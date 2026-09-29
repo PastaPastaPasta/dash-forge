@@ -118,8 +118,9 @@ A repository mirrored from GitHub keeps its CI on GitHub. The [check action](../
         with:
           repo: <owner identity id>/project
           job-status: ${{ job.status }}
+          install: 'false'          # until a release exists; build dg in an earlier step
         env:
           DASH_FORGE_KEY: ${{ secrets.FORGE_RUNNER_KEY }}      # from `dg ci runner new`
 ```
 
-The check run's details link goes back to the GitHub run. A failed report warns and passes by default, so a Forge outage never fails your CI. A pull request from a fork has no access to the secret and does not report: do not use `pull_request_target` to give it one.
+No Dash Forge release is published yet, so the step needs `dg` built earlier in the job: the [check action's README](../../check-action/README.md#quick-start) has the build steps. The check is named `<workflow> / <job>`, and each matrix leg is its own check. The check run's details link goes back to the GitHub run. A failed report warns and passes by default, so a Forge outage never fails your CI. A pull request from a fork has no access to the secret and does not report: do not use `pull_request_target` to give it one.

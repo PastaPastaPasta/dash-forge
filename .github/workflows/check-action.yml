@@ -3,27 +3,27 @@ name: Check Action
 # Tests the Dash Forge check action in check-action/.
 #   * static: actionlint (this workflow uses the action, so its inputs are checked too),
 #             shellcheck and check-action/test.sh (offline, a fake dg). Every trigger.
-#   * live:   reports this job's result as a Forge check run on devnet moutai, on the commit
-#             of `FORGE_CHECK_REPO` (a repo variable, e.g. <owner>/mirror-ci-dash-forge), with the
-#             runner key in the `FORGE_MOUTAI_CI_RUNNER_KEY` secret. Skipped (not failed) while
-#             either is missing: secrets are added only with the owner's OK (SECRETS-TODO.md).
-#             Not on pull requests from forks: the key is a secret.
+#   * live:   reports this job's result as a Forge check run on the devnet named by the
+#             FORGE_CHECK_DEVNET variable, on the commit of `FORGE_CHECK_REPO` (a repo variable,
+#             e.g. <owner>/mirror-ci-dash-forge), with the runner key in the
+#             `FORGE_CI_RUNNER_KEY` secret. Skipped (not failed) while any of the three is
+#             missing: secrets are added only with the owner's OK (SECRETS-TODO.md). Never on a
+#             pull request from a fork: the key is a secret.
 #
-# The same live test runs on a laptop: see check-action/README.md "Test it locally".
+# The same live test runs on a laptop: see check-action/README.md "Test it".
 
 on:
   workflow_dispatch:
   pull_request:
-    paths:
+    paths: &paths
       - check-action/**
-      - .github/workflows/check-action.yml
-  push:
-    branches: [master]
-    paths:
-      - check-action/**
+      - install.sh
       - crates/dg/src/ci.rs
       - crates/forge-core/src/ci.rs
       - .github/workflows/check-action.yml
+  push:
+    branches: [master]
+    paths: *paths
 
 permissions:
   contents: read
@@ -63,19 +63,20 @@ jobs:
       - name: Probe
         id: probe
         env:
-          KEY: ${{ secrets.FORGE_MOUTAI_CI_RUNNER_KEY }}
+          KEY: ${{ secrets.FORGE_CI_RUNNER_KEY }}
           REPO: ${{ vars.FORGE_CHECK_REPO }}
+          DEVNET: ${{ vars.FORGE_CHECK_DEVNET }}
         run: |
-          if [ -n "$KEY" ] && [ -n "$REPO" ]; then
+          if [ -n "$KEY" ] && [ -n "$REPO" ] && [ -n "$DEVNET" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "### Live check-action test skipped: set secret \`FORGE_MOUTAI_CI_RUNNER_KEY\` and variable \`FORGE_CHECK_REPO\`" >> "$GITHUB_STEP_SUMMARY"
-            echo "::warning title=Check Action live test skipped::missing FORGE_MOUTAI_CI_RUNNER_KEY or FORGE_CHECK_REPO"
+            echo "### Live check-action test skipped: set secret \`FORGE_CI_RUNNER_KEY\` and variables \`FORGE_CHECK_REPO\`, \`FORGE_CHECK_DEVNET\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=Check Action live test skipped::missing FORGE_CI_RUNNER_KEY, FORGE_CHECK_REPO or FORGE_CHECK_DEVNET"
           fi
 
   live:
-    name: report this job to Forge (devnet moutai)
+    name: report this job to Forge (devnet)
     needs: [static, probe]
     if: needs.probe.outputs.present == 'true'
     runs-on: ubuntu-latest
@@ -112,11 +113,11 @@ jobs:
           name: check-action-selftest
           status: in_progress
           network: devnet
-          devnet-name: moutai
+          devnet-name: ${{ vars.FORGE_CHECK_DEVNET }}
           install: 'false'
           fail-on-error: 'true'
         env:
-          DASH_FORGE_KEY: ${{ secrets.FORGE_MOUTAI_CI_RUNNER_KEY }}
+          DASH_FORGE_KEY: ${{ secrets.FORGE_CI_RUNNER_KEY }}
 
       - name: Report the result
         id: done
@@ -127,18 +128,20 @@ jobs:
           name: check-action-selftest
           job-status: ${{ job.status }}
           network: devnet
-          devnet-name: moutai
+          devnet-name: ${{ vars.FORGE_CHECK_DEVNET }}
           install: 'false'
           fail-on-error: 'true'
         env:
-          DASH_FORGE_KEY: ${{ secrets.FORGE_MOUTAI_CI_RUNNER_KEY }}
+          DASH_FORGE_KEY: ${{ secrets.FORGE_CI_RUNNER_KEY }}
 
       - name: The run is on Forge
         env:
           REPO: ${{ vars.FORGE_CHECK_REPO }}
+          DEVNET: ${{ vars.FORGE_CHECK_DEVNET }}
           ACTION: ${{ steps.done.outputs.action }}
+          SHA: ${{ steps.done.outputs.sha }}
         run: |
-          echo "report: $ACTION"
+          echo "report: $ACTION on $SHA"
           [ "$ACTION" = updated ] || { echo "::error::the completed report should update the in_progress run, got '$ACTION'"; exit 1; }
-          dg --json --network devnet --devnet-name moutai ci status "$REPO" "$GITHUB_SHA" \
+          dg --json --network devnet --devnet-name "$DEVNET" ci status "$REPO" "$SHA" \
             | jq -e '.checks[] | select(.name == "check-action-selftest" and .status == "completed" and .trusted)'

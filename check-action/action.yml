@@ -13,8 +13,8 @@ inputs:
     description: "Forge repository: <owner identity id or DPNS name>/<name>, or dash://<owner>/<name>."
     required: true
   name:
-    description: "The check's name on Forge (default: the job's id)."
-    default: ${{ github.job }}
+    description: "The check's name on Forge. Default: `<workflow> / <job>`, plus the matrix values of a matrix leg (`CI / test (ubuntu, 1.80)`)."
+    default: ""
   status:
     description: "queued, in_progress or completed (default completed)."
     default: completed
@@ -46,13 +46,13 @@ inputs:
     description: "mainnet, testnet or devnet."
     default: mainnet
   devnet-name:
-    description: "Devnet name (required when network is devnet), e.g. moutai."
+    description: "Devnet name (required when network is devnet): lowercase letters, digits and -."
     default: ""
   version:
     description: "Dash Forge release to install."
     default: "0.1.0"
   install:
-    description: "false: use the dg already on PATH."
+    description: "false: use the dg already on PATH. No release is published yet, so for now build dg in the job and set this to false."
     default: "true"
   fail-on-error:
     description: "true: fail the step when the report cannot be written. Default false: a warning, so a Forge outage never fails your CI."
@@ -62,6 +62,12 @@ outputs:
   document-id:
     description: "The checkRun document id."
     value: ${{ steps.report.outputs.document-id }}
+  sha:
+    description: "The commit the check run is on (the PR head for pull_request runs)."
+    value: ${{ steps.resolve.outputs.sha }}
+  name:
+    description: "The check's name on Forge."
+    value: ${{ steps.resolve.outputs.name }}
   url:
     description: "The Forge commit page that shows the run."
     value: ${{ steps.report.outputs.url }}
@@ -90,20 +96,34 @@ runs:
         INPUT_NETWORK: ${{ inputs.network }}
         INPUT_DEVNET_NAME: ${{ inputs.devnet-name }}
         PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # A matrix leg: its index goes into the run id and its values into the default name,
+        # so the legs of one job never overwrite each other.
+        JOB_TOTAL: ${{ strategy.job-total }}
+        JOB_INDEX: ${{ strategy.job-index }}
+        MATRIX_JSON: ${{ toJSON(matrix) }}
       run: bash "$GITHUB_ACTION_PATH/resolve.sh"
 
     - name: Install Dash Forge ${{ inputs.version }}
+      id: install
       if: inputs.install == 'true'
       shell: bash
       env:
         DASH_FORGE_VERSION: ${{ inputs.version }}
-        DASH_FORGE_INSTALL_DIR: ${{ runner.temp }}/forge-check-bin
+        DASH_FORGE_INSTALL_DIR: ${{ runner.temp }}/forge-check-bin-${{ inputs.version }}
         DASH_FORGE_BINARIES: dg
         DASH_FORGE_ATTESTATION: auto
         GH_TOKEN: ${{ github.token }}
+      # A failed install is reported by the next step, which honours fail-on-error; installed
+      # once per job (a second use of the action reuses it).
       run: |
-        sh "$GITHUB_ACTION_PATH/../install.sh"
-        echo "$RUNNER_TEMP/forge-check-bin" >> "$GITHUB_PATH"
+        dg="$DASH_FORGE_INSTALL_DIR/dg"
+        if [ ! -x "$dg" ]; then
+          if ! sh "$GITHUB_ACTION_PATH/../install.sh" >&2; then
+            echo "failed=dg $DASH_FORGE_VERSION could not be installed (is it released?)" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+        fi
+        echo "dg=$dg" >>"$GITHUB_OUTPUT"
 
     - name: Report to Forge
       id: report
@@ -111,4 +131,6 @@ runs:
       env:
         FORGE_ARGS_FILE: ${{ steps.resolve.outputs.args-file }}
         FORGE_FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+        FORGE_INSTALL_FAILED: ${{ steps.install.outputs.failed }}
+        DG_BIN: ${{ steps.install.outputs.dg || 'dg' }}
       run: bash "$GITHUB_ACTION_PATH/report.sh"
