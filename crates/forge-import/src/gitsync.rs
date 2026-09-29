@@ -98,6 +98,15 @@ pub struct PushReport {
     /// Why the push left its browse index unpublished, with the fix (the helper's
     /// `indexSkipped` event, D-920): the repository clones but the web cannot browse it.
     pub index_skipped: Option<String>,
+    /// The push left the default branch's history index unpublished (the helper's
+    /// `historySkipped` event): the web walks history for the file list's commit column.
+    pub history_skipped: Option<String>,
+    /// Plaintext bytes of the history index the push publishes (the `platform` event's
+    /// `historyBytes`): a Platform fallback stores its chunks too.
+    pub history_bytes: u64,
+    /// The push published the default branch's history index (the helper's `historyIndex`
+    /// event): forge-import's own backfill has nothing to do.
+    pub history_published: bool,
 }
 
 impl PushReport {
@@ -138,6 +147,7 @@ pub fn parse_push(stdout: &str, stderr: &str) -> PushReport {
                 r.docs += num("chunks") + num("manifests") + num("refUpdates");
                 r.est_credits += num("estCredits");
                 r.helper_credits += num("estCredits");
+                r.history_bytes += num("historyBytes");
             }
             _ => {}
         }
@@ -186,6 +196,10 @@ pub fn parse_landed(stderr: &str) -> PushReport {
                     })
                 });
             }
+            Some("historySkipped") => {
+                r.history_skipped = v.get("message").and_then(Value::as_str).map(str::to_string);
+            }
+            Some("historyIndex") => r.history_published = true,
             _ => {}
         }
     }
@@ -224,6 +238,9 @@ pub struct GitPusher {
     /// The storage policy may fall back to Platform (`dash.platformFallback`): the helper's
     /// dry run prices the pack on your storage, but a real push can store it as chunks.
     pub fallback: bool,
+    /// The source's default branch: the helper publishes its history index, and uses this name
+    /// when it cannot read a just-created repository's config yet.
+    pub default_branch: String,
 }
 
 /// Turn the helper's dry-run price into the estimate charged to the budget. The helper
@@ -261,7 +278,15 @@ pub fn price_helper_estimate(mut r: PushReport, fallback: bool) -> PushReport {
         return r;
     }
     if fallback && r.chunks == 0 && r.pack_bytes > 0 {
-        let chunks = worst(&r).chunk_credits;
+        // The pack's chunks and the history index's (it goes where the pack does), sealed.
+        let history = if r.history_bytes > 0 {
+            push_fees::chunks(forge_core::private::pack::sealed_upper_bound(
+                r.history_bytes,
+            ))
+        } else {
+            0
+        };
+        let chunks = worst(&r).chunk_credits + history;
         r.est_credits = r.est_credits.saturating_add(chunks);
         r.fallback_credits = chunks;
     }
@@ -577,7 +602,12 @@ pub fn storage_policy(git_dir: &Path) -> Result<forge_core::storage::StoragePoli
 /// be asked): build the pack locally and price what `storage` writes on chain (the caller
 /// reads it with [`storage_policy`] and [`PackStorage::resolve`]). The PR heads' pack leaves out what the
 /// branches and tags already carry (it is pushed after them).
-pub fn estimate_fresh(git_dir: &Path, refs: &Refs, storage: PackStorage) -> Result<PushReport> {
+pub fn estimate_fresh(
+    git_dir: &Path,
+    refs: &Refs,
+    storage: PackStorage,
+    default_branch: &str,
+) -> Result<PushReport> {
     let tips = local_tips(git_dir, &refs.local_patterns())?;
     let refs_n = tips.len() as u64;
     if tips.is_empty() {
@@ -594,7 +624,8 @@ pub fn estimate_fresh(git_dir: &Path, refs: &Refs, storage: PackStorage) -> Resu
     let pack =
         forge_core::pack::build_pack(git_dir, &unique, &bases).context("sizing the first push")?;
     let bytes = pack.bytes.len() as u64;
-    let est = fresh_push_credits(bytes, pack.parsed.object_count() as u64, refs_n, storage);
+    let est = fresh_push_credits(bytes, pack.parsed.object_count() as u64, refs_n, storage)
+        + fresh_history_credits(git_dir, refs, storage, default_branch);
     Ok(PushReport {
         refs: refs_n,
         packs: 1,
@@ -628,6 +659,105 @@ pub fn fresh_push_credits(bytes: u64, objects: u64, refs: u64, storage: PackStor
         sealed: false,
     })
     .total()
+}
+
+/// The history index the helper publishes with the first push of the default branch
+/// (`default_branch`, in the mirror at `git_dir`): computed here as the helper will, and priced
+/// where `storage` puts it. 0 for the PR heads push, or when the mirror has no such branch.
+fn fresh_history_credits(
+    git_dir: &Path,
+    refs: &Refs,
+    storage: PackStorage,
+    default_branch: &str,
+) -> u64 {
+    if !matches!(refs, Refs::Code) || default_branch.is_empty() {
+        return 0;
+    }
+    let Ok(tips) = local_tips(git_dir, &[format!("refs/heads/{default_branch}")]) else {
+        return 0;
+    };
+    let Some(tip) = tips
+        .first()
+        .and_then(|t| forge_core::pack::historyindex::parse_hex_oid(t.as_bytes()).ok())
+    else {
+        return 0;
+    };
+    let plan = forge_core::repo::HistoryPlan::fresh();
+    let Ok(Some(prepared)) = forge_core::repo::prepare_history_index(git_dir, tip, &plan) else {
+        return 0;
+    };
+    let (external_targets, platform) = match storage {
+        PackStorage::Platform { external_targets } => (external_targets, true),
+        PackStorage::External { targets } => (targets, false),
+    };
+    prepared.credits(false, external_targets, platform)
+}
+
+/// Publish the history index of `default_branch`'s tip in the mirror at `git_dir` when no
+/// published index covers it and `fits(credits)` admits its price (the storage the repository's
+/// packs use: Platform chunks when its policy says so). `Ok(Some(quoted credits))` when it
+/// published, `Ok(None)` when there was nothing to do or it did not fit.
+pub async fn history_backfill(
+    svc: &forge_core::repo::RepoService<'_>,
+    repo: &forge_core::scope::RepoRef,
+    git_dir: &Path,
+    default_branch: &str,
+    fits: &mut dyn FnMut(u64) -> bool,
+) -> Result<Option<u64>> {
+    let Some(tip) = local_tips(git_dir, &[format!("refs/heads/{default_branch}")])?
+        .first()
+        .and_then(|t| forge_core::pack::historyindex::parse_hex_oid(t.as_bytes()).ok())
+    else {
+        return Ok(None);
+    };
+    let plan = svc.plan_history_publish(repo, tip).await?;
+    let Some(prepared) = forge_core::repo::prepare_history_index(git_dir, tip, &plan)? else {
+        return Ok(None);
+    };
+    let policy = storage_policy(git_dir)?;
+    let resolved = if policy.is_platform_only() {
+        forge_core::storage::StoragePolicy::platform_only()
+            .resolve(&forge_core::storage::StorageProfiles::default())?
+    } else {
+        policy.resolve(&forge_core::storage::StorageProfiles::load()?)?
+    };
+    let credits = prepared.credits(
+        repo.visibility == forge_core::rules::v2::Visibility::Private,
+        resolved.external.len() as u64,
+        resolved.platform,
+    );
+    if !fits(credits) {
+        return Ok(None);
+    }
+    let http = forge_core::storage::http_client();
+    let externals = resolved
+        .external
+        .iter()
+        .map(|(name, profile)| {
+            forge_core::storage::ExternalTarget::from_profile(name, profile, &http)
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let chain = resolved.platform.then(|| {
+        forge_core::repo::PlatformChunkTarget::new(svc, repo, forge_core::storage::PLATFORM_PROFILE)
+    });
+    let mut targets: Vec<&dyn forge_core::storage::StorageTarget> = externals
+        .iter()
+        .map(|t| t as &dyn forge_core::storage::StorageTarget)
+        .collect();
+    if let Some(c) = &chain {
+        targets.push(c);
+    }
+    let required = resolved.replicas.min(targets.len()).max(1);
+    svc.store_history_index(
+        repo,
+        prepared,
+        forge_core::repo::RepackTarget::Replicated {
+            targets: &targets,
+            required,
+        },
+    )
+    .await?;
+    Ok(Some(credits))
 }
 
 impl GitPusher {
@@ -673,6 +803,8 @@ impl GitPusher {
             .env("DASH_FORGE_KEY", &self.key)
             .env("GIT_DASH_JSON", "1")
             .env("GIT_TERMINAL_PROMPT", "0")
+            .env("DASH_FORGE_DEFAULT_BRANCH", &self.default_branch)
+            .env("DASH_FORGE_SPAWNED_BY", "forge-import")
             .envs(self.network.env_vars());
         let out = cmd.output().context("running git")?;
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -702,6 +834,8 @@ impl GitPusher {
             (report.packs, report.pack_bytes, report.objects) =
                 (landed.packs, landed.pack_bytes, landed.objects);
             report.index_skipped = landed.index_skipped;
+            report.history_skipped = landed.history_skipped;
+            report.history_published = landed.history_published;
         }
         Ok(report)
     }
@@ -759,6 +893,9 @@ dash: some human line"#;
                 objects: 3,
                 fallback_credits: 0,
                 index_skipped: None,
+                history_skipped: None,
+                history_bytes: 0,
+                history_published: false,
             }
         );
     }
@@ -1000,6 +1137,51 @@ dash: push failed: ref did not converge to pushed tip"#;
         git(d, &["tag", "v1"]);
     }
 
+    /// The first push of the default branch publishes its history index: the estimate prices it
+    /// (never under the charge), and a push of other refs, or of a branch that is not the
+    /// default, does not.
+    #[test]
+    fn a_fresh_push_prices_the_default_branchs_history_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        repo_with_history(d);
+        let with = estimate_fresh(d, &Refs::Code, PackStorage::PLATFORM, "main").unwrap();
+        let other = estimate_fresh(d, &Refs::Code, PackStorage::PLATFORM, "develop").unwrap();
+        let plan = forge_core::repo::HistoryPlan::fresh();
+        let tip: [u8; 20] = hex::decode(git(d, &["rev-parse", "main"]).trim())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let prepared = forge_core::repo::prepare_history_index(d, tip, &plan)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            with.est_credits - other.est_credits,
+            prepared.credits(false, 0, true)
+        );
+        // A fresh repository's index is its first: priced with the first-of-kind fee.
+        assert!(prepared.is_first());
+        assert_eq!(
+            fresh_history_credits(d, &Refs::PullHeads(vec![1]), PackStorage::PLATFORM, "main"),
+            0
+        );
+    }
+
+    /// Review N1: the helper's `historyIndex` event says the push published the index, so the
+    /// import does not publish (and pay for) a second one; a `historySkipped` event says it did not.
+    #[test]
+    fn the_push_reports_whether_it_published_the_history_index() {
+        let published = r#"{"event":"stored","packHash":"ab","bytes":10,"objects":1}
+{"event":"historyIndex","delta":false,"paths":3,"commits":2}"#;
+        let got = parse_landed(published);
+        assert!(got.history_published);
+        assert!(got.history_skipped.is_none());
+        let skipped = r#"{"event":"historySkipped","message":"the history index was not published (x)","fix":"dg repo reindex o/r"}"#;
+        let got = parse_landed(skipped);
+        assert!(!got.history_published);
+        assert!(got.history_skipped.is_some());
+    }
+
     /// F-9: with the pack going to your own bucket, the first push into a new repository
     /// was priced as if Platform chunks held it (~3x the real cost), so `--max-spend`
     /// refused imports it could afford. It is priced by the policy the helper will apply.
@@ -1025,8 +1207,8 @@ dash: push failed: ref did not converge to pushed tip"#;
         git(d, &["config", "dash.platformFallback", "false"]);
         assert_eq!(storage().unwrap(), PackStorage::External { targets: 1 });
 
-        let platform = estimate_fresh(d, &Refs::Code, PackStorage::PLATFORM).unwrap();
-        let byo = estimate_fresh(d, &Refs::Code, storage().unwrap()).unwrap();
+        let platform = estimate_fresh(d, &Refs::Code, PackStorage::PLATFORM, "main").unwrap();
+        let byo = estimate_fresh(d, &Refs::Code, storage().unwrap(), "main").unwrap();
         assert_eq!(
             (byo.refs, byo.pack_bytes),
             (platform.refs, platform.pack_bytes)
@@ -1037,10 +1219,12 @@ dash: push failed: ref did not converge to pushed tip"#;
             byo.est_credits,
             platform.est_credits
         );
-        // Manifests and refs only.
+        // Manifests and refs only, plus the history index's manifest (its bytes go to the
+        // bucket with the pack).
         assert_eq!(
             byo.est_credits,
             fresh_push_credits(0, 0, 2, PackStorage::External { targets: 1 })
+                + push_fees::history_index(0, false, 1, false, true)
         );
         // A fallback to Platform keeps the Platform price (an upper bound).
         git(d, &["config", "dash.platformFallback", "true"]);
@@ -1098,6 +1282,9 @@ dash: push failed: ref did not converge to pushed tip"#;
                     chunks: 0,
                     fallback_credits: 0,
                     index_skipped: None,
+                    history_skipped: None,
+                    history_bytes: 0,
+                    history_published: false,
                 },
                 false,
             )
@@ -1197,6 +1384,9 @@ dash: push failed: ref did not converge to pushed tip"#;
             chunks: 0,
             fallback_credits: 0,
             index_skipped: None,
+            history_skipped: None,
+            history_bytes: 0,
+            history_published: false,
         };
         let plain = price_helper_estimate(r.clone(), false);
         let armed = price_helper_estimate(r, true);

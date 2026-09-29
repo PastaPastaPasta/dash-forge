@@ -89,12 +89,29 @@ test.describe('keyboard', () => {
 test.describe('theme', () => {
   const htmlClass = (page: Page): Promise<string> => page.evaluate(() => document.documentElement.className)
 
-  test('the toggle cycles dark → light → system, persists, and survives a reload', async ({ page }) => {
+  test('a first visit follows the OS: light when it prefers light, dark when it prefers dark (L-66)', async ({ browser }) => {
+    for (const scheme of ['light', 'dark'] as const) {
+      const context = await browser.newContext({ colorScheme: scheme })
+      const page = await context.newPage()
+      await page.goto('/explore/', { waitUntil: 'domcontentloaded' })
+      await expect(page.getByTestId('theme-toggle')).toHaveAttribute('data-theme-choice', 'system')
+      await expect.poll(() => htmlClass(page)).toContain(scheme)
+      expect(await htmlClass(page)).not.toContain(scheme === 'light' ? 'dark' : 'light')
+      await context.close()
+    }
+  })
+
+  test('the toggle cycles system → dark → light, persists, and survives a reload', async ({ page }) => {
     await page.emulateMedia({ colorScheme: 'light' })
     await page.goto('/explore/', { waitUntil: 'domcontentloaded' })
     const toggle = page.getByTestId('theme-toggle')
+    await expect(toggle).toHaveAttribute('data-theme-choice', 'system')
+    expect(await htmlClass(page)).toContain('light')
+
+    await toggle.click()
     await expect(toggle).toHaveAttribute('data-theme-choice', 'dark')
     expect(await htmlClass(page)).toContain('dark')
+    expect(await page.evaluate(() => localStorage.getItem('theme'))).toBe('dark')
 
     await toggle.click()
     await expect(toggle).toHaveAttribute('data-theme-choice', 'light')
@@ -103,16 +120,18 @@ test.describe('theme', () => {
     const bg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor)
     expect(bg).toBe('rgb(250, 250, 249)') // anvil-50: really rendered light
 
+    // The explicit choice wins over the OS, across a reload.
+    await page.emulateMedia({ colorScheme: 'dark' })
     await page.reload({ waitUntil: 'domcontentloaded' })
     await expect(page.getByTestId('theme-toggle')).toHaveAttribute('data-theme-choice', 'light')
     expect(await htmlClass(page)).toContain('light')
 
-    // System follows the OS preference, live.
+    // Back to System: follows the OS preference, live.
     await page.getByTestId('theme-toggle').click()
     await expect(page.getByTestId('theme-toggle')).toHaveAttribute('data-theme-choice', 'system')
-    expect(await htmlClass(page)).toContain('light')
-    await page.emulateMedia({ colorScheme: 'dark' })
     await expect.poll(() => htmlClass(page)).toContain('dark')
+    await page.emulateMedia({ colorScheme: 'light' })
+    await expect.poll(() => htmlClass(page)).toContain('light')
   })
 
   test('a stored light theme is applied before first paint (no flash of dark)', async ({ page }) => {

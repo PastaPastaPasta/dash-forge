@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ResolvedRef } from '../repo'
-import { isLive, refParamFor, selectedTip, selectRef } from './refs'
+import { isLive, matchesRefQuery, refParamFor, selectedTip, selectRef } from './refs'
 
 function ref(refName: string, oid = 'a'.repeat(40)): ResolvedRef {
   return { refName, refNameHash: 'x', state: { state: 'resolved', oid, author: 'id', createdAt: 1 } }
@@ -85,6 +85,19 @@ describe('refParamFor', () => {
   })
 })
 
+describe('matchesRefQuery', () => {
+  it('matches everything on an empty or whitespace-only query', () => {
+    expect(matchesRefQuery('v23.1.8', '')).toBe(true)
+    expect(matchesRefQuery('v23.1.8', '   ')).toBe(true)
+  })
+
+  it('matches a case-insensitive substring anywhere in the name', () => {
+    expect(matchesRefQuery('v23.1.8', '23.1')).toBe(true)
+    expect(matchesRefQuery('Release-Candidate', 'candidate')).toBe(true)
+    expect(matchesRefQuery('v23.1.8', 'CANDIDATE')).toBe(false)
+  })
+})
+
 describe('pinned commits (permalinks, D-054)', () => {
   const commit = 'AbCdEf0123456789abcdef0123456789ABCDEF01'
   it('reads a full commit id no ref is named as a pinned commit', () => {
@@ -102,10 +115,12 @@ describe('pinned commits (permalinks, D-054)', () => {
     expect(selectedTip(selectRef(branches, tags, 'main', ''))).toBe('1'.repeat(40))
   })
 
-  it('leaves an unknown short name unresolved', () => {
-    const selected = selectRef(branches, tags, 'main', 'abcdef0')
-    expect(selected.ref).toBeUndefined()
-    expect(selected.pinned).toBeUndefined()
-    expect(selectedTip(selected)).toBeNull()
+  it('pins a short hex id for the view to resolve (L-32), and leaves other unknown names unresolved', () => {
+    const short = selectRef(branches, tags, 'main', 'abcdef0')
+    expect(short.ref).toBeUndefined()
+    expect(short.pinned).toBe('abcdef0')
+    const unknown = selectRef(branches, tags, 'main', 'feature-x')
+    expect(unknown.pinned).toBeUndefined()
+    expect(selectedTip(unknown)).toBeNull()
   })
 })

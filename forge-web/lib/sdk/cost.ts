@@ -205,8 +205,16 @@ export const KEY_REGISTER_CREDITS = 48_000_000
 /** Adding a key when the identity already holds a budgeted one, e.g. a renewal (see above). */
 export const KEY_RENEW_CREDITS = 30_000_000
 
-/** A typical write for copy ("about 0.0006 DASH per issue or push"): a steady-state issue. */
-export const TYPICAL_WRITE_CREDITS = 62_000_000
+/**
+ * What copy quotes for "an issue" (L-73): the preview a newcomer's first issue gets — a short
+ * title and a paragraph, with every first-write surcharge, as the New issue form shows before
+ * it is signed (so the sign-in sheet and the form never disagree). A steady-state issue by an
+ * author who has written before costs about half this. Derived, not measured separately:
+ * {@link previewCreate} is the one model.
+ */
+export function typicalIssueCredits(): number {
+  return previewCreate('issue', { title: 'A typical issue title', body: 'x'.repeat(300) }).credits
+}
 
 /**
  * What Drive requires to be available before it accepts a write (`validate_fees_of_event`

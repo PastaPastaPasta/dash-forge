@@ -1,8 +1,8 @@
 /** The file list's lazy commit column and the ref bar's commit count. */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
-import { countCommits, historyWalker, lastCommitsForDir, walkCommitColumn, type LastCommitColumn } from './commit-log'
+import { countCommits, historyWalker, lastCommitsForDir, walkCommitColumn, type IndexedHistory, type LastCommit, type LastCommitColumn } from './commit-log'
 import { Store } from './diff-fixtures'
 
 describe('lastCommitsForDir', () => {
@@ -151,7 +151,189 @@ describe('walkCommitColumn (the repo home’s commit column)', () => {
     const states: LastCommitColumn[] = []
     await walkCommitColumn(st.reader(), tip, ['a', 'b'], (s) => states.push(s))
     const last = states[states.length - 1] as LastCommitColumn
-    expect(last).toMatchObject({ done: true, failed: false })
+    expect(last).toMatchObject({ done: true, failed: false, source: 'walk' })
     expect([...last.found.keys()].sort()).toEqual(['a', 'b'])
+    expect(last.more).toBeUndefined()
+  })
+})
+
+describe('the commit column with a history index', () => {
+  /** `a` changes at the tip; `b` long ago; 30 commits in between. */
+  function history() {
+    const st = new Store()
+    let tip = st.commit(st.files({ a: '0', b: '0' }), [], 'root')
+    const old = st.commit(st.files({ a: '0', b: '1' }), [tip], 'b changed')
+    tip = old
+    for (let i = 1; i <= 30; i++) tip = st.commit(st.files({ a: '0', b: '1', c: String(i) }), [tip], `c${i}`)
+    const indexed = tip
+    tip = st.commit(st.files({ a: '1', b: '1', c: '30' }), [tip], 'a changed')
+    return { st, tip, old, indexed }
+  }
+  /** An index of `indexTip` answering every path it is asked for, counting loads. */
+  function index(indexTip: string, old: string) {
+    let loads = 0
+    const paths = new Map<string, LastCommit>(['a', 'b', 'c'].map((p) => [p, { oid: old, subject: `indexed ${p}`, when: 5_000 }]))
+    const h: IndexedHistory = {
+      covers: (tip) => tip === indexTip,
+      async load(tip) {
+        loads++
+        expect(tip).toBe(indexTip)
+        return { paths, commitCount: 0 }
+      },
+    }
+    return { h, loads: () => loads }
+  }
+  function counting(st: Store) {
+    const base = st.reader()
+    let reads = 0
+    return { reader: { readObject: (oid: string) => (reads++, base.readObject(oid)) }, reads: () => reads }
+  }
+
+  it('an index of the tip answers every name without reading history', async () => {
+    const { st, tip, old } = history()
+    const { h, loads } = index(tip, old)
+    const { reader, reads } = counting(st)
+    const states: LastCommitColumn[] = []
+    await walkCommitColumn(reader, tip, ['a', 'b'], (s) => states.push(s), { history: h })
+    const last = states[states.length - 1] as LastCommitColumn
+    expect(last).toMatchObject({ done: true, failed: false, source: 'index' })
+    expect(last.found.get('b')?.subject).toBe('indexed b')
+    expect(reads()).toBe(0)
+    expect(loads()).toBe(1)
+  })
+
+  it('an index of an older tip: only the commits since it are walked', async () => {
+    const { st, tip, old, indexed } = history()
+    const { h } = index(indexed, old)
+    const { reader, reads } = counting(st)
+    const states: LastCommitColumn[] = []
+    await walkCommitColumn(reader, tip, ['a', 'b'], (s) => states.push(s), { history: h })
+    const last = states[states.length - 1] as LastCommitColumn
+    expect(last.found.get('a')?.subject).toBe('a changed')
+    expect(last.found.get('b')?.subject).toBe('indexed b')
+    expect(last.more).toBeUndefined()
+    // The tip and its tree, the indexed commit and its tree: never the 30 below it.
+    expect(reads()).toBeLessThanOrEqual(4)
+  })
+
+  it('in a subdirectory the index is asked for full paths', async () => {
+    const st = new Store()
+    const tip = st.commit(st.files({ 'src/x.rs': '1' }), [], 'root')
+    const h: IndexedHistory = {
+      covers: () => true,
+      // Keyed by full path: `x.rs` alone would not be found.
+      load: async () => ({ paths: new Map([['src/x.rs', { oid: tip, subject: 's', when: 1 }]]), commitCount: 1 }),
+    }
+    const states: LastCommitColumn[] = []
+    await walkCommitColumn(st.reader(), tip, ['x.rs'], (s) => states.push(s), { history: h, dirPath: 'src' })
+    expect(states[states.length - 1]?.found.get('x.rs')?.subject).toBe('s')
+  })
+
+  it('without an index: a date bound for what the window missed, and a way further back', async () => {
+    const { st, tip } = history()
+    const states: LastCommitColumn[] = []
+    await walkCommitColumn(st.reader(), tip, ['a', 'b'], (s) => states.push(s), { limit: 5 })
+    let last = states[states.length - 1] as LastCommitColumn
+    expect(last).toMatchObject({ done: true, failed: false, source: 'walk' })
+    expect(last.found.has('b')).toBe(false)
+    expect(last.olderThan).toBeGreaterThan(0)
+    expect(last.more).toBeTypeOf('function')
+    // "Search older history" continues from where the walk stopped, 5 more at a time.
+    for (let i = 0; i < 10 && !states[states.length - 1]?.found.has('b'); i++) {
+      const more = states[states.length - 1]?.more
+      if (more === undefined) break
+      const before = states.length
+      more()
+      // The continued walk reads as under way at once (cells pending, no second control).
+      expect(states[before]).toMatchObject({ done: false })
+      expect(states[before]?.more).toBeUndefined()
+      await vi.waitFor(() => {
+        expect(states.length).toBeGreaterThan(before)
+        expect(states[states.length - 1]?.done).toBe(true)
+      })
+    }
+    last = states[states.length - 1] as LastCommitColumn
+    expect(last.found.get('b')?.subject).toBe('b changed')
+    expect(last.found.get('a')?.subject).toBe('a changed')
+    expect(last.more).toBeUndefined()
+    expect(last.olderThan).toBeUndefined()
+  })
+})
+
+describe('countCommits with a history index', () => {
+  const counted = (covers: (tip: string) => boolean, commitCount: number): IndexedHistory => ({
+    covers,
+    load: async () => ({ paths: new Map(), commitCount }),
+  })
+  function chain(n: number) {
+    const s = new Store()
+    const tips: string[] = []
+    let tip = s.commit(s.files({ a: '0' }))
+    tips.push(tip)
+    for (let i = 1; i < n; i++) tips.push((tip = s.commit(s.files({ a: String(i) }), [tip])))
+    return { s, tips, tip }
+  }
+
+  it('is exact from an index of the tip', async () => {
+    const { s, tip } = chain(3)
+    const got = await countCommits(s.reader(), tip, 100, { history: counted((t) => t === tip, 33_553) })
+    expect(got).toEqual({ count: 33_553, capped: false, fromIndex: true })
+  })
+
+  it('adds the commits since an older index, exact without merges', async () => {
+    const { s, tips, tip } = chain(6)
+    const at = tips[2] as string
+    const got = await countCommits(s.reader(), tip, 100, { history: counted((t) => t === at, 1_000) })
+    expect(got).toEqual({ count: 1_003, capped: false, fromIndex: true })
+  })
+
+  it('is a lower bound when a merge was walked past', async () => {
+    const s = new Store()
+    const root = s.commit(s.files({ a: '0' }))
+    const side = s.commit(s.files({ a: '0', b: '1' }), [root], 'side')
+    const merge = s.commit(s.files({ a: '0', b: '1' }), [root, side], 'merge')
+    const got = await countCommits(s.reader(), merge, 100, { history: counted((t) => t === root, 10) })
+    expect(got).toEqual({ count: 11, capped: true, fromIndex: true })
+  })
+})
+
+describe('a history index that will not load', () => {
+  function history() {
+    const st = new Store()
+    let tip = st.commit(st.files({ a: '0', b: '0' }), [], 'root')
+    tip = st.commit(st.files({ a: '0', b: '1' }), [tip], 'b changed')
+    const indexed = tip
+    for (let i = 1; i <= 5; i++) tip = st.commit(st.files({ a: '0', b: '1', c: String(i) }), [tip], `c${i}`)
+    tip = st.commit(st.files({ a: '1', b: '1', c: '5' }), [tip], 'a changed')
+    return { st, tip, indexed }
+  }
+  /** Covers `tip`, but its artifact is missing or corrupt. */
+  const broken = (covered: string): IndexedHistory => ({
+    covers: (t) => t === covered,
+    load: () => Promise.reject(new Error('history index truncated')),
+  })
+
+  it('an index of the tip that fails: the column walks instead', async () => {
+    const { st, tip } = history()
+    const states: LastCommitColumn[] = []
+    await walkCommitColumn(st.reader(), tip, ['a', 'b'], (s) => states.push(s), { history: broken(tip) })
+    const last = states[states.length - 1] as LastCommitColumn
+    expect(last).toMatchObject({ done: true, failed: false, source: 'walk' })
+    expect(last.found.get('a')?.subject).toBe('a changed')
+    expect(last.found.get('b')?.subject).toBe('b changed')
+  })
+
+  it('an index the walk stops at that fails: the walk goes on past it', async () => {
+    const { st, tip, indexed } = history()
+    const states: LastCommitColumn[] = []
+    await walkCommitColumn(st.reader(), tip, ['a', 'b'], (s) => states.push(s), { history: broken(indexed) })
+    const last = states[states.length - 1] as LastCommitColumn
+    expect(last).toMatchObject({ done: true, failed: false })
+    expect(last.found.get('b')?.subject).toBe('b changed')
+  })
+
+  it('the count walks on too', async () => {
+    const { st, tip } = history()
+    expect(await countCommits(st.reader(), tip, 100, { history: broken(tip) })).toEqual({ count: 8, capped: false })
   })
 })

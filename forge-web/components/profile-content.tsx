@@ -86,7 +86,7 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
       const follows = forge !== null ? readFollowCounts(sdk!, forge, identityId).catch(() => noCounts) : noCounts
       const [name, repos, counts] = await Promise.all([
         resolveDpnsName(sdk!, identityId, network),
-        listReposByOwner(sdk!, identityId, { network }),
+        listReposByOwner(sdk!, identityId, { network, counts: true }),
         follows,
       ])
       return { identityId, name, repos: repos.owned, memberOf: repos.member, ...counts }
@@ -117,7 +117,7 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
   const unfollowRefund = previewDelete('follow')
   const toggleFollow = (): void => {
     // Unfollowing refunds, so only a follow needs the funds check; both sign in first.
-    if (!guard.check(following ? 0 : followCost, 'community')) return
+    if (!guard.check(following ? 0 : followCost, 'community', following ? 'unfollow' : 'follow this identity')) return
     setConfirming(true)
   }
   // Signed in but whether you already follow is not known yet (or unreadable): no action.
@@ -192,7 +192,7 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {data.repos.map((r) => (
-              <RepoCard key={r.key} repo={r} />
+              <RepoCard key={r.key} repo={r} showOwner={false} />
             ))}
           </div>
         )}

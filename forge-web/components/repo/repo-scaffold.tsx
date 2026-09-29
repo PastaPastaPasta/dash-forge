@@ -21,6 +21,7 @@ import { useSdk } from '@/hooks/use-sdk'
 import { usePrivateHome } from '@/hooks/use-private-home'
 import { PrivateBanner } from '@/components/repo/private-banner'
 import { PrivateRepoState } from '@/components/repo/private-repo-state'
+import { RepoNotFound } from '@/components/repo/repo-not-found'
 import { selectRef, type RepoHome } from '@/lib/view'
 import { repoHref, useExpiredLink, type RepoAddress } from '@/hooks/use-query-param'
 
@@ -46,7 +47,7 @@ export function RepoScaffold({
   /** The page reads code (home, tree, blob, commits): start the browse index with the refs. */
   browse?: boolean
 }): JSX.Element {
-  const { data, loading, error, settled, ready, reload } = useRepoHome(addr, { browse })
+  const { data, loading, error, cause, settled, ready, reload } = useRepoHome(addr, { browse })
   const { status: sdkStatus, retry: retrySdk } = useSdk()
   // A private repo is re-read through the viewer's decryption session (or shown as sealed).
   const privateHome = usePrivateHome(data ?? null, addr)
@@ -99,23 +100,12 @@ export function RepoScaffold({
   if (error) {
     return (
       <>
-        <ErrorState message={error} onRetry={reload} />
+        <ErrorState message={error} cause={cause} onRetry={reload} />
       </>
     )
   }
 
-  if (data === null) {
-    return (
-      <>
-        <EmptyState
-          icon={GitBranch}
-          title="Repo not found"
-          body={`No repo ${addr.owner}/${addr.name} exists on this network.`}
-          action={<Link href="/"><Button variant="primary">Discover repos</Button></Link>}
-        />
-      </>
-    )
-  }
+  if (data === null) return <RepoNotFound addr={addr} />
 
   if (privateHome?.error) {
     return (

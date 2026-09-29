@@ -9,7 +9,7 @@
 import { useState } from 'react'
 import { Plus, Settings2, X, type LucideIcon } from 'lucide-react'
 import { LABEL_COLORS, LABEL_LIMITS, type LabelDef } from '@/lib/repo'
-import { isIdentityId } from '@/lib/view/issue-query'
+import { isIdentityId } from '@/lib/utils'
 import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'

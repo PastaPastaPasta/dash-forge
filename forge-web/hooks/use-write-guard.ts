@@ -27,8 +27,9 @@ export interface WriteGuard {
    * write's cost preview (or a bare estimate). `contract`: which Forge contract the write goes
    * to, `'collab'` for issues, comments and reviews, `'community'` for stars, watches, follows
    * and branch policies (default `'core'`).
+   * `action`: what the click does, for the sign-in sheet when signed out (`star this repo`).
    */
-  readonly check: (need: WriteNeed, contract?: 'core' | 'collab' | 'community') => boolean
+  readonly check: (need: WriteNeed, contract?: 'core' | 'collab' | 'community', action?: string) => boolean
   /** Run when a write throws: opens the fix it calls for and returns the message to show. */
   readonly failed: (e: unknown) => string
   /** Why every write button is disabled (empty state), or null. */
@@ -47,15 +48,17 @@ export function useWriteGuard(): WriteGuard {
   const openTopUp = useUiStore((s) => s.openTopUp)
 
   const check = useCallback(
-    (need: WriteNeed, contract: 'core' | 'collab' | 'community' = 'core'): boolean => {
+    (need: WriteNeed, contract: 'core' | 'collab' | 'community' = 'core', action?: string): boolean => {
       if (!identity || !signer) {
         // A kept session is still being picked up (a moment after a reload): not a sign-in.
         if (resuming) {
           toast({ title: 'Checking this browser’s session…', detail: 'Try again in a moment.' })
           return false
         }
-        // Opens on Unlock when this browser holds a key (a locked session), else the sign-in tiles.
-        openLogin()
+        // Opens on Unlock when this browser holds a key (a locked session), else the sign-in tiles,
+        // naming what the click was for and its cost (L-62).
+        const credits = typeof need === 'number' ? need : need.credits
+        openLogin(undefined, undefined, action ? { action, ...(credits > 0 ? { credits } : {}) } : undefined)
         return false
       }
       if (grants && !grants[contract]) {

@@ -48,7 +48,7 @@ describe('BlameBody in StrictMode', () => {
     await act(async () => {
       root.render(
         <StrictMode>
-          <BlameBody reader={{} as never} tipOid={'a'.repeat(40)} path="f" addr={{ owner: 'o', name: 'n' }} />
+          <BlameBody reader={{} as never} tipOid={'a'.repeat(40)} path="f" addr={{ owner: 'o', name: 'n' }} repo={{ repoId: 'r' } as never} />
         </StrictMode>,
       )
     })
@@ -64,7 +64,7 @@ describe('BlameBody in StrictMode', () => {
 
   it('Cancel still stops the current run and says so', async () => {
     await act(async () => {
-      root.render(<BlameBody reader={{} as never} tipOid={'a'.repeat(40)} path="f" addr={{ owner: 'o', name: 'n' }} />)
+      root.render(<BlameBody reader={{} as never} tipOid={'a'.repeat(40)} path="f" addr={{ owner: 'o', name: 'n' }} repo={{ repoId: 'r' } as never} />)
     })
     await act(async () => {
       ;(el.querySelector('[data-testid="blame-cancel"]') as HTMLButtonElement).click()

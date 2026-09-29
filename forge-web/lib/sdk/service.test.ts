@@ -25,14 +25,13 @@ import {
   RECOVER_GAP_MS,
   RETRYABLE_READS,
   WRITE_SETTLE_MS,
-  isStaleConnectionError,
-  isUnreachableError,
   withTimeout,
   type Clock,
   type Connection,
   type EvoSdkConfig,
 } from './service'
 import { serialized } from './write'
+import { isStaleConnectionError, isUnreachableError } from './unreachable'
 
 afterEach(() => {
   vi.restoreAllMocks()

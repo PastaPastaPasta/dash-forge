@@ -97,17 +97,20 @@ import { useAsync } from '@/hooks/use-async'
 import { useIntent } from '@/hooks/use-intent'
 import { useFirstWrite } from '@/hooks/use-first-write'
 import { useParam, repoHref, type RepoAddress } from '@/hooks/use-query-param'
+import { useRepoLinks } from '@/components/repo/target-href'
+import { importedUrlOf } from '@/lib/view/ref-targets'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Timeline, type CommentSlots } from '@/components/repo/timeline'
 import { ComparisonView, pullBase, pullSpec, usePullComparison } from '@/components/repo/pull-diff'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
-import { bodyRefsUpstream, numberLabel, shownUpstreamNumber } from '@/lib/view/upstream'
+import { numberLabel, shownUpstreamNumber } from '@/lib/view/upstream'
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
 import { Oid } from '@/components/ui/oid'
 import { CopyLinkButton } from '@/components/ui/copy-link'
+import { TabStrip } from '@/components/ui/tab-strip'
 import { CopyRow } from '@/components/ui/copy-row'
 import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
@@ -191,9 +194,15 @@ export function PullContent({
       const signal = { aborted: false }
       current.current = signal
       const want = [...expectations.current]
-      const load = () => loadPullThread(sdk!, home.repo, number, network)
-      const first = await retryWhileMissing(load, justCreated ? 8 : 0)
-      const t = first === null ? null : await readUntil(async () => (signal.aborted ? first : load()), want, { ...(waitFor.current ?? {}), signal })
+      let latest: PullThread | null = null
+      const load = async (): Promise<PullThread | null> => {
+        if (signal.aborted) return latest
+        latest = await loadPullThread(sdk!, home.repo, number, network)
+        return latest
+      }
+      const first = await retryWhileMissing(load, justCreated ? 8 : 0, undefined, signal)
+      // One read on a cold load; re-reads only while a write this page made has not shown (L-77).
+      const t = first === null ? null : await readUntil(load, want, { ...(waitFor.current ?? {}), signal, first })
       if (!signal.aborted && t !== null) {
         expectations.current = expectations.current.filter((w) => !w(t))
         if (expectations.current.length === 0) waitFor.current = null
@@ -385,9 +394,7 @@ function PullPage({
   const transitionCost = previewCreate('transition', {}, transitionFirst)
 
 
-  const links: MarkdownLinks = useMemo(() => ({ issueHref: (n: number) => repoHref('/repo/issue', addr, { number: String(n) }) }), [addr])
-  // A mirrored body's `#n` is the source's number: resolved through `upstreamNumber` (D-2).
-  const upstreamLinks: MarkdownLinks = useMemo(() => ({ issueHref: (n: number) => repoHref('/repo/issue', addr, { upstream: String(n) }) }), [addr])
+  const links: MarkdownLinks = useRepoLinks(addr, home.description)
 
   const eventCost = previewCreate(stateType, {}, eventFirst)
   /** Confirm an event write (the route's price checked against the balance first). */
@@ -449,7 +456,7 @@ function PullPage({
   const commentTooLong = composeTooLong(repo, 'comment', { body: comment.trim() })
 
   const postComment = async (): Promise<void> => {
-    if (posting || comment.trim() === '' || commentTooLong || !guard.check(commentCost, 'collab')) return
+    if (posting || comment.trim() === '' || commentTooLong || !guard.check(commentCost, 'collab', 'comment')) return
     if (!sdk || !signer) return
     setPosting(true)
     setCommentError(null)
@@ -782,12 +789,12 @@ function PullPage({
       ) : null}
 
       {/* Tabs */}
-      <div role="tablist" aria-label="Pull request" className="flex gap-1 overflow-x-auto border-b border-anvil-200 dark:border-anvil-800">
+      <TabStrip role="tablist" label="Pull request" activeKey={tab}>
         <TabButton id="conversation" current={tab} onSelect={setTab} icon={<MessageSquare className="h-4 w-4" aria-hidden />} label="Conversation" count={counts.conversation} />
         <TabButton id="commits" current={tab} onSelect={setTab} icon={<GitCommit className="h-4 w-4" aria-hidden />} label="Commits" count={counts.commits} />
         <TabButton id="checks" current={tab} onSelect={setTab} icon={<ListChecks className="h-4 w-4" aria-hidden />} label="Checks" count={counts.checks} />
         <TabButton id="files" current={tab} onSelect={setTab} icon={<FileDiff className="h-4 w-4" aria-hidden />} label="Files changed" count={counts.files} />
-      </div>
+      </TabStrip>
 
       <div className={cn('grid gap-6', tab !== 'files' && 'lg:grid-cols-[minmax(0,1fr)_16rem]')}>
         <div role="tabpanel" aria-label={tab} className="min-w-0 space-y-4">
@@ -806,7 +813,7 @@ function PullPage({
                   {editing ? (
                     <MarkdownEditor id="edit-pr-body" label="Description" value={editing.body} onChange={(body) => setEditing({ ...editing, body })} links={links} />
                   ) : pull.body ? (
-                    <MarkdownView source={pull.body} links={bodyRefsUpstream(pull, repo, thread.members) ? upstreamLinks : links} />
+                    <MarkdownView source={pull.body} links={links} imported={pull.importedUrl} />
                   ) : (
                     <p className="italic text-anvil-500 dark:text-anvil-400">No description.</p>
                   )}
@@ -817,7 +824,6 @@ function PullPage({
                 <Timeline
                   items={conversation}
                   links={links}
-                  commentLinks={(c) => (bodyRefsUpstream(c, repo, thread.members) ? upstreamLinks : undefined)}
                   trust={trust}
                   eventText={eventText}
                   renderComment={(item) =>
@@ -1421,13 +1427,13 @@ function commentSlots({
     header,
     body: (
       <div className="space-y-2 px-4 py-3">
-        <MarkdownView source={c.body} links={links} />
+        <MarkdownView source={c.body} links={links} imported={importedUrlOf(c.importedRaw)} />
         {replies.map((r) => (
           <div key={r.id} className="border-l-2 border-anvil-200 pl-3 dark:border-anvil-750">
             <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
               <Byline author={r.author} createdAt={r.createdAt} origin={trustedOrigin(r.origin, r.author, trust ?? null)} link={false} />
             </div>
-            <MarkdownView source={r.body} links={links} />
+            <MarkdownView source={r.body} links={links} imported={importedUrlOf(r.importedRaw)} />
           </div>
         ))}
         <button type="button" onClick={onShowFiles} className="text-[12px] text-forge-700 underline-offset-2 hover:underline dark:text-forge-400">

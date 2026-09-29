@@ -414,11 +414,25 @@ export function mentions(body: string | undefined, id: string, name: string | nu
   return new RegExp(`(^|[^\\w@])@${escaped}(?![\\w-])`, 'i').test(body)
 }
 
-/** Whether `row`'s title holds every word of `text`, case-insensitively (`#12` matches the number). */
+/**
+ * Whether `row`'s title holds every word of `text`, case-insensitively; a word that is all
+ * digits (with or without a leading `#`) also matches the issue number directly (L-43: a title
+ * substring check alone missed a bare `7512`, even though `#7512` matched by number — a word
+ * checks both, so neither form of the same search regresses the other).
+ */
 export function matchesText(text: string, row: { readonly title: string; readonly number: number }): boolean {
   const words = text.trim().toLowerCase().split(/\s+/).filter((w) => w !== '')
   const title = row.title.toLowerCase()
-  return words.every((w) => (/^#\d+$/.test(w) ? Number(w.slice(1)) === row.number : title.includes(w)))
+  return words.every((w) => {
+    // `#n` (review L-43) is a number-only match: it never falls back to a title substring, even
+    // when the digits happen to appear in the title of a different-numbered row.
+    const hash = /^#(\d+)$/.exec(w)
+    if (hash) return Number(hash[1]) === row.number
+    // A bare number matches the number OR (additively) a title substring.
+    const bare = /^(\d+)$/.exec(w)
+    if (bare && Number(bare[1]) === row.number) return true
+    return title.includes(w)
+  })
 }
 
 /** The sort order of the list. */

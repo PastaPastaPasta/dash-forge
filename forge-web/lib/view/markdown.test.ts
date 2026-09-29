@@ -8,11 +8,11 @@ describe('splitRefs (#n and @name autolinks)', () => {
       { t: 'text', v: 'see ' },
       { t: 'ref', n: 12 },
       { t: 'text', v: ' and ' },
-      { t: 'mention', name: 'alice' },
+      { t: 'mention', name: 'alice', label: 'alice' },
       { t: 'text', v: '.' },
     ])
     expect(splitRefs('#3 first')).toEqual([{ t: 'ref', n: 3 }, { t: 'text', v: ' first' }])
-    expect(splitRefs('(@Bob.dash)')).toEqual([{ t: 'text', v: '(' }, { t: 'mention', name: 'bob' }, { t: 'text', v: ')' }])
+    expect(splitRefs('(@Bob.dash)')).toEqual([{ t: 'text', v: '(' }, { t: 'mention', name: 'bob', label: 'Bob' }, { t: 'text', v: ')' }])
   })
 
   it('leaves emails, fragments, hex and inner hashes alone', () => {
@@ -33,6 +33,7 @@ function inlineText(nodes: readonly Inline[]): string {
       if (node.t === 'text' || node.t === 'code') return node.v
       if (node.t === 'image') return node.alt
       if (node.t === 'br') return '\n'
+      if (node.t === 'fnref') return `[${node.n}]`
       return inlineText(node.c)
     })
     .join('')
@@ -89,6 +90,7 @@ describe('parseMarkdown GFM tables', () => {
       'This | is ordinary prose.',
       '',
       'This \\| is escaped prose.',
+      '',
       '---',
     ].join('\n')
     const blocks = parseMarkdown(source)
@@ -189,7 +191,8 @@ describe('parseInline grammar (the linear rewrite keeps the old regex semantics)
   })
 
   it('leaves unclosed and empty delimiters as text', () => {
-    for (const s of ['[a](b', '[](x)', '[a]( x)', '[a]()', '`', '``', 'a****', '~~a~', '*', 'http://', 'a ![b]']) {
+    // (A lone `*` is an empty list item, as on GitHub: `x *` keeps the unpaired delimiter in text.)
+    for (const s of ['[a](b', '[](x)', '[a]( x)', '[a]()', '`', '``', 'a****', '~~a~', 'x *', 'http://', 'a ![b]']) {
       expect(inlineText(para(s)), s).toBe(s)
     }
   })

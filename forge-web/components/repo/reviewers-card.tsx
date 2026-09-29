@@ -13,7 +13,7 @@ import { Check, Clock, Eye, MessageSquare, MinusCircle, RotateCcw, X, XCircle } 
 
 import type { Membership } from '@/lib/rules/v2'
 import { STANDING_LABEL, type ReviewerCardRow, type Standing } from '@/lib/view/review-fold'
-import { isIdentityId } from '@/lib/view/issue-query'
+import { isIdentityId } from '@/lib/utils'
 import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'

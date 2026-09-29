@@ -72,8 +72,11 @@ export {
   readPublicRepoFacts,
 } from './social'
 export {
+  compareRefNames,
+  compareTagNames,
   isPrerelease,
   latestRelease,
+  naturalRuns,
   newestPerTag,
   parseReleaseAssets,
   readReleases,

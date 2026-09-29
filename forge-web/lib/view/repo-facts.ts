@@ -18,7 +18,7 @@ import { readBlob, type ObjectReader } from './tree-nav'
 import { decodeTextBlob, type TreeEntry } from './git-objects'
 import { detectLicense, isLicenseFile, LICENSE_MAX_BYTES, type RepoLicense } from './license'
 import { languageStats, type LanguageStats } from './languages'
-import { mapPooled } from './pool'
+import { mapPooled, trimOldest } from './pool'
 import { FILE_WALK_FILES, FILE_WALK_TREES, walkFiles, type FileWalk } from './zip'
 
 export interface RepoFacts {
@@ -41,13 +41,9 @@ const LICENSE_FILES_MAX = 16
 
 const keyOf = (repoKey: string, tipOid: string): string => `${repoKey}\0${tipOid}`
 
-function trim<V>(map: Map<string, V>, keep: number): void {
-  while (map.size > keep) map.delete(map.keys().next().value as string)
-}
-
 function publish(key: string, next: Partial<RepoFacts>): void {
   facts.set(key, { ...(facts.get(key) ?? UNKNOWN), ...next })
-  trim(facts, KEEP_FACTS)
+  trimOldest(facts, KEEP_FACTS)
   for (const l of listeners) l()
 }
 
@@ -101,7 +97,7 @@ export function repoFilesWalk(
     started.catch(() => {
       if (walks.get(key) === started) walks.delete(key)
     })
-    trim(walks, KEEP_WALKS)
+    trimOldest(walks, KEEP_WALKS)
   }
   return walk
 }

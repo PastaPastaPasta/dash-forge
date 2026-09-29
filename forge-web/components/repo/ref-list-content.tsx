@@ -7,19 +7,24 @@
  * folded behind a disclosure so the main list shows only what can be browsed.
  */
 
+import { useCallback, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { GitBranch, Tag } from 'lucide-react'
+import { GitBranch, Search, Tag } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { isDiverged, isLive, plural, refParamFor, tipOidOf } from '@/lib/view'
-import type { ResolvedRef } from '@/lib/repo'
+import { isDiverged, isLive, matchesRefQuery, plural, refParamFor, tipOidOf } from '@/lib/view'
+import { compareRefNames, compareTagNames, type ResolvedRef } from '@/lib/repo'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState } from '@/components/ui/states'
+import { TagCommit, useTagPeeler } from '@/components/repo/tag-commit'
+import { Input } from '@/components/ui/input'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 
 const KIND = {
   branches: { prefix: 'refs/heads/', icon: GitBranch, empty: 'No branches yet', noun: 'a branch', single: 'branch' },
   tags: { prefix: 'refs/tags/', icon: Tag, empty: 'No tags yet', noun: 'a tag', single: 'tag' },
 } as const
+
+type SortMode = 'name' | 'version'
 
 export function RefListContent({
   home,
@@ -31,21 +36,48 @@ export function RefListContent({
   kind: keyof typeof KIND
 }): JSX.Element {
   const { prefix, icon: Icon, empty, noun, single } = KIND[kind]
+  // Only tags need peeling: the branches list starts no browse index.
+  const peeler = useTagPeeler(kind === 'tags' ? home.repo : null)
+  const tipChip = (tip: string): JSX.Element => {
+    // A tag's tip may be a tag object: the chip shows the commit it names (L-02). Keyed by the
+    // tip, so a force-moved tag's chip starts over instead of keeping the old commit.
+    if (kind === 'tags') return <TagCommit key={tip} peeler={peeler} tip={tip} addr={addr} />
+    return (
+      <Link href={repoHref('/repo/commit', addr, { oid: tip })} className="hit-area hover:text-forge-800 dark:hover:text-forge-400">
+        <Oid value={tip} copyable={false} />
+      </Link>
+    )
+  }
   const refs = kind === 'branches' ? home.branches : home.tags
   const defaultRefName = `refs/heads/${home.defaultBranch}`
-  const short = (ref: ResolvedRef): string =>
-    ref.refName.startsWith(prefix) ? ref.refName.slice(prefix.length) : ref.refName
+  const short = useCallback(
+    (ref: ResolvedRef): string => (ref.refName.startsWith(prefix) ? ref.refName.slice(prefix.length) : ref.refName),
+    [prefix],
+  )
 
-  // Default branch first, then alphabetical.
-  const byName = (a: ResolvedRef, b: ResolvedRef): number => {
-    if (a.refName === defaultRefName) return -1
-    if (b.refName === defaultRefName) return 1
-    return a.refName.localeCompare(b.refName)
-  }
-  const live = refs.filter(isLive).sort(byName)
-  const deleted = refs.filter((r) => !isLive(r)).sort(byName)
+  const [query, setQuery] = useState('')
+  // Tags are usually named for a version, so version order (newest first) is the useful default
+  // there; branches usually are not, so name order (default branch first, then alphabetical).
+  const [sort, setSort] = useState<SortMode>(kind === 'tags' ? 'version' : 'name')
 
-  if (live.length === 0 && deleted.length === 0) {
+  // The default branch always leads, so it never scrolls out of view. After it: name order
+  // (alphabetical), or version order (L-13/L-53: a name with a parseable version, newest first).
+  const { live, deleted } = useMemo(() => {
+    // Natural order (digit runs as numbers), not localeCompare: "branch-9" belongs before
+    // "branch-10", and it matches the tags page's Version mode closely enough that switching
+    // between the two sort modes doesn't reshuffle unrelated names. compareRefNames, not bare
+    // naturalRuns: it adds the raw-string tie-break that keeps "foo-bar"/"foo_bar" in a fixed order.
+    const compareNames = sort === 'version' ? compareTagNames : compareRefNames
+    const comparator = (a: ResolvedRef, b: ResolvedRef): number => {
+      if (a.refName === defaultRefName) return -1
+      if (b.refName === defaultRefName) return 1
+      return compareNames(short(a), short(b))
+    }
+    const shown = refs.filter((r) => matchesRefQuery(short(r), query)).sort(comparator)
+    return { live: shown.filter(isLive), deleted: shown.filter((r) => !isLive(r)) }
+  }, [refs, query, sort, defaultRefName, short])
+
+  if (refs.length === 0) {
     return (
       <EmptyState
         icon={Icon}
@@ -57,6 +89,30 @@ export function RefListContent({
 
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-[14rem] flex-1">
+          <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
+          <label htmlFor={`${kind}-search`} className="sr-only">Search {kind}</label>
+          <Input
+            id={`${kind}-search`}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            className="pl-8 font-mono text-[13px]"
+            placeholder={`Find a ${single}…`}
+          />
+        </div>
+        <label className="sr-only" htmlFor={`${kind}-sort`}>Sort</label>
+        <select
+          id={`${kind}-sort`}
+          value={sort}
+          onChange={(e) => setSort(e.target.value as SortMode)}
+          className="rounded-md border border-anvil-300 bg-white px-2 py-1 text-dense dark:border-anvil-700 dark:bg-anvil-950 coarse:h-11"
+        >
+          <option value="name">Name</option>
+          <option value="version">Version</option>
+        </select>
+      </div>
+
       {live.length > 0 ? (
         <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
           {live.map((ref) => {
@@ -86,19 +142,19 @@ export function RefListContent({
                     diverged
                   </span>
                 ) : null}
-                {tip ? (
-                  <Link
-                    href={repoHref('/repo/commit', addr, { oid: tip })}
-                    className="hit-area hover:text-forge-800 dark:hover:text-forge-400"
-                  >
-                    <Oid value={tip} copyable={false} />
-                  </Link>
-                ) : null}
+                {tip ? tipChip(tip) : null}
               </div>
             )
           })}
         </div>
+      ) : query.trim() !== '' ? (
+        // "Active" because a query that matches nothing live can still match a deleted ref,
+        // which then shows up in the disclosure below — this message must not read as "no
+        // matches anywhere".
+        <EmptyState icon={Icon} title={`No active ${kind} match`} body={`No active ${single} matches "${query}". Clear the search to see them all.`} />
       ) : (
+        // Only reachable with an empty query, so nothing was filtered out here: every live ref
+        // really has been deleted, and "every X was deleted" is the correct message.
         <EmptyState
           icon={Icon}
           title={`No active ${kind}`}

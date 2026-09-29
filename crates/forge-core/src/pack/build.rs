@@ -394,7 +394,7 @@ const REPO_LOCATION_ENV: [&str; 6] = [
 
 /// `git -C <cwd> <args>` with the inherited repo-location variables cleared, so the
 /// repository is exactly `cwd`.
-fn git_at(cwd: &Path, args: &[&str]) -> Command {
+pub(super) fn git_at(cwd: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new("git");
     cmd.arg("-C").arg(cwd).args(args);
     for var in REPO_LOCATION_ENV {

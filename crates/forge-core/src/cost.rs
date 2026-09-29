@@ -203,6 +203,32 @@ pub mod push_fees {
         chunks(stored(locator_bytes(objects), sealed))
     }
 
+    /// The credits of a history index (`packManifest.kind == 3`) of `plain_bytes`: its manifest
+    /// (a first write, with each external target's URIs) and, when Platform stores it, its
+    /// chunks, sealed for a private repository. An upper bound, like [`estimate_push`].
+    pub fn history_index(
+        plain_bytes: u64,
+        sealed: bool,
+        external_targets: u64,
+        platform: bool,
+        first: bool,
+    ) -> u64 {
+        let chunk_credits = if platform {
+            chunks(stored(plain_bytes, sealed))
+        } else {
+            0
+        };
+        let first_extra = if first { HISTORY_FIRST_EXTRA } else { 0 };
+        chunk_credits + MANIFEST_FIRST + first_extra + URIS_PER_TARGET * external_targets
+    }
+
+    /// What a repository's first history index costs beyond [`MANIFEST_FIRST`] and its chunks:
+    /// a new `kind` value opens its own subtree of the manifest's `(repoId, kind, $createdAt)`
+    /// index. Measured: dashpay/dash's backfill (67 KB, 5 chunks, moutai beta.6, 2026-09-29)
+    /// charged 23.6M credits over the rest of this formula; rounded up so the quote stays an
+    /// upper bound.
+    pub const HISTORY_FIRST_EXTRA: u64 = 40_000_000;
+
     /// The bytes a `plain`-byte artifact takes stored: sealed ones are a little larger.
     fn stored(plain: u64, sealed: bool) -> u64 {
         if sealed {

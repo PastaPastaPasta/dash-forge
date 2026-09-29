@@ -13,6 +13,7 @@ import { MODE_GITLINK, MODE_TREE } from '../browse'
 import { commitSubject, type CommitObject } from './git-objects'
 import { historyWalker, type LogEntry, type WalkOptions } from './commit-log'
 import { readCommit, readTree, type ObjectReader } from './tree-nav'
+import { trimOldest } from './pool'
 
 /** Commits a page of the log shows. */
 export const LOG_PAGE = 40
@@ -68,13 +69,22 @@ function remember<V>(map: Map<string, Promise<V>>, key: string, load: () => Prom
   p.catch(() => {
     if (map.get(key) === p) map.delete(key)
   })
-  if (map.size > MEMO_MAX) map.delete(map.keys().next().value as string)
+  trimOldest(map, MEMO_MAX)
   return p
 }
 
 /** A reader's parsed commit, through the walker, memoized for the session. */
 export function commitVia(reader: ObjectReader, walker: ObjectReader, oid: string): Promise<CommitObject> {
   return remember(memoOf(reader).commits, oid, () => readCommit(walker, oid))
+}
+
+/**
+ * Read a view's tip commit through `reader` itself into the session memo, so the walks that start
+ * there (the log, a History, Blame, the commit column) do not read it again through a cold
+ * read-ahead walker. The tip resolver reads it first anyway.
+ */
+export function primeCommit(reader: ObjectReader, oid: string): Promise<CommitObject> {
+  return commitVia(reader, reader, oid)
 }
 
 /**

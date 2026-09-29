@@ -77,6 +77,7 @@ A write that is the first of its kind somewhere (a repository's first push or fi
 | Push to **your own bucket** | **~0.002–0.003 DASH**: two pack manifests (the pack's and its browse index's) and one ref update. Measured: 0.0028 DASH for the first push to a repository, 0.0021 DASH after |
 | Push with packs **on Platform** | **~0.004–0.005 DASH** for a tiny push (0.0046 first, 0.0040 after), plus **~0.33 DASH per MiB** of packed data; the storage is permanent. Measured: 200 KiB 0.070 DASH, 1.5 MiB 0.50 DASH |
 | Push to a **private** repository, packs on Platform | 20 KiB: 0.0112 DASH (first push); a tiny follow-up: 0.0022 DASH; three new branches at once: 0.0078 DASH. The packs are sealed, so they are a little larger |
+| History index (a push that moves the **default branch**) | **one more manifest and, on Platform, one small chunk**: ~0.0026–0.0043 DASH on Platform for a typical push, ~0.0016 DASH with your own storage (both upper bounds). See [History index](#history-index) |
 | Each extra branch or tag in a push | ~0.0006–0.0009 DASH (one ref update; the same for a protected branch, public or private). A push that only adds a branch at a commit already stored measured 0.00066 DASH |
 | Each extra storage target (a second bucket) | ~0.00014 DASH a push: the two manifests carry its URIs |
 | Issue | ~0.0006 DASH with a short body in a busy repository, ~0.001 DASH for a repository's first; ~0.0017 DASH with a 4 KB body |
@@ -113,6 +114,24 @@ Per-operation cost reference (no live spend tracking yet):
 ```
 
 These are upper bounds, the prices `dg` and `git push` quote before they sign, not measurements: each is at or above the most the table above measured for that write.
+
+### History index
+
+The file list's last-commit column and the exact `n commits` count come from a **history index** the push publishes with the default branch ([design](../design/history-index.md)). Without one, the web walks history in your browser, 400 commits at a time. The first index is a full one. Later pushes publish a small **delta** over it, until the delta reaches half the full index's size; the next push then publishes a full index again.
+
+Sizes and fees below were computed with `forge-core`'s own code on the showcase mirrors (`measure_a_real_repository`). The fees are the upper bound `git push` and `dg repo reindex` quote (`push_fees::history_index`, priced as a first write), not balance changes:
+
+| Repository (default branch) | Paths | Commits (all / first-parent) | Full index | On Platform | With your own storage |
+|---|---|---|---|---|---|
+| dashpay/dash (`develop` @ 3ba0805c) | 5,117 | 33,553 / 7,979 | 66,965 B, 5 chunks | **~0.0249 DASH** | ~0.0016 DASH |
+| junegunn/fzf (`master`) | 178 | 3,746 / 3,488 | 6,925 B, 1 chunk | ~0.0044 DASH | ~0.0016 DASH |
+| dtolnay/anyhow (`master`) | 62 | 931 / 668 | 2,490 B, 1 chunk | ~0.0032 DASH | ~0.0016 DASH |
+
+**Measured:** backfilling dashpay/dash's full index with `dg repo reindex` on devnet moutai (Platform 4.2.0-beta.6, 2026-09-29) cost **0.02479 DASH** (quoted 0.02455 before a repository's first-index margin was added; the quote now includes it and stays above the charge).
+
+On dashpay/dash, a delta over the full index is 202 B one commit later (3 paths, ~0.0026 DASH quoted), 1.4 KB ten commits later (64 paths, ~0.0029 DASH) and 6.5 KB fifty commits later (488 paths, ~0.0043 DASH). With your own storage, only the manifest is on chain: ~0.0016 DASH quoted, whatever the size. Computing dash's full index takes about 1.3 s on the pusher's machine.
+
+`dg repo reindex <repo>`, run inside a clone that has the default branch's tip, publishes the index for a repository pushed before it existed and quotes its price before asking. A push that stores no new pack, such as a retry of a recorded one, publishes none; `dg repo reindex` fills that in.
 
 **Why a repository is cheap.** Every repository lives in one shared pair of contracts, forge-core and forge-collab, registered once per network (for about 1.16 DASH, paid by the deployer, not by you). A new repository is then just three documents. The first version of Forge gave each repository its own contract, and contract registration fees made that cost about 1.18 DASH per repository; it was removed on 2026-09-26.
 

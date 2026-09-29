@@ -49,5 +49,8 @@ export {
   type BrowseReaderOptions,
   type ReadObjectOptions,
   type ObjectVerdict,
+  isTransportError,
+  readFailure,
+  type ReadFailure,
   type PackSource,
 } from './reader'
