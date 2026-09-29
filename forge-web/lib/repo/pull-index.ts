@@ -16,7 +16,7 @@
  *    close (`kinds 11, 16`) transitions, read on first use; a candidate's row says whether it
  *    still is (a closed PR can have been reopened).
  *
- * State: {@link pullRows} is the one step that turns patch documents into their state, the proved
+ * State: the index's view step (`indexOf`) is the one step that turns patch documents into their state, the proved
  * sum of each PR's transitions (open / merged / closed / draft; `rules/transition.ts`
  * `statusOfCode`). The base refs' histories label a merge "on the base" or not; they come from
  * the repo chrome store (`baseRefReaders`: no request for a public repo whose page just read its

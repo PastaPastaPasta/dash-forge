@@ -25,7 +25,6 @@ import { GitMerge, GitPullRequest, GitPullRequestClosed, X } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { branchName } from '@/lib/view'
 import {
-  DEFAULT_PULL_QUERY,
   PULL_PAGE_SIZE,
   emptyPullsBody,
   hasPullFilters,
@@ -33,6 +32,7 @@ import {
   parsePullSearch,
   pullDroppedReason,
   pullQueryParams,
+  pullSubmitBase,
   pullSearchText,
   unresolvedPullQualifiers,
   type PullListQuery,
@@ -71,7 +71,7 @@ const PULL_GRAMMAR: ListGrammar<PullListQuery> = {
   text: pullSearchText,
   parse: parsePullSearch,
   unresolved: unresolvedPullQualifiers,
-  submitBase: (q) => ({ ...DEFAULT_PULL_QUERY, state: q.state }),
+  submitBase: pullSubmitBase,
 }
 
 function pullStatus(p: PullRow): { label: string; icon: JSX.Element; klass: string } {

@@ -33,6 +33,11 @@ export const DEFAULT_PULL_QUERY: PullListQuery = toPull(DEFAULT_ISSUE_QUERY, 'op
 /** Rows per displayed page. */
 export const PULL_PAGE_SIZE = 25
 
+/** What a search-box submit keeps of the current query: the state tab (every other filter is what the box says). */
+export function pullSubmitBase(q: PullListQuery): PullListQuery {
+  return { ...DEFAULT_PULL_QUERY, state: q.state }
+}
+
 const STATES: readonly PullStateFilter[] = ['open', 'merged', 'closed', 'all']
 
 function toPull(q: IssueListQuery, state: PullStateFilter): PullListQuery {

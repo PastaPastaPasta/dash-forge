@@ -150,6 +150,8 @@ async function recordChunk<Row extends RowExtras>(
   walk: Walk | null,
   codes: Promise<Map<string, number>> = codesOf(sdk, index.repo, docs),
 ): Promise<void> {
+  // Awaited after admission (a private repo's decrypts): handled now, so a failure is never unhandled meanwhile.
+  codes.catch(() => undefined)
   const counts = countsAt(res, 0)
   const fresh = new Map<string, PlainDocument>()
   const hidden: { id: string; reason: Parameters<HiddenTally['add']>[0] }[] = []

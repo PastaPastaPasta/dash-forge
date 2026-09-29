@@ -262,7 +262,10 @@ describe('pull index', () => {
     const all = await queryPulls(sdk, repo, { ...base, state: 'all', pageSize: 300 }, 203, 'devnet')
     expect(all.rows).toHaveLength(203)
     expect(new Set(all.rows.map((r) => r.id)).size).toBe(203)
-    expect(seen.composites.length).toBeGreaterThan(0)
+    // `dev`'s history was asked for twice: the failure, then the retry (the failure was not kept).
+    const devReads = seen.queries.filter((q) => q.documentTypeName === 'refUpdate' && (q.where ?? []).some(([f, , v]) => f === 'refNameHash' && v === DEV))
+    expect(devReads).toHaveLength(1) // the failed call never reached the store; the retry did
+    expect(failed).toBe(true)
   })
 
   it('leaves a hidden PR out of Open only while it is open (review)', async () => {

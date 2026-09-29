@@ -737,8 +737,9 @@ export interface BaseRefReaders {
  * config read, one update-history read per base ref, so a list costs O(base refs), not O(PRs).
  */
 export function baseRefReaders(sdk: EvoSDK, repo: RepoRef, { maxAgeMs = FEED_TTL_MS }: { readonly maxAgeMs?: number } = {}): BaseRefReaders {
-  // Each read is kept for the reader set's life, unless it fails: then the next caller reads again
-  // (a transient failure must not stick to an index that lives for the session).
+  // Each read is kept for the reader set's life, unless it fails transiently: then the next caller
+  // reads again (a node down must not stick to an index that lives for the session). A history too
+  // large to read (`IncompleteReadError`) would fail the same way again: that answer is kept.
   const held = new Map<string, Promise<unknown>>()
   const once = <T>(key: string, read: () => Promise<T>): Promise<T> => {
     let hit = held.get(key) as Promise<T> | undefined
@@ -746,8 +747,8 @@ export function baseRefReaders(sdk: EvoSDK, repo: RepoRef, { maxAgeMs = FEED_TTL
       hit = read()
       held.set(key, hit)
       const mine = hit
-      hit.catch(() => {
-        if (held.get(key) === mine) held.delete(key)
+      hit.catch((e: unknown) => {
+        if (!(e instanceof IncompleteReadError) && held.get(key) === mine) held.delete(key)
       })
     }
     return hit

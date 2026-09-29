@@ -2,7 +2,7 @@
 
 /**
  * The controls the Issues and Pull requests lists share (L-44): the search box with its qualifier
- * lookup ({@link useListSearch}), the state tabs, the label, person and sort filters, the "not
+ * lookup ({@link useListQuery}), the state tabs, the label, person and sort filters, the "not
  * applied" note and the pager. Each list keeps its own query grammar (`lib/view/issue-query`,
  * `lib/view/pull-query`) and passes it in.
  */
@@ -22,7 +22,7 @@ import { Input } from '@/components/ui/input'
 import { LabelChip } from '@/components/repo/issue-bits'
 import { cn } from '@/lib/utils'
 
-/** What a list tells {@link useListSearch} about its query grammar. */
+/** What a list tells {@link useListQuery} about its query grammar. */
 export interface ListGrammar<Q> {
   /** The query as search-box text (qualifiers first). */
   readonly text: (q: Q) => string
@@ -72,7 +72,7 @@ export function useListQuery<Q extends { readonly page: number }>({
   network,
 }: {
   addr: RepoAddress
-  parse: (params: URLSearchParams) => Q
+  parse: (params: { get(name: string): string | null; getAll(name: string): string[] }) => Q
   toParams: (q: Q) => [string, string][]
   grammar: ListGrammar<Q>
   sdk: EvoSDK | null
@@ -82,7 +82,7 @@ export function useListQuery<Q extends { readonly page: number }>({
   const router = useRouter()
   const pathname = usePathname()
   const params = useSearchParams()
-  const query = useMemo(() => parse(new URLSearchParams(params.toString())), [params, parse])
+  const query = useMemo(() => parse(params), [params, parse])
   const setQuery = (next: Q): void => {
     const q = new URLSearchParams({ owner: addr.owner, name: addr.name })
     if (addr.repoId) q.set('repo', addr.repoId)
