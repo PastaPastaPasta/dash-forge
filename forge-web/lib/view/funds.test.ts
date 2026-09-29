@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest'
 import { affordability, fundsNotice, fundsState, LOW_BALANCE_CREDITS, nextFundsChange } from './funds'
 import { previewCreate } from '../sdk/cost'
 import { estimateMissed, reconcile, summarize, type SpendRow } from '../spend'
-import { stateEventRoute } from '../repo/writes'
 
 const NOW = 1_800_000_000_000
 const DAY = 86_400_000
@@ -137,13 +136,5 @@ describe('spend ledger', () => {
   it('reconciles against the balance change since the baseline', () => {
     expect(reconcile(100, 1000n, 880n)).toEqual({ balanceChange: 120, unexplained: 20 })
     expect(reconcile(100, null, 880n)).toBeNull()
-  })
-})
-
-describe('state-event routing (forge-v2 §3)', () => {
-  it('uses event for members, authorEvent for a non-member author, nothing for strangers', () => {
-    expect(stateEventRoute({ viewer: 'a', author: 'a', isMember: true })).toBe('event')
-    expect(stateEventRoute({ viewer: 'a', author: 'a', isMember: false })).toBe('authorEvent')
-    expect(stateEventRoute({ viewer: 'b', author: 'a', isMember: false })).toBeNull()
   })
 })

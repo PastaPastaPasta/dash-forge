@@ -430,8 +430,8 @@ export class IncompleteReadError extends Error {
  * Page a query to exhaustion (the `query_all` pattern — parity with forge-core
  * `platform::query_all_documents`). Repeats the proof-verified query, advancing `startAfter`
  * past the last `$id` of each page, until a **short page** proves the end was reached. Used by
- * every read that MUST be complete: the deterministic folds (`resolve_ref`, `foldIssueStateV2`,
- * `foldPrStateV2`) are folds over a whole history, so a silently truncated input does not
+ * every read that MUST be complete: the deterministic folds (`resolve_ref`, the label and
+ * review folds over `event`) are folds over a whole history, so a silently truncated input does not
  * degrade the answer — it produces a confidently wrong one (a closed issue that reads open,
  * a branch pinned at its 100th push).
  *

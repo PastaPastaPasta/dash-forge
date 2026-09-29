@@ -1001,8 +1001,8 @@ function PullPage({
                 {actions.canMarkMerged && !pull.state.draft ? (
                   <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
                     {actions.markCountsNow
-                      ? `The head commit is already on ${base}, so a merge mark counts as soon as it lands.`
-                      : `"Mark as merged" records a merge done elsewhere: it only counts once the head commit is on ${base}. Merge it above to move the branch.`}
+                      ? `The head commit is already on ${base}: marking it merged records that.`
+                      : `"Mark as merged" records a merge done elsewhere, and it is final. The head commit is not on ${base}, so the PR will say "merge commit not found on the base" until it gets there. Merge it above to move the branch.`}
                   </p>
                 ) : actions.mergeHint !== null ? (
                   <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{actions.mergeHint}</p>

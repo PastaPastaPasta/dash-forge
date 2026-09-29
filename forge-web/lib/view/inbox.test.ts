@@ -13,6 +13,7 @@ import {
   BACKFILL_MS,
   BACKFILL_TRIES,
   backfillQuery,
+  backfillWindow,
   DEFAULT_PREFS,
   PAGE,
   advanceCursor,
@@ -27,6 +28,7 @@ import {
   pollOnce,
   stateWhat,
   toItems,
+  transitionWhat,
   type Feed,
   type InboxItem,
   type Subscriptions,
@@ -67,7 +69,7 @@ describe('planFeeds', () => {
       `comments:${thread().id}`,
       `reviews:${thread().id}`,
       `state:event:${REPO.id}`,
-      `state:authorEvent:${REPO.id}`,
+      `state:transition:${REPO.id}`,
       `new:issue:${REPO.id}`,
       `new:patch:${REPO.id}`,
     ])
@@ -153,19 +155,24 @@ describe('toItems', () => {
   })
   it('reports state changes only on my threads, after I joined', () => {
     const t = thread({ since: 100 })
-    const f: Feed = { kind: 'state', type: 'event', repo: REPO, threads: [t] }
+    const f: Feed = { kind: 'state', type: 'transition', repo: REPO, threads: [t] }
     const items = toItems(
       f,
       [
-        doc(OTHER, 50, { targetId: t.id, kind: 1 }),
-        doc(OTHER, 150, { targetId: t.id, kind: 3 }),
-        doc(OTHER, 160, { targetId: 'someone-elses-thread', kind: 1 }),
-        doc(OTHER, 170, { targetId: t.id, kind: 4, value: 'bug' }),
-        doc(ME, 180, { targetId: t.id, kind: 2 }),
+        doc(OTHER, 50, { targetId: t.id, kind: 11 }),
+        doc(OTHER, 150, { targetId: t.id, kind: 13 }),
+        doc(OTHER, 160, { targetId: 'someone-elses-thread', kind: 11 }),
+        doc(ME, 180, { targetId: t.id, kind: 12 }),
       ],
       ME,
     )
-    expect(items.map((i) => i.what)).toEqual(['marked merged', 'labelled bug'])
+    expect(items.map((i) => i.what)).toEqual(['merged'])
+  })
+  it('reports label and assignee events on my threads; a state kind on an event says nothing', () => {
+    const t = thread({ since: 100 })
+    const f: Feed = { kind: 'state', type: 'event', repo: REPO, threads: [t] }
+    const items = toItems(f, [doc(OTHER, 150, { targetId: t.id, kind: 3 }), doc(OTHER, 170, { targetId: t.id, kind: 4, value: 'bug' })], ME)
+    expect(items.map((i) => i.what)).toEqual(['labelled bug'])
   })
   it('in a private repo, never shows an event value: the feed has no keys to open or check it (L4)', () => {
     const repo = { ...REPO, private: true }
@@ -190,6 +197,13 @@ describe('stateWhat', () => {
     expect(stateWhat(6, ME, ME)).toBe('assigned you')
     expect(stateWhat(6, OTHER, ME)).toBe('assigned someone')
     expect(stateWhat(99, undefined, ME)).toBeNull()
+    // State kinds are transitions now: an event carrying one says nothing.
+    expect(stateWhat(1, undefined, ME)).toBeNull()
+  })
+  it('names every transition kind', () => {
+    expect([1, 2, 11, 12, 13, 14, 15, 16, 17, 3].map(transitionWhat)).toEqual([
+      'closed', 'reopened', 'closed', 'reopened', 'merged', 'marked draft', 'marked ready for review', 'closed', 'reopened', null,
+    ])
   })
 })
 
@@ -246,7 +260,7 @@ describe('a thread watched after its state events landed (L-17)', () => {
   beforeEach(() => resetMemoryStores())
   const ISSUE = thread({ id: 'ISSUE1', kind: 'issue', number: 1, title: 'First', since: 100 })
   const PR = thread({ id: 'PR2', kind: 'pull', number: 2, title: 'Greet by name', since: 300 })
-  const MERGED = { $id: 'EV-MERGE', $ownerId: OTHER, $createdAt: 500, repoId: REPO.id, targetId: PR.id, kind: 3 }
+  const MERGED = { $id: 'EV-MERGE', $ownerId: OTHER, $createdAt: 500, repoId: REPO.id, targetId: PR.id, kind: 13 }
 
   /** An SDK over `docs` answering `==`, ranges, `$createdAt` order and `limit` as Drive does; logs every query. */
   function chainSdk(docs: readonly Record<string, unknown>[]): { sdk: EvoSDK; queries: DocumentQuery[] } {
@@ -272,10 +286,10 @@ describe('a thread watched after its state events landed (L-17)', () => {
   }
   const watch = (threads: ThreadSub[], at: number): Promise<void> => idbPut('inbox', `devnet:${ME}:subs`, subs({ at, repos: [], threads }))
   const backfills = (qs: readonly DocumentQuery[]): DocumentQuery[] => qs.filter((q) => q.where?.[0]?.[0] === 'targetId' && q.documentTypeName !== 'comment' && q.documentTypeName !== 'review')
-  const stateReads = (qs: readonly DocumentQuery[]): DocumentQuery[] => qs.filter((q) => q.documentTypeName === 'event' || q.documentTypeName === 'authorEvent')
+  const stateReads = (qs: readonly DocumentQuery[]): DocumentQuery[] => qs.filter((q) => q.documentTypeName === 'event' || q.documentTypeName === 'transition')
 
-  it('shows "marked merged" once the PR is watched, for one more query, once', async () => {
-    const { sdk, queries } = chainSdk([{ ...MERGED, type: 'event' }])
+  it('shows "merged" once the PR is watched, for one more query, once', async () => {
+    const { sdk, queries } = chainSdk([{ ...MERGED, type: 'transition' }])
     // Poll 1: only the issue is watched; the repo's state feed reads the merge (on a PR not
     // watched yet) and moves past it.
     await watch([ISSUE], 1000)
@@ -286,17 +300,11 @@ describe('a thread watched after its state events landed (L-17)', () => {
     await watch([PR, ISSUE], 2000)
     queries.length = 0
     await pollOnce(sdk, 'devnet', FORGE, ME, { now: 2000 })
-    expect((await loadItems('devnet', ME)).map((i) => [i.target?.number, i.what])).toEqual([[2, 'marked merged']])
-    // The budget: the two state feeds, plus ONE backfill (the authorEvent feed read nothing past
-    // the PR's start, so it needs none), on the PR's own `target` index, bounded by the cursor.
+    expect((await loadItems('devnet', ME)).map((i) => [i.target?.number, i.what])).toEqual([[2, 'merged']])
+    // The budget: the two state feeds, plus ONE backfill (the event feed read nothing past the
+    // PR's start, so it needs none): the PR's transitions on `perTarget`, windowed client-side.
     expect(backfills(queries)).toEqual([
-      {
-        dataContractId: 'COLLAB',
-        documentTypeName: 'event',
-        where: [['targetId', '==', PR.id], ['$createdAt', '>', 300], ['$createdAt', '<=', 500]],
-        orderBy: [['$createdAt', 'desc']],
-        limit: PAGE,
-      },
+      { dataContractId: 'COLLAB', documentTypeName: 'transition', where: [['targetId', '==', PR.id]], orderBy: [['targetId', 'asc']], limit: 100 },
     ])
     expect(stateReads(queries)).toHaveLength(3)
 
@@ -313,17 +321,17 @@ describe('a thread watched after its state events landed (L-17)', () => {
     await watch([ISSUE], 1000)
     await pollOnce(sdk, 'devnet', FORGE, ME, { now: 1000 })
     // The merge lands after that poll: the feed's next read, with the PR watched, sees it.
-    docs.push({ ...MERGED, type: 'event', $createdAt: 5000 })
+    docs.push({ ...MERGED, type: 'transition', $createdAt: 5000 })
     await watch([PR, ISSUE], 2000)
     queries.length = 0
     await pollOnce(sdk, 'devnet', FORGE, ME, { now: 2000 })
     expect(backfills(queries)).toEqual([])
-    expect((await loadItems('devnet', ME)).map((i) => i.what)).toEqual(['marked merged'])
+    expect((await loadItems('devnet', ME)).map((i) => i.what)).toEqual(['merged'])
   })
 
   it('spreads many backfills over polls, BACKFILL_BUDGET at a time, and each runs once', async () => {
     const many = Array.from({ length: BACKFILL_BUDGET + 2 }, (_, i) => thread({ id: `T${i}`, kind: 'issue', number: 10 + i, since: 300 }))
-    const { sdk, queries } = chainSdk([{ ...MERGED, type: 'event', targetId: 'T0' }])
+    const { sdk, queries } = chainSdk([{ ...MERGED, type: 'transition', targetId: 'T0' }])
     await watch([ISSUE], 1000)
     await pollOnce(sdk, 'devnet', FORGE, ME, { now: 1000 })
     await watch([...many, ISSUE], 2000)
@@ -338,10 +346,10 @@ describe('a thread watched after its state events landed (L-17)', () => {
   })
 
   it('on upgrade (cursors but no record) re-reads nothing, so pruned items never come back unread', async () => {
-    const { sdk, queries } = chainSdk([{ ...MERGED, type: 'event' }])
+    const { sdk, queries } = chainSdk([{ ...MERGED, type: 'transition' }])
     await watch([PR, ISSUE], 2000)
     // An earlier build read both state feeds past the merge and has since pruned its items.
-    for (const type of ['event', 'authorEvent']) await idbPut('inbox', `devnet:${ME}:cursor:state:${type}:${REPO.id}`, { at: 900 })
+    for (const type of ['event', 'transition']) await idbPut('inbox', `devnet:${ME}:cursor:state:${type}:${REPO.id}`, { at: 900 })
     await pollOnce(sdk, 'devnet', FORGE, ME, { now: 2000 })
     expect(backfills(queries)).toEqual([])
     expect(await loadItems('devnet', ME)).toEqual([])
@@ -354,11 +362,11 @@ describe('a thread watched after its state events landed (L-17)', () => {
   })
 
   it('retries a failed backfill, reports it, and gives up after BACKFILL_TRIES', async () => {
-    const { sdk: inner, queries } = chainSdk([{ ...MERGED, type: 'event' }])
+    const { sdk: inner, queries } = chainSdk([{ ...MERGED, type: 'transition' }])
     const sdk = {
       documents: {
         query: (q: DocumentQuery) =>
-          backfills([q]).length > 0 && (q.documentTypeName === 'event' || q.documentTypeName === 'authorEvent')
+          backfills([q]).length > 0 && (q.documentTypeName === 'event' || q.documentTypeName === 'transition')
             ? Promise.reject(new Error('node down'))
             : (inner as unknown as { documents: { query: (q: DocumentQuery) => Promise<unknown> } }).documents.query(q),
       },
@@ -368,14 +376,14 @@ describe('a thread watched after its state events landed (L-17)', () => {
     await watch([PR, ISSUE], 2000)
     const failures: number[] = []
     for (let i = 0; i < BACKFILL_TRIES + 1; i++) failures.push((await pollOnce(sdk, 'devnet', FORGE, ME, { now: 2000 + i })).failed)
-    // One failed backfill per poll (the event feed; authorEvent needs none), then no more tries.
+    // One failed backfill per poll (the transition feed; event needs none), then no more tries.
     expect(failures).toEqual([...Array(BACKFILL_TRIES).fill(1), 0])
     // Every state backfill failed (the only ones that reached the SDK were the thread feeds').
     expect(stateReads(backfills(queries))).toEqual([])
   })
 
   it('does not re-read a thread that left the watch set and came back', async () => {
-    const { sdk, queries } = chainSdk([{ ...MERGED, type: 'event' }])
+    const { sdk, queries } = chainSdk([{ ...MERGED, type: 'transition' }])
     await watch([ISSUE], 1000)
     await pollOnce(sdk, 'devnet', FORGE, ME, { now: 1000 })
     await watch([PR, ISSUE], 2000)
@@ -395,5 +403,10 @@ describe('a thread watched after its state events landed (L-17)', () => {
     expect(backfillQuery(FORGE, f, old, { at: 500 }, 500)).toBeNull()
     // A page that stopped inside a busy block: the whole block at `at` is included.
     expect(backfillQuery(FORGE, f, PR, { at: 900, afterId: 'X' }, 0)?.where?.[2]).toEqual(['$createdAt', '<=', 900])
+  })
+
+  it('keeps a transition backfill to the same window, though its index cannot bound it by time', () => {
+    const inWindow = backfillWindow(thread({ id: 'OLD', since: 10 }), { at: 900 }, 500)
+    expect([499, 500, 501, 900, 901].map(inWindow)).toEqual([false, false, true, true, false])
   })
 })

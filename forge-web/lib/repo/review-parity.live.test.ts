@@ -46,7 +46,7 @@ import {
   updateTarget,
   type ReviewDraft,
 } from './review-writes'
-import { createRepo, grantMember, nextNumber } from './writes'
+import { createRepo, grantMember, nextNumber, setTargetState } from './writes'
 
 const LIVE = process.env['FORGE_LIVE'] === '1' && DEFAULT_NETWORK === 'devnet'
 const ID_DIR = join(homedir(), '.config/dash-forge/test-identities/devnet-moutai')
@@ -76,10 +76,10 @@ describe.skipIf(!LIVE)('live review parity (moutai)', () => {
       await grantMember(sdk, OWNER, repo, COLLAB.identityId, 'writer')
 
       // --- CONTRIB opens a draft PR --------------------------------------------------------
-      // (The PR composer's `createPatch` lands with the web launch branches; the document is
-      // written directly here, as forge-core `patch_props` does, with `draft`.)
+      // The patch as forge-core `patch_props` writes it (dense number, `tk` 1), then its
+      // author's draft transition (kind 14).
       const sha = (s: string) => new Uint8Array(createHash('sha256').update(s).digest())
-      const number = (await nextNumber(sdk, repo, 'patch')) ?? 1
+      const number = (await nextNumber(sdk, repo)) ?? 1
       const opened = await createDocumentIdempotent(sdk, CONTRIB, {
         contractId: forge.collab,
         documentType: DOC.patch,
@@ -94,11 +94,13 @@ describe.skipIf(!LIVE)('live review parity (moutai)', () => {
           sourceRefNameHash: sha('refs/heads/feature/greeting'),
           sourceRefName: 'refs/heads/feature/greeting',
           headOid: Buffer.from(C2, 'hex'),
-          draft: true,
+          tk: 1,
         },
       })
       const pr = { documentId: opened.documentId, number }
       const target = { id: pr.documentId, number: pr.number }
+      const stateTarget = { ...target, type: 'patch' as const, author: CONTRIB.identityId }
+      await setTargetState(sdk, CONTRIB, repo, { target: stateTarget, action: 'draft', isMember: false })
       // A node one block behind may not show a write the wait proved yet: retry briefly.
       const docOf = async () => {
         const read = async () =>
@@ -113,7 +115,7 @@ describe.skipIf(!LIVE)('live review parity (moutai)', () => {
 
       // the author (not a member) marks it ready and moves the head
       const author = { author: CONTRIB.identityId, isMember: false }
-      expect((await postTargetEvent(sdk, CONTRIB, repo, { target, kind: 'ready', ...author })).route).toBe('authorEvent')
+      await setTargetState(sdk, CONTRIB, repo, { target: stateTarget, action: 'ready', isMember: false })
       await postTargetEvent(sdk, CONTRIB, repo, { target, kind: 'headUpdate', ...author, payload: { oidHex: C3 } })
       pull = await readPull(sdk, repo, await docOf())
       expect(pull.state.draft).toBe(false)

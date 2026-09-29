@@ -19,7 +19,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { hexToBytes } from '@noble/hashes/utils.js'
 
-import { DEFAULT_NETWORK, type Network } from '../constants'
+import type { Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import { decodeIdentifier } from '../auth/base58'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
@@ -38,14 +38,12 @@ import {
   previewCredits,
   queryDocumentsWithProof,
   type DeleteResult,
-  type DocumentQuery,
   type WriteAuth,
   type WriteResult,
 } from '../sdk'
-import { DOC, num, str, type RepoRef } from './contract'
+import { DOC, type RepoRef } from './contract'
 import { invalidateMembers } from './members'
 import { refNameHash, repoContentWritten } from './push'
-import { mapPooled } from '../view/pool'
 import type { PrivateDocType } from '../private'
 import { isSealedKind, privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter } from './private-writes'
 import { invalidateRepoFeed } from './issues'

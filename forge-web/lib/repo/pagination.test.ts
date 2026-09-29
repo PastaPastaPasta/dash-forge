@@ -68,7 +68,7 @@ function byField(field: string) {
  * Applying `where` is load-bearing for this suite, not realism for its own sake. With a mock
  * that ignores filters and a store holding rows for one target, deleting
  * `where: [['targetId','==',targetId]]` from a reader passes every test here while making
- * every issue in a repo fold every other issue's close events — `foldIssueStateV2` never checks
+ * every issue in a repo fold every other issue's label events — `issueStateV2` never checks
  * `targetId` itself. So the fixtures below deliberately seed rows the filter MUST exclude. The
  * store holds one repo, so the `repoId ==` scope every reader adds is accepted as is.
  */
@@ -149,7 +149,7 @@ function otherTargetEventDoc(i: number, kind: number): Record<string, unknown> {
   return { ...eventDoc(i, kind), $id: `z-${String(i).padStart(4, '0')}`, targetId: 'target-2' }
 }
 
-/** `kind` uses the on-chain integer codes: 1 = close, 4 = labelAdd. */
+/** `kind` uses the on-chain integer codes: 4 = labelAdd, 5 = labelRemove. */
 function eventDoc(i: number, kind: number): Record<string, unknown> {
   return {
     $id: `e-${String(i).padStart(4, '0')}`,
@@ -157,7 +157,7 @@ function eventDoc(i: number, kind: number): Record<string, unknown> {
     $createdAt: 2_000 + i,
     targetId: 'target-1',
     kind,
-    value: kind === 4 ? 'label' : null,
+    value: kind === 4 || kind === 5 ? 'label' : null,
     oid: null,
   }
 }
@@ -235,9 +235,9 @@ describe('event log across a page boundary', () => {
       {
         [DOC.event]: [
           ...Array.from({ length: PAGE + 1 }, (_, i) => eventDoc(i, 4)),
-          // `foldIssueStateV2` never checks `targetId` itself, so a reader that drops its
-          // filter would silently fold another issue's close events into this one.
-          ...Array.from({ length: 5 }, (_, i) => otherTargetEventDoc(i, 1)),
+          // `issueStateV2` never checks `targetId` itself, so a reader that drops its
+          // filter would silently fold another issue's label events into this one.
+          ...Array.from({ length: 5 }, (_, i) => otherTargetEventDoc(i, 5)),
         ],
       },
       seen,
@@ -250,20 +250,22 @@ describe('event log across a page boundary', () => {
     expect(seen.every((q) => q.where?.some(([f, op, v]) => f === 'targetId' && op === '==' && v === 'target-1'))).toBe(true)
   })
 
-  it('folds a close that lands past the first page', async () => {
+  it('folds a label removal that lands past the first page', async () => {
     // The shape of the burying attack: a long log (a busy member, or a padded one) pushes
-    // the close past the first page. The real close must still be seen.
+    // the removal past the first page. It must still be seen.
     const events = Array.from({ length: PAGE }, (_, i) => eventDoc(i, 4))
-    events.push(eventDoc(PAGE, 1))
+    events.push(eventDoc(PAGE, 5))
     const sdk = paginatingSdk({ [DOC.event]: events })
 
     const issue = await readIssue(
       sdk,
       REPO,
       { $id: 'target-1', $ownerId: 'author', $createdAt: 1, number: 1, title: 't', body: 'b' },
+      undefined,
+      0,
     )
 
-    expect(issue.state.open).toBe(false)
+    expect(issue.state.labels).toEqual([])
   })
 })
 
@@ -312,6 +314,8 @@ describe('list surfaces tolerate one unreadable row', () => {
           }
           return Promise.resolve(new Map())
         },
+        // Every target is open (no transitions): the unreadable part is the event log.
+        sum: () => Promise.resolve(new Map()),
       },
     } as unknown as EvoSDK
   }
@@ -320,9 +324,9 @@ describe('list surfaces tolerate one unreadable row', () => {
     // One target's log can outgrow the reader's completeness bound. That must not take down
     // the whole issue list — and dropping the row silently would be the same class of bug as
     // truncating it.
-    const sdk = endlessEventsSdk([
-      { $id: 'target-1', $ownerId: 'author', $createdAt: 1, number: 1, title: 'buried' },
-    ])
+    // A real identifier: the list reads its rows' state with one sum query naming their ids.
+    const id = 'EiaSVsG5gm6aLBXjodmJNmQRVcmwUbvon1YiFGKc64by'
+    const sdk = endlessEventsSdk([{ $id: id, $ownerId: 'author', $createdAt: 1, number: 1, title: 'buried' }])
 
     const issues = await listIssues(sdk, REPO, 10)
 
@@ -339,6 +343,8 @@ describe('list surfaces tolerate one unreadable row', () => {
         sdk,
         REPO,
         { $id: 'target-1', $ownerId: 'author', $createdAt: 1, number: 1, title: 't', body: '' },
+        undefined,
+        0,
       ),
     ).rejects.toThrow(IncompleteReadError)
   })

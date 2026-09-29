@@ -6,14 +6,15 @@
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
+import { sha256 } from '@noble/hashes/sha2.js'
 import { describe, expect, it } from 'vitest'
 
+import { base58Decode, base58Encode } from '../auth/base58'
 import type { ForgeIds } from '../deployments'
 import type { DocumentQuery } from '../sdk'
 import type { CompositeQuery } from '../sdk/composite'
 import { invalidateRepoFeed } from './issues'
-import { queryIssues, foldIssueOpenCount, type IssueSelection } from './issue-index'
-import { openCounts } from './issues'
+import { queryIssues, type IssueSelection } from './issue-index'
 import type { RepoRef } from './contract'
 
 const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', group: 'GROUP' }
@@ -24,6 +25,15 @@ const COLLAB = 'CJao2MVHL4x3f2Ko2xTUibnZ8G1t9exTPtvJnCbHAgDH'
 const AUTHOR = '7Ej2YTftCL23mVwvhviak8ZJMmpqcsVj7CU5KPxzyy4h'
 
 type Doc = Record<string, unknown>
+
+/** Issue `n`'s document id: a real 32-byte identifier (state sums key targets by their bytes). */
+const IID = (n: number): string => base58Encode(sha256(new TextEncoder().encode(`i${String(n).padStart(4, '0')}`)))
+
+/** The wasm SDK's group key: an identifier's 32 bytes, an unsigned integer with the top bit flipped. */
+function groupKey(v: unknown): string {
+  if (typeof v === 'number') return (v ^ 0x80).toString(16).padStart(2, '0')
+  return [...base58Decode(String(v))].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
 
 function repoRef(repoId = REPO): RepoRef {
   return { forge: FORGE, repoId, ownerId: OWNER, name: 'demo', visibility: 'public' }
@@ -69,6 +79,7 @@ interface Seen {
   composites: CompositeQuery[]
   queries: DocumentQuery[]
   counts: DocumentQuery[]
+  sums: DocumentQuery[]
 }
 
 /** A mock over `store[contract][type]` that also answers `documents.composite`. */
@@ -107,29 +118,48 @@ function mockSdk(store: Record<string, Record<string, Doc[]>>, seen: Seen): EvoS
     documents: {
       query,
       composite,
-      count: async (q: DocumentQuery) => {
+      count: async (q: DocumentQuery & { groupBy?: string[] }) => {
         seen.counts.push(q)
-        return new Map([['', BigInt(run(rows(q.dataContractId, q.documentTypeName), (q.where ?? []) as never, [], 100).length)]])
+        const all = rows(q.dataContractId, q.documentTypeName).filter((d) => ((q.where ?? []) as never[]).every((w) => matches(d, w)))
+        const by = q.groupBy?.[0]
+        if (by === undefined) return new Map([['', BigInt(all.length)]])
+        const out = new Map<string, bigint>()
+        for (const d of all) out.set(groupKey(d[by]), (out.get(groupKey(d[by])) ?? 0n) + 1n)
+        return out
+      },
+      sum: async (q: DocumentQuery & { groupBy?: string[] }, property: string) => {
+        seen.sums.push(q)
+        const out = new Map<string, bigint>()
+        for (const d of rows(q.dataContractId, q.documentTypeName).filter((x) => ((q.where ?? []) as never[]).every((w) => matches(x, w)))) {
+          const k = groupKey(d[q.groupBy?.[0] ?? ''])
+          out.set(k, (out.get(k) ?? 0n) + BigInt(Number(d[property] ?? 0)))
+        }
+        return out
       },
     },
   } as unknown as EvoSDK
 }
 
-/** `n` issues, one per second; events closing, labelling and assigning some of them. */
+/** `n` issues, one per second; transitions closing some, events labelling and assigning some. */
 function bigRepo(n: number, repoId = REPO): Record<string, Record<string, Doc[]>> {
   const issues: Doc[] = []
   for (let i = 1; i <= n; i++) {
-    issues.push({ $id: `i${String(i).padStart(4, '0')}`, $ownerId: i % 5 === 0 ? AUTHOR : OWNER, $createdAt: i * 1000, $updatedAt: i * 1000, repoId, number: i, title: `Issue ${i}`, body: i === 7 ? 'ping @alice' : '' })
+    issues.push({ $id: IID(i), $ownerId: i % 5 === 0 ? AUTHOR : OWNER, $createdAt: i * 1000, $updatedAt: i * 1000, repoId, number: i, title: `Issue ${i}`, body: i === 7 ? 'ping @alice' : '' })
   }
   let t = 1_000_000
-  const ev = (target: number, kind: number, extra: Doc = {}): Doc => ({ $id: `e${t}`, $ownerId: MAINT, $createdAt: t++, repoId, targetId: `i${String(target).padStart(4, '0')}`, targetNumber: target, kind, ...extra })
-  const events = [ev(3, 1), ev(33, 1), ev(103, 1), ev(10, 4, { value: 'tens' }), ev(110, 4, { value: 'tens' }), ev(7, 6, { value: COLLAB, refId: COLLAB }), ev(2, 4, { value: 'even' })]
+  const ev = (target: number, kind: number, extra: Doc = {}): Doc => ({ $id: `e${t}`, $ownerId: MAINT, $createdAt: t++, repoId, targetId: IID(target), targetNumber: target, kind, ...extra })
+  const close = (target: number, kind = 1, delta = 1): Doc => ({ $id: `t${t}`, $ownerId: MAINT, $createdAt: t++, repoId, targetId: IID(target), targetNumber: target, targetKind: 0, kind, delta, asAuthor: 0 })
+  const events = [ev(10, 4, { value: 'tens' }), ev(110, 4, { value: 'tens' }), ev(7, 6, { value: COLLAB, refId: COLLAB }), ev(2, 4, { value: 'even' })]
+  // #3, #33 and #103 end closed; #40 was closed and reopened (a closed-tab candidate, now open).
+  // In a small repo the closes of issues it does not have are left out (every transition names
+  // one of the repo's own issues).
+  const transitions = [close(3), close(33), close(103), close(40), close(40, 2, -1)].filter((d) => (d['targetNumber'] as number) <= n)
   return {
     COLLAB: {
       issue: issues,
       event: events,
-      authorEvent: [],
-      comment: [{ $id: 'c1', $ownerId: OWNER, $createdAt: 5, repoId, targetId: 'i0050' }, { $id: 'c2', $ownerId: OWNER, $createdAt: 6, repoId, targetId: 'i0050' }, { $id: 'c3', $ownerId: OWNER, $createdAt: 7, repoId, targetId: 'i0100' }],
+      transition: transitions,
+      comment: [{ $id: 'c1', $ownerId: OWNER, $createdAt: 5, repoId, targetId: IID(50) }, { $id: 'c2', $ownerId: OWNER, $createdAt: 6, repoId, targetId: IID(50) }, { $id: 'c3', $ownerId: OWNER, $createdAt: 7, repoId, targetId: IID(100) }],
     },
     CORE: {
       label: [{ $id: 'l1', $createdAt: 1, repoId, name: 'tens', color: '#d73a4a' }],
@@ -140,7 +170,7 @@ function bigRepo(n: number, repoId = REPO): Record<string, Record<string, Doc[]>
 const base: IssueSelection = { state: 'open', labels: [], author: null, assignee: null, mentions: null, sort: 'newest', text: '', page: 1, pageSize: 50 }
 
 function fresh(n: number, repoId = REPO) {
-  const seen: Seen = { composites: [], queries: [], counts: [] }
+  const seen: Seen = { composites: [], queries: [], counts: [], sums: [] }
   const repo = repoRef(repoId)
   invalidateRepoFeed(repo)
   return { sdk: mockSdk(bigRepo(n, repoId), seen), seen, repo }
@@ -152,14 +182,17 @@ describe('issue index', () => {
     const page = await queryIssues(sdk, repo, base, 112, 'devnet')
     expect(page.rows.map((r) => r.number).slice(0, 3)).toEqual([112, 111, 110])
     expect(page.rows).toHaveLength(50)
-    // Closed = #3, #33, #103 across both chunks; open = the rest: exact, not "of the newest 100".
+    // Closed = #3, #33, #103 (#40 was reopened); open = the rest: proved totals, not a fold.
     expect(page.closedCount).toBe(3)
     expect(page.openCount).toBe(109)
     expect(page.hasNext).toBe(true)
-    // Budget: the first composite (issues + counts + names + feed + labels), plus one `$id in`
-    // composite for #3 and #33 (closed, not in the first chunk). No per-row reads.
-    expect(seen.composites).toHaveLength(2)
+    // Budget: the first composite (issues + counts + names + feed + labels), one sum query for
+    // its rows' state, and the three proved counts. No per-row reads, no closed-target reads.
+    expect(seen.composites).toHaveLength(1)
     expect(seen.queries).toHaveLength(0)
+    expect(seen.sums).toHaveLength(1)
+    expect(seen.sums[0]?.where?.[0]?.[1]).toBe('in')
+    expect(seen.counts.map((q) => q.documentTypeName).sort()).toEqual(['issue', 'patch', 'transition'])
     expect(page.rows.find((r) => r.number === 110)?.state.labels).toEqual(['tens'])
     expect(page.rows.find((r) => r.number === 100)?.comments).toBe(1)
   })
@@ -180,10 +213,13 @@ describe('issue index', () => {
     expect(page.rows.slice(0, 3).map((r) => r.number)).toEqual([1, 2, 3])
   })
 
-  it('finds closed and labelled issues past the first chunk from the feed, not by walking', async () => {
+  it('finds closed issues from the close transitions and labelled ones from the feed, not by walking', async () => {
     const { sdk, seen, repo } = fresh(112)
     const closed = await queryIssues(sdk, repo, { ...base, state: 'closed' }, 112, 'devnet')
+    // #40 was closed and reopened: a candidate, filtered out by its state.
     expect(closed.rows.map((r) => r.number)).toEqual([103, 33, 3])
+    const closeReads = seen.queries.filter((q) => q.documentTypeName === 'transition')
+    expect(closeReads.map((q) => q.where)).toEqual([[['repoId', '==', REPO], ['kind', '==', 1]]])
     const tens = await queryIssues(sdk, repo, { ...base, state: 'all', labels: ['tens'] }, 112, 'devnet')
     expect(tens.rows.map((r) => r.number)).toEqual([110, 10])
     expect(tens.openCount).toBe(2)
@@ -224,18 +260,12 @@ describe('issue index', () => {
     expect(page.rows.slice(0, 2).map((r) => [r.number, r.comments])).toEqual([[50, 2], [100, 1]])
   })
 
-  it('gives the header the exact open count without a second fold', async () => {
-    const { sdk, seen, repo } = fresh(112)
-    // A cold header on a repo past one chunk reads nothing (the Issues tab reads it).
-    expect(await foldIssueOpenCount(sdk, repo, 112, 'devnet')).toBeNull()
-    expect(seen.composites).toHaveLength(0)
-    await queryIssues(sdk, repo, base, 112, 'devnet')
-    const reads = seen.composites.length
-    expect(await foldIssueOpenCount(sdk, repo, 112, 'devnet')).toBe(109)
-    expect(seen.composites).toHaveLength(reads)
-    expect(openCounts(repo, { issues: 112, pulls: 0 }).issues).toBe(109)
-    // A newer issue (total 113) makes the proved count stale: no number rather than a wrong one.
-    expect(openCounts(repo, { issues: 113, pulls: 0 }).issues).toBeNull()
+  it('counts under a filter from the rows it resolved, and the whole repo from the proved totals', async () => {
+    const { sdk, repo } = fresh(112)
+    const all = await queryIssues(sdk, repo, { ...base, state: 'all' }, 112, 'devnet')
+    expect([all.openCount, all.closedCount]).toEqual([109, 3])
+    const tens = await queryIssues(sdk, repo, { ...base, labels: ['tens'] }, 112, 'devnet')
+    expect([tens.openCount, tens.closedCount]).toEqual([2, 0])
   })
 
   it('sorts a small repo oldest first from the one composite (no second walk)', async () => {
@@ -260,11 +290,9 @@ describe('issue index', () => {
     expect(new Set(last.rows.map((r) => r.id)).size).toBe(50)
   })
 
-  it('reads a small repo whole in one composite, header included', async () => {
+  it('reads a small repo whole in one composite', async () => {
     const { sdk, seen, repo } = fresh(12, 'Ad88NKGHimxUgGHrTGpBJjKpnzrQe8Zh4V5q13mRh85h')
-    // Only #3 of the fixture's closed issues exists in a 12-issue repo; the feed's other
-    // targets (#33, #103) are known not to be issues once every issue is loaded, unread.
-    expect(await foldIssueOpenCount(sdk, repo, 12, 'devnet')).toBe(11)
+    // Only #3 of the fixture's closed issues exists in a 12-issue repo.
     const page = await queryIssues(sdk, repo, base, 12, 'devnet')
     expect(page.openCount).toBe(11)
     expect(page.closedCount).toBe(1)

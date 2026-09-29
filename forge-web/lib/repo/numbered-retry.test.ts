@@ -15,8 +15,10 @@ import type { RepoRef } from './contract'
 const intents: (string | undefined)[] = []
 /** What the engine answers for each intent. */
 let answer: (intent: string | undefined) => Promise<unknown>
-/** Issue numbers visible on Platform (what numbering reads). */
+/** Issue numbers visible on Platform (what numbering reads: issue and PR totals, one sequence). */
 let visible: number[] = []
+/** PRs visible on Platform. */
+let visiblePatches = 0
 
 vi.mock('../sdk/write', async (orig) => {
   const real = await orig<typeof import('../sdk/write')>()
@@ -33,7 +35,7 @@ vi.mock('../sdk/query', async (orig) => {
   const rows = (): Record<string, unknown>[] => visible.map((n) => ({ $id: `id${n}`, $ownerId: 'someone', number: n }))
   return {
     ...real,
-    countDocuments: async () => visible.length,
+    countDocuments: async (_sdk: unknown, q: { documentTypeName: string }) => (q.documentTypeName === 'patch' ? visiblePatches : visible.length),
     // The repo has no maintainer documents: the owner alone is trusted (and wrote nothing).
     queryAllDocuments: async () => [],
     queryDocumentsWithProof: async (_sdk: unknown, q: { where?: [string, string, unknown][]; orderBy?: [string, string][] }) => {
@@ -68,6 +70,7 @@ const sdk = {} as EvoSDK
 beforeEach(() => {
   intents.length = 0
   visible = [1, 2]
+  visiblePatches = 0
   const store = new Map<string, string>()
   vi.stubGlobal('window', {
     localStorage: {
@@ -107,5 +110,39 @@ describe('a numbered write retried after an edit (review N1/N2)', () => {
     const r = await createIssue(sdk, AUTH, REPO, { title: 'A', body: '', intent: 'draft2' })
     expect(r.number).toBe(4)
     expect(intents).toEqual(['draft2#3', 'draft2#4'])
+  })
+
+  it('retries with a fresh count when the dense rule refuses the number (another create landed first)', async () => {
+    const { ConsensusRefusal } = await import('../sdk/write')
+    let first = true
+    const retried: [number, number][] = []
+    answer = async () => {
+      if (first) {
+        first = false
+        // A PR took #3 between the count and the write.
+        visiblePatches = 1
+        throw new ConsensusRefusal(10422, 'A document of type "issue" breaks its propertyConstraints rule "dense": it does not hold', {}, true)
+      }
+      return { documentId: 'X', confirmed: true, cost: { credits: 0, dash: 0 }, actualCredits: 0 }
+    }
+    const r = await createIssue(sdk, AUTH, REPO, { title: 'A', body: '', intent: 'dense' }, (taken, next) => retried.push([taken, next]))
+    expect(r.number).toBe(4)
+    expect(intents).toEqual(['dense#3', 'dense#4'])
+    expect(retried).toEqual([[3, 4]])
+  })
+
+  it('does not retry a refusal naming another rule', async () => {
+    const { ConsensusRefusal } = await import('../sdk/write')
+    answer = async () => {
+      throw new ConsensusRefusal(10422, 'A document of type "issue" breaks its propertyConstraints rule "hasTitle": it does not hold', {}, false)
+    }
+    await expect(createIssue(sdk, AUTH, REPO, { title: 'A', body: '', intent: 'other' })).rejects.toBeInstanceOf(ConsensusRefusal)
+    expect(intents).toEqual(['other#3'])
+  })
+
+  it('numbers issues and PRs in one sequence: two issues and one PR, the next issue is #4', async () => {
+    visiblePatches = 1
+    answer = async () => ({ documentId: 'X', confirmed: true, cost: { credits: 0, dash: 0 }, actualCredits: 0 })
+    expect((await createIssue(sdk, AUTH, REPO, { title: 'A', body: '' })).number).toBe(4)
   })
 })
