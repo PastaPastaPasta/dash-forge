@@ -18,8 +18,8 @@
  */
 
 import Link from 'next/link'
-import { createContext, Fragment, memo, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
-import { ImageOff } from 'lucide-react'
+import { createContext, Fragment, memo, useContext, useEffect, useId, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { ImageOff, Info, Lightbulb, MessageSquareWarning, OctagonAlert, TriangleAlert, Workflow } from 'lucide-react'
 import {
   formatBytes,
   headingSlug,
@@ -32,6 +32,9 @@ import {
   type TableAlignment,
   type TreeEntry,
 } from '@/lib/view'
+import { splitUrls, type AlertKind, type Footnote, type RefPiece } from '@/lib/view/markdown'
+import { importedHost, refTarget, type ForgeRepo, type RefContext, type RefTarget } from '@/lib/view/ref-targets'
+import { MODE_TREE } from '@/lib/browse'
 import { imagePreviewType } from '@/lib/view/blob-view'
 import { IMAGE_HOSTS_KEY, parseImageHosts, resolveRepoPath, splitHref, upgradeHttp, urlHostOf } from '@/lib/view/markdown-links'
 import { readBlob, commitRootTree, treeAtPath, findEntry, knownMinSize } from '@/lib/view/tree-nav'
@@ -54,12 +57,15 @@ export interface MarkdownRepoContext {
 }
 
 /**
- * Where `#n` and `@name` in plain text link to (GitHub's autolinks, D-223). Omitted: they stay
- * text (release notes, READMEs). `issueHref(n)` is the repo's issue route.
+ * Where `#n`, `owner/name#n`, commit ids and `@name` in plain text link to (GitHub's
+ * autolinks, D-223, FG-2). Omitted: they stay text. Build it with `repoLinks`
+ * (`components/repo/target-href`), the one place those routes are made.
  */
 export interface MarkdownLinks {
-  readonly issueHref: (n: number) => string
-  readonly profileHref?: (name: string) => string
+  /** The href of a reference ({@link refTarget} decides what it is). */
+  readonly href: (target: RefTarget) => string
+  /** The repository this repo mirrors (its owner-written description names it), or null. */
+  readonly source: ForgeRepo | null
 }
 
 /**
@@ -77,9 +83,13 @@ interface RenderContext {
   readonly images: 'auto' | 'ask'
   readonly links: MarkdownLinks | null
   readonly suggestion: SuggestionContext | null
+  /** How references resolve: the mirror's source, and the forge the content was copied from. */
+  readonly refs: RefContext
+  /** Prefix of this document's footnote ids, unique on the page (several bodies may say `[^1]`). */
+  readonly notes: string
 }
 
-const Ctx = createContext<RenderContext>({ repo: null, images: 'ask', links: null, suggestion: null })
+const Ctx = createContext<RenderContext>({ repo: null, images: 'ask', links: null, suggestion: null, refs: { source: null, imported: null }, notes: '' })
 
 /** A suggestion block as a diff: the replaced lines, then the suggested ones. */
 function SuggestionBlock({ text }: { text: string }): JSX.Element {
@@ -118,7 +128,36 @@ function tableAlignClass(align: TableAlignment | 'left' | 'center' | 'right'): s
 
 const LINK = 'text-forge-700 underline decoration-forge-700/30 underline-offset-2 hover:decoration-forge-700 dark:text-forge-400'
 
-/** Plain text with its `#n` / `@name` references linked (when the page gave `links`). */
+/** How a reference reads: as written, with a commit id shortened as GitHub shows it. */
+function refLabel(p: Exclude<RefPiece, { t: 'text' }>): string {
+  const repo = p.t !== 'mention' && p.repo !== undefined ? `${p.repo.owner}/${p.repo.name}` : ''
+  if (p.t === 'ref') return `${repo}#${p.n}`
+  if (p.t === 'commit') return repo === '' ? p.oid.slice(0, 7) : `${repo}@${p.oid.slice(0, 7)}`
+  return `@${p.label}${p.bot ? '[bot]' : ''}`
+}
+
+/** One autolinked reference: an in-app link, or a link to the forge the content came from. */
+function RefLink({ piece, links }: { piece: Exclude<RefPiece, { t: 'text' }>; links: MarkdownLinks }): JSX.Element {
+  const { refs } = useContext(Ctx)
+  const target = refTarget(piece, refs)
+  const label = refLabel(piece)
+  if (target === null) return <>{label}</>
+  const cls = cn(LINK, piece.t === 'mention' && 'font-medium', piece.t === 'commit' && 'font-mono text-[0.9em]')
+  if (target.kind === 'external') {
+    return (
+      <a href={target.url} target="_blank" rel="noreferrer noopener" className={cls} data-autolink={piece.t} title={`On ${new URL(target.url).host}`}>
+        {label}
+      </a>
+    )
+  }
+  return (
+    <Link href={links.href(target)} className={cls} data-autolink={piece.t}>
+      {label}
+    </Link>
+  )
+}
+
+/** Plain text with its references linked (when the page gave `links`). */
 function AutolinkedText({ text }: { text: string }): JSX.Element {
   const { links } = useContext(Ctx)
   if (links === null) return <>{text}</>
@@ -126,29 +165,38 @@ function AutolinkedText({ text }: { text: string }): JSX.Element {
   if (pieces.length === 1 && pieces[0]?.t === 'text') return <>{text}</>
   return (
     <>
-      {pieces.map((p, i) => {
-        if (p.t === 'text') return <Fragment key={i}>{p.v}</Fragment>
-        if (p.t === 'ref') {
-          return (
-            <Link key={i} href={links.issueHref(p.n)} className={LINK} data-autolink="ref">
-              #{p.n}
-            </Link>
-          )
-        }
-        const href = (links.profileHref ?? ((n: string) => `/u/?name=${encodeURIComponent(n)}`))(p.name)
-        return (
-          <Link key={i} href={href} className={cn(LINK, 'font-medium')} data-autolink="mention">
-            @{p.name}
-          </Link>
-        )
-      })}
+      {pieces.map((p, i) => (p.t === 'text' ? <Fragment key={i}>{p.v}</Fragment> : <RefLink key={i} piece={p} links={links} />))}
     </>
   )
 }
 
-/** A link: an in-page anchor, a repo-relative path (to the blob view), or an external URL. */
+/**
+ * A plain-text body (a commit message) with its URLs and references linked, as GitHub links a
+ * commit message: no Markdown, the text as written.
+ */
+export function LinkifiedText({ text, links, imported = null }: { text: string; links: MarkdownLinks; imported?: string | null }): JSX.Element {
+  const ctx = useMemo<RenderContext>(
+    () => ({ repo: null, images: 'ask', links, suggestion: null, refs: { source: links.source, imported: importedHost(imported, links.source) }, notes: '' }),
+    [links, imported],
+  )
+  return (
+    <Ctx.Provider value={ctx}>
+      {splitUrls(text).map((p, i) =>
+        p.t === 'url' ? (
+          <a key={i} href={p.href} target="_blank" rel="noreferrer noopener" className={cn(LINK, WRAP)}>
+            {p.href}
+          </a>
+        ) : (
+          <AutolinkedText key={i} text={p.v} />
+        ),
+      )}
+    </Ctx.Provider>
+  )
+}
+
+/** A link: an in-page anchor, a repo path (to the blob or tree view), or an external URL. */
 function MdLink({ href, id, children }: { href: string; id?: string; children: ReactNode }): JSX.Element {
-  const { repo } = useContext(Ctx)
+  const { repo, refs } = useContext(Ctx)
   // An `<a href name>` is also an in-page target; a link that goes nowhere keeps only that.
   const target = id === undefined ? undefined : anchorTarget(id)
   if (href === '#') return target === undefined ? <>{children}</> : <a id={target}>{children}</a>
@@ -161,21 +209,73 @@ function MdLink({ href, id, children }: { href: string; id?: string; children: R
       </a>
     )
   }
-  if (isRelativeHref(href)) {
-    const path = repo ? resolveRepoPath(repo.dir, splitHref(href).path) : null
+  if (isRelativeHref(href) || (repo !== null && href.startsWith('/'))) {
+    const path = repo ? repoPathOf(repo, href) : null
     if (repo === null || path === null) return target === undefined ? <>{children}</> : <a id={target}>{children}</a>
-    const fragment = splitHref(href).fragment
-    const to = `${repoPathHref(repo, path, /\/$/.test(href.split(/[?#]/)[0] ?? '') ? '/repo/tree' : '/repo/blob')}${fragment ? `#${fragment}` : ''}`
     return (
-      <Link id={target} href={to} className={LINK}>
+      <RepoPathLink id={target} repo={repo} path={path} href={href}>
         {children}
-      </Link>
+      </RepoPathLink>
+    )
+  }
+  // A site path in content copied from another forge (`/owner/repo/pull/1`) is that forge's.
+  if (href.startsWith('/') && refs.imported !== null) {
+    return (
+      <a id={target} href={`https://${refs.imported}${href}`} target="_blank" rel="noreferrer noopener" className={LINK}>
+        {children}
+      </a>
     )
   }
   return (
     <a id={target} href={href} target={href.startsWith('http') ? '_blank' : undefined} rel="noreferrer noopener" className={LINK}>
       {children}
     </a>
+  )
+}
+
+/**
+ * The repo path a link or image names: a `/`-rooted one (`/doc/build-unix.md`) from the repo
+ * root, as GitHub resolves it in a repo file; a relative one from the file's directory. Null
+ * when it climbs out of the repo.
+ */
+function repoPathOf(repo: MarkdownRepoContext, href: string): string | null {
+  const { path } = splitHref(href)
+  return path.startsWith('/') ? resolveRepoPath('', path) : resolveRepoPath(repo.dir, path)
+}
+
+/** A last path segment with no extension (`doc`, `test`): perhaps a directory, so worth looking up. */
+const MAYBE_DIR = /(^|\/)[^./]+$/
+
+/**
+ * A link to a path in the repo: the tree view when the path is a directory (written with a
+ * trailing `/`, or found to be one in the commit's tree), else the blob view. Only an
+ * extensionless path is looked up, in its parent's tree (the root's is read for the page
+ * already), so a README's many file links cost no reads.
+ */
+function RepoPathLink({ repo, path, href, id, children }: { repo: MarkdownRepoContext; path: string; href: string; id?: string; children: ReactNode }): JSX.Element {
+  const written = /\/$/.test(href.split(/[?#]/)[0] ?? '')
+  const lookup = !written && path !== '' && MAYBE_DIR.test(path) && repo.reader !== undefined && repo.tipOid !== undefined
+  const [isDir, setIsDir] = useState<{ key: string; dir: boolean } | null>(null)
+  const key = `${repo.tipOid ?? ''}:${path}`
+  useEffect(() => {
+    if (!lookup || repo.reader === undefined || repo.tipOid === undefined) return
+    let active = true
+    const slash = path.lastIndexOf('/')
+    entriesAt(repo.reader, repo.tipOid, slash === -1 ? '' : path.slice(0, slash)).then(
+      (entries) => active && setIsDir({ key, dir: findEntry(entries, path.slice(slash + 1))?.mode === MODE_TREE }),
+      () => undefined, // unknown: the blob view it is
+    )
+    return () => {
+      active = false
+    }
+  }, [lookup, repo.reader, repo.tipOid, path, key])
+  const tree = path === '' || written || (isDir?.key === key && isDir.dir)
+  const fragment = splitHref(href).fragment
+  const to = `${repoPathHref(repo, path, tree ? '/repo/tree' : '/repo/blob')}${fragment ? `#${fragment}` : ''}`
+  return (
+    <Link id={id} href={to} className={LINK}>
+      {children}
+    </Link>
   )
 }
 
@@ -278,7 +378,7 @@ function MdImage(props: ImageProps): JSX.Element | null {
   const ctx = useContext(Ctx)
   const { src } = props
   if (src === '#') return <AltText alt={props.alt} />
-  if (isRelativeHref(src)) return <RepoImage {...props} />
+  if (isRelativeHref(src) || (ctx.repo !== null && src.startsWith('/'))) return <RepoImage {...props} />
   if (src.startsWith('/') || src.startsWith('#')) return null // a site path means nothing here
   return ctx.images === 'auto' ? <RemoteImg {...props} /> : <GatedImage {...props} />
 }
@@ -390,7 +490,7 @@ export async function readRepoImage(reader: BrowseReader, tipOid: string, path: 
 /** A relative image: read from the repo's own objects (hash-checked), never fetched from a host. */
 function RepoImage({ src, alt, width, height }: ImageProps): JSX.Element | null {
   const { repo } = useContext(Ctx)
-  const path = repo ? resolveRepoPath(repo.dir, splitHref(src).path) : null
+  const path = repo ? repoPathOf(repo, src) : null
   const reader = repo?.reader
   const tipOid = repo?.tipOid
   const key = path === null || reader === undefined || tipOid === undefined ? null : `${tipOid}:${path}`
@@ -454,10 +554,12 @@ function renderInline(nodes: readonly Inline[], keyPrefix: string): ReactNode {
         return <del key={key} className="text-anvil-500 dark:text-anvil-400">{renderInline(n.c, key)}</del>
       case 'code':
         return (
-          <code key={key} className="rounded bg-anvil-100 px-1 py-0.5 text-[0.9em] text-forge-700 dark:bg-anvil-800 dark:text-forge-300">
+          <code key={key} className={cn('rounded bg-anvil-100 px-1 py-0.5 text-[0.9em] text-forge-700 dark:bg-anvil-800 dark:text-forge-300', WRAP)}>
             {n.v}
           </code>
         )
+      case 'fnref':
+        return <FootnoteRef key={key} n={n.n} label={n.label} k={n.k} />
       case 'link':
         return (
           <MdLink key={key} href={n.href} id={n.id}>
@@ -489,8 +591,86 @@ function renderInline(nodes: readonly Inline[], keyPrefix: string): ReactNode {
 /** Plain text of inline nodes, for heading ids. */
 function textOf(nodes: readonly Inline[]): string {
   return nodes
-    .map((n) => (n.t === 'text' || n.t === 'code' ? n.v : n.t === 'image' ? n.alt : n.t === 'br' ? ' ' : textOf(n.c)))
+    .map((n) => (n.t === 'text' || n.t === 'code' ? n.v : n.t === 'image' ? n.alt : n.t === 'br' ? ' ' : n.t === 'fnref' ? '' : textOf(n.c)))
     .join('')
+}
+
+/**
+ * Long unbroken runs (a magnet URI, a 128-hex hash) wrap anywhere rather than widen the page
+ * (L-52). `overflow-wrap: anywhere` also lets a flex or table cell shrink below such a word.
+ */
+const WRAP = '[overflow-wrap:anywhere]'
+
+/** A footnote's DOM ids: GitHub's `user-content-fn-…`, with this document's prefix (unique per body on a page). */
+function footnoteIds(notes: string, label: string, k = 1): { note: string; ref: string } {
+  const safe = encodeURIComponent(label)
+  return { note: `user-content-fn-${notes}${safe}`, ref: `user-content-fnref-${notes}${safe}${k > 1 ? `-${k}` : ''}` }
+}
+
+function FootnoteRef({ n, label, k }: { n: number; label: string; k: number }): JSX.Element {
+  const { notes } = useContext(Ctx)
+  const ids = footnoteIds(notes, label, k)
+  return (
+    <sup>
+      <a href={`#${ids.note}`} id={ids.ref} className={LINK} data-footnote-ref aria-describedby={`footnote-label-${notes}`}>
+        {n}
+      </a>
+    </sup>
+  )
+}
+
+function Footnotes({ items, keyPrefix, slugs }: { items: readonly Footnote[]; keyPrefix: string; slugs: Map<string, number> }): JSX.Element {
+  const { notes } = useContext(Ctx)
+  return (
+    <section data-footnotes className="mt-6 border-t border-anvil-200 pt-3 text-[0.9em] dark:border-anvil-800">
+      <h2 id={`footnote-label-${notes}`} className="sr-only">
+        Footnotes
+      </h2>
+      <ol className="list-decimal space-y-1 pl-6">
+        {items.map((f) => {
+          const ids = footnoteIds(notes, f.label)
+          return (
+            <li key={f.label} id={ids.note}>
+              {f.c.map((b, i) => renderBlock(b, `${keyPrefix}-${f.n}-${i}`, slugs))}
+              {Array.from({ length: f.refs }, (_, k) => (
+                <a
+                  key={k}
+                  href={`#${footnoteIds(notes, f.label, k + 1).ref}`}
+                  className={cn(LINK, 'ml-1 no-underline')}
+                  data-footnote-backref
+                  aria-label={`Back to reference ${f.n}${k > 0 ? `-${k + 1}` : ''}`}
+                >
+                  ↩{k > 0 ? <sup>{k + 1}</sup> : null}
+                </a>
+              ))}
+            </li>
+          )
+        })}
+      </ol>
+    </section>
+  )
+}
+
+const ALERTS: Readonly<Record<AlertKind, { title: string; icon: typeof Info; box: string; head: string }>> = {
+  note: { title: 'Note', icon: Info, box: 'border-dash-500', head: 'text-dash-600 dark:text-dash-400' },
+  tip: { title: 'Tip', icon: Lightbulb, box: 'border-verify', head: 'text-verify-700 dark:text-verify-400' },
+  important: { title: 'Important', icon: MessageSquareWarning, box: 'border-forge-500', head: 'text-forge-700 dark:text-forge-400' },
+  warning: { title: 'Warning', icon: TriangleAlert, box: 'border-caution', head: 'text-caution-700 dark:text-caution-400' },
+  caution: { title: 'Caution', icon: OctagonAlert, box: 'border-danger', head: 'text-danger-700 dark:text-danger-400' },
+}
+
+/** A mermaid diagram's source, shown as code: rendering it needs mermaid's ~1 MB of script, which would draw attacker-written SVG. */
+function MermaidBlock({ source }: { source: string }): JSX.Element {
+  return (
+    <figure className="my-3" data-testid="mermaid">
+      <ScrollRegion as="pre" label="Mermaid diagram source" className="overflow-x-auto rounded-md border border-anvil-200 bg-anvil-50 p-3 text-[13px] dark:border-anvil-800 dark:bg-anvil-950">
+        <code>{source}</code>
+      </ScrollRegion>
+      <figcaption className="mt-1 flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400">
+        <Workflow className="h-3.5 w-3.5" aria-hidden /> Mermaid diagram, shown as its source: Forge does not draw diagrams.
+      </figcaption>
+    </figure>
+  )
 }
 
 const HEADING_CLASS: Readonly<Record<number, string>> = {
@@ -513,11 +693,12 @@ function renderBlock(b: Block, key: string, slugs: Map<string, number>): ReactNo
       return <h4 key={key} id={id} className={cls}>{content}</h4>
     }
     case 'paragraph':
-      return <p key={key} className="my-3 leading-relaxed">{renderInline(b.c, key)}</p>
+      return <p key={key} className={cn('my-3 leading-relaxed', WRAP)}>{renderInline(b.c, key)}</p>
     case 'inline':
       return <Fragment key={key}>{renderInline(b.c, key)}</Fragment>
     case 'code':
       if (b.lang === 'suggestion') return <SuggestionBlock key={key} text={b.v} />
+      if (b.lang === 'mermaid') return <MermaidBlock key={key} source={b.v} />
       return (
         <ScrollRegion as="pre" key={key} label="Code block" className="my-3 overflow-x-auto rounded-md border border-anvil-200 bg-anvil-50 p-3 text-[13px] dark:border-anvil-800 dark:bg-anvil-950">
           <code>{b.v}</code>
@@ -527,19 +708,33 @@ function renderBlock(b: Block, key: string, slugs: Map<string, number>): ReactNo
       const tasks = b.tasks
       const items = b.items.map((it, i) => {
         const task = tasks?.[i] ?? null
+        const checkbox =
+          task !== null ? <input type="checkbox" checked={task} disabled aria-label={task ? 'Done' : 'Not done'} className="mr-1.5 -ml-5 align-middle" /> : null
+        const text = renderInline(it, `${key}-${i}`)
         return (
-          <li key={i} className={task !== null ? 'list-none' : undefined}>
-            {task !== null ? (
-              <input type="checkbox" checked={task} disabled aria-label={task ? 'Done' : 'Not done'} className="mr-1.5 -ml-5 align-middle" />
-            ) : null}
-            {renderInline(it, `${key}-${i}`)}
+          <li key={i} className={cn(WRAP, task !== null && 'list-none')}>
+            {/* A loose list's items hold paragraphs (GitHub's spacing); a tight one's, bare text. */}
+            {b.loose && it.length > 0 ? (
+              <p className="my-2 leading-relaxed">
+                {checkbox}
+                {text}
+              </p>
+            ) : (
+              <>
+                {checkbox}
+                {text}
+              </>
+            )}
+            {b.blocks?.[i]?.map((inner, j) => renderBlock(inner, `${key}-${i}-${j}`, slugs))}
           </li>
         )
       })
+      // Nested lists sit snug under their item (`[&_ul]:my-1`), as GitHub spaces them.
+      const cls = '[&_ol]:my-1 [&_ul]:my-1 my-3 space-y-1 pl-6'
       return b.ordered ? (
-        <ol key={key} className="my-3 list-decimal space-y-1 pl-6">{items}</ol>
+        <ol key={key} start={b.start} className={cn(cls, 'list-decimal')}>{items}</ol>
       ) : (
-        <ul key={key} className="my-3 list-disc space-y-1 pl-6">{items}</ul>
+        <ul key={key} className={cn(cls, 'list-disc')}>{items}</ul>
       )
     }
     case 'quote':
@@ -548,6 +743,20 @@ function renderBlock(b: Block, key: string, slugs: Map<string, number>): ReactNo
           {b.c.map((inner, i) => renderBlock(inner, `${key}-${i}`, slugs))}
         </blockquote>
       )
+    case 'alert': {
+      const a = ALERTS[b.kind]
+      const Icon = a.icon
+      return (
+        <div key={key} className={cn('my-3 border-l-4 py-1 pl-4', a.box)} data-alert={b.kind} role="note" aria-label={a.title}>
+          <p className={cn('mb-1 flex items-center gap-1.5 font-medium', a.head)}>
+            <Icon className="h-4 w-4" aria-hidden /> {a.title}
+          </p>
+          {b.c.map((inner, i) => renderBlock(inner, `${key}-${i}`, slugs))}
+        </div>
+      )
+    }
+    case 'footnotes':
+      return <Footnotes key={key} items={b.items} keyPrefix={key} slugs={slugs} />
     case 'table':
       return (
         <ScrollRegion key={key} label="Table" className="my-4 max-w-full overflow-x-auto rounded-md border border-anvil-200 dark:border-anvil-800">
@@ -697,6 +906,8 @@ export const MarkdownView = memo(function MarkdownView({
   images = 'ask',
   links = null,
   suggestion = null,
+  mode = repo === null ? 'comment' : 'document',
+  imported = null,
 }: {
   source: string
   className?: string
@@ -704,13 +915,33 @@ export const MarkdownView = memo(function MarkdownView({
   repo?: MarkdownRepoContext | null
   /** `auto` for Markdown the repo itself publishes (README, release notes); `ask` for anyone's. */
   images?: 'auto' | 'ask'
-  /** Link `#n` / `@name` (issue and PR pages); keep it referentially stable (memo). */
+  /** Link `#n`, commit ids and `@name` (repo pages, `repoLinks`); keep it referentially stable (memo). */
   links?: MarkdownLinks | null
   /** Render ```suggestion blocks as diffs (review comments); keep it referentially stable. */
   suggestion?: SuggestionContext | null
+  /**
+   * GitHub's two renderings: `comment` (issues, PRs, comments, reviews, release notes) makes a
+   * single newline a line break; `document` (a README or `.md` file) makes it a space. Defaults
+   * to `document` for a repo file, else `comment`.
+   */
+  mode?: 'comment' | 'document'
+  /**
+   * The `imported.url` of the document this body is from (an issue, PR, comment or review
+   * copied from another forge), or null for one written here: its `@mentions` and other repos'
+   * references then go to that forge, never to a Forge profile anyone could register (L-38).
+   */
+  imported?: string | null
 }): JSX.Element {
-  const ctx = useMemo<RenderContext>(() => ({ repo, images, links, suggestion }), [repo, images, links, suggestion])
-  const blocks = useMemo(() => (source.length > MARKDOWN_MAX_CHARS ? null : parseMarkdown(source)), [source])
+  const notes = useId().replace(/[^a-zA-Z0-9]/g, '')
+  const source_ = links?.source ?? null
+  const ctx = useMemo<RenderContext>(
+    () => ({ repo, images, links, suggestion, refs: { source: source_, imported: importedHost(imported, source_) }, notes: `${notes}-` }),
+    [repo, images, links, suggestion, source_, imported, notes],
+  )
+  const blocks = useMemo(
+    () => (source.length > MARKDOWN_MAX_CHARS ? null : parseMarkdown(source, { breaks: mode === 'comment' })),
+    [source, mode],
+  )
   if (blocks === null) {
     return (
       <div className={cn('text-prose text-anvil-700 dark:text-anvil-200', className)}>

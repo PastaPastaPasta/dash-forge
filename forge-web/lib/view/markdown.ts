@@ -1040,7 +1040,7 @@ function splitTableRow(line: string): string[] {
 
 function delimiterAlignment(cell: string): TableAlignment | undefined {
   const delimiter = cell.trim()
-  if (!/^:?-{3,}:?$/.test(delimiter)) return undefined
+  if (!/^:?-+:?$/.test(delimiter)) return undefined // GFM 198: one `-` is enough
   if (delimiter.startsWith(':') && delimiter.endsWith(':')) return 'center'
   if (delimiter.endsWith(':')) return 'right'
   if (delimiter.startsWith(':')) return 'left'

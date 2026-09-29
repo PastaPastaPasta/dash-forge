@@ -19,6 +19,7 @@ import type { Event } from '@/lib/rules'
 import { Author } from '@/components/author'
 import type { ReactNode } from 'react'
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
+import { importedUrlOf } from '@/lib/view/ref-targets'
 import { EditedMarker } from '@/components/repo/issue-bits'
 import { Oid } from '@/components/ui/oid'
 
@@ -142,7 +143,7 @@ export function Timeline({
               </div>
               {slot.body ?? (
                 <div className="px-4 py-3">
-                  <MarkdownView source={item.comment.body} links={links} />
+                  <MarkdownView source={item.comment.body} links={links} imported={importedUrlOf(item.comment.importedRaw)} />
                 </div>
               )}
             </div>
@@ -179,7 +180,7 @@ export function Timeline({
               </div>
               {review.body ? (
                 <div className="px-4 py-3">
-                  <MarkdownView source={review.body} links={links} />
+                  <MarkdownView source={review.body} links={links} imported={review.origin?.url ?? null} />
                 </div>
               ) : null}
               {item.comments.length > 0 || item.expected > 0 ? (
@@ -187,7 +188,7 @@ export function Timeline({
                   {item.comments.map((c) => (
                     <div key={c.id}>
                       {c.anchor ? <p className="mb-1 font-mono text-[12px] text-anvil-600 dark:text-anvil-400">{anchorLabel(c.anchor)}</p> : null}
-                      <MarkdownView source={c.body} links={links} />
+                      <MarkdownView source={c.body} links={links} imported={importedUrlOf(c.importedRaw)} />
                     </div>
                   ))}
                   {/* A submit writes the review first, then its comments: say when some have not landed (yet). */}

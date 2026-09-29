@@ -100,10 +100,35 @@ export function wordTarget(m: WordMatches): WordTarget {
 
 /** Which of issue n and PR n exist in `repo` (a `(repoId, number)` lookup each). */
 export async function numberTargets(sdk: EvoSDK, repo: RepoRef, number: number): Promise<{ issue: boolean; pull: boolean }> {
-  const exists = async (type: string): Promise<boolean> => {
+  const found = await numberRows(sdk, repo, number)
+  return { issue: found.issue !== null, pull: found.pull !== null }
+}
+
+/** An issue or PR row found at a number: its `imported.url` ('' when written here). */
+export interface NumberRow {
+  readonly importedUrl: string
+}
+
+/** Issue n and PR n of `repo`, when they exist (a `(repoId, number)` lookup each). */
+export async function numberRows(sdk: EvoSDK, repo: RepoRef, number: number): Promise<{ issue: NumberRow | null; pull: NumberRow | null }> {
+  const row = async (type: string): Promise<NumberRow | null> => {
     const { documents } = await queryDocumentsWithProof(sdk, repoSource(repo).repoQuery(type, { where: [['number', '==', number]], limit: 1 }))
-    return documents.length > 0
+    const doc = documents[0]
+    if (doc === undefined) return null
+    const imported = doc['imported']
+    const url = typeof imported === 'object' && imported !== null ? (imported as Record<string, unknown>)['url'] : undefined
+    return { importedUrl: typeof url === 'string' ? url : '' }
   }
-  const [issue, pull] = await Promise.all([exists(DOC.issue), exists(DOC.patch)])
+  const [issue, pull] = await Promise.all([row(DOC.issue), row(DOC.patch)])
   return { issue, pull }
+}
+
+/**
+ * Whether a row's `imported.url` is upstream item `n` (`…/issues/n`, `…/pull/n`,
+ * `…/-/merge_requests/n`): the row a mirror's import wrote for that number. A native issue at
+ * the same number (or an upstream item the import moved elsewhere, `forge-v2.md` §6) is not.
+ */
+export function isUpstreamItem(importedUrl: string, n: number): boolean {
+  const m = /\/(?:issues|pull|merge_requests)\/(\d+)\/?(?:[?#].*)?$/.exec(importedUrl)
+  return m !== null && Number(m[1]) === n
 }

@@ -98,6 +98,8 @@ import { useAsync } from '@/hooks/use-async'
 import { useIntent } from '@/hooks/use-intent'
 import { useFirstWrite } from '@/hooks/use-first-write'
 import { useParam, repoHref, type RepoAddress } from '@/hooks/use-query-param'
+import { useRepoLinks } from '@/components/repo/target-href'
+import { importedUrlOf } from '@/lib/view/ref-targets'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Timeline, type CommentSlots } from '@/components/repo/timeline'
@@ -381,7 +383,7 @@ function PullPage({
   const eventFirst = useFirstWrite(() => eventFirsts(sdk!, repo, stateType, pull.id, identity!), [pull.id, identity ?? '', stateType], firstsReady)
 
 
-  const links: MarkdownLinks = useMemo(() => ({ issueHref: (n: number) => repoHref('/repo/issue', addr, { number: String(n) }) }), [addr])
+  const links: MarkdownLinks = useRepoLinks(addr, home.description)
 
   const eventCost = previewCreate(stateType, {}, eventFirst)
   /** Confirm an event write (the route's price checked against the balance first). */
@@ -791,7 +793,7 @@ function PullPage({
                   {editing ? (
                     <MarkdownEditor id="edit-pr-body" label="Description" value={editing.body} onChange={(body) => setEditing({ ...editing, body })} links={links} />
                   ) : pull.body ? (
-                    <MarkdownView source={pull.body} links={links} />
+                    <MarkdownView source={pull.body} links={links} imported={pull.importedUrl} />
                   ) : (
                     <p className="italic text-anvil-500 dark:text-anvil-400">No description.</p>
                   )}
@@ -1404,13 +1406,13 @@ function commentSlots({
     header,
     body: (
       <div className="space-y-2 px-4 py-3">
-        <MarkdownView source={c.body} links={links} />
+        <MarkdownView source={c.body} links={links} imported={importedUrlOf(c.importedRaw)} />
         {replies.map((r) => (
           <div key={r.id} className="border-l-2 border-anvil-200 pl-3 dark:border-anvil-750">
             <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
               <Byline author={r.author} createdAt={r.createdAt} origin={trustedOrigin(r.origin, r.author, trust ?? null)} link={false} />
             </div>
-            <MarkdownView source={r.body} links={links} />
+            <MarkdownView source={r.body} links={links} imported={importedUrlOf(r.importedRaw)} />
           </div>
         ))}
         <button type="button" onClick={onShowFiles} className="text-[12px] text-forge-700 underline-offset-2 hover:underline dark:text-forge-400">
