@@ -4755,8 +4755,11 @@ mod rc1_tests {
         serde_json::from_str(&std::fs::read_to_string(&path).expect(&path)).expect(&path)
     }
 
-    /// `{"$b":[fill,len]}` as bytes.
+    /// `{"$b":[fill,len]}` or `{"$hex":"…"}` as bytes.
     fn bytes(v: &Value) -> Option<Vec<u8>> {
+        if let Some(h) = v.get("$hex") {
+            return hex::decode(h.as_str()?).ok();
+        }
         let b = v.get("$b")?.as_array()?;
         let fill = u8::try_from(b[0].as_u64()?).ok()?;
         Some(vec![fill; usize::try_from(b[1].as_u64()?).ok()?])
@@ -4909,6 +4912,42 @@ mod rc1_tests {
             enc_v2["anyOf"][1]["greaterThanOrEqual"][1].as_u64(),
             Some(crate::private::doc::MIN_V2 as u64)
         );
+    }
+
+    /// The manifest forms the push path writes besides a git pack: a full and a delta history
+    /// index, a browse artifact and a release-asset manifest, each accepted by RC1.
+    #[test]
+    fn every_manifest_kind_the_client_writes_is_rc1_valid() {
+        let scope = crate::scope::DocScope {
+            contract_id: "CORE".into(),
+            repo_id: [1; 32],
+        };
+        let history = u64::from(crate::pack::KIND_HISTORY_INDEX);
+        for (kind, tips, supersedes) in [
+            (history, vec![vec![1u8; 20]], vec![]),
+            (history, vec![vec![1u8; 20], vec![2u8; 20]], vec![[3u8; 32]]),
+            (
+                u64::from(crate::pack::KIND_OBJECT_LOCATOR),
+                vec![],
+                vec![[3u8; 32]; 2],
+            ),
+            (u64::from(crate::pack::KIND_RELEASE_ASSETS), vec![], vec![]),
+        ] {
+            let props = PackManifestInput {
+                pack_hash: [4; 32],
+                kind,
+                size_bytes: 20_000,
+                object_count: 3,
+                chunk_count: 2,
+                storage: 0,
+                uris: Vec::new(),
+                supersedes,
+                tips,
+            }
+            .props(&scope)
+            .unwrap();
+            crate::test_support::rc1::assert_valid("packManifest", &props);
+        }
     }
 
     #[test]

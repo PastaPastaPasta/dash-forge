@@ -25,7 +25,7 @@ use crate::refs::GitState;
 use crate::rules;
 use crate::scope::DocScope;
 
-const OWNER: [u8; 32] = [7; 32];
+const OWNER: [u8; 32] = crate::test_support::rc1::OWNER;
 
 /// The documents a push wrote, as Platform holds them.
 #[derive(Default)]
@@ -36,8 +36,10 @@ struct Recorded {
 impl Recorded {
     /// Record one create by [`OWNER`], `$createdAt` in write order.
     fn create(&mut self, doc_type: &'static str, fields: BTreeMap<String, FieldValue>) {
-        // TODO(rc1-validate): validate `fields` against the RC1 contract with 5b's
-        // `test_support::rc1::validate_props(doc_type, &fields, OWNER)` once it lands.
+        // Every document the push writes must be one the RC1 contract accepts.
+        if let Err(e) = crate::test_support::rc1::validate_props(doc_type, &fields, OWNER) {
+            panic!("RC1 refuses this {doc_type}: {e}\n  properties: {fields:?}");
+        }
         let n = self.docs.len() as u64;
         self.docs.push((
             doc_type,
