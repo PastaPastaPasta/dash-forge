@@ -1532,6 +1532,13 @@ pub fn review_props(
     Ok(p)
 }
 
+/// Whether a star of `repo` by `signer` also beats for Trending: RC1's `starBeat` names a public
+/// repository (`vis: "public"`, proved against it) and its owner (`repoOwner`, which may not be
+/// the signer: an owner's own star does not trend).
+fn beats(repo: &RepoRef, signer: &str) -> bool {
+    repo.visibility == Visibility::Public && signer != repo.owner_id()
+}
+
 /// Refuse a write of `doc_type` into a contract the RC1 layout does not put it in.
 fn check_layout(repo: &RepoRef, contract: &LoadedContract, doc_type: &str) -> Result<()> {
     match repo.forge().contract_id_of(doc_type) {
@@ -4386,19 +4393,17 @@ impl<'a> Collab<'a> {
         collab: &LoadedContract,
         repo: &RepoRef,
         doc_type: &str,
+        props: BTreeMap<String, FieldValue>,
     ) -> Result<bool> {
         if self.own_index_only(collab, repo, doc_type).await?.is_some() {
             return Ok(false);
         }
         let probe = || async { Ok(self.own_index_only(collab, repo, doc_type).await?.is_some()) };
+        let mut props = Self::with_repo(repo, props)?;
+        crate::layout::stamp_vis_for(doc_type, &mut props, repo.visibility);
         match self
             .engine()?
-            .create_index_only(
-                collab,
-                doc_type,
-                Self::with_repo(repo, BTreeMap::new())?,
-                probe,
-            )
+            .create_index_only(collab, doc_type, props, probe)
             .await
         {
             Ok(_) => Ok(true),
@@ -4427,14 +4432,16 @@ impl<'a> Collab<'a> {
     pub async fn star(&self, repo: &RepoRef, trending: bool) -> Result<bool> {
         let community = self.community_contract(repo).await?;
         let starred = self
-            .create_own_index_only(&community, repo, DOC_STAR)
+            .create_own_index_only(&community, repo, DOC_STAR, BTreeMap::new())
             .await?;
-        if starred && trending {
+        if starred && trending && beats(repo, &self.signer_id()?) {
             // The star stands whatever happens to the beat, which only feeds a ranking. A beat
             // from an earlier star of this repo makes this a no-op (one per identity and repo,
             // ever: it cannot be deleted).
+            let owner = FieldValue::identifier(platform::decode_identifier(repo.owner_id())?);
+            let beat = BTreeMap::from([("repoOwner".to_string(), owner)]);
             if let Err(e) = self
-                .create_own_index_only(&community, repo, DOC_STAR_BEAT)
+                .create_own_index_only(&community, repo, DOC_STAR_BEAT, beat)
                 .await
             {
                 tracing::warn!(error = %e, "the star landed; its Trending beat did not");

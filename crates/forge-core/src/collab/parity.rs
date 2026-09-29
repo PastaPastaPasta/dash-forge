@@ -34,7 +34,7 @@ impl Collab<'_> {
     /// Watch `repo`. `false` when already watching (nothing written).
     pub async fn watch(&self, repo: &RepoRef) -> Result<bool> {
         let community = self.community_contract(repo).await?;
-        self.create_own_index_only(&community, repo, DOC_WATCH)
+        self.create_own_index_only(&community, repo, DOC_WATCH, BTreeMap::new())
             .await
     }
 

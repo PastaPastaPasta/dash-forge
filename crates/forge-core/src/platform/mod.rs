@@ -3075,6 +3075,17 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
                     detail: format!("40120: {err}"),
                 })
             }
+            // 40120 on a `repoKey`'s `memberId` (RC1 `wrap_member`): the wrap names someone who
+            // holds no maintainer or writer document now (revoked since the plan was read).
+            // The detail keeps the path, so the key code can re-plan (`keyring::post_wrap`).
+            StateError::ReferencedEntityNotFoundError(err)
+                if err.path() == "memberId" && document_type == "repoKey" =>
+            {
+                return WriteFailure::Fatal(Error::NotAMember {
+                    document_type: document_type.to_string(),
+                    detail: format!("40120 (path memberId): {err}"),
+                })
+            }
             _ => {}
         }
     }

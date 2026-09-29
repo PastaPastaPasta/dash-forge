@@ -248,12 +248,14 @@ struct Rows {
     wraps: Vec<WrapRow>,
 }
 
-/// Everything [`Keyring::load`] reads, so a write path can re-use the contract.
+/// Everything [`Keyring::load`] reads, so a write path can re-use the contracts.
 pub struct KeyringIo<'a> {
     /// The connection.
     pub client: &'a PlatformClient,
-    /// forge-core, fetched.
+    /// forge-core, fetched (members and anchor configs).
     pub core: &'a LoadedContract,
+    /// forge-collab, fetched (the `repoKey` wraps; RC1 moved them out of forge-core).
+    pub collab: &'a LoadedContract,
     /// The repository's scope.
     pub scope: &'a DocScope,
 }
@@ -270,10 +272,12 @@ impl Keyring {
     ) -> Result<Self> {
         let scope = repo.scope()?;
         let core = client.fetch_contract(&scope.contract_id).await?;
+        let collab = client.fetch_contract(&repo.forge().collab).await?;
         Self::load_with(
             &KeyringIo {
                 client,
                 core: &core,
+                collab: &collab,
                 scope: &scope,
             },
             repo,
@@ -304,7 +308,7 @@ impl Keyring {
         let wraps: Vec<WrapDoc> = io
             .client
             .query_all_documents(
-                io.core,
+                io.collab,
                 DOC_REPO_KEY,
                 &io.scope.filters([]),
                 &[QueryOrder::asc("memberId")],
@@ -381,7 +385,7 @@ impl Keyring {
             if self.wraps[i].member != self.reader {
                 continue;
             }
-            let key = unwrap_own(io.core, &self.repo_id, &self.wraps[i], enc, &keys_of);
+            let key = unwrap_own(io.collab, &self.repo_id, &self.wraps[i], enc, &keys_of);
             if key.is_none() {
                 unreadable.push(self.wraps[i].epoch);
             }
@@ -891,7 +895,7 @@ pub fn hidden_bucket(o: &Opened) -> Option<&'static str> {
 /// `recipientKeyId`, and the sender's public key named by `senderKeyId`. `None` when either is
 /// missing or the wrap does not open (version / KCV, §5.4 (4)).
 fn unwrap_own(
-    core: &LoadedContract,
+    collab: &LoadedContract,
     repo_id: &[u8; 32],
     w: &WrapDoc,
     enc: &EncryptionKeys,
@@ -904,7 +908,7 @@ fn unwrap_own(
         .find(|k| k.id == w.sender_key_id && k.purpose == "ENCRYPTION")?
         .public_key;
     let secret = secret_of(mine).ok()?;
-    open_wrap(core, repo_id, w.epoch, &w.wrapped, &secret, sender_pub).ok()
+    open_wrap(collab, repo_id, w.epoch, &w.wrapped, &secret, sender_pub).ok()
 }
 
 fn secret_of(k: &PrivateKey) -> Result<WrapSecret> {
@@ -957,7 +961,7 @@ impl<'a> PrivateSigner<'a> {
         key: &EpochKey,
         member: [u8; 32],
     ) -> Result<WrapOutcome> {
-        let (core, scope) = (&w.core, &w.scope);
+        let (collab, scope) = (&w.collab, &w.scope);
         let (sender_id, sender) = w
             .enc
             .sender()
@@ -969,7 +973,7 @@ impl<'a> PrivateSigner<'a> {
         };
         let secret = secret_of(sender)?;
         let props = seal_wrap(
-            core,
+            collab,
             &scope.repo_id,
             epoch,
             key,
@@ -995,10 +999,15 @@ impl<'a> PrivateSigner<'a> {
         ]);
         match self
             .engine()?
-            .create_document(core, DOC_REPO_KEY, doc)
+            .create_document(collab, DOC_REPO_KEY, doc)
             .await
         {
             Ok(_) => Ok(WrapOutcome::Posted),
+            // RC1 `wrap_member`: a wrap names a current maintainer or writer. They were removed
+            // since this plan was read; nothing landed, and the caller re-plans without them.
+            Err(Error::NotAMember { detail, .. }) if detail.contains("path memberId") => {
+                Ok(WrapOutcome::NotAMember)
+            }
             // (repoId, memberId, epoch, $ownerId) is unique: this signer already wrapped this
             // epoch to them, and that wrap stands. It counts only if it holds the same key to
             // the member's current key; read it back and say which.
@@ -1028,7 +1037,7 @@ impl<'a> PrivateSigner<'a> {
         let docs = self
             .client
             .query_documents(
-                &w.core,
+                &w.collab,
                 DOC_REPO_KEY,
                 &w.scope.filters([
                     QueryFilter::eq("memberId", FieldValue::identifier(member)),
@@ -1054,7 +1063,7 @@ impl<'a> PrivateSigner<'a> {
         };
         let secret = secret_of(mine)?;
         Ok(open_wrap(
-            &w.core,
+            &w.collab,
             &w.scope.repo_id,
             epoch,
             &d.wrapped,
@@ -1090,6 +1099,8 @@ impl<'a> PrivateSigner<'a> {
             ("archived", FieldValue::boolean(anchor.archived)),
         ]);
         props.insert("backend".into(), anchor.backend.clone());
+        // anchors exist only in private repositories
+        crate::layout::stamp_vis(&mut props, crate::rules::v2::Visibility::Private);
         self.engine()?
             .create_document(core, DOC_CONFIG, props)
             .await
@@ -1110,12 +1121,16 @@ enum WrapOutcome {
     Different(Option<EpochKey>),
     /// The member has no usable `ENCRYPTION` key: nothing was written.
     NoRecipientKey,
+    /// The member holds no maintainer or writer document any more (removed since the plan was
+    /// read; consensus refused the wrap, 40120 on `memberId`): nothing was written.
+    NotAMember,
 }
 
 /// Everything a keyring write needs: the contract, the scope, the signer's keys and the
 /// keyring read now (§5.3: before every write).
 struct WriteCtx {
     core: LoadedContract,
+    collab: LoadedContract,
     scope: DocScope,
     me: [u8; 32],
     enc: EncryptionKeys,
@@ -1128,6 +1143,7 @@ impl PrivateSigner<'_> {
         let io = KeyringIo {
             client: self.client,
             core: &w.core,
+            collab: &w.collab,
             scope: &w.scope,
         };
         Keyring::load_with(&io, repo, &self.identity.id(), &w.enc).await
@@ -1155,11 +1171,13 @@ impl PrivateSigner<'_> {
     async fn open(&self, repo: &RepoRef) -> Result<WriteCtx> {
         let scope = repo.scope()?;
         let core = self.client.fetch_contract(&scope.contract_id).await?;
+        let collab = self.client.fetch_contract(&repo.forge().collab).await?;
         let enc = self.encryption_keys(repo);
         let kr = Keyring::load_with(
             &KeyringIo {
                 client: self.client,
                 core: &core,
+                collab: &collab,
                 scope: &scope,
             },
             repo,
@@ -1170,6 +1188,7 @@ impl PrivateSigner<'_> {
         let me = kr.reader;
         Ok(WriteCtx {
             core,
+            collab,
             scope,
             me,
             enc,
@@ -1267,7 +1286,7 @@ async fn self_wrap(
     match signer.post_wrap(w, epoch, &key, w.me).await? {
         WrapOutcome::Posted | WrapOutcome::Same => Ok((key, false)),
         WrapOutcome::Different(Some(standing)) => Ok((standing, true)),
-        WrapOutcome::Different(None) | WrapOutcome::NoRecipientKey => Err(UserError::new(
+        WrapOutcome::Different(None) | WrapOutcome::NoRecipientKey | WrapOutcome::NotAMember => Err(UserError::new(
             codes::ROTATION_PENDING,
             format!("your own key wrap for epoch {epoch} stands and cannot be read back"),
         )
@@ -1297,6 +1316,17 @@ pub async fn add_member_wrap(
     {
         WrapOutcome::Posted | WrapOutcome::Same => Ok(()),
         WrapOutcome::NoRecipientKey => Err(no_encryption_key(member, "cannot wrap the repo key")),
+        WrapOutcome::NotAMember => Err(UserError::new(
+            codes::NOT_A_WRITER,
+            format!("{member} is not a member of {} (any more)", repo.display()),
+        )
+        .cause("a key wrap names a current maintainer or writer (40120 on memberId)")
+        .fix(format!(
+            "`dg collab list {}` shows the members; add them again with `dg collab add`",
+            repo.display()
+        ))
+        .note("the key was not wrapped to them")
+        .into()),
         WrapOutcome::Different(_) => Err(UserError::new(
             codes::ROTATION_PENDING,
             format!("{member} already has a wrap of epoch {epoch} from you that it cannot use"),
@@ -1662,7 +1692,8 @@ async fn wrap_all(
             .await?
         {
             WrapOutcome::Posted | WrapOutcome::Same => wrapped.push(t.clone()),
-            WrapOutcome::NoRecipientKey => skipped.push(t.clone()),
+            // removed since the plan was read: not a member, so not wrapped (re-planned out)
+            WrapOutcome::NoRecipientKey | WrapOutcome::NotAMember => skipped.push(t.clone()),
             WrapOutcome::Different(_) => return Ok(Err(t.clone())),
         }
     }
@@ -2128,7 +2159,7 @@ pub async fn repair(signer: &PrivateSigner<'_>, repo: &RepoRef) -> Result<Repair
         let id = platform::encode_identifier(*m);
         match signer.post_wrap(&w, epoch, &key, *m).await? {
             WrapOutcome::Posted | WrapOutcome::Same => report.wrapped.push(id),
-            WrapOutcome::NoRecipientKey => report.skipped.push(id),
+            WrapOutcome::NoRecipientKey | WrapOutcome::NotAMember => report.skipped.push(id),
             // A standing wrap of ours to a key they no longer use cannot be replaced within
             // the epoch: a new epoch wraps everyone to their current key.
             WrapOutcome::Different(_) => {
