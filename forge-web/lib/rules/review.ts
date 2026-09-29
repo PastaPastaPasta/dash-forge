@@ -15,11 +15,8 @@ import type { Event, EventKind, Oid } from './types'
 // The review fold
 // ---------------------------------------------------------------------------
 
+/** The `authorEvent` kind enum (11–14, 16); an author's close, reopen, draft and ready are transitions. */
 const AUTHOR_KINDS: ReadonlySet<EventKind> = new Set<EventKind>([
-  'close',
-  'reopen',
-  'draft',
-  'ready',
   'threadResolve',
   'threadUnresolve',
   'reviewRequest',
