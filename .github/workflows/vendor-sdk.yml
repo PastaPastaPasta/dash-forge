@@ -185,7 +185,10 @@ jobs:
           (cd packages/js-evo-sdk && yarn pack --out "$out/$evo")
           cd "$out"
           # What forge-web loads (next.config.js, lib/sdk/wasm-shim.ts) and the package entries.
-          has() { tar -tzf "$1" | grep -Fxq "$2" || { echo "::error::$1 lacks $2"; exit 1; }; }
+          # Each archive is listed once into a file: `tar | grep -q` would fail under pipefail
+          # whenever grep matched early and tar, still listing, died of SIGPIPE.
+          for f in "$wasm" "$evo"; do tar -tzf "$f" > "$RUNNER_TEMP/$f.list"; done
+          has() { grep -Fxq -- "$2" "$RUNNER_TEMP/$1.list" || { echo "::error::$1 lacks $2"; exit 1; }; }
           for f in package/package.json package/dist/sdk.js package/dist/sdk.d.ts package/dist/sdk.compressed.js \
                    package/dist/raw/wasm_sdk.js package/dist/raw/wasm_sdk.d.ts package/dist/raw/wasm_sdk_bg.wasm; do
             has "$wasm" "$f"
