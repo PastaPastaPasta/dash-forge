@@ -64,7 +64,9 @@ use dash_sdk::platform::fetch_current_no_parameters::FetchCurrent;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{DataContract, Fetch, FetchMany, Identifier, Identity, IdentityPublicKey};
 use dash_sdk::{RequestSettings, Sdk, SdkBuilder};
-use drive_proof_verifier::DocumentCount;
+use drive_proof_verifier::{
+    DocumentCount, DocumentSplitCounts, DocumentSplitSums, SplitCountEntry, SplitSumEntry,
+};
 use rs_sdk_trusted_context_provider::TrustedHttpContextProvider;
 use simple_signer::single_key_signer::SingleKeySigner;
 
@@ -1137,6 +1139,87 @@ impl PlatformClient {
         Ok(count.map_or(0, |c| c.0))
     }
 
+    /// Proved counts of `document_type` documents matching `filters`, one per value of the
+    /// `In` filter on `group_field` (`select count(*) … group by group_field`,
+    /// [`DocumentSplitCounts`]): Drive answers one count tree per `In` value of a countable
+    /// index the filters cover exactly (`PointLookupProof`). Keyed by the value's tree-key
+    /// bytes ([`decode_u8_key`] for an integer ≤ 255, the 32 raw bytes for an identifier); a
+    /// value with no documents is absent (read it as 0). No `limit` is sent: Drive refuses one
+    /// on a group-by-`In` aggregate (the `In` array, ≤ 100 values, bounds the result).
+    pub async fn count_documents_grouped(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        filters: &[QueryFilter],
+        group_field: &str,
+    ) -> Result<BTreeMap<Vec<u8>, u64>> {
+        let query = Self::grouped_query(contract, document_type, filters, group_field)?
+            .with_select(SelectProjection::count_star());
+        let counts = retry_transient_read("grouped count", || {
+            DocumentSplitCounts::fetch(&self.sdk, query.clone())
+        })
+        .await
+        .map_err(|e| {
+            self.read_error(
+                &contract.id(),
+                &e,
+                &format!("counting {document_type} documents by {group_field}"),
+            )
+        })?;
+        Ok(split_counts(counts.map(|c| c.0).unwrap_or_default()))
+    }
+
+    /// Proved sums of `sum_field` over `document_type` documents matching `filters`, one per
+    /// value of the `In` filter on `group_field` (`select sum(sum_field) … group by
+    /// group_field`, [`DocumentSplitSums`]) on an index whose `summable` names `sum_field`.
+    /// Keyed like [`Self::count_documents_grouped`]; a value with no documents is absent.
+    pub async fn sum_documents_grouped(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        filters: &[QueryFilter],
+        group_field: &str,
+        sum_field: &str,
+    ) -> Result<BTreeMap<Vec<u8>, i64>> {
+        let query = Self::grouped_query(contract, document_type, filters, group_field)?
+            .with_select(SelectProjection::sum(sum_field));
+        let sums = retry_transient_read("grouped sum", || {
+            DocumentSplitSums::fetch(&self.sdk, query.clone())
+        })
+        .await
+        .map_err(|e| {
+            self.read_error(
+                &contract.id(),
+                &e,
+                &format!("summing {document_type}.{sum_field} by {group_field}"),
+            )
+        })?;
+        Ok(split_sums(sums.map(|s| s.0).unwrap_or_default()))
+    }
+
+    /// The query of a grouped aggregate: `filters`, grouped by `group_field`, no limit.
+    fn grouped_query(
+        contract: &LoadedContract,
+        document_type: &str,
+        filters: &[QueryFilter],
+        group_field: &str,
+    ) -> Result<DocumentQuery> {
+        if !filters
+            .iter()
+            .any(|f| f.op == QueryOp::In && f.field == group_field)
+        {
+            return Err(Error::Config(format!(
+                "a grouped aggregate groups by an `in` filter; none on {group_field}"
+            )));
+        }
+        let mut query = DocumentQuery::new(Arc::clone(&contract.0), document_type)
+            .map_err(|e| Error::Platform(format!("building grouped query: {e}")))?;
+        for f in filters {
+            query = query.with_where(f.to_where_clause());
+        }
+        Ok(query.with_group_by(group_field))
+    }
+
     /// What is left of key `key_id`'s budget on `identity_id` (protocol 14), proof-verified.
     /// `None` when the key has no budget (or does not exist); `Some(0)` when it is spent.
     pub async fn key_remaining_budget(
@@ -1158,6 +1241,43 @@ impl PlatformClient {
         .map_err(|e| Error::Platform(format!("reading key {key_id}'s remaining budget: {e}")))?;
         Ok(budgets.and_then(|b| b.get(&key_id).copied().flatten()))
     }
+}
+
+/// Flat grouped counts: entries summed per key across `In` forks (a flat query has none), an
+/// absent or unproved count read as 0.
+fn split_counts(entries: Vec<SplitCountEntry>) -> BTreeMap<Vec<u8>, u64> {
+    let mut out: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
+    for e in entries {
+        let slot = out.entry(e.key).or_default();
+        *slot = slot.saturating_add(e.count.unwrap_or(0));
+    }
+    out
+}
+
+/// Flat grouped sums, as [`split_counts`].
+fn split_sums(entries: Vec<SplitSumEntry>) -> BTreeMap<Vec<u8>, i64> {
+    let mut out: BTreeMap<Vec<u8>, i64> = BTreeMap::new();
+    for e in entries {
+        let slot = out.entry(e.key).or_default();
+        *slot = slot.saturating_add(e.sum.unwrap_or(0));
+    }
+    out
+}
+
+/// The value of a `u8` property from its tree key (one byte, sign bit flipped: rs-dpp
+/// `DocumentPropertyType::encode_u8`). `None` for a key of another width.
+#[must_use]
+pub fn decode_u8_key(key: &[u8]) -> Option<u8> {
+    match key {
+        [b] => Some(b ^ 0x80),
+        _ => None,
+    }
+}
+
+/// The identifier (base58) an identifier property's tree key names (its 32 raw bytes).
+#[must_use]
+pub fn decode_identifier_key(key: &[u8]) -> Option<String> {
+    <[u8; 32]>::try_from(key).ok().map(encode_identifier)
 }
 
 /// A read-only where-operator, mapped to the SDK's [`WhereOperator`] inside this module.
@@ -2373,6 +2493,10 @@ pub enum FieldValue {
     /// a minimal-width encoding (e.g. `U32`) mismatches Drive's stored width and fails proof
     /// verification. `imported.createdAt` is the case in point (data-contracts §2.4).
     Uint64(u64),
+    /// A signed integer field (forge-v2 `transition.delta`, −8..8). Serialized at its minimal
+    /// signed width; a top-level typed field (`I8` under sized integer types) coerces it. Reads
+    /// of a negative integer land here; a non-negative one reads back as [`FieldValue::Integer`].
+    Signed(i64),
     /// A UTF-8 string field (e.g. `defaultBranch`, `normalizedName`).
     Text(String),
     /// A boolean field (e.g. `force`, `archived`).
@@ -2434,8 +2558,23 @@ impl FieldValue {
     pub fn as_u64(&self) -> Option<u64> {
         match self {
             FieldValue::Integer(n) | FieldValue::Uint64(n) => Some(*n),
+            FieldValue::Signed(n) => u64::try_from(*n).ok(),
             _ => None,
         }
+    }
+
+    /// The signed value of any integer field, if this is one that fits an `i64`.
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            FieldValue::Integer(n) | FieldValue::Uint64(n) => i64::try_from(*n).ok(),
+            FieldValue::Signed(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// A signed integer field ([`FieldValue::Signed`]).
+    pub fn signed(n: i64) -> Self {
+        FieldValue::Signed(n)
     }
 
     /// A string list: the items of a [`FieldValue::List`] of `Text`. An empty array reads
@@ -2485,6 +2624,7 @@ impl FieldValue {
             FieldValue::Integer(n) => minimal_uint(n),
             // Full-width u64 for an unbounded nested integer (matches Drive's stored width).
             FieldValue::Uint64(n) => Value::U64(n),
+            FieldValue::Signed(n) => minimal_int(n),
             FieldValue::Text(s) => Value::Text(s),
             FieldValue::Bool(b) => Value::Bool(b),
             FieldValue::Object(map) => Value::Map(
@@ -2513,11 +2653,13 @@ impl FieldValue {
             Value::U128(n) => FieldValue::Integer(u64::try_from(*n).ok()?),
             Value::I128(n) => FieldValue::Integer(u64::try_from(*n).ok()?),
             Value::U64(n) => FieldValue::Integer(*n),
-            Value::I64(n) => FieldValue::Integer(u64::try_from(*n).ok()?),
+            Value::I64(n) => signed_or_unsigned(*n),
             Value::U32(n) => FieldValue::Integer(u64::from(*n)),
-            Value::I32(n) => FieldValue::Integer(u64::try_from(*n).ok()?),
+            Value::I32(n) => signed_or_unsigned(i64::from(*n)),
             Value::U16(n) => FieldValue::Integer(u64::from(*n)),
+            Value::I16(n) => signed_or_unsigned(i64::from(*n)),
             Value::U8(n) => FieldValue::Integer(u64::from(*n)),
+            Value::I8(n) => signed_or_unsigned(i64::from(*n)),
             // A byteArray that came back as an array of U8 → repack to bytes. Anything else
             // is a typed array (forge-v2 string lists).
             Value::Array(items) if items.iter().all(|i| matches!(i, Value::U8(_))) => {
@@ -2744,6 +2886,28 @@ pub fn encode_identifier(bytes: [u8; 32]) -> String {
 /// (integer `0` decodes back as `U8(0)`, not `U64(0)`). Matching it keeps a nested-object
 /// integer's signed value equal to what the network stores and the proof returns; a
 /// top-level integer field (typed `I64`) coerces from any width, so this is safe there too.
+/// A read integer: non-negative ones stay [`FieldValue::Integer`] (every existing reader), a
+/// negative one is [`FieldValue::Signed`] (sized integer types store `transition.delta` as `I8`).
+fn signed_or_unsigned(n: i64) -> FieldValue {
+    u64::try_from(n).map_or(FieldValue::Signed(n), FieldValue::Integer)
+}
+
+/// The smallest signed `Value` holding `n` ([`minimal_uint`] for a non-negative one).
+fn minimal_int(n: i64) -> Value {
+    if let Ok(u) = u64::try_from(n) {
+        return minimal_uint(u);
+    }
+    if let Ok(v) = i8::try_from(n) {
+        Value::I8(v)
+    } else if let Ok(v) = i16::try_from(n) {
+        Value::I16(v)
+    } else if let Ok(v) = i32::try_from(n) {
+        Value::I32(v)
+    } else {
+        Value::I64(n)
+    }
+}
+
 fn minimal_uint(n: u64) -> Value {
     if let Ok(v) = u8::try_from(n) {
         Value::U8(v)
@@ -2861,6 +3025,20 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
         consensus_error_of(e)
     {
         return WriteFailure::Fatal(Error::StaleProtocolVersion(format!("{err:?}")));
+    }
+
+    // 10422: a `propertyConstraints` rule of the type does not hold (forge-v2: a dense number
+    // another create took, a state move the target's transitions no longer allow). Refused
+    // before execution, so nothing landed; the caller re-reads and decides.
+    if let Some(ConsensusError::BasicError(BasicError::DocumentPropertyConstraintViolatedError(
+        err,
+    ))) = consensus_error_of(e)
+    {
+        return WriteFailure::Fatal(Error::RuleRefused {
+            document_type: err.document_type_name().to_string(),
+            rule: err.constraint().to_string(),
+            detail: err.to_string(),
+        });
     }
 
     if let Some(ConsensusError::StateError(state_error)) = consensus_error_of(e) {
@@ -3367,6 +3545,85 @@ mod tests {
     use crate::error::{Error, Result};
     use std::cell::RefCell;
     use std::collections::BTreeMap;
+
+    /// The grouped-count keys of `transition.kind` (a `u8` under sized integer types) and the
+    /// grouped-sum keys of `targetId` (an identifier), as Drive serializes them
+    /// (`encode_value_for_tree_keys`): checked against rs-dpp's own encoder.
+    #[test]
+    fn grouped_aggregate_keys_decode_as_drive_encodes_them() {
+        use dash_sdk::dpp::data_contract::document_type::DocumentPropertyType;
+        use dash_sdk::dpp::platform_value::Value;
+        for kind in [1u8, 2, 11, 12, 13, 14, 15, 16, 17, 0, 255] {
+            let key = DocumentPropertyType::U8
+                .encode_value_for_tree_keys(&Value::U8(kind))
+                .unwrap();
+            assert_eq!(key, DocumentPropertyType::encode_u8(kind));
+            assert_eq!(super::decode_u8_key(&key), Some(kind), "kind {kind}");
+        }
+        assert_eq!(super::decode_u8_key(&[1, 2]), None);
+        let id = [7u8; 32];
+        let key = DocumentPropertyType::Identifier
+            .encode_value_for_tree_keys(&Value::Identifier(id))
+            .unwrap();
+        assert_eq!(
+            super::decode_identifier_key(&key),
+            Some(super::encode_identifier(id))
+        );
+        assert_eq!(super::decode_identifier_key(&key[..31]), None);
+    }
+
+    /// Split entries flatten per key; an unproved (`None`) value reads 0.
+    #[test]
+    fn split_entries_flatten_per_key() {
+        use drive_proof_verifier::{SplitCountEntry, SplitSumEntry};
+        let counts = super::split_counts(vec![
+            SplitCountEntry {
+                in_key: None,
+                key: vec![0x81],
+                count: Some(3),
+            },
+            SplitCountEntry {
+                in_key: None,
+                key: vec![0x82],
+                count: None,
+            },
+        ]);
+        assert_eq!(counts, BTreeMap::from([(vec![0x81], 3), (vec![0x82], 0)]));
+        let sums = super::split_sums(vec![
+            SplitSumEntry {
+                in_key: None,
+                key: vec![1; 32],
+                sum: Some(-1),
+            },
+            SplitSumEntry {
+                in_key: Some(vec![9]),
+                key: vec![1; 32],
+                sum: Some(9),
+            },
+        ]);
+        assert_eq!(sums, BTreeMap::from([(vec![1; 32], 8)]));
+    }
+
+    /// `transition.delta` is signed: a negative value goes out as a signed `Value` and reads
+    /// back as [`FieldValue::Signed`]; a non-negative one stays [`FieldValue::Integer`].
+    #[test]
+    fn signed_integers_round_trip() {
+        use dash_sdk::dpp::platform_value::Value;
+        assert_eq!(FieldValue::signed(-8).into_value(), Value::I8(-8));
+        assert_eq!(FieldValue::signed(2).into_value(), Value::U8(2));
+        assert_eq!(FieldValue::signed(-300).into_value(), Value::I16(-300));
+        assert_eq!(
+            FieldValue::from_value(&Value::I8(-1)),
+            Some(FieldValue::Signed(-1))
+        );
+        assert_eq!(
+            FieldValue::from_value(&Value::I8(8)),
+            Some(FieldValue::Integer(8))
+        );
+        assert_eq!(FieldValue::Signed(-1).as_i64(), Some(-1));
+        assert_eq!(FieldValue::Signed(-1).as_u64(), None);
+        assert_eq!(FieldValue::Integer(5).as_i64(), Some(5));
+    }
 
     #[test]
     fn a_replace_against_a_newer_revision_is_refused() {

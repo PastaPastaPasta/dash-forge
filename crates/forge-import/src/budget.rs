@@ -26,8 +26,10 @@ pub enum CollabDoc {
     Comment,
     /// A review.
     Review,
-    /// A state event (close, reopen, merge, label, draft).
+    /// A member event (a label).
     Event,
+    /// A state transition (close, reopen, merge, draft, ready).
+    Transition,
     /// A label definition.
     Label,
     /// A release.
@@ -53,7 +55,12 @@ impl CollabDoc {
             // 2026-09-29: 53.2M estimated, 0.91x). The contract grew (forge-collab 19.5 kB,
             // read on every write) and the event type's indexes (`addressee`, the target's
             // log) fill up; 56M keeps a merge event 10% over.
-            CollabDoc::Event => 56_000_000,
+            //
+            // A transition is not measured yet (wipe day, WIPE-PLAN §3 step 8): it is priced as
+            // the close / merge event it replaces. It has three indexes (the target's sum and
+            // count tree, the per-kind count tree, the feed) and its writer reads two totals;
+            // the gate is "≤ 1.15 × the close event", so it is re-measured and raised if over.
+            CollabDoc::Event | CollabDoc::Transition => 56_000_000,
             // Measured 27–68M, mean 28–36M.
             CollabDoc::Label => 35_000_000,
         }

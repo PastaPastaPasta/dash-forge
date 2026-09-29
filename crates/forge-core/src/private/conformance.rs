@@ -183,6 +183,7 @@ fn collab_json(v: &FieldValue) -> Value {
         FieldValue::Text(t) => json!(t),
         FieldValue::Bool(b) => json!(b),
         FieldValue::Integer(n) | FieldValue::Uint64(n) => json!(n),
+        FieldValue::Signed(n) => json!(n),
         FieldValue::Object(m) => {
             Value::Object(m.iter().map(|(k, v)| (k.clone(), collab_json(v))).collect())
         }

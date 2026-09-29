@@ -6,16 +6,18 @@
 //! needs a `maintainer` or `writer` document for the repo, `authorEvent` needs the signer to
 //! be the target's author (close / reopen only), `release` needs a maintainer, `label` any
 //! member; issues, patches, comments, reviews and stars are un-gated. What is left
-//! client-side is `FORGE_RULES_V2` ([`crate::rules::v2`]): numbering ([`allocate_number`]),
-//! the state fold, approvals and well-formedness.
+//! client-side is `FORGE_RULES_V2` ([`crate::rules::v2`]): the next state move
+//! ([`next_transition`]), the metadata fold, approvals and well-formedness. Issue and PR state
+//! is a chain fact: each close, reopen, merge, draft or ready is one `transition` document, and
+//! the running sum of their `delta` is the target's state code (`STATE-COUNTS.md` §2). Numbers
+//! are dense: the contract's `dense` rule pins `number` to the repo's issue + PR count.
 //!
 //! [`Collab`] is the one entry point. Reads need only a client ([`Collab::reader`]); writes
-//! need the signer ([`Collab::new`]). The explicit-number creates
-//! ([`Collab::create_issue_numbered`], [`Collab::create_patch_numbered`]) are the primitive
-//! the importer builds on; [`Collab::create_issue`] / [`Collab::create_patch`] allocate the
-//! number by the §6 rule and are resumable: the signed create is journaled before it is
-//! broadcast, so re-running an interrupted create re-broadcasts the same bytes instead of
-//! opening a second issue.
+//! need the signer ([`Collab::new`]). [`Collab::create_issue`] / [`Collab::create_patch`] take
+//! the dense next number (one count read) and are resumable: the signed create is journaled
+//! before it is broadcast, so re-running an interrupted create re-broadcasts the same bytes
+//! instead of opening a second issue. The importer creates through
+//! [`Collab::create_imported`], which records the source number as `upstreamNumber`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -42,10 +44,12 @@ use crate::platform::{
 };
 use crate::private::DocKind;
 use crate::rules::v2::{
-    allocate_number, checks_state, count_approvals, fold_issue_state_v2, fold_pr_review_v2,
-    fold_pr_state_v2, is_author_kind, is_well_formed, number_ceiling, Approvals, CheckRunRow,
-    ChecksPolicy, ChecksState, ContentDoc, ContentKind, Policy, PrReviewState,
-    Review as RuleReview, Role, RoleOracle, Visibility,
+    checks_state, count_approvals, dense_number, fold_pr_review_v2, is_author_kind, is_state_kind,
+    is_well_formed, issue_state_v2, merge_transition, names_dense_rule, next_transition,
+    pr_state_v2, repo_counts, state_code, status_of_code, Actor, Approvals, CheckRunRow,
+    ChecksPolicy, ChecksState, ContentDoc, ContentKind, Policy, PrReviewState, RepoCounts,
+    Review as RuleReview, Role, RoleOracle, StateAction, Transition, TransitionMove,
+    TransitionTarget, Visibility, TRANSITION_KINDS,
 };
 use crate::rules::{self, Event, EventKind, IssueState, PrState};
 use crate::scope::RepoRef;
@@ -59,11 +63,14 @@ pub const DOC_PATCH: &str = "patch";
 pub const DOC_COMMENT: &str = "comment";
 /// A review verdict on a patch.
 pub const DOC_REVIEW: &str = "review";
-/// A member-gated state event.
+/// A member-gated event (labels, assignees, retarget, milestones, review kinds, …).
 pub const DOC_EVENT: &str = "event";
-/// An author-gated state event (close, reopen, draft, ready, thread resolution, review
-/// requests, head update).
+/// An author-gated event (thread resolution, review requests, head update).
 pub const DOC_AUTHOR_EVENT: &str = "authorEvent";
+/// A state change of an issue or PR (close, reopen, merge, draft, ready): immutable,
+/// non-deletable, gated to members or the target's author, and judged against the target's
+/// state code by the contract's rules.
+pub const DOC_TRANSITION: &str = "transition";
 /// A branch policy (maintainer-gated).
 pub const DOC_POLICY: &str = "policy";
 /// A check run reported on a head (maintainer- or writer-gated).
@@ -90,8 +97,8 @@ pub const TRENDING_DEFAULT: bool = true;
 /// The most PRs one push follows ([`Collab::prs_following`]): each costs a few reads.
 pub const MAX_FOLLOWING: usize = 20;
 
-/// Attempts at claiming a number before giving up: each collision re-reads the index, so
-/// the next attempt starts above whatever took the number.
+/// Attempts at claiming the dense next number before giving up: each refusal (another create
+/// took the number first) re-reads the count.
 const MAX_NUMBER_ATTEMPTS: usize = 8;
 
 /// The environment variable that turns the client-side role checks off, so a write reaches
@@ -106,18 +113,6 @@ pub fn precheck_enabled() -> bool {
 // ===========================================================================
 // Types
 // ===========================================================================
-
-/// Concurrent `author`-index reads one allocation makes (one per trusted identity).
-const TRUSTED_READS: usize = 8;
-
-/// The owner, then each other maintainer once (sorted).
-fn trusted_authors<'a>(owner: &str, maintainers: impl IntoIterator<Item = &'a str>) -> Vec<String> {
-    let rest: BTreeSet<&str> = maintainers.into_iter().filter(|m| *m != owner).collect();
-    std::iter::once(owner)
-        .chain(rest)
-        .map(str::to_string)
-        .collect()
-}
 
 /// Issue or pull request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -175,6 +170,15 @@ fn open_with(
 }
 
 impl TargetKind {
+    /// The `transition` target this is ([`TransitionTarget`]; its code is the stored `tk`).
+    #[must_use]
+    pub fn transition_target(self) -> TransitionTarget {
+        match self {
+            TargetKind::Issue => TransitionTarget::Issue,
+            TargetKind::Patch => TransitionTarget::Patch,
+        }
+    }
+
     /// The content kind of this target's document.
     fn content_kind(self) -> ContentKind {
         match self {
@@ -230,6 +234,9 @@ pub struct Issue {
     pub created_at: u64,
     /// Importer provenance, when the issue was archived from another forge.
     pub imported: Option<Imported>,
+    /// The source forge's number (`upstreamNumber`), when an importer recorded it. A free
+    /// field: show it only through [`crate::rules::v2::trusted_upstream_number`].
+    pub upstream_number: Option<u32>,
 }
 
 impl Issue {
@@ -269,12 +276,12 @@ pub struct Patch {
     pub head_oid: String,
     /// A `packManifest` hash in the source repo, when the author recorded one (hex).
     pub patch_manifest_hash: Option<String>,
-    /// Opened as a draft (`draft`); `draft` / `ready` events override it ([`PatchView::state`]).
-    pub draft: bool,
     /// Consensus `$createdAt` (ms).
     pub created_at: u64,
     /// Importer provenance.
     pub imported: Option<Imported>,
+    /// The source forge's number (`upstreamNumber`), as on [`Issue::upstream_number`].
+    pub upstream_number: Option<u32>,
 }
 
 /// The base a PR's merge is folded against: `baseRefName` as of the patch's `$createdAt`
@@ -325,7 +332,8 @@ pub struct PatchInput {
     pub head_oid: Vec<u8>,
     /// A `packManifest` hash in the source repo, if the author published one.
     pub patch_manifest_hash: Option<[u8; 32]>,
-    /// Open as a draft.
+    /// Open as a draft: the create is followed by a draft transition (kind 14), since a
+    /// `patch` carries no draft flag of its own.
     pub draft: bool,
 }
 
@@ -371,12 +379,15 @@ pub struct Review {
     pub imported: Option<Imported>,
 }
 
-/// A target's state documents, by the gate that admitted them (§3).
+/// A target's history: its state changes (`transition`) and its events, by the gate that
+/// admitted them (§3).
 #[derive(Debug, Clone, Default)]
 pub struct TargetLog {
-    /// Member `event`s.
+    /// The target's `transition`s, oldest first: their `delta` sum is its state code.
+    pub transitions: Vec<Transition>,
+    /// Member `event`s (labels, assignees, retarget, milestones, review kinds).
     pub events: Vec<Event>,
-    /// The author's own close / reopen (`authorEvent`).
+    /// The author's own review-kind events (`authorEvent`).
     pub author_events: Vec<Event>,
     /// Private repos: member events whose sealed value is not readable here (kept, without
     /// their value).
@@ -395,6 +406,14 @@ pub struct Listed<T> {
     pub hidden: usize,
     /// The page was full: older rows exist beyond it.
     pub more: bool,
+}
+
+impl TargetLog {
+    /// The target's state code: the sum of its transitions' `delta`.
+    #[must_use]
+    pub fn state_code(&self) -> i64 {
+        state_code(&self.transitions)
+    }
 }
 
 impl<T> Listed<T> {
@@ -418,13 +437,13 @@ pub struct IssueView {
     pub hidden_values: usize,
     /// Events whose value is in plaintext ([`TargetLog::plaintext_values`]).
     pub plaintext_values: usize,
-    /// The issue's `event` and `authorEvent` documents.
+    /// The issue's `transition`, `event` and `authorEvent` documents.
     pub log: TargetLog,
 }
 
 impl IssueView {
     /// The events that applied to the issue (every member `event`, and the author's own
-    /// close / reopen), in fold order: its history as the web's timeline shows it.
+    /// review-kind events), in fold order. Its state changes are [`TargetLog::transitions`].
     #[must_use]
     pub fn events(&self) -> Vec<&Event> {
         rules::review::merged_log(
@@ -452,9 +471,9 @@ pub struct PatchView {
     pub base_tip: Option<String>,
     /// Whether the head has been a tip of the base ref (a merge naming it would count).
     pub head_on_base: bool,
-    /// Every commit the base ref has pointed at (what a merge event may name).
+    /// Every commit the base ref has pointed at (what a merge may name).
     pub base_tips: BTreeSet<String>,
-    /// The PR's `event` and `authorEvent` documents.
+    /// The PR's `transition`, `event` and `authorEvent` documents.
     pub log: TargetLog,
 }
 
@@ -603,24 +622,6 @@ pub struct EventPayload<'a> {
     pub ref_id: Option<&'a str>,
 }
 
-/// How a create with an explicit number ended.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Numbered {
-    /// Written by this call.
-    Created {
-        /// The new document id.
-        document_id: String,
-    },
-    /// The number is already taken in this repo (consensus refused the duplicate, or a read
-    /// found it first). `existing` is the document holding it, when it could be read.
-    Taken {
-        /// The document id holding the number.
-        existing_id: Option<String>,
-        /// Its author.
-        existing_author: Option<String>,
-    },
-}
-
 /// How an allocated, journaled create ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Created {
@@ -631,16 +632,94 @@ pub struct Created {
     /// `true` when an interrupted earlier run's transition was re-broadcast and confirmed
     /// (nothing was paid twice).
     pub resumed: bool,
+    /// A PR opened as a draft: the draft transition's id.
+    pub draft_transition: Option<String>,
 }
 
-/// Which gate a close / reopen went through.
+/// One issue or PR as [`Collab::imported_targets`] reads it.
+#[derive(Debug, Clone)]
+pub struct ImportedRow {
+    /// The target.
+    pub target: Target,
+    /// Its `imported` provenance (opened, in a private repo).
+    pub imported: Option<Imported>,
+    /// Its `upstreamNumber`.
+    pub upstream_number: Option<u32>,
+    /// A PR's base (for its merge check); `None` for an issue.
+    pub base: Option<PrBase>,
+}
+
+/// A fetched (and opened) issue or patch as an [`ImportedRow`].
+fn imported_row(kind: TargetKind, d: &FetchedDocument) -> ImportedRow {
+    match kind {
+        TargetKind::Issue => {
+            let i = issue_from_doc(d);
+            ImportedRow {
+                target: i.target(),
+                imported: i.imported,
+                upstream_number: i.upstream_number,
+                base: None,
+            }
+        }
+        TargetKind::Patch => {
+            let p = patch_from_doc(d);
+            ImportedRow {
+                target: p.target(),
+                base: Some(p.base()),
+                imported: p.imported,
+                upstream_number: p.upstream_number,
+            }
+        }
+    }
+}
+
+/// What [`Collab::create_imported`] creates.
+#[derive(Debug, Clone, Copy)]
+pub enum ImportedTarget<'a> {
+    /// An issue.
+    Issue {
+        /// Title.
+        title: &'a str,
+        /// Body.
+        body: &'a str,
+    },
+    /// A pull request (its `draft` is ignored: the importer writes state as transitions).
+    Patch(&'a PatchInput),
+}
+
+/// Which gate an event, or a state change, went through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StateRoute {
-    /// A member `event` (maintainer or writer).
+    /// A member (maintainer or writer): an `event`, or a `transition` with `asAuthor` 0.
     Member,
-    /// The author's `authorEvent`.
+    /// The target's author: an `authorEvent`, or a `transition` with `asAuthor` = its number.
     Author,
+}
+
+impl StateRoute {
+    /// The transition actor this route is.
+    #[must_use]
+    pub fn actor(self) -> Actor {
+        match self {
+            StateRoute::Member => Actor::Member,
+            StateRoute::Author => Actor::Author,
+        }
+    }
+}
+
+/// A state change written ([`Collab::set_state`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateChange {
+    /// The gate: a member, or the target's author.
+    pub route: StateRoute,
+    /// The `transition` document id.
+    pub transition_id: String,
+    /// Its kind (1, 2, 11–17).
+    pub kind: u8,
+    /// The state code after it.
+    pub after: i64,
 }
 
 // ===========================================================================
@@ -669,6 +748,13 @@ fn imported_of(d: &FetchedDocument) -> Option<Imported> {
     }
 }
 
+/// `upstreamNumber`, when set and in range.
+fn upstream_number_of(d: &FetchedDocument) -> Option<u32> {
+    d.field_u64("upstreamNumber")
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|&n| n > 0)
+}
+
 fn number_of(d: &FetchedDocument) -> u32 {
     d.field_u64("number")
         .and_then(|n| u32::try_from(n).ok())
@@ -685,6 +771,7 @@ pub fn issue_from_doc(d: &FetchedDocument) -> Issue {
         body: d.field_str("body").unwrap_or_default(),
         created_at: d.created_at.unwrap_or_default(),
         imported: imported_of(d),
+        upstream_number: upstream_number_of(d),
     }
 }
 
@@ -705,10 +792,35 @@ pub fn patch_from_doc(d: &FetchedDocument) -> Patch {
         source_ref_name: d.field_str("sourceRefName"),
         head_oid: d.field_hex("headOid").unwrap_or_default(),
         patch_manifest_hash: d.field_hex("patchManifestHash"),
-        draft: d.field_bool("draft"),
         created_at: d.created_at.unwrap_or_default(),
         imported: imported_of(d),
+        upstream_number: upstream_number_of(d),
     }
+}
+
+/// A fetched `transition` as a rules [`Transition`]; `None` for a kind the contract does not
+/// have (a newer client's).
+pub fn transition_from_doc(d: &FetchedDocument) -> Option<Transition> {
+    let kind = d
+        .field_u64("kind")
+        .and_then(|k| u8::try_from(k).ok())
+        .filter(|k| TRANSITION_KINDS.contains(k))?;
+    Some(Transition {
+        id: d.id.clone(),
+        kind,
+        actor: d.owner_id.clone(),
+        oid: d.field_hex("oid"),
+        as_author: d
+            .field_u64("asAuthor")
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(0),
+        created_at: d.created_at.unwrap_or_default(),
+    })
+}
+
+/// The target a fetched `transition` names (`targetId`, base58).
+fn transition_target_of(d: &FetchedDocument) -> Option<String> {
+    id_field(d, "targetId")
 }
 
 fn id_field(d: &FetchedDocument, name: &str) -> Option<String> {
@@ -848,9 +960,10 @@ fn patch_epoch_keys<'k>(
     })
 }
 
-/// An issue's state from its log (§3 fold).
-fn fold_issue(log: &TargetLog, issue: &Issue) -> IssueState {
-    fold_issue_state_v2(&log.events, &log.author_events, &issue.author)
+/// An issue's state: open or closed from its transitions, labels and assignees from its
+/// member events.
+fn fold_issue(log: &TargetLog) -> IssueState {
+    issue_state_v2(log.state_code(), &log.events)
 }
 
 /// An `event` / `authorEvent` document as a fold [`Event`]; `None` for an unknown kind.
@@ -901,30 +1014,66 @@ pub fn well_formed(kind: ContentKind, d: &FetchedDocument, visibility: Visibilit
     is_well_formed(&content_of(kind, d), visibility)
 }
 
+/// The source of an imported issue or PR: its provenance and, when known, the source forge's
+/// number (`upstreamNumber`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Provenance<'a> {
+    /// The `imported` object.
+    pub imported: Option<&'a Imported>,
+    /// The source number.
+    pub upstream_number: Option<u32>,
+}
+
+/// `tk` (the target kind tag `transition.targetKind` agrees on), `number`, and the
+/// provenance of a new issue or PR.
+///
+/// `upstreamNumber` is a plain top-level integer (D-2): the sparse `upstream (repoId,
+/// upstreamNumber)` index keys it, and an indexed property cannot be sealed, so it stays
+/// plaintext in a private repo too (it says no more than the number itself does).
+fn target_head(
+    kind: TargetKind,
+    number: u32,
+    from: Provenance<'_>,
+) -> Result<BTreeMap<String, FieldValue>> {
+    let mut p = BTreeMap::new();
+    p.insert("number".to_string(), FieldValue::integer(u64::from(number)));
+    p.insert(
+        "tk".to_string(),
+        FieldValue::integer(u64::from(kind.transition_target().code())),
+    );
+    if let Some(n) = from.upstream_number.filter(|&n| n > 0) {
+        p.insert(
+            "upstreamNumber".to_string(),
+            FieldValue::integer(u64::from(n)),
+        );
+    }
+    insert_imported(&mut p, from.imported)?;
+    Ok(p)
+}
+
 /// The creator-side properties of a new `issue`.
 pub fn issue_props(
     number: u32,
     title: &str,
     body: &str,
-    imported: Option<&Imported>,
+    from: Provenance<'_>,
 ) -> Result<BTreeMap<String, FieldValue>> {
     check_title(title)?;
     check_text("issue body", body, 5120, 5120)?;
-    let mut p = BTreeMap::new();
-    p.insert("number".to_string(), FieldValue::integer(u64::from(number)));
+    let mut p = target_head(TargetKind::Issue, number, from)?;
     p.insert("title".to_string(), FieldValue::text(title));
     if !body.is_empty() {
         p.insert("body".to_string(), FieldValue::text(body));
     }
-    insert_imported(&mut p, imported)?;
     Ok(p)
 }
 
-/// The creator-side properties of a new `patch`.
+/// The creator-side properties of a new `patch`. A draft is not a property: it is a kind-14
+/// transition written after the create ([`Collab::create_patch`]).
 pub fn patch_props(
     number: u32,
     input: &PatchInput,
-    imported: Option<&Imported>,
+    from: Provenance<'_>,
 ) -> Result<BTreeMap<String, FieldValue>> {
     check_title(&input.title)?;
     check_text("PR body", &input.body, 5120, 5120)?;
@@ -951,8 +1100,7 @@ pub fn patch_props(
             input.head_oid.len()
         )));
     }
-    let mut p = BTreeMap::new();
-    p.insert("number".to_string(), FieldValue::integer(u64::from(number)));
+    let mut p = target_head(TargetKind::Patch, number, from)?;
     p.insert("title".to_string(), FieldValue::text(&input.title));
     if !input.body.is_empty() {
         p.insert("body".to_string(), FieldValue::text(&input.body));
@@ -983,10 +1131,6 @@ pub fn patch_props(
     if let Some(h) = input.patch_manifest_hash {
         p.insert("patchManifestHash".to_string(), FieldValue::bytes32(h));
     }
-    if input.draft {
-        p.insert("draft".to_string(), FieldValue::boolean(true));
-    }
-    insert_imported(&mut p, imported)?;
     Ok(p)
 }
 
@@ -1024,6 +1168,12 @@ pub fn event_payload_props(
     payload: &EventPayload<'_>,
 ) -> Result<BTreeMap<String, FieldValue>> {
     let EventPayload { value, oid, ref_id } = *payload;
+    if is_state_kind(kind) {
+        return Err(Error::Config(format!(
+            "a {} is a state change: it is written as a `transition`, not an event",
+            kind_verb(kind)
+        )));
+    }
     // an empty value is no value: never written, and a kind that needs one is refused
     let value = value.filter(|v| !v.is_empty());
     if let Some(v) = value {
@@ -1090,9 +1240,129 @@ pub fn event_payload_props(
     Ok(p)
 }
 
-/// The properties of an `authorEvent` close or reopen.
-pub fn author_event_props(target: &Target, close: bool) -> Result<BTreeMap<String, FieldValue>> {
-    event_props(target, close_kind(close), None, None)
+/// The properties of the `transition` that carries out `mv` on `target` (without `repoId`):
+/// `targetId`, `targetNumber`, `targetKind`, `kind`, `delta`, `asAuthor`, and for a merge
+/// (kind 13) the merge commit `oid` (20 or 32 bytes; the contract's `e_mergeOid`).
+pub fn transition_props(
+    target: &Target,
+    mv: &TransitionMove,
+    oid: Option<&[u8]>,
+) -> Result<BTreeMap<String, FieldValue>> {
+    if mv.target_kind != target.kind.transition_target().code() {
+        return Err(Error::Config(format!(
+            "a kind-{} transition does not apply to {} #{}",
+            mv.kind,
+            target.kind.noun(),
+            target.number
+        )));
+    }
+    let merge = mv.kind == crate::rules::transition::PR_MERGE;
+    let oid = oid.filter(|o| !o.is_empty());
+    match oid {
+        Some(o) if !matches!(o.len(), 20 | 32) => {
+            return Err(Error::Config(format!(
+                "a merge names a 20- or 32-byte commit oid, got {} bytes",
+                o.len()
+            )))
+        }
+        None if merge => return Err(Error::Config("a merge names the merge commit (oid)".into())),
+        Some(_) if !merge => {
+            return Err(Error::Config(format!(
+                "only a merge names a commit; a kind-{} transition does not",
+                mv.kind
+            )))
+        }
+        _ => {}
+    }
+    let mut p = target_props(target)?;
+    p.insert(
+        "targetKind".to_string(),
+        FieldValue::integer(u64::from(mv.target_kind)),
+    );
+    p.insert("kind".to_string(), FieldValue::integer(u64::from(mv.kind)));
+    p.insert("delta".to_string(), FieldValue::signed(mv.delta));
+    p.insert(
+        "asAuthor".to_string(),
+        FieldValue::integer(u64::from(mv.as_author)),
+    );
+    if let Some(o) = oid {
+        p.insert("oid".to_string(), FieldValue::bytes(o.to_vec()));
+    }
+    Ok(p)
+}
+
+/// The request a state change is: its [`StateAction`], and the verb the messages use.
+fn action_verb(action: StateAction) -> &'static str {
+    match action {
+        StateAction::Close => "close",
+        StateAction::Reopen => "reopen",
+        StateAction::Merge => "merge",
+        StateAction::Draft => "convert to a draft",
+        StateAction::Ready => "mark ready",
+    }
+}
+
+/// What a target's state code reads as, for a refusal ("it is already closed").
+fn state_words(kind: TargetKind, code: i64) -> &'static str {
+    let s = status_of_code(code);
+    match (s.merged, s.open, kind == TargetKind::Patch && s.draft) {
+        (true, _, _) => "merged",
+        (_, true, true) => "an open draft",
+        (_, true, false) => "open",
+        (_, false, true) => "a closed draft",
+        (_, false, false) => "closed",
+    }
+}
+
+/// The state code `action` is a legal move from (a PR's close and reopen also have draft
+/// forms, 8 → 9 and 9 → 8).
+fn legal_from(action: StateAction) -> i64 {
+    match action {
+        StateAction::Close | StateAction::Merge | StateAction::Draft => 0,
+        StateAction::Reopen => 1,
+        StateAction::Ready => 8,
+    }
+}
+
+/// Why `action` cannot be carried out on `target` in state `code` by `actor` (no legal
+/// move): the user error, raised before anything is signed.
+fn no_move(target: &Target, code: i64, action: StateAction, actor: Actor) -> Error {
+    let what = format!(
+        "{} {} #{}",
+        action_verb(action),
+        target.kind.noun(),
+        target.number
+    );
+    if actor == Actor::Other {
+        return Error::NotPermitted {
+            action: what,
+            reason: format!(
+                "you are neither a member nor the {}'s author",
+                target.kind.noun()
+            ),
+            needs: "writer".into(),
+        };
+    }
+    if action == StateAction::Merge && actor == Actor::Author && status_of_code(code).open {
+        return Error::NotPermitted {
+            action: what,
+            reason: "only a maintainer or writer can merge".into(),
+            needs: "writer".into(),
+        };
+    }
+    let hint = match (action, status_of_code(code)) {
+        (StateAction::Merge, s) if s.draft && s.open => " (mark it ready first)",
+        _ => "",
+    };
+    UserError::new(
+        codes::REJECTED,
+        format!(
+            "cannot {what}: it is {}{hint}",
+            state_words(target.kind, code)
+        ),
+    )
+    .note("checked before anything was signed; nothing was written or paid")
+    .into()
 }
 
 /// The properties of a `policy` (without `repoId`).
@@ -1218,14 +1488,6 @@ pub fn review_props(
     Ok(p)
 }
 
-fn close_kind(close: bool) -> EventKind {
-    if close {
-        EventKind::Close
-    } else {
-        EventKind::Reopen
-    }
-}
-
 fn target_props(target: &Target) -> Result<BTreeMap<String, FieldValue>> {
     let mut p = BTreeMap::new();
     p.insert(
@@ -1239,24 +1501,32 @@ fn target_props(target: &Target) -> Result<BTreeMap<String, FieldValue>> {
     Ok(p)
 }
 
-/// How a close / reopen by `signer` must be written (§3): a member writes an `event`, the
-/// target's author (who is not a member) an `authorEvent`. `None`: neither, so consensus
-/// would refuse both. A member who is also the author uses the member route, which carries
-/// every kind.
-pub fn state_route(signer_role: Option<Role>, signer: &str, target: &Target) -> Option<StateRoute> {
-    kind_route(signer_role, signer, target, EventKind::Close)
+/// Who `signer` is to a state change of `target` (§3): a member (`asAuthor` 0), else the
+/// target's author (`asAuthor` = its number), else no one the contract admits. A member who is
+/// also the author writes as a member, which admits every kind (a merge too).
+pub fn state_actor(signer_role: Option<Role>, signer: &str, target: &Target) -> Actor {
+    if signer_role.is_some() {
+        Actor::Member
+    } else if signer == target.author {
+        Actor::Author
+    } else {
+        Actor::Other
+    }
 }
 
-/// [`state_route`] for any kind: the author route only for an author kind
-/// ([`is_author_kind`]); merge, labels, assignees, retarget, dismissals and milestones are
-/// members only.
+/// How an event of `kind` by `signer` is written: a member's `event`, else — for an author
+/// kind ([`is_author_kind`]) — the author's `authorEvent`. `None`: consensus admits neither.
+/// A state kind (close, reopen, merge, draft, ready) is never an event: it is `None` here
+/// ([`state_actor`] routes it).
 pub fn kind_route(
     signer_role: Option<Role>,
     signer: &str,
     target: &Target,
     kind: EventKind,
 ) -> Option<StateRoute> {
-    if signer_role.is_some() {
+    if is_state_kind(kind) {
+        None
+    } else if signer_role.is_some() {
         Some(StateRoute::Member)
     } else if signer == target.author && is_author_kind(kind) {
         Some(StateRoute::Author)
@@ -1265,46 +1535,65 @@ pub fn kind_route(
     }
 }
 
-/// Every taken number the §6 allocator needs, from a probe of the `number` index: `base`
-/// and the contiguous run above it. `page(after)` returns up to one page of taken numbers
-/// `> after`, ascending; this pages until the run breaks (a gap, or a short page).
-pub async fn contiguous_run_above<F, Fut>(
-    base: u32,
-    page_size: usize,
-    mut page: F,
-) -> Result<Vec<u32>>
-where
-    F: FnMut(u32) -> Fut,
-    Fut: std::future::Future<Output = Result<Vec<u32>>>,
-{
-    let mut run = Vec::new();
-    let mut last = base;
-    loop {
-        let rows = page(last).await?;
-        let full = rows.len() >= page_size;
-        for n in rows {
-            if u64::from(n) != u64::from(last) + 1 {
-                return Ok(run);
-            }
-            run.push(n);
-            last = n;
+/// How a create that must hold the dense next number ended after one attempt.
+#[derive(Debug, PartialEq, Eq)]
+enum NumberOutcome {
+    /// Consensus refused the number (the `dense` rule, or the unique `number` index): another
+    /// create took it between the count read and the write. Nothing landed; count again.
+    Taken,
+    /// Anything else: returned as it is.
+    Other,
+}
+
+/// Whether `e` says the dense number was taken ([`NumberOutcome::Taken`]): a 10422 naming
+/// `dense`, or the unique-index refusal a same-number create gets once rules pass.
+fn number_outcome(e: &Error) -> NumberOutcome {
+    match e {
+        Error::DuplicateUniqueIndex(_) => NumberOutcome::Taken,
+        Error::RuleRefused { rule, .. } if rule == crate::rules::v2::DENSE_RULE => {
+            NumberOutcome::Taken
         }
-        if !full || last == u32::MAX {
-            return Ok(run);
+        Error::RuleRefused { detail, .. } | Error::Platform(detail) if names_dense_rule(detail) => {
+            NumberOutcome::Taken
         }
+        _ => NumberOutcome::Other,
     }
 }
 
-/// A PR's view folded from its log and its base ref's tips (pure; [`Collab::patch_view`] and
-/// [`Collab::list_patch_views`] read the inputs).
+/// Whether `e` is a refusal of a state move by the contract's sum rules (`c1`…`c5`): the
+/// target's state changed between the read and the write.
+fn is_state_rule_refusal(e: &Error) -> bool {
+    matches!(e, Error::RuleRefused { rule, .. } if rule.starts_with('c'))
+}
+
+/// The per-target state codes of a grouped sum ([`Collab::state_codes`]), by target id: a
+/// target with no transitions is absent from the answer and reads 0.
+fn codes_by_target(sums: BTreeMap<Vec<u8>, i64>) -> BTreeMap<String, i64> {
+    sums.into_iter()
+        .filter_map(|(k, v)| platform::decode_identifier_key(&k).map(|id| (id, v)))
+        .collect()
+}
+
+/// A grouped count of `transition.kind` ([`Collab::repo_state_counts`]) as counts per kind.
+fn counts_by_kind(counts: BTreeMap<Vec<u8>, u64>) -> BTreeMap<u8, u64> {
+    counts
+        .into_iter()
+        .filter_map(|(k, v)| platform::decode_u8_key(&k).map(|kind| (kind, v)))
+        .collect()
+}
+
+/// A PR's view from its log and its base ref's tips (pure; [`Collab::patch_view`] and
+/// [`Collab::list_patch_views`] read the inputs). "Merged" is the chain fact (a member
+/// recorded a merge, D-9); [`PrState::merge_on_base`] says whether its commit was a tip of the
+/// base, so readers label a merge they cannot find there.
 fn view_of(patch: Patch, log: TargetLog, base: rules::MergeBaseTips) -> PatchView {
-    let state = fold_pr_state_v2(
+    let merge_oid = merge_transition(&log.transitions).and_then(|t| t.oid.clone());
+    let state = pr_state_v2(
+        log.state_code(),
+        merge_oid.as_deref(),
         &log.events,
-        &log.author_events,
-        &patch.author,
         base.tip.as_deref(),
         |oid, _| base.contains(oid),
-        patch.draft,
     );
     let review = fold_pr_review_v2(
         &log.events,
@@ -1842,14 +2131,11 @@ impl<'a> Collab<'a> {
     }
 
     /// Every readable issue and pull request of `repo` (complete, oldest first), as flattened
-    /// targets with their importer provenance: in a private repo `imported.author` / `.url`
-    /// are sealed, so this is the only way an importer finds what it already mirrored. A pull
-    /// request also carries the base its merge is folded against (`baseRefName`, and its
-    /// `$createdAt`: see [`Self::base_ref_tips`]).
-    pub async fn imported_targets(
-        &self,
-        repo: &RepoRef,
-    ) -> Result<Vec<(Target, Option<Imported>, Option<PrBase>)>> {
+    /// targets with their importer provenance and source number: in a private repo
+    /// `imported.author` / `.url` are sealed, so this is the only way an importer finds what it
+    /// already mirrored. A pull request also carries the base its merge is checked against
+    /// (`baseRefName`, and its `$createdAt`: see [`Self::base_ref_tips`]).
+    pub async fn imported_targets(&self, repo: &RepoRef) -> Result<Vec<ImportedRow>> {
         let collab = self.collab_contract(repo).await?;
         let mut out = Vec::new();
         for kind in [TargetKind::Issue, TargetKind::Patch] {
@@ -1863,19 +2149,72 @@ impl<'a> Collab<'a> {
                 )
                 .await?;
             let (docs, _) = self.readable_all(repo, kind.content_kind(), docs).await?;
-            out.extend(docs.iter().map(|d| match kind {
-                TargetKind::Issue => {
-                    let i = issue_from_doc(d);
-                    (i.target(), i.imported, None)
-                }
-                TargetKind::Patch => {
-                    let p = patch_from_doc(d);
-                    let base = p.base();
-                    (p.target(), p.imported, Some(base))
-                }
-            }));
+            out.extend(docs.iter().map(|d| imported_row(kind, d)));
         }
         Ok(out)
+    }
+
+    /// The `kind` documents of `repo` whose `upstreamNumber` is `n` (the sparse `upstream
+    /// (repoId, upstreamNumber)` index; whoever wrote them), opened in a private repo: how an
+    /// importer finds the copy of source item #n in one read. The number is plaintext (it is
+    /// indexed); the provenance beside it may be sealed.
+    pub async fn upstream_targets(
+        &self,
+        repo: &RepoRef,
+        kind: TargetKind,
+        n: u32,
+    ) -> Result<Vec<ImportedRow>> {
+        let filters = [
+            Self::repo_filter(repo)?,
+            QueryFilter::eq("upstreamNumber", FieldValue::integer(u64::from(n))),
+        ];
+        self.upstream_rows(repo, kind, &filters, &[], None).await
+    }
+
+    /// The `kind` documents of `repo` that carry an `upstreamNumber`, highest first: one page
+    /// of 100 (`all`: every one). A range from 1 up binds the sparse index (a missing value
+    /// never meets it), so Drive answers from it. Whoever wrote them: the caller filters.
+    pub async fn upstream_numbered(
+        &self,
+        repo: &RepoRef,
+        kind: TargetKind,
+        all: bool,
+    ) -> Result<Vec<ImportedRow>> {
+        let filters = [
+            Self::repo_filter(repo)?,
+            QueryFilter::gte("upstreamNumber", FieldValue::integer(1)),
+        ];
+        let order = [QueryOrder::desc("upstreamNumber")];
+        let mut rows = self
+            .upstream_rows(repo, kind, &filters, &order, (!all).then_some(DEFAULT_PAGE))
+            .await?;
+        rows.sort_by_key(|r| std::cmp::Reverse(r.upstream_number));
+        Ok(rows)
+    }
+
+    async fn upstream_rows(
+        &self,
+        repo: &RepoRef,
+        kind: TargetKind,
+        filters: &[QueryFilter],
+        order: &[QueryOrder],
+        page: Option<u32>,
+    ) -> Result<Vec<ImportedRow>> {
+        let collab = self.collab_contract(repo).await?;
+        let docs = match page {
+            Some(limit) => {
+                self.client
+                    .query_documents(&collab, kind.doc_type(), filters, order, limit, None)
+                    .await?
+            }
+            None => {
+                self.client
+                    .query_all_documents(&collab, kind.doc_type(), filters, order)
+                    .await?
+            }
+        };
+        let (docs, _) = self.readable_all(repo, kind.content_kind(), docs).await?;
+        Ok(docs.iter().map(|d| imported_row(kind, d)).collect())
     }
 
     /// The newest `limit` issues (0 = one page of 100), newest first.
@@ -1886,31 +2225,38 @@ impl<'a> Collab<'a> {
             .map(|d| issue_from_doc(&d)))
     }
 
-    /// The repository's event feed (`event`, `authorEvent`) as history specs, in
-    /// [`Self::feed_logs`] order. Both types are immutable and non-deletable, so the feed is
-    /// read through the delta cache ([`crate::history`]): after the first read each call costs
-    /// one request for what landed since.
+    /// The repository's feed (`transition`, `event`, `authorEvent`) as history specs, in
+    /// [`Self::feed_logs`] order. All three are immutable and non-deletable with a
+    /// `(repoId, $createdAt)` index, so the feed is read through the delta cache
+    /// ([`crate::history`]): after the first read each call costs one request for what landed
+    /// since.
     fn feed_specs<'c>(
         collab: &'c LoadedContract,
         scope: &crate::scope::DocScope,
-    ) -> [crate::history::HistorySpec<'c>; 2] {
+    ) -> [crate::history::HistorySpec<'c>; 3] {
         [
+            crate::history::HistorySpec::new(collab, DOC_TRANSITION, scope),
             crate::history::HistorySpec::new(collab, DOC_EVENT, scope),
             crate::history::HistorySpec::new(collab, DOC_AUTHOR_EVENT, scope),
         ]
     }
 
     /// The repo feed's rows (as Platform holds them; a private repo's member event values are
-    /// opened here, never stored opened) folded into one log per target.
+    /// opened here, never stored opened) as one log per target: the target's transitions
+    /// (its state) and its events (labels, assignees, the base ref, the review kinds).
     async fn feed_logs(
         &self,
         repo: &RepoRef,
-        events: Vec<FetchedDocument>,
-        author_events: Vec<FetchedDocument>,
+        [transitions, events, author_events]: [Vec<FetchedDocument>; 3],
     ) -> Result<BTreeMap<String, TargetLog>> {
         // A private repo's member events: their sealed values opened (§8.1).
         let (events, _, _) = self.readable_events(repo, events).await?;
         let mut logs: BTreeMap<String, TargetLog> = BTreeMap::new();
+        for d in &transitions {
+            if let (Some(tid), Some(t)) = (transition_target_of(d), transition_from_doc(d)) {
+                logs.entry(tid).or_default().transitions.push(t);
+            }
+        }
         for e in events.iter().filter_map(event_from_doc) {
             logs.entry(e.target_id.clone()).or_default().events.push(e);
         }
@@ -1923,12 +2269,12 @@ impl<'a> Collab<'a> {
         Ok(logs)
     }
 
-    /// Every well-formed issue of `repo` (newest first) with its folded state, and how many
-    /// were skipped as malformed: one keyset walk of the `created` index (`$createdAt <=` the
-    /// oldest row read, 100 per page, deduped by id) and ONE read of the repo feed (`event` /
-    /// `authorEvent` by `(repoId, $createdAt)`) through the delta cache, folded per issue.
-    /// Requests: about `⌈issues/100⌉` plus the feed's new rows, where the old list paid 2 per
-    /// row.
+    /// Every well-formed issue of `repo` (newest first) with its state, and how many were
+    /// skipped as malformed: one keyset walk of the `created` index (`$createdAt <=` the
+    /// oldest row read, 100 per page, deduped by id) and ONE read of the repo feed
+    /// (`transition` / `event` / `authorEvent` by `(repoId, $createdAt)`) through the delta
+    /// cache. Open or closed is the sum of each issue's transitions; labels and assignees fold
+    /// from its events. Requests: about `⌈issues/100⌉` plus the feed's new rows.
     pub async fn issues_with_state(&self, repo: &RepoRef) -> Result<(Vec<IssueView>, usize)> {
         let collab = self.collab_contract(repo).await?;
         let mut docs: Vec<FetchedDocument> = Vec::new();
@@ -1965,7 +2311,7 @@ impl<'a> Collab<'a> {
             }
             before = oldest;
         }
-        let [events, author_events] = crate::history::take(
+        let feed: [Vec<FetchedDocument>; 3] = crate::history::take(
             crate::history::sync(
                 self.client,
                 &Self::feed_specs(&collab, &repo.scope()?),
@@ -1973,7 +2319,7 @@ impl<'a> Collab<'a> {
             )
             .await?,
         );
-        let logs = self.feed_logs(repo, events, author_events).await?;
+        let logs = self.feed_logs(repo, feed).await?;
         // Malformed rows, and in a private repo rows this reader cannot open, are hidden.
         let (readable, hidden) = self.readable_all(repo, ContentKind::Issue, docs).await?;
         let shown: Vec<IssueView> = readable
@@ -1982,7 +2328,7 @@ impl<'a> Collab<'a> {
                 let issue = issue_from_doc(d);
                 let log = logs.get(&issue.document_id).cloned().unwrap_or_default();
                 IssueView {
-                    state: fold_issue(&log, &issue),
+                    state: fold_issue(&log),
                     issue,
                     hidden_values: log.hidden_values,
                     plaintext_values: log.plaintext_values,
@@ -2055,22 +2401,51 @@ impl<'a> Collab<'a> {
             .await
     }
 
-    /// Every `event` and `authorEvent` of a target, complete.
+    /// Every `transition`, `event` and `authorEvent` of a target, complete. The transitions
+    /// are read on the `perTarget (targetId)` index (a target's history is short); their sum
+    /// is the state code, the same number the proved sum query returns.
     pub async fn target_log(&self, repo: &RepoRef, target_id: &str) -> Result<TargetLog> {
         let collab = self.collab_contract(repo).await?;
-        let events = self
-            .by_target(&collab, DOC_EVENT, "targetId", target_id)
-            .await?;
+        // Boxed: three complete reads in parallel make a large future for every caller.
+        let (transitions, events, author_events) = Box::pin(async {
+            futures::try_join!(
+                self.transitions_of(&collab, target_id),
+                self.by_target(&collab, DOC_EVENT, "targetId", target_id),
+                self.by_target(&collab, DOC_AUTHOR_EVENT, "targetId", target_id),
+            )
+        })
+        .await?;
         let (events, hidden_values, plaintext_values) = self.readable_events(repo, events).await?;
-        let author_events = self
-            .by_target(&collab, DOC_AUTHOR_EVENT, "targetId", target_id)
-            .await?;
         Ok(TargetLog {
+            transitions,
             events: events.iter().filter_map(event_from_doc).collect(),
             author_events: author_events.iter().filter_map(event_from_doc).collect(),
             hidden_values,
             plaintext_values,
         })
+    }
+
+    /// A target's transitions, oldest first (`$createdAt`, then `$id`), complete.
+    async fn transitions_of(
+        &self,
+        collab: &LoadedContract,
+        target_id: &str,
+    ) -> Result<Vec<Transition>> {
+        let docs = self
+            .client
+            .query_all_documents(
+                collab,
+                DOC_TRANSITION,
+                &[QueryFilter::eq(
+                    "targetId",
+                    FieldValue::identifier(platform::decode_identifier(target_id)?),
+                )],
+                &[QueryOrder::asc("targetId")],
+            )
+            .await?;
+        let mut out: Vec<Transition> = docs.iter().filter_map(transition_from_doc).collect();
+        out.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+        Ok(out)
     }
 
     /// Every well-formed (and, private, readable) comment on a target, oldest first.
@@ -2114,10 +2489,10 @@ impl<'a> Collab<'a> {
 
     // --- reads: folded state --------------------------------------------------------
 
-    /// An issue's state (§3 fold).
+    /// An issue's state: its transitions' sum, and its events' labels and assignees.
     pub async fn issue_state(&self, repo: &RepoRef, issue: &Issue) -> Result<IssueState> {
         let log = self.target_log(repo, &issue.document_id).await?;
-        Ok(fold_issue(&log, issue))
+        Ok(fold_issue(&log))
     }
 
     /// The issue and its state, or `None`.
@@ -2127,7 +2502,7 @@ impl<'a> Collab<'a> {
         };
         let log = self.target_log(repo, &issue.document_id).await?;
         Ok(Some(IssueView {
-            state: fold_issue(&log, &issue),
+            state: fold_issue(&log),
             issue,
             hidden_values: log.hidden_values,
             plaintext_values: log.plaintext_values,
@@ -2208,8 +2583,9 @@ impl<'a> Collab<'a> {
     ///   `$id`s (reviews can be deleted, so they are read live), and the repo's `maintainer`
     ///   and `writer` documents as siblings;
     /// - ONE delta read ([`crate::history`]) of everything append-only the folds need: the
-    ///   repo's event feed (`event`, `authorEvent`) and its ref history (`refUpdate`,
-    ///   `protectedRefUpdate`, `config`), so every PR's state and base tips fold from it.
+    ///   repo's feed (`transition`, `event`, `authorEvent`) and its ref history (`refUpdate`,
+    ///   `protectedRefUpdate`, `config`), so every PR's state, merge commit, labels and base
+    ///   tips come from it.
     ///
     /// A review lookup or a member sibling that fills its 100-row cap may be cut short, so
     /// what it covers is re-read completely rather than folded from a partial list. A private
@@ -2229,15 +2605,15 @@ impl<'a> Collab<'a> {
         let scope = repo.scope()?;
         let limit = page_limit(limit);
         let reads = pr_list_reads(&collab, &core, &scope, limit);
-        let [feed_a, feed_b] = Self::feed_specs(&collab, &scope);
+        let [feed_a, feed_b, feed_c] = Self::feed_specs(&collab, &scope);
         let [refs_a, refs_b, refs_c] = crate::refs::GitState::specs(&core, &scope);
-        let history = [feed_a, feed_b, refs_a, refs_b, refs_c];
+        let history = [feed_a, feed_b, feed_c, refs_a, refs_b, refs_c];
         let (batch, synced) = futures::join!(
             self.client.query_batch(&reads),
             crate::history::sync(self.client, &history, crate::history::Freshness::Now)
         );
         let [page, reviews, maintainers, writers] = crate::history::take(batch?);
-        let [events, author_events, ref_updates, protected_ref_updates, configs] =
+        let [transitions, events, author_events, ref_updates, protected_ref_updates, configs] =
             crate::history::take(synced?);
         let state = crate::refs::GitState::from_rows([ref_updates, protected_ref_updates, configs]);
 
@@ -2253,7 +2629,9 @@ impl<'a> Collab<'a> {
         } else {
             oracle_of(&maintainers, &writers)
         };
-        let mut logs = self.feed_logs(repo, events, author_events).await?;
+        let mut logs = self
+            .feed_logs(repo, [transitions, events, author_events])
+            .await?;
         let reviews = self.complete_reviews(&collab, reviews, &page_ids).await?;
         let (reviews, _) = self
             .readable_all(repo, ContentKind::Review, reviews)
@@ -2549,249 +2927,91 @@ impl<'a> Collab<'a> {
             .collect())
     }
 
+    // --- state and counts -----------------------------------------------------------------
+
+    /// The state codes of `target_ids` (base58): the proved sum of `transition.delta` per
+    /// target (`perTarget`, `summable: delta`), one grouped request per 100 targets. A target
+    /// with no transitions reads 0 (open).
+    pub async fn state_codes(
+        &self,
+        repo: &RepoRef,
+        target_ids: &[String],
+    ) -> Result<BTreeMap<String, i64>> {
+        let collab = self.collab_contract(repo).await?;
+        let ids: BTreeSet<[u8; 32]> = target_ids
+            .iter()
+            .map(|id| platform::decode_identifier(id))
+            .collect::<Result<_>>()?;
+        let ids: Vec<[u8; 32]> = ids.into_iter().collect();
+        let mut out: BTreeMap<String, i64> = target_ids.iter().map(|id| (id.clone(), 0)).collect();
+        for chunk in ids.chunks(LOOKUP_CAP_LEN) {
+            let filter = QueryFilter::in_list(
+                "targetId",
+                chunk.iter().map(|id| FieldValue::identifier(*id)).collect(),
+            );
+            let sums = self
+                .client
+                .sum_documents_grouped(&collab, DOC_TRANSITION, &[filter], "targetId", "delta")
+                .await?;
+            out.extend(codes_by_target(sums));
+        }
+        Ok(out)
+    }
+
+    /// One target's state code ([`Self::state_codes`]).
+    pub async fn state_code(&self, repo: &RepoRef, target_id: &str) -> Result<i64> {
+        Ok(self
+            .state_codes(repo, &[target_id.to_string()])
+            .await?
+            .get(target_id)
+            .copied()
+            .unwrap_or(0))
+    }
+
+    /// The repo's open / closed / merged / draft totals (`STATE-COUNTS.md` §4), from three
+    /// proved counts read in parallel: the `issue` and `patch` totals (`perRepo`), and the
+    /// `transition`s grouped by `kind` (`perRepoKind`, one count tree per kind).
+    pub async fn repo_state_counts(&self, repo: &RepoRef) -> Result<RepoCounts> {
+        let collab = self.collab_contract(repo).await?;
+        let by_repo = [Self::repo_filter(repo)?];
+        let kinds = [
+            Self::repo_filter(repo)?,
+            QueryFilter::in_list(
+                "kind",
+                TRANSITION_KINDS
+                    .iter()
+                    .map(|k| FieldValue::integer(u64::from(*k)))
+                    .collect(),
+            ),
+        ];
+        let (issues, patches, kinds) = futures::try_join!(
+            self.client.count_documents(&collab, DOC_ISSUE, &by_repo),
+            self.client.count_documents(&collab, DOC_PATCH, &by_repo),
+            self.client
+                .count_documents_grouped(&collab, DOC_TRANSITION, &kinds, "kind"),
+        )?;
+        Ok(repo_counts(issues, patches, &counts_by_kind(kinds)))
+    }
+
     // --- numbering --------------------------------------------------------------------
 
-    /// The identities whose numbers a repo's allocation trusts (§6): the owner and its current
-    /// maintainers, once each. When the maintainers cannot be read, the owner alone: a
-    /// numbering gap is better than a failed create.
-    pub async fn numbering_trust(&self, repo: &RepoRef) -> Vec<String> {
-        let maintainers = match MemberReader::new(self.client).maintainers(repo).await {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!(error = %e, "maintainers unread; trusting the owner's numbers only");
-                Vec::new()
-            }
-        };
-        trusted_authors(
-            repo.owner_id(),
-            maintainers.iter().map(|m| m.identity_id.as_str()),
-        )
-    }
-
-    /// The largest number among `repo`'s issues (or PRs) written by one of `trusted`, or 0:
-    /// one `number desc, limit 1` read of the `author` index (`$ownerId, repoId, number`)
-    /// each, at most [`TRUSTED_READS`] at a time.
-    async fn trusted_max_number(
-        &self,
-        collab: &LoadedContract,
-        repo_filter: &QueryFilter,
-        kind: TargetKind,
-        trusted: &[String],
-    ) -> Result<u32> {
-        use futures::{StreamExt as _, TryStreamExt as _};
-        let highest: Vec<u32> = futures::stream::iter(trusted)
-            .map(|author| async move {
-                let owner = FieldValue::identifier(platform::decode_identifier(author)?);
-                Ok::<u32, Error>(
-                    self.client
-                        .query_documents(
-                            collab,
-                            kind.doc_type(),
-                            &[QueryFilter::eq("$ownerId", owner), repo_filter.clone()],
-                            &[QueryOrder::desc("number")],
-                            1,
-                            None,
-                        )
-                        .await?
-                        .first()
-                        .map_or(0, number_of),
-                )
-            })
-            .buffer_unordered(TRUSTED_READS)
-            .try_collect()
-            .await?;
-        Ok(highest.into_iter().max().unwrap_or(0))
-    }
-
-    /// The lowest number above `above` that no issue (or PR) of `repo` holds: an ascending
-    /// probe of the `number` index, paged to the end of the contiguous run. Not the §6 rule:
-    /// forge-import stores an upstream item whose number is taken here, where it cannot take
-    /// a number a later upstream item needs (on GitHub, issues and PRs share one number
-    /// space, so each kind's mirror has the other's numbers free).
-    pub async fn lowest_free_number(
-        &self,
-        repo: &RepoRef,
-        kind: TargetKind,
-        above: u32,
-    ) -> Result<u32> {
+    /// The number the next issue or PR of `repo` must carry: the contract's `dense` rule pins
+    /// it to the repo's issue count plus its PR count, the new document included (issues and
+    /// PRs share one sequence). Two proved counts (`perRepo`), read in parallel.
+    pub async fn next_number(&self, repo: &RepoRef) -> Result<u32> {
         let collab = self.collab_contract(repo).await?;
-        let repo_filter = Self::repo_filter(repo)?;
-        let run = contiguous_run_above(above, DEFAULT_PAGE as usize, |after| {
-            let filters = [
-                repo_filter.clone(),
-                QueryFilter::gt("number", FieldValue::integer(u64::from(after))),
-            ];
-            let collab = &collab;
-            async move {
-                Ok(self
-                    .client
-                    .query_documents(
-                        collab,
-                        kind.doc_type(),
-                        &filters,
-                        &[QueryOrder::asc("number")],
-                        DEFAULT_PAGE,
-                        None,
-                    )
-                    .await?
-                    .iter()
-                    .map(number_of)
-                    .collect())
-            }
-        })
-        .await?;
-        run.last()
-            .copied()
-            .unwrap_or(above)
-            .checked_add(1)
-            .ok_or_else(|| {
-                Error::Config(format!(
-                    "every {} number above {above} is taken",
-                    kind.noun()
-                ))
-            })
-    }
-
-    /// The number a new issue or PR would claim now (§6), trusting the numbers of `trusted`
-    /// ([`Self::numbering_trust`], read once per action and reused across its retries).
-    pub async fn next_number(
-        &self,
-        repo: &RepoRef,
-        kind: TargetKind,
-        trusted: &[String],
-    ) -> Result<u32> {
-        let collab = self.collab_contract(repo).await?;
-        let repo_filter = Self::repo_filter(repo)?;
-        let (count, trusted_max) = futures::future::try_join(
-            self.client.count_documents(
-                &collab,
-                kind.doc_type(),
-                std::slice::from_ref(&repo_filter),
-            ),
-            self.trusted_max_number(&collab, &repo_filter, kind, trusted),
-        )
-        .await?;
-        let ceiling = number_ceiling(count);
-        let base = self
-            .client
-            .query_documents(
-                &collab,
-                kind.doc_type(),
-                &[
-                    repo_filter.clone(),
-                    QueryFilter::lte("number", FieldValue::integer(ceiling)),
-                ],
-                &[QueryOrder::desc("number")],
-                1,
-                None,
-            )
-            .await?
-            .first()
-            .map_or(0, number_of)
-            .max(trusted_max);
-        let mut taken = vec![base];
-        // Below the ceiling `base + 1` is free by construction; only a base at or above it
-        // (the ceiling itself, or a trusted number past it) can have squatters directly
-        // above it, and the probe steps over the whole run.
-        if u64::from(base) >= ceiling {
-            let page = DEFAULT_PAGE as usize;
-            let run = contiguous_run_above(base, page, |after| {
-                let filters = [
-                    repo_filter.clone(),
-                    QueryFilter::gt("number", FieldValue::integer(u64::from(after))),
-                ];
-                let collab = &collab;
-                async move {
-                    Ok(self
-                        .client
-                        .query_documents(
-                            collab,
-                            kind.doc_type(),
-                            &filters,
-                            &[QueryOrder::asc("number")],
-                            DEFAULT_PAGE,
-                            None,
-                        )
-                        .await?
-                        .iter()
-                        .map(number_of)
-                        .collect())
-                }
-            })
-            .await?;
-            taken.extend(run);
-        }
-        taken.retain(|n| *n > 0);
-        allocate_number(count, &taken, trusted_max).ok_or_else(|| {
-            Error::Config(format!(
-                "every {} number above {base} is taken",
-                kind.noun()
-            ))
-        })
+        let by_repo = [Self::repo_filter(repo)?];
+        let (issues, patches) = futures::try_join!(
+            self.client.count_documents(&collab, DOC_ISSUE, &by_repo),
+            self.client.count_documents(&collab, DOC_PATCH, &by_repo),
+        )?;
+        dense_number(issues, patches)
+            .ok_or_else(|| Error::Config(format!("{} has used every issue number", repo.display())))
     }
 
     // --- writes: numbered creates ------------------------------------------------------
 
-    async fn create_numbered(
-        &self,
-        repo: &RepoRef,
-        kind: TargetKind,
-        number: u32,
-        props: BTreeMap<String, FieldValue>,
-    ) -> Result<Numbered> {
-        let collab = self.collab_contract(repo).await?;
-        let props = self
-            .seal_if_private(repo, kind.content_kind(), props)
-            .await?;
-        let props = Self::with_repo(repo, props)?;
-        match self
-            .engine()?
-            .create_document(&collab, kind.doc_type(), props)
-            .await
-        {
-            Ok(document_id) => Ok(Numbered::Created { document_id }),
-            Err(Error::DuplicateUniqueIndex(_)) => {
-                let existing = self.target_doc(repo, kind, number).await.ok().flatten();
-                Ok(Numbered::Taken {
-                    existing_id: existing.as_ref().map(|d| d.id.clone()),
-                    existing_author: existing.map(|d| d.owner_id),
-                })
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Create issue `number` of `repo` (the importer's primitive). A number already taken
-    /// is [`Numbered::Taken`], not an error.
-    pub async fn create_issue_numbered(
-        &self,
-        repo: &RepoRef,
-        number: u32,
-        title: &str,
-        body: &str,
-        imported: Option<&Imported>,
-    ) -> Result<Numbered> {
-        let props = issue_props(number, title, body, imported)?;
-        self.create_numbered(repo, TargetKind::Issue, number, props)
-            .await
-    }
-
-    /// Create pull request `number` of `repo` (the importer's primitive).
-    pub async fn create_patch_numbered(
-        &self,
-        repo: &RepoRef,
-        number: u32,
-        input: &PatchInput,
-        imported: Option<&Imported>,
-    ) -> Result<Numbered> {
-        let props = patch_props(number, input, imported)?;
-        self.create_numbered(repo, TargetKind::Patch, number, props)
-            .await
-    }
-
-    // --- writes: allocated, journaled creates ---------------------------------------------
-
-    /// Open an issue, numbered by the §6 rule. Resumable: see the module docs.
+    /// Open an issue at the dense next number. Resumable: see the module docs.
     pub async fn create_issue(
         &self,
         repo: &RepoRef,
@@ -2799,22 +3019,28 @@ impl<'a> Collab<'a> {
         body: &str,
         journal_dir: &Path,
     ) -> Result<Created> {
-        issue_props(1, title, body, None)?;
+        issue_props(1, title, body, Provenance::default())?;
         let fingerprint = [title, "\0", body].concat();
-        self.create_allocated(repo, TargetKind::Issue, &fingerprint, journal_dir, |n| {
-            issue_props(n, title, body, None)
-        })
+        self.create_dense(
+            repo,
+            TargetKind::Issue,
+            Some((journal_dir, &fingerprint)),
+            |n| issue_props(n, title, body, Provenance::default()),
+        )
         .await
     }
 
-    /// Open a pull request, numbered by the §6 rule. Resumable.
+    /// Open a pull request at the dense next number. Resumable. A draft (`input.draft`) is the
+    /// create followed by a draft transition (kind 14): a `patch` has no draft flag. When the
+    /// PR lands but the draft transition does not, the error says so (E106) and names the
+    /// command that finishes it.
     pub async fn create_patch(
         &self,
         repo: &RepoRef,
         input: &PatchInput,
         journal_dir: &Path,
     ) -> Result<Created> {
-        patch_props(1, input, None)?;
+        patch_props(1, input, Provenance::default())?;
         let fingerprint = format!(
             "{}\0{}\0{}\0{}\0{}",
             input.title,
@@ -2823,102 +3049,192 @@ impl<'a> Collab<'a> {
             input.source_repo_id,
             hex::encode(&input.head_oid)
         );
-        self.create_allocated(repo, TargetKind::Patch, &fingerprint, journal_dir, |n| {
-            patch_props(n, input, None)
-        })
-        .await
+        let mut created = self
+            .create_dense(
+                repo,
+                TargetKind::Patch,
+                Some((journal_dir, &fingerprint)),
+                |n| patch_props(n, input, Provenance::default()),
+            )
+            .await?;
+        if input.draft {
+            created.draft_transition = Some(self.mark_new_draft(repo, &created).await?);
+        }
+        Ok(created)
     }
 
-    async fn create_allocated(
+    /// The draft transition of a PR this command opened (code 0 when it was just created; a
+    /// resumed create reads its state, and a PR already a draft is left as it is).
+    async fn mark_new_draft(&self, repo: &RepoRef, created: &Created) -> Result<String> {
+        let target = Target {
+            kind: TargetKind::Patch,
+            id: created.document_id.clone(),
+            number: created.number,
+            author: self.signer_id()?,
+        };
+        let known = (!created.resumed).then_some(0);
+        let done = self
+            .set_state_from(repo, &target, StateAction::Draft, None, known)
+            .await;
+        match done {
+            Ok(c) => Ok(c.transition_id),
+            Err(e) => Err(UserError::new(
+                codes::PARTIAL,
+                format!(
+                    "opened pull request #{} in {}, but did not mark it as a draft",
+                    created.number,
+                    repo.display()
+                ),
+            )
+            .cause(e.to_string())
+            .fix(format!(
+                "`dg pr draft {} {}` marks it a draft",
+                repo.display(),
+                created.number
+            ))
+            .into()),
+        }
+    }
+
+    /// Create an imported issue or PR (the importer's primitive) at the dense next number,
+    /// recording its provenance and source number (`upstreamNumber`). Not journaled: the
+    /// importer finds what it already wrote on chain (`imported.url`, `upstreamNumber`).
+    pub async fn create_imported(
+        &self,
+        repo: &RepoRef,
+        what: ImportedTarget<'_>,
+        from: Provenance<'_>,
+    ) -> Result<Created> {
+        match what {
+            ImportedTarget::Issue { title, body } => {
+                self.create_dense(repo, TargetKind::Issue, None, |n| {
+                    issue_props(n, title, body, from)
+                })
+                .await
+            }
+            ImportedTarget::Patch(input) => {
+                self.create_dense(repo, TargetKind::Patch, None, |n| {
+                    patch_props(n, input, from)
+                })
+                .await
+            }
+        }
+    }
+
+    /// Create a `kind` document at the dense next number ([`Self::next_number`]), counting
+    /// again when another create took it first: consensus refuses a stale number by the
+    /// `dense` rule (10422, before execution: nothing landed, and a stale write is refused at
+    /// CheckTx for free) or, when the count moved on after the rules ran, by the unique
+    /// `number` index. `journal` (a directory and the content's fingerprint) makes it
+    /// resumable: the signed create is saved before its first broadcast.
+    async fn create_dense(
         &self,
         repo: &RepoRef,
         kind: TargetKind,
-        fingerprint: &str,
-        journal_dir: &Path,
+        journal: Option<(&Path, &str)>,
         props: impl Fn(u32) -> Result<BTreeMap<String, FieldValue>>,
     ) -> Result<Created> {
         let me = self.signer_id()?;
         let collab = self.collab_contract(repo).await?;
         let engine = self.engine()?;
-        // A private repo's title and body must not be guessable from a local file name: the
-        // fingerprint is keyed with a per-install secret there.
-        let key = (repo.visibility == Visibility::Private)
-            .then(|| journal_secret(journal_dir))
-            .transpose()?;
-        let path = create_journal_path(
-            journal_dir,
-            &self.client.target().network.key(),
-            repo.id(),
-            kind,
-            &me,
-            fingerprint,
-            key.as_ref(),
-        );
-        if let Some(saved) = CreateJournal::load(&path, &collab.id()) {
-            if replay_landed(&engine, &collab, kind.doc_type(), &saved.intent).await? {
-                CreateJournal::remove(&path);
-                return Ok(Created {
-                    number: saved.number,
-                    document_id: saved.intent.document_id,
-                    resumed: true,
-                });
+        let path = match journal {
+            Some((dir, fingerprint)) => {
+                // A private repo's title and body must not be guessable from a local file
+                // name: the fingerprint is keyed with a per-install secret there.
+                let key = (repo.visibility == Visibility::Private)
+                    .then(|| journal_secret(dir))
+                    .transpose()?;
+                Some(create_journal_path(
+                    dir,
+                    &self.client.target().network.key(),
+                    repo.id(),
+                    kind,
+                    &me,
+                    fingerprint,
+                    key.as_ref(),
+                ))
             }
-            tracing::warn!(
-                document = %saved.intent.document_id,
-                "a saved create from an interrupted run never landed; allocating afresh"
-            );
-            CreateJournal::remove(&path);
+            None => None,
+        };
+        if let Some(path) = &path {
+            if let Some(saved) = CreateJournal::load(path, &collab.id()) {
+                if replay_landed(&engine, &collab, kind.doc_type(), &saved.intent).await? {
+                    CreateJournal::remove(path);
+                    return Ok(Created {
+                        number: saved.number,
+                        document_id: saved.intent.document_id,
+                        resumed: true,
+                        draft_transition: None,
+                    });
+                }
+                tracing::warn!(
+                    document = %saved.intent.document_id,
+                    "a saved create from an interrupted run never landed; numbering afresh"
+                );
+                CreateJournal::remove(path);
+            }
         }
-        // A read right after a collision can lag the block that took the number, so never
-        // try a number at or below one already refused.
+        // A read right after a refusal can lag the block that took the number, so never try
+        // a number at or below one already refused.
         let mut floor = 0u32;
-        let trusted = self.numbering_trust(repo).await;
         for attempt in 0..MAX_NUMBER_ATTEMPTS {
-            let number = self.next_number(repo, kind, &trusted).await?.max(floor);
+            let number = self.next_number(repo).await?.max(floor);
             // sealed per number: the AD binds it (§4.4), so a renumbered retry re-seals
             let sealed = self
                 .seal_if_private(repo, kind.content_kind(), props(number)?)
                 .await?;
             let all = Self::with_repo(repo, sealed)?;
             let res = engine
-                .create_journaled(&collab, kind.doc_type(), all, |p| {
-                    CreateJournal {
+                .create_journaled(&collab, kind.doc_type(), all, |p| match &path {
+                    Some(path) => CreateJournal {
                         saved_at: unix_now(),
                         contract: collab.id(),
                         number,
                         intent: WriteIntent::for_prepared(0, p),
                     }
-                    .save(&path)
+                    .save(path),
+                    None => Ok(()),
                 })
                 .await;
+            let forget = || {
+                if let Some(path) = &path {
+                    CreateJournal::remove(path);
+                }
+            };
             match res {
                 Ok(prepared) => {
-                    CreateJournal::remove(&path);
+                    forget();
                     return Ok(Created {
                         number,
                         document_id: prepared.document_id().to_string(),
                         resumed: false,
+                        draft_transition: None,
                     });
                 }
-                // Someone claimed the number first: nothing landed; read again and retry.
-                Err(Error::DuplicateUniqueIndex(_)) => {
-                    CreateJournal::remove(&path);
+                // Another create took the number: nothing landed; count again.
+                Err(e) if number_outcome(&e) == NumberOutcome::Taken => {
+                    forget();
                     floor = number.saturating_add(1);
-                    tracing::warn!(number, attempt, "number taken; allocating again");
+                    tracing::warn!(number, attempt, "number taken; counting again");
                 }
                 // Refusals that prove nothing landed: forget the transition, or the same
                 // command would replay it (and be refused) forever. Anything else — a failed
                 // read after the broadcast, an unrecognised SDK error — may hide a landed
                 // create, so the journal stays and the next run resumes it.
-                Err(e @ (Error::NotAMember { .. } | Error::StaleProtocolVersion(_))) => {
-                    CreateJournal::remove(&path);
+                Err(
+                    e @ (Error::NotAMember { .. }
+                    | Error::StaleProtocolVersion(_)
+                    | Error::RuleRefused { .. }),
+                ) => {
+                    forget();
                     return Err(e);
                 }
                 Err(e) => return Err(e),
             }
         }
         Err(Error::Platform(format!(
-            "could not claim a {} number after {MAX_NUMBER_ATTEMPTS} attempts",
+            "could not claim a {} number after {MAX_NUMBER_ATTEMPTS} attempts (other creates \
+             kept taking it); run the command again",
             kind.noun()
         )))
     }
@@ -3208,8 +3524,9 @@ impl<'a> Collab<'a> {
 
     // --- writes: events ------------------------------------------------------------------
 
-    /// Post a member `event` (any kind). Consensus admits it only from a current
-    /// maintainer or writer; the client checks first unless [`SKIP_PRECHECK_ENV`] is set.
+    /// Post a member `event` (any kind but a state kind, which is a transition: see
+    /// [`Self::set_state`]). Consensus admits it only from a current maintainer or writer; the
+    /// client checks first unless [`SKIP_PRECHECK_ENV`] is set.
     pub async fn post_event(
         &self,
         repo: &RepoRef,
@@ -3234,44 +3551,116 @@ impl<'a> Collab<'a> {
         self.write(repo, &collab, DOC_EVENT, props).await
     }
 
-    /// Close or reopen `target`, through whichever gate admits the signer: a member's
-    /// `event`, else the author's `authorEvent`. Neither is [`Error::NotPermitted`] before
-    /// anything is signed (unless [`SKIP_PRECHECK_ENV`] is set: then a member event is
-    /// attempted and consensus refuses it).
-    pub async fn set_open(
+    /// Carry out `action` (close, reopen, merge, draft, ready) on `target`: one `transition`
+    /// whose kind, `delta` and `asAuthor` follow from the target's state code (read now, a
+    /// proved sum) and who the signer is ([`state_actor`]: a member writes `asAuthor` 0, the
+    /// target's author its number). A merge names its commit (`merge_oid`).
+    ///
+    /// Refused before anything is signed when there is no legal move ("it is already
+    /// closed") or the signer is neither a member nor the author ([`Error::NotPermitted`]);
+    /// with [`SKIP_PRECHECK_ENV`] set, the move is attempted anyway and consensus judges it.
+    /// When consensus refuses it by a state rule (`c1`…`c5`: another client moved the target
+    /// first) the state is read again and the error says what it is now.
+    pub async fn set_state(
         &self,
         repo: &RepoRef,
         target: &Target,
-        close: bool,
-    ) -> Result<(StateRoute, String)> {
+        action: StateAction,
+        merge_oid: Option<&[u8]>,
+    ) -> Result<StateChange> {
+        self.set_state_from(repo, target, action, merge_oid, None)
+            .await
+    }
+
+    /// Write the transition `mv` on `target` as it is (the importer's primitive: it computed
+    /// the move from the state code it read, as a member). No pre-check: consensus judges it,
+    /// and a move the target's state no longer allows is refused before execution
+    /// ([`Error::RuleRefused`] naming a `c*` rule).
+    pub async fn write_transition(
+        &self,
+        repo: &RepoRef,
+        target: &Target,
+        mv: &TransitionMove,
+        merge_oid: Option<&[u8]>,
+    ) -> Result<String> {
+        let props = transition_props(target, mv, merge_oid)?;
+        let collab = self.collab_contract(repo).await?;
+        self.write(repo, &collab, DOC_TRANSITION, props).await
+    }
+
+    /// [`Self::set_state`] from a state code the caller already knows (`None`: read it).
+    async fn set_state_from(
+        &self,
+        repo: &RepoRef,
+        target: &Target,
+        action: StateAction,
+        merge_oid: Option<&[u8]>,
+        known_code: Option<i64>,
+    ) -> Result<StateChange> {
         let me = self.signer_id()?;
         let role = self.signer_role(repo).await?;
-        let verb = if close { "close" } else { "reopen" };
-        let route = match state_route(role, &me, target) {
-            Some(r) => r,
-            None if !precheck_enabled() => StateRoute::Member,
-            None => {
-                return Err(Error::NotPermitted {
-                    action: format!("{verb} {} #{}", target.kind.noun(), target.number),
-                    reason: format!(
-                        "you are neither a member of {} nor the {}'s author",
-                        repo.display(),
-                        target.kind.noun()
-                    ),
-                    needs: "writer".into(),
-                })
-            }
+        let mut actor = state_actor(role, &me, target);
+        if actor == Actor::Other && !precheck_enabled() {
+            // judged by consensus (the e2e suite proves the gate this way)
+            actor = Actor::Member;
+        }
+        let code = match known_code {
+            Some(c) => c,
+            None => self.state_code(repo, &target.id).await?,
         };
-        let (doc_type, props) = match route {
-            StateRoute::Member => (
-                DOC_EVENT,
-                event_props(target, close_kind(close), None, None)?,
-            ),
-            StateRoute::Author => (DOC_AUTHOR_EVENT, author_event_props(target, close)?),
+        let route = match actor {
+            Actor::Author => StateRoute::Author,
+            _ => StateRoute::Member,
         };
+        let mv = match next_transition(
+            target.kind.transition_target(),
+            code,
+            action,
+            actor,
+            target.number,
+        ) {
+            Some(mv) => mv,
+            // With the pre-check off, the move is attempted from the state it is legal from
+            // and consensus refuses it (the e2e suite proves the rules this way).
+            None if !precheck_enabled() => next_transition(
+                target.kind.transition_target(),
+                legal_from(action),
+                action,
+                actor,
+                target.number,
+            )
+            .ok_or_else(|| no_move(target, code, action, actor))?,
+            None => return Err(no_move(target, code, action, actor)),
+        };
+        let props = transition_props(target, &mv, merge_oid)?;
         let collab = self.collab_contract(repo).await?;
-        let id = self.write(repo, &collab, doc_type, props).await?;
-        Ok((route, id))
+        match self.write(repo, &collab, DOC_TRANSITION, props).await {
+            Ok(transition_id) => Ok(StateChange {
+                route,
+                transition_id,
+                kind: mv.kind,
+                after: mv.after,
+            }),
+            Err(e) if is_state_rule_refusal(&e) => {
+                let now = self.state_code(repo, &target.id).await.unwrap_or(code);
+                Err(UserError::new(
+                    codes::REJECTED,
+                    format!(
+                        "cannot {} {} #{}: it is {} now",
+                        action_verb(action),
+                        target.kind.noun(),
+                        target.number,
+                        state_words(target.kind, now)
+                    ),
+                )
+                .cause(format!(
+                    "another change landed first; consensus refused this one ({e})"
+                ))
+                .note("refused before execution: nothing was written")
+                .into())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Post a PR/issue event of any kind through whichever gate admits the signer
@@ -4141,21 +4530,224 @@ mod tests {
     }
 
     #[test]
-    fn close_and_reopen_route_members_to_event_and_authors_to_author_event() {
+    fn a_state_change_is_a_member_s_or_the_author_s_transition() {
         let t = target("alice");
-        // A member always writes a member event, author or not.
+        // A member always writes as a member (asAuthor 0), author or not.
+        assert_eq!(state_actor(Some(Role::Writer), "bob", &t), Actor::Member);
         assert_eq!(
-            state_route(Some(Role::Writer), "bob", &t),
-            Some(StateRoute::Member)
+            state_actor(Some(Role::Maintainer), "alice", &t),
+            Actor::Member
         );
+        // The author who is not a member writes as the author.
+        assert_eq!(state_actor(None, "alice", &t), Actor::Author);
+        // Anyone else: no operand admits them.
+        assert_eq!(state_actor(None, "mallory", &t), Actor::Other);
+        // State kinds are never events, on either gate.
+        for kind in [
+            EventKind::Close,
+            EventKind::Reopen,
+            EventKind::Merge,
+            EventKind::Draft,
+            EventKind::Ready,
+        ] {
+            assert_eq!(kind_route(Some(Role::Writer), "bob", &t, kind), None);
+            assert_eq!(kind_route(None, "alice", &t, kind), None);
+            assert!(event_props(&t, kind, None, None).is_err(), "{kind:?}");
+        }
+    }
+
+    fn pr(author: &str) -> Target {
+        Target {
+            kind: TargetKind::Patch,
+            number: 9,
+            ..target(author)
+        }
+    }
+
+    fn mv(target: &Target, code: i64, action: StateAction, actor: Actor) -> TransitionMove {
+        next_transition(
+            target.kind.transition_target(),
+            code,
+            action,
+            actor,
+            target.number,
+        )
+        .unwrap()
+    }
+
+    /// Every action and role writes the exact transition fields the contract's rules pin:
+    /// `targetKind` = `kind / 10`, the per-kind `delta`, and `asAuthor` 0 for a member, the
+    /// target's number for its author; a merge carries its commit.
+    #[test]
+    fn transition_documents_carry_the_pinned_fields_for_each_action_and_role() {
+        use StateAction::{Close, Draft, Merge, Ready, Reopen};
+        let fields = |t: &Target, m: &TransitionMove, oid: Option<&[u8]>| {
+            let p = transition_props(t, m, oid).unwrap();
+            assert!(matches!(p.get("targetId"), Some(FieldValue::Identifier(_))));
+            assert!(!p.contains_key("repoId"), "the service adds repoId");
+            (
+                p.get("targetNumber").and_then(FieldValue::as_u64),
+                p.get("targetKind").and_then(FieldValue::as_u64),
+                p.get("kind").and_then(FieldValue::as_u64),
+                p.get("delta").and_then(FieldValue::as_i64),
+                p.get("asAuthor").and_then(FieldValue::as_u64),
+                p.get("oid").and_then(FieldValue::as_bytes),
+            )
+        };
+        let (issue, pr) = (target("alice"), pr("alice"));
+        let cases: [(&Target, i64, StateAction, Actor, u64, i64, u64); 14] = [
+            (&issue, 0, Close, Actor::Member, 1, 1, 0),
+            (&issue, 0, Close, Actor::Author, 1, 1, 3),
+            (&issue, 1, Reopen, Actor::Member, 2, -1, 0),
+            (&issue, 1, Reopen, Actor::Author, 2, -1, 3),
+            (&pr, 0, Close, Actor::Member, 11, 1, 0),
+            (&pr, 0, Close, Actor::Author, 11, 1, 9),
+            (&pr, 1, Reopen, Actor::Author, 12, -1, 9),
+            (&pr, 0, Draft, Actor::Author, 14, 8, 9),
+            (&pr, 0, Draft, Actor::Member, 14, 8, 0),
+            (&pr, 8, Ready, Actor::Author, 15, -8, 9),
+            (&pr, 8, Close, Actor::Member, 16, 1, 0),
+            (&pr, 9, Reopen, Actor::Author, 17, -1, 9),
+            (&pr, 1, Reopen, Actor::Member, 12, -1, 0),
+            (&pr, 8, Ready, Actor::Member, 15, -8, 0),
+        ];
+        for (t, code, action, actor, kind, delta, as_author) in cases {
+            let m = mv(t, code, action, actor);
+            let tk = u64::from(t.kind.transition_target().code());
+            assert_eq!(
+                fields(t, &m, None),
+                (
+                    Some(u64::from(t.number)),
+                    Some(tk),
+                    Some(kind),
+                    Some(delta),
+                    Some(as_author),
+                    None
+                ),
+                "{:?} {code} {action:?} {actor:?}",
+                t.kind
+            );
+        }
+        // A merge: a member's, from open and ready, with its commit.
+        let m = mv(&pr, 0, Merge, Actor::Member);
         assert_eq!(
-            state_route(Some(Role::Maintainer), "alice", &t),
-            Some(StateRoute::Member)
+            fields(&pr, &m, Some(&[7; 20])),
+            (
+                Some(9),
+                Some(1),
+                Some(13),
+                Some(2),
+                Some(0),
+                Some(vec![7; 20])
+            )
         );
-        // The author who is not a member writes an authorEvent.
-        assert_eq!(state_route(None, "alice", &t), Some(StateRoute::Author));
-        // Anyone else: no gate admits them.
-        assert_eq!(state_route(None, "mallory", &t), None);
+        // ... never without one, and only a merge names one.
+        assert!(transition_props(&pr, &m, None).is_err());
+        assert!(transition_props(&pr, &m, Some(&[7; 4])).is_err());
+        let close = mv(&pr, 0, Close, Actor::Member);
+        assert!(transition_props(&pr, &close, Some(&[7; 20])).is_err());
+        // A PR move never names an issue (a_kindOfTarget / the tk agreement).
+        assert!(transition_props(&issue, &close, None).is_err());
+    }
+
+    /// No legal move: a clear refusal before anything is signed.
+    #[test]
+    fn an_illegal_state_change_says_what_the_target_is() {
+        let pr = pr("alice");
+        let msg = |code, action, actor| no_move(&pr, code, action, actor).to_string();
+        assert!(msg(1, StateAction::Close, Actor::Member).contains("it is closed"));
+        assert!(msg(2, StateAction::Reopen, Actor::Member).contains("it is merged"));
+        assert!(msg(8, StateAction::Merge, Actor::Member).contains("mark it ready first"));
+        assert!(msg(0, StateAction::Ready, Actor::Member).contains("it is open"));
+        assert!(matches!(
+            no_move(&pr, 0, StateAction::Merge, Actor::Author),
+            Error::NotPermitted { .. }
+        ));
+        assert!(matches!(
+            no_move(&pr, 0, StateAction::Close, Actor::Other),
+            Error::NotPermitted { .. }
+        ));
+        assert_eq!(
+            state_words(TargetKind::Issue, 1),
+            "closed",
+            "an issue has no draft"
+        );
+        for a in [
+            StateAction::Close,
+            StateAction::Reopen,
+            StateAction::Merge,
+            StateAction::Draft,
+            StateAction::Ready,
+        ] {
+            assert!(
+                next_transition(TransitionTarget::Patch, legal_from(a), a, Actor::Member, 1)
+                    .is_some(),
+                "{a:?}"
+            );
+        }
+    }
+
+    /// A create refused because another took the number counts again; so does the unique
+    /// index; a state-rule refusal is recognised apart from both.
+    #[test]
+    fn a_dense_or_duplicate_refusal_means_count_again() {
+        let dense = Error::RuleRefused {
+            document_type: "issue".into(),
+            rule: "dense".into(),
+            detail: "A document of type \"issue\" breaks its propertyConstraints rule \"dense\": it does not hold".into(),
+        };
+        assert_eq!(number_outcome(&dense), NumberOutcome::Taken);
+        assert_eq!(
+            number_outcome(&Error::DuplicateUniqueIndex("number".into())),
+            NumberOutcome::Taken
+        );
+        // The message alone (an error the SDK did not decode) still counts.
+        assert_eq!(
+            number_outcome(&Error::Platform(
+                "state transition broadcast error: A document of type \"patch\" breaks its propertyConstraints rule \"dense\": it does not hold".into()
+            )),
+            NumberOutcome::Taken
+        );
+        let title = Error::RuleRefused {
+            document_type: "issue".into(),
+            rule: "hasTitle".into(),
+            detail: "…".into(),
+        };
+        assert_eq!(number_outcome(&title), NumberOutcome::Other);
+        assert!(!is_state_rule_refusal(&dense));
+        let closed = Error::RuleRefused {
+            document_type: "transition".into(),
+            rule: "c1_closedAfter".into(),
+            detail: "…".into(),
+        };
+        assert!(is_state_rule_refusal(&closed));
+        assert_eq!(number_outcome(&closed), NumberOutcome::Other);
+    }
+
+    /// The per-target codes of a grouped sum (keys: the 32 id bytes) and the per-kind counts
+    /// of a grouped count (keys: the kind's u8 tree key), as the readers take them.
+    #[test]
+    fn grouped_answers_become_codes_and_repo_counts() {
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+        let codes = codes_by_target(BTreeMap::from([(a.to_vec(), 1), (b.to_vec(), 8)]));
+        assert_eq!(codes.get(&platform::encode_identifier(a)), Some(&1));
+        assert_eq!(codes.get(&platform::encode_identifier(b)), Some(&8));
+        let key = |k: u8| vec![k ^ 0x80];
+        let kinds = counts_by_kind(BTreeMap::from([
+            (key(1), 5),
+            (key(2), 1),
+            (key(13), 3),
+            (key(14), 2),
+            (key(11), 1),
+        ]));
+        assert_eq!(kinds.get(&13), Some(&3));
+        let c = repo_counts(10, 7, &kinds);
+        assert_eq!((c.issues_open, c.issues_closed), (6, 4));
+        assert_eq!(
+            (c.prs_merged, c.prs_closed, c.prs_draft, c.prs_open),
+            (3, 1, 2, 3)
+        );
     }
 
     #[test]
@@ -4166,12 +4758,6 @@ mod tests {
         assert_eq!(p.get("kind"), Some(&FieldValue::integer(4)));
         assert_eq!(p.get("value"), Some(&FieldValue::text("bug")));
         assert!(!p.contains_key("repoId"), "the service adds repoId");
-        // authorEvent: close = 1, reopen = 2, and nothing else.
-        let a = author_event_props(&target("a"), true).unwrap();
-        assert_eq!(a.get("kind"), Some(&FieldValue::integer(1)));
-        assert_eq!(a.len(), 3);
-        let r = author_event_props(&target("a"), false).unwrap();
-        assert_eq!(r.get("kind"), Some(&FieldValue::integer(2)));
         // A retarget must name a legal ref.
         assert!(event_props(&target("a"), EventKind::Retarget, Some("-x"), None).is_err());
         assert!(event_props(&target("a"), EventKind::Retarget, None, None).is_err());
@@ -4271,16 +4857,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(head.get("kind"), Some(&FieldValue::integer(16)));
-        // The author may resolve and move the head, never dismiss, label or merge.
+        // The author may resolve and move the head, never dismiss or label (a merge is a
+        // transition, never an event).
         assert_eq!(
             kind_route(None, "alice", &t, EventKind::HeadUpdate),
             Some(StateRoute::Author)
         );
-        for kind in [
-            EventKind::ReviewDismiss,
-            EventKind::LabelAdd,
-            EventKind::Merge,
-        ] {
+        for kind in [EventKind::ReviewDismiss, EventKind::LabelAdd] {
             assert_eq!(kind_route(None, "alice", &t, kind), None);
             assert_eq!(
                 kind_route(Some(Role::Writer), "bob", &t, kind),
@@ -4323,7 +4906,19 @@ mod tests {
             patch_manifest_hash: None,
             draft: false,
         };
-        let p = patch_props(7, &input, None).unwrap();
+        let p = patch_props(7, &input, Provenance::default()).unwrap();
+        // The target kind tag; a draft is never a property (a kind-14 transition instead).
+        assert_eq!(p.get("tk"), Some(&FieldValue::integer(1)));
+        assert!(!p.contains_key("draft"));
+        let drafted = PatchInput {
+            draft: true,
+            ..input.clone()
+        };
+        assert_eq!(
+            patch_props(7, &drafted, Provenance::default()).unwrap(),
+            p,
+            "the draft flag writes nothing on the patch"
+        );
         assert_eq!(
             p.get("baseRefNameHash"),
             Some(&FieldValue::bytes32(sha256(b"refs/heads/main")))
@@ -4339,13 +4934,13 @@ mod tests {
         assert!(!p.contains_key("body"), "an empty body is omitted");
         let mut bad = input.clone();
         bad.source_ref_name = Some("+refs/heads/x:refs/heads/main\n".into());
-        assert!(patch_props(7, &bad, None).is_err());
+        assert!(patch_props(7, &bad, Provenance::default()).is_err());
         let mut short = input.clone();
         short.head_oid = vec![1; 4];
-        assert!(patch_props(7, &short, None).is_err());
+        assert!(patch_props(7, &short, Provenance::default()).is_err());
         let mut untitled = input;
         untitled.title = "  ".into();
-        assert!(patch_props(7, &untitled, None).is_err());
+        assert!(patch_props(7, &untitled, Provenance::default()).is_err());
     }
 
     #[test]
@@ -4355,8 +4950,22 @@ mod tests {
             created_at: 1_600_000_000,
             url: "https://github.com/o/r/issues/1".into(),
         };
-        let p = issue_props(1, "t", "b", Some(&imp)).unwrap();
+        let from = Provenance {
+            imported: Some(&imp),
+            upstream_number: Some(7761),
+        };
+        let p = issue_props(1, "t", "b", from).unwrap();
         assert!(matches!(p.get("imported"), Some(FieldValue::Object(_))));
+        assert_eq!(p.get("tk"), Some(&FieldValue::integer(0)));
+        // A top-level integer (D-2), never inside `imported`.
+        assert_eq!(p.get("upstreamNumber"), Some(&FieldValue::integer(7761)));
+        let Some(FieldValue::Object(inner)) = p.get("imported") else {
+            unreachable!()
+        };
+        assert!(!inner.contains_key("number"));
+        // No source number, no property (the sparse index skips the document).
+        let plain = issue_props(1, "t", "b", Provenance::default()).unwrap();
+        assert!(!plain.contains_key("upstreamNumber") && !plain.contains_key("imported"));
         // Read back through the codec.
         let doc = FetchedDocument {
             id: "x".into(),
@@ -4369,75 +4978,48 @@ mod tests {
         };
         let issue = issue_from_doc(&doc);
         assert_eq!(issue.number, 1);
+        assert_eq!(issue.upstream_number, Some(7761));
         let got = issue.imported.unwrap();
         assert_eq!(got.author, "octocat");
         assert_eq!(got.created_at, 1_600_000_000);
     }
 
-    #[tokio::test]
-    async fn the_contiguous_run_is_paged_to_its_first_gap() {
-        // Taken above base 100: 101..=250 (a run across two full pages), then 252.
-        let taken: Vec<u32> = (101..=250).chain([252, 253]).collect();
-        let pages = std::sync::Mutex::new(0);
-        let run = contiguous_run_above(100, 100, |after| {
-            *pages.lock().unwrap() += 1;
-            let rows: Vec<u32> = taken
-                .iter()
-                .copied()
-                .filter(|n| *n > after)
-                .take(100)
-                .collect();
-            async move { Ok(rows) }
-        })
-        .await
-        .unwrap();
-        assert_eq!(run.first(), Some(&101));
-        assert_eq!(
-            run.last(),
-            Some(&250),
-            "the run ends at the first gap (251)"
-        );
-        assert_eq!(run.len(), 150);
-        assert_eq!(
-            *pages.lock().unwrap(),
-            2,
-            "a second page, not stopping after one"
-        );
-        // The allocator, fed the run, claims the gap.
-        let count = 0; // the ceiling is 100 = base
-        let mut all = vec![100];
-        all.extend(run);
-        assert_eq!(allocate_number(count, &all, 0), Some(251));
-    }
-
-    #[tokio::test]
-    async fn an_empty_probe_is_an_empty_run() {
-        let run = contiguous_run_above(7, 100, |_| async { Ok(Vec::new()) })
-            .await
-            .unwrap();
-        assert!(run.is_empty());
-        // A page starting with a gap ends the run at once.
-        let run = contiguous_run_above(7, 100, |_| async { Ok(vec![9, 10]) })
-            .await
-            .unwrap();
-        assert!(run.is_empty());
-    }
-
     #[test]
-    fn numbering_trusts_the_owner_and_each_maintainer_once() {
-        // The owner is trusted without a maintainer document of its own.
-        assert_eq!(trusted_authors("owner", []), vec!["owner"]);
-        // Duplicates, and the owner's own maintainer document, collapse.
+    fn transitions_read_back_with_their_target_and_kind() {
+        let doc = |kind: u64, delta: FieldValue| FetchedDocument {
+            id: format!("t{kind}"),
+            owner_id: "m".into(),
+            created_at: Some(5),
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            revision: None,
+            fields: BTreeMap::from([
+                ("targetId".into(), FieldValue::identifier([3; 32])),
+                ("kind".into(), FieldValue::integer(kind)),
+                ("delta".into(), delta),
+                ("asAuthor".into(), FieldValue::integer(4)),
+                ("oid".into(), FieldValue::bytes(vec![0xab; 20])),
+            ]),
+        };
+        let t = transition_from_doc(&doc(13, FieldValue::integer(2))).unwrap();
+        assert_eq!((t.kind, t.as_author), (13, 4));
+        assert_eq!(t.oid.as_deref(), Some("ab".repeat(20).as_str()));
         assert_eq!(
-            trusted_authors("owner", ["m2", "owner", "m1", "m2"]),
-            vec!["owner", "m1", "m2"]
+            transition_target_of(&doc(13, FieldValue::integer(2))),
+            Some(platform::encode_identifier([3; 32]))
         );
-    }
-
-    #[test]
-    fn a_squatter_far_ahead_does_not_move_numbering() {
-        // Three issues, and a squatter at 4294967295: the ceiling is 106, base 3.
-        assert_eq!(allocate_number(4, &[3], 0), Some(4));
+        // A reopen (a signed delta) reads too; its sum is the state code.
+        let log = TargetLog {
+            transitions: vec![
+                transition_from_doc(&doc(11, FieldValue::integer(1))).unwrap(),
+                transition_from_doc(&doc(12, FieldValue::Signed(-1))).unwrap(),
+                transition_from_doc(&doc(14, FieldValue::integer(8))).unwrap(),
+            ],
+            ..TargetLog::default()
+        };
+        assert_eq!(log.state_code(), 8);
+        // A kind the contract does not have is not a transition.
+        assert!(transition_from_doc(&doc(3, FieldValue::integer(2))).is_none());
     }
 
     #[test]
@@ -4603,7 +5185,7 @@ mod tests {
             revision: None,
             fields,
         };
-        let ok = doc(issue_props(1, "t", "", None).unwrap());
+        let ok = doc(issue_props(1, "t", "", Provenance::default()).unwrap());
         assert!(well_formed(ContentKind::Issue, &ok, Visibility::Public));
         let mut enc = BTreeMap::new();
         enc.insert("number".into(), FieldValue::integer(1));
@@ -4637,7 +5219,7 @@ mod tests {
             revision: None,
             fields,
         };
-        let honest = patch_props(1, &input, None).unwrap();
+        let honest = patch_props(1, &input, Provenance::default()).unwrap();
         assert!(well_formed(
             ContentKind::Patch,
             &doc(honest.clone()),
@@ -4667,8 +5249,8 @@ mod tests {
     fn text_limits_count_bytes_too() {
         // 1500 three-byte characters: under 5120 characters, over 5120 bytes.
         let body = "€".repeat(1800);
-        assert!(issue_props(1, "t", &body, None).is_err());
-        assert!(issue_props(1, "t", &"€".repeat(1700), None).is_ok());
+        assert!(issue_props(1, "t", &body, Provenance::default()).is_err());
+        assert!(issue_props(1, "t", &"€".repeat(1700), Provenance::default()).is_ok());
     }
 
     #[test]

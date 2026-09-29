@@ -127,6 +127,9 @@ pub struct SrcCollab {
     pub open_pulls: Option<Vec<u64>>,
     /// Things the user should know about what was read.
     pub warnings: Vec<String>,
+    /// Read with `since` (an incremental run): it lists only what changed, so it cannot
+    /// create an item below one already mirrored ([`crate::sink::Sink`]'s order check).
+    pub incremental: bool,
 }
 
 /// An item URL split into (`host/repository`, the item: `issues/12`,

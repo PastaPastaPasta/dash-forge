@@ -9,7 +9,12 @@
 //!   mutable, with `[repoId, headOid, name]` immutable. The newest per `(headOid, name)` by
 //!   `($createdAt, $id)` is what readers show ([`crate::collab::v2::newest_check_runs`]), so a
 //!   run's progress (`queued → in_progress → completed`) is a **replace** of the reporter's own
-//!   document, and a re-run of the same check on the same commit is a new document.
+//!   document, and a re-run of the same check on the same commit is a new document. The
+//!   contract's monotonic rules (D-5) pin `startedAt` / `completedAt` / `conclusion` /
+//!   `externalId` once set and tie them to the status; [`check_run_write`] decides each write
+//!   so they hold: `startedAt` on the first report that is not `queued`, `completedAt` on the
+//!   first `completed` one, a stored time never changed, and a report that would move a run
+//!   backwards or change its conclusion is a new run.
 //! * **The runner's key** is AUTHENTICATION / HIGH bound to `(forge-collab, checkRun)`
 //!   ([`ContractBounds::SingleContractDocumentType`], admitted on AUTHENTICATION keys from protocol
 //!   14), with a budget and an expiry: consensus refuses anything else it signs with 20014
@@ -33,6 +38,7 @@ use crate::members;
 use crate::platform::{
     self, FetchedDocument, FieldValue, LoadedContract, LoadedIdentity, PlatformClient, QueryOrder,
 };
+use crate::rules::v2::{check_run_write, RunReport, RunWrite, RunWriteAction, StoredRun};
 use crate::scope::RepoRef;
 
 /// forge-core: a CI runner's membership of a repo.
@@ -212,9 +218,11 @@ pub struct CheckReport {
     /// The CI's own run id: a report with the same `externalId` updates that run in place
     /// instead of starting a new one.
     pub external_id: Option<String>,
-    /// When the run started / completed (ms).
+    /// When the run started (ms), when the CI says; else the report's time is used, on the
+    /// first report that is not `queued` ([`check_run_write`]).
     pub started_at: Option<u64>,
-    /// When the run completed (ms).
+    /// When the run completed (ms), when the CI says; else the report's time, on the first
+    /// `completed` report.
     pub completed_at: Option<u64>,
     /// The log's URL and SHA-256 (both or neither: `dependentRequired`).
     pub log: Option<(String, [u8; 32])>,
@@ -297,88 +305,89 @@ impl CheckReport {
         Ok(oid)
     }
 
-    /// The full property set a create carries (the scope adds `repoId`).
-    fn create_props(&self, oid: Vec<u8>) -> BTreeMap<String, FieldValue> {
+    /// What the monotonic rules read of this report.
+    fn run_report(&self) -> RunReport {
+        RunReport {
+            status: self.status.clone(),
+            conclusion: self.conclusion.clone(),
+            started_at: self.started_at,
+            completed_at: self.completed_at,
+            external_id: self.external_id.clone(),
+        }
+    }
+
+    /// The write this report makes against `stored` (the run [`run_to_update`] picked, or
+    /// none) at `now_ms`: create or replace, and the set-once fields it sets
+    /// ([`check_run_write`]). `None` for a report the contract refuses (an unknown status, a
+    /// conclusion without `completed` or the reverse): [`Self::validate`] refuses it first.
+    #[must_use]
+    pub fn write(&self, stored: Option<&FetchedDocument>, now_ms: u64) -> Option<RunWrite> {
+        let stored = stored.map(stored_run);
+        check_run_write(stored.as_ref(), &self.run_report(), now_ms)
+    }
+
+    /// The full property set a create carries (the scope adds `repoId`): the status, the
+    /// set-once fields `w` sets, and everything else this report gives.
+    fn create_props(&self, oid: Vec<u8>, w: &RunWrite) -> BTreeMap<String, FieldValue> {
         let mut p = BTreeMap::from([
             ("headOid".to_string(), FieldValue::bytes(oid)),
             ("name".to_string(), FieldValue::text(&self.name)),
         ]);
         p.extend(
-            self.changes(None)
+            self.changes(w)
                 .into_iter()
                 .filter_map(|(k, v)| v.map(|v| (k, v))),
         );
         p
     }
 
-    /// What a replace of `stored` changes (`None` removes a property):
+    /// What a write of this report sets (never removes: the monotonic fields are set once,
+    /// and a report that would clear one is a new run, [`check_run_write`]):
     ///
-    /// * `status` and `conclusion` always: a conclusion left from an earlier report goes (the
-    ///   contract's `doneIfConclusion` refuses it on a run that is not completed).
-    /// * `completedAt` only on a completed run; any other status clears it.
-    /// * A re-queued run starts over: `startedAt` and the log pair are cleared unless this
-    ///   report gives them.
-    /// * `startedAt` is kept once set: a repeated `in_progress` (or the completion) does not move
-    ///   the start.
+    /// * `status` always.
+    /// * `startedAt`, `completedAt`, `conclusion`, `externalId` as `w` says: only those the
+    ///   stored run does not hold yet.
     /// * Everything else this report gives replaces what is stored; what it does not give stays.
-    fn changes(&self, stored: Option<&FetchedDocument>) -> BTreeMap<String, Option<FieldValue>> {
+    fn changes(&self, w: &RunWrite) -> BTreeMap<String, Option<FieldValue>> {
         let text = |v: &Option<String>| v.as_deref().map(FieldValue::text);
-        let queued = self.status == "queued";
-        let completed = self.status == "completed";
-        let has = |k: &str| stored.is_some_and(|d| d.fields.contains_key(k));
-        let mut c = BTreeMap::from([
-            ("status".to_string(), Some(FieldValue::text(&self.status))),
-            ("conclusion".to_string(), text(&self.conclusion)),
-        ]);
-        if completed {
-            if let Some(t) = self.completed_at {
-                c.insert("completedAt".into(), Some(FieldValue::integer(t)));
-            }
-        } else if has("completedAt") {
-            c.insert("completedAt".into(), None);
-        }
-        match self.started_at {
-            Some(t) if !queued && !has("startedAt") => {
-                c.insert("startedAt".into(), Some(FieldValue::integer(t)));
-            }
-            Some(t) if queued => {
-                c.insert("startedAt".into(), Some(FieldValue::integer(t)));
-            }
-            None if queued && has("startedAt") => {
-                c.insert("startedAt".into(), None);
-            }
-            _ => {}
-        }
-        match &self.log {
-            Some((u, h)) => {
-                c.insert("logUrl".into(), Some(FieldValue::text(u)));
-                c.insert("logSha256".into(), Some(FieldValue::bytes(h.to_vec())));
-            }
-            None if queued && (has("logUrl") || has("logSha256")) => {
-                c.insert("logUrl".into(), None);
-                c.insert("logSha256".into(), None);
-            }
-            None => {}
-        }
-        let given = [
+        let mut c = BTreeMap::from([("status".to_string(), Some(FieldValue::text(&self.status)))]);
+        let set = [
+            ("startedAt", w.started_at.map(FieldValue::integer)),
+            ("completedAt", w.completed_at.map(FieldValue::integer)),
+            ("conclusion", text(&w.conclusion)),
+            ("externalId", text(&w.external_id)),
             ("detailsUrl", text(&self.details_url)),
             ("summary", text(&self.summary)),
-            ("externalId", text(&self.external_id)),
             ("artifacts", text(&self.artifacts)),
         ];
         c.extend(
-            given
-                .into_iter()
+            set.into_iter()
                 .filter_map(|(k, v)| v.map(|v| (k.to_string(), Some(v)))),
         );
+        if let Some((u, h)) = &self.log {
+            c.insert("logUrl".into(), Some(FieldValue::text(u)));
+            c.insert("logSha256".into(), Some(FieldValue::bytes(h.to_vec())));
+        }
         c
     }
 }
 
+/// A stored `checkRun` as the monotonic rules read it.
+fn stored_run(d: &FetchedDocument) -> StoredRun {
+    StoredRun {
+        status: d.field_str("status").unwrap_or_default(),
+        started_at: d.field_u64("startedAt"),
+        completed_at: d.field_u64("completedAt"),
+        conclusion: d.field_str("conclusion"),
+        external_id: d.field_str("externalId"),
+    }
+}
+
 /// The run a report updates in place, among `docs` (the head's `checkRun` documents): the
-/// reporter's own newest run of that name, and only while it is not completed or when it
-/// carries the same `externalId`. A completed run is history; a new report of it (a re-run)
-/// is a new document.
+/// reporter's own newest run of that name (with an `externalId`, the newest carrying it), when
+/// the report continues it ([`check_run_write`] answers a replace). A report that would move
+/// it backwards (a re-run queued after it started or completed) or change its conclusion is a
+/// new run: `None`.
 pub fn run_to_update<'d>(
     docs: &'d [FetchedDocument],
     reporter: &str,
@@ -391,7 +400,9 @@ pub fn run_to_update<'d>(
         .max_by(|a, b| {
             (a.created_at.unwrap_or(0), &a.id).cmp(&(b.created_at.unwrap_or(0), &b.id))
         })?;
-    (report.external_id.is_some() || newest.field_str("status").as_deref() != Some("completed"))
+    report
+        .write(Some(newest), 0)
+        .is_some_and(|w| w.action == RunWriteAction::Replace)
         .then_some(newest)
 }
 
@@ -441,10 +452,14 @@ impl<'a> CheckRuns<'a> {
             docs = check_run_docs(self.client, &collab, repo, oid.clone()).await?;
         }
         let target = run_to_update(&docs, &me, report).cloned();
+        let write = report
+            .write(target.as_ref(), crate::cache::now_ms())
+            .ok_or_else(|| Error::Config("the report breaks the check run rules".into()))?;
         Ok(ReportPlan {
             collab,
             oid,
             target,
+            write,
         })
     }
 
@@ -462,7 +477,7 @@ impl<'a> CheckRuns<'a> {
                     &plan.collab,
                     DOC_CHECK_RUN,
                     &run.id,
-                    &report.changes(Some(run)),
+                    &report.changes(&plan.write),
                 )
                 .await?;
             return Ok(Reported {
@@ -470,7 +485,9 @@ impl<'a> CheckRuns<'a> {
                 action: if written { "updated" } else { "unchanged" },
             });
         }
-        let props = repo.scope()?.scoped(report.create_props(plan.oid));
+        let props = repo
+            .scope()?
+            .scoped(report.create_props(plan.oid, &plan.write));
         let document_id = engine
             .create_document(&plan.collab, DOC_CHECK_RUN, props)
             .await?;
@@ -493,6 +510,8 @@ pub struct ReportPlan {
     oid: Vec<u8>,
     /// The run it replaces; `None`: it creates one.
     target: Option<FetchedDocument>,
+    /// What it writes ([`check_run_write`]).
+    write: RunWrite,
 }
 
 impl ReportPlan {
@@ -601,18 +620,33 @@ mod tests {
         );
         // Another identity's run is never replaced (consensus would refuse it anyway).
         assert_eq!(run_to_update(&docs, "nobody", &r), None);
-        // Completed newest: a re-run starts a new document.
+        // A re-run queued after the run started is a new document (never backwards).
+        assert_eq!(run_to_update(&docs, me, &report("queued", None)), None);
+        // Completed: the same completion again is the same run; another conclusion, or a
+        // re-run starting over, is new.
         let done = [doc(
             "a",
             me,
             1,
-            &[("name", "build"), ("status", "completed")],
+            &[
+                ("name", "build"),
+                ("status", "completed"),
+                ("conclusion", "success"),
+            ],
         )];
-        assert_eq!(run_to_update(&done, me, &r), None);
+        assert_eq!(
+            run_to_update(&done, me, &r).map(|d| d.id.as_str()),
+            Some("a")
+        );
+        assert_eq!(
+            run_to_update(&done, me, &report("completed", Some("failure"))),
+            None
+        );
+        assert_eq!(run_to_update(&done, me, &report("in_progress", None)), None);
     }
 
     #[test]
-    fn an_external_id_updates_exactly_that_run_even_once_completed() {
+    fn an_external_id_updates_exactly_that_run() {
         let me = "runner";
         let docs = [
             doc(
@@ -622,6 +656,7 @@ mod tests {
                 &[
                     ("name", "build"),
                     ("status", "completed"),
+                    ("conclusion", "failure"),
                     ("externalId", "gh-1"),
                 ],
             ),
@@ -642,6 +677,11 @@ mod tests {
             run_to_update(&docs, me, &r).map(|d| d.id.as_str()),
             Some("a")
         );
+        r.external_id = Some("gh-2".into());
+        assert_eq!(
+            run_to_update(&docs, me, &r).map(|d| d.id.as_str()),
+            Some("b")
+        );
         r.external_id = Some("gh-3".into());
         assert_eq!(run_to_update(&docs, me, &r), None);
     }
@@ -661,61 +701,58 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_requeue_clears_the_conclusion_completion_start_and_log() {
-        let done = stored(&[
-            ("status", FieldValue::text("completed")),
-            ("conclusion", FieldValue::text("failure")),
-            ("startedAt", FieldValue::integer(10)),
-            ("completedAt", FieldValue::integer(20)),
-            ("logUrl", FieldValue::text("https://x/log")),
-            ("logSha256", FieldValue::bytes(vec![1; 32])),
-            ("summary", FieldValue::text("old")),
-        ]);
-        let c = report("queued", None).changes(Some(&done));
-        for k in [
-            "conclusion",
-            "completedAt",
-            "startedAt",
-            "logUrl",
-            "logSha256",
-        ] {
-            assert_eq!(c.get(k), Some(&None), "{k} must be cleared: {c:?}");
-        }
-        assert!(!c.contains_key("summary"), "a field not given stays: {c:?}");
+    /// The fields a replace or create sets, as `dg ci report` writes them at `now`.
+    fn written(
+        r: &CheckReport,
+        stored: Option<&FetchedDocument>,
+        now: u64,
+    ) -> (RunWriteAction, BTreeMap<String, Option<FieldValue>>) {
+        let w = r.write(stored, now).expect("a valid report");
+        (w.action, r.changes(&w))
     }
 
     #[test]
-    fn a_repeated_in_progress_keeps_the_start_and_drops_a_stale_completion() {
+    fn a_run_that_jumps_to_completed_gets_both_times() {
+        // The old stamping dropped `startedAt` here (only `in_progress` set it), which the
+        // contract's `startedIfRunning` refuses.
+        let (action, c) = written(&report("completed", Some("success")), None, 50);
+        assert_eq!(action, RunWriteAction::Create);
+        assert_eq!(c.get("startedAt"), Some(&Some(FieldValue::integer(50))));
+        assert_eq!(c.get("completedAt"), Some(&Some(FieldValue::integer(50))));
+        assert_eq!(
+            c.get("conclusion"),
+            Some(&Some(FieldValue::text("success")))
+        );
+        let create = report("completed", Some("success")).create_props(
+            vec![0; 20],
+            &report("completed", Some("success"))
+                .write(None, 50)
+                .unwrap(),
+        );
+        assert!(create.contains_key("startedAt") && create.contains_key("completedAt"));
+    }
+
+    #[test]
+    fn a_queued_run_has_no_times_and_its_start_is_set_once() {
+        let (action, c) = written(&report("queued", None), None, 10);
+        assert_eq!(action, RunWriteAction::Create);
+        assert!(!c.contains_key("startedAt") && !c.contains_key("completedAt"));
+        assert!(!c.contains_key("conclusion"));
+        // The first in_progress sets the start; a repeated one does not move it.
+        let queued = stored(&[("status", FieldValue::text("queued"))]);
+        let (action, c) = written(&report("in_progress", None), Some(&queued), 20);
+        assert_eq!(action, RunWriteAction::Replace);
+        assert_eq!(c.get("startedAt"), Some(&Some(FieldValue::integer(20))));
         let running = stored(&[
             ("status", FieldValue::text("in_progress")),
-            ("startedAt", FieldValue::integer(10)),
-            ("completedAt", FieldValue::integer(20)),
-            ("logUrl", FieldValue::text("https://x/log")),
-            ("logSha256", FieldValue::bytes(vec![1; 32])),
+            ("startedAt", FieldValue::integer(20)),
         ]);
         let mut again = report("in_progress", None);
         again.started_at = Some(99);
-        let c = again.changes(Some(&running));
-        assert!(
-            !c.contains_key("startedAt"),
-            "the start does not move: {c:?}"
-        );
-        assert_eq!(
-            c.get("completedAt"),
-            Some(&None),
-            "not completed: no completion time"
-        );
-        assert!(
-            !c.contains_key("logUrl"),
-            "an in-progress update keeps the log"
-        );
-        // A first in_progress sets the start.
-        let queued = stored(&[("status", FieldValue::text("queued"))]);
-        assert_eq!(
-            again.changes(Some(&queued)).get("startedAt"),
-            Some(&Some(FieldValue::integer(99)))
-        );
+        let (action, c) = written(&again, Some(&running), 30);
+        assert_eq!(action, RunWriteAction::Replace);
+        assert!(!c.contains_key("startedAt"), "the start never moves: {c:?}");
+        assert!(c.values().all(Option::is_some), "nothing is ever removed");
     }
 
     #[test]
@@ -727,16 +764,35 @@ mod tests {
         let mut done = report("completed", Some("success"));
         done.completed_at = Some(30);
         done.log = Some(("https://x/log".into(), [7; 32]));
-        let c = done.changes(Some(&running));
+        let (action, c) = written(&done, Some(&running), 99);
+        assert_eq!(action, RunWriteAction::Replace);
         assert_eq!(c.get("completedAt"), Some(&Some(FieldValue::integer(30))));
         assert_eq!(
             c.get("logSha256"),
             Some(&Some(FieldValue::bytes(vec![7; 32])))
         );
         assert!(!c.contains_key("startedAt"));
-        let create = report("queued", None).create_props(vec![0; 20]);
-        assert!(!create.contains_key("conclusion") && !create.contains_key("logUrl"));
-        assert_eq!(create.get("status"), Some(&FieldValue::text("queued")));
+        // A completion time the CI gives never precedes the start it pairs with.
+        done.completed_at = Some(5);
+        let (_, c) = written(&done, Some(&running), 99);
+        assert_eq!(c.get("completedAt"), Some(&Some(FieldValue::integer(10))));
+        // The same completion again sets nothing new.
+        let finished = stored(&[
+            ("status", FieldValue::text("completed")),
+            ("startedAt", FieldValue::integer(10)),
+            ("completedAt", FieldValue::integer(30)),
+            ("conclusion", FieldValue::text("success")),
+        ]);
+        let (action, c) = written(&report("completed", Some("success")), Some(&finished), 99);
+        assert_eq!(action, RunWriteAction::Replace);
+        assert_eq!(c.keys().collect::<Vec<_>>(), ["status"]);
+        // A backwards report or a changed conclusion is a new run with its own times.
+        let (action, c) = written(&report("queued", None), Some(&finished), 99);
+        assert_eq!(action, RunWriteAction::Create);
+        assert!(!c.contains_key("startedAt"));
+        let (action, c) = written(&report("completed", Some("failure")), Some(&finished), 99);
+        assert_eq!(action, RunWriteAction::Create);
+        assert_eq!(c.get("startedAt"), Some(&Some(FieldValue::integer(99))));
     }
 
     #[test]

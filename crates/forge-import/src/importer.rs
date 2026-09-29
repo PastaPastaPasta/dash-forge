@@ -73,7 +73,14 @@ pub async fn run(cfg: &ImportConfig) -> Summary {
         ledger: None,
         signer: signer.as_ref().map(|s| (&client, s)),
     };
-    let result = run_inner(cfg, &client, signer.as_ref(), &mut summary, &mut outcome).await;
+    let result = Box::pin(run_inner(
+        cfg,
+        &client,
+        signer.as_ref(),
+        &mut summary,
+        &mut outcome,
+    ))
+    .await;
     dest::finish(summary, outcome, result).await
 }
 
@@ -111,12 +118,14 @@ async fn run_inner<'a>(
         &state::destination(existing_id.as_deref().unwrap_or_default(), &collab_contract),
     );
     let since = sync_state.since();
-    let collab_src = src.collect(
+    let mut collab_src = src.collect(
         cfg.classes,
         since.as_deref(),
         sync_state.pending_revisits(),
         cfg.limit,
     )?;
+    // An incremental run cannot place an earlier item it finds missing (dense numbers).
+    collab_src.incremental = since.is_some();
     summary.warnings.extend(collab_src.warnings.iter().cloned());
     summary.incomplete = collab_src.incomplete;
     if collab_src.truncated && cfg.state_path.is_some() {
@@ -343,15 +352,9 @@ async fn run_inner<'a>(
     if collab_src.truncated || collab_src.incomplete || skipped > 0 {
         return Ok(());
     }
-    // A merge not proved yet (the code is not on chain, or the base could not be fetched) is
-    // read again next run, whatever `since` says (a merge into a base gone at the source
-    // never can be).
-    let revisit = outcome
-        .ledger
-        .as_ref()
-        .map(|l| l.unproved.clone())
-        .unwrap_or_default();
-    sync_state.save(started, revisit)
+    // Nothing to revisit: a merge is recorded as soon as the source says merged (D-9), with
+    // the base tip that proves it when there is one, else the source's merge commit.
+    sync_state.save(started, Vec::new())
 }
 
 /// The optional PR-heads push: re-priced now, admitted only if it fits the cap AND the

@@ -43,11 +43,32 @@ pub fn short(oid: &str) -> &str {
     oid.char_indices().nth(12).map_or(oid, |(i, _)| &oid[..i])
 }
 
-/// How a close / reopen was written, for human output.
+/// How an event was written, for human output.
 pub fn route_text(route: forge_core::collab::v2::StateRoute) -> &'static str {
     match route {
         forge_core::collab::v2::StateRoute::Member => "as a member (event)",
         forge_core::collab::v2::StateRoute::Author => "as the author (authorEvent)",
+    }
+}
+
+/// How a state change (a `transition`) was written, for human output.
+pub fn transition_route_text(route: forge_core::collab::v2::StateRoute) -> &'static str {
+    match route {
+        forge_core::collab::v2::StateRoute::Member => "as a member (transition)",
+        forge_core::collab::v2::StateRoute::Author => "as the author (transition)",
+    }
+}
+
+/// What a `transition` did, in the web timeline's words.
+pub fn transition_phrase(kind: u8) -> &'static str {
+    use forge_core::rules::transition as t;
+    match kind {
+        t::ISSUE_CLOSE | t::PR_CLOSE | t::PR_DRAFT_CLOSE => "closed this",
+        t::ISSUE_REOPEN | t::PR_REOPEN | t::PR_DRAFT_REOPEN => "reopened this",
+        t::PR_MERGE => "merged this",
+        t::PR_DRAFT => "marked this as draft",
+        t::PR_READY => "marked this ready for review",
+        _ => "changed the state",
     }
 }
 
@@ -152,6 +173,34 @@ pub fn event_values_note(hidden: usize, plaintext: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The timeline's words for each transition kind (the web's), and how a state change was
+    /// written.
+    #[test]
+    fn transitions_read_as_the_web_timeline() {
+        for (kind, words) in [
+            (1, "closed this"),
+            (2, "reopened this"),
+            (11, "closed this"),
+            (12, "reopened this"),
+            (13, "merged this"),
+            (14, "marked this as draft"),
+            (15, "marked this ready for review"),
+            (16, "closed this"),
+            (17, "reopened this"),
+            (99, "changed the state"),
+        ] {
+            assert_eq!(transition_phrase(kind), words, "kind {kind}");
+        }
+        assert_eq!(
+            transition_route_text(forge_core::collab::v2::StateRoute::Author),
+            "as the author (transition)"
+        );
+        assert_eq!(
+            transition_route_text(forge_core::collab::v2::StateRoute::Member),
+            "as a member (transition)"
+        );
+    }
 
     #[test]
     fn event_values_note_says_what_it_counts() {

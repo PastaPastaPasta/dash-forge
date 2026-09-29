@@ -232,6 +232,9 @@ pub fn collect(
     let mut items = items(gl, classes, since, limit, &mut out)?;
     if classes.prs && since.is_some() {
         add_revisits(gl, revisit, &mut items, &mut out);
+        // Source order (issues and merge requests by creation time): Forge numbers them
+        // densely in the order they are created.
+        items.sort_by(|a, b| a.gl.created_at.cmp(&b.gl.created_at));
     }
     // Which merge requests GitLab still has a head for (it deletes the ref 14 days after
     // one closes or merges). Unknown (the git read failed) is never reported as gone.

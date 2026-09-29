@@ -129,8 +129,8 @@ pub(crate) fn merged_log<'a>(
 
 /// Fold a PR's `event` and `authorEvent` documents into its [`PrReviewState`].
 ///
-/// * Ordering is `(createdAt, id)` over both types, `event`s first at equal keys (as
-///   [`super::v2::fold_pr_state_v2`]); an `authorEvent` applies only if its kind is an author
+/// * Ordering is `(createdAt, id)` over both types, `event`s first at equal keys; an
+///   `authorEvent` applies only if its kind is an author
 ///   kind ([`is_author_kind`]) and its writer is `target_author`.
 /// * `headUpdate` (16) needs an `oid`; the newest applied one is the head.
 /// * `reviewRequest` / `reviewRequestRemove` (13/14) need a `ref_id` (the reviewer); the newest

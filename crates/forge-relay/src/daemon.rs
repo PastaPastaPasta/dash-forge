@@ -50,7 +50,7 @@ use crate::error::{RelayError, Result};
 use crate::ingest::{
     self, poll_stream, Baseline, Cursor, LiveStream, TargetInfo, DOC_AUTHOR_EVENT, DOC_CHECK_RUN,
     DOC_COMMENT, DOC_EVENT, DOC_ISSUE, DOC_PATCH, DOC_PROTECTED_REF_UPDATE, DOC_REF_UPDATE,
-    DOC_RELEASE, DOC_REVIEW,
+    DOC_RELEASE, DOC_REVIEW, DOC_TRANSITION,
 };
 use crate::payload::{CheckRunAction, RepositoryMeta, ALL_EVENTS};
 use crate::queue::RetryQueue;
@@ -989,22 +989,15 @@ impl RepoState {
         }
     }
 
-    /// Whether `d` is a close (kind 1) of a target this relay has already seen closed or
-    /// merged. GitHub sends one `closed` per closing (with `merged: true` for a merge), so a
-    /// close after a merge, or a second close, is not delivered again: it would reach
-    /// receivers as a separate `closed` with `merged: false` (D-602). A reopen clears it.
-    fn repeats_a_close(&self, d: &FetchedDocument) -> bool {
-        d.field_u64("kind") == Some(1)
-            && d.field_bytes32("targetId")
-                .map(forge_core::platform::encode_identifier)
-                .is_some_and(|id| self.closed.contains(&id))
-    }
-
-    /// Whether a merge event's `oid` was set on the PR's base ref by a valid update (see
-    /// [`ingest::translate_event`]). `true` for other kinds (nothing to verify). The base ref's
-    /// hash must be `sha256(baseRefName)`, or the merge is unverified.
-    fn merge_verified(&self, d: &FetchedDocument) -> bool {
-        if d.field_u64("kind") != Some(3) {
+    /// Whether a merge transition's `oid` was set on the PR's base ref by a valid update (see
+    /// [`ingest::translate_transition`]). `true` for other kinds (nothing to check). The base
+    /// ref's hash must be `sha256(baseRefName)`, or the merge commit is "not found on the base".
+    ///
+    /// A second close, or a close after a merge, needs no filter here: consensus refuses both
+    /// (the target's state code allows one close per open, and a merge is terminal), so each
+    /// stored transition is one GitHub action (D-602).
+    fn merge_on_base(&self, d: &FetchedDocument) -> bool {
+        if d.field_u64("kind") != Some(u64::from(forge_core::rules::transition::PR_MERGE)) {
             return true;
         }
         let target = d
@@ -1146,10 +1139,11 @@ async fn poll_repo_rest(
     let base = st.baseline;
     let mut high = 0;
 
-    let streams: [(&str, &LoadedContract); 5] = [
+    let streams: [(&str, &LoadedContract); 6] = [
         (DOC_RELEASE, core),
         (DOC_ISSUE, collab),
         (DOC_PATCH, collab),
+        (DOC_TRANSITION, collab),
         (DOC_EVENT, collab),
         (DOC_AUTHOR_EVENT, collab),
     ];
@@ -1157,9 +1151,9 @@ async fn poll_repo_rest(
         if Instant::now() >= deadline {
             return (high, false);
         }
-        if matches!(doc_type, DOC_EVENT | DOC_AUTHOR_EVENT) {
+        if matches!(doc_type, DOC_TRANSITION | DOC_EVENT | DOC_AUTHOR_EVENT) {
             if !pushes_read {
-                // Merges would be judged against tips missing this cycle's pushes.
+                // Merges would be checked against tips missing this cycle's pushes.
                 continue;
             }
             // Tips of new PRs' base refs, before their merges are judged.
@@ -1199,17 +1193,20 @@ async fn poll_repo_rest(
                         ingest::translate_issue(&st.meta, d)
                     }
                 }
+                DOC_TRANSITION => {
+                    let on_base = st.merge_on_base(d);
+                    note_transition(st, d);
+                    ingest::translate_transition(&st.meta, d, &st.targets, on_base)
+                }
                 _ => {
-                    let verified = st.merge_verified(d);
-                    let repeat_close = st.repeats_a_close(d);
                     note_activity(st, d);
                     // A head update that did not move the head (older, stranger's, malformed)
                     // is not a `synchronize`.
                     let moved = follow_head(st, d, doc_type == DOC_AUTHOR_EVENT);
-                    if (d.field_u64("kind") == Some(16) && !moved) || repeat_close {
+                    if d.field_u64("kind") == Some(16) && !moved {
                         None
                     } else {
-                        ingest::translate_event(&st.meta, d, &st.targets, verified)
+                        ingest::translate_event(&st.meta, d, &st.targets)
                     }
                 }
             };
@@ -1383,25 +1380,34 @@ async fn poll_check_runs(
     (high, finished)
 }
 
-/// Record an event's effect on its target: activity time, and open/closed.
-fn note_activity(s: &mut RepoState, d: &FetchedDocument) {
-    let Some(tid) = d
+/// Record an event's effect on its target: its activity time.
+fn note_activity(s: &mut RepoState, d: &FetchedDocument) -> Option<String> {
+    let tid = d
         .field_bytes32("targetId")
-        .map(forge_core::platform::encode_identifier)
-    else {
-        return;
-    };
+        .map(forge_core::platform::encode_identifier)?;
     if let Some(t) = s.targets.get_mut(&tid) {
         t.last_activity = t.last_activity.max(d.created_at.unwrap_or(0));
     }
-    match d.field_u64("kind") {
-        Some(1 | 3) => {
+    Some(tid)
+}
+
+/// Record a transition's effect on its target: activity time, and open / closed (which
+/// threads are read first, [`threads_this_cycle`]).
+fn note_transition(s: &mut RepoState, d: &FetchedDocument) {
+    let Some(tid) = note_activity(s, d) else {
+        return;
+    };
+    match d
+        .field_u64("kind")
+        .and_then(|k| ingest::transition_action(k))
+    {
+        Some((_, false, _)) => {
             s.closed.insert(tid);
         }
-        Some(2) => {
+        Some((_, true, _)) => {
             s.closed.remove(&tid);
         }
-        _ => {}
+        None => {}
     }
 }
 
@@ -1660,25 +1666,27 @@ mod tests {
             revision: None,
             fields: BTreeMap::from([
                 ("targetId".into(), FieldValue::identifier([4; 32])),
-                ("kind".into(), FieldValue::integer(3)),
+                ("kind".into(), FieldValue::integer(13)),
                 ("oid".into(), FieldValue::bytes(hex::decode(oid).unwrap())),
             ]),
         };
         st.targets.insert(target.clone(), pr(base, &hash));
-        assert!(st.merge_verified(&merge(&"ab".repeat(20))));
-        assert!(!st.merge_verified(&merge(&"cd".repeat(20))), "not a tip");
-        // A baseRefName that does not hash to baseRefNameHash: unverified.
+        assert!(st.merge_on_base(&merge(&"ab".repeat(20))));
+        assert!(!st.merge_on_base(&merge(&"cd".repeat(20))), "not a tip");
+        // A baseRefName that does not hash to baseRefNameHash: not found on the base.
         st.targets.insert(target, pr("refs/heads/other", &hash));
-        assert!(!st.merge_verified(&merge(&"ab".repeat(20))));
+        assert!(!st.merge_on_base(&merge(&"ab".repeat(20))));
     }
 
-    /// D-602: a merge then a close on one PR reached receivers as `closed` merged:true and a
-    /// second `closed` merged:false. GitHub sends one `closed`.
+    /// Open / closed follows the transitions (which threads are read first): a close, a merge
+    /// or a draft close closes the target; a reopen (either axis) opens it; a draft or ready
+    /// leaves it open.
     #[test]
-    fn a_close_after_a_merge_or_close_is_not_delivered_again() {
+    fn transitions_open_and_close_their_target() {
         let mut st = state_with_threads(0);
-        let event = |kind: u64| FetchedDocument {
-            id: format!("e{kind}"),
+        let tid = forge_core::platform::encode_identifier([4; 32]);
+        let tr = |kind: u64| FetchedDocument {
+            id: format!("t{kind}"),
             owner_id: "M".into(),
             created_at: Some(1),
             created_at_block_height: None,
@@ -1689,20 +1697,22 @@ mod tests {
                 ("kind".into(), FieldValue::integer(kind)),
             ]),
         };
-        assert!(
-            !st.repeats_a_close(&event(1)),
-            "the first close is delivered"
-        );
-        note_activity(&mut st, &event(3));
-        assert!(!st.repeats_a_close(&event(3)), "only closes are dropped");
-        assert!(
-            st.repeats_a_close(&event(1)),
-            "a close after the merge is not"
-        );
-        note_activity(&mut st, &event(2));
-        assert!(!st.repeats_a_close(&event(1)), "a close after a reopen is");
-        note_activity(&mut st, &event(1));
-        assert!(st.repeats_a_close(&event(1)), "a second close is not");
+        for (kind, closed) in [
+            (11, true),
+            (12, false),
+            (14, false),
+            (16, true),
+            (17, false),
+            (15, false),
+            (13, true),
+        ] {
+            note_transition(&mut st, &tr(kind));
+            assert_eq!(st.closed.contains(&tid), closed, "after kind {kind}");
+        }
+        // An event does not change it.
+        st.closed.clear();
+        note_activity(&mut st, &tr(4));
+        assert!(!st.closed.contains(&tid));
     }
 
     /// A poll the deadline cuts short resumes after the last head it read, so later heads are

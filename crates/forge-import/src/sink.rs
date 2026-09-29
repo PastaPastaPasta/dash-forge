@@ -3,11 +3,19 @@
 //! signed.
 //!
 //! **Idempotency lives on chain, not in a state file.** An item is already mirrored when the
-//! destination holds a document written by the signer whose `imported.url` is the item's
-//! key: an issue or PR at the same number, a comment or review on it. State (open, closed,
-//! merged, draft, labels) is compared with the fold of the target's events. A re-run with
+//! destination holds a document written by the signer (or a member) whose `imported.url` is
+//! the item's key: an issue or PR carrying its source number as `upstreamNumber`, a comment
+//! or review on it. State (open, closed, merged, draft) is compared with the target's state
+//! code (the sum of its `transition`s), labels with the fold of its events. A re-run with
 //! nothing new writes nothing and costs nothing, whatever happened to the machine (or the
 //! state file) of the last run.
+//!
+//! **Numbers are dense.** Forge numbers issues and PRs together, each at the repo's count + 1
+//! (the contract's `dense` rule), so items are created in source order (GitHub numbers issues
+//! and PRs in one sequence; GitLab's are merged by creation time) and a fresh mirror of a
+//! source with no deleted items numbers identically. Each keeps its source number as
+//! `upstreamNumber`. An earlier item cannot be placed after later ones, so an incremental run
+//! that finds one missing refuses to start ([`Sink::check_order`]).
 //!
 //! A dry run walks the same path with every write replaced by a count and an estimate.
 
@@ -17,11 +25,16 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use forge_core::collab::v2::{Collab, Numbered, PatchInput, PrBase, Target, TargetKind};
+use forge_core::collab::v2::{
+    Collab, ImportedTarget, PatchInput, PrBase, Provenance, Target, TargetKind,
+};
 use forge_core::collab::{ReleaseInput, Verdict};
 use forge_core::history::Freshness;
 use forge_core::platform::PlatformClient;
-use forge_core::rules::v2::{fold_issue_state_v2, fold_pr_state_v2, Visibility};
+use forge_core::rules::v2::{
+    issue_state_v2, next_transition, pr_state_v2, Actor, StateAction, TransitionMove,
+    TransitionTarget, Visibility,
+};
 use forge_core::rules::{EventKind, MergeBaseTips};
 use forge_core::scope::RepoRef;
 
@@ -41,9 +54,6 @@ pub struct Ledger<'a> {
     pub counts: Counts,
     /// Things the user should know that did not stop the run.
     pub warnings: Vec<String>,
-    /// Source numbers of merged PRs recorded closed that a later run may still prove (not
-    /// those whose base is gone at the source): saved in the state for the next run.
-    pub unproved: Vec<u32>,
 }
 
 impl<'a> Ledger<'a> {
@@ -61,7 +71,6 @@ impl<'a> Ledger<'a> {
             budget,
             counts: Counts::default(),
             warnings: Vec::new(),
-            unproved: Vec::new(),
         }
     }
 
@@ -195,14 +204,17 @@ pub struct Sink<'a> {
     /// the history may be the dry run's, from before this run's push: a base's first read
     /// here asks the network (`Freshness::Now`), later ones reuse that copy.
     fresh_read: BTreeSet<String>,
+    /// Each source item looked up this run, by `(tk, source number)`: its copy, or `None`
+    /// when it has none (yet).
+    known: BTreeMap<(u8, u32), Option<Target>>,
+    /// The first source item stored at a number other than its own ([`Sink::create`]):
+    /// numbers diverge from there on, said once.
+    diverged: bool,
 }
 
 /// Pauses (ms) between re-reads of a base's history that does not show this run's push yet
 /// (read-after-write lag across nodes): about 20 s in all.
 const BASE_LAG_WAITS: &[u64] = &[1_500, 3_000, 5_000, 10_000];
-
-/// Attempts at finding a free number for one item.
-const MAX_NUMBER_TRIES: usize = 4;
 
 /// Whether `e` concerns one item only (the destination refused its content), so the run
 /// can skip it and carry on. Only the content checks of one document qualify (a field too
@@ -216,11 +228,15 @@ fn item_error(e: &anyhow::Error) -> bool {
         "head oid must be",
         "is required",
         "needs a body",
-        "number above",
+        "a merge names",
     ];
     e.chain()
         .any(|c| match c.downcast_ref::<forge_core::Error>() {
-            Some(forge_core::Error::DuplicateUniqueIndex(_)) => true,
+            // A duplicate, or a rule of the type refusing this one document (a state move the
+            // target's transitions no longer allow: another client moved it first).
+            Some(
+                forge_core::Error::DuplicateUniqueIndex(_) | forge_core::Error::RuleRefused { .. },
+            ) => true,
             Some(forge_core::Error::Config(why)) => ITEM.iter().any(|m| why.contains(m)),
             _ => false,
         })
@@ -234,24 +250,93 @@ fn state_after(thread: &Result<()>) -> bool {
     thread.as_ref().err().is_none_or(item_error)
 }
 
-/// The state of a target as its events fold today.
+/// A target's state on chain: its state code (the sum of its transitions) and its labels.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Current {
-    open: bool,
-    merged: bool,
-    draft: bool,
+    code: i64,
     labels: BTreeSet<String>,
 }
 
 impl Current {
     fn new_target() -> Self {
         Self {
-            open: true,
-            merged: false,
-            draft: false,
+            code: 0,
             labels: BTreeSet::new(),
         }
     }
+}
+
+/// The state code `t` has at the source: an issue open (0) or closed (1); a PR open (0),
+/// closed (1), merged (2), and a draft adds 8 unless merged.
+fn wanted_code(t: &SrcTarget) -> i64 {
+    let closed = i64::from(t.closed || t.merged_oid.is_some());
+    match t.kind {
+        TargetKind::Issue => closed,
+        TargetKind::Patch if t.merged_oid.is_some() => 2,
+        TargetKind::Patch => closed + if t.draft { 8 } else { 0 },
+    }
+}
+
+/// The shortest run of transitions a member writes to take a `target` of state `from` to
+/// `to` (breadth first over the legal moves, [`next_transition`]); empty when it already is
+/// there, or cannot get there (a merged PR is terminal). A merge is only a step when `to` is
+/// merged.
+fn state_path(target: TransitionTarget, from: i64, to: i64, number: u32) -> Vec<TransitionMove> {
+    use std::collections::VecDeque;
+    const ACTIONS: [StateAction; 5] = [
+        StateAction::Close,
+        StateAction::Reopen,
+        StateAction::Draft,
+        StateAction::Ready,
+        StateAction::Merge,
+    ];
+    let mut back: BTreeMap<i64, (i64, TransitionMove)> = BTreeMap::new();
+    let mut queue = VecDeque::from([from]);
+    while let Some(code) = queue.pop_front() {
+        if code == to {
+            let mut path = Vec::new();
+            let mut at = to;
+            while at != from {
+                let (prev, mv) = back[&at];
+                path.push(mv);
+                at = prev;
+            }
+            path.reverse();
+            return path;
+        }
+        for action in ACTIONS {
+            if action == StateAction::Merge && to != 2 {
+                continue;
+            }
+            if let Some(mv) = next_transition(target, code, action, Actor::Member, number) {
+                if mv.after != from && !back.contains_key(&mv.after) {
+                    back.insert(mv.after, (code, mv));
+                    queue.push_back(mv.after);
+                }
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// The label events that take `current` to `t`'s labels.
+fn label_events(t: &SrcTarget, current: &Current) -> Vec<StateEvent> {
+    let add = t
+        .labels
+        .difference(&current.labels)
+        .map(|l| (EventKind::LabelAdd, l));
+    let remove = current
+        .labels
+        .difference(&t.labels)
+        .map(|l| (EventKind::LabelRemove, l));
+    add.chain(remove).map(|(k, l)| (k, l.clone())).collect()
+}
+
+/// The source items of one kind this run would create below the highest source number the
+/// destination already holds (`held`): with dense numbers they would land after it, out of
+/// source order.
+fn out_of_order(new: &[u32], held: u32) -> Vec<u32> {
+    new.iter().copied().filter(|&n| n < held).collect()
 }
 
 /// Whether a destination document keyed `url` is the mirrored copy of the source item
@@ -267,30 +352,31 @@ fn copy_rule(same_kind: bool, mine: bool, member: bool, url: &str, wanted: &str)
         }
 }
 
-/// The summary line for an item stored away from its source number.
-fn moved_note(noun: &str, t: &SrcTarget, stored: u32) -> String {
+/// The note for the first item stored at a number other than its own.
+fn diverged_note(noun: &str, t: &SrcTarget, stored: u32) -> String {
     format!(
-        "upstream {noun} #{} stored as #{stored} (number taken on Forge): {}",
+        "upstream {noun} #{} is #{stored} here: Forge numbers issues and PRs densely, so \
+         numbers differ from the source from here on (a deleted or skipped upstream item); each \
+         keeps its source number as its upstream number: {}",
         t.number, t.imported.url
     )
 }
 
-/// What [`Sink::create`] ended with.
-enum Created {
-    /// Written now.
-    New(Target),
-    /// Already mirrored at another number (found once its source number was taken).
-    Found(Target),
-    /// Every candidate number was taken.
-    NoNumber,
-}
-
-/// A member event to write: kind, `value`, `oid`.
-type StateEvent = (EventKind, Option<String>, Option<Vec<u8>>);
+/// A member label event to write: kind and label.
+type StateEvent = (EventKind, String);
 
 fn need(repo: Option<&RepoRef>) -> forge_core::Result<&RepoRef> {
     repo.ok_or_else(|| forge_core::Error::Config("no destination repository".into()))
 }
+
+/// The key [`Sink::known`] holds `t` under.
+fn key_of(t: &SrcTarget) -> (u8, u32) {
+    (t.kind.transition_target().code(), t.number)
+}
+
+/// A `transition`'s own property bytes (target id, number, kind, delta, asAuthor, framing),
+/// before a merge's oid.
+const TRANSITION_BYTES: u64 = 90;
 
 /// Estimated bytes of a comment/review/issue document around `text`.
 fn text_doc(text: &str) -> u64 {
@@ -311,6 +397,8 @@ impl<'a> Sink<'a> {
             lag_waited: BTreeSet::new(),
             never_provable: BTreeSet::new(),
             fresh_read: BTreeSet::new(),
+            known: BTreeMap::new(),
+            diverged: false,
         }
     }
 
@@ -495,8 +583,79 @@ impl<'a> Sink<'a> {
         if let Some(releases) = &src.releases {
             self.sync_releases(releases).await?;
         }
+        self.check_order(src).await?;
         for t in &src.targets {
             self.sync_target(t).await?;
+        }
+        Ok(())
+    }
+
+    /// The highest source number of `kind` the destination holds from a trusted writer (the
+    /// signer or a member), or 0. A stranger can set any `upstreamNumber`, so theirs are
+    /// skipped; one page usually settles it, else every one is read.
+    async fn held_upstream(&mut self, kind: TargetKind) -> Result<u32> {
+        let Some(repo) = self.repo.clone() else {
+            return Ok(0);
+        };
+        for all in [false, true] {
+            let rows = self
+                .collab
+                .upstream_numbered(&repo, kind, all)
+                .await
+                .context("reading the destination's upstream numbers")?;
+            let full = rows.len() >= 100;
+            for row in rows {
+                if self.trusted(&row.target.author).await? {
+                    return Ok(row.upstream_number.unwrap_or(0));
+                }
+            }
+            if !full {
+                break;
+            }
+        }
+        Ok(0)
+    }
+
+    /// Refuse, before anything is written, an incremental run (`--state`) that would create
+    /// an item below one the destination already holds: numbers are dense, so it would land
+    /// after later items and the mirror's numbers would stop following the source's, and the
+    /// run could not tell whether other earlier items are missing too. A full run creates
+    /// such an item at the next number and says so.
+    async fn check_order(&mut self, src: &SrcCollab) -> Result<()> {
+        for kind in [TargetKind::Issue, TargetKind::Patch] {
+            let held = self.held_upstream(kind).await?;
+            let mut missing = Vec::new();
+            for t in src
+                .targets
+                .iter()
+                .filter(|t| t.kind == kind && t.number < held)
+            {
+                if self.existing(t).await?.is_none() {
+                    missing.push(t.number);
+                }
+            }
+            let missing = out_of_order(&missing, held);
+            let Some(first) = missing.first() else {
+                continue;
+            };
+            let noun = kind.noun();
+            if src.incremental {
+                anyhow::bail!(
+                    "refusing this incremental run: upstream {noun} #{first} (and {} more) is \
+                     not mirrored, but #{held} already is. Forge numbers issues and PRs \
+                     densely, so an earlier item cannot be placed before later ones, and an \
+                     incremental run cannot tell what else is missing. Run once without \
+                     --state (a full scan): it mirrors every missing item at the next number, \
+                     keeping its source number as its upstream number",
+                    missing.len() - 1
+                );
+            }
+            self.ledger.warn(format!(
+                "{} upstream {noun}(s) from #{first} are mirrored after #{held}: Forge \
+                 numbers densely, so they take the next numbers (each keeps its source number \
+                 as its upstream number)",
+                missing.len()
+            ));
         }
         Ok(())
     }
@@ -678,25 +837,15 @@ impl<'a> Sink<'a> {
 
     async fn sync_target_inner(&mut self, t: &SrcTarget) -> Result<()> {
         let noun = t.kind.noun();
-        let (target, fresh) = match self.existing(t).await? {
-            Some(target) => (target, false),
-            None => match self.create(t, noun).await? {
-                Created::New(target) => {
-                    if let Some(idx) = &mut self.index {
-                        idx.push((t.imported.url.clone(), target.clone()));
-                    }
-                    (target, true)
-                }
-                Created::Found(target) => (target, false),
-                Created::NoNumber => {
-                    self.ledger.skip(format!(
-                        "{noun} #{} could not get a number (every candidate was taken); {} \
-                         not mirrored this run",
-                        t.number, t.imported.url
-                    ));
-                    return Ok(());
-                }
-            },
+        let (target, fresh) = if let Some(target) = self.existing(t).await? {
+            (target, false)
+        } else {
+            let target = self.create(t, noun).await?;
+            if let Some(idx) = &mut self.index {
+                idx.push((t.imported.url.clone(), target.clone()));
+            }
+            self.known.insert(key_of(t), Some(target.clone()));
+            (target, true)
         };
         if !fresh && !self.ledger.is_mine(&target.author) {
             // A member mirrored this item (an earlier mirror identity, or a second mirror):
@@ -712,7 +861,7 @@ impl<'a> Sink<'a> {
         let current = if fresh {
             Current::new_target()
         } else {
-            self.current(t, &target).await?
+            self.current(&target).await?
         };
         // The thread first, then the state: readers order a target's timeline by `$createdAt`,
         // and at the source a close (or merge) comes after the comments that led to it (L-46).
@@ -737,8 +886,8 @@ impl<'a> Sink<'a> {
 
     /// Every imported issue and PR already in the destination, by its `imported.url` key:
     /// each `issue` / `patch` of the repo that carries provenance, whoever wrote it. One
-    /// complete read per kind, so an item is found wherever it landed (its source number, or
-    /// an allocated one when that was taken).
+    /// complete read per kind, so an item is found wherever it landed; read only when its
+    /// upstream number is held by a document that is not its copy.
     async fn load_index(&mut self) -> Result<()> {
         if self.index.is_some() {
             return Ok(());
@@ -751,12 +900,12 @@ impl<'a> Sink<'a> {
                 .imported_targets(repo)
                 .await
                 .context("reading the destination's issues and pull requests")?;
-            for (target, imported, base) in targets {
-                if let Some(b) = base {
-                    self.opened.insert(target.id.clone(), b);
+            for row in targets {
+                if let Some(b) = row.base {
+                    self.opened.insert(row.target.id.clone(), b);
                 }
-                if let Some(i) = imported.filter(|i| !i.url.is_empty()) {
-                    index.push((i.url, target));
+                if let Some(i) = row.imported.filter(|i| !i.url.is_empty()) {
+                    index.push((i.url, row.target));
                 }
             }
         }
@@ -764,36 +913,37 @@ impl<'a> Sink<'a> {
         Ok(())
     }
 
-    /// The existing mirrored target for `t`, if any (tolerating a renamed source repo). A
-    /// point lookup at the source number first (the common case: one read); the full index
-    /// only when that number holds something else.
+    /// The existing mirrored target for `t`, if any (tolerating a renamed source repo),
+    /// looked up once per run. The `upstream (repoId, upstreamNumber)` index first (one read);
+    /// the full `imported.url` index only when that number is held by something that is not
+    /// its copy (a stranger can write any `upstreamNumber`).
     async fn existing(&mut self, t: &SrcTarget) -> Result<Option<Target>> {
+        if let Some(k) = self.known.get(&key_of(t)) {
+            return Ok(k.clone());
+        }
+        let found = self.lookup(t).await?;
+        self.known.insert(key_of(t), found.clone());
+        Ok(found)
+    }
+
+    async fn lookup(&mut self, t: &SrcTarget) -> Result<Option<Target>> {
         if self.index.is_none() {
             let Some(repo) = self.repo.as_ref() else {
                 return Ok(None);
             };
-            let at = match t.kind {
-                TargetKind::Issue => self
-                    .collab
-                    .issue(repo, t.number)
-                    .await?
-                    .map(|i| (i.target(), i.imported)),
-                TargetKind::Patch => {
-                    let p = self.collab.patch(repo, t.number).await?;
-                    if let Some(p) = &p {
-                        self.opened.insert(p.document_id.clone(), p.base());
+            let rows = self.collab.upstream_targets(repo, t.kind, t.number).await?;
+            if rows.is_empty() {
+                return Ok(None);
+            }
+            for row in rows {
+                if let Some(b) = &row.base {
+                    self.opened.insert(row.target.id.clone(), b.clone());
+                }
+                if let Some(i) = row.imported.filter(|i| !i.url.is_empty()) {
+                    if self.is_copy(&i.url, &row.target, t).await? {
+                        return Ok(Some(row.target));
                     }
-                    p.map(|p| (p.target(), p.imported))
                 }
-            };
-            match at {
-                // Nothing there: new, unless it landed elsewhere (a taken number) earlier —
-                // `create` finds out when this number is taken, so skip the full read now.
-                None => return Ok(None),
-                Some((target, Some(i))) if self.is_copy(&i.url, &target, t).await? => {
-                    return Ok(Some(target));
-                }
-                Some(_) => {}
             }
         }
         self.load_index().await?;
@@ -822,275 +972,137 @@ impl<'a> Sink<'a> {
         Ok(None)
     }
 
-    /// Create `t`: at its source number when free, else at the lowest free number (the
-    /// body's header keeps the source number, and `imported.url` finds it again next run). A
-    /// squatter on a number therefore costs the mirror nothing but the number. The moved item
-    /// goes low, not after the mirror's highest number: that is the next upstream number,
-    /// which the next upstream item would then find taken, and so on for every later item.
-    /// On GitHub, issues and PRs share one number space, so the lowest free number is one
-    /// the other kind holds upstream and no later item needs. The move is recorded in the
-    /// summary. In a dry run the returned target is a placeholder (nothing reads it).
-    async fn create(&mut self, t: &SrcTarget, noun: &str) -> Result<Created> {
-        let mut number = t.number;
-        // Refused low numbers: a read right after a refusal can lag the block that took it.
-        let mut above = 0u32;
-        for _ in 0..MAX_NUMBER_TRIES {
-            match self.create_at(t, noun, number).await? {
-                Ok(target) => {
-                    if number != t.number {
-                        self.ledger.warn(moved_note(noun, t, number));
-                    }
-                    return Ok(Created::New(target));
-                }
-                Err(why) => {
-                    // Mirrored earlier at another number: the full index (loaded on the
-                    // taken number) finds it.
-                    if let Some(found) = self.indexed(t).await? {
-                        return Ok(Created::Found(found));
-                    }
-                    tracing::info!(number, %why, "{noun} number taken; allocating another");
-                    if number != t.number {
-                        above = above.max(number);
-                    }
-                    let repo = need(self.repo.as_ref())?;
-                    number = self.collab.lowest_free_number(repo, t.kind, above).await?;
-                }
-            }
-        }
-        Ok(Created::NoNumber)
-    }
-
-    /// Create `t` at `number`. `Err(why)` when the number is taken.
-    async fn create_at(
-        &mut self,
-        t: &SrcTarget,
-        noun: &str,
-        number: u32,
-    ) -> Result<std::result::Result<Target, String>> {
+    /// Create `t` at the repo's dense next number ([`Collab::create_imported`]: it counts
+    /// again when another create took the number first), with its provenance and its source
+    /// number as `upstreamNumber`. In a dry run the returned target is a placeholder at the
+    /// source number (nothing reads it).
+    async fn create(&mut self, t: &SrcTarget, noun: &str) -> Result<Target> {
         let placeholder = Target {
             kind: t.kind,
             id: String::new(),
-            number,
+            number: t.number,
             author: self.ledger.signer.clone().unwrap_or_default(),
         };
         let credits = collab_doc_credits(
             CollabDoc::Target,
-            text_doc(&t.title) + t.body.len() as u64 + t.imported.url.len() as u64 + 90,
+            text_doc(&t.title) + t.body.len() as u64 + t.imported.url.len() as u64 + 100,
         );
         let (collab, repo) = (&self.collab, self.repo.as_ref());
         let what = format!("{noun} #{}", t.number);
-        let out = match (t.kind, &t.patch) {
-            (TargetKind::Patch, Some(p)) => {
-                let input = PatchInput {
-                    title: t.title.clone(),
-                    body: t.body.clone(),
-                    base_ref_name: p.base_ref_name.clone(),
-                    source_repo_id: repo.map(|r| r.id().to_string()).unwrap_or_default(),
-                    source_ref_name: p.source_ref_name.clone(),
-                    head_oid: p.head_oid.clone(),
-                    patch_manifest_hash: None,
-                    draft: false,
-                };
-                let input = &input;
-                self.ledger
-                    .write(
-                        what,
-                        credits,
-                        |_| {},
-                        || async move {
-                            collab
-                                .create_patch_numbered(
-                                    need(repo)?,
-                                    number,
-                                    input,
-                                    Some(&t.imported),
-                                )
-                                .await
-                        },
-                    )
-                    .await?
-            }
-            _ => {
-                self.ledger
-                    .write(
-                        what,
-                        credits,
-                        |_| {},
-                        || async move {
-                            collab
-                                .create_issue_numbered(
-                                    need(repo)?,
-                                    number,
-                                    &t.title,
-                                    &t.body,
-                                    Some(&t.imported),
-                                )
-                                .await
-                        },
-                    )
-                    .await?
-            }
+        let from = Provenance {
+            imported: Some(&t.imported),
+            upstream_number: Some(t.number),
         };
-        let created = |c: &mut Counts| match t.kind {
-            TargetKind::Issue => c.issues += 1,
-            TargetKind::Patch => c.prs += 1,
+        let input = t.patch.as_ref().map(|p| PatchInput {
+            title: t.title.clone(),
+            body: t.body.clone(),
+            base_ref_name: p.base_ref_name.clone(),
+            source_repo_id: repo.map(|r| r.id().to_string()).unwrap_or_default(),
+            source_ref_name: p.source_ref_name.clone(),
+            head_oid: p.head_oid.clone(),
+            patch_manifest_hash: None,
+            draft: false,
+        });
+        let doc = match (t.kind, &input) {
+            (TargetKind::Patch, Some(input)) => ImportedTarget::Patch(input),
+            _ => ImportedTarget::Issue {
+                title: &t.title,
+                body: &t.body,
+            },
         };
-        Ok(match out {
-            None => {
-                created(&mut self.ledger.counts);
-                Ok(placeholder)
-            }
-            Some(Numbered::Created { document_id }) => {
-                created(&mut self.ledger.counts);
-                Ok(Target {
-                    id: document_id,
-                    ..placeholder
-                })
-            }
-            Some(Numbered::Taken {
-                existing_id,
-                existing_author,
-            }) => {
-                // Nothing was stored (refused before the write, or by consensus, which
-                // charges no storage); the reconcile keeps any fee actually taken.
-                self.ledger.budget.refund(credits);
-                // The number is held by someone else: the full index finds where this
-                // item may already live before another number is allocated.
-                self.load_index().await?;
-                Err(format!(
-                    "by {} ({})",
-                    existing_author.unwrap_or_default(),
-                    existing_id.unwrap_or_default()
-                ))
-            }
+        let count: fn(&mut Counts) = match t.kind {
+            TargetKind::Issue => |c| c.issues += 1,
+            TargetKind::Patch => |c| c.prs += 1,
+        };
+        let out = self
+            .ledger
+            .write(what, credits, count, || async move {
+                collab.create_imported(need(repo)?, doc, from).await
+            })
+            .await?;
+        let Some(created) = out else {
+            return Ok(placeholder);
+        };
+        if created.number != t.number && !self.diverged {
+            self.diverged = true;
+            self.ledger.warn(diverged_note(noun, t, created.number));
+        }
+        Ok(Target {
+            id: created.document_id,
+            number: created.number,
+            ..placeholder
         })
     }
 
-    /// `target`'s state as every reader folds it: a PR's merge counts only if its oid has
-    /// been a valid tip of the base it was opened against ([`pr_base_tips`]), exactly the
-    /// predicate forge-web and `dg` use, so "merged" here is "shown merged".
-    async fn current(&mut self, t: &SrcTarget, target: &Target) -> Result<Current> {
+    /// `target`'s state on chain: its state code (the sum of its transitions; "merged" is the
+    /// chain fact, D-9) and its labels as every reader folds them.
+    async fn current(&mut self, target: &Target) -> Result<Current> {
         let repo = need(self.repo.as_ref())?;
         let log = self.collab.target_log(repo, &target.id).await?;
-        Ok(match target.kind {
-            TargetKind::Issue => {
-                let s = fold_issue_state_v2(&log.events, &log.author_events, &target.author);
-                Current {
-                    open: s.open,
-                    merged: false,
-                    draft: false,
-                    labels: s.labels,
-                }
-            }
-            TargetKind::Patch => {
-                let base = t
-                    .patch
-                    .as_ref()
-                    .map_or("refs/heads/main", |p| p.base_ref_name.as_str());
-                let tips = self.base_tips(&target.id, base, Freshness::Synced).await?;
-                let s = fold_pr_state_v2(
-                    &log.events,
-                    &log.author_events,
-                    &target.author,
-                    tips.tip.as_deref(),
-                    |oid, _| tips.contains(oid),
-                    false,
-                );
-                Current {
-                    open: s.open,
-                    merged: s.merged,
-                    draft: s.draft,
-                    labels: s.labels,
-                }
-            }
-        })
+        let code = log.state_code();
+        let labels = match target.kind {
+            TargetKind::Issue => issue_state_v2(code, &log.events).labels,
+            TargetKind::Patch => pr_state_v2(code, None, &log.events, None, |_, _| false).labels,
+        };
+        Ok(Current { code, labels })
     }
 
-    /// The member events that take `current` to `t`'s state, in order. `merge_proof` is the
-    /// oid a merge event names ([`Sink::merge_proof`]): a pushed base tip containing the
-    /// source's merge commit, which every reader counts; `None` when there is none.
-    ///
-    /// A PR the source merged gets a merge event when it can be proved, and otherwise a close
-    /// (a merge into a base that is not mirrored, or no longer there): readers then show it
-    /// closed, never open. Never both: a close after a counted merge would be delivered by
-    /// the relay as a second, unmerged `closed`. A PR that reads closed but not merged (an
-    /// older import, or a base pushed since) still takes a merge event, which the fold
-    /// applies after a close, so a re-run repairs it. A merged PR is never reopened.
-    fn state_events(
-        t: &SrcTarget,
-        current: &Current,
-        merge_proof: Option<Vec<u8>>,
-    ) -> Vec<StateEvent> {
-        let mut out = Vec::new();
-        for l in t.labels.difference(&current.labels) {
-            out.push((EventKind::LabelAdd, Some(l.clone()), None));
+    /// The commit a merge transition for `t` names: a pushed base tip containing the source's
+    /// merge commit when there is one ([`Sink::merge_proof`]), so readers find it on the base;
+    /// else the source's merge commit itself. A merge is recorded either way (D-9: "merged"
+    /// is what a member recorded); readers label one whose commit is not on the base.
+    async fn merge_oid(&mut self, t: &SrcTarget, target: &Target) -> Result<Vec<u8>> {
+        let upstream = t.merged_oid.clone().unwrap_or_default();
+        if let Some(tip) = self.merge_proof(t, &target.id).await? {
+            return Ok(tip);
         }
-        for l in current.labels.difference(&t.labels) {
-            out.push((EventKind::LabelRemove, Some(l.clone()), None));
-        }
-        if t.kind == TargetKind::Patch && t.draft != current.draft && !current.merged {
-            out.push((
-                if t.draft {
-                    EventKind::Draft
-                } else {
-                    EventKind::Ready
-                },
-                None,
-                None,
-            ));
-        }
-        if current.merged {
-            return out;
-        }
-        let closed = t.closed || t.merged_oid.is_some();
-        if t.merged_oid.is_some() && merge_proof.is_some() {
-            out.push((EventKind::Merge, None, merge_proof));
-        } else if closed && current.open {
-            out.push((EventKind::Close, None, None));
-        } else if !closed && !current.open {
-            out.push((EventKind::Reopen, None, None));
-        }
-        out
+        let base = t.patch.as_ref().map_or("?", |p| p.base_ref_name.as_str());
+        self.ledger.counts.unproved_merges += 1;
+        let reason = if self.never_provable.contains(&target.id) {
+            format!(
+                "its base {base} was not a branch on chain when it was mirrored (forge-v2 §6, \
+                 D-501: push the code before the issues and PRs)"
+            )
+        } else {
+            no_proof_reason(self.mirror.as_ref(), base)
+        };
+        self.ledger.warn(format!(
+            "{} was merged; recorded as merged with the source's merge commit {}, which readers \
+             label as not found on the base: {reason}",
+            t.imported.url,
+            hex::encode(&upstream)
+        ));
+        Ok(upstream)
     }
 
+    /// Bring `target` to `t`'s state: label events for the labels that differ, then the
+    /// transitions ([`state_path`]) from its state code to the source's ([`wanted_code`]).
+    /// Idempotent: a target already in that state takes nothing, and a merged one is final.
     async fn sync_state(
         &mut self,
         t: &SrcTarget,
         target: &Target,
         current: &Current,
     ) -> Result<()> {
-        let mut proof = None;
-        if t.merged_oid.is_some() && !current.merged {
-            proof = self.merge_proof(t, &target.id).await?;
-            if proof.is_none() {
-                let base = t.patch.as_ref().map_or("?", |p| p.base_ref_name.as_str());
-                self.ledger.counts.unproved_merges += 1;
-                let reason = if self.never_provable.contains(&target.id) {
-                    format!(
-                        "its base {base} was not a branch on chain when it was mirrored, so no \
-                         merge into it counts (forge-v2 §6, D-501: push the code before the \
-                         issues and PRs)"
-                    )
-                } else {
-                    if may_prove_later(self.mirror.as_ref(), base) {
-                        self.ledger.unproved.push(t.number);
-                    }
-                    no_proof_reason(self.mirror.as_ref(), base)
-                };
-                self.ledger.warn(format!(
-                    "{} was merged, but {reason}; recorded as closed",
-                    t.imported.url
-                ));
-            }
-        }
+        let moves = state_path(
+            t.kind.transition_target(),
+            current.code,
+            wanted_code(t),
+            target.number,
+        );
+        let merges = moves
+            .iter()
+            .any(|m| m.kind == forge_core::rules::transition::PR_MERGE);
+        let merge_oid = if merges {
+            Some(self.merge_oid(t, target).await?)
+        } else {
+            None
+        };
         let (collab, repo) = (&self.collab, self.repo.as_ref());
-        for (kind, value, oid) in Self::state_events(t, current, proof) {
-            let credits = collab_doc_credits(
-                CollabDoc::Event,
-                120 + value.as_deref().map_or(0, str::len) as u64,
-            );
+        for (kind, value) in label_events(t, current) {
+            let credits = collab_doc_credits(CollabDoc::Event, 120 + value.len() as u64);
             let what = format!("{kind:?} event on #{}", t.number);
-            let (value, oid) = (value.as_deref(), oid.as_deref());
+            let value = value.as_str();
             self.ledger
                 .write(
                     what,
@@ -1098,9 +1110,27 @@ impl<'a> Sink<'a> {
                     |c| c.events += 1,
                     || async move {
                         collab
-                            .post_event(need(repo)?, target, kind, value, oid)
+                            .post_event(need(repo)?, target, kind, Some(value), None)
                             .await
                     },
+                )
+                .await?;
+        }
+        for mv in moves {
+            let oid = (mv.kind == forge_core::rules::transition::PR_MERGE)
+                .then_some(merge_oid.as_deref())
+                .flatten();
+            let credits = collab_doc_credits(
+                CollabDoc::Transition,
+                TRANSITION_BYTES + oid.map_or(0, <[u8]>::len) as u64,
+            );
+            let what = format!("kind-{} transition on #{}", mv.kind, t.number);
+            self.ledger
+                .write(
+                    what,
+                    credits,
+                    |c| c.transitions += 1,
+                    || async move { collab.write_transition(need(repo)?, target, &mv, oid).await },
                 )
                 .await?;
         }
@@ -1230,12 +1260,6 @@ fn chain_tip_containing(dir: &Path, tips: &MergeBaseTips, merged: &str) -> Optio
         .cloned()
 }
 
-/// Whether a later run may prove a merge into `base` this run could not: not when the base is
-/// gone at the source (its commits can never be fetched again).
-fn may_prove_later(proof: Option<&ProofRepo>, base: &str) -> bool {
-    proof.and_then(|p| p.unfetched.get(base)) != Some(&Unfetched::Gone)
-}
-
 /// Why a merged PR into `base` has no merge proof, for its warning.
 fn no_proof_reason(proof: Option<&ProofRepo>, base: &str) -> String {
     match proof {
@@ -1267,83 +1291,6 @@ fn fingerprint(name: &str, notes: &str, assets: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The importer's number choice over an in-memory repo: each upstream number where it is
-    /// free, else the lowest free number (what [`Sink::create`]'s fallback asks
-    /// [`Collab::lowest_free_number`] for). Returns where each upstream item landed.
-    fn mirror_into(taken: &mut BTreeSet<u32>, upstream: &[u32]) -> Vec<u32> {
-        upstream
-            .iter()
-            .map(|&n| {
-                let at = if taken.contains(&n) {
-                    (1..=u32::MAX).find(|c| !taken.contains(c)).unwrap()
-                } else {
-                    n
-                };
-                taken.insert(at);
-                at
-            })
-            .collect()
-    }
-
-    #[test]
-    fn a_native_squatter_on_the_next_upstream_number_moves_one_item_only() {
-        let upstream = [7762, 7763, 7764];
-        // A windowed mirror (15 recent issues up to #7761), then someone opens #7762 natively
-        // (the web continues the mirror's numbering). Upstream then files #7762..#7764.
-        let window: BTreeSet<u32> = (0..14).map(|i| 7748 + i).chain([7762]).collect();
-        assert_eq!(
-            mirror_into(&mut window.clone(), &upstream),
-            vec![1, 7763, 7764]
-        );
-        // A full GitHub mirror: the issues hold only some numbers (PRs hold the rest), so the
-        // moved item takes a PR's number and later issues still land exactly.
-        let full: BTreeSet<u32> = (1..=7761).filter(|n| n % 3 != 0).chain([7762]).collect();
-        assert_eq!(
-            mirror_into(&mut full.clone(), &upstream),
-            vec![3, 7763, 7764]
-        );
-        // Allocating after the mirror's highest number instead cascades: every later upstream
-        // item moves by one.
-        let mut after = window.clone();
-        let cascade: Vec<u32> = upstream
-            .iter()
-            .map(|&n| {
-                let at = if after.contains(&n) {
-                    after.iter().next_back().unwrap() + 1
-                } else {
-                    n
-                };
-                after.insert(at);
-                at
-            })
-            .collect();
-        assert_eq!(cascade, vec![7763, 7764, 7765]);
-    }
-
-    #[test]
-    fn a_dense_source_has_no_safe_number_and_moves_each_later_item() {
-        // A source whose kind holds every number (a GitLab project's issues): no free number
-        // is below the frontier, so the moved item takes the next one and each later item
-        // moves too, every move reported (the documented limit).
-        let dense: BTreeSet<u32> = (1..=7762).collect();
-        assert_eq!(
-            mirror_into(&mut dense.clone(), &[7762, 7763]),
-            vec![7763, 7764]
-        );
-    }
-
-    #[test]
-    fn a_moved_item_names_its_upstream_number_and_url() {
-        let mut t = target(TargetKind::Issue);
-        t.number = 7762;
-        t.imported.url = "https://github.com/dashpay/dash/issues/7762".into();
-        assert_eq!(
-            moved_note("issue", &t, 16),
-            "upstream issue #7762 stored as #16 (number taken on Forge): \
-             https://github.com/dashpay/dash/issues/7762"
-        );
-    }
 
     #[test]
     fn a_stranger_squatting_an_imported_url_is_not_the_mirror_copy() {
@@ -1389,12 +1336,6 @@ mod tests {
         }
     }
 
-    fn kinds(v: &[StateEvent]) -> Vec<EventKind> {
-        v.iter().map(|e| e.0).collect()
-    }
-
-    /// L-46: the thread is written before the state, and a refused comment or review does not
-    /// cost the item its close; a cap or network error stops before the state.
     #[test]
     fn state_follows_the_thread_even_past_a_refused_comment() {
         assert!(state_after(&Ok(())));
@@ -1403,62 +1344,6 @@ mod tests {
         assert!(state_after(&Err(refused)));
         let stop = anyhow::anyhow!("--max-spend reached");
         assert!(!state_after(&Err(stop)));
-    }
-
-    #[test]
-    fn an_unchanged_target_needs_no_events() {
-        let t = target(TargetKind::Issue);
-        assert!(Sink::state_events(&t, &Current::new_target(), None).is_empty());
-    }
-
-    #[test]
-    fn closing_labels_and_reopening_are_diffed() {
-        let mut t = target(TargetKind::Issue);
-        t.closed = true;
-        t.labels = ["bug".to_string()].into();
-        let mut cur = Current::new_target();
-        cur.labels = ["old".to_string()].into();
-        assert_eq!(
-            kinds(&Sink::state_events(&t, &cur, None)),
-            vec![
-                EventKind::LabelAdd,
-                EventKind::LabelRemove,
-                EventKind::Close
-            ]
-        );
-        // Closed on chain, open at the source again: reopen.
-        let t = target(TargetKind::Issue);
-        cur = Current {
-            open: false,
-            ..Current::new_target()
-        };
-        assert_eq!(
-            kinds(&Sink::state_events(&t, &cur, None)),
-            vec![EventKind::Reopen]
-        );
-    }
-
-    /// D-602: the merge event names a base tip that contains the merge commit (every
-    /// reader counts it), with no close after it (the relay delivered that as a second,
-    /// unmerged `closed`). Without such a tip the PR is recorded closed.
-    #[test]
-    fn a_provable_merge_is_one_merge_event_and_an_unprovable_one_a_close() {
-        let mut t = target(TargetKind::Patch);
-        t.closed = true;
-        t.merged_oid = Some(vec![1; 20]);
-        let tip = vec![9; 20];
-        let events = Sink::state_events(&t, &Current::new_target(), Some(tip.clone()));
-        assert_eq!(kinds(&events), vec![EventKind::Merge]);
-        assert_eq!(
-            events[0].2.as_deref(),
-            Some(&tip[..]),
-            "the base tip, not the merge commit"
-        );
-        // Base not mirrored (or deleted): closed, never left open.
-        assert_eq!(
-            kinds(&Sink::state_events(&t, &Current::new_target(), None)),
-            vec![EventKind::Close]
-        );
     }
 
     fn git(dir: &std::path::Path, args: &[&str]) -> String {
@@ -1533,7 +1418,8 @@ mod tests {
         );
         // Nothing is pushed without `code`: the fetched tip never stands in for the chain's.
         assert_eq!(pushed_tip(&proof, "refs/heads/main", &merge), None);
-        // A chain that only shows the old tip cannot prove it: recorded closed, and said why.
+        // A chain that only shows the old tip cannot prove it: recorded with the source's merge
+        // commit (D-9), and said why.
         let old_only = MergeBaseTips {
             historical: vec![old_tip.clone()],
             tip: Some(old_tip.clone()),
@@ -1553,75 +1439,138 @@ mod tests {
             unfetched: BTreeMap::new(),
         };
         assert!(pushed_tip(&pushed, "refs/heads/main", &merge).is_some());
-        // A1: a base gone at the source is never revisited; one not fetched this run, or whose
-        // tip on chain predates the merge, is.
-        assert!(!may_prove_later(Some(&proof), "refs/heads/gone"));
-        assert!(may_prove_later(Some(&proof), "refs/heads/main"));
         let failed = ProofRepo {
             unfetched: [("refs/heads/x".to_string(), Unfetched::Failed)].into(),
             ..pushed
         };
-        assert!(may_prove_later(Some(&failed), "refs/heads/x"));
         assert!(no_proof_reason(Some(&failed), "refs/heads/x").contains("could not be fetched"));
-        assert!(may_prove_later(None, "refs/heads/main"));
     }
 
-    /// An earlier import left the PR closed-but-not-merged (the D-602 data): a re-run adds
-    /// the merge event, which the fold applies after the close.
-    #[test]
-    fn a_closed_unmerged_import_is_repaired_by_a_merge_event() {
-        let mut t = target(TargetKind::Patch);
-        t.closed = true;
-        t.merged_oid = Some(vec![1; 20]);
-        let closed = Current {
-            open: false,
-            ..Current::new_target()
-        };
-        assert_eq!(
-            kinds(&Sink::state_events(&t, &closed, Some(vec![9; 20]))),
-            vec![EventKind::Merge]
-        );
-        // Still unprovable: nothing more to write (it already reads closed).
-        assert!(Sink::state_events(&t, &closed, None).is_empty());
+    /// The transitions an importer writes for each upstream state, from a fresh target and
+    /// from what the chain already says.
+    fn kinds(from: i64, t: &SrcTarget) -> Vec<u8> {
+        state_path(t.kind.transition_target(), from, wanted_code(t), 7)
+            .iter()
+            .map(|m| {
+                assert_eq!(m.as_author, 0, "the mirror writes as a member");
+                m.kind
+            })
+            .collect()
     }
 
     #[test]
-    fn a_merged_pr_takes_no_more_state_events() {
-        let mut t = target(TargetKind::Patch);
-        t.closed = true;
-        t.merged_oid = Some(vec![1; 20]);
-        let done = Current {
-            open: false,
-            merged: true,
-            ..Current::new_target()
-        };
-        assert!(Sink::state_events(&t, &done, Some(vec![9; 20])).is_empty());
-        // Never reopened, whatever the source says; labels still follow the source.
-        t.closed = false;
-        t.merged_oid = None;
+    fn each_upstream_state_is_its_transitions_from_a_new_target() {
+        let issue = target(TargetKind::Issue);
+        assert!(kinds(0, &issue).is_empty(), "open: nothing to write");
+        let mut closed = issue.clone();
+        closed.closed = true;
+        assert_eq!(kinds(0, &closed), vec![1]);
+
+        let pr = target(TargetKind::Patch);
+        assert!(kinds(0, &pr).is_empty());
+        let mut draft = pr.clone();
+        draft.draft = true;
+        assert_eq!(kinds(0, &draft), vec![14]);
+        let mut closed_pr = pr.clone();
+        closed_pr.closed = true;
+        assert_eq!(kinds(0, &closed_pr), vec![11]);
+        let mut closed_draft = draft.clone();
+        closed_draft.closed = true;
+        assert_eq!(kinds(0, &closed_draft), vec![14, 16]);
+        // Merged: one merge (D-9: recorded whether or not the base is mirrored), never a
+        // close beside it; a merged draft upstream is just merged.
+        let mut merged = pr.clone();
+        merged.closed = true;
+        merged.merged_oid = Some(vec![1; 20]);
+        assert_eq!(kinds(0, &merged), vec![13]);
+        let mut merged_draft = merged.clone();
+        merged_draft.draft = true;
+        assert_eq!(kinds(0, &merged_draft), vec![13]);
+    }
+
+    /// Idempotent against the chain's current state code: nothing when it already matches,
+    /// the shortest legal path when it does not, and nothing ever after a merge.
+    #[test]
+    fn transitions_follow_the_current_code_and_a_merge_is_final() {
+        let mut pr = target(TargetKind::Patch);
+        for code in [0, 1, 2, 8, 9] {
+            // what the source says, as a code
+            let (closed, draft, merged) = (code & 1 == 1, code & 8 == 8, code == 2);
+            pr.closed = closed || merged;
+            pr.draft = draft;
+            pr.merged_oid = merged.then(|| vec![1; 20]);
+            assert!(kinds(code, &pr).is_empty(), "already {code}");
+        }
+        // Closed on chain, reopened upstream: reopen.
+        pr.closed = false;
+        pr.draft = false;
+        pr.merged_oid = None;
+        assert_eq!(kinds(1, &pr), vec![12]);
+        // A closed PR the source merged since (an older import): reopen, then merge.
+        pr.merged_oid = Some(vec![1; 20]);
+        pr.closed = true;
+        assert_eq!(kinds(1, &pr), vec![12, 13]);
+        // A draft readied upstream, and a draft that was merged.
+        let mut ready = target(TargetKind::Patch);
+        assert_eq!(kinds(8, &ready), vec![15]);
+        ready.merged_oid = Some(vec![1; 20]);
+        assert_eq!(kinds(8, &ready), vec![15, 13]);
+        // Merged on chain: nothing, whatever the source says now.
+        for (closed, draft) in [(false, false), (true, false), (false, true)] {
+            let mut t = target(TargetKind::Patch);
+            t.closed = closed;
+            t.draft = draft;
+            assert!(kinds(2, &t).is_empty());
+        }
+        // An issue closed then reopened upstream.
+        let issue = target(TargetKind::Issue);
+        assert_eq!(kinds(1, &issue), vec![2]);
+    }
+
+    #[test]
+    fn labels_are_diffed_against_the_fold() {
+        let mut t = target(TargetKind::Issue);
         t.labels = ["bug".to_string()].into();
+        let cur = Current {
+            code: 0,
+            labels: ["old".to_string()].into(),
+        };
         assert_eq!(
-            kinds(&Sink::state_events(&t, &done, None)),
-            vec![EventKind::LabelAdd]
+            label_events(&t, &cur),
+            vec![
+                (EventKind::LabelAdd, "bug".to_string()),
+                (EventKind::LabelRemove, "old".to_string())
+            ]
         );
+        assert!(label_events(
+            &t,
+            &Current {
+                code: 0,
+                labels: t.labels.clone()
+            }
+        )
+        .is_empty());
+    }
+
+    /// An incremental run refuses items below the highest source number held (they would
+    /// land out of order); items above it are fine.
+    #[test]
+    fn items_below_the_held_upstream_number_are_out_of_order() {
+        assert_eq!(out_of_order(&[3, 12, 15], 12), vec![3]);
+        assert!(out_of_order(&[13, 14], 12).is_empty());
+        assert!(out_of_order(&[1, 2], 0).is_empty(), "nothing held yet");
     }
 
     #[test]
-    fn draft_changes_become_draft_and_ready_events() {
-        let mut t = target(TargetKind::Patch);
-        t.draft = true;
-        assert_eq!(
-            kinds(&Sink::state_events(&t, &Current::new_target(), None)),
-            vec![EventKind::Draft]
+    fn a_diverging_item_names_its_upstream_number_and_url() {
+        let mut t = target(TargetKind::Issue);
+        t.number = 7762;
+        t.imported.url = "https://github.com/dashpay/dash/issues/7762".into();
+        let note = diverged_note("issue", &t, 16);
+        assert!(
+            note.starts_with("upstream issue #7762 is #16 here"),
+            "{note}"
         );
-        t.draft = false;
-        let cur = Current {
-            draft: true,
-            ..Current::new_target()
-        };
-        assert_eq!(
-            kinds(&Sink::state_events(&t, &cur, None)),
-            vec![EventKind::Ready]
-        );
+        assert!(note.ends_with("https://github.com/dashpay/dash/issues/7762"));
     }
 }
