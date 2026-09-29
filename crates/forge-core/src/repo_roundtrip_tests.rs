@@ -134,35 +134,16 @@ async fn push(
     refs: &[(&str, &str, Option<&str>)],
 ) {
     let pack = crate::pack::build_pack(src, wants, haves).unwrap();
-    let meta = PackMeta::for_bytes(&pack.bytes);
-    let hash = meta.pack_hash_bytes().unwrap();
-    let owner = crate::platform::encode_identifier(OWNER);
-    let (storage, chunk_count, uris) = match store {
-        Store::Platform => {
-            let docs = chunk_documents(&pack.bytes, hash);
-            let n = docs.len() as u64;
-            for (_, props) in docs {
-                rec.create("chunk", scope.scoped(props));
-            }
-            (0, n, vec![scope.locator(&owner, &meta.pack_hash)])
-        }
-        Store::External(backend) => {
-            let uris = backend.put(&pack.bytes, &meta).await.unwrap();
-            (1, 0, uris.into_iter().map(|u| u.0).collect())
-        }
-    };
-    let manifest = PackManifestInput {
-        pack_hash: hash,
-        kind: u64::from(crate::pack::KIND_GIT_PACK),
-        size_bytes: pack.bytes.len() as u64,
-        object_count: pack.parsed.object_count() as u64,
-        chunk_count,
-        storage,
-        uris,
-        supersedes: Vec::new(),
-        tips: Vec::new(),
-    };
-    rec.create("packManifest", manifest.props(scope).unwrap());
+    store_artifact(
+        rec,
+        scope,
+        store,
+        &pack.bytes,
+        u64::from(crate::pack::KIND_GIT_PACK),
+        pack.parsed.object_count() as u64,
+        Vec::new(),
+    )
+    .await;
     for (name, new, prev) in refs {
         let new = hex::decode(new).unwrap();
         let prev = prev.map(|p| hex::decode(p).unwrap());
@@ -170,6 +151,47 @@ async fn push(
         let props = public_ref_props(scope, name, &new, prev.as_deref(), false).unwrap();
         rec.create("refUpdate", props);
     }
+}
+
+/// Store `bytes` in `store` and record its `packManifest` of `kind`, as the helper does.
+async fn store_artifact(
+    rec: &mut Recorded,
+    scope: &DocScope,
+    store: &Store<'_>,
+    bytes: &[u8],
+    kind: u64,
+    object_count: u64,
+    tips: Vec<Vec<u8>>,
+) {
+    let meta = PackMeta::for_bytes(bytes);
+    let hash = meta.pack_hash_bytes().unwrap();
+    let owner = crate::platform::encode_identifier(OWNER);
+    let (storage, chunk_count, uris) = match store {
+        Store::Platform => {
+            let docs = chunk_documents(bytes, hash);
+            let n = docs.len() as u64;
+            for (_, props) in docs {
+                rec.create("chunk", scope.scoped(props));
+            }
+            (0, n, vec![scope.locator(&owner, &meta.pack_hash)])
+        }
+        Store::External(backend) => {
+            let uris = backend.put(bytes, &meta).await.unwrap();
+            (1, 0, uris.into_iter().map(|u| u.0).collect())
+        }
+    };
+    let manifest = PackManifestInput {
+        pack_hash: hash,
+        kind,
+        size_bytes: bytes.len() as u64,
+        object_count,
+        chunk_count,
+        storage,
+        uris,
+        supersedes: Vec::new(),
+        tips,
+    };
+    rec.create("packManifest", manifest.props(scope).unwrap());
 }
 
 /// Read a pack back as the helper does: from its `platform://` locator's chunks, or from the
@@ -260,6 +282,46 @@ async fn clone(rec: &Recorded, dst: &Path, store: &Store<'_>) {
     );
 }
 
+/// The push's history index of `tip` (kind 3), planned and computed as a push does, stored
+/// like any artifact.
+async fn publish_history(
+    rec: &mut Recorded,
+    scope: &DocScope,
+    store: &Store<'_>,
+    src: &Path,
+    tip: &str,
+) {
+    let tip: [u8; 20] = hex::decode(tip).unwrap().try_into().unwrap();
+    let prepared = super::prepare_history_index(src, tip, &super::HistoryPlan::fresh())
+        .unwrap()
+        .unwrap();
+    let artifact = &prepared.artifact;
+    store_artifact(
+        rec,
+        scope,
+        store,
+        &artifact.plain,
+        u64::from(artifact.kind),
+        artifact.rows,
+        artifact.tips.iter().map(|t| t.to_vec()).collect(),
+    )
+    .await;
+}
+
+/// The history index reads back through its manifest, its format from its header.
+async fn check_history(rec: &Recorded, store: &Store<'_>, tip: &str) {
+    let tip: [u8; 20] = hex::decode(tip).unwrap().try_into().unwrap();
+    let history = rec
+        .of("packManifest")
+        .iter()
+        .map(|d| manifest_info(d).unwrap())
+        .find(|m| m.kind == u64::from(crate::pack::KIND_HISTORY_INDEX))
+        .expect("a history index manifest");
+    assert_eq!(history.tips, vec![tip]);
+    let ix = crate::pack::HistoryIndex::parse(&read_pack(rec, &history, store).await).unwrap();
+    assert_eq!((ix.version(), ix.commit_count, ix.tip), (2, 3, tip));
+}
+
 /// The source repository and the pushes of the round trip: `main` and an annotated tag, then
 /// `main` moved on (an incremental pack over the first) with a branch whose name exercises
 /// the grammar (`@` without `{`, a `.` inside a component, a slash).
@@ -311,6 +373,8 @@ async fn round_trip(store: &Store<'_>) {
     )
     .await;
 
+    publish_history(&mut rec, &scope, store, s, &c3).await;
+
     // What was written is the RC1 form.
     for (t, d) in &rec.docs {
         match *t {
@@ -330,6 +394,7 @@ async fn round_trip(store: &Store<'_>) {
     }
 
     clone(&rec, dst.path(), store).await;
+    check_history(&rec, store, &c3).await;
     git(dst.path(), &["fsck", "--strict", "--no-dangling"]);
     for r in [
         "refs/heads/main",

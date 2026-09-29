@@ -18,6 +18,7 @@ import { CheckCircle2, CircleDashed, GitCommit, ListChecks, MinusCircle, XCircle
 import { checkOutcome, checksPhrase, fetchVerifiedLog, runDuration, safeDetailsUrl, safeLogUrl, untrustedWords, type CheckRun, type ChecksSummary, type VerifiedLog } from '@/lib/repo/checks'
 import type { PrCommits } from '@/lib/view/pr-commits'
 import { plural, timeAgo } from '@/lib/view'
+import { Time } from '@/components/repo/byline'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { errorMessage } from '@/lib/utils'
 import { Author } from '@/components/author'
@@ -47,7 +48,11 @@ export function CommitsTab({
   if (commits === null && unavailable !== null) return <EmptyState icon={GitCommit} title="Commits unavailable" body={unavailable} />
   if (commits === null) return loading ? <LoadingBlock label="Walking the PR's commits" /> : <LoadingBlock label="Comparing the PR with its base" />
   if (commits.commits.length === 0) return <EmptyState icon={GitCommit} title="No commits" body="The base branch already contains this PR's head." />
-  const at = sourceAddr ?? addr
+  return <CommitList commits={commits} addr={sourceAddr ?? addr} allHint="`dg pr commits` lists them all." />
+}
+
+/** Commits, newest first, each linking to its page in the repo at `addr`; `allHint` says how to see a cut list whole. */
+export function CommitList({ commits, addr: at, allHint }: { commits: PrCommits; addr: RepoAddress; allHint: string }): JSX.Element {
   return (
     <div data-testid="pr-commits">
       <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
@@ -60,7 +65,9 @@ export function CommitsTab({
               </Link>
               <div className="mt-0.5 flex items-center gap-2 text-[12px] text-anvil-500 dark:text-anvil-400">
                 <span>{c.commit.author.name || 'unknown'}</span>
-                <span>· {timeAgo(c.commit.committer.when)}</span>
+                <span>
+                  · <Time ms={c.commit.author.when} prefix="authored " />
+                </span>
               </div>
             </div>
             <Oid value={c.oid} chars={7} />
@@ -69,7 +76,7 @@ export function CommitsTab({
       </div>
       {commits.truncated ? (
         <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-          Showing the newest {commits.commits.length} of {plural(commits.total ?? 'many', 'commit')}. `dg pr commits` lists them all.
+          Showing the newest {commits.commits.length} of {plural(commits.total ?? 'many', 'commit')}. {allHint}
         </p>
       ) : null}
     </div>

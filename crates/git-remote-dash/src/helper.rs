@@ -519,8 +519,15 @@ impl Helper {
                 dry_run,
                 identity: conn.identity().id(),
                 sealed: std::cell::RefCell::default(),
-                history_bytes: history.as_ref().map(|h| h.prepared.plain_len()),
+                history_bytes: std::cell::Cell::new(
+                    history.as_ref().map(|h| h.prepared.plain_len()),
+                ),
                 history_first: history.as_ref().is_some_and(|h| h.prepared.is_first()),
+                history_fallback: history
+                    .as_ref()
+                    .and_then(|h| h.prepared.fallback())
+                    .map(PreparedHistory::plain_len),
+                history_on_fallback: std::cell::Cell::new(false),
             }),
             _ => None,
         };
@@ -570,7 +577,19 @@ impl Helper {
             read_refs_until_converged(conn, &planned).await?
         };
         if let (Some(ctx), Some(history)) = (ctx.as_ref(), history) {
-            publish_history_after_refs(ctx, history, history_paid, stored, &final_refs).await;
+            // The guard took the fallback delta over a due full index: publish what was paid for.
+            let history = if ctx.history_on_fallback.get() {
+                let branch = history.branch;
+                history
+                    .prepared
+                    .into_fallback()
+                    .map(|prepared| PushHistory { prepared, branch })
+            } else {
+                Some(history)
+            };
+            if let Some(history) = history {
+                publish_history_after_refs(ctx, history, history_paid, stored, &final_refs).await;
+            }
         }
         // The branches that moved: the PRs following them get a head update (review-parity
         // R14). Read before `finalize_outcomes` consumes the plan.
@@ -1220,15 +1239,41 @@ struct PushContext<'a> {
     /// push's refs land ([`forget_sealed`]).
     sealed: std::cell::RefCell<Option<std::path::PathBuf>>,
     /// The plaintext size of the history index this push publishes, if any: priced with it.
-    history_bytes: Option<u64>,
+    /// Becomes the fallback delta's size when the cost guard declines a due full index.
+    history_bytes: std::cell::Cell<Option<u64>>,
     /// It is the repository's first history index (it pays the first-of-kind fee).
     history_first: bool,
+    /// The size of the delta a due full index carries as its fallback
+    /// ([`PreparedHistory::fallback`]), if any.
+    history_fallback: Option<u64>,
+    /// The cost guard declined the full index and the fallback delta is priced instead: the
+    /// push publishes the delta.
+    history_on_fallback: std::cell::Cell<bool>,
+}
+
+/// After the cost guard declined a push priced with a due full history index: price the
+/// cheaper delta it carries instead (still readable, at most half the full index), so the
+/// web does not fall behind until someone pays for the full one. False when there is none.
+fn take_history_fallback(ctx: &PushContext<'_>) -> bool {
+    let Some(delta) = ctx.history_fallback else {
+        return false;
+    };
+    if ctx.history_on_fallback.replace(true) {
+        return false;
+    }
+    ctx.history_bytes.set(Some(delta));
+    ctx.progress.note(&format!(
+        "a full history index is due (its deltas have cost as much as one); publishing the \
+         {delta}-byte delta instead. `dg repo reindex {}` publishes the full one",
+        ctx.repo_label
+    ));
+    true
 }
 
 /// The on-chain price of the history index a push publishes (`ctx.history_bytes`), stored where
 /// its pack goes: 0 when it publishes none.
 fn history_credits(ctx: &PushContext<'_>, platform_bytes: bool) -> u64 {
-    ctx.history_bytes.map_or(0, |bytes| {
+    ctx.history_bytes.get().map_or(0, |bytes| {
         push_fees::history_index(
             bytes,
             ctx.repo.visibility == forge_core::rules::v2::Visibility::Private,
@@ -1294,7 +1339,7 @@ async fn upload_push_pack(
         tracing::info!("push adds no new objects; skipping pack upload and browse index");
         // A fast-forward to a commit already stored still moves the default branch: its history
         // index goes where the policy stores (priced on top of the refs).
-        if ctx.dry_run || ctx.history_bytes.is_none() {
+        if ctx.dry_run || ctx.history_bytes.get().is_none() {
             return Ok(None);
         }
         let refs_only = push_fees::estimate_ref_updates(ctx.refs.len() as u64);
@@ -1328,10 +1373,10 @@ async fn upload_push_pack(
     let platform_writes = |est: &push_fees::PushEstimate, stores_pack: bool| {
         progress::platform_line(&PlatformWrites {
             chunks: if stores_pack { job.chunk_count } else { 0 },
-            manifests: 2 + u32::from(ctx.history_bytes.is_some()),
+            manifests: 2 + u32::from(ctx.history_bytes.get().is_some()),
             ref_updates: ctx.refs.len(),
             est_credits: est.total(),
-            history_bytes: ctx.history_bytes.unwrap_or(0),
+            history_bytes: ctx.history_bytes.get().unwrap_or(0),
         })
     };
     if ctx.dry_run {
@@ -1352,12 +1397,15 @@ async fn upload_push_pack(
             history,
         }));
     }
-    policy::enforce(
-        estimate.total(),
-        ctx.policy,
-        resolved.platform,
-        policy::NOTE_NOTHING_STORED,
-    )?;
+    // A declined due full history index: ask again with its cheaper delta (review L8).
+    let note = policy::NOTE_NOTHING_STORED;
+    if let Err(e) = policy::enforce(estimate.total(), ctx.policy, resolved.platform, note) {
+        if !take_history_fallback(ctx) {
+            return Err(e.into());
+        }
+        let delta = job.estimate(ctx, resolved.platform);
+        policy::enforce(delta.total(), ctx.policy, resolved.platform, note)?;
+    }
 
     let jpath = crate::journal::journal_path(
         ctx.git_dir,
@@ -1925,10 +1973,10 @@ async fn dry_run_writes(
     let history = history_credits(ctx, ctx.policy.resolved.platform);
     progress::platform_line(&PlatformWrites {
         chunks: 0,
-        manifests: u32::from(ctx.history_bytes.is_some()),
+        manifests: u32::from(ctx.history_bytes.get().is_some()),
         ref_updates: ctx.refs.len(),
         est_credits: push_fees::estimate_ref_updates(ctx.refs.len() as u64) + history,
-        history_bytes: ctx.history_bytes.unwrap_or(0),
+        history_bytes: ctx.history_bytes.get().unwrap_or(0),
     })
 }
 
@@ -2283,29 +2331,32 @@ fn history_alone(
     refs_only: u64,
     replication: Replication,
 ) -> Result<(u64, HistoryTarget)> {
-    if ctx.history_bytes.is_none() {
+    if ctx.history_bytes.get().is_none() {
         policy::enforce(refs_only, ctx.policy, false, policy::NOTE_NOTHING_STORED)?;
         return Ok((refs_only, HistoryTarget::None));
     }
     let platform = replication.has_platform();
     let external = replication.replicas.iter().filter(|r| !r.platform).count() as u64;
-    let with_history = refs_only
-        + ctx.history_bytes.map_or(0, |bytes| {
-            push_fees::history_index(
-                bytes,
-                ctx.repo.visibility == forge_core::rules::v2::Visibility::Private,
-                external,
-                platform,
-                ctx.history_first,
-            )
-        });
-    match policy::enforce(
-        with_history,
-        ctx.policy,
-        platform,
-        policy::NOTE_NOTHING_STORED,
-    ) {
-        Ok(()) => Ok((with_history, HistoryTarget::Alone(replication))),
+    let with_history = || {
+        refs_only
+            + ctx.history_bytes.get().map_or(0, |bytes| {
+                push_fees::history_index(
+                    bytes,
+                    ctx.repo.visibility == forge_core::rules::v2::Visibility::Private,
+                    external,
+                    platform,
+                    ctx.history_first,
+                )
+            })
+    };
+    let note = policy::NOTE_NOTHING_STORED;
+    // A declined due full history index: ask again with its cheaper delta (review L8).
+    let mut outcome = policy::enforce(with_history(), ctx.policy, platform, note);
+    if outcome.is_err() && take_history_fallback(ctx) {
+        outcome = policy::enforce(with_history(), ctx.policy, platform, note);
+    }
+    match outcome {
+        Ok(()) => Ok((with_history(), HistoryTarget::Alone(replication))),
         Err(e) => {
             policy::enforce(refs_only, ctx.policy, false, policy::NOTE_NOTHING_STORED)?;
             history_skipped(ctx, &format!("the cost guard declined it: {}", e.message));

@@ -117,7 +117,7 @@ test.describe('commits, History and Blame (read fixture)', () => {
     await expect(rows).toHaveCount(2, { timeout: 60_000 })
     await expect(rows.nth(0)).toContainText('Document the fold rules')
     await expect(rows.nth(1)).toContainText('Initial import')
-    await expect(page.getByTestId('log-status')).toContainText('the whole history')
+    await expect(page.getByTestId('log-status')).toContainText('The whole history')
     // docs/ was added by c2 only.
     await page.goto(`/${DEMO.owner}/${DEMO.name}/commits/main/docs`, { waitUntil: 'domcontentloaded' })
     await expect(page).toHaveURL(/\/repo\/commits\/\?.*path=docs/)
@@ -216,6 +216,8 @@ test.describe('commits paging, History and Blame (showcase repos)', () => {
     await expect(rows).toHaveCount(80, { timeout: 60_000 })
     await page.getByTestId('older-commits').click()
     await expect(rows).toHaveCount(120, { timeout: 60_000 })
+    // L-31: the page count is in the URL, and Back from a commit rebuilds the same list.
+    await expect(page).toHaveURL(/[?&]pages=3\b/)
     const all = await rows.evaluateAll((els) => els.map((e) => e.textContent))
     expect(all.slice(0, 40)).toEqual(firstPage)
     expect(new Set(all).size).toBe(120)
@@ -226,6 +228,14 @@ test.describe('commits paging, History and Blame (showcase repos)', () => {
     // Measured 1.
     expect(total, JSON.stringify(Object.fromEntries(counts))).toBeLessThanOrEqual(6)
     await shot(page, 'f5-hb-04-jq-commits-page-3')
+    // Open commit #100, then Back: the same 120 rows, near the same scroll position (L-31).
+    await rows.nth(99).locator('a').first().scrollIntoViewIfNeeded()
+    const y = await page.evaluate(() => window.scrollY)
+    await rows.nth(99).locator('a').first().click()
+    await page.waitForURL(/\/repo\/commit\//)
+    await page.goBack()
+    await expect(rows).toHaveCount(120, { timeout: 60_000 })
+    await expect.poll(() => page.evaluate(() => window.scrollY), { timeout: 10_000 }).toBeGreaterThan(y - 400)
   })
 
   test('hb-5. blame of fzf main.go matches git blame --first-parent line for line; cancel stops a run', async ({ page }) => {

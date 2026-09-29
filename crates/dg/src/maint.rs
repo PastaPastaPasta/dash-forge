@@ -271,7 +271,8 @@ fn quote_reindex(
         }
         if let Some(h) = &history.prepared {
             print_history_plan(handle, h, label, &cost_line(history_credits, price));
-        } else if let Some(why) = &history.note {
+        }
+        if let Some(why) = &history.note {
             println!("  history index:   {why}");
         }
     }
@@ -285,7 +286,7 @@ struct HistoryReindex {
     /// `covered` (an index covers the default branch's tip), `publish`, `no-branch` (the
     /// default branch has no tip), or `no-clone` (no local repository holds the tip).
     status: &'static str,
-    /// Why nothing is published, for a person.
+    /// Why nothing is published, or what the publish replaces, for a person.
     note: Option<String>,
 }
 
@@ -365,9 +366,13 @@ fn print_history_plan(
     price: &str,
 ) {
     let ix = h.index();
+    let versions: usize = ix
+        .versions
+        .as_ref()
+        .map_or(0, |v| v.lists.values().map(|l| l.versions.len()).sum());
     println!(
-        "History index of {}: {} path(s), {} commit(s), {} bytes ({}) to {label} + its \
-         manifest   {price}",
+        "History index of {}: {} path(s), {} commit(s), {versions} path version(s), {} bytes \
+         ({}) to {label} + its manifest   {price}",
         handle.display(),
         ix.paths.len(),
         ix.commit_count,
