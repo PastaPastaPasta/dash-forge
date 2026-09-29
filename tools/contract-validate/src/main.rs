@@ -298,10 +298,10 @@ fn validate_one(
             let result = contract
                 .validate_document_properties(&case.doc_type, case_value(&case.doc)?, &system, pv)
                 .map_err(|e| anyhow!("{} ({}): {e}", case.name, case.doc_type))?;
-            let reason = result.errors.first().map(refusal_reason);
-            let fine = match (case.expect.as_str(), &reason) {
+            let first = result.errors.first();
+            let fine = match (case.expect.as_str(), first) {
                 ("ok", None) => true,
-                ("refused", Some(got)) => case.why.as_deref().is_none_or(|want| want == got),
+                ("refused", Some(e)) => case.why.as_deref() == Some(refusal_reason(e).as_str()),
                 _ => false,
             };
             if !fine {
@@ -315,9 +315,9 @@ fn validate_one(
                         .as_deref()
                         .map(|w| format!(" by {w}"))
                         .unwrap_or_default(),
-                    match (&reason, result.errors.first()) {
-                        (Some(r), Some(e)) => format!("refused by {r}: {e}"),
-                        _ => "accepted".to_string(),
+                    match first {
+                        Some(e) => format!("refused by {}: {e}", refusal_reason(e)),
+                        None => "accepted".to_string(),
                     }
                 ));
             }
@@ -773,12 +773,20 @@ fn read_cases(path: &std::path::Path) -> Result<Vec<Case>> {
                     .map(str::to_string)
                     .with_context(|| format!("{}: a case without {k}", path.display()))
             };
+            let expect = field("expect")?;
+            let why = c["why"].as_str().map(str::to_string);
+            // A refusal names its reason (so a case cannot pass by failing for another one);
+            // an accepted case has none
+            match (expect.as_str(), &why) {
+                ("refused", Some(_)) | ("ok", None) => {}
+                _ => bail!("{}: case {:?} expects {expect:?}: a refused case names its `why`, an accepted one none", path.display(), c["name"]),
+            }
             Ok(Case {
                 item: field("item")?,
                 name: field("name")?,
                 doc_type: field("type")?,
-                expect: field("expect")?,
-                why: c["why"].as_str().map(str::to_string),
+                expect,
+                why,
                 owner: c.get("owner").map(case_identifier).transpose()?,
                 doc: c["doc"].clone(),
             })

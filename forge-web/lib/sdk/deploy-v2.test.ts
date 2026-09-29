@@ -7,13 +7,13 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { DEPENDENT_CONTRACTS, communityId, dependentSupersedeError, loadSchema, schemaHash, supersedes } from '../../../forge-contracts/scripts/deploy-v2.mjs'
+import { DEPENDENT_CONTRACTS, communityId, dependentSupersedeError, loadSchema, placeholderFor, schemaHash, supersedes } from '../../../forge-contracts/scripts/deploy-v2.mjs'
 import { snapshotIds } from '../../../forge-contracts/scripts/snapshot-contracts.mjs'
 
 const CORE_ID = '4xQ1gLbVttHSnHSNAexse7ByXJd7BQCRLgLYuPevrcTW'
-const COLLAB_ID = 'C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS'
+const COLLAB_ID = '2EMkNwZUsFRdojAw4A1y3HrJsrvGBQuH8mPb6sDV4zxk'
 
-/** A schema with the ids of the contracts registered before it substituted (forge-community also names forge-collab, RC1 O-01). */
+/** A schema with the ids of the contracts registered before it (forge-community's events name forge-collab). */
 const withCore = (name: string, coreId = CORE_ID) =>
   loadSchema(name, { FORGE_CORE_CONTRACT_ID: coreId, FORGE_COLLAB_CONTRACT_ID: COLLAB_ID }) as { documentSchemas: Record<string, unknown> }
 
@@ -34,16 +34,26 @@ describe('deploy-v2: the three forge-v2 contracts', () => {
   it('substitutes forge-core id into every cross-contract reference', () => {
     for (const { schemaName } of DEPENDENT_CONTRACTS) {
       const text = JSON.stringify(withCore(schemaName))
-      expect(text).not.toContain('FORGE_CORE_CONTRACT_ID')
+      expect(text).not.toContain('_CONTRACT_ID')
       expect(text).toContain(CORE_ID)
     }
+  })
+
+  it("substitutes forge-collab's id into forge-community (its events name collab's issues and PRs)", () => {
+    expect(() => loadSchema('forge-community', { FORGE_CORE_CONTRACT_ID: CORE_ID })).toThrow(/unresolved contract id placeholder/)
+    expect(JSON.stringify(withCore('forge-community'))).toContain(COLLAB_ID)
+    expect(JSON.stringify(withCore('forge-collab'))).not.toContain(COLLAB_ID)
+  })
+
+  it('names each placeholder after its contract', () => {
+    expect(placeholderFor('forge-core')).toBe('FORGE_CORE_CONTRACT_ID')
+    expect(placeholderFor('forge-collab')).toBe('FORGE_COLLAB_CONTRACT_ID')
   })
 
   it('splits the types between the three contracts with none shared', () => {
     const types = (name: string) => Object.keys(withCore(name).documentSchemas).sort()
     const collab = types('forge-collab')
     const community = types('forge-community')
-    // The RC1 layout (O-01 events and milestones, O-02 runners to forge-community; O-03 repoKey to forge-collab).
     expect(collab).toEqual(['comment', 'issue', 'patch', 'repoKey', 'review', 'transition'])
     expect(community).toEqual(['authorEvent', 'checkRun', 'event', 'follow', 'milestone', 'policy', 'profile', 'runner', 'star', 'starBeat', 'watch', 'webhook'])
     expect(types('forge-core').filter((t) => collab.includes(t) || community.includes(t))).toEqual([])

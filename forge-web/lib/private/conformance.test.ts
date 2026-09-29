@@ -17,7 +17,6 @@ import { expand } from '@noble/hashes/hkdf.js'
 import { hmac } from '@noble/hashes/hmac.js'
 import { sha256 as nobleSha256 } from '@noble/hashes/sha2.js'
 import { beforeAll, describe, expect, it } from 'vitest'
-import { rc1Contracts } from '../sdk/rc1-validate'
 
 import { bytesToHex, concat, hexToBytes, sha256 } from './bytes'
 import { TooLargeError, openContent, type OpenContext, type OpenResult, type PrivateDoc, type StoredPrivateDoc } from './doc'
@@ -318,7 +317,7 @@ async function packErrorOf(f: () => Promise<Json>): Promise<Json> {
 
 let evo: Evo
 let facade: WrapFacade
-let forgeCore: InstanceType<Evo['DataContract']>
+let repoKeyContract: InstanceType<Evo['DataContract']>
 
 function encryptionKey(pubHex: string): InstanceType<Evo['IdentityPublicKey']> {
   return new evo.IdentityPublicKey({
@@ -341,14 +340,14 @@ function repoKeyDocument(repoId: Uint8Array, epoch: number, wrapped: Uint8Array)
       wrapped,
     },
     documentTypeName: 'repoKey',
-    dataContractId: forgeCore.id,
+    dataContractId: repoKeyContract.id,
     ownerId: new Uint8Array(32).fill(0xa1),
   })
 }
 
 function openVectorWrap(repoId: Uint8Array, epoch: number, wrapped: Uint8Array, readerPriv: string, counterpartyPub: string, anchorCommit: Uint8Array): Promise<EpochKeys> {
   return openWrap(facade, {
-    dataContract: forgeCore,
+    dataContract: repoKeyContract,
     document: repoKeyDocument(repoId, epoch, wrapped),
     readerPrivateKey: evo.PrivateKey.fromHex(readerPriv, 'testnet'),
     counterpartyKey: encryptionKey(counterpartyPub),
@@ -361,7 +360,7 @@ function openVectorWrap(repoId: Uint8Array, epoch: number, wrapped: Uint8Array, 
 /** The epoch key behind `keys`, recovered through a wrap round trip (keys are non-extractable). */
 async function wrapRoundTrip(inp: Obj, keys: EpochKeys, raw: Uint8Array): Promise<Uint8Array> {
   const props = await sealWrap(facade, keys, raw, {
-    dataContract: forgeCore,
+    dataContract: repoKeyContract,
     senderKey: encryptionKey(str(inp, 'senderPub')),
     senderPrivateKey: evo.PrivateKey.fromHex(str(inp, 'senderPriv'), 'testnet'),
     recipientKey: encryptionKey(str(inp, 'recipientPub')),
@@ -648,9 +647,13 @@ describe('private-repository conformance vectors', () => {
   beforeAll(async () => {
     evo = await import('@dashevo/evo-sdk')
     await evo.EvoSDK.getLatestVersionNumber()
-    // `repoKey` (and its `encryptedFor` declaration) lives in forge-collab since RC1 (O-03).
-    const json: unknown = rc1Contracts()['forge-collab']
-    forgeCore = evo.DataContract.fromJSON(json as Parameters<Evo['DataContract']['fromJSON']>[0], true, 14)
+    // `repoKey` is a forge-collab type (RC1 layout O-03); its gates name forge-core, whose id the
+    // deploy script substitutes (any valid id parses)
+    const text = readFileSync(resolve(ROOT, 'forge-contracts', 'contracts', 'forge-collab.json'), 'utf8').replaceAll(
+      'FORGE_CORE_CONTRACT_ID',
+      'A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1',
+    )
+    repoKeyContract = evo.DataContract.fromJSON(JSON.parse(text) as Parameters<Evo['DataContract']['fromJSON']>[0], true, 14)
     facade = new evo.EvoSDK().encryptedFor
   })
 
