@@ -25,7 +25,14 @@ export interface DiffSides {
 export interface LogEntry {
   readonly oid: string
   readonly subject: string
-  readonly commit: CommitObject
+  /** Who wrote it and when (ms): all a log row shows, so the history index can supply it. */
+  readonly author: LogAuthor
+}
+
+/** A log row's author: a commit's `author` ident, or the history index's name and time. */
+export interface LogAuthor {
+  readonly name: string
+  readonly when: number
 }
 
 /** A single file change between two trees. */

@@ -14,7 +14,7 @@ import { PathActions } from '@/components/repo/path-actions'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
 import type { RepoRef } from '@/lib/repo'
-import { commitSubject, lineHash, selectedTip, selectLine, selectRef, timeAgo } from '@/lib/view'
+import { lineHash, selectedTip, selectLine, selectRef, timeAgo } from '@/lib/view'
 import { ROW_PX, scrollToRow, useRowWindow } from '@/hooks/use-row-window'
 import { BLAME_MAX_COMMITS, BLAME_MAX_VERSIONS, BlameRefusedError, BlameStoppedError, blameFile, type BlameProgress, type BlameResult } from '@/lib/view/blame'
 import { BlobToolbar, useLineSelection } from '@/components/repo/blob-content'
@@ -228,13 +228,13 @@ function BlameTable({
                 data-tap-exempt="code-line"
                 // The subject beside it is the commit's link (and tab stop); this one is for phones.
                 tabIndex={-1}
-                aria-label={`Commit ${hunk.oid.slice(0, 7)}: ${commitSubject(commit.message) || '(no message)'}`}
+                aria-label={`Commit ${hunk.oid.slice(0, 7)}: ${commit.subject || '(no message)'}`}
               >
                 {timeAgo(commit.author.when)}
               </Link>
               {/* One per hunk, inside a 20 px code row (e2e/mobile.spec.ts exempts it, as the diff gutter). */}
               <Link href={repoHref('/repo/commit', addr, { oid: hunk.oid })} className="hidden min-w-0 truncate hover:text-forge-800 sm:inline dark:hover:text-forge-400" title={`${hunk.oid.slice(0, 7)} ${commit.author.name}`} data-tap-exempt="code-line" data-testid="blame-commit">
-                {commitSubject(commit.message) || '(no message)'}
+                {commit.subject || '(no message)'}
               </Link>
             </span>
           ) : null}

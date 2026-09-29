@@ -3,7 +3,8 @@
 /**
  * CommitsContent — the first-parent commit log (browse plane), newest first, a page at a time
  * ("Older" continues the walk where the last page stopped), and with `path` a file's or a
- * directory's History: only the commits that changed it. Pages walk one shared read-ahead walker
+ * directory's History: only the commits that changed it ({@link pathVersions}: from the push-time
+ * history index when one covers the tip, with no walk). Pages walk one shared read-ahead walker
  * and the session memo of `lib/view/path-history.ts`, so an older page reads only what it adds.
  *
  * How many pages are shown is in the URL (`?pages=3`, L-31), and the scroll position is kept for
@@ -20,7 +21,7 @@ import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
 import { selectedTip, selectRef, type LogEntry } from '@/lib/view'
 import { historyWalker } from '@/lib/view/commit-log'
-import { LOG_PAGE, logPage, PATH_WALK_CAP, type LogPage } from '@/lib/view/path-history'
+import { LOG_PAGE, PATH_WALK_CAP, pathVersions, type PathVersionsPage } from '@/lib/view/path-history'
 import { historyOf } from '@/lib/view/history-source'
 import { useAsync } from '@/hooks/use-async'
 import { Time } from '@/components/repo/byline'
@@ -90,13 +91,15 @@ export interface LogState {
   /** Commits examined so far by a path walk (for the "no change in the last n" note). */
   readonly examined: number
   readonly capped: boolean
+  /** Entries the push-time history index listed (no walk). */
+  readonly indexed: number
   /** Pages loaded so far. */
   readonly pages: number
 }
 
 /** A log before its first page. */
 export function freshLog(tipOid: string): LogState {
-  return { entries: [], next: tipOid, loading: true, error: null, examined: 0, capped: false, pages: 0 }
+  return { entries: [], next: tipOid, loading: true, error: null, examined: 0, capped: false, indexed: 0, pages: 0 }
 }
 
 /** Most pages a `?pages=` link loads on open (40 commits each). */
@@ -118,7 +121,7 @@ export function logStatus(state: Pick<LogState, 'entries' | 'next'>, total: numb
 }
 
 /** `state` with one more page appended (a page that repeats what is shown adds nothing twice). */
-export function withPage(state: LogState, page: LogPage): LogState {
+export function withPage(state: LogState, page: PathVersionsPage): LogState {
   const shown = new Set(state.entries.map((e) => e.oid))
   return {
     entries: [...state.entries, ...page.entries.filter((e) => !shown.has(e.oid))],
@@ -127,6 +130,7 @@ export function withPage(state: LogState, page: LogPage): LogState {
     error: null,
     examined: state.examined + page.examined,
     capped: page.capped,
+    indexed: state.indexed + page.indexed,
     pages: state.pages + 1,
   }
 }
@@ -168,7 +172,7 @@ function LogBody({
       const stop = new AbortController()
       run.current = stop
       setState((s) => ({ ...s, loading: true, error: null }))
-      logPage(reader, from, { path, walker, signal: stop.signal }).then(
+      pathVersions(reader, from, path, { walker, signal: stop.signal }).then(
         (page) => {
           if (stop.signal.aborted) return
           run.current = null
@@ -232,7 +236,12 @@ function LogBody({
 
   return (
     <div className="space-y-3">
-      <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="commit-log" onClickCapture={keepScroll}>
+      <div
+        className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800"
+        data-testid="commit-log"
+        data-source={state.indexed > 0 ? 'index' : 'walk'}
+        onClickCapture={keepScroll}
+      >
         {state.entries.map((entry) => (
           <div key={entry.oid} className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850" data-testid="commit-row">
             {/* Touch: the message link stretches over its whole text column (both lines and the
@@ -242,9 +251,9 @@ function LogBody({
                 {entry.subject || '(no message)'}
               </Link>
               <div className="mt-0.5 flex items-center gap-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-                <span>{entry.commit.author.name || 'unknown'}</span>
+                <span>{entry.author.name || 'unknown'}</span>
                 <span>
-                  · <Time ms={entry.commit.author.when} prefix="authored " />
+                  · <Time ms={entry.author.when} prefix="authored " />
                 </span>
               </div>
             </div>
@@ -256,6 +265,11 @@ function LogBody({
         <span data-testid="log-status">
           {logStatus(state, total.data, path)}
           {path && state.capped ? ` · searched the last ${plural(state.examined, 'commit')} (up to ${PATH_WALK_CAP} a page)` : ''}
+          {state.indexed > 0 ? (
+            <span title="Listed by the history index the last push published: no history walk in your browser" data-testid="log-from-index">
+              {' · from the history index'}
+            </span>
+          ) : null}
         </span>
         {state.error !== null ? <span className="text-danger-700 dark:text-danger-400">{state.error}</span> : null}
         {state.next !== null ? (
