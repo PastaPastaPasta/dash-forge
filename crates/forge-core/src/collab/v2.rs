@@ -1313,6 +1313,23 @@ fn legal_from(action: StateAction) -> i64 {
     }
 }
 
+/// The move `action` is from the state it is legal from ([`legal_from`]), written as `actor`
+/// with no actor gate: what the client attempts with the pre-check off, so consensus judges
+/// every rule (a non-member's gate, `f_authorNoMerge` for an author's merge, the `c*` state
+/// rules). `None` for an action the target kind has no transition for.
+fn forced_move(
+    target: TransitionTarget,
+    action: StateAction,
+    actor: Actor,
+    number: u32,
+) -> Option<TransitionMove> {
+    let mv = next_transition(target, legal_from(action), action, Actor::Member, number)?;
+    Some(TransitionMove {
+        as_author: if actor == Actor::Author { number } else { 0 },
+        ..mv
+    })
+}
+
 /// Why `action` cannot be carried out on `target` in state `code` by `actor` (no legal
 /// move): the user error, raised before anything is signed.
 fn no_move(target: &Target, code: i64, action: StateAction, actor: Actor) -> Error {
@@ -1536,25 +1553,99 @@ fn number_taken(e: &Error) -> bool {
     }
 }
 
+/// The fields that identify a create's content: an issue's or PR's number, kind tag, text,
+/// provenance and (a PR's) refs and head, as the signer wrote them.
+const CONTENT_FIELDS: [&str; 9] = [
+    "number",
+    "tk",
+    "title",
+    "body",
+    "upstreamNumber",
+    "imported",
+    "headOid",
+    "baseRefName",
+    "sourceRefName",
+];
+
+/// Whether two field values hold the same data (integers by value whatever their width,
+/// byte arrays whatever their kind, objects field by field).
+fn same_value(a: Option<&FieldValue>, b: Option<&FieldValue>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            if let (Some(x), Some(y)) = (a.as_i64(), b.as_i64()) {
+                return x == y;
+            }
+            if let (Some(x), Some(y)) = (a.as_bytes(), b.as_bytes()) {
+                return x == y;
+            }
+            match (a, b) {
+                (FieldValue::Object(x), FieldValue::Object(y)) => {
+                    x.len() == y.len() && x.iter().all(|(k, v)| same_value(Some(v), y.get(k)))
+                }
+                _ => a == b,
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Whether `stored` (the document now at the number a create was refused, opened in a private
+/// repo) is the signer's own create of `plain`: an earlier attempt of the same create landed
+/// (a consumed nonce whose read lagged), so it is the result, not a reason to take the next
+/// number and write the issue twice.
+fn is_own_copy(
+    stored: &FetchedDocument,
+    signer: &str,
+    plain: &BTreeMap<String, FieldValue>,
+) -> bool {
+    stored.owner_id == signer
+        && CONTENT_FIELDS
+            .iter()
+            .all(|k| same_value(stored.fields.get(*k), plain.get(*k)))
+}
+
 /// Whether `e` is a refusal of a state move by the contract's sum rules (`c1`…`c5`): the
 /// target's state changed between the read and the write.
 fn is_state_rule_refusal(e: &Error) -> bool {
-    matches!(e, Error::RuleRefused { rule, .. } if rule.starts_with('c'))
+    matches!(e, Error::RuleRefused { document_type, rule, .. }
+        if document_type == DOC_TRANSITION
+            && rule.starts_with('c')
+            && rule.as_bytes().get(1).is_some_and(u8::is_ascii_digit)
+            && rule.as_bytes().get(2) == Some(&b'_'))
+}
+
+/// A grouped answer's key that does not decode: the contract's encoding is not the one this
+/// reader expects, so nothing read from it can be trusted (never silently "open").
+fn undecodable(what: &str, key: &[u8]) -> Error {
+    Error::Platform(format!(
+        "a grouped {what} came back keyed by {} ({} bytes), which this client cannot read",
+        hex::encode(key),
+        key.len()
+    ))
 }
 
 /// The per-target state codes of a grouped sum ([`Collab::state_codes`]), by target id: a
 /// target with no transitions is absent from the answer and reads 0.
-fn codes_by_target(sums: BTreeMap<Vec<u8>, i64>) -> BTreeMap<String, i64> {
+fn codes_by_target(sums: BTreeMap<Vec<u8>, i64>) -> Result<BTreeMap<String, i64>> {
     sums.into_iter()
-        .filter_map(|(k, v)| platform::decode_identifier_key(&k).map(|id| (id, v)))
+        .map(|(k, v)| {
+            platform::decode_identifier_key(&k)
+                .map(|id| (id, v))
+                .ok_or_else(|| undecodable("sum of transition.delta", &k))
+        })
         .collect()
 }
 
 /// A grouped count of `transition.kind` ([`Collab::repo_state_counts`]) as counts per kind.
-fn counts_by_kind(counts: BTreeMap<Vec<u8>, u64>) -> BTreeMap<u8, u64> {
+fn counts_by_kind(counts: BTreeMap<Vec<u8>, u64>) -> Result<BTreeMap<u8, u64>> {
     counts
         .into_iter()
-        .filter_map(|(k, v)| platform::decode_u8_key(&k).map(|kind| (kind, v)))
+        .map(|(k, v)| {
+            platform::decode_u8_key(&k)
+                .map(|kind| (kind, v))
+                .ok_or_else(|| undecodable("count of transition.kind", &k))
+        })
         .collect()
 }
 
@@ -2935,7 +3026,7 @@ impl<'a> Collab<'a> {
                 .client
                 .sum_documents_grouped(&collab, DOC_TRANSITION, &[filter], "targetId", "delta")
                 .await?;
-            out.extend(codes_by_target(sums));
+            out.extend(codes_by_target(sums)?);
         }
         Ok(out)
     }
@@ -2972,7 +3063,7 @@ impl<'a> Collab<'a> {
             self.client
                 .count_documents_grouped(&collab, DOC_TRANSITION, &kinds, "kind"),
         )?;
-        Ok(repo_counts(issues, patches, &counts_by_kind(kinds)))
+        Ok(repo_counts(issues, patches, &counts_by_kind(kinds)?))
     }
 
     // --- numbering --------------------------------------------------------------------
@@ -3040,42 +3131,71 @@ impl<'a> Collab<'a> {
             )
             .await?;
         if input.draft {
-            created.draft_transition = Some(self.mark_new_draft(repo, &created).await?);
+            created.draft_transition = self.mark_new_draft(repo, &created).await?;
         }
         Ok(created)
     }
 
-    /// The draft transition of a PR this command opened (code 0 when it was just created; a
-    /// resumed create reads its state, and a PR already a draft is left as it is).
-    async fn mark_new_draft(&self, repo: &RepoRef, created: &Created) -> Result<String> {
+    /// The draft transition of a PR this command opened: its id, or `None` when the PR already
+    /// reads as a draft (a resumed create whose transition landed on the earlier run). A PR
+    /// just created is at code 0. When the transition cannot be written the state is read
+    /// again first: a draft that landed anyway (a timed-out wait) is done, not an error.
+    async fn mark_new_draft(&self, repo: &RepoRef, created: &Created) -> Result<Option<String>> {
         let target = Target {
             kind: TargetKind::Patch,
             id: created.document_id.clone(),
             number: created.number,
             author: self.signer_id()?,
         };
-        let known = (!created.resumed).then_some(0);
-        let done = self
-            .set_state_from(repo, &target, StateAction::Draft, None, known)
-            .await;
-        match done {
-            Ok(c) => Ok(c.transition_id),
-            Err(e) => Err(UserError::new(
-                codes::PARTIAL,
-                format!(
-                    "opened pull request #{} in {}, but did not mark it as a draft",
-                    created.number,
-                    repo.display()
-                ),
-            )
-            .cause(e.to_string())
-            .fix(format!(
-                "`dg pr draft {} {}` marks it a draft",
-                repo.display(),
-                created.number
-            ))
-            .into()),
+        let is_draft = |code: i64| status_of_code(code).draft;
+        let code = if created.resumed {
+            self.state_code(repo, &target.id).await?
+        } else {
+            0
+        };
+        if is_draft(code) {
+            return Ok(None);
         }
+        let e = match self
+            .set_state_from(repo, &target, StateAction::Draft, None, Some(code))
+            .await
+        {
+            Ok(c) => return Ok(Some(c.transition_id)),
+            Err(e) => e,
+        };
+        if self.state_code(repo, &target.id).await.is_ok_and(is_draft) {
+            return Ok(None);
+        }
+        // A refusal is conclusive; anything else (the network) may hide a landed transition.
+        let refused = matches!(
+            e,
+            Error::RuleRefused { .. }
+                | Error::NotPermitted { .. }
+                | Error::NotAMember { .. }
+                | Error::User(_)
+        );
+        Err(UserError::new(
+            codes::PARTIAL,
+            format!(
+                "opened pull request #{} in {}, but {} as a draft",
+                created.number,
+                repo.display(),
+                if refused {
+                    "did not mark it"
+                } else {
+                    "could not confirm it is marked"
+                }
+            ),
+        )
+        .cause(e.to_string())
+        .fix(format!(
+            "`dg pr view {} {}` shows its state; `dg pr draft {} {}` marks it a draft",
+            repo.display(),
+            created.number,
+            repo.display(),
+            created.number
+        ))
+        .into())
     }
 
     /// Create an imported issue or PR (the importer's primitive) at the dense next number,
@@ -3103,6 +3223,84 @@ impl<'a> Collab<'a> {
         }
     }
 
+    /// Where a journaled create of `kind` by `me` is saved (`None`: not journaled). A private
+    /// repo's title and body must not be guessable from a local file name: the fingerprint is
+    /// keyed with a per-install secret there.
+    fn journal_path(
+        &self,
+        repo: &RepoRef,
+        kind: TargetKind,
+        me: &str,
+        journal: Option<(&Path, &str)>,
+    ) -> Result<Option<PathBuf>> {
+        let Some((dir, fingerprint)) = journal else {
+            return Ok(None);
+        };
+        let key = (repo.visibility == Visibility::Private)
+            .then(|| journal_secret(dir))
+            .transpose()?;
+        Ok(Some(create_journal_path(
+            dir,
+            &self.client.target().network.key(),
+            repo.id(),
+            kind,
+            me,
+            fingerprint,
+            key.as_ref(),
+        )))
+    }
+
+    /// Finish an interrupted create saved at `path`: re-broadcast its bytes and, when they
+    /// landed, return it. A saved create that never landed (refused, or its number taken) is
+    /// dropped, and the caller numbers afresh.
+    async fn resume_create(
+        &self,
+        engine: &WriteEngine<'_>,
+        collab: &LoadedContract,
+        kind: TargetKind,
+        path: Option<&Path>,
+    ) -> Result<Option<Created>> {
+        let Some(path) = path else { return Ok(None) };
+        let Some(saved) = CreateJournal::load(path, &collab.id()) else {
+            return Ok(None);
+        };
+        let landed = replay_landed(engine, collab, kind.doc_type(), &saved.intent).await?;
+        CreateJournal::remove(path);
+        if landed {
+            return Ok(Some(Created {
+                number: saved.number,
+                document_id: saved.intent.document_id,
+                resumed: true,
+                draft_transition: None,
+            }));
+        }
+        tracing::warn!(
+            document = %saved.intent.document_id,
+            "a saved create from an interrupted run never landed; numbering afresh"
+        );
+        Ok(None)
+    }
+
+    /// The signer's own create of `plain` at `number`, when that is what holds it
+    /// ([`is_own_copy`]): an earlier attempt landed though its read lagged.
+    async fn own_create_at(
+        &self,
+        repo: &RepoRef,
+        kind: TargetKind,
+        number: u32,
+        me: &str,
+        plain: &BTreeMap<String, FieldValue>,
+    ) -> Option<Created> {
+        let d = self.readable_target(repo, kind, number).await.ok()??;
+        let own = is_own_copy(&d, me, plain);
+        own.then_some(Created {
+            number,
+            document_id: d.id,
+            resumed: false,
+            draft_transition: None,
+        })
+    }
+
     /// Create a `kind` document at the dense next number ([`Self::next_number`]), counting
     /// again when another create took it first: consensus refuses a stale number by the
     /// `dense` rule (10422, before execution: nothing landed, and a stale write is refused at
@@ -3119,63 +3317,39 @@ impl<'a> Collab<'a> {
         let me = self.signer_id()?;
         let collab = self.collab_contract(repo).await?;
         let engine = self.engine()?;
-        let path = match journal {
-            Some((dir, fingerprint)) => {
-                // A private repo's title and body must not be guessable from a local file
-                // name: the fingerprint is keyed with a per-install secret there.
-                let key = (repo.visibility == Visibility::Private)
-                    .then(|| journal_secret(dir))
-                    .transpose()?;
-                Some(create_journal_path(
-                    dir,
-                    &self.client.target().network.key(),
-                    repo.id(),
-                    kind,
-                    &me,
-                    fingerprint,
-                    key.as_ref(),
-                ))
-            }
-            None => None,
-        };
-        if let Some(path) = &path {
-            if let Some(saved) = CreateJournal::load(path, &collab.id()) {
-                if replay_landed(&engine, &collab, kind.doc_type(), &saved.intent).await? {
-                    CreateJournal::remove(path);
-                    return Ok(Created {
-                        number: saved.number,
-                        document_id: saved.intent.document_id,
-                        resumed: true,
-                        draft_transition: None,
-                    });
-                }
-                tracing::warn!(
-                    document = %saved.intent.document_id,
-                    "a saved create from an interrupted run never landed; numbering afresh"
-                );
-                CreateJournal::remove(path);
-            }
+        let path = self.journal_path(repo, kind, &me, journal)?;
+        if let Some(done) = self
+            .resume_create(&engine, &collab, kind, path.as_deref())
+            .await?
+        {
+            return Ok(done);
         }
         // A read right after a refusal can lag the block that took the number, so never try
         // a number at or below one already refused.
         let mut floor = 0u32;
         for attempt in 0..MAX_NUMBER_ATTEMPTS {
             let number = self.next_number(repo).await?.max(floor);
+            let plain = props(number)?;
             // sealed per number: the AD binds it (§4.4), so a renumbered retry re-seals
             let sealed = self
-                .seal_if_private(repo, kind.content_kind(), props(number)?)
+                .seal_if_private(repo, kind.content_kind(), plain.clone())
                 .await?;
             let all = Self::with_repo(repo, sealed)?;
+            // The id of the create last signed: what a failed wait checks before giving up.
+            let mut signed: Option<String> = None;
             let res = engine
-                .create_journaled(&collab, kind.doc_type(), all, |p| match &path {
-                    Some(path) => CreateJournal {
-                        saved_at: unix_now(),
-                        contract: collab.id(),
-                        number,
-                        intent: WriteIntent::for_prepared(0, p),
+                .create_journaled(&collab, kind.doc_type(), all, |p| {
+                    signed = Some(p.document_id().to_string());
+                    match &path {
+                        Some(path) => CreateJournal {
+                            saved_at: unix_now(),
+                            contract: collab.id(),
+                            number,
+                            intent: WriteIntent::for_prepared(0, p),
+                        }
+                        .save(path),
+                        None => Ok(()),
                     }
-                    .save(path),
-                    None => Ok(()),
                 })
                 .await;
             let forget = || {
@@ -3193,9 +3367,14 @@ impl<'a> Collab<'a> {
                         draft_transition: None,
                     });
                 }
-                // Another create took the number: nothing landed; count again.
+                // The number is taken: by an earlier attempt of this same create (it landed, but
+                // the read after its consumed nonce lagged), which is the result; else by
+                // another create, and nothing of ours landed: count again.
                 Err(e) if number_taken(&e) => {
                     forget();
+                    if let Some(done) = self.own_create_at(repo, kind, number, &me, &plain).await {
+                        return Ok(done);
+                    }
                     floor = number.saturating_add(1);
                     tracing::warn!(number, attempt, "number taken; counting again");
                 }
@@ -3211,7 +3390,26 @@ impl<'a> Collab<'a> {
                     forget();
                     return Err(e);
                 }
-                Err(e) => return Err(e),
+                // Anything else (a wait that timed out, a failed read) may hide a landed create:
+                // a proved read of the signed id settles it. Unsettled, a journaled create stays
+                // saved for the next run; the importer (not journaled) finds its copy on chain.
+                Err(e) => {
+                    let Some(id) = signed else { return Err(e) };
+                    if !engine
+                        .landed(&collab, kind.doc_type(), &id, true)
+                        .await
+                        .unwrap_or(false)
+                    {
+                        return Err(e);
+                    }
+                    forget();
+                    return Ok(Created {
+                        number,
+                        document_id: id,
+                        resumed: false,
+                        draft_transition: None,
+                    });
+                }
             }
         }
         Err(Error::Platform(format!(
@@ -3594,24 +3792,17 @@ impl<'a> Collab<'a> {
             Actor::Author => StateRoute::Author,
             _ => StateRoute::Member,
         };
-        let mv = match next_transition(
-            target.kind.transition_target(),
-            code,
-            action,
-            actor,
-            target.number,
-        ) {
-            Some(mv) => mv,
-            // With the pre-check off, the move is attempted from the state it is legal from
-            // and consensus refuses it (the e2e suite proves the rules this way).
-            None if !precheck_enabled() => next_transition(
-                target.kind.transition_target(),
-                legal_from(action),
-                action,
-                actor,
-                target.number,
-            )
-            .ok_or_else(|| no_move(target, code, action, actor))?,
+        let tt = target.kind.transition_target();
+        let (mv, forced) = match next_transition(tt, code, action, actor, target.number) {
+            Some(mv) => (mv, false),
+            // With the pre-check off, the move is attempted from the state it is legal from,
+            // without the actor gate, and consensus judges it (the e2e suite proves the rules
+            // this way).
+            None if !precheck_enabled() => (
+                forced_move(tt, action, actor, target.number)
+                    .ok_or_else(|| no_move(target, code, action, actor))?,
+                true,
+            ),
             None => return Err(no_move(target, code, action, actor)),
         };
         let props = transition_props(target, &mv, merge_oid)?;
@@ -3625,6 +3816,13 @@ impl<'a> Collab<'a> {
             }),
             Err(e) if is_state_rule_refusal(&e) => {
                 let now = self.state_code(repo, &target.id).await.unwrap_or(code);
+                // A move attempted though it was known illegal, or one whose target has not
+                // moved since the read: the rule refused this move itself, not a race.
+                let cause = if forced || now == code {
+                    format!("consensus refused it ({e})")
+                } else {
+                    format!("another change landed first; consensus refused this one ({e})")
+                };
                 Err(UserError::new(
                     codes::REJECTED,
                     format!(
@@ -3635,9 +3833,7 @@ impl<'a> Collab<'a> {
                         state_words(target.kind, now)
                     ),
                 )
-                .cause(format!(
-                    "another change landed first; consensus refused this one ({e})"
-                ))
+                .cause(cause)
                 .note("refused before execution: nothing was written")
                 .into())
             }
@@ -4665,6 +4861,64 @@ mod tests {
         }
     }
 
+    /// With the pre-check off the move is attempted without the actor gate, so consensus
+    /// judges an author's merge (`f_authorNoMerge`) and a stranger's move (its gate).
+    #[test]
+    fn a_forced_move_skips_only_the_actor_gate() {
+        let tt = TransitionTarget::Patch;
+        let m = forced_move(tt, StateAction::Merge, Actor::Author, 9).unwrap();
+        assert_eq!((m.kind, m.delta, m.as_author), (13, 2, 9));
+        let m = forced_move(tt, StateAction::Close, Actor::Other, 9).unwrap();
+        assert_eq!((m.kind, m.as_author), (11, 0));
+        let m = forced_move(tt, StateAction::Ready, Actor::Member, 9).unwrap();
+        assert_eq!((m.kind, m.delta), (15, -8));
+        // An issue has no merge, draft or ready transition at all.
+        for a in [StateAction::Merge, StateAction::Draft, StateAction::Ready] {
+            assert!(forced_move(TransitionTarget::Issue, a, Actor::Member, 3).is_none());
+        }
+    }
+
+    /// A create refused as "taken" by an earlier attempt of itself (it landed; the read after
+    /// the consumed nonce lagged) is the result: the signer's own copy with the same content.
+    #[test]
+    fn a_landed_attempt_of_the_same_create_is_recognised() {
+        let imp = Imported {
+            author: "octocat".into(),
+            created_at: 1_600_000_000,
+            url: "https://github.com/o/r/issues/7".into(),
+        };
+        let from = Provenance {
+            imported: Some(&imp),
+            upstream_number: Some(7),
+        };
+        let plain = issue_props(4, "t", "b", from).unwrap();
+        let doc = |owner: &str, fields: BTreeMap<String, FieldValue>| FetchedDocument {
+            id: "landed".into(),
+            owner_id: owner.into(),
+            created_at: Some(5),
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            revision: Some(1),
+            fields,
+        };
+        // As stored: integers read back at another width, the nested createdAt too.
+        let mut stored = plain.clone();
+        stored.insert("imported".into(), {
+            let Some(FieldValue::Object(mut m)) = stored.get("imported").cloned() else {
+                unreachable!()
+            };
+            m.insert("createdAt".into(), FieldValue::Integer(1_600_000_000));
+            FieldValue::Object(m)
+        });
+        stored.insert("repoId".into(), FieldValue::identifier([1; 32]));
+        assert!(is_own_copy(&doc(ME, stored.clone()), ME, &plain));
+        // Someone else's issue at that number, or other content: count again.
+        assert!(!is_own_copy(&doc("other", stored.clone()), ME, &plain));
+        let mut edited = stored;
+        edited.insert("title".into(), FieldValue::text("another"));
+        assert!(!is_own_copy(&doc(ME, edited), ME, &plain));
+    }
+
     /// A create refused because another took the number counts again; so does the unique
     /// index; a state-rule refusal is recognised apart from both.
     #[test]
@@ -4691,6 +4945,20 @@ mod tests {
             detail: "…".into(),
         };
         assert!(is_state_rule_refusal(&closed));
+        // Only the transition's c<digit>_ rules: checkRun's conclusionIfDone is not one.
+        for (doc, rule) in [
+            ("checkRun", "conclusionIfDone"),
+            ("checkRun", "completedAtIfDone"),
+            ("transition", "f_authorNoMerge"),
+            ("issue", "c1_closedAfter"),
+        ] {
+            let e = Error::RuleRefused {
+                document_type: doc.into(),
+                rule: rule.into(),
+                detail: String::new(),
+            };
+            assert!(!is_state_rule_refusal(&e), "{doc} {rule}");
+        }
         assert!(!number_taken(&closed));
     }
 
@@ -4700,17 +4968,21 @@ mod tests {
     fn grouped_answers_become_codes_and_repo_counts() {
         let a = [1u8; 32];
         let b = [2u8; 32];
-        let codes = codes_by_target(BTreeMap::from([(a.to_vec(), 1), (b.to_vec(), 8)]));
+        let codes = codes_by_target(BTreeMap::from([(a.to_vec(), 1), (b.to_vec(), 8)])).unwrap();
         assert_eq!(codes.get(&platform::encode_identifier(a)), Some(&1));
         assert_eq!(codes.get(&platform::encode_identifier(b)), Some(&8));
         let key = |k: u8| vec![k ^ 0x80];
+        // A key of another width is an error, never a silent 0 or "open".
+        assert!(counts_by_kind(BTreeMap::from([(vec![1, 2], 1)])).is_err());
+        assert!(codes_by_target(BTreeMap::from([(vec![1; 31], 1)])).is_err());
         let kinds = counts_by_kind(BTreeMap::from([
             (key(1), 5),
             (key(2), 1),
             (key(13), 3),
             (key(14), 2),
             (key(11), 1),
-        ]));
+        ]))
+        .unwrap();
         assert_eq!(kinds.get(&13), Some(&3));
         let c = repo_counts(10, 7, &kinds);
         assert_eq!((c.issues_open, c.issues_closed), (6, 4));

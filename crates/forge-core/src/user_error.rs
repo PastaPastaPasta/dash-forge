@@ -661,6 +661,14 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
             reason,
             needs,
         } => not_permitted(ctx, action, reason, needs),
+        // 10422: a `propertyConstraints` rule of the type does not hold (forge-v2: a state move
+        // the target's transitions do not allow, an author's merge, a stale dense number).
+        CoreError::RuleRefused { rule, detail, .. } => UserError::new(
+            codes::REJECTED,
+            ctx.headline(&format!("consensus refused it by the rule {rule:?}")),
+        )
+        .cause(detail.clone())
+        .note("refused before execution: nothing was written"),
         CoreError::V2NotDeployed { network } => not_deployed(ctx, network),
         CoreError::ContractsMissing { network, detail } => contracts_missing(ctx, network, detail),
         CoreError::Timeout { retryable } => timed_out(ctx, *retryable),
