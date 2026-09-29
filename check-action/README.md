@@ -8,13 +8,15 @@ Reports a GitHub Actions job's result as a [Dash Forge](../README.md) check run 
 
 ## Quick start
 
-1. **A runner key.** As the owner of the Forge repository:
+1. **A runner identity and key.** Create an identity for CI, with a small deposit because it pays for its own reports, then enrol it as the repository's owner. `dg auth new` makes the new identity this computer's default, so sign back in as the owner, or pass `--identity`:
 
    ```sh
+   dg auth new --backup-file runner.json --skip-backup-check          # the runner identity
+   dg auth login ~/owner.identity.json                                # back to the owner
    dg ci runner new alice/project --runner runner.json -o runner.dfk1
    ```
 
-   Add the contents of `runner.dfk1` as a GitHub secret named `FORGE_RUNNER_KEY`, then delete the file.
+   Add the contents of `runner.dfk1` as a GitHub secret named `FORGE_RUNNER_KEY`, then delete the file. Keep `runner.json` (it holds the runner's master key) somewhere safe, not in CI. See [CI and check runs](../docs/guides/ci.md#enrol-a-runner).
 
 2. **Report each job.** Add the action as the last step, with `if: always()` so failures are reported too.
 
@@ -43,6 +45,9 @@ jobs:
         with:
           repo: <owner identity id>/project     # or dash://<owner>/project
           job-status: ${{ job.status }}
+          # Forge runs on a devnet today; name it (see docs/guides/README.md "Which network").
+          network: devnet
+          devnet-name: <devnet name>
           install: 'false'
         env:
           DASH_FORGE_KEY: ${{ secrets.FORGE_RUNNER_KEY }}

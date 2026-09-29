@@ -92,6 +92,12 @@ resolve INPUT_JOB_STATUS=success INPUT_SUMMARY="$long" || fail "exit $?"
 s=$(args | sed -n 's/^--summary=//p')
 [[ $(printf '%s' "$s" | wc -c) -le 2000 ]] || fail "summary is $(printf '%s' "$s" | wc -c) bytes"
 
+case="a multibyte name fits 100 characters and 200 bytes"
+resolve INPUT_JOB_STATUS=success INPUT_NAME="$(printf '%100s' '' | tr ' ' 'x' | sed 's/x/𝒳/g')" || fail "exit $?"
+n=$(args | sed -n 's/^--name=//p')
+[[ $(printf '%s' "$n" | wc -c) -le 200 && -n "$n" ]] || fail "name is $(printf '%s' "$n" | wc -c) bytes"
+[[ "$(printf '%s' "$n" | LC_ALL=C.UTF-8 wc -m | tr -d ' ')" -le 100 ]] || fail "name is over 100 characters"
+
 case="a long run id is hashed to 120 bytes"
 resolve INPUT_JOB_STATUS=success GITHUB_JOB=a-rather-long-job-id INPUT_NAME="$(printf '%100s' '' | tr ' ' 'n')" || fail "exit $?"
 e=$(args | sed -n 's/^--external-id=//p')
@@ -185,6 +191,19 @@ report FORGE_ARGS_FILE="$(args_file)" DASH_FORGE_KEY=dfk1:x FORGE_INSTALL_FAILED
 grep -q '::warning title=Dash Forge check not reported::installing dg failed' "$tmp/stdout" || fail "install warning"
 resolve INPUT_JOB_STATUS=success
 if report FORGE_ARGS_FILE="$(args_file)" DASH_FORGE_KEY=dfk1:x FORGE_INSTALL_FAILED=x FORGE_FAIL_ON_ERROR=true; then fail "install failure with fail-on-error must fail"; fi
+
+case="unreadable dg output on success warns (or fails when asked)"
+cat >"$tmp/bin/dg-garbage" <<'EOF'
+#!/usr/bin/env bash
+echo 'not json'
+EOF
+chmod +x "$tmp/bin/dg-garbage"
+resolve INPUT_JOB_STATUS=success
+report FORGE_ARGS_FILE="$(args_file)" DASH_FORGE_KEY=dfk1:x DG_BIN="$tmp/bin/dg-garbage" || fail "must warn, not fail"
+grep -q 'output could not be read' "$tmp/stdout" || fail "says the output is unreadable"
+grep -q '^document-id=' "$tmp/out" && fail "no empty outputs published"
+resolve INPUT_JOB_STATUS=success
+if report FORGE_ARGS_FILE="$(args_file)" DASH_FORGE_KEY=dfk1:x DG_BIN="$tmp/bin/dg-garbage" FORGE_FAIL_ON_ERROR=true; then fail "fail-on-error must fail"; fi
 
 case="report without key"
 resolve INPUT_JOB_STATUS=success

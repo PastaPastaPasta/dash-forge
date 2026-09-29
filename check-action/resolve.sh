@@ -33,7 +33,9 @@ if [[ -z "$name" ]]; then
   name="${GITHUB_WORKFLOW:+$GITHUB_WORKFLOW / }${GITHUB_JOB:-job}${matrix_suffix}"
 fi
 one_line "name" "$name"
-name=$(printf '%s' "$name" | cut -c1-100)
+# The contract caps a name at 100 characters and 200 UTF-8 bytes.
+name="${name:0:100}"
+while (( ${#name} > 0 )) && (( $(printf '%s' "$name" | wc -c) > 200 )); do name="${name%?}"; done
 [[ -n "$name" ]] || die "name is empty"
 
 status="${INPUT_STATUS:-completed}"

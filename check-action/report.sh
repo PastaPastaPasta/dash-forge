@@ -21,6 +21,7 @@ cell() { local s="${1//|/\\|}"; printf '%s' "${s//$'\n'/ }"; }
 [[ -f "${FORGE_ARGS_FILE:-}" ]] || warn_or_fail "internal: no argument file"
 dg="${DG_BIN:-dg}"
 command -v "$dg" >/dev/null || warn_or_fail "$dg is not on PATH (install: 'true', or build it before this step)"
+command -v jq >/dev/null || warn_or_fail "jq is not on PATH (GitHub's hosted runners have it; install it on a self-hosted one)"
 
 args=()
 while IFS= read -r line; do args+=("$line"); done <"$FORGE_ARGS_FILE"
@@ -39,9 +40,10 @@ if [[ $rc -ne 0 ]]; then
   warn_or_fail "$msg"
 fi
 
-doc=$(jq -r '.documentId // empty' "$out")
-url=$(jq -r '.url // empty' "$out")
-action=$(jq -r '.status // empty' "$out")
+doc=$(jq -r '.documentId // empty' "$out" 2>/dev/null) || doc=""
+url=$(jq -r '.url // empty' "$out" 2>/dev/null) || url=""
+action=$(jq -r '.status // empty' "$out" 2>/dev/null) || action=""
+[[ -n "$doc" && -n "$action" ]] || warn_or_fail "dg reported success but its output could not be read: $(head -c 300 "$out" | tr '\n' ' ')"
 {
   echo "document-id=$doc"
   echo "url=$url"

@@ -118,6 +118,8 @@ A repository mirrored from GitHub keeps its CI on GitHub. The [check action](../
         with:
           repo: <owner identity id>/project
           job-status: ${{ job.status }}
+          network: devnet           # Forge runs on a devnet today
+          devnet-name: <devnet name>
           install: 'false'          # until a release exists; build dg in an earlier step
         env:
           DASH_FORGE_KEY: ${{ secrets.FORGE_RUNNER_KEY }}      # from `dg ci runner new`
