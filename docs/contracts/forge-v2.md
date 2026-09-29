@@ -1,9 +1,9 @@
 # Dash Forge v2 contracts (protocol 14)
 
-Two shared data contracts, **forge-core** and **forge-collab**, registered once per network and joined by a PV14 contract group. Every repository is a set of documents in these two contracts, keyed by the `repo` document's id (`repoId`). This is the only data model Dash Forge implements.
+Three shared data contracts, **forge-core**, **forge-collab** and **forge-community**, registered once per network and joined by a PV14 contract group. Every repository is a set of documents in these contracts, keyed by the `repo` document's id (`repoId`). This is the only data model Dash Forge implements.
 
-- Schemas: `forge-contracts/contracts/forge-core.json`, `forge-contracts/contracts/forge-collab.json`
-- Offline validation: `tools/contract-validate` (rs-dpp `v4.2.0-beta.7`, `PlatformVersion` 14)
+- Schemas: `forge-contracts/contracts/forge-core.json`, `forge-contracts/contracts/forge-collab.json`, `forge-contracts/contracts/forge-community.json`
+- Offline validation: `tools/contract-validate` (rs-dpp `v4.2.0-beta.7`, `PlatformVersion` 14), `.github/workflows/contracts.yml`
 - Registration: `forge-contracts/scripts/deploy-v2.mjs` (evo-sdk `4.2.0-beta.7`)
 - Decision record: roadmap D-A (owner decision of 2026-09-24, reviewed by a protocol architect)
 
@@ -14,9 +14,11 @@ Contract registration is priced per contract (a base fee plus a fee per document
 Protocol 14 can express per-repository access control inside a shared contract:
 
 - **`ownerRefersTo`**: a document type can require its writer (`$ownerId`) to be found through a unique index of another document type. Consensus checks this on create, and on every replace when the target is a `deletableDocument`.
-- **`lookup`** references resolve a key such as `(repoId, memberId)` through a unique index, so a membership document is enough; the writer does not have to name it.
-- **`propertyAgreement` with `$ownerId`** makes "only the owner of the referenced document may write this" a consensus rule.
-- **Contract groups** give the pair a provable "these contracts belong together" record.
+- **`findBy`** references find a document through the unique index whose properties are exactly the ones named, e.g. `{"repoId": "repoId", "memberId": "."}` (`"."` is the reference's own value: the writer, for `ownerRefersTo`), so a membership document is enough; the writer does not have to name it.
+- **`where`** checks properties of the document found, keyed by **its** property: `{"$ownerId": "$ownerId"}` makes "only the owner of the referenced document may write this" a consensus rule, and `{"number": "targetNumber"}` means the found document's `number` equals ours.
+- **Contract groups** give the three contracts a provable "these contracts belong together" record.
+
+**Spelling (platform#5197, beta.7).** `findBy` and `where` replaced `lookup {index, keys}` and `propertyAgreement {referring: referenced}` in v4.2.0-beta.7: the index name is gone (Platform picks the unique index the `findBy` keys name), and `where` is keyed by the referenced property, the reverse of `propertyAgreement`. The parsed model, validation and fees are unchanged. The old keywords are refused **on every parse**, stored contracts included, so the contracts registered before the beta.7 wipe cannot be read by a beta.7 client; that is why this schema is a fresh registration (§8).
 
 The per-repo "sovereign" tier is dropped. Anyone who wants different rules can register their own copy of these schemas (the deploy script works for any identity). Clients treat a copy as a different forge.
 
@@ -28,78 +30,84 @@ The per-repo "sovereign" tier is dropped. Anyone who wants different rules can r
 
 | Type | Gate (create) | Mutable | Deletable | Notes |
 |---|---|---|---|---|
-| `repo` | anyone | yes; `name`, `visibility`, `forkOf` immutable | **no** (target of `permanentDocument` refs) | unique `($ownerId, name)`, rangeCountable (repos per owner); `name` is the immutable URL slug `^[a-z0-9][a-z0-9._-]{0,62}$`; `displayName` (≤ 400 bytes) and `description` are editable; `forkOf` → permanent `repo` |
+| `repo` | anyone | yes; `name`, `visibility`, `forkOf` immutable | **no** (target of `permanentDocument` refs) | unique `($ownerId, name)`, rangeCountable (repos per owner); `name` is the immutable URL slug `^[a-z0-9][a-z0-9._-]{0,62}$`; `displayName` (≤ 400 bytes) and `description` are editable; `forkOf` → permanent `repo`, ranked index `skipIfAbsent` (a non-fork writes no entry, so "most forked" has no null group) |
 | `maintainer` | repo owner only (`repoId` → repo with `{"$ownerId":"$ownerId"}`) | no | yes (= revoke) | unique `(repoId, memberId)`; `memberId` → existing identity; index `memberId` |
 | `writer` | repo owner only | no | yes (= revoke) | same shape as `maintainer` |
 | `refUpdate` | M or W | no | **no** | `(repoId, refNameHash, $createdAt)` ref state, `(repoId, $createdAt)` reflog, `(repoId, $ownerId, $createdAt)` pusher |
 | `protectedRefUpdate` | M | no | **no** | same indexes |
 | `config` | M | no | **no** | append-only, newest wins; `protectedPatterns` and `backend.uris` are typed string arrays now |
-| `packManifest` | M or W | no | **no** | unique `(repoId, $ownerId, packHash)`; `(repoId, packHash)` lookup; `(repoId, $createdAt)` rangeCountable (pack count); `(repoId, kind, $createdAt)` |
+| `packManifest` | M or W | no | **no** | unique `(repoId, $ownerId, packHash)`; `(repoId, packHash)` lookup; `(repoId, $createdAt)` rangeCountable (pack count); `(repoId, kind, $createdAt)`. `kind`: 0 git pack, 1 `objectLocator`, 2 `flatIndex`, **3 `releaseAssets`** (a release's full asset list, named by `release.assetManifest`; `docs/design/release-asset-manifest.md`) |
 | `manifestPart` | M or W | no | **no** | unique `(repoId, $ownerId, packHash, partSeq)` |
-| `chunk` | M or W | no | **no** | unique `(repoId, $ownerId, packHash, seq)`, rangeCountable (availability audit per uploader) |
-| `release` | **M** | no | yes | newest per `(repoId, tagName)` wins; maintainer-only because a release names artifacts users install; optional `enc`/`epoch` (C-1) for a private repo, with `tagName` the keyed hash of the tag |
+| `chunk` | M or W | no | **no** | unique `(repoId, $ownerId, packHash, seq)`, rangeCountable (availability audit per uploader); `documentsCountable` (the chunk total, a ceiling for the fee estimator; `dash-forge-qa/design/CHUNK-COUNT-ESTIMATOR.md`, kept only if its count-tree cost measures under ~5 % of a chunk write) |
+| `release` | **M** | no | yes | newest per `(repoId, tagName)` wins; maintainer-only because a release names artifacts users install; optional `enc`/`epoch` (C-1) for a private repo, with `tagName` the keyed hash of the tag; optional `assetManifest` (h32: the `packHash` of a kind-3 `packManifest` holding the full asset list when `assets` does not fit) and `imported {author, createdAt, url}` (a mirrored release); `noPlain` covers `assetManifest` too |
 | `label` | M or W | no | yes | newest per `(repoId, name)` wins; optional `enc`/`epoch` (C-1), `name` then the keyed hash of the name |
 | `repoKey` | M | no | **no** | unique `(repoId, memberId, epoch, $ownerId)`; private repos, §5 |
-| `runner` | repo owner only (as `maintainer`) | no | yes (= revoke) | CI membership (C-1, platform-parity-spec §2.2): unique `(repoId, memberId)`, index `memberId`; a runner may post `checkRun` and nothing else |
+| `runner` | repo owner only (as `maintainer`) | no | yes (= revoke) | CI membership (C-1, platform-parity-spec §2.2): unique `(repoId, memberId)`, index `memberId`; a runner may post `checkRun` (forge-community) and nothing else |
 | `topic` | repo owner only (as `maintainer`) | no | yes (untag) | C-1: unique `(repoId, name)`; `byName (name, $createdAt)` countable and ranked at `name` (repos per topic, popular topics); `name` `^[a-z0-9][a-z0-9-]{0,29}$`; the owner tags, so an untag is always possible |
 
-forge-core was registered fresh on moutai after the beta.6 reset (2026-09-28), with the C-1 types and optional properties and the gaps an in-place update could not close. Later changes ship as an in-place `DataContractUpdate`: new types and new optional properties. C-1 added `renamedTo` (a permanent `repo` reference: where the repository moved) and `language` (≤ 30 characters). CI (`.github/workflows/contracts.yml`) validates it with `contract-validate --expect-update forge-contracts/contracts/registered/forge-core.v1.json`, the schema registered fresh after the beta.6 reset.
+forge-core is registered fresh at the beta.7 wipe, in the `findBy`/`where` spelling, with the release asset manifest, the countable `chunk` type and the sparse `forkOf` index. Later changes ship as an in-place `DataContractUpdate`: new types and new optional properties. CI (`.github/workflows/contracts.yml`) validates it with `contract-validate --expect-update forge-contracts/contracts/registered/forge-core.v1.json`, the schema of that fresh registration.
 
 ### forge-collab
 
-References into forge-core carry `contractId`. The schema file holds the placeholder `FORGE_CORE_CONTRACT_ID`, and the deploy script replaces it with forge-core's id before registering.
+Issues, PRs and everything that changes their state or discusses them. References into forge-core carry `contractId`. The schema file holds the placeholder `FORGE_CORE_CONTRACT_ID`, and the deploy script replaces it with forge-core's id before registering.
 
 | Type | Gate (create) | Mutable | Deletable | Notes |
 |---|---|---|---|---|
-| `issue` | anyone (fees are the spam floor) | yes (title, body), history kept; `repoId`, `number` immutable; `$updatedAt` required | **no** | unique `(repoId, number)` rangeCountable; unique `($ownerId, repoId, number)` (the author lookup `authorEvent` uses); `repoId` → permanent `repo` |
-| `patch` (PR) | anyone | yes (title, body), history kept; `repoId`, `number`, `sourceRepoId`, the four ref-name fields, `headOid` (the *initial* head; later heads are `headUpdate` events) and `draft` immutable; `$updatedAt` required | **no** | as `issue`, plus `sourceRepoId` → permanent `repo` (the fork holding the PR's objects), index `sourceRef (sourceRepoId, sourceRefNameHash)` ("the PRs from this branch"; `sourceRepoId ==` alone also uses it); optional `draft` (opened as a draft) |
-| `comment` | anyone | yes (body); `repoId`, `targetId` and the anchor (`replyTo`, `commitOid`, `path`, `line`, `side`, `startLine`, `reviewId`) immutable; `$updatedAt` required | yes | `targetId` → permanent `issue` or `patch` of the same repo (`propertyAgreement` on `repoId`); `(targetId, $createdAt)` rangeCountable; `reply (replyTo)` ("replies to my comment"; `nullSearchable: false`, so only replies are in it); `startLine` (first line of a range); `reviewId` → deletable `review` with `propertyAgreement {repoId: repoId, targetId: patchId, $ownerId: $ownerId}`, so only the reviewer can attach comments to their review, and only on its PR (consensus) |
+| `issue` | anyone (fees are the spam floor) | yes (title, body), history kept; `repoId`, `number`, `tk`, `upstreamNumber` immutable; `$updatedAt` required | **no** | `tk = 0` (the target-kind tag a `transition` agrees with); `number` is **dense** (§6.2): unique `(repoId, number)`; `perRepo (repoId)` countable (the numbering total and the header's issue total); unique `author ($ownerId, repoId, number)` rangeCountable (the author lookup `authorEvent` and `transition` use; author totals); optional `upstreamNumber` (a mirror's source number) with `upstream (repoId, upstreamNumber)` `skipIfAbsent`; `repoId` → permanent `repo` |
+| `patch` (PR) | anyone | yes (title, body), history kept; `repoId`, `number`, `tk`, `upstreamNumber`, `sourceRepoId`, the four ref-name fields and `headOid` (the *initial* head; later heads are `headUpdate` events) immutable; `$updatedAt` required | **no** | as `issue` with `tk = 1`, sharing the issues' number sequence, plus `sourceRepoId` → permanent `repo` (the fork holding the PR's objects), index `sourceRef (sourceRepoId, sourceRefNameHash)` ("the PRs from this branch"; `sourceRepoId ==` alone also uses it). No `draft` field: a draft PR is a `patch` plus a kind-14 `transition` |
+| `transition` | M or W, **or** the author of the target | no | **no** | a state change of an issue or PR (§3.1): `kind`, signed `delta`, `targetKind`, `asAuthor`, `oid` (merge); `perTarget (targetId)` countable + `summable: delta` (the target's state), `perRepoKind (repoId, kind)` countable (the header counts), `feed (repoId, $createdAt)` |
+| `comment` | anyone | yes (body); `repoId`, `targetId` and the anchor (`replyTo`, `commitOid`, `path`, `line`, `side`, `startLine`, `reviewId`) immutable; `$updatedAt` required | yes | `targetId` → permanent `issue` or `patch` of the same repo (`where` on `repoId`); `(targetId, $createdAt)` rangeCountable; `reply (replyTo)` ("replies to my comment"; `skipIfAbsent`, so only replies are in it); `startLine` (first line of a range); `reviewId` → deletable `review` with `where {repoId: repoId, patchId: targetId, $ownerId: $ownerId}` (the review's `patchId` must equal the comment's `targetId`), so only the reviewer can attach comments to their review, and only on its PR (consensus) |
 | `review` | anyone | no | yes | `patchId` → permanent `patch` of the same repo; `(patchId, $createdAt)` rangeCountable (review count per PR); `commentCount` (how many `reviewId` comments the submit writes); clients count approvals only from M/W holders (§6) |
-| `event` | M or W | no | **no** | every kind 1–22 (§3); `refId` (a thread root, a reviewer, a review) with index `addressee (refId)` (`nullSearchable: false`: only events that carry a `refId` are in it); optional `enc`/`epoch` (`dependentRequired`): a private repo's event seals its `value` there (private-repos.md §4.3) |
-| `authorEvent` | **the author of the target issue or PR** | no | **no** | `kind ∈ {1, 2, 9, 10, 11, 12, 13, 14, 16}`, enforced by the schema (`enum`); `refId`, `oid`; indexes `(targetId, $createdAt)`, repo feed `(repoId, $createdAt)` and `addressee (refId)` (sparse, as on `event`); §3 |
-| `checkRun` | **runner**, M or W | yes (status progression); `repoId`, `headOid`, `name` immutable; `$updatedAt` required | yes | a replace re-checks the gate, so a revoked runner cannot advance its runs; `conclusion` is GitHub's enum and present exactly when `status` is `completed` (consensus rules); `externalId`, `startedAt`, `completedAt`, `artifacts`, `logUrl` + `logSha256` (both or neither); indexes `head (repoId, headOid, $createdAt)` and `recent (repoId, $createdAt)` |
-| `policy` | **M** | no | **no** | a branch policy: `requiredApprovals` 0–10, `approverRole` (0 any member, 1 maintainers), `requireChecks`, `requiredChecks` (≤ 10 names, C-1), `mergeMethods` bitmask (1 fast-forward, 2 merge commit, 4 squash, 8 rebase; 0 any); newest by `($createdAt, $id)` wins; non-deletable so a revoked maintainer cannot revert it by deleting it; a client rule in the merge box, never consensus |
-| `webhook` | M | yes (`url`, `events`, `secret`, `disabled`); `repoId`, `hookId` immutable | yes | the creating maintainer toggles `disabled` or edits in place; a replace re-checks the gate, so a revoked maintainer cannot re-enable a hook. Another maintainer supersedes it with a newer doc for the same `hookId` (newest wins) or asks the creator to delete. `secret` is `encryptedFor` the relay identity's encryption key (§5) |
-| `profile` | anyone | yes | yes | one per identity; `location`, `company`, `pubkeys` (≤ 4: `gpg:<fingerprint>` / `ssh-ed25519 …`, for signed-commit badges) since C-1 |
-| `star` | anyone | no | yes (unstar) | `indexOnly`: `(repoId)` countable + ranked = star count and all-time "most starred"; `($ownerId)` with terminal `repoId` = my stars; one star per (repo, identity) is structural; no `$createdAt`, so an unstar never needs a timestamp (platform-parity-spec §4.3) |
-| `starBeat` | anyone | no | **no** | trending (C-1): `indexOnly`; `byOwner ($ownerId)` terminal `repoId` (one per identity and repo, ever); `byWeek ($createdAt, repoId)` 7-day windows every day, ranked, whose entries expire through the index's `ttl` (one week). Written beside a new star when the starrer counts toward Trending (default on) |
-| `watch` | anyone | no | yes (unwatch) | `indexOnly`: `(repoId)` countable = watchers; `($ownerId)` terminal `repoId` = what I watch (the inbox's subscriptions, on every device) |
+| `event` | M or W | no | **no** | the non-state kinds 4–8, 11–22 (§3; `kind ≥ 4` and rule `noState` keep 9, 10 out); `refId` (a thread root, a reviewer, a review) with index `addressee (refId)` (`skipIfAbsent`: only events that carry a `refId` are in it); optional `enc`/`epoch` (`dependentRequired`): a private repo's event seals its `value` there (private-repos.md §4.3) |
+| `authorEvent` | **the author of the target issue or PR** | no | **no** | `kind ∈ {11, 12, 13, 14, 16}`, enforced by the schema (`enum`); `refId`, `oid`; indexes `(targetId, $createdAt)`, repo feed `(repoId, $createdAt)` and `addressee (refId)` (sparse, as on `event`); §3 |
 | `milestone` | M or W | no | yes | newest per `(repoId, title)` wins (index `byRepo (repoId, title, $createdAt)`); `description`, `dueOn`, `closed`; a private repo's milestone seals them in `enc` and keeps the keyed hash of the title in `title`; set / cleared on an issue or PR by event kinds 17 / 18 |
-| `follow` | anyone | no | yes (unfollow) | `indexOnly`: follower and following counts are both countable, and `byTarget` is ranked ("most followed", C-1); `identityId` → existing identity, `distinctFrom: $ownerId` |
+
+### forge-community
+
+The social graph, CI and repo automation: types no collab rule counts, split off so both collab and community keep real headroom. References into forge-core carry `contractId` (`FORGE_CORE_CONTRACT_ID`, substituted like forge-collab's). A key bound to the contract group covers all three contracts; a runner key is bound to `(forge-community, checkRun)` only.
+
+| Type | Gate (create) | Mutable | Deletable | Notes |
+|---|---|---|---|---|
+| `checkRun` | **runner**, M or W | yes (status progression); `repoId`, `headOid`, `name` immutable; `startedAt`, `completedAt`, `conclusion`, `externalId` **set once** (`immutableAllowSetting`); `$updatedAt` required | yes | a replace re-checks the gate, so a revoked runner cannot advance its runs; `conclusion` is GitHub's enum and present exactly when `status` is `completed`; **monotonic** (§6): `startedAt` present exactly when `status ≠ queued`, `completedAt` present exactly when `status = completed`, and a set-once field can never change or be removed (40128), so a completed run is final; `logUrl` + `logSha256` (both or neither); indexes `head (repoId, headOid, $createdAt)`, `recent (repoId, $createdAt)` and `updated (repoId, $updatedAt)` (for pollers) |
+| `policy` | **M** | no | **no** | a branch policy: `requiredApprovals` 0–10, `approverRole` (0 any member, 1 maintainers), `requireChecks`, `requiredChecks` (≤ 10 names, C-1), `mergeMethods` bitmask (1 fast-forward, 2 merge commit, 4 squash, 8 rebase; 0 any); newest by `($createdAt, $id)` wins; non-deletable so a revoked maintainer cannot revert it by deleting it; a client rule in the merge box, never consensus. "Checks only from runners" (`policy.checksFrom`) stays a client rule too: there is no consensus "posted by a runner" bit (wipe decision D-6) |
+| `webhook` | M | yes (`url`, `events`, `secret`, `disabled`); `repoId`, `hookId` immutable | yes | the creating maintainer toggles `disabled` or edits in place; a replace re-checks the gate, so a revoked maintainer cannot re-enable a hook. Another maintainer supersedes it with a newer doc for the same `hookId` (newest wins) or asks the creator to delete. `secret` is `encryptedFor` the relay identity's encryption key (§5) |
+| `profile` | anyone | yes | yes | one per identity; `location`, `company`, `pubkeys` (≤ 4: `gpg:<fingerprint>` / `ssh-ed25519 …`, for signed-commit badges) |
+| `star` | anyone | no | yes (unstar) | `indexOnly`: `(repoId)` countable + ranked = star count and all-time "most starred"; `($ownerId)` with terminal `repoId` = my stars; one star per (repo, identity) is structural; no `$createdAt`, so an unstar never needs a timestamp (platform-parity-spec §4.3) |
+| `starBeat` | anyone | no | **no** | trending: `indexOnly`; `byOwner ($ownerId)` terminal `repoId` (one per identity and repo, ever); `byWeek ($createdAt, repoId)` 7-day windows every day, ranked, whose entries expire through the index's `ttl` (one week). Written beside a new star when the starrer counts toward Trending (default on) |
+| `watch` | anyone | no | yes (unwatch) | `indexOnly`: `(repoId)` countable = watchers; `($ownerId)` terminal `repoId` = what I watch (the inbox's subscriptions, on every device) |
+| `follow` | anyone | no | yes (unfollow) | `indexOnly`: follower and following counts are both countable, and `byTarget` is ranked ("most followed"); `identityId` → existing identity, `distinctFrom: $ownerId` |
 
 Shared shapes (`id`, `oid`, `h32`, `refName`, `body`, `enc`, …) are in `schemaDefs` and referenced with `$ref`. A document type may use each `$defs` entry **once**: rs-dpp's depth walker treats a second `$ref` to the same definition in one type as a cycle (`InvalidJsonSchemaRefError`). The same goes for the `integer` shape of a key id named by `encryptedFor` or `keyIdProperty`, which must be inline (the parser's `is_key_id_schema` resolves `$ref` against the document schema, which has no `$defs`). Repeats are inlined for these reasons.
 
 ## 3. Events, and what "authorization survives revocation" means
 
-Issue and PR state changes are two document types, one per kind of authority, so a reader always knows which gate admitted a document:
+The state of an issue or PR (open, closed, merged, draft) is a **`transition`** (§3.1). Everything else that happens to one is an event of two document types, one per kind of authority, so a reader always knows which gate admitted a document:
 
-- **`event`** (every kind, table below) is gated by `ownerRefersTo anyOf` with two operands:
-  1. a `maintainer` for `repoId` (deletable lookup `byRepoMember` into forge-core),
+- **`event`** (the member kinds, table below) is gated by `ownerRefersTo anyOf` with two operands:
+  1. a `maintainer` for `repoId` (deletable, `findBy {"repoId": "repoId", "memberId": "."}` into forge-core),
   2. a `writer` for `repoId`.
 - **`authorEvent`** (the author's kinds, table below) is gated by `ownerRefersTo anyOf` with two operands:
-  1. the author of the target issue: the lookup `author($ownerId = writer, repoId, number = targetNumber)` on `issue`, with `propertyAgreement {"targetId": "$id"}`, so the issue found must be the one the document targets,
+  1. the author of the target issue: `findBy {"$ownerId": ".", "repoId": "repoId", "number": "targetNumber"}` on `issue` (its unique `author` index), with `where {"$id": "targetId"}`, so the issue found must be the one the document targets,
   2. the same for `patch`.
 
-  Its `kind` is an integer with `enum [1, 2, 9, 10, 11, 12, 13, 14, 16]` (close, reopen, draft, ready, thread resolve and unresolve, review request and remove, head update), so an author's merge, label, assign, retarget, review dismissal or milestone is refused outright. The document fails the node's document schema validation, and the SDK runs the same validation and refuses to broadcast. It carries `refId` and `oid`, never `value`.
+  Its `kind` is an integer with `enum [11, 12, 13, 14, 16]` (thread resolve and unresolve, review request and remove, head update), so an author's label, assign, retarget, review dismissal or milestone is refused outright. The document fails the node's document schema validation, and the SDK runs the same validation and refuses to broadcast. It carries `refId` and `oid`, never `value`.
 
 For both types, `targetId` must be an `issue` or `patch` whose `repoId` and `number` equal the document's `repoId` and `targetNumber`. Membership of repo A cannot authorize an event on repo B's issue, and the author of issue #3 cannot act on issue #4. Both are indexed `(targetId, $createdAt)` (a target's history) and `(repoId, $createdAt)` (the repo's activity feed, which reads both types).
 
-`authorEvent`'s operands are `permanentDocument` lookups, so `issue` and `patch` must be non-deletable (registration rejects a permanent lookup into a deletable type with 40122). That is why issues and PRs can no longer be deleted for a refund.
+`authorEvent`'s and `transition`'s author operands are `permanentDocument` lookups, so `issue` and `patch` must be non-deletable (registration rejects a permanent lookup into a deletable type with 40122). That is why issues and PRs can no longer be deleted for a refund.
 
 **Why two types.** The first registration gated a single `event` type by all four operands. A reader then could not tell which operand admitted a given event: a maintainer who also authored the PR, and was later revoked, left merges that might have been admitted by the author path, where merge is not allowed. The split removes the question. Protocol 14 freezes `ownerRefersTo` on update (removing an `anyOf` operand is an incompatible schema change; `tools/contract-validate --previous` reports it), so the split shipped as a new forge-collab registration (§8), not an update.
 
 Both types are immutable and non-deletable, and the gate is judged at creation. **A document's existence therefore proves its writer was authorized at its block time**: an `event` proves the writer held a `maintainer` or `writer` document for the repo then, and an `authorEvent` proves the writer was the target's author. Revoking a maintainer later does not invalidate their past events, and nothing has to be reconstructed from membership history.
 
-**Kinds.** `kind` is a `u8` on both types (integer widths are fixed at registration). Payload fields: `value` (≤ 120 chars, plaintext), `oid`, `refId` (an identifier).
+**Kinds.** `kind` is a `u8` on both types (integer widths are fixed at registration). `event.kind` / `authorEvent.kind` and `transition.kind` are separate number spaces: transition kinds 11–17 are PR state moves (§3.1), not the thread and review kinds 11–17 below, and only the pair of document type and kind names an action. Payload fields: `value` (≤ 120 chars, plaintext), `oid`, `refId` (an identifier).
 
 | # | kind | payload | from `event` (any M/W at write time) | from `authorEvent` |
 |---|---|---|---|---|
-| 1, 2 | close, reopen | — | yes | yes |
-| 3 | merge | `oid` merge commit | yes, if `oid` is reachable from the base tip | never (schema) |
+| 1, 2, 3, 9, 10 | close, reopen, merge, draft, ready | — | **never**: a `transition` (§3.1); `event.kind ≥ 4` and rule `noState` refuse them | never (schema) |
 | 4, 5 | label+, label− | `value` label | yes | never (schema) |
 | 6, 7 | assign, unassign | `value` identity | yes | never (schema) |
 | 8 | retarget | `value` base ref | yes | never (schema) |
-| 9, 10 | draft, ready | — | yes | yes |
 | 11, 12 | threadResolve, threadUnresolve | `refId` thread root comment | yes | yes |
 | 13, 14 | reviewRequest, reviewRequestRemove | `refId` reviewer identity | yes | yes |
 | 15 | reviewDismiss | `refId` review, `value` reason | yes | never (schema) |
@@ -108,9 +116,41 @@ Both types are immutable and non-deletable, and the gate is judged at creation. 
 | 19, 20 | pin, unpin | — | yes | never (schema) |
 | 21, 22 | lock, unlock | — (a locked thread: clients offer the composer to members only; fees stay the only floor) | yes | never (schema) |
 
-**Kind rules (`FORGE_RULES_V2`, `forge-core::rules::v2` and `rules::review`, `forge-web/lib/rules/v2` and `review`).** An `authorEvent` applies when its kind is an author kind (`is_author_kind`) and its writer is the target's author. `fold_pr_state_v2` applies kinds 1–10 to the PR state (seeded with the patch's `draft`); `fold_pr_review_v2` folds kinds 11–18 into the review state (head, requested reviewers, resolved threads, dismissed reviews, milestone). An `authorEvent` of a kind outside the author set cannot exist on chain; the folds treat one handed to them as inert anyway, and ignore one whose writer is not `target_author`. Events of both types are merged into one log and ordered by `($createdAt, $id)`, with `$id` compared by Unicode code point (UTF-8 byte order; JavaScript's `<` compares UTF-16 code units and disagrees on astral characters, so the TypeScript port uses `compareStrings`). Documents with the same key keep their input order, `event`s first. A merged PR cannot be reopened.
+**Kind rules (`FORGE_RULES_V2`, `forge-core::rules::v2` and `rules::review`, `forge-web/lib/rules/v2` and `review`).** An `authorEvent` applies when its kind is an author kind (`is_author_kind`) and its writer is the target's author. The state is the target's `transition` sum (§3.1), not a fold; `fold_pr_review_v2` folds kinds 11–18 into the review state (head, requested reviewers, resolved threads, dismissed reviews, milestone). An `authorEvent` of a kind outside the author set cannot exist on chain; the folds treat one handed to them as inert anyway, and ignore one whose writer is not `target_author`. Events of both types are merged into one log and ordered by `($createdAt, $id)`, with `$id` compared by Unicode code point (UTF-8 byte order; JavaScript's `<` compares UTF-16 code units and disagrees on astral characters, so the TypeScript port uses `compareStrings`). Documents with the same key keep their input order, `event`s first. A merged PR cannot be reopened.
 
 **Known design choices.** The author may reopen what a member closed, and a member can close it again; nothing stops the two alternating except fees. A member's approval counts on their own PR (§6), because a `review` does not know the PR's author; clients may show a self-approval distinctly.
+
+### 3.1 `transition`: state as a consensus sum
+
+Every state change is a `transition` document with a small signed `delta`. **The running sum of `delta` over a target's transitions is its state code**, and the type's `propertyConstraints` make every stored transition a legal move from the current state, so the state is a proved `sum` read, not a fold:
+
+| code | issue | PR |
+|---|---|---|
+| 0 | open | open, ready |
+| 1 | closed | closed (not merged) |
+| 2 | — | merged (terminal) |
+| 8 | — | open draft |
+| 9 | — | closed draft |
+
+| kind | name | delta | from | to | who |
+|---|---|---|---|---|---|
+| 1 | issue close | +1 | 0 | 1 | member or author |
+| 2 | issue reopen | −1 | 1 | 0 | member or author |
+| 11 | PR close | +1 | 0 | 1 | member or author |
+| 12 | PR reopen | −1 | 1 | 0 | member or author |
+| 13 | PR merge (`oid` required) | +2 | 0 | 2 | member only |
+| 14 | PR draft | +8 | 0 | 8 | member or author |
+| 15 | PR ready | −8 | 8 | 0 | member or author |
+| 16 | PR close while draft | +1 | 8 | 9 | member or author |
+| 17 | PR reopen while draft | −1 | 9 | 8 | member or author |
+
+The rules: `a_kindOfTarget` (`targetKind == kind / 10`, and `targetId`'s `where {"tk": "targetKind"}` ties it to the target's `tk`, so an issue kind cannot name a PR); `b1`–`b3` pin the delta per kind; `c1`–`c5` pin the target's sum **after** the write per kind (`sumOf(transition, delta, {targetId})` on the `perTarget` index; a create's total already includes the new document), which pins the state before it; `e_mergeOid` (a merge carries `oid`); `f_authorNoMerge`. A merged PR can be neither reopened, closed nor drafted; a draft must be readied before it merges. Two closes in one block: the second sees sum 2 after its own write and is refused by `c1` (a nonce bump); a stale write is refused free at CheckTx.
+
+**Authority.** `ownerRefersTo anyOf` with four operands: `maintainer`, `writer` (forge-core, `findBy {"repoId": "repoId", "memberId": "."}`), and the author of the target `issue` / `patch` (`findBy {"$ownerId": ".", "repoId": "repoId", "number": "targetNumber"}`, `where {"$id": "targetId", "number": "asAuthor"}`). A writer admitted as the author must set `asAuthor == targetNumber` (≥ 1); a member sets `asAuthor = 0`. So **`asAuthor = 0` proves the writer held a `maintainer` or `writer` document for the repo at the block time**, and `f_authorNoMerge` refuses a merge unless `asAuthor = 0`: "merged" is a chain fact recorded by a member. `anyOf` admits through the first operand that holds, so a member-author may also write as the author. The repo owner is admitted only through their own `maintainer` document, written in the repo-create session (REPO-01): an owner without it cannot close issues.
+
+**What "merged" means (D-9).** The chain records that a member merged a PR with an `oid`; it cannot see git. Readers still check that `oid` has been a valid tip of the base (the D-602 membership rule, §6) and label a merge that fails it "merged (merge commit not found on the base)" instead of treating it as inert; counts use the chain fact. forge-import records a merge with the upstream merge sha whenever the source says merged.
+
+**Private repos.** `transition` has no `enc`: kinds, times and actors of state changes were already visible (private-repos.md §7), and a sealed kind could not be judged or counted. The counts of a private repo are public, as every count query is.
 
 ## 4. Non-deletable audit types
 
@@ -119,7 +159,7 @@ Protocol 14 checks references on create and replace only; **a delete is never re
 - `refUpdate`, `protectedRefUpdate`: otherwise the author of a tip could delete it and silently rewind the branch;
 - `config`: as-of protection evaluation needs every historical config;
 - `packManifest`, `manifestPart`: otherwise a revoked writer could delete the index of packs other people's refs point into;
-- `event`, `authorEvent`, `issue`, `patch`, `repo`: see §3, and `repo` is the target of every `permanentDocument` reference;
+- `event`, `authorEvent`, `transition`, `issue`, `patch`, `repo`: see §3, and `repo` is the target of every `permanentDocument` reference;
 - `chunk`: the pack bytes themselves (owner decision 2026-09-25: an unbreakable repo outweighs the refund);
 - `repoKey`: past epochs must stay readable to past members.
 
@@ -175,15 +215,17 @@ The AEAD layouts, key derivation, anchors, rotation and conformance vectors are 
 | Push authorization | consensus: `ownerRefersTo` M or W |
 | Protected refs | consensus: M gate on `protectedRefUpdate`. **Routing is a rule**: consensus cannot read `protectedPatterns`, so a plain `refUpdate` naming a protected ref can exist, and it is inert by the as-of config rule — for ref resolution and for merge verification alike (`merge_base_tips`: the base history a merge is checked against holds only valid updates, so a plain update cannot put a PR head "on" a protected branch; vectors `merge_base_tips__*`, `fold_pr*__merge_via_*`) |
 | Revocation | delete the `maintainer`/`writer` document; the next write is refused (40120) |
-| Event actor authorization | consensus at create time (§3): `event` is M/W only, `authorEvent` is the target's author with kind close/reopen only. **Merge reachability is a rule**: `merge` needs `oid` reachable from the base tip, and the base must have been a branch when the PR was opened (`pr_base_tips`, vectors `pr_base_tips__*`, `fold_pr_v2__merge_into_base_*`): a base with no valid tip at the patch's `$createdAt` (never pushed, or deleted then) has no tips, so a merge into a branch created later never counts. The fold reads the base the patch was opened against (`baseRefName`, at its `$createdAt`), so a retarget does not change it. This applies to merge events already on chain: a PR that read as merged because its merge created its base now reads open. **Readers check membership, never ancestry** (D-602, vectors `fold_pr_v2__merge_naming_a_later_base_tip_counts`, `fold_pr_v2__merge_naming_a_non_tip_ancestor_inert`, `fold_pr_v2__merge_after_close_repairs_an_imported_pr`): "reachable from the base tip" is proved by `oid` having been a valid tip of the base, so a merge commit that is an ancestor of a tip without ever being one does not count. A commit-graph walk per PR in a list would need pack reads for every row. So a writer that knows ancestry names a tip: `dg pr merge` names the commit it pushed to the base, and `forge-import` (whose source's merge commit is rarely a tip the mirror pushed) names the newest base tip on chain that contains the merge commit (`git merge-base --is-ancestor` in its local mirror, after that run's push; a run that syncs no code fetches the base branches' commits for the check and pushes nothing). When no mirrored tip contains it (the base is not mirrored, or was deleted), the importer records a close instead. It never writes a close after a counted merge, and a PR a previous import recorded closed takes the merge event on a later run (only a merged PR is final; the importer's incremental state is versioned, so the first run after an upgrade revisits every item). The base history is re-read for up to ~20 s when the chain does not show the tip this run pushed yet, so a node's read-after-write lag does not record a fresh merge as a close. Clients refuse to open a PR against a base that is not a branch, and `dg pr merge` and the browser merge refuse to push to a base that does not exist (it would create it) |
+| Issue / PR state | consensus (§3.1): a `transition` is accepted only as a legal move from the target's current state, and a merge only from a member (`asAuthor = 0`). The state is the target's proved `delta` sum |
+| Event actor authorization | consensus at create time (§3): `event` is M/W only, `authorEvent` is the target's author with the review kinds only. **Merge reachability is a rule**: `merge` needs `oid` reachable from the base tip, and the base must have been a branch when the PR was opened (`pr_base_tips`, vectors `pr_base_tips__*`, `fold_pr_v2__merge_into_base_*`): a base with no valid tip at the patch's `$createdAt` (never pushed, or deleted then) has no tips, so a merge into a branch created later never counts. The fold reads the base the patch was opened against (`baseRefName`, at its `$createdAt`), so a retarget does not change it. This applies to merge events already on chain: a PR that read as merged because its merge created its base now reads open. **Readers check membership, never ancestry** (D-602, vectors `fold_pr_v2__merge_naming_a_later_base_tip_counts`, `fold_pr_v2__merge_naming_a_non_tip_ancestor_inert`, `fold_pr_v2__merge_after_close_repairs_an_imported_pr`): "reachable from the base tip" is proved by `oid` having been a valid tip of the base, so a merge commit that is an ancestor of a tip without ever being one does not count. A commit-graph walk per PR in a list would need pack reads for every row. So a writer that knows ancestry names a tip: `dg pr merge` names the commit it pushed to the base, and `forge-import` (whose source's merge commit is rarely a tip the mirror pushed) names the newest base tip on chain that contains the merge commit (`git merge-base --is-ancestor` in its local mirror, after that run's push; a run that syncs no code fetches the base branches' commits for the check and pushes nothing). When no mirrored tip contains it (the base is not mirrored, or was deleted), the importer records a close instead. It never writes a close after a counted merge, and a PR a previous import recorded closed takes the merge event on a later run (only a merged PR is final; the importer's incremental state is versioned, so the first run after an upgrade revisits every item). The base history is re-read for up to ~20 s when the chain does not show the tip this run pushed yet, so a node's read-after-write lag does not record a fresh merge as a close. Clients refuse to open a PR against a base that is not a branch, and `dg pr merge` and the browser merge refuse to push to a base that does not exist (it would create it) |
 | Repository listing | the `repo` document is the listing; its `$ownerId` is the owner |
 | Owner lock-out prevention | client rule: the owner self-enrols as maintainer in the same session that creates the repo |
 | Concurrent-push divergence, newest-wins resolution, ref-name glob matching, overlay | client rules (the base rules, shared by every client). Ref resolution (`resolve_ref`, vectors `resolve_ref__*`) folds a ref's valid updates in consensus-clock order (`$createdAt`, required on both ref update types); only inside one block does the `prevOid` chain order them (an update naming another's tip comes after it), then `$id`, a chain cycle inside one block being broken at the smallest-`$id` update that waits on nothing outside its own cycle (every update it builds on builds back on it). A `prevOid` names a commit, not a document, and a ref can hold the same commit twice (`A → B → force A`), so a chain match against a newer update is no causal link; the fold only lets a later update supersede an earlier one, and a ref whose newest update names a commit is never unborn |
-| Issue and PR numbering | client rule, see below |
+| Issue and PR numbering | consensus: dense, shared by issues and PRs (§6.2) |
 | PR approvals | client rule (`count_approvals`, vectors `approvals__*`): `review` is un-gated. Its input is the PR's reviews filtered by `is_well_formed` (§5) first. A review counts only if it is on the PR's current head (the folded head: the newest `headUpdate`, else `patch.headOid`) and its reviewer had a current `maintainer`/`writer` document created at or before the review's `$createdAt`. Each reviewer's newest counting approve (1) or request-changes (2) review by `($createdAt, $id)` stands; comment (3), unknown verdicts and dismissed reviews (`reviewDismiss`) neither count nor clear. A revoked reviewer's document is gone, so their reviews stop counting. A member's approval of their own PR counts (§3, known design choices) |
-| Review comments belong to their review | consensus: `comment.reviewId`'s `propertyAgreement` (`$ownerId`, `repoId`, `targetId` = `patchId`). Readers also filter by owner (`group_review_comments`) |
+| Review comments belong to their review | consensus: `comment.reviewId`'s `where` (`$ownerId`, `repoId`, the review's `patchId` = the comment's `targetId`). Readers also filter by owner (`group_review_comments`) |
 | Branch policy (required approvals, approver role, checks, merge methods) | client rule in the merge box (`meets_policy`). The `policy` document is maintainer-gated at consensus, but nothing at consensus requires approvals, and a maintainer can override |
-| Open / closed counts | client rule: open is a fold over `event` + `authorEvent`, not a stored field, so no count index can hold it (§6.1) |
+| Open / closed / merged / draft counts | consensus-backed: differences of proved counts of `transition` kinds (§6.1) |
+| CI run progression | consensus: `checkRun` is monotonic (queued → in progress → completed, with `startedAt` / `completedAt` set once, and a completed run final); which runs a branch policy trusts stays a client rule (`checks_state`) |
 
 ### 6.1 Counts
 
@@ -191,33 +233,52 @@ A provable `COUNT(*)` needs a `countable` or `rangeCountable` index whose proper
 
 | Count | Query | Index |
 |---|---|---|
-| Issues / PRs ever opened in a repo (open and closed) | `repoId ==` | `issue.number` / `patch.number` `(repoId, number)` rangeCountable |
+| Issues / PRs ever opened in a repo (open and closed) | `repoId ==` | `issue.perRepo` / `patch.perRepo` `(repoId)` countable |
+| Transitions of each kind in a repo | `repoId == R and kind in [1, 2, 11, …, 17]`, `groupBy [kind]` (one request, one proof; an absent kind reads 0) | `transition.perRepoKind (repoId, kind)` countable |
+| A page of targets' states | `sum(delta)` where `targetId in [page]`, `groupBy [targetId]` (a missing entry is state 0) | `transition.perTarget (targetId)` summable |
+| Issues / PRs by an author | `$ownerId == A and repoId == R` (prefix-to-last) | `author` rangeCountable |
+| Chunks (the estimator ceiling) | the type total | `chunk` `documentsCountable` |
+| CI runs updated since | `repoId == R and $updatedAt >` (documents, not a count) | `checkRun.updated` |
 | Comments on an issue or PR | `targetId ==` (or `in` for a list page: one entry per target) | `comment.target (targetId, $createdAt)` rangeCountable |
 | Reviews on a PR | `patchId ==` / `in` | `review.patch (patchId, $createdAt)` rangeCountable |
-| Stars, followers | `repoId ==`, `identityId ==` | `star.byRepo`, `follow.byTarget` countable |
+| Stars, followers (forge-community) | `repoId ==`, `identityId ==` | `star.byRepo`, `follow.byTarget` countable |
 
 A composite query (`documents.composite`, Platform 4.2) can prove a page of PRs plus a `counts` sub-query per type (bound from `$id` to `targetId` / `patchId`) under one merged proof. The count sub-query uses the same index picker, so these indexes serve it.
 
-**Open and closed counts are folded, because they are not stored.** An issue's or PR's state is the fold of its `event` and `authorEvent` documents (§3). Who may close, reopen or merge is decided per document at consensus, and a merge counts only if its commit is on the base branch, a rule no index evaluates. A count tree counts documents by their stored index values, so an open count would need a stored state field. That field could only live on the `issue`/`patch` document, which only its author can replace, while members close and merge. A separate summary document would be a second, unverified copy of the fold that any member could write wrongly. Neither is sound, so readers fold. The web's tab counts fold the cached list pages, and show no number while a list is incomplete (forge-web `listIssuesCached` / `listPullsCached`).
+**Open, closed, merged and draft counts are differences of proved counts.** Every stored transition is a legal move, so per target the closes and reopens strictly alternate, and with `I`, `P` the issue and PR totals and `c_k` the count of kind-`k` transitions:
+
+| Number | Formula |
+|---|---|
+| issues closed | `c1 − c2` |
+| issues open | `I − (c1 − c2)` |
+| PRs merged | `c13` |
+| PRs closed (not merged) | `(c11 − c12) + (c16 − c17)` |
+| PRs draft (open) | `(c14 − c15) − (c16 − c17)` |
+| PRs open (GitHub's tab, drafts included) | `P − c13 − (c11 − c12) − (c16 − c17)` |
+
+So the header is three requests (the two `perRepo` counts and the grouped `perRepoKind` count), each O(1) and proved, and a list page is one documents query plus one sum query for its rows' states. Filtered counts (by label, assignee, milestone) are still folds over `event`.
 
 **Requested reviewers** are also a fold (the newest request or remove per identity), so nothing counts them. `event.addressee (refId)` / `authorEvent.addressee` find the requests addressed to one identity (readers sort by `$createdAt`).
 
-**Numbering** (client rule, `allocate_number`, vectors `allocate_number__*`). Numbers are unique per repo at consensus, but anyone can claim any number, so allocation must tolerate gaps and hostile claims. A max+1 rule breaks as soon as someone posts #4294967295. The rule:
+### 6.2 Numbering: dense, shared, chain-enforced
 
-1. `n` = the provable count of the repo's issues (rangeCountable `number` index).
-2. `ceiling` = `min(2 × n + 100, 2³² − 1)`.
-3. `trusted` = the largest number among the issues written by the repo's owner or a current maintainer, or 0: one read per trusted identity of the `author` index `($ownerId, repoId, number)`, `number` descending, limit 1. The maintainers are the repo's current `maintainer` documents; the owner is read even without one.
-4. `base` = the larger of `trusted` and the largest taken number ≤ `ceiling` (a range query on the `number` index, descending from `ceiling`, limit 1), or 0 if there is neither.
-5. Claim the first number greater than `base` that is not taken. Every number in `(base, ceiling]` is free by the choice of `base`, so below the ceiling this is `base + 1`. Only when `base` is at or above `ceiling` can squatters sit directly above it, and the probe steps over them: an ascending query from `base + 1`, **paged to the end of the contiguous run** (the first gap). Stopping after one page hands the allocator a run cut short, and it would pick a number that is already taken.
-6. If every number from `base + 1` to 2³² − 1 is taken, there is nothing to allocate.
+`issue` and `patch` carry the rule
 
-Gaps below `base` are never filled. A number above the ceiling cannot be reached until the repo grows to about half that many issues, so a squatter at 2³²−1 (or anywhere far ahead) is ignored. A squatter at exactly the ceiling is counted, and allocation continues above it. Squatting the number the allocator is about to take costs the squatter a document fee and the allocator one retry: consensus refuses the duplicate, and the next attempt sees it as `base`. Issues and PRs number independently.
+```json
+"dense": { "ifThen": [
+  { "equal": ["$createdAtBlockHeight", "$updatedAtBlockHeight"] },
+  { "equal": ["number", { "add": [
+      { "countOf": ["issue", { "repoId": "repoId" }] },
+      { "countOf": ["patch", { "repoId": "repoId" }] } ] }] } ] }
+```
 
-**Trusted numbers.** Trust goes only to identities who could already disrupt numbering: the owner and the maintainers can write an issue at any number, and so push everyone's next number there. Trusting their numbers lets that happen with one document instead of a ceiling's worth, and does not extend it to anyone else; a stranger or a writer still cannot move numbering. What it buys is mirrors: forge-import keeps the source's numbers, so a mirror holding a recent window of upstream issues (#2142 … #7761, 15 documents) has every number above its ceiling (130). Without step 3 all of them read as squatters and the next issue is #1; with it the next is #7762, as on the source. An issue a maintainer wrote stays trusted only while they are a maintainer: after a revoke, its number is judged by the ceiling like anyone's. The cost is one extra `author`-index read per trusted identity (at most 8 at a time); a client that cannot read the maintainers trusts the owner alone rather than fail.
+answered by the countable `perRepo (repoId)` index on both types. On create the totals include the new document, so a repo's first issue or PR is **#1**, the next **#2**, and issues and PRs **share one sequence**, as on GitHub. The guard makes it a create-only rule (both heights are required; a replace in a later block is not re-judged).
 
-**Exhaustion.** Issues cannot be deleted, so a trusted number is permanent. An owner or maintainer issue at 2³² − 1 makes `base` 2³² − 1 and leaves nothing to allocate (step 6) for as long as its author stays trusted; for a maintainer, revoking them ends it, but an owner's is final for that repo. The clients' allocators only ever claim `base + 1` or the step-5 probe's gap, and forge-import only the source's own numbers, so this takes a document written by hand.
+- **No squatting, no gaps.** No number exists without a document at exactly `count + 1`; the old ceiling allocator (`allocate_number`, its trusted-number step and its vectors) is retired.
+- **Races.** Two creators in one block: the second is refused by `dense` (10422 naming `dense`, before the unique-index check) as a nonce bump, and retries with `count + 1`. Across blocks a stale write is refused free at CheckTx. A client reads the two `perRepo` counts, writes `I + P + 1`, and retries on a `dense` refusal.
+- **Griefing.** A stranger can only advance the sequence by creating real issues at the spam floor; they cannot reserve, skip or block a number.
 
-**Mirrors and native issues.** Once numbering continues the source's, an issue opened on the mirror takes the next upstream number (#7762), and the upstream item that later gets #7762 finds it taken. forge-import then stores that one item at the lowest free number (not this rule: it fills a gap below `base` on purpose) and reports it in the run summary. On GitHub, issues and PRs share one number space, so a mirror's issues leave the PRs' numbers free, and the moved item takes one no later upstream issue needs; later upstream items land at their own numbers. Allocating it after the highest number instead would place it at #7763, which the next upstream item needs, and every later item would move by one. A source whose kind holds every number (a GitLab project's issues) has no such gap, so there each later item moves by one, each move reported.
+**Mirrors.** forge-import imports issues and PRs **in upstream order**, so a fresh mirror of a source without deleted items numbers identically. The source's number goes in the optional, immutable `upstreamNumber` (top-level, because a `skipIfAbsent` property must be; the index `upstream (repoId, upstreamNumber)` skips native documents). After the first upstream gap the numbers diverge, and readers show "#12 · upstream #7761". `#7761` in a mirrored body resolves through the `upstream` index, trusted only from the mirror signer or a member (ISS-02). An incremental run refuses to start when an earlier upstream item is missing.
 
 **Repository names** (`is_valid_repo_name`, `normalize_repo_name`, vectors `repo_name__*`). A name is valid when it matches the contract's pattern `^[a-z0-9][a-z0-9._-]{0,62}$` in full; a trailing newline does not match. Clients lowercase ASCII `A`–`Z` in user input before checking, and change nothing else, so `Dash-Forge` names `dash-forge`. Other characters are not folded: `é`, or the Kelvin sign that Unicode lowercases to `k`, leaves the name invalid.
 
@@ -225,10 +286,9 @@ Gaps below `base` are never filled. A number above the ceiling cannot be reached
 
 | Rule | Functions | Vectors |
 |---|---|---|
-| Issue/PR fold over `event` + `authorEvent` (§3) | `fold_issue_state_v2`, `fold_pr_state_v2` | `fold_issue_v2__*`, `fold_pr_v2__*` |
+| Issue/PR state (§3.1): the transition sum and the feed fold for labels, assignees and head | `fold_issue_state_v2`, `fold_pr_state_v2` | `fold_issue_v2__*`, `fold_pr_v2__*` (reshaped to transitions with the client work) |
 | A PR's base history (§6 merge reachability) | `merge_base_tips`, `pr_base_tips` | `merge_base_tips__*`, `pr_base_tips__*` |
 | Membership | `RoleOracle::{role_at, member_at, current_role}` | through `approvals__*` |
-| Numbering | `allocate_number`, `number_ceiling` | `allocate_number__*` |
 | Pack reader rule (§4) | `order_pack_copies`, `select_pack_copy`, `pack_read_order` | `pack_copies__*` |
 | Pack list / `packRef` space (§4) | `v2_pack_list` | `v2_pack_list__*` |
 | Approvals (dismissed reviews skipped) | `count_approvals` | `approvals__*` |
@@ -254,31 +314,22 @@ The v2 fold takes no membership input: an `event`'s existence is its authorizati
 
 ## 7. Measured size and cost
 
-From `tools/contract-validate` (rs-dpp v4.2.0-beta.5, `PlatformVersion` 14; the same sizes as under beta.4). The signed-shape transitions carry a 65-byte recoverable signature and the contract group fields. The deploy script's dry run built the same transitions with the evo-sdk wasm, signed them, and got the same byte counts.
+From `tools/contract-validate` (rs-dpp v4.2.0-beta.7, `PlatformVersion` 14) and the beta.7 gate (`dash-forge-qa/design/final-schema/`). The signed-shape transitions carry a 65-byte recoverable signature and the contract group fields.
 
-| | forge-core (C-1, version 2) | forge-collab (C-1) |
-|---|---|---|
-| Document types / indexes | 14 / 30 | 15 / 33 |
-| Serialized contract | 13,645 B | 19,355 B |
-| Signed transition | **13,716 B** (`DataContractUpdate`) | **19,461 B** (`DataContractCreate` v1) |
-| vs `max_state_transition_size` (20,480 B, the hard limit) | 67.0% | 95.0% |
-| Fee (fee schedule v3: 0.1 base + 0.02/type + 0.01/index) | **0.68 DASH** (an update pays the schedule too) | **0.73 DASH** |
+| | forge-core | forge-collab | forge-community |
+|---|---|---|---|
+| Document types / indexes | 14 / 30 | 8 / 25 | 8 / 16 |
+| Serialized contract | 14,329 B | 15,671 B | 8,134 B |
+| Signed create transition | **14,509 B** | **15,777 B** | **8,240 B** |
+| vs `max_state_transition_size` (20,480 B) | 70.8 % | 77.0 % | 40.2 % |
+| Headroom for later in-place updates | ≈ 5.9 KB | ≈ 4.7 KB | ≈ 12.2 KB |
+| Fee (fee schedule v3: 0.1 base + 0.02/type + 0.01/index) | **0.68 DASH** | **0.51 DASH** | **0.42 DASH** |
 
-**forge-collab's size is a lifetime budget.** A `DataContractUpdate` carries the whole contract, so every later in-place update of forge-collab (a new optional property, a widened enum, a new type) must fit in the ≈ 1,000 B left under 20,480 B. Anything larger goes in a new contract (or a new registration, which orphans every collab document). forge-core has ≈ 6.7 KB left.
+**Each contract's size is a lifetime budget.** A `DataContractUpdate` carries the whole contract, so every later in-place update (a new optional property, a new type) must fit under 20,480 B. The split into three contracts keeps at least 3 KB of headroom in each (the wipe brief's floor).
 
-`estimated_contract_max_serialized_size` (16,384 B) is not a limit. It is the size Drive's fee *estimation* assumes when it prices reading a stored contract (`apply_contract_with_serialization` v0). Both contracts are under it anyway.
+`estimated_contract_max_serialized_size` (16,384 B) is not a limit. It is the size Drive's fee *estimation* assumes when it prices reading a stored contract (`apply_contract_with_serialization` v0). All three contracts are under it anyway.
 
-Total one-time registration fees are **1.41 DASH** (C-1: forge-core's update 0.68, forge-collab 0.73), paid once by the deployer, plus storage. A new repository is three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate. `dg repo create` quotes an upper bound of 0.002 DASH before signing and reports the measured cost afterwards.
-
-**Measured on devnet moutai**, as the deployer's balance change. The current contracts are the forge-core of 2026-09-26 (the private-repository changes of `docs/security/private-repos.md` §13) and the forge-collab of 2026-09-27 (the review-parity revision, `docs/design/review-parity-spec.md` §3):
-
-| | forge-core | forge-collab |
-|---|---|---|
-| Total cost | 0.605726 DASH (60,572,562,220 credits) | 0.616306 DASH (61,630,588,260 credits) |
-| of which the registration fee | 0.60 | 0.61 |
-| storage + processing | 0.0057 | 0.0063 |
-
-Together that is **1.222032 DASH**. The superseded registrations (§8) cost: the two review-parity iterations of 2026-09-27 0.616286 DASH (61,628,633,380 credits, nonce 8) and 0.616288 DASH (61,628,799,160 credits, nonce 9); the 2026-09-26 forge-collab 0.555554 DASH (55,555,374,110 credits); the 2026-09-25 pair 0.605711 DASH (60,571,079,360 credits) + 0.555523 DASH (55,552,297,710 credits); the first two forge-collab attempts 0.515157 DASH (51,515,695,120 credits, the four-operand `event`) and 0.545473 DASH (54,547,323,690 credits, the split without the feed index).
+Total one-time registration fees are **≈ 1.61 DASH**, paid once by the deployer, plus storage. A new repository is three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate. `dg repo create` quotes an upper bound of 0.002 DASH before signing and reports the measured cost afterwards. The costs measured on the beta.7 chain are recorded here after the wipe (`dash-forge-qa/WIPE-PLAN.md` §3 step 8).
 
 ## 8. Deploying
 
@@ -287,11 +338,14 @@ Together that is **1.222032 DASH**. The superseded registrations (§8) cost: the
 node forge-contracts/scripts/deploy-v2.mjs --self-test
 node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
      --network devnet --devnet-name moutai --dry-run
-# re-register forge-collab alone (new id) against the recorded forge-core and group:
+# re-register forge-collab (or forge-community) alone (new id) against the recorded forge-core
+# and group:
 node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
-     --network devnet --devnet-name moutai --only collab --force-new [--dry-run]
-# re-register both (new forge-core, new group, new forge-collab) after a forge-core change the
-# update rules refuse:
+     --network devnet --devnet-name moutai --only collab --force-new --same-group [--dry-run]
+node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
+     --network devnet --devnet-name moutai --only community --force-new --same-group [--dry-run]
+# re-register all three (new forge-core, new group, new forge-collab and forge-community) after a
+# forge-core change the update rules refuse:
 node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
      --network devnet --devnet-name moutai --force-new [--dry-run]
 # update the recorded forge-core in place (DataContractUpdate, next version; same id and group):
@@ -301,32 +355,23 @@ node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
 git show <commit it was registered from>:forge-contracts/contracts/forge-collab.json > /tmp/registered-forge-collab.json
 cargo +1.98.1 run -q --locked --manifest-path tools/contract-validate/Cargo.toml -- \
      forge-contracts/contracts/forge-core.json forge-contracts/contracts/forge-collab.json \
-     --previous /tmp/registered-forge-collab.json
+     --previous /tmp/registered-forge-collab.json forge-contracts/contracts/forge-community.json
 ```
 
 - forge-core's create transition registers the contract group (`dash-forge`) and enrols forge-core as a whole contract.
-- forge-collab's transition enrols it in the same group. The group id is `hash_double("contract_group" ‖ owner ‖ nonce)` of forge-core's transition.
+- forge-collab's and then forge-community's transitions enrol them in the same group. The group id is `hash_double("contract_group" ‖ owner ‖ nonce)` of forge-core's transition. Once all three are registered the script checks on chain that the group exists, that the deployer owns it, and that every contract is enrolled.
 - Results go to the `v2` section of `deployments/<network>.json` (`devnet-<name>.json` for a devnet). Each step's nonce (masked to its low 40 bits, as rs-dpp does), contract id, group id derived from that same nonce, and pre-broadcast balance are written before broadcasting. A rerun that finds the contract on chain completes the record (status, cost, owner) rather than skipping it; one whose reserved nonce never landed takes the chain's next nonce and re-derives both ids from it. It never registers a second copy unless told to. Each record also carries `schemaHash`, the sha256 of the schema JSON (after placeholder substitution, compactly re-serialized) it was registered from; a rerun that finds a recorded contract whose hash differs from the current schema warns and leaves it as is. A dry run's forge-core step is not checked against a leftover record.
-- `--force-new` without `--only` supersedes the pair when the recorded forge-core was registered from a different schema: forge-core's record moves to `v2.forgeCoreSuperseded`, the group to `v2.contractGroupSuperseded`, forge-collab (whose schema names forge-core's id) to `v2.forgeCollabSuperseded`, and a new forge-core (registering a new group) and forge-collab are registered. A rerun after success registers nothing.
-- `--only collab` registers forge-collab alone, against the forge-core and group already recorded and found on chain; it never registers forge-core. With `--force-new` it registers a new forge-collab when the recorded one is registered from a different schema (its `schemaHash` differs, or it predates the field): the old record moves to `v2.forgeCollabSuperseded`, and the new one takes the next nonce and so a new id. A recorded contract from the current schema, or one still `broadcasting` (an interrupted run, which is completed or retried instead), is never superseded, so rerunning the same command registers nothing. This is how a schema change the update rules refuse ships. Documents written under the old contract stay under its id.
+- `--force-new` without `--only` supersedes the set when the recorded forge-core was registered from a different schema: forge-core's record moves to `v2.forgeCoreSuperseded`, the group to `v2.contractGroupSuperseded`, forge-collab and forge-community (whose schemas name forge-core's id) to `v2.forgeCollabSuperseded` / `v2.forgeCommunitySuperseded`, and a new forge-core (registering a new group), forge-collab and forge-community are registered. A rerun after success registers nothing.
+- `--only collab` / `--only community` registers that contract alone, against the forge-core and group already recorded and found on chain; it never registers forge-core or the other one. With `--force-new --same-group` it registers a new one when the recorded one is registered from a different schema (its `schemaHash` differs, or it predates the field): the old record moves to `v2.forgeCollabSuperseded` (or `v2.forgeCommunitySuperseded`), and the new one takes the next nonce and so a new id. A recorded contract from the current schema, or one still `broadcasting` (an interrupted run, which is completed or retried instead), is never superseded, so rerunning the same command registers nothing. This is how a schema change the update rules refuse ships. Documents written under the old contract stay under its id.
 - The script refuses a CRITICAL key that is missing, different from the identity file, or disabled on chain.
-- **Registered on devnet moutai** (protocol 14, drive 4.2.0-beta.6) by the moutai DEPLOYER `E24SPCssqYzFQmjcQ1hNmiLXrzz1o9AqTv54tuWNkgHz` on 2026-09-28. moutai's Platform chain was wiped and restarted on drive 4.2.0-beta.6 that day (the second reset, after the one to beta.5 on 2026-09-27), taking every contract, identity, name and document with it. With the chain empty, forge-core was registered **fresh** rather than updated in place, which closes the gaps the in-place C-1 update had to accept:
-  - `repo` is `documentsCountable`;
-  - `repo.forkOf` is ranked (`rangeCountable` + `rankedCountable`);
-  - `release` and `label` have `dependentRequired` `enc`→`epoch`;
-  - `refUpdate`, `protectedRefUpdate`, `config`, `release` and `label` carry the sealed-presence `propertyConstraints`: `noPlain` on all five, and `hasName` on the two ref types.
-
-  forge-collab was registered from the schema on master. The ids are recorded in `deployments/devnet-moutai.json`, and the script checked on chain that the group exists, that the deployer owns it, and that both contracts are enrolled. The read fixtures were re-seeded under the new ids (`forge-contracts/scripts/seed-v2-fixture.mjs`, `seed-issues-paging.mjs`):
-  - forge-core `A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1` (nonce 1, version 1), 14,515 B signed, 0.686679 DASH
-  - forge-collab `C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS` (nonce 2), 19,461 B signed, 0.738022 DASH
-  - contract group `6dV3kMBWHGR7pLKrHToMBQgbTpjqeE2VAyCEWmLbrkWC` (`dash-forge`)
-  - the key-exchange copy for wallet sign-in (`deploy-key-exchange.mjs`) `7LUEWxUydSA1DPjvZzwRJCza99qFdz5uMk7ryCkSFAk7` (nonce 3)
-  - Before the resets, the pair went through several registrations and one in-place update on the old chains. None of those contracts exists any more. The history is in git (this section before 2026-09-28).
+- **Devnet moutai** is re-registered at the beta.7 wipe (the runbook is `dash-forge-qa/WIPE-PLAN.md` §3): forge-core, forge-collab and forge-community fresh, in that order, in one new group, then the key-exchange copy (`deploy-key-exchange.mjs`) and `snapshot-contracts.mjs`. The ids are recorded in `deployments/devnet-moutai.json`. The contracts registered on the beta.6 chain (forge-core `A2KL77ng…`, forge-collab `C1zHeeG7…`, group `6dV3kMBW…`) use the pre-beta.7 spelling and cannot be loaded by a beta.7 node or client; the history of earlier registrations is in git.
 - For mainnet (roadmap D-D, D-J), decide on `config.readonly` before registering, since it cannot be added afterwards (§4).
 
 What the offline validator cannot check, and registration will: that forge-core exists in state when forge-collab registers (the validator uses the in-memory contract), the deployer's identity and balance, and the contract-group state rules (the group is new; the signer owns the group a membership names).
 
 ### Contract group trust
+
+> **Pending (three contracts).** The trust checks below name forge-community as a known member, but `dg` (`crates/dg/src/auth/group.rs` `check_pair`, `is_known`) and the web (`lib/auth/group-trust.ts`) still know only forge-core and forge-collab until the contract-resolution follow-up lands (WIPE-PLAN §2.4). Until then they list forge-community as an unknown member, and `--strict-group` refuses it.
 
 A limited key is bound to the `dash-forge` contract group, and a group-bound key can sign documents for **every member** of the group, including members added after the key was registered. Binding a key therefore trusts whoever can add members. On protocol 14 that is only the group's owner or one of its admins:
 
@@ -336,19 +381,19 @@ A limited key is bound to the `dash-forge` contract group, and a group-bound key
 So `dg` and the web app pin the **trust root**, not the member list. Before offering to bind a key to the group (before the confirmation prompt), each one checks, with every read proof-verified:
 
 1. **Owner pin.** `getContractGroupInfo` returns the owner recorded in the bundled `deployments/<network>.json` (`v2.contractGroup.owner` when its `id` is the current group, else forge-core's `ownerId`), and **no admins** (`deploy-v2.mjs` registers none). A different owner, any admin, or a missing group is refused. With this pin, consensus alone guarantees that every member was created by the Forge deployer.
-2. **The current pair.** forge-core and forge-collab are whole-contract members. This is checked before any member contract is read.
+2. **The current set.** forge-core, forge-collab and forge-community are whole-contract members. This is checked before any member contract is read.
 3. **Member owners, as a cross-check.** Every other member (a whole contract, a document type or a token) should belong to a contract whose `$ownerId` is the pinned owner. The client reads each unknown member contract, up to 64 of them, and refuses on a proof-verified owner mismatch.
 4. **Unknown members are shown, not refused.** A member the client does not know passes and is listed before the key is confirmed. Examples are a newer forge-collab revision or a trending-index contract. `dg` prints a `note:` line (part of the key explanation, or right after the group check in `dg auth new`), and reports `unknownGroupMembers` in `--json` output. The web app shows the note on the key-creation screen. The note reads "newer Forge contract revision(s)", or "additional group member(s)" when a member is a document type or token of a contract the client already knows. Earlier contracts the deployment lists as superseded in the same group count as known.
-5. **Strict mode (`dg` only).** `dg auth … --strict-group`, or `DASH_FORGE_STRICT_GROUP=1` for CI, accepts only the known set: the current pair and its superseded predecessors. Anything else is refused, and no member contract is read. The web app has no strict mode.
+5. **Strict mode (`dg` only).** `dg auth … --strict-group`, or `DASH_FORGE_STRICT_GROUP=1` for CI, accepts only the known set: the three current contracts and their superseded predecessors. Anything else is refused, and no member contract is read. The web app has no strict mode.
 
 **Trade-off: a member the client cannot read is accepted.** A member contract that cannot be fetched or decoded (for example, a contract format newer than the installed binary) is accepted. The note names it ("could not read contract X; accepted because the group owner is pinned"), and `--json` lists it under `uncheckedGroupMembers`. The same applies to unknown members past the cap of 64. Rule 1 is what bounds a key: only the pinned owner can add members, and consensus enforces that, so rule 3 adds no security that rule 1 lacks. Refusing on a read failure would turn every future contract format into an outage for every installed client, which is the failure this design removes. Only a proof-verified owner that differs from the pin is refused.
 
-Registering a new Forge contract into the group (`deploy-v2.mjs --only collab --force-new`) therefore breaks no installed client. Only a change of owner or admins does, and that would need a new group, and so a new deployment file.
+Registering a new Forge contract into the group (`deploy-v2.mjs --only collab --force-new --same-group`) therefore breaks no installed client. `--force-new` without `--only` also refuses to put a new forge-collab or forge-community into the existing group (when forge-core itself was not superseded) unless `--same-group` is given. Only a change of owner or admins does, and that would need a new group, and so a new deployment file.
 
 ## 9. Rules that changed from the brief
 
-- **The author path is a lookup on a second unique index.** A permanent lookup needs a unique index that includes the writer. `issue` and `patch` therefore carry `author($ownerId, repoId, number)` next to `number(repoId, number)`, and `authorEvent` (and `event`, for the target agreement) carries `targetNumber` so the lookup key can be assembled. The id reference `targetId` is tied to it with `{"targetId": "$id"}`.
+- **The author path is a `findBy` on a second unique index.** A permanent `findBy` needs a unique index that includes the writer. `issue` and `patch` therefore carry `author($ownerId, repoId, number)` next to `number(repoId, number)`, and `authorEvent`, `transition` (and `event`, for the target agreement) carry `targetNumber` so the key can be assembled. The id reference `targetId` is tied to it with `where {"$id": "targetId"}`.
 - **`documentsKeepHistory` only on `issue` and `patch`.** Platform refuses history on a deletable type (the storage layer cannot delete such documents). `comment` stays deletable, so it has no history.
 - **`repoKey` recipients are not required to be members**; see §5.
-- **Author events are their own type** (`authorEvent`, kind close/reopen only) rather than a third and fourth operand of `event`'s gate; see §3.
+- **Author events are their own type** (`authorEvent`) rather than a third and fourth operand of `event`'s gate; see §3. State changes moved to `transition` (§3.1), whose four operands are all used.
 - **Stars and follows are `indexOnly`** with a `$createdAt`-free proof index. "Who starred, newest first" is no longer ordered by time; star and follower counts and "did I star this" are O(1).

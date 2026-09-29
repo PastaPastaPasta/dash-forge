@@ -3,7 +3,7 @@
   "id": "11111111111111111111111111111111",
   "ownerId": "11111111111111111111111111111111",
   "version": 1,
-  "description": "Dash Forge v2 core: repositories, membership, refs, packs",
+  "description": "Dash Forge v2 core: repositories, refs, packs, members, releases, labels, runners, topics",
   "schemaDefs": {
     "id": {
       "type": "array",
@@ -161,7 +161,8 @@
             }
           ],
           "rangeCountable": true,
-          "rankedCountable": true
+          "rankedCountable": true,
+          "skipIfAbsent": true
         },
         {
           "name": "recent",
@@ -194,7 +195,7 @@
           "refersTo": {
             "type": "permanentDocument",
             "documentType": "repo",
-            "propertyAgreement": {
+            "where": {
               "$ownerId": "$ownerId"
             }
           },
@@ -255,7 +256,7 @@
           "refersTo": {
             "type": "permanentDocument",
             "documentType": "repo",
-            "propertyAgreement": {
+            "where": {
               "$ownerId": "$ownerId"
             }
           },
@@ -311,23 +312,17 @@
           {
             "type": "deletableDocument",
             "documentType": "maintainer",
-            "lookup": {
-              "index": "byRepoMember",
-              "keys": {
-                "repoId": "repoId",
-                "memberId": "."
-              }
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
             }
           },
           {
             "type": "deletableDocument",
             "documentType": "writer",
-            "lookup": {
-              "index": "byRepoMember",
-              "keys": {
-                "repoId": "repoId",
-                "memberId": "."
-              }
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
             }
           }
         ]
@@ -455,12 +450,9 @@
       "ownerRefersTo": {
         "type": "deletableDocument",
         "documentType": "maintainer",
-        "lookup": {
-          "index": "byRepoMember",
-          "keys": {
-            "repoId": "repoId",
-            "memberId": "."
-          }
+        "findBy": {
+          "repoId": "repoId",
+          "memberId": "."
         }
       },
       "dependentRequired": {
@@ -586,12 +578,9 @@
       "ownerRefersTo": {
         "type": "deletableDocument",
         "documentType": "maintainer",
-        "lookup": {
-          "index": "byRepoMember",
-          "keys": {
-            "repoId": "repoId",
-            "memberId": "."
-          }
+        "findBy": {
+          "repoId": "repoId",
+          "memberId": "."
         }
       },
       "dependentRequired": {
@@ -707,23 +696,17 @@
           {
             "type": "deletableDocument",
             "documentType": "maintainer",
-            "lookup": {
-              "index": "byRepoMember",
-              "keys": {
-                "repoId": "repoId",
-                "memberId": "."
-              }
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
             }
           },
           {
             "type": "deletableDocument",
             "documentType": "writer",
-            "lookup": {
-              "index": "byRepoMember",
-              "keys": {
-                "repoId": "repoId",
-                "memberId": "."
-              }
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
             }
           }
         ]
@@ -868,23 +851,17 @@
           {
             "type": "deletableDocument",
             "documentType": "maintainer",
-            "lookup": {
-              "index": "byRepoMember",
-              "keys": {
-                "repoId": "repoId",
-                "memberId": "."
-              }
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
             }
           },
           {
             "type": "deletableDocument",
             "documentType": "writer",
-            "lookup": {
-              "index": "byRepoMember",
-              "keys": {
-                "repoId": "repoId",
-                "memberId": "."
-              }
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
             }
           }
         ]
@@ -946,23 +923,17 @@
           {
             "type": "deletableDocument",
             "documentType": "maintainer",
-            "lookup": {
-              "index": "byRepoMember",
-              "keys": {
-                "repoId": "repoId",
-                "memberId": "."
-              }
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
             }
           },
           {
             "type": "deletableDocument",
             "documentType": "writer",
-            "lookup": {
-              "index": "byRepoMember",
-              "keys": {
-                "repoId": "repoId",
-                "memberId": "."
-              }
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
             }
           }
         ]
@@ -1026,7 +997,8 @@
         "seq",
         "d0"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "documentsCountable": true
     },
     "release": {
       "type": "object",
@@ -1035,12 +1007,9 @@
       "ownerRefersTo": {
         "type": "deletableDocument",
         "documentType": "maintainer",
-        "lookup": {
-          "index": "byRepoMember",
-          "keys": {
-            "repoId": "repoId",
-            "memberId": "."
-          }
+        "findBy": {
+          "repoId": "repoId",
+          "memberId": "."
         }
       },
       "properties": {
@@ -1086,6 +1055,38 @@
           "minimum": 0,
           "maximum": 4294967295,
           "position": 7
+        },
+        "assetManifest": {
+          "$ref": "#/$defs/h32",
+          "position": 8
+        },
+        "imported": {
+          "type": "object",
+          "properties": {
+            "author": {
+              "type": "string",
+              "maxLength": 64,
+              "maxBytes": 256,
+              "position": 0
+            },
+            "createdAt": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991,
+              "position": 1
+            },
+            "url": {
+              "type": "string",
+              "maxLength": 300,
+              "maxBytes": 300,
+              "position": 2
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "additionalProperties": false,
+          "position": 9
         }
       },
       "indices": [
@@ -1142,6 +1143,9 @@
                 },
                 {
                   "absent": "assets"
+                },
+                {
+                  "absent": "assetManifest"
                 }
               ]
             }
@@ -1158,23 +1162,17 @@
           {
             "type": "deletableDocument",
             "documentType": "maintainer",
-            "lookup": {
-              "index": "byRepoMember",
-              "keys": {
-                "repoId": "repoId",
-                "memberId": "."
-              }
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
             }
           },
           {
             "type": "deletableDocument",
             "documentType": "writer",
-            "lookup": {
-              "index": "byRepoMember",
-              "keys": {
-                "repoId": "repoId",
-                "memberId": "."
-              }
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
             }
           }
         ]
@@ -1272,12 +1270,9 @@
       "ownerRefersTo": {
         "type": "deletableDocument",
         "documentType": "maintainer",
-        "lookup": {
-          "index": "byRepoMember",
-          "keys": {
-            "repoId": "repoId",
-            "memberId": "."
-          }
+        "findBy": {
+          "repoId": "repoId",
+          "memberId": "."
         }
       },
       "properties": {
@@ -1391,7 +1386,7 @@
           "refersTo": {
             "type": "permanentDocument",
             "documentType": "repo",
-            "propertyAgreement": {
+            "where": {
               "$ownerId": "$ownerId"
             }
           },
@@ -1452,7 +1447,7 @@
           "refersTo": {
             "type": "permanentDocument",
             "documentType": "repo",
-            "propertyAgreement": {
+            "where": {
               "$ownerId": "$ownerId"
             }
           },
