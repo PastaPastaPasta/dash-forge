@@ -44,9 +44,10 @@ export interface SelectedRef {
   readonly ref: ResolvedRef | undefined
   readonly isTag: boolean
   /**
-   * A commit pinned by its full id (`?ref=<40 hex>`, a permalink) that no branch or tag is
-   * named. It is read by id and hash-checked like any object, so a permalink can only show
-   * what the repo holds; it is not checked against any ref.
+   * A commit pinned by its id (`?ref=<4 to 40 hex>`, a permalink) that no branch or tag is
+   * named. A short id is resolved against the repo's objects by the view ({@link resolveTip}),
+   * which says so when it matches nothing or several. It is read by id and hash-checked like any
+   * object, so a permalink can only show what the repo holds; it is not checked against any ref.
    */
   readonly pinned?: string
 }
@@ -55,9 +56,12 @@ export interface SelectedRef {
  * Resolve the `?ref=` URL param against the repo's refs, falling back to the default branch
  * when the param is empty. A bare name matches branches first, then tags; a `heads/…` or
  * `tags/…` (optionally `refs/`-prefixed) param pins the kind, which is how a tag sharing a
- * branch's name stays addressable. A full commit id no ref is named is a pinned commit
- * ({@link SelectedRef.pinned}). `ref` stays undefined when nothing matches — the caller
- * surfaces "ref not found" unless the commit is pinned.
+ * branch's name stays addressable. A commit id (full, or a prefix of 4+ hex digits) no ref is
+ * named is a pinned commit ({@link SelectedRef.pinned}). `ref` stays undefined when nothing
+ * matches — the caller surfaces "ref not found" unless the commit is pinned.
+ *
+ * The tip of a ref ({@link selectedTip}) may be an annotated tag's id, not a commit's: views peel
+ * it ({@link resolveTip}) before reading a tree or a history from it.
  */
 export function selectRef(
   branches: readonly ResolvedRef[],
@@ -77,14 +81,17 @@ export function selectRef(
     const tag = tags.find((t) => t.refName === `refs/tags/${name}`)
     if (tag) return { name, ref: tag, isTag: true }
   }
-  if (/^[0-9a-f]{40}$/i.test(param)) {
+  if (/^[0-9a-f]{4,40}$/i.test(param)) {
     const pinned = param.toLowerCase()
     return { name: pinned.slice(0, 7), ref: undefined, isTag: false, pinned }
   }
   return { name, ref: undefined, isTag: false }
 }
 
-/** The commit a view of `selected` reads: its pinned commit, else its ref's tip (null: none). */
+/**
+ * The object a view of `selected` starts from: its pinned commit id, else its ref's tip (null:
+ * none). Not always a full commit id: a short pinned id, or an annotated tag's id ({@link resolveTip}).
+ */
 export function selectedTip(selected: SelectedRef): string | null {
   return selected.pinned ?? tipOidOf(selected.ref)
 }

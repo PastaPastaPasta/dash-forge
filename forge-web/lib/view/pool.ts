@@ -1,4 +1,9 @@
-/** Bounded-concurrency helper for view reads that fan out over many objects. */
+/** Bounded-concurrency helper for view reads that fan out over many objects, and a bounded-memo trim. */
+
+/** Drop a memo's oldest entries (insertion order) until it holds at most `keep`. */
+export function trimOldest<K, V>(map: Map<K, V>, keep: number): void {
+  while (map.size > keep) map.delete(map.keys().next().value as K)
+}
 
 /**
  * Map `items` through `fn` with at most `limit` calls in flight, preserving input order in the

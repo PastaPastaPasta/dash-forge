@@ -16,7 +16,7 @@ import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, CheckCircle2, Download, FileArchive, Loader2, Tag, XCircle } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { formatBytes, plural } from '@/lib/view'
+import { formatBytes, plural, tipOidOf } from '@/lib/view'
 import type { ReleaseAssetView, ReleaseView } from '@/lib/repo'
 import {
   AssetHashMismatchError,
@@ -84,7 +84,7 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
           <ul className="space-y-3">
             {data.current.map((r) => (
               <li key={r.id}>
-                <ReleaseCard release={r} addr={addr} />
+                <ReleaseCard release={r} addr={addr} tagTip={releaseTagTip(home, r.tagName)} />
               </li>
             ))}
           </ul>
@@ -115,6 +115,11 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
   )
 }
 
+/** The tip of a release's tag (a commit, or an annotated tag object), or null when no live tag has the name. */
+function releaseTagTip(home: RepoHome, tag: string): string | null {
+  return tipOidOf(home.tags.find((t) => t.refName === `refs/tags/${tag}`))
+}
+
 export function ReleaseContent({ home, addr, tag }: { home: RepoHome; addr: RepoAddress; tag: string }): JSX.Element {
   const { data, error, reload } = useReleases(home.repo)
   if (error) return <ErrorState message={error} onRetry={reload} />
@@ -140,7 +145,7 @@ export function ReleaseContent({ home, addr, tag }: { home: RepoHome; addr: Repo
       <Link href={repoHref('/repo/releases', addr)} className="text-dense text-anvil-600 underline dark:text-anvil-300">
         ← All releases
       </Link>
-      <ReleaseCard release={release} addr={addr} full />
+      <ReleaseCard release={release} addr={addr} full tagTip={releaseTagTip(home, tag)} />
       {previous.length > 0 ? (
         <section aria-label="Previous revisions" className="space-y-3">
           <h2 className="text-prose">Previous revisions of {tag}</h2>
@@ -158,11 +163,14 @@ function ReleaseCard({
   addr,
   previous = false,
   full = false,
+  tagTip = null,
 }: {
   release: ReleaseView
   addr: RepoAddress
   previous?: boolean
   full?: boolean
+  /** The release tag's tip (a commit or a tag object); null when no live tag has its name. */
+  tagTip?: string | null
 }): JSX.Element {
   return (
     <article
@@ -201,6 +209,24 @@ function ReleaseCard({
         ) : (
           <>
             Published by <Author identityId={r.publisher} /> · <Time ms={r.createdAt} />
+          </>
+        )}
+        {/* Only for a live tag of that name: a release's tag may be missing or deleted. */}
+        {previous || tagTip === null ? null : (
+          <>
+            {' · '}
+            <Link href={repoHref('/repo', addr, { ref: `tags/${r.tagName}` })} className="underline hover:text-forge-800 dark:hover:text-forge-400" data-testid="release-browse">
+              Browse files
+            </Link>
+            {full ? (
+              <>
+                {' · '}
+                {/* The commit page peels an annotated tag to the commit it names (L-01). */}
+                <Link href={repoHref('/repo/commit', addr, { oid: tagTip })} className="underline hover:text-forge-800 dark:hover:text-forge-400" data-testid="release-commit">
+                  View commit
+                </Link>
+              </>
+            ) : null}
           </>
         )}
       </p>

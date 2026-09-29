@@ -3,34 +3,29 @@
 /**
  * CommitContent — a single commit: metadata + its patch against its first parent (browse-plane
  * tree diff, then per-file line diffs through the shared {@link DiffView}). A root commit shows
- * every file as added. Each changed path links to its blob on the default branch — the blob
- * route addresses branches and tags, not commits. Below the header, the commit's check runs (CI
- * results, `checkRun`): what `dg ci report` and the GitHub Action link to.
+ * every file as added. Each changed path links to its blob at this commit (L-28). An annotated
+ * tag's id (the tags list's chips) shows the commit it names, and says which tag it came through.
+ * Below the header, the commit's check runs (CI results, `checkRun`): what `dg ci report` and the
+ * GitHub Action link to.
  */
 
 import Link from 'next/link'
 import { useMemo } from 'react'
-import { GitCommit } from 'lucide-react'
+import { GitCommit, Tag } from 'lucide-react'
 import type { BrowseReader } from '@/lib/browse'
 import { readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
 import { readCheckRuns, summarizeChecks } from '@/lib/repo/checks'
 import type { DiffSides, RepoHome } from '@/lib/view'
-import { CommitIdError, commitSubject, formatDate, loadCommitChanges, timeAgo } from '@/lib/view'
+import { commitSubject, formatDate, loadCommitChanges, timeAgo } from '@/lib/view'
 import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { DiffView } from '@/components/repo/diff-view'
 import { ChecksTab } from '@/components/repo/pull-tabs'
+import { ReadErrorState } from '@/components/repo/resolved-tip'
 import { Oid } from '@/components/ui/oid'
-import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
+import { EmptyState, LoadingBlock } from '@/components/ui/states'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
-
-const COMMIT_ID_TITLES: Record<CommitIdError['kind'], string> = {
-  invalid: 'Not a commit id',
-  'not-found': 'Commit not found',
-  'not-a-commit': 'Not a commit',
-  ambiguous: 'Ambiguous commit id',
-}
 
 export function CommitContent({ home, addr, oid }: { home: RepoHome; addr: RepoAddress; oid: string }): JSX.Element {
   if (!oid) return <EmptyState icon={GitCommit} title="No commit addressed" body="Add &oid= to the URL." />
@@ -45,33 +40,12 @@ function Body({ reader, retry, oid, addr, repo }: { reader: BrowseReader; retry:
   const { data, loading, error, cause } = useAsync(() => loadCommitChanges(reader, oid), [oid])
   const sides = useMemo<DiffSides>(() => ({ base: reader, head: reader }), [reader])
   if (loading) return <LoadingBlock label="Reconstructing commit" />
-  if (cause instanceof CommitIdError) {
-    return (
-      <EmptyState
-        icon={GitCommit}
-        title={COMMIT_ID_TITLES[cause.kind]}
-        body={cause.message}
-        action={
-          cause.candidates.length > 0 ? (
-            <ul className="space-y-1 text-left font-mono text-dense">
-              {cause.candidates.map((c) => (
-                <li key={c}>
-                  <Link href={repoHref('/repo/commit', addr, { oid: c })} className="hover:text-forge-800 dark:hover:text-forge-400">
-                    {c}
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          ) : undefined
-        }
-      />
-    )
-  }
-  if (error) return <ErrorState message={error} onRetry={retry} />
+  if (error) return <ReadErrorState cause={cause} retry={retry} addr={addr} repo={repo} />
   if (!data) return <LoadingBlock />
 
-  const { commit, changes, truncated } = data
+  const { commit, changes, truncated, tags } = data
   const full = data.oid
+  const tagNames = tags.map((t) => t.tag).filter((t) => t !== '')
   const body = commit.message.split('\n').slice(1).join('\n').trim()
 
   return (
@@ -83,6 +57,11 @@ function Body({ reader, retry, oid, addr, repo }: { reader: BrowseReader; retry:
           <span className="font-medium text-anvil-700 dark:text-anvil-200">{commit.author.name || 'unknown'}</span>
           <span>committed {timeAgo(commit.committer.when)} · {formatDate(commit.committer.when)}</span>
           <span className="flex items-center gap-1">commit <Oid value={full} chars={9} /></span>
+          {tagNames.length > 0 ? (
+            <span className="flex items-center gap-1" data-testid="commit-via-tag">
+              <Tag className="h-3 w-3" aria-hidden /> tagged {tagNames.join(' → ')}
+            </span>
+          ) : null}
           {commit.parents.map((p) => (
             <Link key={p} href={repoHref('/repo/commit', addr, { oid: p })} className="hit-area flex items-center gap-1 hover:text-forge-800 dark:hover:text-forge-400">
               parent <Oid value={p} chars={7} copyable={false} />
@@ -106,7 +85,7 @@ function Body({ reader, retry, oid, addr, repo }: { reader: BrowseReader; retry:
           sides={sides}
           changes={changes}
           truncated={truncated}
-          fileHref={(path) => repoHref('/repo/blob', addr, { path })}
+          fileHref={(path) => repoHref('/repo/blob', addr, { path, ref: full })}
         />
       )}
     </div>

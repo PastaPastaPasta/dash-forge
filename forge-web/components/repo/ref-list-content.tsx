@@ -14,6 +14,7 @@ import { isDiverged, isLive, plural, refParamFor, tipOidOf } from '@/lib/view'
 import type { ResolvedRef } from '@/lib/repo'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState } from '@/components/ui/states'
+import { TagCommit, useTagPeeler } from '@/components/repo/tag-commit'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 
 const KIND = {
@@ -31,6 +32,18 @@ export function RefListContent({
   kind: keyof typeof KIND
 }): JSX.Element {
   const { prefix, icon: Icon, empty, noun, single } = KIND[kind]
+  // Only tags need peeling: the branches list starts no browse index.
+  const peeler = useTagPeeler(kind === 'tags' ? home.repo : null)
+  const tipChip = (tip: string): JSX.Element => {
+    // A tag's tip may be a tag object: the chip shows the commit it names (L-02). Keyed by the
+    // tip, so a force-moved tag's chip starts over instead of keeping the old commit.
+    if (kind === 'tags') return <TagCommit key={tip} peeler={peeler} tip={tip} addr={addr} />
+    return (
+      <Link href={repoHref('/repo/commit', addr, { oid: tip })} className="hit-area hover:text-forge-800 dark:hover:text-forge-400">
+        <Oid value={tip} copyable={false} />
+      </Link>
+    )
+  }
   const refs = kind === 'branches' ? home.branches : home.tags
   const defaultRefName = `refs/heads/${home.defaultBranch}`
   const short = (ref: ResolvedRef): string =>
@@ -86,14 +99,7 @@ export function RefListContent({
                     diverged
                   </span>
                 ) : null}
-                {tip ? (
-                  <Link
-                    href={repoHref('/repo/commit', addr, { oid: tip })}
-                    className="hit-area hover:text-forge-800 dark:hover:text-forge-400"
-                  >
-                    <Oid value={tip} copyable={false} />
-                  </Link>
-                ) : null}
+                {tip ? tipChip(tip) : null}
               </div>
             )
           })}

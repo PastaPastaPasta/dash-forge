@@ -6,9 +6,9 @@
  */
 
 import { MissingObjectError, MODE_GITLINK, MODE_TREE, type GitObject } from '../browse'
-import { commitSubject, type CommitObject, type TreeEntry } from './git-objects'
+import { commitSubject, type CommitObject, type TagObject, type TreeEntry } from './git-objects'
 import { mapPooled } from './pool'
-import { readCommit, readTree, type ObjectReader } from './tree-nav'
+import { ObjectTypeError, peelToCommit, readCommit, readTree, type ObjectReader, type Peeled } from './tree-nav'
 
 /**
  * Where each side of a comparison reads its objects. A commit diff reads both from one repo;
@@ -142,8 +142,10 @@ export async function diffTrees(
 /** A commit and its change set against its first parent (everything added for a root). */
 export interface CommitChanges extends TreeDiff {
   readonly commit: CommitObject
-  /** The full oid, when the URL named the commit by a short id. */
+  /** The full oid, when the URL named the commit by a short id (or by a tag). */
   readonly oid: string
+  /** The annotated tags the URL's id was peeled through to reach the commit (outermost first). */
+  readonly tags: readonly TagObject[]
 }
 
 /**
@@ -157,6 +159,10 @@ export class CommitIdError extends Error {
     readonly input: string,
     /** For `ambiguous`: some of the commits the prefix matches. */
     readonly candidates: readonly string[] = [],
+    /** For `not-a-commit`: what the id names instead (`tree`, `blob`), when known. */
+    readonly actual?: GitObject['type'],
+    /** For `not-a-commit`: the id names an annotated tag of that object. */
+    readonly viaTag = false,
   ) {
     super(
       kind === 'invalid'
@@ -164,11 +170,16 @@ export class CommitIdError extends Error {
         : kind === 'not-found'
           ? `No commit ${input} in this repo`
           : kind === 'not-a-commit'
-            ? `${input} names a file or directory in this repo, not a commit`
+            ? `${input} ${viaTag ? 'is a tag of' : 'names'} ${nounOf(actual)} in this repo, not a commit`
             : `${input} is ambiguous: ${candidates.length > 1 && candidates.length < AMBIGUOUS_SHOWN ? candidates.length : 'several'} objects start with it; use more characters`,
     )
     this.name = 'CommitIdError'
   }
+}
+
+/** How a non-commit object reads in a sentence. */
+function nounOf(type: GitObject['type'] | undefined): string {
+  return type === 'blob' ? 'a file' : type === 'tree' ? 'a directory' : 'an object'
 }
 
 const AMBIGUOUS_SHOWN = 5
@@ -188,8 +199,9 @@ const PREFIX_SCAN = 16
 /**
  * Resolve a commit id as git does: a full 40-hex oid as is, or an unambiguous prefix of at
  * least 4 hex digits (odd lengths too — the 7-character form the UI shows) through the
- * locator's sorted OID index. Only commits count: a prefix shared by one commit and one blob
- * resolves to the commit, as `git show <prefix>^{commit}` does.
+ * locator's sorted OID index. Only commits and annotated tags (which peel to one) count: a
+ * prefix shared by one commit and one blob resolves to the commit, as `git show <prefix>^{commit}`
+ * does. The result may be a tag's id: peel it ({@link peelToCommit}).
  */
 export async function resolveCommitOid(reader: PrefixReader, input: string): Promise<string> {
   const id = input.trim().toLowerCase()
@@ -202,10 +214,13 @@ export async function resolveCommitOid(reader: PrefixReader, input: string): Pro
   const typeOf = (oid: string): Promise<GitObject['type'] | null> =>
     reader.objectType ? reader.objectType(oid) : reader.readObject(oid).then((o) => o.type)
   const commits: string[] = []
+  let other: GitObject['type'] | undefined
   let unreadable: unknown = null
   for (const oid of matches) {
     try {
-      if ((await typeOf(oid)) === 'commit') commits.push(oid)
+      const type = await typeOf(oid)
+      if (type === 'commit' || type === 'tag') commits.push(oid)
+      else other ??= type ?? undefined
     } catch (e) {
       unreadable = e
     }
@@ -216,7 +231,7 @@ export async function resolveCommitOid(reader: PrefixReader, input: string): Pro
   }
   // No match is a commit. If some could not even be read, that is the real answer.
   if (unreadable !== null) throw unreadable
-  throw new CommitIdError('not-a-commit', input)
+  throw new CommitIdError('not-a-commit', input, [], other)
 }
 
 /** "No such commit", unless packs are missing, in which case it may be in one of those. */
@@ -227,22 +242,25 @@ function notFound(reader: PrefixReader, input: string): Error {
 }
 
 export async function loadCommitChanges(reader: PrefixReader, id: string): Promise<CommitChanges> {
-  const oid = await resolveCommitOid(reader, id)
+  const named = await resolveCommitOid(reader, id)
+  let peeled: Peeled
   let commit: CommitObject
   try {
-    commit = await readCommit(reader, oid)
+    // A tag's id (the tags list, a release) shows the commit it names, as `git show` does.
+    peeled = await peelToCommit(reader, named)
+    commit = await readCommit(reader, peeled.oid)
   } catch (e) {
     // A well-formed full id the repo does not hold: say so, not "object not in locator". A
     // partial clone's own error already names the packs it could not load; keep it.
     if (e instanceof MissingObjectError) throw e
-    if (reader.locate?.(oid) === null) throw notFound(reader, id)
-    if (e instanceof Error && / is not a commit$/.test(e.message)) throw new CommitIdError('not-a-commit', id)
+    if (reader.locate?.(named) === null) throw notFound(reader, id)
+    if (e instanceof ObjectTypeError) throw new CommitIdError('not-a-commit', id, [], e.actual, e.oid !== named)
     throw e
   }
   const parent = commit.parents[0]
   const parentTree = parent ? (await readCommit(reader, parent)).tree : null
   const diff = await diffTrees({ base: reader, head: reader }, parentTree, commit.tree)
-  return { commit, oid, ...diff }
+  return { commit, oid: peeled.oid, tags: peeled.tags, ...diff }
 }
 
 /** The commit that last changed a directory entry, for the file list's lazy commit column. */

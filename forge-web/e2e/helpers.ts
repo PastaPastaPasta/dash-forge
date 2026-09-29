@@ -83,6 +83,7 @@ export const SHOWCASE_OWNERS = {
   CHARMBRACELET: 'unofficial-charmbracelet-mirror',
   JUNEGUNN: 'unofficial-junegunn-mirror',
   BURNTSUSHI: 'unofficial-burntsushi-mirror',
+  DASHPAY: 'unofficial-dashpay-dash-mirror',
 } as const
 
 const showcaseOwnerCache = new Map<string, Promise<string>>()

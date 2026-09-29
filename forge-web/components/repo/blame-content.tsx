@@ -13,6 +13,7 @@ import { FileText, History, X } from 'lucide-react'
 import { PathActions } from '@/components/repo/path-actions'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
+import type { RepoRef } from '@/lib/repo'
 import { commitSubject, lineHash, selectedTip, selectLine, selectRef, timeAgo } from '@/lib/view'
 import { ROW_PX, scrollToRow, useRowWindow } from '@/hooks/use-row-window'
 import { BLAME_MAX_COMMITS, BLAME_MAX_VERSIONS, BlameRefusedError, BlameStoppedError, blameFile, type BlameProgress, type BlameResult } from '@/lib/view/blame'
@@ -20,13 +21,14 @@ import { BlobToolbar, useLineSelection } from '@/components/repo/blob-content'
 import { permalinkPath, pinnedHref, usePermalinkKey } from '@/components/repo/permalink'
 import { plural } from '@/lib/view/format'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
+import { ReadErrorState, ResolvedTip } from '@/components/repo/resolved-tip'
 import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
 import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
 import { Button } from '@/components/ui/button'
 import { ScrollRegion } from '@/components/ui/scroll-region'
-import { EmptyState, ErrorState } from '@/components/ui/states'
+import { EmptyState } from '@/components/ui/states'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
-import { cn, errorMessage } from '@/lib/utils'
+import { cn } from '@/lib/utils'
 
 export function BlameContent({
   home,
@@ -55,7 +57,13 @@ export function BlameContent({
         <PathActions addr={addr} path={path} refParam={refParam} show={['code', 'history']} />
       </div>
       <BrowseBoundary repo={home.repo} addr={addr}>
-        {(reader) => <BlameBody key={`${tipOid}\0${path}`} reader={reader} tipOid={tipOid} path={path} addr={addr} privateRepo={home.repo.visibility === 'private'} />}
+        {(reader, retry) => (
+          <ResolvedTip reader={reader} retry={retry} repo={home.repo} tip={tipOid} pinned={selected.pinned !== undefined} name={selected.name} addr={addr} refParam={refParam} accepts="commit" label="Reading the file’s history">
+            {(tip) => (
+              <BlameBody key={`${tip.oid}\0${path}`} reader={reader} tipOid={tip.oid} path={path} addr={addr} privateRepo={home.repo.visibility === 'private'} repo={home.repo} />
+            )}
+          </ResolvedTip>
+        )}
       </BrowseBoundary>
     </div>
   )
@@ -74,12 +82,15 @@ export function BlameBody({
   path,
   addr,
   privateRepo = false,
+  repo,
 }: {
   reader: BrowseReader
   tipOid: string
   path: string
   addr: RepoAddress
   privateRepo?: boolean
+  /** For the storage card when a pack's storage stops answering (tests may leave it out). */
+  repo?: RepoRef
 }): JSX.Element {
   const [run, setRun] = useState<RunState>({ kind: 'running', progress: null })
   const [attempt, setAttempt] = useState(0)
@@ -124,7 +135,7 @@ export function BlameBody({
 
   if (run.kind === 'failed') {
     if (run.error instanceof BlameRefusedError) return <EmptyState icon={FileText} title="Can't blame this file" body={run.error.message} />
-    return <ErrorState message={errorMessage(run.error)} onRetry={restart} />
+    return <ReadErrorState cause={run.error} retry={restart} addr={addr} repo={repo} />
   }
   if (run.kind === 'cancelled' && run.partial !== null) {
     // Cancel keeps what was worked out (L-23): the table, marked stopped, and a way to run again.

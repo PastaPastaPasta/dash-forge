@@ -8,7 +8,7 @@
 
 import { MODE_GITLINK, MODE_TREE } from '../browse'
 import type { ObjectReader } from './tree-nav'
-import { readCommit, readTree } from './tree-nav'
+import { ObjectTypeError, peel, readCommit, readTree } from './tree-nav'
 import { mapPooled } from './pool'
 
 /** The largest ref the browser zips (uncompressed bytes). Above it: clone instead. */
@@ -87,9 +87,15 @@ export async function walkFiles(
   return { files, truncated: dropped || queue.length > 0 }
 }
 
-/** Every file of a commit (for the zip). */
-export async function listFiles(reader: ObjectReader, commitOid: string): Promise<ZipFile[]> {
-  return (await walkFiles(reader, (await readCommit(reader, commitOid)).tree)).files
+/**
+ * Every file of a ref's tip (for the zip): a commit, or what an annotated tag names, through any
+ * nested tags (L-01): the commit's tree, or a tagged tree itself. A tagged blob has no tree.
+ */
+export async function listFiles(reader: ObjectReader, tipOid: string): Promise<ZipFile[]> {
+  const tip = await peel(reader, tipOid)
+  const tree = tip.type === 'commit' ? (await readCommit(reader, tip.oid)).tree : tip.type === 'tree' ? tip.oid : null
+  if (tree === null) throw new ObjectTypeError(tip.oid, tip.type, 'tree')
+  return (await walkFiles(reader, tree)).files
 }
 
 /** Stored (compressed-on-disk) sizes from the locator: a lower bound, cheap to sum. */
