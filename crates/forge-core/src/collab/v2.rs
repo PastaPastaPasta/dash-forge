@@ -1756,9 +1756,9 @@ fn undecodable(what: &str, key: &[u8]) -> Error {
     ))
 }
 
-/// The per-target state codes of a grouped sum ([`Collab::state_codes`]), by target id: a
+/// The per-target transition sums of a grouped sum ([`Collab::state_sums`]), by target id: a
 /// target with no transitions is absent from the answer and reads 0.
-fn codes_by_target(sums: BTreeMap<Vec<u8>, i64>) -> Result<BTreeMap<String, i64>> {
+fn sums_by_target(sums: BTreeMap<Vec<u8>, i64>) -> Result<BTreeMap<String, i64>> {
     sums.into_iter()
         .map(|(k, v)| {
             platform::decode_identifier_key(&k)
@@ -2274,7 +2274,7 @@ impl<'a> Collab<'a> {
         if !precheck_enabled() || self.is_member(repo).await? {
             return Ok(());
         }
-        if status_of_code(self.state_code(repo, target_id).await?).locked {
+        if status_of_code(self.state_sum(repo, target_id).await?).locked {
             return Err(Error::NotPermitted {
                 action: "post to this conversation".into(),
                 reason: format!(
@@ -3237,10 +3237,11 @@ impl<'a> Collab<'a> {
 
     // --- state and counts -----------------------------------------------------------------
 
-    /// The state codes of `target_ids` (base58): the proved sum of `transition.delta` per
+    /// The transition sums of `target_ids` (base58): the proved sum of `transition.delta` per
     /// target (`perTarget`, `summable: delta`), one grouped request per 100 targets. A target
-    /// with no transitions reads 0 (open).
-    pub async fn state_codes(
+    /// with no transitions reads 0 (open). A sum is not a state code: fold it
+    /// ([`status_of_code`], [`rules::v2::fold_sum`]; 16 or more is locked).
+    pub async fn state_sums(
         &self,
         repo: &RepoRef,
         target_ids: &[String],
@@ -3261,15 +3262,15 @@ impl<'a> Collab<'a> {
                 .client
                 .sum_documents_grouped(&collab, DOC_TRANSITION, &[filter], "targetId", "delta")
                 .await?;
-            out.extend(codes_by_target(sums)?);
+            out.extend(sums_by_target(sums)?);
         }
         Ok(out)
     }
 
-    /// One target's state code ([`Self::state_codes`]).
-    pub async fn state_code(&self, repo: &RepoRef, target_id: &str) -> Result<i64> {
+    /// One target's transition sum ([`Self::state_sums`]).
+    pub async fn state_sum(&self, repo: &RepoRef, target_id: &str) -> Result<i64> {
         Ok(self
-            .state_codes(repo, &[target_id.to_string()])
+            .state_sums(repo, &[target_id.to_string()])
             .await?
             .get(target_id)
             .copied()
@@ -3384,7 +3385,7 @@ impl<'a> Collab<'a> {
         };
         let is_draft = |code: i64| status_of_code(code).draft;
         let code = if created.resumed {
-            self.state_code(repo, &target.id).await?
+            self.state_sum(repo, &target.id).await?
         } else {
             0
         };
@@ -3398,7 +3399,7 @@ impl<'a> Collab<'a> {
             Ok(c) => return Ok(Some(c.transition_id)),
             Err(e) => e,
         };
-        if self.state_code(repo, &target.id).await.is_ok_and(is_draft) {
+        if self.state_sum(repo, &target.id).await.is_ok_and(is_draft) {
             return Ok(None);
         }
         // A refusal is conclusive; anything else (the network) may hide a landed transition.
@@ -4142,7 +4143,7 @@ impl<'a> Collab<'a> {
         }
         let code = match known_code {
             Some(c) => c,
-            None => self.state_code(repo, &target.id).await?,
+            None => self.state_sum(repo, &target.id).await?,
         };
         let route = match actor {
             Actor::Author => StateRoute::Author,
@@ -4171,7 +4172,7 @@ impl<'a> Collab<'a> {
                 after: mv.after,
             }),
             Err(e) if is_state_rule_refusal(&e) => {
-                let now = self.state_code(repo, &target.id).await.unwrap_or(code);
+                let now = self.state_sum(repo, &target.id).await.unwrap_or(code);
                 // A move attempted though it was known illegal, or one whose target has not
                 // moved since the read: the rule refused this move itself, not a race.
                 let cause = if forced || now == code {
@@ -5335,13 +5336,13 @@ mod tests {
     fn grouped_answers_become_codes_and_repo_counts() {
         let a = [1u8; 32];
         let b = [2u8; 32];
-        let codes = codes_by_target(BTreeMap::from([(a.to_vec(), 1), (b.to_vec(), 8)])).unwrap();
+        let codes = sums_by_target(BTreeMap::from([(a.to_vec(), 1), (b.to_vec(), 8)])).unwrap();
         assert_eq!(codes.get(&platform::encode_identifier(a)), Some(&1));
         assert_eq!(codes.get(&platform::encode_identifier(b)), Some(&8));
         let key = |k: u8| vec![k ^ 0x80];
         // A key of another width is an error, never a silent 0 or "open".
         assert!(counts_by_kind(BTreeMap::from([(vec![1, 2], 1)])).is_err());
-        assert!(codes_by_target(BTreeMap::from([(vec![1; 31], 1)])).is_err());
+        assert!(sums_by_target(BTreeMap::from([(vec![1; 31], 1)])).is_err());
         let kinds = counts_by_kind(BTreeMap::from([
             (key(1), 5),
             (key(2), 1),

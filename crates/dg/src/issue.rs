@@ -140,7 +140,7 @@ async fn milestone(ctx: &Ctx, repo: &str, number: u64, title: Option<&str>) -> R
 }
 
 /// Which thread flag [`thread_flag`] sets.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Flag {
     Pin,
     Lock,
@@ -160,10 +160,20 @@ async fn thread_flag(ctx: &Ctx, repo: &str, number: u64, flag: Flag, on: bool) -
         (Flag::Lock, true) => "; then only members can comment",
         _ => "",
     };
+    let collab = s.collab();
+    // Already locked (or unlocked): nothing to write, as `dg pr lock` says.
+    if flag == Flag::Lock
+        && status_of_code(collab.state_sum(&s.repo, &target.id).await?).locked == on
+    {
+        ctx.emit(
+            json!({ "status": done, "issue": number, "written": false }),
+            || println!("issue #{number} is already {done}; nothing written"),
+        );
+        return Ok(());
+    }
     ctx.confirm_or_cancel(&format!(
         "{verb} issue #{number}? (one small document; members only{note})"
     ))?;
-    let collab = s.collab();
     let id = match flag {
         Flag::Pin => collab.set_pinned(&s.repo, &target, on).await?,
         Flag::Lock => collab.set_locked(&s.repo, &target, on).await?,
@@ -673,7 +683,7 @@ async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
 /// signed, with the reason.
 async fn refuse_if_locked(s: &Session, number: u64, target_id: &str) -> Result<()> {
     let collab = s.collab();
-    if !status_of_code(collab.state_code(&s.repo, target_id).await?).locked {
+    if !status_of_code(collab.state_sum(&s.repo, target_id).await?).locked {
         return Ok(());
     }
     if collab.signer_role(&s.repo).await?.is_some() {
