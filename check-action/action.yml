@@ -1,0 +1,114 @@
+# Dash Forge check action: reports a GitHub Actions job's result as a Forge check run (a
+# `checkRun` document) on the same commit of the repository's Forge mirror. Forge mirrors are
+# byte-identical git, so the GitHub commit id IS the Forge commit id. See check-action/README.md.
+name: Dash Forge check
+description: Report this GitHub Actions job's result as a Dash Forge check run on the mirrored commit.
+author: PastaPastaPasta
+branding:
+  icon: check-circle
+  color: blue
+
+inputs:
+  repo:
+    description: "Forge repository: <owner identity id or DPNS name>/<name>, or dash://<owner>/<name>."
+    required: true
+  name:
+    description: "The check's name on Forge (default: the job's id)."
+    default: ${{ github.job }}
+  status:
+    description: "queued, in_progress or completed (default completed)."
+    default: completed
+  conclusion:
+    description: "With status completed: success, failure, neutral, cancelled, skipped, timed_out, action_required or stale. Default: from job-status."
+    default: ""
+  job-status:
+    description: "The job's status, to derive the conclusion from: pass `job.status` (success, failure or cancelled)."
+    default: ""
+  sha:
+    description: "The commit to report on (default: the pull request head, else github.sha)."
+    default: ""
+  summary:
+    description: "A one-line summary (≤ 1000 characters). Default: the workflow, job and run attempt."
+    default: ""
+  details-url:
+    description: "Link back to the run (default: this workflow run on GitHub)."
+    default: ""
+  log:
+    description: "A file to upload as the run's log (with log-storage). Content-addressed; the check run records its URL and SHA-256."
+    default: ""
+  log-storage:
+    description: "The storage profile the log goes to: its name in a storage.toml the job provides (see check-action/README.md)."
+    default: ""
+  public-log:
+    description: "true: upload the log even for a private repository (it is unencrypted, and its URL is public)."
+    default: "false"
+  network:
+    description: "mainnet, testnet or devnet."
+    default: mainnet
+  devnet-name:
+    description: "Devnet name (required when network is devnet), e.g. moutai."
+    default: ""
+  version:
+    description: "Dash Forge release to install."
+    default: "0.1.0"
+  install:
+    description: "false: use the dg already on PATH."
+    default: "true"
+  fail-on-error:
+    description: "true: fail the step when the report cannot be written. Default false: a warning, so a Forge outage never fails your CI."
+    default: "false"
+
+outputs:
+  document-id:
+    description: "The checkRun document id."
+    value: ${{ steps.report.outputs.document-id }}
+  url:
+    description: "The Forge commit page that shows the run."
+    value: ${{ steps.report.outputs.url }}
+  action:
+    description: "created, updated or unchanged (empty when nothing was written)."
+    value: ${{ steps.report.outputs.action }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve the report
+      id: resolve
+      shell: bash
+      env:
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_NAME: ${{ inputs.name }}
+        INPUT_STATUS: ${{ inputs.status }}
+        INPUT_CONCLUSION: ${{ inputs.conclusion }}
+        INPUT_JOB_STATUS: ${{ inputs.job-status }}
+        INPUT_SHA: ${{ inputs.sha }}
+        INPUT_SUMMARY: ${{ inputs.summary }}
+        INPUT_DETAILS_URL: ${{ inputs.details-url }}
+        INPUT_LOG: ${{ inputs.log }}
+        INPUT_LOG_STORAGE: ${{ inputs.log-storage }}
+        INPUT_PUBLIC_LOG: ${{ inputs.public-log }}
+        INPUT_NETWORK: ${{ inputs.network }}
+        INPUT_DEVNET_NAME: ${{ inputs.devnet-name }}
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: bash "$GITHUB_ACTION_PATH/resolve.sh"
+
+    - name: Install Dash Forge ${{ inputs.version }}
+      if: inputs.install == 'true'
+      shell: bash
+      env:
+        DASH_FORGE_VERSION: ${{ inputs.version }}
+        DASH_FORGE_INSTALL_DIR: ${{ runner.temp }}/forge-check-bin
+        DASH_FORGE_BINARIES: dg
+        DASH_FORGE_ATTESTATION: auto
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        sh "$GITHUB_ACTION_PATH/../install.sh"
+        echo "$RUNNER_TEMP/forge-check-bin" >> "$GITHUB_PATH"
+
+    - name: Report to Forge
+      id: report
+      shell: bash
+      env:
+        FORGE_ARGS_FILE: ${{ steps.resolve.outputs.args-file }}
+        FORGE_FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+      run: bash "$GITHUB_ACTION_PATH/report.sh"

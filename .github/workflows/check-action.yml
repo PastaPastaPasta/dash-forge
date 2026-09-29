@@ -1,0 +1,144 @@
+name: Check Action
+
+# Tests the Dash Forge check action in check-action/.
+#   * static: actionlint (this workflow uses the action, so its inputs are checked too),
+#             shellcheck and check-action/test.sh (offline, a fake dg). Every trigger.
+#   * live:   reports this job's result as a Forge check run on devnet moutai, on the commit
+#             of `FORGE_CHECK_REPO` (a repo variable, e.g. <owner>/mirror-ci-dash-forge), with the
+#             runner key in the `FORGE_MOUTAI_CI_RUNNER_KEY` secret. Skipped (not failed) while
+#             either is missing: secrets are added only with the owner's OK (SECRETS-TODO.md).
+#             Not on pull requests from forks: the key is a secret.
+#
+# The same live test runs on a laptop: see check-action/README.md "Test it locally".
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - check-action/**
+      - .github/workflows/check-action.yml
+  push:
+    branches: [master]
+    paths:
+      - check-action/**
+      - crates/dg/src/ci.rs
+      - crates/forge-core/src/ci.rs
+      - .github/workflows/check-action.yml
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    name: actionlint, shellcheck, check-action/test.sh
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Install actionlint
+        env:
+          VERSION: 1.7.12
+          SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          curl -fsSLo /tmp/actionlint.tgz \
+            "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/actionlint_${VERSION}_linux_amd64.tar.gz"
+          echo "${SHA256}  /tmp/actionlint.tgz" | sha256sum -c -
+          tar -xzf /tmp/actionlint.tgz -C /tmp actionlint
+      - name: actionlint
+        run: /tmp/actionlint -color .github/workflows/check-action.yml
+      - name: shellcheck
+        run: shellcheck check-action/*.sh
+      - name: check-action/test.sh
+        run: bash check-action/test.sh
+
+  probe:
+    name: runner key configured?
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    outputs:
+      present: ${{ steps.probe.outputs.present }}
+    steps:
+      - name: Probe
+        id: probe
+        env:
+          KEY: ${{ secrets.FORGE_MOUTAI_CI_RUNNER_KEY }}
+          REPO: ${{ vars.FORGE_CHECK_REPO }}
+        run: |
+          if [ -n "$KEY" ] && [ -n "$REPO" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "### Live check-action test skipped: set secret \`FORGE_MOUTAI_CI_RUNNER_KEY\` and variable \`FORGE_CHECK_REPO\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=Check Action live test skipped::missing FORGE_MOUTAI_CI_RUNNER_KEY or FORGE_CHECK_REPO"
+          fi
+
+  live:
+    name: report this job to Forge (devnet moutai)
+    needs: [static, probe]
+    if: needs.probe.outputs.present == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install protoc
+        env:
+          PROTOC_VERSION: '28.3'
+        run: |
+          curl -sSLo /tmp/protoc.zip \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
+          sudo chmod +x /usr/local/bin/protoc
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: check-action
+
+      # No release is published yet: build dg from this commit and use install: 'false'.
+      - name: Build dg
+        timeout-minutes: 30
+        run: |
+          cargo build --locked -p dg
+          echo "$GITHUB_WORKSPACE/target/debug" >> "$GITHUB_PATH"
+
+      - name: Report in_progress
+        uses: ./check-action
+        with:
+          repo: ${{ vars.FORGE_CHECK_REPO }}
+          name: check-action-selftest
+          status: in_progress
+          network: devnet
+          devnet-name: moutai
+          install: 'false'
+          fail-on-error: 'true'
+        env:
+          DASH_FORGE_KEY: ${{ secrets.FORGE_MOUTAI_CI_RUNNER_KEY }}
+
+      - name: Report the result
+        id: done
+        if: always()
+        uses: ./check-action
+        with:
+          repo: ${{ vars.FORGE_CHECK_REPO }}
+          name: check-action-selftest
+          job-status: ${{ job.status }}
+          network: devnet
+          devnet-name: moutai
+          install: 'false'
+          fail-on-error: 'true'
+        env:
+          DASH_FORGE_KEY: ${{ secrets.FORGE_MOUTAI_CI_RUNNER_KEY }}
+
+      - name: The run is on Forge
+        env:
+          REPO: ${{ vars.FORGE_CHECK_REPO }}
+          ACTION: ${{ steps.done.outputs.action }}
+        run: |
+          echo "report: $ACTION"
+          [ "$ACTION" = updated ] || { echo "::error::the completed report should update the in_progress run, got '$ACTION'"; exit 1; }
+          dg --json --network devnet --devnet-name moutai ci status "$REPO" "$GITHUB_SHA" \
+            | jq -e '.checks[] | select(.name == "check-action-selftest" and .status == "completed" and .trusted)'
