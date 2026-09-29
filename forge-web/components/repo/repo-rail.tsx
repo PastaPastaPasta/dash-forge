@@ -206,7 +206,7 @@ function MirrorProvenance({ home }: { home: RepoHome }): JSX.Element | null {
       <a href={`https://${source.label}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-0.5 font-medium text-forge-700 hover:underline dark:text-forge-400">
         {source.label} <ExternalLink className="h-3 w-3" aria-hidden />
       </a>
-      {updated > 0 ? <span title={new Date(updated).toISOString()}> · last updated {timeAgo(updated)}</span> : null}
+      {updated > 0 ? <> · <Time ms={updated} prefix="last updated " /></> : null}
     </p>
   )
 }
