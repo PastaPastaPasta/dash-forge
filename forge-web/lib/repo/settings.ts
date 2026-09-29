@@ -39,6 +39,7 @@ import {
   type WriteResult,
 } from '../sdk'
 import { readConfigBundle, type RepoConfig } from './config'
+import { repoContentWritten } from './push'
 import { DOC, num, str, type RepoRef } from './contract'
 import { repoSource } from './source'
 
@@ -316,12 +317,18 @@ export async function updateConfig(
   const problem = patternsProblem(next.protectedPatterns)
   if (problem) throw new Error(problem)
   if (fresh !== null && sameConfig(now, next)) return null
-  return write(sdk, auth, {
-    contractId: repo.forge.core,
-    documentType: DOC.config,
-    data: { repoId: decodeIdentifier(repo.repoId), ...configData(next) },
-    ...(intent ? { intent } : {}),
-  })
+  try {
+    return await write(sdk, auth, {
+      contractId: repo.forge.core,
+      documentType: DOC.config,
+      data: { repoId: decodeIdentifier(repo.repoId), ...configData(next) },
+      ...(intent ? { intent } : {}),
+    })
+  } finally {
+    // Landed, refused or unknown: the repo's cached config (the chrome store, the home, the browse
+    // context) is read again, never answered by a read issued before this write.
+    repoContentWritten(repo)
+  }
 }
 
 /** An edit of the `repo` document; unset fields are left alone, empty clears. */

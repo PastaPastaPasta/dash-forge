@@ -267,7 +267,8 @@ export function chromeFallbacks(): number {
 
 /** Put a read in the store; a failed one is dropped (the next reader reads again). */
 function remember(key: string, read: Pick<StoreEntry, 'repoId' | 'at' | 'generation'>, promise: Promise<RepoTimelines>): void {
-  const entry: StoreEntry = { ...read, promise, pending: true, settled: store.get(key)?.settled }
+  const prev = store.get(key)
+  const entry: StoreEntry = { ...read, promise, pending: true, settled: prev?.repoId === read.repoId ? prev.settled : undefined }
   store.delete(key)
   store.set(key, entry)
   for (const k of store.keys()) {

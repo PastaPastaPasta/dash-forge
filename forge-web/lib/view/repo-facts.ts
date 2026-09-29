@@ -144,12 +144,13 @@ export async function loadRepoFacts(
           throw err
         }
       })
-      signal?.throwIfAborted()
+      // Published even if the home was left meanwhile: facts are keyed by tip, and the placeholder
+      // another route shows for this tip ends with them.
       publish(key, { license: detectLicense(texts) })
+      signal?.throwIfAborted()
     }
     if (known.languages === undefined) {
       const walk = await repoFilesWalk(repoKey, tipOid, reader, rootTree)
-      signal?.throwIfAborted()
       publish(key, { languages: languageStats(walk) })
     }
   } finally {
@@ -189,7 +190,7 @@ function wantedOf(repoKey: string): { open: boolean; readonly waiters: Set<() =>
     // Trim the oldest entries nobody waits on.
     for (const [k, v] of wanted) {
       if (wanted.size <= KEEP_WANTED) break
-      if (v.waiters.size === 0) wanted.delete(k)
+      if (k !== repoKey && v.waiters.size === 0) wanted.delete(k)
     }
   }
   return w

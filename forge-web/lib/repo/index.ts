@@ -51,6 +51,7 @@ export {
 export {
   holdingsOfRole,
   invalidateMembers,
+  membersGeneration,
   membershipsFromDocs,
   seedMemberships,
   readMemberRepoIds,

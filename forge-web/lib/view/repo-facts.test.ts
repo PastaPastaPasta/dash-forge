@@ -243,6 +243,19 @@ describe('the About card placeholder shows only while a load is registered (revi
     expect(repoFactsLoading('r', tip)).toBe(false)
   })
 
+  it('a load left while reading still publishes what it read (another route of the tip shows it)', async () => {
+    resetRepoFacts()
+    wantRepoFacts('r')
+    const { s, tip, root } = repo()
+    const reader = s.reader(undefined, locateBy(s))
+    const stop = new AbortController()
+    const load = loadRepoFacts('r', tip, reader, root, await readTree(reader, root), stop.signal)
+    stop.abort(new Error('left'))
+    await expect(load).rejects.toThrow('left')
+    expect(repoFacts('r', tip).license).toEqual({ ids: ['MIT'], file: 'LICENSE' })
+    expect(repoFactsLoading('r', tip)).toBe(false)
+  })
+
   it('a failed or abandoned load ends the placeholder', async () => {
     resetRepoFacts()
     const { s, tip, root } = repo()

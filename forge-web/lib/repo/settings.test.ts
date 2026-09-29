@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { RepoConfig } from './config'
 import type { RepoRef } from './contract'
+import { onRepoContentWritten } from './push'
 import {
   DEFAULT_CONFIG,
   SealedConfigError,
@@ -81,6 +82,20 @@ describe('config changes', () => {
     })
     await updateConfig({} as never, {} as never, { visibility: 'public', repoId: '11111111111111111111111111111111', forge: { core: 'c' } } as never, NOW, { archived: true }, undefined, async () => fresh, write as never)
     expect(written).toMatchObject({ archived: true, protectedPatterns: ['refs/heads/main', 'refs/heads/release/*'], backend: { mode: 4 } })
+  })
+
+  it('a config write, landed or not, tells the repo\'s caches it wrote (the chrome store reads again)', async () => {
+    const told: string[] = []
+    const off = onRepoContentWritten((r) => told.push(r.repoId))
+    const repo = { visibility: 'public', repoId: '11111111111111111111111111111111', forge: { core: 'c' } } as never
+    await updateConfig({} as never, {} as never, repo, NOW, { archived: true }, undefined, async () => NOW, (async () => ({ documentId: 'x' })) as never)
+    await expect(
+      updateConfig({} as never, {} as never, repo, NOW, { archived: true }, undefined, async () => NOW, (async () => {
+        throw new Error('unconfirmed')
+      }) as never),
+    ).rejects.toThrow('unconfirmed')
+    off()
+    expect(told).toEqual(['11111111111111111111111111111111', '11111111111111111111111111111111'])
   })
 
   it('refuse when the field being edited changed since the page loaded (H1)', async () => {

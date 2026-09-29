@@ -109,7 +109,7 @@ export function membersGeneration(): number {
  * Record a repo's complete membership read elsewhere, unless a fresher read is cached, or a
  * membership changed through this tab since that read started (`generation`, taken then).
  */
-export function seedMemberships(repo: RepoRef, network: Network, memberships: Membership[], generation = membersGenerationNow): void {
+export function seedMemberships(repo: RepoRef, network: Network, memberships: Membership[], generation: number): void {
   const key = membersKey(network, repo)
   if (generation !== membersGenerationNow) return
   const hit = membersCache.get(key)
