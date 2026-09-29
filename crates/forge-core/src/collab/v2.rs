@@ -42,9 +42,10 @@ use crate::platform::{
 };
 use crate::private::DocKind;
 use crate::rules::v2::{
-    allocate_number, count_approvals, fold_issue_state_v2, fold_pr_review_v2, fold_pr_state_v2,
-    is_author_kind, is_well_formed, number_ceiling, Approvals, ContentDoc, ContentKind, Policy,
-    PrReviewState, Review as RuleReview, Role, RoleOracle, Visibility,
+    allocate_number, checks_state, count_approvals, fold_issue_state_v2, fold_pr_review_v2,
+    fold_pr_state_v2, is_author_kind, is_well_formed, number_ceiling, Approvals, CheckRunRow,
+    ChecksPolicy, ChecksState, ContentDoc, ContentKind, Policy, PrReviewState,
+    Review as RuleReview, Role, RoleOracle, Visibility,
 };
 use crate::rules::{self, Event, EventKind, IssueState, PrState};
 use crate::scope::RepoRef;
@@ -525,25 +526,28 @@ pub struct CheckRun {
     pub created_at: u64,
 }
 
-/// The newest check run per name among `docs` (a head's `checkRun` documents), trusting a run
-/// only when `is_member(reporter)`. Sorted by name.
+/// One check run per name among `docs` (a head's `checkRun` documents), sorted by name: the
+/// newest run whose reporter `is_member`, which is what a merge counts ([`checks_state`]); an
+/// untrusted run never shadows it. A name with no trusted run shows its newest run, untrusted.
+/// Parity: forge-web `newestCheckRuns`.
 pub fn newest_check_runs(
     docs: &[FetchedDocument],
     is_member: impl Fn(&str) -> bool,
 ) -> Vec<CheckRun> {
-    let mut newest: BTreeMap<String, &FetchedDocument> = BTreeMap::new();
+    let mut newest: BTreeMap<String, (&FetchedDocument, bool)> = BTreeMap::new();
     for d in docs {
         let Some(name) = d.field_str("name").filter(|n| !n.is_empty()) else {
             continue;
         };
-        let key = (d.created_at.unwrap_or_default(), &d.id);
-        if newest
-            .get(&name)
-            .is_none_or(|e| key > (e.created_at.unwrap_or_default(), &e.id))
-        {
-            newest.insert(name, d);
+        let trusted = is_member(&d.owner_id);
+        let key = (trusted, d.created_at.unwrap_or_default(), &d.id);
+        if newest.get(&name).is_none_or(|(e, e_trusted)| {
+            key > (*e_trusted, e.created_at.unwrap_or_default(), &e.id)
+        }) {
+            newest.insert(name, (d, trusted));
         }
     }
+    let newest = newest.into_iter().map(|(name, (d, _))| (name, d));
     newest
         .into_iter()
         .map(|(name, d)| CheckRun {
@@ -2488,23 +2492,61 @@ impl<'a> Collab<'a> {
     /// newest per `name`, each marked trusted when its reporter is a current maintainer,
     /// writer or runner ([`newest_check_runs`]).
     pub async fn check_runs(&self, repo: &RepoRef, head_oid: &str) -> Result<Vec<CheckRun>> {
-        let collab = self.collab_contract(repo).await?;
-        let oid = hex::decode(head_oid)
-            .map_err(|_| Error::Config(format!("{head_oid:?} is not a hex commit id")))?;
-        let docs = check_run_docs(self.client, &collab, repo, oid).await?;
+        let docs = self.check_run_docs(repo, head_oid).await?;
         if docs.is_empty() {
             return Ok(Vec::new());
         }
         let oracle = self.member_oracle(repo).await?;
-        let runners: BTreeSet<String> = crate::ci::RunnerReader::new(self.client)
+        let runners = self.runner_ids(repo).await?;
+        Ok(newest_check_runs(&docs, |who| {
+            oracle.current_role(who).is_some() || runners.contains(who)
+        }))
+    }
+
+    /// Whether the check runs on `head_oid` meet `policy`'s check rules ([`checks_state`], the
+    /// rule the web merge box applies too): the newest **trusted** run per name decides it.
+    pub async fn head_checks(
+        &self,
+        repo: &RepoRef,
+        head_oid: &str,
+        oracle: &RoleOracle,
+        policy: &ChecksPolicy,
+    ) -> Result<ChecksState> {
+        let docs = self.check_run_docs(repo, head_oid).await?;
+        let rows: Vec<CheckRunRow> = docs
+            .iter()
+            .map(|d| CheckRunRow {
+                id: d.id.clone(),
+                head_oid: head_oid.to_ascii_lowercase(),
+                name: d.field_str("name").unwrap_or_default(),
+                status: d.field_str("status").unwrap_or_default(),
+                conclusion: d.field_str("conclusion"),
+                reporter: d.owner_id.clone(),
+                created_at: d.created_at.unwrap_or_default(),
+            })
+            .collect();
+        let runners = if rows.is_empty() {
+            BTreeSet::new()
+        } else {
+            self.runner_ids(repo).await?
+        };
+        Ok(checks_state(&rows, head_oid, oracle, &runners, policy))
+    }
+
+    async fn check_run_docs(&self, repo: &RepoRef, head_oid: &str) -> Result<Vec<FetchedDocument>> {
+        let collab = self.collab_contract(repo).await?;
+        let oid = hex::decode(head_oid)
+            .map_err(|_| Error::Config(format!("{head_oid:?} is not a hex commit id")))?;
+        check_run_docs(self.client, &collab, repo, oid).await
+    }
+
+    async fn runner_ids(&self, repo: &RepoRef) -> Result<BTreeSet<String>> {
+        Ok(crate::ci::RunnerReader::new(self.client)
             .list(repo)
             .await?
             .into_iter()
             .map(|r| r.identity_id)
-            .collect();
-        Ok(newest_check_runs(&docs, |who| {
-            oracle.current_role(who).is_some() || runners.contains(who)
-        }))
+            .collect())
     }
 
     // --- numbering --------------------------------------------------------------------

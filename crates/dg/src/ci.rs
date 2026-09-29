@@ -22,6 +22,7 @@ use serde_json::json;
 use forge_core::ci::{commit_web_url, CheckReport, CheckRuns, RunnerReader, RunnerService};
 use forge_core::keystore::{self, BridgeIdentity};
 use forge_core::platform::identity::{DocTypeKeySpec, FreshKey, KeySpec};
+use forge_core::rules::v2::Visibility;
 
 use crate::auth::{dash_to_credits, expiry_ms, now_ms, parse_days};
 use crate::common::{Reader, Session};
@@ -31,10 +32,14 @@ use crate::fmt::{cost_json, cost_line, credits_to_dash, dash_amount, dash_usd_pr
 /// Runner key defaults (spec §2.2): 0.5 DASH for 365 days.
 const RUNNER_KEY_BUDGET_DASH: f64 = 0.5;
 const RUNNER_KEY_DAYS: u64 = 365;
-/// One identity update adding a key, plus a `runner` document (an upper bound, credits).
-const RUNNER_NEW_ESTIMATE_CREDITS: u64 = 40_000_000;
-/// One `checkRun` create or replace (an upper bound, credits; measured on moutai in the docs).
-const REPORT_ESTIMATE_CREDITS: u64 = 30_000_000;
+/// Estimates (credits), upper bounds over what devnet moutai charged on 2026-09-29
+/// (docs/guides/ci.md "What it costs"): the runner key's identity update (28.5 M, paid by the
+/// runner), a `runner` document (45.8 M, paid by the owner), a `checkRun` create (55–78 M) and a
+/// replace (3.3–3.7 M).
+const KEY_ESTIMATE_CREDITS: u64 = 35_000_000;
+const ENROL_ESTIMATE_CREDITS: u64 = 55_000_000;
+const CREATE_ESTIMATE_CREDITS: u64 = 85_000_000;
+const REPLACE_ESTIMATE_CREDITS: u64 = 5_000_000;
 
 /// `dg ci` subcommands.
 #[derive(Debug, Subcommand)]
@@ -140,6 +145,10 @@ pub struct ReportArgs {
     /// The storage profile(s) for --log (default: the repository's dash.storage).
     #[arg(long, requires = "log")]
     pub storage: Option<String>,
+    /// For a private repository: upload the log anyway. The log goes to your bucket unencrypted
+    /// and its URL is public on chain; without this, `--log` is refused on a private repository.
+    #[arg(long, requires = "log")]
+    pub public_log: bool,
 }
 
 impl CiCommand {
@@ -225,33 +234,25 @@ async fn runner_new(ctx: &Ctx, args: &RunnerNewArgs) -> Result<()> {
         contract: s.repo.forge().collab.clone(),
         document_type: forge_core::collab::v2::DOC_CHECK_RUN.to_string(),
     };
-    if !ctx.json {
-        eprintln!(
-            "Registering a runner key on {} ({}):",
-            holder.identity_id,
-            ctx.network_label()
-        );
-        eprintln!(
-            "  it can only write checkRun documents, spend at most {} DASH, and expires in {days} day(s)",
-            dash_amount(credits_to_dash(spec.budget_credits))
-        );
-        if enrol {
-            eprintln!("  and enrols it as a runner of {}", s.repo.display());
-        }
-        eprintln!(
-            "  {}",
-            cost_line(RUNNER_NEW_ESTIMATE_CREDITS, dash_usd_price())
-        );
-    }
+    explain_runner_key(ctx, &s, &holder.identity_id, &spec, days, enrol);
     ctx.confirm_or_cancel("Register the runner key?")?;
+    let holder_before = holder_balance(&s, &holder.identity_id).await;
     let key_id = register_runner_key(ctx, &s, &holder, &spec, &args.output).await?;
+    let key_spent = holder_spent(&s, &holder.identity_id, holder_before).await;
     // The owner pays the enrolment; the key update is paid by the key holder.
-    let (membership, spent) = if enrol {
+    let (membership, enrol_spent) = if enrol {
         let before = s.balance().await;
         let m = RunnerService::new(&s.client, &s.identity, &s.bridge)
             .enrol(&s.repo, &holder.identity_id)
             .await
-            .context("enrolling the runner (the key is registered and saved)")?;
+            .with_context(|| {
+                format!(
+                    "enrolling the runner (key #{key_id} is registered and saved in {}; enrol it with `dg ci runner add {} {}`)",
+                    args.output.display(),
+                    s.repo.display(),
+                    holder.identity_id
+                )
+            })?;
         (Some(m), s.spent_since(before).await)
     } else {
         (None, 0)
@@ -267,7 +268,8 @@ async fn runner_new(ctx: &Ctx, args: &RunnerNewArgs) -> Result<()> {
             "expiresAt": spec.expires_at_ms,
             "path": args.output.display().to_string(),
             "enrolled": membership.as_ref().map(|m| m.document_id.clone()),
-            "enrolCost": cost_json(spent, dash_usd_price()),
+            "keyCost": cost_json(key_spent, dash_usd_price()),
+            "enrolCost": cost_json(enrol_spent, dash_usd_price()),
         }),
         || {
             println!(
@@ -275,8 +277,13 @@ async fn runner_new(ctx: &Ctx, args: &RunnerNewArgs) -> Result<()> {
                 holder.identity_id,
                 args.output.display()
             );
+            println!("  the key cost {}", cost_line(key_spent, dash_usd_price()));
             if membership.is_some() {
-                println!("✓ enrolled as a runner of {}", s.repo.display());
+                println!(
+                    "✓ enrolled as a runner of {} ({})",
+                    s.repo.display(),
+                    cost_line(enrol_spent, dash_usd_price())
+                );
             }
             println!("  use it as a CI secret: DASH_FORGE_KEY=<the file's contents>");
             println!(
@@ -286,6 +293,59 @@ async fn runner_new(ctx: &Ctx, args: &RunnerNewArgs) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// What `runner new` is about to do and cost, on stderr.
+fn explain_runner_key(
+    ctx: &Ctx,
+    s: &Session,
+    holder: &str,
+    spec: &DocTypeKeySpec,
+    days: u64,
+    enrol: bool,
+) {
+    if ctx.json {
+        return;
+    }
+    let price = dash_usd_price();
+    eprintln!(
+        "Registering a runner key on {holder} ({}):",
+        ctx.network_label()
+    );
+    eprintln!(
+        "  it can only write checkRun documents, spend at most {} DASH, and expires in {days} day(s)",
+        dash_amount(credits_to_dash(spec.budget_credits))
+    );
+    eprintln!(
+        "  the key: one identity update, {} (paid by {holder})",
+        cost_line(KEY_ESTIMATE_CREDITS, price)
+    );
+    if enrol {
+        eprintln!(
+            "  the enrolment as a runner of {}: one document, {} (paid by you)",
+            s.repo.display(),
+            cost_line(ENROL_ESTIMATE_CREDITS, price)
+        );
+    }
+}
+
+/// The key holder's balance (0 when unreadable), for [`holder_spent`].
+async fn holder_balance(s: &Session, id: &str) -> u64 {
+    s.client.get_balance(id).await.unwrap_or(0)
+}
+
+/// Credits the key holder spent since `before` (read until it moves, like
+/// [`Session::spent_since`]); 0 when unreadable.
+async fn holder_spent(s: &Session, id: &str, before: u64) -> u64 {
+    for attempt in 0..4 {
+        if let Ok(after) = s.client.get_balance(id).await {
+            if after < before || attempt == 3 {
+                return before.saturating_sub(after);
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    }
+    0
 }
 
 /// Register a key for `spec` on `holder` (signed once by its master key), writing its `dfk1:`
@@ -315,7 +375,13 @@ async fn register_runner_key(
             &[],
         )
         .await
-        .context("registering the runner key")?;
+        .with_context(|| {
+            format!(
+                "registering the runner key on {} (it may still land: `dg auth keys list --identity <runner file>` shows it; {} holds the key if it did — delete it if not, and run again with a new -o)",
+                holder.identity_id,
+                output.display()
+            )
+        })?;
     let key_id = *ids.first().context("no key id")?;
     if key_id != predicted {
         keystore::write_private_file(output, dfk1_for(key_id).expose().as_bytes())?;
@@ -336,7 +402,7 @@ async fn runner_add(ctx: &Ctx, repo: &str, runner: &str) -> Result<()> {
     ctx.confirm_or_cancel(&format!(
         "Enrol {runner} as a runner of {}? ({})",
         s.repo.display(),
-        cost_line(RUNNER_NEW_ESTIMATE_CREDITS, dash_usd_price())
+        cost_line(ENROL_ESTIMATE_CREDITS, dash_usd_price())
     ))?;
     let before = s.balance().await;
     let m = RunnerService::new(&s.client, &s.identity, &s.bridge)
@@ -396,12 +462,39 @@ async fn upload_log(path: &Path, storage: Option<&str>) -> Result<(String, [u8; 
     let url = asset
         .uris
         .iter()
-        .find(|u| u.starts_with("https://") || u.starts_with("http://"))
+        .find(|u| u.starts_with("https://"))
+        .or_else(|| asset.uris.iter().find(|u| u.starts_with("http://")))
         .cloned()
         .context("the log's storage recorded no http(s) URL a browser can read")?;
     let mut sha = [0u8; 32];
     hex::decode_to_slice(&asset.sha256, &mut sha).context("the log's SHA-256")?;
     Ok((url, sha))
+}
+
+/// E207 for `--log` on a private repository unless `--public-log` (then a warning): the log is
+/// stored unencrypted and its URL is public on chain.
+fn refuse_private_log(a: &ReportArgs, s: &Session) -> Result<()> {
+    if a.log.is_none() || s.repo.visibility != Visibility::Private {
+        return Ok(());
+    }
+    if !a.public_log {
+        return Err(forge_core::user_error::UserError::new(
+            forge_core::user_error::codes::PRIVATE_UNSUPPORTED,
+            format!(
+                "{} is private; --log would publish the log",
+                s.repo.display()
+            ),
+        )
+        .cause("a log is stored unencrypted in your bucket, and its URL is public on chain")
+        .fix("leave out --log, or pass --public-log if the log may be public")
+        .note("nothing was uploaded or written")
+        .into());
+    }
+    eprintln!(
+        "warning: {} is private; the log is uploaded unencrypted and its URL is public on chain",
+        s.repo.display()
+    );
+    Ok(())
 }
 
 async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
@@ -434,21 +527,28 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
         other => other.into(),
     })?;
     let s = Session::open_for_write(ctx, &a.repo, "check run not reported").await?;
-    if let Some(p) = &a.log {
-        r.log = Some(upload_log(p, a.storage.as_deref()).await?);
-    }
+    refuse_private_log(a, &s)?;
+    let runs = CheckRuns::new(&s.client, &s.identity, &s.bridge);
+    // Decided before the prompt, so it prices the write that happens.
+    let plan = runs.plan(&s.repo, &r).await?;
+    let (verb, estimate) = if plan.replaces() {
+        ("update", REPLACE_ESTIMATE_CREDITS)
+    } else {
+        ("create", CREATE_ESTIMATE_CREDITS)
+    };
     ctx.confirm_or_cancel(&format!(
-        "Report {} = {} on {} in {}? ({})",
+        "Report {} = {} on {} in {}? ({verb} a check run, {})",
         r.name,
         r.conclusion.as_deref().unwrap_or(&r.status),
         &r.head_oid[..7.min(r.head_oid.len())],
         s.repo.display(),
-        cost_line(REPORT_ESTIMATE_CREDITS, dash_usd_price())
+        cost_line(estimate, dash_usd_price())
     ))?;
+    if let Some(p) = &a.log {
+        r.log = Some(upload_log(p, a.storage.as_deref()).await?);
+    }
     let before = s.balance().await;
-    let done = CheckRuns::new(&s.client, &s.identity, &s.bridge)
-        .report(&s.repo, &r)
-        .await?;
+    let done = runs.execute(&s.repo, &r, plan).await?;
     let spent = if done.action == "unchanged" {
         0
     } else {
@@ -506,9 +606,9 @@ async fn status(ctx: &Ctx, repo: &str, sha: &str) -> Result<()> {
                     "  {:<24} {state}{}",
                     crate::fmt::safe(&c.name),
                     if c.trusted {
-                        String::new()
+                        ""
                     } else {
-                        "  (reporter is no longer a member or runner: not counted)".into()
+                        "  (reporter is no longer a member or runner: not counted)"
                     }
                 );
             }

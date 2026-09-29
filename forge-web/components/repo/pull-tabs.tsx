@@ -146,7 +146,7 @@ export function ChecksTab({
       <EmptyState
         icon={ListChecks}
         title={`No checks reported for ${headOid.slice(0, 7)}`}
-        body={`CI records check runs for the ${subject}: a runner the owner enrolled (\`dg ci runner new\`), the GitHub Action, or a maintainer or writer with \`dg ci report\`.`}
+        body={`CI records check runs for the ${subject}: a runner the owner enrolled (dg ci runner new), the GitHub Action, or a maintainer or writer (dg ci report).`}
       />
     )
   }
@@ -176,7 +176,7 @@ export function ChecksTab({
                   Details
                 </a>
               ) : null}
-              <RunLog run={r} />
+              <RunLog key={`${r.id}:${r.logSha256}`} run={r} />
             </li>
           )
         })}

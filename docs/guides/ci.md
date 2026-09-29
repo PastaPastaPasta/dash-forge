@@ -12,10 +12,11 @@ The design is in [platform-parity-spec §2](../design/platform-parity-spec.md#2-
 
 ## Enrol a runner
 
-A runner is an identity of its own. Mint one for CI (`dg auth new --backup-file runner.json`, with a small deposit, since it pays for its own reports). Then, as the repository owner:
+A runner is an identity of its own. Mint one for CI with `dg auth new --backup-file runner.json` and a small deposit, since it pays for its own reports. `dg auth new` makes the new identity this computer's default, so sign back in as the repository owner (`dg auth login <your identity file>`), or pass `--identity` for the next command. Then, as the owner:
 
 ```sh
-dg ci runner new alice/project --runner runner.json -o runner.dfk1
+dg ci runner new alice/project --runner runner.json -o runner.dfk1 \
+    --identity ~/owner.identity.json      # only if you did not sign back in as the owner
 ```
 
 This does two things:
@@ -47,15 +48,17 @@ dg ci report alice/project --sha "$SHA" --name build --status completed \
     --conclusion success --summary "412 tests passed" --log build.log --storage my-r2
 ```
 
-- **The first report creates the run; the next ones update it in place.** An update is a replace of your own open run with that name on that commit. Once a run is `completed`, reporting the same name again starts a new run (a re-run). With `--external-id <your CI's run id>`, a report always updates the run carrying that id, even after it completed.
+- **The first report creates the run; the next ones update it in place.** An update is a replace of your own open run with that name on that commit. Once a run is `completed`, reporting the same name again starts a new run (a re-run).
+- **`--external-id <your CI's run id>`** ties reports to one run: a report always updates the run carrying that id, even after it completed, and never starts a second one for it. If no run carries the id yet, `dg` reads once more a few seconds later before it creates one, so a report sent right after the first does not split the run. Use it whenever your CI has a run id (the GitHub Action passes `gh:<run id>:<attempt>:<job>:<name>`).
+- **What an update keeps.** A field the report does not give keeps its stored value. The exceptions: `completedAt` is cleared unless the run is `completed`; a re-queued run (`--status queued`) also clears its start time and its log; and the start time, once set, does not move on a repeated `in_progress` report.
 - **`--status`** is `queued`, `in_progress` or `completed`. A completed run needs a `--conclusion`: `success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`, `action_required` or `stale` (GitHub's set). `dg` refuses a wrong combination before it signs anything, and so does the contract.
-- **`--log <file>`** uploads the log to your storage profile. It is content-addressed, the same way a release asset is (see [Bring your own storage](bring-your-own-storage.md)), and the run records the log's URL and SHA-256. The web app downloads the log from your bucket and shows it only if its bytes hash to the recorded SHA-256; otherwise it says the bytes are not the reported log. Log bytes never go on Platform. The bucket needs CORS for the web app's origin, like any bucket the browser reads.
+- **`--log <file>`** uploads the log to your storage profile (after you confirm the report). It is content-addressed, the same way a release asset is (see [Bring your own storage](bring-your-own-storage.md)), and the run records the log's URL and SHA-256. The web app downloads the log from your bucket and shows it only if its bytes hash to the recorded SHA-256; otherwise it says the bytes are not the reported log. Log bytes never go on Platform. The bucket needs CORS for the web app's origin, like any bucket the browser reads.
 - **`--summary`** (or `--summary-file`) takes up to 1,000 characters.
 - `dg` prints the commit's web page, where the run shows up.
 
-`dg ci status alice/project <sha>` lists the newest run per name on a commit. `dg pr checks alice/project <n>` does the same for a pull request's head.
+`dg ci status alice/project <sha>` lists one run per name on a commit: the newest run by a current member or runner, which is the one a merge counts. A newer run by anyone else is not shown in its place. `dg pr checks alice/project <n>` does the same for a pull request's head.
 
-The newest run per name wins, by `($createdAt, $id)`. A merge box whose branch policy has `requireChecks` needs every counted run on the head to pass (`success`, `neutral` or `skipped`), and at least one run to exist.
+For each name, the newest run by `($createdAt, $id)` among runs by current members and runners decides. A branch policy with `requireChecks` needs every such run on the head to pass (`success`, `neutral` or `skipped`), and at least one to exist. The web merge box and `dg pr merge` apply the same rule; a maintainer can override it (`--override-policy`).
 
 ## What it costs
 
@@ -71,11 +74,15 @@ Measured on devnet moutai (2026-09-29, drive 4.2.0-beta.6; 1 DASH = 10¹¹ credi
 
 The create's price depends on the fields it carries; a report with a details URL and a summary sits at the top of the range. A typical run is one create plus two updates, about **0.00063 DASH**, so a 0.5 DASH runner key covers roughly 790 runs. The log itself costs nothing on Platform: it goes to your bucket.
 
+Before it signs, `dg` shows an estimate a little above these numbers: 0.00035 DASH for the key, 0.00055 for the enrolment, 0.00085 for a create and 0.00005 for an update. It reads the commit's runs first, so the prompt names the write that will happen (create or update). After the write it prints what was actually charged.
+
 ## Security
 
-- **Keys.** Give CI a runner key, never your identity file: the file holds your master key. The runner key's bounds are enforced by consensus. Anything else it signs is refused with `ContractBoundedKeyOutOfBoundsError` (20014), which `dg` reports as [E302](../errors.md#e302) before anything is broadcast. The key cannot register keys, move credits or write any other document type. The budget and the expiry cap the damage from a leak. `dg auth keys disable <id> --master runner.json` retires the key early, and `dg ci runner revoke` removes the identity's standing on the repo.
+- **Keys.** Give CI a runner key, never your identity file: the file holds your master key. The runner key's bounds are enforced by consensus. Anything else it signs is refused with `ContractBoundedKeyOutOfBoundsError` (20014), which `dg` reports as [E302](../errors.md#e302) before anything is broadcast. The key cannot register keys, move credits or write any other document type. The budget and the expiry cap the damage from a leak. `DASH_FORGE_KEY=runner.json dg auth keys disable <id> --master runner.json` retires the key early (it signs as the runner identity, whose key it is), and `dg ci runner revoke` removes the identity's standing on the repo.
 - **What a runner can do.** It can write check runs on *any* commit id of the repositories it runs for, including commits that are not in the repository. Readers match runs to commits by id, so a run on a stranger's commit shows nowhere. A runner cannot edit or delete another identity's run.
-- **What is public.** Check runs are plaintext on chain, even for a private repository: name, status, summary, details URL, log URL. See [private-repos §7](../security/private-repos.md#7-metadata-that-stays-visible). Do not put secrets or private code in summaries or in logs stored on a public bucket.
+- **What is public.** Check runs are plaintext on chain, even for a private repository: name, status, summary, details URL, log URL. See [private-repos §7](../security/private-repos.md#7-metadata-that-stays-visible). Do not put secrets or private code in summaries.
+- **Logs of a private repository.** A log is uploaded unencrypted and its URL is public on chain, so on a private repository `dg ci report --log` is refused ([E207](../errors.md#e207)) unless you pass `--public-log`, and then `dg` warns. Keep private build output out of the log, or leave `--log` out and link a log your CI keeps private with `--details-url`.
+- **Reading a log in the browser.** The web app fetches a log only over https (plain http only from a page served on the same machine, for local tests), without cookies or a referrer, gives up after 30 seconds, and stops reading at 32 MiB.
 - **Verifying a log.** The SHA-256 on chain pins the bytes. Whoever controls the bucket can delete a log, but cannot swap it for another without the web app noticing.
 
 ## Limits of the current contract

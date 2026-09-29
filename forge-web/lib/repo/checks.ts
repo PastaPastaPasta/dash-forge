@@ -15,6 +15,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
 import { compareKey } from '../rules'
+import type { CheckRunRow } from '../rules/parity'
 import { hexToBase64, queryAllDocuments, type PlainDocument } from '../sdk'
 import { DOC, asIdentifierString, byteFieldToHex, num, str, type RepoRef } from './contract'
 import { repoSource } from './source'
@@ -51,7 +52,11 @@ export function checkOutcome(r: Pick<CheckRun, 'status' | 'conclusion'>): CheckO
   return PASSING.has(r.conclusion) ? 'passed' : 'failing'
 }
 
-/** The newest run per name (sorted by name), trusted when `isMember(reporter)`. */
+/**
+ * One run per name (sorted by name): the newest run whose reporter `isMember`, which is what the
+ * merge box counts (`checksState`, forge-core `checks_state`); an untrusted run never shadows it.
+ * A name with no trusted run shows its newest run, marked not counted.
+ */
 export function newestCheckRuns(docs: readonly PlainDocument[], isMember: (who: string) => boolean): CheckRun[] {
   const newest = new Map<string, PlainDocument>()
   const key = (d: PlainDocument) => ({ createdAt: num(d, '$createdAt'), id: str(d, '$id') })
@@ -59,7 +64,9 @@ export function newestCheckRuns(docs: readonly PlainDocument[], isMember: (who: 
     const name = str(d, 'name')
     if (name === '') continue
     const held = newest.get(name)
-    if (held === undefined || compareKey(key(d), key(held)) > 0) newest.set(name, d)
+    const trusted = isMember(str(d, '$ownerId'))
+    const heldTrusted = held !== undefined && isMember(str(held, '$ownerId'))
+    if (held === undefined || (trusted && !heldTrusted) || (trusted === heldTrusted && compareKey(key(d), key(held)) > 0)) newest.set(name, d)
   }
   return [...newest.entries()]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
@@ -128,12 +135,52 @@ export async function readRunners(sdk: EvoSDK, repo: RepoRef): Promise<string[]>
   return docs.map((d) => asIdentifierString(d['memberId'])).filter((id) => id !== '')
 }
 
-/** The newest run per name on `headOid`, trusted when the reporter is in `members` or a current runner. */
-export async function readCheckRuns(sdk: EvoSDK, repo: RepoRef, headOid: string, members: ReadonlySet<string>): Promise<CheckRun[]> {
+// Runners change rarely and every commit and PR page of a repo reads them: cached per repo, like
+// the members. A failed read is never cached.
+const RUNNERS_TTL_MS = 5 * 60_000
+const runnersCache = new Map<string, { at: number; promise: Promise<string[]> }>()
+
+/** {@link readRunners} through the per-repo session cache. */
+export function readRunnersCached(sdk: EvoSDK, repo: RepoRef): Promise<string[]> {
+  const key = `${repo.forge.core}:${repo.repoId}`
+  const hit = runnersCache.get(key)
+  if (hit !== undefined && Date.now() - hit.at < RUNNERS_TTL_MS) return hit.promise
+  const promise = readRunners(sdk, repo)
+  runnersCache.set(key, { at: Date.now(), promise })
+  promise.catch(() => {
+    if (runnersCache.get(key)?.promise === promise) runnersCache.delete(key)
+  })
+  return promise
+}
+
+/** A head's check runs as the page shows them, and the rows the merge-box rule reads. */
+export interface HeadChecks {
+  /** Per name: the newest trusted run, or (none trusted) the newest run, listed as not counted. */
+  readonly runs: CheckRun[]
+  /** Every run on the head, flattened for {@link checksState}. */
+  readonly rows: CheckRunRow[]
+  /** The repo's current runners. */
+  readonly runners: ReadonlySet<string>
+}
+
+/** The check runs on `headOid`, trusted when the reporter is in `members` or a current runner. */
+export async function readCheckRuns(sdk: EvoSDK, repo: RepoRef, headOid: string, members: ReadonlySet<string>): Promise<HeadChecks> {
   const docs = await readCheckRunDocs(sdk, repo, headOid)
-  if (docs.length === 0) return []
-  const runners = new Set(await readRunners(sdk, repo))
-  return newestCheckRuns(docs, (who) => members.has(who) || runners.has(who))
+  if (docs.length === 0) return { runs: [], rows: [], runners: new Set() }
+  const runners = new Set(await readRunnersCached(sdk, repo))
+  return {
+    runs: newestCheckRuns(docs, (who) => members.has(who) || runners.has(who)),
+    rows: docs.map((d) => ({
+      id: str(d, '$id'),
+      headOid: headOid.toLowerCase(),
+      name: str(d, 'name'),
+      status: str(d, 'status'),
+      conclusion: str(d, 'conclusion') || null,
+      reporter: str(d, '$ownerId'),
+      createdAt: num(d, '$createdAt'),
+    })),
+    runners,
+  }
 }
 
 /** Logs larger than this are not read into the page (spec §2.5 caps a log at 32 MiB). */
@@ -147,28 +194,68 @@ export interface VerifiedLog {
   readonly verified: boolean
 }
 
+/** How long a log read may take before it is abandoned. */
+export const LOG_TIMEOUT_MS = 30_000
+
 /**
  * Fetch a run's log and check it against the SHA-256 the run records: the bytes come from the
  * reporter's own storage, so only the on-chain hash says they are the log that was reported.
- * `verified: false` is shown as a warning, never as the log.
+ * `verified: false` is shown as a warning, never as the log. The read is streamed and stops at
+ * {@link LOG_MAX_BYTES} (refused up front when the length says so), sends no credentials and no
+ * referrer, and is abandoned after {@link LOG_TIMEOUT_MS}.
  */
-export async function fetchVerifiedLog(run: Pick<CheckRun, 'logUrl' | 'logSha256'>, fetchImpl: typeof fetch = (i, init) => fetch(i, init)): Promise<VerifiedLog> {
-  const url = safeLogUrl(run.logUrl)
-  if (url === null) throw new Error('the run records no log a browser can read (https, or http on this machine)')
-  const resp = await fetchImpl(url)
+export async function fetchVerifiedLog(run: Pick<CheckRun, 'logUrl' | 'logSha256'>, fetchImpl: typeof fetch = (i, init) => fetch(i, init), pageHost: string = typeof location === 'undefined' ? '' : location.hostname): Promise<VerifiedLog> {
+  const url = safeLogUrl(run.logUrl, pageHost)
+  if (url === null) throw new Error('the run records no log this page can read (https, or http on this machine for a page served from it)')
+  const signal = AbortSignal.timeout(LOG_TIMEOUT_MS)
+  const resp = await fetchImpl(url, { credentials: 'omit', referrerPolicy: 'no-referrer', signal })
   if (!resp.ok) throw new Error(`the log's storage answered HTTP ${resp.status}`)
-  const buf = new Uint8Array(await resp.arrayBuffer())
-  if (buf.length > LOG_MAX_BYTES) throw new Error('the log is larger than 32 MiB')
-  const got = bytesToHex(sha256(buf))
-  return { text: new TextDecoder().decode(buf), bytes: buf.length, sha256: got, verified: got === run.logSha256.toLowerCase() }
+  const declared = Number(resp.headers.get('content-length') ?? '')
+  if (Number.isFinite(declared) && declared > LOG_MAX_BYTES) throw new Error('the log is larger than 32 MiB')
+  const hash = sha256.create()
+  const parts: Uint8Array[] = []
+  let total = 0
+  const take = (chunk: Uint8Array): void => {
+    total += chunk.length
+    if (total > LOG_MAX_BYTES) throw new Error('the log is larger than 32 MiB')
+    hash.update(chunk)
+    parts.push(chunk)
+  }
+  if (resp.body === null) take(new Uint8Array(await resp.arrayBuffer()))
+  else {
+    const reader = resp.body.getReader()
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        take(value)
+      }
+    } catch (e) {
+      await reader.cancel().catch(() => undefined)
+      throw e
+    }
+  }
+  const bytes = new Uint8Array(total)
+  let at = 0
+  for (const p of parts) {
+    bytes.set(p, at)
+    at += p.length
+  }
+  const got = bytesToHex(hash.digest())
+  return { text: new TextDecoder().decode(bytes), bytes: total, sha256: got, verified: got === run.logSha256.toLowerCase() }
 }
 
-/** A log URL a page may fetch: https, or http on this machine (a local MinIO/RustFS in tests). */
-export function safeLogUrl(url: string): string | null {
+const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]'])
+
+/**
+ * A log URL a page may fetch: https; or plain http on this machine, and only when the page itself
+ * is served from this machine (a local test bucket). A public page never reads an http URL.
+ */
+export function safeLogUrl(url: string, pageHost: string = typeof location === 'undefined' ? '' : location.hostname): string | null {
   try {
     const u = new URL(url)
     if (u.protocol === 'https:') return u.toString()
-    if (u.protocol === 'http:' && (u.hostname === '127.0.0.1' || u.hostname === 'localhost')) return u.toString()
+    if (u.protocol === 'http:' && LOOPBACK.has(u.hostname) && LOOPBACK.has(pageHost)) return u.toString()
     return null
   } catch {
     return null

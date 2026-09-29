@@ -62,6 +62,8 @@ check "queued: created" assert_eq "created" "$(jq_py "$LOG-q.json" 'd["status"]'
 check "the report links the commit page" assert_contains "$(jq_py "$LOG-q.json" 'd["url"]')" "/repo/commit/?"
 as_runner "$LOG-p" ci report "$REPO" --sha "$SHA" --name build --status in_progress || must "$LOG-p" "report in_progress"
 check "in_progress: the same run, updated" assert_eq "updated $DOC" "$(jq_py "$LOG-p.json" 'd["status"]+" "+d["documentId"]')"
+as_runner "$LOG-p2" ci report "$REPO" --sha "$SHA" --name build --status in_progress || must "$LOG-p2" "report in_progress again"
+check "a repeated in_progress changes nothing (the start is kept)" assert_eq "unchanged" "$(jq_py "$LOG-p2.json" 'd["status"]')"
 as_runner "$LOG-c" ci report "$REPO" --sha "$SHA" --name build --status completed --conclusion success --summary "e2e ${RUN_ID}" || must "$LOG-c" "report completed"
 check "completed: the same run, updated" assert_eq "updated $DOC" "$(jq_py "$LOG-c.json" 'd["status"]+" "+d["documentId"]')"
 as_runner "$LOG-bad" ci report "$REPO" --sha "$SHA" --name build --status completed
@@ -96,8 +98,13 @@ if dg_read_retry "$ID_OWNER" "$LOG-st2.json" "$LOG-st2.err" --json ci status "$R
   check "the revoked runner's run is no longer counted" assert_eq "[False]" "$(jq_py "$LOG-st2.json" "[c['trusted'] for c in d['checks'] if c['name']=='build']")"
 fi
 
-step "5. clean-up: disable the runner key"
-DASH_FORGE_KEY="$RUNNER" RUST_LOG=error NO_COLOR=1 _tmo "${DG}" --yes --json auth keys disable "$KEY_ID" --master "$RUNNER" --force \
-  >"$LOG-dis.json" 2>"$LOG-dis.err" || { cat "$LOG-dis.err" >&2; info "could not disable runner key #$KEY_ID (it expires in a day)"; }
+step "5. the runner key is disabled like any Forge key (no --force)"
+if DASH_FORGE_KEY="$RUNNER" RUST_LOG=error NO_COLOR=1 _tmo "${DG}" --yes --json auth keys disable "$KEY_ID" --master "$RUNNER" \
+     >"$LOG-dis.json" 2>"$LOG-dis.err"; then
+  check "runner key disabled" assert_eq "disabled" "$(jq_py "$LOG-dis.json" 'd["status"]')"
+else
+  cat "$LOG-dis.json" "$LOG-dis.err" >&2
+  is_flake "$LOG-dis.err" && info "disable flaked; the key expires in a day" || bad "dg auth keys disable (runner key)"
+fi
 
 finish_scenario

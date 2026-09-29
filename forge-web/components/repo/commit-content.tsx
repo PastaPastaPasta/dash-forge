@@ -126,7 +126,7 @@ function CommitChecks({ repo, oid }: { repo: RepoRef; oid: string }): JSX.Elemen
         (ms) => ({ known: true, ids: new Set(ms.map((m) => m.identity)) }),
         () => ({ known: false, ids: new Set<string>() }),
       )
-      const runs = await readCheckRuns(sdk!, repo, oid, members.ids)
+      const { runs } = await readCheckRuns(sdk!, repo, oid, members.ids)
       return { runs, summary: summarizeChecks(runs, members.known) }
     },
     [ready, repoKey(repo), oid, network],

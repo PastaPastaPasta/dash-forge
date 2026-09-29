@@ -811,7 +811,8 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
                     "the key is bound to one contract or document type, and this write is outside it: {}",
                     one_line(msg)
                 ))
-                .fix("a CI runner key (`dg ci runner new`) can only report check runs; sign anything else with your own key (`dg auth login`)"),
+                .fix("sign this with a key whose bounds cover it: your own limited key (`dg auth login`), not a key bound to another contract or document type")
+                .note("a CI runner key (`dg ci runner new`) can only write check runs"),
         );
     }
     // PublicKeyIsDisabledError ("Identity key N is disabled"), or the same caught before signing.
@@ -1599,7 +1600,9 @@ mod tests {
             let u = from_platform_text(text, &ctx).expect(text);
             assert_eq!(u.code, codes::KEY_CANNOT_SIGN, "{text}");
             assert!(
-                u.fix.iter().any(|f| f.contains("dg ci runner new")),
+                u.note
+                    .as_deref()
+                    .is_some_and(|n| n.contains("dg ci runner new")),
                 "{text}"
             );
         }
