@@ -11,7 +11,8 @@
 //! A re-run with nothing new writes nothing and costs nothing: git sees up-to-date refs,
 //! and the collaboration diff finds every item already there (see [`crate::sink`]).
 
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -21,7 +22,7 @@ use forge_core::repo::credits_to_dash;
 
 use crate::budget::Budget;
 use crate::dest::{self, Outcome, Signer, REPO_CREATE_CREDITS};
-use crate::gitsync::{GitPusher, PackStorage, PushReport, Refs};
+use crate::gitsync::{GitPusher, PackStorage, ProofRepo, PushReport, Refs};
 use crate::sink::Ledger;
 use crate::source::{Classes, Source};
 use crate::state::{self, SyncState};
@@ -110,7 +111,12 @@ async fn run_inner<'a>(
         &state::destination(existing_id.as_deref().unwrap_or_default(), &collab_contract),
     );
     let since = sync_state.since();
-    let collab_src = src.collect(cfg.classes, since.as_deref(), cfg.limit)?;
+    let collab_src = src.collect(
+        cfg.classes,
+        since.as_deref(),
+        sync_state.pending_revisits(),
+        cfg.limit,
+    )?;
     summary.warnings.extend(collab_src.warnings.iter().cloned());
     summary.incomplete = collab_src.incomplete;
     if collab_src.truncated && cfg.state_path.is_some() {
@@ -139,9 +145,9 @@ async fn run_inner<'a>(
                 .context("preparing the open pull requests' heads")?;
         }
     }
-    // Merged PRs are proved against the base tips this mirror pushes (D-602): only with the
-    // git data in hand. Without `code`, a merged PR is recorded closed.
-    let mirror = cfg.classes.code.then(|| work.clone());
+    // Merged PRs are proved against base tips that contain their merge commits (D-602).
+    let (mirror, _proof_dir) =
+        proof_repo(cfg.classes, src, &work, &collab_src, &mut summary.warnings);
 
     // Price everything, then the up-front cap check. Branches and tags, then the open PRs'
     // heads, are separate pushes (see gitsync); the second is optional, so it is priced for
@@ -337,7 +343,15 @@ async fn run_inner<'a>(
     if collab_src.truncated || collab_src.incomplete || skipped > 0 {
         return Ok(());
     }
-    sync_state.save(started)
+    // A merge not proved yet (the code is not on chain, or the base could not be fetched) is
+    // read again next run, whatever `since` says (a merge into a base gone at the source
+    // never can be).
+    let revisit = outcome
+        .ledger
+        .as_ref()
+        .map(|l| l.unproved.clone())
+        .unwrap_or_default();
+    sync_state.save(started, revisit)
 }
 
 /// The optional PR-heads push: re-priced now, admitted only if it fits the cap AND the
@@ -441,6 +455,71 @@ pub(crate) fn planned_pushes(classes: Classes, open: Option<&[u64]>) -> Vec<Refs
     }
 }
 
+/// The git data merged PRs are proved against (D-602), and the temporary directory holding
+/// it (removed when the guard drops). With `code`, the mirror this run pushes. Without it, the
+/// base branches of the merged PRs are fetched: into the `--work-dir` mirror when a code run
+/// left one there (whole commits, like the mirror's own), or else into a commits-only
+/// repository in a temporary directory, never inside `--work-dir`, so a later code run can
+/// still clone its mirror there. `None` (warned) when no merged PR needs a proof, or nothing
+/// could be fetched.
+fn proof_repo(
+    classes: Classes,
+    src: &dyn Source,
+    work: &Path,
+    collab: &crate::model::SrcCollab,
+    warnings: &mut Vec<String>,
+) -> (Option<ProofRepo>, Option<TempDir>) {
+    if classes.code {
+        let proof = ProofRepo {
+            dir: work.to_path_buf(),
+            pushed: true,
+            unfetched: BTreeMap::new(),
+        };
+        return (Some(proof), None);
+    }
+    let bases: BTreeSet<String> = collab
+        .targets
+        .iter()
+        .filter(|t| t.merged_oid.is_some())
+        .filter_map(|t| t.patch.as_ref().map(|p| p.base_ref_name.clone()))
+        .collect();
+    if bases.is_empty() {
+        return (None, None);
+    }
+    let bases: Vec<String> = bases.into_iter().collect();
+    // A full mirror takes a full fetch (it must never become a partial clone); anything else
+    // gets its own commits-only repository, outside `--work-dir`.
+    let (dir, treeless, guard) = if work.join("HEAD").exists() {
+        (work.to_path_buf(), false, None)
+    } else {
+        let dir = std::env::temp_dir().join(format!(
+            "forge-import-proof-{}-{}",
+            src.default_name(),
+            std::process::id()
+        ));
+        (dir.clone(), true, Some(TempDir(dir)))
+    };
+    let why = match src.fetch_bases(&dir, &bases, treeless) {
+        Ok(unfetched) if unfetched.len() < bases.len() => {
+            let proof = ProofRepo {
+                dir,
+                pushed: false,
+                unfetched,
+            };
+            return (Some(proof), guard);
+        }
+        Ok(_) => format!(
+            "none of the merged PRs' base branches ({}) could be fetched from the source",
+            bases.join(", ")
+        ),
+        Err(e) => format!("fetching the merged PRs' base branches failed ({e:#})"),
+    };
+    warnings.push(format!(
+        "{why}, so their merges cannot be proved and they are recorded as closed"
+    ));
+    (None, guard)
+}
+
 /// Removes a temporary directory on drop.
 struct TempDir(PathBuf);
 
@@ -453,6 +532,143 @@ impl Drop for TempDir {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A source served from a local repository (`file://`), for the proof fetch.
+    struct Local(PathBuf);
+
+    impl Source for Local {
+        fn display(&self) -> String {
+            "local".into()
+        }
+        fn default_name(&self) -> String {
+            "local".into()
+        }
+        fn meta(&self) -> Result<crate::source::SourceMeta> {
+            unreachable!()
+        }
+        fn collect(
+            &self,
+            _: Classes,
+            _: Option<&str>,
+            _: &[u32],
+            _: usize,
+        ) -> Result<crate::model::SrcCollab> {
+            unreachable!()
+        }
+        fn sync_mirror(&self, dir: &Path) -> Result<()> {
+            let ok = std::process::Command::new("git")
+                .args(["clone", "--mirror", "--quiet"])
+                .arg(&self.0)
+                .arg(dir)
+                .status()?
+                .success();
+            anyhow::ensure!(ok, "clone failed");
+            Ok(())
+        }
+        fn fetch_bases(
+            &self,
+            dir: &Path,
+            bases: &[String],
+            treeless: bool,
+        ) -> Result<BTreeMap<String, crate::gitsync::Unfetched>> {
+            crate::gitsync::fetch_proof_bases(
+                dir,
+                &format!("file://{}", self.0.display()),
+                bases,
+                treeless,
+                None,
+            )
+        }
+        fn pull_head_prefix(&self) -> &'static str {
+            "refs/pull/"
+        }
+    }
+
+    /// C2 (review): an issues/PRs run into a `--work-dir` that holds no mirror yet must leave it
+    /// empty: the proof repository lives elsewhere and is removed after the run, so a later
+    /// code run can still clone its mirror there (git refuses to clone into a non-empty
+    /// directory).
+    #[test]
+    fn a_collab_only_run_leaves_the_work_dir_for_the_code_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&src)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "a"]);
+        let source = Local(src.clone());
+        let work = tmp.path().join("work.git");
+        let collab = crate::model::SrcCollab {
+            targets: vec![merged_pr("refs/heads/main")],
+            ..Default::default()
+        };
+        let mut warnings = Vec::new();
+        let issues_prs = Classes::parse("issues,prs").unwrap();
+        let (proof, guard) = proof_repo(issues_prs, &source, &work, &collab, &mut warnings);
+        let proof = proof.expect("the base was fetched");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(!proof.pushed);
+        assert!(!proof.dir.starts_with(&work), "{}", proof.dir.display());
+        assert!(!work.exists(), "the work dir is untouched");
+        drop(guard);
+        assert!(
+            !proof.dir.exists(),
+            "the proof repository is removed after the run"
+        );
+        // The code run then mirrors into the same work dir.
+        source.sync_mirror(&work).unwrap();
+        let (code, _) = proof_repo(
+            Classes::parse("code").unwrap(),
+            &source,
+            &work,
+            &collab,
+            &mut warnings,
+        );
+        assert!(code.is_some_and(|p| p.pushed && p.dir == work));
+        // With the code run's mirror there, a later issues/PRs run fetches into it (whole
+        // commits, never a partial clone) and removes nothing.
+        let (proof, guard) = proof_repo(issues_prs, &source, &work, &collab, &mut warnings);
+        assert!(proof.is_some_and(|p| p.dir == work) && guard.is_none());
+        let config = std::fs::read_to_string(work.join("config")).unwrap();
+        assert!(
+            !config.contains("promisor") && !config.contains("partialclone"),
+            "{config}"
+        );
+    }
+
+    fn merged_pr(base: &str) -> crate::model::SrcTarget {
+        crate::model::SrcTarget {
+            kind: forge_core::collab::v2::TargetKind::Patch,
+            number: 1,
+            title: "t".into(),
+            body: String::new(),
+            imported: forge_core::collab::Imported::default(),
+            closed: true,
+            merged_oid: Some(vec![1; 20]),
+            labels: std::collections::BTreeSet::new(),
+            draft: false,
+            patch: Some(crate::model::SrcPatch {
+                base_ref_name: base.into(),
+                source_ref_name: None,
+                head_oid: vec![2; 20],
+            }),
+            comments: Vec::new(),
+            reviews: Vec::new(),
+        }
+    }
 
     #[test]
     fn heads_are_pushed_only_when_the_open_list_was_read() {

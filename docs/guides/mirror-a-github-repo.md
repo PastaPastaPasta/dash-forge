@@ -104,6 +104,27 @@ A run with `--limit` that left items out does not advance `--state` either, and 
 
 **Refused history.** The importer pushes through `git-remote-dash`, so a history holding an object git itself refuses (a `.git` look-alike path, a hostile `.gitmodules`) stops the push before anything is stored or paid for ([E511](../errors.md#e511)). Old commits with malformed author or committer lines (a bad time zone, a broken email) are accepted, as a plain `git clone` accepts them; that needs git 2.44 or newer.
 
+**Importing in phases.** A large repository can be imported in steps: the code first, then the issues and PRs, each with its own cap and state file:
+
+```sh
+forge-import alice/project --sync code,releases,labels --work-dir ./project.git --state ./project-code.sync.json --max-spend 100
+forge-import alice/project --sync issues,prs,labels --work-dir ./project.git --state ./project-collab.sync.json --max-spend 5
+```
+
+**Run the code pass first.** A merged PR is recorded as merged only when a base tip already on chain contains its merge commit. A pass without `code` checks that itself and pushes nothing. It fetches the merged PRs' base branches from the source: into the `--work-dir` mirror when a code run left one there, or else commits only, into a temporary repository that is removed after the run (never inside `--work-dir`). If the base branch's tip on chain does not contain the merge yet, the PR is recorded as closed. The same happens when the base could not be fetched. The run warns for each such PR, the summary counts them (`unprovedMerges`), and `--state` keeps their numbers: the next run reads them again whatever changed, and turns each close into a merge once the code is on chain (one small event per PR; nothing else is written again). A PR whose base branch was deleted at the source can never be proved; it stays closed, and is not revisited. Nor can a PR mirrored before its base branch was on chain at all: a merge counts only into a base that was a branch when the PR was opened on Forge ([forge-v2 §6](../contracts/forge-v2.md)), which is why the code must come first.
+
+**Release assets.** A release lists its assets in at most 4,096 bytes, about 16 GitHub assets. When a source release has more, the importer keeps, in this order:
+1. checksum files (`SHA256SUMS`, `checksums.txt`) and their signatures;
+2. Linux x86-64 builds;
+3. Windows;
+4. macOS arm64;
+5. macOS x86-64;
+6. Linux arm64;
+7. source archives;
+8. everything else.
+
+A signature or per-file checksum (`<file>.asc`, `.sig`, `.minisig`, `.sha256`, `.sha512`) is kept right after its file when it fits, and never without it; a checksum list such as `SHA256SUMS.asc` counts as a checksum file. The release's notes then end with a line saying how many assets are not mirrored, with a link to the source release, and the web shows it as "N more assets not mirrored". The summary counts them (`assetsOmitted`). The importer hashes up to 4 GiB of assets per run, newest releases first; an imported asset it has not hashed yet is shown as "not verified yet" with a link to its original on GitHub or GitLab, and a later run hashes it (`assetsUnhashed`). A release published on Forge itself never offers a file without a recorded hash. Mirroring every asset of a large release needs a contract change, proposed in [release asset manifests](../design/release-asset-manifest.md).
+
 **Not mirrored.** Edits to a title or body after the item was first mirrored, a PR's later retarget to another base, and a PR's later head moves (its `headOid` stays at the commit it was mirrored at; `refs/mirror/pull/<n>/head` follows the head while the PR is open). Reactions, milestones, assignees, projects and GitHub Discussions are not mirrored.
 
 ---
@@ -253,7 +274,7 @@ If the page says **Not indexed for browsing yet**, the import stored the code bu
 dg repo reindex <owner>/<repo>   # shows the price first; the index is 36 bytes per object
 ```
 
-It reads the stored packs, builds their index locally and uploads only that, about a thirtieth of what the code cost: 3.3 DASH for dashpay/dash's 268,015 objects, whose code upload was 91 DASH. The index goes to Platform when the packs are there. When the packs live on your own storage, name it with `--profile <name>[,<name>…]` (as for `dg repack`); the index then costs only its manifest on chain. If the warning names `dg repack` instead, the index cannot be extended as it stands, and a repack rebuilds it.
+It reads the stored packs, builds their index locally and uploads only that, about a thirtieth of what the code cost: about 3.6 DASH quoted for dashpay/dash's 268,015 objects, whose code upload was 98 DASH. The index goes to Platform when the packs are there. When the packs live on your own storage, name it with `--profile <name>[,<name>…]` (as for `dg repack`); the index then costs only its manifest on chain. If the warning names `dg repack` instead, the index cannot be extended as it stands, and a repack rebuilds it.
 
 To check that a branch's history on the mirror matches GitHub, compare its tip on both:
 

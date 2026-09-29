@@ -19,6 +19,7 @@
 //! are a second, optional one, so a stranger's large PR can fail only its own push, never the
 //! mirror of branches, tags and issues. It prunes the heads of PRs that closed.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -324,13 +325,149 @@ pub fn sync_pull_heads(git_dir: &Path, open: &[u64], source_prefix: &str) -> Res
     Ok(())
 }
 
+/// The git data a run proves merged PRs against (D-602, [`crate::sink::Sink::with_mirror`]).
+#[derive(Debug, Clone)]
+pub struct ProofRepo {
+    /// A bare repository holding the base branches' commits.
+    pub dir: PathBuf,
+    /// This run pushes its branches from `dir` (`--sync code`): its own tip of a base is what
+    /// the chain is about to show. Otherwise nothing is pushed, and `dir` only answers
+    /// ancestry questions for the base tips already on chain.
+    pub pushed: bool,
+    /// Bases [`fetch_proof_bases`] could not fetch, and why.
+    pub unfetched: BTreeMap<String, Unfetched>,
+}
+
+/// Why a base branch is not in a [`ProofRepo`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unfetched {
+    /// The source has no such branch any more (git: "couldn't find remote ref"): a merge into
+    /// it can never be proved, whatever a later run does.
+    Gone,
+    /// The fetch failed another way (network, auth): a later run may succeed.
+    Failed,
+}
+
+/// Where [`fetch_proof_bases`] keeps a base branch: never pushed (the pushes send only
+/// `refs/heads/*`, `refs/tags/*` and `refs/mirror/pull/*`), never pruned by `sync_mirror`.
+pub const PROOF_PREFIX: &str = "refs/forge-import/proof/";
+
+/// Fetch the base branches `bases` (`refs/heads/<b>`) from `url` into the bare repository
+/// at `git_dir` (created when missing), under [`PROOF_PREFIX`]: the commits a merged PR's
+/// merge commit is checked against when this run syncs no `code` (D-602 without a push).
+///
+/// `treeless` fetches commits only (`--filter=tree:0`, a few MB even for dashpay/dash):
+/// ancestry needs no trees. Only for a repository made for the proof: a filtered fetch into
+/// a full mirror would make it a partial clone, and a later push of it would lack trees. The
+/// fetch leaves `url` recorded as a promisor remote; that is removed again, so reading the
+/// repository never fetches a missing object from the network ([`is_ancestor`] also turns
+/// lazy fetches off, on git 2.45 and later).
+///
+/// Each base is fetched on its own, so one deleted at the source (a merge into a branch
+/// that is gone) does not stop the others. Returns the bases that could not be fetched.
+pub fn fetch_proof_bases(
+    git_dir: &Path,
+    url: &str,
+    bases: &[String],
+    treeless: bool,
+    auth: Option<&(String, String)>,
+) -> Result<BTreeMap<String, Unfetched>> {
+    if !git_dir.join("HEAD").exists() {
+        std::fs::create_dir_all(git_dir)?;
+        let init = Command::new("git")
+            .args(["init", "--bare", "--quiet"])
+            .arg(git_dir)
+            .status()
+            .context("running git")?;
+        if !init.success() {
+            bail!("git init failed in {}", git_dir.display());
+        }
+    }
+    let mut missing = BTreeMap::new();
+    for base in bases {
+        let outcome = match base.strip_prefix("refs/heads/") {
+            Some(branch) => fetch_proof_base(git_dir, url, base, branch, treeless, auth)?,
+            None => Some(Unfetched::Gone),
+        };
+        if let Some(why) = outcome {
+            missing.insert(base.clone(), why);
+        }
+    }
+    if treeless {
+        forget_promisor(git_dir, url);
+    }
+    Ok(missing)
+}
+
+/// One base of [`fetch_proof_bases`]: `None` when it was fetched.
+fn fetch_proof_base(
+    git_dir: &Path,
+    url: &str,
+    base: &str,
+    branch: &str,
+    treeless: bool,
+    auth: Option<&(String, String)>,
+) -> Result<Option<Unfetched>> {
+    let mut cmd = Command::new("git");
+    if let Some((k, v)) = auth {
+        crate::github::append_git_config(&mut cmd, k, v);
+    }
+    cmd.arg("-C")
+        .arg(git_dir)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        // git's own words, whatever the user's locale: "couldn't find remote ref" is matched.
+        .env("LC_ALL", "C")
+        .stdin(std::process::Stdio::null())
+        .args(["fetch", "--quiet", "--no-tags", "--no-write-fetch-head"]);
+    if treeless {
+        cmd.arg("--filter=tree:0");
+    }
+    let out = cmd
+        .arg("--")
+        .arg(url)
+        .arg(format!("+{base}:{PROOF_PREFIX}heads/{branch}"))
+        .output()
+        .context("running git")?;
+    Ok(if out.status.success() {
+        None
+    } else if String::from_utf8_lossy(&out.stderr).contains("couldn't find remote ref") {
+        Some(Unfetched::Gone)
+    } else {
+        Some(Unfetched::Failed)
+    })
+}
+
+/// Drop the promisor remote a filtered fetch of `url` recorded, so git never goes back to it
+/// for an object the proof repository lacks (a missing object is then just missing).
+fn forget_promisor(git_dir: &Path, url: &str) {
+    for key in ["promisor", "partialclonefilter"] {
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(git_dir)
+            .args(["config", "--unset-all", &format!("remote.{url}.{key}")])
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+/// `git -C <git_dir>` for a read that must never reach the network: no lazy fetch of a
+/// missing object from a promisor remote (`GIT_NO_LAZY_FETCH`, git 2.45+; older gits are
+/// covered by [`forget_promisor`]), no credential prompt, nothing on stdin.
+fn local_git(git_dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(git_dir)
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(std::process::Stdio::null());
+    cmd
+}
+
 /// Whether commit `ancestor` is reachable from `tip` in the mirror at `git_dir` (itself
 /// included). `false` when either is missing locally.
 pub fn is_ancestor(git_dir: &Path, ancestor: &str, tip: &str) -> bool {
     ancestor == tip
-        || Command::new("git")
-            .arg("-C")
-            .arg(git_dir)
+        || local_git(git_dir)
             .args(["merge-base", "--is-ancestor", ancestor, tip])
             .stderr(std::process::Stdio::null())
             .status()
@@ -339,9 +476,7 @@ pub fn is_ancestor(git_dir: &Path, ancestor: &str, tip: &str) -> bool {
 
 /// The commit `ref_name` points at in the mirror, if it exists there.
 pub fn local_tip(git_dir: &Path, ref_name: &str) -> Option<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(git_dir)
+    let out = local_git(git_dir)
         .args(["rev-parse", "--verify", "--quiet"])
         .arg(format!("{ref_name}^{{commit}}"))
         .output()
@@ -755,6 +890,61 @@ dash: push failed: ref did not converge to pushed tip"#;
         assert_eq!(heads(), "refs/mirror/pull/2/head");
     }
 
+    /// C1 (review): the proof repository is a treeless partial clone. Asking it about an
+    /// object it lacks must never fetch from the source (a promisor remote pointing at a
+    /// dead address here would hang or prompt): the answer is `false`, at once.
+    #[test]
+    fn the_proof_repo_never_fetches_a_missing_object() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        git(&src, &["init", "-q", "-b", "main"]);
+        std::fs::write(src.join("f"), "x").unwrap();
+        git(&src, &["add", "f"]);
+        git(&src, &["commit", "-q", "-m", "a"]);
+        let tip = git(&src, &["rev-parse", "HEAD"]);
+        git(&src, &["config", "uploadpack.allowFilter", "true"]);
+        let proof = tmp.path().join("proof.git");
+        let url = format!("file://{}", src.display());
+        let missing =
+            fetch_proof_bases(&proof, &url, &["refs/heads/main".to_string()], true, None).unwrap();
+        assert!(missing.is_empty(), "{missing:?}");
+        // The promisor remote the filtered fetch recorded is gone again.
+        let config = std::fs::read_to_string(proof.join("config")).unwrap();
+        assert!(!config.contains("promisor"), "{config}");
+        // Even if a promisor were configured (an older forge-import's proof repo), reads stay
+        // local: point one at an address that can never answer.
+        git(
+            &proof,
+            &["config", "remote.dead.url", "https://192.0.2.1/x.git"],
+        );
+        git(&proof, &["config", "remote.dead.promisor", "true"]);
+        git(&proof, &["config", "extensions.partialClone", "dead"]);
+        let started = std::time::Instant::now();
+        let absent = "ab".repeat(20);
+        assert!(!is_ancestor(&proof, &absent, &tip));
+        assert!(is_ancestor(&proof, &tip, &tip));
+        assert_eq!(local_tip(&proof, "refs/heads/nope"), None);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        // A branch the source does not have is `Gone`, not a failure.
+        let gone =
+            fetch_proof_bases(&proof, &url, &["refs/heads/nope".to_string()], true, None).unwrap();
+        assert_eq!(gone.get("refs/heads/nope"), Some(&Unfetched::Gone));
+        let failed = fetch_proof_bases(
+            &proof,
+            &format!("file://{}/nowhere", tmp.path().display()),
+            &["refs/heads/main".to_string()],
+            true,
+            None,
+        )
+        .unwrap();
+        assert_eq!(failed.get("refs/heads/main"), Some(&Unfetched::Failed));
+    }
+
     /// D-602: the importer names a pushed base tip that contains the merge commit; this is
     /// the ancestry test it relies on (git's own, over the local mirror).
     #[test]
@@ -947,6 +1137,46 @@ dash: push failed: ref did not converge to pushed tip"#;
         // Push 3: the other 9 refs and a 1,183-byte pack: the balance fell 942,227,520.
         let last = fresh_push_credits(1_183, 0, 9, PackStorage::PLATFORM);
         assert!(last >= 942_227_520, "{last}");
+    }
+
+    /// The showcase rebuild on moutai beta.6 (2026-09-28): 15 first imports into new public
+    /// repositories, packs on Platform, one identity each, in the order they landed. Each run
+    /// charged the repository's creation, one push, and its releases and labels; what it paid
+    /// is the identity's balance drop. dashpay/dash (19,107 chunks) paid 97.901210 DASH against
+    /// an estimate of 97.339809: each chunk cost ~98M beyond its bytes, not the 94M priced,
+    /// because every chunk insert rewrites its ancestors in forge-core's network-wide chunk
+    /// tree ([`push_fees::CHUNK_PER_LEVEL`]). Every estimate must cover its charge.
+    #[test]
+    fn import_estimates_cover_the_beta6_showcase_imports() {
+        // (pack bytes, objects, refs, releases+labels estimate, paid), all credits but bytes.
+        #[rustfmt::skip]
+        const RUNS: &[(u64, u64, u64, u64, u64)] = &[
+            (2_492_980, 712, 5, 420_500_000, 83_408_472_560),              // dashpay/dips
+            (13_808_506, 26_871, 169, 3_905_400_000, 504_183_680_440),     // psf/requests
+            (20_900_383, 50_301, 623, 32_583_100_000, 815_318_105_360),    // preactjs/preact
+            (5_934_182, 14_063, 288, 14_105_500_000, 244_509_209_840),     // BurntSushi/ripgrep
+            (2_583_839, 8_762, 54, 9_958_000_000, 109_445_328_060),        // sharkdp/fd
+            (8_456_787, 11_862, 38, 5_498_400_000, 308_048_112_020),       // jqlang/jq
+            (2_085_947, 5_682, 53, 5_532_200_000, 85_874_938_920),         // sharkdp/hyperfine
+            (8_795_952, 20_496, 193, 21_524_400_000, 355_049_116_060),     // junegunn/fzf
+            (3_239_305, 4_407, 36, 6_485_000_000, 124_701_199_440),        // charmbracelet/glow
+            (10_547_811, 4_521, 12, 471_600_000, 372_312_999_100),         // dashpay/docs-platform
+            (1_174_452, 3_850, 106, 10_818_800_000, 58_204_447_320),       // dtolnay/anyhow
+            (3_218_916, 9_147, 183, 19_194_400_000, 133_173_374_760),      // serde-rs/json
+            (1_622_200, 3_458, 2, 336_200_000, 57_038_991_760),            // sindresorhus/awesome
+            (3_240_199, 11_860, 13, 635_900_000, 129_369_646_160),         // github/gitignore
+            (271_210_607, 268_021, 604, 33_291_800_000, 9_790_121_010_320), // dashpay/dash
+        ];
+        for &(bytes, objects, refs, collab, paid) in RUNS {
+            let git = fresh_push_credits(bytes, objects, refs, PackStorage::PLATFORM);
+            let estimate = crate::dest::REPO_CREATE_CREDITS + git + collab;
+            #[allow(clippy::cast_precision_loss)]
+            let ratio = estimate as f64 / paid as f64;
+            assert!(
+                estimate >= paid && ratio <= 1.35,
+                "{bytes} B: estimate {estimate} vs paid {paid} ({ratio:.4})"
+            );
+        }
     }
 
     /// With `dash.platformFallback` armed, the helper's dry run prices the pack on your

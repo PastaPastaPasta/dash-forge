@@ -38,6 +38,13 @@ export interface ReleaseView {
   readonly assets: readonly ReleaseAssetView[]
   /** Assets that could not be parsed (shown as a count, never guessed at). */
   readonly badAssets: number
+  /**
+   * The notes without the importer's footer ({@link omittedAssets}), for display. `notes` stays
+   * as stored, so a re-publish that keeps the notes keeps the footer too.
+   */
+  readonly notesBody: string
+  /** Assets of the source release that are not mirrored here (forge-import's footer), or null. */
+  readonly omitted: OmittedAssets | null
   readonly publisher: string
   readonly createdAt: number
 }
@@ -47,6 +54,36 @@ export interface ReleaseList {
   readonly current: readonly ReleaseView[]
   /** Superseded revisions, newest first. */
   readonly previous: readonly ReleaseView[]
+}
+
+/** What forge-import says it left out of an imported release (see {@link omittedAssets}). */
+export interface OmittedAssets {
+  /** Assets not listed here. */
+  readonly count: number
+  /** Assets the source release has. */
+  readonly total: number
+  /** The source release's page (an https URL), or null when the importer knew none. */
+  readonly sourceUrl: string | null
+}
+
+/**
+ * The line forge-import ends an imported release's notes with when the source release has more
+ * assets than the 4,096-byte `assets` field lists (`model::assets_footer`):
+ * `---` then `_forge-import: N of M assets are not mirrored here (…). Download them from the
+ * [source release](https://…)._`. Only a footer at the very end counts, so text quoted in the
+ * notes is never taken for it.
+ */
+const OMITTED_FOOTER =
+  /\n\n---\n_forge-import: (\d+) of (\d+) assets are not mirrored here \([^)]*\)\.(?: Download them from the \[source release\]\((https:\/\/[^\s)]+)\)\.)?_\s*$/
+
+/** Split forge-import's omitted-assets footer off `notes`. */
+export function omittedAssets(notes: string): { body: string; omitted: OmittedAssets | null } {
+  const m = OMITTED_FOOTER.exec(notes)
+  if (m === null) return { body: notes, omitted: null }
+  const count = Number(m[1])
+  const total = Number(m[2])
+  if (count === 0 || total < count) return { body: notes, omitted: null }
+  return { body: notes.slice(0, m.index), omitted: { count, total, sourceUrl: m[3] ?? null } }
 }
 
 const SHA256 = /^[0-9a-fA-F]{64}$/
@@ -62,6 +99,28 @@ export function assetVerifiable(asset: { readonly sha256: string }): boolean {
 /** Why an asset with no recorded hash is not downloaded, and how that is fixed. */
 export const UNVERIFIABLE_ASSET =
   'no SHA-256 is recorded for this asset, so it cannot be verified and is not downloaded. A maintainer fixes it by re-running the import with a current forge-import (it hashes each asset) or by publishing the release again with the file.'
+
+/**
+ * Whether `url` is a release download on the forge an import copies from (GitHub's
+ * `/<o>/<r>/releases/download/…`, GitLab's `/-/releases/<tag>/downloads/…` or `/uploads/…`).
+ * forge-import references assets there; a release published here stores them in its owner's
+ * storage instead, so such a URL marks an imported asset.
+ */
+export function importedAssetUrl(url: string): boolean {
+  let u: URL
+  try {
+    u = new URL(url)
+  } catch {
+    return false
+  }
+  if (u.protocol !== 'https:') return false
+  if (u.hostname === 'github.com') return /^\/[^/]+\/[^/]+\/releases\/download\//.test(u.pathname)
+  return /\/-\/releases\/[^/]+\/downloads\/|\/uploads\/[0-9a-f]{32}\//.test(u.pathname)
+}
+
+/** An imported asset the import has not hashed yet (its hashing budget ran out): the original is linked. */
+export const NOT_VERIFIED_YET =
+  'Not verified yet: the import has not recorded this file’s SHA-256, so this page can’t check it. Get it from the source; a later import run records the hash.'
 
 const size = z.number().int().nonnegative()
 const Asset = z
@@ -111,11 +170,15 @@ export function parseReleaseAssets(raw: string): { assets: ReleaseAssetView[]; b
 function toRelease(doc: PlainDocument): ReleaseView {
   const { assets, bad } = parseReleaseAssets(str(doc, 'assets'))
   const created = doc['$createdAt']
+  const notes = str(doc, 'notes')
+  const { body, omitted } = omittedAssets(notes)
   return {
     id: str(doc, '$id'),
     tagName: str(doc, 'tagName'),
     name: str(doc, 'name'),
-    notes: str(doc, 'notes'),
+    notes,
+    notesBody: body,
+    omitted,
     yanked: doc['yanked'] === true,
     assets,
     badAssets: bad,

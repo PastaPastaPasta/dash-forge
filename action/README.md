@@ -95,8 +95,8 @@ Run it once with `dry-run: 'true'` from the Actions tab (`workflow_dispatch`) to
 ## What is synced
 
 - **Code** (`code`): every branch and tag. Force-pushes are mirrored as force-pushes. The head of each **open** pull request is stored at `refs/mirror/pull/<n>/head`, so it can be checked out.
-- **Issues and pull requests** (`issues`, `prs`): title and body as of the first mirror, plus state, labels, comments and reviews. They are signed by the runner identity, and each one says which GitHub item and author it came from. State changes are recorded as events.
-- **Releases** (`releases`): tag, title and notes. Assets are **not re-uploaded**. They are referenced by their GitHub URL, together with their sha256 when GitHub reports a digest.
+- **Issues and pull requests** (`issues`, `prs`): title and body as of the first mirror, plus state, labels, comments and reviews. They are signed by the runner identity, and each one says which GitHub item and author it came from. State changes are recorded as events. A merged PR reads as merged once the base branch's tip on chain contains its merge commit. A run without `code` checks that by fetching the base branches' commits, and records a PR as closed when the code is not mirrored yet.
+- **Releases** (`releases`): tag, title and notes. Assets are **not re-uploaded**. They are referenced by their GitHub URL and SHA-256 (GitHub's digest, or one the importer computes). A release lists at most about 16 assets. Past that, checksum files, signatures and the common platform builds are kept first, and the notes link the source release for the rest ([guide](../docs/guides/mirror-a-github-repo.md#1-first-import)).
 - **Labels** (`labels`).
 
 Not mirrored:

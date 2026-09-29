@@ -26,7 +26,7 @@
 //! import.
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -440,6 +440,17 @@ pub struct GlRelease {
     /// Assets.
     #[serde(default)]
     pub assets: GlAssets,
+    /// Links; `self` is the release's page.
+    #[serde(default, rename = "_links")]
+    pub links: GlReleaseLinks,
+}
+
+/// A release's `_links`.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GlReleaseLinks {
+    /// The release's page (`<project>/-/releases/<tag>`).
+    #[serde(default, rename = "self")]
+    pub self_url: Option<String>,
 }
 
 /// `null` as the default (GitLab sends `"author": null` for some imported items).
@@ -929,6 +940,19 @@ impl GitlabClient {
         )
     }
 
+    /// One merge request; `Ok(Ok(None))` when GitLab has no such merge request (404).
+    pub fn merge_request(&self, iid: u64) -> Result<Readable<Option<GlItem>>> {
+        let url = self.url(&format!("merge_requests/{iid}"));
+        Ok(match self.get(&url, "a merge request") {
+            Ok(Ok(r)) => Ok(Some(
+                serde_json::from_slice(&r.body).context("parsing a merge request")?,
+            )),
+            Ok(Err(d)) => Err(d),
+            Err(e) if format!("{e:#}").contains("answered 404") => Ok(None),
+            Err(e) => return Err(e),
+        })
+    }
+
     /// [`Self::issues`] for merge requests.
     pub fn merge_requests(
         &self,
@@ -1015,6 +1039,17 @@ impl GitlabClient {
 
     fn clone_url(&self) -> String {
         format!("{}.git", self.repo.web_url())
+    }
+
+    /// Fetch the base branches `bases` into `dir` ([`crate::gitsync::fetch_proof_bases`]).
+    pub fn fetch_bases(
+        &self,
+        dir: &Path,
+        bases: &[String],
+        treeless: bool,
+    ) -> Result<BTreeMap<String, crate::gitsync::Unfetched>> {
+        let auth = git_auth(&self.repo.base, gitlab_token().as_deref());
+        crate::gitsync::fetch_proof_bases(dir, &self.clone_url(), bases, treeless, auth.as_ref())
     }
 
     /// Mirror-clone (or update) the project into the bare repo at `dir`: branches, tags and

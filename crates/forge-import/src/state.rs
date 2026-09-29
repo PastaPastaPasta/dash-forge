@@ -28,6 +28,11 @@ pub struct SyncState {
     pub destination: String,
     /// Unix seconds when the last successful run started.
     pub last_sync_started: Option<u64>,
+    /// PRs/MRs (source numbers) the source merged whose merge the last run could not prove
+    /// yet (the code was not on chain, or the base could not be fetched): read again by the
+    /// next run whatever `since` says, so the cursor never skips past them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub revisit: Vec<u32>,
     #[serde(skip)]
     path: Option<PathBuf>,
 }
@@ -42,6 +47,7 @@ impl SyncState {
             source: source.to_string(),
             destination: destination.to_string(),
             last_sync_started: None,
+            revisit: Vec::new(),
             path: path.map(Path::to_path_buf),
         };
         let Some(p) = path else { return fresh };
@@ -70,9 +76,21 @@ impl SyncState {
             .map(|t| crate::github::unix_to_iso8601(t.saturating_sub(OVERLAP_SECS)))
     }
 
-    /// Record a successful run that started at `started` (unix seconds).
-    pub fn save(&mut self, started: u64) -> Result<()> {
+    /// The items the last run left to revisit ([`Self::revisit`]); none on a full scan, which
+    /// reads everything anyway.
+    pub fn pending_revisits(&self) -> &[u32] {
+        if self.last_sync_started.is_some() {
+            &self.revisit
+        } else {
+            &[]
+        }
+    }
+
+    /// Record a successful run that started at `started` (unix seconds), with the items the
+    /// next run must read again whatever `since` says ([`Self::revisit`]).
+    pub fn save(&mut self, started: u64, revisit: Vec<u32>) -> Result<()> {
         self.last_sync_started = Some(started);
+        self.revisit = revisit;
         let Some(p) = &self.path else { return Ok(()) };
         if let Some(dir) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -136,7 +154,7 @@ mod tests {
         let path = dir.join("s.json");
         let mut s = SyncState::load(Some(&path), "github.com/o/r", "R1");
         assert!(s.since().is_none(), "a missing file is a full scan");
-        s.save(1_000_000).unwrap();
+        s.save(1_000_000, Vec::new()).unwrap();
 
         let again = SyncState::load(Some(&path), "github.com/o/r", "R1");
         assert_eq!(again.last_sync_started, Some(1_000_000));
@@ -157,6 +175,30 @@ mod tests {
 
     /// A state file an older importer saved (no version in its scope) is a full scan for this
     /// one: the PRs it recorded closed-not-merged are revisited and repaired (D-602).
+    /// A1 (review): merges a run could not prove are saved and read again by the next run
+    /// (the cursor still advances past everything else); a full scan needs no list.
+    #[test]
+    fn unproved_merges_are_revisited_by_the_next_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.json");
+        let mut s = SyncState::load(Some(&path), "src", "R1");
+        assert!(s.pending_revisits().is_empty());
+        s.save(1_000_000, vec![7, 9]).unwrap();
+        let again = SyncState::load(Some(&path), "src", "R1");
+        assert_eq!(again.pending_revisits(), [7, 9]);
+        assert!(again.since().is_some());
+        let mut next = again;
+        next.save(2_000_000, Vec::new()).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !raw.contains("revisit"),
+            "an empty list is not written: {raw}"
+        );
+        assert!(SyncState::load(Some(&path), "src", "R1")
+            .pending_revisits()
+            .is_empty());
+    }
+
     #[test]
     fn an_older_importers_state_is_a_full_scan() {
         let dir = std::env::temp_dir().join(format!("forge-import-scope-{}", std::process::id()));
@@ -164,7 +206,7 @@ mod tests {
         let all = crate::source::Classes::parse("all").unwrap();
         let old = "github.com/o/r [code,issues,prs,releases,labels] limit=0";
         SyncState::load(Some(&path), old, "R1")
-            .save(1_000_000)
+            .save(1_000_000, Vec::new())
             .unwrap();
         let now = scope("github.com/o/r", all, 0);
         assert!(now.ends_with(" v2"), "{now}");
@@ -182,7 +224,7 @@ mod tests {
         let path = dir.join("s.json");
         let before = destination("R1", "CollabOld");
         SyncState::load(Some(&path), "github.com/o/r", &before)
-            .save(1_000_000)
+            .save(1_000_000, Vec::new())
             .unwrap();
         assert!(SyncState::load(Some(&path), "github.com/o/r", &before)
             .since()

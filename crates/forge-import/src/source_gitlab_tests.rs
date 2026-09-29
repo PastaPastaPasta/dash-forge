@@ -124,7 +124,7 @@ fn client(anonymous: bool) -> (GitlabClient, Rc<RefCell<Vec<String>>>) {
 
 /// `collect` with members-only content refused (the default).
 fn collect(gl: &GitlabClient, c: Classes, since: Option<&str>, limit: usize) -> Result<SrcCollab> {
-    super::collect(gl, c, since, limit, false)
+    super::collect(gl, c, since, &[], limit, false)
 }
 
 fn all() -> Classes {
@@ -460,7 +460,7 @@ fn members_only_content_needs_the_opt_in() {
     let (gl, _) = serve(api());
     assert!(collect(&gl, Classes::parse("code,prs,releases").unwrap(), None, 0).is_ok());
     let (gl, _) = serve(api());
-    let out = super::collect(&gl, all(), None, 0, true).unwrap();
+    let out = super::collect(&gl, all(), None, &[], 0, true).unwrap();
     assert_eq!(out.targets.len(), 9);
 }
 
@@ -531,4 +531,27 @@ fn incremental_reads_ask_for_updated_after() {
     assert!(listings
         .iter()
         .all(|u| u.contains("updated_after=2026-01-01T00:00:00Z")));
+}
+
+/// Review: a revisited merge request GitLab no longer has (404) is warned about and dropped
+/// (`Ok(None)`); it never fails the run, which would fail every later run too.
+#[test]
+fn a_revisited_merge_request_gitlab_no_longer_has_is_none() {
+    let (gl, _) = serve(Recorded {
+        overrides: vec![(
+            "/merge_requests/424242",
+            GlResponse::status(404, br#"{"message":"404 Not found"}"#.to_vec(), None),
+        )],
+        ..Default::default()
+    });
+    assert!(matches!(gl.merge_request(424_242), Ok(Ok(None))));
+    // A refusal is not "gone": it stays a Readable error (the run is partial, the list kept).
+    let (gl, _) = serve(Recorded {
+        overrides: vec![(
+            "/merge_requests/7",
+            GlResponse::status(403, Vec::new(), None),
+        )],
+        ..Default::default()
+    });
+    assert!(matches!(gl.merge_request(7), Ok(Err(_))));
 }

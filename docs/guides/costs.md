@@ -44,7 +44,9 @@ Every byte you store on Platform costs about **27,700 credits**. On top of that,
 
 The per-document fee is why a small write costs about 0.001 DASH, not the few hundred thousand credits its bytes alone would cost.
 
-Rule of thumb for packs on Platform: **1 MiB ≈ 0.33 DASH** measured, about 0.0046 DASH for each 14.7 KB chunk document; `dg` and `git push` quote ~0.36 DASH/MiB, an upper bound that also covers a new repository's first chunks. About 85% of it is the deposit.
+Rule of thumb for packs on Platform: **1 MiB ≈ 0.33–0.36 DASH** measured, about 0.0046–0.0050 DASH for each 14.7 KB chunk document; `dg` and `git push` quote ~0.39 DASH/MiB, an upper bound. About 75–85% of it is the deposit.
+
+A chunk costs a little more the more chunks the whole network holds: every chunk of every repository sits in one tree, and adding one rewrites the chunks on its path to the root (about 7M credits per level, ~1.4% of a chunk). The quote allows for a network of up to about 65,000 chunks (~1 GB of packs on Platform). The dashpay/dash import on moutai (19,107 chunks, 2026-09-28) paid about 98M credits per chunk beyond its bytes, where the old quote allowed 94M, so its estimate came in 0.6% under the charge. The quote now allows 140M.
 
 ```sh
 dg cost estimate --bytes 1048576
@@ -52,12 +54,12 @@ dg cost estimate --bytes 1048576
 
 ```
 Estimate for 1048576 bytes (platform tier):
-  total:      ~0.36072827 DASH ≈ $10.82
+  total:      ~0.39384827 DASH ≈ $11.82
   storage:    ~0.28311552 DASH ≈ $8.49 (deposit; Platform packs are permanent, not refunded)
-  fees:       ~0.07761275 DASH ≈ $2.33 (per-document and processing)
+  fees:       ~0.11073275 DASH ≈ $3.32 (per-document and processing)
 ```
 
-This is the price `git push` quotes: an upper bound, about 1.05–1.09x what Platform charges for a large push.
+This is the price `git push` quotes: an upper bound, never below the charge. On the 15 first imports of the beta.6 showcase (a whole repository each: the repository, its pack, its refs, releases and labels), the estimate was 1.08–1.16x the charge for a pack of 5 MiB or more (dashpay/dash, 259 MiB: 1.08x), and 1.08–1.27x for a 1–3 MiB one, where the per-document fees weigh more.
 
 A deposit only comes back when the document is deleted. Some documents can never be deleted, by design (see [Refunds](#refunds)). For those, the deposit is effectively a one-time cost.
 
@@ -105,7 +107,7 @@ Per-operation cost reference (no live spend tracking yet):
   repo create                ~0.002 DASH ≈ $0.06
   ref update                 ~0.00092 DASH ≈ $0.03
   pack manifest              ~0.00112 DASH ≈ $0.03
-  pack chunk (14.7 KB)       ~0.00504791 DASH ≈ $0.15
+  pack chunk (14.7 KB)       ~0.00550791 DASH ≈ $0.17
   issue (~500 B)             ~0.00108658 DASH ≈ $0.03
   comment (~500 B)           ~0.00070658 DASH ≈ $0.02
 ```
@@ -157,7 +159,7 @@ The audit trail grows forever: each ref update costs about 0.0006–0.0009 DASH 
 ## Seeing costs before you pay
 
 - **`dg` asks first.** Every command that writes asks before it writes (`[y/N]`; `dg init` and `dg repo create` ask `Proceed? [Y/n]` after showing the price) unless you pass `--yes`. `dg repo create`, `dg repack` and `dg repo reindex` show their price before the question. For other commands, use `dg cost estimate` and `dg cost audit`. With `--json` or no terminal, `dg` refuses to write without `--yes` ([`E802`](../errors.md#e802)).
-- **`git push` prints its estimate** before it writes to Platform, and what Platform actually charged when it is done. The estimate prices every write as the first of its kind, so it is an upper bound: 1.01–1.2x the charge on a first push, up to about 1.6x on a small later one. To make it ask:
+- **`git push` prints its estimate** before it writes to Platform, and what Platform actually charged when it is done. The estimate prices every write as the first of its kind, so it is an upper bound: 1.08–1.27x the charge on a first import of 1 MiB or more, up to about 1.4x on a tiny first push and 1.7x on a small later one. To make it ask:
   ```sh
   git config --global dash.costWarnThreshold 0.01   # ask above 0.01 DASH
   git config --global dash.confirm auto             # auto | always | never | refuse

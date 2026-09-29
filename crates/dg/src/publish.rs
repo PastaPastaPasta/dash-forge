@@ -361,7 +361,7 @@ impl Storage {
     }
 }
 
-/// `~0.36 DASH/MiB`, plus what `size` bytes would cost when known: the calibrated chunk
+/// `~0.39 DASH/MiB`, plus what `size` bytes would cost when known: the calibrated chunk
 /// fees `git push` quotes.
 fn platform_price(size: Option<u64>) -> String {
     let rate = crate::fmt::platform_rate();
@@ -1292,15 +1292,15 @@ mod tests {
         let cause = u.cause.unwrap();
         assert!(
             cause.starts_with(
-                "No storage profile. Packs would go to Platform at ~0.36 DASH/MiB (1.2 MiB ≈ 0.43"
+                "No storage profile. Packs would go to Platform at ~0.39 DASH/MiB (1.2 MiB ≈ 0.47"
             ),
             "{cause}"
         );
         assert!(u.fix[0].contains("dg storage add") && u.fix[0].contains("--storage platform"));
         assert_eq!(u.note.as_deref(), Some("nothing was written"));
         // Without a size, just the rate.
-        assert_eq!(platform_price(None), "~0.36 DASH/MiB");
-        assert_eq!(platform_price(Some(0)), "~0.36 DASH/MiB");
+        assert_eq!(platform_price(None), "~0.39 DASH/MiB");
+        assert_eq!(platform_price(Some(0)), "~0.39 DASH/MiB");
     }
 
     #[test]
@@ -1331,7 +1331,7 @@ mod tests {
             .unwrap();
         let line = packs_line(&r, Some(2 * 1024 * 1024));
         assert!(
-            line.contains("Platform stores the packs at ~0.36 DASH/MiB (2.0 MiB ≈ 0.72"),
+            line.contains("Platform stores the packs at ~0.39 DASH/MiB (2.0 MiB ≈ 0.78"),
             "{line}"
         );
     }

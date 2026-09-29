@@ -63,17 +63,80 @@ impl Source for GithubSource {
         })
     }
 
-    fn collect(&self, classes: Classes, since: Option<&str>, limit: usize) -> Result<SrcCollab> {
-        collect(&self.gh, &self.repo, classes, since, limit)
+    fn collect(
+        &self,
+        classes: Classes,
+        since: Option<&str>,
+        revisit: &[u32],
+        limit: usize,
+    ) -> Result<SrcCollab> {
+        let mut out = collect(&self.gh, &self.repo, classes, since, limit)?;
+        if classes.prs && since.is_some() {
+            let have: BTreeSet<u32> = out.targets.iter().map(|t| t.number).collect();
+            let missing: Vec<u64> = revisit
+                .iter()
+                .filter(|n| !have.contains(n))
+                .map(|&n| u64::from(n))
+                .collect();
+            if !missing.is_empty() {
+                // Each one in full (no `since`: its thread is diffed on chain anyway). One that
+                // cannot be read (deleted at GitHub) is warned about and dropped: it must not
+                // fail every later run.
+                let mut items = Vec::with_capacity(missing.len());
+                for &n in &missing {
+                    match self.gh.issue(n) {
+                        Ok(i) => items.push(i),
+                        Err(e) if gone_at_github(&e) => out.warnings.push(format!(
+                            "#{n} (a merge to prove again) is gone from GitHub, so it is not \
+                             revisited any more: {e:#}"
+                        )),
+                        Err(e) => {
+                            // Kept for the next run: the run is partial, so the state (and
+                            // the list) do not advance.
+                            out.incomplete = true;
+                            out.warnings.push(format!(
+                                "#{n} (a merge to prove again) could not be read this run: {e:#}"
+                            ));
+                        }
+                    }
+                }
+                out.targets
+                    .extend(targets(&self.gh, &self.repo, &items, classes, None, true)?);
+                out.targets.sort_by_key(|t| t.number);
+            }
+        }
+        Ok(out)
     }
 
     fn sync_mirror(&self, dir: &Path) -> Result<()> {
         self.gh.sync_mirror(dir)
     }
 
+    fn fetch_bases(
+        &self,
+        dir: &Path,
+        bases: &[String],
+        treeless: bool,
+    ) -> Result<BTreeMap<String, crate::gitsync::Unfetched>> {
+        crate::gitsync::fetch_proof_bases(
+            dir,
+            &self.gh.clone_url(),
+            bases,
+            treeless,
+            crate::github::git_auth().as_ref(),
+        )
+    }
+
     fn pull_head_prefix(&self) -> &'static str {
         "refs/pull/"
     }
+}
+
+/// Whether `e` says the item no longer exists at GitHub (HTTP 404 or 410, as `gh api` reports
+/// them), rather than a failure a later run may not meet.
+fn gone_at_github(e: &anyhow::Error) -> bool {
+    let s = format!("{e:#}");
+    s.contains("HTTP 404") || s.contains("HTTP 410")
 }
 
 /// The repository's label definitions.
@@ -136,16 +199,32 @@ pub fn collect(
     };
     items.sort_by_key(|i| i.number);
     out.truncated = truncated;
-    let mut threads = threads(gh, &items, classes, since, limit > 0)?;
+    out.targets = targets(gh, src, &items, classes, since, limit > 0)?;
+    Ok(out)
+}
+
+/// The model of `items` (sorted by number): each with its thread, and a PR with its detail and
+/// reviews. `per_item` reads each item's own thread and detail (a `--limit` run, or a few
+/// revisited items); otherwise the repository-wide listings are read once.
+fn targets(
+    gh: &GithubClient,
+    src: &GithubRepoRef,
+    items: &[GhIssue],
+    classes: Classes,
+    since: Option<&str>,
+    per_item: bool,
+) -> Result<Vec<SrcTarget>> {
+    let mut out = Vec::with_capacity(items.len());
+    let mut threads = threads(gh, items, classes, since, per_item)?;
 
     // PR details from the listing (one call per 100 PRs); a PR the listing missed (it
     // changed mid-read), or any PR of a `--limit` run, is read by its own call.
-    let mut pulls = if limit == 0 && classes.prs && items.iter().any(GhIssue::is_pull_request) {
+    let mut pulls = if !per_item && classes.prs && items.iter().any(GhIssue::is_pull_request) {
         gh.pulls(since)?
     } else {
         BTreeMap::new()
     };
-    for i in &items {
+    for i in items {
         let Ok(number) = u32::try_from(i.number) else {
             continue;
         };
@@ -185,7 +264,7 @@ pub fn collect(
                 .filter_map(|r| review(src, number, &r))
                 .collect();
         }
-        out.targets.push(t);
+        out.push(t);
     }
     Ok(out)
 }
@@ -347,7 +426,13 @@ fn release(r: &crate::github::GhRelease) -> SrcRelease {
             uri: None,
         })
         .collect();
-    model::release(&r.tag_name, r.name.as_deref(), r.body.as_deref(), assets)
+    model::release(
+        &r.tag_name,
+        r.name.as_deref(),
+        r.body.as_deref(),
+        assets,
+        r.html_url.clone(),
+    )
 }
 
 #[cfg(test)]
@@ -448,6 +533,22 @@ mod tests {
         let log = std::rc::Rc::default();
         let gh = GithubClient::with_api(src(), Box::new(BigRepo(std::rc::Rc::clone(&log))));
         (gh, log)
+    }
+
+    /// Review: a revisited PR is dropped only when GitHub says it is gone. The texts are what
+    /// `gh api` prints (checked 2026-09-28: `gh: Not Found (HTTP 404)`), as the retry wrapper
+    /// keeps them in the error.
+    #[test]
+    fn only_a_404_or_410_drops_a_revisit() {
+        let gone = anyhow::anyhow!("`gh api repos/o/r/issues/9` failed: gh: Not Found (HTTP 404)");
+        assert!(gone_at_github(&gone));
+        assert!(gone_at_github(&anyhow::anyhow!("gh: Gone (HTTP 410)")));
+        let flaky =
+            anyhow::anyhow!("`gh api repos/o/r/issues/9` failed: read: operation timed out");
+        assert!(!gone_at_github(&flaky));
+        assert!(!gone_at_github(&anyhow::anyhow!(
+            "gh: Server Error (HTTP 502)"
+        )));
     }
 
     /// F-10: `--limit 2` on a large repository read every comment of the repository (tens

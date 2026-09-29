@@ -810,7 +810,7 @@ mod tests {
     use super::*;
 
     /// Review finding: a reindex onto the owner's storage pays no Platform chunks, only the
-    /// manifest and its URIs; onto Platform it pays the index chunks (about 3.3 DASH for
+    /// manifest and its URIs; onto Platform it pays the index chunks (about 3.6 DASH for
     /// dashpay/dash's 268,015 objects), sealed a little more for a private repository.
     #[test]
     fn a_reindex_is_priced_for_where_the_index_goes() {
@@ -819,7 +819,7 @@ mod tests {
         assert_eq!(byo, MANIFEST_FIRST + 2 * URIS_PER_TARGET);
         let chain = reindex_estimate(268_015, false, 0, true);
         assert!(
-            (320_000_000_000..350_000_000_000).contains(&chain),
+            (350_000_000_000..380_000_000_000).contains(&chain),
             "{chain}"
         );
         assert!(reindex_estimate(268_015, true, 0, true) > chain);

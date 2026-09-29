@@ -234,6 +234,9 @@ pub struct GhRelease {
     /// Draft (never mirrored).
     #[serde(default)]
     pub draft: bool,
+    /// The release's page on GitHub.
+    #[serde(default)]
+    pub html_url: String,
     /// Assets.
     #[serde(default)]
     pub assets: Vec<GhAsset>,
@@ -460,6 +463,14 @@ impl GithubClient {
             .collect())
     }
 
+    /// One issue or PR as the issues listing shows it.
+    pub fn issue(&self, number: u64) -> Result<GhIssue> {
+        self.get(
+            &self.path(&format!("issues/{number}")),
+            &format!("#{number}"),
+        )
+    }
+
     /// One PR's detail.
     pub fn pull(&self, number: u64) -> Result<GhPull> {
         self.get(
@@ -542,22 +553,19 @@ impl GithubClient {
         self.list(&self.path(&format!("pulls/{number}/reviews?per_page=100")))
     }
 
+    /// The repository's clone URL.
+    pub fn clone_url(&self) -> String {
+        format!("https://github.com/{}.git", self.repo.slug())
+    }
+
     /// Mirror-clone (or update) the source into the bare repo at `dir`: branches, tags and
     /// `refs/pull/*`. An existing mirror is fetched with `--prune`, so deletions and
     /// force-pushes on GitHub are reflected.
     pub fn sync_mirror(&self, dir: &Path) -> Result<()> {
-        let url = format!("https://github.com/{}.git", self.repo.slug());
-        // The token rides in an auth header from the environment, never in the URL or argv.
-        let header = gh_token().map(|t| {
-            use base64_lite::encode;
-            format!(
-                "AUTHORIZATION: basic {}",
-                encode(format!("x-access-token:{t}").as_bytes())
-            )
-        });
+        let url = self.clone_url();
         let mut cmd = Command::new("git");
-        if let Some(h) = &header {
-            append_git_config(&mut cmd, "http.https://github.com/.extraheader", h);
+        if let Some((k, v)) = git_auth() {
+            append_git_config(&mut cmd, &k, &v);
         }
         if dir.join("HEAD").exists() {
             cmd.arg("-C")
@@ -580,6 +588,20 @@ impl GithubClient {
         }
         Ok(())
     }
+}
+
+/// The git config entry that authenticates git to github.com with `gh`'s token: an auth
+/// header from the environment, never the URL or argv. `None` without a token.
+pub(crate) fn git_auth() -> Option<(String, String)> {
+    gh_token().map(|t| {
+        (
+            "http.https://github.com/.extraheader".to_string(),
+            format!(
+                "AUTHORIZATION: basic {}",
+                base64_lite::encode(format!("x-access-token:{t}").as_bytes())
+            ),
+        )
+    })
 }
 
 /// Give `cmd` one more git config entry through `GIT_CONFIG_*`, appended after any the

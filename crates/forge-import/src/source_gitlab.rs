@@ -25,7 +25,7 @@
 //! * **Releases** keep their tag, title and notes; asset links are recorded by URL (GitLab
 //!   reports no digest or size for them). Releases dated in the future are left out.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::Result;
@@ -73,12 +73,34 @@ impl Source for GitlabSource {
         })
     }
 
-    fn collect(&self, classes: Classes, since: Option<&str>, limit: usize) -> Result<SrcCollab> {
-        collect(&self.gl, classes, since, limit, self.include_members_only)
+    fn collect(
+        &self,
+        classes: Classes,
+        since: Option<&str>,
+        revisit: &[u32],
+        limit: usize,
+    ) -> Result<SrcCollab> {
+        collect(
+            &self.gl,
+            classes,
+            since,
+            revisit,
+            limit,
+            self.include_members_only,
+        )
     }
 
     fn sync_mirror(&self, dir: &Path) -> Result<()> {
         self.gl.sync_mirror(dir)
+    }
+
+    fn fetch_bases(
+        &self,
+        dir: &Path,
+        bases: &[String],
+        treeless: bool,
+    ) -> Result<BTreeMap<String, crate::gitsync::Unfetched>> {
+        self.gl.fetch_bases(dir, bases, treeless)
     }
 
     fn pull_head_prefix(&self) -> &'static str {
@@ -184,6 +206,7 @@ pub fn collect(
     gl: &GitlabClient,
     classes: Classes,
     since: Option<&str>,
+    revisit: &[u32],
     limit: usize,
     include_members_only: bool,
 ) -> Result<SrcCollab> {
@@ -206,7 +229,10 @@ pub fn collect(
         return Ok(out);
     }
 
-    let items = items(gl, classes, since, limit, &mut out)?;
+    let mut items = items(gl, classes, since, limit, &mut out)?;
+    if classes.prs && since.is_some() {
+        add_revisits(gl, revisit, &mut items, &mut out);
+    }
     // Which merge requests GitLab still has a head for (it deletes the ref 14 days after
     // one closes or merges). Unknown (the git read failed) is never reported as gone.
     let heads: Option<BTreeSet<u64>> = if classes.prs {
@@ -275,6 +301,43 @@ pub fn collect(
         ));
     }
     Ok(out)
+}
+
+/// The merge requests numbered in `revisit` (a merge the last run could not prove) that the
+/// `since` listing did not return, read again in full into `items`. One GitLab no longer has
+/// (404) is warned about and dropped; any other failure, or a 401/403, makes the run partial
+/// instead, so the state, and this list, stay as they are for the next run.
+fn add_revisits(gl: &GitlabClient, revisit: &[u32], items: &mut Vec<Item>, out: &mut SrcCollab) {
+    for &iid in revisit {
+        let iid = u64::from(iid);
+        if items
+            .iter()
+            .any(|i| i.kind == TargetKind::Patch && i.gl.iid == iid)
+        {
+            continue;
+        }
+        match gl.merge_request(iid) {
+            Ok(r) => match out.readable(r, "a merge request", gl.repo()) {
+                Some(Some(gl)) => items.push(Item {
+                    kind: TargetKind::Patch,
+                    gl,
+                }),
+                Some(None) => out.warnings.push(format!(
+                    "!{iid} (a merge to prove again) is gone from GitLab, so it is not revisited \
+                     any more"
+                )),
+                None => {}
+            },
+            Err(e) => {
+                // Kept for the next run: the run is partial, so the state (and the list) do not
+                // advance.
+                out.incomplete = true;
+                out.warnings.push(format!(
+                    "!{iid} (a merge to prove again) could not be read this run: {e:#}"
+                ));
+            }
+        }
+    }
 }
 
 /// The issues and merge requests to mirror, oldest first; `out.truncated` when `limit` left
@@ -474,6 +537,7 @@ fn release(r: &GlRelease) -> SrcRelease {
         r.name.as_deref(),
         r.description.as_deref(),
         assets,
+        r.links.self_url.clone().unwrap_or_default(),
     )
 }
 

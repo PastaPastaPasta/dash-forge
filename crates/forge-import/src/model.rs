@@ -6,7 +6,7 @@
 //! `imported.url`. It is how a re-run recognizes what it already wrote, so running an
 //! import again costs nothing when nothing changed.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use forge_core::collab::v2::TargetKind;
 use forge_core::collab::{CommentAnchor, Imported, ReleaseAsset, Verdict};
@@ -99,8 +99,10 @@ pub struct SrcRelease {
     /// Assets referenced by URL and sha256 (never re-uploaded).
     pub assets: Vec<ReleaseAsset>,
     /// Assets of the source release left out: the rest do not fit the 4096 bytes a release
-    /// lists (the run warns).
+    /// lists (the run warns, and the notes' footer says so: [`notes_with_footer`]).
     pub dropped: usize,
+    /// The release's page at the source (empty when unknown).
+    pub source_url: String,
 }
 
 /// Everything one run mirrors (beyond git data).
@@ -259,41 +261,205 @@ pub fn label(name: &str, color_hex: &str, description: Option<&str>) -> Option<S
     })
 }
 
-/// A release within the contract: the title defaults to the tag, and only as many assets
-/// are kept as fit the release's 4096-byte `assets` field.
+/// A release within the contract: the title defaults to the tag, and the assets are the
+/// ones [`fit_assets`] keeps within the release's 4096-byte `assets` field. `source_url` is
+/// the release's page at the source, which the notes' footer links when assets are left out
+/// ([`notes_with_footer`]).
 pub fn release(
     tag_name: &str,
     name: Option<&str>,
     notes: Option<&str>,
-    mut assets: Vec<ReleaseAsset>,
+    assets: Vec<ReleaseAsset>,
+    source_url: String,
 ) -> SrcRelease {
     // Sized as recorded: with the 64-hex hash the importer fills in for an asset the source
     // gives none (D-517), so the list never outgrows the field once hashed.
-    let sized = assets
+    let sized: Vec<ReleaseAsset> = assets
         .iter()
         .map(|a| ReleaseAsset {
             sha256: "0".repeat(64),
             ..a.clone()
         })
         .collect();
-    let fit = fit_assets(sized).len();
-    let dropped = assets.len() - fit;
-    assets.truncate(fit);
+    let keep = fit_indices(&sized);
+    let total = assets.len();
+    let assets = select(assets, &keep);
     SrcRelease {
         tag_name: tag_name.to_string(),
         name: clip(name.unwrap_or(tag_name), 120, 480),
-        notes: clip(notes.unwrap_or(""), 5120, 5120),
+        notes: clip(notes.unwrap_or(""), NOTES_MAX, NOTES_MAX),
+        dropped: total - assets.len(),
         assets,
-        dropped,
+        source_url,
     }
 }
 
-/// The longest prefix of `assets` whose JSON fits a release's 4096-byte `assets` field.
-pub fn fit_assets(mut assets: Vec<ReleaseAsset>) -> Vec<ReleaseAsset> {
-    while !assets.is_empty() && serde_json::to_string(&assets).map_or(0, |s| s.len()) > 4096 {
-        assets.pop();
+/// The most bytes a release's `assets` JSON may take (forge-core `release.assets`).
+const ASSETS_MAX: usize = 4096;
+
+/// The most bytes a release's `notes` may take (forge-core `release.notes`).
+const NOTES_MAX: usize = 5120;
+
+/// How much an asset is worth keeping when a release lists more than 4096 bytes of them;
+/// lower is kept first. Checksum lists come first (`SHA256SUMS`, `checksums.txt` and their
+/// signatures: one file verifies every other download), then the common platform builds,
+/// in order: Linux x86-64, Windows x64, macOS arm64, macOS x86-64, Linux arm64. Then source
+/// archives, then everything else. Documented in docs/guides/mirror-a-github-repo.md.
+fn asset_rank(name: &str) -> u8 {
+    // Lower-cased once, and split into its `-`/`.`/`+`… delimited tokens, so a word matches
+    // only whole (`darwinia` is not macOS, `armadillo` is not ARM); `x86-64` is one token.
+    let n = name.to_ascii_lowercase().replace("x86-64", "x86_64");
+    let tokens: Vec<&str> = n
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|t| !t.is_empty())
+        .collect();
+    let has = |words: &[&str]| tokens.iter().any(|t| words.contains(t));
+    let starts = |prefixes: &[&str]| {
+        tokens
+            .iter()
+            .any(|t| prefixes.iter().any(|p| t.starts_with(p)))
+    };
+    let ext = tokens.last().copied().unwrap_or("");
+    let linux = has(&["linux"]);
+    let windows = has(&["win", "win32", "win64", "windows"]) || matches!(ext, "exe" | "msi");
+    let mac = has(&["darwin", "apple", "macos", "mac", "osx", "osx64"]) || ext == "dmg";
+    let x86_64 = has(&["x86_64", "amd64", "x64", "win64", "osx64"]);
+    let arm64 = has(&["aarch64", "arm64"]);
+    if starts(&["sha256sum", "sha512sum", "sha1sum", "checksum"]) {
+        0
+    } else if linux && x86_64 {
+        1
+    } else if windows && !arm64 && !has(&["win32", "i686", "i386", "x86"]) {
+        2
+    } else if mac && arm64 {
+        3
+    } else if mac {
+        4
+    } else if linux && arm64 {
+        5
+    } else if matches!(ext, "gz" | "xz" | "tgz" | "zip")
+        && !linux
+        && !mac
+        && !windows
+        && !has(&[
+            "arm", "armhf", "armel", "i686", "i386", "x86", "android", "freebsd",
+        ])
+        && !starts(&["armv", "riscv"])
+    {
+        6
+    } else {
+        7
     }
+}
+
+/// The file a detached signature or per-file checksum is for (`a.tar.gz.asc` → `a.tar.gz`).
+fn signed_subject(name: &str) -> Option<&str> {
+    [
+        ".asc",
+        ".sig",
+        ".minisig",
+        ".sha256",
+        ".sha256sum",
+        ".sha512",
+    ]
+    .iter()
+    .find_map(|ext| name.strip_suffix(ext))
+    .filter(|s| !s.is_empty())
+}
+
+/// The assets of `assets` a release keeps within [`ASSETS_MAX`] bytes, as indices (in the
+/// source's order). Chosen by [`asset_rank`], each file with its signature (`.asc`, `.sig`,
+/// …) right behind it, so a kept download keeps what verifies it; a pair that does not fit
+/// may keep the file alone. Every asset that fits after the higher-ranked ones is kept, so a
+/// large one never blocks smaller ones behind it.
+fn fit_indices(assets: &[ReleaseAsset]) -> BTreeSet<usize> {
+    let size = |i: usize| serde_json::to_string(&assets[i]).map_or(usize::MAX, |s| s.len());
+    let by_name: BTreeMap<&str, usize> = assets
+        .iter()
+        .enumerate()
+        .map(|(i, a)| (a.name.as_str(), i))
+        .collect();
+    // A signature whose subject is listed travels with it; any other asset is its own unit.
+    let mut sigs: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    let mut roots = Vec::new();
+    for (i, a) in assets.iter().enumerate() {
+        match signed_subject(&a.name).and_then(|s| by_name.get(s).copied()) {
+            Some(s) if s != i => sigs.entry(s).or_default().push(i),
+            _ => roots.push(i),
+        }
+    }
+    // Stable: equal ranks keep the source's order.
+    roots.sort_by_key(|&i| asset_rank(&assets[i].name));
+    // `[` + entries joined by `,` + `]`.
+    let mut used = 2usize;
+    let mut keep = BTreeSet::new();
+    let mut take = |i: usize| {
+        let add = size(i).saturating_add(usize::from(!keep.is_empty()));
+        let fits = used.saturating_add(add) <= ASSETS_MAX;
+        if fits {
+            used += add;
+            keep.insert(i);
+        }
+        fits
+    };
+    for root in roots {
+        // The file first; its signatures only with it.
+        if take(root) {
+            for &sig in sigs.get(&root).into_iter().flatten() {
+                take(sig);
+            }
+        }
+    }
+    keep
+}
+
+/// The entries of `assets` whose index is in `keep`, in order.
+fn select(assets: Vec<ReleaseAsset>, keep: &BTreeSet<usize>) -> Vec<ReleaseAsset> {
     assets
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| keep.contains(i))
+        .map(|(_, a)| a)
+        .collect()
+}
+
+/// The assets of `assets` a release keeps within its 4096-byte `assets` field ([`fit_indices`]:
+/// checksum files and signatures, then the common platform builds), in the source's order.
+pub fn fit_assets(assets: Vec<ReleaseAsset>) -> Vec<ReleaseAsset> {
+    let keep = fit_indices(&assets);
+    select(assets, &keep)
+}
+
+/// The line the importer ends a release's notes with when `omitted` of its `total` assets are
+/// not listed: readers (forge-web) show it as "N more assets not mirrored" with the link.
+/// The release has no field for it on the current contracts; a release asset manifest does
+/// away with the limit (docs/design/release-asset-manifest.md).
+fn assets_footer(omitted: usize, total: usize, source_url: &str) -> String {
+    let link = if source_url.starts_with("https://") {
+        // A `(`, `)` or space would end the markdown link early (and the web's parse of it).
+        let url = source_url
+            .replace('(', "%28")
+            .replace(')', "%29")
+            .replace(|c: char| c.is_whitespace(), "%20");
+        format!(" Download them from the [source release]({url}).")
+    } else {
+        String::new()
+    };
+    format!(
+        "\n\n---\n_forge-import: {omitted} of {total} assets are not mirrored here (a release \
+         lists at most 4,096 bytes of them).{link}_"
+    )
+}
+
+/// `notes` with [`assets_footer`] appended, the notes clipped so both fit the 5120-byte
+/// field. No footer when nothing was omitted.
+pub fn notes_with_footer(notes: &str, omitted: usize, total: usize, source_url: &str) -> String {
+    if omitted == 0 {
+        return notes.to_string();
+    }
+    let footer = assets_footer(omitted, total, source_url);
+    let room = NOTES_MAX.saturating_sub(footer.len());
+    format!("{}{footer}", clip(notes, room, room))
 }
 
 /// `YYYY-MM-DD` of unix seconds, for headers.
@@ -428,5 +594,148 @@ mod tests {
         assert_eq!(oid(&"ab".repeat(20)).unwrap().len(), 20);
         assert!(oid("abcd").is_none());
         assert!(oid("zz").is_none());
+    }
+
+    /// dashpay/dash v22.1.3 as GitHub lists it (21 assets, alphabetical). Stored in order, 16
+    /// fitted and `SHA256SUMS.asc`, the Linux x86-64 and source tarballs and their signatures
+    /// were the ones left out.
+    fn dash_22_1_3() -> Vec<ReleaseAsset> {
+        let names = [
+            "dashcore-22.1.3-aarch64-linux-gnu.tar.gz",
+            "dashcore-22.1.3-aarch64-linux-gnu.tar.gz.asc",
+            "dashcore-22.1.3-arm64-apple-darwin.tar.gz",
+            "dashcore-22.1.3-arm64-apple-darwin.tar.gz.asc",
+            "dashcore-22.1.3-arm64-apple-darwin.zip",
+            "dashcore-22.1.3-arm64-apple-darwin.zip.asc",
+            "dashcore-22.1.3-riscv64-linux-gnu.tar.gz",
+            "dashcore-22.1.3-riscv64-linux-gnu.tar.gz.asc",
+            "dashcore-22.1.3-win64-setup.exe",
+            "dashcore-22.1.3-win64-setup.exe.asc",
+            "dashcore-22.1.3-win64.zip",
+            "dashcore-22.1.3-win64.zip.asc",
+            "dashcore-22.1.3-x86_64-apple-darwin.tar.gz",
+            "dashcore-22.1.3-x86_64-apple-darwin.tar.gz.asc",
+            "dashcore-22.1.3-x86_64-apple-darwin.zip",
+            "dashcore-22.1.3-x86_64-apple-darwin.zip.asc",
+            "dashcore-22.1.3-x86_64-linux-gnu.tar.gz",
+            "dashcore-22.1.3-x86_64-linux-gnu.tar.gz.asc",
+            "dashcore-22.1.3.tar.gz",
+            "dashcore-22.1.3.tar.gz.asc",
+            "SHA256SUMS.asc",
+        ];
+        names
+            .iter()
+            .map(|n| ReleaseAsset {
+                name: (*n).to_string(),
+                sha256: "0".repeat(64),
+                size_bytes: 12_345_678,
+                uris: vec![format!(
+                    "https://github.com/dashpay/dash/releases/download/v22.1.3/{n}"
+                )],
+                uri: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn truncation_keeps_checksums_signatures_and_the_common_builds() {
+        let all = dash_22_1_3();
+        let kept = fit_assets(all.clone());
+        let json = serde_json::to_string(&kept).unwrap();
+        assert!(json.len() <= ASSETS_MAX, "{}", json.len());
+        assert!(kept.len() < all.len(), "the list must not fit whole");
+        let names: Vec<&str> = kept.iter().map(|a| a.name.as_str()).collect();
+        for must in [
+            "SHA256SUMS.asc",
+            "dashcore-22.1.3-x86_64-linux-gnu.tar.gz",
+            "dashcore-22.1.3-x86_64-linux-gnu.tar.gz.asc",
+            "dashcore-22.1.3-win64-setup.exe",
+            "dashcore-22.1.3-win64-setup.exe.asc",
+            "dashcore-22.1.3-arm64-apple-darwin.tar.gz",
+            "dashcore-22.1.3-arm64-apple-darwin.tar.gz.asc",
+            "dashcore-22.1.3-x86_64-apple-darwin.tar.gz",
+            "dashcore-22.1.3-aarch64-linux-gnu.tar.gz",
+        ] {
+            assert!(names.contains(&must), "{must} missing from {names:?}");
+        }
+        // The riscv build goes first (ranked last); the source's order is kept.
+        assert!(!names.contains(&"dashcore-22.1.3-riscv64-linux-gnu.tar.gz"));
+        let pos = |n: &str| all.iter().position(|a| a.name == n).unwrap();
+        assert!(kept.windows(2).all(|w| pos(&w[0].name) < pos(&w[1].name)));
+        // A kept signature always has its file kept.
+        for a in &kept {
+            if let Some(subject) = signed_subject(&a.name) {
+                if all.iter().any(|x| x.name == subject) {
+                    assert!(
+                        names.contains(&subject),
+                        "{} kept without {subject}",
+                        a.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_list_that_fits_is_kept_whole_and_in_order() {
+        let few: Vec<ReleaseAsset> = dash_22_1_3().into_iter().rev().take(5).collect();
+        let names = |v: &[ReleaseAsset]| v.iter().map(|a| a.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&fit_assets(few.clone())), names(&few));
+        assert!(fit_assets(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn asset_ranks_follow_the_documented_priority() {
+        let order = [
+            "SHA256SUMS",
+            "checksums.txt",
+            "tool-1.0-x86_64-unknown-linux-musl.tar.gz",
+            "tool-1.0-x86_64-pc-windows-msvc.zip",
+            "tool-1.0-aarch64-apple-darwin.tar.gz",
+            "tool-1.0-x86_64-apple-darwin.tar.gz",
+            "tool-1.0-aarch64-unknown-linux-gnu.tar.gz",
+            "tool-1.0.tar.gz",
+            "tool-1.0-riscv64-linux-gnu.tar.gz",
+        ];
+        let ranks: Vec<u8> = order.iter().map(|n| asset_rank(n)).collect();
+        assert!(ranks.windows(2).all(|w| w[0] <= w[1]), "{ranks:?}");
+        // Whole tokens only: no platform read into a longer word.
+        assert_eq!(asset_rank("darwinia-1.0.tar.gz"), 6, "not macOS");
+        assert_eq!(asset_rank("armadillo-1.0.zip"), 6, "not an ARM build");
+        assert_eq!(asset_rank("linuxkit-docs.pdf"), 7, "not Linux");
+        assert_eq!(asset_rank("tool-x86-64-linux.tar.gz"), 1);
+        assert_eq!(asset_rank("SHA256SUMS.asc"), 0);
+        // Only Windows x64 ranks as the common Windows build.
+        assert_eq!(asset_rank("tool-1.0-aarch64-pc-windows-msvc.zip"), 7);
+        assert_eq!(asset_rank("tool-1.0-i686-pc-windows-msvc.zip"), 7);
+        assert_eq!(asset_rank("tool-1.0-win32.zip"), 7);
+        assert_eq!(asset_rank("tool-1.0-win64-setup.exe"), 2);
+        assert_eq!(signed_subject("a.tar.gz.asc"), Some("a.tar.gz"));
+        assert_eq!(signed_subject("a.tar.gz"), None);
+    }
+
+    #[test]
+    fn omitted_assets_are_named_in_the_notes_with_the_source_link() {
+        let url = "https://github.com/dashpay/dash/releases/tag/v22.1.3";
+        assert_eq!(notes_with_footer("n", 0, 3, url), "n");
+        let n = notes_with_footer("Release notes", 5, 21, url);
+        assert!(n.starts_with("Release notes\n\n---\n"), "{n}");
+        assert!(n.contains("5 of 21 assets are not mirrored here"), "{n}");
+        assert!(n.contains(&format!("[source release]({url})")), "{n}");
+        // Long notes are clipped so the footer always fits the field.
+        let long = notes_with_footer(&"x".repeat(NOTES_MAX), 1, 2, url);
+        assert!(long.len() <= NOTES_MAX, "{}", long.len());
+        assert!(long.ends_with(")._"), "{long}");
+        // No https source: no link; a URL with parentheses or spaces stays one link.
+        assert!(!notes_with_footer("n", 1, 2, "").contains("source release"));
+        let odd = notes_with_footer("n", 1, 2, "https://example.org/r/v1 (final)");
+        assert!(
+            odd.contains("(https://example.org/r/v1%20%28final%29)"),
+            "{odd}"
+        );
+        // Through `release`: the source URL and the dropped count travel with it.
+        let r = release("v22.1.3", None, Some("n"), dash_22_1_3(), url.into());
+        assert_eq!(r.dropped, 21 - r.assets.len());
+        assert_eq!(r.source_url, url);
     }
 }
