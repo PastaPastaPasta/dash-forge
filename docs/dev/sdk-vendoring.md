@@ -68,15 +68,18 @@ Only when a new Platform tag is also unpublished on npm (check `npm view @dashev
 
 ## API notes for the contract rework (4.2.0-beta.6)
 
-The JS surface between beta.5 and beta.6 is unchanged apart from what the wasm exports: evo-sdk's `dist/*.js` facades are identical, and `@dashevo/wasm-sdk`'s declarations add the following.
+The JS surface between beta.5 and beta.6 is unchanged apart from what the wasm exports: evo-sdk's `dist/*.js` facades are identical, and `@dashevo/wasm-sdk`'s declarations add or change the following.
 
 **Contracts with beta.6 rules parse.** `DataContract.fromJSON(json, true, 14)` accepts the beta.6 `propertyConstraints` grammar: `countOf`, `sumOf`, `ifThen`, `ifThenElse`, `notIn`, `min`/`max`/`abs`, `length`/`byteLength`/`count`, `startsWith`/`endsWith`/`contains`, `$ownerId` and the system times and heights (`$createdAtBlockHeight`, …). beta.5 refuses such a contract, so every client must be on beta.6 before one is registered. `forge-web/lib/sdk/contract-rules-beta6.test.ts` pins this with the state-counts forge-collab draft.
 
+New in beta.6:
+
 - `DataContract#documentTypePropertyConstraints(type: string): DocumentPropertyConstraint[]`: each rule's `name`, `rule`, `reads`, `readsOwner`, `readsSystem`, `readsTotals` (`{ kind: 'countOf' | 'sumOf', documentType, property?, filter: string[] }`).
 - `DataContract#checkDocumentPropertyConstraints(document: Document): DocumentPropertyConstraintViolation | undefined` evaluates locally with consensus's code. It does not judge rules that read a block height or a `countOf`/`sumOf` total.
-- `DocumentPropertyConstraintErrorCode.DocumentPropertyConstraintViolated = 10422`.
 
-**Errors carry their consensus code (platform#5112).** A refusal at the broadcast check now arrives as a `WasmSdkError` of kind `Protocol` *with* the node's numeric `code`, which used to be -1. A block's verdict from a result wait stays kind `StateTransitionBroadcastError`. forge-web's `asConsensusRefusal` (`lib/sdk/write.ts`) treats only the latter as charged. The text patterns remain as a fallback and for the figures (budget, balance) that only the text holds. platform#5053 also restored the node's order of `BasicError`, so the beta.5-only remap of decoded codes (`consensus-shift.ts`) is gone.
+Not new: `DocumentPropertyConstraintErrorCode.DocumentPropertyConstraintViolated = 10422` (a rule broken) is in beta.5 too; beta.6 only widens what a rule can say.
+
+**Errors carry their consensus code (platform#5112).** A refusal at the broadcast check used to arrive as a `WasmSdkError` of kind `Generic` with `code` -1; it now arrives as kind `Protocol` *with* the node's numeric `code`. A block's verdict from a result wait stays kind `StateTransitionBroadcastError`. forge-web's `asConsensusRefusal` (`lib/sdk/write.ts`) reads the charge from the kind: `StateTransitionBroadcastError` charged, `Protocol` not charged, any other kind unknown (no "nothing was charged" claim). Call sites that know where the error came from override it: a broadcast's own catch is never charged, and the result wait's verdict is charged unless the SDK could not decode it (then unknown). A stale document id (10405) now carries its code too and is still re-prepared before any refusal decode. The text patterns remain as a fallback and for the figures (budget, balance) that only the text holds. platform#5053 also restored the node's order of `BasicError`, so the beta.5-only remap of decoded codes (`consensus-shift.ts`) is gone.
 
 **Aggregate reads.** The evo-sdk facade names these; wasm-sdk's `getDocumentsCount`/`getDocumentsSum`/`getDocumentsAverage` (and `…WithProofInfo`) sit behind them:
 
@@ -90,11 +93,11 @@ sdk.documents.averageWithProof(query: DocumentsQuery, averageProperty: string): 
 sdk.documents.ranked(query: DocumentsRankedQuery): Promise<DocumentsRankedResult>
 ```
 
-`DocumentsQuery` is `{ dataContractId, documentTypeName, where?, orderBy?, limit?, startAfter?, startAt?, groupBy?: string[], timeRange?: {...}[] }`, and `where` clauses are `[field, op, value]` with `op` one of `==`, `>`, `>=`, `<`, `<=`, `in`, `startsWith` (and their capitalized aliases). Grouping:
+`DocumentsQuery` is `{ dataContractId, documentTypeName, where?, orderBy?, limit?, startAfter?, startAt?, groupBy?: string[], timeRange?: {...}[] }`, and `where` clauses are `[field, op, value]` with `op` (`DocumentWhereOperator`) one of `==`, `=`, `>`, `>=`, `<`, `<=`, `between`/`Between`, `BetweenExcludeBounds`, `BetweenExcludeLeft`, `BetweenExcludeRight`, `in`/`In`, `startsWith`/`StartsWith`. Only `between`, `in` and `startsWith` have capitalized aliases; the three `BetweenExclude*` exist only capitalized. Grouping:
 
 - `groupBy` omitted or `[]`: one entry keyed `''` with the total;
 - `groupBy: ['<field>']` where `<field>` carries an `in` clause: one entry per `in` value (PerInValue);
 - `groupBy: ['<field>']` on a range clause: one entry per distinct value in the range (RangeDistinct);
 - `groupBy: ['<inField>', '<rangeField>']`: compound entries.
 
-The first `orderBy` clause sets the entry order. A count needs a `countable`/`rangeCountable` index covering the `==`/`in` clauses, and a sum needs a summable index (Platform book, `drive/document-count-trees.md`). These signatures are the same in beta.5; what beta.6 adds is the contract grammar that lets rules read the same totals (`countOf`/`sumOf`) at write time.
+The first `orderBy` clause sets the entry order. A count needs a `countable` index whose properties the `==`/`in` clauses cover (Platform book, `drive/document-count-trees.md`); a count over a range, or one entry per distinct value in a range, needs `rangeCountable` on that index. A sum needs `summable` naming the property on the index, and `rangeSummable` for a range (book, `contract-keywords/aggregates.md`). These signatures are the same in beta.5; what beta.6 adds is the contract grammar that lets rules read the same totals (`countOf`/`sumOf`) at write time.

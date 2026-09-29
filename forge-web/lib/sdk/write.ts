@@ -603,18 +603,25 @@ function consensusCodeOf(e: unknown): number | null {
 }
 
 /**
- * Whether a coded wasm error is the SDK's `Protocol` kind: a consensus error the node sent at
- * the broadcast check (CheckTx), or one the SDK caught before sending. Neither reached a block,
- * so neither was charged. A block's verdict comes from the result wait as the
- * `StateTransitionBroadcastError` kind (wasm-sdk 4.2.0-beta.6, `WasmSdkError::with_context`
- * keeps the kind of the error it wraps, platform#5112).
+ * Whether a refusal the SDK threw was charged, by the error's kind (wasm-sdk 4.2.0-beta.6,
+ * platform#5112; `WasmSdkError::with_context` keeps the kind of the error it wraps):
+ * - `StateTransitionBroadcastError`: the result wait's verdict on a transition in a block,
+ *   which pays its processing fee (unless Drive leaves that refusal unpaid): `true`;
+ * - `Protocol`: a consensus error the node sent at the broadcast check (CheckTx), or one the
+ *   SDK caught before sending; neither reached a block: `false`;
+ * - anything else, or no kind: not known, `null` (no "nothing was charged" claim).
+ * Call sites that know where the error came from override this (a broadcast's catch, the wait).
  */
-function isProtocolKind(e: unknown): boolean {
+function chargedByKind(e: unknown): boolean | null {
+  let name: unknown
   try {
-    return (e as { name?: unknown }).name === 'Protocol'
+    name = (e as { name?: unknown } | null)?.name
   } catch {
-    return false
+    return null
   }
+  if (name === 'StateTransitionBroadcastError') return true
+  if (name === 'Protocol') return false
+  return null
 }
 
 function figuresOf(groups: Record<string, string> | undefined): RefusalFigures {
@@ -628,16 +635,17 @@ function figuresOf(groups: Record<string, string> | undefined): RefusalFigures {
 /**
  * The consensus refusal `e` is, or null when it is transport noise or unclassified.
  *
- * Where it came from sets `charged`: a code on the SDK's `StateTransitionBroadcastError` is the
- * transition's verdict in a block (a result wait); a `Protocol` error, coded or not, is a
- * refusal at the broadcast check (CheckTx) or before sending, where nothing is charged
- * (measured live on moutai: a refused write leaves the balance unchanged).
+ * Where it came from sets `charged` ({@link chargedByKind}): the SDK's
+ * `StateTransitionBroadcastError` is the transition's verdict in a block; a `Protocol` error is
+ * a refusal at the broadcast check (CheckTx) or before sending, where nothing is charged
+ * (measured live on moutai: a refused write leaves the balance unchanged); another kind is
+ * unknown.
  */
 export function asConsensusRefusal(e: unknown): ConsensusRefusal | null {
   if (e instanceof ConsensusRefusal) return e
   const message = errorMessage(e)
   const code = consensusCodeOf(e)
-  const charged = code !== null && !isProtocolKind(e)
+  const charged = chargedByKind(e)
   for (const [patternCode, re] of REFUSAL_PATTERNS) {
     if (code !== null && code !== patternCode) continue
     const m = re.exec(message)
@@ -689,8 +697,11 @@ async function awaitOutcome(sdk: EvoSDK, st: StateTransition, indexOnly: boolean
     // A nonce answer is settled by reading the chain (the caller's `settleUnanswered`).
     const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
     // The result wait answers with the transition's verdict in a block, whatever shape the
-    // error takes: charged (unless Drive leaves that refusal unpaid).
-    if (refusal !== null) throw new ConsensusRefusal(refusal.code, refusal.message, refusal.figures, true)
+    // error takes: charged (unless Drive leaves that refusal unpaid). A verdict the SDK could
+    // not decode has no code to tell an unpaid refusal by: its charge is unknown.
+    if (refusal !== null) {
+      throw new ConsensusRefusal(refusal.code, refusal.message, refusal.figures, refusal.code === UNREADABLE_REFUSAL_CODE ? null : true)
+    }
     return 'unknown'
   } finally {
     clearTimeout(timer)
@@ -1281,14 +1292,16 @@ async function createDocumentUnlocked(
           signed = await build(pinnedNonce ?? undefined)
           continue
         }
-        // A nonce taken on a retry: settle it by reading the chain, like a lost answer below.
-        // Refused at the broadcast check (CheckTx): nothing ran, nothing was charged (D-007).
-        const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
-        if (refusal) await refused(refusal, signed.documentId, false)
+        // A nonce taken on a retry: settle it by reading the chain, like a lost answer below. A
+        // stale id on the second attempt as well is thrown as it is, before the refusal decode
+        // (from beta.6 it carries its code, 10405, and would otherwise read as a plain refusal).
         if (isNonceUsedError(e) || isStaleDocumentIdError(e)) {
           clearPendingST(cacheKey)
           throw e
         }
+        // Refused at the broadcast check (CheckTx): nothing ran, nothing was charged (D-007).
+        const refusal = asConsensusRefusal(e)
+        if (refusal) await refused(refusal, signed.documentId, false)
         // Unclassified (a timeout, a dropped connection): the node may have taken the bytes and
         // lost the answer. Keep them cached and poll; unseen, the next retry rebroadcasts the
         // same bytes instead of signing a second document.
@@ -1343,10 +1356,14 @@ async function pollUntil(check: () => Promise<boolean>, timeoutMs: number): Prom
   }
 }
 
+/** The consensus code of a document transition id derived at another protocol version. */
+const STALE_DOCUMENT_ID_CODE = 10405
+
 /** Consensus refused a create because its id was derived at another protocol version. */
 export function isStaleDocumentIdError(e: unknown): boolean {
+  if (consensusCodeOf(e) === STALE_DOCUMENT_ID_CODE) return true
   const m = errorMessage(e).toLowerCase()
-  return m.includes('invalid document transition id') || m.includes('10405')
+  return m.includes('invalid document transition id') || m.includes(String(STALE_DOCUMENT_ID_CODE))
 }
 
 /**

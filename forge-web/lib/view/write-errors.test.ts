@@ -1,7 +1,9 @@
 /**
- * Refusal decoding and routing (D-007, D-042). The messages are the ones evo-sdk 4.2.0-beta.4
- * threw on moutai (2026-09-27): a refusal at broadcast arrives as a `WasmSdkError` of kind
- * Generic with `code: -1` and Drive's text, so the text is what identifies it.
+ * Refusal decoding and routing (D-007, D-042). The texts are Drive's (first recorded from evo-sdk
+ * 4.2.0-beta.4 on moutai, 2026-09-27). From wasm-sdk 4.2.0-beta.6 (platform#5112) a refusal at
+ * broadcast arrives as a `WasmSdkError` of kind Protocol carrying the node's code, and a block's
+ * verdict from the result wait as kind StateTransitionBroadcastError. An error without a code
+ * (-1: one the SDK could not decode, or one from an older SDK) is still identified by its text.
  */
 
 import { describe, expect, it } from 'vitest'
@@ -9,8 +11,15 @@ import { describe, expect, it } from 'vitest'
 import { BusyWriteError, ConsensusRefusal, KeyUnusableError, SupersededWriteError, UnconfirmedWriteError, asConsensusRefusal } from '../sdk/write'
 import { writeFailure } from './write-errors'
 
-/** A wasm error as the SDK throws it: a plain object, `code` -1, the text in `message`. */
-const wasm = (message: string, code = -1) => ({ name: 'Generic', kind: 18, code, message, isRetriable: false })
+/**
+ * A wasm error as the SDK throws it: a plain object with the text in `message`. With `code` -1 it
+ * is an uncoded refusal at the broadcast check (kind Protocol); a code makes it the result
+ * wait's verdict in a block (kind StateTransitionBroadcastError).
+ */
+const wasm = (message: string, code = -1) =>
+  code === -1
+    ? { name: 'Protocol', kind: 3, code, message, isRetriable: false }
+    : { name: 'StateTransitionBroadcastError', kind: 22, code, message, isRetriable: false }
 
 const BUDGET =
   'Failed to broadcast: Protocol error: Identity 9sBGBgYZHgGDbwQyDsMvugXXYUsxgrXmZfpCXwyRgYCB public key 5 has 1000000 credits of budget left, the state transition requires 48654000'
@@ -57,6 +66,13 @@ describe('asConsensusRefusal decodes the SDK text (D-007)', () => {
     expect(asConsensusRefusal(wasm(BUDGET))?.charged).toBe(false)
     expect(asConsensusRefusal(wasm('Protocol error: referenced document Xyz not found for path repoId'))?.feeCharged).toBe(false)
     expect(asConsensusRefusal(wasm('gate', 40120))?.feeCharged).toBe(true)
+  })
+  it('does not know the charge of an error of another kind, and does not claim one', () => {
+    const generic = { name: 'Generic', kind: 18, code: 40120, message: 'referenced document Xyz not found for path repoId' }
+    expect(asConsensusRefusal(generic)?.charged).toBeNull()
+    expect(asConsensusRefusal(generic)?.feeCharged).toBeNull()
+    expect(writeFailure(asConsensusRefusal(generic)).message).not.toMatch(/Nothing was charged/)
+    expect(asConsensusRefusal(new Error('Protocol error: referenced document Xyz not found for path repoId'))?.charged).toBeNull()
   })
 })
 
