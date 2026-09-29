@@ -19,6 +19,8 @@
   "expected": {
     "action": "create",
     "startedAt": 1000,
-    "completedAt": 1000
+    "completedAt": 1000,
+    "conclusion": "success",
+    "externalId": null
   }
 }

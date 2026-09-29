@@ -1,207 +1,195 @@
 {
-  "name": "issue_moves_by_member",
-  "description": "Every issue action from every state code, by a member (asAuthor 0): only close from 0 and reopen from 1 are legal.",
+  "name": "pr_moves_by_other",
+  "description": "Anyone who is neither a member nor the PR author: no move at all.",
   "case": "transition_moves",
   "rules": "v2",
   "input": {
     "cases": [
       {
-        "target": "issue",
+        "target": "patch",
         "code": 0,
         "action": "close",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 0,
         "action": "reopen",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 0,
         "action": "merge",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 0,
         "action": "draft",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 0,
         "action": "ready",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 1,
         "action": "close",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 1,
         "action": "reopen",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 1,
         "action": "merge",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 1,
         "action": "draft",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 1,
         "action": "ready",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 2,
         "action": "close",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 2,
         "action": "reopen",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 2,
         "action": "merge",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 2,
         "action": "draft",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 2,
         "action": "ready",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 8,
         "action": "close",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 8,
         "action": "reopen",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 8,
         "action": "merge",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 8,
         "action": "draft",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 8,
         "action": "ready",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 9,
         "action": "close",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 9,
         "action": "reopen",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 9,
         "action": "merge",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 9,
         "action": "draft",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       },
       {
-        "target": "issue",
+        "target": "patch",
         "code": 9,
         "action": "ready",
-        "actor": "member",
+        "actor": "other",
         "targetNumber": 7
       }
     ]
   },
   "expected": [
-    {
-      "kind": 1,
-      "delta": 1,
-      "targetKind": 0,
-      "asAuthor": 0,
-      "after": 1
-    },
     null,
     null,
     null,
     null,
     null,
-    {
-      "kind": 2,
-      "delta": -1,
-      "targetKind": 0,
-      "asAuthor": 0,
-      "after": 0
-    },
+    null,
+    null,
     null,
     null,
     null,

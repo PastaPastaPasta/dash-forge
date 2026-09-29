@@ -1,0 +1,28 @@
+{
+  "name": "external_id_changed_is_a_rerun",
+  "description": "A report naming another externalId (immutable once set) is a different run: a new document.",
+  "case": "check_run_write",
+  "rules": "v2",
+  "input": {
+    "stored": {
+      "status": "in_progress",
+      "startedAt": 100,
+      "completedAt": null,
+      "conclusion": null,
+      "externalId": "gh-1"
+    },
+    "report": {
+      "status": "in_progress",
+      "conclusion": null,
+      "externalId": "gh-2"
+    },
+    "now": 1000
+  },
+  "expected": {
+    "action": "create",
+    "startedAt": 1000,
+    "completedAt": null,
+    "conclusion": null,
+    "externalId": "gh-2"
+  }
+}

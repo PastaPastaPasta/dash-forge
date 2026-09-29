@@ -50,8 +50,8 @@ pub use super::review::{
 };
 pub use super::transition::{
     delta_of, dense_number, merge_transition, names_dense_rule, next_transition, repo_counts,
-    state_code, status_of_code, RepoCounts, StateAction, StateStatus, Transition, TransitionMove,
-    TransitionTarget, DENSE_RULE, TRANSITION_KINDS,
+    state_code, status_of_code, Actor, RepoCounts, StateAction, StateStatus, Transition,
+    TransitionMove, TransitionTarget, DENSE_RULE, TRANSITION_KINDS,
 };
 
 use serde::{Deserialize, Serialize};
@@ -179,6 +179,10 @@ pub fn issue_state_v2(state_code: i64, events: &[Event]) -> IssueState {
 /// transition's `oid` when the reader has it; [`PrState::merge_on_base`] then says whether it
 /// was a valid tip of the base (`is_ancestor(oid, base_tip)`, the historical-tips predicate).
 /// A merge that fails it is still merged and is labelled "merge commit not found on the base".
+///
+/// A reader that has not loaded the base ref's history must pass `merge_oid = None` (the answer
+/// is then "unknown", `None`), never a `base_tip` of `None` with an oid: that reads as "the base
+/// has no tip", so the merge would be labelled not found.
 #[must_use]
 pub fn pr_state_v2(
     state_code: i64,
@@ -195,6 +199,8 @@ pub fn pr_state_v2(
     state.open = status.open;
     state.merged = status.merged;
     state.draft = status.draft;
+    // An empty oid is "not known", as in the TS port.
+    let merge_oid = merge_oid.filter(|o| !o.is_empty());
     state.merge_on_base = match (status.merged, merge_oid, base_tip) {
         (false, _, _) | (true, None, _) => None,
         (true, Some(_), None) => Some(false),

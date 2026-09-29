@@ -172,6 +172,8 @@ pub fn wrap_envelope(
         updated_at_core_block_height: None,
         transferred_at_core_block_height: None,
         creator_id: None,
+        moderated_at: None,
+        moderated_by: None,
         contract_version: None,
     });
     let env = EncryptedPropertyEnvelope::read(dt, PROPERTY, &doc)

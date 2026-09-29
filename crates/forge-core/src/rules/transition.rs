@@ -116,6 +116,18 @@ pub enum StateAction {
     Ready,
 }
 
+/// Who asks for a state change, as the contract's `ownerRefersTo` operands see them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Actor {
+    /// A current maintainer or writer (admitted by the membership operands, `asAuthor` 0).
+    Member,
+    /// The target's author who is not a member (admitted by the author operands).
+    Author,
+    /// Anyone else: no operand admits them.
+    Other,
+}
+
 /// The fields of the `transition` document a client writes (besides `repoId`, `targetId`,
 /// `targetNumber` and, for a merge, `oid`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,8 +146,8 @@ pub struct TransitionMove {
     pub after: i64,
 }
 
-/// The move that carries out `action` on a `target` whose state code is `code`, written by a
-/// member (`member`) or by the target's author; `None` when consensus would refuse it: an
+/// The move that carries out `action` on a `target` whose state code is `code`, written by
+/// `actor`; `None` when consensus would refuse it: a writer no operand admits (40120), an
 /// illegal move from this state (`c1`…`c5`), or a merge by a non-member (`f_authorNoMerge`).
 ///
 /// A member writes `asAuthor = 0`; an author who is not a member writes the target's
@@ -145,10 +157,15 @@ pub fn next_transition(
     target: TransitionTarget,
     code: i64,
     action: StateAction,
-    member: bool,
+    actor: Actor,
     target_number: u32,
 ) -> Option<TransitionMove> {
     use StateAction::{Close, Draft, Merge, Ready, Reopen};
+    let member = match actor {
+        Actor::Member => true,
+        Actor::Author => false,
+        Actor::Other => return None,
+    };
     let kind = match (target, action, code) {
         (TransitionTarget::Issue, Close, 0) => ISSUE_CLOSE,
         (TransitionTarget::Issue, Reopen, 1) => ISSUE_REOPEN,
@@ -260,11 +277,11 @@ pub fn repo_counts(issues: u64, patches: u64, kinds: &BTreeMap<u8, u64>) -> Repo
     let ready_closed = c(PR_CLOSE).saturating_sub(c(PR_REOPEN));
     let draft_closed = c(PR_DRAFT_CLOSE).saturating_sub(c(PR_DRAFT_REOPEN));
     let prs_merged = c(PR_MERGE);
-    let prs_closed = ready_closed + draft_closed;
+    let prs_closed = ready_closed.saturating_add(draft_closed);
     RepoCounts {
         issues_open: issues.saturating_sub(issues_closed),
         issues_closed,
-        prs_open: patches.saturating_sub(prs_merged + prs_closed),
+        prs_open: patches.saturating_sub(prs_merged.saturating_add(prs_closed)),
         prs_closed,
         prs_merged,
         prs_draft: c(PR_DRAFT)
@@ -319,7 +336,7 @@ mod tests {
         for target in [TransitionTarget::Issue, TransitionTarget::Patch] {
             for code in codes {
                 for a in actions {
-                    if let Some(m) = next_transition(target, code, a, true, 5) {
+                    if let Some(m) = next_transition(target, code, a, Actor::Member, 5) {
                         assert!(codes.contains(&m.after), "{target:?} {code} {a:?}");
                         assert_eq!(m.kind / 10, target.code());
                         assert_eq!(m.as_author, 0);
@@ -339,7 +356,7 @@ mod tests {
             StateAction::Ready,
         ] {
             assert_eq!(
-                next_transition(TransitionTarget::Patch, 2, a, true, 1),
+                next_transition(TransitionTarget::Patch, 2, a, Actor::Member, 1),
                 None
             );
         }

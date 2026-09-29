@@ -1,6 +1,6 @@
 // Register the forge-v2 contract pair (forge-core + forge-collab) in one PV14 contract group.
 //
-//   (cd forge-contracts/sdk-v2 && npm ci)           # @dashevo/evo-sdk@4.2.0-beta.5, pinned
+//   (cd forge-contracts/sdk-v2 && npm ci)           # @dashevo/evo-sdk@4.2.0-beta.7, pinned
 //   node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
 //        --network devnet --devnet-name moutai [--addresses https://ip:1443,...] [--dry-run]
 //        [--only collab] [--force-new [--same-group]] [--update core]
@@ -78,7 +78,7 @@ const GROUP = { name: 'dash-forge', description: 'Dash Forge v2: forge-core and 
 const PUT_SETTINGS = { connectTimeoutMs: 10000, timeoutMs: 90000, retries: 3 };
 const CREDITS_PER_DASH = 1e11;
 const DEFAULT_ADDRESSES = {
-  // devnet moutai (protocol 14, drive 4.2.0-beta.5; chain reset 2026-09-27)
+  // devnet moutai (protocol 14, drive 4.2.0-beta.6; chain reset 2026-09-28)
   moutai: [254, 207, 192, 194, 195, 196, 253, 198, 199, 84].map((o) => `https://68.67.122.${o}:1443`),
 };
 
@@ -548,7 +548,7 @@ async function main() {
     v2.contractGroupId = groupIdFinal;
     v2.contractGroup = { id: groupIdFinal, name: GROUP.name, owner: ownerId, verifiedAt: new Date().toISOString() };
     v2.protocolVersion = PROTOCOL_VERSION;
-    v2.sdk = '@dashevo/evo-sdk@4.2.0-beta.5';
+    v2.sdk = '@dashevo/evo-sdk@4.2.0-beta.7';
     if (devnetName) v2.devnet = { name: devnetName, addresses: addresses ?? null };
     record();
     log(`contract group ${groupIdFinal} verified: owner ${ownerId}, both contracts enrolled`);

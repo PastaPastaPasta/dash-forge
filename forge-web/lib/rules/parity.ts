@@ -318,6 +318,7 @@ export interface StoredRun {
   readonly startedAt?: number | null
   readonly completedAt?: number | null
   readonly conclusion?: string | null
+  readonly externalId?: string | null
 }
 
 /** What a reporter says now. */
@@ -326,30 +327,46 @@ export interface RunReport {
   readonly conclusion?: string | null
   readonly startedAt?: number | null
   readonly completedAt?: number | null
+  readonly externalId?: string | null
 }
 
-/** The write a report makes; on a replace only a time the stored run lacks is set (null keeps it). */
+/** The write a report makes; on a replace only a field the stored run lacks is set (null keeps it). */
 export interface RunWrite {
   readonly action: 'create' | 'replace'
   readonly startedAt: number | null
   readonly completedAt: number | null
+  readonly conclusion: string | null
+  readonly externalId: string | null
 }
 
-const STATUS_RANK: Readonly<Record<string, number>> = { queued: 0, in_progress: 1, completed: 2 }
+const STATUS_RANK: ReadonlyMap<string, number> = new Map([
+  ['queued', 0],
+  ['in_progress', 1],
+  ['completed', 2],
+])
+
+/** Whether `stored` can take the report as a replace (parity: forge-core `continues`). */
+function continues(stored: StoredRun, report: RunReport, rank: number): boolean {
+  const held = STATUS_RANK.get(stored.status)
+  if (held === undefined) return false
+  const sameRun = stored.externalId == null || report.externalId == null || stored.externalId === report.externalId
+  const conclusionKept = stored.conclusion == null || stored.conclusion === (report.conclusion ?? null)
+  return sameRun && rank >= held && conclusionKept
+}
 
 /**
  * The write that records `report` against `stored` at `nowMs`, so the forge-community `checkRun`
- * rules hold (D-5): `startedAt` on the first non-queued report, `completedAt` on the first
- * completed one (the CI's own time when given, never before the start), a stored time never
- * changed or dropped, and a backwards move or a changed conclusion is a new run. Null for an
- * unknown status. Parity: forge-core `check_run_write`.
+ * rules hold (D-5): a conclusion with `completed` and only with it; `startedAt` on the first
+ * non-queued report, `completedAt` on the first completed one (the CI's own time when given,
+ * never before the start); a stored time, conclusion or `externalId` never changed or dropped;
+ * a backwards move, a changed conclusion or another `externalId` is a new run. Null when
+ * consensus would refuse the report whatever is stored. Parity: forge-core `check_run_write`.
  */
 export function checkRunWrite(stored: StoredRun | null, report: RunReport, nowMs: number): RunWrite | null {
-  const rank = STATUS_RANK[report.status]
+  const rank = STATUS_RANK.get(report.status)
   if (rank === undefined) return null
-  const held = stored === null ? undefined : STATUS_RANK[stored.status]
-  const keeps =
-    stored !== null && held !== undefined && rank >= held && !(held === 2 && stored.conclusion != null && stored.conclusion !== (report.conclusion ?? null))
+  if ((rank === 2) !== (report.conclusion != null)) return null
+  const keeps = stored !== null && continues(stored, report, rank)
   const heldStart = keeps ? stored.startedAt ?? null : null
   const heldEnd = keeps ? stored.completedAt ?? null : null
   const start = heldStart ?? (rank >= 1 ? report.startedAt ?? nowMs : null)
@@ -358,9 +375,12 @@ export function checkRunWrite(stored: StoredRun | null, report: RunReport, nowMs
     const e = report.completedAt ?? nowMs
     end = start === null ? e : Math.max(e, start)
   }
+  const unset = (held: string | null | undefined, given: string | null | undefined): string | null => (keeps && held != null ? null : given ?? null)
   return {
     action: keeps ? 'replace' : 'create',
     startedAt: heldStart !== null ? null : start,
     completedAt: heldEnd !== null ? null : end,
+    conclusion: unset(stored?.conclusion, report.conclusion),
+    externalId: unset(stored?.externalId, report.externalId),
   }
 }

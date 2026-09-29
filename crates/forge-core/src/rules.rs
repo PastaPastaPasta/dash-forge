@@ -896,7 +896,6 @@ pub struct PrState {
     /// Merged PRs only, when the reader has the merge's `oid`: whether it was a valid tip of the
     /// base (`true`), or not (`false`: shown as "merge commit not found on the base"). `None`
     /// when not merged or the oid is not known.
-    #[serde(default)]
     pub merge_on_base: Option<bool>,
 }
 
@@ -1474,7 +1473,7 @@ mod tests {
         target: v2::TransitionTarget,
         code: i64,
         action: v2::StateAction,
-        member: bool,
+        actor: v2::Actor,
         target_number: u32,
     }
 
@@ -1832,8 +1831,6 @@ mod tests {
         }
     }
 
-    /// The transition, count and numbering cases (`transition__*`, `dense_number__*`,
-    /// `upstream_number__*`).
     #[derive(Deserialize, Serialize)]
     #[serde(deny_unknown_fields)]
     struct Codes {
@@ -1861,12 +1858,14 @@ mod tests {
 
     #[derive(Deserialize, Serialize)]
     #[serde(deny_unknown_fields)]
-    struct Input {
+    struct CheckRunWriteInput {
         stored: Option<v2::StoredRun>,
         report: v2::RunReport,
         now: u64,
     }
 
+    /// The transition, count, numbering and check-run cases (`transition__*`, `dense_number__*`,
+    /// `upstream_number__*`, `check_run_write__*`).
     fn run_transition_case(v: &Vector) {
         let ctx = &v.name;
         match v.case.as_str() {
@@ -1876,7 +1875,7 @@ mod tests {
                     .cases
                     .iter()
                     .map(|c| {
-                        v2::next_transition(c.target, c.code, c.action, c.member, c.target_number)
+                        v2::next_transition(c.target, c.code, c.action, c.actor, c.target_number)
                     })
                     .collect();
                 assert_eq!(
@@ -1940,7 +1939,7 @@ mod tests {
                 assert_eq!(got, expected::<Option<u32>>(v), "vector `{ctx}`");
             }
             "check_run_write" => {
-                let inp: Input = input(v);
+                let inp: CheckRunWriteInput = input(v);
                 let got = v2::check_run_write(inp.stored.as_ref(), &inp.report, inp.now);
                 assert_eq!(got, expected::<Option<v2::RunWrite>>(v), "vector `{ctx}`");
             }

@@ -1,6 +1,6 @@
 {
-  "name": "in_progress_to_completed",
-  "description": "In progress to completed: a replace that sets completedAt and the conclusion; the stored startedAt stays.",
+  "name": "external_id_kept",
+  "description": "A report naming the stored externalId continues that run; the id is not written again.",
   "case": "check_run_write",
   "rules": "v2",
   "input": {
@@ -8,11 +8,13 @@
       "status": "in_progress",
       "startedAt": 100,
       "completedAt": null,
-      "conclusion": null
+      "conclusion": null,
+      "externalId": "gh-1"
     },
     "report": {
       "status": "completed",
-      "conclusion": "failure"
+      "conclusion": "success",
+      "externalId": "gh-1"
     },
     "now": 1000
   },
@@ -20,7 +22,7 @@
     "action": "replace",
     "startedAt": null,
     "completedAt": 1000,
-    "conclusion": "failure",
+    "conclusion": "success",
     "externalId": null
   }
 }
