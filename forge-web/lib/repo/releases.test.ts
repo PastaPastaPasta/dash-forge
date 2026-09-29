@@ -41,21 +41,22 @@ describe('parseReleaseAssets', () => {
   })
 })
 
+const rel = (tag: string, at: number, id: string): ReleaseView => ({
+  id,
+  tagName: tag,
+  name: '',
+  notes: '',
+  yanked: false,
+  assets: [],
+  badAssets: 0,
+  notesBody: '',
+  omitted: null,
+  published: null,
+  publisher: 'p',
+  createdAt: at,
+})
+
 describe('newestPerTag', () => {
-  const rel = (tag: string, at: number, id: string): ReleaseView => ({
-    id,
-    tagName: tag,
-    name: '',
-    notes: '',
-    yanked: false,
-    assets: [],
-    badAssets: 0,
-    notesBody: '',
-    omitted: null,
-    published: null,
-    publisher: 'p',
-    createdAt: at,
-  })
   it('keeps the newest revision per tag and lists the rest as previous', () => {
     const { current, previous } = newestPerTag([rel('v1', 1, 'a'), rel('v1', 3, 'b'), rel('v2', 2, 'c'), rel('v1', 3, 'd')])
     expect(current.map((r) => r.id)).toEqual(['c', 'd'])
@@ -118,20 +119,7 @@ describe('compareTagNames', () => {
   // running releaseOrder, not by asserting a second hand-copied expectation.
   it('agrees with releaseOrder on a mixed real-world tag set with no version ties', () => {
     const tags = ['v24.0.0-rc.1', 'v23.1.2', 'v23.1.10', 'v24.0.0-rc.10', 'v0.9.13.15', 'nightly', 'jq-1.7.1']
-    const releases: ReleaseView[] = tags.map((tag, i) => ({
-      id: tag,
-      tagName: tag,
-      name: '',
-      notes: '',
-      yanked: false,
-      assets: [],
-      badAssets: 0,
-      notesBody: '',
-      omitted: null,
-      published: null,
-      publisher: 'p',
-      createdAt: i + 1,
-    }))
+    const releases: ReleaseView[] = tags.map((t, i) => rel(t, i + 1, t))
     const byCompareTagNames = [...tags].sort(compareTagNames)
     const byReleaseOrder = [...releases].sort(releaseOrder).map((r) => r.tagName)
     expect(byCompareTagNames).toEqual(byReleaseOrder)

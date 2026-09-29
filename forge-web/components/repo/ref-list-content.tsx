@@ -66,13 +66,11 @@ export function RefListContent({
     // Natural order (digit runs as numbers), not localeCompare: "branch-9" belongs before
     // "branch-10", and it matches the tags page's Version mode closely enough that switching
     // between the two sort modes doesn't reshuffle unrelated names.
-    const byName = (a: ResolvedRef, b: ResolvedRef): number => naturalRuns(short(a), short(b))
-    const byVersion = (a: ResolvedRef, b: ResolvedRef): number => compareTagNames(short(a), short(b))
-    const order = sort === 'version' ? byVersion : byName
+    const compareNames = sort === 'version' ? compareTagNames : naturalRuns
     const comparator = (a: ResolvedRef, b: ResolvedRef): number => {
       if (a.refName === defaultRefName) return -1
       if (b.refName === defaultRefName) return 1
-      return order(a, b)
+      return compareNames(short(a), short(b))
     }
     const shown = refs.filter((r) => matchesRefQuery(short(r), query)).sort(comparator)
     return { live: shown.filter(isLive), deleted: shown.filter((r) => !isLive(r)) }
@@ -149,10 +147,13 @@ export function RefListContent({
           })}
         </div>
       ) : query.trim() !== '' ? (
-        <EmptyState icon={Icon} title={`No ${kind} match`} body={`No ${kind} match "${query}". Clear the search to see them all.`} />
+        // "Active" because a query that matches nothing live can still match a deleted ref,
+        // which then shows up in the disclosure below — this message must not read as "no
+        // matches anywhere".
+        <EmptyState icon={Icon} title={`No active ${kind} match`} body={`No active ${single} matches "${query}". Clear the search to see them all.`} />
       ) : (
-        // Only reachable with an empty query: every live ref was filtered out by the search
-        // above, not (necessarily) by deletion, so "every X was deleted" would be misleading.
+        // Only reachable with an empty query, so nothing was filtered out here: every live ref
+        // really has been deleted, and "every X was deleted" is the correct message.
         <EmptyState
           icon={Icon}
           title={`No active ${kind}`}

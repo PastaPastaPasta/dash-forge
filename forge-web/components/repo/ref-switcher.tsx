@@ -107,11 +107,12 @@ export function RefSwitcher({
   const close = (): void => setOpen(false)
 
   // Scroll the keyboard-highlighted row into view as it moves past the popover's visible edge.
+  // Inlines the id (rather than calling optionId, which is recreated every render) so the
+  // exhaustive-deps list is accurate with no eslint-disable needed.
   useEffect(() => {
     if (!open) return
-    document.getElementById(optionId(active))?.scrollIntoView({ block: 'nearest' })
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- optionId is a stable closure over uid
-  }, [open, active])
+    document.getElementById(`${uid}-option-${active}`)?.scrollIntoView({ block: 'nearest' })
+  }, [open, active, uid])
 
   const onKeyDown = (e: React.KeyboardEvent): void => {
     switch (e.key) {
@@ -132,8 +133,10 @@ export function RefSwitcher({
         // Ignore an Enter that's confirming an IME composition (e.g. picking a candidate while
         // typing Japanese/Chinese/Korean), not choosing a ref. A mouse click on the <Link>
         // navigates on its own (only the popover needs closing); Enter here has no href to
-        // follow, so it navigates itself.
-        if (e.nativeEvent.isComposing) return
+        // follow, so it navigates itself. Safari can report isComposing === false on the very
+        // Enter that confirms a candidate, still tagging it with the legacy keyCode 229 — check
+        // both.
+        if (e.nativeEvent.isComposing || e.keyCode === 229) return
         e.preventDefault()
         const entry = flat[active]
         if (entry) {
@@ -299,7 +302,11 @@ function RefGroup({
 }): JSX.Element {
   return (
     <div role="group" aria-labelledby={headingId}>
-      <div id={headingId} className="px-3 pb-1 pt-2 text-[11px] uppercase tracking-wide text-anvil-500 dark:text-anvil-400">
+      <div
+        id={headingId}
+        role="presentation"
+        className="px-3 pb-1 pt-2 text-[11px] uppercase tracking-wide text-anvil-500 dark:text-anvil-400"
+      >
         {label}
       </div>
       {entries.map((entry) => {

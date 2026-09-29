@@ -246,7 +246,12 @@ export function naturalRuns(a: string, b: string): number {
     else if (typeof y === 'number') return 1
     else if (x !== y) return x < y ? -1 : 1
   }
-  return ra.length - rb.length
+  if (ra.length !== rb.length) return ra.length - rb.length
+  // Case and the dropped separators (. - _) mean e.g. "foo-bar", "foo_bar" and "Foo.bar" compare
+  // equal above; fall back to the raw string so two such names sort in a fixed order instead of
+  // whatever order they happened to arrive in (a caller's filter/enumeration order, which can
+  // change between renders).
+  return a < b ? -1 : a > b ? 1 : 0
 }
 
 /** `a` vs `b` by version, highest first: numbers compared as numbers, a release above its pre-releases. */
