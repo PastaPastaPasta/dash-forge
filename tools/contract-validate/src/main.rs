@@ -14,7 +14,7 @@
 //!      a later contract, substitutes the ids of the earlier ones for their placeholders
 //!      (`FORGE_CORE_CONTRACT_ID`), exactly as `forge-contracts/scripts/deploy-v2.mjs` does;
 //!   2. parses it with FULL validation under `PlatformVersion::get(14)` — the meta-schema, every
-//!      document type, index, `refersTo`/`ownerRefersTo`/`lookup`, `immutable`, `encryptedFor`,
+//!      document type, index, `refersTo`/`ownerRefersTo`/`findBy`/`where`, `immutable`, `encryptedFor`,
 //!      `maxBytes`, typed-array and `indexOnly` rule the create transition's action transform
 //!      runs on a node;
 //!   3. runs the create transition's state-free basic-structure rules (version, keywords,
@@ -437,7 +437,8 @@ fn basic_structure(
 /// validation of every `refersTo` leaf), run against this contract and the contracts validated
 /// before it, which a node would fetch from state. The parser under full validation leaves the
 /// referenced-side checks of a same-contract leaf's permanence (40122 / 40131) and every
-/// `propertyAgreement` pair to this step, so it runs on every leaf, not only foreign ones.
+/// `where` pair (the parsed model still calls it the property agreement) to this step, so it runs
+/// on every leaf, not only foreign ones.
 fn registration_references(
     contract: &DataContract,
     known: &[DataContract],
@@ -452,7 +453,11 @@ fn registration_references(
                 ReferenceHolder::Owner | ReferenceHolder::Creator => None,
             };
             let target = match reference {
-                PropertyReference::Value(t) | PropertyReference::Elements { target: t, .. } => t,
+                // A revealed property (a `findBy` function's param, platform#5041) is checked
+                // like an identifier's, as drive-abci does
+                PropertyReference::Value(t)
+                | PropertyReference::Revealed(t)
+                | PropertyReference::Elements { target: t, .. } => t,
                 PropertyReference::KeyId(key_ref) => {
                     check_key_id_reference(contract, dt, holder.path(), key_ref, pv)
                         .map_err(|e| anyhow!("{type_name}.{}: {e} (40125)", holder.path()))?;
@@ -622,7 +627,10 @@ fn check_leaf(
     if is_foreign {
         if let Some(lookup) = decl.lookup {
             if let Some(reason) = lookup.referenced_side_error(declaring, referenced) {
-                bail!("{at}: lookup {} invalid (40137): {reason}", lookup.index);
+                bail!(
+                    "{at}: findBy {{{}}} invalid (40137): {reason}",
+                    lookup.find_by_names()
+                );
             }
         }
         if let Some(list) = leaf.as_list_element_reference() {

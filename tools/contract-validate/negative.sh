@@ -10,7 +10,7 @@ contracts="$here/../../forge-contracts/contracts"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/dash-forge-target-contract-validate}"
-# Pinned like the rs-dpp tag it builds against (platform v4.2.0-beta.6's rust-toolchain.toml)
+# Pinned like the rs-dpp tag it builds against (platform v4.2.0-beta.7's rust-toolchain.toml)
 cargo +1.98.1 build -q --locked --manifest-path "$here/Cargo.toml"
 bin="$CARGO_TARGET_DIR/debug/contract-validate"
 
@@ -31,28 +31,32 @@ expect_reject() {
 
 expect_reject repo-deletable core '.documentSchemas.repo.canBeDeleted = true'
 expect_reject membership-mutable core '.documentSchemas.maintainer.documentsMutable = true'
-expect_reject lookup-non-unique-index core '.documentSchemas.refUpdate.ownerRefersTo.anyOf[0].lookup.index = "byMember"'
+# findBy must name exactly the properties of a unique index (maintainer.byMember is not unique)
+expect_reject findby-non-unique-index core '.documentSchemas.refUpdate.ownerRefersTo.anyOf[0].findBy = {"memberId": "."}'
 expect_reject lookup-optional-key core '.documentSchemas.chunk.required -= ["repoId"]'
 expect_reject permanent-on-deletable core '.documentSchemas.repoKey.ownerRefersTo.type = "permanentDocument"'
-expect_reject five-operands core '.documentSchemas.label.ownerRefersTo.anyOf += [{"type":"identity"},{"type":"permanentDocument","documentType":"repo","lookup":{"index":"ownerName","keys":{"$ownerId":".","name":"name"}}},{"allOf":[{"type":"identity"},{"type":"deletableDocument","documentType":"writer","lookup":{"index":"byRepoMember","keys":{"repoId":"repoId","memberId":"."}}}]}]'
+expect_reject five-operands core '.documentSchemas.label.ownerRefersTo.anyOf += [{"type":"identity"},{"type":"permanentDocument","documentType":"repo","findBy":{"$ownerId":".","name":"name"}},{"allOf":[{"type":"identity"},{"type":"deletableDocument","documentType":"writer","findBy":{"repoId":"repoId","memberId":"."}}]}]'
 expect_reject immutable-system-prop core '.documentSchemas.repo.immutable += ["$createdAt"]'
 expect_reject encrypted-too-short core '.documentSchemas.repoKey.properties.wrapped.maxItems = 16'
-expect_reject cross-lookup-wrong-index collab '.documentSchemas.event.ownerRefersTo.anyOf[0].lookup.index = "byMember"'
+expect_reject cross-findby-non-unique-index collab '.documentSchemas.event.ownerRefersTo.anyOf[0].findBy = {"memberId": "."}'
 expect_reject cross-permanent-on-deletable collab '.documentSchemas.webhook.ownerRefersTo.type = "permanentDocument"'
 expect_reject cross-missing-type collab '.documentSchemas.star.properties.repoId.refersTo.documentType = "nope"'
 expect_reject cross-deletable-on-permanent collab '.documentSchemas.issue.properties.repoId.refersTo.type = "deletableDocument"'
 expect_reject issue-deletable-under-author-lookup collab '.documentSchemas.issue.canBeDeleted = true | del(.documentSchemas.issue.documentsKeepHistory)'
-expect_reject author-lookup-wrong-index collab '.documentSchemas.authorEvent.ownerRefersTo.anyOf[0].lookup.index = "number"'
+# the author operand must bind the writer: findBy has to read "." (the writer) exactly once
+expect_reject author-findby-without-writer collab '.documentSchemas.authorEvent.ownerRefersTo.anyOf[0].findBy |= del(."$ownerId")'
 expect_reject author-lookup-optional-key collab '.documentSchemas.authorEvent.required -= ["targetNumber"]'
 expect_reject author-lookup-optional-repo collab '.documentSchemas.authorEvent.required -= ["repoId"]'
-expect_reject author-agreement-non-id collab '.documentSchemas.authorEvent.ownerRefersTo.anyOf[1].propertyAgreement = {"targetNumber": "$id"}'
-expect_reject agreement-kind-mismatch collab '.documentSchemas.event.properties.targetId.refersTo.anyOf[0].propertyAgreement.targetNumber = "title"'
+# `where` keyed by the found document's $id needs an identifier on the referring side
+expect_reject author-where-non-id collab '.documentSchemas.authorEvent.ownerRefersTo.anyOf[1].where = {"$id": "targetNumber"}'
+# `where` pairs the found issue's `title` (a string) with our `kind` (an integer)
+expect_reject where-kind-mismatch collab '.documentSchemas.event.properties.targetId.refersTo.anyOf[0].where.title = "kind"'
 expect_reject key-id-not-integer core '.documentSchemas.repoKey.properties.recipientKeyId = {"type":"string","maxLength":10,"position":3}'
 expect_reject key-ref-on-identity-with-own-key collab '.documentSchemas.webhook.properties.senderKeyId.refersTo.identityProperty = "relayIdentityId"'
 expect_reject membership-non-deletable core '.documentSchemas.maintainer.canBeDeleted = false'
 # review parity (docs/design/review-parity-spec.md §3)
 expect_reject review-link-permanent-on-deletable collab '.documentSchemas.comment.properties.reviewId.refersTo.type = "permanentDocument"'
-expect_reject review-link-agreement-missing-prop collab '.documentSchemas.comment.properties.reviewId.refersTo.propertyAgreement.targetId = "nope"'
+expect_reject review-link-where-missing-prop collab '.documentSchemas.comment.properties.reviewId.refersTo.where.patchId = "nope"'
 expect_reject policy-gate-permanent-on-deletable collab '.documentSchemas.policy.ownerRefersTo.type = "permanentDocument"'
 expect_reject immutable-unknown-prop collab '.documentSchemas.patch.immutable += ["nope"]'
 expect_reject immutable-on-immutable-type collab '.documentSchemas.policy.immutable = ["repoId"]'
