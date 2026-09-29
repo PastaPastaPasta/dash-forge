@@ -91,6 +91,16 @@ describe('historySource', () => {
     await expect(src!.load('ff'.repeat(20))).rejects.toThrow(/another tip/)
   })
 
+  it('a delta without a live base covers nothing; of two full indexes of one tip, the newer', () => {
+    const tip = 'ab'.repeat(20)
+    const orphan = manifest(new Uint8Array([7]), [tip, '99'.repeat(20)])
+    expect(historySource([orphan, manifest(new Uint8Array([8]), ['00'.repeat(20)])], async () => new Uint8Array())?.covers(tip)).toBe(false)
+    const older = manifest(new Uint8Array([1]), [tip])
+    const newer = manifest(new Uint8Array([2]), [tip])
+    const src = historySource([newer, older], async () => new Uint8Array())
+    expect(src?.byTip.get(tip)?.manifest.packHash).toBe(newer.packHash)
+  })
+
   it('is null for a repository with no history index', () => {
     expect(historySource([manifest(new Uint8Array([1]), [], { kind: 1 })], async () => new Uint8Array())).toBeNull()
   })

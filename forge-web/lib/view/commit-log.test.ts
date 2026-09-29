@@ -296,3 +296,44 @@ describe('countCommits with a history index', () => {
     expect(got).toEqual({ count: 11, capped: true, fromIndex: true })
   })
 })
+
+describe('a history index that will not load', () => {
+  function history() {
+    const st = new Store()
+    let tip = st.commit(st.files({ a: '0', b: '0' }), [], 'root')
+    tip = st.commit(st.files({ a: '0', b: '1' }), [tip], 'b changed')
+    const indexed = tip
+    for (let i = 1; i <= 5; i++) tip = st.commit(st.files({ a: '0', b: '1', c: String(i) }), [tip], `c${i}`)
+    tip = st.commit(st.files({ a: '1', b: '1', c: '5' }), [tip], 'a changed')
+    return { st, tip, indexed }
+  }
+  /** Covers `tip`, but its artifact is missing or corrupt. */
+  const broken = (covered: string): IndexedHistory => ({
+    covers: (t) => t === covered,
+    load: () => Promise.reject(new Error('history index truncated')),
+  })
+
+  it('an index of the tip that fails: the column walks instead', async () => {
+    const { st, tip } = history()
+    const states: LastCommitColumn[] = []
+    await walkCommitColumn(st.reader(), tip, ['a', 'b'], (s) => states.push(s), { history: broken(tip) })
+    const last = states[states.length - 1] as LastCommitColumn
+    expect(last).toMatchObject({ done: true, failed: false, source: 'walk' })
+    expect(last.found.get('a')?.subject).toBe('a changed')
+    expect(last.found.get('b')?.subject).toBe('b changed')
+  })
+
+  it('an index the walk stops at that fails: the walk goes on past it', async () => {
+    const { st, tip, indexed } = history()
+    const states: LastCommitColumn[] = []
+    await walkCommitColumn(st.reader(), tip, ['a', 'b'], (s) => states.push(s), { history: broken(indexed) })
+    const last = states[states.length - 1] as LastCommitColumn
+    expect(last).toMatchObject({ done: true, failed: false })
+    expect(last.found.get('b')?.subject).toBe('b changed')
+  })
+
+  it('the count walks on too', async () => {
+    const { st, tip } = history()
+    expect(await countCommits(st.reader(), tip, 100, { history: broken(tip) })).toEqual({ count: 8, capped: false })
+  })
+})

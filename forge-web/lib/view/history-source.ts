@@ -53,14 +53,17 @@ export function historySource(
 ): HistorySource | null {
   const live = liveHistoryIndexes(manifests)
   if (live.length === 0) return null
-  const byTip = new Map<string, HistoryEntry>()
-  // Oldest first, so a full index wins over a delta of the same tip, and the newest of two
-  // full indexes of one tip wins.
-  for (const e of live) {
-    const had = byTip.get(e.tip)
-    if (had === undefined || had.baseTip !== null) byTip.set(e.tip, e)
-  }
   const fulls = new Map(live.filter((e) => e.baseTip === null).map((e) => [e.manifest.packHash.toLowerCase(), e]))
+  const fullTips = new Set([...fulls.values()].map((e) => e.tip))
+  // A delta covers its tip only while a live full index of its base tip stands behind it
+  // (forge-core `plan_history_index`). Per tip: a full index over a delta, and the newer of two
+  // of the same kind (`live` is in first-upload order, oldest first).
+  const byTip = new Map<string, HistoryEntry>()
+  for (const e of live) {
+    if (e.baseTip !== null && !fullTips.has(e.baseTip)) continue
+    const had = byTip.get(e.tip)
+    if (had === undefined || had.baseTip !== null || e.baseTip === null) byTip.set(e.tip, e)
+  }
   const parsed = new Map<string, Promise<HistoryIndex>>()
   const read = (e: HistoryEntry): Promise<HistoryIndex> => {
     const key = e.manifest.packHash.toLowerCase()

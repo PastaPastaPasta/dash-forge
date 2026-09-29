@@ -17,7 +17,7 @@
  * only the paths changed since its base's tip, with its own tip's counts.
  */
 
-import { ungzip } from 'pako'
+import { Inflate } from 'pako'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
 const MAGIC = [0x44, 0x46, 0x48, 0x49] // "DFHI"
@@ -25,6 +25,8 @@ const VERSION = 1
 const OID_LEN = 20
 /** Rows one index may hold: a bound for hostile bytes (forge-core `MAX_ROWS`). */
 const MAX_ROWS = 4_000_000
+/** The most an index may inflate to (forge-core `MAX_INFLATED`): a gzip bomb stops here. */
+export const MAX_INFLATED = 64 * 1024 * 1024
 
 /** A commit the index refers to. */
 export interface IndexedCommit {
@@ -61,13 +63,12 @@ class Cursor {
   }
   varint(): number {
     let r = 0
-    for (let shift = 0; shift < 64; shift += 7) {
+    // At most 8 bytes: 56 bits, past any safe integer; the result must itself be safe.
+    for (let shift = 0; shift < 56; shift += 7) {
       const byte = this.take(1)[0] as number
       r += (byte & 0x7f) * 2 ** shift
-      if ((byte & 0x80) === 0) {
-        if (!Number.isSafeInteger(r)) throw new Error('history index varint overflow')
-        return r
-      }
+      if (!Number.isSafeInteger(r)) throw new Error('history index varint overflow')
+      if ((byte & 0x80) === 0) return r
     }
     throw new Error('history index varint overflow')
   }
@@ -83,9 +84,40 @@ class Cursor {
 
 const utf8 = new TextDecoder('utf-8', { fatal: false })
 
+/** Byte order, as git and forge-core sort paths. */
+function compareBytes(a: Uint8Array, b: Uint8Array): number {
+  const n = Math.min(a.length, b.length)
+  for (let i = 0; i < n; i++) {
+    const d = (a[i] as number) - (b[i] as number)
+    if (d !== 0) return d
+  }
+  return a.length - b.length
+}
+
+/** Inflate a gzip body, refusing one that grows past `max` bytes (a gzip bomb). */
+export function inflateBounded(compressed: Uint8Array, max: number): Uint8Array {
+  const inflator = new Inflate()
+  const parts: Uint8Array[] = []
+  let size = 0
+  inflator.onData = (chunk: Uint8Array) => {
+    size += chunk.length
+    if (size > max) throw new Error(`inflates past its size limit (${max} bytes)`)
+    parts.push(chunk)
+  }
+  inflator.push(compressed, true)
+  if (inflator.err) throw new Error(`inflate failed: ${inflator.msg}`)
+  const out = new Uint8Array(size)
+  let at = 0
+  for (const p of parts) {
+    out.set(p, at)
+    at += p.length
+  }
+  return out
+}
+
 /** Parse a gzip-compressed history index; throws on anything malformed. */
 export function parseHistoryIndex(compressed: Uint8Array): HistoryIndex {
-  const c = new Cursor(ungzip(compressed))
+  const c = new Cursor(inflateBounded(compressed, MAX_INFLATED))
   const head = c.take(5)
   if (MAGIC.some((m, i) => head[i] !== m) || (head[4] as number) < VERSION) throw new Error('not a history index')
   const tip = bytesToHex(c.take(OID_LEN))
@@ -113,7 +145,11 @@ export function parseHistoryIndex(compressed: Uint8Array): HistoryIndex {
     path.set(suffix, shared)
     const commit = commits[c.varint()]
     if (commit === undefined) throw new Error('history index path names a missing commit')
-    paths.set(utf8.decode(path), commit)
+    if (paths.size > 0 && compareBytes(path, prev) <= 0) throw new Error('history index paths are not strictly sorted')
+    const key = utf8.decode(path)
+    // Two byte strings that decode to one path (invalid UTF-8) would shadow each other.
+    if (paths.has(key)) throw new Error('history index has a duplicate path')
+    paths.set(key, commit)
     prev = path
   }
   // A later version's extension sections: whole `(tag, len, bytes)` records, skipped.

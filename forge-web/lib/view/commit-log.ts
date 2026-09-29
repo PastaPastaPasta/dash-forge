@@ -467,45 +467,58 @@ export function walkCommitColumn(
     if (signal?.aborted !== true) onState({ found: new Map(found), ...state })
   }
   const pathOf = (name: string): string => (dirPath === '' ? name : `${dirPath}/${name}`)
-  const fromIndex = async (tip: string, open: readonly string[]): Promise<void> => {
-    if (history === null || open.length === 0) return
-    const { paths } = await history.load(tip)
-    for (const name of open) {
-      const c = paths.get(pathOf(name))
-      if (c !== undefined) found.set(name, c)
+  // The index, until it fails to load: then the column walks as if there were none (a
+  // missing or corrupt artifact must not blank the column or stop the walk at a dead end).
+  let index = history
+  const fromIndex = async (tip: string, open: readonly string[]): Promise<boolean> => {
+    if (index === null) return false
+    try {
+      const { paths } = await index.load(tip)
+      for (const name of open) {
+        const c = paths.get(pathOf(name))
+        if (c !== undefined) found.set(name, c)
+      }
+      return true
+    } catch {
+      index = null
+      return false
     }
   }
   report({ done: false, failed: false })
 
+  const openNames = (): string[] => names.filter((n) => !found.has(n))
   const step = async (from: WalkCursor | undefined): Promise<void> => {
-    const open = names.filter((n) => !found.has(n))
     // A continued walk is under way again: its open cells read as pending, and no second
     // `more` is offered while it runs.
     if (from !== undefined) report({ done: false, failed: false, source: 'walk' })
     try {
-      if (from === undefined && history?.covers(tipOid) === true) {
-        await fromIndex(tipOid, open)
+      if (from === undefined && index?.covers(tipOid) === true && (await fromIndex(tipOid, openNames()))) {
         report({ done: true, failed: false, source: 'index' })
         return
       }
-      const walked = await walkDir(reader, tipOid, dirPath, open, {
+      // Stop at an indexed commit only while the index still loads.
+      const stopAt = index
+      const walked = await walkDir(reader, tipOid, dirPath, openNames(), {
         limit,
         walker,
         signal,
         ...(from !== undefined ? { from } : {}),
-        ...(history !== null ? { stopAt: (oid: string) => history.covers(oid) } : {}),
+        ...(stopAt !== null ? { stopAt: (oid: string) => stopAt.covers(oid) } : {}),
         onFound: (next) => {
           for (const [k, v] of next) found.set(k, v)
           report({ done: false, failed: false, source: 'walk' })
         },
       })
       for (const [k, v] of walked.found) found.set(k, v)
-      if (walked.indexTip !== null) {
-        await fromIndex(walked.indexTip, names.filter((n) => !found.has(n)))
-        report({ done: true, failed: false, source: 'walk' })
-        return
+      if (walked.indexTip !== null && walked.next !== null) {
+        if (await fromIndex(walked.indexTip, openNames())) {
+          report({ done: true, failed: false, source: 'walk' })
+          return
+        }
+        // The index there would not load: walk on from where the walk stopped, without it.
+        return await step(walked.next)
       }
-      const stillOpen = names.some((n) => !found.has(n))
+      const stillOpen = openNames().length > 0
       const next = walked.next
       report({
         done: true,
@@ -546,9 +559,10 @@ export async function countCommits(
   {
     walker = historyWalker(reader),
     signal,
-    history,
+    history: given = null,
   }: WalkOptions & { readonly history?: IndexedHistory | null } = {},
 ): Promise<CommitCount> {
+  let history = given
   let count = 0
   let merges = false
   let oid: string | undefined = tipOid
@@ -557,8 +571,13 @@ export async function countCommits(
     while (oid !== undefined && count < cap && !seen.has(oid)) {
       signal?.throwIfAborted()
       if (history?.covers(oid) === true) {
-        const base = (await history.load(oid)).commitCount
-        return { count: base + count, capped: merges, fromIndex: true }
+        // An index that will not load counts as none: the walk counts on.
+        const base = await history.load(oid).then(
+          (ix) => ix.commitCount,
+          () => null,
+        )
+        if (base !== null) return { count: base + count, capped: merges, fromIndex: true }
+        history = null
       }
       seen.add(oid)
       count += 1

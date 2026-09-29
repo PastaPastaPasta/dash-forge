@@ -5,7 +5,7 @@ import { resolve } from 'node:path'
 import { gzip } from 'pako'
 import { describe, expect, it } from 'vitest'
 
-import { overlayHistory, parseHistoryIndex } from './history-index'
+import { MAX_INFLATED, overlayHistory, parseHistoryIndex } from './history-index'
 
 /** The body forge-core's `the_shared_decoder_fixture_matches` writes (before gzip). */
 const body = Uint8Array.from(
@@ -34,6 +34,25 @@ describe('parseHistoryIndex', () => {
     const foreign = Uint8Array.from(body)
     foreign[0] = 0x58
     expect(() => parseHistoryIndex(gzip(foreign))).toThrow(/not a history index/)
+  })
+
+  it('refuses unsorted or duplicate paths, oversized varints and gzip bombs', () => {
+    // A hand-built v1 index: one commit, then `paths` (each front-coded from nothing).
+    const tiny = (paths: number[][]): Uint8Array => {
+      const out = [0x44, 0x46, 0x48, 0x49, 1, ...new Array(52).fill(0), 1, 1, 0, 0, 1, ...new Array(20).fill(1), 0, 0]
+      out.push(paths.length)
+      for (const p of paths) out.push(0, p.length, ...p, 0)
+      return Uint8Array.from(out)
+    }
+    expect(parseHistoryIndex(gzip(tiny([[0x61], [0x62]]))).paths.size).toBe(2)
+    expect(() => parseHistoryIndex(gzip(tiny([[0x62], [0x61]])))).toThrow(/sorted/)
+    expect(() => parseHistoryIndex(gzip(tiny([[0x61], [0x61]])))).toThrow(/sorted/)
+    // Two invalid-UTF-8 byte strings that decode to the same replacement text.
+    expect(() => parseHistoryIndex(gzip(tiny([[0xfe], [0xff]])))).toThrow(/duplicate/)
+    const big = Uint8Array.from([0x44, 0x46, 0x48, 0x49, 1, ...new Array(52).fill(0), 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f])
+    expect(() => parseHistoryIndex(gzip(big))).toThrow(/overflow/)
+    const bomb = gzip(new Uint8Array(MAX_INFLATED + 1))
+    expect(() => parseHistoryIndex(bomb)).toThrow(/size limit/)
   })
 
   it('skips a later version\'s extension sections', () => {
