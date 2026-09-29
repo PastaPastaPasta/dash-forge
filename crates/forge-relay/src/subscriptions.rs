@@ -3,7 +3,7 @@
 //!
 //! ## Discovery
 //!
-//! 1. Query forge-collab `webhook` by the `relay` index (`relayIdentityId == me`), complete:
+//! 1. Query forge-community `webhook` by the `relay` index (`relayIdentityId == me`), complete:
 //!    the repos that have ever pointed a hook at this relay.
 //! 2. For each such repo, read **all** of its `webhook` documents (the `list` index) and
 //!    resolve newest per `(repoId, hookId)` by `($createdAt, $id)`. Resolution must see the
@@ -105,7 +105,7 @@ impl RelayIdentity {
     pub async fn load(
         client: &PlatformClient,
         path: &std::path::Path,
-        collab_id: &str,
+        contract_id: &str,
     ) -> Result<Self> {
         let file = EncryptionKeyFile::load(path)?;
         if file.other_keys > 0 || file.has_mnemonic {
@@ -118,7 +118,7 @@ impl RelayIdentity {
             );
         }
         let on_chain = client.fetch_identity(&file.identity_id).await?;
-        let keys = held_encryption_keys(file.keys, &on_chain.public_keys(), collab_id);
+        let keys = held_encryption_keys(file.keys, &on_chain.public_keys(), contract_id);
         if keys.is_empty() {
             return Err(RelayError::Config(format!(
                 "relay identity {} has no ENCRYPTION key in {} matching an enabled on-chain \
@@ -165,7 +165,7 @@ pub struct Discovery {
 pub async fn platform_subscriptions(
     client: &PlatformClient,
     relay: &RelayIdentity,
-    collab_id: &str,
+    contract_id: &str,
     repo_filter: &BTreeSet<String>,
 ) -> Result<Discovery> {
     let reader = WebhookReader::new(client);
@@ -180,7 +180,7 @@ pub async fn platform_subscriptions(
     let mut writer_keys: BTreeMap<String, Vec<IdentityKeyInfo>> = BTreeMap::new();
     let mut out = Discovery::default();
     for repo_id in repos {
-        match repo_subscriptions(client, relay, collab_id, &repo_id, &mut writer_keys).await {
+        match repo_subscriptions(client, relay, contract_id, &repo_id, &mut writer_keys).await {
             Ok(mut subs) => out.subs.append(&mut subs),
             Err(e) => {
                 tracing::warn!(repo = %repo_id, error = %e, "reading this repo's webhooks failed; keeping its previous hooks");
@@ -195,7 +195,7 @@ pub async fn platform_subscriptions(
 async fn repo_subscriptions(
     client: &PlatformClient,
     relay: &RelayIdentity,
-    collab_id: &str,
+    contract_id: &str,
     repo_id: &str,
     writer_keys: &mut BTreeMap<String, Vec<IdentityKeyInfo>>,
 ) -> Result<Vec<WebhookSub>> {
@@ -215,7 +215,7 @@ async fn repo_subscriptions(
                 let keys = client.fetch_identity(&h.owner_id).await?.public_keys();
                 writer_keys.insert(h.owner_id.clone(), keys);
             }
-            match decrypt_secret(&h, &relay.keys, &writer_keys[&h.owner_id], collab_id) {
+            match decrypt_secret(&h, &relay.keys, &writer_keys[&h.owner_id], contract_id) {
                 Ok(secret) => subs.push(WebhookSub {
                     repo_id: repo_id.to_string(),
                     hook_id: hook,

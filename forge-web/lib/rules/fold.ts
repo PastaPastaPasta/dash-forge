@@ -1,27 +1,14 @@
 /**
- * Event fold building blocks — issue / PR state.
+ * Event fold building blocks — an issue's or PR's labels, assignees and base ref.
  *
- * The per-kind effects (`applyIssueEvent`, `applyPrEvent`), merge reachability
- * (`mergeReachable`) and the state accumulators the FORGE_RULES_V2 fold in `./v2` applies,
- * ported from `crates/forge-core/src/rules.rs`.
+ * The per-kind effects (`applyIssueEvent`, `applyPrEvent`) and the accumulators the
+ * FORGE_RULES_V2 metadata fold in `./v2` applies, ported from `crates/forge-core/src/rules.rs`.
+ * Open, closed, merged and draft come from the target's transitions (`./transition`); the
+ * state kinds never reach these functions (`isStateKind` filters them).
  */
 
 import { compareStrings, isLegalRefName } from './oid'
-import type { Event, IsAncestor, IssueState, PrState } from './types'
-
-/**
- * Whether a `merge` event's `oid` is reachable from (an ancestor of, or equal to) the base
- * tip. No merge oid or no base tip: reachability cannot be proven, so the merge is inert.
- */
-export function mergeReachable(
-  e: Event,
-  baseTip: string | undefined,
-  isAncestor: IsAncestor,
-): boolean {
-  const oid = e.oid ?? undefined
-  if (oid === undefined || baseTip === undefined) return false
-  return isAncestor(oid, baseTip)
-}
+import type { Event, IssueState, PrState } from './types'
 
 /** Mutable issue state while folding. */
 export interface IssueAcc {
@@ -41,8 +28,8 @@ export function newIssueAcc(): IssueAcc {
   return { open: true, labels: new Set(), assignees: new Set() }
 }
 
-export function newPrAcc(draft = false): PrAcc {
-  return { ...newIssueAcc(), merged: false, draft, baseRef: null }
+export function newPrAcc(): PrAcc {
+  return { ...newIssueAcc(), merged: false, draft: false, baseRef: null }
 }
 
 /** Apply one authorized event to an issue. PR-only kinds do nothing. */

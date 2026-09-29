@@ -48,7 +48,7 @@ const BOB = id(0x22) // writer
 const CAROL = id(0x23) // writer, removed at epoch 1
 const EVE = id(0x24) // outsider
 
-const FORGE = { core: 'CORE', collab: 'COLLAB', group: 'GROUP' }
+const FORGE = { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'GROUP' }
 const REPO_REF: RepoRef = { forge: FORGE, repoId: b58(REPO), ownerId: b58(ALICE), name: 'secret', visibility: 'private' }
 
 const K0 = Uint8Array.from({ length: 32 }, (_, i) => i)
@@ -187,7 +187,7 @@ function mockSdk(rows: Record<string, Record<string, unknown>[]>): EvoSDK {
     out = out.slice(0, Math.min(q.limit ?? 100, 100))
     return new Map(out.map((d) => [String(d['$id']), d]))
   }
-  return { documents: { query, count: async () => new Map() } } as unknown as EvoSDK
+  return { documents: { query, count: async () => new Map(), sum: async () => new Map() } } as unknown as EvoSDK
 }
 
 // ---------------------------------------------------------------------------

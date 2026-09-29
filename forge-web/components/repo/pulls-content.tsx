@@ -31,8 +31,7 @@ import { cn } from '@/lib/utils'
 type Filter = 'open' | 'closed' | 'all'
 
 function pullStatus(p: PullView): { label: string; icon: JSX.Element; klass: string } {
-  // A fold over a partial event log is not a state. Say unverified rather than guess.
-  if (!p.stateComplete) return { label: 'Unverified', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, klass: 'text-danger-700 dark:text-danger-400' }
+  // State is the proved transition sum even when the event log (labels, head) was incomplete.
   if (p.state.merged) return { label: 'Merged', icon: <GitMerge className="h-4 w-4" aria-hidden />, klass: 'text-dash' }
   if (!p.state.open) return { label: 'Closed', icon: <GitPullRequestClosed className="h-4 w-4" aria-hidden />, klass: 'text-danger-700 dark:text-danger-400' }
   if (p.state.draft) return { label: 'Draft', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, klass: 'text-anvil-500 dark:text-anvil-400' }

@@ -36,15 +36,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("name".to_string(), FieldValue::text(name.as_str())),
         ("status".to_string(), FieldValue::text(status.as_str())),
     ]);
+    // forge-community's checkRun rules: a run that has started records `startedAt`, a completed
+    // one `completedAt` too (both set once).
+    let now_ms = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis(),
+    )?;
+    if status != "queued" {
+        props.insert("startedAt".into(), FieldValue::integer(now_ms));
+    }
+    if status == "completed" {
+        props.insert("completedAt".into(), FieldValue::integer(now_ms));
+    }
     if let Some(c) = rest.first() {
         props.insert("conclusion".into(), FieldValue::text(c.as_str()));
     }
     if let Some(u) = rest.get(1) {
         props.insert("detailsUrl".into(), FieldValue::text(u.as_str()));
     }
-    let collab = client.fetch_contract(&repo.forge().collab).await?;
+    let community = client.fetch_contract(&repo.forge().community).await?;
     let id = engine
-        .create_document(&collab, "checkRun", repo.scope()?.scoped(props))
+        .create_document(&community, "checkRun", repo.scope()?.scoped(props))
         .await?;
     println!("{id}");
     Ok(())

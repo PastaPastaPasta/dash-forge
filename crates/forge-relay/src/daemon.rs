@@ -89,6 +89,9 @@ const MAX_HEADS: usize = 50;
 struct Contracts {
     core: LoadedContract,
     collab: LoadedContract,
+    /// forge-community: `checkRun` and `webhook` (forge-collab's id on a deployment that
+    /// predates the three-contract split).
+    community: LoadedContract,
 }
 
 /// What every task shares.
@@ -193,11 +196,12 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
     let contracts = Contracts {
         core: client.fetch_contract(&forge.core).await?,
         collab: client.fetch_contract(&forge.collab).await?,
+        community: client.fetch_contract(&forge.community).await?,
     };
 
     let identity = match &cfg.identity_path {
         Some(path) if cfg.use_platform_webhooks => {
-            let id = RelayIdentity::load(&client, path, &forge.collab).await?;
+            let id = RelayIdentity::load(&client, path, &forge.community).await?;
             tracing::info!(relay_identity = %id.id, encryption_keys = ?id.key_ids(), "loaded relay identity");
             Some(id)
         }
@@ -493,7 +497,7 @@ impl Discovery {
                 subscriptions::platform_subscriptions(
                     &shared.client,
                     identity,
-                    &shared.contracts.collab.id(),
+                    &shared.contracts.community.id(),
                     &self.repo_filter,
                 ),
             )
@@ -1350,7 +1354,7 @@ async fn poll_check_runs(
         ];
         let source = LiveStream {
             client: &shared.client,
-            contract: &shared.contracts.collab,
+            contract: &shared.contracts.community,
             doc_type: DOC_CHECK_RUN,
             prefix: &prefix,
         };

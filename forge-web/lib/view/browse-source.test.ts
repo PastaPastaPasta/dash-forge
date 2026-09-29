@@ -35,7 +35,7 @@ import { memoryArtifactStore, setIndexArtifactStore } from './index-cache'
 beforeEach(() => clearChunkCache())
 
 const REPO: RepoRef = {
-  forge: { core: 'CORE', collab: 'COLLAB', group: 'GROUP' },
+  forge: { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'GROUP' },
   repoId: 'REPO',
   ownerId: 'owner',
   name: 'proj',
@@ -655,7 +655,7 @@ describe('loadBrowseContext', () => {
 
 describe('fork pack via a platform:// locator', () => {
   const FORK: RepoRef = {
-    forge: { core: 'CORE', collab: 'COLLAB', group: 'GROUP' },
+    forge: { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'GROUP' },
     repoId: 'FORK',
     ownerId: 'forker',
     name: 'proj',

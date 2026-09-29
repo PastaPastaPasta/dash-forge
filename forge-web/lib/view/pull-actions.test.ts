@@ -2,7 +2,7 @@
  * PR action gating — the merge control is offered only to members (whose `event` consensus
  * admits), and it says whether the mark counts now.
  *
- * The end-to-end case at the bottom ties the gate to `foldPrStateV2`: whenever the gate says a
+ * The end-to-end case at the bottom ties the gate to `prStateV2`: whenever the gate says a
  * mark "counts now", folding that same merge event really does flip the PR to merged.
  */
 
@@ -10,8 +10,8 @@ import { describe, expect, it } from 'vitest'
 
 import type { PullView } from '../repo'
 import { historicalTipsPredicate } from '../repo'
-import type { Event, Holdings } from '../rules'
-import { foldPrStateV2 } from '../rules/v2'
+import type { Holdings } from '../rules'
+import { prStateV2 } from '../rules/v2'
 import { deleteBranchOffer, deleteBranchProblem, mergeBaseTip, mergeBoxShown, mergeBoxSlot, mergeButton, mergeRefProblem, policyOf, pullActions, type PullActionInputs } from './pull-actions'
 
 const AUTHOR = 'author'
@@ -165,10 +165,8 @@ describe('pullActions — protected base and branch policy (D-503)', () => {
   })
 })
 
-describe('pullActions agrees with the fold', () => {
-  const mergeBy = (actor: string): Event => ({ id: 'e1', kind: 'merge', actor, oid: HEAD, createdAt: 10 })
-
-  it('"counts now" iff the head has been a base tip — and the fold then merges', () => {
+describe('pullActions agrees with the merge label', () => {
+  it('"on the base now" iff the head has been a base tip — and the merged PR is then not labelled', () => {
     for (const [baseTips, expected] of [
       [[HEAD, 'ef'.repeat(20)], true], // head was a tip, base moved on
       [['ef'.repeat(20)], false], // head never reached base
@@ -180,10 +178,10 @@ describe('pullActions agrees with the fold', () => {
       const a = pullActions({ pull: pull({ headOnBase }), viewer: WRITER, holdings: WRITE })
       expect(a.canMarkMerged).toBe(true)
       expect(a.markCountsNow).toBe(expected)
-      // A member's `event` (consensus admitted it, so the fold applies it).
-      expect(foldPrStateV2([mergeBy(WRITER)], [], AUTHOR, baseTip, isAncestor).merged).toBe(expected)
-      // An author's merge through `authorEvent` is inert — merge is not an author action.
-      expect(foldPrStateV2([], [mergeBy(AUTHOR)], AUTHOR, baseTip, isAncestor).merged).toBe(false)
+      // The recorded merge (state code 2, oid = the head) is merged either way, labelled when not on the base.
+      const state = prStateV2(2, HEAD, [], baseTip, isAncestor)
+      expect(state.merged).toBe(true)
+      expect(state.mergeOnBase).toBe(expected)
     }
   })
 })

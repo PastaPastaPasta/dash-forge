@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // verify-c1.mjs — the live acceptance checks of the final contract revision (platform-parity
-// spec §7, C-1) against the deployed forge-core / forge-collab on a devnet.
+// spec §7, C-1) against the deployed forge-core / forge-collab / forge-community on a devnet.
+// beta.7 only: needs evo-sdk 4.2.0-beta.7 (forge-contracts/sdk-v2) and the three-contract
+// deployment; star, starBeat, watch, policy and checkRun live in forge-community.
 //
 //   node forge-contracts/scripts/verify-c1.mjs --owner <A.identity.json> --member <B.identity.json> \
 //        [--network devnet --devnet-name moutai]
@@ -20,7 +22,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { loadEvoSdk } from './deploy-v2.mjs';
+import { communityId, loadEvoSdk } from './deploy-v2.mjs';
 
 const log = (m) => console.error(`${new Date().toISOString().slice(11, 19)} ${m}`);
 function args() {
@@ -34,6 +36,7 @@ const key = a.network === 'devnet' ? `devnet-${a['devnet-name']}` : a.network;
 const dep = JSON.parse(readFileSync(resolve(new URL('..', import.meta.url).pathname, 'deployments', `${key}.json`), 'utf8'));
 const core = dep.v2.forgeCore.contractId;
 const collab = dep.v2.forgeCollab.contractId;
+const community = communityId(dep);
 
 const evo = await loadEvoSdk();
 const { EvoSDK, Document, IdentityPublicKey, IdentitySigner, PrivateKey, Identifier } = evo;
@@ -57,17 +60,11 @@ const check = (name, ok, detail = '') => {
   results.push({ name, ok });
   console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}`);
 };
-const INDEX_ONLY_WAIT = /VerifiedDocuments snapshot|AffectedState/i;
-
-async function create(w, contractId, documentTypeName, data, { indexOnly = false } = {}) {
+// evo-sdk 4.2.0-beta.7 resolves indexOnly creates (platform#5136): no refusal to catch.
+async function create(w, contractId, documentTypeName, data) {
   const base = new Document({ properties: {}, documentTypeName, dataContractId: contractId, ownerId: w.id });
   const document = Document.fromObject({ ...base.toObject(), ...data }, version);
-  try {
-    return await sdk.documents.create({ document, identityKey: w.identityKey, signer: w.signer });
-  } catch (e) {
-    if (indexOnly && INDEX_ONLY_WAIT.test(String(e?.message ?? e))) return null;
-    throw e;
-  }
+  return sdk.documents.create({ document, identityKey: w.identityKey, signer: w.signer });
 }
 async function refused(fn) {
   try {
@@ -103,31 +100,27 @@ log(`scratch repos ${repoId}, ${repo2Id}`);
 // 2. runner: accepted, then refused after revocation
 const runnerDoc = await create(OWNER, core, 'runner', { repoId: R, memberId: b58(MEMBER.id) });
 const head = Buffer.alloc(20, 7);
-const run1 = await refused(() => create(MEMBER, collab, 'checkRun', { repoId: R, headOid: head, name: 'build', status: 'in_progress', startedAt: Date.now() }));
+const run1 = await refused(() => create(MEMBER, community, 'checkRun', { repoId: R, headOid: head, name: 'build', status: 'in_progress', startedAt: Date.now() }));
 check('a runner posts a checkRun', run1 === null, run1 ?? '');
 await sdk.documents.delete({ document: { id: runnerDoc.id, ownerId: OWNER.id, dataContractId: core, documentTypeName: 'runner' }, identityKey: OWNER.identityKey, signer: OWNER.signer });
-const after = await refused(() => create(MEMBER, collab, 'checkRun', { repoId: R, headOid: head, name: 'test', status: 'queued' }));
+const after = await refused(() => create(MEMBER, community, 'checkRun', { repoId: R, headOid: head, name: 'test', status: 'queued' }));
 check('a revoked runner is refused at consensus (40120)', after !== null && /40120|ReferencedEntityNotFound|not found/i.test(after), (after ?? 'accepted').slice(0, 160));
 
 // 3. beta.5 rule: completed needs a conclusion
-const noConclusion = await refused(() => create(OWNER, collab, 'checkRun', { repoId: R, headOid: head, name: 'lint', status: 'completed' }));
+const noConclusion = await refused(() => create(OWNER, community, 'checkRun', { repoId: R, headOid: head, name: 'lint', status: 'completed', startedAt: Date.now(), completedAt: Date.now() }));
 check('a completed checkRun without a conclusion is refused (propertyConstraints)', noConclusion !== null && /conclusionIfDone|constraint/i.test(noConclusion), (noConclusion ?? 'accepted').slice(0, 160));
 
 // 4. policy.requiredChecks
-const pol = await refused(() => create(OWNER, collab, 'policy', { repoId: R, requiredApprovals: 0, requireChecks: true, requiredChecks: ['build', 'test'] }));
+const pol = await refused(() => create(OWNER, community, 'policy', { repoId: R, requiredApprovals: 0, requireChecks: true, requiredChecks: ['build', 'test'] }));
 check('a policy with requiredChecks is accepted', pol === null, pol ?? '');
 
 // 5. watch create + delete by values
-const ownRows = (w, t, id) => sdk.documents.query({ dataContractId: collab, documentTypeName: t, where: [['$ownerId', '==', w.id], ['repoId', '==', id]], orderBy: [['$ownerId', 'asc']], limit: 1 });
+const ownRows = (w, t, id) => sdk.documents.query({ dataContractId: community, documentTypeName: t, where: [['$ownerId', '==', w.id], ['repoId', '==', id]], orderBy: [['$ownerId', 'asc']], limit: 1 });
 const own = async (w, t, id) => (await ownRows(w, t, id)).size > 0;
-await create(OWNER, collab, 'watch', { repoId: R }, { indexOnly: true });
+await create(OWNER, community, 'watch', { repoId: R });
 const watched = await until(() => own(OWNER, 'watch', repoId));
 const doc = [...(await ownRows(OWNER, 'watch', repoId)).values()][0];
-try {
-  await sdk.documents.delete({ document: doc, identityKey: OWNER.identityKey, signer: OWNER.signer });
-} catch (e) {
-  if (!INDEX_ONLY_WAIT.test(String(e?.message ?? e))) throw e;
-}
+await sdk.documents.delete({ document: doc, identityKey: OWNER.identityKey, signer: OWNER.signer });
 const unwatched = await until(async () => !(await own(OWNER, 'watch', repoId)));
 check('a watch is created and deleted by its values', watched && unwatched);
 
@@ -141,11 +134,11 @@ const counted = await until(async () => {
 check('count on topic.byName counts the tagged repo', counted);
 
 // 7. ranked trending with `oldest`
-for (const [w, id] of [[OWNER, R], [MEMBER, R], [OWNER, b58(repo2Id)]]) await create(w, collab, 'starBeat', { repoId: id }, { indexOnly: true });
+for (const [w, id] of [[OWNER, R], [MEMBER, R], [OWNER, b58(repo2Id)]]) await create(w, community, 'starBeat', { repoId: id });
 // The scratch repos' rows of the ranking, in ranked order: [repoId, count].
 let mine = [];
 await until(async () => {
-  const ranked = await sdk.documents.ranked({ dataContractId: collab, documentTypeName: 'starBeat', groupBy: 'repoId', aggregate: { type: 'count' }, limit: 100, timeRange: [{ field: '$createdAt', selector: 'oldest' }] });
+  const ranked = await sdk.documents.ranked({ dataContractId: community, documentTypeName: 'starBeat', groupBy: 'repoId', aggregate: { type: 'count' }, limit: 100, timeRange: [{ field: '$createdAt', selector: 'oldest' }] });
   mine = ranked.entries.filter((e) => e.groupValue === repoId || e.groupValue === repo2Id).map((e) => [e.groupValue, Number(e.value)]);
   return mine.length === 2;
 });

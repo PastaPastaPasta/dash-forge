@@ -1,6 +1,6 @@
 //! `dg ci` — CI runners and check runs (platform-parity-spec §2.2, §2.8).
 //!
-//! * `runner new` registers a key bound to `(forge-collab, checkRun)` (AUTHENTICATION / HIGH,
+//! * `runner new` registers a key bound to `(forge-community, checkRun)` (AUTHENTICATION / HIGH,
 //!   `ContractBounds::SingleContractDocumentType`, with a budget and an expiry) on a runner
 //!   identity, writes it as a `dfk1:` value (0600) **before** it is registered, and enrols the
 //!   identity as a `runner` of the repo (a forge-core document only the repo owner can write).
@@ -136,7 +136,8 @@ pub struct ReportArgs {
     /// Read the summary from a file.
     #[arg(long, value_name = "FILE")]
     pub summary_file: Option<PathBuf>,
-    /// The CI's own run id: reporting it again updates that run, even once completed.
+    /// The CI's own run id: reporting it again updates that run until it completes (a completed
+    /// run is final on forge-community; a report after that is a new run).
     #[arg(long)]
     pub external_id: Option<String>,
     /// Upload this log file to your storage (content-addressed) and record its URL and SHA-256.
@@ -231,7 +232,7 @@ async fn runner_new(ctx: &Ctx, args: &RunnerNewArgs) -> Result<()> {
     let spec = DocTypeKeySpec {
         budget_credits: dash_to_credits(args.budget.unwrap_or(RUNNER_KEY_BUDGET_DASH))?,
         expires_at_ms: expiry_ms(days),
-        contract: s.repo.forge().collab.clone(),
+        contract: s.repo.forge().community.clone(),
         document_type: forge_core::collab::v2::DOC_CHECK_RUN.to_string(),
     };
     explain_runner_key(ctx, &s, &holder.identity_id, &spec, days, enrol);

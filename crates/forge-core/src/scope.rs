@@ -187,13 +187,7 @@ mod tests {
 
     fn repo() -> RepoRef {
         RepoRef {
-            forge: ForgeIds {
-                core: "CORE".into(),
-                collab: "COLLAB".into(),
-                group: "GROUP".into(),
-                superseded_in_group: vec![],
-                group_owner: None,
-            },
+            forge: ForgeIds::test_forge(),
             repo_id: REPO.into(),
             owner_id: OWNER.into(),
             name: "proj".into(),

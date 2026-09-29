@@ -553,6 +553,8 @@ export const DUPLICATE_UNIQUE_CODE = 40105
 
 /** An `ownerRefersTo` gate was not satisfied (not a member, not the author). */
 export const GATE_REFUSED_CODE = 40120
+/** A document breaks one of its type's `propertyConstraints` rules (the message names the rule). */
+export const RULE_REFUSED_CODE = 10422
 
 /** A replace named a revision other than the stored one + 1 (`InvalidDocumentRevisionError`). */
 export const INVALID_REVISION_CODE = 40106

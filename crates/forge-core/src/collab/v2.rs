@@ -55,7 +55,7 @@ use crate::rules::{self, Event, EventKind, IssueState, PrState};
 use crate::scope::RepoRef;
 use crate::user_error::{codes, UserError};
 
-/// forge-collab document types.
+/// forge-collab document types (issue through milestone); forge-community ones are marked.
 pub const DOC_ISSUE: &str = "issue";
 /// A pull request.
 pub const DOC_PATCH: &str = "patch";
@@ -71,16 +71,16 @@ pub const DOC_AUTHOR_EVENT: &str = "authorEvent";
 /// non-deletable, gated to members or the target's author, and judged against the target's
 /// state code by the contract's rules.
 pub const DOC_TRANSITION: &str = "transition";
-/// A branch policy (maintainer-gated).
+/// forge-community: a branch policy (maintainer-gated).
 pub const DOC_POLICY: &str = "policy";
-/// A check run reported on a head (maintainer- or writer-gated).
+/// forge-community: a check run reported on a head (maintainer- or writer-gated).
 pub const DOC_CHECK_RUN: &str = "checkRun";
-/// A star (`indexOnly`).
+/// forge-community: a star (`indexOnly`).
 pub const DOC_STAR: &str = "star";
-/// A trending beat (`indexOnly`, non-deletable): written beside a star when the starrer counts
+/// forge-community: a trending beat (`indexOnly`, non-deletable): written beside a star when the starrer counts
 /// toward Trending (platform-parity-spec §4.3).
 pub const DOC_STAR_BEAT: &str = "starBeat";
-/// A watch (`indexOnly`): cross-device "watching this repo".
+/// forge-community: a watch (`indexOnly`): cross-device "watching this repo".
 pub const DOC_WATCH: &str = "watch";
 /// A milestone definition (maintainer- or writer-gated).
 pub const DOC_MILESTONE: &str = "milestone";
@@ -590,13 +590,13 @@ pub fn newest_check_runs(
 /// Every `checkRun` on commit `oid` in `repo` (the `head (repoId, headOid, $createdAt)` index).
 pub(crate) async fn check_run_docs(
     client: &PlatformClient,
-    collab: &LoadedContract,
+    community: &LoadedContract,
     repo: &RepoRef,
     oid: Vec<u8>,
 ) -> Result<Vec<FetchedDocument>> {
     client
         .query_all_documents(
-            collab,
+            community,
             DOC_CHECK_RUN,
             &[
                 Collab::repo_filter(repo)?,
@@ -1940,6 +1940,12 @@ impl<'a> Collab<'a> {
         self.client.fetch_contract(&repo.forge().collab).await
     }
 
+    /// forge-community: stars, beats, watches, follows, check runs, policies, webhooks and
+    /// profiles (`docs/contracts/forge-v2.md` §2).
+    pub(super) async fn community_contract(&self, repo: &RepoRef) -> Result<LoadedContract> {
+        self.client.fetch_contract(&repo.forge().community).await
+    }
+
     pub(super) async fn core_contract(&self, repo: &RepoRef) -> Result<LoadedContract> {
         self.client.fetch_contract(&repo.forge().core).await
     }
@@ -2760,11 +2766,11 @@ impl<'a> Collab<'a> {
     /// The branch policy in force: the newest `policy` of `repo` by `($createdAt, $id)`
     /// (forge-v2.md §2), or `None`.
     pub async fn policy(&self, repo: &RepoRef) -> Result<Option<Policy>> {
-        let collab = self.collab_contract(repo).await?;
+        let community = self.community_contract(repo).await?;
         let docs = self
             .client
             .query_all_documents(
-                &collab,
+                &community,
                 DOC_POLICY,
                 &[Self::repo_filter(repo)?],
                 &[QueryOrder::asc("$createdAt")],
@@ -2912,10 +2918,10 @@ impl<'a> Collab<'a> {
     }
 
     async fn check_run_docs(&self, repo: &RepoRef, head_oid: &str) -> Result<Vec<FetchedDocument>> {
-        let collab = self.collab_contract(repo).await?;
+        let community = self.community_contract(repo).await?;
         let oid = hex::decode(head_oid)
             .map_err(|_| Error::Config(format!("{head_oid:?} is not a hex commit id")))?;
-        check_run_docs(self.client, &collab, repo, oid).await
+        check_run_docs(self.client, &community, repo, oid).await
     }
 
     async fn runner_ids(&self, repo: &RepoRef) -> Result<BTreeSet<String>> {
@@ -3719,8 +3725,8 @@ impl<'a> Collab<'a> {
         let props = policy_props(policy)?;
         self.require_role(repo, Role::Maintainer, "set the branch policy")
             .await?;
-        let collab = self.collab_contract(repo).await?;
-        self.write(repo, &collab, DOC_POLICY, props).await
+        let community = self.community_contract(repo).await?;
+        self.write(repo, &community, DOC_POLICY, props).await
     }
 
     // --- releases and labels (forge-core) ---------------------------------------------------
@@ -3924,9 +3930,9 @@ impl<'a> Collab<'a> {
 
     /// The star count of `repo` (the countable `byRepo` index).
     pub async fn star_count(&self, repo: &RepoRef) -> Result<u64> {
-        let collab = self.collab_contract(repo).await?;
+        let community = self.community_contract(repo).await?;
         self.client
-            .count_documents(&collab, DOC_STAR, &[Self::repo_filter(repo)?])
+            .count_documents(&community, DOC_STAR, &[Self::repo_filter(repo)?])
             .await
     }
 
@@ -3988,30 +3994,32 @@ impl<'a> Collab<'a> {
 
     async fn own_star(
         &self,
-        collab: &LoadedContract,
+        community: &LoadedContract,
         repo: &RepoRef,
     ) -> Result<Option<FetchedDocument>> {
-        self.own_index_only(collab, repo, DOC_STAR).await
+        self.own_index_only(community, repo, DOC_STAR).await
     }
 
     /// Whether the signer has starred `repo`.
     pub async fn is_starred(&self, repo: &RepoRef) -> Result<bool> {
-        let collab = self.collab_contract(repo).await?;
-        Ok(self.own_star(&collab, repo).await?.is_some())
+        let community = self.community_contract(repo).await?;
+        Ok(self.own_star(&community, repo).await?.is_some())
     }
 
     /// Star `repo`; with `trending`, a new star also counts toward Trending (a `starBeat`,
     /// once per identity and repo, platform-parity-spec §4.3). Returns `false` when it was
     /// already starred (nothing written, no beat either).
     pub async fn star(&self, repo: &RepoRef, trending: bool) -> Result<bool> {
-        let collab = self.collab_contract(repo).await?;
-        let starred = self.create_own_index_only(&collab, repo, DOC_STAR).await?;
+        let community = self.community_contract(repo).await?;
+        let starred = self
+            .create_own_index_only(&community, repo, DOC_STAR)
+            .await?;
         if starred && trending {
             // The star stands whatever happens to the beat, which only feeds a ranking. A beat
             // from an earlier star of this repo makes this a no-op (one per identity and repo,
             // ever: it cannot be deleted).
             if let Err(e) = self
-                .create_own_index_only(&collab, repo, DOC_STAR_BEAT)
+                .create_own_index_only(&community, repo, DOC_STAR_BEAT)
                 .await
             {
                 tracing::warn!(error = %e, "the star landed; its Trending beat did not");
@@ -4023,8 +4031,8 @@ impl<'a> Collab<'a> {
     /// Unstar `repo` (the values-carrying `indexOnly` delete). Returns `false` when it was
     /// not starred.
     pub async fn unstar(&self, repo: &RepoRef) -> Result<bool> {
-        let collab = self.collab_contract(repo).await?;
-        self.delete_own_index_only(&collab, repo, DOC_STAR).await
+        let community = self.community_contract(repo).await?;
+        self.delete_own_index_only(&community, repo, DOC_STAR).await
     }
 
     /// Delete the signer's row of an indexOnly `doc_type` for `repo` (the values-carrying
@@ -4340,13 +4348,7 @@ mod tests {
 
     fn repo_ref(visibility: Visibility) -> RepoRef {
         RepoRef {
-            forge: ForgeIds {
-                core: "CORE".into(),
-                collab: "COLLAB".into(),
-                group: "GROUP".into(),
-                superseded_in_group: vec![],
-                group_owner: None,
-            },
+            forge: ForgeIds::test_forge(),
             repo_id: ME.into(),
             owner_id: ME.into(),
             name: "proj".into(),

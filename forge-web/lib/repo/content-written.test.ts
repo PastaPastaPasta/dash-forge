@@ -20,7 +20,7 @@ vi.mock('./config', () => ({ readConfigBundle: () => Promise.resolve({ config: {
 
 const { onRepoContentWritten, writePackManifest, writeRefUpdate } = await import('./push')
 
-const forge = { core: 'CORE', collab: 'COLLAB', group: 'GROUP' }
+const forge = { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'GROUP' }
 const PARENT: RepoRef = { forge, repoId: '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD', ownerId: 'o', name: 'p', visibility: 'public' }
 const FORK: RepoRef = { forge, repoId: 'GKBTXUdo3MpRYAUqgZvTZGTav9mXGqfJfR5822K2tp79', ownerId: 'c', name: 'f', visibility: 'public' }
 const auth = { identityId: 'contributor' } as unknown as WriteAuth

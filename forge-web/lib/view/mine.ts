@@ -242,7 +242,7 @@ const repoIdDoc = z.object({ repoId: ident })
 
 /** The repos `me` holds a `star` or `watch` of (`byOwner`: index order; neither records a time). */
 async function ownRepoIds(sdk: EvoSDK, forge: ForgeIds, type: 'star' | 'watch', me: string, limit: number): Promise<Page<string>> {
-  const docs = await read(sdk, { dataContractId: forge.collab, documentTypeName: type, where: [['$ownerId', '==', me]], limit })
+  const docs = await read(sdk, { dataContractId: forge.community, documentTypeName: type, where: [['$ownerId', '==', me]], limit })
   return { rows: parseDocs(repoIdDoc, docs).map((d) => d.repoId), more: docs.length >= limit }
 }
 

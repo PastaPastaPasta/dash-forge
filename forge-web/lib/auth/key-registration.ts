@@ -28,7 +28,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import type { Network } from '../constants'
-import type { ForgeIds } from '../deployments'
+import { contractKind, type ForgeContractKind, type ForgeIds } from '../deployments'
 import { authSdk, type WasmKey } from '../sdk/facade'
 import type { KeyLimits } from '../view/funds'
 import { hash160 } from './asset-lock'
@@ -43,34 +43,60 @@ import { authKeyFromLogin, encryptionKeyFromLogin, protocolUri } from './wallet-
 export interface KeyScope {
   readonly core: boolean
   readonly collab: boolean
+  /** forge-community (stars, watches, follows, check runs, policies, webhooks). */
+  readonly community: boolean
   /** No contract bounds: consensus lets it sign on any contract (the Android wallet's keys). */
   readonly unbounded: boolean
 }
 
 /**
- * The scope of an AUTHENTICATION key over forge-core and forge-collab, or null when Forge must
- * not use it: bound to another contract or group (it is another app's key, or a key left on a
- * superseded group), or to a single document type.
+ * The scope of an AUTHENTICATION key over Forge's contracts, or null when Forge must not use
+ * it: bound to another contract or group (it is another app's key, or a key left on a
+ * superseded group), or to a single document type. A key bound to the group covers all three.
+ * On a deployment that predates the split forge-community is forge-collab, so a forge-collab key
+ * covers it too.
  */
 export function keyScope(k: Pick<WasmKey, 'contractBounds'>, forge: ForgeIds): KeyScope | null {
   const bounds = k.contractBounds?.toJSON()
-  if (bounds === undefined || bounds === null) return { core: true, collab: true, unbounded: true }
-  if (bounds.$type === 'contractGroup') return bounds.id === forge.group ? { core: true, collab: true, unbounded: false } : null
+  if (bounds === undefined || bounds === null) return { core: true, collab: true, community: true, unbounded: true }
+  if (bounds.$type === 'contractGroup') return bounds.id === forge.group ? { core: true, collab: true, community: true, unbounded: false } : null
   if (bounds.$type === 'singleContract') {
-    if (bounds.id === forge.core) return { core: true, collab: false, unbounded: false }
-    if (bounds.id === forge.collab) return { core: false, collab: true, unbounded: false }
+    const one = { core: bounds.id === forge.core, collab: bounds.id === forge.collab, community: bounds.id === forge.community, unbounded: false }
+    return one.core || one.collab || one.community ? one : null
   }
   return null
 }
 
 /**
- * Whether a scope lets the key sign on `contractId`. Only Forge's two contracts are ever asked
+ * Whether a scope lets the key sign on `contractId`. Only Forge's contracts are ever asked
  * about; anything else is refused, whatever the key's bounds.
  */
 export function scopeCovers(scope: KeyScope, forge: ForgeIds, contractId: string): boolean {
-  if (contractId === forge.core) return scope.core
-  if (contractId === forge.collab) return scope.collab
-  return false
+  const kind = contractKind(forge, contractId)
+  return kind !== null && scope[kind]
+}
+
+/**
+ * The Forge contract a session still needs a wallet grant for (a shipped wallet grants one
+ * contract per approval): forge-collab first, then forge-community; null when both are covered.
+ * The keys panel's fallback; a refused write names its own contract.
+ */
+export function nextGrant(grants: { readonly collab: boolean; readonly community: boolean } | null | undefined): ForgeContractKind | null {
+  if (!grants) return null
+  if (!grants.collab) return 'collab'
+  return grants.community ? null : 'community'
+}
+
+/** What a wallet grant for each contract lets this browser sign (the grant sheet's copy). */
+export const GRANT_COPY: Readonly<Record<ForgeContractKind, { readonly title: string; readonly what: string }>> = {
+  core: { title: 'Approve repositories and pushes', what: 'Repositories and pushes' },
+  collab: { title: 'Approve issues and pull requests', what: 'Issues, pull requests and reviews' },
+  community: { title: 'Approve stars, watches and follows', what: 'Stars, watches, follows and branch policies' },
+}
+
+/** Whether `contractId` is one of Forge's contracts. */
+export function isForgeContract(forge: ForgeIds, contractId: string | undefined): contractId is string {
+  return contractKind(forge, contractId) !== null
 }
 
 /** A wallet-granted key Forge verified on chain. */

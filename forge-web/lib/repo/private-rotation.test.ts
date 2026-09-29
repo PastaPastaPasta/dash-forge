@@ -40,7 +40,7 @@ const REPO = id(0x11)
 const ALICE = id(0x21)
 const BOB = id(0x22)
 const CAROL = id(0x23)
-const FORGE = { core: 'CORE', collab: 'COLLAB', group: 'GROUP' }
+const FORGE = { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'GROUP' }
 const REPO_REF: RepoRef = { forge: FORGE, repoId: b58(REPO), ownerId: b58(ALICE), name: 'secret', visibility: 'private' }
 
 /** Raw epoch keys by their commitment hex: what a fake wrap "encrypts". */

@@ -63,6 +63,7 @@ import { readMilestones } from '@/lib/repo/milestones'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
+import { bodyRefsUpstream, numberLabel, shownUpstreamNumber } from '@/lib/view/upstream'
 
 /** The write the confirm dialog is about to sign. */
 type Pending =
@@ -121,6 +122,11 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     () => (addr ? { issueHref: (n: number) => repoHref('/repo/issue', addr, { number: String(n) }) } : undefined),
     [addr],
   )
+  // A mirrored body's `#n` is the source's number: resolved through `upstreamNumber` (D-2).
+  const upstreamLinks: MarkdownLinks | undefined = useMemo(
+    () => (addr ? { issueHref: (n: number) => repoHref('/repo/issue', addr, { upstream: String(n) }) } : undefined),
+    [addr],
+  )
 
   // Which subtrees this viewer's comment or event would create, for tight previews (D-011).
   // Read only once the viewer turns to a write (typing a comment, or a confirm opening): the
@@ -130,8 +136,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const viewerMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
   const firstsReady = (comment !== '' || pending !== null) && ready && sdk !== null && identity !== null && issueId !== ''
   const commentFirst = useFirstWrite(() => commentFirsts(sdk!, home.repo, issueId, identity!, hasComments), [issueId, identity ?? '', hasComments ?? ''], firstsReady)
-  const stateType = viewerMember ? 'event' : 'authorEvent'
-  const eventFirst = useFirstWrite(() => eventFirsts(sdk!, home.repo, stateType, issueId, identity!), [issueId, identity ?? '', stateType], firstsReady)
+  const stateFirst = useFirstWrite(() => eventFirsts(sdk!, home.repo, 'transition', issueId, identity!), [issueId, identity ?? ''], firstsReady)
+  const eventFirst = useFirstWrite(() => eventFirsts(sdk!, home.repo, 'event', issueId, identity!), [issueId, identity ?? ''], firstsReady && viewerMember)
 
   if (!Number.isFinite(number)) return <EmptyState icon={CircleDot} title="No issue addressed" body="Add &number= to the URL." />
   if (loading && !data) return <LoadingBlock label="Folding issue" />
@@ -161,8 +167,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       : null
   const target = { id: issue.id, number: issue.number }
   const commentCost = composeCost(home.repo, 'comment', { body: comment.trim() }, commentFirst)
-  // A member's close is an `event`; the author who is not a member uses `authorEvent`.
-  const stateCost = previewCreate(isMember ? 'event' : 'authorEvent', {}, eventFirst)
+  // A close or reopen is one `transition`, by a member or by the author.
+  const stateCost = previewCreate('transition', {}, stateFirst)
   const labelDefs = new Map(labels.map((l) => [l.name, l]))
 
   const postComment = async (): Promise<void> => {
@@ -192,7 +198,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     if (!sdk || !signer || pending === null) throw new Error('sign in to continue')
     switch (pending.kind) {
       case 'state':
-        await setTargetState(sdk, signer, home.repo, { target, kind: open ? 'close' : 'reopen', author: issue.author, isMember, intent })
+        await setTargetState(sdk, signer, home.repo, { target: { ...target, type: 'issue', author: issue.author }, action: open ? 'close' : 'reopen', isMember, intent })
         break
       case 'label':
         await setLabel(sdk, signer, home.repo, { target, label: pending.label, add: !pending.remove, intent })
@@ -288,7 +294,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           ) : (
             <div className="flex items-start gap-3">
               <h1 className="flex-1 text-2xl">
-                {issue.title || '(untitled)'} <span className="font-mono font-normal text-anvil-500 dark:text-anvil-400">#{issue.number}</span>
+                {issue.title || '(untitled)'} <span className="font-mono font-normal text-anvil-500 dark:text-anvil-400" data-testid="issue-number">{numberLabel(issue.number, shownUpstreamNumber(issue, home.repo, members))}</span>
               </h1>
               {isAuthor ? (
                 <Button
@@ -328,7 +334,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             {editing ? (
               <MarkdownEditor id="edit-body" label="Description" value={editing.body} onChange={(body) => setEditing({ ...editing, body })} links={links} />
             ) : issue.body ? (
-              <MarkdownView source={issue.body} links={links} />
+              <MarkdownView source={issue.body} links={bodyRefsUpstream(issue, home.repo, members) ? upstreamLinks : links} />
             ) : (
               <p className="italic text-anvil-500 dark:text-anvil-400">No description.</p>
             )}
@@ -340,6 +346,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           <Timeline
             items={timeline}
             links={links}
+            commentLinks={(c) => (bodyRefsUpstream(c, home.repo, members) ? upstreamLinks : undefined)}
             trust={trust}
             renderComment={(item) => {
               const slots = commentSlots({

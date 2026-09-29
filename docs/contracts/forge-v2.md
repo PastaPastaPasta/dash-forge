@@ -371,8 +371,6 @@ What the offline validator cannot check, and registration will: that forge-core 
 
 ### Contract group trust
 
-> **Pending (three contracts).** The trust checks below name forge-community as a known member, but `dg` (`crates/dg/src/auth/group.rs` `check_pair`, `is_known`) and the web (`lib/auth/group-trust.ts`) still know only forge-core and forge-collab until the contract-resolution follow-up lands (WIPE-PLAN §2.4). Until then they list forge-community as an unknown member, and `--strict-group` refuses it.
-
 A limited key is bound to the `dash-forge` contract group, and a group-bound key can sign documents for **every member** of the group, including members added after the key was registered. Binding a key therefore trusts whoever can add members. On protocol 14 that is only the group's owner or one of its admins:
 
 - A member joins in the create transition of its own contract (`contract_group_memberships`). drive-abci (`data_contract_create/state/v1`) accepts the join only when the signer is the group's owner or an admin (`ContractGroupOwner::may_add_members`). A contract cannot enrol another contract, and no other transition adds members.

@@ -10,7 +10,7 @@
 //! 1. The group's owner, read proof-verified, must be the Forge deployer the embedded
 //!    deployment file records, and the group must have no admins. Consensus then guarantees
 //!    that every member contract was created by that owner.
-//! 2. forge-core and forge-collab must be whole-contract members (checked before anything
+//! 2. forge-core, forge-collab and forge-community must be whole-contract members (checked before anything
 //!    else is read).
 //! 3. Cross-check: each member contract this binary does not know is read proof-verified, and
 //!    an `$ownerId` other than the pinned owner is refused. A contract that cannot be read or
@@ -275,7 +275,8 @@ fn check_ownership<'a>(
     Ok(pinned)
 }
 
-/// forge-core and forge-collab are whole-contract members.
+/// forge-core, forge-collab and forge-community are whole-contract members (forge-community
+/// is forge-collab on a deployment that predates the split, so the check is then the pair).
 #[allow(clippy::result_large_err)]
 fn check_pair(
     forge: &ForgeIds,
@@ -284,13 +285,13 @@ fn check_pair(
     network: &str,
 ) -> Result<(), UserError> {
     let whole: BTreeSet<&str> = members.contracts.iter().map(String::as_str).collect();
-    if whole.contains(forge.core.as_str()) && whole.contains(forge.collab.as_str()) {
+    if forge.all().iter().all(|(_, c)| whole.contains(c)) {
         return Ok(());
     }
     Err(refusal(format!(
-        "group {group} on {network} does not hold forge-core {} and forge-collab {} as whole \
-         contracts",
-        forge.core, forge.collab
+        "group {group} on {network} does not hold forge-core {}, forge-collab {} and \
+         forge-community {} as whole contracts",
+        forge.core, forge.collab, forge.community
     )))
 }
 
@@ -308,9 +309,7 @@ fn unknown_contracts(forge: &ForgeIds, members: &GroupMembers) -> BTreeSet<Strin
 }
 
 fn is_known(forge: &ForgeIds, contract: &str) -> bool {
-    contract == forge.core
-        || contract == forge.collab
-        || forge.superseded_in_group.iter().any(|s| s == contract)
+    forge.contains(contract) || forge.superseded_in_group.iter().any(|s| s == contract)
 }
 
 /// The members this binary does not know, as `contract`, `contract (document type t)` or
@@ -364,6 +363,7 @@ mod tests {
         ForgeIds {
             core: "CORE".into(),
             collab: "COLLAB".into(),
+            community: "COMMUNITY".into(),
             group: "GROUP".into(),
             superseded_in_group: vec!["OLDCOLLAB".into()],
             group_owner: Some(DEPLOYER.into()),
@@ -437,7 +437,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_known_set_passes_without_a_notice_or_a_read() {
-        let chain = Chain::new(&["CORE", "COLLAB", "OLDCOLLAB"]);
+        let chain = Chain::new(&["CORE", "COLLAB", "COMMUNITY", "OLDCOLLAB"]);
         let r = check(&chain, false).await.unwrap();
         assert_eq!(r.notice(), None);
         assert!(r.covers("GROUP") && !r.covers("OTHER"));
@@ -447,7 +447,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_unknown_member_owned_by_the_deployer_is_accepted_with_a_notice() {
-        let chain = Chain::new(&["CORE", "COLLAB", "NEWCOLLAB"]).owned("NEWCOLLAB", DEPLOYER);
+        let chain =
+            Chain::new(&["CORE", "COLLAB", "COMMUNITY", "NEWCOLLAB"]).owned("NEWCOLLAB", DEPLOYER);
         let notice = check(&chain, false)
             .await
             .unwrap()
@@ -466,7 +467,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unknown_member_with_another_owner_is_refused() {
-        let chain = Chain::new(&["CORE", "COLLAB", "EVIL"]).owned("EVIL", STRANGER);
+        let chain = Chain::new(&["CORE", "COLLAB", "COMMUNITY", "EVIL"]).owned("EVIL", STRANGER);
         let e = check(&chain, false).await.unwrap_err();
         assert!(cause(&e).contains("EVIL"), "{}", cause(&e));
         assert!(cause(&e).contains(STRANGER), "{}", cause(&e));
@@ -474,7 +475,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreadable_member_is_accepted_because_the_owner_is_pinned() {
-        let chain = Chain::new(&["CORE", "COLLAB", "FUTURE"]);
+        let chain = Chain::new(&["CORE", "COLLAB", "COMMUNITY", "FUTURE"]);
         let r = check(&chain, false).await.unwrap();
         let notice = r.notice().unwrap();
         assert!(
@@ -488,7 +489,8 @@ mod tests {
 
     #[tokio::test]
     async fn strict_mode_refuses_unknown_members_without_reading_them() {
-        let chain = Chain::new(&["CORE", "COLLAB", "NEWCOLLAB"]).owned("NEWCOLLAB", DEPLOYER);
+        let chain =
+            Chain::new(&["CORE", "COLLAB", "COMMUNITY", "NEWCOLLAB"]).owned("NEWCOLLAB", DEPLOYER);
         let e = check(&chain, true).await.unwrap_err();
         assert!(cause(&e).contains("NEWCOLLAB"), "{}", cause(&e));
         assert!(cause(&e).contains(STRICT_ENV), "{}", cause(&e));
@@ -511,11 +513,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_group_without_forge_community_is_refused() {
+        let chain = Chain::new(&["CORE", "COLLAB"]);
+        let e = check(&chain, false).await.unwrap_err();
+        assert!(
+            cause(&e).contains("forge-community COMMUNITY"),
+            "{}",
+            cause(&e)
+        );
+        assert!(chain.reads().is_empty());
+    }
+
+    #[tokio::test]
     async fn owners_past_the_cap_are_accepted_unchecked() {
         let ids: Vec<String> = (0..MAX_UNKNOWN_CONTRACTS + 2)
             .map(|i| format!("N{i:03}"))
             .collect();
-        let mut contracts = vec!["CORE", "COLLAB"];
+        let mut contracts = vec!["CORE", "COLLAB", "COMMUNITY"];
         contracts.extend(ids.iter().map(String::as_str));
         let mut chain = Chain::new(&contracts);
         for id in &ids {
@@ -529,7 +543,7 @@ mod tests {
 
     #[tokio::test]
     async fn document_type_and_token_members_follow_the_owner_rule() {
-        let mut chain = Chain::new(&["CORE", "COLLAB"]).owned("TRENDING", DEPLOYER);
+        let mut chain = Chain::new(&["CORE", "COLLAB", "COMMUNITY"]).owned("TRENDING", DEPLOYER);
         chain
             .members
             .document_types
@@ -549,7 +563,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_part_of_a_known_contract_is_an_additional_member() {
-        let mut chain = Chain::new(&["CORE", "COLLAB"]);
+        let mut chain = Chain::new(&["CORE", "COLLAB", "COMMUNITY"]);
         chain.members.tokens.push(("CORE".into(), 0));
         let r = check(&chain, false).await.unwrap();
         let notice = r.notice().unwrap();
@@ -563,7 +577,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_changed_group_owner_or_any_admin_is_refused() {
-        let mut chain = Chain::new(&["CORE", "COLLAB"]);
+        let mut chain = Chain::new(&["CORE", "COLLAB", "COMMUNITY"]);
         chain.owner = STRANGER.into();
         let e = check(&chain, false).await.unwrap_err();
         assert!(
@@ -571,7 +585,7 @@ mod tests {
             "{}",
             cause(&e)
         );
-        let mut chain = Chain::new(&["CORE", "COLLAB"]);
+        let mut chain = Chain::new(&["CORE", "COLLAB", "COMMUNITY"]);
         chain.admins = vec![STRANGER.into()];
         let e = check(&chain, false).await.unwrap_err();
         assert!(cause(&e).contains(STRANGER), "{}", cause(&e));
@@ -607,13 +621,14 @@ mod tests {
 
     #[tokio::test]
     async fn json_output_lists_the_unknown_members() {
-        let chain = Chain::new(&["CORE", "COLLAB", "NEWCOLLAB"]).owned("NEWCOLLAB", DEPLOYER);
+        let chain =
+            Chain::new(&["CORE", "COLLAB", "COMMUNITY", "NEWCOLLAB"]).owned("NEWCOLLAB", DEPLOYER);
         let r = check(&chain, false).await.unwrap();
         let out = with_group_fields(json!({ "status": "added" }), Some(&r));
         assert_eq!(out["status"], "added");
         assert_eq!(out["unknownGroupMembers"], json!(["NEWCOLLAB"]));
         assert_eq!(out["uncheckedGroupMembers"], json!([]));
-        let known = check(&Chain::new(&["CORE", "COLLAB"]), false)
+        let known = check(&Chain::new(&["CORE", "COLLAB", "COMMUNITY"]), false)
             .await
             .unwrap();
         let out = with_group_fields(json!({}), Some(&known));

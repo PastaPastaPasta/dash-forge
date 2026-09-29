@@ -6,21 +6,19 @@
  *
  * 1. **One composite** (the first request): the newest 100 issues, their comment counts
  *    (`comment.target` count tree), their authors' DPNS names, and as siblings under the same
- *    proof the first 100 rows of the repo feed (`event`, `authorEvent`) and of the label
- *    definitions. A small repo is fully read by it.
- * 2. **The rest of the feed**, only when a sibling page was full (`queryAllDocuments`
- *    continuing from that page). The feed decides every row's state, labels and assignees
- *    (`foldIssueStateV2`), so it is read to completion.
+ *    proof the first 100 rows of the repo's member `event` feed and of the label definitions;
+ *    and beside it one proved sum query for those issues' state codes (`transition.perTarget`).
+ * 2. **The rest of the event feed**, only when a sibling page was full (`queryAllDocuments`
+ *    continuing from that page). The feed decides every row's labels and assignees, so it is
+ *    read to completion.
  * 3. **More issues on demand**: a keyset composite per 100 (`$createdAt <=` the oldest loaded,
- *    newest first; `>=` the newest loaded for the oldest-first sort), and `$id in` composites
- *    for issues the feed names but no loaded chunk holds (a closed or labelled issue past the
- *    loaded pages).
+ *    newest first; `>=` the newest loaded for the oldest-first sort), each with its sum query,
+ *    and `$id in` composites for issues the feed names but no loaded chunk holds.
+ * 4. **The Closed tab's candidates**: the targets of the repo's issue-close transitions
+ *    (`transition.perRepoKind`, `kind == 1`), read on first use; every closed issue has one.
  *
- * Counts: the repo's issue total is the countable `issue.number` index (the header already
- * reads it); what is closed is a fold over the complete feed. So Open / Closed are exact
- * without reading every issue: closed = the feed's closed targets that are issues, open =
- * total − closed − hidden. (A target's type is not in the event, so each closed target is
- * resolved once, by `$id in` on `issue`; a patch id finds nothing and is remembered as such.)
+ * Counts: Open / Closed are the proved totals (`./transitions` `readRepoCounts`: the issue total
+ * and the close / reopen counts), never a fold.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -29,16 +27,9 @@ import { DEFAULT_NETWORK, NETWORKS, type Network } from '../constants'
 import { compositeOf, countsAt, docsAt, queryComposite, siblingOf, type CompositeSub } from '../sdk/composite'
 import { IncompleteReadError, queryAllDocuments, type DocumentQuery, type PlainDocument } from '../sdk'
 import { DOC, asIdentifierString, repoKey, str, type RepoRef } from './contract'
-import {
-  groupFeed,
-  issueViewOf,
-  onRepoInvalidated,
-  seedRepoFeed,
-  settleIssueCount,
-  toLog,
-  type IssueView,
-  type TargetLog,
-} from './issues'
+import { groupFeed, issueViewOf, onRepoInvalidated, toLog, type IssueView, type TargetLog } from './issues'
+import { ISSUE_CLOSE } from '../rules/transition'
+import { readRepoCounts, readStateCodes } from './transitions'
 import { newestLabels, type LabelDef } from './labels'
 import { pinnedTargets } from '../rules/parity'
 import { HiddenTally, gateFor, type ContentGate, type HiddenCounts } from './private-content'
@@ -74,8 +65,12 @@ interface Walk {
 interface IndexState {
   readonly repo: RepoRef
   readonly network: Network
-  /** Every target's log; null when the feed is too large to read completely. */
+  /** Every target's member events; null when the feed is too large to read completely. */
   feed: Map<string, TargetLog> | null
+  /** Targets with an issue-close transition (the Closed tab's candidates), once read; null if too many. */
+  closedOnce: Set<string> | null | undefined
+  /** The repo's proved counts, read once per index (a write drops the index). */
+  counts?: Promise<Awaited<ReturnType<typeof readRepoCounts>>>
   labels: LabelDef[]
   /** The label read was complete (short page). */
   labelsComplete: boolean
@@ -129,8 +124,14 @@ function chunkSubs(network: Network): CompositeSub[] {
   ]
 }
 
-/** Record a chunk's issue documents (and what its sub-queries said about them). */
-async function addDocs(state: IndexState, docs: readonly PlainDocument[], counts: ReadonlyMap<string, number> | null, walk: Walk | null): Promise<void> {
+/** Record a chunk's issue documents (and what its sub-queries and sum query said about them). */
+async function addDocs(
+  state: IndexState,
+  docs: readonly PlainDocument[],
+  counts: ReadonlyMap<string, number> | null,
+  codes: ReadonlyMap<string, number>,
+  walk: Walk | null,
+): Promise<void> {
   for (const raw of docs) {
     const id = str(raw, '$id')
     if (id === '' || state.rows.has(id) || state.notIssues.has(id)) {
@@ -143,7 +144,7 @@ async function addDocs(state: IndexState, docs: readonly PlainDocument[], counts
       state.hidden.add(admitted.reason)
       continue
     }
-    const view = issueViewOf(admitted.doc, state.feed?.get(id) ?? EMPTY_LOG)
+    const view = issueViewOf(admitted.doc, state.feed?.get(id) ?? EMPTY_LOG, codes.get(id) ?? 0)
     state.rows.set(id, {
       ...view,
       stateComplete: state.feed !== null,
@@ -174,10 +175,16 @@ async function readChunk(
 ): Promise<PlainDocument[]> {
   const res = await queryComposite(sdk, compositeOf(page, limit, chunkSubs(state.network)))
   const docs = keep ? res.page.filter(keep) : res.page
-  if (walk === null) await addDocs(state, docs, countsAt(res, 0), null)
-  else await addChunk(state, walk, docs, countsAt(res, 0))
+  const codes = await codesOf(sdk, state.repo, docs)
+  if (walk === null) await addDocs(state, docs, countsAt(res, 0), codes, null)
+  else await addChunk(state, walk, docs, countsAt(res, 0), codes)
   await seedNames(state.network, docs, docsAt(res, 1))
   return docs
+}
+
+/** The state codes of a chunk's issues: one proved sum query (`targetId in [chunk]`). */
+function codesOf(sdk: EvoSDK, repo: RepoRef, docs: readonly PlainDocument[]): Promise<Map<string, number>> {
+  return docs.length === 0 ? Promise.resolve(new Map()) : readStateCodes(sdk, repo, docs.map((d) => str(d, '$id')))
 }
 
 /** Read the rest of a sibling-started query, when its first page was full. */
@@ -194,25 +201,23 @@ async function loadIndex(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<
   const page = source.repoQuery(DOC.issue, { orderBy: [['$createdAt', 'desc']] })
   const res = await queryComposite(
     sdk,
-    compositeOf(page, CHUNK, [...chunkSubs(network), siblingOf(feedQuery(DOC.event), CHUNK), siblingOf(feedQuery(DOC.authorEvent), CHUNK), siblingOf(labelQuery, CHUNK)]),
+    compositeOf(page, CHUNK, [...chunkSubs(network), siblingOf(feedQuery(DOC.event), CHUNK), siblingOf(labelQuery, CHUNK)]),
   )
+  const firstCodes = codesOf(sdk, repo, res.page)
+  // Awaited below, after the feed: mark it handled now so a feed failure does not leave it unhandled.
+  firstCodes.catch(() => undefined)
 
   let feed: Map<string, TargetLog> | null
   try {
-    const [allEvents, allAuthorEvents] = await Promise.all([
-      rest(sdk, feedQuery(DOC.event), docsAt(res, 2), FEED_MAX_PAGES),
-      rest(sdk, feedQuery(DOC.authorEvent), docsAt(res, 3), FEED_MAX_PAGES),
-    ])
+    const allEvents = await rest(sdk, feedQuery(DOC.event), docsAt(res, 2), FEED_MAX_PAGES)
     // A private repo's member events are read through `readableEvents` (values opened).
-    const log = await toLog(repo, allEvents, allAuthorEvents)
-    feed = groupFeed(log.events, log.authorEvents)
-    // The pulls page and the header's PR count fold from the same feed.
-    seedRepoFeed(repo, feed)
+    const log = await toLog(repo, allEvents, [])
+    feed = groupFeed(log.events, [])
   } catch (e) {
     if (!(e instanceof IncompleteReadError)) throw e
     feed = null
   }
-  let labelDocs = docsAt(res, 4)
+  let labelDocs = docsAt(res, 3)
   let labelsComplete = true
   try {
     labelDocs = await rest(sdk, labelQuery, labelDocs, 10)
@@ -225,6 +230,7 @@ async function loadIndex(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<
     repo,
     network,
     feed,
+    closedOnce: undefined,
     labels: newestLabels(labelDocs),
     labelsComplete,
     rows: new Map(),
@@ -237,15 +243,21 @@ async function loadIndex(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<
     all: false,
     gate: gateFor(repo),
   }
-  await addChunk(state, state.desc, res.page, countsAt(res, 0))
+  await addChunk(state, state.desc, res.page, countsAt(res, 0), await firstCodes)
   await seedNames(network, res.page, docsAt(res, 1))
   return state
 }
 
 /** Record one keyset chunk and move its walk's bound. */
-async function addChunk(state: IndexState, walk: Walk, docs: readonly PlainDocument[], counts: ReadonlyMap<string, number> | null): Promise<void> {
+async function addChunk(
+  state: IndexState,
+  walk: Walk,
+  docs: readonly PlainDocument[],
+  counts: ReadonlyMap<string, number> | null,
+  codes: ReadonlyMap<string, number>,
+): Promise<void> {
   const before = walk.ids.length
-  await addDocs(state, docs, counts, walk)
+  await addDocs(state, docs, counts, codes, walk)
   if (docs.length < CHUNK) {
     walk.done = true
   } else {
@@ -416,28 +428,49 @@ export function compareRows(sort: IssueSelection['sort']): (a: IssueRow, b: Issu
   return sortRowsNewest
 }
 
-/** Feed targets whose fold passes the feed-decided filters (state, labels, assignee), or null when none applies. */
+/** Feed targets whose events pass the feed-decided filters (labels, assignee), or null when none applies. */
 function feedCandidates(state: IndexState, q: IssueSelection): Set<string> | null {
-  const byFeed = q.state === 'closed' || q.labels.length > 0 || (q.assignee !== null && q.assignee !== 'none')
+  const byFeed = q.labels.length > 0 || (q.assignee !== null && q.assignee !== 'none')
   if (!byFeed || state.feed === null) return null
   const out = new Set<string>()
   for (const [id, log] of state.feed) {
     if (id === '' || state.notIssues.has(id)) continue
-    // The fold needs the target's author (an authorEvent counts only from them); a row not
-    // loaded yet is folded after it is resolved, so admit it here on member events alone.
     const row = state.rows.get(id)
     if (row !== undefined) {
-      if (stateMatches(row, q.state) && rowMatches(row, { ...q, author: null, mentions: null, text: '' })) out.add(id)
+      if (rowMatches(row, { ...q, author: null, mentions: null, text: '' })) out.add(id)
       continue
     }
-    const kinds = new Set(log.events.map((e) => e.kind))
-    const couldBeClosed = kinds.has('close') || log.authorEvents.some((e) => e.kind === 'close')
-    if (q.state === 'closed' && !couldBeClosed) continue
-    if (q.labels.length > 0 && !kinds.has('labelAdd')) continue
+    // Not loaded yet: admitted on its events alone, filtered exactly once resolved.
+    if (q.labels.length > 0 && !log.events.some((e) => e.kind === 'labelAdd')) continue
     if (q.assignee !== null && q.assignee !== 'none' && !log.events.some((e) => e.kind === 'assign' && e.value === q.assignee)) continue
     out.add(id)
   }
   return out
+}
+
+/** Pages of issue-close transitions read for the Closed tab before it walks chunks instead. */
+const CLOSED_MAX_PAGES = 30
+
+/**
+ * Every issue ever closed (the targets of the repo's issue-close transitions, `perRepoKind`
+ * `kind == 1`): the Closed tab's candidates. Read once per index; null when there are too many.
+ */
+function closedCandidates(sdk: EvoSDK, state: IndexState): Promise<Set<string> | null> {
+  return serial(state, async () => {
+    if (state.closedOnce !== undefined) return state.closedOnce
+    try {
+      const docs = await queryAllDocuments(
+        sdk,
+        repoSource(state.repo).repoQuery(DOC.transition, { where: [['kind', '==', ISSUE_CLOSE]], orderBy: [['kind', 'asc']] }),
+        { maxPages: CLOSED_MAX_PAGES },
+      )
+      state.closedOnce = new Set(docs.map((d) => asIdentifierString(d['targetId'])).filter((id) => id !== ''))
+    } catch (e) {
+      if (!(e instanceof IncompleteReadError)) throw e
+      state.closedOnce = null
+    }
+    return state.closedOnce
+  })
 }
 
 /**
@@ -470,43 +503,23 @@ async function readAuthor(sdk: EvoSDK, state: IndexState, author: string): Promi
   return null
 }
 
-/** The feed's closed targets (issues or patches: resolve to tell). */
-function closedTargets(state: IndexState): string[] {
-  if (state.feed === null) return []
-  const out: string[] = []
-  for (const [id, log] of state.feed) {
-    if (id === '' || state.notIssues.has(id)) continue
-    const row = state.rows.get(id)
-    if (row !== undefined) {
-      if (!row.state.open) out.push(id)
-    } else if (log.events.some((e) => e.kind === 'close') || log.authorEvents.some((e) => e.kind === 'close')) {
-      out.push(id)
-    }
-  }
-  return out
-}
-
 /**
- * The repo's exact Open / Closed issue counts: closed from the complete feed (its closed
- * targets resolved to issues), open = total − closed − hidden. Null when the feed is too large
- * to fold, or the total is unknown.
+ * The repo's Open / Closed issue totals: the proved counts (read once per index, dropped with it
+ * by a write), less the issues this reader skipped as not shown. A skipped issue (not
+ * well-formed, or a stranger's) is never closed, so it sits in Open; once every issue is
+ * loaded it is subtracted exactly. In a private repo anyone's ciphertext counts in the total
+ * and cannot be told apart until read, so only a full read gives an open count there. Null
+ * when the counts could not be read.
  */
-async function exactCounts(sdk: EvoSDK, state: IndexState, total: number | null): Promise<{ open: number; closed: number } | null> {
-  if (state.feed === null || total === null) return null
-  await resolveIds(sdk, state, closedTargets(state))
-  const closed = [...state.rows.values()].filter((r) => !r.state.open).length
-  // Every issue is loaded: count directly (no reliance on the total), unless the index holds
-  // fewer issues than the total proves (it was read from a node without a newer issue).
-  if (state.all) {
-    if (state.rows.size + state.hidden.total < total) return null
-    return { open: state.rows.size - closed, closed }
-  }
-  // Not every issue is loaded: open = the countable total less the closed and the hidden seen so
-  // far. In a private repo anyone's ciphertext counts in the total but is not shown, so only a
-  // full read proves the open count there.
-  if (state.repo.visibility === 'private') return null
-  const open = total - closed - state.hidden.total
-  return open >= 0 ? { open, closed } : null
+async function exactCounts(sdk: EvoSDK, state: IndexState): Promise<{ open: number; closed: number } | null> {
+  state.counts ??= readRepoCounts(sdk, state.repo)
+  const counts = await state.counts.catch(() => {
+    state.counts = undefined
+    return null
+  })
+  if (counts === null) return null
+  if (state.repo.visibility === 'private' && !state.all) return null
+  return { open: Math.max(0, counts.issuesOpen - state.hidden.total), closed: counts.issuesClosed }
 }
 
 /**
@@ -564,10 +577,9 @@ export async function queryIssues(
   let closedCount: number | null = null
   const filtered = q.labels.length > 0 || q.author !== null || q.assignee !== null || q.mentions !== null || q.text.trim() !== ''
   if (!filtered) {
-    const exact = await exactCounts(sdk, state, total)
+    const exact = await exactCounts(sdk, state)
     openCount = exact?.open ?? null
     closedCount = exact?.closed ?? null
-    if (exact !== null && state.feed !== null) settleIssueCount(repo, exact.open, total)
   } else {
     // Both tabs' counts need every candidate in either state: the feed or author index names
     // them, or a finished walk has loaded every issue.
@@ -611,10 +623,14 @@ async function withBothStates(sdk: EvoSDK, state: IndexState, q: IssueSelection)
  * and the `author` index, intersected. Null when neither applies (the list walks chunks).
  */
 async function candidatesFor(sdk: EvoSDK, state: IndexState, q: IssueSelection): Promise<Set<string> | null> {
-  const fromFeed = feedCandidates(state, q)
-  const mine = q.author === null ? null : await authorCandidates(sdk, state, q.author)
-  if (mine === null) return fromFeed
-  return fromFeed === null ? mine : new Set([...fromFeed].filter((id) => mine.has(id)))
+  const sets = [
+    feedCandidates(state, q),
+    q.author === null ? null : await authorCandidates(sdk, state, q.author),
+    q.state === 'closed' ? await closedCandidates(sdk, state) : null,
+  ].filter((c): c is Set<string> => c !== null)
+  const [first, ...others] = sets
+  if (first === undefined) return null
+  return new Set([...first].filter((id) => others.every((o) => o.has(id))))
 }
 
 /** The repo's pinned issues, newest pin first (one `$id in` read for any not loaded yet). */
@@ -629,19 +645,4 @@ async function pinnedRows(sdk: EvoSDK, state: IndexState): Promise<IssueRow[]> {
 /** The loaded rows of `ids`, in order (ids not loaded are skipped). */
 function rowsOf(state: IndexState, ids: Iterable<string>): IssueRow[] {
   return [...ids].map((id) => state.rows.get(id)).filter((r): r is IssueRow => r !== undefined)
-}
-
-/**
- * The exact open issue count for the repo header (null when not provable). Reads the index
- * (one composite and the feed, shared with the Issues tab) and resolves the closed targets.
- */
-export async function foldIssueOpenCount(sdk: EvoSDK, repo: RepoRef, total: number | null, network: Network = DEFAULT_NETWORK): Promise<number | null> {
-  if (total === 0) return 0
-  // The header of every repo page asks: read the index for it only when one composite is likely
-  // to hold the whole repo, or when the Issues tab has read it already.
-  if (!indexes.has(indexKey(repo, network)) && !(total !== null && total < CHUNK)) return null
-  const state = await indexOf(sdk, repo, network)
-  const exact = await exactCounts(sdk, state, total)
-  if (exact !== null) settleIssueCount(repo, exact.open, total)
-  return exact?.open ?? null
 }

@@ -14,7 +14,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { GitBranch } from 'lucide-react'
 
-import { createPatch, findForks, readRefs, repoKey, type ResolvedRef, type RepoRef } from '@/lib/repo'
+import { DraftMarkError, createPatch, findForks, readRefs, repoKey, type ResolvedRef, type RepoRef } from '@/lib/repo'
 import { branchName, commitSubject, readCommit, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
 import { preferring } from '@/lib/view/pull-diff'
 import { dropPrDraft, loadPrDraft, savePrDraft } from '@/lib/view/pr-draft'
@@ -152,6 +152,13 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
       dropPrDraft(repo)
       router.push(repoHref('/repo/pull', addr, { number: String(created.number), created: '1' }))
     } catch (e) {
+      if (e instanceof DraftMarkError) {
+        // The PR itself landed: never post it again. Open it; its page offers "Convert to draft".
+        dropPrDraft(repo)
+        draftIntent.renew()
+        router.push(repoHref('/repo/pull', addr, { number: String(e.created.number), created: '1' }))
+        return
+      }
       if (e instanceof SupersededWriteError) {
         // The earlier version of this PR was posted: this draft is done (never post it twice).
         dropPrDraft(repo)

@@ -2,12 +2,12 @@
  * PR action gating (view glue) — which PR state controls a viewer is shown, and what the
  * merge control may honestly promise.
  *
- * The web app cannot merge code. What it can do is append a `merge` event naming the PR head.
- * Consensus admits an `event` only from a current maintainer or writer, and `foldPrStateV2`
- * applies the merge only when the head has been a tip of the base ref. So the control is
- * offered only to members, is labelled "Mark as merged", and says up front whether the mark
- * will count now (the head is already on the base branch) or stay inert until the code gets
- * there by a push.
+ * The web app cannot merge code. What it can do is record a merge `transition` naming the PR
+ * head. Consensus admits a merge only from a current maintainer or writer, and only from an open,
+ * ready PR; a recorded merge is final (D-9). Readers label a merge whose commit never was a tip
+ * of the base ref ("merge commit not found on the base"). So the control is offered only to
+ * members, is labelled "Mark as merged", and says up front whether the head is on the base
+ * branch already or the merge will carry that label until a push puts it there.
  *
  * Two branch rules then narrow it for a writer (`review-parity-spec.md` §4.8):
  *
@@ -18,8 +18,8 @@
  *   disabled; a maintainer is offered "Merge anyway (policy override)". Nothing at consensus
  *   requires approvals.
  *
- * Close/reopen stay available to the PR author as well (an `authorEvent`), but not to anyone
- * consensus would refuse.
+ * Close/reopen stay available to the PR author as well (a transition written as the author), but
+ * not to anyone consensus would refuse.
  */
 
 import { isOidHex, isPlainBranchRef, matchesProtected, type Holdings } from '../rules'
@@ -34,9 +34,9 @@ export interface PullActions {
   /** Offer close (open PRs) / reopen (closed, unmerged PRs). */
   readonly canCloseReopen: boolean
   /**
-   * The mark would count right away: the head has already been a tip of the base branch.
-   * When false the event still lands, but the fold ignores it until a push puts the head
-   * there — the dialog must say so.
+   * The head has already been a tip of the base branch, so a merge mark is on the base. When
+   * false the mark still records the PR merged, labelled "merge commit not found on the base"
+   * until a push puts the head there — the dialog must say so.
    */
   readonly markCountsNow: boolean
   /** A short reason shown when the merge control is withheld; null when shown. */

@@ -12,7 +12,7 @@ import { useState } from 'react'
 import { Fingerprint, HardDrive, ShieldPlus, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { RepoRef } from '@/lib/repo'
-import { grantMember, invalidateMembers, readMembershipsCached, revokeMember } from '@/lib/repo'
+import { grantMember, invalidateMembers, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
 import type { Membership, Role as MemberRole } from '@/lib/rules/v2'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { previewCreate, previewDelete } from '@/lib/sdk'
@@ -44,7 +44,7 @@ export function SettingsContent({ home, reload }: { home: RepoHome; reload: () =
  * creating their document and removes one by deleting it; consensus refuses anyone else.
  */
 function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; reload: () => void }): JSX.Element {
-  const { sdk, ready, network } = useSdk([repo.forge.core, repo.forge.collab])
+  const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const { identity, signer } = useAuth()
   const guard = useWriteGuard()
   const isOwner = identity === repo.ownerId
@@ -227,6 +227,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           </DetailRow>
           <DetailRow label="forge-collab">
             <Oid value={repo.forge.collab} chars={12} label="forge-collab contract id" />
+          </DetailRow>
+          <DetailRow label="forge-community">
+            <Oid value={repo.forge.community} chars={12} label="forge-community contract id" />
           </DetailRow>
           <DetailRow label="Network">
             <NetworkBadge always />

@@ -2300,13 +2300,7 @@ mod tests {
 
     fn test_repo() -> RepoRef {
         RepoRef {
-            forge: crate::network::ForgeIds {
-                core: "C".into(),
-                collab: "L".into(),
-                group: "G".into(),
-                group_owner: None,
-                superseded_in_group: vec![],
-            },
+            forge: crate::network::ForgeIds::test_forge(),
             repo_id: "R".into(),
             owner_id: "alice".into(),
             name: "proj".into(),

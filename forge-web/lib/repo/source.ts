@@ -2,20 +2,22 @@
  * RepoSource — where a repo's documents live and how a query is scoped to one repo.
  *
  * Every reader in `lib/repo` and `lib/view` builds its queries here. Every repo shares
- * forge-core (code: refs, config, packs, members, releases, labels) and forge-collab
- * (issues, PRs, comments, reviews, events, social). Indexes that list a repo's documents lead
+ * forge-core (code: refs, config, packs, members, releases, labels), forge-collab (issues,
+ * PRs, transitions, comments, reviews, events, milestones) and forge-community (stars,
+ * watches, follows, check runs, policies, webhooks, profiles). Indexes that list a repo's documents lead
  * with `repoId`, so {@link RepoSource.repoQuery} prefixes `repoId ==` (`forge-v2.md` §2).
  * Indexes keyed by a document id (`targetId`, `patchId`) need no prefix — consensus ties
  * those references to the same repo — and go through {@link RepoSource.targetQuery}.
  *
  * Parity: forge-core's v2 data plane scopes its reads the same way; the index shapes are the
- * contract's own (`forge-contracts/contracts/forge-core.json`, `forge-collab.json`).
+ * contract's own (`forge-contracts/contracts/forge-{core,collab,community}.json`).
  */
 
 import { hexToBase64, type DocumentQuery, type OrderByClause, type WhereClause } from '../sdk'
+import type { ForgeIds } from '../deployments'
 import { DOC, type RepoRef } from './contract'
 
-/** The forge-v2 document types held by forge-core; everything else is forge-collab. */
+/** The forge-v2 document types held by forge-core. */
 const CORE_TYPES: ReadonlySet<string> = new Set([
   DOC.repo,
   DOC.maintainer,
@@ -32,6 +34,24 @@ const CORE_TYPES: ReadonlySet<string> = new Set([
   DOC.runner,
   DOC.topic,
 ])
+
+/** The forge-v2 document types held by forge-community; the rest is forge-collab. */
+export const COMMUNITY_TYPES: ReadonlySet<string> = new Set([
+  DOC.star,
+  DOC.starBeat,
+  DOC.watch,
+  DOC.follow,
+  DOC.checkRun,
+  DOC.policy,
+  DOC.webhook,
+  DOC.profile,
+])
+
+/** The contract of `forge` that holds `type` (`forge-v2.md` §2). */
+export function contractOf(forge: ForgeIds, type: string): string {
+  if (CORE_TYPES.has(type)) return forge.core
+  return COMMUNITY_TYPES.has(type) ? forge.community : forge.collab
+}
 
 /** The clauses a caller adds to a scoped query. */
 export interface QueryShape {
@@ -68,16 +88,14 @@ function build(dataContractId: string, documentTypeName: string, shape: QuerySha
 
 /** The {@link RepoSource} for `repo`. Cheap: a few closures, no I/O. */
 export function repoSource(repo: RepoRef): RepoSource {
-  const contractOf = (type: string): string =>
-    CORE_TYPES.has(type) ? repo.forge.core : repo.forge.collab
   const repoQuery = (type: string, shape: QueryShape = {}): DocumentQuery =>
-    build(contractOf(type), type, {
+    build(contractOf(repo.forge, type), type, {
       ...shape,
       where: [['repoId', '==', repo.repoId], ...(shape.where ?? [])],
     })
   return {
     repoQuery,
-    targetQuery: (type, shape = {}) => build(contractOf(type), type, shape),
+    targetQuery: (type, shape = {}) => build(contractOf(repo.forge, type), type, shape),
     chunkQuery: (packHashHex, uploader, seqs) =>
       repoQuery(DOC.chunk, {
         where: [

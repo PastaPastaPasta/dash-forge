@@ -560,7 +560,7 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
                 size="sm"
                 disabled={!changed || guard.disabledReason !== null}
                 onClick={() => {
-                  if (guard.check(cost, 'collab')) setConfirming(true)
+                  if (guard.check(cost, 'community')) setConfirming(true)
                 }}
               >
                 Save policy

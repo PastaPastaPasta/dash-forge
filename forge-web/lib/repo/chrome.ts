@@ -144,7 +144,7 @@ function chromeSubs(forge: ForgeIds, network: Network, known: RepoTimelines | un
     limit: PAGE,
   })
   return [
-    { dataContractId: forge.collab, documentType: DOC.star, kind: 'counts', bind },
+    { dataContractId: forge.community, documentType: DOC.star, kind: 'counts', bind },
     { dataContractId: forge.collab, documentType: DOC.issue, kind: 'counts', bind },
     { dataContractId: forge.collab, documentType: DOC.patch, kind: 'counts', bind },
     { dataContractId: forge.core, documentType: DOC.maintainer, bind, orderBy: ordered('memberId'), limit: PAGE },
