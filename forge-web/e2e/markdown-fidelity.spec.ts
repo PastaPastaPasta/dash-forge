@@ -43,13 +43,13 @@ test.describe('markdown fidelity (dash showcase mirror)', () => {
   test('fg2-2. imported issue #6935: comment-mode breaks, GitHub mentions (L-41, L-38)', async ({ page }) => {
     await page.goto(repoUrl('issue', '&number=6935', DASH), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
-    const body = page.locator('.text-prose').first()
+    const body = page.locator('[data-tap-exempt="prose"]', { hasText: 'Backup freezes' }).first()
     await expect(body).toContainText('Backup freezes', { timeout: 60_000 })
     // "…export / Backup freezes… / Force close needed." are three lines, as on GitHub.
     const para = body.locator('p', { hasText: 'Exporting of transactions' })
     await expect(para.locator('br')).toHaveCount(2)
     // The imported author links to GitHub, never to a Forge profile of the same name.
-    const mention = body.getByRole('link', { name: /^@coffseducation$/i })
+    const mention = body.getByRole('link', { name: /^@coffseducation$/i }).first()
     await expect(mention).toHaveAttribute('href', /^https:\/\/github\.com\/coffseducation$/i)
     await expect(page.locator('a[href^="/u/?name=coffseducation"]')).toHaveCount(0)
     await shot(page, 'fg2-02-issue-6935')
@@ -58,7 +58,7 @@ test.describe('markdown fidelity (dash showcase mirror)', () => {
   test('fg2-3. imported issue #7512: cross-repo refs and #N (L-40, L-39)', async ({ page }) => {
     await page.goto(repoUrl('issue', '&number=7512', DASH), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
-    const body = page.locator('.text-prose').first()
+    const body = page.locator('[data-tap-exempt="prose"]', { hasText: 'dashpay/platform' }).first()
     await expect(body).toContainText('dashpay/platform', { timeout: 60_000 })
     await expect(body.getByRole('link', { name: 'dashpay/platform#4344' }).first()).toHaveAttribute('href', 'https://github.com/dashpay/platform/issues/4344')
     const own = body.getByRole('link', { name: /^dashpay\/dash#\d+$/ }).first()
