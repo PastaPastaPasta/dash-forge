@@ -514,9 +514,10 @@ async function submitWith(
   const total = 1 + draft.comments.length
   const done = () => (current.reviewId ? 1 : 0) + current.comments.filter((c) => c.landedId).length
   onProgress?.({ done: done(), total })
+  // Settled once for the review and all its comments: they must agree on who is writing.
+  const settled = await settledPost(sdk, repo, auth.identityId, post, draft.verdict)
   let reviewId = current.reviewId
   if (reviewId === undefined) {
-    const settled = await settledPost(sdk, repo, auth.identityId, post, draft.verdict)
     const r = await write(sdk, auth, repo, DOC.review, reviewData({
       patchId: draft.prId,
       verdict: draft.verdict,
@@ -541,7 +542,7 @@ async function submitWith(
       body: c.body,
       anchor: { ...c.anchor, commitOid: c.anchor.commitOid ?? draft.headOid },
       reviewId,
-      post,
+      post: settled,
     }, auth.identityId), `review:${draft.draftId}:comment:${c.localId}`, writer)
     ids.push(r.documentId)
     const comments = [...current.comments]

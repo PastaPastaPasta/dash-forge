@@ -307,6 +307,20 @@ describe('the review fixes', () => {
     expect(r?.data['asMember']).toBeDefined()
   })
 
+  it('a member read as a non-member on a locked PR: re-read, then the review and its comments all carry the proof', async () => {
+    held['writer'] = [BOB]
+    const draft: ReviewDraft = {
+      draftId: 'l', network: 'devnet', identity: BOB, repoId: REPO.repoId, prId: PR, headOid: HEAD, verdict: 'comment', summary: 's', startedAt: 0,
+      comments: [{ localId: 'a', anchor: { path: 'f', line: 1, side: 1 }, body: 'one' }],
+    }
+    await submitReviewDraft(sdk, auth(BOB), REPO, draft, { isMember: false, locked: true }, undefined, { reviews: async () => [], comments: async () => [] })
+    const made = await judged()
+    expect(types(made)).toEqual(['review', 'comment'])
+    expect(made.every((c) => c.data['asMember'] !== undefined)).toBe(true)
+    await createReview(sdk, auth(BOB), REPO, { patchId: PR, verdict: 'approve', commitOid: HEAD, post: { isMember: false, locked: true } })
+    expect((await judged())[0]?.data).toMatchObject({ verdict: 1 })
+  })
+
   it('a release refused by oneLive (a stale live total) is read again and retried once', async () => {
     const { ConsensusRefusal } = await import('../sdk')
     refuseNext = new ConsensusRefusal(10422, 'breaks its propertyConstraints rule "oneLive": NotMet')

@@ -140,11 +140,12 @@ export function commentProof(signer: string, post: PostContext | undefined): Rec
 
 /**
  * `post` with its membership settled for a review of `verdict`: a non-member's approve or request
- * changes is recorded as 4/5, which never counts, so a "not a member" read (still loading, failed,
- * or cached from before they were added) is read again, uncached, before it decides that.
+ * changes is recorded as 4/5, which never counts, and a non-member's post to a locked thread is
+ * refused, so a "not a member" read (still loading, failed, or cached from before they were
+ * added) is read again, uncached, before it decides either.
  */
 export async function settledPost(sdk: EvoSDK, repo: RepoRef, signer: string, post: PostContext, verdict: VerdictInput): Promise<PostContext> {
-  if (post.isMember || verdict === 'comment') return post
+  if (post.isMember || (verdict === 'comment' && post.locked !== true)) return post
   const members = await readMemberships(sdk, repo)
   return members.some((m) => m.identity === signer) ? { ...post, isMember: true } : post
 }
@@ -641,9 +642,9 @@ export async function createReview(
   repo: RepoRef,
   input: { patchId: string; verdict: VerdictInput; commitOid: string; body?: string; intent?: string; post: PostContext },
 ): Promise<WriteResult> {
-  if (lockedOut(input.post)) throw new Error(LOCKED_REASON)
   if (!isRc1OidHex(input.commitOid)) throw new Error('a review names a 20- or 32-byte commit')
   const post = await settledPost(sdk, repo, auth.identityId, input.post, input.verdict)
+  if (lockedOut(post)) throw new Error(LOCKED_REASON)
   const data: Record<string, unknown> = {
     patchId: decodeIdentifier(input.patchId),
     ...reviewVerdictFields(input.verdict, auth.identityId, post),
