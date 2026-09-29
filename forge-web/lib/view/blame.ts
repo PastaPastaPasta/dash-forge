@@ -1,7 +1,9 @@
 /**
  * Blame (F-5): each line of a file at a commit, with the commit that last changed it, computed in
- * the browser over the file's first-parent history ({@link logPage} with a path, the same walk and
- * session memo as the History page), in the manner of `git blame --first-parent`.
+ * the browser over the file's first-parent history ({@link pathVersions}: the push-time history
+ * index's list of the file's versions when one covers the commit, else the same walk and session
+ * memo as the History page), in the manner of `git blame --first-parent`. With the index, each
+ * version is one blob read (a few read ahead at once) and no commit or tree is read.
  *
  * Not always git's answer: the line alignment is our Myers diff with git's change compaction on
  * top, not xdiff's own diff, so on some edits (a line that appears several times, moved around) a
@@ -18,8 +20,8 @@
 
 import { ObjectTooLargeError } from '../browse'
 import { BlameState, lineMap } from './blame-core'
-import { diffTrees, historyWalker, type WalkOptions } from './commit-log'
-import { decodeTextBlob, type CommitObject } from './git-objects'
+import { diffTrees, historyWalker, type LogEntry, type PrefixReader, type WalkOptions } from './commit-log'
+import { commitSubject, decodeTextBlob } from './git-objects'
 import { commitVia, entryMode, entryOid, isFileMode, PATH_WALK_CAP, pathEntryAt, pathVersions } from './path-history'
 import { readBlob, type ObjectReader } from './tree-nav'
 
@@ -29,6 +31,8 @@ export const BLAME_MAX_BYTES = 2 * 1024 * 1024
 export const BLAME_MAX_VERSIONS = 200
 /** Most commits the walk examines in all (a file untouched for years must not walk all history). */
 export const BLAME_MAX_COMMITS = 10_000
+/** Versions whose blobs are read ahead while one is compared, when the history index names them. */
+const BLAME_READ_AHEAD = 4
 
 /** A run of consecutive lines blamed on one commit. */
 export interface BlameHunk {
@@ -41,8 +45,8 @@ export interface BlameHunk {
 export interface BlameResult {
   readonly lines: readonly string[]
   readonly hunks: readonly BlameHunk[]
-  /** The commits the hunks name (and only those), with their commit objects (author, time, subject). */
-  readonly commits: ReadonlyMap<string, CommitObject>
+  /** The commits the hunks name (and only those): author, time and subject. */
+  readonly commits: ReadonlyMap<string, LogEntry>
   /**
    * The walk stopped before every line reached the commit that added it (the version cap, the
    * commit budget, or a rename too large to look up): the oldest hunks may name a later commit than
@@ -134,7 +138,7 @@ export class BlameStoppedError extends Error {
  * {@link BlameStoppedError} that carries the partial result.
  */
 export async function blameFile(
-  reader: ObjectReader,
+  reader: PrefixReader,
   tipOid: string,
   path: string,
   {
@@ -157,7 +161,19 @@ export async function blameFile(
   const tipText = await textOf(reader, entry)
   const state = new BlameState(tipText)
   // Every commit the walk met, so the hunks' owners can be looked up at the end.
-  const seen = new Map<string, CommitObject>()
+  const seen = new Map<string, LogEntry>()
+  // Each version's text, read once. The index names versions ahead, so their reads can overlap.
+  const texts = new Map<string, Promise<string>>()
+  const textFor = (blob: string): Promise<string> => {
+    let t = texts.get(blob)
+    if (t === undefined) {
+      t = textOf(reader, blob)
+      // A read ahead that fails is reported when its version is reached, not before.
+      t.catch(() => undefined)
+      texts.set(blob, t)
+    }
+    return t
+  }
   let approximate = false
   let versions = 0
   let partial = false
@@ -177,7 +193,7 @@ export async function blameFile(
   // The result for a final attribution: the hunks and the commits they name.
   const resultOf = (owner: readonly string[], isPartial: boolean): BlameResult => {
     const hunks = toHunks(owner as string[])
-    const commits = new Map(hunks.map((h) => [h.oid, seen.get(h.oid) as CommitObject]))
+    const commits = new Map(hunks.map((h) => [h.oid, seen.get(h.oid) as LogEntry]))
     return { lines: state.lines, hunks, commits, partial: isPartial, approximate, versions, renames, unfollowedRename }
   }
   // What a stopped walk has: the open lines go to the oldest version reached.
@@ -194,17 +210,20 @@ export async function blameFile(
       }
       const page = await pathVersions(reader, start, at, { walker, signal, cap: Math.min(pageCap, maxCommits - examined), onExamined: report })
       examined += page.examined
-      for (const e of page.entries) {
+      for (const [i, e] of page.entries.entries()) {
         signal?.throwIfAborted()
-        seen.set(e.oid, e.commit)
+        seen.set(e.oid, e)
+        for (const ahead of page.entries.slice(i + 1, i + 1 + BLAME_READ_AHEAD)) {
+          if (ahead.entry !== undefined && isFileEntry(ahead.entry)) void textFor(ahead.entry)
+        }
         if (current === null) {
           current = { oid: e.oid, text: tipText, blob: entry }
         } else {
           // `current.oid` changed the file from this version's text to `current.text`. A version
           // that was a directory or a submodule there means `current.oid` made the file.
-          const older = await pathEntryAt(reader, walker, e.oid, at)
+          const older = e.entry ?? (await pathEntryAt(reader, walker, e.oid, at))
           if (!isFileEntry(older)) break outer
-          const text = await textOf(reader, older)
+          const text = await textFor(older)
           if (state.step(current.oid, lineMap(text, current.text)).approximate) approximate = true
           current = { oid: e.oid, text, blob: older }
           versions += 1
@@ -242,7 +261,8 @@ export async function blameFile(
   // walk reached the commit that added the file). No version at all: the path is unchanged in
   // every commit the capped walk examined, so the tip stands in, and the result says it is partial.
   if (current === null) {
-    seen.set(tipOid, await commitVia(reader, walker, tipOid))
+    const tip = await commitVia(reader, walker, tipOid)
+    seen.set(tipOid, { oid: tipOid, subject: commitSubject(tip.message), author: tip.author })
     current = { oid: tipOid, text: tipText, blob: entry }
     partial = true
   }

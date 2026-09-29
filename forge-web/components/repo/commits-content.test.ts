@@ -12,7 +12,7 @@ import type { LogEntry } from '@/lib/view'
 import type { LogPage } from '@/lib/view/path-history'
 import { freshLog, withPage } from './commits-content'
 
-const entry = (oid: string): LogEntry => ({ oid, subject: oid, commit: { tree: '', parents: [], author: { name: '', email: '', when: 0 }, committer: { name: '', email: '', when: 0 }, message: oid } })
+const entry = (oid: string): LogEntry => ({ oid, subject: oid, author: { name: '', when: 0 } })
 const page = (oids: string[], next: string | null): LogPage => ({ entries: oids.map(entry), next, examined: oids.length, capped: false })
 
 describe('commit log paging state', () => {
@@ -25,6 +25,11 @@ describe('commit log paging state', () => {
   it('a first page landing twice (a new reader re-ran the walk) is not listed twice', () => {
     const once = withPage(freshLog('c3'), page(['c3', 'c2'], 'c1'))
     expect(withPage(once, page(['c3', 'c2'], 'c1')).entries.map((e) => e.oid)).toEqual(['c3', 'c2'])
+  })
+
+  it('counts the entries the history index listed', () => {
+    const s = withPage(withPage(freshLog('c3'), { ...page(['c3', 'c2'], 'c1'), indexed: 2 }), page(['c1'], null))
+    expect(s.indexed).toBe(2)
   })
 
   it('a restart starts empty at the tip', () => {
