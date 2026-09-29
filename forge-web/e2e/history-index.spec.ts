@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { collectPageErrors, countDapi, E2E_DEVNET, repoUrl, shot } from './helpers'
+import { collectPageErrors, countDapi, DAPI_METHOD, decodeDocumentsRequest, E2E_DEVNET, repoUrl, shot } from './helpers'
 
 /**
  * The history index (packManifest kind 3, docs/design/history-index.md) on a live repo's home:
@@ -24,10 +24,11 @@ const [OWNER, NAME] = (process.env['E2E_HISTORY_REPO'] ?? 'unofficial-dashpay-da
 const REPO = { owner: OWNER, name: NAME } as const
 /**
  * DAPI requests one cold home may make with the history index (every kind, incl. the connect).
- * dashpay/dash measured 100 before the index (the column's 400-commit walk) and 75 with it on
- * 2026-09-29; the rest is the repo chrome, which S-1 cuts separately.
+ * Measured with master 758df8b4's page-budget method (2026-09-29): dashpay/dash 50 on master (25
+ * of them the column's and the count's history walk), 26 with the index; preact 31 → 19,
+ * ripgrep 18 → 13.
  */
-const MAX_DAPI = Number(process.env['E2E_HISTORY_MAX_DAPI'] ?? 80)
+const MAX_DAPI = Number(process.env['E2E_HISTORY_MAX_DAPI'] ?? 30)
 
 const pendingCells = (page: Page) => page.getByTestId('commit-cell-pending')
 const commitCells = (page: Page) => page.getByTestId('commit-cell')
@@ -42,16 +43,27 @@ test.describe('history index (live)', () => {
   test.skip(E2E_DEVNET !== 'moutai', 'the history-indexed repo lives on moutai')
 
   test('hi-1. the home column and count come from the index: real commits on every row, an exact count, no walk', async ({ browser }) => {
-    const context = await browser.newContext()
+    const context = await browser.newContext({ viewport: { width: 1280, height: 900 } })
     const page = await context.newPage()
     const { errors } = collectPageErrors(page)
     const counts = countDapi(page)
+    // The history walk's read-ahead blocks (a `chunk` read of 17-19 seqs): the index removes them.
+    let walkBlocks = 0
+    page.on('request', (r) => {
+      if (DAPI_METHOD.exec(r.url())?.[1] !== 'getDocuments') return
+      const d = decodeDocumentsRequest(r.postDataBuffer() ?? null)
+      const n = d?.documentType === 'chunk' ? d.where.find((w) => w.inCount !== null)?.inCount : undefined
+      if (typeof n === 'number' && n >= 17 && n <= 19) walkBlocks++
+    })
 
     await page.goto(repoUrl('', '', REPO), { waitUntil: 'domcontentloaded' })
     await settledColumn(page)
     const count = page.getByTestId('commit-count')
     await expect(count).toContainText(/^\s*[\d,]+ commits?\s*$/, { timeout: 30_000 })
-    await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => undefined)
+    // Settle as page-budget.spec.ts does, so the numbers compare.
+    await page.waitForLoadState('networkidle', { timeout: 30_000 }).catch(() => undefined)
+    await page.waitForTimeout(2_500)
+    await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => undefined)
 
     const rows = await page.locator('main div.group.flex.h-9').count()
     expect(await commitCells(page).count(), 'every row has a commit').toBe(rows)
@@ -62,6 +74,7 @@ test.describe('history index (live)', () => {
     const budget = JSON.stringify(Object.fromEntries(counts))
     test.info().annotations.push({ type: 'dapi', description: `${total} DAPI requests ${budget}; ${await count.innerText()}` })
     await shot(page, 'hi-01-home-from-history-index')
+    expect(walkBlocks, 'history walk read-ahead blocks').toBe(0)
     expect(total, budget).toBeLessThanOrEqual(MAX_DAPI)
     expect(errors, errors.join('\n')).toEqual([])
 
