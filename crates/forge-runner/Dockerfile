@@ -3,13 +3,12 @@
 #
 #   docker build -f crates/forge-runner/Dockerfile -t forge-runner .
 #
-# The runner starts job containers through a Docker daemon it is given. Two ways to run it,
-# documented in docs/guides/self-host-runner.md:
-#   * with a dedicated daemon (rootless Docker, or a Docker-in-Docker sidecar) reached over
-#     DOCKER_HOST: recommended; the jobs never see the host's daemon;
-#   * with the host socket mounted (-v /var/run/docker.sock:/var/run/docker.sock): simplest, but
-#     whoever can make the runner start containers controls the host. The job containers
-#     themselves never get the socket (`mount_docker_socket = false`, the default).
+# The runner starts job containers through a Docker daemon it is given (DOCKER_HOST). That
+# daemon is the security boundary: a job container on it is only as contained as the daemon
+# lets it be. Give the runner a daemon of its own: rootless Docker, a sysbox runtime, or a
+# Docker-in-Docker sidecar with TLS (tcp://…:2376) or a unix socket shared only with the
+# runner. Never the host's /var/run/docker.sock, and never an unauthenticated tcp://…:2375.
+# docs/guides/self-host-runner.md §Security.
 # Base images are pinned by digest; bump them deliberately (same pins as forge-relay's Dockerfile).
 
 FROM rust:1.98-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS builder
@@ -54,7 +53,9 @@ FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates git docker.io \
  && rm -rf /var/lib/apt/lists/* \
- && useradd --system --create-home --uid 10001 runner
+ && useradd --system --create-home --uid 10001 runner \
+ && mkdir -p /var/lib/forge-runner /etc/forge-runner \
+ && chown runner:runner /var/lib/forge-runner
 COPY --from=builder /out/ /usr/local/bin/
 COPY --from=act /usr/local/bin/act /usr/local/bin/act
 USER runner

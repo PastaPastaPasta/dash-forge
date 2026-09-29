@@ -95,14 +95,16 @@ These are what the protocol and the current forge-collab contract allow. They ar
 
 ## Self-host a runner
 
-[`forge-runner`](self-host-runner.md) watches a repository, runs `.forge/workflows/*.yml` (GitHub Actions syntax) with [nektos/act](https://github.com/nektos/act) in Docker on every push, and reports each job through `dg ci report` with its log. Its isolation, in short:
+[`forge-runner`](self-host-runner.md) watches a repository, runs `.forge/workflows/*.yml` (GitHub Actions syntax) with [nektos/act](https://github.com/nektos/act) in Docker on every push, and reports each job through `dg ci report` with its log.
 
-- **No Docker socket in job containers.** Job containers do not get the socket, and they run on the `bridge` network, not the host's.
-- **No inherited environment.** Jobs never see the runner's own environment, and `DASH_FORGE_KEY` never leaves the runner.
-- **Secrets only on trusted refs.** A secrets file is passed only to refs in `trusted_refs`, and secret values are redacted from logs before upload.
-- **The checkout cannot configure the run.** A checked-out repository cannot plant act configuration (`.actrc`, `.env`, `.secrets`).
-- **No fork pull requests.** The runner runs pushes to the watched repository's own refs only, so a pull request from a fork never runs, with or without secrets.
+**The security boundary is the Docker daemon you give the runner.** Give it a daemon of its own: rootless, sysbox, or a Docker-in-Docker sidecar over TLS. Never the host's socket. On top of that, the runner:
 
-[Self-host a CI runner](self-host-runner.md#security) has the details and what to put around it: a dedicated Docker daemon, and a network the jobs cannot reach out of.
+- **Refuses workflow options that reach past the container.** A job that sets docker options or mounts (`container.options` / `volumes`, the same on `services`), or calls a reusable workflow, is refused unless the repository allows it.
+- **Keeps the daemon's socket out of jobs,** and puts jobs on the `bridge` network, not the host's.
+- **Hands secrets and a `GITHUB_TOKEN` to trusted refs only.** Other runs get an empty token, and secret values are redacted from logs before upload.
+- **Clears act's environment,** so `DASH_FORGE_KEY` never reaches act or a job, and ignores act configuration planted in the checkout.
+- **Never runs a fork's pull request:** it runs pushes to the watched repository's own refs only.
+
+[Self-host a CI runner](self-host-runner.md#security) has the details.
 
 **Coming soon:** reporting from GitHub Actions (`forge-check-action`).
