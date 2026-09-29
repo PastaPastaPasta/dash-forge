@@ -23,9 +23,9 @@ import { hexToBytes } from '@noble/hashes/utils.js'
 import { decodeIdentifier } from '../auth/base58'
 import { compareKey } from '../rules/oid'
 import {
+  LOCK_DELTA,
   PR_MERGE,
   TRANSITION_KINDS,
-  lockTransition,
   nextTransition,
   refusedRule,
   repoCounts,
@@ -307,7 +307,8 @@ export async function writeLock(
   const { target, lock } = input
   const once = async (): Promise<WriteResult> => {
     const state = (await readThreadStates(sdk, repo, [target.id])).get(target.id) ?? threadStateOf(0)
-    const move = lockTransition(target.type, state.locked, lock)
+    const sum = state.code + (state.locked ? LOCK_DELTA : 0)
+    const move = nextTransition(target.type, sum, lock ? 'lock' : 'unlock', 'member', target.number)
     if (move === null) return { documentId: '', confirmed: true, cost: previewCredits(0), actualCredits: 0 }
     return write(DOC.transition, moveData(target, move), input.intent ? `${input.intent}:${lock ? 'lock' : 'unlock'}` : undefined)
   }

@@ -1,0 +1,64 @@
+{
+  "name": "source_pinned_to_a_maintainer",
+  "description": "A check pinned to a maintainer passes on that maintainer's run.",
+  "case": "checks",
+  "rules": "v2",
+  "input": {
+    "runs": [
+      {
+        "id": "r1",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "build",
+        "status": "completed",
+        "reporter": "maint",
+        "createdAt": 100,
+        "conclusion": "success"
+      },
+      {
+        "id": "r2",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "build",
+        "status": "completed",
+        "reporter": "ci-bot",
+        "createdAt": 200,
+        "conclusion": "failure"
+      }
+    ],
+    "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "runners": [
+      "ci-bot",
+      "ci-other"
+    ],
+    "policy": {
+      "requiredChecks": [
+        "build"
+      ],
+      "requiredCheckSources": [
+        "maint"
+      ]
+    }
+  },
+  "expected": {
+    "required": [
+      {
+        "name": "build",
+        "state": "passed",
+        "runId": "r1"
+      }
+    ],
+    "met": true,
+    "untrusted": 0
+  }
+}

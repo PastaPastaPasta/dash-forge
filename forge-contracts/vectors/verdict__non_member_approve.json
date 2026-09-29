@@ -1,0 +1,12 @@
+{
+  "name": "verdict_non_member_approve",
+  "description": "Review verdict code 4 (RC1 R-16): a non-member's approve, recorded without a membership proof and never counted. Both clients label it so the history shows why it does not count.",
+  "case": "verdict_label",
+  "input": {
+    "code": 4
+  },
+  "expected": {
+    "label": "approved (not a member)",
+    "code": 4
+  }
+}

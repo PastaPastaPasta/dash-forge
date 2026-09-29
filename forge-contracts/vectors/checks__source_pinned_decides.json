@@ -1,0 +1,80 @@
+{
+  "name": "source_pinned_decides",
+  "description": "RC1 R-08: a required check paired with a source counts only that source's runs; another trusted reporter's newer success does not stand in for the pinned runner's failure. The unpinned check is decided by any trusted reporter.",
+  "case": "checks",
+  "rules": "v2",
+  "input": {
+    "runs": [
+      {
+        "id": "r1",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "build",
+        "status": "completed",
+        "reporter": "ci-bot",
+        "createdAt": 100,
+        "conclusion": "failure"
+      },
+      {
+        "id": "r2",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "build",
+        "status": "completed",
+        "reporter": "ci-other",
+        "createdAt": 200,
+        "conclusion": "success"
+      },
+      {
+        "id": "r3",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "lint",
+        "status": "completed",
+        "reporter": "writ",
+        "createdAt": 150,
+        "conclusion": "success"
+      }
+    ],
+    "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "runners": [
+      "ci-bot",
+      "ci-other"
+    ],
+    "policy": {
+      "requiredChecks": [
+        "build",
+        "lint"
+      ],
+      "requiredCheckSources": [
+        "ci-bot",
+        "maint"
+      ]
+    }
+  },
+  "expected": {
+    "required": [
+      {
+        "name": "build",
+        "state": "failing",
+        "runId": "r1"
+      },
+      {
+        "name": "lint",
+        "state": "missing",
+        "runId": null
+      }
+    ],
+    "met": false,
+    "untrusted": 0
+  }
+}

@@ -203,15 +203,15 @@ export interface PullView {
 }
 
 /** A review verdict, as recorded on-chain. Parity with forge-core `Verdict`. */
-export type VerdictName = 'approve' | 'requestChanges' | 'comment' | 'unknown'
+export type VerdictName = 'approve' | 'requestChanges' | 'comment' | 'approveNonMember' | 'requestChangesNonMember' | 'unknown'
 
 const VERDICT_BY_INT: Readonly<Record<number, VerdictName>> = {
   1: 'approve',
   2: 'requestChanges',
   3: 'comment',
   // A non-member's approve and request changes (RC1 R-16): shown as such, never counted.
-  4: 'approve',
-  5: 'requestChanges',
+  4: 'approveNonMember',
+  5: 'requestChangesNonMember',
 }
 
 /** Short label for a verdict, matching `dg pr view`. */
@@ -219,6 +219,8 @@ export const VERDICT_LABEL: Readonly<Record<VerdictName, string>> = {
   approve: 'approved',
   requestChanges: 'changes requested',
   comment: 'commented',
+  approveNonMember: 'approved (not a member)',
+  requestChangesNonMember: 'changes requested (not a member)',
   unknown: 'unknown verdict',
 }
 

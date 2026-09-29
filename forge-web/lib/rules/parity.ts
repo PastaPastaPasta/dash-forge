@@ -65,6 +65,24 @@ export interface ChecksState {
   readonly untrusted: number
 }
 
+/**
+ * Each pinned check name and the sources that may decide it: empty unless `requiredCheckSources`
+ * pairs up with `requiredChecks` one for one; an empty name or source pins nothing. Parity:
+ * forge-core `pinned_sources`.
+ */
+function pinnedSources(policy: ChecksPolicy): Map<string, Set<string>> {
+  const names = policy.requiredChecks ?? []
+  const sources = policy.requiredCheckSources ?? []
+  const pins = new Map<string, Set<string>>()
+  if (sources.length !== names.length) return pins
+  names.forEach((name, i) => {
+    const source = sources[i] as string
+    if (name === '' || source === '') return
+    pins.set(name, (pins.get(name) ?? new Set()).add(source))
+  })
+  return pins
+}
+
 /** The conclusions that pass a required check. */
 export const PASSING_CONCLUSIONS: readonly string[] = ['success', 'neutral', 'skipped']
 
@@ -98,12 +116,7 @@ export function checksState(
   policy: ChecksPolicy,
 ): ChecksState {
   const trusted = (who: string) => oracle.currentRole(who) !== null || runners.has(who)
-  // A pinned name's source, when the policy pairs one with every name (the contract's rule).
-  const sources = policy.requiredCheckSources ?? []
-  const pinned = new Map<string, string>()
-  if (sources.length > 0 && sources.length === (policy.requiredChecks ?? []).length) {
-    ;(policy.requiredChecks ?? []).forEach((name, i) => pinned.set(name, sources[i] as string))
-  }
+  const pinned = pinnedSources(policy)
   const newest = new Map<string, CheckRunRow>()
   let untrusted = 0
   const head = headOid.toLowerCase()
@@ -113,8 +126,8 @@ export function checksState(
       untrusted += 1
       continue
     }
-    const source = pinned.get(run.name)
-    if (source !== undefined && run.reporter !== source) continue
+    const sources = pinned.get(run.name)
+    if (sources !== undefined && !sources.has(run.reporter)) continue
     const held = newest.get(run.name)
     if (held === undefined || compareKey(run, held) > 0) newest.set(run.name, run)
   }
