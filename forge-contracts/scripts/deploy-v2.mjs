@@ -160,6 +160,9 @@ function selfTest() {
   }
   const core = loadSchema('forge-core');
   if (JSON.stringify(core).includes(PLACEHOLDER)) throw new Error('forge-core must not name its own id');
+  if (!readFileSync(join(ROOT, 'contracts', 'forge-community.json'), 'utf8').includes(placeholderFor('forge-collab'))) {
+    throw new Error('forge-community names no FORGE_COLLAB_CONTRACT_ID: its events would not refer to this forge-collab');
+  }
   const ids = { [PLACEHOLDER]: want.contract };
   for (const { schemaName } of DEPENDENT_CONTRACTS) {
     const raw = readFileSync(join(ROOT, 'contracts', `${schemaName}.json`), 'utf8');
@@ -575,10 +578,16 @@ async function main() {
   const substitutions = { [PLACEHOLDER]: coreId };
   // Register the contracts that name forge-core's id, in order (all, or the one --only names).
   // Each registered id is substituted into the ones after it; one --only skips lends its
-  // recorded id.
+  // recorded id once it is confirmed on chain.
   const dependents = DEPENDENT_CONTRACTS.filter((c) => only === null || c.only === only);
-  for (const { key, schemaName } of DEPENDENT_CONTRACTS) {
-    if (!dependents.some((d) => d.key === key) && v2[key]?.contractId) substitutions[placeholderFor(schemaName)] = v2[key].contractId;
+  // (only the ones registered before the first this run registers can be named by it)
+  for (const c of DEPENDENT_CONTRACTS) {
+    if (dependents.includes(c)) break;
+    if (!v2[c.key]?.contractId) continue;
+    // Only a contract found on chain may be named (reconcile also settles an interrupted record)
+    const found = await reconcile(c.key, schemaHash(loadSchema(c.schemaName, substitutions)));
+    if (!found) throw new Error(`--only ${only}: ${c.key} is recorded but not on chain; run --only ${c.only} first`);
+    substitutions[placeholderFor(c.schemaName)] = found;
   }
   for (const { key, schemaName } of dependents) {
     if (forceNew && v2[key]?.contractId) {
