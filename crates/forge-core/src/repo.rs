@@ -2369,6 +2369,7 @@ impl<'a> RepoService<'a> {
             rows: locator.object_count() as u64,
             supersedes,
             tips: Vec::new(),
+            format: 0,
         };
         self.store_artifact(repo, artifact, target).await
     }
@@ -2403,8 +2404,9 @@ impl<'a> RepoService<'a> {
                 chunk_count: stored.chunk_count,
                 storage: stored.storage,
                 // A browse artifact locates itself: no `manifestPart` offset index is
-                // written for it, so none is claimed.
-                offset_index_parts: 0,
+                // written for it, so none is claimed. A history index records its format
+                // version there instead ([`HistoryEntry::format`]).
+                offset_index_parts: artifact.format,
                 uris: stored.uris,
                 supersedes: artifact.supersedes,
                 tips: artifact.tips.iter().map(|t| t.to_vec()).collect(),
@@ -2451,6 +2453,8 @@ struct Artifact {
     rows: u64,
     supersedes: Vec<[u8; 32]>,
     tips: Vec<[u8; 20]>,
+    /// `offsetIndexParts`: 0, or a history index's format version.
+    format: u64,
 }
 
 /// A live history index, as the manifests describe it.
@@ -2464,15 +2468,28 @@ pub struct HistoryEntry {
     pub base_tip: Option<[u8; 20]>,
     /// Its stored size (sealed, for a private repository).
     pub size_bytes: u64,
+    /// Its format version, from the manifest's `offsetIndexParts` (a kind-3 artifact locates
+    /// itself, so the field is free): 2 for an index with per-path version lists, 0 from a
+    /// writer before them (v1).
+    pub format: u64,
+}
+
+impl HistoryEntry {
+    /// It lists each path's versions (Blame and History read them): format 2 or later.
+    pub fn has_versions(&self) -> bool {
+        self.format >= u64::from(crate::pack::historyindex::VERSION_V2)
+    }
 }
 
 /// What the next history index publish should do.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HistoryPlan {
-    /// An index already covers the tip: nothing to publish.
+    /// An index with version lists already covers the tip: nothing to publish. A v1 index
+    /// (the column and the count only) does not: a v2 one replaces it.
     pub covered: bool,
-    /// The live FULL indexes by current members, newest first: the bases a delta may extend
-    /// (the first on the new tip's first-parent chain).
+    /// The live FULL indexes with version lists by current members, newest first: the bases a
+    /// delta may extend (the first on the new tip's first-parent chain). A v1 full index is no
+    /// base: a delta over it would leave every unchanged path without a list.
     pub bases: Vec<HistoryEntry>,
     /// Every live history index by a current member: what a full index supersedes, and the
     /// deltas of a base a new delta supersedes.
@@ -2570,22 +2587,26 @@ pub fn plan_history_index(
                 tip: *m.tips.first()?,
                 base_tip: m.tips.get(1).copied(),
                 size_bytes: m.size_bytes,
+                format: m.offset_index_parts,
             })
         })
         .collect();
     // A delta covers its tip only while a live full index of its base tip stands behind it:
     // a reader could not overlay it otherwise (forge-web `historySource` applies the same rule).
+    // Only v2 indexes count here: a delta extends a v2 full index, and covers its tip only over
+    // one (an older writer's v1 delta over a v2 base answers the column, not the lists).
     let full_tips: BTreeSet<[u8; 20]> = live
         .iter()
-        .filter(|e| e.base_tip.is_none())
+        .filter(|e| e.base_tip.is_none() && e.has_versions())
         .map(|e| e.tip)
         .collect();
-    let covers = |e: &HistoryEntry| e.base_tip.is_none_or(|b| full_tips.contains(&b));
+    let covers =
+        |e: &HistoryEntry| e.has_versions() && e.base_tip.is_none_or(|b| full_tips.contains(&b));
     HistoryPlan {
         covered: live.iter().any(|e| e.tip == tip && covers(e)),
         bases: live
             .iter()
-            .filter(|e| e.base_tip.is_none())
+            .filter(|e| e.base_tip.is_none() && e.has_versions())
             .cloned()
             .collect(),
         first: !manifests.iter().any(|m| m.kind == kind),
@@ -2656,6 +2677,7 @@ fn prepared<'e>(
         plain,
         supersedes: replaces.take(MAX_SUPERSEDES).map(|e| e.pack_hash).collect(),
         tips,
+        format: u64::from(index.version()),
     };
     PreparedHistory {
         index,
@@ -3556,7 +3578,34 @@ mod tests {
             .map(|t| [t; 20])
             .collect();
         m.size_bytes = 1000;
+        m.offset_index_parts = 2;
         m
+    }
+
+    /// A v1 index (a writer before version lists) covers nothing and is no delta base: the next
+    /// publish is a full v2 index superseding it. `dg repo reindex` backfills v2 this way.
+    #[test]
+    fn a_v1_index_is_replaced_by_a_full_v2_index() {
+        use super::plan_history_index;
+        let roles: RoleMap = [("w".to_string(), Role::Writer)].into();
+        let mut v1 = history("f", 10, 1, "w", 0xa0, None);
+        v1.offset_index_parts = 0;
+        let plan = plan_history_index(std::slice::from_ref(&v1), &roles, [0xa0; 20]);
+        assert!(!plan.covered, "a v1 index of the tip does not cover it");
+        assert!(plan.bases.is_empty(), "nor is it a delta base");
+        assert_eq!(
+            plan.live.len(),
+            1,
+            "but it is live: the full index supersedes it"
+        );
+        assert!(!plan.first);
+        // A v2 delta over a v2 base covers its tip; a v1 delta over it does not.
+        let base = history("b", 10, 2, "w", 0xa0, None);
+        let v2_delta = history("d", 20, 3, "w", 0xb0, Some(0xa0));
+        assert!(plan_history_index(&[v2_delta.clone(), base.clone()], &roles, [0xb0; 20]).covered);
+        let mut v1_delta = v2_delta;
+        v1_delta.offset_index_parts = 0;
+        assert!(!plan_history_index(&[v1_delta, base], &roles, [0xb0; 20]).covered);
     }
 
     /// Review M1: a delta covers its tip only while a live full index of its base tip stands
