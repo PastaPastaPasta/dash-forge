@@ -25,7 +25,8 @@ name: Release
 
 on:
   push:
-    tags: ['v*']
+    # `vendor-sdk-v…` also starts with `v`: those are vendor-sdk.yml's build artifacts.
+    tags: ['v*', '!vendor-sdk-*']
     # A dry run on master: keeps master releasable and seeds the build cache that PR dry
     # runs restore (only master saves it).
     branches: [master]
