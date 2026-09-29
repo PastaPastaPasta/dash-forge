@@ -11,9 +11,10 @@
  */
 
 import { AlertTriangle, Loader2, WifiOff, type LucideIcon } from 'lucide-react'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { isUnreachableError } from '@/lib/sdk/unreachable'
 import { scheduleReconnect } from '@/lib/view/reconnect'
+import { isOffline, subscribeOnlineStatus } from '@/lib/online'
 import { cn } from '@/lib/utils'
 
 /** Inline spinner with an accessible label. */
@@ -63,19 +64,31 @@ export function EmptyState({
 }
 
 /** Whether the browser reports no network connection now (and follows it). */
-function useOffline(): boolean {
-  const [offline, setOffline] = useState(false)
-  useEffect(() => {
-    const update = (): void => setOffline(navigator.onLine === false)
-    update()
-    window.addEventListener('online', update)
-    window.addEventListener('offline', update)
-    return () => {
-      window.removeEventListener('online', update)
-      window.removeEventListener('offline', update)
-    }
-  }, [])
-  return offline
+export function useOffline(): boolean {
+  return useSyncExternalStore(subscribeOnlineStatus, isOffline, () => false)
+}
+
+/** "Try now" for an offline or unreachable state. */
+export function RetryNowButton({ onClick }: { onClick: () => void }): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="mt-4 rounded-md border border-anvil-300 px-3 py-1.5 text-dense hover:bg-anvil-100 coarse:min-h-11 dark:border-anvil-700 dark:hover:bg-anvil-800"
+    >
+      Try now
+    </button>
+  )
+}
+
+/** The raw error, behind a collapsed Details: there for a bug report, not in the reader's face. */
+export function ErrorDetails({ message }: { message: string }): JSX.Element {
+  return (
+    <details className="mt-3 max-w-md text-dense text-anvil-500 dark:text-anvil-400">
+      <summary className="cursor-pointer coarse:min-h-11">Details</summary>
+      <p className="mt-1 break-words font-mono text-[12px]">{message}</p>
+    </details>
+  )
 }
 
 /**
@@ -155,16 +168,8 @@ export function UnreachableState({ message, onRetry }: { message: string; onRetr
           ? 'This page will load as soon as your connection is back.'
           : 'Nothing answered this read. It will try again by itself in a few seconds.'}
       </p>
-      <button
-        onClick={onRetry}
-        className="mt-4 rounded-md border border-anvil-300 px-3 py-1.5 text-dense hover:bg-anvil-100 coarse:min-h-11 dark:border-anvil-700 dark:hover:bg-anvil-800"
-      >
-        Try now
-      </button>
-      <details className="mt-3 max-w-md text-dense text-anvil-500 dark:text-anvil-400">
-        <summary className="cursor-pointer coarse:min-h-11">Details</summary>
-        <p className="mt-1 break-words font-mono text-[12px]">{message}</p>
-      </details>
+      <RetryNowButton onClick={onRetry} />
+      <ErrorDetails message={message} />
     </div>
   )
 }

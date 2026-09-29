@@ -46,6 +46,7 @@ import { base64ToBytes, queryDocumentsWithProof } from '../sdk'
 import { isPublicHttpsUrl } from '../net'
 import { externalSourceName, noteContentCheck, noteViewPack, objectObserver } from './content-checks'
 import { noteReadOutage } from './reconnect'
+import { isOffline } from '../online'
 import {
   describePack,
   gatewayDownReason,
@@ -373,8 +374,7 @@ const deadUrls = new Set<string>()
  * mirror must be tried again once the connection is back (L-10).
  */
 function markDead(url: string): void {
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) return
-  deadUrls.add(url)
+  if (!isOffline()) deadUrls.add(url)
 }
 
 /** "Try again": ask every mirror afresh, including the ones that failed this session. */

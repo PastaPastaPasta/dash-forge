@@ -46,6 +46,7 @@ import { useFirstWrite } from '@/hooks/use-first-write'
 import { plural } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
 import { useDpnsName } from '@/hooks/use-dpns-name'
+import { ownerLabel } from '@/lib/page-title'
 import { useAsync } from '@/hooks/use-async'
 import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
@@ -518,7 +519,7 @@ function ComposeIssueDialog({
       open={open}
       onClose={onClose}
       title="Open an issue"
-      description={`In ${ownerName ?? (addr.owner === repo.ownerId ? `${addr.owner.slice(0, 8)}…` : addr.owner)}/${addr.name}. Anyone can open one.`}
+      description={`In ${ownerLabel(addr.owner, ownerName)}/${addr.name}. Anyone can open one.`}
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={pending}>Cancel</Button>

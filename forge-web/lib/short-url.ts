@@ -130,7 +130,7 @@ export const BASE_PATH = (process.env.NEXT_PUBLIC_BASE_PATH ?? '').replace(/\/+$
  */
 export function shortRepoUrl(repo: { readonly owner: string; readonly name: string; readonly repoId?: string }, target?: ShortTarget): string {
   const pin = repo.repoId ? `?repo=${encodeURIComponent(repo.repoId)}` : ''
-  const path = hasShortPath(repo) ? `${BASE_PATH}${shortRepoPath(repo, target)}${pin}` : `${BASE_PATH}${canonicalPath(repo, target)}`
+  const path = BASE_PATH + (hasShortPath(repo) ? `${shortRepoPath(repo, target)}${pin}` : canonicalPath(repo, target))
   return typeof window === 'undefined' ? path : `${window.location.origin}${path}`
 }
 
@@ -148,9 +148,8 @@ function canonicalPath(repo: { readonly owner: string; readonly name: string; re
     case 'tree':
     case 'blob':
     case 'blame':
-      return route(`/${target.kind}`, { ref: target.ref, path: target.path })
     case 'commits':
-      return route('/commits', { ref: target.ref, path: target.path })
+      return route(`/${target.kind}`, { ref: target.ref, path: target.path })
     case 'issues':
     case 'pulls':
     case 'releases':

@@ -19,12 +19,18 @@ import { useSdk } from '@/hooks/use-sdk'
 import { reposNamed, type DiscoveredRepo } from '@/lib/view/discovery'
 import { mirrorSourceOfDescription } from '@/lib/view/mirror-source'
 
-/** Repos named like `addr.name`, mirrors of `github.com/<owner>/<name>` first, with which is which. */
-export function rankSuggestions(addr: RepoAddress, repos: readonly DiscoveredRepo[]): { repo: DiscoveredRepo; mirrorOf: string | null }[] {
+/**
+ * Repos named like `addr.name`, with the source each mirrors; `exact`: it mirrors
+ * `github.com/<owner>/<name>` itself (those first).
+ */
+function rankSuggestions(addr: RepoAddress, repos: readonly DiscoveredRepo[]): { repo: DiscoveredRepo; mirrorOf: string | null; exact: boolean }[] {
   const wanted = `github.com/${addr.owner}/${addr.name}`.toLowerCase()
   return repos
-    .map((repo) => ({ repo, mirrorOf: mirrorSourceOfDescription(repo.description, 'issue')?.label ?? null }))
-    .sort((a, b) => Number(b.mirrorOf?.toLowerCase() === wanted) - Number(a.mirrorOf?.toLowerCase() === wanted))
+    .map((repo) => {
+      const mirrorOf = mirrorSourceOfDescription(repo.description, 'issue')?.label ?? null
+      return { repo, mirrorOf, exact: mirrorOf?.toLowerCase() === wanted }
+    })
+    .sort((a, b) => Number(b.exact) - Number(a.exact))
 }
 
 export function RepoNotFound({ addr }: { addr: RepoAddress }): JSX.Element {
@@ -32,7 +38,6 @@ export function RepoNotFound({ addr }: { addr: RepoAddress }): JSX.Element {
   const name = addr.name.trim().toLowerCase()
   const found = useAsync(() => reposNamed(sdk!, name, { network }), [ready, name, network], { enabled: ready && sdk !== null && name !== '' })
   const suggestions = found.data ? rankSuggestions(addr, found.data.repos) : []
-  const wanted = `github.com/${addr.owner}/${addr.name}`.toLowerCase()
   return (
     <div className="space-y-4">
       <EmptyState
@@ -49,7 +54,7 @@ export function RepoNotFound({ addr }: { addr: RepoAddress }): JSX.Element {
         <section aria-label="Repos with this name" data-testid="repo-suggestions" className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
           <h2 className="mb-2 text-prose">Repos named {name}</h2>
           <ul className="space-y-2">
-            {suggestions.map(({ repo, mirrorOf }) => (
+            {suggestions.map(({ repo, mirrorOf, exact }) => (
               <li key={repo.key} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-dense">
                 <Author identityId={repo.ownerId} link={false} />
                 <span aria-hidden className="text-anvil-400">/</span>
@@ -60,7 +65,7 @@ export function RepoNotFound({ addr }: { addr: RepoAddress }): JSX.Element {
                   {repo.slug}
                 </Link>
                 {mirrorOf !== null ? (
-                  <span className={mirrorOf.toLowerCase() === wanted ? 'font-medium text-anvil-800 dark:text-anvil-100' : 'text-anvil-500 dark:text-anvil-400'}>
+                  <span className={exact ? 'font-medium text-anvil-800 dark:text-anvil-100' : 'text-anvil-500 dark:text-anvil-400'}>
                     mirror of {mirrorOf}
                   </span>
                 ) : null}

@@ -19,6 +19,7 @@ import { useTargetCounts, useViewerRole } from '@/hooks/use-repo-chrome'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
 import { TabStrip } from '@/components/ui/tab-strip'
+import { bareRoute } from '@/lib/page-title'
 import { ForkButton } from '@/components/repo/fork-button'
 import { readRepoById } from '@/lib/repo'
 import type { ForgeIds } from '@/lib/deployments'
@@ -57,7 +58,7 @@ export const CODE_ROUTES = ['/repo', '/repo/tree', '/repo/blob', '/repo/blame', 
 
 /** The tab a repo route belongs to (`null`: none, e.g. Stargazers, as on GitHub). */
 export function activeRepoTab(pathname: string): 'code' | 'issues' | 'pulls' | 'releases' | 'settings' | null {
-  const p = bare(pathname)
+  const p = bareRoute(pathname)
   if (CODE_ROUTES.includes(p)) return 'code'
   if (p === '/repo/issues' || p === '/repo/issue') return 'issues'
   if (p === '/repo/pulls' || p === '/repo/pull' || p === '/repo/pulls/new') return 'pulls'
@@ -69,11 +70,9 @@ export function activeRepoTab(pathname: string): 'code' | 'issues' | 'pulls' | '
 /** Routes whose view renders its own h1 (an issue's title, a commit's subject): the repo name is not the page's heading there. */
 const VIEWS_WITH_OWN_H1 = ['/repo/issue', '/repo/pull', '/repo/pulls/new', '/repo/commit', '/repo/releases', '/repo/stargazers']
 
-/** Match a route with or without the export's trailing slash. */
-const bare = (p: string): string => (p.length > 1 ? p.replace(/\/+$/, '') : p)
 
 export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
-  const pathname = bare(usePathname())
+  const pathname = bareRoute(usePathname())
   const current = activeRepoTab(pathname)
   const refParam = useParam('ref')
   const counts = useTargetCounts(home.repo)

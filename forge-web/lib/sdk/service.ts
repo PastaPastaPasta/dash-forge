@@ -48,8 +48,6 @@ import { followSdkVersion, setStaleContractHandler } from './query'
 import { compileWasm, onWasmProgress, type DownloadProgress } from './wasm-fetch'
 import { setWriteHold } from './write'
 
-export { isStaleConnectionError, isUnreachableError } from './unreachable'
-
 /** How often the seeded contracts are checked against the network (spec §3.4: once per hour). */
 const SEED_CHECK_MS = 60 * 60 * 1000
 const SEED_CHECK_KEY = 'forge.seededContractsChecked.v1'

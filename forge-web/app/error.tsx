@@ -12,6 +12,8 @@ import { useEffect } from 'react'
 import { AlertTriangle, WifiOff } from 'lucide-react'
 import { isUnreachableError } from '@/lib/sdk/unreachable'
 import { errorMessage } from '@/lib/utils'
+import { isOffline } from '@/lib/online'
+import { ErrorDetails, RetryNowButton } from '@/components/ui/states'
 
 /** A failure to fetch the app's own code (a webpack chunk, or the route's RSC payload). */
 function isLoadFailure(e: unknown): boolean {
@@ -20,7 +22,7 @@ function isLoadFailure(e: unknown): boolean {
 }
 
 export default function AppError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }): JSX.Element {
-  const connection = isLoadFailure(error) || isUnreachableError(error) || (typeof navigator !== 'undefined' && navigator.onLine === false)
+  const connection = isLoadFailure(error) || isUnreachableError(error) || isOffline()
   useEffect(() => {
     if (!connection) return
     // The failed chunk is only fetched again by a fresh load of the page.
@@ -47,17 +49,8 @@ export default function AppError({ error, reset }: { error: Error & { digest?: s
           ? 'This page could not be loaded. It will load by itself as soon as your connection is back.'
           : 'Something in this page failed. Trying again usually works; if it keeps failing, reload.'}
       </p>
-      <button
-        type="button"
-        onClick={() => (connection ? window.location.reload() : reset())}
-        className="mt-4 rounded-md border border-anvil-300 px-3 py-1.5 text-dense hover:bg-anvil-100 coarse:min-h-11 dark:border-anvil-700 dark:hover:bg-anvil-800"
-      >
-        Try now
-      </button>
-      <details className="mt-3 max-w-md text-dense text-anvil-500 dark:text-anvil-400">
-        <summary className="cursor-pointer coarse:min-h-11">Details</summary>
-        <p className="mt-1 break-words font-mono text-[12px]">{errorMessage(error, 'unknown error')}</p>
-      </details>
+      <RetryNowButton onClick={() => (connection ? window.location.reload() : reset())} />
+      <ErrorDetails message={errorMessage(error, 'unknown error')} />
     </main>
   )
 }

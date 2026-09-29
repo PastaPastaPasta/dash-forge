@@ -60,23 +60,19 @@ function UnavailablePacksNotice({ packs }: { packs: readonly UnavailablePack[] }
 }
 
 /**
- * A number that goes up once the connection is back after a read of repo `key` got no bytes
- * (L-10): the view is keyed on it, so what failed to load (a README, the commit column, a file
+ * The read outages of repo `key` this view has recovered from (L-10): it catches up with the
+ * count once the connection is back after a read got no bytes. The view is keyed on it, so what failed to load (a README, the commit column, a file
  * row) is read again without a reload. Objects that did load are memoized by the reader, so the
  * re-read costs only what was missing.
  */
 function useReadRecovery(key: string): number {
   const outages = useSyncExternalStore(subscribeReadOutages, () => readOutages(key), () => 0)
   const [handled, setHandled] = useState(outages)
-  const [epoch, setEpoch] = useState(0)
   useEffect(() => {
     if (outages <= handled) return
-    return scheduleReconnect(() => {
-      setHandled(outages)
-      setEpoch((n) => n + 1)
-    })
+    return scheduleReconnect(() => setHandled(outages))
   }, [outages, handled])
-  return epoch
+  return handled
 }
 
 export function BrowseBoundary({

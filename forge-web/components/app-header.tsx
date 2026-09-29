@@ -30,7 +30,7 @@ import { balanceToDash, dashToUsd } from '@/lib/view/format'
 import { FundsPill } from '@/components/funds-pill'
 import { consumePrehydrationIntent } from '@/lib/prehydration'
 import { isPageShortcut } from '@/lib/focus'
-import { pageTitle } from '@/lib/page-title'
+import { bareRoute, pageTitle } from '@/lib/page-title'
 import { useDpnsName } from '@/hooks/use-dpns-name'
 
 /** The mirror guide (the `/mirror` wizard does not exist yet). */
@@ -138,7 +138,7 @@ function DocumentTitle(): null {
   const params = useSearchParams()
   const owner = params.get('owner') ?? (pathname.startsWith('/u') ? params.get('name') : null) ?? ''
   const name = useDpnsName(owner)
-  const title = pageTitle(pathname, new URLSearchParams(params.toString()), name)
+  const title = pageTitle(pathname, params, name)
   useEffect(() => {
     document.title = title
   }, [title])
@@ -356,14 +356,11 @@ function NavDrawer({ signedIn }: { signedIn: boolean }): JSX.Element {
   const pathname = usePathname()
   // A navigation closes it (the header stays mounted across pages).
   useEffect(() => setOpen(false), [pathname, setOpen])
-  const item = (href: string, label: string, Icon: typeof Compass, external = false): JSX.Element => {
-    const cls = cn(MENU_ITEM, 'items-center coarse:min-h-11', !external && bare(pathname) === bare(href) && 'bg-anvil-100 dark:bg-anvil-800')
-    return external ? (
-      <a key={href} href={href} target="_blank" rel="noopener noreferrer" className={cls} onClick={() => setOpen(false)}>
-        <Icon className="h-4 w-4 shrink-0 text-forge-500" aria-hidden /> {label}
-      </a>
-    ) : (
-      <Link key={href} href={href} className={cls} aria-current={bare(pathname) === bare(href) ? 'page' : undefined} onClick={() => setOpen(false)}>
+  const close = (): void => setOpen(false)
+  const item = (href: string, label: string, Icon: typeof Compass): JSX.Element => {
+    const current = bareRoute(pathname) === bareRoute(href)
+    return (
+      <Link key={href} href={href} className={cn(ITEM, current && 'bg-anvil-100 dark:bg-anvil-800')} aria-current={current ? 'page' : undefined} onClick={close}>
         <Icon className="h-4 w-4 shrink-0 text-forge-500" aria-hidden /> {label}
       </Link>
     )
@@ -391,7 +388,9 @@ function NavDrawer({ signedIn }: { signedIn: boolean }): JSX.Element {
         >
           {item('/explore/', 'Explore', Compass)}
           {ACTIVE_NETWORK.v2 !== null ? item('/new/', 'New repository', Plus) : null}
-          {item(MIRROR_GUIDE_URL, 'Mirror a GitHub repo (guide)', GitFork, true)}
+          <a href={MIRROR_GUIDE_URL} target="_blank" rel="noopener noreferrer" className={ITEM} onClick={close}>
+            <GitFork className="h-4 w-4 shrink-0 text-forge-500" aria-hidden /> Mirror a GitHub repo (guide)
+          </a>
           {signedIn ? item('/notifications/', 'Notifications', Bell) : null}
           {signedIn ? item('/settings/', 'Settings & spend', Settings) : null}
         </nav>
@@ -400,8 +399,6 @@ function NavDrawer({ signedIn }: { signedIn: boolean }): JSX.Element {
   )
 }
 
-/** A route without the export's trailing slash. */
-const bare = (p: string): string => (p.length > 1 ? p.replace(/\/+$/, '') : p)
 
 function profileHref(name: string): string {
   return `/u/?name=${encodeURIComponent(name)}`
@@ -494,6 +491,9 @@ function usePopover(): { open: boolean; setOpen: (v: boolean) => void; ref: Reac
 }
 
 const MENU_ITEM = 'flex w-full items-start gap-2 rounded-md px-3 py-2 text-left text-dense hover:bg-anvil-100 focus-visible:bg-anvil-100 dark:hover:bg-anvil-800 dark:focus-visible:bg-anvil-800'
+
+/** A drawer row: a menu item sized for a finger. */
+const ITEM = cn(MENU_ITEM, 'items-center coarse:min-h-11')
 
 function NewMenu(): JSX.Element | null {
   const { open, setOpen, ref, trigger } = usePopover()
