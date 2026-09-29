@@ -5,7 +5,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import { describe, expect, it } from 'vitest'
 
 import { AssetHashMismatchError, browserReadable, downloadVerifiedAsset } from '../view/release-download'
-import { UNVERIFIABLE_ASSET, assetVerifiable, compareRefNames, compareTagNames, isPrerelease, latestRelease, newestPerTag, parseReleaseAssets, releaseOrder, type ReleaseView } from './releases'
+import { UNVERIFIABLE_ASSET, assetVerifiable, compareRefNames, compareTagNames, isPrerelease, latestRelease, newestPerTag, parseReleaseAssets, type ReleaseView } from './releases'
 
 const H = 'ab'.repeat(32)
 
@@ -41,7 +41,7 @@ describe('parseReleaseAssets', () => {
   })
 })
 
-const rel = (tag: string, at: number, id: string): ReleaseView => ({
+const rel = (tag: string, at: number, id: string, publishedAt: number | null = null): ReleaseView => ({
   id,
   tagName: tag,
   name: '',
@@ -51,7 +51,7 @@ const rel = (tag: string, at: number, id: string): ReleaseView => ({
   badAssets: 0,
   notesBody: '',
   omitted: null,
-  published: null,
+  published: publishedAt === null ? null : { host: 'github.com', author: '', at: publishedAt },
   publisher: 'p',
   createdAt: at,
 })
@@ -59,26 +59,37 @@ const rel = (tag: string, at: number, id: string): ReleaseView => ({
 describe('newestPerTag', () => {
   it('keeps the newest revision per tag and lists the rest as previous', () => {
     const { current, previous } = newestPerTag([rel('v1', 1, 'a'), rel('v1', 3, 'b'), rel('v2', 2, 'c'), rel('v1', 3, 'd')])
-    expect(current.map((r) => r.id)).toEqual(['c', 'd'])
+    // v1's newest-createdAt revision (d, tied with b on createdAt=3) beats v2's only revision (c)
+    // on publish date (releaseOrder, L-78) even though v2 > v1 by version.
+    expect(current.map((r) => r.id)).toEqual(['d', 'c'])
     expect(previous.map((r) => r.id)).toEqual(['b', 'a'])
   })
 
-  // L-14: an import writes the source's newest-first listing, so the OLDEST release had the
-  // newest $createdAt and the rail showed it as "Latest". Same fixture as forge-core's test.
-  it('orders by version and picks the latest non-prerelease', () => {
-    const tags = ['v24.0.0-rc.1', 'v23.1.2', 'v23.1.10', 'v24.0.0-rc.10', 'v0.9.13.15', 'nightly', 'jq-1.7.1']
-    const list = newestPerTag(tags.map((t, i) => rel(t, i + 1, t)))
-    expect(list.current.map((r) => r.tagName)).toEqual(['v24.0.0-rc.10', 'v24.0.0-rc.1', 'v23.1.10', 'v23.1.2', 'jq-1.7.1', 'v0.9.13.15', 'nightly'])
+  // L-78: the releases page matches GitHub's own order — newest published first — not version
+  // order. An imported release's `published.at` (its notes' real source date) is what's compared,
+  // not `$createdAt` (when forge-import ran) and not the tag's version number.
+  it('orders releases newest-published-first, and latestRelease skips pre-releases', () => {
+    const list = newestPerTag([
+      rel('v24.0.0-rc.1', 100, 'rc1', 5_000),
+      rel('v23.1.2', 100, 'a', 1_000),
+      rel('v23.1.10', 100, 'b', 4_000),
+      rel('v24.0.0-rc.10', 100, 'rc10', 6_000),
+      rel('v0.9.13.15', 100, 'old', 2_000),
+      rel('nightly', 100, 'n', 3_000),
+    ])
+    expect(list.current.map((r) => r.tagName)).toEqual(['v24.0.0-rc.10', 'v24.0.0-rc.1', 'v23.1.10', 'nightly', 'v0.9.13.15', 'v23.1.2'])
     expect(latestRelease(list)?.tagName).toBe('v23.1.10')
     expect(latestRelease({ current: list.current.slice(0, 2), previous: [] })?.tagName).toBe('v24.0.0-rc.10')
     expect(latestRelease({ current: [], previous: [] })).toBeUndefined()
     expect([isPrerelease('v24.0.0-rc.1'), isPrerelease('15.2.0'), isPrerelease('v1+build')]).toEqual([true, false, false])
   })
 
-  it('orders pre-release suffixes as forge-core does', () => {
-    const tags = ['1.0.0-beta', '1.0.0-1', '1.0.0-rc.2', '1.0.0-RC1', '1.0.0-rc10', '1.0.0-alpha']
-    const list = newestPerTag(tags.map((t, i) => rel(t, i, t)))
-    expect(list.current.map((r) => r.tagName)).toEqual(['1.0.0-rc10', '1.0.0-rc.2', '1.0.0-RC1', '1.0.0-beta', '1.0.0-alpha', '1.0.0-1'])
+  // The exact case the verifier found (L-78): a low-version release published later outranks a
+  // high-version pre-release cut long before it. Version order (the old behavior) would get this
+  // backwards, since it never looks at when anything actually shipped.
+  it('a later-published low-version release outranks an earlier-published high-version pre-release', () => {
+    const list = newestPerTag([rel('v19.0.0-rc.1', 100, 'rc', 1_000), rel('v18.2.2', 100, 'patch', 5_000)])
+    expect(list.current.map((r) => r.tagName)).toEqual(['v18.2.2', 'v19.0.0-rc.1'])
   })
 
   it('reads a recorded size of 0 as unknown (GitLab links)', () => {
@@ -86,8 +97,8 @@ describe('newestPerTag', () => {
     expect(assets[0]?.size).toBeNull()
   })
 
-  it('ripgrep: 15.2.0 is latest, not 0.0.2', () => {
-    const list = newestPerTag(['15.2.0', '14.1.1', '0.10.0', '0.0.2'].map((t, i) => rel(t, i + 1, t)))
+  it('ripgrep: 15.2.0 is latest, published most recently', () => {
+    const list = newestPerTag(['0.0.2', '0.10.0', '14.1.1', '15.2.0'].map((t, i) => rel(t, i + 1, t)))
     expect(latestRelease(list)?.tagName).toBe('15.2.0')
     expect(list.current.map((r) => r.tagName)).toEqual(['15.2.0', '14.1.1', '0.10.0', '0.0.2'])
   })
@@ -111,18 +122,15 @@ describe('compareTagNames', () => {
     expect([...names].sort(compareTagNames)).toEqual(['alpha-v1.0.0', 'zeta-v1.0.0'])
   })
 
-  // Both compareTagNames (name-only, for the ref switcher and tags/branches pages) and
-  // releaseOrder (ReleaseView-based, for the releases page) share the same version comparison
-  // (versionDesc); they only differ in how they break a tie between two equal versions
-  // (natural-sort the name vs. newestFirst by createdAt/id). This fixture has no true ties, so
-  // that difference cannot show up here, and the two orders genuinely agree — proven by actually
-  // running releaseOrder, not by asserting a second hand-copied expectation.
-  it('agrees with releaseOrder on a mixed real-world tag set with no version ties', () => {
-    const tags = ['v24.0.0-rc.1', 'v23.1.2', 'v23.1.10', 'v24.0.0-rc.10', 'v0.9.13.15', 'nightly', 'jq-1.7.1']
-    const releases: ReleaseView[] = tags.map((t, i) => rel(t, i + 1, t))
-    const byCompareTagNames = [...tags].sort(compareTagNames)
-    const byReleaseOrder = [...releases].sort(releaseOrder).map((r) => r.tagName)
-    expect(byCompareTagNames).toEqual(byReleaseOrder)
+  // compareTagNames (name-only, for the ref switcher and tags/branches pages) sorts by version;
+  // releaseOrder (ReleaseView-based, for the releases page, L-78) sorts by publish date instead —
+  // the two intentionally disagree whenever a tag's version order and its real publish date
+  // disagree (see the newestPerTag tests above for that case). This suffix-ordering fixture only
+  // exercises compareTagNames's version comparison (versionDesc/naturalRuns), which this change
+  // did not touch.
+  it('orders pre-release suffixes as forge-core does (compareTagNames)', () => {
+    const tags = ['1.0.0-beta', '1.0.0-1', '1.0.0-rc.2', '1.0.0-RC1', '1.0.0-rc10', '1.0.0-alpha']
+    expect([...tags].sort(compareTagNames)).toEqual(['1.0.0-rc10', '1.0.0-rc.2', '1.0.0-RC1', '1.0.0-beta', '1.0.0-alpha', '1.0.0-1'])
   })
 
   // naturalRuns alone calls "foo-bar"/"foo_bar"/"Foo.bar" equal (it drops separators and case),

@@ -3,8 +3,9 @@
  * loaded standalone (e.g. by an e2e spec asserting against the real comparator) without pulling
  * in `lib/sdk` and its `import.meta`-using WASM loader, which Playwright's test loader cannot
  * transpile. Kept separate from `releases.ts` (which needs the SDK to read release documents) for
- * exactly that reason. Parity: forge-core `tag_version`, `natural`; `releases.ts`'s `releaseOrder`
- * (forge-core `release_order`) is built from `versionDesc` here.
+ * exactly that reason. Parity: forge-core `tag_version`, `natural`; `compareTagNames` here is what
+ * the ref switcher and the tags page use, and it is *not* what `releases.ts`'s `releaseOrder`
+ * uses (that sorts by publish date, L-78 — see its own doc comment for why they diverge).
  */
 
 /**
@@ -83,8 +84,8 @@ export function versionDesc(a: TagVersion, b: TagVersion): number {
  * before `v23.1.8`, not string order); a name without one falls back to natural sort ({@link
  * naturalRuns}: digit runs compare as numbers). Mixed lists put every versioned name ahead of
  * every unversioned one. Equal versions (and unversioned names) fall back to {@link
- * compareRefNames}. Reused by the ref switcher and the tags page so both sort identically, and
- * shares its version comparison with `releaseOrder` (releases.ts).
+ * compareRefNames}. Reused by the ref switcher and the tags page so both sort identically.
+ * `releases.ts`'s `releaseOrder` deliberately does not use this — see its doc comment.
  */
 export function compareTagNames(a: string, b: string): number {
   const va = tagVersion(a)
