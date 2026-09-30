@@ -44,6 +44,7 @@ use super::{
 };
 use crate::context::Ctx;
 use crate::fmt::credits_to_dash;
+use crate::secret_out::{Stream, Surroundings};
 
 /// How long to wait for a deposit before saving the journal and exiting.
 const DEPOSIT_WAIT: Duration = Duration::from_mins(30);
@@ -81,17 +82,81 @@ pub struct NewArgs {
 /// How `dg auth new` backs the identity up besides the words shown on screen.
 #[derive(Debug, clap::Args)]
 pub struct BackupArgs {
-    /// Also write the full identity (recovery words and every key) to this new file,
-    /// encrypted under a passphrase (0600). Required with --skip-backup-check.
+    /// Write the full identity (recovery words and every key) to this new file (0600; an
+    /// existing file is refused), encrypted under a passphrase (DASH_FORGE_PASSPHRASE without a
+    /// terminal or with --json). Required without a terminal (CI, pipes, --json): the words are
+    /// then never printed, only this file's path.
     #[arg(long, value_name = "FILE")]
     pub backup_file: Option<PathBuf>,
     /// Write the --backup-file unencrypted.
     #[arg(long, requires = "backup_file")]
     pub reveal_secrets: bool,
-    /// Skip showing the words and the three-word check (automation). Needs --backup-file:
-    /// the file is then the only backup.
-    #[arg(long, requires = "backup_file")]
+    /// Skip the three-word check after the words are shown on a terminal. It does not print
+    /// or write the words anywhere else: without a terminal they are never shown, and go only
+    /// to --backup-file.
+    #[arg(long)]
     pub skip_backup_check: bool,
+}
+
+/// Refuse, before anything is read or asked, a `--backup-file` that cannot be written: one
+/// already there (it is never overwritten), or a sealed one with no passphrase to seal it.
+fn check_backup_file(args: &BackupArgs) -> Result<()> {
+    let Some(path) = &args.backup_file else {
+        return Ok(());
+    };
+    if path.symlink_metadata().is_ok() {
+        return Err(crate::errors::usage(format!(
+            "--backup-file {} exists; name a new file (it is never overwritten)",
+            path.display()
+        )));
+    }
+    if !args.reveal_secrets && !forge_core::sealed::passphrase_available() {
+        return Err(UserError::new(codes::USAGE, "the backup file cannot be sealed")
+            .cause("it is encrypted under a passphrase, and there is no terminal to ask for one (or --json)")
+            .fix("set DASH_FORGE_PASSPHRASE (10 or more characters) for this run")
+            .note("nothing was created or paid")
+            .into());
+    }
+    Ok(())
+}
+
+/// Where the fresh recovery words go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WordsTo {
+    /// Shown once on the terminal (stderr), then the three-word check unless skipped.
+    Screen { check: bool },
+    /// Never printed: `--backup-file` is the only copy.
+    BackupFileOnly,
+}
+
+/// Decide where the recovery words of a fresh creation go, before anything is created or
+/// connected to. Without a terminal (or with --json, or in CI) they are never printed: only a
+/// `--backup-file` may hold them, and without one the creation is refused.
+fn words_destination(args: &BackupArgs, here: Surroundings) -> Result<WordsTo> {
+    if here.may_show() {
+        return Ok(WordsTo::Screen {
+            check: !args.skip_backup_check,
+        });
+    }
+    if args.backup_file.is_some() {
+        return Ok(WordsTo::BackupFileOnly);
+    }
+    let why = here.why_not().unwrap_or_default();
+    Err(
+        UserError::new(codes::USAGE, "the recovery words have nowhere safe to go")
+            .cause(format!(
+                "{why}, and dg never prints recovery words where a log or another program could \
+                 keep them"
+            ))
+            .fix("run `dg auth new` in a terminal: it shows the words once and checks your copy")
+            .fix(
+                "or pass --backup-file <new file>: the words and keys go only to that file (0600, \
+                 passphrase-encrypted, DASH_FORGE_PASSPHRASE without a terminal or with --json) \
+                 and only its path is printed",
+            )
+            .note("nothing was created or paid")
+            .into(),
+    )
 }
 
 /// A pending creation: public facts only.
@@ -163,37 +228,48 @@ fn qr(address: &str, duffs: u64) -> String {
     )
 }
 
-/// Show the words once and have the user type three of them back.
-fn backup_ceremony(ctx: &Ctx, words: &Secret, skip_check: bool) -> Result<()> {
-    if ctx.json {
-        return Ok(());
-    }
-    let list: Vec<&str> = words.expose().split(' ').collect();
-    eprintln!();
-    eprintln!("Your recovery words. Write them down now, in order, and keep them offline.");
-    eprintln!(
-        "The 12 words ARE the identity: lose them (and any backup file) and nobody can recover it."
-    );
-    eprintln!();
+/// The words as the numbered list shown on screen.
+fn words_list(list: &[&str]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
     for (i, w) in list.iter().enumerate() {
-        eprint!("  {:>2}. {w:<12}", i + 1);
+        let _ = write!(out, "  {:>2}. {w:<12}", i + 1);
         if i % 4 == 3 {
-            eprintln!();
+            out.push('\n');
         }
     }
-    eprintln!();
-    if skip_check {
+    out
+}
+
+/// Show the words once on `screen` (stderr, a terminal: see [`words_destination`]) and have the
+/// user type three of them back. With [`WordsTo::BackupFileOnly`] nothing is written.
+fn backup_ceremony(screen: &mut dyn std::io::Write, words: &Secret, to: WordsTo) -> Result<()> {
+    let WordsTo::Screen { check } = to else {
         return Ok(());
-    }
-    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        return Err(UserError::new(codes::USAGE, "the backup check needs a terminal")
-            .cause("dg auth new asks you to type three of the words back, and stdin is not a terminal")
-            .fix("run it in a terminal, or pass --skip-backup-check (and --backup-file) for automation")
-            .into());
+    };
+    let list: Vec<&str> = words.expose().split(' ').collect();
+    let shown = zeroize::Zeroizing::new(words_list(&list));
+    writeln!(screen)?;
+    writeln!(
+        screen,
+        "Your recovery words. Write them down now, in order, and keep them offline."
+    )?;
+    writeln!(
+        screen,
+        "The 12 words ARE the identity: lose them (and any backup file) and nobody can recover it."
+    )?;
+    writeln!(screen)?;
+    writeln!(screen, "{}", shown.as_str())?;
+    screen.flush()?;
+    if !check {
+        return Ok(());
     }
     let mut positions = rand::seq::index::sample(&mut rand::rngs::OsRng, list.len(), 3).into_vec();
     positions.sort_unstable();
-    eprintln!("Check your copy: type the words it asks for (hidden as you type).");
+    writeln!(
+        screen,
+        "Check your copy: type the words it asks for (hidden as you type)."
+    )?;
     for p in positions {
         for attempt in 0..3 {
             let got = rpassword::prompt_password(format!("  word #{}: ", p + 1))
@@ -207,12 +283,13 @@ fn backup_ceremony(ctx: &Ctx, words: &Secret, skip_check: bool) -> Result<()> {
                     .fix("run `dg auth new` again and copy the words carefully (nothing was created or paid)")
                     .into());
             }
-            eprintln!("  that is not word #{}; try again", p + 1);
+            writeln!(screen, "  that is not word #{}; try again", p + 1)?;
         }
     }
-    eprintln!(
+    writeln!(
+        screen,
         "  ✓ backup checked. Keep the 12 words offline; do everything else with limited keys."
-    );
+    )?;
     Ok(())
 }
 
@@ -442,13 +519,6 @@ async fn start_or_resume(
         );
         read_mnemonic()?
     } else {
-        let stderr_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
-        if (ctx.json || !stderr_tty) && !args.backup.skip_backup_check {
-            return Err(crate::errors::usage(
-                "the recovery words can only be shown on a terminal; run it in one, or add \
-                 --skip-backup-check --backup-file <file>",
-            ));
-        }
         identity::new_mnemonic()?
     };
     let keys = NewIdentityKeys::from_mnemonic(&words, ctx.network())?;
@@ -469,7 +539,10 @@ async fn start_or_resume(
         }
         Some(j) => j,
         None => {
-            backup_ceremony(ctx, &words, args.backup.skip_backup_check)?;
+            // `run` refused this up front; decided again right where the words are written.
+            let to =
+                words_destination(&args.backup, Surroundings::detect(ctx.json, Stream::Stderr))?;
+            backup_ceremony(&mut std::io::stderr().lock(), &words, to)?;
             // The backup is written before the journal: a bad backup path leaves nothing
             // behind that would ask for --resume.
             if let Some(path) = &args.backup.backup_file {
@@ -689,6 +762,12 @@ async fn register(
 
 pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
     let network = ctx.network_label();
+    // Before any network read or passphrase prompt: a fresh creation that has nowhere safe to
+    // put its recovery words is refused here (a resume reads the words; it shows none).
+    if !args.resume {
+        words_destination(&args.backup, Surroundings::detect(ctx.json, Stream::Stderr))?;
+        check_backup_file(&args.backup)?;
+    }
     deposit_duffs(args.amount)?;
     let spec = key_spec(ctx, &args.limits, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS)?;
     if let Some(label) = &args.name {
@@ -787,6 +866,116 @@ mod tests {
         let q = qr("yRd4FhXfVGHXpsuZXPNkMrfD9GVj46pnjt", 5_000_000);
         assert!(q.lines().count() > 10);
         assert!(q.contains('█') || q.contains('▀') || q.contains('▄'));
+    }
+
+    fn backup(file: bool, skip: bool) -> BackupArgs {
+        BackupArgs {
+            backup_file: file.then(|| PathBuf::from("b.json")),
+            reveal_secrets: false,
+            skip_backup_check: skip,
+        }
+    }
+
+    const PERSON: Surroundings = Surroundings {
+        json: false,
+        terminal: true,
+        ci: false,
+    };
+
+    /// Every way a run can be automated or captured.
+    fn not_a_person() -> [Surroundings; 3] {
+        [
+            Surroundings {
+                json: true,
+                ..PERSON
+            },
+            Surroundings {
+                terminal: false,
+                ..PERSON
+            },
+            Surroundings { ci: true, ..PERSON },
+        ]
+    }
+
+    #[test]
+    fn the_words_are_shown_only_to_a_person_at_a_terminal() {
+        assert_eq!(
+            words_destination(&backup(false, false), PERSON).unwrap(),
+            WordsTo::Screen { check: true }
+        );
+        // --skip-backup-check skips the quiz, nothing else.
+        assert_eq!(
+            words_destination(&backup(false, true), PERSON).unwrap(),
+            WordsTo::Screen { check: false }
+        );
+        assert_eq!(
+            words_destination(&backup(true, true), PERSON).unwrap(),
+            WordsTo::Screen { check: false }
+        );
+        for here in not_a_person() {
+            for skip in [false, true] {
+                assert_eq!(
+                    words_destination(&backup(true, skip), here).unwrap(),
+                    WordsTo::BackupFileOnly,
+                    "{here:?}"
+                );
+                let err = words_destination(&backup(false, skip), here)
+                    .unwrap_err()
+                    .to_string();
+                assert!(err.contains("nowhere safe"), "{here:?}: {err}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_refusal_names_both_safe_ways() {
+        let err = words_destination(&backup(false, true), not_a_person()[1]).unwrap_err();
+        let user = err.downcast_ref::<UserError>().expect("a UserError");
+        let text = format!("{user:?}");
+        assert!(text.contains("in a terminal"), "{text}");
+        assert!(text.contains("--backup-file"), "{text}");
+        assert!(text.contains("nothing was created"), "{text}");
+    }
+
+    #[test]
+    fn skip_backup_check_writes_nothing_without_a_terminal() {
+        let words = identity::new_mnemonic().unwrap();
+        for here in not_a_person() {
+            let to = words_destination(&backup(true, true), here).unwrap();
+            let mut out = Vec::new();
+            backup_ceremony(&mut out, &words, to).unwrap();
+            assert!(out.is_empty(), "{here:?} wrote {} bytes", out.len());
+        }
+    }
+
+    #[test]
+    fn a_terminal_sees_every_word_once_and_in_order() {
+        let words = identity::new_mnemonic().unwrap();
+        let mut out = Vec::new();
+        backup_ceremony(&mut out, &words, WordsTo::Screen { check: false }).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        for (i, w) in words.expose().split(' ').enumerate() {
+            assert!(
+                text.contains(&format!("{:>2}. {w}", i + 1)),
+                "word #{}",
+                i + 1
+            );
+        }
+    }
+
+    #[test]
+    fn skip_backup_check_help_does_not_promise_anything_about_printing() {
+        use clap::Args as _;
+        let cmd = BackupArgs::augment_args(clap::Command::new("new"));
+        let help = cmd
+            .get_arguments()
+            .find(|a| a.get_id() == "skip_backup_check")
+            .and_then(|a| a.get_help())
+            .map(ToString::to_string)
+            .unwrap();
+        assert!(help.contains("three-word check"), "{help}");
+        assert!(!help.contains("Skip showing"), "{help}");
+        assert!(help.contains("never shown"), "{help}");
     }
 
     #[test]

@@ -104,8 +104,15 @@ describe('Settings → Webhooks', () => {
     })
     expect(state.written).toHaveLength(1)
     expect(state.written[0]).toMatchObject({ url: 'https://ci.example.com/hook', events: [], relayIdentityId: RELAY })
-    expect(state.written[0]!.secret).toMatch(/^[0-9a-f]{64}$/)
-    expect(host.querySelector('[data-testid="webhook-secret"]')?.textContent).toContain('shown once')
+    const secret = state.written[0]!.secret
+    expect(secret).toMatch(/^[0-9a-f]{64}$/)
+    const box = host.querySelector('[data-testid="webhook-secret"]')!
+    expect(box.textContent).toContain('shown once')
+    // Masked until asked for (QW2-001): neither the text nor an accessible name carries it.
+    expect(box.textContent).not.toContain(secret)
+    expect(box.innerHTML).not.toContain(secret)
+    act(() => box.querySelector<HTMLButtonElement>('button[aria-label="Show the webhook secret"]')!.click())
+    expect(box.textContent).toContain(secret)
   })
 
   it('refuses a URL the schema refuses before anything is signed', async () => {

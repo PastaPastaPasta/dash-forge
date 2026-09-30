@@ -158,8 +158,10 @@ pub enum NameCommand {
 /// `dg auth export` arguments.
 #[derive(Debug, clap::Args)]
 pub struct ExportArgs {
-    /// Where to write (default: `dash-forge-<id>.key.json` in the current directory; `-` for
-    /// stdout with --format dfk1).
+    /// Where to write (a new file, 0600; default: under the config directory's `exports/`).
+    /// `-` prints the key on stdout, only with --format dfk1 --reveal-secrets and not with
+    /// --json: pipe it straight into a secret store (`| gh secret set DASH_FORGE_KEY`), never
+    /// into a log.
     #[arg(long, short = 'o')]
     pub output: Option<PathBuf>,
     /// Write the secrets unencrypted: a bridge-format file (0600), or with `--format dfk1` the
@@ -1153,23 +1155,29 @@ async fn current_key_text(
     Ok((current.to_dfk1(key.id).context("no key")?, Some(id)))
 }
 
+/// Refuse export flag combinations before anything is loaded. A key reaches stdout only with
+/// `--format dfk1 --reveal-secrets -o -`, and never inside `--json` output.
+fn check_export_args(ctx: &Ctx, args: &ExportArgs, to_stdout: bool) -> Result<()> {
+    let refusal = if args.format == "dfk1" && !args.reveal_secrets {
+        "--format dfk1 writes the key in the clear; add --reveal-secrets"
+    } else if !to_stdout {
+        return Ok(());
+    } else if args.format != "dfk1" {
+        "`-o -` (stdout) is only for --format dfk1 --reveal-secrets"
+    } else if ctx.json {
+        "`-o -` prints the key itself, not a JSON document; drop --json, or write it to a file \
+         with -o <file>"
+    } else if args.new_key {
+        "--new-key writes the key to a file (so it is kept before it is registered); pass -o <file>"
+    } else {
+        return Ok(());
+    };
+    Err(crate::errors::usage(refusal))
+}
+
 async fn export(ctx: &Ctx, args: &ExportArgs) -> Result<()> {
     let to_stdout = args.output.as_deref().is_some_and(|p| p.as_os_str() == "-");
-    if args.format == "dfk1" && !args.reveal_secrets {
-        return Err(crate::errors::usage(
-            "--format dfk1 writes the key in the clear; add --reveal-secrets",
-        ));
-    }
-    if to_stdout && args.format != "dfk1" {
-        return Err(crate::errors::usage(
-            "`-o -` (stdout) is only for --format dfk1 --reveal-secrets",
-        ));
-    }
-    if to_stdout && args.new_key {
-        return Err(crate::errors::usage(
-            "--new-key writes the key to a file (so it is kept before it is registered); pass -o <file>",
-        ));
-    }
+    check_export_args(ctx, args, to_stdout)?;
     let current = ctx.load_bridge()?;
     let path = export_path(args, &current.identity_id, to_stdout)?;
     // Ask for the passphrase before anything is registered.
