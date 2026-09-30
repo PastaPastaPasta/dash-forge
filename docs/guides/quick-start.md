@@ -125,7 +125,7 @@ With a sealed key file, each command that signs asks for the passphrase once:
 - A plain `git push` asks on the terminal, once per push.
 - Without a terminal (a GUI git client, a cron job) the push stops with [`E303`](../errors.md#e303) before anything is written. Its message names the ways out: run it in a terminal, keep the key in the OS keychain, or set `DASH_FORGE_PASSPHRASE` (or a [`dfk1:` key](identity-and-keys.md)) for scripts.
 
-`git push` and `git clone` use the same network: `git-remote-dash` reads the one `dg` recorded, so plain git commands need no flags or environment either. A repository's own git config (`dash.network`, which `dg init` and `dg repo clone` write) wins over it, and `DASH_FORGE_NETWORK` wins over both. Inside such a clone, `dg` uses the repository's network too, and commands that leave out the repository use the clone's (`dg issue list`, `dg pr view 3`, `dg release list`), as `gh` does.
+`git push` and `git clone` use the same network: `git-remote-dash` reads the one `dg` recorded, so plain git commands need no flags or environment either. A repository's own git config (`dash.network`, which `dg init` and `dg repo clone` write) wins over it, and `DASH_FORGE_NETWORK` wins over both. Inside such a clone, `dg` uses the repository's network too, and commands that leave out the repository use the clone's (`dg issue list`, `dg pr view 3`, `dg issue label 3 add bug`, `dg release download v1.0`), as `gh` does; `-R <owner>/<name>` names another one. In a clone of a fork, `dg pr create` opens the PR in the fork's parent.
 
 Then check everything:
 

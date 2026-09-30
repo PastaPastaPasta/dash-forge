@@ -266,15 +266,28 @@ pub(crate) fn state_label(v: &PatchView) -> &'static str {
 
 #[allow(clippy::too_many_lines)]
 async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
-    let s = Session::open_for_write(ctx, &args.repo, "pull request not created").await?;
+    let mut s = Session::open(ctx, &args.repo).await?;
+    // In a clone of a fork with no repository named, the PR goes to the fork's parent, with
+    // the fork as its source, as `gh pr create` does (QW2-014). Naming the fork opens it
+    // there.
+    let fork = if crate::infer::repo_from_clone() {
+        into_fork_parent(&mut s).await?
+    } else {
+        None
+    };
+    s.refuse_if_archived(ctx, "pull request not created")
+        .await?;
     let handle = &s.repo;
     let forge = handle.forge();
     let cwd = std::env::current_dir().context("reading the current directory")?;
 
-    // Where the branch may live: --head-repo, else the signer's forks of the target, then the
-    // target itself. The first that has the branch is the source.
+    // Where the branch may live: --head-repo, else (in a fork's clone) that fork, else the
+    // signer's forks of the target, then the target itself. The first that has the branch is
+    // the source.
     let candidates = if let Some(r) = &args.head_repo {
         vec![resolve(&s.client, &s.identity, &RepoRef::parse(r)?).await?]
+    } else if let Some(fork) = fork {
+        vec![fork, handle.clone()]
     } else {
         let mut c =
             forge_core::resolve::find_forks(&s.client, forge, handle.id(), Some(&s.identity.id()))
@@ -378,6 +391,37 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// When the session's repository is a fork, point the session at the fork's parent and
+/// return the fork; `None` (the session unchanged) when it is not one, or its parent is gone.
+async fn into_fork_parent(s: &mut Session) -> Result<Option<Repo>> {
+    let Some(parent_id) = forge_core::resolve::fork_parent(&s.client, &s.repo)
+        .await
+        .context("reading whether this clone's repository is a fork")?
+    else {
+        return Ok(None);
+    };
+    let parent = match forge_core::resolve::resolve_id(&s.client, &parent_id).await {
+        Ok(p) => p,
+        Err(forge_core::Error::NotFound) => {
+            eprintln!(
+                "note: {} is a fork of {parent_id}, which no longer exists; the PR goes to the fork",
+                s.repo.display()
+            );
+            return Ok(None);
+        }
+        Err(e) => return Err(e).context("resolving the fork's parent"),
+    };
+    let fork = std::mem::replace(&mut s.repo, parent);
+    // stderr, with --json too: where the PR goes is worth saying either way
+    eprintln!(
+        "{} is a fork of {}: the PR goes there (`dg pr create {} …` opens it in the fork)",
+        fork.display(),
+        s.repo.display(),
+        fork.display()
+    );
+    Ok(Some(fork))
 }
 
 /// The PR's source repository, branch and head commit. The branch is `--head` (else the
