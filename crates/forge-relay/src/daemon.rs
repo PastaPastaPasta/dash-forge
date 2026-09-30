@@ -169,6 +169,10 @@ struct RepoState {
     last_head: String,
     /// Which stage group a poll starts at (it resumes where the deadline last stopped it).
     next_stage: usize,
+    /// Tags whose newest release revision seen so far was yanked (by `tagName`): a further
+    /// delta-0 revision on one of these is `edited`, not a repeated `unpublished`
+    /// ([`ingest::translate_release`]).
+    yanked_tags: BTreeSet<String>,
 }
 
 /// A served repo: its state, and what its hooks want (set by discovery, read by polls).
@@ -873,6 +877,7 @@ async fn init_repo(shared: &Shared, repo_id: &str, baseline: Baseline) -> Result
         rotation: 0,
         last_head: String::new(),
         next_stage: 0,
+        yanked_tags: BTreeSet::new(),
     };
     // Valid tips of the PRs' base refs only (what merges are checked against).
     state.backfill_tips(shared).await?;
@@ -1188,7 +1193,16 @@ async fn poll_repo_rest(
         };
         for d in &r.docs {
             let event = match doc_type {
-                DOC_RELEASE => ingest::translate_release(&st.meta, d),
+                DOC_RELEASE => {
+                    let tag = d.field_str("tagName").unwrap_or_default();
+                    let was_yanked = st.yanked_tags.contains(&tag);
+                    if d.field_bool("yanked") {
+                        st.yanked_tags.insert(tag);
+                    } else {
+                        st.yanked_tags.remove(&tag);
+                    }
+                    ingest::translate_release(&st.meta, d, was_yanked)
+                }
                 DOC_ISSUE | DOC_PATCH => {
                     // A thread first seen live: everything on it is new (bounded below by the
                     // hooks that want its comments; see `no_earlier_than`).
@@ -1688,6 +1702,7 @@ mod tests {
             rotation: 0,
             last_head: String::new(),
             next_stage: 0,
+            yanked_tags: BTreeSet::new(),
         }
     }
 

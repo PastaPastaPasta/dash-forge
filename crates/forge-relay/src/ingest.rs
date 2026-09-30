@@ -512,8 +512,15 @@ pub fn translate_review(
     ))
 }
 
-/// A `release` → `release` published, or `unpublished` when it marks the tag yanked.
-pub fn translate_release(repo: &RepositoryMeta, d: &FetchedDocument) -> Option<WebhookEvent> {
+/// A `release` → `release` published, or `unpublished` when it newly marks the tag yanked.
+/// `was_yanked` is whether the tag's previous revision was already yanked (the caller's own
+/// per-tag cache, so this stays a pure function of its arguments): a further delta-0 revision on
+/// an already-yanked tag is `edited`, not a repeated `unpublished`.
+pub fn translate_release(
+    repo: &RepositoryMeta,
+    d: &FetchedDocument,
+    was_yanked: bool,
+) -> Option<WebhookEvent> {
     let assets = d
         .field_str("assets")
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -527,18 +534,26 @@ pub fn translate_release(repo: &RepositoryMeta, d: &FetchedDocument) -> Option<W
         author: d.owner_id.clone(),
         assets,
     };
-    Some(release_event(repo, &d.id, release_action(d, r.yanked), &r))
+    Some(release_event(
+        repo,
+        &d.id,
+        release_action(d, r.yanked, was_yanked),
+        &r,
+    ))
 }
 
 /// A release document's GitHub action from its RC1 `delta` (+1 publish, 0 edit / yank /
-/// sealed, −1 unpublish): `published`, `unpublished`, or for 0 `edited` (`unpublished` when it
-/// yanks). A document without a delta (before RC1) is `published` unless yanked.
-fn release_action(d: &FetchedDocument, yanked: bool) -> &'static str {
+/// sealed, −1 unpublish): `published`, `unpublished`, or for 0 `edited` -- unless this revision
+/// newly sets `yanked` (it was not set on the tag's previous revision), which is `unpublished`
+/// instead. A document without a delta (before RC1) is `published` unless it newly yanks.
+fn release_action(d: &FetchedDocument, yanked: bool, was_yanked: bool) -> &'static str {
+    let newly_yanked = yanked && !was_yanked;
     match d.fields.get("delta").and_then(FieldValue::as_i64) {
         Some(1) => "published",
         Some(-1) => "unpublished",
-        Some(_) if !yanked => "edited",
-        _ if yanked => "unpublished",
+        Some(_) if newly_yanked => "unpublished",
+        Some(_) => "edited",
+        _ if newly_yanked => "unpublished",
         _ => "published",
     }
 }
@@ -901,7 +916,7 @@ mod tests {
                 ("assets", FieldValue::text(r#"[{"name":"x.tgz"}]"#)),
             ],
         );
-        let e = translate_release(&meta(), &d).unwrap();
+        let e = translate_release(&meta(), &d, false).unwrap();
         assert_eq!(e.event, "release");
         assert_eq!(e.payload["action"], "published");
         assert_eq!(e.payload["release"]["tag_name"], "v1.2.0");
@@ -915,7 +930,7 @@ mod tests {
                 ("assets", FieldValue::text("not json")),
             ],
         );
-        let e = translate_release(&meta(), &bad_assets).unwrap();
+        let e = translate_release(&meta(), &bad_assets, false).unwrap();
         assert_eq!(e.payload["release"]["assets"], serde_json::json!([]));
     }
 
@@ -1374,11 +1389,12 @@ mod tests {
                 ("yanked", FieldValue::boolean(true)),
             ],
         );
-        let e = translate_release(&meta(), &yanked).unwrap();
+        let e = translate_release(&meta(), &yanked, false).unwrap();
         assert_eq!(e.payload["action"], "unpublished");
     }
 
-    /// RC1 `release.delta`: +1 publish, 0 edit (or yank), −1 unpublish.
+    /// RC1 `release.delta`: +1 publish, 0 edit (or yank), −1 unpublish. `was_yanked` is always
+    /// `false` here (a tag never yanked before), so 0-and-yanked is the moment it becomes yanked.
     #[test]
     fn a_release_action_follows_its_delta() {
         let rel = |delta: i64, yanked: bool| {
@@ -1398,11 +1414,42 @@ mod tests {
             (0, false, "edited"),
             (0, true, "unpublished"),
         ] {
-            let e = translate_release(&meta(), &rel(delta, yanked)).unwrap();
+            let e = translate_release(&meta(), &rel(delta, yanked), false).unwrap();
             assert_eq!(
                 e.payload["action"], action,
                 "delta {delta}, yanked {yanked}"
             );
         }
+    }
+
+    /// A further delta-0 edit of a release already yanked (`was_yanked: true`) is `edited`, not
+    /// a repeated `unpublished` -- only the revision that newly sets `yanked` is `unpublished`.
+    /// Un-yanking (publishing again without `--yanked`) is likewise `edited`, not a webhook
+    /// action of its own: GitHub has none for it, and the tag's publish state did not change.
+    #[test]
+    fn editing_an_already_yanked_release_is_edited_not_unpublished_again() {
+        let rel = |yanked: bool| {
+            doc(
+                "r",
+                "M",
+                vec![
+                    ("tagName", FieldValue::text("v1")),
+                    ("delta", FieldValue::signed(0)),
+                    ("yanked", FieldValue::boolean(yanked)),
+                ],
+            )
+        };
+        // Newly yanked: was_yanked false, yanked true -> unpublished.
+        let e = translate_release(&meta(), &rel(true), false).unwrap();
+        assert_eq!(e.payload["action"], "unpublished");
+        // Still yanked on a later edit: was_yanked true, yanked true -> edited.
+        let e = translate_release(&meta(), &rel(true), true).unwrap();
+        assert_eq!(e.payload["action"], "edited");
+        // Un-yanked: was_yanked true, yanked false -> edited.
+        let e = translate_release(&meta(), &rel(false), true).unwrap();
+        assert_eq!(e.payload["action"], "edited");
+        // Never yanked: was_yanked false, yanked false -> edited.
+        let e = translate_release(&meta(), &rel(false), false).unwrap();
+        assert_eq!(e.payload["action"], "edited");
     }
 }
