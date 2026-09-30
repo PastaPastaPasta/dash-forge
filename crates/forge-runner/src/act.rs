@@ -151,9 +151,10 @@ pub struct Invocation<'a> {
     pub event: &'a Path,
     /// A secrets file, for a trusted ref only.
     pub secrets: Option<&'a Path>,
-    /// The `GITHUB_TOKEN` secret the job sees: empty unless the ref is trusted and the
-    /// secrets file sets one (act would otherwise fill it from the host's `gh auth token`).
-    pub github_token: &'a str,
+    /// Whether `secrets` sets a non-empty `GITHUB_TOKEN`. Then act takes it from that file;
+    /// otherwise it is forced empty (act would fill it from the host's `gh auth token`). The
+    /// value never goes on act's command line, where `ps` shows it to every local user.
+    pub secrets_set_github_token: bool,
     /// Act's action cache and host workspaces for this run (`--action-cache-path`): per run, so
     /// nothing one run puts there reaches another.
     pub action_cache: &'a Path,
@@ -185,8 +186,13 @@ pub fn run_args(cfg: &Config, inv: &Invocation<'_>) -> Vec<String> {
         "--secret-file".into(),
         inv.secrets
             .map_or_else(|| "/dev/null".into(), |p| p.display().to_string()),
-        "-s".into(),
-        format!("GITHUB_TOKEN={}", inv.github_token),
+    ];
+    if inv.secrets.is_none() || !inv.secrets_set_github_token {
+        // An empty value only: act lets `-s` override the secrets file and fills a missing
+        // token from `gh auth token`. A real token comes from the file, never from argv.
+        a.extend(["-s".into(), "GITHUB_TOKEN=".into()]);
+    }
+    a.extend([
         // No shared cache server: one repository's job could otherwise read or poison another's
         // `actions/cache` entries.
         "--no-cache-server".into(),
@@ -196,7 +202,7 @@ pub fn run_args(cfg: &Config, inv: &Invocation<'_>) -> Vec<String> {
         cfg.container_network.clone(),
         "--rm".into(),
         "--pull=false".into(),
-    ];
+    ]);
     if !cfg.mount_docker_socket {
         // `-`: act does not bind the Docker socket into job containers (its default does).
         a.push("--container-daemon-socket".into());
@@ -289,9 +295,41 @@ level=warning msg= ⚠ Apple M-series ⚠
             workflow: Path::new("/co/.forge/workflows/ci.yml"),
             event: Path::new("/ev.json"),
             secrets,
-            github_token: "",
+            secrets_set_github_token: false,
             action_cache: Path::new("/s/run/1/act"),
             artifacts: None,
+        }
+    }
+
+    /// A trusted ref's `GITHUB_TOKEN` comes from the secrets file act reads; argv (which `ps`
+    /// shows every local user) never holds it. Without one it is forced empty.
+    #[test]
+    fn the_github_token_is_never_on_the_command_line() {
+        let file = Path::new("/etc/forge/secrets");
+        let with = run_args(
+            &cfg(""),
+            &Invocation {
+                secrets_set_github_token: true,
+                ..inv(Some(file))
+            },
+        );
+        assert_eq!(
+            pair(&with, "--secret-file").as_deref(),
+            Some("/etc/forge/secrets")
+        );
+        assert!(
+            !with.iter().any(|a| a.contains("GITHUB_TOKEN")),
+            "the file's token is not overridden: {with:?}"
+        );
+        for (secrets, sets) in [(Some(file), false), (None, false), (None, true)] {
+            let a = run_args(
+                &cfg(""),
+                &Invocation {
+                    secrets_set_github_token: sets,
+                    ..inv(secrets)
+                },
+            );
+            assert_eq!(pair(&a, "-s").as_deref(), Some("GITHUB_TOKEN="), "{a:?}");
         }
     }
 

@@ -294,8 +294,8 @@ impl Config {
             });
             if !host_only {
                 bail!(
-                    "relay.url {:?} must be http(s)://host[:port], with no path",
-                    r.url
+                    "relay.url {:?} must be http(s)://host[:port], with no path or user:password@",
+                    shown_url(&r.url)
                 );
             }
         }
@@ -311,7 +311,7 @@ impl Config {
         }
         if let Some(u) = &c.artifact_server_url {
             if !(u.starts_with("http://") || u.starts_with("https://")) {
-                bail!("artifact_server_url {u:?} must be http(s)://…");
+                bail!("artifact_server_url {:?} must be http(s)://…", shown_url(u));
             }
         }
         if c.network.as_deref() == Some("devnet") && c.devnet_name.is_none() {
@@ -352,6 +352,22 @@ impl RepoConfig {
     pub fn trusted(&self, refname: &str) -> bool {
         self.secrets_file.is_some() && self.trusted_refs.iter().any(|g| glob_match(g, refname))
     }
+}
+
+/// `url` for an error message: `user:password@` and any query or fragment (tokens) replaced by
+/// `[redacted]`, the scheme, host and path kept so the mistake is still visible.
+fn shown_url(url: &str) -> String {
+    let (scheme, rest) = url.split_once("://").map_or(("", url), |(s, r)| (s, r));
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(end);
+    let sep = if scheme.is_empty() { "" } else { "://" };
+    let host = authority.rfind('@').map_or(authority.to_string(), |at| {
+        format!("[redacted]{}", &authority[at..])
+    });
+    let path = tail
+        .find(['?', '#'])
+        .map_or(tail.to_string(), |q| format!("{}?[redacted]", &tail[..q]));
+    format!("{scheme}{sep}{host}{path}")
 }
 
 /// A ref glob: `*` matches any run of characters within one path segment (never a `/`), and
@@ -447,6 +463,32 @@ repo = "alice/project"
         ] {
             assert!(Config::parse(bad).is_err(), "{bad}");
         }
+    }
+
+    /// A URL with credentials in it is refused without printing them.
+    #[test]
+    fn url_errors_never_print_credentials() {
+        for (key, url) in [
+            ("relay", "https://user:FAKEpass@relay.example"),
+            ("relay", "http://r:8080/v1?token=FAKEtoken"),
+            ("artifact", "FAKEuser:FAKEpass@host:1234"),
+        ] {
+            let cfg = if key == "relay" {
+                format!("state_dir = \"/x\"\n[relay]\nurl = \"{url}\"\nsecret_file = \"/s\"\n[[repo]]\nrepo = \"a/b\"")
+            } else {
+                format!(
+                    "state_dir = \"/x\"\nartifact_server_url = \"{url}\"\n[[repo]]\nrepo = \"a/b\""
+                )
+            };
+            let e = format!("{:#}", Config::parse(&cfg).unwrap_err());
+            assert!(!e.contains("FAKE"), "{e}");
+            assert!(e.contains("[redacted]"), "{e}");
+        }
+        assert_eq!(
+            shown_url("https://u:p@h:1/x?t=1#f"),
+            "https://[redacted]@h:1/x?[redacted]"
+        );
+        assert_eq!(shown_url("ftp://r"), "ftp://r");
     }
 
     #[test]

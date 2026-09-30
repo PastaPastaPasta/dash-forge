@@ -547,7 +547,6 @@ struct RunCtx<'a> {
     event: &'a Path,
     secrets: Option<&'a Path>,
     secret_values: &'a [(String, String)],
-    github_token: &'a str,
     logs: &'a Path,
     run_dir: &'a Path,
     deadline: Instant,
@@ -699,10 +698,6 @@ pub fn run(cfg: &Config, repo: &RepoConfig, trig: &Trigger, run_dir: &Path) -> R
         .map(read_secret_values)
         .transpose()?
         .unwrap_or_default();
-    let github_token = secret_values
-        .iter()
-        .find(|(k, _)| k == "GITHUB_TOKEN")
-        .map_or("", |(_, v)| v.as_str());
     let logs = run_dir.join("logs");
     std::fs::create_dir_all(&logs)?;
     let deadline = Instant::now() + Duration::from_secs(cfg.job_timeout_secs);
@@ -715,7 +710,6 @@ pub fn run(cfg: &Config, repo: &RepoConfig, trig: &Trigger, run_dir: &Path) -> R
         event: &event_path,
         secrets: secrets.as_deref(),
         secret_values: &secret_values,
-        github_token,
         logs: &logs,
         run_dir,
         deadline,
@@ -775,7 +769,7 @@ fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Resul
             workflow: &workflow_path,
             event: c.event,
             secrets: c.secrets,
-            github_token: c.github_token,
+            secrets_set_github_token: sets_github_token(c.secret_values),
             action_cache: &action_cache,
             artifacts: art_dir.as_deref(),
         },
@@ -911,14 +905,67 @@ fn read_secret_values(path: &Path) -> Result<Vec<(String, String)>> {
         .collect())
 }
 
-/// `log` with every secret value (of 4 characters or more) replaced by `***`. act masks
-/// secrets in its own output already; this is a second fence before a log leaves the machine
-/// (logs are public).
+/// Whether a secrets file's pairs set a non-empty `GITHUB_TOKEN` (act upper-cases the names it
+/// reads from the file, so the match ignores case).
+fn sets_github_token(values: &[(String, String)]) -> bool {
+    values
+        .iter()
+        .any(|(k, v)| k.eq_ignore_ascii_case("GITHUB_TOKEN") && !v.is_empty())
+}
+
+/// `log` with every secret value (of 4 characters or more) replaced by `***`, in the clear and
+/// in the encoded forms a job most often prints it in: base64 (standard and URL-safe, at any
+/// alignment, as inside a `Basic` credential) and URL-encoding. act masks secrets in its own
+/// output already; this is a second fence before a log leaves the machine (logs are public).
 pub fn redact(log: &str, secrets: &[String]) -> String {
-    secrets
+    let mut forms: Vec<String> = secrets
         .iter()
         .filter(|s| s.len() >= 4)
+        .flat_map(|s| encoded_forms(s))
+        .collect();
+    // Longest first, so a form is never cut short by a shorter one inside it.
+    forms.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    forms.dedup();
+    forms
+        .iter()
         .fold(log.to_string(), |acc, s| acc.replace(s.as_str(), "***"))
+}
+
+/// `s` itself, its URL-encoding, and the part of its base64 encoding that depends on `s` alone
+/// at each of the three byte alignments it can start at inside a longer encoded string.
+fn encoded_forms(s: &str) -> Vec<String> {
+    use base64::engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD};
+    use base64::Engine as _;
+    let mut forms = vec![s.to_string(), url_encode(s)];
+    for lead in 0..3usize {
+        let mut bytes = vec![0u8; lead];
+        bytes.extend_from_slice(s.as_bytes());
+        let bits = bytes.len() * 8;
+        // Characters holding any bit of the `lead` filler bytes, and a last character that
+        // holds bits of whatever follows `s`, are not `s`'s alone.
+        let skip = (lead * 8).div_ceil(6);
+        let keep = bits / 6;
+        for engine in [&STANDARD_NO_PAD, &URL_SAFE_NO_PAD] {
+            let enc = engine.encode(&bytes);
+            if let Some(core) = enc.get(skip..keep).filter(|c| c.len() >= 4) {
+                forms.push(core.to_string());
+            }
+        }
+    }
+    forms
+}
+
+/// Percent-encoding of everything but RFC 3986's unreserved characters (upper-case hex).
+fn url_encode(s: &str) -> String {
+    use std::fmt::Write as _;
+    s.bytes().fold(String::new(), |mut out, b| {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            let _ = write!(out, "%{b:02X}");
+        }
+        out
+    })
 }
 
 /// Run act with `args`, streaming its JSON log, stopped after `limit`: SIGINT first (act then
@@ -1357,6 +1404,51 @@ mod tests {
             redact("t=abcd1234 q=xyz789 ab", &values),
             "t=*** q=*** ab",
             "too-short values are left"
+        );
+    }
+
+    #[test]
+    fn a_github_token_in_the_secrets_file_is_found_whatever_its_case() {
+        let pairs = |p: &[(&str, &str)]| -> Vec<(String, String)> {
+            p.iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        assert!(sets_github_token(&pairs(&[
+            ("A", "b"),
+            ("GITHUB_TOKEN", "ghs_FAKE")
+        ])));
+        assert!(sets_github_token(&pairs(&[("github_token", "ghs_FAKE")])));
+        assert!(!sets_github_token(&pairs(&[("GITHUB_TOKEN", "")])));
+        assert!(!sets_github_token(&pairs(&[("GH_TOKEN", "ghs_FAKE")])));
+    }
+
+    /// A job that prints a secret base64-encoded (a `Basic` credential, at any alignment) or
+    /// URL-encoded is masked too.
+    #[test]
+    fn encoded_secret_values_never_reach_a_log() {
+        use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+        use base64::Engine as _;
+        let secret = "ghs_FAKE+tok/en=Value?1".to_string();
+        let values = std::slice::from_ref(&secret);
+        for prefix in ["", "x", "xy", "x-access-token:"] {
+            for encoded in [
+                STANDARD.encode(format!("{prefix}{secret}")),
+                URL_SAFE_NO_PAD.encode(format!("{prefix}{secret}:suffix")),
+            ] {
+                let log = format!("Authorization: Basic {encoded}\n");
+                let out = redact(&log, values);
+                assert!(out.contains("***"), "{prefix:?}: {out}");
+                // What is left can no longer be decoded back to the secret.
+                let fragment = &STANDARD.encode(&secret)[4..20];
+                assert!(!out.contains(fragment), "{prefix:?}: {out}");
+            }
+        }
+        let url = "https://h/?t=ghs_FAKE%2Btok%2Fen%3DValue%3F1&x=1";
+        assert_eq!(redact(url, values), "https://h/?t=***&x=1");
+        assert_eq!(
+            redact("plain ghs_FAKE+tok/en=Value?1.", values),
+            "plain ***."
         );
     }
 

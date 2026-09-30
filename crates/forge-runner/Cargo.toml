@@ -22,6 +22,8 @@ toml = "0.8"
 yaml_serde = "0.10"
 sha2 = "0.10"
 hex = "0.4"
+# `redact`: the base64 forms of a secret, masked in job logs like the value itself.
+base64 = "0.22"
 # Artifacts: upload-artifact v3's files zipped into one artifact, their gzipped parts inflated.
 zip = { version = "8", default-features = false, features = ["deflate"] }
 flate2 = "1"
