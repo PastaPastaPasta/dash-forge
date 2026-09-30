@@ -54,6 +54,7 @@ const SITE_TITLES: Readonly<Record<string, string>> = {
   '/': SITE_TITLE,
   '/explore': 'Explore',
   '/new': 'New repository',
+  '/mirror': 'Mirror a GitHub repository',
   '/notifications': 'Notifications',
   '/settings': 'Settings',
   '/settings/storage': 'Storage settings',

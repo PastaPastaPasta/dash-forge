@@ -13,7 +13,7 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { STEADY, type FirstWrite } from '../sdk/cost'
+import { STEADY, previewCreate, sumPreviews, type CostPreview, type FirstWrite } from '../sdk/cost'
 import { countDocuments, queryDocumentsWithProof, type DocumentQuery } from '../sdk'
 import { DOC, type RepoRef } from './contract'
 import { contractOf, repoSource, type QueryShape } from './source'
@@ -177,13 +177,43 @@ export async function reviewFirsts(sdk: EvoSDK, repo: RepoRef, reviewer: string,
   return known({ target: !prHasReviews, contract: await contractFirst(sdk, reviewer, repo.forge.collab) })
 }
 
+/** A repository creation's documents, previewed (`firsts`: {@link repoCreationFirsts}). */
+export interface RepoCreationFirsts {
+  readonly first: FirstWrite
+  readonly rest: FirstWrite
+}
+
+/**
+ * The price of creating a repository: public, three documents (`repo`, the owner's
+ * `maintainer`, the first `config`); private, four (plus the owner's epoch-0 `repoKey`, and a
+ * sealed `config`).
+ */
+export function previewRepoCreate(
+  i: { readonly name: string; readonly description?: string; readonly defaultBranch?: string; readonly visibility?: 'public' | 'private' },
+  firsts: RepoCreationFirsts,
+): CostPreview {
+  if (i.visibility === 'private') {
+    return sumPreviews([
+      previewCreate('repo', { name: i.name, visibility: 'private', ...(i.description ? { description: i.description } : {}) }, firsts.first),
+      previewCreate('maintainer', {}, firsts.rest),
+      previewCreate('repoKey'),
+      previewCreate('config', { enc: new Uint8Array(80), epoch: 0, backend: { mode: 0 } }, firsts.rest),
+    ])
+  }
+  return sumPreviews([
+    previewCreate('repo', { ...i, visibility: 'public' }, firsts.first),
+    previewCreate('maintainer', {}, firsts.rest),
+    previewCreate('config', { defaultBranch: i.defaultBranch ?? 'main' }, firsts.rest),
+  ])
+}
+
 /**
  * A new repo (repo + maintainer + config) by `owner`, per document: the first one pays the
  * contract nonce, the owner's first repo also the owner's subtrees. An owner who has written
  * to forge-core has created a repo (every forge-core write is into a repo they own or
  * maintain), so the nonce answers both.
  */
-export async function repoCreationFirsts(sdk: EvoSDK, owner: string, core: string): Promise<{ first: FirstWrite; rest: FirstWrite }> {
+export async function repoCreationFirsts(sdk: EvoSDK, owner: string, core: string): Promise<RepoCreationFirsts> {
   const contract = await contractFirst(sdk, owner, core)
   if (contract === undefined) return { first: {}, rest: { contract: false } }
   const first = known({ contract, author: contract, member: contract })

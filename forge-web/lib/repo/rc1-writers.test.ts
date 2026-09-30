@@ -411,6 +411,10 @@ describe('private writers are RC1-valid', () => {
         openManifest: async () => {
           throw new Error('no asset list in this test')
         },
+        storedLists: async () => [],
+        storedHeader: async () => {
+          throw new Error('no stored file in this test')
+        },
         store: async (sealed, sha256Hex) => {
           stored.push(sealed)
           const h = Buffer.from(await crypto.subtle.digest('SHA-256', sealed as BufferSource)).toString('hex')

@@ -325,6 +325,26 @@ describe('identities are bytes', () => {
     expect(r.members.has(BOB)).toBe(true)
     expect(r.repair?.missingWraps.map((m) => encodePrivateId(m, 'base58'))).toEqual([base58Encode(ALICE)])
   })
+
+  it('dates stated(e): the earliest $createdAt of the epoch’s configs at the height its key was first stated (§16.3)', async () => {
+    const keys = await keysFor()
+    const c0 = await sealDoc(keys, { type: 'config', ownerId: ALICE, epoch: 0 }, { defaultBranch: 'refs/heads/main' }, { anchor: true })
+    const b58 = (b: Uint8Array) => privateId(base58Encode(b))
+    const row = (id: number, height: number, createdAt?: number): ConfigRow => ({
+      id: b58(new Uint8Array(32).fill(id)),
+      owner: b58(ALICE),
+      epoch: 0,
+      createdAtBlockHeight: height,
+      enc: c0,
+      ...(createdAt !== undefined ? { createdAt } : {}),
+    })
+    const resolve = (configs: ConfigRow[]) =>
+      resolveEpochs({ repoId: REPO_ID, reader: b58(ALICE), memberships: [{ identity: b58(ALICE), role: 'maintainer' }], configs, wraps: [] })
+    // a re-anchor later (height 20) does not move it
+    const r = await resolve([row(2, 10, 5_000), row(1, 10, 4_000), row(3, 20, 9_000)])
+    expect(r.anchors.get(0)?.statedAt).toBe(4_000)
+    expect((await resolve([row(1, 10)])).anchors.get(0)?.statedAt).toBeUndefined()
+  })
 })
 
 describe('doc hardening', () => {

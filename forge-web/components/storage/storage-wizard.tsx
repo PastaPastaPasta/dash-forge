@@ -29,7 +29,7 @@ import {
   type StorageProfile,
 } from '@/lib/storage'
 import { errText } from '@/lib/storage/util'
-import { useStorageConfig } from '@/hooks/use-storage-config'
+import { useStorageConfig, type StorageConfigState } from '@/hooks/use-storage-config'
 import { Button } from '@/components/ui/button'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
@@ -51,7 +51,16 @@ const TILE_ICON: Readonly<Record<ProviderId, typeof Cloud>> = {
 }
 
 export function StorageWizard(): JSX.Element {
-  const { config, loading, error, storable, save, reload, discard, needsUnlock } = useStorageConfig()
+  return <StorageWizardView storage={useStorageConfig()} />
+}
+
+/**
+ * The wizard over a caller's {@link useStorageConfig} (the `/mirror` wizard shares one with its
+ * own profile picker, so a profile saved here shows there at once). `embedded` leaves out the
+ * saved-profile list and the browser-push default, which that page shows its own way.
+ */
+export function StorageWizardView({ storage, embedded = false }: { storage: StorageConfigState; embedded?: boolean }): JSX.Element {
+  const { config, loading, error, storable, save, reload, discard, needsUnlock } = storage
   const [provider, setProvider] = useState<ProviderId | null>(null)
   const [editing, setEditing] = useState<StorageProfile | null>(null)
 
@@ -122,9 +131,12 @@ export function StorageWizard(): JSX.Element {
         />
       ) : null}
 
-      <Profiles config={config} storable={storable} save={save} onEdit={(p) => start(p.settings.provider, p)} />
-
-      <DefaultPolicy config={config} storable={storable} save={save} />
+      {embedded ? null : (
+        <>
+          <Profiles config={config} storable={storable} save={save} onEdit={(p) => start(p.settings.provider, p)} />
+          <DefaultPolicy config={config} storable={storable} save={save} />
+        </>
+      )}
 
       <CostCard />
     </div>

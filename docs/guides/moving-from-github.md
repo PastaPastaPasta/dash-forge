@@ -4,6 +4,21 @@ This guide is one path from a project on GitHub (or GitLab) to the same project 
 
 You don't have to move everything at once. Most projects start as a **mirror**, where GitHub stays the home and Forge follows it, and **cut over** later, or never. Both are covered.
 
+## Start here: the mirror wizard
+
+For a public GitHub repository, the quickest path needs no install. Open **[forge.dashhq.org/mirror](https://forge.dashhq.org/mirror/)** (or **New → Mirror a GitHub repo**). It works through six steps in your browser. The hosted site moves to bonsia when the web app cuts over ([Which network](README.md#which-network)); until then, use `/mirror` on a build of `forge-web` for bonsia.
+
+1. **The GitHub repository.** Type `owner/name` or paste its URL. Your browser asks GitHub's public API, without signing in, whether the repository exists and is public. There is no GitHub OAuth app, because Forge runs no server.
+2. **The Forge repository.** The name comes from GitHub and the price is shown before you sign. Creating it writes three documents, for about 0.002 DASH. If you already own a Forge repository with that name, the mirror writes into it at no cost.
+3. **Storage.** Pick a bucket you have already saved, or add one with the [storage wizard](bring-your-own-storage.md). Cloudflare R2 or S3 is recommended. The step shows the CORS policy to paste. Dash Platform is also offered, priced per MiB.
+4. **A runner key.** This is a limited key on your identity, bound to Forge's contracts, with its own budget and expiry (default 0.5 DASH and 365 days). Your master key signs once, from your identity file or recovery words. The key is shown **once**, as the `DASH_FORGE_KEY` value to paste into GitHub, and is not stored in the browser. Because it belongs to the repository's owner, the Action needs no other membership.
+5. **The workflow.** The wizard lists the secrets to add first: `DASH_FORGE_KEY`, plus `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` for a bucket. It then builds `.github/workflows/forge-mirror.yml` with the repository, network, devnet name and storage filled in, and both the build and the Action pinned to one commit. **Create this file on GitHub** opens GitHub's new-file page with the file filled in, and committing it starts the first run.
+6. **The first run.** The page checks Platform until the mirror's branches appear, then links to the repository.
+
+The wizard saves your progress in the browser and picks up where you stopped. It never saves a key. Until a Dash Forge release is published, the workflow builds `dg`, `git-remote-dash` and `forge-import` on the runner. That makes the first run take several extra minutes, and later runs use the cache ([measured timing](mirror-a-github-repo.md#the-setup-wizard)).
+
+The rest of this guide covers the command-line path: private repositories, GitLab, a one-off import with no Action, and cutting over.
+
 1. [What moves and what doesn't](#1-what-moves-and-what-doesnt)
 2. [Pick where the code is stored](#2-pick-where-the-code-is-stored)
 3. [Get and fund an identity](#3-get-and-fund-an-identity)
@@ -125,7 +140,7 @@ Then open `https://forge.dashhq.org/<your id>/project`. Run `dg storage advertis
 
 ## 5. Keep it in sync
 
-While GitHub is still where work happens, let Forge follow it with the **Forge Mirror Action**: the same importer, run from GitHub Actions on every push, issue, PR and release and on a daily schedule, under a per-run cost cap. Set it up from [Mirror a GitHub repository §2](mirror-a-github-repo.md#2-the-forge-mirror-action). Its CI secret is a limited key, never your identity file:
+While GitHub is still where work happens, let Forge follow it with the **Forge Mirror Action**: the same importer, run from GitHub Actions on every push, issue, PR and release and on a daily schedule, under a per-run cost cap. The [mirror wizard](#start-here-the-mirror-wizard) sets it up from the browser. To set it up by hand, see [Mirror a GitHub repository §2](mirror-a-github-repo.md#2-the-forge-mirror-action). Its CI secret is a limited key, never your identity file:
 
 ```sh
 dg auth export --new-key --master dash-identity-<id>.json \

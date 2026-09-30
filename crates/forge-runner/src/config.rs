@@ -157,6 +157,30 @@ pub struct RepoConfig {
     /// repository whose every pusher you trust with the Docker daemon.
     #[serde(default)]
     pub allow_container_options: bool,
+    /// Which pull requests run their `pull_request` workflows (see [`PullPolicy`]).
+    #[serde(default)]
+    pub pull_requests: PullPolicy,
+    /// Where a fork's PR head is fetched from, `{id}` standing for the fork's repo id. Default
+    /// `dash://{id}`; the local end-to-end test points it at a directory.
+    #[serde(default)]
+    pub fork_url: Option<String>,
+}
+
+/// Which pull requests a repository's runner runs. None ever gets the secrets unless its head
+/// is a trusted branch of the repository itself and its author a member (`run::pull_trusted`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PullPolicy {
+    /// No pull request runs.
+    Off,
+    /// Pull requests whose author is a current member (owner, maintainer or writer), from a
+    /// branch here or from a fork. Others are skipped with a log line; `forge-runner run
+    /// --pr <n>` runs one by hand.
+    #[default]
+    Members,
+    /// Also strangers' PRs from forks: a stranger's code runs on your Docker daemon (without
+    /// secrets or container options), as a fork's PR does on GitHub without the approval step.
+    All,
 }
 
 fn default_interval() -> u64 {
@@ -274,6 +298,17 @@ impl RepoConfig {
         self.refs.iter().any(|g| glob_match(g, refname))
     }
 
+    /// Where a pull request's head is fetched from: this repository, or the fork holding it.
+    pub fn pull_source_url(&self, pr: &crate::watch::PullRow) -> String {
+        if !pr.is_fork() {
+            return self.url();
+        }
+        match &self.fork_url {
+            Some(t) => t.replace("{id}", &pr.source_repo_id),
+            None => format!("dash://{}", pr.source_repo_id),
+        }
+    }
+
     /// Whether a run of `refname` gets the secrets.
     pub fn trusted(&self, refname: &str) -> bool {
         self.secrets_file.is_some() && self.trusted_refs.iter().any(|g| glob_match(g, refname))
@@ -335,6 +370,25 @@ repo = "alice/project"
             !c.sweep_after_timeout,
             "no daemon-wide sweep unless the daemon is the runner's"
         );
+        assert_eq!(
+            r.pull_requests,
+            PullPolicy::Members,
+            "strangers' pull requests do not run by default"
+        );
+    }
+
+    #[test]
+    fn pull_request_policies() {
+        let p = |v: &str| {
+            Config::parse(&format!(
+                "state_dir = \"/x\"\n[[repo]]\nrepo = \"a/b\"\npull_requests = \"{v}\""
+            ))
+            .map(|c| c.repos[0].pull_requests)
+        };
+        assert_eq!(p("off").unwrap(), PullPolicy::Off);
+        assert_eq!(p("members").unwrap(), PullPolicy::Members);
+        assert_eq!(p("all").unwrap(), PullPolicy::All);
+        assert!(p("yes").is_err());
     }
 
     #[test]

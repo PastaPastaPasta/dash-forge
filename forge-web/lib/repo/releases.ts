@@ -16,6 +16,7 @@ import {
   bytesToHex,
   foldReleases,
   openRelease,
+  releaseStatusOf,
   type FoldRevision,
   type OpenContext,
   type ReleaseFields,
@@ -94,6 +95,11 @@ export interface ReleaseList {
    * on a public repo, any carrying `enc`. Absent: none.
    */
   readonly hidden?: number
+  /**
+   * Of `hidden`, revisions sealed under an earlier use of their epoch number: "sealed under a key
+   * this repository no longer uses", not tampering (§16.3). Absent: none.
+   */
+  readonly earlierUse?: number
   /** Tags whose newest revision could not be read: their state is unknown (§16.3). */
   readonly unknownTags?: readonly string[]
   /** Newer revisions are under a key this reader does not hold yet (§16.3). */
@@ -401,13 +407,14 @@ export async function sealedReleases(docs: readonly PlainDocument[], ctx: OpenCo
     docs.map(async (doc): Promise<SealedRow> => {
       const stored = storedRelease(doc)
       const opened: ReleaseOpenResult = stored === null ? { status: 'malformed' } : await openRelease(ctx, stored)
+      const createdAt = typeof doc['$createdAt'] === 'number' ? doc['$createdAt'] : undefined
       return {
         doc,
         id: idField(doc, '$id') ?? new Uint8Array(0),
-        createdAt: typeof doc['$createdAt'] === 'number' ? doc['$createdAt'] : 0,
+        createdAt: createdAt ?? 0,
         epoch: stored?.epoch ?? -1,
         tagName: str(doc, 'tagName'),
-        status: opened.status === 'unreadable' ? opened.reason : opened.status,
+        status: releaseStatusOf(opened, stored?.epoch, createdAt, ctx),
         enc: bytesToHex(bytesField(doc, 'enc') ?? new Uint8Array(0)),
         ...(opened.status === 'readable' ? { fields: opened.fields } : {}),
       }
@@ -415,10 +422,12 @@ export async function sealedReleases(docs: readonly PlainDocument[], ctx: OpenCo
   )
   const fold = foldReleases(rows)
   const view = (r: SealedRow): ReleaseView => sealedView(r.doc, r.epoch, r.fields as ReleaseFields)
+  const earlierUse = rows.filter((r) => r.status === 'earlierUse').length
   return {
     current: fold.live.map(view).sort(releaseOrder),
     previous: fold.history.map(view),
     hidden: fold.hidden,
+    ...(earlierUse > 0 ? { earlierUse } : {}),
     unknownTags: fold.unknownTags,
     stale: fold.stale,
   }

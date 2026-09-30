@@ -59,6 +59,7 @@ const SPEND_TITLES: Readonly<Record<string, string>> = {
   'key:topup': 'Key budget topped up',
   'key:revoke': 'Key disabled on chain',
   'key:encryption': 'Encryption key registered',
+  'key:runner': 'Runner key registered',
   'identity:create': 'Identity created',
 }
 
@@ -142,6 +143,8 @@ interface AuthContextValue {
   revokeStored: (identityId: string, input: MasterInput) => Promise<void>
   /** Raise this browser key's budget / expiry in place (the master key signs once). */
   topUpKey: (input: MasterInput, request: TopUpRequest) => Promise<KeyLimits>
+  /** Register a CI runner key (not stored here; shown once). The master key signs once. */
+  createRunnerKey: (input: MasterInput, request: LimitedKeyRequest) => Promise<LimitedKey>
   reloadVaults: () => void
   /** The headless controller (identity creation stores its key before registering it). */
   readonly controller: AuthController
@@ -236,6 +239,7 @@ export function AuthProvider({
       forget: withReload(controller.forget.bind(controller)),
       revokeStored: withReload(controller.revokeStored.bind(controller)),
       topUpKey: (input: MasterInput, request: TopUpRequest) => controller.topUpKey(input, request),
+      createRunnerKey: (input: MasterInput, request: LimitedKeyRequest) => controller.createRunnerKey(input, request),
     }),
     [controller, withReload],
   )

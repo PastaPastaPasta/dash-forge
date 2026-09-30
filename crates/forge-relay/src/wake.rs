@@ -1,10 +1,10 @@
 //! Runner wake-ups (`[wake]` in the config): a long-poll endpoint on the `--listen` address that
-//! tells a runner which of its repositories just had a push, so it polls them now instead of at
-//! its next interval (platform-parity-spec §2.4).
+//! tells a runner which of its repositories just had a push or pull-request activity, so it
+//! polls them now instead of at its next interval (platform-parity-spec §2.4).
 //!
 //! A wake carries no trust. The runner reads the repository from Platform itself (the refs
-//! from proofs); a wake only says "look now". So a relay that lies, or is down, costs latency
-//! and nothing else: the runner keeps its own poll interval.
+//! from proofs, the pull requests through `dg`); a wake only says "look now". So a relay that
+//! lies, or is down, costs latency and nothing else: the runner keeps its own poll interval.
 //!
 //! ## Protocol (`forge-wake-v1`)
 //!

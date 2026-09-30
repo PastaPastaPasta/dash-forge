@@ -722,6 +722,28 @@ impl Keyring {
         }
     }
 
+    /// Whether an artifact sealed under `epoch` and first recorded at block height `height` was
+    /// uploaded after the late-content cut-off for that epoch, whoever uploaded it (§8.2):
+    /// `H(next(e)) + GRACE_BLOCKS`, or at any height under a burned epoch. A named sealed
+    /// release asset list stays readable (the revision's `enc` commits to it), but maintainers
+    /// are warned: a member removed by the rotation may read it (§16.5).
+    #[must_use]
+    pub fn uploaded_late(&self, epoch: u32, height: u64) -> bool {
+        crate::private::doc::is_late(&self.ctx.anchors, &self.ctx.burned, epoch, height, false)
+    }
+
+    /// Whether anything recorded at `height` could be [`Self::uploaded_late`] under some epoch:
+    /// false before every epoch's cut-off, with none burned, so there is no header to read.
+    #[must_use]
+    pub fn may_be_late(&self, height: u64) -> bool {
+        !self.ctx.burned.is_empty()
+            || self
+                .ctx
+                .anchors
+                .keys()
+                .any(|&e| self.uploaded_late(e, height))
+    }
+
     /// The subkeys of `epoch`, when this reader holds them: a sealed artifact names its own
     /// epoch, which may be older than the document that points at it (§16.5).
     pub fn epoch_keys(&self, epoch: u32) -> Option<&EpochKeys> {
@@ -2725,6 +2747,24 @@ mod tests {
         assert!(!kr.earlier_use(2, Some(30)));
         assert!(!kr.earlier_use(2, None));
         assert!(!kr.earlier_use(9, Some(1)), "no such epoch");
+    }
+
+    /// §16.5: a sealed release's asset list is "uploaded under an old key" when its first copy
+    /// was recorded after the next epoch's anchor plus GRACE_BLOCKS, whoever uploaded it.
+    #[test]
+    fn an_asset_list_uploaded_after_the_grace_period_is_late() {
+        let kr = three_epochs(&[(ALICE, Role::Maintainer)]).keyring(ALICE);
+        // epoch 2's anchor is at height 30: epoch 1's cut-off is 30 + GRACE_BLOCKS
+        let cutoff = 30 + crate::private::GRACE_BLOCKS;
+        assert!(!kr.uploaded_late(1, cutoff));
+        assert!(kr.uploaded_late(1, cutoff + 1));
+        assert!(
+            !kr.uploaded_late(2, u64::MAX),
+            "the current epoch has no cut-off"
+        );
+        // nothing to fetch before the earliest cut-off (epoch 0's: epoch 1's anchor + grace)
+        assert!(kr.may_be_late(cutoff + 1));
+        assert!(!kr.may_be_late(0));
     }
 
     /// §16.3: a release has no block height, so a `BadTag` revision is an earlier use when its

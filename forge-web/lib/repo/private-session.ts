@@ -163,7 +163,15 @@ export function parseConfigRow(doc: PlainDocument): ConfigRow | null {
   const owner = idField(doc, '$ownerId')
   const height = blockHeightOf(doc)
   if (id === undefined || owner === undefined || height === undefined || doc['epoch'] == null) return null
-  return { id, owner, epoch: num(doc, 'epoch'), createdAtBlockHeight: height, enc: bytesField(doc, 'enc') ?? new Uint8Array(0) }
+  const createdAt = doc['$createdAt']
+  return {
+    id,
+    owner,
+    epoch: num(doc, 'epoch'),
+    createdAtBlockHeight: height,
+    enc: bytesField(doc, 'enc') ?? new Uint8Array(0),
+    ...(typeof createdAt === 'number' ? { createdAt } : {}),
+  }
 }
 
 

@@ -594,6 +594,11 @@ Every sealed release has `delta = 0`. For a private repository that means:
 - **A tag in doubt.** A revision that does not open (`BadTag`, `Malformed`) but shares an epoch and a `tagName` with one of a tag's readable revisions, and is newer than the tag's newest readable revision, puts the tag in the fold's `unknownTags`. The tag is shown with its newest readable revision, marked "a newer revision of this release could not be read; its state is unknown" (`…__newer_unopenable_same_tag_name`).
 - **A stale list.** A `NoKey` revision has no tag the reader can compute. When one is newer than every readable revision, the fold sets `stale`, and the list says "releases may be out of date: newer revisions are under a key you don't hold yet". This is typically a member whose wrap for the current epoch lags (§5.4) (`…__newer_revision_under_missing_key`).
 - **EarlierUse.** A revision sealed under an earlier use of an epoch number (§8.1 step 7) cannot be told from tampering by height, because a release has none. Readers compare its `$createdAt` with the block time of `stated(e)`, best-effort (`$createdAt` is set by the client). A `BadTag` revision before that time is reported as "sealed under a key this repository no longer uses", not as tampering.
+  - **How the time is taken.** The time of `stated(e)` is the earliest `$createdAt` of epoch `e`'s configs at the block height where its current key was first stated; a later re-anchor does not move it.
+  - **Counting.** Such a revision is counted among the hidden ones, and does not put its tag in doubt (it is not `BadTag`).
+  - **Where it is shown.** `dg release list` shows "n release revision(s) could not be read (m sealed under a key this repository no longer uses)" (JSON `earlierUse`), and so does the web releases page.
+
+  (forge-core `Keyring::open_release`, forge-web `releaseStatusOf`.)
 - **A non-member** sees no tags, names or count. The repository page is already locked (§9), and its Releases tab says the releases are encrypted.
 
 **Lookups.** Every read, including `dg release download <tag>`, lists the repository's revisions through `created (repoId, $createdAt)` and filters locally. Clients never query `tag` or `perTag` with a keyed `tagName`. A burst of one query per epoch would show the node that answers which `tagName`s across epochs are one tag. Releases are few, so listing costs little.
@@ -655,15 +660,32 @@ A sealed release never lists assets in `enc`: at about 255 bytes per entry, 1507
 
 Any failure is `manifestMismatch` or `SealedPackCorrupt`. The revision is then shown without assets ("asset list unavailable") and without the continued notes (tag 2's prefix, marked incomplete).
 
-A kind-4 manifest is only ever reached through tag 21 of a readable revision. One that no readable revision names is ignored, never listed. §8.2's "uploaded under an old key" flag does not apply to one that is named: the maintainer's `enc` commits to its exact bytes. A later revision may keep naming an unchanged older manifest: anyone who can open it could before.
+A kind-4 manifest is only ever reached through tag 21 of a readable revision. One that no readable revision names is ignored, never listed. §8.2's "uploaded under an old key" flag never makes one that is named unreadable: the maintainer's `enc` commits to its exact bytes. Maintainers are still warned of a late upload (below). A later revision may keep naming an unchanged older manifest: anyone who can open it could before.
 
-**Upload before sign, same epoch.** A writer uploads the sealed assets and the manifest first, then writes the release. Every artifact it newly writes for a revision must carry, in its sealed header, the revision's `epoch`. After the final anchor re-read before signing (§5.3), if the write epoch has changed, the writer re-seals and re-uploads under the new epoch (or aborts) before it signs. Otherwise a rotation that lands during a long upload would leave the new assets readable to the member it removed. Readers also warn maintainers when a named kind-4 `packManifest`, which carries a `$createdAtBlockHeight`, was written after `H(next(e)) + GRACE_BLOCKS` for its header epoch `e` (§8.2).
+**Upload before sign, same epoch.** A writer uploads the sealed assets and the manifest first, then writes the release. Every artifact it newly writes for a revision must carry, in its sealed header, the revision's `epoch`. After the final anchor re-read before signing (§5.3), if the write epoch has changed, the writer re-seals and re-uploads under the new epoch (or aborts) before it signs. Otherwise a rotation that lands during a long upload would leave the new assets readable to the member it removed. Readers also warn maintainers when a named kind-4 `packManifest`, which carries a `$createdAtBlockHeight`, was written after `H(next(e)) + GRACE_BLOCKS` for its header epoch `e` (§8.2). How the warning is judged and shown:
+
+- **The first upload decides.** The height is the list's first upload, the lowest `$createdAtBlockHeight` among its kind-4 copies. A later copy, such as a `dg reseed` of the same bytes, does not count.
+- **Burned epochs.** A list whose header names a burned epoch is always late, as §8.2's burned clause makes any content under one.
+- **No member exception.** The list stays readable, because the revision's `enc` commits to it. The warning is what a member removed by the rotation may read, whoever uploaded it.
+- **What it says.** `dg release list` (JSON `assetListUploadedLate`) and the web release page say, to maintainers only: "uploaded under an old key, after the key was rotated: a member removed since may be able to read it; publish the release again with its files to seal a new list".
+- **No verdict.** A list whose header no copy serves is not judged.
+
+(forge-core `Collab::late_asset_lists`, forge-web `assetListUploadedLate`.)
 
 **Storage.**
 
-- Asset objects and the manifest follow the repository's storage policy, as today (assets are external only).
+- **External storage only.** A writer stores a sealed release's asset objects and its kind-4 manifest on the external targets of the repository's storage policy (S3, R2, IPFS and the like). It never stores them as Platform `chunk` documents, even when the policy also names Platform. The kind-4 `packManifest` it records has `storage = 1` and `chunkCount = 0`.
+  - Under a policy with no external target, a revision with new files is refused before anything is sealed or stored: `dg release create` says "no storage for the assets", and the web says it needs storage of your own. A revision that needs a new list only for notes that continue in it is refused when the list is to be stored, before anything is uploaded or written.
+  - An edit that keeps the list as it is needs no storage.
+  - Readers follow a kind-4 `packManifest` to wherever it says the list is, Platform chunks included, so a list another client stored on Platform still opens.
+  - This matches forge-core (`dg release create`'s asset targets are the policy's external ones), forge-web (`NO_EXTERNAL_STORAGE`) and forge-import (the policy's non-Platform profiles).
 - An object stored under a content name uses `sealedSha256`, **never** the plaintext `sha256`. A plaintext-hash name would tell an outsider which public binaries a private repository ships (§3.4's reasoning for `packHash`).
-- A sealed manifest is not content-addressed across runs: a re-seal gives a new `packHash`. So a retried release reuses the manifest it already uploaded (it is on chain under its `packManifest`) instead of sealing a new one (release-asset-manifest.md §1.3).
+- A sealed manifest is not content-addressed across runs: a re-seal gives a new `packHash`. So a retried release reuses the manifest it already uploaded (it is on chain under its `packManifest`) instead of sealing a new one (release-asset-manifest.md §1.3). Before it seals a new list, a writer looks among its own kind-4 manifests (the same `$ownerId`) that no readable revision names and that were recorded after the revision it carries forward, newest first, opening at most four. It reuses one only when all of these hold:
+  - it opens under exactly the write key;
+  - it states exactly the list the writer would build: the same tag, the kept entries unchanged, then each new file with the same name, `sha256` and size (sealed, so its URIs and sealed hash are the earlier attempt's), the same continued notes and the same `source`;
+  - each new file it names is still stored, sealed under the write epoch at its recorded sealed size (the writer reads the header of the file's first copy that answers).
+
+  Nothing is sealed or uploaded again: not the list, not the files. A list under any other key (the epoch moved since) is not reused, and the writer seals anew. If the key moves after a reuse and before signing, the reused list is reported with what is left named by nothing. The search is best-effort: a candidate that cannot be read or checked is skipped, and the worst case is the old behaviour, a new list. The web lists the newest 100 kind-4 manifests of every uploader (no index narrows by `$ownerId`). It never bounds that query by the carried revision's `$createdAt`, which would show the node which revision the next one belongs to (§16.3). (forge-core `stored_asset_list`, forge-web `storedAssetList`.)
 - `dg reseed` and mirrors copy the sealed bytes verbatim.
 
 **Padding (optional).** A writer MAY pad a sealed asset's plaintext with zero bytes (for example to a multiple of 64 KiB). The manifest's `sizeBytes` and `sha256` stay the file's own. Readers MUST truncate the decrypted plaintext to `sizeBytes` before checking `sha256`. The reader rule is mandatory, so writers can adopt padding later without a format change (§16.6).

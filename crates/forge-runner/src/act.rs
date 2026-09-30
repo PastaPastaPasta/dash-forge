@@ -137,11 +137,13 @@ pub fn command(cfg: &Config) -> Command {
 
 /// One act invocation of one workflow file.
 pub struct Invocation<'a> {
+    /// The event act runs (`push`, `pull_request`): its first argument.
+    pub event_name: &'a str,
     /// The checkout (`-C`).
     pub checkout: &'a Path,
     /// The workflow file (`-W`), inside the checkout.
     pub workflow: &'a Path,
-    /// The push event (`-e`).
+    /// The event payload (`-e`).
     pub event: &'a Path,
     /// A secrets file, for a trusted ref only.
     pub secrets: Option<&'a Path>,
@@ -153,11 +155,11 @@ pub struct Invocation<'a> {
     pub action_cache: &'a Path,
 }
 
-/// The act arguments for `inv`: the push event, one workflow file, isolation settings from
+/// The act arguments for `inv`: the event, one workflow file, isolation settings from
 /// `cfg`, and `--json`. Every act call the runner makes is built here.
 pub fn run_args(cfg: &Config, inv: &Invocation<'_>) -> Vec<String> {
     let mut a: Vec<String> = vec![
-        "push".into(),
+        inv.event_name.into(),
         "-C".into(),
         inv.checkout.display().to_string(),
         "-W".into(),
@@ -264,6 +266,7 @@ level=warning msg= ⚠ Apple M-series ⚠
 
     fn inv(secrets: Option<&Path>) -> Invocation<'_> {
         Invocation {
+            event_name: "push",
             checkout: Path::new("/co"),
             workflow: Path::new("/co/.forge/workflows/ci.yml"),
             event: Path::new("/ev.json"),
