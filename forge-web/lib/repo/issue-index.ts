@@ -212,6 +212,21 @@ export function mentions(body: string | undefined, id: string, name: string | nu
 }
 
 /**
+ * A body as a text search reads it (lowercased, without a mirrored provenance quote), kept per
+ * body: a walk re-matches every loaded row after each chunk it reads.
+ */
+const searchBodies = new Map<string, string>()
+function searchBody(body: string): string {
+  let hit = searchBodies.get(body)
+  if (hit === undefined) {
+    if (searchBodies.size >= 4096) searchBodies.clear()
+    hit = searchableBody(body).toLowerCase()
+    searchBodies.set(body, hit)
+  }
+  return hit
+}
+
+/**
  * Whether `row` holds every term of `text` ({@link searchTerms}: a word, or a `"quoted phrase"`
  * as a whole, QW-021), case-insensitively, in its title or body (GitHub's default; `scope`
  * `title` / `body` is `in:`). A mirrored body's provenance quote is not searched: it names the
@@ -225,7 +240,7 @@ export function matchesText(text: string, row: { readonly title: string; readonl
   if (terms.length === 0) return true
   const fields: string[] = []
   if (scope !== 'body') fields.push(row.title.toLowerCase())
-  if (scope !== 'title' && row.body) fields.push(searchableBody(row.body).toLowerCase())
+  if (scope !== 'title' && row.body) fields.push(searchBody(row.body))
   return terms.every((w) => {
     // `#n` (review L-43) is a number-only match: it never falls back to a text substring, even
     // when the digits happen to appear in the title of a different-numbered row.

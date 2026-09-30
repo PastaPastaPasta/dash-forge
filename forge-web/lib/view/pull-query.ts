@@ -79,7 +79,7 @@ function setsIssueState(text: string): boolean {
 /** `mentions:` — an Issues filter, not a PR one. */
 const MENTIONS_TOKEN = /(^|\s)(mentions:\S*)/gi
 /** `draft:` and `review-requested:`, the PR-only qualifiers with a value. */
-const PR_VALUE_TOKEN = /(^|\s)((draft|review-requested):(\S*))/gi
+const PR_VALUE_TOKEN = /(^|\s)((draft|review-requested):("[^"]*"|\S*))/gi
 
 interface PullOnly {
   readonly rest: string

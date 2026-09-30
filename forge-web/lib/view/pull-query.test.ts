@@ -55,6 +55,9 @@ describe('PR list query (L-44)', () => {
     expect(parsePullSearch('Draft:TRUE').draft).toBe(true)
     expect(parsePullSearch('review-requested:@me').reviewRequested).toBe('me')
     expect(parsePullSearch(`review-requested:${ID} fix`)).toMatchObject({ reviewRequested: ID, q: 'fix' })
+    // A quoted value is one token: none of it leaks into the free text.
+    expect(parsePullSearch('review-requested:"a b" fix')).toMatchObject({ reviewRequested: null, q: 'fix' })
+    expect(unresolvedPullQualifiers('review-requested:"a b" fix')).toEqual(['review-requested:"a b"'])
     expect(unresolvedPullQualifiers('draft:maybe review-requested:bob.dash review:approved')).toEqual(['review:approved', 'draft:maybe', 'review-requested:bob.dash'])
     expect(pullDroppedReason(['draft:maybe', 'review-requested:bob.dash'], ['bob.dash'])).toBe('draft: takes true or false. No DPNS name `bob.dash` was found.')
     const q = { ...DEFAULT_PULL_QUERY, draft: true, reviewRequested: ID, milestone: 'v1', q: 'fix' }
