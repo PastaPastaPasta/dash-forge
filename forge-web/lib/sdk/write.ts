@@ -869,6 +869,24 @@ function trackMeasurement(identityId: string, measurement: Promise<unknown>): vo
 }
 
 /**
+ * How long a write waits for the last one's measurement. A healthy one reads its "after" within
+ * a block; one still reading past this (DAPI slow or down) no longer holds writes up: its row may
+ * then fold in the next write's fee, as before D-2.
+ */
+const MEASUREMENT_WAIT_MS = 12_000
+
+/** Wait (bounded, in wall time) for this identity's measurements still reading. Never rejects. */
+function lastMeasurement(identityId: string): Promise<void> {
+  const pending = measuring.get(identityId)
+  if (pending === undefined) return Promise.resolve()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const cap = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, MEASUREMENT_WAIT_MS)
+  })
+  return Promise.race([pending, cap]).finally(() => clearTimeout(timer))
+}
+
+/**
  * The credits a write took (negative: refunded), from the balance on each side of it. The
  * identity's next write waits until this has read its "after".
  */
@@ -1026,8 +1044,7 @@ export function serialized<T>(identityId: string, run: () => Promise<T>, waitMs 
     // Gave up while queued in this tab: pass the turn on without writing.
     if (waiting.signal.aborted) return Promise.reject(new WriterBusyError())
     clearTimeout(timer)
-    // The last write's charge is read before this one can move the balance (bounded: ~8 reads).
-    return (measuring.get(identityId) ?? Promise.resolve()).then(() => writeHold(run))
+    return lastMeasurement(identityId).then(() => writeHold(run))
   }
   // The chain's tail never rejects (see `tail` below).
   const prev = writeLocks.get(identityId) ?? Promise.resolve()

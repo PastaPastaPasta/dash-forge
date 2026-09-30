@@ -1212,7 +1212,7 @@ describe('spend measurement across back-to-back writes (D-2)', () => {
    * A chain whose balance reads lag the proof by {@link LAG} on the virtual clock. `stale(n)`:
    * the next n reads come from a node far behind (they see none of the fees yet).
    */
-  function laggingChain(fees: bigint[]) {
+  function laggingChain(fees: bigint[], verdicts: ReadonlyArray<unknown> = []) {
     let now = 0
     setWriteClock({
       now: () => now,
@@ -1243,7 +1243,12 @@ describe('spend measurement across back-to-back writes (D-2)', () => {
           nonce += 1n
           charged.push({ fee: fees[charged.length] ?? 0n, at: now })
         },
-        waitForResponse: async () => ({}),
+        // The i-th write's verdict: a block's refusal (its fee paid) when `verdicts[i]` is set.
+        waitForResponse: async () => {
+          const verdict = verdicts[charged.length - 1]
+          if (verdict !== undefined) throw verdict
+          return {}
+        },
       },
       epoch: { current: async () => undefined },
       version: () => 14,
@@ -1297,5 +1302,19 @@ describe('spend measurement across back-to-back writes (D-2)', () => {
     await reported()
     expect(spends.map((s) => s.actualCredits)).toEqual([700, 800])
     expect(spends[1]?.balanceBefore).toBe(START - 700n)
+  })
+
+  it('a write refused in a block (its fee paid) and the write after it are each recorded at their own fee', async () => {
+    const duplicate = sdkVerdict('Document X has duplicate unique properties ["repoId", "number"] with other documents', 40105)
+    const chain = laggingChain([300n, 800n], [duplicate])
+    const spends: SpendEvent[] = []
+    await expect(createDocumentIdempotent(chain.sdk, auth(spends), doc('issue', 'D2d'))).rejects.toBeInstanceOf(ConsensusRefusal)
+    await createDocumentIdempotent(chain.sdk, auth(spends), doc('issue', 'D2d'))
+    await reported()
+    await reported()
+    expect(spends.map((s) => [s.kind, s.actualCredits])).toEqual([
+      ['refused:issue', 300],
+      ['create:issue', 800],
+    ])
   })
 })

@@ -354,10 +354,13 @@ export class AuthController {
    */
   private async charged<T>(identityId: string, kind: KeySpendKind, keyIdOf: (result: T | null) => number | null, update: () => Promise<T>): Promise<T> {
     const sdk = await this.getSdk()
-    return serialized(identityId, async () => {
-      const before = await readIdentityBalance(sdk, identityId)
+    // A read from a node still behind an earlier measured write counts as the last measured balance.
+    const readBalance = (): Promise<bigint | null> =>
+      readIdentityBalance(sdk, identityId)
         .then((read) => balanceBeforeWrite(sdk, identityId, read))
         .catch(() => null)
+    return serialized(identityId, async () => {
+      const before = await readBalance()
       const listening = before !== null && this.spendListener !== null
       let result: T
       try {
@@ -366,7 +369,7 @@ export class AuthController {
         // One read, no polling: most failures happen before anything is sent, and the error
         // should not wait on a balance that will not move.
         if (listening) {
-          const now = await readIdentityBalance(sdk, identityId).catch(() => null)
+          const now = await readBalance()
           if (now !== null && now !== before) this.emitSpend(identityId, { kind, keyId: keyIdOf(null), balanceBefore: before }, Number(before! - now))
         }
         throw e
