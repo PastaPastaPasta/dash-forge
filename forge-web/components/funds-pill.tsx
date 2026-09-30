@@ -42,13 +42,11 @@ export function FundsPill(): JSX.Element | null {
       data-level={level}
       title={tooltip}
       aria-label={`${tooltip}${level === 'comfortable' ? '' : ` — ${level}, click to fix`}`}
-      onClick={() => {
-        if (level !== 'comfortable') {
-          openTopUp({ blocker: funds.reason ?? 'balance' })
-        }
-      }}
+      // Always does something (QW-048): the sheet shows the balance and this key's budget and
+      // expiry, which the tooltip alone never shows on a touch screen.
+      onClick={() => openTopUp({ blocker: funds.reason ?? 'balance', proactive: true })}
       className={cn(
-        'flex-col items-stretch rounded-full border px-2.5 py-0.5 text-[12px] sm:flex',
+        'flex-col items-stretch justify-center whitespace-nowrap rounded-full border px-2.5 py-0.5 text-[12px] coarse:min-h-11 sm:flex',
         // Phones: an icon-only cue, shown for low and empty funds.
         level === 'comfortable' ? 'hidden' : 'relative flex max-sm:h-11 max-sm:w-11 max-sm:items-center max-sm:justify-center max-sm:border-0 max-sm:bg-transparent max-sm:p-0',
         level === 'empty'

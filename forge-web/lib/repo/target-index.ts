@@ -376,17 +376,18 @@ export function transitionTargets<Row extends RowExtras>(sdk: EvoSDK, index: Lis
 }
 
 /**
- * Feed targets whose member events can pass the label and assignee filters, or null when neither
+ * Feed targets whose member events can pass the label, assignee and milestone filters, or null when none
  * applies. A loaded row is checked exactly (`loaded`); one not loaded yet is admitted on its
  * events and filtered once resolved.
  */
 export function metaCandidates<Row extends RowExtras>(
   index: ListIndex<Row>,
-  q: { readonly labels: readonly string[]; readonly assignee: string | null },
+  q: { readonly labels: readonly string[]; readonly assignee: string | null; readonly milestone?: string | null },
   loaded: (row: Row) => boolean,
 ): Set<string> | null {
   const assignee = q.assignee !== null && q.assignee !== 'none' ? q.assignee : null
-  if ((q.labels.length === 0 && assignee === null) || index.feed === null) return null
+  const milestone = q.milestone ?? null
+  if ((q.labels.length === 0 && assignee === null && milestone === null) || index.feed === null) return null
   const out = new Set<string>()
   for (const [id, log] of index.feed) {
     if (id === '' || index.notRows.has(id)) continue
@@ -397,6 +398,7 @@ export function metaCandidates<Row extends RowExtras>(
     }
     if (q.labels.length > 0 && !log.events.some((e) => e.kind === 'labelAdd')) continue
     if (assignee !== null && !log.events.some((e) => e.kind === 'assign' && e.value === assignee)) continue
+    if (milestone !== null && !log.events.some((e) => e.kind === 'milestoneSet' && e.value === milestone)) continue
     out.add(id)
   }
   return out
@@ -457,6 +459,7 @@ export async function selectRows<Row extends RowExtras>(
     want,
     walkAll,
     partial,
+    maxChunks = MAX_CHUNKS,
   }: {
     candidates: Set<string> | null
     matches: (r: Row) => boolean
@@ -465,6 +468,8 @@ export async function selectRows<Row extends RowExtras>(
     want: number
     walkAll: boolean
     partial: boolean
+    /** At most this many chunks more (default {@link MAX_CHUNKS}): a side read bounds its cost. */
+    maxChunks?: number
   },
 ): Promise<Selected<Row>> {
   if (candidates !== null) {
@@ -476,7 +481,7 @@ export async function selectRows<Row extends RowExtras>(
   const loaded = (): string[] => (index.all ? [...index.rows.keys()] : walk.ids)
   const matching = (): Row[] => rowsOf(index, loaded()).filter(matches)
   let chunks = 0
-  for (; !walk.done && !index.all && chunks < MAX_CHUNKS && (walkAll || matching().length <= want); chunks++) {
+  for (; !walk.done && !index.all && chunks < maxChunks && (walkAll || matching().length <= want); chunks++) {
     await serial(index, async () => {
       if (walk.done || index.all) return
       const bound: [string, '<=' | '>=', number][] = walk.bound === null ? [] : [['$createdAt', direction === 'desc' ? '<=' : '>=', walk.bound]]
@@ -484,7 +489,7 @@ export async function selectRows<Row extends RowExtras>(
     })
   }
   const complete = index.all || (walk.done && walk.complete)
-  const short = !complete && (walk.done || chunks >= MAX_CHUNKS)
+  const short = !complete && (walk.done || chunks >= maxChunks)
   return { rows: matching().sort(cmp), complete, short, searched: !complete && partial ? loaded().length : null }
 }
 

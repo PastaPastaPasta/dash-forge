@@ -31,9 +31,10 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import { IncompleteReadError } from '../sdk'
 import type { RepoRef } from './contract'
-import { compareRows, rowMatches } from './issue-index'
+import { compareRows, rowMatches, selectionFiltered, type RowFilters } from './issue-index'
 import { baseRefReaders, incompletePullView, readPull, type BaseRefReaders, type PullView } from './issues'
 import { PR_CLOSE, PR_DRAFT_CLOSE, PR_MERGE } from '../rules/transition'
+import { linkedIssues } from '../rules/review'
 import type { LabelDef } from './labels'
 import type { HiddenCounts } from './private-content'
 import {
@@ -94,7 +95,7 @@ const indexOf = indexCache<PullRow>('patch', async (sdk, index, doc, log, code) 
 // ---------------------------------------------------------------------------
 
 /** What the list asks for (`me` already replaced by the viewer's id). */
-export interface PullSelection {
+export interface PullSelection extends RowFilters {
   readonly state: PullStateFilter
   readonly labels: readonly string[]
   /** An identity id, or null. */
@@ -105,6 +106,10 @@ export interface PullSelection {
   readonly text: string
   readonly page: number
   readonly pageSize: number
+  /** `draft:true` / `draft:false` (`is:draft`): only drafts, or none; null either. */
+  readonly draft?: boolean | null
+  /** `review-requested:x`: an identity with a standing review request. */
+  readonly reviewRequested?: string | null
 }
 
 /** Open / Merged / Closed counts (null: not proven). */
@@ -141,9 +146,19 @@ function pullStateMatches(row: Pick<PullView, 'state'>, tab: PullStateFilter): b
   return row.state.open
 }
 
-/** Whether a row passes every filter but the state tab (labels, author, assignee, title / `#n`): the issue list's rule. */
+/**
+ * Whether a row passes every filter but the state tab: the issue list's rule (labels, author,
+ * assignee, milestone, comments, text / `#n`), plus the PR-only draft and review-request filters.
+ */
 function filtersMatch(row: PullRow, q: PullSelection): boolean {
-  return rowMatches(row, { ...q, state: 'all', mentions: null })
+  if (q.draft != null && row.state.draft !== q.draft) return false
+  if (q.reviewRequested != null && !row.review.requestedReviewers.some((r) => r.identity === q.reviewRequested)) return false
+  return rowMatches({ ...row, milestone: row.review.milestone }, { ...q, mentions: null })
+}
+
+/** Whether a selection narrows the list beyond its state tab. */
+function pullFiltered(q: PullSelection): boolean {
+  return selectionFiltered(q) || q.draft != null || q.reviewRequested != null
 }
 
 /** Open / Merged / Closed of `rows`. */
@@ -200,7 +215,7 @@ export async function queryPulls(
   network: Network = DEFAULT_NETWORK,
 ): Promise<PullListPage> {
   const index = await indexOf(sdk, repo, network)
-  const filtered = q.labels.length > 0 || q.author !== null || q.assignee !== null || q.text.trim() !== ''
+  const filtered = pullFiltered(q)
   const selected = await selectRows(sdk, index, {
     candidates: await candidatesFor(sdk, index, q),
     matches: (r) => pullStateMatches(r, q.state) && filtersMatch(r, q),
@@ -208,7 +223,7 @@ export async function queryPulls(
     direction: q.sort === 'oldest' ? 'asc' : 'desc',
     want: q.page * q.pageSize,
     walkAll: q.sort === 'comments',
-    partial: q.text.trim() !== '' || q.sort === 'comments',
+    partial: filtered || q.sort === 'comments',
   })
 
   let counts = NO_COUNTS
@@ -235,4 +250,53 @@ export async function queryPulls(
     hidden: index.hidden.total,
     hiddenBy: index.hidden.value,
   }
+}
+
+/** The PRs whose description links an issue ({@link pullsLinking}). */
+export interface LinkingPulls {
+  /** Newest first. */
+  readonly pulls: readonly PullRow[]
+  /** How many PRs were looked at when not all of them were, else null. */
+  readonly searched: number | null
+}
+
+/** How many chunks of PRs (100 each, newest first) a backlink read looks through at most. */
+const LINKING_CHUNKS = 3
+
+/**
+ * The PRs whose description says they close an issue ("Fixes #12", `linkedIssues`): the issue
+ * page's backlinks (review-parity P8, QW-015). `issue.number` is its native number;
+ * `issue.upstream` the source forge's number a trusted mirror recorded, or null. A description
+ * whose `#N` is the source's (`refsUpstream`: imported text, as the page renders it) links the
+ * issue through `upstream` only, never through the native number. Read from the pull index the PR
+ * list shares (cached for the session), through the newest {@link LINKING_CHUNKS} chunks at most,
+ * so an issue page on a repo with thousands of PRs stays cheap; `searched` says when the answer
+ * covers only those.
+ */
+export async function pullsLinking(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  issue: { readonly number: number; readonly upstream: number | null },
+  refsUpstream: (r: PullRow) => boolean,
+  network: Network = DEFAULT_NETWORK,
+): Promise<LinkingPulls> {
+  const index = await indexOf(sdk, repo, network)
+  // The window is the newest LINKING_CHUNKS + 1 chunks (the first load's included), whatever the
+  // session has walked already: a later issue page reads no further (the rows loaded past it, by
+  // the PR list, are matched too, at no cost).
+  const walked = Math.ceil(index.walks.desc.ids.length / 100)
+  const selected = await selectRows(sdk, index, {
+    candidates: null,
+    matches: (r) => {
+      const n = refsUpstream(r) ? issue.upstream : issue.number
+      return n !== null && linkedIssues(r.body).includes(n)
+    },
+    cmp: compareRows('newest'),
+    direction: 'desc',
+    want: 20,
+    walkAll: true,
+    partial: true,
+    maxChunks: Math.max(0, LINKING_CHUNKS + 1 - walked),
+  })
+  return { pulls: selected.rows.slice(0, 20), searched: selected.searched }
 }

@@ -17,7 +17,7 @@ import { CHUNK_PAYLOAD_MAX } from '../constants'
 import type { PackManifest, RepoRef } from '../repo'
 import { bytesToBase64 } from '../sdk'
 import { base58Decode, base58Encode } from '../auth/base58'
-import { DOC } from '../repo'
+import { DOC, resetForkParents } from '../repo'
 import { serializeLocator, type IndexedObject } from '../browse/indexer'
 import {
   artifactRangeFetch,
@@ -646,6 +646,152 @@ describe('loadBrowseContext', () => {
       kind: 'unindexed',
       reason: 'index-behind',
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// A fork's browse index — its parent's, remapped into the fork's pack space (QW-023)
+// ---------------------------------------------------------------------------
+
+describe('loadBrowseContext for a fork (QW-023)', () => {
+  beforeEach(() => resetForkParents())
+
+  const parentRepo = (repoId: string): RepoRef => ({ ...REPO, repoId })
+  const forkRepo = (repoId: string): RepoRef => ({ ...REPO, repoId, ownerId: 'forker', name: 'proj-fork' })
+
+  /**
+   * Two repositories: each `packManifest` query answers the manifests of the repo its `repoId`
+   * clause names, a `repo` query by `$id` answers that repo's document (`forkOf` included), and
+   * a `chunk` query serves any artifact's bytes.
+   */
+  function forkSdk(
+    manifests: Readonly<Record<string, readonly ManifestSpec[]>>,
+    forkOf: Readonly<Record<string, string | null>>,
+    artifacts: ReadonlyMap<string, Uint8Array>,
+  ): EvoSDK {
+    const clause = (q: { where?: readonly (readonly unknown[])[] }, field: string): unknown => (q.where ?? []).find((w) => w[0] === field)?.[2]
+    return {
+      documents: {
+        query: vi.fn((q: { documentTypeName: string; where?: readonly (readonly unknown[])[] }): Promise<Map<string, unknown>> => {
+          if (q.documentTypeName === DOC.repo) {
+            const id = String(clause(q, '$id'))
+            if (!(id in forkOf)) return Promise.resolve(new Map())
+            const parent = forkOf[id]
+            const doc = { $id: id, $ownerId: 'owner', name: id.toLowerCase(), ...(parent ? { forkOf: parent } : {}) }
+            return Promise.resolve(new Map([[id, doc]]))
+          }
+          if (q.documentTypeName === DOC.packManifest) {
+            const rows = (manifests[String(clause(q, 'repoId'))] ?? []).map(manifestDoc)
+            return Promise.resolve(new Map(rows.map((d) => [String(d['$id']), d])))
+          }
+          if (q.documentTypeName === DOC.chunk) {
+            const bytes = artifacts.get(bytesToHex(base58Decode(String(clause(q, 'packHash') ?? ''))))
+            return Promise.resolve(bytes === undefined ? new Map() : new Map([['c0', { seq: 0, d0: bytesToBase64(bytes) }]]))
+          }
+          return Promise.resolve(new Map())
+        }),
+      },
+    } as unknown as EvoSDK
+  }
+
+  // The parent: three pushes, each indexed. The fork was made after the first two.
+  const F0 = fragmentBytes(0, [0x11, 0x13])
+  const F1 = fragmentBytes(1, [0x22])
+  const F2 = fragmentBytes(2, [0x33])
+  const artifacts = new Map([F0, F1, F2].map((f) => [digest(f), f]))
+  const frag = (id: string, createdAt: number, bytes: Uint8Array): ManifestSpec => ({ id, createdAt, kind: 1, hash: digest(bytes), sizeBytes: bytes.length })
+  const parentManifests: ManifestSpec[] = [
+    { id: 'pp0', createdAt: 100, kind: 0, hash: 0xa0 },
+    frag('pf0', 110, F0),
+    { id: 'pp1', createdAt: 200, kind: 0, hash: 0xa1 },
+    frag('pf1', 210, F1),
+    { id: 'pp2', createdAt: 300, kind: 0, hash: 0xa2 },
+    frag('pf2', 310, F2),
+  ]
+  // The fork's by-reference manifests, listed in the other order: its packRef 0 is the parent's 1.
+  const forkPacks: ManifestSpec[] = [
+    { id: 'fp1', createdAt: 1000, kind: 0, hash: 0xa1 },
+    { id: 'fp0', createdAt: 1001, kind: 0, hash: 0xa0 },
+  ]
+
+  it("reads through its parent's index, remapped to its own packs, instead of a browser rebuild", async () => {
+    const sdk = forkSdk({ PARENT1: parentManifests, FORK1: forkPacks }, { FORK1: 'PARENT1', PARENT1: null }, artifacts)
+    const state = await loadBrowseContext(sdk, forkRepo('FORK1'))
+
+    expect(state.kind).toBe('ready')
+    if (state.kind !== 'ready') return
+    const { locator } = state.context
+    expect(locator.lookup(oidBytes(0x11))).toMatchObject({ packRef: 1, offset: 100 + 0x11 })
+    expect(locator.lookup(oidBytes(0x22))).toMatchObject({ packRef: 0, offset: 100 + 0x22 })
+    // Pushed to the parent after the fork: not the fork's, so it does not resolve.
+    expect(locator.lookup(oidBytes(0x33))).toBeNull()
+    expect([...locator.packRefsCovered()].sort()).toEqual([0, 1])
+  })
+
+  it("merges the fork's own pushes' fragments with its parent's", async () => {
+    // The fork's first push stored pack a9 (its packRef 2) and indexed just that pack.
+    const own = fragmentBytes(2, [0x99])
+    const withOwn = new Map(artifacts).set(digest(own), own)
+    const fork = [...forkPacks, { id: 'fp9', createdAt: 2000, kind: 0 as const, hash: 0xa9 }, frag('ff9', 2010, own)]
+    const sdk = forkSdk({ PARENT2: parentManifests, FORK2: fork }, { FORK2: 'PARENT2', PARENT2: null }, withOwn)
+    const state = await loadBrowseContext(sdk, forkRepo('FORK2'))
+
+    expect(state.kind).toBe('ready')
+    if (state.kind !== 'ready') return
+    expect(state.context.locator.lookup(oidBytes(0x99))).toMatchObject({ packRef: 2 })
+    expect(state.context.locator.lookup(oidBytes(0x13))).toMatchObject({ packRef: 1 })
+  })
+
+  it("reads a fork of a fork through its grandparent's index and its parent's own push", async () => {
+    // B forked A and pushed pack a9 (indexed by B at its packRef 2); C forked B.
+    const own = fragmentBytes(2, [0x99])
+    const withOwn = new Map(artifacts).set(digest(own), own)
+    const b = [...forkPacks, { id: 'bp9', createdAt: 2000, kind: 0 as const, hash: 0xa9 }, frag('bf9', 2010, own)]
+    const c: ManifestSpec[] = [
+      { id: 'cp9', createdAt: 3000, kind: 0, hash: 0xa9 },
+      { id: 'cp0', createdAt: 3001, kind: 0, hash: 0xa0 },
+      { id: 'cp1', createdAt: 3002, kind: 0, hash: 0xa1 },
+    ]
+    const sdk = forkSdk({ PARENT6: parentManifests, B6: b, C6: c }, { C6: 'B6', B6: 'PARENT6', PARENT6: null }, withOwn)
+    const state = await loadBrowseContext(sdk, forkRepo('C6'))
+
+    expect(state.kind).toBe('ready')
+    if (state.kind !== 'ready') return
+    expect(state.context.locator.lookup(oidBytes(0x99))).toMatchObject({ packRef: 0 })
+    expect(state.context.locator.lookup(oidBytes(0x11))).toMatchObject({ packRef: 1 })
+    expect(state.context.locator.lookup(oidBytes(0x22))).toMatchObject({ packRef: 2 })
+  })
+
+  it('asks again for a fork whose repo document a lagging node did not return', async () => {
+    let lagging = true
+    const base = forkSdk({ PARENT7: parentManifests, FORK7: forkPacks }, { FORK7: 'PARENT7', PARENT7: null }, artifacts)
+    const query = base.documents.query.bind(base.documents)
+    const sdk = {
+      documents: {
+        query: (q: { documentTypeName: string }) => (lagging && q.documentTypeName === DOC.repo ? Promise.resolve(new Map()) : query(q as never)),
+      },
+    } as unknown as EvoSDK
+    expect(await loadBrowseContext(sdk, forkRepo('FORK7'))).toMatchObject({ kind: 'unindexed', reason: 'no-index' })
+    lagging = false
+    expect((await loadBrowseContext(sdk, forkRepo('FORK7'))).kind).toBe('ready')
+  })
+
+  it('still falls back when the parent published no index, or its index does not cover the fork', async () => {
+    const unindexed = parentManifests.filter((m) => m.kind === 0)
+    const none = forkSdk({ PARENT3: unindexed, FORK3: forkPacks }, { FORK3: 'PARENT3', PARENT3: null }, artifacts)
+    expect(await loadBrowseContext(none, forkRepo('FORK3'))).toMatchObject({ kind: 'unindexed', reason: 'no-index' })
+
+    // The parent indexed only its first push: the fork's second pack stays unindexed.
+    const partial = parentManifests.filter((m) => m.id !== 'pf1')
+    const behind = forkSdk({ PARENT4: partial, FORK4: forkPacks }, { FORK4: 'PARENT4', PARENT4: null }, artifacts)
+    expect(await loadBrowseContext(behind, forkRepo('FORK4'))).toMatchObject({ kind: 'unindexed', reason: 'index-behind' })
+  })
+
+  it("never reads another repository's index for a repo that is not a fork", async () => {
+    const sdk = forkSdk({ PARENT5: parentManifests, SOLO5: forkPacks }, { SOLO5: null, PARENT5: null }, artifacts)
+    expect(await loadBrowseContext(sdk, parentRepo('SOLO5'))).toMatchObject({ kind: 'unindexed', reason: 'no-index' })
+    const reads = vi.mocked(sdk.documents.query).mock.calls.map(([q]) => q as { documentTypeName: string; where?: unknown[][] })
+    expect(reads.some((q) => q.documentTypeName === DOC.packManifest && q.where?.some((w) => w[1] === '==' && w[2] === 'PARENT5'))).toBe(false)
   })
 })
 

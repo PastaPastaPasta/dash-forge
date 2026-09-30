@@ -282,7 +282,7 @@ pub fn refusal(cause: &str, platform_bytes: bool) -> UserError {
     } else {
         u.fix("run `git -c dash.confirm=never push` to accept the price")
     };
-    u.fix("or raise `git config dash.costWarnThreshold` (DASH)")
+    u.fix("raise `git config dash.costWarnThreshold` (DASH)")
         .note(NOTE_NOTHING_STORED)
 }
 

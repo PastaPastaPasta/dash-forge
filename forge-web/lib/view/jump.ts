@@ -7,7 +7,8 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import type { Network } from '../constants'
-import { DOC, repoSource, resolveOwner, type RepoRef } from '../repo'
+import { DOC, num, readStateCodes, repoSource, resolveOwner, str, titleOf, type RepoRef } from '../repo'
+import { statusOfCode } from '../rules/transition'
 import { queryDocumentsWithProof } from '../sdk'
 import { reposNamed, type DiscoveredRepo } from './discovery'
 import { isIdentityId } from '../utils'
@@ -105,4 +106,37 @@ export async function numberTargets(sdk: EvoSDK, repo: RepoRef, number: number):
   }
   const [issue, pull] = await Promise.all([exists(DOC.issue), exists(DOC.patch)])
   return { issue, pull }
+}
+
+/** An issue a PR's description closes ("Fixes #12"), as the merge box offers to close it. */
+export interface LinkedIssue {
+  readonly id: string
+  readonly number: number
+  readonly title: string
+  readonly author: string
+  /** Its proved state (the sum of its transitions). */
+  readonly open: boolean
+}
+
+/** At most this many "Fixes #n" a merge offers to close (each is one transition). */
+export const LINKED_ISSUES_MAX = 10
+
+/**
+ * The issues among `numbers` (a PR's `linkedIssues`, QW-015), with their proved state: one
+ * `(repoId, number)` lookup each and one sum query for their states. A number that is a PR, or
+ * that nothing holds, is left out; at most {@link LINKED_ISSUES_MAX}.
+ */
+export async function linkedIssueTargets(sdk: EvoSDK, repo: RepoRef, numbers: readonly number[]): Promise<LinkedIssue[]> {
+  const wanted = [...new Set(numbers)].slice(0, LINKED_ISSUES_MAX)
+  if (wanted.length === 0) return []
+  const docs = await Promise.all(
+    wanted.map(async (n) => (await queryDocumentsWithProof(sdk, repoSource(repo).repoQuery(DOC.issue, { where: [['number', '==', n]], limit: 1 }))).documents[0] ?? null),
+  )
+  const found = docs.filter((d): d is NonNullable<typeof d> => d !== null)
+  const ids = found.map((d) => str(d, '$id'))
+  const codes = ids.length === 0 ? new Map<string, number>() : await readStateCodes(sdk, repo, ids)
+  return found.map((d) => {
+    const id = str(d, '$id')
+    return { id, number: num(d, 'number'), title: titleOf(d), author: str(d, '$ownerId'), open: statusOfCode(codes.get(id) ?? 0).open }
+  })
 }

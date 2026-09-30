@@ -31,6 +31,7 @@ import { errorMessage } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { Field, Input, Textarea } from '@/components/ui/input'
+import { useConfirmAction } from '@/components/ui/confirm-action'
 
 type Mode = 'file' | 'paste' | 'register'
 
@@ -49,6 +50,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
   // Secrets: refs only, dropped after use and on unmount.
   const pasted = useRef<HTMLInputElement>(null)
   const phrase = useRef<HTMLTextAreaElement>(null)
+  const [confirm, confirmDialog] = useConfirmAction()
 
   useEffect(() => {
     if (identity === null) return
@@ -110,9 +112,16 @@ export function EncryptionKeyPanel(): JSX.Element | null {
     void run(() => adoptEncryptionKey(sdk!, network, identity, core, parseEncryptionKeyInput(value)))
   }
 
-  const register = (): void => {
+  const register = async (): Promise<void> => {
+    const ok = await confirm({
+      title: 'Register a new encryption key?',
+      body: `This adds an encryption key to your identity (${REGISTER_COST}): your recovery phrase signs one identity update and is not stored. If your identity already has an encryption key, it is added here instead and nothing is registered.`,
+      confirmLabel: 'Register key',
+      tone: 'primary',
+    })
+    if (!ok) return
+    // Read after the confirm: the field keeps its value while the dialog is open.
     const mnemonic = phrase.current?.value ?? ''
-    if (!window.confirm(`Register a new encryption key on your identity (${REGISTER_COST})? Your recovery phrase signs one identity update and is not stored. If your identity already has an encryption key, it is added here instead and nothing is registered.`)) return
     void run(async () => {
       // A paid IdentityUpdate: recorded in the spend ledger like the other key updates.
       let keyId = 0
@@ -140,15 +149,19 @@ export function EncryptionKeyPanel(): JSX.Element | null {
           <span className="text-dense" data-testid="encryption-key-stored">
             {storage === 'session'
               ? `Encryption key ${keyId} is held for this tab only; it is forgotten on reload or lock.`
-              : `Encryption key ${keyId} is stored in this browser, locked with the rest of the vault.`}
+              : `Encryption key ${keyId} is stored in this browser and unlocked now: private repos you're a member of open here. It locks again with this browser's key (Lock, or after 12 hours).`}
           </span>
           <Button
             size="sm"
             variant="outline"
             onClick={() => {
-              if (window.confirm('Remove the encryption key from this browser? You can add it again from your identity file.')) {
-                removeEncryptionKey(network, identity).catch((e: unknown) => setError(errorMessage(e)))
-              }
+              void confirm({
+                title: 'Remove the encryption key from this browser?',
+                body: 'Private repos stop opening here until you add it again (from your identity file, the key itself or your recovery phrase). The key stays on your identity.',
+                confirmLabel: 'Remove key',
+              }).then((ok) => {
+                if (ok) removeEncryptionKey(network, identity).catch((e: unknown) => setError(errorMessage(e)))
+              })
             }}
           >
             <Trash2 className="h-3.5 w-3.5" aria-hidden /> Remove from this browser
@@ -171,7 +184,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
                 aria-selected={mode === m}
                 type="button"
                 onClick={() => setMode(m)}
-                className={'rounded px-3 py-1.5 text-dense font-medium ' + (mode === m ? 'bg-forge-500/15 text-forge-800 dark:text-forge-400' : 'text-anvil-500 dark:text-anvil-400')}
+                className={'rounded px-3 py-1.5 text-dense font-medium coarse:min-h-11 ' + (mode === m ? 'bg-forge-500/15 text-forge-800 dark:text-forge-400' : 'text-anvil-500 dark:text-anvil-400')}
               >
                 {label}
               </button>
@@ -184,6 +197,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
                 type="file"
                 accept="application/json,.json,.txt"
                 disabled={busy}
+                className="max-w-full text-dense coarse:min-h-11"
                 onChange={(e) => {
                   const f = e.target.files?.[0]
                   if (f) fromFile(f)
@@ -213,7 +227,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
               >
                 <Textarea id="enc-phrase" ref={phrase} className="min-h-[64px] font-mono" spellCheck={false} autoComplete="off" />
               </Field>
-              <Button variant="primary" loading={busy} onClick={register}>
+              <Button variant="primary" loading={busy} onClick={() => void register()}>
                 Register and store
               </Button>
             </div>
@@ -226,6 +240,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
           {error}
         </p>
       ) : null}
+      {confirmDialog}
     </section>
   )
 }

@@ -80,12 +80,12 @@ const WIF_SIGNABLE_KEY_TYPES = new Set(['ECDSA_SECP256K1', 'ECDSA_HASH160'])
 /** The header every identity file carries: its id, network and raw key list. */
 function fileHeader(json: unknown): { obj: Record<string, unknown>; identityId: string; network: Network | null; networkKey: string | null; rawKeys: unknown } {
   if (json === null || typeof json !== 'object') {
-    throw new Error('identity file must be a JSON object')
+    throw new Error("That file isn't an identity file: it holds no identity. Choose the .json file the Dash bridge or `dg auth new` saved.")
   }
   const obj = json as Record<string, unknown>
   const identityId = asString(obj['identityId']) ?? asString(obj['id'])
   if (identityId === null) {
-    throw new Error('identity file is missing "identityId"')
+    throw new Error("That file isn't an identity file: it has no identity ID. Choose the .json file the Dash bridge or `dg auth new` saved.")
   }
   const network = normalizeNetwork(obj['network'])
   const networkKey = network === null ? null : (obj['network'] as string)
@@ -97,7 +97,7 @@ function parseJson(text: string): unknown {
     return JSON.parse(text)
   } catch {
     // Never forward the parser's message: it quotes the input, which may hold a private key.
-    throw new Error('identity file is not valid JSON')
+    throw new Error("That file isn't an identity file: it isn't JSON. Choose the .json file the Dash bridge or `dg auth new` saved.")
   }
 }
 
@@ -169,7 +169,7 @@ export function masterMaterialFromFile(text: string): MasterMaterial {
   }
   const mnemonic = asString(obj['mnemonic'])
   if (masterWif === null && mnemonic === null) {
-    throw new Error('identity file has neither a MASTER authentication key nor a mnemonic')
+    throw new Error("This identity file holds neither the identity's master key nor its recovery phrase, so it can't register a key for this browser. Use a file that includes them, or sign in with the recovery phrase.")
   }
   return { identityId, networkKey, masterWif, mnemonic }
 }

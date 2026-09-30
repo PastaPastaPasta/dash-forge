@@ -143,11 +143,14 @@ dg issue create <owner>/<repo> --title "Crash on empty input" --body "Steps: …
 dg issue edit   <owner>/<repo> 12 --title "Crash on empty config" [--body … | --body-file notes.md]
 dg issue comment <owner>/<repo> 12 --body "Fixed in 8f3e2a1"
 dg issue edit-comment <owner>/<repo> <comment id> --body "Fixed in 8f3e2a1 (and 91c0d4e)"
+dg issue delete-comment <owner>/<repo> <comment id>
 dg issue close  <owner>/<repo> 12
 dg issue reopen <owner>/<repo> 12
 dg issue label  <owner>/<repo> 12 add bug docs     # or: remove bug (the older --add/--remove still work)
 dg issue assign <owner>/<repo> 12 me alice         # or: unassign; ids or DPNS names
 ```
+
+A label the issue already has, or an assignee already assigned, is left alone: `dg` says so and writes (and charges) nothing for it, so the timeline never shows the same change twice. Removing one the issue does not have is skipped the same way.
 
 **Who can change state.** The issue's author can close and reopen it (an `authorEvent`). Writers and maintainers can close, reopen, label and assign any issue (an `event`). `dg` picks the right one for you. Consensus refuses both from anyone else, and `dg` says so before anything is signed ([`E601`](../errors.md#e601)).
 
@@ -161,7 +164,7 @@ dg issue assign <owner>/<repo> 12 me alice         # or: unassign; ids or DPNS n
 
 A mirrored item's own number still follows this repo's dense sequence; mirroring never skips ahead to match the source. What a mirror (`forge-import`) can carry instead is the source's number in a separate `upstreamNumber` field, trusted only when it was written by the repo's owner or a current maintainer or writer. The web app shows it beside the local number, "#12 · upstream #7761", and a bare `#7761` in an imported body resolves to whichever local item recorded that upstream number ([Mirror a GitHub repo](mirror-a-github-repo.md) has the details). `dg` does not read `upstreamNumber` back today; the display is web-only.
 
-**No deletes.** Issues, PRs and their state events cannot be deleted, so nobody can rewrite a thread's history. Comments can be deleted by their author.
+**No deletes.** Issues, PRs and their state events cannot be deleted, so nobody can rewrite a thread's history. Comments can be deleted by their author: the comment's **Delete** on the web, or `dg issue delete-comment` (for PR comments too). Consensus lets nobody else delete it, maintainers included, so a comment posted by mistake is for its author to remove. Replies to it stay, and read as replies to a deleted comment. A delete removes the comment from Platform state, but the write that posted it stays in the chain's block history: treat a secret posted in a comment as leaked and rotate it.
 
 **Locking.** A writer or maintainer locks a conversation to stop non-members from posting to it:
 
@@ -193,7 +196,7 @@ dg repo fork <owner>/project            # or --name <another name>
   cost:    ~0.03 DASH ≈ $0.90
 ```
 
-A fork is a new repository with `forkOf` set to the parent. It records the parent's packs **by reference**, so nothing is uploaded again. Packs on external storage keep their URLs, and packs on Platform are read from the parent's chunks, which are permanent. The fork's cost is its own documents: the repo, one small manifest per pack, and the refs. Re-running an interrupted fork finishes it without paying twice. It never moves a branch you have already pushed to the fork.
+A fork is a new repository with `forkOf` set to the parent. It records the parent's packs **by reference**, so nothing is uploaded again. Packs on external storage keep their URLs, and packs on Platform are read from the parent's chunks, which are permanent. The fork's cost is its own documents: the repo, one small manifest per pack, and the refs. Re-running an interrupted fork finishes it without paying twice. It never moves a branch you have already pushed to the fork. In the web, the fork browses through the parent's published browse and history index, so no visitor rebuilds it in the browser; your own pushes to the fork index just the packs they add.
 
 **2. Push your branch to it.**
 
@@ -310,6 +313,8 @@ dg release list   <owner>/<repo>
 dg release download <owner>/<repo> v1.0.0 [--asset <name>] [--output <dir | file>]
 dg release unpublish <owner>/<repo> v1.0.0
 ```
+
+The tag must exist in the repository first (push it, as above): a release cannot be deleted, only unpublished, so `dg release create` refuses a tag the repository does not have ([E102](../errors.md#e102)) before anything is uploaded or signed. A new revision of an existing release (to yank it or change its notes) is allowed even if its tag was deleted since.
 
 `--asset` uploads each file to your own storage and records its SHA-256, size and URLs in the release. The storage is the repository's `dash.storage` profiles, or `--storage`, and each copy is read back and verified. Platform stores packs, not arbitrary files, so publishing an asset needs an S3 or IPFS profile ([bring your own storage](bring-your-own-storage.md)).
 

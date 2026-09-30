@@ -285,7 +285,7 @@ function ReleasePage({
   }
   return (
     <div className="mx-auto max-w-3xl space-y-4">
-      <Link href={repoHref('/repo/releases', addr)} className="text-dense text-anvil-600 underline dark:text-anvil-300">
+      <Link href={repoHref('/repo/releases', addr)} className="hit-area text-dense text-anvil-600 underline dark:text-anvil-300">
         ← All releases
       </Link>
       <SealedListNotes list={data} />
@@ -416,14 +416,14 @@ function ReleaseCard({
         {previous || tagTip === null ? null : (
           <>
             {' · '}
-            <Link href={repoHref('/repo', addr, { ref: `tags/${r.tagName}` })} className="underline hover:text-forge-800 dark:hover:text-forge-400" data-testid="release-browse">
+            <Link href={repoHref('/repo', addr, { ref: `tags/${r.tagName}` })} className="hit-area underline hover:text-forge-800 dark:hover:text-forge-400" data-testid="release-browse">
               Browse files
             </Link>
             {full ? (
               <>
                 {' · '}
                 {/* The commit page peels an annotated tag to the commit it names (L-01). */}
-                <Link href={repoHref('/repo/commit', addr, { oid: tagTip })} className="underline hover:text-forge-800 dark:hover:text-forge-400" data-testid="release-commit">
+                <Link href={repoHref('/repo/commit', addr, { oid: tagTip })} className="hit-area underline hover:text-forge-800 dark:hover:text-forge-400" data-testid="release-commit">
                   View commit
                 </Link>
               </>
@@ -450,7 +450,7 @@ function ReleaseCard({
       {notes && !full && !previous ? (
         <Link
           href={repoHref('/repo/release', addr, { tag: r.tagName })}
-          className="mt-1 inline-block text-dense text-anvil-600 underline dark:text-anvil-300"
+          className="hit-area mt-1 inline-block text-dense text-anvil-600 underline dark:text-anvil-300"
         >
           Full release notes
         </Link>

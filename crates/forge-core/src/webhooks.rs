@@ -373,9 +373,8 @@ pub fn decrypt_secret(
 /// secret is encrypted from the writer's encryption key. Said as that, not as E303 "could not
 /// load your identity file", which a limited key from `dg auth login` (signing only) used to get
 /// because the old text mentioned the identity file.
-fn no_sender_encryption_key(who: &str) -> Error {
-    crate::keyring::no_encryption_key_for(
-        who,
+fn no_sender_encryption_key() -> Error {
+    crate::keyring::no_encryption_key_held_because(
         "webhook secret",
         "a webhook's secret is encrypted from the writer's identity ENCRYPTION key to the relay's",
     )
@@ -608,7 +607,7 @@ impl<'a> WebhookService<'a> {
         let (sender_key_id, sender) = mine
             .iter()
             .next_back()
-            .ok_or_else(|| no_sender_encryption_key(&self.identity.id()))?;
+            .ok_or_else(no_sender_encryption_key)?;
         let ciphertext = envelope::encrypt(sender, &recipient.public_key, input.secret.expose())?;
 
         // Ids, key ids and the ciphertext, the text fields, and ~100 bytes of document and
@@ -695,14 +694,16 @@ mod tests {
 
     #[test]
     fn a_key_source_without_an_encryption_key_is_e306_not_e303() {
-        let e = no_sender_encryption_key("IDENT");
+        let e = no_sender_encryption_key();
         let Error::User(u) = &e else {
             panic!("expected a user error, got {e:?}")
         };
         let text = u.to_string();
         assert_eq!(u.code, codes::NO_ENCRYPTION_KEY, "{text}");
         assert!(
-            text.contains("webhook secret: IDENT has no encryption key"),
+            text.contains(
+                "webhook secret: the key stored on this computer holds no encryption key"
+            ),
             "{text}"
         );
         assert!(text.contains("limited key"), "{text}");

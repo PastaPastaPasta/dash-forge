@@ -110,7 +110,8 @@ function SuggestionBlock({ text }: { text: string }): JSX.Element {
       <div className="border-b border-anvil-200 bg-anvil-50 px-3 py-1 text-[12px] font-medium text-anvil-600 dark:border-anvil-800 dark:bg-anvil-900 dark:text-anvil-300">
         Suggested change
       </div>
-      <pre className="overflow-x-auto font-mono">
+      {/* Keyboard-scrollable when a line is wider than the comment (WCAG 2.1.1). */}
+      <ScrollRegion as="pre" label="Suggested change" className="overflow-x-auto font-mono">
         {removed?.map((l, i) => (
           <div key={`r${i}`} className="bg-danger/10 px-3 text-danger-800 dark:text-danger-300" data-kind="removed">
             <span aria-hidden className="select-none">- </span>
@@ -124,7 +125,7 @@ function SuggestionBlock({ text }: { text: string }): JSX.Element {
           </div>
         ))}
         {added.length === 0 ? <div className="px-3 italic text-anvil-500 dark:text-anvil-400">(deletes the lines)</div> : null}
-      </pre>
+      </ScrollRegion>
     </div>
   )
 }

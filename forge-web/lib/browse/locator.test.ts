@@ -161,3 +161,58 @@ describe('lookupRanged', () => {
     expect(await lookupRanged(rangeOver(merged), bytes(oid(0x30)))).toBeNull()
   })
 })
+
+describe('ObjectLocator.remapPacks', () => {
+  // A fork reads its parent's index (QW-023): each parent packRef becomes the fork's position of
+  // the same pack, and the rows of a pack the fork does not hold go.
+  const parent = ObjectLocator.merge([
+    fragment(0, [
+      [0x10, 100],
+      [0x30, 300],
+    ]),
+    fragment(1, [
+      [0x10, 110],
+      [0x20, 200],
+    ]),
+    fragment(2, [[0x40, 400]]),
+  ])
+
+  it('renumbers each row and keeps its address within the pack', () => {
+    const fork = parent.remapPacks(
+      new Map([
+        [0, 1],
+        [1, 0],
+        [2, 2],
+      ]),
+    )
+    expect(fork.count).toBe(5)
+    // 0x10 sat in both packs: the swap changes which copy has the lowest packRef, and the rows
+    // stay sorted by (oid, packRef), so lookup still finds it.
+    expect(fork.lookup(bytes(oid(0x10)))).toMatchObject({ packRef: 0, offset: 110 })
+    expect(fork.lookup(bytes(oid(0x20)))).toMatchObject({ packRef: 0, offset: 200 })
+    expect(fork.lookup(bytes(oid(0x30)))).toMatchObject({ packRef: 1, offset: 300 })
+    expect(fork.lookup(bytes(oid(0x40)))).toMatchObject({ packRef: 2, offset: 400 })
+    expect(fork.buildOffsetIndex().get(offsetKey(1, 100))).toMatchObject({ packRef: 1, offset: 100 })
+    // Round-trips as an artifact, so the fanout was rebuilt.
+    expect(ObjectLocator.parse(fork.asBytes()).lookup(bytes(oid(0x30)))).toMatchObject({ packRef: 1 })
+  })
+
+  it("drops the rows of packs the map leaves out, so nothing outside the fork's packs resolves", () => {
+    const fork = parent.remapPacks(new Map([[0, 0]]))
+    expect([...fork.packRefsCovered()]).toEqual([0])
+    expect(fork.lookup(bytes(oid(0x10)))).toMatchObject({ packRef: 0, offset: 100 })
+    expect(fork.lookup(bytes(oid(0x20)))).toBeNull()
+    expect(fork.lookup(bytes(oid(0x40)))).toBeNull()
+  })
+
+  it('returns the same locator for the identity map', () => {
+    const same = parent.remapPacks(
+      new Map([
+        [0, 0],
+        [1, 1],
+        [2, 2],
+      ]),
+    )
+    expect(same).toBe(parent)
+  })
+})

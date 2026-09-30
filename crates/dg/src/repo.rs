@@ -482,7 +482,15 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
     if handle.visibility == Visibility::Private {
         svc.keyring(handle).await?.require_key(handle)?;
     }
-    let default_branch = svc.read_default_branch(handle).await.unwrap_or(None);
+    // `archived` is `null` when the config cannot be read, not a guessed `false` (QW-081).
+    let (default_branch, config) =
+        tokio::join!(svc.read_default_branch(handle), svc.current_config(handle));
+    let default_branch = default_branch.unwrap_or(None);
+    let archived = config.ok().map(|c| c.archived);
+    let visibility = match handle.visibility {
+        Visibility::Private => "private",
+        Visibility::Public => "public",
+    };
     let refs = live_refs(svc.read_refs(handle).await.unwrap_or_default());
     let manifests = svc.read_pack_manifests(handle).await.unwrap_or_default();
     let members = MemberReader::new(client)
@@ -503,6 +511,8 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
             "repoId": handle.id(),
             "ownerId": handle.owner_id(),
             "name": handle.name(),
+            "visibility": visibility,
+            "archived": archived,
             "defaultBranch": default_branch,
             "refs": refs_json,
             "packCount": manifests.len(),
@@ -513,6 +523,14 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
         || {
             println!("{}", handle.display());
             println!("  id:             {}", handle.id());
+            println!(
+                "  visibility:     {visibility}{}",
+                if archived == Some(true) {
+                    " (archived)"
+                } else {
+                    ""
+                }
+            );
             println!(
                 "  default branch: {}",
                 default_branch.clone().unwrap_or_else(|| "(none)".into())

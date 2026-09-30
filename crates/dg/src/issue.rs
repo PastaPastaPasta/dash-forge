@@ -53,6 +53,9 @@ pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
             };
             edit_comment(ctx, repo, comment_id, &body).await
         }
+        IssueCommand::DeleteComment { repo, comment_id } => {
+            delete_comment(ctx, repo, comment_id).await
+        }
         IssueCommand::Close { repo, number } => set_open(ctx, repo, *number, true).await,
         IssueCommand::Reopen { repo, number } => set_open(ctx, repo, *number, false).await,
         IssueCommand::Label {
@@ -559,6 +562,43 @@ async fn edit_comment(ctx: &Ctx, repo: &str, comment_id: &str, body: &str) -> Re
     Ok(())
 }
 
+/// Delete one of the signer's comments (QW-016): an owner-only document delete, refused before
+/// signing for someone else's comment.
+async fn delete_comment(ctx: &Ctx, repo: &str, comment_id: &str) -> Result<()> {
+    let s = Session::open_for_write(ctx, repo, "comment not deleted").await?;
+    // Someone else's comment (or another repo's) is refused before the prompt, not after it.
+    let there = s.collab().deletable_comment(&s.repo, comment_id).await?;
+    if there {
+        ctx.confirm_or_cancel(&format!(
+            "Delete comment {comment_id}? (a document delete; replies to it stay)"
+        ))?;
+    }
+    let before = s.balance().await;
+    let deleted = there && s.collab().delete_comment(&s.repo, comment_id).await?;
+    let spent = s.spent_since(before).await;
+    let price = dash_usd_price();
+    ctx.emit(
+        json!({
+            "status": if deleted { "deleted" } else { "absent" },
+            "comment": comment_id,
+            "cost": cost_json(spent, price),
+        }),
+        || {
+            if deleted {
+                println!(
+                    "✓ deleted comment {comment_id} · {}",
+                    cost_line(spent, price)
+                );
+            } else {
+                println!(
+                    "comment {comment_id} is not there (already deleted?); nothing was written"
+                );
+            }
+        },
+    );
+    Ok(())
+}
+
 async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "issue not created").await?;
     ctx.confirm_or_cancel(&format!(
@@ -711,8 +751,21 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()>
     let s = Session::open_for_write(ctx, repo, "state not changed").await?;
     let target = target(&s, repo, number).await?;
     let (done, prompt) = open_words(close);
-    ctx.confirm_or_cancel(&format!("{prompt} issue #{number}? (one small document)"))?;
     let collab = s.collab();
+    // Closing a closed issue (or reopening an open one) is not an error: nothing to write, as
+    // `gh issue close` says (QW-042: it stopped with E604, a code for consensus refusals). The
+    // state is the one the write would be judged against (its transition sum), read the same
+    // way `set_state` reads it.
+    let open = status_of_code(collab.state_sum(&s.repo, &target.id).await?).open;
+    if open != close {
+        let state = if open { "open" } else { "closed" };
+        ctx.emit(
+            json!({ "status": "unchanged", "issue": number, "open": open, "written": false }),
+            || println!("issue #{number} is already {state}; nothing written"),
+        );
+        return Ok(());
+    }
+    ctx.confirm_or_cancel(&format!("{prompt} issue #{number}? (one small document)"))?;
     let action = if close {
         StateAction::Close
     } else {
@@ -755,16 +808,45 @@ async fn label(ctx: &Ctx, repo: &str, number: u64, add: bool, names: &[String]) 
         EventKind::LabelRemove
     };
     let s = Session::open_for_write(ctx, repo, "label not changed").await?;
-    let target = target(&s, repo, number).await?;
+    let collab = s.collab();
+    // A label already on (or already off) the issue is not written again: it would be paid
+    // for and show twice in the timeline (QW-035).
+    let (target, current) = target_and_state(&s, repo, number).await?;
+    let (names, unchanged) = changes(names, current.as_ref().map(|c| &c.labels), add);
+    if names.is_empty() {
+        let already = if add { "already has" } else { "does not have" };
+        ctx.emit(
+            json!({
+                "status": "unchanged",
+                "issue": number,
+                "labels": unchanged,
+                "action": if add { "add" } else { "remove" },
+                "written": false,
+            }),
+            || {
+                println!(
+                    "issue #{number} {already} {}; nothing written",
+                    label_list(&unchanged)
+                );
+            },
+        );
+        return Ok(());
+    }
+    if !unchanged.is_empty() && !ctx.json {
+        let already = if add { "already on" } else { "not on" };
+        println!(
+            "{} {already} issue #{number}; skipped",
+            label_list(&unchanged)
+        );
+    }
     // a private repo seals the label name into the event's `enc` (private-repos.md §7)
     ctx.confirm_or_cancel(&format!(
         "{} label(s) {} on issue #{number}? (one small document each; members only)",
         if add { "Add" } else { "Remove" },
         names.join(", ")
     ))?;
-    let collab = s.collab();
     let mut ids = Vec::new();
-    for name in names {
+    for name in &names {
         ids.push(
             collab
                 .post_event(&s.repo, &target, kind, Some(name), None)
@@ -780,6 +862,7 @@ async fn label(ctx: &Ctx, repo: &str, number: u64, add: bool, names: &[String]) 
             "action": if add { "add" } else { "remove" },
             "eventId": ids.first(),
             "eventIds": ids,
+            "unchanged": unchanged,
         }),
         || {
             let verb = if add { "added" } else { "removed" };
@@ -792,12 +875,93 @@ async fn label(ctx: &Ctx, repo: &str, number: u64, add: bool, names: &[String]) 
     Ok(())
 }
 
+/// Issue `number` as an event target, with its labels and assignees when every value in its
+/// log could be read (a private repository's sealed values need the member's key); `None`
+/// when some could not, so nothing is assumed about them. The state is as fresh as the node
+/// answering: a change made a moment ago may not show yet.
+async fn target_and_state(
+    s: &Session,
+    repo: &str,
+    number: u64,
+) -> Result<(Target, Option<IssueState>)> {
+    let view = s
+        .collab()
+        .issue_view(&s.repo, number_arg(number)?)
+        .await?
+        .ok_or_else(|| not_found(repo, number))?;
+    let state = (view.hidden_values == 0).then_some(view.state);
+    Ok((view.issue.target(), state))
+}
+
+/// Split the `wanted` labels or assignees into those an add (or a removal) would change and
+/// those it would not, given what the issue has now (`current`; `None`: unknown, so every
+/// one is written). A name given twice is written once.
+fn changes(
+    wanted: &[String],
+    current: Option<&std::collections::BTreeSet<String>>,
+    add: bool,
+) -> (Vec<String>, Vec<String>) {
+    let mut write = Vec::new();
+    let mut unchanged = Vec::new();
+    for w in wanted {
+        if write.contains(w) || unchanged.contains(w) {
+            continue;
+        }
+        if current.is_some_and(|c| c.contains(w) == add) {
+            unchanged.push(w.clone());
+        } else {
+            write.push(w.clone());
+        }
+    }
+    (write, unchanged)
+}
+
+/// `bug` or `bug, docs` for a message, terminal-safe.
+fn label_list(names: &[String]) -> String {
+    safe(&names.join(", ")).to_string()
+}
+
 async fn assign(ctx: &Ctx, repo: &str, number: u64, who: &[String], add: bool) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
-    let target = target(&s, repo, number).await?;
-    let mut ids = Vec::new();
+    // An assignee already on (or already off) the issue is not written again (QW-035).
+    let (target, current) = target_and_state(&s, repo, number).await?;
+    let mut wanted = Vec::new();
     for w in who {
-        ids.push(identity_arg(&s.client, || Ok(s.identity.id()), w).await?);
+        wanted.push(identity_arg(&s.client, || Ok(s.identity.id()), w).await?);
+    }
+    let (ids, unchanged) = changes(&wanted, current.as_ref().map(|c| &c.assignees), add);
+    if ids.is_empty() {
+        let already = if add {
+            "already assigned"
+        } else {
+            "not assigned"
+        };
+        ctx.emit(
+            json!({
+                "status": "unchanged",
+                "issue": number,
+                "assignees": unchanged,
+                "written": false,
+            }),
+            || {
+                println!(
+                    "{} {already} on issue #{number}; nothing written",
+                    unchanged.join(", ")
+                );
+            },
+        );
+        return Ok(());
+    }
+    if !unchanged.is_empty() && !ctx.json {
+        let already = if add {
+            "already assigned"
+        } else {
+            "not assigned"
+        };
+        println!(
+            "{} {already} on issue #{number}; skipped",
+            unchanged.join(", ")
+        );
     }
     ctx.confirm_or_cancel(&format!(
         "{} {} on issue #{number}? (one small document each; members only)",
@@ -815,6 +979,7 @@ async fn assign(ctx: &Ctx, repo: &str, number: u64, who: &[String], add: bool) -
             "issue": number,
             "assignees": ids,
             "eventIds": events,
+            "unchanged": unchanged,
         }),
         || {
             let verb = if add { "assigned" } else { "unassigned" };
@@ -826,7 +991,32 @@ async fn assign(ctx: &Ctx, repo: &str, number: u64, who: &[String], add: bool) -
 
 #[cfg(test)]
 mod tests {
-    use super::{event_phrase, label_args, open_words, timeline, title_matches, Item};
+    use super::{changes, event_phrase, label_args, open_words, timeline, title_matches, Item};
+
+    /// QW-035: a label (or assignee) already on the issue is not written again, one already
+    /// off is not removed again, and a name given twice is written once. An unreadable state
+    /// assumes nothing.
+    #[test]
+    fn only_what_would_change_is_written() {
+        let names = |v: &[&str]| v.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        let on: std::collections::BTreeSet<String> = ["bug".to_string()].into();
+        assert_eq!(
+            changes(&names(&["bug", "docs", "docs"]), Some(&on), true),
+            (names(&["docs"]), names(&["bug"]))
+        );
+        assert_eq!(
+            changes(&names(&["bug"]), Some(&on), true),
+            (vec![], names(&["bug"]))
+        );
+        assert_eq!(
+            changes(&names(&["bug", "docs"]), Some(&on), false),
+            (names(&["bug"]), names(&["docs"]))
+        );
+        assert_eq!(
+            changes(&names(&["bug"]), None, true),
+            (names(&["bug"]), vec![])
+        );
+    }
     use crate::fmt::transition_phrase;
     use forge_core::collab::v2::Comment;
     use forge_core::rules::v2::Transition;

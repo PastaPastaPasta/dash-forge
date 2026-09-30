@@ -168,13 +168,17 @@ export {
   matchesText,
   mentions,
   queryIssues,
+  rowFiltersOf,
   rowMatches,
   type IssueListPage,
   type IssueRow,
   type IssueSelection,
+  type RowFilters,
 } from './issue-index'
 export {
+  pullsLinking,
   queryPulls,
+  type LinkingPulls,
   type PullCounts,
   type PullListPage,
   type PullRow,
@@ -300,6 +304,7 @@ export {
   type ForkResult,
   type ForkStep,
 } from './fork'
+export { noteForkOf, readForkParent, resetForkParents } from './fork-parent'
 export {
   DEFAULT_CONFIG,
   MAX_PROTECTED_PATTERNS,

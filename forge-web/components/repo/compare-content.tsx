@@ -26,12 +26,14 @@ import { DiffView } from '@/components/repo/diff-view'
 import { CommitList } from '@/components/repo/pull-tabs'
 import { ReadErrorState } from '@/components/repo/resolved-tip'
 import { Button } from '@/components/ui/button'
+import { CopyLinkButton } from '@/components/ui/copy-link'
 import { Input } from '@/components/ui/input'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState, ErrorState, Spinner } from '@/components/ui/states'
 
 export function CompareContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
-  const baseParam = useParam('base') || home.defaultBranch
+  const baseGiven = useParam('base')
+  const baseParam = baseGiven || home.defaultBranch
   const headParam = useParam('head')
   const base = selectRef(home.branches, home.tags, home.defaultBranch, baseParam)
   const head = headParam ? selectRef(home.branches, home.tags, home.defaultBranch, headParam) : null
@@ -39,9 +41,13 @@ export function CompareContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="flex items-center gap-2 text-xl">
-          <GitCompare className="h-5 w-5 text-anvil-500 dark:text-anvil-400" aria-hidden /> Compare changes
-        </h1>
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="flex items-center gap-2 text-xl">
+            <GitCompare className="h-5 w-5 text-anvil-500 dark:text-anvil-400" aria-hidden /> Compare changes
+          </h1>
+          {/* GitHub's `/owner/name/compare/base...head` (QW-058). */}
+          {headParam ? <CopyLinkButton repo={addr} target={{ kind: 'compare', head: headParam, ...(baseGiven ? { base: baseGiven } : {}) }} className="ml-auto" /> : null}
+        </div>
         <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">
           Pick two branches, tags or commits: this shows what the second has that the first does not, from where their histories meet.
         </p>
@@ -235,7 +241,7 @@ function Compared({
         ) : null}
       </div>
       <details open={commits.commits.length <= 10} className="group">
-        <summary className="mb-2 cursor-pointer text-dense font-semibold text-anvil-700 dark:text-anvil-200">
+        <summary className="mb-2 cursor-pointer text-dense font-semibold text-anvil-700 coarse:py-3 dark:text-anvil-200">
           Commits ({commitCount})
         </summary>
         <CommitList commits={commits} addr={addr} allHint={`Clone the repo and run git log ${shortOid(mergeBase)}..${shortOid(headOid)} to see them all.`} />

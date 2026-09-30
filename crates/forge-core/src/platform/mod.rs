@@ -91,7 +91,7 @@ const MAX_BROADCAST_ATTEMPTS: u32 = 4;
 /// signed bytes can be sent again once the node has caught up ([`MAX_LAG_RETRIES`]). Every one
 /// of these rules is judged by whichever node answers: a real refusal is final after the
 /// retries, a few seconds later.
-const TOTAL_READING_RULES: [(&str, &str); 13] = [
+pub(crate) const TOTAL_READING_RULES: [(&str, &str); 13] = [
     ("packManifest", "platformChunks"),
     ("release", "oneLive"),
     ("topic", "atMost20"),
@@ -113,7 +113,7 @@ const TOTAL_READING_RULES: [(&str, &str); 13] = [
 const MAX_LAG_RETRIES: u32 = 2;
 
 /// Whether `rule` of `document_type` reads a total that lags behind the writer's own writes.
-fn reads_a_total(document_type: &str, rule: &str) -> bool {
+pub(crate) fn reads_a_total(document_type: &str, rule: &str) -> bool {
     TOTAL_READING_RULES.contains(&(document_type, rule))
 }
 
@@ -3382,7 +3382,9 @@ async fn wait_out_lag(
     n: u32,
 ) {
     let delay = backoff_delay(backoff * 3 / 2, n);
-    tracing::warn!(
+    // Debug, not warn: the write is being recovered, and a refusal that outlasts the retries
+    // reaches the caller as its own error (D-5).
+    tracing::debug!(
         document_type,
         rule,
         delay_ms = duration_ms(delay),

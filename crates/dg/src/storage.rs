@@ -326,7 +326,7 @@ fn describe(profile: &Profile) -> String {
 fn list(ctx: &Ctx) -> Result<()> {
     let path = StorageProfiles::default_path()?;
     let profiles = StorageProfiles::load_from(&path)?;
-    let rows: Vec<_> = profiles
+    let mut rows: Vec<_> = profiles
         .profiles
         .iter()
         .map(|(name, p)| {
@@ -335,9 +335,17 @@ fn list(ctx: &Ctx) -> Result<()> {
                 .iter()
                 .map(|(f, r)| json!({ "field": f, "ref": r.to_string(), "available": r.is_available() }))
                 .collect();
-            json!({ "name": name, "kind": p.kind(), "target": describe(p), "secrets": secrets })
+            json!({ "name": name, "kind": p.kind(), "target": describe(p), "secrets": secrets, "builtIn": false })
         })
         .collect();
+    // The human list shows the built-in profile too; so does the JSON (QW-081).
+    rows.push(json!({
+        "name": PLATFORM_PROFILE,
+        "kind": "platform",
+        "target": "on-chain chunk documents",
+        "secrets": [],
+        "builtIn": true,
+    }));
     ctx.emit(
         json!({
             "path": path.display().to_string(),

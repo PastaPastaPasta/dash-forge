@@ -421,7 +421,7 @@ fn not_rotated(e: &anyhow::Error, repo: &str, member: &str) -> anyhow::Error {
     .fix(format!(
         "run `dg repo keys repair {repo}` (any maintainer can)"
     ))
-    .fix(format!("or run `dg collab remove {repo} {member}` again"))
+    .fix(format!("run `dg collab remove {repo} {member}` again"))
     .note(format!(
         "until the key rotates, {member} can still read new content"
     ))

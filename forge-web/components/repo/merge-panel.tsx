@@ -62,6 +62,18 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 /** "Delete the branch after merging": runnable, or shown disabled with why. */
 export type DeleteBranchOption = { readonly label: string; readonly run: () => Promise<void> } | { readonly label: string; readonly disabled: string }
 
+/**
+ * "Close #12 after merging" (review-parity P8, QW-015): the open issues the PR's description
+ * closes ("Fixes #12"), each ticked by default as GitHub closes them, and how to close one (a
+ * member's close transition, run after the merge lands).
+ */
+export interface CloseIssuesOption {
+  readonly issues: readonly { readonly number: number; readonly title: string }[]
+  readonly close: (number: number) => Promise<void>
+  /** Linked issues past the most a merge offers (`LINKED_ISSUES_MAX`): said, not silently dropped. */
+  readonly omitted?: number
+}
+
 export function MergePanel({
   repo,
   pull,
@@ -77,6 +89,7 @@ export function MergePanel({
   allowedMethods = 0,
   squashAuthors = null,
   deleteBranch = null,
+  closeIssues = null,
   onRunning,
   active = true,
   unmetRules = [],
@@ -104,6 +117,8 @@ export function MergePanel({
   squashAuthors?: SquashAuthors
   /** Delete the PR's source branch after merging (the merger can write there), or null. */
   deleteBranch?: DeleteBranchOption | null
+  /** Close the open issues the PR's description links, after merging, or null. */
+  closeIssues?: CloseIssuesOption | null
   /** Told when a merge starts and ends here (the page keeps the panel mounted meanwhile). */
   onRunning?: (running: boolean) => void
   /** False while the page keeps the panel mounted but hidden: no merge check runs meanwhile. */
@@ -145,6 +160,10 @@ export function MergePanel({
   const squash = squashDraft(pull, squashAuthors, committer, squashText)
   const squashMsg = squash.message
   const [alsoDelete, setAlsoDelete] = useState(true)
+  // Linked issues the merger unticked (every other one offered is closed after the merge).
+  const [keepOpen, setKeepOpen] = useState<ReadonlySet<number>>(() => new Set())
+  const closing = useMemo(() => (closeIssues?.issues ?? []).filter((i) => !keepOpen.has(i.number)).map((i) => i.number), [closeIssues, keepOpen])
+  const [closed, setClosed] = useState<readonly { number: number; error: string | null }[] | null>(null)
   const input = useMemo<MergeInput>(
     () => ({
       baseTip: baseTipOid,
@@ -259,6 +278,7 @@ export function MergePanel({
     previewCreate(baseProtected ? 'protectedRefUpdate' : 'refUpdate'),
     previewCreate('event'),
     ...(deleting ? [previewCreate('refUpdate')] : []),
+    ...closing.map(() => previewCreate('transition')),
     ...(gate.bypassing || bypassed !== null ? [previewCreate('comment', { body: bypassNote('0'.repeat(40), baseRefName, bypassed ?? unmetRules) })] : []),
   ])
   // Only a merge commit is authored; a fast-forward writes no commit.
@@ -329,6 +349,19 @@ export function MergePanel({
           setDeleted({ label: deletable.label, error: e instanceof Error ? e.message : String(e) })
         }
       }
+      if (closeIssues !== null && closing.length > 0) {
+        // One at a time (each is a transition from this identity): a failure is reported and the rest still close.
+        const outcome: { number: number; error: string | null }[] = []
+        for (const n of closing) {
+          try {
+            await closeIssues.close(n)
+            outcome.push({ number: n, error: null })
+          } catch (e) {
+            outcome.push({ number: n, error: e instanceof Error ? e.message : String(e) })
+          }
+        }
+        setClosed(outcome)
+      }
     } catch (e) {
       if (e instanceof MergeStepError) {
         setRun(e.run)
@@ -340,7 +373,7 @@ export function MergePanel({
     } finally {
       setBusy(false)
     }
-  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, pull.author, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete, locked])
+  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, pull.author, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete, locked, closeIssues, closing])
   const onMergeClick = (): void => {
     // A retry resumes the merge it started with (and its bypass, already confirmed).
     if (failure !== null) void start(bypassed)
@@ -496,6 +529,36 @@ export function MergePanel({
           </div>
         )
       ) : null}
+      {mergeable && closeIssues !== null && closeIssues.issues.length > 0 && newTip === null ? (
+        <fieldset className="mt-2" data-testid="close-linked-issues">
+          <legend className="sr-only">Linked issues to close</legend>
+          {closeIssues.issues.map((i) => (
+            <label key={i.number} className="flex items-center gap-2 text-dense coarse:min-h-11">
+              <input
+                type="checkbox"
+                className="h-4 w-4 shrink-0 accent-forge-700"
+                checked={!keepOpen.has(i.number)}
+                onChange={(e) =>
+                  setKeepOpen((k) => {
+                    const next = new Set(k)
+                    if (e.target.checked) next.delete(i.number)
+                    else next.add(i.number)
+                    return next
+                  })
+                }
+              />
+              <span className="min-w-0 truncate">
+                Close <span className="font-mono">#{i.number}</span> <span className="text-anvil-500 dark:text-anvil-400">{i.title}</span> after merging
+              </span>
+            </label>
+          ))}
+          {closeIssues.omitted ? (
+            <p className="ml-6 text-[12px] text-anvil-500 dark:text-anvil-400">
+              {closeIssues.omitted} more linked {closeIssues.omitted === 1 ? 'issue is' : 'issues are'} not offered here; close {closeIssues.omitted === 1 ? 'it' : 'them'} from {closeIssues.omitted === 1 ? 'its page' : 'their pages'}.
+            </p>
+          ) : null}
+        </fieldset>
+      ) : null}
       {mergeable && !identityOk ? (
         <p className="mt-2 text-[12px] text-caution-700 dark:text-caution-400">
           A browser merge commit is authored with your name and email. Set them in{' '}
@@ -575,6 +638,15 @@ export function MergePanel({
           consensus does not enforce them.
         </p>
       </Dialog>
+      {closed !== null ? (
+        <ul className="mt-1 space-y-0.5 text-dense" data-testid="linked-issues-closed">
+          {closed.map((c) => (
+            <li key={c.number} className={c.error === null ? 'text-anvil-700 dark:text-anvil-200' : 'text-danger-700 dark:text-danger-400'}>
+              {c.error === null ? `Closed #${c.number}.` : `The merge stands; closing #${c.number} failed: ${c.error}`}
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {deleted !== null && deleted.error === null ? (
         <p className="mt-1 text-dense text-anvil-700 dark:text-anvil-200" data-testid="branch-deleted">
           Deleted {deleted.label}.

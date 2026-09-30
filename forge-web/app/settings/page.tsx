@@ -3,7 +3,7 @@
 /** `/settings` — account settings: identity, network, balance, the local spend ledger, sign out. */
 
 import Link from 'next/link'
-import { Wallet } from 'lucide-react'
+import { Lock, Wallet } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
 import { SignInButton } from '@/components/sign-in-button'
 import { EmptyState } from '@/components/ui/states'
@@ -20,10 +20,11 @@ import { GatewaysField } from '@/components/gateways-field'
 import { DisplayPrefsPanel } from '@/components/display-prefs-panel'
 import { TrendingPrefPanel } from '@/components/trending-pref-panel'
 import { creditsToDash } from '@/lib/sdk'
-import { balanceToDash, dashToUsd } from '@/lib/view/format'
+import { balanceToDash, dashValueNote } from '@/lib/view/format'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 
 export default function SettingsPage(): JSX.Element {
-  const { identity, balance } = useAuth()
+  const { identity, balance, locked } = useAuth()
   const openTopUp = useUiStore((s) => s.openTopUp)
 
   const gateways = (
@@ -40,9 +41,13 @@ export default function SettingsPage(): JSX.Element {
       <AppShell>
         <div className="mx-auto max-w-xl space-y-6">
           <EmptyState
-            icon={Wallet}
-            title="Not signed in"
-            body="Sign in to see your balance and account settings."
+            icon={locked ? Lock : Wallet}
+            title={locked ? 'Session locked' : 'Not signed in'}
+            body={
+              locked
+                ? 'Your key is still in this browser. Unlock it to see your balance, spend and account settings.'
+                : 'Sign in to see your balance and account settings.'
+            }
             action={<SignInButton />}
           />
           {gateways}
@@ -74,7 +79,7 @@ export default function SettingsPage(): JSX.Element {
           <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">Balance</h2>
           <div className="font-mono text-2xl text-dash-600 dark:text-dash-400">{balanceToDash(balance ?? '0')} DASH</div>
           <div className="mt-1 font-mono text-dense text-anvil-500 dark:text-anvil-400">
-            {credits.toLocaleString()} credits · ≈ {dashToUsd(creditsToDash(credits))}
+            {credits.toLocaleString()} credits · {dashValueNote(creditsToDash(credits), ACTIVE_NETWORK.network)}
           </div>
           <button type="button" onClick={() => openTopUp()} className="hit-area mt-3 inline-block text-dense text-forge-700 underline dark:text-forge-400">
             Top up →

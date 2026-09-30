@@ -138,25 +138,43 @@ impl EncryptionKeys {
     }
 }
 
-/// E306: the identity has no usable `ENCRYPTION` key in its file.
-pub fn no_encryption_key(who: &str, action: &str) -> Error {
-    no_encryption_key_for(
-        who,
+/// E306: `member` (someone else) has no enabled `ENCRYPTION` key on their identity, so the
+/// repository key cannot be wrapped to them.
+pub fn no_encryption_key(member: &str, action: &str) -> Error {
+    UserError::new(
+        codes::NO_ENCRYPTION_KEY,
+        format!("{action}: {member} has no encryption key"),
+    )
+    .cause("private repositories encrypt their content to each member's identity ENCRYPTION key, and this identity has no enabled one")
+    .fix(format!("they add one themselves: `{FIX_ADD_ENCRYPTION_KEY}`, or Settings → Keys → Enable private repos in the web app"))
+    .into()
+}
+
+/// E306: the key source on this computer holds no private half of an enabled `ENCRYPTION`
+/// key of the signer's identity. Usually the identity has one (`dg auth new`, the bridge and the
+/// web app create key 4) and the source is the limited signing key `dg auth login` and
+/// `dg auth new` store (QW-040: it said the identity had none, and offered file-only routes).
+pub fn no_encryption_key_held(action: &str) -> Error {
+    no_encryption_key_held_because(
         action,
         "private repositories encrypt their content to each member's identity ENCRYPTION key",
     )
 }
 
-/// E306 with `why` the operation needs the key; the rest (the key source holds none, and the
-/// fixes) is the same for every operation.
-pub fn no_encryption_key_for(who: &str, action: &str, why: &str) -> Error {
+/// [`no_encryption_key_held`] for an operation that needs the key for `why` (a webhook's secret
+/// is encrypted from it, QW-071); the rest of the message and the fixes are the same.
+pub fn no_encryption_key_held_because(action: &str, why: &str) -> Error {
     UserError::new(
         codes::NO_ENCRYPTION_KEY,
-        format!("{action}: {who} has no encryption key"),
+        format!("{action}: the key stored on this computer holds no encryption key"),
     )
-    .cause(format!("{why}, and the key source in use holds none that matches an enabled key on the identity (a limited key from `dg auth login` holds only a signing key)"))
-    .fix("if the identity has an ENCRYPTION key (`dg auth keys list`), use a source that holds it: `DASH_FORGE_KEY=<identity file>`, or `dg auth login --full-key <identity file>`")
-    .fix(format!("if it has none: {FIX_ADD_ENCRYPTION_KEY}"))
+    .cause(format!("{why}; the key source in use holds none that matches an enabled one on your identity (a limited key from `dg auth login` or `dg auth new` is a signing key only)"))
+    .fix(format!(
+        "if your identity has an ENCRYPTION key (`dg auth keys list`), store a source that holds it: {}",
+        crate::user_error::FIX_FULL_KEY_LOGIN
+    ))
+    .fix("for one command: DASH_FORGE_KEY=<identity file>")
+    .fix(format!("if it has none: `{FIX_ADD_ENCRYPTION_KEY}` (from the recovery words)"))
     .into()
 }
 
@@ -1087,7 +1105,7 @@ impl<'a> PrivateSigner<'a> {
         let (sender_id, sender) = w
             .enc
             .sender()
-            .ok_or_else(|| no_encryption_key("your identity", "cannot wrap the repo key"))?;
+            .ok_or_else(|| no_encryption_key_held("cannot wrap the repo key"))?;
         let member_b58 = platform::encode_identifier(member);
         let recipient_keys = self.client.fetch_identity(&member_b58).await?.public_keys();
         let Some(recipient) = recipient_key(&recipient_keys, &scope.contract_id) else {
@@ -2292,6 +2310,36 @@ pub async fn repair(signer: &PrivateSigner<'_>, repo: &RepoRef) -> Result<Repair
 mod tests {
     use super::*;
     use crate::platform::FieldValue;
+
+    /// QW-040: when the signer's own key source lacks the encryption key, E306 says so (not
+    /// that the identity has none) and gives the words-only route; a member without one is told
+    /// to add it themselves.
+    #[test]
+    fn e306_tells_the_stored_key_from_the_identity() {
+        let held = |e: Error| match e {
+            Error::User(u) => *u,
+            other => panic!("{other:?}"),
+        };
+        let u = held(no_encryption_key_held("cannot create a private repository"));
+        assert_eq!(u.code, "E306");
+        assert!(
+            u.message.contains("the key stored on this computer"),
+            "{}",
+            u.message
+        );
+        assert!(
+            u.fix.iter().any(|f| f.contains("--mnemonic --full-key")),
+            "{:?}",
+            u.fix
+        );
+        let u = held(no_encryption_key("Abc", "cannot wrap the repo key"));
+        assert!(
+            u.message.contains("Abc has no encryption key"),
+            "{}",
+            u.message
+        );
+        assert!(u.fix[0].contains(FIX_ADD_ENCRYPTION_KEY), "{:?}", u.fix);
+    }
 
     fn doc(kind_fields: Vec<(&str, FieldValue)>) -> FetchedDocument {
         FetchedDocument {
