@@ -229,15 +229,16 @@ export async function readRepoPackManifests(sdk: EvoSDK, repo: RepoRef): Promise
 /**
  * {@link readRepoPackManifests} for a browse context: a public repo's manifests come from the
  * repo chrome store ({@link repoTimelines}: the home's own read when it is a few seconds old, else
- * one request for what is new), and the membership from the cache that read seeded. `fresh`: a
- * read started now (a re-resolve after a miss or a push), never an earlier one's answer.
+ * one request for what is new), and the membership from the cache that read seeded. `after`: a
+ * re-resolve of a pack list read by then (after a miss or a push): only a read issued after it
+ * answers (the home's revalidation of a moment ago, else a new one), never the read it checks.
  */
 export async function readBrowseManifests(
   sdk: EvoSDK,
   repo: RepoRef,
-  { fresh = false, network = DEFAULT_NETWORK }: { readonly fresh?: boolean; readonly network?: Network } = {},
+  { after, network = DEFAULT_NETWORK }: { readonly after?: number; readonly network?: Network } = {},
 ): Promise<PackManifest[]> {
-  const timelines = await repoTimelines(sdk, repo, { network, ...(fresh ? { maxAgeMs: 0 } : {}) })
+  const timelines = await repoTimelines(sdk, repo, { network, ...(after === undefined ? {} : { issuedAfter: after }) })
   if (timelines === null) return readRepoPackManifests(sdk, repo)
   const oracle = await readRoleOracle(sdk, repo, network)
   // Newest first, as `readPackManifests` answers (the store holds them oldest first).

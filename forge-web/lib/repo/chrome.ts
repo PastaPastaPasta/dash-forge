@@ -288,23 +288,32 @@ function remember(key: string, read: Pick<StoreEntry, 'repoId' | 'at' | 'generat
 
 /**
  * A public repo's complete timelines, for a repo this tab read through {@link readRepoChrome}:
- * the stored ones when that read is in flight or started within `maxAgeMs`, else a new chrome
- * read (one request for what is new, plus any full pages). Null when the store holds nothing for
- * this repo (it was never read through the chrome, or its name now names another repo): the
- * caller reads the plain way.
+ * the stored ones when that read is in flight or started within `maxAgeMs` (and after
+ * `issuedAfter`), else a new chrome read (one request for what is new, plus any full pages). Null
+ * when the store holds nothing for this repo (it was never read through the chrome, or its name
+ * now names another repo): the caller reads the plain way.
+ *
+ * `issuedAfter`: a re-resolve checking what an earlier read saw (a browse context's pack list,
+ * read by then) takes only a read issued after it, such as the home's revalidation of a moment
+ * ago, never the read it is checking (D-11).
  */
 export async function repoTimelines(
   sdk: EvoSDK,
   repo: RepoRef,
-  { maxAgeMs = TIMELINES_FRESH_MS, network = DEFAULT_NETWORK }: { readonly maxAgeMs?: number; readonly network?: Network } = {},
+  {
+    maxAgeMs = TIMELINES_FRESH_MS,
+    issuedAfter = -Infinity,
+    network = DEFAULT_NETWORK,
+  }: { readonly maxAgeMs?: number; readonly issuedAfter?: number; readonly network?: Network } = {},
 ): Promise<RepoTimelines | null> {
   if (repo.visibility !== 'public') return null
   const key = keyOf(repo.forge, repo.ownerId, repo.name)
   const hit = touch(key)
   if (hit === undefined || hit.repoId !== repo.repoId) return null
   // A read in flight is joined (as the browse cache joins a re-resolve in flight), a settled one
-  // answers within `maxAgeMs`; neither when it was issued before this tab's last write.
-  if (hit.generation === generationOf(key) && (hit.pending || Date.now() - hit.at < maxAgeMs)) return hit.promise
+  // answers within `maxAgeMs` if issued after `issuedAfter`; neither when it was issued before
+  // this tab's last write.
+  if (hit.generation === generationOf(key) && (hit.pending || (Date.now() - hit.at < maxAgeMs && hit.at > issuedAfter))) return hit.promise
   const chrome = await readRepoChrome(sdk, repo.forge, repo.ownerId, repo.name, network)
   return chrome?.repo.repoId === repo.repoId ? chrome.timelines : null
 }
