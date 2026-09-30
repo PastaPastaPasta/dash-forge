@@ -131,7 +131,11 @@ test('the web app survives its host going down: another static host and the IPFS
 
     // The host goes down.
     await takeDown(primary)
-    await expect(page.goto(`${primary.origin}/`)).rejects.toThrow(/ERR_CONNECTION_REFUSED/)
+    // In a tab of its own: the refused load leaves a Chrome error page navigating in it, which
+    // would interrupt the next load in the same tab.
+    const dead = await context.newPage()
+    await expect(dead.goto(`${primary.origin}/`)).rejects.toThrow(/ERR_CONNECTION_REFUSED/)
+    await dead.close()
 
     // The same build, from elsewhere.
     await expectAppRuns(page, secondary.origin)
