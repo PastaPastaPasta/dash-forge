@@ -28,8 +28,8 @@ use serde::{Deserialize, Serialize};
 use super::private::{self, EventValue};
 use super::{
     check_len, check_text, doc_engine, event_kind_to_u64, insert_imported, label_from_doc,
-    release_from_doc, u64_to_event_kind, CommentAnchor, Imported, Label, Release, ReleaseInput,
-    Verdict, DEFAULT_PAGE,
+    release_from_doc, release_from_sealed, u64_to_event_kind, CommentAnchor, Imported, Label,
+    Release, ReleaseInput, ReleaseList, Verdict, DEFAULT_PAGE,
 };
 use crate::backends::sha256;
 use crate::create::replay_landed;
@@ -4374,7 +4374,13 @@ impl<'a> Collab<'a> {
     /// Every release of `repo`: the newest revision of each tag not unpublished (see
     /// [`newest_per_tag`]), in [`release_order`]; `previous` holds the other revisions, an
     /// unpublished tag's included, newest first.
-    pub async fn releases(&self, repo: &RepoRef) -> Result<(Vec<Release>, Vec<Release>)> {
+    ///
+    /// A private repository's revisions are opened and folded per §16.3 ([`sealed_releases`]),
+    /// and need a member's keys: a reader without them gets the keyring's error, never a list
+    /// of tags named by their hash. Every read lists the repository through `created`
+    /// (`repoId, $createdAt`) and filters locally: nothing queries a keyed `tagName`.
+    pub async fn releases(&self, repo: &RepoRef) -> Result<ReleaseList> {
+        let keys = self.private_keys(repo).await?;
         let core = self.core_contract(repo).await?;
         let docs = self
             .client
@@ -4385,7 +4391,19 @@ impl<'a> Collab<'a> {
                 &[QueryOrder::asc("$createdAt")],
             )
             .await?;
-        Ok(newest_per_tag(docs.iter().map(release_from_doc).collect()))
+        if let Some(kr) = keys {
+            return Ok(sealed_releases(&docs, |d| kr.open_release(d)));
+        }
+        // a public reader holds no key: a revision carrying `enc` is malformed (§16.2)
+        let (sealed, plain): (Vec<_>, Vec<_>) =
+            docs.iter().partition(|d| d.fields.contains_key("enc"));
+        let (current, previous) = newest_per_tag(plain.into_iter().map(release_from_doc).collect());
+        Ok(ReleaseList {
+            current,
+            previous,
+            hidden: sealed.len(),
+            ..ReleaseList::default()
+        })
     }
 
     /// Define (or supersede) a label. Member-gated.
@@ -4806,12 +4824,13 @@ fn natural(a: &str, b: &str) -> std::cmp::Ordering {
 }
 
 /// The repo's latest release, as GitHub picks it: the first in [`release_order`] that is
-/// neither a pre-release nor yanked (else the first not yanked).
+/// neither a pre-release nor yanked (else the first not yanked). A draft is never the latest
+/// (§16.3).
 pub fn latest_release(current: &[Release]) -> Option<&Release> {
-    current
-        .iter()
-        .find(|r| !r.yanked && !is_prerelease(&r.tag_name))
-        .or_else(|| current.iter().find(|r| !r.yanked))
+    let candidates = || current.iter().filter(|r| !r.yanked && !r.is_draft());
+    candidates()
+        .find(|r| !r.is_prerelease())
+        .or_else(|| candidates().next())
 }
 
 /// `a` vs `b`, newest revision first (`$createdAt`, then `$id`).
@@ -4852,8 +4871,8 @@ pub fn check_tag_name(tag: &str) -> Result<()> {
 /// Split release revisions into the newest per live tag (in [`release_order`]) and the rest
 /// (newest first). A tag whose newest revision unpublishes it (`delta` −1) is not live: every
 /// revision of it is previous. For a public tag this is exactly "its deltas sum below 1"
-/// (`oneLive` admits only +1 after an unpublish); a sealed release always has `delta` 0, so it
-/// stays shown.
+/// (`oneLive` admits only +1 after an unpublish). Public revisions only: a private
+/// repository's are folded by [`sealed_releases`].
 fn newest_per_tag(all: Vec<Release>) -> (Vec<Release>, Vec<Release>) {
     let mut by_tag: BTreeMap<String, Vec<Release>> = BTreeMap::new();
     for r in all {
@@ -4872,6 +4891,65 @@ fn newest_per_tag(all: Vec<Release>) -> (Vec<Release>, Vec<Release>) {
     current.sort_by(release_order);
     previous.sort_by(newest_first);
     (current, previous)
+}
+
+/// A private repository's releases (§16.3): every revision opened with `open`, then folded by
+/// its decrypted tag across epochs. Unreadable revisions are counted, replays ignored.
+fn sealed_releases(
+    docs: &[FetchedDocument],
+    open: impl Fn(&FetchedDocument) -> crate::private::release::Opened,
+) -> ReleaseList {
+    use crate::private::release::{self, Opened};
+    use crate::private::Unreadable;
+    let opened: Vec<Opened> = docs.iter().map(open).collect();
+    let ids: Vec<Vec<u8>> = docs
+        .iter()
+        .map(|d| platform::decode_identifier(&d.id).map_or_else(|_| Vec::new(), Vec::from))
+        .collect();
+    let encs: Vec<Vec<u8>> = docs
+        .iter()
+        .map(|d| d.field_bytes("enc").unwrap_or_default())
+        .collect();
+    let tag_names: Vec<String> = docs
+        .iter()
+        .map(|d| d.field_str("tagName").unwrap_or_default())
+        .collect();
+    let revs: Vec<release::Revision<'_>> = docs
+        .iter()
+        .enumerate()
+        .map(|(i, d)| release::Revision {
+            id: &ids[i],
+            created_at: d.created_at.unwrap_or(0),
+            epoch: d
+                .field_u64("epoch")
+                .and_then(|e| u32::try_from(e).ok())
+                .unwrap_or(u32::MAX),
+            tag_name: &tag_names[i],
+            opened: &opened[i],
+            enc: &encs[i],
+        })
+        .collect();
+    let fold = release::fold(&revs);
+    let release_at = |i: usize| {
+        let Opened::Readable(f) = &opened[i] else {
+            unreachable!("the fold lists readable revisions only")
+        };
+        release_from_sealed(&docs[i], revs[i].epoch, (**f).clone())
+    };
+    let mut current: Vec<Release> = fold.live.iter().map(|&i| release_at(i)).collect();
+    current.sort_by(release_order);
+    ReleaseList {
+        current,
+        previous: fold.history.iter().map(|&i| release_at(i)).collect(),
+        hidden: fold.hidden,
+        earlier_use: opened
+            .iter()
+            .filter(|o| matches!(o, Opened::Unreadable(Unreadable::EarlierUse)))
+            .count(),
+        replays: fold.replays.len(),
+        unknown_tags: fold.unknown_tags,
+        stale: fold.stale,
+    }
 }
 
 // ===========================================================================
@@ -5774,6 +5852,7 @@ mod tests {
             publisher: "m".into(),
             created_at: at,
             delta,
+            sealed: None,
         };
         let (cur, prev) = newest_per_tag(vec![
             rel("v1", 1, "a", 1),
@@ -5842,6 +5921,107 @@ mod tests {
         }
     }
 
+    /// §16.3 over stored documents: a sealed revision opens to its tag, a later yank is the
+    /// release, a replayed `enc` cannot un-yank it, a plaintext release in a private repo is
+    /// hidden, a draft is listed but not counted, and no tag is ever shown by its hash.
+    #[test]
+    fn sealed_releases_open_and_fold_and_never_show_a_hash() {
+        use crate::private::doc::{AnchorRef, OpenContext};
+        use crate::private::release::{self, ReleaseFields};
+        use crate::private::{EpochKey, EpochKeys};
+        let (repo_id, owner) = ([0x11; 32], [0x22; 32]);
+        let keys = EpochKeys::derive(&repo_id, 0, &EpochKey::from_bytes([1; 32]));
+        let ctx = OpenContext {
+            keys: [(0, keys.clone())].into(),
+            anchors: [(
+                0,
+                AnchorRef {
+                    id: [9; 32],
+                    height: 1,
+                },
+            )]
+            .into(),
+            ..OpenContext::default()
+        };
+        let seal = |f: &ReleaseFields, nonce: u8| {
+            let s = release::seal_with_nonce(&keys, &owner, f, [nonce; 12]).unwrap();
+            (s.tag_name, s.enc)
+        };
+        let doc = |id: u8, at: u64, (tag_name, enc): &(String, Vec<u8>)| {
+            let mut fields: BTreeMap<String, FieldValue> = [
+                ("tagName", FieldValue::text(tag_name.clone())),
+                ("vis", FieldValue::text("private")),
+                ("delta", FieldValue::integer(0)),
+                ("epoch", FieldValue::integer(0)),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+            if !enc.is_empty() {
+                fields.insert("enc".into(), FieldValue::bytes(enc.clone()));
+            }
+            FetchedDocument {
+                id: platform::encode_identifier([id; 32]),
+                owner_id: platform::encode_identifier(owner),
+                created_at: Some(at),
+                created_at_block_height: None,
+                updated_at_block_height: None,
+                revision: None,
+                fields,
+            }
+        };
+        let v1 = ReleaseFields {
+            tag: "v1.0.0".into(),
+            name: Some("One".into()),
+            ..ReleaseFields::default()
+        };
+        let published = seal(&v1, 1);
+        let yanked = seal(
+            &ReleaseFields {
+                yanked: true,
+                ..v1.clone()
+            },
+            2,
+        );
+        let draft = seal(
+            &ReleaseFields {
+                tag: "v2.0.0".into(),
+                draft: true,
+                ..ReleaseFields::default()
+            },
+            3,
+        );
+        let docs = [
+            doc(1, 100, &published),
+            doc(2, 200, &yanked),
+            doc(3, 300, &published), // a replay of the first revision
+            doc(4, 400, &("v9.9.9".into(), Vec::new())), // plaintext: malformed
+            doc(5, 500, &draft),
+        ];
+        let list = sealed_releases(&docs, |d| {
+            release::open(&ctx, &crate::keyring::stored_release(d).unwrap())
+        });
+        let tags: Vec<&str> = list.current.iter().map(|r| r.tag_name.as_str()).collect();
+        assert_eq!(tags, ["v2.0.0", "v1.0.0"]);
+        let v1_now = &list.current[1];
+        assert_eq!(v1_now.document_id, docs[1].id, "the yank is the release");
+        assert!(v1_now.yanked && v1_now.name == "One");
+        assert!(list.current[0].is_draft());
+        assert_eq!(
+            list.count(),
+            1,
+            "a draft is not counted; a yanked release is"
+        );
+        assert!(
+            latest_release(&list.current).is_none(),
+            "a draft or a yanked release is never the latest"
+        );
+        assert_eq!(list.previous.len(), 1);
+        assert_eq!(list.previous[0].document_id, docs[0].id);
+        assert_eq!((list.replays, list.hidden), (1, 1));
+        assert!(!list.stale && list.unknown_tags.is_empty());
+    }
+
     /// L-14: the rail's "Latest release" was the OLDEST (an import writes newest-first, so
     /// the oldest release had the newest `$createdAt`). Version order, and the latest is the
     /// highest non-prerelease, as on GitHub.
@@ -5857,6 +6037,7 @@ mod tests {
             assets: Vec::new(),
             publisher: "m".into(),
             created_at: at,
+            sealed: None,
         };
         // Written in GitHub's listing order: newest release first (lowest $createdAt).
         let (cur, _) = newest_per_tag(vec![

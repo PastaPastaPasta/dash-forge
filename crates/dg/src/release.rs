@@ -13,7 +13,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::json;
 
 use forge_core::backends::PackMeta;
-use forge_core::collab::{Release, ReleaseAsset, ReleaseInput};
+use forge_core::collab::{Release, ReleaseAsset, ReleaseInput, ReleaseList};
 use forge_core::rules::v2::Role;
 use forge_core::storage::policy::git_config_scoped;
 use forge_core::storage::{
@@ -134,7 +134,7 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
         .await?;
     // A release for this tag supersedes the current one (newest per tag wins), so what the
     // command does not change is carried forward: `--yanked` alone must not drop the files.
-    let (current, _) = collab.releases(&s.repo).await?;
+    let current = collab.releases(&s.repo).await?.current;
     let existing = current.into_iter().find(|r| &r.tag_name == tag);
     let targets = if args.assets.is_empty() {
         None
@@ -293,21 +293,88 @@ fn asset_json(a: &ReleaseAsset) -> serde_json::Value {
     json!({ "name": a.name, "sha256": a.sha256, "sizeBytes": a.size_bytes, "uris": a.uris })
 }
 
-/// The releases of `repo` (newest per tag, newest first) and the superseded revisions.
-async fn read_releases(ctx: &Ctx, repo: &str) -> Result<(Vec<Release>, Vec<Release>)> {
+/// The releases of `repo` (newest per tag, newest first) and the superseded revisions. A
+/// private repository's are opened with the identity's keys and folded (§16.3).
+async fn read_releases(ctx: &Ctx, repo: &str) -> Result<ReleaseList> {
     // No key is opened to read them for a public repository (L-12).
     let s = Reader::open(ctx, repo).await?;
     Ok(s.collab().releases(&s.repo).await?)
 }
 
+/// `(draft, pre-release, yanked)`, as `dg release list` prints them after the tag.
+fn labels(r: &Release) -> String {
+    let mut out = String::new();
+    for (on, label) in [
+        (r.is_draft(), "draft"),
+        (r.is_prerelease(), "pre-release"),
+        (r.yanked, "yanked"),
+    ] {
+        if on {
+            out.push_str(" (");
+            out.push_str(label);
+            out.push(')');
+        }
+    }
+    out
+}
+
+/// The lines a private repository's list ends with when it is incomplete (§16.3).
+fn incomplete_notes(list: &ReleaseList) -> Vec<String> {
+    let mut out = Vec::new();
+    if list.stale {
+        out.push(
+            "releases may be out of date: newer revisions are under a key you don't hold yet"
+                .to_string(),
+        );
+    }
+    if list.hidden > 0 {
+        let earlier = if list.earlier_use > 0 {
+            format!(
+                " ({} sealed under a key this repository no longer uses)",
+                list.earlier_use
+            )
+        } else {
+            String::new()
+        };
+        out.push(format!(
+            "{} release revision(s) could not be read{earlier}",
+            list.hidden
+        ));
+    }
+    out
+}
+
+/// Whether `r` keeps its asset list in a sealed kind-4 manifest, which this `dg` does not open
+/// yet (§16.5).
+fn has_sealed_asset_list(r: &Release) -> bool {
+    r.sealed
+        .as_ref()
+        .is_some_and(|s| s.fields.asset_manifest.is_some())
+}
+
+/// A release's asset count as `dg release list` shows it.
+fn asset_count(r: &Release) -> String {
+    if has_sealed_asset_list(r) {
+        "sealed asset list".to_string()
+    } else {
+        format!("{} asset(s)", r.assets.len())
+    }
+}
+
 async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
-    let (current, previous) = read_releases(ctx, repo).await?;
+    let list = read_releases(ctx, repo).await?;
     let row = |r: &Release| {
         json!({
             "tag": r.tag_name,
             "name": r.name,
             "notes": r.notes,
+            // the notes above are a prefix: the rest is in the sealed manifest (§16.2 flag 0x10)
+            "notesContinue": r.sealed.as_ref().is_some_and(|s| s.fields.notes_continue),
             "yanked": r.yanked,
+            "draft": r.is_draft(),
+            "prerelease": r.is_prerelease(),
+            "sealed": r.sealed.is_some(),
+            "stateUnknown": list.unknown_tags.contains(&r.tag_name),
             "publishedBy": r.publisher,
             "createdAt": r.created_at,
             "assets": r.assets.iter().map(asset_json).collect::<Vec<_>>(),
@@ -315,23 +382,32 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
     };
     ctx.emit(
         json!({
-            "count": current.len(),
-            "releases": current.iter().map(row).collect::<Vec<_>>(),
-            "previous": previous.iter().map(row).collect::<Vec<_>>(),
+            "count": list.count(),
+            "releases": list.current.iter().map(row).collect::<Vec<_>>(),
+            "previous": list.previous.iter().map(row).collect::<Vec<_>>(),
+            "hidden": list.hidden,
+            "earlierUse": list.earlier_use,
+            "stale": list.stale,
         }),
         || {
-            if current.is_empty() {
+            if list.current.is_empty() {
                 println!("no releases");
             }
-            for r in &current {
-                let y = if r.yanked { " (yanked)" } else { "" };
+            for r in &list.current {
                 println!(
-                    "{}{y}  {}  {} asset(s)  published by {}",
+                    "{}{}  {}  {}  published by {}",
                     r.tag_name,
+                    labels(r),
                     r.name,
-                    r.assets.len(),
+                    asset_count(r),
                     r.publisher
                 );
+                if list.unknown_tags.contains(&r.tag_name) {
+                    println!("  a newer revision of this release could not be read; its state is unknown");
+                }
+            }
+            for note in incomplete_notes(&list) {
+                println!("note: {note}");
             }
         },
     );
@@ -490,8 +566,9 @@ async fn assets_to_download(
     tag: &str,
     asset_name: Option<&str>,
 ) -> Result<Vec<ReleaseAsset>> {
-    let (current, _) = read_releases(ctx, repo).await?;
-    let release = current
+    let release = read_releases(ctx, repo)
+        .await?
+        .current
         .into_iter()
         .find(|r| r.tag_name == tag)
         .ok_or_else(|| {
@@ -500,6 +577,16 @@ async fn assets_to_download(
                 format!("`dg release list {repo}` lists its releases"),
             )
         })?;
+    if has_sealed_asset_list(&release) {
+        return Err(UserError::new(
+            codes::USAGE,
+            format!("release {tag:?} keeps its asset list sealed"),
+        )
+        .cause("this dg reads sealed releases but cannot open their sealed asset files yet")
+        .fix("update dg")
+        .note("nothing was downloaded")
+        .into());
+    }
     let assets: Vec<ReleaseAsset> = release
         .assets
         .into_iter()
@@ -793,6 +880,7 @@ mod tests {
             publisher: "M".into(),
             created_at: 1,
             delta: 1,
+            sealed: None,
         }
     }
 

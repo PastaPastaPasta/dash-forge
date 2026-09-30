@@ -31,6 +31,8 @@ export class EpochKeys {
     readonly docKey: CryptoKey,
     /** `K_ref,e`: HMAC-SHA256 for ref-name hashes (§4.5). */
     readonly refKey: CryptoKey,
+    /** `K_tag,e`: HMAC-SHA256 for sealed release `tagName`s (§16.1). */
+    readonly tagKey: CryptoKey,
     /** `K_hedge,e`: HMAC-SHA256 hedging the RNG for nonces and file ids (§3.6). */
     readonly hedgeKey: CryptoKey,
     /** `KCV_e`, 14 bytes: error detection for wraps (§5.1). */
@@ -58,9 +60,10 @@ export class EpochKeys {
       salt,
       info: subkeyInfo(label, epoch),
     })
-    const [docKey, refKey, hedgeKey, kcvBits, commitBits] = await Promise.all([
+    const [docKey, refKey, tagKey, hedgeKey, kcvBits, commitBits] = await Promise.all([
       crypto.subtle.deriveKey(params('doc'), base, AES_256, false, ['encrypt', 'decrypt']),
       crypto.subtle.deriveKey(params('ref'), base, HMAC_256, false, ['sign']),
+      crypto.subtle.deriveKey(params('tag'), base, HMAC_256, false, ['sign']),
       crypto.subtle.deriveKey(params('hedge'), base, HMAC_256, false, ['sign']),
       crypto.subtle.deriveBits(params('kcv'), base, 256),
       crypto.subtle.deriveBits(params('commit'), base, 256),
@@ -71,6 +74,7 @@ export class EpochKeys {
       base,
       docKey,
       refKey,
+      tagKey,
       hedgeKey,
       new Uint8Array(kcvBits, 0, 14).slice(),
       new Uint8Array(commitBits),
@@ -123,6 +127,23 @@ async function hmac(key: CryptoKey, data: Uint8Array): Promise<Bytes> {
 /** `refNameHash = HMAC-SHA256(K_ref,e, refName)` (§4.5). */
 export function refNameHash(keys: EpochKeys, refName: string): Promise<Bytes> {
   return hmac(keys.refKey, utf8(refName))
+}
+
+/** `HMAC-SHA256(K_tag,e, tag)`: the 32 bytes behind a sealed release's `tagName` (§16.1). */
+export function releaseTagHash(keys: EpochKeys, tag: string): Promise<Bytes> {
+  return hmac(keys.tagKey, utf8(tag))
+}
+
+/** A sealed release's plaintext `tagName`: unpadded base64url of {@link releaseTagHash}, 43 characters (§16.1). */
+export async function releaseTagName(keys: EpochKeys, tag: string): Promise<string> {
+  return base64url(await releaseTagHash(keys, tag))
+}
+
+/** RFC 4648 §5 base64url, unpadded. */
+function base64url(b: Uint8Array): string {
+  let bin = ''
+  for (const x of b) bin += String.fromCharCode(x)
+  return btoa(bin).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')
 }
 
 /** `fileId = HMAC-SHA256(K_hedge,e, 0x01 ‖ rnd ‖ SHA-256(plaintext))[0..16]` (§3.6). */

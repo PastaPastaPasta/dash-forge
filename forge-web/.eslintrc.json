@@ -30,7 +30,7 @@
               "message": "lib/private/testing holds the deterministic (fixed nonce/fileId) seals for the conformance vectors: tests only (private-repos.md §3.6)."
             },
             {
-              "group": ["**/private/doc", "**/private/pack", "**/private/doc.*", "**/private/pack.*"],
+              "group": ["**/private/doc", "**/private/pack", "**/private/release", "**/private/doc.*", "**/private/pack.*", "**/private/release.*"],
               "importNamePattern": "^__unsafe",
               "message": "__unsafe* seals take a caller-chosen nonce/fileId; only lib/private/testing.ts may import them."
             }
@@ -49,7 +49,7 @@
               "message": "lib/private/testing holds the deterministic (fixed nonce/fileId) seals for the conformance vectors: tests only (private-repos.md §3.6)."
             },
             {
-              "group": ["./doc", "./pack", "./doc.*", "./pack.*", "**/private/doc", "**/private/pack"],
+              "group": ["./doc", "./pack", "./release", "./doc.*", "./pack.*", "./release.*", "**/private/doc", "**/private/pack", "**/private/release"],
               "importNamePattern": "^__unsafe",
               "message": "__unsafe* seals take a caller-chosen nonce/fileId; only lib/private/testing.ts may import them."
             }
