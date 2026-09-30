@@ -44,9 +44,10 @@ export default function LandingPage(): JSX.Element {
     [ready, network],
     { enabled: deployed && featured && ready && sdk !== null },
   )
-  // The recent feed without the featured repos (they are shown above it).
+  // The recent feed without the featured repos (they are shown above it), once the featured read
+  // has settled, so a featured card never shows in the feed and then leaves it.
   const shown = new Set((showcase.data ?? []).map((r) => r.key))
-  const recent = feed.data?.filter((r) => !shown.has(r.key)) ?? null
+  const recent = featured && showcase.loading ? null : (feed.data?.filter((r) => !shown.has(r.key)) ?? null)
   const faucet = faucetUrl()
 
   return (
@@ -178,6 +179,8 @@ export default function LandingPage(): JSX.Element {
               </Link>
             }
           />
+        ) : recent && recent.length === 0 ? (
+          <p className="text-dense text-anvil-500 dark:text-anvil-400">The newest repos are the featured ones above.</p>
         ) : recent ? (
           <RepoGrid repos={recent} />
         ) : sdkStatus.phase === 'error' ? null : sdkStatus.phase === 'downloading' ? (

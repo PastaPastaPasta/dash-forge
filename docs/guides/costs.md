@@ -99,7 +99,7 @@ A write that is the first of its kind somewhere (a repository's first push or fi
 
 | Action | Cost |
 |---|---|
-| Create a repository | **~0.0013 DASH**: three small documents (`repo`, your `maintainer` membership, the first `config`). A private one: ~0.0020 DASH (it adds your key and the first anchor) |
+| Create a repository | **~0.0016 DASH** on bonsia (0.0013 on moutai): three small documents (`repo`, your `maintainer` membership, the first `config`). A private one: ~0.0020 DASH (it adds your key and the first anchor) |
 | Push to **your own bucket** | **~0.004–0.005 DASH** on bonsia: the pack's and its browse index's manifests, the history index's, and one ref update. Measured on bonsia (2026-09-30): 0.0052 DASH for the first push to a repository, ~0.0040 after. (On moutai: 0.0028 and 0.0021) |
 | Push with packs **on Platform** | **~0.004–0.010 DASH** for a tiny push on bonsia: 0.0040 for a tag and 0.0052 for a branch, 0.0102 (first) and 0.0088 when it moves the default branch, whose history index is stored as a chunk too (quoted up to 0.012). Plus **~0.33 DASH per MiB** of packed data (`git push` quotes up to 0.39); the storage is permanent. Measured on moutai: 200 KiB 0.070 DASH, 1.5 MiB 0.50 DASH |
 | Push to a **private** repository, packs on Platform | 20 KiB: 0.0112 DASH (first push); a tiny follow-up: 0.0022 DASH; three new branches at once: 0.0078 DASH. The packs are sealed, so they are a little larger |
@@ -244,7 +244,7 @@ The audit trail grows forever: each ref update costs about 0.0006–0.0009 DASH 
 - **`dg` asks first.** Every command that writes asks before it writes (`[y/N]`; `dg init` and `dg repo create` ask `Proceed? [Y/n]` after showing the price) unless you pass `--yes`. `dg repo create`, `dg repack` and `dg repo reindex` show their price before the question. For other commands, use `dg cost estimate` before you write (in a repository it quotes a first push of it to `--backend platform`, `s3`, `ipfs`, `https` or `mixed`) and `dg cost prices` / `dg cost audit` to see the reference table or what you've already spent. With `--json` or no terminal, `dg` refuses to write without `--yes` ([`E802`](../errors.md#e802)).
 - **`git push` prints its estimate** before it writes to Platform, and what Platform actually charged when it is done. The estimate prices every write as the first of its kind, so it is an upper bound: 1.08–1.27x the charge on a first import of 1 MiB or more, up to about 1.4x on a tiny first push and 1.7x on a small later one. To make it ask:
   ```sh
-  git config --global dash.costWarnThreshold 0.01   # ask above 0.01 DASH
+  git config --global dash.costWarnThreshold 0.05   # ask above 0.05 DASH (what dg doctor --fix sets)
   git config --global dash.confirm auto             # auto | always | never | refuse
   ```
   Without a terminal (CI), a push over the threshold stops with [`E801`](../errors.md#e801) rather than spending.
