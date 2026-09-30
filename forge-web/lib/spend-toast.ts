@@ -45,12 +45,13 @@ const REPO_CREATE_STEPS = new Set(['create:maintainer', 'create:repoKey', 'creat
  * (QW2-034): its `repo` write opens "Creating the repository", its maintainer, key and config
  * writes add to it while it shows, and the config write, the last, closes it as created.
  */
-export function spendToast(event: Pick<SpendEvent, 'kind' | 'repo'>): { title: string; group?: string } {
+export function spendToast(event: Pick<SpendEvent, 'kind' | 'repo'>): { title: string; group?: string; pending?: boolean } {
   const group = event.repo === null ? undefined : `create-repo:${event.repo}`
-  if (event.kind === 'create:repo' && group) return { title: 'Creating the repository', group }
+  if (event.kind === 'create:repo' && group) return { title: 'Creating the repository', group, pending: true }
   const live = group === undefined ? undefined : liveToast(group)
   if (live && REPO_CREATE_STEPS.has(event.kind)) {
-    return { title: event.kind === 'create:config' ? 'Repository created' : live.title, group }
+    const done = event.kind === 'create:config'
+    return { title: done ? 'Repository created' : live.title, group, pending: !done }
   }
   return { title: SPEND_TITLES[event.kind] ?? 'Write confirmed' }
 }

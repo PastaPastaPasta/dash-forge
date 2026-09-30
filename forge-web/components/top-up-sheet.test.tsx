@@ -23,7 +23,8 @@ vi.mock('@/contexts/auth-context', () => ({
     storage: 'vault',
     balance: String(19_312_430_240),
     keyLimits: { remaining: 4_000_000_000n, total: 5_000_000_000n, expiresAt: EXPIRES },
-    funds: { level: 'comfortable', reason: null, spendable: 1n },
+    // fundsState's: the balance (0.19 DASH) is above the key's 0.04 left, so the key caps it.
+    funds: { level: 'comfortable', reason: null, spendable: 4_000_000_000n },
     refreshBalance: async () => undefined,
   }),
 }))
@@ -77,5 +78,8 @@ describe('the top-up sheet', () => {
     act(() => q('[data-testid="funds-pill"]')!.click())
     expect(useUiStore.getState().topUp).toEqual({ blocker: 'balance', proactive: true })
     expect(q('[data-testid="key-funds-line"]')!.textContent).toMatch(/0\.04 of 0\.05 DASH budget left, expires/)
+    // The balance does not cap a key with less left than it (QW2-035).
+    expect(q('[data-testid="key-funds-line"]')!.textContent).not.toMatch(/capped/)
+    expect(q('[data-testid="top-up-coverage"]')!.textContent).toMatch(/covers about \d+\.$/)
   })
 })

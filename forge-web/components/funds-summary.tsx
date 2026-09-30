@@ -13,15 +13,15 @@ import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { cn } from '@/lib/utils'
 
 export function KeyFundsLine({ className }: { className?: string }): JSX.Element | null {
-  const { keyLimits, funds, balance } = useAuth()
+  const { keyLimits, funds } = useAuth()
   if (keyLimits === null || (keyLimits.total === null && keyLimits.expiresAt === null)) return null
   const warn = funds?.reason === 'key-budget' || funds?.reason === 'key-expiry'
   // A budget above the balance is not all spendable (QW2-035: "0.05 of 0.05 DASH left" beside a
   // 0.0054 DASH balance): say the balance caps it.
-  const capped = balance !== null && keyLimits.remaining !== null && BigInt(balance) < keyLimits.remaining
+  const capped = funds != null && keyLimits.remaining !== null && funds.spendable < keyLimits.remaining
   const parts = [
     keyLimits.remaining !== null && keyLimits.total !== null ? `${creditsAsDash(Number(keyLimits.remaining))} of ${creditsAsDash(Number(keyLimits.total))} DASH budget left` : null,
-    capped ? `capped by your ${creditsAsDash(Number(balance))} DASH balance` : null,
+    capped ? `capped by your ${creditsAsDash(Number(funds.spendable))} DASH balance` : null,
     keyLimits.expiresAt !== null ? `expires ${formatDate(keyLimits.expiresAt)}` : null,
   ].filter((p): p is string => p !== null)
   return (

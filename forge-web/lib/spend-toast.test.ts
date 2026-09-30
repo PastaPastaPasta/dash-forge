@@ -49,9 +49,21 @@ describe('a repo creation shows one toast with its total (QW2-034)', () => {
     expect(useToasts.getState().toasts.map((t) => t.title)).toEqual(['Maintainer added', 'Creating the repository', 'Maintainer added'])
   })
 
+  it('waits for a slow step, then lets a finished creation go like any toast', () => {
+    spend('create:repo', 'R', 81_700_000)
+    // One step (reads, broadcast, confirmation, measurement) can take longer than 8 s.
+    vi.advanceTimersByTime(20_000)
+    spend('create:maintainer', 'R', 48_100_000)
+    vi.advanceTimersByTime(20_000)
+    spend('create:config', 'R', 35_500_000)
+    expect(useToasts.getState().toasts).toMatchObject([{ title: 'Repository created', credits: 165_300_000, writes: 3 }])
+    vi.advanceTimersByTime(9000)
+    expect(useToasts.getState().toasts).toEqual([])
+  })
+
   it('a creation whose toast has gone starts afresh', () => {
     spend('create:repo', 'R', 81_700_000)
-    vi.advanceTimersByTime(9000)
+    vi.advanceTimersByTime(61_000)
     expect(useToasts.getState().toasts).toEqual([])
     spend('create:config', 'R', 35_500_000)
     expect(useToasts.getState().toasts).toMatchObject([{ title: 'Repository config written', writes: 1 }])

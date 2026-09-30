@@ -54,9 +54,11 @@ function Dash({ credits, signed = false }: { credits: number; signed?: boolean }
 function Estimate({ row }: { row: SpendRow }): JSX.Element {
   const min = row.estimateMinCredits
   if (min === undefined || min >= row.estimateCredits || row.estimateCredits < 0) return <Dash credits={row.estimateCredits} />
+  // May break after the dash: a phone's row keeps room for what the write was.
   return (
-    <span className="whitespace-nowrap font-mono">
-      {creditsAsDash(min)}–{creditsAsDash(row.estimateCredits)} DASH
+    <span className="font-mono">
+      {creditsAsDash(min)}–<wbr />
+      <span className="whitespace-nowrap">{creditsAsDash(row.estimateCredits)} DASH</span>
     </span>
   )
 }
@@ -190,14 +192,14 @@ export function SpendPanel(): JSX.Element {
       </div>
       {rec ? (
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="spend-reconcile" data-unexplained={rec.unexplained}>
-          Ledger <Dash credits={s.allTime} /> spent
-          {s.credited > 0 ? (
+          Since the ledger began: <Dash credits={since?.allTime ?? 0} /> spent
+          {since !== null && since.credited > 0 ? (
             <>
-              , <Dash credits={s.credited} signed /> topped up here
+              , <Dash credits={since.credited} signed /> topped up here
             </>
           ) : null}{' '}
-          · balance <Dash credits={rec.balanceChange} signed /> since the first row ·{' '}
-          {rec.unexplained === 0 ? (
+          · balance <Dash credits={rec.balanceChange} signed /> ·{' '}
+          {creditsAsDash(Math.abs(rec.unexplained)) === '0' ? (
             'all of it in the ledger'
           ) : (
             <>

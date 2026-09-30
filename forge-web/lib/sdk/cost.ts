@@ -219,6 +219,11 @@ export const KEY_LIMITS_UPDATE_CREDITS = 2_300_000
 export const KEY_REGISTER_CREDITS = 48_000_000
 /** Adding a key when the identity already holds a budgeted one, e.g. a renewal (see above). */
 export const KEY_RENEW_CREDITS = 28_000_000
+/**
+ * The least adding this browser's key was measured to cost (bonsia, a sign-in's key: 26.8M): the
+ * low end of a key registration's range in Settings → Spend (QW-043).
+ */
+export const KEY_ADD_FLOOR_CREDITS = 26_500_000
 
 /**
  * What copy quotes for "an issue" (L-73): the preview a newcomer's first issue gets — a short

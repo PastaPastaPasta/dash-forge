@@ -174,7 +174,7 @@ describe('the spend reconciliation after a reload', () => {
       await act(async () => release())
       await flush()
       expect(unexplained()).toBe('0')
-      expect(q('spend-reconcile')?.textContent).toMatch(/Ledger/)
+      expect(q('spend-reconcile')?.textContent).toMatch(/Since the ledger began/)
     } finally {
       ledger.rows = rowsBefore
       slow.mockRestore()
@@ -203,8 +203,8 @@ describe('the spend reconciliation after a reload', () => {
       auth.balanceReadAt = 250
       await render()
       const line = q('spend-reconcile')?.textContent ?? ''
-      expect(line).toMatch(/0\.000274 DASH spent, \+9\.9997 DASH topped up here/)
-      expect(line).toMatch(/balance \+9\.99\d* DASH since the first row/)
+      expect(line).toMatch(/Since the ledger began: 0\.000274 DASH spent, \+9\.9997 DASH topped up here/)
+      expect(line).toMatch(/balance \+9\.99\d* DASH ·/)
       expect(line).toMatch(/all of it in the ledger/)
       expect(line).not.toMatch(/−9\.99/)
       expect(host.textContent).toMatch(/All time \(1 write\)/)

@@ -23,6 +23,8 @@ export interface Toast {
   readonly group?: string
   /** How many writes the toast totals (1 unless grouped). */
   readonly writes?: number
+  /** The group's action has more writes to come: the toast waits for them. */
+  readonly pending?: boolean
 }
 
 interface ToastState {
@@ -33,6 +35,11 @@ interface ToastState {
 
 let next = 1
 const TOAST_MS = 8000
+/**
+ * A grouped toast waits this long for its action's next write: one step of a repo's creation (its
+ * reads, broadcast, confirmation and charge measurement) takes longer than a plain toast shows.
+ */
+const GROUP_WAIT_MS = 60_000
 const timers = new Map<number, ReturnType<typeof setTimeout>>()
 
 /** Two writes' credits together; unknown when either could not be read. */
@@ -41,14 +48,14 @@ function sumCredits(a: number | null | undefined, b: number | null | undefined):
 }
 
 export const useToasts = create<ToastState>((set, get) => {
-  const expire = (id: number): void => {
+  const expire = (id: number, ms: number): void => {
     clearTimeout(timers.get(id))
     timers.set(
       id,
       setTimeout(() => {
         timers.delete(id)
         set((s) => ({ toasts: s.toasts.filter((x) => x.id !== id) }))
-      }, TOAST_MS),
+      }, ms),
     )
   }
   return {
@@ -58,12 +65,12 @@ export const useToasts = create<ToastState>((set, get) => {
       if (prev) {
         const merged: Toast = { ...t, id: prev.id, credits: sumCredits(prev.credits, t.credits), writes: (prev.writes ?? 1) + 1 }
         set((s) => ({ toasts: s.toasts.map((x) => (x.id === prev.id ? merged : x)) }))
-        expire(prev.id)
+        expire(prev.id, t.pending ? GROUP_WAIT_MS : TOAST_MS)
         return
       }
       const id = next++
       set((s) => ({ toasts: [...s.toasts.slice(-3), { ...t, id, writes: 1 }] }))
-      expire(id)
+      expire(id, t.pending ? GROUP_WAIT_MS : TOAST_MS)
     },
     dismiss: (id) => {
       clearTimeout(timers.get(id))
