@@ -103,7 +103,8 @@ function recheck(): void {
     return
   }
   if (Math.abs(aheadMs - noted.skew.aheadMs) > 60_000) {
-    noted = { ...noted, skew: { ...noted.skew, aheadMs } }
+    // Re-anchored at this measurement: the next one projects from here, not from the first.
+    noted = { skew: { ...noted.skew, aheadMs }, at: monotonicNow(), wall: Date.now() }
     emit()
   }
 }
@@ -121,6 +122,15 @@ export function noteClockSkew(e: unknown): boolean {
   if (timer === null && typeof setInterval !== 'undefined') timer = setInterval(recheck, RECHECK_MS)
   if (changed) emit()
   return true
+}
+
+/**
+ * A Platform answer was accepted: this device's clock agrees with the network's now, whatever
+ * was noted before (one lagging node, a clock fixed meanwhile). While the clock really is off
+ * every answer is refused, so none lands here.
+ */
+export function noteClockOk(): void {
+  if (noted !== null) clearClockSkew()
 }
 
 /** The offset this session last saw, while the device clock still disagrees; else null. */

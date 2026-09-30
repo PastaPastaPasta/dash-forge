@@ -41,6 +41,11 @@ const button = cva(
   },
 )
 
+/** A button's classes, for a link that must look like one (a `Link` styled as the primary action). */
+export function buttonClass(opts: VariantProps<typeof button> = {}): string {
+  return button(opts)
+}
+
 export interface ButtonProps
   extends ButtonHTMLAttributes<HTMLButtonElement>,
     VariantProps<typeof button> {

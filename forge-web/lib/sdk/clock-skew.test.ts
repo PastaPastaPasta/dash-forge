@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   clearClockSkew,
+  noteClockOk,
   clockSkewCopy,
   clockSkewErrorCopy,
   clockSkewOf,
@@ -70,6 +71,25 @@ describe('the session store', () => {
     expect(currentClockSkew()?.aheadMs).toBe(7_206_261)
     expect(listener).toHaveBeenCalledTimes(1)
     off()
+  })
+
+  it('clears once an answer is accepted', () => {
+    noteClockSkew(AHEAD)
+    noteClockOk()
+    expect(currentClockSkew()).toBeNull()
+  })
+
+  it('re-anchors a changed offset, so a partial fix is not read as a full one', () => {
+    vi.useFakeTimers({ toFake: ['Date', 'performance', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(1_790_800_506_217)
+    noteClockSkew(AHEAD)
+    // Set back by 1 h: still about 1 h ahead.
+    vi.setSystemTime(Date.now() - 3_600_000)
+    vi.advanceTimersByTime(5_000)
+    const once = currentClockSkew()?.aheadMs ?? 0
+    expect(Math.abs(once - (7_206_261 - 3_600_000))).toBeLessThan(60_000)
+    vi.advanceTimersByTime(5_000)
+    expect(currentClockSkew()?.aheadMs).toBe(once)
   })
 
   it('clears by itself once the device clock agrees with the network again', () => {

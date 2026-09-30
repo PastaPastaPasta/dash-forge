@@ -293,12 +293,19 @@ export const UNFOLLOWED = "recorded, but not a public https address, so browsers
 
 /** Whether every failed place for `packs` is an IPFS gateway (so adding a gateway may help). */
 export function onlyGatewaysFailed(places: readonly string[]): boolean {
-  return places.length > 0 && places.every((p) => p.startsWith(GATEWAY_PLACE))
+  // A recorded copy no browser fetches (a local node's gateway URL beside the `ipfs://`) is not
+  // a failed place: a working gateway is still the fix.
+  const tried = places.filter((p) => !isUnfollowed(p))
+  return tried.length > 0 && tried.every((p) => p.startsWith(GATEWAY_PLACE))
+}
+
+function isUnfollowed(place: string): boolean {
+  return place.endsWith(`(${UNFOLLOWED})`)
 }
 
 /** Whether every failed place is a recorded copy no browser fetches (see {@link UNFOLLOWED}). */
 export function onlyUnfollowed(places: readonly string[]): boolean {
-  return places.length > 0 && places.every((p) => p.endsWith(`(${UNFOLLOWED})`))
+  return places.length > 0 && places.every(isUnfollowed)
 }
 
 /** Every distinct place, over a set of unreadable packs (`gateways`: the repo's, {@link readGatewaysFor}). */

@@ -75,9 +75,9 @@ export function StorageUnreachableCard({
           </ul>
           {privateOnly ? (
             <p data-testid="private-storage-advice" className="mt-2 text-dense text-anvil-700 dark:text-anvil-200">
-              A private-network or plain-http address works only on its owner&apos;s network, so this
-              site never fetches from it. The owner can publish the files by adding public https or
-              IPFS storage and pushing again.
+              This site fetches only public https addresses: a local, private-network or plain-http
+              one would have every visitor&apos;s browser call it. The owner can publish the files
+              by adding public https or IPFS storage and pushing again.
             </p>
           ) : null}
           {gatewaysOnly ? (
@@ -94,7 +94,8 @@ export function StorageUnreachableCard({
           <p className="mt-2 text-dense text-anvil-600 dark:text-anvil-300">
             Branches, issues and pull requests are unaffected.
           </p>
-          <div className="mt-3 flex flex-wrap gap-2">
+          {/* Nothing is fetched from an unfollowed address, so Try again could not change anything. */}
+          <div className={privateOnly ? 'hidden' : 'mt-3 flex flex-wrap gap-2'}>
             <Button
               variant="primary"
               onClick={() => {

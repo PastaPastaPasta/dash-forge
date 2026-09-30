@@ -18,7 +18,7 @@ import { PackUnavailableError, unavailableOf } from '@/lib/view/browse-source'
 import { isPermanentReadError, peekTip, resolveTip, type PeeledTip } from '@/lib/view/tip'
 import { useAsync } from '@/hooks/use-async'
 import { StorageUnreachableCard } from '@/components/repo/storage-unreachable'
-import { Button } from '@/components/ui/button'
+import { Button, buttonClass } from '@/components/ui/button'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { errorMessage } from '@/lib/utils'
@@ -55,7 +55,7 @@ function CommitIdState({ cause, addr, retry }: { cause: CommitIdError; addr: Rep
             <Link
               href={repoHref('/repo/commits', addr)}
               data-testid="commit-not-found-commits"
-              className="inline-flex h-9 items-center rounded-md bg-forge-700 px-3.5 text-dense font-medium text-white hover:bg-forge-800 coarse:h-auto coarse:min-h-11"
+              className={buttonClass({ variant: 'primary' })}
             >
               View commits
             </Link>

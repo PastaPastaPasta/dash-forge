@@ -129,5 +129,9 @@ describe('describePack', () => {
     expect(onlyUnfollowed(describePack(pack, []))).toBe(true)
     expect(describePack({ ...pack, unfollowed: [] }, [])).toEqual(['no place a browser can fetch from is recorded'])
     expect(onlyUnfollowed(describePack({ ...pack, hosts: ['pub-1.r2.dev'], reason: 'pub-1.r2.dev: HTTP 403' }, []))).toBe(false)
+    // Beside failed gateways, an unfollowed local copy still leaves "add a gateway" as the fix.
+    const places = describePack({ ...pack, hosts: ['ipfs.io'], reason: 'ipfs.io: HTTP 404', unfollowed: ['127.0.0.1:8080'] }, ['https://ipfs.io'])
+    expect(onlyGatewaysFailed(places)).toBe(true)
+    expect(onlyUnfollowed(places)).toBe(false)
   })
 })

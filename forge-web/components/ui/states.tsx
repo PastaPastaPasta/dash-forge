@@ -14,7 +14,7 @@
 import { AlertTriangle, Clock, Loader2, ShieldX, WifiOff, type LucideIcon } from 'lucide-react'
 import { useEffect, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { isUnreachableError } from '@/lib/sdk/unreachable'
-import { clockSkewErrorCopy, noteClockSkew } from '@/lib/sdk/clock-skew'
+import { clockSkewErrorCopy } from '@/lib/sdk/clock-skew'
 import { DEFAULT_NETWORK } from '@/lib/constants'
 import { proofFailureCopy, unreachableReadCopy, type FailureCopy } from '@/lib/view/platform-failure'
 import { scheduleReconnect } from '@/lib/view/reconnect'
@@ -145,9 +145,6 @@ export function ErrorState({
  * the SDK's raw timestamps behind Details. Try again stays: it works once the clock is set.
  */
 function ClockSkewState({ copy, message, onRetry }: { copy: FailureCopy; message: string; onRetry?: () => void }): JSX.Element {
-  useEffect(() => {
-    noteClockSkew(message)
-  }, [message])
   return (
     <div
       data-testid="read-clock-skew"

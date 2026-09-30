@@ -38,7 +38,7 @@
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
-import { noteClockSkew } from './clock-skew'
+import { noteClockOk, noteClockSkew } from './clock-skew'
 
 import { NETWORKS, type Network } from '../constants'
 import { dapiBudget, installDapiFetchGate } from './budget'
@@ -931,10 +931,16 @@ export class EvoSdkService {
     if (result instanceof Promise) {
       // A device clock off the network's fails every call the same way: noted once for the app
       // shell and the Verification card (QW2-018), and still thrown to the caller.
-      void result.then(done, (e: unknown) => {
-        noteClockSkew(e)
-        done()
-      })
+      void result.then(
+        () => {
+          done()
+          noteClockOk()
+        },
+        (e: unknown) => {
+          done()
+          noteClockSkew(e)
+        },
+      )
     } else done()
     return result
   }

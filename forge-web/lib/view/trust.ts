@@ -154,14 +154,14 @@ function deriveChain(
       detail: 'This connection does not check proofs, so Platform data is shown as the node returned it.',
     }
   }
-  if (connection === 'clock') {
+  // A known key mismatch stays a failure whatever the connection's state.
+  if (connection === 'clock' && quorum?.state !== 'mismatch') {
     return {
       state: 'unverified',
       detail: `This device's clock is too far off the Dash network's, so every answer from ${label} is refused as stale. Nothing new can be read or checked until the clock is right.`,
-      note: 'Each Platform answer carries the time its block was made; the SDK refuses one more than 31 minutes from this device\'s clock. Set the clock to update automatically, then try again.',
+      note: "Each Platform answer carries the time its block was made, and the SDK refuses one too far from this device's clock. Set the clock to update automatically, then try again.",
     }
   }
-  // A known key mismatch stays a failure whatever the connection's state.
   if (connection === 'offline' && quorum?.state !== 'mismatch') {
     return {
       state: 'partial',
@@ -256,6 +256,10 @@ function deriveTipNow(input: TrustInputs): TipLink {
   }
   const signed = (h: RefHead): string =>
     `${shown} = \`${shortOid(h.oid)}\`, the latest signed update by ${shortOid(h.author, 8)}, ${timeAgo(h.createdAt)}.`
+  if (input.connection === 'clock' && heads.length === 0) {
+    // Nothing read yet (or an unborn ref): say why, not "has no commit".
+    return { ...base, state: 'unverified', detail: `${shown} could not be read while this device's clock is off.` }
+  }
   if (input.connection === 'untrusted' || input.connection === 'clock') {
     const h = newest(heads)
     return {
@@ -472,8 +476,9 @@ export function deriveConnectionTrust(
  * not a connection came up: that is the reason nothing reads, not the network.
  */
 export function connectionTrust(ready: boolean, trusted: boolean, unreachable = false, clockOff = false): ConnectionTrust {
+  // A connection that checks no proofs says so first: the clock does not change that.
+  if (ready && !trusted) return 'untrusted'
   if (clockOff) return 'clock'
   if (!ready) return 'connecting'
-  if (!trusted) return 'untrusted'
   return unreachable ? 'offline' : 'trusted'
 }
