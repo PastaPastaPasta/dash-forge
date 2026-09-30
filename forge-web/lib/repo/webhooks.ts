@@ -18,7 +18,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { decodeIdentifier } from '../auth/base58'
-import { hexToBytes } from '../private/bytes'
+import { bytesToHex, hexToBytes } from '../private/bytes'
 import {
   createDocumentIdempotent,
   deleteDocumentIdempotent,
@@ -119,14 +119,14 @@ export function webhookUrlProblem(url: string, allowQuery = false): string | nul
  */
 export function generateWebhookSecret(): string {
   const raw = crypto.getRandomValues(new Uint8Array(32))
-  const hex = Array.from(raw, (b) => b.toString(16).padStart(2, '0')).join('')
+  const hex = bytesToHex(raw)
   raw.fill(0)
   return hex
 }
 
 /** A fresh random hook id (64 hex characters). */
 export function randomHookId(): string {
-  return Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, '0')).join('')
+  return bytesToHex(crypto.getRandomValues(new Uint8Array(32)))
 }
 
 /**
@@ -198,6 +198,14 @@ export async function writeWebhook(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, 
     contentKey: `webhook:${repo.repoId}:${input.hookId}:${input.url}:${input.events.join(',')}:${input.relayIdentityId}:${input.disabled === true}`,
     ...(intent !== undefined ? { intent } : {}),
   })
+}
+
+/**
+ * Whether removing `hookId` has to write a disabled revision first: another maintainer's
+ * revision would be current once the signer's own are deleted ({@link removeWebhook}).
+ */
+export function removalNeedsTombstone(docs: readonly WebhookView[], hookId: string, me: string): boolean {
+  return activeHooks(docs.filter((h) => h.hookId === hookId && h.ownerId !== me)).length > 0
 }
 
 /** What a removal wrote: the disabled revision it had to add (if any), and what it deleted. */

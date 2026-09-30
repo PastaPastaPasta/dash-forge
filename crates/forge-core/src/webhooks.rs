@@ -41,9 +41,9 @@ use crate::platform::{
     PlatformClient, QueryFilter, QueryOrder, WriteEngine,
 };
 use crate::rules::v2::{Role, Visibility};
-use crate::keyring::FIX_ADD_ENCRYPTION_KEY;
 use crate::scope::RepoRef;
-use crate::user_error::{codes, UserError};
+#[cfg(test)]
+use crate::user_error::codes;
 
 /// The forge-community document type.
 pub const DOC_WEBHOOK: &str = "webhook";
@@ -374,21 +374,11 @@ pub fn decrypt_secret(
 /// load your identity file", which a limited key from `dg auth login` (signing only) used to get
 /// because the old text mentioned the identity file.
 fn no_sender_encryption_key(who: &str) -> Error {
-    UserError::new(
-        codes::NO_ENCRYPTION_KEY,
-        format!("webhook secret: {who} has no encryption key here"),
+    crate::keyring::no_encryption_key_for(
+        who,
+        "webhook secret",
+        "a webhook's secret is encrypted from the writer's identity ENCRYPTION key to the relay's",
     )
-    .cause(
-        "a webhook's secret is encrypted from the writer's identity ENCRYPTION key to the relay's, \
-         and the key source in use holds none that matches an enabled key on the identity \
-         (a limited key from `dg auth login` holds only a signing key)",
-    )
-    .fix(
-        "if the identity has an ENCRYPTION key (`dg auth keys list`), use a source that holds it: \
-         `DASH_FORGE_KEY=<identity file>`, or `dg auth login --full-key <identity file>`",
-    )
-    .fix(format!("if it has none: {FIX_ADD_ENCRYPTION_KEY}"))
-    .into()
 }
 
 /// The forge-community contract of `client`'s network (where `webhook` lives).
@@ -711,10 +701,16 @@ mod tests {
         };
         let text = u.to_string();
         assert_eq!(u.code, codes::NO_ENCRYPTION_KEY, "{text}");
-        assert!(text.contains("webhook secret: IDENT has no encryption key"), "{text}");
+        assert!(
+            text.contains("webhook secret: IDENT has no encryption key"),
+            "{text}"
+        );
         assert!(text.contains("limited key"), "{text}");
         // Not the misleading "identity file" wording the E303 classifier keys on.
-        assert!(!text.contains("could not load your identity file"), "{text}");
+        assert!(
+            !text.contains("could not load your identity file"),
+            "{text}"
+        );
     }
 
     fn hook(doc: &str, repo: u8, hook: u8, at: u64, disabled: bool) -> Webhook {

@@ -13,13 +13,15 @@ import { useMemo, useState } from 'react'
 import { Webhook as WebhookIcon } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { plural, timeAgo } from '@/lib/view'
-import { repoContractIds } from '@/lib/repo'
+import { DOC, repoContractIds } from '@/lib/repo'
+import { previewDelete } from '@/lib/sdk'
 import {
   WEBHOOK_EVENTS,
   activeHooks,
   generateWebhookSecret,
   randomHookId,
   readWebhookDocs,
+  removalNeedsTombstone,
   removeWebhook,
   webhookCost,
   webhookUrlProblem,
@@ -72,8 +74,12 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
   const [removing, setRemoving] = useState<WebhookView | null>(null)
   // The secret of the hook just added: shown once, as `dg webhook add` prints it.
   const [shown, setShown] = useState<{ url: string; secret: string } | null>(null)
-  // The add's content, fixed when its confirm opens (the secret is made then, once per action).
+  // The add's content, fixed when its confirm first opens, and kept until the hook is written: a
+  // write left unconfirmed may still land, so adding the same hook again reuses its id and
+  // secret (a newer revision of that hook, whose secret is the one shown), never a second hook.
   const [pending, setPending] = useState<{ hookId: string; url: string; events: readonly string[]; relay: string; secret: string } | null>(null)
+  // A tab that resumed with the signing key only cannot seal: it unlocks first (below).
+  const canSeal = sealer.data?.kind === 'ready' && unlockScope !== 'signing'
 
   const chosen = allEvents ? [] : events
   const urlProblem = url.trim() === '' ? null : webhookUrlProblem(url.trim(), allowQuery)
@@ -92,16 +98,22 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
     if (!sdk || !signer || pending === null || sealer.data?.kind !== 'ready') throw new Error('sign in to continue')
     await writeWebhook(sdk, signer, repo, sealer.data.seal, { hookId: pending.hookId, url: pending.url, events: pending.events, relayIdentityId: pending.relay, secret: pending.secret }, intent)
     setShown({ url: pending.url, secret: pending.secret })
+    setPending(null)
     setUrl('')
     setRelay('')
     await reloadUntil((rows) => rows.some((h) => h.hookId === pending.hookId))
   }
   const remove = async (): Promise<void> => {
-    if (!sdk || !signer || removing === null || sealer.data?.kind !== 'ready') throw new Error('sign in to continue')
+    if (!sdk || !signer || removing === null || sealer.data?.kind !== 'ready') throw new Error('unlock to continue')
     const hookId = removing.hookId
     await removeWebhook(sdk, signer, repo, sealer.data.seal, hookId)
     await reloadUntil((rows) => !rows.some((h) => h.hookId === hookId))
   }
+
+  // Removing deletes the signer's revisions (refunds), after a disabled revision when another
+  // maintainer's would otherwise be current: then it costs about what an add does.
+  const removeCost = (h: WebhookView) =>
+    identity !== null && removalNeedsTombstone(docs.data ?? [], h.hookId, identity) ? webhookCost(repo, h) : previewDelete(DOC.webhook)
 
   const toggle = (e: string, on: boolean): void => setEvents((xs) => (on ? [...xs.filter((x) => x !== e), e] : xs.filter((x) => x !== e)))
 
@@ -138,8 +150,16 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
                       <span>{timeAgo(h.createdAt)}</span>
                     </p>
                   </div>
-                  {maintainer && sealer.data?.kind === 'ready' ? (
-                    <Button size="sm" variant="danger" aria-label={`Remove the webhook to ${h.url}`} disabled={guard.disabledReason !== null} onClick={() => setRemoving(h)}>
+                  {maintainer && canSeal ? (
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      aria-label={`Remove the webhook to ${h.url}`}
+                      disabled={guard.disabledReason !== null}
+                      onClick={() => {
+                        if (guard.check(removeCost(h))) setRemoving(h)
+                      }}
+                    >
                       Remove
                     </Button>
                   ) : null}
@@ -170,6 +190,14 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
                 Settings → Private repos
               </Link>
               . Or use <span className="font-mono">dg webhook add</span> with an identity file that holds it.
+            </p>
+          ) : sealer.data?.kind === 'unusable' ? (
+            <p className="text-[12px] text-caution-700 dark:text-caution-400">
+              The encryption key in this browser is no longer an enabled key of your identity. Add or replace it in{' '}
+              <Link href="/settings/#enc-key-title" className="hit-area text-forge-700 underline dark:text-forge-400">
+                Settings → Private repos
+              </Link>
+              .
             </p>
           ) : sealer.data?.kind === 'wrong-contract' ? (
             <p className="text-[12px] text-caution-700 dark:text-caution-400">
@@ -224,7 +252,8 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
                 disabled={!canAdd || guard.disabledReason !== null}
                 onClick={() => {
                   if (!guard.check(cost)) return
-                  setPending({ hookId: randomHookId(), url: url.trim(), events: chosen, relay: relay.trim(), secret: generateWebhookSecret() })
+                  const same = pending !== null && pending.url === url.trim() && pending.relay === relay.trim() && pending.events.join(',') === chosen.join(',')
+                  if (!same) setPending({ hookId: randomHookId(), url: url.trim(), events: chosen, relay: relay.trim(), secret: generateWebhookSecret() })
                   setAdding(true)
                 }}
               >
@@ -241,10 +270,7 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
       </div>
       <ConfirmDialog
         open={adding}
-        onClose={() => {
-          setAdding(false)
-          setPending(null)
-        }}
+        onClose={() => setAdding(false)}
         title="Add a webhook"
         description={`Writes a webhook document: ${pending?.url ?? ''} for ${pending === null || pending.events.length === 0 ? 'every event' : pending.events.join(', ')}, delivered by ${pending?.relay.slice(0, 8) ?? ''}…. The URL and events are public; the secret is encrypted to the relay.`}
         cost={cost}
@@ -256,7 +282,7 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
         onClose={() => setRemoving(null)}
         title="Remove this webhook"
         description={`Deletes the webhook to ${removing?.url ?? ''}. If another maintainer's revision of it would still be in force, a disabled revision is written first so no relay delivers it again.`}
-        cost={null}
+        cost={removing === null ? null : removeCost(removing)}
         confirmLabel="Sign & remove"
         onConfirm={remove}
       />

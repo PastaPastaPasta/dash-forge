@@ -125,7 +125,13 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
   // have none, the form says so and nothing opens.
   const [pickedAdd, setPickedAdd] = useState<string | null>(null)
   useEffect(() => {
-    if (pickedAdd === null || pickedAdd !== trimmed || !keyCheck.settled) return
+    if (pickedAdd === null) return
+    // The field no longer holds the picked id (edited, or another pick): the pick is dropped.
+    if (pickedAdd !== trimmed) {
+      setPickedAdd(null)
+      return
+    }
+    if (!keyCheck.settled) return
     setPickedAdd(null)
     if (keyCheck.data === true && guard.check(addMemberCost(role))) setAdding(true)
   }, [pickedAdd, trimmed, keyCheck.settled, keyCheck.data, guard, role])
@@ -244,7 +250,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
               // The add runs through the form: it checks their encryption key and hands them the key.
               setMemberId(id)
               setRole(r)
-              setPickedAdd(id)
+              setPickedAdd(id.trim())
             }}
           />
         </div>

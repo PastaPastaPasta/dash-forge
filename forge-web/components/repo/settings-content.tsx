@@ -44,7 +44,8 @@ export function SettingsContent({ home, reload }: { home: RepoHome; reload: () =
   // claim it has none. A signed-out visitor or an outsider sees what every other tab shows them;
   // a member whose tab holds only the signing key (`locked`), or no encryption key yet
   // (`no-key`), still gets the page and the way to open it.
-  const access = home.private?.access
+  // No access resolved yet reads as an outsider, as RepoScaffold does.
+  const access = home.private?.access ?? 'outsider'
   if (home.repo.visibility === 'private' && (access === 'signed-out' || access === 'outsider')) {
     return <PrivateRepoState repo={home.repo} addr={{ owner: home.repo.ownerId, name: home.repo.name }} access={access} />
   }

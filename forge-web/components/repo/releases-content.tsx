@@ -147,7 +147,8 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
                   addr={addr}
                   links={links}
                   previous
-                  actions={<EditReleaseButton home={home} tag={r.tagName} onEdit={editor.edit} restore />}
+                  // A stale list (newer revisions under a key not held yet) may already have it back.
+                  actions={data.stale === true ? null : <EditReleaseButton home={home} tag={r.tagName} onEdit={editor.edit} restore />}
                 />
               </li>
             ))}
@@ -189,7 +190,8 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
  * revision (newest first). A public repo's list has none: its releases have no unpublish.
  */
 export function unpublishedTags(list: ReleaseList): ReleaseView[] {
-  const live = new Set(list.current.map((r) => r.tagName))
+  // A tag whose newest revision does not open (§16.3) may have been published again since.
+  const live = new Set([...list.current.map((r) => r.tagName), ...(list.unknownTags ?? [])])
   const seen = new Set<string>()
   const out: ReleaseView[] = []
   // `previous` is newest first: the first revision of a tag is its newest.

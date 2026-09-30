@@ -49,6 +49,8 @@ const SPEND_TITLES: Readonly<Record<string, string>> = {
   'create:review': 'Review submitted',
   // Every release revision (publish, edit, yank, unpublish) is this kind: the dialog says which (QW-077).
   'create:release': 'Release saved',
+  'create:webhook': 'Webhook saved',
+  'delete:webhook': 'Webhook revision deleted',
   'create:star': 'Starred',
   'create:follow': 'Following',
   'delete:star': 'Unstarred',

@@ -140,11 +140,21 @@ impl EncryptionKeys {
 
 /// E306: the identity has no usable `ENCRYPTION` key in its file.
 pub fn no_encryption_key(who: &str, action: &str) -> Error {
+    no_encryption_key_for(
+        who,
+        action,
+        "private repositories encrypt their content to each member's identity ENCRYPTION key",
+    )
+}
+
+/// E306 with `why` the operation needs the key; the rest (the key source holds none, and the
+/// fixes) is the same for every operation.
+pub fn no_encryption_key_for(who: &str, action: &str, why: &str) -> Error {
     UserError::new(
         codes::NO_ENCRYPTION_KEY,
         format!("{action}: {who} has no encryption key"),
     )
-    .cause("private repositories encrypt their content to each member's identity ENCRYPTION key, and the key source in use holds none that matches an enabled key on the identity (a limited key from `dg auth login` holds only a signing key)")
+    .cause(format!("{why}, and the key source in use holds none that matches an enabled key on the identity (a limited key from `dg auth login` holds only a signing key)"))
     .fix("if the identity has an ENCRYPTION key (`dg auth keys list`), use a source that holds it: `DASH_FORGE_KEY=<identity file>`, or `dg auth login --full-key <identity file>`")
     .fix(format!("if it has none: {FIX_ADD_ENCRYPTION_KEY}"))
     .into()
