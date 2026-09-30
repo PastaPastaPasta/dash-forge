@@ -234,7 +234,11 @@ async fn unpublish(ctx: &Ctx, repo: &str, tag: &str) -> Result<()> {
     let collab = s.collab();
     // Maintainer-only at consensus: find out, and whether the tag is live, before confirming.
     collab
-        .require_role(&s.repo, Role::Maintainer, &format!("unpublish release {tag}"))
+        .require_role(
+            &s.repo,
+            Role::Maintainer,
+            &format!("unpublish release {tag}"),
+        )
         .await?;
     let (current, _) = collab.releases(&s.repo).await?;
     if !current.iter().any(|r| r.tag_name == *tag) {
