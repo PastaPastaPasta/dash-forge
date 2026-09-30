@@ -32,6 +32,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { RepoStoragePolicy } from '@/components/storage/repo-storage-policy'
 import { PrivateMembers } from '@/components/repo/private-members'
+import { UnlockMore } from '@/components/auth/unlock-more'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { BranchSettings, DangerZone, GeneralSettings, Section, SettingsNav } from '@/components/repo/repo-settings-sections'
 
@@ -147,7 +148,12 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
             )}
           </div>
         )}
-        {isOwner && repo.visibility === 'private' ? (
+        {home.private?.access === 'locked' ? (
+          // The encryption key is in this browser, but this tab resumed with the signing key only.
+          <div className="mt-4">
+            <UnlockMore title={isOwner ? 'Unlock this tab to add or remove members' : "Unlock this tab to read the repo's members and key epoch"} testId="members-unlock" />
+          </div>
+        ) : isOwner && repo.visibility === 'private' ? (
           <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
             Adding or removing a member of a private repo hands out or rotates its key: add your encryption key to this browser
             (Settings → Keys → Enable private repos) to manage members.
