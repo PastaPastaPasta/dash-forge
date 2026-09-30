@@ -33,6 +33,8 @@ export interface AuthSdk {
     balance(id: string): Promise<bigint | undefined>
     update(options: unknown): Promise<void>
     create(options: unknown): Promise<void>
+    /** `IdentityTopUp` from an asset lock: resolves with the identity's new balance (credits). */
+    topUp(options: unknown): Promise<bigint>
     keysRemainingBudgets(id: string, keyIds: number[]): Promise<Map<number, bigint | null>>
     /** The identity's last used nonce (the next transition takes nonce + 1). */
     nonce(id: string): Promise<bigint | undefined>

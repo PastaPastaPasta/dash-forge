@@ -2,25 +2,29 @@
 
 /**
  * Top-up sheet (`ux-dx-spec.md` §4): shown when a write does not fit the balance or this
- * browser's key budget, or when Platform refused one for that reason (D-007). It says which
- * budget blocks and by how much, and offers the fix for that budget:
- * - the identity's balance: an asset-lock top-up from any Dash wallet, or a credit transfer
- *   from another identity (dev networks link the faucet);
+ * browser's key budget, or when Platform refused one for that reason (D-007), and ahead of any
+ * write from the low-funds banner, the funds pill or Settings (`proactive`: it then describes
+ * the funds as they stand, QW-047). It says which budget blocks and by how much, and offers the
+ * fix for that budget:
+ * - the identity's balance: a top-up from this browser (a deposit address any Dash wallet or a
+ *   devnet faucet can pay, QW-012), or a credit transfer from another identity;
  * - this key's budget: top up the same key (one master-key signature), or renew it;
  * - an expired or disabled key: renew it (a new key; the old one is disabled).
  */
 
 import { useState } from 'react'
-import { ExternalLink } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore, type TopUpReason } from '@/hooks/use-ui-store'
 import { Dialog } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { CopyRow } from '@/components/ui/copy-row'
 import { KeyTopUpDialog } from '@/components/key-top-up-dialog'
+import { IdentityTopUpFlow } from '@/components/identity-top-up-flow'
+import { KeyFundsLine } from '@/components/funds-summary'
 import { ACTIVE_NETWORK } from '@/lib/constants'
-import { STEADY, previewCreate } from '@/lib/sdk'
-import { creditsAsDash } from '@/lib/view/format'
+import { typicalIssueCredits } from '@/lib/sdk'
+import type { KeyLimits } from '@/lib/view/funds'
+import { creditsAsDash, formatDate } from '@/lib/view/format'
 
 /** Where dev networks get test DASH (mainnet and testnet show no faucet, spec §2.1). */
 export function faucetUrl(): string | null {
@@ -30,16 +34,33 @@ export function faucetUrl(): string | null {
   return null
 }
 
-/** A typical issue (steady state) and how many fit in 0.05 DASH: the copy follows cost.ts. */
-const ISSUE_DASH = previewCreate('issue', { title: 'A typical issue title' }, STEADY).dash
-const WRITES_PER_005 = Math.floor(0.05 / ISSUE_DASH / 10) * 10
+/**
+ * What "an issue" costs in copy: the same figure the sign-in chooser and the New issue form quote
+ * (`typicalIssueCredits`, QW-043), and how many such issues 0.05 DASH covers.
+ */
+const ISSUE_CREDITS = typicalIssueCredits()
+const ISSUES_PER_005 = Math.floor(0.05 / (ISSUE_CREDITS / 1e11) / 10) * 10
 
 function short(shortfall: bigint | undefined): string {
   return shortfall && shortfall > 0n ? ` (short by ${creditsAsDash(Number(shortfall))} DASH)` : ''
 }
 
-/** What the sheet says blocks the write. */
-function describeBlocker(reason: TopUpReason, balance: string | null): string {
+/** What the sheet says blocks the write, or (opened ahead of any write) how the funds stand. */
+export function describeBlocker(reason: TopUpReason, balance: string | null, keyLimits: KeyLimits | null = null, now = Date.now()): string {
+  if (reason.proactive) {
+    const left = keyLimits?.remaining != null && keyLimits.total != null ? `${creditsAsDash(Number(keyLimits.remaining))} of ${creditsAsDash(Number(keyLimits.total))} DASH` : null
+    switch (reason.blocker) {
+      case 'balance':
+        return `Your identity's balance is ${balance !== null ? `${creditsAsDash(Number(balance))} DASH` : 'being read'}. Every write is paid from it; reading is free.`
+      case 'key-budget':
+        return `This browser's key has ${left ?? 'little'}${left ? ' of budget' : ' budget'} left. Top it up or renew it before your next write.`
+      case 'key-expiry':
+        if (keyLimits?.expiresAt != null && keyLimits.expiresAt > now) return `This browser's key expires on ${formatDate(keyLimits.expiresAt)}. Renew it to keep writing from this browser.`
+        return "This browser's key has expired. Reading still works."
+      default:
+        break
+    }
+  }
   switch (reason.blocker) {
     case 'key-expiry':
       return "This browser's key has expired. Reading still works."
@@ -61,6 +82,7 @@ export function TopUpSheet(): JSX.Element | null {
   const close = useUiStore((s) => s.closeTopUp)
   const openLogin = useUiStore((s) => s.openLogin)
   const { identity, storage, keyLimits, balance } = useAuth()
+  const [other, setOther] = useState(false)
   const [topUpKey, setTopUpKey] = useState(false)
   if (identity === null) return null
   if (topUpKey) return <KeyTopUpDialog onClose={() => setTopUpKey(false)} />
@@ -82,9 +104,10 @@ export function TopUpSheet(): JSX.Element | null {
       open
       onClose={close}
       title={title}
-      description={describeBlocker(reason, balance)}
+      description={describeBlocker(reason, balance, keyLimits)}
     >
       <div className="space-y-3 text-dense" data-testid="top-up-sheet" data-blocker={reason.blocker}>
+        {reason.proactive ? <KeyFundsLine /> : null}
         {keyProblem ? (
           <>
             {canTopUpKey ? (
@@ -117,21 +140,27 @@ export function TopUpSheet(): JSX.Element | null {
           </>
         ) : (
           <>
-            <p>
-              Send DASH from any Dash wallet as an identity top-up (asset lock) to this identity, or ask anyone to
-              transfer credits to it:
-            </p>
-            <CopyRow text={identity} label="Copy identity id" />
+            {/* From this browser: a deposit address any wallet (or the faucet) can pay (QW-012). */}
+            <IdentityTopUpFlow faucet={faucet} />
             <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-              About {ISSUE_DASH.toFixed(4)} DASH covers an issue; 0.05 DASH covers about {WRITES_PER_005} writes.
+              About {creditsAsDash(ISSUE_CREDITS)} DASH covers an issue; 0.05 DASH covers about {ISSUES_PER_005} of them.
             </p>
+            <div>
+              <button type="button" aria-expanded={other} onClick={() => setOther((o) => !o)} className="hit-area text-[12px] text-anvil-500 underline hover:text-anvil-800 dark:text-anvil-400 dark:hover:text-anvil-100">
+                Other ways to add credits
+              </button>
+              {other ? (
+                <div className="mt-2 space-y-2" data-testid="top-up-other-ways">
+                  <p className="text-[12px] text-anvil-600 dark:text-anvil-300">
+                    A wallet with identity support (Dash Wallet&apos;s DashPay, the Dash bridge) can top up this identity directly, and anyone
+                    with credits can transfer some to it. Either way they need its ID:
+                  </p>
+                  <CopyRow text={identity} label="Copy identity id" />
+                </div>
+              ) : null}
+            </div>
           </>
         )}
-        {faucet && !keyProblem ? (
-          <a href={faucet} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-1 text-forge-700 underline dark:text-forge-400">
-            {ACTIVE_NETWORK.key} faucet <ExternalLink className="h-3 w-3" aria-hidden />
-          </a>
-        ) : null}
       </div>
     </Dialog>
   )
