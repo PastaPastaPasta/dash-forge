@@ -41,6 +41,17 @@ function baselineKey(network: Network, identityId: string): string {
  * with the balance read right before that write (writes of one identity are serialized, so
  * no other write of this browser can sit between that read and this row).
  */
+/** Told of every write this tab records (after its row is stored). */
+const recorded = new Set<(event: SpendEvent) => void>()
+
+/** Listen for this tab's writes (the inbox, to watch a thread the moment one joins it); returns the unsubscribe. */
+export function onSpendRecorded(listener: (event: SpendEvent) => void): () => void {
+  recorded.add(listener)
+  return () => {
+    recorded.delete(listener)
+  }
+}
+
 export async function recordSpend(event: SpendEvent): Promise<void> {
   const at = Date.now()
   const { balanceBefore, ...rest } = event
@@ -52,6 +63,13 @@ export async function recordSpend(event: SpendEvent): Promise<void> {
   const bk = baselineKey(event.network, event.identityId)
   if (balanceBefore !== null && (await idbGet<Baseline>('spend', bk)) === undefined) {
     await idbPut<Baseline>('spend', bk, { at, balanceCredits: balanceBefore.toString() })
+  }
+  for (const listener of recorded) {
+    try {
+      listener(event)
+    } catch {
+      /* a listener's failure is its own */
+    }
   }
 }
 

@@ -13,8 +13,11 @@ import { create } from 'zustand'
 import { useAuth } from '@/contexts/auth-context'
 import { DEFAULT_NETWORK, NETWORKS, type Network } from '@/lib/constants'
 import { ensureSdk } from '@/lib/sdk'
+import { onSpendRecorded } from '@/lib/spend'
 import { errorMessage } from '@/lib/utils'
 import {
+  refreshesSubscriptions,
+  threadKey,
   POLL_MS,
   loadItems,
   loadPrefs,
@@ -57,14 +60,17 @@ export const useInboxStore = create<InboxState>(() => initial)
 
 const set = (patch: Partial<InboxState>): void => useInboxStore.setState(patch)
 
+/** How long after one of this tab's writes the poller recomputes its subscriptions. */
+const PARTICIPATION_DELAY_MS = 2_000
+
 /** Ask the poller for a round now, recomputing subscriptions (queued if one is in flight). */
 function nudge(): void {
   set({ nudge: { n: useInboxStore.getState().nudge.n + 1, refreshSubs: true } })
 }
 
-/** Unread items, for the header badge. */
+/** Threads with something unread, for the header badge (the list shows one row per thread). */
 export function useUnreadCount(): number {
-  return useInboxStore((s) => s.items.reduce((n, i) => n + (i.read ? 0 : 1), 0))
+  return useInboxStore((s) => new Set(s.items.filter((i) => !i.read).map(threadKey)).size)
 }
 
 async function reloadLocal(owner: string, network: Network, me: string): Promise<void> {
@@ -138,6 +144,16 @@ export function useInboxPoller(): void {
     const unsubscribe = useInboxStore.subscribe((state, prev) => {
       if (state.nudge.n !== prev.nudge.n) void run(state.nudge.refreshSubs)
     })
+    // QW-066: a thread this identity just took part in (a comment, a new issue or PR, a review,
+    // a watch or star) is watched from the next round, not after the subscriptions' next
+    // refresh (up to SUBS_TTL_MS) or a reload. The write is confirmed; a short wait lets the
+    // other nodes a read may reach catch up.
+    let participation: ReturnType<typeof setTimeout> | null = null
+    const offSpend = onSpendRecorded((e) => {
+      if (e.identityId !== identity || e.network !== network || !refreshesSubscriptions(e.kind)) return
+      if (participation !== null) clearTimeout(participation)
+      participation = setTimeout(() => void run(true), PARTICIPATION_DELAY_MS)
+    })
     void run(false)
     schedule()
     document.addEventListener('visibilitychange', onVisible)
@@ -145,6 +161,8 @@ export function useInboxPoller(): void {
       cancelled = true
       if (timer !== null) clearTimeout(timer)
       unsubscribe()
+      offSpend()
+      if (participation !== null) clearTimeout(participation)
       document.removeEventListener('visibilitychange', onVisible)
     }
   }, [identity, forge, network])

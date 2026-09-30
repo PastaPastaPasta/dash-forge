@@ -69,6 +69,8 @@ export interface MergeRun {
   readonly headOid: string
   /** The squash message this run built with (absent: a merge): a different one is a new run. */
   readonly squash?: string
+  /** Built as a merge commit where a fast-forward was possible (--no-ff): the other choice is a new run. */
+  readonly noFastForward?: true
   readonly done: readonly MergeStepId[]
   readonly result?: Extract<MergeResult, { kind: 'fast-forward' | 'merge' | 'squash' }>
   readonly stored?: StoredPack
@@ -79,13 +81,22 @@ export interface MergeRun {
 }
 
 /** A fresh run for `input`. */
-export function newRun(input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash'>): MergeRun {
-  return { baseTip: input.baseTip, headOid: input.headOid, ...(input.squash ? { squash: input.squash.message } : {}), done: [] }
+export function newRun(input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash' | 'noFastForward'>): MergeRun {
+  return {
+    baseTip: input.baseTip,
+    headOid: input.headOid,
+    ...(input.squash ? { squash: input.squash.message } : {}),
+    ...(input.noFastForward === true && !input.squash ? { noFastForward: true as const } : {}),
+    done: [],
+  }
 }
 
 /** `run` when it is for `input`'s base tip, head and method, else a fresh run. */
-export function runFor(run: MergeRun | null, input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash'>): MergeRun {
-  return run !== null && run.baseTip === input.baseTip && run.headOid === input.headOid && run.squash === input.squash?.message ? run : newRun(input)
+export function runFor(run: MergeRun | null, input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash' | 'noFastForward'>): MergeRun {
+  const noFf = input.noFastForward === true && !input.squash
+  return run !== null && run.baseTip === input.baseTip && run.headOid === input.headOid && run.squash === input.squash?.message && (run.noFastForward === true) === noFf
+    ? run
+    : newRun(input)
 }
 
 export interface MergeRunDeps {

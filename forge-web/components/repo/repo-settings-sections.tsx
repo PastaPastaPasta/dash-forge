@@ -586,6 +586,8 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
                     }}
                   />
                   {m.label}
+                  {/* The policy can allow it (other clients may), but neither this app nor dg rebase-merges yet (QW-069). */}
+                  {m.key === 'rebase' ? <span className="text-[11px] text-anvil-500 dark:text-anvil-400">(no Forge client merges this way yet)</span> : null}
                 </label>
               ))}
             </div>

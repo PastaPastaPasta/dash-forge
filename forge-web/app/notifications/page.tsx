@@ -12,13 +12,14 @@ import { Bell, CheckCheck, CircleDot, GitCommit, GitPullRequest, Info, MessageSq
 import { AppShell } from '@/components/app-shell'
 import { SignInButton } from '@/components/sign-in-button'
 import { Author } from '@/components/author'
+import { WithAge } from '@/components/repo/timeline'
 import { Button } from '@/components/ui/button'
 import { EmptyState, ErrorState, Spinner } from '@/components/ui/states'
 import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge'
 import { useAuth } from '@/contexts/auth-context'
 import { useInboxActions, useInboxStore } from '@/hooks/use-inbox'
 import { repoHref } from '@/hooks/use-query-param'
-import { INBOX_EMPTY, MAX_REPOS, MAX_THREADS, POLL_MS, type InboxItem } from '@/lib/view/inbox'
+import { INBOX_EMPTY, MAX_REPOS, MAX_THREADS, POLL_MS, groupThreads, type InboxItem, type InboxThread } from '@/lib/view/inbox'
 import { plural, timeAgo } from '@/lib/view'
 import { cn } from '@/lib/utils'
 
@@ -42,8 +43,10 @@ export default function NotificationsPage(): JSX.Element {
   const { items, subs, prefs, polling, lastPoll, lastFeeds, error } = useInboxStore()
   const { markRead, markAllRead, setPrefs, pollNow } = useInboxActions()
   const [filter, setFilter] = useState<'unread' | 'all'>('unread')
-  const shown = filter === 'unread' ? items.filter((i) => !i.read) : items
-  const unread = items.filter((i) => !i.read).length
+  // One row per thread (an issue, a PR, a repo's pushes), as GitHub lists them (QW-066).
+  const threads = groupThreads(items)
+  const shown = filter === 'unread' ? threads.filter((t) => t.unread > 0) : threads
+  const unread = threads.filter((t) => t.unread > 0).length
 
   if (!isForgeDeployed()) {
     return (
@@ -99,7 +102,7 @@ export default function NotificationsPage(): JSX.Element {
               onClick={() => setFilter(f)}
               className={cn('rounded px-3 py-1 text-dense font-medium coarse:min-h-11', filter === f ? 'bg-forge-500/15 text-forge-800 dark:text-forge-300' : 'text-anvil-600 dark:text-anvil-300')}
             >
-              {f === 'unread' ? `Unread (${unread})` : `All (${items.length})`}
+              {f === 'unread' ? `Unread (${unread})` : `All (${threads.length})`}
             </button>
           ))}
         </div>
@@ -116,8 +119,8 @@ export default function NotificationsPage(): JSX.Element {
           </div>
         ) : (
           <ul className="divide-y divide-anvil-200 overflow-hidden rounded-lg border border-anvil-200 dark:divide-anvil-800 dark:border-anvil-800" data-testid="inbox-list">
-            {shown.map((item) => (
-              <InboxRow key={item.id} item={item} onRead={() => void markRead([item.id])} />
+            {shown.map((t) => (
+              <ThreadRow key={t.key} thread={t} onRead={() => void markRead(t.items.filter((i) => !i.read).map((i) => i.id))} />
             ))}
           </ul>
         )}
@@ -182,35 +185,41 @@ export default function NotificationsPage(): JSX.Element {
   )
 }
 
-function InboxRow({ item, onRead }: { item: InboxItem; onRead: () => void }): JSX.Element {
-  const Icon = ICON[item.kind]
+function ThreadRow({ thread, onRead }: { thread: InboxThread; onRead: () => void }): JSX.Element {
+  const latest = thread.items[0] as InboxItem
+  const Icon = ICON[thread.target?.kind ?? latest.kind]
+  const more = thread.items.length - 1
+  const unread = thread.unread > 0
   return (
-    <li className={cn('flex items-start gap-3 px-3 py-2.5 sm:px-4', item.read ? 'bg-transparent' : 'bg-forge-500/5')} data-read={item.read}>
+    <li className={cn('flex items-start gap-3 px-3 py-2.5 sm:px-4', unread ? 'bg-forge-500/5' : 'bg-transparent')} data-read={!unread} data-testid="inbox-thread" data-events={thread.items.length}>
       <Icon className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
       {/* Touch: the thread link covers its whole text column (the meta line holds no links). */}
       <div className="relative min-w-0 flex-1">
-        <Link href={hrefOf(item)} onClick={onRead} className="block text-dense hover:underline coarse:after:absolute coarse:after:inset-x-0 coarse:after:-inset-y-2.5 coarse:after:content-['']">
-          <span className="font-mono text-anvil-500 dark:text-anvil-400">{item.repo.name}</span>
-          {item.target ? (
+        <Link href={hrefOf(latest)} onClick={onRead} className="block text-dense hover:underline coarse:after:absolute coarse:after:inset-x-0 coarse:after:-inset-y-2.5 coarse:after:content-['']">
+          <span className="font-mono text-anvil-500 dark:text-anvil-400">{thread.repo.name}</span>
+          {thread.target ? (
             <>
               {' '}
-              <span className="font-mono text-anvil-500 dark:text-anvil-400">#{item.target.number}</span>{' '}
-              <span className="font-medium text-anvil-900 dark:text-anvil-50">{item.target.title}</span>
+              <span className="font-mono text-anvil-500 dark:text-anvil-400">#{thread.target.number}</span>{' '}
+              <span className="font-medium text-anvil-900 dark:text-anvil-50">{thread.target.title}</span>
             </>
           ) : null}
         </Link>
-        <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[12px] text-anvil-500 dark:text-anvil-400">
-          <Author identityId={item.actor} link={false} />
-          <span>{item.what}</span>
-          <span>· {timeAgo(item.at)}</span>
-          {item.read ? null : <span className="rounded bg-forge-700 px-1 text-[10px] font-semibold uppercase text-white">new</span>}
-        </div>
+        <p className="mt-0.5 text-[12px] leading-5 text-anvil-500 dark:text-anvil-400">
+          <Author identityId={latest.actor} link={false} className="align-middle" /> <WithAge text={latest.what} age={timeAgo(latest.at)} />
+          {more > 0 ? <span className="whitespace-nowrap"> · {plural(more, 'earlier event')}</span> : null}
+          {unread ? (
+            <span className="ml-1.5 whitespace-nowrap rounded bg-forge-700 px-1 align-middle text-[10px] font-semibold uppercase text-white">
+              {thread.unread > 1 ? `${thread.unread} new` : 'new'}
+            </span>
+          ) : null}
+        </p>
       </div>
-      {item.read ? null : (
-        <Button variant="ghost" size="sm" onClick={onRead} aria-label={`Mark read: ${item.what}${item.target ? ` on #${item.target.number}` : ''}`}>
+      {unread ? (
+        <Button variant="ghost" size="sm" onClick={onRead} aria-label={`Mark read: ${thread.target ? `#${thread.target.number} ${thread.target.title}` : `pushes to ${thread.repo.name}`}`}>
           <CheckCheck className="h-3.5 w-3.5" aria-hidden /> <span className="hidden sm:inline">Read</span>
         </Button>
-      )}
+      ) : null}
     </li>
   )
 }

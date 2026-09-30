@@ -645,3 +645,53 @@ export async function pollOnce(
   }
   return { added, feedsRead: round.length - failed, feedsTotal: feeds.length, failed: failed + backfillsFailed, subs }
 }
+
+// ---------------------------------------------------------------------------
+// Threads (QW-066): the inbox lists one row per issue, PR or repo's pushes, as GitHub does
+// ---------------------------------------------------------------------------
+
+/** The items of one thread (an issue, a PR, or a repo's pushes), newest first. */
+export interface InboxThread {
+  readonly key: string
+  readonly repo: RepoLite
+  readonly target?: InboxItem['target']
+  /** Newest first; never empty. */
+  readonly items: readonly InboxItem[]
+  readonly unread: number
+}
+
+/** The thread an item belongs to. */
+export function threadKey(item: InboxItem): string {
+  return item.target ? `${item.repo.id}:${item.target.kind}:${item.target.number}` : `${item.repo.id}:push`
+}
+
+/** `items` as threads, the one with the newest item first; each thread's items newest first. */
+export function groupThreads(items: readonly InboxItem[]): InboxThread[] {
+  const by = new Map<string, InboxItem[]>()
+  for (const i of items) {
+    const k = threadKey(i)
+    const list = by.get(k)
+    if (list === undefined) by.set(k, [i])
+    else list.push(i)
+  }
+  return [...by.entries()]
+    .map(([key, list]) => {
+      const sorted = [...list].sort((a, b) => b.at - a.at)
+      const newest = sorted[0] as InboxItem
+      // The newest item's title is the thread's (an edit renames it).
+      return { key, repo: newest.repo, ...(newest.target ? { target: newest.target } : {}), items: sorted, unread: sorted.filter((i) => !i.read).length }
+    })
+    .sort((a, b) => (b.items[0] as InboxItem).at - (a.items[0] as InboxItem).at)
+}
+
+const PARTICIPATION_TYPES: ReadonlySet<string> = new Set([DOC.repo, DOC.issue, DOC.patch, DOC.comment, DOC.review, DOC.watch, DOC.star, DOC.maintainer, DOC.writer])
+
+/**
+ * Whether a write of this kind (`create:comment`, `delete:watch`, …) changes what the writer is
+ * subscribed to (a thread they took part in, a repo they watch or star), so the inbox recomputes
+ * its subscriptions at once instead of on its next refresh ({@link SUBS_TTL_MS}).
+ */
+export function refreshesSubscriptions(kind: string): boolean {
+  const [verb, type] = kind.split(':')
+  return (verb === 'create' || verb === 'delete') && type !== undefined && PARTICIPATION_TYPES.has(type)
+}

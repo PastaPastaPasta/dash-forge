@@ -46,6 +46,7 @@ import { ResolvedTip } from '@/components/repo/resolved-tip'
 import { StorageUnreachableCard } from '@/components/repo/storage-unreachable'
 import { PackUnavailableError, unavailableOf } from '@/lib/view/browse-source'
 import { FileList } from '@/components/repo/file-list'
+import { LatestCommit } from '@/components/repo/latest-commit'
 import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
 import { MarkdownView, type MarkdownRepoContext } from '@/components/markdown-view'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
@@ -195,6 +196,7 @@ function RootBody({
         addr={addr}
         basePath=""
         refParam={refParam}
+        header={<LatestCommit reader={reader} tipOid={tipOid} addr={addr} />}
         commitColumn={(name) => <CommitCell commit={lastCommits.found.get(name)} column={lastCommits} addr={addr} />}
       />
       <SearchOlderHistory column={lastCommits} />
