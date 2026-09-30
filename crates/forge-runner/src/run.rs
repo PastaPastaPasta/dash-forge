@@ -13,6 +13,7 @@
 //! the secrets only when [`pull_trusted`] says so; otherwise it runs as GitHub runs a fork's PR:
 //! no secrets and an empty `GITHUB_TOKEN`.
 
+use std::collections::BTreeMap;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -22,6 +23,7 @@ use anyhow::{bail, Context as _, Result};
 use serde_json::json;
 
 use crate::act::{self, Invocation, Outcome, Results};
+use crate::artifacts;
 use crate::config::{Config, RepoConfig};
 use crate::watch::{PullEvent, PullRow, Push};
 use crate::workflow::{self, Facts, Job, PullFacts, PushFacts};
@@ -146,6 +148,8 @@ pub struct Report<'a> {
     pub conclusion: Option<&'static str>,
     pub summary: Option<String>,
     pub log: Option<PathBuf>,
+    /// Artifacts to upload and record (a completed report only).
+    pub artifacts: Vec<PathBuf>,
 }
 
 /// The `dg` arguments for `r` (the network flags come from the environment).
@@ -174,15 +178,18 @@ pub fn report_args(cfg: &Config, r: &Report<'_>) -> Vec<String> {
     if let Some(s) = &r.summary {
         a.extend(["--summary".into(), s.chars().take(1000).collect()]);
     }
-    // On a private repository `dg` leaves the summary, the run id and the log out (a private
-    // repository's check run carries none) and does not upload the log.
-    if let (Some(log), Some(storage)) = (&r.log, &cfg.log_storage) {
-        a.extend([
-            "--log".into(),
-            log.display().to_string(),
-            "--storage".into(),
-            storage.clone(),
-        ]);
+    // On a private repository `dg` leaves the summary, the run id, the log and the artifacts
+    // out (a private repository's check run carries none) and uploads none of them.
+    if let Some(storage) = &cfg.log_storage {
+        if let Some(log) = &r.log {
+            a.extend(["--log".into(), log.display().to_string()]);
+        }
+        for f in &r.artifacts {
+            a.extend(["--artifact".into(), f.display().to_string()]);
+        }
+        if r.log.is_some() || !r.artifacts.is_empty() {
+            a.extend(["--storage".into(), storage.clone()]);
+        }
     }
     a
 }
@@ -497,16 +504,26 @@ fn report(cfg: &Config, r: &Report<'_>) -> bool {
     cmd.args(report_args(cfg, r));
     match output(&mut cmd, "dg ci report") {
         Ok(out) => {
-            let status = serde_json::from_str::<serde_json::Value>(&out)
-                .ok()
-                .and_then(|v| v["status"].as_str().map(str::to_string))
-                .unwrap_or_default();
+            let v = serde_json::from_str::<serde_json::Value>(&out).unwrap_or_default();
             eprintln!(
-                "forge-runner: {} {} = {} ({status})",
+                "forge-runner: {} {} = {} ({})",
                 r.repo,
                 r.name,
-                r.conclusion.unwrap_or(r.status)
+                r.conclusion.unwrap_or(r.status),
+                v["status"].as_str().unwrap_or_default()
             );
+            // Uploaded, but past what the run's artifact list holds.
+            if let Some(left) = v["artifactsLeftOut"].as_array().filter(|a| !a.is_empty()) {
+                eprintln!(
+                    "forge-runner: {} {}: artifacts not recorded (the list is full): {}",
+                    r.repo,
+                    r.name,
+                    left.iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
             true
         }
         Err(e) => {
@@ -549,6 +566,7 @@ impl RunCtx<'_> {
             conclusion: None,
             summary: None,
             log: None,
+            artifacts: Vec::new(),
         }
     }
 
@@ -743,6 +761,12 @@ fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Resul
         }
         None => c.checkout.join(&wf.file),
     };
+    // Each workflow file's uploads in a directory of their own, so they are told apart.
+    let art_key = artifacts::file_name(&wf.file.to_string_lossy());
+    let art_dir = c
+        .cfg
+        .artifacts
+        .then(|| c.run_dir.join("artifacts").join(&art_key));
     let args = act::run_args(
         c.cfg,
         &Invocation {
@@ -753,6 +777,7 @@ fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Resul
             secrets: c.secrets,
             github_token: c.github_token,
             action_cache: &action_cache,
+            artifacts: art_dir.as_deref(),
         },
     );
     let started = Instant::now();
@@ -762,6 +787,16 @@ fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Resul
         sweep_containers(c.cfg);
     }
     let secs = started.elapsed().as_secs();
+    let ids: Vec<&str> = runnable.iter().map(|j| j.id.as_str()).collect();
+    let mut uploads = match &art_dir {
+        Some(d) => job_artifacts(
+            d,
+            &c.run_dir.join("artifact-zips").join(&art_key),
+            &results,
+            &ids,
+        ),
+        None => BTreeMap::new(),
+    };
     let values: Vec<String> = c.secret_values.iter().map(|(_, v)| v.clone()).collect();
     for j in runnable {
         let outcome = results.outcome(&j.id);
@@ -775,8 +810,9 @@ fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Resul
             (Outcome::Unfinished, _, _) => " (no result from act)",
             _ => "",
         };
+        let (files, note) = uploads.remove(&j.id).unwrap_or_default();
         let summary = format!(
-            "forge-runner: {conclusion} on {} in {secs}s ({}){}{why}",
+            "forge-runner: {conclusion} on {} in {secs}s ({}){}{why}{note}",
             c.trig.label(),
             wf.file.display(),
             if c.secrets.is_some() {
@@ -789,12 +825,78 @@ fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Resul
             conclusion: Some(conclusion),
             summary: Some(summary),
             log: Some(log_path),
+            artifacts: files,
             ..c.report_of(&wf.file, &j.id, &j.check_name, "completed")
         };
-        report(c.cfg, &r);
+        report_completed(c.cfg, &r);
         ran.checks.push((r.name, conclusion));
     }
     Ok(())
+}
+
+/// Report a job's result. A failed artifact upload must not leave the run in progress for good:
+/// if the report with artifacts fails, report the result again without them, and say so.
+fn report_completed(cfg: &Config, r: &Report<'_>) {
+    if !report(cfg, r) && !r.artifacts.is_empty() {
+        report(
+            cfg,
+            &Report {
+                artifacts: Vec::new(),
+                summary: r
+                    .summary
+                    .as_ref()
+                    .map(|s| format!("{s}; artifacts not recorded: their upload failed")),
+                ..r.clone()
+            },
+        );
+    }
+}
+
+/// Each job's artifacts from act's server directory `dir` (zipped into `out`): at most
+/// [`artifacts::MAX_PER_JOB`] files per job, and a note for its summary on what was left out.
+fn job_artifacts(
+    dir: &Path,
+    out: &Path,
+    results: &Results,
+    jobs: &[&str],
+) -> BTreeMap<String, (Vec<PathBuf>, String)> {
+    let found = artifacts::collect(dir, out).unwrap_or_else(|e| {
+        eprintln!("forge-runner: artifacts not collected: {e:#}");
+        artifacts::Collected::default()
+    });
+    for s in &found.skipped {
+        eprintln!("forge-runner: artifact left out: {s}");
+    }
+    let left_out =
+        (!found.skipped.is_empty()).then(|| format!("left out: {}", found.skipped.join("; ")));
+    artifacts::assign(&found.artifacts, &results.logs, jobs)
+        .into_iter()
+        .map(|(job, mine)| {
+            let files: Vec<PathBuf> = mine
+                .iter()
+                .take(artifacts::MAX_PER_JOB)
+                .map(|a| a.zip.clone())
+                .collect();
+            let over = mine.len().saturating_sub(artifacts::MAX_PER_JOB);
+            let mut parts = Vec::new();
+            if !files.is_empty() {
+                parts.push(format!("{} artifact(s)", files.len()));
+            }
+            if over > 0 {
+                parts.push(format!(
+                    "{over} more not recorded (at most {})",
+                    artifacts::MAX_PER_JOB
+                ));
+            }
+            parts.extend(left_out.clone());
+            let note = if parts.is_empty() {
+                String::new()
+            } else {
+                format!("; {}", parts.join(", "))
+            };
+            (job, (files, note))
+        })
+        .collect()
 }
 
 /// The `KEY=value` pairs of a secrets file (act's format).
@@ -966,6 +1068,7 @@ mod tests {
             conclusion: Some("success"),
             summary: Some("ok".into()),
             log: Some("/l/build.log".into()),
+            artifacts: vec!["/a/dist.zip".into()],
         };
         let without = report_args(&cfg(""), &r);
         assert!(!without.contains(&"--log".to_string()));

@@ -21,9 +21,10 @@
 //!
 //! Module map: [`config`] (runner.toml), [`watch`] (refs, cursors), [`relay`] (wake-ups),
 //! [`workflow`] (the YAML the runner reads before act), [`act`] (act's CLI and JSON log),
-//! [`run`] (one push end to end).
+//! [`run`] (one run end to end), [`artifacts`] (upload-artifact's uploads, zipped per artifact).
 
 mod act;
+mod artifacts;
 mod config;
 mod relay;
 mod run;

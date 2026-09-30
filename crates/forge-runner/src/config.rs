@@ -32,6 +32,8 @@ pub const MIN_INTERVAL_SECS: u64 = 30;
 pub const DEFAULT_IMAGE: &str = "node:20-bookworm-slim";
 
 /// The whole runner configuration.
+// Its flags are independent operator switches, as runner.toml spells them.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -81,6 +83,25 @@ pub struct Config {
     /// it, reports carry no log.
     #[serde(default)]
     pub log_storage: Option<String>,
+    /// Start act's artifact server, so `actions/upload-artifact` (v3 and v4) works, and upload
+    /// each job's artifacts to `log_storage` with its completed report. Off by default: an
+    /// upload step then fails, as on a runner with no artifact storage.
+    #[serde(default)]
+    pub artifacts: bool,
+    /// The address act's artifact server listens on (`--artifact-server-addr`), which job
+    /// containers must reach. Default: act's, this host's outbound address. Anyone who can
+    /// reach it during a run can add to that run's artifacts: bind it where only the job
+    /// network reaches, such as the Docker bridge's gateway.
+    #[serde(default)]
+    pub artifact_server_addr: Option<String>,
+    /// Its port (`--artifact-server-port`).
+    #[serde(default = "default_artifact_port")]
+    pub artifact_server_port: u16,
+    /// The URL jobs are told to reach it at (`ACTIONS_RUNTIME_URL`), when that is not
+    /// `http://<addr>:<port>/`: `http://host.docker.internal:<port>/` under Docker Desktop or
+    /// OrbStack, whose containers reach the host by that name.
+    #[serde(default)]
+    pub artifact_server_url: Option<String>,
     /// No longer has any effect (kept so existing configs still load): a private repository's
     /// check run cannot carry a log URL, so `dg` never uploads its logs.
     #[serde(default)]
@@ -195,6 +216,9 @@ fn default_network() -> String {
 fn default_timeout() -> u64 {
     3600
 }
+fn default_artifact_port() -> u16 {
+    34567
+}
 fn default_attempts() -> u32 {
     3
 }
@@ -273,6 +297,21 @@ impl Config {
                     "relay.url {:?} must be http(s)://host[:port], with no path",
                     r.url
                 );
+            }
+        }
+        if c.artifacts && c.artifact_server_addr.is_none() {
+            bail!(
+                "artifacts = true needs artifact_server_addr: act's artifact server has no \
+                 authentication, so bind it where only the job network reaches (the Docker \
+                 bridge's gateway, or 127.0.0.1 with artifact_server_url under Docker Desktop)"
+            );
+        }
+        if c.artifacts && c.log_storage.is_none() {
+            bail!("artifacts = true needs log_storage: artifacts are uploaded where logs are");
+        }
+        if let Some(u) = &c.artifact_server_url {
+            if !(u.starts_with("http://") || u.starts_with("https://")) {
+                bail!("artifact_server_url {u:?} must be http(s)://…");
             }
         }
         if c.network.as_deref() == Some("devnet") && c.devnet_name.is_none() {

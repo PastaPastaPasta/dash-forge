@@ -132,6 +132,10 @@ pub fn command(cfg: &Config) -> Command {
             c.env(&k, v);
         }
     }
+    // act reads the URL jobs reach its artifact server at from its own environment.
+    if let Some(url) = cfg.artifact_server_url.as_ref().filter(|_| cfg.artifacts) {
+        c.env("ACTIONS_RUNTIME_URL", url);
+    }
     c
 }
 
@@ -153,6 +157,9 @@ pub struct Invocation<'a> {
     /// Act's action cache and host workspaces for this run (`--action-cache-path`): per run, so
     /// nothing one run puts there reaches another.
     pub action_cache: &'a Path,
+    /// Where act's artifact server keeps this workflow run's uploads (`--artifact-server-path`),
+    /// with `artifacts = true`; `None` starts no server.
+    pub artifacts: Option<&'a Path>,
 }
 
 /// The act arguments for `inv`: the event, one workflow file, isolation settings from
@@ -202,6 +209,17 @@ pub fn run_args(cfg: &Config, inv: &Invocation<'_>) -> Vec<String> {
     if let Some(opts) = &cfg.container_options {
         a.push("--container-options".into());
         a.push(opts.clone());
+    }
+    if let Some(dir) = inv.artifacts {
+        a.extend([
+            "--artifact-server-path".into(),
+            dir.display().to_string(),
+            "--artifact-server-port".into(),
+            cfg.artifact_server_port.to_string(),
+        ]);
+        if let Some(addr) = &cfg.artifact_server_addr {
+            a.extend(["--artifact-server-addr".into(), addr.clone()]);
+        }
     }
     a
 }
@@ -273,6 +291,7 @@ level=warning msg= ⚠ Apple M-series ⚠
             secrets,
             github_token: "",
             action_cache: Path::new("/s/run/1/act"),
+            artifacts: None,
         }
     }
 
@@ -321,6 +340,57 @@ level=warning msg= ⚠ Apple M-series ⚠
             "act runs one whole (filtered) file"
         );
         assert!(!a.contains(&"--privileged".to_string()));
+    }
+
+    #[test]
+    fn the_artifact_server_only_with_artifacts_on() {
+        let off = run_args(&cfg(""), &inv(None));
+        assert!(!off.iter().any(|a| a.starts_with("--artifact")));
+        let c = cfg("log_storage = \"l\"\nartifacts = true\nartifact_server_addr = \"172.17.0.1\"\nartifact_server_url = \"http://host.docker.internal:34567/\"");
+        let on = run_args(
+            &c,
+            &Invocation {
+                artifacts: Some(Path::new("/r/artifacts/ci")),
+                ..inv(None)
+            },
+        );
+        assert_eq!(
+            pair(&on, "--artifact-server-path").as_deref(),
+            Some("/r/artifacts/ci")
+        );
+        assert_eq!(
+            pair(&on, "--artifact-server-port").as_deref(),
+            Some("34567")
+        );
+        assert_eq!(
+            pair(&on, "--artifact-server-addr").as_deref(),
+            Some("172.17.0.1")
+        );
+        let url = command(&c)
+            .get_envs()
+            .find(|(k, _)| *k == "ACTIONS_RUNTIME_URL")
+            .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()));
+        assert_eq!(url.as_deref(), Some("http://host.docker.internal:34567/"));
+        assert!(
+            command(&cfg(""))
+                .get_envs()
+                .all(|(k, _)| k != "ACTIONS_RUNTIME_URL"),
+            "no runtime URL from the runner's own environment"
+        );
+        let with = |extra: &str| {
+            Config::parse(&format!(
+                "state_dir = \"/s\"\nartifacts = true\n{extra}\n[[repo]]\nrepo = \"a/b\""
+            ))
+        };
+        assert!(
+            with("artifact_server_addr = \"127.0.0.1\"").is_err(),
+            "needs log_storage"
+        );
+        assert!(
+            with("log_storage = \"l\"").is_err(),
+            "needs an address chosen for it: act's default may be public"
+        );
+        assert!(with("log_storage = \"l\"\nartifact_server_addr = \"127.0.0.1\"").is_ok());
     }
 
     #[test]

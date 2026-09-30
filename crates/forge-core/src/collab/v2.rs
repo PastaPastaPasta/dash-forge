@@ -561,6 +561,11 @@ pub struct CheckRun {
     /// The log's SHA-256 (hex).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub log_sha256: Option<String>,
+    /// What the run uploaded (`artifacts`, the shape of a release's `assets`): each named with its
+    /// SHA-256, size and URL, which a reader verifies the bytes against. Empty when there are none,
+    /// or when the field does not parse.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<crate::collab::ReleaseAsset>,
     /// Consensus `$createdAt` (ms).
     pub created_at: u64,
 }
@@ -603,6 +608,10 @@ pub fn newest_check_runs(
             completed_at: d.field_u64("completedAt"),
             log_url: d.field_str("logUrl"),
             log_sha256: d.field_hex("logSha256"),
+            artifacts: d
+                .field_str("artifacts")
+                .and_then(|a| serde_json::from_str(&a).ok())
+                .unwrap_or_default(),
         })
         .collect()
 }

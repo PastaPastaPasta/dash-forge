@@ -22,6 +22,16 @@ describe('check runs on a head', () => {
     expect(checksPhrase(s)).toBe('1 passed (1 not counted: reporter no longer a member or runner)')
   })
 
+  it("reads a run's artifacts in the release-asset shape dg records", () => {
+    const artifacts = JSON.stringify([
+      { name: 'dist.zip', sha256: 'A'.repeat(64), sizeBytes: 248, uris: ['https://b.example/ci/packs/x.pack'] },
+      { name: 'bad' },
+    ])
+    const [run] = newestCheckRuns([{ ...doc('1', 'ci / build', 'm', 1, 'completed', 'success'), artifacts }], () => true)
+    expect(run?.artifacts).toEqual([{ name: 'dist.zip', sha256: 'a'.repeat(64), size: 248, uris: ['https://b.example/ci/packs/x.pack'] }])
+    expect(newestCheckRuns([doc('2', 'lint', 'm', 1, 'queued')], () => true)[0]?.artifacts).toEqual([])
+  })
+
   it('says "unknown" rather than "no checks" when the members could not be read', () => {
     const runs = newestCheckRuns([doc('1', 'build', 'm', 1, 'completed', 'success')], () => false)
     const s = summarizeChecks(runs, false)

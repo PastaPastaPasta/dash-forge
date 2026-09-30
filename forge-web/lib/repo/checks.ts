@@ -22,6 +22,7 @@ import { compareKey } from '../rules'
 import { pinnedSources, type CheckRunRow, type ChecksPolicy } from '../rules/parity'
 import { hexToBase64, queryAllDocuments, type PlainDocument } from '../sdk'
 import { DOC, asIdentifierString, byteFieldToHex, num, str, type RepoRef } from './contract'
+import { parseReleaseAssets, type ReleaseAssetView } from './releases'
 import { repoSource } from './source'
 
 /** The newest run of one check name on a commit. */
@@ -44,6 +45,12 @@ export interface CheckRun {
   /** Where the log is and its SHA-256 (hex); '' when none. The bytes are checked against it. */
   readonly logUrl: string
   readonly logSha256: string
+  /**
+   * What the run uploaded (`actions/upload-artifact` through forge-runner, or `dg ci report --artifact`): the
+   * `artifacts` JSON, the shape of a release's `assets`. Each is downloaded from the reporter's storage and saved only
+   * if its bytes hash to the recorded SHA-256. Empty for none, and always for a private repository (RC1 `privateNoText`).
+   */
+  readonly artifacts: readonly ReleaseAssetView[]
   /** The reporter the policy pins this check to (base58), or null: any trusted reporter counts. */
   readonly requiredSource: string | null
   /** No source is pinned, or this run is from it; false: the run cannot decide the check. */
@@ -131,6 +138,7 @@ export function newestCheckRuns(docs: readonly PlainDocument[], isMember: (who: 
         completedAt: num(d, 'completedAt'),
         logUrl: str(d, 'logUrl'),
         logSha256: byteFieldToHex(d, 'logSha256'),
+        artifacts: parseReleaseAssets(str(d, 'artifacts')).assets,
         requiredSource: pin,
         fromRequiredSource: pin === null || pin === reporter,
       }
