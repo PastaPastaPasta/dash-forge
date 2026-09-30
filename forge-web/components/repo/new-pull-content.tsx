@@ -13,7 +13,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { GitBranch } from 'lucide-react'
 
 import { DraftMarkError, createPatch, findForks, readRefs, repoKey, type ResolvedRef, type RepoRef } from '@/lib/repo'
 import { branchName, commitSubject, readCommit, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
@@ -33,7 +32,7 @@ import { MarkdownView } from '@/components/markdown-view'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
-import { CopyRow } from '@/components/ui/copy-row'
+import { PushBranchHint } from '@/components/repo/push-branch-hint'
 import { cn } from '@/lib/utils'
 
 /** A branch a PR can come from: this repo's, or one of the viewer's forks'. */
@@ -177,7 +176,6 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     }
   }
 
-  const you = identity ?? 'you'
   return (
     <div className="mx-auto max-w-5xl space-y-5">
       <div>
@@ -243,13 +241,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
         {forks.loading && identity !== null ? <span className="pb-2 text-[12px] text-anvil-600 dark:text-anvil-400">Looking for your forks…</span> : null}
       </div>
 
-      <div className="text-dense text-anvil-600 dark:text-anvil-300">
-        <p className="mb-1.5">
-          <GitBranch className="mr-1 inline h-3.5 w-3.5" aria-hidden />
-          Need to push a branch first?
-        </p>
-        <CopyRow text={`git push dash://${you}/${repo.name} HEAD:my-fix`} />
-      </div>
+      <PushBranchHint repo={repo} forks={forks.error !== null ? 'failed' : forks.data === null ? null : forks.data.map((f) => f.fork)} />
 
       {noBase ? (
         <p role="alert" className="text-dense text-caution-700 dark:text-caution-400">
