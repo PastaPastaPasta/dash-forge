@@ -16,8 +16,9 @@ import {
   describeCommit,
   exportAttributes,
   formatCommit,
+  describeNames,
   parseArchiveCommit,
-  taggedCommits,
+  peelTags,
   uniqueAbbrev,
   type DescribeTag,
   type FormatContext,
@@ -70,6 +71,15 @@ describe('.gitattributes for an archive', () => {
     expect(attrs('docs/c.png').ignore).toBe(true)
     expect(attrs('odd name.txt').ignore).toBe(true)
   })
+
+  it('takes a directory-only pattern for the directory and everything in it, never for a file of that name', () => {
+    const attrs = exportAttributes(new Map([['.gitattributes', '/tests/ export-ignore\nfixtures/ export-ignore\n']]))
+    expect(attrs('tests/a_test.c').ignore).toBe(true)
+    expect(attrs('src/tests/a.c').ignore).toBe(false)
+    expect(attrs('lib/fixtures/data.json').ignore).toBe(true)
+    // A file named like the directory pattern is not a directory.
+    expect(attrs('fixtures').ignore).toBe(false)
+  })
 })
 
 describe('$Format: placeholders', () => {
@@ -82,7 +92,7 @@ describe('$Format: placeholders', () => {
     `tree ${tree}\nparent ${parent}\nauthor Ada Lovelace <ada@example.com> 1700000000 +0200\ncommitter Bob <bob@example.com> 1700003600 -0530\n\nFix the thing\nacross two lines\n\nThe body.\n`,
   )
   const commit = parseArchiveCommit(oid, s.objects.get(oid)!.bytes)
-  const ctx: FormatContext = { commit, abbrev: (o, min = 7) => o.slice(0, min), describe: () => 'v1.0-3-gabcdef', decorations: ['main', 'tag: v1.1'] }
+  const ctx: FormatContext = { commit, abbrev: (o, min = 7) => o.slice(0, min), describe: (spec) => (spec === 'bogus' ? null : 'v1.0-3-gabcdef'), decorations: ['main', 'tag: v1.1'] }
 
   it('expands what git log --format would', () => {
     expect(formatCommit('%H|%h|%T|%P|%p', ctx)).toBe(`${oid}|${oid.slice(0, 7)}|${tree}|${parent}|${parent.slice(0, 7)}`)
@@ -105,6 +115,55 @@ describe('$Format: placeholders', () => {
     // dashpay/dash: ~500k objects is 10 digits, git's `--short` there.
     expect(autoAbbrevLength(500_000)).toBe(10)
     expect(uniqueAbbrev('abcdef1234', 4, (p) => (p.length < 6 ? ['abcdef1234', 'abcde99999'] : ['abcdef1234']))).toBe('abcdef')
+  })
+})
+
+describe('substituteFiles, as git archive expands', () => {
+  /** A two-commit repo whose tip has `files`, an annotated tag on the root and two tags on the tip. */
+  function repo(files: Record<string, string>, { tagged = true, when = 1_700_000_000 } = {}) {
+    const s = new Store()
+    const root = s.commit(s.files({ a: '1\n' }), [], 'root')
+    const tree = s.files({ '.gitattributes': '*.txt export-subst\n', ...files })
+    const tip = raw(s, 'commit', `tree ${tree}\nparent ${root}\nauthor A <a@x> ${when} +0000\ncommitter A <a@x> ${when} +0000\n\ntip\n`)
+    const tag = (target: string, name: string, time: number): DescribeTag => ({
+      name,
+      oid: raw(s, 'tag', `object ${target}\ntype commit\ntag ${name}\ntagger T <t@x> ${time} +0000\n\n${name}\n`),
+    })
+    const tags = tagged ? [tag(root, 'v1.0', 1), tag(tip, 'v2.0', 5), tag(tip, 'v2.0-final', 9)] : []
+    return { s, tip, tags }
+  }
+  async function expand(files: Record<string, string>, opts: { tagged?: boolean; when?: number } = {}): Promise<Record<string, string>> {
+    const { s, tip, tags } = repo(files, opts)
+    const reader = Object.assign(s.reader(), { findByPrefix: findIn(s), objectCount: s.objects.size })
+    const plan = await planArchive(reader, tip)
+    const entries = await readZipFiles(reader, plan.files, () => undefined)
+    await substituteFiles(reader, plan, entries, { tags, heads: [{ name: 'main', oid: tip }] })
+    return Object.fromEntries(Object.entries(entries).map(([k, v]) => [k, new TextDecoder().decode(v)]))
+  }
+
+  it('expands the first %(describe) whatever its option spelling, and leaves the ones after it', async () => {
+    const got = await expand({ 'a.txt': '$Format:%(describe:tags=true)$ $Format:%(describe)$\n', 'b.txt': '$Format:%(describe:abbrev=0)$\n' })
+    // Both tags are on the tip: the newer tagger date wins, as describe's replace_name picks.
+    expect(got['a.txt']).toBe('v2.0-final %(describe)\n')
+    expect(got['b.txt']).toBe('%(describe:abbrev=0)\n')
+  })
+
+  it('writes nothing for %(describe) when no tag describes the commit, as git does', async () => {
+    expect((await expand({ 'a.txt': 'v="$Format:%(describe)$"\n' }, { tagged: false }))['a.txt']).toBe('v=""\n')
+  })
+
+  it('names every tag at the commit in %d', async () => {
+    expect((await expand({ 'a.txt': '$Format:%d$\n' }))['a.txt']).toBe(' (main, tag: v2.0, tag: v2.0-final)\n')
+  })
+
+  it('zips a commit dated before 1980 (the DOS date is clamped; the UT field keeps the time)', async () => {
+    const { s, tip } = repo({ 'a.txt': 'x\n' }, { tagged: false, when: 86_400 })
+    const reader = s.reader()
+    const plan = await planArchive(reader, tip)
+    const entries = await readZipFiles(reader, plan.files, () => undefined)
+    const zip = zipSync(zipEntries(entries, { modes: {}, mtime: plan.mtime, comment: tip }), { level: 6 })
+    expect(Object.keys(unzipSync(zip))).toContain('a.txt')
+    expect(centralDirectory(zip).get('a.txt')?.ut).toBe(86_400)
   })
 })
 
@@ -150,11 +209,12 @@ describe.skipIf(!HAVE_GIT)('git describe, against git', () => {
       writeLiterally(dir, s.objects.values())
       for (const t of tags) git(dir, ['update-ref', `refs/tags/${t.name}`, t.oid])
       const reader = s.reader()
-      const abbrevOf = (oid: string, min: number): string => uniqueAbbrev(oid, min, findIn(s))
-      for (const opts of [{ tags: false, abbrev: 12 }, { tags: true, abbrev: 7 }, { tags: false, abbrev: 0 }]) {
-        const named = await taggedCommits(reader, tags, { match: [], exclude: [] })
+      const abbrevOf = (oid: string, min = 7): string => uniqueAbbrev(oid, min, findIn(s))
+      const peeled = await peelTags(reader, tags)
+      for (const opts of [{ tags: false, abbrev: 12 }, { tags: true, abbrev: 7 }, { tags: false, abbrev: 0 }, { tags: false, abbrev: null }]) {
+        const named = describeNames(peeled, { match: [], exclude: [] })
         for (const c of commits) {
-          const want = git(dir, ['describe', `--abbrev=${opts.abbrev}`, ...(opts.tags ? ['--tags'] : []), c])
+          const want = git(dir, ['describe', ...(opts.abbrev === null ? [] : [`--abbrev=${opts.abbrev}`]), ...(opts.tags ? ['--tags'] : []), c])
           const got = await describeCommit(reader, c, named, opts, abbrevOf)
           expect(got ?? '', `${c} ${JSON.stringify(opts)}`).toBe(want.status === 0 ? want.out : '')
         }
@@ -172,9 +232,9 @@ describe.skipIf(!HAVE_GIT)('git describe, against git', () => {
       writeLiterally(dir, s.objects.values())
       for (const t of tags) git(dir, ['update-ref', `refs/tags/${t.name}`, t.oid])
       const reader = s.reader()
-      const named = await taggedCommits(reader, tags, { match: ['v*'], exclude: ['*-again'] })
+      const named = describeNames(await peelTags(reader, tags), { match: ['v*'], exclude: ['*-again'] })
       const tip = commits[commits.length - 1] as string
-      const got = await describeCommit(reader, tip, named, { tags: false, abbrev: 7 }, (o, m) => uniqueAbbrev(o, m, findIn(s)))
+      const got = await describeCommit(reader, tip, named, { tags: false, abbrev: 7 }, (o, m = 7) => uniqueAbbrev(o, m, findIn(s)))
       expect(got).toBe(git(dir, ['describe', '--abbrev=7', '--match', 'v*', '--exclude', '*-again', tip]).out)
     } finally {
       done()

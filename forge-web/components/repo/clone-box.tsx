@@ -115,7 +115,7 @@ function ZipDownload({ home, addr, selected }: { home: RepoHome; addr: RepoAddre
       const stored = storedSize(files)
       if (stored > ZIP_MAX_BYTES) throw new ZipTooLargeError(stored)
       const entries = await readZipFiles(reader, files, setProgress, cancel.current.signal)
-      await substituteFiles(reader, plan, entries, archiveRefs(home))
+      await substituteFiles(reader, plan, entries, archiveRefs(home), { signal: cancel.current.signal, onProgress: setProgress })
       const name = zipFileName(addr.name, selected.name)
       const prefix = `${name.replace(/\.zip$/, '')}/`
       const rooted: Record<string, Uint8Array> = {}
@@ -141,7 +141,9 @@ function ZipDownload({ home, addr, selected }: { home: RepoHome; addr: RepoAddre
         ? 'Listing files…'
         : progress.phase === 'reading'
           ? `Reading ${progress.files} of ${plural(progress.filesTotal, 'file')} (${formatBytes(progress.bytes)})`
-          : `Compressing ${formatBytes(progress.bytes)}…`
+          : progress.phase === 'describing'
+            ? 'Describing the commit for export-subst (git describe)…'
+            : `Compressing ${formatBytes(progress.bytes)}…`
 
   return (
     <div className="mt-2">

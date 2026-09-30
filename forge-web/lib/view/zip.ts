@@ -15,14 +15,14 @@ import {
   autoAbbrevLength,
   describeCommit,
   DescribeError,
+  describeNames,
   expandExportSubst,
   exportAttributes,
   parseArchiveCommit,
   parseDescribeOptions,
-  taggedCommits,
+  peelTags,
   uniqueAbbrev,
   type ArchiveCommit,
-  type DescribeOptions,
   type DescribeTag,
   type FormatContext,
 } from './archive'
@@ -54,7 +54,7 @@ export interface FileWalk {
 }
 
 export interface ZipProgress {
-  readonly phase: 'listing' | 'reading' | 'compressing'
+  readonly phase: 'listing' | 'reading' | 'describing' | 'compressing'
   readonly files: number
   readonly filesTotal: number
   readonly bytes: number
@@ -177,14 +177,22 @@ export interface ArchiveRefs {
 
 /**
  * Expand the `export-subst` files of `entries` in place (`$Format:…$`, gitattributes(5)), for the
- * plan's commit. `%(describe)` walks the history as `git describe` does, once per option set;
- * `%d`/`%D` name the branches and tags at the commit. A file that is not UTF-8 is left as it is.
+ * plan's commit, as git archive does: files in archive order, and one `%(describe)` per archive
+ * (the first; it is empty when no tag describes the commit, and the ones after it stay as
+ * written), worked out as `git describe` does; `%d`/`%D` name the branches and tags at the
+ * commit. A file that is not UTF-8 is left as it is. `signal` stops the describe walk.
  */
-export async function substituteFiles(reader: ObjectReader & { findByPrefix?(prefix: string, limit?: number): string[]; readonly objectCount?: number }, plan: ArchivePlan, entries: Record<string, Uint8Array>, refs: ArchiveRefs): Promise<void> {
+export async function substituteFiles(
+  reader: ObjectReader & { findByPrefix?(prefix: string, limit?: number): string[]; readonly objectCount?: number },
+  plan: ArchivePlan,
+  entries: Record<string, Uint8Array>,
+  refs: ArchiveRefs,
+  { signal, onProgress }: { readonly signal?: AbortSignal; readonly onProgress?: (p: ZipProgress) => void } = {},
+): Promise<void> {
   const commit = plan.commit
   if (commit === null || plan.subst.size === 0) return
   const texts = new Map<string, string>()
-  for (const path of plan.subst) {
+  for (const path of [...plan.subst].sort()) {
     const bytes = entries[path]
     if (bytes === undefined) continue
     try {
@@ -193,57 +201,44 @@ export async function substituteFiles(reader: ObjectReader & { findByPrefix?(pre
       // Not UTF-8: left as stored.
     }
   }
-  const all = [...texts.values()].join('\n')
-  if (!all.includes('$Format:')) return
+  const formats = [...texts.values()].flatMap((t) => [...t.matchAll(/\$Format:([^$]*)\$/g)].map((m) => m[1] as string))
+  if (formats.length === 0) return
   const findByPrefix = reader.findByPrefix?.bind(reader)
   const auto = autoAbbrevLength(reader.objectCount ?? 0)
-  const abbrev = (oid: string, min = auto): string => uniqueAbbrev(oid, min, findByPrefix)
+  const abbrev = (oid: string, min: number = auto): string => uniqueAbbrev(oid, min, findByPrefix)
 
-  // `%(describe…)` is worked out before the (synchronous) expansion, once per option set.
-  const described = new Map<string, string | null>()
-  for (const [, spec] of all.matchAll(/%\(describe(?::([^)]*))?\)/g)) {
-    const key = spec ?? ''
-    if (described.has(key)) continue
-    const opts = parseDescribeOptions(key)
-    if (opts === null) {
-      described.set(key, null)
-      continue
-    }
-    const named = await taggedCommits(reader, refs.tags, opts)
+  // The one `%(describe…)` git archive expands: the first, worked out before the (synchronous) expansion.
+  const first = formats.map((f) => /%\(describe(?::([^)]*))?\)/.exec(f)).find((m) => m !== null)
+  const firstSpec = first == null ? null : (first[1] ?? '')
+  const firstOptions = firstSpec === null ? null : parseDescribeOptions(firstSpec)
+  const needTags = firstOptions !== null || formats.some((f) => /%[dD]/.test(f))
+  const peeled = needTags ? await peelTags(reader, refs.tags, signal) : []
+  let described = ''
+  if (firstOptions !== null) {
+    onProgress?.({ phase: 'describing', files: 0, filesTotal: 0, bytes: 0 })
     const walker = historyWalker(reader)
     try {
-      described.set(key, await describeCommit(walker, commit.oid, named, opts, abbrev))
+      described = (await describeCommit(walker, commit.oid, describeNames(peeled, firstOptions), firstOptions, abbrev, { ...(signal ? { signal } : {}) })) ?? ''
     } catch (e) {
+      // Past its bound: empty, as git's describe would fail.
       if (!(e instanceof DescribeError)) throw e
-      described.set(key, null)
     } finally {
       walker.flush?.()
     }
   }
-  // `%d` / `%D`: the branches, then the tags, at the commit.
-  let decorations: string[] = []
-  if (/%[dD]/.test(all)) {
-    const tagged = await taggedCommits(reader, refs.tags, { match: [], exclude: [] })
-    const tagNames = refs.tags.filter((t) => t.oid === commit.oid || tagged.get(commit.oid)?.name === t.name).map((t) => `tag: ${t.name}`)
-    decorations = [...refs.heads.filter((h) => h.oid === commit.oid).map((h) => h.name), ...tagNames]
-  }
+  let invoked = false
   const ctx: FormatContext = {
     commit,
     abbrev,
-    decorations,
-    describe: (opts) => described.get(describeKey(opts)) ?? null,
+    // `%d` / `%D`: the branches, then every tag, at the commit.
+    decorations: [...refs.heads.filter((h) => h.oid === commit.oid).map((h) => h.name), ...peeled.filter((t) => t.commit === commit.oid).map((t) => `tag: ${t.ref}`)],
+    describe: (spec) => {
+      if (invoked) return null
+      invoked = true
+      return parseDescribeOptions(spec) === null ? null : spec === firstSpec ? described : null
+    },
   }
   for (const [path, text] of texts) entries[path] = new TextEncoder().encode(expandExportSubst(text, ctx))
-}
-
-/** The `%(describe:…)` spec an option set came from, to find its worked-out value. */
-function describeKey(opts: DescribeOptions): string {
-  const parts: string[] = []
-  if (opts.tags) parts.push('tags')
-  if (opts.abbrev !== null) parts.push(`abbrev=${opts.abbrev}`)
-  for (const m of opts.match) parts.push(`match=${m}`)
-  for (const x of opts.exclude) parts.push(`exclude=${x}`)
-  return parts.join(',')
 }
 
 /** Stored (compressed-on-disk) sizes from the locator: a lower bound, cheap to sum. */

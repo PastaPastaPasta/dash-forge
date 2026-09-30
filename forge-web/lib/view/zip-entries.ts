@@ -46,9 +46,20 @@ export function entryAttributes(mode: number): Pick<ZipOptions, 'os' | 'attrs'> 
   return { os: 0, attrs: 0 }
 }
 
+/**
+ * The DOS date an entry carries: zip's DOS date holds 1980 to 2107 and fflate takes 1980 to 2099,
+ * so a commit time outside that (an imported history's 1970 dates) is clamped to its edge rather
+ * than failing the whole zip. The `UT` field keeps the exact time.
+ */
+function dosDate(mtime: number): Date {
+  const earliest = new Date(1980, 0, 1, 0, 0, 0).getTime()
+  const latest = new Date(2099, 11, 31, 23, 59, 58).getTime()
+  return new Date(Math.min(Math.max(mtime, earliest), latest))
+}
+
 /** `entries` with each file's attributes, every directory's entry, and the commit's time. */
 export function zipEntries(entries: Record<string, Uint8Array>, meta: NonNullable<ZipMessage['meta']>): Zippable {
-  const mtime = new Date(meta.mtime)
+  const mtime = dosDate(meta.mtime)
   const extra = { [EXTENDED_TIMESTAMP]: extendedTimestamp(meta.mtime) }
   const out: Zippable = {}
   const dirs = new Set<string>()

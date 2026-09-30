@@ -23,7 +23,7 @@ import { mapPooled } from './pool'
 
 /** One `.gitattributes` line, reduced to the attributes an archive reads. */
 interface AttrRule {
-  readonly match: (path: string) => boolean
+  readonly match: (path: string, isDir: boolean) => boolean
   /** true: set; false: unset (`-attr` or `!attr`); absent: this line says nothing. */
   readonly attrs: ReadonlyMap<'export-ignore' | 'export-subst', boolean>
 }
@@ -75,15 +75,22 @@ function wildmatchRegex(pattern: string): RegExp {
   return new RegExp(`^${re}$`)
 }
 
-/** A `.gitattributes` pattern, from its file's directory (`''` = the root). */
-function patternMatcher(pattern: string, dir: string): ((path: string) => boolean) | null {
-  // A trailing `/` (a directory-only pattern) is not supported by git's attributes: it matches nothing.
-  if (pattern === '' || pattern.endsWith('/') || pattern.startsWith('!')) return null
-  const anchored = pattern.includes('/')
-  const re = wildmatchRegex(anchored ? pattern.replace(/^\//, '') : pattern)
+/**
+ * A `.gitattributes` pattern, from its file's directory (`''` = the root), as attr.c's
+ * `path_matches`: a trailing `/` makes it match directories only (git archive checks a directory
+ * as `dir/`), a pattern with no other `/` is matched against the basename, else against the path
+ * from the file's directory.
+ */
+function patternMatcher(pattern: string, dir: string): ((path: string, isDir: boolean) => boolean) | null {
+  if (pattern === '' || pattern.startsWith('!')) return null
+  const dirOnly = pattern.endsWith('/')
+  const body = dirOnly ? pattern.replace(/\/+$/, '') : pattern
+  if (body === '') return null
+  const anchored = body.includes('/')
+  const re = wildmatchRegex(anchored ? body.replace(/^\//, '') : body)
   const prefix = dir === '' ? '' : `${dir}/`
-  return (path) => {
-    if (!path.startsWith(prefix)) return false
+  return (path, isDir) => {
+    if ((dirOnly && !isDir) || !path.startsWith(prefix)) return false
     const rel = path.slice(prefix.length)
     return re.test(anchored ? rel : rel.slice(rel.lastIndexOf('/') + 1))
   }
@@ -143,18 +150,20 @@ export function exportAttributes(files: ReadonlyMap<string, string>): (path: str
     const slash = p.lastIndexOf('/')
     return parseGitAttributes(files.get(p) as string, slash === -1 ? '' : p.slice(0, slash))
   })
-  const attr = (path: string, name: 'export-ignore' | 'export-subst'): boolean => {
+  const attr = (path: string, isDir: boolean, name: 'export-ignore' | 'export-subst'): boolean => {
     let value = false
     for (const r of rules) {
       const v = r.attrs.get(name)
-      if (v !== undefined && r.match(path)) value = v
+      if (v !== undefined && r.match(path, isDir)) value = v
     }
     return value
   }
   return (path) => {
-    let ignore = attr(path, 'export-ignore')
-    for (let at = path.indexOf('/'); !ignore && at !== -1; at = path.indexOf('/', at + 1)) ignore = attr(path.slice(0, at), 'export-ignore')
-    return { ignore, subst: !ignore && attr(path, 'export-subst') }
+    // A directory left out leaves out everything under it (git archive does not descend into it).
+    let ignore = false
+    for (let at = path.indexOf('/'); !ignore && at !== -1; at = path.indexOf('/', at + 1)) ignore = attr(path.slice(0, at), true, 'export-ignore')
+    ignore ||= attr(path, false, 'export-ignore')
+    return { ignore, subst: !ignore && attr(path, false, 'export-subst') }
   }
 }
 
@@ -251,8 +260,12 @@ export interface FormatContext {
   readonly commit: ArchiveCommit
   /** An oid's shortest unique abbreviation of at least `min` digits (`%h`, and `%(describe)`'s suffix). */
   readonly abbrev: (oid: string, min?: number) => string
-  /** `%(describe…)`: the expansion, or null to leave the placeholder as written. */
-  readonly describe: (options: DescribeOptions) => string | null
+  /**
+   * `%(describe…)` by its option text (`abbrev=12`, `''` for none): the expansion (`''` when no
+   * tag describes the commit, as git's is then empty), or null to leave the placeholder as
+   * written (git archive expands one `%(describe)` per archive: the ones after it stay).
+   */
+  readonly describe: (spec: string) => string | null
   /** The refs pointing at the commit, as `%D` prints them (`tag: v1`, `main`). */
   readonly decorations: readonly string[]
 }
@@ -330,8 +343,7 @@ export function formatCommit(fmt: string, ctx: FormatContext): string {
       const close = fmt.indexOf(')', i + 2)
       const inner = close === -1 ? null : fmt.slice(i + 2, close)
       if (inner !== null && (inner === 'describe' || inner.startsWith('describe:'))) {
-        const opts = parseDescribeOptions(inner === 'describe' ? '' : inner.slice('describe:'.length))
-        value = opts === null ? null : ctx.describe(opts)
+        value = ctx.describe(inner === 'describe' ? '' : inner.slice('describe:'.length))
         used = close - i + 1
       }
     } else if (n === 'x' && /^[0-9a-fA-F]{2}$/.test(fmt.slice(i + 2, i + 4))) {
@@ -404,19 +416,23 @@ export interface DescribeTag {
   readonly oid: string
 }
 
-/** Commits {@link describeCommit} walks at most before it gives up (it then says so, and nothing is written). */
+/** A tag peeled to its commit, as `git describe` knows it (builtin/describe.c `commit_name`). */
+export interface PeeledTag {
+  /** The ref's short name (`v1.0` for `refs/tags/v1.0`). */
+  readonly ref: string
+  readonly commit: string
+  /** 2 annotated, 1 lightweight (git's `prio`). */
+  readonly prio: 1 | 2
+  /** The outermost tag object's tagger time (s), 0 for a lightweight tag. */
+  readonly date: number
+  /** What describe prints: the tag object's own name for an annotated tag, else the ref's. */
+  readonly display: string
+}
+
+/** Commits {@link describeCommit} walks at most before it gives up. */
 export const DESCRIBE_COMMIT_CAP = 100_000
 /** git describe's `--candidates` default. */
 const MAX_CANDIDATES = 10
-
-interface Named {
-  readonly name: string
-  /** 2 annotated, 1 lightweight (git's `prio`). */
-  readonly prio: number
-  /** The tagger time (s), to prefer the newer of two annotated tags of one commit. */
-  readonly date: number
-}
-
 /** Tag objects are read this many at a time. */
 const TAG_READ_POOL = 16
 
@@ -426,41 +442,53 @@ function globRegex(glob: string): RegExp {
 }
 
 /**
- * The commits the tags name, as `git describe` keys them (every tag peeled to its commit): for each
- * commit, the best name (annotated over lightweight, then the newer tagger date).
+ * Every tag peeled to the commit it names (a tag of a tree or a blob is left out, as describe
+ * leaves it), in ref-name order. The tag objects are read side by side.
  */
-export async function taggedCommits(reader: ObjectReader, tags: readonly DescribeTag[], options: Pick<DescribeOptions, 'match' | 'exclude'>): Promise<Map<string, Named>> {
-  const match = options.match.map(globRegex)
-  const exclude = options.exclude.map(globRegex)
-  const wanted = tags.filter((t) => (match.length === 0 || match.some((r) => r.test(t.name))) && !exclude.some((r) => r.test(t.name)))
-  const named = new Map<string, Named>()
-  await mapPooled(wanted, TAG_READ_POOL, async (t) => {
+export async function peelTags(reader: ObjectReader, tags: readonly DescribeTag[], signal?: AbortSignal): Promise<PeeledTag[]> {
+  const sorted = [...tags].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+  const peeled = await mapPooled(sorted, TAG_READ_POOL, async (t): Promise<PeeledTag | null> => {
+    signal?.throwIfAborted()
     let at = t.oid
-    let prio = 1
+    let prio: 1 | 2 = 1
     let date = 0
-    // Peel through nested tags; the outermost tag's date is the one that counts.
+    let display = t.name
     for (let depth = 0; depth < 10; depth++) {
       const obj = await reader.readObject(at)
-      if (obj.type !== 'tag') {
-        if (obj.type !== 'commit') return
-        break
-      }
+      if (obj.type !== 'tag') return obj.type === 'commit' ? { ref: t.name, commit: at, prio, date, display } : null
       const tag = parseTag(obj.bytes)
-      if (tag === null || !OID_HEX.test(tag.object)) return
+      if (tag === null || !OID_HEX.test(tag.object)) return null
       if (depth === 0) {
         prio = 2
+        display = tag.tag || t.name
         const tagger = /\ntagger .* (\d+) [+-]\d{4}\n/.exec(`\n${new TextDecoder().decode(obj.bytes)}`)
         date = tagger === null ? 0 : Number(tagger[1])
       }
       at = tag.object
     }
-    const had = named.get(at)
-    if (had === undefined || prio > had.prio || (prio === 2 && had.prio === 2 && date > had.date)) named.set(at, { name: t.name, prio, date })
+    return null
   })
+  return peeled.filter((t): t is PeeledTag => t !== null)
+}
+
+/**
+ * The name `git describe` gives each tagged commit (its `names` map): the tags that pass `match`
+ * and `exclude`, taken in ref-name order, an annotated tag over a lightweight one and, of two
+ * annotated ones, the newer tagger date; otherwise the first stays (describe.c `replace_name`).
+ */
+export function describeNames(peeled: readonly PeeledTag[], options: Pick<DescribeOptions, 'match' | 'exclude'>): Map<string, PeeledTag> {
+  const match = options.match.map(globRegex)
+  const exclude = options.exclude.map(globRegex)
+  const named = new Map<string, PeeledTag>()
+  for (const t of peeled) {
+    if ((match.length > 0 && !match.some((r) => r.test(t.ref))) || exclude.some((r) => r.test(t.ref))) continue
+    const had = named.get(t.commit)
+    if (had === undefined || had.prio < t.prio || (had.prio === 2 && t.prio === 2 && had.date < t.date)) named.set(t.commit, t)
+  }
   return named
 }
 
-/** `git describe --abbrev=<n> [--tags] <commit>` could not be worked out. */
+/** The description could not be worked out (the history is past its bound). */
 export class DescribeError extends Error {
   constructor(message: string) {
     super(message)
@@ -469,28 +497,32 @@ export class DescribeError extends Error {
 }
 
 /**
- * `git describe` of `commitOid` (builtin/describe.c): the nearest tag by the number of commits it
- * does not contain, with `-<n>-g<abbrev>` after it unless it names the commit itself, and
- * `abbrev` 0 for the tag alone. By default only annotated tags count (`tags` for all). Walks the
- * history newest first as git does (up to 10 candidates, then the depth of the best one); null
- * when no tag is reachable.
+ * `git describe [--tags] [--abbrev=<n>] <commit>` (builtin/describe.c `describe_commit`): the
+ * nearest tag by the number of commits it does not contain, with `-<n>-g<abbrev>` after it unless
+ * it names the commit itself (`abbrev` 0: the tag alone). Only annotated tags count unless `tags`.
+ * The walk is git's: newest first, up to 10 candidates (or every tag there is), stopping early
+ * when the last path is covered, then the best candidate's depth finished. `abbrevOf(oid, min)`
+ * gives an oid's unique abbreviation (`min` undefined: git's automatic length). Null when no tag
+ * describes the commit (git then fails, and `%(describe)` is empty).
  */
 export async function describeCommit(
   reader: ObjectReader,
   commitOid: string,
-  named: ReadonlyMap<string, Named>,
+  named: ReadonlyMap<string, PeeledTag>,
   options: Pick<DescribeOptions, 'tags' | 'abbrev'>,
-  abbrevOf: (oid: string, min: number) => string,
-  cap = DESCRIBE_COMMIT_CAP,
+  abbrevOf: (oid: string, min?: number) => string,
+  { signal, cap = DESCRIBE_COMMIT_CAP }: { readonly signal?: AbortSignal; readonly cap?: number } = {},
 ): Promise<string | null> {
-  const eligible = (n: Named | undefined): n is Named => n !== undefined && (options.tags || n.prio === 2)
-  const suffix = (depth: number): string => (options.abbrev === 0 ? '' : `-${depth}-g${abbrevOf(commitOid, options.abbrev ?? 7)}`)
+  const suffix = (depth: number): string => `-${depth}-g${abbrevOf(commitOid, options.abbrev ?? undefined)}`
   const exact = named.get(commitOid)
-  if (eligible(exact)) return exact.name
+  if (exact !== undefined && (options.tags || exact.prio === 2)) {
+    const misnamed = exact.prio === 2 && exact.display !== exact.ref
+    return misnamed ? `${exact.display}${suffix(0)}` : exact.display
+  }
 
   interface Node {
-    when: number
-    parents: readonly string[]
+    readonly when: number
+    readonly parents: readonly string[]
     flags: number
   }
   const SEEN = 1
@@ -498,19 +530,20 @@ export async function describeCommit(
   const load = async (oid: string): Promise<Node> => {
     const known = nodes.get(oid)
     if (known !== undefined) return known
+    signal?.throwIfAborted()
     if (nodes.size >= cap) throw new DescribeError(`gave up after ${cap} commits`)
     const obj = await reader.readObject(oid)
     if (obj.type !== 'commit') throw new DescribeError(`${oid.slice(0, 12)} is not a commit`)
     const c = parseArchiveCommit(oid, obj.bytes)
-    const node = { when: c.committer.time, parents: c.parents, flags: 0 }
+    const node: Node = { when: c.committer.time, parents: c.parents, flags: 0 }
     nodes.set(oid, node)
     return node
   }
   // git's prio_queue by commit date, newest first; ties in insertion order.
   const queue: { oid: string; when: number; seq: number }[] = []
   let seq = 0
-  const put = (oid: string, when: number): void => {
-    queue.push({ oid, when, seq: seq++ })
+  const put = (oid: string): void => {
+    queue.push({ oid, when: (nodes.get(oid) as Node).when, seq: seq++ })
   }
   const get = (): string => {
     let best = 0
@@ -521,55 +554,76 @@ export async function describeCommit(
     }
     return (queue.splice(best, 1)[0] as (typeof queue)[number]).oid
   }
-  const visitParents = async (c: Node): Promise<void> => {
+  const flagsOf = (oid: string): number => (nodes.get(oid) as Node).flags
+  /** Queue `c`'s unseen parents and pass them its flags; `onParent` sees each (was it seen, its flags before). */
+  const visitParents = async (c: Node, onParent?: (oid: string, seen: boolean, before: number) => void): Promise<void> => {
     const parents = await Promise.all(c.parents.map(load))
     parents.forEach((p, i) => {
-      if ((p.flags & SEEN) === 0) put(c.parents[i] as string, p.when)
+      const oid = c.parents[i] as string
+      const seen = (p.flags & SEEN) !== 0
+      if (!seen) put(oid)
+      const before = p.flags
       p.flags |= c.flags
+      onParent?.(oid, seen, before)
     })
   }
 
   const matches: { name: string; depth: number; flag: number; order: number }[] = []
   let annotated = 0
-  let seen = 0
   let gaveUpOn: string | null = null
-  const start = await load(commitOid)
-  start.flags = SEEN
-  put(commitOid, start.when)
+  let seen = 0
+  ;(await load(commitOid)).flags = SEEN
+  put(commitOid)
   while (queue.length > 0) {
     const oid = get()
     const c = nodes.get(oid) as Node
     seen++
+    if (matches.length === MAX_CANDIDATES || matches.length === named.size) {
+      gaveUpOn = oid
+      break
+    }
     const n = named.get(oid)
-    if (n !== undefined) {
-      if (!options.tags && n.prio < 2) {
-        // git counts it, and goes on.
-      } else if (matches.length < MAX_CANDIDATES) {
-        const flag = 1 << (matches.length + 1)
-        matches.push({ name: n.name, depth: seen - 1, flag, order: matches.length + 1 })
-        c.flags |= flag
-        if (n.prio === 2) annotated++
-      } else {
-        gaveUpOn = oid
-        break
-      }
+    if (n !== undefined && (options.tags || n.prio === 2)) {
+      const flag = 1 << (matches.length + 1)
+      matches.push({ name: n.display, depth: seen - 1, flag, order: matches.length + 1 })
+      c.flags |= flag
+      if (n.prio === 2) annotated++
     }
     for (const m of matches) if ((c.flags & m.flag) === 0) m.depth++
-    if (annotated > 0 && queue.length === 0) break
+    // Stop if the last remaining path is already covered by the best candidate(s).
+    if (annotated > 0 && queue.length === 0) {
+      let bestDepth = Infinity
+      let bestWithin = 0
+      for (const m of matches) {
+        if (m.depth < bestDepth) {
+          bestDepth = m.depth
+          bestWithin = m.flag
+        } else if (m.depth === bestDepth) bestWithin |= m.flag
+      }
+      if ((c.flags & bestWithin) === bestWithin) break
+    }
     await visitParents(c)
   }
   if (matches.length === 0) return null
   matches.sort((a, b) => a.depth - b.depth || a.order - b.order)
   const best = matches[0] as (typeof matches)[number]
-  if (gaveUpOn !== null) put(gaveUpOn, (nodes.get(gaveUpOn) as Node).when)
-  // finish_depth_computation: walk on until every queued commit is within the best tag.
+  if (gaveUpOn !== null) put(gaveUpOn)
+  // finish_depth_computation: on until no queued commit is outside the best candidate.
+  const unflagged = new Set(queue.filter((q) => (flagsOf(q.oid) & best.flag) === 0).map((q) => q.oid))
   while (queue.length > 0) {
     const oid = get()
     const c = nodes.get(oid) as Node
     if ((c.flags & best.flag) !== 0) {
-      if (queue.every((q) => ((nodes.get(q.oid) as Node).flags & best.flag) !== 0)) break
-    } else best.depth++
-    await visitParents(c)
+      if (unflagged.size === 0) break
+    } else {
+      unflagged.delete(oid)
+      best.depth++
+    }
+    await visitParents(c, (p, wasSeen, before) => {
+      const after = flagsOf(p) & best.flag
+      if (!wasSeen && after === 0) unflagged.add(p)
+      if (wasSeen && (before & best.flag) === 0 && after !== 0) unflagged.delete(p)
+    })
   }
-  return `${best.name}${suffix(best.depth)}`
+  return options.abbrev === 0 ? best.name : `${best.name}${suffix(best.depth)}`
 }
