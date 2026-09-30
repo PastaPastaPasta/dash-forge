@@ -22,9 +22,7 @@ use forge_core::user_error::{codes, UserError};
 
 use crate::common::{resolve, Reader, RepoRef, Session};
 use crate::context::Ctx;
-use crate::fmt::{
-    cost_json, cost_line, dash_usd_price, FORK_PER_DOC_CREDITS, REPO_CREATE_ESTIMATE_CREDITS,
-};
+use crate::fmt::{cost_json, cost_line, REPO_CREATE_ESTIMATE_CREDITS};
 use crate::publish::Report;
 
 pub use crate::publish::init;
@@ -197,18 +195,22 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
             parent.display()
         )));
     }
-    let price = dash_usd_price();
-    let packs = RepoService::new(&client, &identity, &bridge)
+    let price = ctx.usd_price();
+    let svc = RepoService::new(&client, &identity, &bridge);
+    let packs = svc
         .read_pack_manifests(&parent)
         .await
-        .map_or(0, |m| {
-            forge_core::fork::plan_manifests(&m, &BTreeMap::new(), &BTreeSet::new()).len()
-        });
-    // repo + maintainer + config, one manifest per pack, and a few ref updates.
-    let estimate = REPO_CREATE_ESTIMATE_CREDITS + FORK_PER_DOC_CREDITS * (packs as u64 + 4);
+        .context("reading the parent's packs")
+        .map(|m| forge_core::fork::plan_manifests(&m, &BTreeMap::new(), &BTreeSet::new()).len())?;
+    let refs = svc
+        .read_refs(&parent)
+        .await
+        .context("reading the parent's refs")?
+        .len();
+    let estimate = fork_estimate(packs as u64, refs as u64);
     if !ctx.json {
         println!(
-            "Forking {} as {}/{slug} on {}\n  repo + {packs} pack manifest(s), nothing re-uploaded, + refs   {}",
+            "Forking {} as {}/{slug} on {}\n  repo + {packs} pack manifest(s), nothing re-uploaded, + {refs} ref(s)   {}",
             parent.display(),
             identity.id(),
             ctx.network_label(),
@@ -233,12 +235,26 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
     report_fork(ctx, &parent, &result, price)
 }
 
+/// URIs a fork's manifest records per pack for the quote: the parent's Platform locator and
+/// one external copy (each adds [`push_fees::URIS_PER_TARGET`]).
+const FORK_URIS_PER_PACK: u64 = 2;
+
+/// The pre-sign quote for a fork of a parent with `packs` packs and `refs` refs (QW2-020: it
+/// priced each manifest and ref at 20M credits and was exceeded 1.5x): the repository's three
+/// documents, one first-of-kind manifest per pack, and a first update per ref, as `git push`
+/// prices them. An upper bound.
+fn fork_estimate(packs: u64, refs: u64) -> u64 {
+    use forge_core::cost::push_fees;
+    let manifest = push_fees::MANIFEST_FIRST + FORK_URIS_PER_PACK * push_fees::URIS_PER_TARGET;
+    REPO_CREATE_ESTIMATE_CREDITS + packs * manifest + push_fees::estimate_ref_updates(refs)
+}
+
 /// Print (or `--json`-emit) a finished fork; an incomplete one is E503.
 fn report_fork(
     ctx: &Ctx,
     parent: &forge_core::scope::RepoRef,
     result: &forge_core::fork::ForkResult,
-    price: f64,
+    price: Option<f64>,
 ) -> Result<()> {
     let fork = &result.created.repo;
     let nothing_new = result.created.already_existed()
@@ -665,6 +681,16 @@ async fn backend_set(ctx: &Ctx, repo: &str, mode: u8, label: &str) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// QW2-020: a fork of a parent with two packs and two refs was quoted 0.0032 DASH and
+    /// charged 0.00494466 on bonsia.
+    #[test]
+    fn a_fork_quote_covers_its_charge() {
+        assert!(fork_estimate(2, 2) >= 494_466_000);
+        assert!(fork_estimate(2, 2) < 2 * 494_466_000);
+        assert!(fork_estimate(3, 2) > fork_estimate(2, 2));
+        assert!(fork_estimate(2, 3) > fork_estimate(2, 2));
+    }
 
     #[test]
     fn a_clone_destination_must_be_missing_or_empty() {

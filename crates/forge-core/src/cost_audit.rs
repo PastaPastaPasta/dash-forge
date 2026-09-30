@@ -3,9 +3,9 @@
 //! forge-v2 keeps no spend ledger: a document records who created it (`$ownerId`) and when
 //! (`$createdAt`), never what it cost. So this is not a balance-change history (the web app's
 //! `forge-web/lib/spend.ts` keeps one, but only in the browser that made the writes) — it is
-//! `(proved document count) x (that document type's flat create cost)`, the same estimate
-//! shape as forge-web's `BASE_CREDITS` table (see `docs/guides/costs.md` for how the two can
-//! diverge: a refund, a first-of-its-kind write, or a browser that never saw a write at all).
+//! `(proved document count) x (that document type's typical create cost on bonsia)` (see
+//! `docs/guides/costs.md` for how it and the web app's ledger can diverge: a refund, a
+//! first-of-its-kind write, or a browser that never saw a write at all).
 //!
 //! Which contract holds which type is never hard-coded here: [`crate::layout::ForgeContract`]
 //! is the one place that answers that, and its own test cross-checks it against the generated
@@ -66,6 +66,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::cost::push_fees;
 use crate::error::{Error, Result};
 use crate::layout::ForgeContract;
 use crate::platform::{self, FetchedDocument, FieldValue, PlatformClient, QueryFilter, QueryOrder};
@@ -120,39 +121,66 @@ pub struct AuditReport {
     pub excluded_types: Vec<&'static str>,
 }
 
-/// The estimated create cost of one `doc_type` document, in credits — forge-web's
-/// `BASE_CREDITS` table (`forge-web/lib/spend.ts`), so the CLI and the web app agree. A flat
-/// per-type figure, not a measurement of any one document: a first-of-its-kind write (a
-/// repo's first push, an index's first fill) or an unusually large one costs more than its
-/// row here says (`docs/guides/costs.md` has the measured ranges).
+/// The typical create cost of one `doc_type` document, in credits: what the same write paid on
+/// devnet bonsia (Platform 4.2.0-beta.7, 2026-09-30, QA wave 2's balance deltas), between a
+/// repository's first of its kind and a later one where both were seen. A flat per-type
+/// figure, not a measurement of any one document: an unusually large one costs more than its
+/// row says (`docs/guides/costs.md` has the measured ranges).
+///
+/// QW2-021: this table was forge-web's moutai steady-state bases (a `packManifest` at 60M, a
+/// `refUpdate` at 45M), and an identity that had created and pushed one repository was
+/// audited at 0.00417 DASH for the 0.00685 it paid.
 fn base_credits(doc_type: &str) -> u64 {
     match doc_type {
-        "repo" => 56_500_000,
-        "maintainer" | "writer" => 40_000_000,
-        "config" => 35_500_000,
-        "release" => 53_300_000,
-        "label" | "refUpdate" | "protectedRefUpdate" | "milestone" | "checkRun" => 45_000_000,
-        "packManifest" => 60_000_000,
-        "chunk" => 140_000_000,
-        "issue" => 59_000_000,
-        "patch" => 72_000_000,
-        "comment" => 52_000_000,
-        "event" => 43_000_000,
-        "authorEvent" => 41_500_000,
-        "review" => 35_900_000,
-        "policy" => 34_000_000,
-        "star" => 18_000_000,
-        "follow" => 28_300_000,
-        "starBeat" => 15_300_000,
-        "watch" => 27_400_000,
-        // profile, webhook, runner, topic, repoKey, consent, transition: no measured figure of
-        // their own yet, so forge-web falls back to a round default and so do we.
+        // Measured, bonsia (credits):
+        // - a first repository (web, OB-7): repo 81.7M, maintainer 48.1M, config 35.5M; a
+        //   runner enrolment 47.3M;
+        // - a first push to your own storage: 521.1M for four manifests (pack, browse index,
+        //   the history index's two parts) and a ref's first update; a later one 410M;
+        // - a repository's first issue 118.7M-120.9M, its second 80.1M; pull requests
+        //   130.1M-133.9M; a comment 65.0M; an issue close 74.1M; an approving review 49.6M;
+        // - a first release with one asset 93.9M, an unpublish revision 70.4M;
+        // - a check run's first report 122.1M, a second name's 81.6M;
+        // - forge-community (web, N-17): star 19.4M, starBeat 19.8M, a repository's first
+        //   watch 37.6M, follow 47.2M, consent 30.8M.
+        // Events are priced at the importer's calibrated 58.4M (beta.6); labels, milestones and
+        // policies were not measured on bonsia.
+        "repo" => 82_000_000,
+        "maintainer" | "writer" | "runner" => 48_000_000,
+        "config" => 36_000_000,
+        "packManifest" | "issue" | "checkRun" => 100_000_000,
+        "refUpdate" | "protectedRefUpdate" => 80_000_000,
+        "release" => 85_000_000,
+        "patch" => 130_000_000,
+        "comment" => 65_000_000,
+        "transition" => 74_000_000,
+        "review" => 50_000_000,
+        "event" | "authorEvent" => 58_000_000,
+        "label" | "milestone" | "follow" => 45_000_000,
+        "policy" => 40_000_000,
+        "star" | "starBeat" => 20_000_000,
+        "watch" => 35_000_000,
+        "consent" => 31_000_000,
+        // A chunk priced alone (its manifest's size, when it has one, prices it exactly:
+        // [`chunk_credits`]).
+        "chunk" => push_fees::CHUNK_FLAT,
+        // profile, webhook, topic, repoKey: no measured figure of their own yet.
         _ => DEFAULT_BASE_CREDITS,
     }
 }
 
-/// forge-web's fallback for a document type it has no measured figure for.
+/// The fallback for a document type with no measured figure.
 const DEFAULT_BASE_CREDITS: u64 = 50_000_000;
+
+/// What a pack manifest's `chunkCount` chunks cost, from its `sizeBytes` when it records one
+/// (`git push`'s calibrated chunk fees, `push_fees::chunks`: a full 14.7 KB chunk is ~0.0055
+/// DASH, not the flat figure), else the flat figure per chunk.
+fn chunk_credits(chunk_count: u64, size_bytes: Option<u64>) -> u64 {
+    match size_bytes {
+        Some(bytes) if bytes > 0 && chunk_count > 0 => push_fees::chunks(bytes),
+        _ => base_credits("chunk") * chunk_count,
+    }
+}
 
 /// One [`GLOBAL_TYPES`] or [`REPO_SCANNED_TYPES`] entry: a document type, the contract that
 /// holds it, and the ascending order fields applied after that pass's equality filter(s) — the
@@ -389,6 +417,18 @@ impl Totals {
     /// chunks, so `since_ms` is applied against the manifest's own `$createdAt`. A no-op for
     /// `n == 0`.
     fn record_n(&mut self, doc_type: &'static str, n: u64, doc: &FetchedDocument) {
+        self.record_priced(doc_type, n, base_credits(doc_type) * n, doc);
+    }
+
+    /// [`Totals::record_n`] with the `n` documents' `credits` given (a pack's chunks, priced
+    /// by its size).
+    fn record_priced(
+        &mut self,
+        doc_type: &'static str,
+        n: u64,
+        credits: u64,
+        doc: &FetchedDocument,
+    ) {
         if n == 0 {
             return;
         }
@@ -397,7 +437,6 @@ impl Totals {
                 return;
             }
         }
-        let credits = base_credits(doc_type) * n;
         let type_tally = self.by_type.entry(doc_type).or_default();
         type_tally.count += n;
         type_tally.credits += credits;
@@ -584,7 +623,9 @@ impl Auditor<'_> {
                 // ~14.7 KB `chunk` body just to count rows, and its `$createdAt` lets `--since`
                 // actually date them.
                 for d in &docs {
-                    totals.record_n("chunk", d.field_u64("chunkCount").unwrap_or(0), d);
+                    let n = d.field_u64("chunkCount").unwrap_or(0);
+                    let credits = chunk_credits(n, d.field_u64("sizeBytes"));
+                    totals.record_priced("chunk", n, credits, d);
                 }
             }
         }
@@ -768,15 +809,7 @@ mod tests {
         ] {
             assert!(base_credits(doc_type) > 0, "{doc_type} has no figure");
         }
-        for doc_type in [
-            "profile",
-            "webhook",
-            "runner",
-            "topic",
-            "repoKey",
-            "consent",
-            "transition",
-        ] {
+        for doc_type in ["profile", "webhook", "topic", "repoKey"] {
             assert_eq!(
                 base_credits(doc_type),
                 DEFAULT_BASE_CREDITS,
@@ -1014,6 +1047,37 @@ mod tests {
             0,
             "a manifest before --since must drop all of its chunks"
         );
+    }
+
+    /// QW2-021: an identity that created one repository and pushed it once to its own storage
+    /// (repo, maintainer, config, four manifests, one ref update) paid 0.00685 DASH on bonsia,
+    /// and was audited at 0.00417 (-39 %).
+    #[test]
+    fn a_created_and_pushed_repository_is_audited_near_its_charge() {
+        let audited: u64 = ["repo", "maintainer", "config", "refUpdate"]
+            .iter()
+            .map(|t| base_credits(t))
+            .sum::<u64>()
+            + 4 * base_credits("packManifest");
+        let paid = 685_000_000_u64;
+        assert!(
+            audited.abs_diff(paid) * 100 / paid <= 15,
+            "{audited} vs {paid}"
+        );
+    }
+
+    /// A pack's chunks are priced by its size, as `git push` prices them: a full chunk is far
+    /// above the flat figure, and a manifest without a size falls back to it.
+    #[test]
+    fn chunks_are_priced_by_their_packs_size() {
+        let full = crate::pack::DOC_PAYLOAD_MAX as u64;
+        assert_eq!(
+            chunk_credits(2, Some(2 * full)),
+            push_fees::chunks(2 * full)
+        );
+        assert!(chunk_credits(1, Some(full)) > 3 * base_credits("chunk"));
+        assert_eq!(chunk_credits(3, None), 3 * base_credits("chunk"));
+        assert_eq!(chunk_credits(0, Some(100)), 0);
     }
 
     #[test]

@@ -192,7 +192,7 @@ async fn add_encryption(
         .fix("run it again and type the recovery words when asked, or pass --master <identity file> with the words")
         .note("nothing was sent")
     })?;
-    let price = crate::fmt::dash_usd_price();
+    let price = ctx.usd_price();
     if !ctx.json {
         println!(
             "Add ENCRYPTION key #{key_id} to {} (derived from the recovery words), {}",

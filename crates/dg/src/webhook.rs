@@ -22,7 +22,7 @@ use forge_core::webhooks::{
 
 use crate::common::{resolve, Reader, RepoRef};
 use crate::context::Ctx;
-use crate::fmt::{cost_json, cost_line, dash_usd_price};
+use crate::fmt::{cost_json, cost_line};
 use crate::secret_out::{self, Stream, Surroundings};
 
 /// `dg webhook` subcommands.
@@ -144,7 +144,7 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
         .await
         .context("preparing the webhook")?;
 
-    let price = dash_usd_price();
+    let price = ctx.usd_price();
     let credits = estimate(prepared.approx_bytes).total();
     if !ctx.json {
         println!(

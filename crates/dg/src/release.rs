@@ -26,7 +26,7 @@ use forge_core::user_error::{codes, UserError};
 
 use crate::common::{Reader, Session};
 use crate::context::Ctx;
-use crate::fmt::{cost_json, cost_line, dash_usd_price, short};
+use crate::fmt::{cost_json, cost_line, short};
 use crate::{ReleaseCommand, ReleaseCreateArgs};
 
 /// URIs an asset records (the contract's whole `assets` JSON is 4096 bytes).
@@ -123,6 +123,7 @@ fn copies(n: usize) -> String {
     format!("{n} cop{}", if n == 1 { "y" } else { "ies" })
 }
 
+#[allow(clippy::too_many_lines)] // one linear flow: checks, quote, uploads, write, report
 async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
     let s = Session::open_for_write(ctx, &args.repo, "release not created").await?;
     // A tag the contract would refuse is refused before any asset is uploaded.
@@ -176,9 +177,15 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
             }
         )
     });
+    let quote = release_quote(
+        existing.as_ref(),
+        args,
+        targets.as_ref().map_or(0, |t| t.0.len()),
+    );
     ctx.confirm_or_cancel(&format!(
-        "Publish release {tag} of {}{with}{kept}? (one small document, ~0.0002 DASH)",
-        s.repo.display()
+        "Publish release {tag} of {}{with}{kept}? (one document, {})",
+        s.repo.display(),
+        cost_line(quote, ctx.usd_price())
     ))?;
     let mut uploaded = Vec::new();
     if let Some((targets, required)) = &targets {
@@ -206,7 +213,7 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
         })
     })?;
     let spent = s.spent_since(before).await;
-    let price = dash_usd_price();
+    let price = ctx.usd_price();
     ctx.emit(
         json!({
             "status": "created",
@@ -331,9 +338,13 @@ async fn create_sealed(ctx: &Ctx, args: &ReleaseCreateArgs, s: &Session) -> Resu
     ctx.confirm_or_cancel(&format!(
         "Publish sealed release {tag} of {}{with}? A private release holds 1507 bytes of tag, \
          name, notes preview and provenance; longer notes continue in its sealed asset list. \
-         What you do not change is kept from the tag's last revision. (one small document, \
-         ~0.0002 DASH, plus one for a new asset list)",
-        s.repo.display()
+         What you do not change is kept from the tag's last revision. (one document, and one \
+         for a new asset list: {})",
+        s.repo.display(),
+        cost_line(
+            crate::quote::sealed_release(true, targets.as_ref().map_or(1, |t| t.0.len() as u64)),
+            ctx.usd_price()
+        )
     ))?;
     let store = targets.as_ref().map(|(t, required)| ReleaseStore {
         targets: t.iter().map(|t| t as &dyn StorageTarget).collect(),
@@ -365,7 +376,7 @@ async fn create_sealed(ctx: &Ctx, args: &ReleaseCreateArgs, s: &Session) -> Resu
             })
         })?;
     let spent = s.spent_since(before).await;
-    let price = dash_usd_price();
+    let price = ctx.usd_price();
     ctx.emit(
         json!({
             "status": "created",
@@ -445,13 +456,17 @@ async fn unpublish(ctx: &Ctx, repo: &str, tag: &str) -> Result<()> {
         return Err(release_not_live(repo, tag).into());
     }
     ctx.confirm_or_cancel(&format!(
-        "Unpublish release {tag} of {}? (one small document, ~0.0002 DASH)",
-        s.repo.display()
+        "Unpublish release {tag} of {}? (one document, {})",
+        s.repo.display(),
+        cost_line(
+            crate::quote::release(tag.len() as u64, 0, 0),
+            ctx.usd_price()
+        )
     ))?;
     let before = s.balance().await;
     let doc_id = collab.unpublish_release(&s.repo, tag).await?;
     let spent = s.spent_since(before).await;
-    let price = dash_usd_price();
+    let price = ctx.usd_price();
     ctx.emit(
         json!({
             "status": "unpublished",
@@ -493,8 +508,9 @@ async fn unpublish_sealed(ctx: &Ctx, repo: &str, tag: &str, s: &Session) -> Resu
         return Err(release_not_live(repo, tag).into());
     };
     ctx.confirm_or_cancel(&format!(
-        "Unpublish sealed release {tag} of {}? (one small document, ~0.0002 DASH)",
-        s.repo.display()
+        "Unpublish sealed release {tag} of {}? (one document, {})",
+        s.repo.display(),
+        cost_line(crate::quote::sealed_release(false, 0), ctx.usd_price())
     ))?;
     let input = ReleaseInput {
         tag_name: tag.to_string(),
@@ -508,7 +524,7 @@ async fn unpublish_sealed(ctx: &Ctx, repo: &str, tag: &str, s: &Session) -> Resu
         .await
         .map_err(|e| anyhow::Error::from(e).context("nothing was written"))?;
     let spent = s.spent_since(before).await;
-    let price = dash_usd_price();
+    let price = ctx.usd_price();
     ctx.emit(
         json!({
             "status": "unpublished",
@@ -582,6 +598,46 @@ fn uploads_replace(uploads: &[PathBuf], name: &str) -> bool {
 /// and notes stay unless given, and its assets stay, except those a new upload of the same
 /// name replaces. `--yanked` is the one field each revision states afresh (a republish
 /// without it un-yanks).
+/// The longest URI an uploaded asset records (`ReleaseAsset::uris`), for a quote made before
+/// the upload names them.
+const MAX_ASSET_URI_BYTES: u64 = 300;
+
+/// The quote for a public release revision (QW2-020): its tag, name and notes as
+/// [`superseding_input`] carries them forward, the assets it keeps, and each new asset's name
+/// and up to one URI per storage target.
+fn release_quote(existing: Option<&Release>, args: &ReleaseCreateArgs, targets: usize) -> u64 {
+    let keep = |given: &str, old: &str| {
+        if given.is_empty() {
+            old.len()
+        } else {
+            given.len()
+        }
+    };
+    let (name, notes) = existing.map_or((args.name.len(), args.notes.len()), |r| {
+        (keep(&args.name, &r.name), keep(&args.notes, &r.notes))
+    });
+    let kept: Vec<&ReleaseAsset> = existing
+        .into_iter()
+        .flat_map(|r| &r.assets)
+        .filter(|a| !uploads_replace(&args.assets, &a.name))
+        .collect();
+    let kept_bytes: usize = kept
+        .iter()
+        .map(|a| a.name.len() + a.uris.iter().map(String::len).sum::<usize>())
+        .sum();
+    let uris = targets.min(MAX_ASSET_URIS) as u64;
+    let new_bytes: u64 = args
+        .assets
+        .iter()
+        .map(|p| upload_name(p).map_or(0, str::len) as u64 + uris * MAX_ASSET_URI_BYTES)
+        .sum();
+    crate::quote::release(
+        (args.tag.len() + name + notes) as u64,
+        (kept.len() + args.assets.len()) as u64,
+        kept_bytes as u64 + new_bytes,
+    )
+}
+
 fn superseding_input(
     existing: Option<&Release>,
     args: &ReleaseCreateArgs,

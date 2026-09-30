@@ -8,10 +8,8 @@
 use anyhow::{Context, Result};
 use serde_json::json;
 
-use forge_core::collab::v2::{
-    kind_route, state_actor, Collab, EventPayload, PatchView, StateRoute,
-};
-use forge_core::rules::v2::{Actor, StateAction};
+use forge_core::collab::v2::{kind_route, Collab, EventPayload, PatchView, StateRoute};
+use forge_core::rules::v2::StateAction;
 use forge_core::rules::EventKind;
 use forge_core::scope::RepoRef as Repo;
 use forge_core::user_error::{codes, UserError};
@@ -19,7 +17,7 @@ use forge_core::user_error::{codes, UserError};
 use super::{estimate, event_estimate, open_pr, open_pr_read, Est, Pr};
 use crate::common::{resolve_identity, Session};
 use crate::context::Ctx;
-use crate::fmt::{cost_line, dash_usd_price, route_text, safe, short, transition_route_text};
+use crate::fmt::{cost_line, route_text, safe, short, transition_route_text};
 use crate::git;
 
 /// The route an event of `kind` by the signer takes, or E601 before anything is signed.
@@ -81,7 +79,7 @@ async fn post(
             StateRoute::Member => "event",
             StateRoute::Author => "authorEvent",
         },
-        cost_line(est, dash_usd_price())
+        cost_line(est, ctx.usd_price())
     ))?;
     Ok(collab
         .post_target_event(&pr.s.repo, &pr.view.patch.target(), kind, payload)
@@ -135,7 +133,7 @@ pub async fn edit(
     };
     ctx.confirm_or_cancel(&format!(
         "Edit PR #{number}? (one document replace, {}{old_epoch})",
-        cost_line(est, dash_usd_price())
+        cost_line(est, ctx.usd_price())
     ))?;
     let landed =
         pr.s.collab()
@@ -286,15 +284,11 @@ pub async fn set_draft(ctx: &Ctx, repo: &str, number: u64, draft: bool) -> Resul
     }
     let collab = pr.s.collab();
     let target = pr.view.patch.target();
-    let me = collab.signer_id()?;
-    let role = collab.signer_role(&pr.s.repo).await?;
-    let est = match state_actor(role, &me, &target) {
-        Actor::Author => estimate(Est::AuthorEvent, 0),
-        _ => estimate(Est::Event, 0),
-    };
+    // A transition, whoever writes it (QW-043: it was quoted as an event, under its charge).
+    let est = crate::quote::TRANSITION;
     ctx.confirm_or_cancel(&format!(
         "Mark PR #{number} {word}? (one transition, {})",
-        cost_line(est, dash_usd_price())
+        cost_line(est, ctx.usd_price())
     ))?;
     let change = collab.set_state(&pr.s.repo, &target, action, None).await?;
     ctx.emit(
@@ -338,7 +332,7 @@ pub async fn set_locked(ctx: &Ctx, repo: &str, number: u64, lock: bool) -> Resul
     }
     ctx.confirm_or_cancel(&format!(
         "{verb} the conversation of PR #{number}? (one transition, {}; members only)",
-        cost_line(estimate(Est::Event, 0), dash_usd_price())
+        cost_line(crate::quote::TRANSITION, ctx.usd_price())
     ))?;
     let collab = pr.s.collab();
     let target = pr.view.patch.target();

@@ -45,7 +45,7 @@ use forge_core::user_error::{codes, UserError};
 
 use crate::common::{number_arg, resolve, Reader, RepoRef, Session};
 use crate::context::Ctx;
-use crate::fmt::{cost_json, cost_line, dash_usd_price, safe, short, transition_route_text};
+use crate::fmt::{cost_json, cost_line, safe, short, transition_route_text};
 use crate::git::{self, MergePlan};
 use crate::PrCommand;
 
@@ -350,15 +350,24 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
             short(&head_oid)
         );
     }
-    ctx.confirm_or_cancel(if args.draft {
-        "Open it as a draft? (the PR and a draft transition: two small documents, ~0.0002 DASH)"
+    // The PR's title, body and ref names are its text (QW2-020: this was a fixed "~0.0001").
+    let text = input.title.len()
+        + input.body.len()
+        + input.base_ref_name.len()
+        + input.source_ref_name.as_deref().map_or(0, str::len);
+    let pr_quote = crate::quote::target_create(text as u64);
+    let price = ctx.usd_price();
+    ctx.confirm_or_cancel(&if args.draft {
+        format!(
+            "Open it as a draft? (the PR and a draft transition: two documents, {})",
+            cost_line(pr_quote + crate::quote::TRANSITION, price)
+        )
     } else {
-        "Open it? (one small document, ~0.0001 DASH)"
+        format!("Open it? (one document, {})", cost_line(pr_quote, price))
     })?;
     let before = s.balance().await;
     let created = s.collab().create_patch(handle, &input, &journal).await?;
     let spent = s.spent_since(before).await;
-    let price = dash_usd_price();
     ctx.emit(
         json!({
             "status": "created",
@@ -1332,7 +1341,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         );
     }
     ctx.confirm_or_cancel(&format!(
-        "Merge PR #{number}{}? ({}{}; ~0.0003 DASH plus the pack if new objects are stored)",
+        "Merge PR #{number}{}? ({}{}; {}, plus Platform storage for any new objects)",
         if not_passing.is_empty() {
             String::new()
         } else {
@@ -1347,7 +1356,11 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
             ", then deletes the source branch"
         } else {
             ""
-        }
+        },
+        cost_line(
+            crate::quote::merge(!event_only, delete.is_some(), merge_stores_on_platform()),
+            ctx.usd_price()
+        )
     ))?;
 
     // What the merge costs: the push (the helper pays from this identity) and the events.
@@ -1453,7 +1466,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     let merged = after.as_ref().is_some_and(|v| v.state.merged);
     let on_base = after.as_ref().and_then(|v| v.state.merge_on_base);
     let spent = s.spent_since(before).await;
-    let price = dash_usd_price();
+    let price = ctx.usd_price();
     ctx.emit(
         json!({
             "status": if merged { "merged" } else { "merge_recorded" },
@@ -2277,6 +2290,19 @@ pub(crate) fn fetch_base_and_head(
 /// `git [-c storage…] [-c dash.confirm=never] push -q <url> <oid>:<ref>`: the user's storage
 /// settings, and `--yes` passed on so the helper's cost guard does not ask again (it has no
 /// terminal here and would refuse with E801).
+/// Whether a merge's push from here stores its bytes on Platform, as [`push_argv`]'s push
+/// resolves its storage: `dash.storage` in the current repository names Platform, or nothing is
+/// set (Platform is the default). An unreadable policy counts as Platform, the dearer case.
+fn merge_stores_on_platform() -> bool {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    crate::storage::push_policy_in(&cwd).map_or(true, |p| {
+        p.targets
+            .iter()
+            .any(|t| t == forge_core::storage::PLATFORM_PROFILE)
+            || p.platform_fallback
+    })
+}
+
 pub(crate) fn push_argv(ctx: &Ctx, url: &str, oid: &str, dst: &str) -> Vec<String> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     merge_push_argv(

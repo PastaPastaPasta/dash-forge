@@ -15,9 +15,7 @@ use forge_core::user_error::{codes, UserError};
 
 use crate::common::{number_arg, Reader, Session};
 use crate::context::Ctx;
-use crate::fmt::{
-    cost_json, cost_line, dash_usd_price, safe, transition_phrase, transition_route_text, with_name,
-};
+use crate::fmt::{cost_json, cost_line, safe, transition_phrase, transition_route_text, with_name};
 use crate::{IssueCommand, IssueListArgs};
 
 /// Dispatch an `issue` subcommand.
@@ -577,7 +575,7 @@ async fn edit_comment(ctx: &Ctx, repo: &str, comment_id: &str, body: &str) -> Re
     let before = s.balance().await;
     let edited = s.collab().update_comment(&s.repo, comment_id, body).await?;
     let spent = s.spent_since(before).await;
-    let price = dash_usd_price();
+    let price = ctx.usd_price();
     ctx.emit(
         json!({
             "status": if edited { "edited" } else { "unchanged" },
@@ -612,7 +610,7 @@ async fn delete_comment(ctx: &Ctx, repo: &str, comment_id: &str) -> Result<()> {
     let before = s.balance().await;
     let deleted = there && s.collab().delete_comment(&s.repo, comment_id).await?;
     let spent = s.spent_since(before).await;
-    let price = dash_usd_price();
+    let price = ctx.usd_price();
     ctx.emit(
         json!({
             "status": if deleted { "deleted" } else { "absent" },
@@ -638,8 +636,12 @@ async fn delete_comment(ctx: &Ctx, repo: &str, comment_id: &str) -> Result<()> {
 async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "issue not created").await?;
     ctx.confirm_or_cancel(&format!(
-        "Open issue {title:?} in {}? (one small document, ~0.0001 DASH)",
-        s.repo.display()
+        "Open issue {title:?} in {}? (one document, {})",
+        s.repo.display(),
+        cost_line(
+            crate::quote::target_create((title.len() + body.len()) as u64),
+            ctx.usd_price()
+        )
     ))?;
     let before = s.balance().await;
     let created = s
@@ -647,7 +649,7 @@ async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str) -> Result<()> {
         .create_issue(&s.repo, title, body, &default_journal_dir()?)
         .await?;
     let spent = s.spent_since(before).await;
-    let price = dash_usd_price();
+    let price = ctx.usd_price();
 
     ctx.emit(
         json!({
@@ -717,7 +719,7 @@ async fn edit(
         .update_target(&s.repo, &target, title, body)
         .await?;
     let spent = s.spent_since(before).await;
-    let price = dash_usd_price();
+    let price = ctx.usd_price();
     ctx.emit(
         json!({
             "status": if edited { "edited" } else { "unchanged" },

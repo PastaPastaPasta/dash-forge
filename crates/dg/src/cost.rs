@@ -12,7 +12,8 @@ use forge_core::storage::human_bytes;
 use forge_import::budget::{collab_doc_credits, CollabDoc};
 
 use crate::context::Ctx;
-use crate::fmt::{cost_json, cost_line, dash_usd_price, REPO_CREATE_ESTIMATE_CREDITS};
+use crate::fmt::{cost_json, cost_line, REPO_CREATE_ESTIMATE_CREDITS};
+use crate::quote::FIRST_OF_KIND_EXTRA;
 use crate::{Backend, CostCommand};
 
 /// Dispatch a `cost` subcommand.
@@ -38,7 +39,7 @@ pub async fn run(ctx: &Ctx, cmd: &CostCommand) -> Result<()> {
 /// identity spend estimate; moved here so it stays reachable — see `docs/guides/costs.md`
 /// §What each action costs).
 fn prices_cmd(ctx: &Ctx) {
-    let price = dash_usd_price();
+    let price = ctx.usd_price();
     let ops = price_table();
     let rows: Vec<_> = ops
         .iter()
@@ -52,18 +53,15 @@ fn prices_cmd(ctx: &Ctx) {
         }),
         || {
             println!("Per-operation cost reference (upper bounds; see `dg cost audit` for what you've spent):");
+            if price.is_none() {
+                println!("  ({} on {})", crate::fmt::NO_CASH_VALUE, ctx.network_label());
+            }
             for (op, credits) in ops {
                 println!("  {op:<26} {}", cost_line(credits, price));
             }
         },
     );
 }
-
-/// What a write that is the first of its kind pays beyond a later one of the same size: its
-/// new index subtrees (a repository's first issue, a thread's first comment). Measured on
-/// devnet bonsia (Platform 4.2.0-beta.7, 2026-09-30): a repository's first issue 120.9M
-/// credits, its second 80.1M (QW-038: the table priced the later one, and was exceeded).
-const FIRST_OF_KIND_EXTRA: u64 = 50_000_000;
 
 /// `dg cost prices`' rows: upper bounds from the fees measured on moutai and bonsia
 /// (`push_fees`, the importer's calibrated collaboration model); docs/guides/costs.md has the
@@ -349,7 +347,7 @@ fn estimate_cmd(
         (None, None) => Target::backend(Backend::Platform),
     };
     let q = quote(&target, &input);
-    let price = dash_usd_price();
+    let price = ctx.usd_price();
     let label = target.label.as_str();
     // Objects only price the browse index's chunks, which only Platform storage pays for.
     let assumed = if input.counted() || q.chunks == 0 {
@@ -428,7 +426,7 @@ async fn audit(
     since: Option<&str>,
     repo: Option<&str>,
 ) -> Result<()> {
-    let price = dash_usd_price();
+    let price = ctx.usd_price();
 
     let Some(repo) = repo else {
         return identity_audit(ctx, identity, since, price).await;
@@ -438,33 +436,94 @@ async fn audit(
     // A read: a public repository's key is never opened (QW-034).
     let reader = crate::common::Reader::open(ctx, repo).await?;
     let handle = &reader.repo;
+    // A failed read is an error, not an empty repository (QW2-021: it read as "0 packs").
     let manifests = reader
         .service()
         .read_pack_manifests(handle)
         .await
-        .unwrap_or_default();
-    let total_bytes: u64 = manifests.iter().map(|m| m.size_bytes).sum();
-    let deposit_locked: u64 = est_deposit(total_bytes);
+        .context("reading the repository's pack manifests")?;
+    let tally = StorageTally::of(&manifests);
 
     ctx.emit(
         json!({
             "mode": "repo_storage_tally",
             "repoId": handle.id(),
             "packCount": manifests.len(),
-            "packBytes": total_bytes,
-            "depositLocked": cost_json(deposit_locked, price),
+            "packBytes": tally.platform.bytes + tally.external.bytes,
+            "platformPacks": tally.platform.count,
+            "platformBytes": tally.platform.bytes,
+            "externalPacks": tally.external.count,
+            "externalBytes": tally.external.bytes,
+            "depositLocked": cost_json(tally.deposit_locked(), price),
         }),
         || {
             println!("Storage tally for {}:", handle.display());
             println!(
-                "  packs:           {} ({total_bytes} bytes)",
-                manifests.len()
+                "  packs:           {} ({} bytes)",
+                manifests.len(),
+                tally.platform.bytes + tally.external.bytes
             );
-            println!("  deposit locked:  {}", cost_line(deposit_locked, price));
-            println!("  (packs are permanent: the deposit is not refundable)");
+            println!(
+                "  on Platform:     {} ({} bytes), deposit locked {}{}",
+                tally.platform.count,
+                tally.platform.bytes,
+                cost_line(tally.deposit_locked(), price),
+                if tally.platform.count > 0 {
+                    " (packs are permanent: the deposit is not refundable)"
+                } else {
+                    ""
+                }
+            );
+            if tally.external.count > 0 {
+                println!(
+                    "  elsewhere:       {} ({} bytes) off Platform (a bucket or IPFS, or a fork's parent), no Platform deposit",
+                    tally.external.count, tally.external.bytes
+                );
+            }
         },
     );
     Ok(())
+}
+
+/// Packs and their bytes.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Stored {
+    count: usize,
+    bytes: u64,
+}
+
+/// A repository's pack manifests split by where the bytes are: Platform `chunk` documents
+/// (storage tier 0, which lock a deposit), or external storage (tier 1: a bucket, IPFS, or a
+/// fork's reference to its parent's copies), which Platform holds no bytes of (QW2-021).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct StorageTally {
+    platform: Stored,
+    external: Stored,
+}
+
+impl StorageTally {
+    fn of(manifests: &[forge_core::repo::PackManifestInfo]) -> Self {
+        let mut t = Self::default();
+        for m in manifests {
+            let side = if m.storage == 0 && m.chunk_count > 0 {
+                &mut t.platform
+            } else {
+                &mut t.external
+            };
+            side.count += 1;
+            side.bytes += m.size_bytes;
+        }
+        t
+    }
+
+    /// The storage deposit Platform's chunks of these packs hold.
+    fn deposit_locked(&self) -> u64 {
+        if self.platform.count == 0 {
+            0
+        } else {
+            est_deposit(self.platform.bytes)
+        }
+    }
 }
 
 /// An identity-wide spend estimate: total, per document type, per repository. With neither
@@ -476,7 +535,7 @@ async fn identity_audit(
     ctx: &Ctx,
     identity: Option<&str>,
     since: Option<&str>,
-    price: f64,
+    price: Option<f64>,
 ) -> Result<()> {
     let client = ctx.connect().await?;
     let identity_id = match identity {
@@ -499,7 +558,7 @@ async fn identity_audit(
 }
 
 /// The `--json` payload for an identity spend [`AuditReport`].
-fn audit_json(report: &AuditReport, price: f64) -> serde_json::Value {
+fn audit_json(report: &AuditReport, price: Option<f64>) -> serde_json::Value {
     json!({
         "mode": "identity_spend_estimate",
         "identityId": report.identity_id,
@@ -525,7 +584,7 @@ fn audit_json(report: &AuditReport, price: f64) -> serde_json::Value {
 }
 
 /// The human-readable rendering of an identity spend [`AuditReport`].
-fn print_audit(report: &AuditReport, price: f64) {
+fn print_audit(report: &AuditReport, price: Option<f64>) {
     println!("Spend estimate for {}:", report.identity_id);
     if let Some(since_ms) = report.since_ms {
         println!("  since:  {} UTC", format_utc(since_ms));
@@ -894,6 +953,69 @@ mod estimate_tests {
         };
         assert!(row("issue") >= 120_878_000);
         assert!(row("comment") >= collab_doc_credits(CollabDoc::Comment, 500));
+    }
+}
+
+#[cfg(test)]
+mod tally_tests {
+    use super::*;
+    use forge_core::repo::PackManifestInfo;
+
+    fn manifest(storage: u64, chunk_count: u64, size_bytes: u64) -> PackManifestInfo {
+        PackManifestInfo {
+            document_id: String::new(),
+            created_at: 0,
+            owner_id: String::new(),
+            pack_hash: [0; 32],
+            kind: 0,
+            size_bytes,
+            object_count: 1,
+            chunk_count,
+            storage,
+            uris: Vec::new(),
+            supersedes: Vec::new(),
+            tips: Vec::new(),
+            created_at_block_height: 0,
+        }
+    }
+
+    /// QW2-021: four packs on your own storage (storage tier 1, no chunks) claimed a locked
+    /// Platform deposit of ~0.00050814 DASH.
+    #[test]
+    fn packs_on_your_own_storage_lock_no_platform_deposit() {
+        let external: Vec<_> = [388, 500, 600, 394].map(|b| manifest(1, 0, b)).into();
+        let t = StorageTally::of(&external);
+        assert_eq!(t.platform, Stored::default());
+        assert_eq!(
+            t.external,
+            Stored {
+                count: 4,
+                bytes: 1882
+            }
+        );
+        assert_eq!(t.deposit_locked(), 0);
+    }
+
+    /// Only Platform chunks hold a deposit, on their bytes alone.
+    #[test]
+    fn platform_packs_lock_a_deposit_on_their_bytes() {
+        let mixed = [manifest(0, 1, 5000), manifest(1, 0, 9000)];
+        let t = StorageTally::of(&mixed);
+        assert_eq!(
+            t.platform,
+            Stored {
+                count: 1,
+                bytes: 5000
+            }
+        );
+        assert_eq!(
+            t.external,
+            Stored {
+                count: 1,
+                bytes: 9000
+            }
+        );
+        assert_eq!(t.deposit_locked(), est_deposit(5000));
     }
 }
 
