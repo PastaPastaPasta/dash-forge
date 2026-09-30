@@ -1,5 +1,5 @@
 // Shared helpers for the S0.1 throughput spike.
-// evo-sdk resolves via node_modules symlink -> tools/mint-identity/node_modules.
+// evo-sdk resolves via a local node_modules symlink (not committed): ln -s ../../tools/mint-identity/node_modules node_modules
 import { readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import * as evoSdk from '@dashevo/evo-sdk';
