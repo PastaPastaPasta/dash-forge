@@ -156,6 +156,7 @@ const DAPI_RETRIES: usize = 6;
 pub use crate::network::{Network, NetworkTarget};
 
 pub mod identity_keys;
+mod quorum;
 pub mod wrap;
 
 pub mod core_chain;
@@ -463,6 +464,9 @@ impl PlatformClient {
             .with_context_provider(context_provider.clone())
             .build()
             .map_err(|e| Error::Platform(format!("building SDK: {e}")))?;
+        // A quorum rotation the quorum service lags gets every node banned for proofs no node
+        // could have made verifiable: the retries unban them ([`quorum`]).
+        quorum::register(sdk.address_list(), &context_provider);
 
         Ok(Self {
             sdk,
@@ -1977,6 +1981,7 @@ impl<'a> WriteEngine<'a> {
             },
             || self.nonce_spent(&state_transition, prepared.signed.nonce),
             RETRY_BACKOFF_BASE,
+            &quorum::QUORUM_WAITS,
             document_type,
         )
         .await
@@ -3016,6 +3021,10 @@ enum WriteFailure {
     /// A transient failure (stale node, timeout, proof mismatch). Safe to re-broadcast
     /// the same signed bytes — the SDK's authoritative `CanRetry::can_retry()` says so.
     Retryable(String),
+    /// A proof no node could make verifiable yet: the quorum that signed it rotated in and the
+    /// quorum service has not caught up ([`quorum`]). Retried like [`Self::Retryable`], after
+    /// the longer [`quorum::QUORUM_WAITS`].
+    QuorumMiss(String),
     /// A terminal failure surfaced as a crate error.
     Fatal(Error),
 }
@@ -3125,6 +3134,10 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
         }
     }
 
+    if quorum::is_quorum_miss(e) {
+        return WriteFailure::QuorumMiss(e.to_string());
+    }
+
     // The SDK's retry signal (StaleNode / TimeoutReached / Proof) plus node-level transport
     // failures. Re-broadcasting the identical signed bytes is safe for all of them.
     if is_transient_node_error(e) {
@@ -3214,6 +3227,7 @@ async fn drive_write<B, BFut, W, WFut, N, NFut>(
     mut wait: W,
     mut nonce_spent: N,
     backoff: std::time::Duration,
+    quorum_waits: &[std::time::Duration],
     document_type: &str,
 ) -> Result<BroadcastOutcome>
 where
@@ -3226,6 +3240,9 @@ where
 {
     let mut attempt: u32 = 0;
     let mut lag_retries: u32 = 0;
+    let mut quorum_retries: u32 = 0;
+    // An earlier send of this call may have reached a node: a later TxKnown is then ours.
+    let mut tried = false;
     // Whether a broadcast in THIS call was accepted. A transition the node already knew on
     // our first send was broadcast by an earlier call (a replayed journal): its landing is
     // reported as `AlreadyExists`, not as a fresh `Applied`.
@@ -3234,16 +3251,18 @@ where
         attempt += 1;
         let started = std::time::Instant::now();
         let sent_now = broadcast().await;
-        // A refusal the broadcast itself returned is CheckTx's: before the nonce is spent, so
-        // it can be sent again. One the wait returns (after an accepted send, or a node that
-        // already holds the bytes: TxKnown, "already in chain") came from block execution,
-        // which spent the nonce and charged a fee: final.
+        // A refusal the broadcast returned is CheckTx's (nonce unspent: may be sent again); one
+        // the wait returns (after a send or TxKnown) came from block execution: final.
         let at_check_tx = matches!(sent_now, Err(ref f) if !matches!(f, WriteFailure::TxKnown));
+        let tried_before = tried;
+        // Only a send that may have reached a node: accepted, or no answer (not one refused
+        // before it left, such as every node banned).
+        tried |= matches!(sent_now, Ok(()) | Err(WriteFailure::Retryable(_)));
         let failure = match sent_now {
             Ok(()) | Err(WriteFailure::TxKnown) => {
-                // A plain Ok is our own send. TxKnown on a later attempt is too: an earlier
-                // attempt's bytes reached the node even though its answer did not reach us.
-                sent |= sent_now.is_ok() || attempt > 1;
+                // Ok is our own send, and so is TxKnown after an earlier send of ours; TxKnown on
+                // every send so far (a replayed journal) is not.
+                sent |= sent_now.is_ok() || tried_before;
                 match wait().await {
                     Ok(()) => {
                         tracing::debug!(
@@ -3258,31 +3277,44 @@ where
                             BroadcastOutcome::AlreadyExists
                         });
                     }
-                    // No answer: can the transition still land at all?
-                    Err(WriteFailure::Retryable(reason)) => {
+                    // No answer: can it still land? (A quorum miss asks after its pause.)
+                    Err(f @ WriteFailure::Retryable(_)) => {
                         if nonce_spent().await {
                             tracing::warn!(
                                 document_type,
                                 attempt,
                                 elapsed_elapsed_ms = duration_ms(started.elapsed()),
-                                error = %reason,
                                 "no result, and the write's nonce is spent: it landed or another \
                                  write by this identity took the nonce"
                             );
                             return Ok(BroadcastOutcome::NonceConsumed);
                         }
-                        WriteFailure::Retryable(reason)
+                        f
                     }
                     Err(f) => f,
                 }
             }
             Err(f) => f,
         };
+        let failure = match wait_out_quorum(
+            failure,
+            quorum_waits,
+            &mut quorum_retries,
+            document_type,
+            &mut nonce_spent,
+        )
+        .await
+        {
+            QuorumStep::Retry => continue,
+            QuorumStep::Landed => return Ok(BroadcastOutcome::NonceConsumed),
+            QuorumStep::Failure(f) => f,
+        };
+        let used = attempt - lag_retries - quorum_retries;
         match failure {
             WriteFailure::AlreadyLanded => return Ok(BroadcastOutcome::AlreadyExists),
             WriteFailure::NonceConsumed => return Ok(BroadcastOutcome::NonceConsumed),
-            WriteFailure::Retryable(reason) if attempt - lag_retries < MAX_BROADCAST_ATTEMPTS => {
-                let delay = backoff_delay(backoff, attempt - lag_retries);
+            WriteFailure::Retryable(reason) if used < MAX_BROADCAST_ATTEMPTS => {
+                let delay = backoff_delay(backoff, used);
                 tracing::warn!(
                     document_type,
                     attempt,
@@ -3293,8 +3325,9 @@ where
                 );
                 tokio::time::sleep(delay).await;
             }
-            // Only a broadcast answers TxKnown, and that is handled above; a wait cannot.
-            WriteFailure::Retryable(_) | WriteFailure::TxKnown => {
+            // Only a broadcast answers TxKnown, and that is handled above; a wait cannot. A
+            // quorum miss was made Retryable above.
+            WriteFailure::Retryable(_) | WriteFailure::TxKnown | WriteFailure::QuorumMiss(_) => {
                 tracing::warn!(document_type, attempt, "write not confirmed; giving up");
                 return Err(Error::Timeout { retryable: true });
             }
@@ -3310,19 +3343,73 @@ where
                 && lag_retries < MAX_LAG_RETRIES =>
             {
                 lag_retries += 1;
-                let delay = backoff_delay(backoff * 3 / 2, lag_retries);
-                tracing::warn!(
-                    document_type,
-                    rule,
-                    delay_ms = duration_ms(delay),
-                    error = %detail,
-                    "refused by a rule that reads a total; re-broadcasting once the node has \
-                     caught up with this identity's latest writes"
-                );
-                tokio::time::sleep(delay).await;
+                wait_out_lag(document_type, &rule, &detail, backoff, lag_retries).await;
             }
             WriteFailure::Fatal(err) => return Err(err),
         }
+    }
+}
+
+/// Before lag retry `n` (1-based) of a write a total-reading rule refused at CheckTx: wait about
+/// a block, then two ([`MAX_LAG_RETRIES`]), for the node to catch up.
+async fn wait_out_lag(
+    document_type: &str,
+    rule: &str,
+    detail: &str,
+    backoff: std::time::Duration,
+    n: u32,
+) {
+    let delay = backoff_delay(backoff * 3 / 2, n);
+    tracing::warn!(
+        document_type,
+        rule,
+        delay_ms = duration_ms(delay),
+        error = %detail,
+        "refused by a rule that reads a total; re-broadcasting once the node has caught up \
+         with this identity's latest writes"
+    );
+    tokio::time::sleep(delay).await;
+}
+
+/// What [`drive_write`] does after [`wait_out_quorum`].
+enum QuorumStep {
+    /// Send the same bytes again.
+    Retry,
+    /// The nonce was spent while it waited: the write landed, or another took the nonce.
+    Landed,
+    /// Handle this failure as usual.
+    Failure(WriteFailure),
+}
+
+/// A quorum the quorum service has not caught up with ([`WriteFailure::QuorumMiss`]): wait for
+/// it ([`quorum::wait_for_quorum`]: unbanning the nodes banned over it), then ask whether the
+/// nonce was spent meanwhile before sending again, without spending an ordinary attempt. When
+/// no wait is due (past the pacing or the rotation's budget, or an unreachable quorum service)
+/// it is an ordinary retryable failure, asked the same question first. Any other failure is
+/// returned as it is.
+async fn wait_out_quorum<N, NFut>(
+    failure: WriteFailure,
+    waits: &[std::time::Duration],
+    retries: &mut u32,
+    document_type: &str,
+    nonce_spent: &mut N,
+) -> QuorumStep
+where
+    N: FnMut() -> NFut,
+    NFut: std::future::Future<Output = bool>,
+{
+    let WriteFailure::QuorumMiss(reason) = failure else {
+        return QuorumStep::Failure(failure);
+    };
+    let waited = quorum::wait_for_quorum(document_type, waits, *retries as usize).await;
+    if nonce_spent().await {
+        return QuorumStep::Landed;
+    }
+    if waited {
+        *retries += 1;
+        QuorumStep::Retry
+    } else {
+        QuorumStep::Failure(WriteFailure::Retryable(reason))
     }
 }
 
@@ -3347,11 +3434,12 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = std::result::Result<T, dash_sdk::Error>>,
 {
-    retry_with_backoff(
+    retry_with_quorum_waits(
         label,
         RETRY_BACKOFF_BASE,
         is_transient_node_error,
         rate_limit_reset,
+        (quorum::is_quorum_miss, &quorum::QUORUM_WAITS),
         || {
             let fut = op();
             async move {
@@ -3415,18 +3503,47 @@ fn rate_limit_reset(e: &dash_sdk::Error) -> Option<std::time::Duration> {
     }
 }
 
-/// The loop behind [`retry_transient_read`], generic over the error and the delay so the
-/// attempt count and backoff are testable without a network or a real clock.
-///
-/// A rate-limit refusal (`rate_limited` returns the reset the gateway asked for) is not a
-/// failed attempt: the loop waits out the reset (plus jitter) and asks again, up to
-/// [`crate::budget::MAX_RATE_LIMIT_WAITS`] times, and says so on stderr once per wait
-/// (D-902: a rate limit used to ban every node and fail the command).
+/// [`retry_with_quorum_waits`] with no quorum waits: what the attempt-count and rate-limit tests
+/// drive.
+#[cfg(test)]
 async fn retry_with_backoff<T, E, F, Fut>(
     label: &str,
     base: std::time::Duration,
     transient: impl Fn(&E) -> bool,
     rate_limited: impl Fn(&E) -> Option<std::time::Duration>,
+    op: F,
+) -> std::result::Result<T, E>
+where
+    E: std::fmt::Display,
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<T, E>>,
+{
+    retry_with_quorum_waits(
+        label,
+        base,
+        transient,
+        rate_limited,
+        (|_: &E| false, &[]),
+        op,
+    )
+    .await
+}
+
+/// The loop behind [`retry_transient_read`], generic over the error and the delays so the
+/// attempt count and backoff are testable without a network or a real clock.
+///
+/// A rate-limit refusal (`rate_limited` returns the reset the gateway asked for) is not a
+/// failed attempt: the loop waits out the reset (plus jitter) and asks again, up to
+/// [`crate::budget::MAX_RATE_LIMIT_WAITS`] times, and says so on stderr once per wait
+/// (D-902: a rate limit used to ban every node and fail the command). Nor is a quorum miss
+/// (`quorum.0`, [`quorum::is_quorum_miss`]): it is retried after each pause of `quorum.1` in
+/// turn, every node unbanned first. Past those, failures take the ordinary attempts.
+async fn retry_with_quorum_waits<T, E, F, Fut>(
+    label: &str,
+    base: std::time::Duration,
+    transient: impl Fn(&E) -> bool,
+    rate_limited: impl Fn(&E) -> Option<std::time::Duration>,
+    quorum: (impl Fn(&E) -> bool, &[std::time::Duration]),
     mut op: F,
 ) -> std::result::Result<T, E>
 where
@@ -3434,13 +3551,19 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = std::result::Result<T, E>>,
 {
+    let (quorum_miss, quorum_waits) = quorum;
     let mut attempt: u32 = 1;
     let mut waits: u32 = 0;
+    let mut quorum_retries: usize = 0;
     loop {
         let e = match op().await {
             Ok(v) => return Ok(v),
             Err(e) => e,
         };
+        if quorum_miss(&e) && quorum::wait_for_quorum(label, quorum_waits, quorum_retries).await {
+            quorum_retries += 1;
+            continue;
+        }
         match rate_limited(&e) {
             Some(reset) if waits < crate::budget::MAX_RATE_LIMIT_WAITS => {
                 waits += 1;
@@ -4260,6 +4383,7 @@ mod tests {
             },
             || std::future::ready(n.borrow_mut().next().unwrap_or(false)),
             std::time::Duration::ZERO,
+            &[std::time::Duration::ZERO; 3],
             "comment",
         )
         .await;
@@ -4268,6 +4392,112 @@ mod tests {
 
     fn timeout() -> super::WriteFailure {
         super::WriteFailure::Retryable("wait timed out".into())
+    }
+
+    fn quorum_miss() -> super::WriteFailure {
+        super::WriteFailure::QuorumMiss("Quorum not found for type 107".into())
+    }
+
+    /// A quorum rotation the quorum service lags (bonsia, 01:48Z): the proofs cannot be
+    /// verified for minutes. The write waits for it without spending its ordinary re-broadcasts,
+    /// asks whether its nonce is spent before each re-send (so it never lands twice), and lands
+    /// once the quorum is known; past the waits it gives up as a timeout.
+    #[tokio::test]
+    async fn a_write_waits_out_a_quorum_rotation() {
+        // The wait cannot verify the proof twice, then can: the same bytes land.
+        let (out, nb, nw) = scripted_write(
+            vec![Ok(()), Ok(()), Ok(())],
+            vec![Err(quorum_miss()), Err(quorum_miss()), Ok(())],
+            vec![false, false],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
+        assert_eq!((nb, nw), (3, 3));
+        // The nonce probe finds it landed during the rotation: not sent again.
+        let (out, nb, _) = scripted_write(vec![Ok(())], vec![Err(quorum_miss())], vec![true]).await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::NonceConsumed);
+        assert_eq!(nb, 1);
+        // A broadcast the SDK gave up on (every node banned over the quorum: a bare "no
+        // available addresses", classified as a quorum miss) waits too.
+        let (out, nb, _) =
+            scripted_write(vec![Err(quorum_miss()), Ok(())], vec![Ok(())], vec![]).await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
+        assert_eq!(nb, 2);
+        // A replayed journal: the node held the bytes on every send, across a quorum wait. Not
+        // this call's send: AlreadyExists.
+        let (out, nb, nw) = scripted_write(
+            vec![
+                Err(super::WriteFailure::TxKnown),
+                Err(super::WriteFailure::TxKnown),
+            ],
+            vec![Err(quorum_miss()), Ok(())],
+            vec![false],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::AlreadyExists);
+        assert_eq!((nb, nw), (2, 2));
+        // A first send that never left (every node banned over the quorum) is not ours either:
+        // the TxKnown after it is the replay's.
+        let (out, nb, nw) = scripted_write(
+            vec![Err(quorum_miss()), Err(super::WriteFailure::TxKnown)],
+            vec![Ok(())],
+            vec![false],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::AlreadyExists);
+        assert_eq!((nb, nw), (2, 1));
+        // Past its three scripted waits: ordinary retries (4), then a timeout.
+        let (out, nb, _) = scripted_write(
+            (0..7).map(|_| Ok(())).collect(),
+            vec![
+                Err(quorum_miss()),
+                Err(quorum_miss()),
+                Err(quorum_miss()),
+                Err(quorum_miss()),
+                Err(quorum_miss()),
+                Err(quorum_miss()),
+                Err(quorum_miss()),
+            ],
+            vec![false; 7],
+        )
+        .await;
+        assert!(
+            matches!(out, Err(Error::Timeout { retryable: true })),
+            "{out:?}"
+        );
+        assert_eq!(nb, 3 + super::MAX_BROADCAST_ATTEMPTS as usize);
+    }
+
+    /// A read through the quorum wait: the same pauses, without spending its ordinary attempts.
+    #[tokio::test(start_paused = true)]
+    async fn a_read_waits_out_a_quorum_rotation() {
+        let script = vec![Err("quorum"), Err("quorum"), Err("quorum"), Ok(7)];
+        let calls = RefCell::new(script.into_iter());
+        let waits = [std::time::Duration::from_secs(15); 3];
+        let started = tokio::time::Instant::now();
+        let out = super::retry_with_quorum_waits(
+            "test",
+            std::time::Duration::ZERO,
+            |_: &&str| false,
+            |_: &&str| None,
+            (|e: &&str| *e == "quorum", &waits),
+            || std::future::ready(calls.borrow_mut().next().expect("script exhausted")),
+        )
+        .await;
+        assert_eq!(out, Ok(7));
+        assert!(started.elapsed() >= std::time::Duration::from_secs(45));
+        // Past the waits a quorum miss is an ordinary failure (not transient here: returned).
+        let calls = RefCell::new(vec![Err("quorum"); 5].into_iter());
+        let out: std::result::Result<u32, &str> = super::retry_with_quorum_waits(
+            "test",
+            std::time::Duration::ZERO,
+            |_: &&str| false,
+            |_: &&str| None,
+            (|e: &&str| *e == "quorum", &waits),
+            || std::future::ready(calls.borrow_mut().next().expect("script exhausted")),
+        )
+        .await;
+        assert_eq!(out, Err("quorum"));
     }
 
     fn refused(document_type: &str, rule: &str) -> super::WriteFailure {
