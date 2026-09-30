@@ -344,7 +344,7 @@ On the web, **Issues → Labels** lists them and lets members create one, change
 
 ### Milestones
 
-Members (maintainers and writers) define milestones and put issues and PRs in them:
+Members (maintainers and writers) define milestones and put issues in them:
 
 ```sh
 dg milestone create <owner>/<repo> v1.0 --description "First release" --due 2026-12-01

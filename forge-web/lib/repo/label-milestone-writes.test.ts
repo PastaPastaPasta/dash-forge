@@ -83,6 +83,28 @@ describe('deleteLabel', () => {
     expect(deleted.map((d) => d.id)).toEqual(['l2'])
   })
 
+  it("keeps the signer's own newest retirement on a retry instead of writing or deleting it", async () => {
+    stored['label'] = [
+      { $id: 'o1', $ownerId: OTHER, $createdAt: 1, name: 'bug' },
+      { $id: 'l2', $ownerId: ME, $createdAt: 2, name: 'bug' },
+      { $id: 'r3', $ownerId: ME, $createdAt: 3, name: 'bug', retired: true },
+    ]
+    expect(await deleteLabel(sdk, AUTH, REPO, 'bug')).toEqual({ retired: false, deleted: 1 })
+    expect(created).toEqual([])
+    expect(deleted.map((d) => d.id)).toEqual(['l2'])
+  })
+
+  it('never deletes the retirement it just wrote, even when the write replays an existing document', async () => {
+    // The node has not indexed the replayed retirement's position yet: it still reads as older
+    // than the other member's definition, so the plan retires, and the replay answers its id.
+    stored['label'] = [
+      { $id: 'new', $ownerId: ME, $createdAt: 1, name: 'bug', retired: true },
+      { $id: 'o2', $ownerId: OTHER, $createdAt: 2, name: 'bug' },
+    ]
+    expect(await deleteLabel(sdk, AUTH, REPO, 'bug')).toEqual({ retired: true, deleted: 0 })
+    expect(deleted).toEqual([])
+  })
+
   it('writes nothing for a label that is not defined', async () => {
     expect(await deleteLabel(sdk, AUTH, REPO, 'nope')).toEqual({ retired: false, deleted: 0 })
     expect(created).toEqual([])

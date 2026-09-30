@@ -22,7 +22,7 @@ import type { RepoHome } from '@/lib/view'
 import { invalidateRepoFeed, issueMilestoneItems, pullMilestoneItems, repoContractIds, repoKey } from '@/lib/repo'
 import { MILESTONE_LIMITS, checkMilestoneInput, dayOf, defineMilestone, deleteMilestone, dueOnOf, readMilestoneDefs, type MilestoneDocRef } from '@/lib/repo/milestones'
 import { foldMilestonesV2, type Milestone } from '@/lib/rules/parity'
-import { previewCreate, previewDelete, type CostPreview as Cost } from '@/lib/sdk'
+import { previewCreate, previewDelete, sumPreviews, type CostPreview as Cost } from '@/lib/sdk'
 import { readUntil } from '@/lib/view/retry'
 import { invalidateSessionCache } from '@/lib/view/session-cache'
 import { useSdk } from '@/hooks/use-sdk'
@@ -185,7 +185,8 @@ export function MilestonesContent({ home, addr }: { home: RepoHome; addr: RepoAd
       ? null
       : pending.kind === 'define'
         ? previewCreate('milestone', { title: pending.title, ...(pending.description ? { description: pending.description } : {}), ...(pending.dueOn !== null ? { dueOn: pending.dueOn } : {}), closed: pending.closed })
-        : previewDelete('milestone')
+        : // One delete per definition the signer wrote (create, each edit, each close/reopen).
+          sumPreviews(Array.from({ length: Math.max(1, data?.owners.get(pending.title)?.length ?? 1) }, () => previewDelete('milestone')))
 
   const run = async (intent: string): Promise<void> => {
     if (!sdk || !signer || pending === null) throw new Error('sign in to continue')
