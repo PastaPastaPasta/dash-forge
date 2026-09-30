@@ -1,24 +1,21 @@
-//! Test-only reference of sealed releases (`docs/security/private-repos.md` §16): the
-//! `private_release_seal` / `private_release_open` vectors are reproduced here byte for byte from
-//! the existing primitives (the epoch's HKDF-SHA256 PRK, HMAC-SHA256, AES-256-GCM under
-//! `K_doc,e` with the §4.4 AD, and the §3 sealed-artifact format). It is not the client
-//! implementation: nothing outside the conformance test calls it, and production `seal` APIs
-//! still refuse releases on private repositories until the CLI and the web implement §16.
+//! Sealed releases of a private repository (`docs/security/private-repos.md` §16): the keyed
+//! `tagName` (§16.1), the `enc` TLV and its AD (§16.2), [`open`] (§16.4), the sealed kind-4
+//! asset manifest (§16.5) and the reader's [`fold`] over a tag's revisions (§16.3).
+//!
+//! The `private_release_*` conformance vectors hold this module byte for byte against
+//! `tools/private-repos-vectors/gen.py` and forge-web's `lib/private/release.ts`.
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::Engine as _;
-use hkdf::Hkdf;
-use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::Sha256;
 
 use super::doc::{OpenContext, Unreadable};
 use super::keys::{ct_eq, sha256, EpochKeys};
 use super::{pack, PrivateError};
 
-/// forge-core `$defs.enc.maxItems` minus the v0x01 framing (§4.1).
+/// forge-core `$defs.enc.maxItems` minus the v0x01 framing (§4.1): 1507 bytes of TLV.
 pub const MAX_PLAINTEXT: usize = 1536 - 29;
 const AD_DOMAIN: &[u8] = b"dash-forge/v2/doc\0";
 const MAX_SAFE_INT: u64 = (1 << 53) - 1;
@@ -54,7 +51,7 @@ pub struct ReleaseFields {
     /// TLV 17.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// TLV 2.
+    /// TLV 2: the whole notes, or their prefix when [`Self::notes_continue`] is set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
     /// TLV 18 (hex).
@@ -72,7 +69,7 @@ pub struct ReleaseFields {
     /// TLV 19 bit 0x08.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unpublished: bool,
-    /// TLV 19 bit 0x10.
+    /// TLV 19 bit 0x10: the full notes are the manifest's `notes`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub notes_continue: bool,
     /// TLV 13.
@@ -84,7 +81,7 @@ pub struct ReleaseFields {
     /// TLV 20.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub imported_created_at: Option<u64>,
-    /// TLV 21 (hex).
+    /// TLV 21 (hex): the `packHash` of the sealed kind-4 manifest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asset_manifest: Option<String>,
 }
@@ -102,38 +99,26 @@ impl ReleaseFields {
         .filter(|(on, _)| *on)
         .fold(0, |acc, (_, bit)| acc | bit)
     }
+
+    /// TLV 21 as bytes.
+    #[must_use]
+    pub fn asset_manifest_hash(&self) -> Option<[u8; 32]> {
+        hex::decode(self.asset_manifest.as_deref()?)
+            .ok()?
+            .try_into()
+            .ok()
+    }
 }
 
-/// `K_tag,e = HKDF-Expand(PRK_e, "dash-forge/v2/tag" ‖ 0x00 ‖ u32(e), 32)` (§16.1).
-pub fn tag_key(keys: &EpochKeys) -> [u8; 32] {
-    let [prk, ..] = keys.raw_subkeys_for_vectors();
-    let mut info = b"dash-forge/v2/tag\0".to_vec();
-    info.extend_from_slice(&keys.epoch().to_be_bytes());
-    let mut okm = [0u8; 32];
-    Hkdf::<Sha256>::from_prk(&prk)
-        .expect("32-byte PRK")
-        .expand(&info, &mut okm)
-        .expect("32-byte OKM");
-    okm
-}
-
-fn hmac32(key: &[u8], msg: &[u8]) -> [u8; 32] {
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("any key length");
-    mac.update(msg);
-    mac.finalize().into_bytes().into()
-}
-
-/// `HMAC-SHA256(K_tag,e, tag)`.
-pub fn tag_hash(keys: &EpochKeys, tag: &str) -> [u8; 32] {
-    hmac32(&tag_key(keys), tag.as_bytes())
-}
-
-/// The plaintext `tagName`: unpadded base64url of [`tag_hash`], 43 characters.
+/// The plaintext `tagName`: unpadded base64url of `HMAC-SHA256(K_tag,e, tag)`, 43 characters
+/// (§16.1).
+#[must_use]
 pub fn tag_name(keys: &EpochKeys, tag: &str) -> String {
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(tag_hash(keys, tag))
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(keys.release_tag_hash(tag))
 }
 
 /// The §4.4 AD with `docType = "release"` and `bind = tagName` (its ASCII bytes).
+#[must_use]
 pub fn ad(keys: &EpochKeys, owner: &[u8; 32], tag_name: &str) -> Vec<u8> {
     let mut ad = AD_DOMAIN.to_vec();
     ad.push(0x01);
@@ -162,10 +147,10 @@ fn pad(out: &mut Vec<u8>) {
     rec(out, FIRST_EXTENSION, &vec![0; r]);
 }
 
-/// The TLV records of `f`, ascending, without padding (§16.2).
-pub fn encode(f: &ReleaseFields) -> Vec<u8> {
+/// The TLV records of `f`, ascending, without padding (§16.2). `None` when a hex field does
+/// not decode.
+fn encode(f: &ReleaseFields) -> Option<Vec<u8>> {
     let mut out = Vec::new();
-    let hex_ = |h: &str| hex::decode(h).expect("hex");
     if let Some(n) = &f.notes {
         rec(&mut out, NOTES, n.as_bytes());
     }
@@ -180,7 +165,7 @@ pub fn encode(f: &ReleaseFields) -> Vec<u8> {
         rec(&mut out, NAME, n.as_bytes());
     }
     if let Some(o) = &f.target_oid {
-        rec(&mut out, TARGET_OID, &hex_(o));
+        rec(&mut out, TARGET_OID, &hex::decode(o).ok()?);
     }
     // always written, 0x00 included: a flag change never changes the length
     rec(&mut out, FLAGS, &[f.flags()]);
@@ -188,9 +173,9 @@ pub fn encode(f: &ReleaseFields) -> Vec<u8> {
         rec(&mut out, IMPORTED_CREATED_AT, &t.to_be_bytes());
     }
     if let Some(m) = &f.asset_manifest {
-        rec(&mut out, ASSET_MANIFEST, &hex_(m));
+        rec(&mut out, ASSET_MANIFEST, &hex::decode(m).ok()?);
     }
-    out
+    Some(out)
 }
 
 fn text_ok(s: &str, min: usize, chars: usize, bytes: usize) -> bool {
@@ -198,6 +183,7 @@ fn text_ok(s: &str, min: usize, chars: usize, bytes: usize) -> bool {
 }
 
 /// Parse a release TLV with §4.3's strictness and §16.2's table. `None` is `Malformed`.
+#[must_use]
 pub fn parse(pt: &[u8]) -> Option<ReleaseFields> {
     let mut f = ReleaseFields::default();
     let mut tag_seen = false;
@@ -284,15 +270,16 @@ pub fn parse(pt: &[u8]) -> Option<ReleaseFields> {
     Some(f)
 }
 
-/// What the writer refuses before sealing (§16.2): `Malformed` or `TooLarge`.
-pub fn writer_check(f: &ReleaseFields) -> Result<Vec<u8>, PrivateError> {
+/// The padded TLV of `f`, or what the writer refuses before sealing (§16.2): `Malformed` for
+/// content a reader would refuse or the writer's tighter caps, `TooLarge` past 1507 bytes.
+pub fn writer_tlv(f: &ReleaseFields) -> Result<Vec<u8>, PrivateError> {
     let bad = !crate::rules::is_legal_tag_name(&f.tag) // 1..=63 bytes of the grammar
         || f.name.as_deref().is_some_and(|n| !text_ok(n, 1, 120, 480))
         || f.notes.as_deref().is_some_and(|n| !text_ok(n, 1, 5120, 5120))
         || f
             .target_oid
             .as_deref()
-            .is_some_and(|o| ![20, 32].contains(&(o.len() / 2)))
+            .is_some_and(|o| ![40, 64].contains(&o.len()))
         // the release schema's imported caps, tighter than TLV 13's reader cap
         || f.imported_author.as_deref().is_some_and(|a| !text_ok(a, 1, 64, 256))
         || f.imported_url.as_deref().is_some_and(|u| !text_ok(u, 1, 300, 300))
@@ -304,7 +291,7 @@ pub fn writer_check(f: &ReleaseFields) -> Result<Vec<u8>, PrivateError> {
     if f.tag.is_empty() || bad {
         return Err(PrivateError::Malformed);
     }
-    let mut pt = encode(f);
+    let mut pt = encode(f).ok_or(PrivateError::Malformed)?;
     if pt.len() > MAX_PLAINTEXT {
         return Err(PrivateError::TooLarge("release", MAX_PLAINTEXT));
     }
@@ -317,6 +304,7 @@ pub fn writer_check(f: &ReleaseFields) -> Result<Vec<u8>, PrivateError> {
 }
 
 /// A sealed release and the intermediate values the vectors pin.
+#[cfg(any(test, feature = "vectors"))]
 pub struct Sealed {
     /// The plaintext `tagName` (§16.1).
     pub tag_name: String,
@@ -328,14 +316,15 @@ pub struct Sealed {
     pub enc: Vec<u8>,
 }
 
-/// Seal `f` for `owner` under `keys` with a fixed nonce.
+/// Seal `f` for `owner` under `keys` with a fixed nonce: the conformance vectors only.
+#[cfg(any(test, feature = "vectors"))]
 pub fn seal_with_nonce(
     keys: &EpochKeys,
     owner: &[u8; 32],
     f: &ReleaseFields,
     nonce: [u8; 12],
 ) -> Result<Sealed, PrivateError> {
-    let tlv = writer_check(f)?;
+    let tlv = writer_tlv(f)?;
     let tag_name = tag_name(keys, &f.tag);
     let ad = ad(keys, owner, &tag_name);
     let ct = Aes256Gcm::new(keys.doc_key().into())
@@ -362,21 +351,19 @@ pub fn seal_with_nonce(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Opened {
     /// The decoded fields.
-    Readable(ReleaseFields),
+    Readable(Box<ReleaseFields>),
     /// Well-framed but not readable by this reader.
     Unreadable(Unreadable),
     /// A document no honest writer produces.
     Malformed,
 }
 
-/// A stored release document as the vectors give it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// A stored `release` document, as [`open`] reads it.
+#[derive(Debug, Clone)]
 pub struct StoredRelease {
-    /// `$ownerId` (hex).
-    pub owner_id: String,
+    /// `$ownerId`.
+    pub owner_id: [u8; 32],
     /// `epoch`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub epoch: Option<u32>,
     /// `tagName`.
     pub tag_name: String,
@@ -384,15 +371,12 @@ pub struct StoredRelease {
     pub vis: String,
     /// `delta`.
     pub delta: i64,
-    /// `epoch` is absent only on a document without `enc`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enc: Option<String>,
-    /// A plaintext `yanked` next to `enc` (never written; Malformed).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub yanked: Option<bool>,
-    /// A plaintext `imported` next to `enc` (never written; Malformed).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub imported: Option<Value>,
+    /// `enc`.
+    pub enc: Option<Vec<u8>>,
+    /// Whether any plaintext content field is present: `name`, `notes`, `assets` and
+    /// `assetManifest` (the contract's `noPlain`), or `yanked` and `imported` (a client rule:
+    /// never written next to `enc`, §16.2).
+    pub plaintext: bool,
 }
 
 /// Whether `s` has the shape of a sealed `tagName`: 43 characters of the base64url alphabet.
@@ -404,29 +388,14 @@ fn tag_name_shaped(s: &str) -> bool {
 
 /// §16.4: well-formedness, framing, epoch, key, AES-GCM, TLV, the tagName check, and the
 /// burned clause of the late-content rule (the only part a release can be judged by).
+#[must_use]
 pub fn open(ctx: &OpenContext, d: &StoredRelease) -> Opened {
-    let owner: [u8; 32] = match hex::decode(&d.owner_id)
-        .ok()
-        .and_then(|b| b.try_into().ok())
-    {
-        Some(o) => o,
-        None => return Opened::Malformed,
-    };
-    // step 0, key-independent: a private release is sealed, carries no plaintext content (the
-    // contract's noPlain, plus `yanked` and `imported` by client rule), is stamped private,
-    // publishes nothing and has a tagName of the sealed shape
+    // step 0, key-independent: a private release is sealed, carries no plaintext content, is
+    // stamped private, publishes nothing and has a tagName of the sealed shape
     let (Some(enc), Some(epoch)) = (d.enc.as_deref(), d.epoch) else {
         return Opened::Malformed;
     };
-    let Ok(enc) = hex::decode(enc) else {
-        return Opened::Malformed;
-    };
-    if d.yanked.is_some()
-        || d.imported.is_some()
-        || d.vis != "private"
-        || d.delta != 0
-        || !tag_name_shaped(&d.tag_name)
-    {
+    if d.plaintext || d.vis != "private" || d.delta != 0 || !tag_name_shaped(&d.tag_name) {
         return Opened::Malformed;
     }
     if enc.len() < 29 || enc[0] != 0x01 {
@@ -438,13 +407,14 @@ pub fn open(ctx: &OpenContext, d: &StoredRelease) -> Opened {
     let Some(keys) = ctx.keys.get(&epoch) else {
         return Opened::Unreadable(Unreadable::NoKey);
     };
-    let ad = ad(keys, &owner, &d.tag_name);
+    let ad = ad(keys, &d.owner_id, &d.tag_name);
     let (nonce, ct) = enc[1..].split_at(12);
     let Ok(pt) = Aes256Gcm::new(keys.doc_key().into())
         .decrypt(Nonce::from_slice(nonce), Payload { msg: ct, aad: &ad })
     else {
         return Opened::Unreadable(Unreadable::BadTag);
     };
+    let pt = zeroize::Zeroizing::new(pt);
     let Some(f) = parse(&pt) else {
         return Opened::Malformed;
     };
@@ -454,22 +424,15 @@ pub fn open(ctx: &OpenContext, d: &StoredRelease) -> Opened {
     }
     // §8.2's burned clause needs no height: nothing is written under a burned epoch except by
     // someone its key leaked to
-    if ctx.burned.contains(&epoch) && !ctx.members.contains(&owner) {
+    if ctx.burned.contains(&epoch) && !ctx.members.contains(&d.owner_id) {
         return Opened::Unreadable(Unreadable::Late);
     }
-    Opened::Readable(f)
+    Opened::Readable(Box::new(f))
 }
 
-/// [`open`] as the vectors' `expected`.
-pub fn open_json(ctx: &OpenContext, d: &StoredRelease) -> Value {
-    match open(ctx, d) {
-        Opened::Readable(f) => serde_json::json!({ "status": "readable", "fields": f }),
-        Opened::Unreadable(r) => serde_json::json!({ "status": "unreadable", "reason": r }),
-        Opened::Malformed => serde_json::json!({ "status": "malformed" }),
-    }
-}
-
-/// Canonical JSON (§16.5): keys sorted by code point, no insignificant whitespace.
+/// Canonical JSON (§16.5): keys sorted by code point, no insignificant whitespace, non-ASCII
+/// characters not escaped.
+#[must_use]
 pub fn canonical_json(v: &Value) -> String {
     match v {
         Value::Object(m) => {
@@ -480,7 +443,7 @@ pub fn canonical_json(v: &Value) -> String {
                 .map(|k| {
                     format!(
                         "{}:{}",
-                        serde_json::to_string(k).expect("key"),
+                        serde_json::to_string(k).expect("a string serializes"),
                         canonical_json(&m[k])
                     )
                 })
@@ -491,12 +454,13 @@ pub fn canonical_json(v: &Value) -> String {
             "[{}]",
             a.iter().map(canonical_json).collect::<Vec<_>>().join(",")
         ),
-        other => serde_json::to_string(other).expect("scalar"),
+        other => serde_json::to_string(other).expect("a scalar serializes"),
     }
 }
 
-/// Seal a kind-4 manifest with a fixed fileId: `(canonical, sealed)`.
-pub fn seal_manifest(
+/// Seal a kind-4 manifest with a fixed fileId: `(canonical, sealed)`. The vectors only.
+#[cfg(any(test, feature = "vectors"))]
+pub fn seal_manifest_with_file_id(
     keys: &EpochKeys,
     manifest: &Value,
     file_id: [u8; 16],
@@ -510,10 +474,50 @@ pub fn seal_manifest(
 /// Why a manifest does not belong to the release that names it.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ManifestError {
-    /// The copy's hash, the tag or the total disagree with the release.
+    /// The copy's hash, the size cap, the tag, the total or an entry disagree (`manifestMismatch`).
     Mismatch,
     /// The sealed artifact failed §3.5.
     Pack(PrivateError),
+}
+
+/// One asset of a kind-4 manifest (§16.5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManifestAsset {
+    /// The file name.
+    pub name: String,
+    /// The plaintext file's SHA-256 (hex; `""` only on an external link).
+    pub sha256: String,
+    /// The plaintext file's size.
+    pub size_bytes: u64,
+    /// Where the sealed object (or, for an external link, the file) is stored.
+    pub uris: Vec<String>,
+    /// The sealed object's SHA-256; absent on an external link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealed_sha256: Option<String>,
+    /// The sealed object's size; absent on an external link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealed_size_bytes: Option<u64>,
+}
+
+/// An opened kind-4 manifest (§16.5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReleaseManifest {
+    /// `1`.
+    pub v: u64,
+    /// The plaintext tag (TLV 16).
+    pub tag: String,
+    /// The number of assets.
+    pub total: u64,
+    /// The import's source release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// The full notes, exactly when the release sets flag `0x10`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    /// The assets.
+    pub assets: Vec<ManifestAsset>,
 }
 
 fn is_hex64(v: &Value) -> bool {
@@ -553,7 +557,10 @@ fn entry_ok(e: &Value) -> bool {
         (None, None) => true,
         // a sealed object: the writer hashed the file it sealed, and the object holds it
         (Some(h), Some(n)) => {
-            is_hex64(h) && is_hex64(&e["sha256"]) && n.as_u64().is_some_and(|n| n >= 36 + size + 16)
+            is_hex64(h)
+                && is_hex64(&e["sha256"])
+                && n.as_u64()
+                    .is_some_and(|n| size.checked_add(52).is_some_and(|min| n >= min))
         }
         _ => false,
     };
@@ -569,7 +576,7 @@ pub fn open_manifest<'k>(
     tag: &str,
     notes_continue: bool,
     key_of: impl Fn(u32) -> Option<&'k EpochKeys>,
-) -> Result<Value, ManifestError> {
+) -> Result<ReleaseManifest, ManifestError> {
     if size_bytes > MAX_MANIFEST_BYTES || !ct_eq(&sha256(sealed), asset_manifest) {
         return Err(ManifestError::Mismatch);
     }
@@ -600,98 +607,119 @@ pub fn open_manifest<'k>(
     if !ok {
         return Err(ManifestError::Mismatch);
     }
-    Ok(m)
+    serde_json::from_value(m).map_err(|_| ManifestError::Mismatch)
 }
 
 /// One revision as the §16.3 fold sees it, after [`open`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FoldRow {
-    /// `$id` (hex; compared as raw bytes).
-    pub id: String,
+#[derive(Debug, Clone, Copy)]
+pub struct Revision<'a> {
+    /// `$id`, compared as its raw bytes (never as base58).
+    pub id: &'a [u8],
     /// `$createdAt`.
     pub created_at: u64,
     /// `epoch`.
     pub epoch: u32,
     /// `tagName`.
-    pub tag_name: String,
-    /// `readable`, or the unreadable reason (`noKey`, `badTag`, `late`, …), or `malformed`.
-    pub status: String,
-    /// `enc` (any string: only equality matters).
-    pub enc: String,
-    /// The opened fields of a readable revision.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fields: Option<ReleaseFields>,
+    pub tag_name: &'a str,
+    /// What [`open`] said.
+    pub opened: &'a Opened,
+    /// `enc` (only equality matters).
+    pub enc: &'a [u8],
+}
+
+impl Revision<'_> {
+    fn key(&self) -> (u64, &[u8]) {
+        (self.created_at, self.id)
+    }
+
+    fn fields(&self) -> Option<&ReleaseFields> {
+        match self.opened {
+            Opened::Readable(f) => Some(f),
+            _ => None,
+        }
+    }
+}
+
+/// The §16.3 fold, as indexes into the revisions it was given.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Fold {
+    /// The release of each live tag (its newest revision), in tag byte order.
+    pub live: Vec<usize>,
+    /// Every other readable revision that is not a replay, newest first.
+    pub history: Vec<usize>,
+    /// Live tags whose release is not a draft.
+    pub count: usize,
+    /// Readable revisions whose `enc` repeats an earlier one's: ignored.
+    pub replays: Vec<usize>,
+    /// Tags with a newer revision under one of their `(epoch, tagName)` that does not open.
+    pub unknown_tags: Vec<String>,
+    /// A revision under a key the reader lacks is newer than every readable one.
+    pub stale: bool,
+    /// Revisions that did not open.
+    pub hidden: usize,
 }
 
 /// The §16.3 fold: live tags, history, the count, replays, tags whose state is unknown, and
 /// whether the list may be stale.
-pub fn fold(rows: &[FoldRow]) -> Value {
+#[must_use]
+pub fn fold(revs: &[Revision<'_>]) -> Fold {
     use std::collections::{BTreeMap, BTreeSet};
-    let key = |r: &FoldRow| (r.created_at, hex::decode(&r.id).expect("hex id"));
-    let mut rows: Vec<&FoldRow> = rows.iter().collect();
-    rows.sort_by_key(|r| key(r));
+    let mut by_time: Vec<usize> = (0..revs.len()).collect();
+    by_time.sort_by(|&a, &b| revs[a].key().cmp(&revs[b].key()));
 
+    let mut out = Fold::default();
     let mut seen_enc = BTreeSet::new();
-    let mut replays = Vec::new();
-    let mut by_tag: BTreeMap<&str, Vec<&FoldRow>> = BTreeMap::new();
-    for r in &rows {
-        let Some(f) = r.fields.as_ref().filter(|_| r.status == "readable") else {
+    let mut by_tag: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for &i in &by_time {
+        let Some(f) = revs[i].fields() else {
+            out.hidden += 1;
             continue;
         };
         // honest writers never repeat a hedged nonce, so an equal enc is a copy
-        if !seen_enc.insert(r.enc.as_str()) {
-            replays.push(r.id.clone());
+        if !seen_enc.insert(revs[i].enc) {
+            out.replays.push(i);
             continue;
         }
-        by_tag.entry(f.tag.as_str()).or_default().push(r);
+        by_tag.entry(f.tag.as_str()).or_default().push(i);
     }
-    let hidden = rows.iter().filter(|r| r.status != "readable").count();
-
-    let mut live = serde_json::Map::new();
-    let mut history: Vec<&FoldRow> = Vec::new();
-    let mut count = 0usize;
-    let mut unknown = Vec::new();
-    for (tag, revs) in &by_tag {
-        let newest = revs.last().expect("a group has a revision");
-        let nf = newest.fields.as_ref().expect("readable");
+    for (tag, group) in &by_tag {
+        let (&newest, older) = group.split_last().expect("a group has a revision");
+        let nf = revs[newest]
+            .fields()
+            .expect("grouped revisions are readable");
         if nf.unpublished {
-            history.extend(revs.iter());
+            out.history.extend(group);
         } else {
-            live.insert((*tag).to_string(), Value::from(newest.id.clone()));
-            count += usize::from(!nf.draft);
-            history.extend(&revs[..revs.len() - 1]);
+            out.live.push(newest);
+            out.count += usize::from(!nf.draft);
+            out.history.extend(older);
         }
         // a newer revision that shares an (epoch, tagName) with this tag but does not open
-        let names: BTreeSet<(u32, &str)> = revs
+        let names: BTreeSet<(u32, &str)> = group
             .iter()
-            .map(|r| (r.epoch, r.tag_name.as_str()))
+            .map(|&i| (revs[i].epoch, revs[i].tag_name))
             .collect();
-        let shadowed = rows.iter().any(|u| {
-            matches!(u.status.as_str(), "badTag" | "malformed")
-                && names.contains(&(u.epoch, u.tag_name.as_str()))
-                && key(u) > key(newest)
+        let shadowed = revs.iter().any(|u| {
+            matches!(
+                u.opened,
+                Opened::Unreadable(Unreadable::BadTag) | Opened::Malformed
+            ) && names.contains(&(u.epoch, u.tag_name))
+                && u.key() > revs[newest].key()
         });
         if shadowed {
-            unknown.push((*tag).to_string());
+            out.unknown_tags.push((*tag).to_string());
         }
     }
-    history.sort_by_key(|r| std::cmp::Reverse(key(r)));
-    let newest_readable = rows
+    out.history
+        .sort_by(|&a, &b| revs[b].key().cmp(&revs[a].key()));
+    let newest_readable = revs
         .iter()
-        .filter(|r| r.status == "readable")
-        .map(|r| key(r))
+        .filter(|r| r.fields().is_some())
+        .map(Revision::key)
         .max();
-    let stale = rows
-        .iter()
-        .any(|r| r.status == "noKey" && newest_readable.as_ref().is_none_or(|n| key(r) > *n));
-    serde_json::json!({
-        "live": live,
-        "history": history.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
-        "count": count,
-        "replays": replays,
-        "unknownTags": unknown,
-        "stale": stale,
-        "hidden": hidden,
-    })
+    out.stale = revs.iter().any(|r| {
+        matches!(r.opened, Opened::Unreadable(Unreadable::NoKey))
+            && newest_readable.is_none_or(|n| r.key() > n)
+    });
+    out
 }

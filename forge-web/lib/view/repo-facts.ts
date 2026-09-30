@@ -22,7 +22,7 @@ import { repoKey, type RepoRef } from '../repo/contract'
 import { readGitPackBytes, type GitPackBytes } from '../repo/packs'
 import { onPrivateSessionEnded } from '../repo/private-session'
 import { onRepoContentWritten } from '../repo/push'
-import { readReleaseCount } from '../repo/releases'
+import { readReleaseCount, readReleases, releaseCountOf } from '../repo/releases'
 import { invalidateSessionCache, sessionCached } from './session-cache'
 import { historyWalker } from './commit-log'
 import { readBlob, type ObjectReader } from './tree-nav'
@@ -255,17 +255,26 @@ const GIT_PACK_BYTES = 'gitPackBytes:'
  * The count is keyed under the releases list's prefix, so a publish or an unpublish (which drop
  * that prefix) drops it too; the size goes when this tab writes the repo's content (a push).
  *
- * A private repo's count is not read: a sealed release carries `delta` 0 (`forge-v2.md`), so the
- * sum would say 0 whatever it holds.
+ * A private repo's count is never the proved sum: a sealed release carries `delta` 0
+ * (`private-repos.md` §16.3), so the sum says 0 whatever it holds. A member's is counted from the
+ * decrypted list instead (the releases list's own cache entry), and a reader without keys gets none.
  */
 export async function readAboutTotals(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<AboutTotals> {
   const [releases, gitPacks] = await Promise.all([
-    repo.visibility === 'private'
-      ? null
-      : sessionCached(`releases:${network}:${repoKey(repo)}:count`, TOTALS_TTL_MS, () => readReleaseCount(sdk, repo)).catch(() => null),
+    readReleaseTotal(sdk, repo, network),
     sessionCached(`${GIT_PACK_BYTES}${repoKey(repo)}:${network}`, TOTALS_TTL_MS, () => readGitPackBytes(sdk, repo)).catch(() => null),
   ])
   return { releases, gitPacks }
+}
+
+/** {@link readAboutTotals}'s release count: `null` when it cannot be read. */
+async function readReleaseTotal(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<number | null> {
+  const listKey = `releases:${network}:${repoKey(repo)}`
+  if (repo.visibility !== 'private') {
+    return sessionCached(`${listKey}:count`, TOTALS_TTL_MS, () => readReleaseCount(sdk, repo)).catch(() => null)
+  }
+  if (repo.session === undefined) return null
+  return sessionCached(listKey, TOTALS_TTL_MS, () => readReleases(sdk, repo)).then(releaseCountOf, () => null)
 }
 
 // This tab stored a pack or moved a ref in the repo: its size is read again.

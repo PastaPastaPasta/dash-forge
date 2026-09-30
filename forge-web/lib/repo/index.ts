@@ -74,16 +74,20 @@ export {
 export {
   compareRefNames,
   compareTagNames,
+  isDraft,
   isPrerelease,
+  isPrereleaseView,
   latestRelease,
   naturalRuns,
   newestPerTag,
   parseReleaseAssets,
   readReleases,
+  releaseCountOf,
   releaseOrder,
   type ReleaseAssetView,
   type ReleaseList,
   type ReleaseView,
+  type SealedReleaseInfo,
 } from './releases'
 export {
   readConfig,

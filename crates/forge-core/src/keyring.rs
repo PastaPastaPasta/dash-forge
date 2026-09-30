@@ -36,7 +36,7 @@ use crate::private::{
     open_content, resolve_epochs, Alert, DocHeader, EpochKey, EpochKeys, EpochResolution, Fields,
     OpenContext, Opened, Private, Unreadable,
 };
-use crate::private::{DocKind, PrivateError};
+use crate::private::{release, DocKind, PrivateError};
 use crate::rules::v2::Role;
 use crate::scope::{DocScope, RepoRef};
 use crate::user_error::{codes, UserError};
@@ -702,6 +702,40 @@ impl Keyring {
         }
     }
 
+    /// [`release::open`] (§16.4) for a fetched `release` document. A `BadTag` revision created
+    /// before the block time of stated(e) is `EarlierUse`: a release has no block height, so
+    /// this is judged by its client-set `$createdAt`, best-effort (§16.3).
+    pub fn open_release(&self, d: &FetchedDocument) -> release::Opened {
+        let Some(stored) = stored_release(d) else {
+            return release::Opened::Malformed;
+        };
+        let opened = release::open(&self.ctx, &stored);
+        let earlier = matches!(opened, release::Opened::Unreadable(Unreadable::BadTag))
+            && matches!(
+                (stored.epoch.and_then(|e| self.stated_at(e)), d.created_at),
+                (Some(stated), Some(at)) if at < stated
+            );
+        if earlier {
+            release::Opened::Unreadable(Unreadable::EarlierUse)
+        } else {
+            opened
+        }
+    }
+
+    /// The `$createdAt` of stated(e): the earliest config of `epoch` at the block height where
+    /// its key was first stated on chain (§5.3).
+    fn stated_at(&self, epoch: u32) -> Option<u64> {
+        let height = self.resolution.anchors.get(&epoch)?.stated_height;
+        self.configs
+            .iter()
+            .filter(|c| {
+                c.created_at_block_height == Some(height)
+                    && c.field_u64("epoch") == Some(u64::from(epoch))
+            })
+            .filter_map(|c| c.created_at)
+            .min()
+    }
+
     /// Whether something written at `height` under `epoch` predates the moment the epoch's
     /// current key was first stated on chain (stated(e), §5.3; a re-anchor does not move it):
     /// it was sealed under an earlier use of the number, not tampered with.
@@ -871,6 +905,33 @@ pub fn header_of(kind: DocKind, d: &FetchedDocument) -> Option<DocHeader> {
         DocKind::Config => {}
     }
     Some(h)
+}
+
+/// A release's plaintext fields as [`release::open`] judges them; `None` when its `$ownerId`
+/// does not decode.
+pub fn stored_release(d: &FetchedDocument) -> Option<release::StoredRelease> {
+    Some(release::StoredRelease {
+        owner_id: platform::decode_identifier(&d.owner_id).ok()?,
+        epoch: d.field_u64("epoch").and_then(|e| u32::try_from(e).ok()),
+        tag_name: d.field_str("tagName").unwrap_or_default(),
+        vis: d.field_str("vis").unwrap_or_default(),
+        delta: d
+            .fields
+            .get("delta")
+            .and_then(FieldValue::as_i64)
+            .unwrap_or(0),
+        enc: d.field_bytes("enc"),
+        plaintext: [
+            "name",
+            "notes",
+            "assets",
+            "assetManifest",
+            "yanked",
+            "imported",
+        ]
+        .iter()
+        .any(|k| d.fields.contains_key(*k)),
+    })
 }
 
 /// Why a document did not open, in the three buckets the UI and `dg` report (§9 Reading).
@@ -2657,6 +2718,64 @@ mod tests {
         assert!(!kr.earlier_use(2, Some(30)));
         assert!(!kr.earlier_use(2, None));
         assert!(!kr.earlier_use(9, Some(1)), "no such epoch");
+    }
+
+    /// §16.3: a release has no block height, so a `BadTag` revision is an earlier use when its
+    /// `$createdAt` predates the block time of stated(e), and tampering after it.
+    #[test]
+    fn a_release_opens_and_an_old_bad_tag_is_an_earlier_use() {
+        let mut f = Fixture::new(&[(ALICE, Role::Maintainer)]);
+        f.config(ALICE, 0, 10, None, 10, false)
+            .wrap(ALICE, ALICE, 0, 10);
+        let mut kr = f.keyring(ALICE);
+        // stated(0) is the config at height 10, created at t = 50
+        let mut stated = doc(vec![("epoch", FieldValue::integer(0))]);
+        (stated.created_at, stated.created_at_block_height) = (Some(50), Some(10));
+        kr.configs = vec![stated];
+        let keys = EpochKeys::derive(&f.repo_id, 0, &k(10));
+        let fields = release::ReleaseFields {
+            tag: "v1.0.0".into(),
+            ..release::ReleaseFields::default()
+        };
+        let sealed = release::seal_with_nonce(&keys, &ALICE, &fields, [0; 12]).unwrap();
+        let rel = |enc: &[u8], at: u64, extra: Option<(&str, FieldValue)>| {
+            let mut d = doc(vec![
+                ("tagName", FieldValue::text(sealed.tag_name.clone())),
+                ("vis", FieldValue::text("private")),
+                ("delta", FieldValue::integer(0)),
+                ("epoch", FieldValue::integer(0)),
+                ("enc", FieldValue::bytes(enc.to_vec())),
+            ]);
+            d.owner_id = platform::encode_identifier(ALICE);
+            d.created_at = Some(at);
+            if let Some((k, v)) = extra {
+                d.fields.insert(k.into(), v);
+            }
+            d
+        };
+        assert_eq!(
+            kr.open_release(&rel(&sealed.enc, 60, None)),
+            release::Opened::Readable(Box::new(fields))
+        );
+        let mut tampered = sealed.enc.clone();
+        *tampered.last_mut().unwrap() ^= 1;
+        assert_eq!(
+            kr.open_release(&rel(&tampered, 40, None)),
+            release::Opened::Unreadable(Unreadable::EarlierUse)
+        );
+        assert_eq!(
+            kr.open_release(&rel(&tampered, 60, None)),
+            release::Opened::Unreadable(Unreadable::BadTag)
+        );
+        // a plaintext `yanked: false` next to `enc` is never written: malformed
+        assert_eq!(
+            kr.open_release(&rel(
+                &sealed.enc,
+                60,
+                Some(("yanked", FieldValue::Bool(false)))
+            )),
+            release::Opened::Malformed
+        );
     }
 
     #[test]

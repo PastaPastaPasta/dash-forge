@@ -1,14 +1,15 @@
 /**
- * TEST-ONLY deterministic seams for the §11 conformance vectors
+ * TEST-ONLY deterministic seams for the §11 and §16.7 conformance vectors
  * (`docs/security/private-repos.md` §3.6: production seal APIs take no caller-supplied nonce
  * or `fileId`). `index.ts` does not re-export this module, and ESLint's
  * `no-restricted-imports` bans importing it anywhere but `*.test.ts`.
  */
 
-import { sha256, type Bytes } from './bytes'
+import { sha256, utf8, type Bytes } from './bytes'
 import { __unsafeSealDocWithNonce, type PrivateDoc, type SealDocOptions } from './doc'
 import { hedgeFileId, hedgeNonce, type EpochKeys } from './keys'
 import { __unsafeSealPackWithFileId } from './pack'
+import { __unsafeSealReleaseWithNonce, encodeReleaseManifest, type ReleaseFields, type ReleaseManifest } from './release'
 import type { DocFields } from './tlv'
 
 /** `sealDoc` with a fixed nonce; returns the AD and TLV too. */
@@ -35,4 +36,24 @@ export async function hedgedFileId(keys: EpochKeys, rnd: Uint8Array, plaintext: 
 /** The hedged document nonce for a given `rnd` (§3.6). */
 export async function hedgedNonce(keys: EpochKeys, rnd: Uint8Array, ad: Uint8Array, plaintext: Uint8Array): Promise<Bytes> {
   return hedgeNonce(keys, rnd, ad, await sha256(plaintext))
+}
+
+/** `sealRelease` with a fixed nonce; returns the tag hash, AD and padded TLV too. */
+export function sealReleaseWithNonce(
+  keys: EpochKeys,
+  ownerId: Uint8Array,
+  fields: ReleaseFields,
+  nonce: Uint8Array,
+): Promise<{ tagName: string; tagHash: Bytes; ad: Bytes; tlv: Bytes; enc: Bytes }> {
+  return __unsafeSealReleaseWithNonce(keys, ownerId, fields, nonce)
+}
+
+/** `sealReleaseManifest` with a fixed `fileId`. */
+export async function sealReleaseManifestWithFileId(
+  keys: EpochKeys,
+  manifest: ReleaseManifest,
+  fileId: Uint8Array,
+): Promise<{ canonical: string; sealed: Bytes }> {
+  const canonical = encodeReleaseManifest(manifest)
+  return { canonical, sealed: await __unsafeSealPackWithFileId(keys, utf8(canonical), fileId) }
 }

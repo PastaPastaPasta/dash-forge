@@ -14,7 +14,7 @@ use super::epoch::{resolve_epochs, ConfigRow, MemberRow, WrapRow};
 use super::keys::{sha256, EpochKey, EpochKeys};
 use super::pack::{self, PackHeader};
 use super::tlv::Fields;
-use super::{release_ref, wrap, PrivateError};
+use super::{release, wrap, PrivateError};
 use crate::platform::FieldValue;
 
 #[derive(Clone, Deserialize)]
@@ -362,7 +362,7 @@ struct ReleaseSealIn {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     nonce: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    fields: Option<release_ref::ReleaseFields>,
+    fields: Option<release::ReleaseFields>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     file_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -379,10 +379,44 @@ struct ManifestIn {
     notes_continue: bool,
 }
 
+/// One revision of a `private_release_fold` vector, after its open.
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FoldRowIn {
+    id: String,
+    created_at: u64,
+    epoch: u32,
+    tag_name: String,
+    /// `readable`, `malformed`, or the unreadable reason.
+    status: String,
+    /// Any string: only equality matters.
+    enc: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fields: Option<release::ReleaseFields>,
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ReleaseFoldIn {
-    revisions: Vec<release_ref::FoldRow>,
+    revisions: Vec<FoldRowIn>,
+}
+
+/// A stored release as the `private_release_open` vectors give it.
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StoredReleaseIn {
+    owner_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    epoch: Option<u32>,
+    tag_name: String,
+    vis: String,
+    delta: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    enc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    yanked: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    imported: Option<Value>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -392,7 +426,7 @@ struct ReleaseOpenIn {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     context: Option<OpenCtxIn>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    doc: Option<release_ref::StoredRelease>,
+    doc: Option<StoredReleaseIn>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     keys: Option<BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -412,7 +446,86 @@ fn open_context(repo_id: &[u8; 32], c: &OpenCtxIn) -> OpenContext {
     }
 }
 
-/// `private_release_seal` / `private_release_open` (§16), through the test-only reference.
+/// [`release::open`] as the vectors' `expected`.
+fn release_open_json(ctx: &OpenContext, d: &StoredReleaseIn) -> Value {
+    let malformed = json!({ "status": "malformed" });
+    let Some(owner_id) = hex::decode(&d.owner_id)
+        .ok()
+        .and_then(|b| <[u8; 32]>::try_from(b).ok())
+    else {
+        return malformed;
+    };
+    let enc = match d.enc.as_deref().map(hex::decode) {
+        None => None,
+        Some(Ok(e)) => Some(e),
+        Some(Err(_)) => return malformed,
+    };
+    let stored = release::StoredRelease {
+        owner_id,
+        epoch: d.epoch,
+        tag_name: d.tag_name.clone(),
+        vis: d.vis.clone(),
+        delta: d.delta,
+        enc,
+        plaintext: d.yanked.is_some() || d.imported.is_some(),
+    };
+    match release::open(ctx, &stored) {
+        release::Opened::Readable(f) => json!({ "status": "readable", "fields": f }),
+        release::Opened::Unreadable(r) => json!({ "status": "unreadable", "reason": r }),
+        release::Opened::Malformed => malformed,
+    }
+}
+
+/// [`release::fold`] over a vector's opened revisions, in the vectors' JSON.
+fn release_fold_json(rows: &[FoldRowIn]) -> Value {
+    let ids: Vec<Vec<u8>> = rows.iter().map(|r| hex::decode(&r.id).unwrap()).collect();
+    let opened: Vec<release::Opened> = rows
+        .iter()
+        .map(|r| match r.status.as_str() {
+            "readable" => release::Opened::Readable(Box::new(r.fields.clone().unwrap())),
+            "malformed" => release::Opened::Malformed,
+            reason => release::Opened::Unreadable(
+                serde_json::from_value(Value::from(reason)).expect("an unreadable reason"),
+            ),
+        })
+        .collect();
+    let revs: Vec<release::Revision<'_>> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| release::Revision {
+            id: &ids[i],
+            created_at: r.created_at,
+            epoch: r.epoch,
+            tag_name: &r.tag_name,
+            opened: &opened[i],
+            enc: r.enc.as_bytes(),
+        })
+        .collect();
+    let f = release::fold(&revs);
+    let id = |i: &usize| rows[*i].id.clone();
+    let live: serde_json::Map<String, Value> = f
+        .live
+        .iter()
+        .map(|i| {
+            let tag = rows[*i]
+                .fields
+                .as_ref()
+                .expect("live revisions are readable");
+            (tag.tag.clone(), Value::from(id(i)))
+        })
+        .collect();
+    json!({
+        "live": live,
+        "history": f.history.iter().map(id).collect::<Vec<_>>(),
+        "count": f.count,
+        "replays": f.replays.iter().map(id).collect::<Vec<_>>(),
+        "unknownTags": f.unknown_tags,
+        "stale": f.stale,
+        "hidden": f.hidden,
+    })
+}
+
+/// `private_release_seal` / `private_release_open` / `private_release_fold` (§16).
 fn run_release(v: &Vector) -> Value {
     if v.case == "private_release_seal" {
         let i: ReleaseSealIn = input(v);
@@ -422,7 +535,7 @@ fn run_release(v: &Vector) -> Value {
                 .unwrap()
                 .try_into()
                 .unwrap();
-            let (canonical, sealed) = release_ref::seal_manifest(&keys, m, fid).unwrap();
+            let (canonical, sealed) = release::seal_manifest_with_file_id(&keys, m, fid).unwrap();
             return json!({
                 "canonical": canonical,
                 "header": hex::encode(&sealed[..36]),
@@ -433,14 +546,14 @@ fn run_release(v: &Vector) -> Value {
         }
         let f = i.fields.as_ref().unwrap();
         let owner = h32(i.owner_id.as_deref().unwrap());
-        return match release_ref::seal_with_nonce(
+        return match release::seal_with_nonce(
             &keys,
             &owner,
             f,
             nonce12(i.nonce.as_deref().unwrap()),
         ) {
             Ok(s) => json!({
-                "tagHash": hex::encode(release_ref::tag_hash(&keys, &f.tag)),
+                "tagHash": hex::encode(keys.release_tag_hash(&f.tag)),
                 "tagName": s.tag_name,
                 "ad": hex::encode(s.ad),
                 "tlv": hex::encode(s.tlv),
@@ -455,13 +568,13 @@ fn run_release(v: &Vector) -> Value {
     }
     if v.case == "private_release_fold" {
         let i: ReleaseFoldIn = input(v);
-        return release_ref::fold(&i.revisions);
+        return release_fold_json(&i.revisions);
     }
     let i: ReleaseOpenIn = input(v);
     let repo_id = h32(&i.repo_id);
     if let Some(m) = &i.manifest {
         let ring = keyring(&repo_id, i.keys.as_ref().unwrap());
-        return match release_ref::open_manifest(
+        return match release::open_manifest(
             &hex::decode(&m.sealed).unwrap(),
             m.size_bytes,
             &h32(&m.asset_manifest),
@@ -470,12 +583,12 @@ fn run_release(v: &Vector) -> Value {
             |e| ring.get(&e),
         ) {
             Ok(manifest) => json!({ "status": "readable", "manifest": manifest }),
-            Err(release_ref::ManifestError::Mismatch) => json!({ "error": "manifestMismatch" }),
-            Err(release_ref::ManifestError::Pack(e)) => error_json(&e),
+            Err(release::ManifestError::Mismatch) => json!({ "error": "manifestMismatch" }),
+            Err(release::ManifestError::Pack(e)) => error_json(&e),
         };
     }
     let ctx = open_context(&repo_id, i.context.as_ref().unwrap());
-    release_ref::open_json(&ctx, i.doc.as_ref().unwrap())
+    release_open_json(&ctx, i.doc.as_ref().unwrap())
 }
 
 // --- cases ------------------------------------------------------------------------------------
