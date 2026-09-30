@@ -127,7 +127,7 @@ export interface MergeRunDeps {
   /** The intent prefix for this merge's writes (one per PR head), so retries re-use them. */
   readonly intent: string
   /**
-   * A maintainer's bypass of the branch rules: after the merge event, writes the comment that
+   * A maintainer's bypass of the branch rules: after the merge event, writes the event that
    * records it (a policy-bypass event naming the new tip) and resolves with the event's id.
    * Absent: the rules are met, nothing to record.
    */

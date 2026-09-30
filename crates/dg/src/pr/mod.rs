@@ -785,13 +785,16 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
     // The policy's required checks on the head, as `dg pr merge` and the web merge box judge
     // them (QW2-011: the approvals alone were shown as "met" while a required check failed).
     // `Err`: they could not be read, which the merge treats as not met.
+    // Judged on an open PR only, as the web's merge box: a merged or closed PR has no merge
+    // to gate (a later run on its head says nothing about how it was merged).
+    let judged = v.state.open;
     let checks = match &policy {
-        Some(p) => required_checks(&collab, handle, &v, &oracle, p)
+        Some(p) if judged => required_checks(&collab, handle, &v, &oracle, p)
             .await
             .map_err(|e| format!("{e:#}")),
-        None => Ok(None),
+        _ => Ok(None),
     };
-    let unmet = if let (Some(p), Some(st)) = (&policy, &policy_status) {
+    let unmet = if let (Some(p), Some(st), true) = (&policy, &policy_status, judged) {
         let mut u = unmet_rules(p, st, checks.as_ref().ok().and_then(Option::as_ref));
         if checks.is_err() {
             u.push("required checks: could not be read".to_string());
@@ -819,10 +822,11 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
     let standing = json!({
         "requiredChecks": checks.as_ref().ok().cloned().flatten(),
         "requiredChecksError": checks.as_ref().err(),
-        "policyMet": policy.as_ref().map(|_| unmet.is_empty()),
+        "policyMet": policy.as_ref().filter(|_| judged).map(|_| unmet.is_empty()),
         "unmetRules": unmet,
         "policyBypasses": bypasses.iter().map(|b| json!({
             "id": b.id, "actor": b.actor, "rules": b.value, "mergeOid": b.oid, "createdAt": b.created_at,
+            "namesThisMerge": merged_at(&v, b.oid.as_deref().unwrap_or_default()),
         })).collect::<Vec<_>>(),
     });
     let mut out = json!({
@@ -910,30 +914,43 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
                 println!("changes requested by {}", who.join(", "));
             }
             if let (Some(p), Some(st)) = (&policy, &policy_status) {
-                println!(
-                    "policy: {} of {} required approval{}{}{} — {}",
+                let approvals = format!(
+                    "{} of {} required approval{}{}",
                     st.have,
                     st.need,
                     if st.need == 1 { "" } else { "s" },
                     if p.approver_role == 1 { " (maintainers)" } else { "" },
-                    checks_words(&checks),
-                    if unmet.is_empty() {
-                        "met".to_string()
-                    } else {
-                        format!("not met: {}", unmet.join("; "))
-                    }
                 );
+                if !judged {
+                    println!("policy: {approvals}");
+                } else if unmet.is_empty() {
+                    println!("policy: met ({approvals})");
+                } else {
+                    // Rule text carries check names reported by members and runners.
+                    println!("policy: not met: {}", safe(&unmet.join("; ")));
+                }
+                if let Some(line) = checks_words(&checks) {
+                    println!("required checks: {line}");
+                }
             }
             for b in &bypasses {
-                println!(
-                    "! merged by bypassing the branch rules ({}), by {}{}",
-                    safe(b.value.as_deref().unwrap_or("rules not readable here")),
-                    b.actor,
-                    b.oid
-                        .as_deref()
-                        .map(|o| format!(" at {}", short(o)))
-                        .unwrap_or_default()
-                );
+                let rules = safe(b.value.as_deref().unwrap_or("rules not readable here"));
+                let oid = b.oid.as_deref().unwrap_or_default();
+                if merged_at(&v, oid) {
+                    println!(
+                        "! merged by bypassing the branch rules ({rules}), by {} at {}",
+                        b.actor,
+                        short(oid)
+                    );
+                } else {
+                    // Any member can write the event: one that names no merge of this PR
+                    // records a claim, not a merge.
+                    println!(
+                        "! {} recorded a branch-rules bypass ({rules}) naming {}, which is not this PR's merge",
+                        b.actor,
+                        short(oid)
+                    );
+                }
             }
             if !rows.is_empty() {
                 println!("\nReviewers");
@@ -1009,32 +1026,45 @@ fn policy_bypasses(v: &PatchView) -> Vec<&forge_core::rules::Event> {
     out
 }
 
-/// `dg pr view`'s words for the policy's required checks, after its approvals: ", required
-/// checks: build passed, lint failing"; empty when the policy requires none.
+/// Whether a merge `transition` of the PR names `oid` (a policy-bypass event is shown as the
+/// merge's only when it names that merge).
+fn merged_at(v: &PatchView, oid: &str) -> bool {
+    !oid.is_empty()
+        && v.log.transitions.iter().any(|t| {
+            t.kind == forge_core::rules::transition::PR_MERGE
+                && t.oid
+                    .as_deref()
+                    .is_some_and(|o| o.eq_ignore_ascii_case(oid))
+        })
+}
+
+/// `dg pr view`'s line for the policy's required checks: "build passed, lint failing"; `None`
+/// when none are judged.
 fn checks_words(
     checks: &std::result::Result<Option<forge_core::rules::v2::ChecksState>, String>,
-) -> String {
-    use forge_core::rules::v2::CheckState;
+) -> Option<String> {
     match checks {
-        Err(_) => ", required checks: could not be read".to_string(),
-        Ok(None) => String::new(),
-        Ok(Some(c)) if c.required.is_empty() => ", required checks: none reported".to_string(),
-        Ok(Some(c)) => {
-            let each: Vec<String> = c
-                .required
+        Err(_) => Some("could not be read".to_string()),
+        Ok(None) => None,
+        Ok(Some(c)) if c.required.is_empty() => Some("none reported on the head".to_string()),
+        Ok(Some(c)) => Some(
+            c.required
                 .iter()
-                .map(|r| {
-                    let state = match r.state {
-                        CheckState::Passed => "passed",
-                        CheckState::Failing => "failing",
-                        CheckState::Pending => "pending",
-                        CheckState::Missing => "missing",
-                    };
-                    format!("{} {state}", safe(&r.name))
-                })
-                .collect();
-            format!(", required checks: {}", each.join(", "))
-        }
+                .map(|r| format!("{} {}", safe(&r.name), check_word(r.state)))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+    }
+}
+
+/// A required check's state in `dg`'s words ("passed", "failing", "pending", "missing").
+fn check_word(state: forge_core::rules::v2::CheckState) -> &'static str {
+    use forge_core::rules::v2::CheckState;
+    match state {
+        CheckState::Passed => "passed",
+        CheckState::Failing => "failing",
+        CheckState::Pending => "pending",
+        CheckState::Missing => "missing",
     }
 }
 
@@ -1449,14 +1479,7 @@ fn not_passing_words(
         .required
         .iter()
         .filter(|c| c.state != CheckState::Passed && !judged.contains(c.name.as_str()))
-        .map(|c| {
-            let word = match c.state {
-                CheckState::Failing => "failing",
-                CheckState::Pending | CheckState::Passed => "pending",
-                CheckState::Missing => "missing",
-            };
-            format!("{} {word}", safe(&c.name))
-        })
+        .map(|c| format!("{} {}", safe(&c.name), check_word(c.state)))
         .collect()
 }
 
@@ -1806,15 +1829,7 @@ fn checks_refusal(
         .required
         .iter()
         .filter(|c| c.state != CheckState::Passed)
-        .map(|c| {
-            let state = match c.state {
-                CheckState::Failing => "failing",
-                CheckState::Pending => "pending",
-                CheckState::Missing => "missing",
-                CheckState::Passed => "passed",
-            };
-            format!("{} {state}", c.name)
-        })
+        .map(|c| format!("{} {}", c.name, check_word(c.state)))
         .collect();
     let cause = if checks.required.is_empty() {
         "the branch policy requires checks, and no member or runner reported any on the head"
@@ -1990,12 +2005,11 @@ fn unmet_rules(
             out.push("required checks: none reported on the head".to_string());
         }
         for r in c.required.iter().filter(|r| r.state != CheckState::Passed) {
-            let state = match r.state {
-                CheckState::Failing => "failing",
-                CheckState::Missing => "missing",
-                CheckState::Pending | CheckState::Passed => "pending",
-            };
-            out.push(format!("required check `{}`: {state}", r.name));
+            out.push(format!(
+                "required check `{}`: {}",
+                r.name,
+                check_word(r.state)
+            ));
         }
     }
     out
@@ -3248,13 +3262,13 @@ mod tests {
             untrusted: 0,
         };
         assert_eq!(
-            checks_words(&Ok(Some(state))),
-            ", required checks: build passed, lint failing"
+            checks_words(&Ok(Some(state))).as_deref(),
+            Some("build passed, lint failing")
         );
-        assert_eq!(checks_words(&Ok(None)), "");
+        assert_eq!(checks_words(&Ok(None)), None);
         assert_eq!(
-            checks_words(&Err("x".into())),
-            ", required checks: could not be read"
+            checks_words(&Err("x".into())).as_deref(),
+            Some("could not be read")
         );
     }
 

@@ -125,7 +125,7 @@ export function requiredChecksLine(checks: ChecksState | null | 'unknown', named
   const list = (names: readonly string[]): string => (names.length > 0 ? `: ${names.join(', ')}` : '')
   if (checks === 'unknown') return { ok: false, text: `Required checks not read yet${list(named)}` }
   if (checks === null || checks.met) return { ok: true, text: `Required checks pass${list(checks === null ? named : checks.required.map((c) => c.name))}` }
-  if (checks.required.length === 0) return { ok: false, text: 'Required checks: none reported on the head' }
+  if (checks.required.length === 0) return { ok: false, text: 'Required checks not passing on the head: none reported' }
   const notPassing = checks.required.filter((c) => c.state !== 'passed').map((c) => (c.state === 'failing' ? c.name : `${c.name} (${c.state})`))
   return { ok: false, text: `Required checks not passing on the head${list(notPassing)}` }
 }

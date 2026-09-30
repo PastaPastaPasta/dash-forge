@@ -660,7 +660,7 @@ export function MergePanel({
           ))}
         </ul>
         <p className="mt-3 text-[12px] text-anvil-600 dark:text-anvil-400">
-          After the merge, a comment on this PR records that you bypassed these rules, where every reader sees it. Branch rules are a client rule every Forge client applies;
+          After the merge, an event on this PR records that you bypassed these rules, where every reader sees it and nobody can delete it. Branch rules are a client rule every Forge client applies;
           consensus does not enforce them.
         </p>
       </Dialog>

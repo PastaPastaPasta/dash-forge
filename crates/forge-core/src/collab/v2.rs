@@ -1278,7 +1278,10 @@ pub fn event_payload_props(
         EventKind::PolicyBypass
             if value.is_none() || !oid.is_some_and(|o| matches!(o.len(), 20 | 32)) =>
         {
-            return missing("the rules bypassed and the merge commit's oid");
+            return Err(Error::Config(
+                "a policy-bypass event needs the rules bypassed and the merge commit's oid"
+                    .to_string(),
+            ));
         }
         // The assignee in `value` (the fold) and in `refId` (the `addressee` index), the same
         // identity (platform-parity-spec §1.2; forge-web `targetEventData`).
