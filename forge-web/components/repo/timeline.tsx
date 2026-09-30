@@ -96,7 +96,8 @@ function eventPhrase(e: Event): { text: string; icon: JSX.Element; who?: string;
     case 'policyBypass':
       // The immutable record of a maintainer's bypass (QW2-003): what was not met at the merge.
       return {
-        text: value ? `merged by bypassing the branch rules (${value})` : 'merged by bypassing the branch rules',
+        // The value names checks in `backticks` (dg's words); the timeline is plain text.
+        text: value ? `merged by bypassing the branch rules (${value.replace(/`/g, '')})` : 'merged by bypassing the branch rules',
         icon: <ShieldAlert className="h-3.5 w-3.5 text-caution-700 dark:text-caution-400" aria-hidden />,
       }
     default:
