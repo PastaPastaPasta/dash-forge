@@ -9,20 +9,21 @@
  * closing unmounts it and drops everything).
  */
 
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import { create } from 'zustand'
-import { CheckCircle2, KeyRound, Upload } from 'lucide-react'
+import { CheckCircle2 } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { Dialog } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { Field, Input, Textarea } from '@/components/ui/input'
+import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { ErrorBox } from '@/components/auth/protection-fields'
-import { TOP_UP_DEFAULTS, TOP_UP_MAX_DAYS, TopUpPendingError, masterMaterialFromFile, parseDashAmount, topUpExpiry } from '@/lib/auth'
+import { useMasterKeyInput } from '@/components/auth/master-key-input'
+import { TOP_UP_DEFAULTS, TOP_UP_MAX_DAYS, TopUpPendingError, parseDashAmount, topUpExpiry } from '@/lib/auth'
 import { KEY_LIMITS_UPDATE_CREDITS, previewCredits } from '@/lib/sdk'
 import type { KeyLimits } from '@/lib/view/funds'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
-import { cn, errorMessage } from '@/lib/utils'
+import { errorMessage } from '@/lib/utils'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -63,15 +64,9 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
   const suggested = Date.now() + TOP_UP_DEFAULTS.days * DAY_MS
   const [extend, setExtend] = useState(current === null || current < suggested)
   const [expiry, setExpiry] = useState(isoDay(suggested))
-  const [mode, setMode] = useState<'file' | 'mnemonic'>('file')
-  const fileRef = useRef<string | null>(null)
-  const fileInput = useRef<HTMLInputElement>(null)
-  const [fileName, setFileName] = useState('')
-  // The recovery phrase never enters React state: an uncontrolled textarea, read at submit
-  // and cleared afterwards. Only "something was typed" is state.
-  const phraseRef = useRef<HTMLTextAreaElement>(null)
-  const [phraseTyped, setPhraseTyped] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const master = useMasterKeyInput(identity, { id: 'topup', fileLabel: 'Identity file for the top-up' })
+  const [submitError, setError] = useState<string | null>(null)
+  const error = submitError ?? master.error
   const [done, setDone] = useState<{ before: KeyLimits | null; after: KeyLimits } | null>(null)
   // Sent, but not visible on chain yet: re-read, never re-send (kept across close / reopen).
   const pending = usePendingTopUps((s) => (identity === null ? null : s.byIdentity[identity] ?? null))
@@ -99,45 +94,20 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
       expiryError = errorMessage(e)
     }
   }
-  const hasMaster = mode === 'file' ? fileName !== '' : phraseTyped
+  const hasMaster = master.ready
   const changes = credits !== null || newExpiry !== null
   const ready = hasMaster && changes && amountError === null && expiryError === null && !isLoading
-
-  const onFile = async (f: File): Promise<void> => {
-    setError(null)
-    const text = await f.text()
-    try {
-      const m = masterMaterialFromFile(text)
-      if (m.identityId !== identity) throw new Error('that identity file is for another identity')
-      fileRef.current = text
-      setFileName(f.name)
-    } catch (e) {
-      fileRef.current = null
-      setFileName('')
-      setError(errorMessage(e))
-    }
-  }
-
-  const clearSecrets = (): void => {
-    fileRef.current = null
-    setFileName('')
-    if (phraseRef.current) phraseRef.current.value = ''
-    setPhraseTyped(false)
-  }
 
   const submit = async (): Promise<void> => {
     if (!ready) return
     setError(null)
     const before = keyLimits
     try {
-      const input = mode === 'file' ? { fileText: fileRef.current ?? '' } : { mnemonic: phraseRef.current?.value ?? '' }
-      const after = await topUpKey(input, { addCredits: credits, expiresAt: newExpiry })
+      const after = await topUpKey(master.take(), { addCredits: credits, expiresAt: newExpiry })
       setDone({ before, after })
     } catch (e) {
       if (e instanceof TopUpPendingError) setPending({ before, message: e.message })
       else setError(errorMessage(e))
-    } finally {
-      clearSecrets()
     }
   }
 
@@ -248,55 +218,7 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
             {expiryError ? <p className="text-[12px] text-danger-700 dark:text-danger-400">{expiryError}</p> : null}
           </div>
 
-          <fieldset className="space-y-2 rounded-md border border-anvil-200 p-3 dark:border-anvil-750">
-            <legend className="px-1 text-[12px] font-medium text-anvil-600 dark:text-anvil-300">
-              <KeyRound className="mr-1 inline h-3.5 w-3.5" aria-hidden /> Master key, used once
-            </legend>
-            <div role="group" aria-label="Master key source" className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
-              {(['file', 'mnemonic'] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  aria-pressed={mode === m}
-                  onClick={() => setMode(m)}
-                  className={cn('rounded px-3 py-1 text-dense font-medium', mode === m ? 'bg-forge-500/15 text-forge-800 dark:text-forge-300' : 'text-anvil-600 dark:text-anvil-300')}
-                >
-                  {m === 'file' ? 'Identity file' : 'Recovery phrase'}
-                </button>
-              ))}
-            </div>
-            {mode === 'file' ? (
-              <>
-                <Button type="button" variant="outline" className="w-full" onClick={() => fileInput.current?.click()}>
-                  <Upload className="h-4 w-4" aria-hidden /> {fileName || 'Choose the identity file'}
-                </Button>
-                <input
-                  ref={fileInput}
-                  type="file"
-                  aria-label="Identity file for the top-up"
-                  accept="application/json,.json,.txt"
-                  className="sr-only"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0]
-                    if (f) void onFile(f)
-                    e.target.value = ''
-                  }}
-                />
-              </>
-            ) : (
-              <Field label="Recovery phrase (12 or 24 words)" htmlFor="topup-mnemonic">
-                <Textarea
-                  id="topup-mnemonic"
-                  ref={phraseRef}
-                  defaultValue=""
-                  onChange={(e) => setPhraseTyped(e.target.value.trim() !== '')}
-                  className="min-h-[64px] font-mono"
-                  spellCheck={false}
-                  autoComplete="off"
-                />
-              </Field>
-            )}
-          </fieldset>
+          {master.element}
 
           <CostPreview cost={previewCredits(KEY_LIMITS_UPDATE_CREDITS)} />
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">

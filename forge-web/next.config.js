@@ -53,6 +53,9 @@ const nextConfig = {
   env: {
     // The wasm's size, so the download can show a percentage whatever the host's encoding.
     FORGE_WASM_SDK_BYTES: String(fs.statSync(WASM_FILE).size),
+    // The commit this build is from, when the builder says (GitHub Actions sets GITHUB_SHA):
+    // the /mirror wizard pins the Mirror Action and its binaries to it. No git call here.
+    FORGE_BUILD_COMMIT: /^[0-9a-f]{40}$/.test(process.env.FORGE_BUILD_COMMIT || process.env.GITHUB_SHA || '') ? process.env.FORGE_BUILD_COMMIT || process.env.GITHUB_SHA : '',
   },
   webpack: (config, { isServer, webpack }) => {
     config.resolve.alias = {

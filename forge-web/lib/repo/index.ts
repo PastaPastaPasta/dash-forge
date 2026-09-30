@@ -235,10 +235,12 @@ export {
   eventFirsts,
   followFirsts,
   issueFirsts,
+  previewRepoCreate,
   repoCreationFirsts,
   reviewFirsts,
   starBeatFirsts,
   starFirsts,
+  type RepoCreationFirsts,
 } from './first-write'
 export {
   EVENT_KIND_CODE,

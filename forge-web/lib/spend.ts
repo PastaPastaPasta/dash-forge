@@ -122,6 +122,7 @@ const KIND_LABELS: Readonly<Record<string, string>> = {
   'key:topup': 'Top up key budget',
   'key:revoke': 'Revoke key on chain',
   'key:encryption': 'Register encryption key',
+  'key:runner': 'Register a CI runner key',
   'identity:create': 'Create identity',
 }
 
