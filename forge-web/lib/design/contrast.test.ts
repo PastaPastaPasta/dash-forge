@@ -236,8 +236,12 @@ describe('no component renders text in the raw brand blue', () => {
   // non-text graphic, which WCAG 1.4.11 asks 3:1 of — the brand value meets that on every
   // dark surface.
   const ICON = /<[A-Z]\w*\s+className="[^"]*\btext-dash(?![-\w/])[^"]*"\s+aria-hidden\s*\/>/g
-  // Class strings that are applied only to an icon wrapper, checked by hand.
-  const ICON_ONLY = new Set(['components/repo/pulls-content.tsx:81'])
+  // Class strings that are applied only to an icon wrapper, checked by hand: the file and the
+  // line's code (not its number, which any edit above it moves).
+  const ICON_ONLY: readonly { file: string; code: string }[] = [
+    { file: 'components/repo/pulls-content.tsx', code: `label: 'Merged', icon: <GitMerge className="h-4 w-4" aria-hidden />, klass: 'text-dash' }` },
+  ]
+  const iconOnly = (where: string, text: string): boolean => ICON_ONLY.some((o) => where.startsWith(o.file + ':') && text.includes(o.code))
 
   it('uses raw dash blue only on icons', () => {
     const offenders = ['app', 'components']
@@ -246,7 +250,7 @@ describe('no component renders text in the raw brand blue', () => {
         readFileSync(file, 'utf8')
           .split('\n')
           .map((text, i) => ({ where: `${file.slice(root.length + 1)}:${i + 1}`, text }))
-          .filter(({ where, text }) => RAW.test(text.replace(ICON, '')) && !ICON_ONLY.has(where)),
+          .filter(({ where, text }) => RAW.test(text.replace(ICON, '')) && !iconOnly(where, text)),
       )
       .map(({ where }) => where)
     expect(offenders).toEqual([])

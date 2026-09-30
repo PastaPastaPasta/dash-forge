@@ -9,12 +9,18 @@
  *   assignee=<identity id|me|none>
  *   mentions=me
  *   sort=newest|oldest|comments (default newest)
- *   q=<text>                    (matches titles; `#12` matches the number)
+ *   q=<text>                    (free text, matched in titles and bodies; `#12` matches the
+ *                               number and `"a phrase"` matches as a whole. It also carries the
+ *                               qualifiers that have no parameter of their own, as GitHub's
+ *                               `?q=` does: `-label:`, `no:label`, `milestone:`,
+ *                               `no:milestone`, a mirrored `author:` login, `in:`, `comments:`)
  *   page=<n>                    (1-based, default 1)
  *
- * The search box also takes GitHub's qualifiers (`is:closed label:bug author:@me
- * assignee:@me no:assignee mentions:@me sort:comments-desc`), which {@link parseSearchText}
- * lifts into the structured query; what is left is the free text.
+ * The search box also takes GitHub's qualifiers (`is:closed label:bug -label:wontfix
+ * author:@me assignee:@me no:assignee no:label milestone:"v1.0" no:milestone mentions:@me
+ * in:title comments:>2 sort:comments-desc`), which {@link parseSearchText} lifts into the
+ * structured query; what is left is the free text. A qualifier the list cannot apply is reported
+ * under the box ({@link unresolvedQualifiers}), never searched for as text (QW-020).
  */
 
 import { displayDpnsName, looksLikeDpnsName } from './dpns'
@@ -23,9 +29,35 @@ import { isIdentityId } from '../utils'
 
 export type IssueStateFilter = 'open' | 'closed' | 'all'
 export type IssueSort = 'newest' | 'oldest' | 'comments'
+/** Where free text is looked for (`in:`): titles and bodies (GitHub's default), or one of them. */
+export type TextScope = 'any' | 'title' | 'body'
+
+/**
+ * The qualifiers with no URL parameter of their own (they travel in `q` as text, as on GitHub),
+ * shared by the Issues and Pull requests lists.
+ */
+export interface ExtraFilters {
+  /** `-label:x`: none of these may be on the row. */
+  readonly notLabels: readonly string[]
+  /** `no:label`: the row has no label. */
+  readonly noLabel: boolean
+  /** `milestone:"v1.0"`: the row's milestone title. */
+  readonly milestone: string | null
+  /** `no:milestone`. */
+  readonly noMilestone: boolean
+  /**
+   * `author:login` for a name that is not an identity: the source forge's login an import
+   * recorded (a mirror's `@thephez`), matched only on items a trusted mirror signed (QW-062).
+   */
+  readonly authorLogin: string | null
+  /** `in:title` / `in:body`. */
+  readonly scope: TextScope
+  /** `comments:>2` and the like, as typed (a value {@link commentRange} reads). */
+  readonly comments: string | null
+}
 
 /** The structured list query. `author` / `assignee` hold an identity id, `me`, or (assignee) `none`. */
-export interface IssueListQuery {
+export interface IssueListQuery extends ExtraFilters {
   readonly state: IssueStateFilter
   readonly labels: readonly string[]
   readonly author: string | null
@@ -34,6 +66,16 @@ export interface IssueListQuery {
   readonly sort: IssueSort
   readonly q: string
   readonly page: number
+}
+
+export const NO_EXTRA_FILTERS: ExtraFilters = {
+  notLabels: [],
+  noLabel: false,
+  milestone: null,
+  noMilestone: false,
+  authorLogin: null,
+  scope: 'any',
+  comments: null,
 }
 
 export const DEFAULT_ISSUE_QUERY: IssueListQuery = {
@@ -45,6 +87,7 @@ export const DEFAULT_ISSUE_QUERY: IssueListQuery = {
   sort: 'newest',
   q: '',
   page: 1,
+  ...NO_EXTRA_FILTERS,
 }
 
 /** Rows per displayed page. */
@@ -54,6 +97,18 @@ const STATES: readonly IssueStateFilter[] = ['open', 'closed', 'all']
 const SORTS: readonly IssueSort[] = ['newest', 'oldest', 'comments']
 /** A label is 1-30 characters (the `label.name` schema); a longer value cannot match one. */
 const LABEL_MAX = 30
+/** A milestone title is 1-63 characters (the `milestone.title` schema). */
+const MILESTONE_MAX = 63
+/** A source forge's login (GitHub's shape: letters, digits and inner hyphens, at most 39). */
+const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/
+
+/**
+ * The longest `?q=` read (a crafted link cannot force unbounded parsing or DPNS reads). `q` also
+ * carries the qualifiers with no parameter of their own (a 63-character milestone, several
+ * `-label:`s, `comments:`, `in:`, a PR's `draft:` and `review-requested:`), so this leaves room
+ * for them beside the free text: a cut mid-qualifier would read back as a different filter.
+ */
+export const Q_MAX = 512
 
 /** The bytes an issue, PR or comment `body` may hold (the contract's `maxBytes`). */
 export const BODY_MAX = 5120
@@ -79,17 +134,19 @@ export function parseIssueQuery(params: { get(name: string): string | null; getA
   const page = Number.parseInt(params.get('page') ?? '', 10)
   const labels = [...new Set(params.getAll('label').map((l) => l.trim()).filter((l) => l !== '' && [...l].length <= LABEL_MAX))]
   const parsed: IssueListQuery = {
+    ...NO_EXTRA_FILTERS,
     state: STATES.includes(state as IssueStateFilter) ? (state as IssueStateFilter) : 'open',
     labels,
     author: identityParam(params.get('author'), ['me']),
     assignee: identityParam(params.get('assignee'), ['me', 'none']),
     mentions: params.get('mentions') === 'me',
     sort: SORTS.includes(sort as IssueSort) ? (sort as IssueSort) : 'newest',
-    q: (params.get('q') ?? '').slice(0, 200),
+    q: (params.get('q') ?? '').slice(0, Q_MAX),
     page: Number.isInteger(page) && page >= 1 && page <= 10_000 ? page : 1,
   }
   // A GitHub link carries its qualifiers inside `q` (`/issues?q=is:closed+label:bug`): lift
-  // them out. The app writes only free text to `q`, so this leaves its own URLs as they are.
+  // them out. The app writes to `q` only free text and the qualifiers with no parameter of
+  // their own ({@link extraQualifiers}), which read back to the same query.
   return parsed.q.includes(':') ? { ...parseSearchText(parsed.q, parsed), page: parsed.page } : parsed
 }
 
@@ -102,7 +159,8 @@ export function issueQueryParams(q: IssueListQuery): [string, string][] {
   if (q.assignee) out.push(['assignee', q.assignee])
   if (q.mentions) out.push(['mentions', 'me'])
   if (q.sort !== 'newest') out.push(['sort', q.sort])
-  if (q.q.trim() !== '') out.push(['q', q.q.trim()])
+  const text = [...extraQualifiers(q), q.q.trim()].filter((t) => t !== '').join(' ')
+  if (text !== '') out.push(['q', text])
   if (q.page > 1) out.push(['page', String(q.page)])
   return out
 }
@@ -130,7 +188,66 @@ export function searchSubmitBase(q: IssueListQuery): IssueListQuery {
 
 /** Whether any filter narrows the list beyond the state tab. */
 export function hasFilters(q: IssueListQuery): boolean {
-  return q.labels.length > 0 || q.author !== null || q.assignee !== null || q.mentions || q.q.trim() !== ''
+  return q.labels.length > 0 || q.author !== null || q.assignee !== null || q.mentions || q.q.trim() !== '' || hasExtraFilters(q)
+}
+
+/** Whether any {@link ExtraFilters} narrows the list (`in:` alone does not: it only scopes free text). */
+export function hasExtraFilters(q: ExtraFilters): boolean {
+  return q.notLabels.length > 0 || q.noLabel || q.milestone !== null || q.noMilestone || q.authorLogin !== null || q.comments !== null
+}
+
+/** The {@link ExtraFilters} as search-box qualifiers (what `q` carries for them in the URL). */
+export function extraQualifiers(q: ExtraFilters): string[] {
+  const parts: string[] = []
+  for (const l of q.notLabels) parts.push(`-label:${quoted(l)}`)
+  if (q.noLabel) parts.push('no:label')
+  if (q.milestone !== null) parts.push(`milestone:${quoted(q.milestone)}`)
+  if (q.noMilestone) parts.push('no:milestone')
+  if (q.authorLogin !== null) parts.push(`author:${q.authorLogin}`)
+  if (q.scope !== 'any') parts.push(`in:${q.scope}`)
+  if (q.comments !== null) parts.push(`comments:${q.comments}`)
+  return parts
+}
+
+/** A qualifier value, quoted when it holds whitespace. */
+function quoted(v: string): string {
+  return /\s/.test(v) ? `"${v}"` : v
+}
+
+/** An inclusive comment-count range, from a `comments:` value. */
+export interface CountRange {
+  readonly min: number
+  readonly max: number
+}
+
+/**
+ * The range a `comments:` value names (GitHub's forms: `5`, `>2`, `>=2`, `<5`, `<=5`, `1..3`,
+ * `2..*`, `*..3`), or null for anything else.
+ */
+export function commentRange(v: string | null): CountRange | null {
+  if (v === null) return null
+  const int = (s: string): number => Number.parseInt(s, 10)
+  const single = /^(>=|<=|>|<)?(\d{1,9})$/.exec(v)
+  if (single) {
+    const k = int(single[2] ?? '0')
+    switch (single[1]) {
+      case '>':
+        return { min: k + 1, max: Infinity }
+      case '>=':
+        return { min: k, max: Infinity }
+      case '<':
+        return k === 0 ? null : { min: 0, max: k - 1 }
+      case '<=':
+        return { min: 0, max: k }
+      default:
+        return { min: k, max: k }
+    }
+  }
+  const range = /^(\d{1,9}|\*)\.\.(\d{1,9}|\*)$/.exec(v)
+  if (!range || (range[1] === '*' && range[2] === '*')) return null
+  const min = range[1] === '*' ? 0 : int(range[1] ?? '0')
+  const max = range[2] === '*' ? Infinity : int(range[2] ?? '0')
+  return min <= max ? { min, max } : null
 }
 
 /**
@@ -146,6 +263,16 @@ export function emptyIssuesBody(filtered: boolean, state: IssueStateFilter, clos
   return `No issue is open right now; ${plural(closedCount, 'issue')} ${closedCount === 1 ? 'is' : 'are'} closed.`
 }
 
+/**
+ * The last page of a list with `matching` rows, when `page` lies past it (a hand-edited or stale
+ * `?page=`, QW-068); null when the page is in range or the total is not known.
+ */
+export function pastLastPage(page: number, matching: number | null, pageSize: number): number | null {
+  if (matching === null || page <= 1) return null
+  const last = Math.max(1, Math.ceil(matching / pageSize))
+  return page > last ? last : null
+}
+
 /** Split `text` into tokens, keeping `"quoted phrases"` (and `label:"two words"`) whole. */
 function tokens(text: string): string[] {
   const out: string[] = []
@@ -156,18 +283,40 @@ function tokens(text: string): string[] {
 
 const unquote = (s: string): string => s.replace(/"/g, '')
 
-/** A qualifier this parser knows: a known key whose value is (or is not) one it can use. */
-const KNOWN_KEYS = new Set(['is', 'state', 'label', 'author', 'assignee', 'no', 'mentions', 'sort'])
+/**
+ * The qualifiers this parser applies (the rest of GitHub's are known by name below and
+ * reported, never searched for as text). `-label` is the one negation it applies.
+ */
+const APPLIED_KEYS = new Set(['is', 'state', 'label', '-label', 'author', 'assignee', 'no', 'mentions', 'sort', 'milestone', 'in', 'comments'])
+
+/**
+ * GitHub's issue and PR search qualifiers this list does not apply (QW-020): a token with one of
+ * these keys (or any negated `-key:`) is reported as not applied rather than kept as free text,
+ * which could never match and read as "nothing matches".
+ */
+const OTHER_GITHUB_KEYS = new Set([
+  'archived', 'base', 'closed', 'commenter', 'created', 'draft', 'head', 'interactions', 'involves', 'language', 'linked', 'merged',
+  'org', 'project', 'reactions', 'reason', 'repo', 'review', 'review-requested', 'reviewed-by', 'status', 'team',
+  'team-review-requested', 'type', 'updated', 'user', 'user-review-requested',
+])
+
+/** Whether `key` (lowercased, a leading `-` kept) is a qualifier: applied, or one of GitHub's that is reported. */
+function isQualifierKey(key: string): boolean {
+  if (APPLIED_KEYS.has(key) || OTHER_GITHUB_KEYS.has(key)) return true
+  return key.startsWith('-') && (APPLIED_KEYS.has(key.slice(1)) || OTHER_GITHUB_KEYS.has(key.slice(1)))
+}
 
 /**
  * Lift GitHub-style qualifiers out of search-box text into `base` (the rest of the query is
- * kept): `is:open|closed`, `state:…`, `label:x` (repeatable, quotes for spaces), `author:x`,
- * `assignee:x`, `no:assignee`, `mentions:@me`, `sort:created-desc|created-asc|comments-desc`.
- * `@me` means the viewer. A qualifier with a known key overrides `base` only when its value
- * resolves; one that does not (`author:` and `assignee:` only take an identity id, `@me`, or a
- * value already rewritten to an id by {@link withResolvedNames} — a DPNS name this function is
- * handed as-is does not resolve here) is dropped from the free text and reported by
- * {@link unresolvedQualifiers}. An unknown key stays free text.
+ * kept): `is:open|closed`, `state:…`, `label:x` (repeatable, quotes for spaces), `-label:x`,
+ * `author:x`, `assignee:x`, `no:assignee|label|milestone`, `milestone:x`, `mentions:@me`,
+ * `in:title|body`, `comments:>n`, `sort:created-desc|created-asc|comments-desc`. `@me` means
+ * the viewer. A qualifier with a known key overrides `base` only when its value resolves; one
+ * that does not (`author:` and `assignee:` take an identity id, `@me`, or a value already
+ * rewritten to an id by {@link withResolvedNames}; `author:` also takes a source forge's login,
+ * matched against mirrored items; a DPNS name this function is handed as-is does not resolve
+ * here) is dropped from the free text and reported by {@link unresolvedQualifiers}, as is any
+ * other GitHub qualifier. An unknown key stays free text.
  */
 export function parseSearchText(text: string, base: IssueListQuery = DEFAULT_ISSUE_QUERY): IssueListQuery {
   return liftQualifiers(text, base).query
@@ -238,25 +387,47 @@ export async function resolveSearchNames(
   return { text: resolved.size > 0 ? withResolvedNames(text, resolved) : text, notFound }
 }
 
-/** An `author:`/`assignee:` token's lowercased key and its value (quotes and a leading `@` stripped); null for any other token. */
+/** The qualifiers whose value names a person (an id, `@me`, or a DPNS name to look up first). */
+const PERSON_KEYS: ReadonlySet<string> = new Set(['author', 'assignee', 'review-requested'])
+
+/** A person qualifier's lowercased key and its value (quotes and a leading `@` stripped); null for any other token. */
 function personQualifier(tok: string): { key: string; value: string } | null {
   const at = tok.indexOf(':')
   if (at <= 0) return null
   const key = tok.slice(0, at).toLowerCase()
-  if (key !== 'author' && key !== 'assignee') return null
+  if (!PERSON_KEYS.has(key)) return null
   return { key, value: unquote(tok.slice(at + 1)).replace(/^@/, '') }
+}
+
+/** A person qualifier's value as an identity: an id, or `me` (either case, `@` or not); null otherwise. */
+export function personValue(v: string): string | null {
+  return identityParam(v.replace(/^@/, ''), ['me'])
 }
 
 /** Why a known qualifier's value could not be used, by key (see {@link droppedQualifiersReason}). */
 const QUALIFIER_REASON: Readonly<Record<string, string>> = {
   is: 'is: and state: take open, closed, all or issue.',
   state: 'is: and state: take open, closed, all or issue.',
-  author: 'Authors and assignees take an identity id, a DPNS name, or @me.',
-  assignee: 'Authors and assignees take an identity id, a DPNS name, or @me.',
+  author: 'Authors and assignees take an identity id, a DPNS name, or @me (an author also a mirrored login).',
+  assignee: 'Authors and assignees take an identity id, a DPNS name, or @me (an author also a mirrored login).',
   label: `A label is 1-${LABEL_MAX} characters.`,
-  no: 'no: only takes assignee.',
+  '-label': `A label is 1-${LABEL_MAX} characters.`,
+  no: 'no: takes label, milestone or assignee.',
   mentions: 'mentions: only takes @me.',
   sort: 'sort: takes created-desc, created-asc or comments-desc.',
+  milestone: `milestone: takes a milestone title (1-${MILESTONE_MAX} characters; quote one with spaces).`,
+  in: 'in: takes title or body (comment text is not searched from the list).',
+  comments: 'comments: takes a count: 3, >2, >=2, <5, <=5 or 1..3.',
+  review: "review: is not a list filter: a PR's reviews are read on its page.",
+  'reviewed-by': "reviewed-by: is not a list filter: a PR's reviews are read on its page.",
+  'review-requested': 'review-requested: and draft: are pull request filters.',
+  draft: 'review-requested: and draft: are pull request filters.',
+}
+
+/** The key of a qualifier token, lowercased, a leading `-` kept (`''` for a token that is not one). */
+function keyOf(tok: string): string {
+  const at = tok.indexOf(':')
+  return at > 0 ? tok.slice(0, at).toLowerCase() : ''
 }
 
 /**
@@ -267,11 +438,13 @@ const QUALIFIER_REASON: Readonly<Record<string, string>> = {
  * a valid value. An `author:`/`assignee:` value in `notFound` (a {@link resolveSearchNames}
  * candidate DPNS actually looked up and could not find) names the specific name that was not
  * found, rather than the generic "take an id, a name, or @me" reason, which would wrongly
- * suggest the value's shape (not its non-existence) was the problem.
+ * suggest the value's shape (not its non-existence) was the problem. A GitHub qualifier the list
+ * does not apply at all says so by name.
  */
 export function droppedQualifiersReason(dropped: readonly string[], notFound: readonly string[] = []): string {
   const notFoundLower = new Set(notFound.map((n) => n.toLowerCase()))
   const reasons = new Set<string>()
+  const unsupported = new Set<string>()
   for (const tok of dropped) {
     if (/^(is|state):pr$/i.test(tok)) {
       reasons.add('is:pr is not a filter here — open the Pull requests tab to search pull requests.')
@@ -282,28 +455,30 @@ export function droppedQualifiersReason(dropped: readonly string[], notFound: re
       reasons.add(`No DPNS name \`${displayDpnsName(person.value)}\` was found.`)
       continue
     }
-    const key = tok.slice(0, tok.indexOf(':')).toLowerCase()
+    const key = keyOf(tok)
     const reason = QUALIFIER_REASON[key]
     if (reason) reasons.add(reason)
+    else if (key.startsWith('-')) reasons.add('Only -label: can be negated here.')
+    else unsupported.add(`${key}:`)
   }
+  if (unsupported.size > 0) reasons.add(`${[...unsupported].join(', ')} ${unsupported.size === 1 ? 'is not a filter' : 'are not filters'} here.`)
   return [...reasons].join(' ')
 }
 
 function liftQualifiers(text: string, base: IssueListQuery): { query: IssueListQuery; unresolved: string[] } {
   let state = base.state
   const labels = [...base.labels]
-  let author = base.author
-  let assignee = base.assignee
-  let mentions = base.mentions
-  let sort = base.sort
+  const notLabels = [...base.notLabels]
+  let { author, assignee, mentions, sort, noLabel, milestone, noMilestone, authorLogin, scope, comments } = base
   const free: string[] = []
   const unresolved: string[] = []
   // identityParam already matches 'me'/'none' case-insensitively, so stripping a leading `@`
   // (never mind its case) is all this needs — `@me`, `@ME`, `me` and `ME` all land on 'me'.
   const who = (v: string, extra: readonly string[] = []): string | null => identityParam(v.replace(/^@/, ''), ['me', ...extra])
+  const labelOk = (v: string): boolean => v !== '' && [...v].length <= LABEL_MAX
   for (const tok of tokens(text)) {
     const at = tok.indexOf(':')
-    const key = at > 0 ? tok.slice(0, at).toLowerCase() : ''
+    const key = keyOf(tok)
     const value = at > 0 ? unquote(tok.slice(at + 1)) : ''
     let used = true
     switch (key) {
@@ -313,14 +488,27 @@ function liftQualifiers(text: string, base: IssueListQuery): { query: IssueListQ
         else if (value !== 'issue') used = false
         break
       case 'label':
-        if (value !== '' && [...value].length <= LABEL_MAX) {
+        if (labelOk(value)) {
           if (!labels.includes(value)) labels.push(value)
+        } else used = false
+        break
+      case '-label':
+        if (labelOk(value)) {
+          if (!notLabels.includes(value)) notLabels.push(value)
         } else used = false
         break
       case 'author': {
         const id = who(value)
-        if (id !== null) author = id
-        else used = false
+        const login = value.replace(/^@/, '')
+        if (id !== null) {
+          author = id
+          authorLogin = null
+        } else if (LOGIN.test(login)) {
+          // Not an identity (a DPNS name DPNS knows was rewritten to its id before this): the
+          // login an import recorded, as the mirror shows it (`@thephez on github.com`).
+          authorLogin = login
+          author = null
+        } else used = false
         break
       }
       case 'assignee': {
@@ -331,10 +519,27 @@ function liftQualifiers(text: string, base: IssueListQuery): { query: IssueListQ
       }
       case 'no':
         if (value === 'assignee') assignee = 'none'
+        else if (value === 'label') noLabel = true
+        else if (value === 'milestone') noMilestone = true
+        else used = false
+        break
+      case 'milestone':
+        if (value !== '' && [...value].length <= MILESTONE_MAX) milestone = value
         else used = false
         break
       case 'mentions':
         if (value === '@me' || value === 'me') mentions = true
+        else used = false
+        break
+      case 'in': {
+        // `in:title,body` is both (the default), as on GitHub.
+        const parts = new Set(value.toLowerCase().split(','))
+        if ([...parts].some((p) => p !== 'title' && p !== 'body')) used = false
+        else scope = parts.size === 2 ? 'any' : parts.has('title') ? 'title' : 'body'
+        break
+      }
+      case 'comments':
+        if (commentRange(value) !== null) comments = value
         else used = false
         break
       case 'sort':
@@ -347,22 +552,41 @@ function liftQualifiers(text: string, base: IssueListQuery): { query: IssueListQ
         used = false
     }
     if (used) continue
-    if (KNOWN_KEYS.has(key)) unresolved.push(tok)
+    // A GitHub key with nothing after its colon (`status: broken`, `type: error`) is prose, not a
+    // qualifier: it stays free text, as it does on GitHub. An applied key's empty value is reported.
+    if (isQualifierKey(key) && (value !== '' || APPLIED_KEYS.has(key))) unresolved.push(tok)
     else free.push(tok)
   }
-  return { query: { ...base, state, labels, author, assignee, mentions, sort, q: free.join(' '), page: 1 }, unresolved }
+  return {
+    query: { ...base, state, labels, notLabels, author, assignee, mentions, sort, noLabel, milestone, noMilestone, authorLogin, scope, comments, q: free.join(' '), page: 1 },
+    unresolved,
+  }
 }
 
 /** The query as search-box text, qualifiers first (the inverse of {@link parseSearchText}). */
 export function searchText(q: IssueListQuery): string {
   const parts: string[] = [`is:${q.state}`]
-  for (const l of q.labels) parts.push(/\s/.test(l) ? `label:"${l}"` : `label:${l}`)
+  for (const l of q.labels) parts.push(`label:${quoted(l)}`)
   if (q.author) parts.push(`author:${q.author === 'me' ? '@me' : q.author}`)
   if (q.assignee === 'none') parts.push('no:assignee')
   else if (q.assignee) parts.push(`assignee:${q.assignee === 'me' ? '@me' : q.assignee}`)
   if (q.mentions) parts.push('mentions:@me')
+  parts.push(...extraQualifiers(q))
   if (q.sort === 'oldest') parts.push('sort:created-asc')
   if (q.sort === 'comments') parts.push('sort:comments-desc')
   if (q.q.trim() !== '') parts.push(q.q.trim())
   return parts.join(' ')
+}
+
+/**
+ * The free text's search terms (QW-021): a `"quoted phrase"` is one term, spaces and all, and
+ * any other word is one term; lowercased, quotes never part of a term.
+ */
+export function searchTerms(text: string): string[] {
+  const out: string[] = []
+  for (const m of text.toLowerCase().matchAll(/"([^"]*)"|(\S+)/g)) {
+    const term = (m[1] ?? m[2] ?? '').replace(/"/g, '').trim()
+    if (term !== '') out.push(term)
+  }
+  return out
 }

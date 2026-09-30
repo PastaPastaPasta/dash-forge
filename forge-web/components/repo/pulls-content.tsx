@@ -38,18 +38,23 @@ import {
   unresolvedPullQualifiers,
   type PullListQuery,
 } from '@/lib/view/pull-query'
-import { queryPulls, repoContractIds, repoKey, type PullListPage, type PullRow, type PullSelection } from '@/lib/repo'
+import { queryPulls, repoContractIds, repoKey, rowFiltersOf, type PullListPage, type PullRow, type PullSelection } from '@/lib/repo'
+import { pastLastPage } from '@/lib/view/issue-query'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useAuth } from '@/contexts/auth-context'
 import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
 import { useRepoTotals } from '@/components/repo/use-repo-totals'
+import { useMilestones } from '@/components/repo/use-milestones'
 import {
+  AuthorLoginNote,
   CommentCount,
   DroppedNote,
   LabelChipFilter,
   LabelFilter,
+  MilestoneFilter,
   Pager,
+  PastLastPage,
   PersonFilter,
   RowLink,
   SearchBox,
@@ -90,13 +95,16 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
   const generation = useRepoWriteGeneration(home.repo)
   const trust = useMirrorTrust(home.repo)
   const total = useRepoTotals(home.repo, 'pulls')
+  const milestones = useMilestones(home.repo)
 
   // The list query lives in the URL (a reload or a shared link shows the same list).
   const { query, search } = useListQuery({ addr, parse: parsePullQuery, toParams: pullQueryParams, grammar: PULL_GRAMMAR, sdk, ready, network })
   const change = search.change
 
   // `me` needs a signed-in viewer; signed out, a `me` filter shows nothing rather than everything.
-  const needsViewer = query.author === 'me' || query.assignee === 'me'
+  const needsViewer = query.author === 'me' || query.assignee === 'me' || query.reviewRequested === 'me'
+  // `author:<login>` matches only what a trusted mirror signed: the read waits for the trust set.
+  const awaitingTrust = query.authorLogin !== null && trust === null
   const { data, loading, error, reload } = useAsync<PullListPage>(
     () => {
       const who = (v: string | null): string | null => (v === 'me' ? identity ?? '' : v)
@@ -109,11 +117,14 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
         text: query.q,
         page: query.page,
         pageSize: PULL_PAGE_SIZE,
+        draft: query.draft,
+        reviewRequested: who(query.reviewRequested),
+        ...rowFiltersOf(query, trust),
       }
       return queryPulls(sdk!, home.repo, selection, total, network)
     },
-    [ready, repoKey(home.repo), generation, JSON.stringify(query), identity ?? '', total ?? -1],
-    { enabled: ready && sdk !== null && (!needsViewer || identity !== null) },
+    [ready, repoKey(home.repo), generation, JSON.stringify(query), identity ?? '', total ?? -1, query.authorLogin !== null && trust !== null ? [...trust].sort().join(',') : null],
+    { enabled: ready && sdk !== null && (!needsViewer || identity !== null) && !awaitingTrust },
   )
 
   const labelDefs = useMemo(() => new Map((data?.labels ?? []).map((l) => [l.name, l])), [data])
@@ -122,6 +133,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
   const heads = useMemo(() => (data?.rows ?? []).map((p) => p.headOid), [data])
   const outcomes = useCheckOutcomes(home.repo, heads)
   const filtered = hasPullFilters(query)
+  const lastPage = data !== null && data.rows.length === 0 ? pastLastPage(query.page, data.matching, PULL_PAGE_SIZE) : null
   const counts = data?.counts
   const settled = counts?.merged != null && counts.closed != null ? counts.merged + counts.closed : null
 
@@ -137,6 +149,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
         </Link>
       </div>
       <DroppedNote search={search} reason={pullDroppedReason(search.dropped, search.notFound)} testId="pull-search-dropped" />
+      <AuthorLoginNote login={query.authorLogin} notFound={search.notFound} />
 
       <MirrorNote home={home} kind="pull" />
 
@@ -168,18 +181,21 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
           </div>
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <LabelFilter labels={data?.labels ?? []} selected={query.labels} onChange={(labels) => change({ labels })} />
-            <PersonFilter label="Author" value={query.author} signedIn={identity !== null} onChange={(author) => change({ author })} />
+            <MilestoneFilter milestones={milestones.data} value={query.milestone} none={query.noMilestone} onChange={(c) => change(c)} />
+            <PersonFilter label="Author" value={query.author} signedIn={identity !== null} onChange={(author) => change({ author, authorLogin: null })} />
             <PersonFilter label="Assignee" value={query.assignee} signedIn={identity !== null} allowNone onChange={(assignee) => change({ assignee })} />
             <SortSelect id="pull-sort" value={query.sort} onChange={(sort) => change({ sort })} />
           </div>
         </div>
 
         {needsViewer && identity === null ? (
-          <p className="px-4 py-6 text-dense text-anvil-500 dark:text-anvil-400">Sign in to filter by your own pull requests and assignments.</p>
-        ) : loading && !data ? (
+          <p className="px-4 py-6 text-dense text-anvil-500 dark:text-anvil-400">Sign in to filter by your own pull requests, assignments and review requests.</p>
+        ) : (loading || awaitingTrust) && !data ? (
           <LoadingBlock label="Reading pull requests" />
         ) : error ? (
           <div className="p-4"><ErrorState message={error} onRetry={reload} /></div>
+        ) : lastPage !== null ? (
+          <PastLastPage page={query.page} last={lastPage} onPage={(page) => change({ page })} />
         ) : data !== null && data.rows.length === 0 ? (
           <EmptyState
             icon={GitPullRequest}

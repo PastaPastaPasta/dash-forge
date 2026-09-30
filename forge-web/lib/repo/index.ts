@@ -168,10 +168,12 @@ export {
   matchesText,
   mentions,
   queryIssues,
+  rowFiltersOf,
   rowMatches,
   type IssueListPage,
   type IssueRow,
   type IssueSelection,
+  type RowFilters,
 } from './issue-index'
 export {
   queryPulls,

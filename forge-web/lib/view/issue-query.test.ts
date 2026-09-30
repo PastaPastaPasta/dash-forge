@@ -5,10 +5,13 @@ import {
   dpnsAuthorCandidates,
   droppedQualifiersReason,
   emptyIssuesBody,
+  commentRange,
   hasFilters,
   issueQueryParams,
   parseIssueQuery,
   parseSearchText,
+  pastLastPage,
+  searchTerms,
   resolveSearchNames,
   searchSubmitBase,
   searchText,
@@ -16,7 +19,7 @@ import {
   withQuery,
   withResolvedNames,
 } from './issue-query'
-import { matchesText } from '../repo/issue-index'
+import { matchesText, rowMatches, rowFiltersOf } from '../repo/issue-index'
 
 const ID = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const params = (s: string) => new URLSearchParams(s)
@@ -29,7 +32,7 @@ describe('issue list URL state', () => {
 
   it('round-trips every filter through the URL', () => {
     const q = parseIssueQuery(params(`state=closed&label=bug&label=good%20first&author=${ID}&assignee=me&mentions=me&sort=comments&q=crash&page=3`))
-    expect(q).toEqual({ state: 'closed', labels: ['bug', 'good first'], author: ID, assignee: 'me', mentions: true, sort: 'comments', q: 'crash', page: 3 })
+    expect(q).toEqual({ ...DEFAULT_ISSUE_QUERY, state: 'closed', labels: ['bug', 'good first'], author: ID, assignee: 'me', mentions: true, sort: 'comments', q: 'crash', page: 3 })
     const back = new URLSearchParams(issueQueryParams(q))
     expect(parseIssueQuery(back)).toEqual(q)
     expect(back.toString()).toBe(`state=closed&label=bug&label=good+first&author=${ID}&assignee=me&mentions=me&sort=comments&q=crash&page=3`)
@@ -52,7 +55,7 @@ describe('issue list URL state', () => {
     // An unknown qualifier stays free text.
     expect(parseIssueQuery(params('q=foo%3Abar')).q).toBe('foo:bar')
     // A URL param is never cleared by a qualifier that does not resolve.
-    expect(parseIssueQuery(params(`author=${ID}&q=author%3Aalice`))).toMatchObject({ author: ID, q: '' })
+    expect(parseIssueQuery(params(`author=${ID}&q=author%3Aalice.dash`))).toMatchObject({ author: ID, q: '' })
   })
 
   it('dedupes repeated labels', () => {
@@ -87,16 +90,16 @@ describe('search-box qualifiers', () => {
   })
 
   it('keeps unknown keys as free text, and drops (and reports) known ones it cannot resolve', () => {
-    const q = parseSearchText('author:alice is:merged foo:bar hello')
+    const q = parseSearchText('author:alice.dash is:merged foo:bar hello')
     expect(q.author).toBeNull()
     expect(q.state).toBe('open')
     expect(q.q).toBe('foo:bar hello')
-    expect(unresolvedQualifiers('author:alice is:merged foo:bar hello')).toEqual(['author:alice', 'is:merged'])
+    expect(unresolvedQualifiers('author:alice.dash is:merged foo:bar hello')).toEqual(['author:alice.dash', 'is:merged'])
   })
 
   it('never overrides a filter with an unresolvable qualifier', () => {
     const base = { ...DEFAULT_ISSUE_QUERY, author: ID, assignee: 'me', mentions: true, sort: 'comments' as const }
-    const q = parseSearchText('author:alice assignee:bob mentions:you sort:random', base)
+    const q = parseSearchText('author:alice.dash assignee:bob mentions:you sort:random', base)
     expect(q).toMatchObject({ author: ID, assignee: 'me', mentions: true, sort: 'comments', q: '' })
   })
 
@@ -128,6 +131,64 @@ describe('search-box qualifiers', () => {
     })
   })
 
+  it('reads -label:, no:label, milestone:, no:milestone, in: and comments: (QW-018, QW-020)', () => {
+    const q = parseSearchText('-label:wontfix -label:"needs info" no:label milestone:"v1 0" no:milestone in:title comments:>2 crash')
+    expect(q).toMatchObject({ notLabels: ['wontfix', 'needs info'], noLabel: true, milestone: 'v1 0', noMilestone: true, scope: 'title', comments: '>2', q: 'crash' })
+    expect(parseSearchText('in:body').scope).toBe('body')
+    expect(parseSearchText('in:title,body').scope).toBe('any')
+    expect(unresolvedQualifiers('-label:wontfix milestone:v1 in:title comments:1..3')).toEqual([])
+  })
+
+  it('reports the GitHub qualifiers it does not apply rather than searching for them (QW-020)', () => {
+    const text = 'in:comments comments:lots review:approved review-requested:@me draft:true created:>2024-01-01 -author:bob foo:bar'
+    expect(unresolvedQualifiers(text)).toEqual(['in:comments', 'comments:lots', 'review:approved', 'review-requested:@me', 'draft:true', 'created:>2024-01-01', '-author:bob'])
+    // An unknown key is not a GitHub qualifier: it stays free text.
+    expect(parseSearchText(text).q).toBe('foo:bar')
+    const reason = droppedQualifiersReason(unresolvedQualifiers(text))
+    expect(reason).toContain('in: takes title or body')
+    expect(reason).toContain('comments: takes a count')
+    expect(reason).toContain('review: is not a list filter')
+    expect(reason).toContain('are pull request filters')
+    expect(reason).toContain('created: is not a filter here.')
+    expect(reason).toContain('Only -label: can be negated here.')
+  })
+
+  it('keeps a GitHub key with no value as the prose it is ("status: broken")', () => {
+    expect(unresolvedQualifiers('status: broken type: error')).toEqual([])
+    expect(parseSearchText('status: broken type: error').q).toBe('status: broken type: error')
+    // An applied key with no value is still reported.
+    expect(unresolvedQualifiers('label: milestone:')).toEqual(['label:', 'milestone:'])
+  })
+
+  it('reads back a URL whose q carries long qualifiers, uncut', () => {
+    const q = parseSearchText(
+      '-label:"needs more discussion" -label:"blocked upstream" -label:wontfix-maybe milestone:"Release 2026 Q4 stabilisation and hardening sprint" in:title comments:>=10 a longer free text search for the crash on startup',
+    )
+    const text = issueQueryParams(q).find(([k]) => k === 'q')?.[1] ?? ''
+    expect(text.length).toBeGreaterThan(200)
+    const back = parseIssueQuery(new URLSearchParams(issueQueryParams(q)))
+    expect(back).toMatchObject({ notLabels: q.notLabels, milestone: q.milestone, scope: 'title', comments: '>=10', q: q.q })
+  })
+
+  it('takes an author name with no identity behind it as a mirrored login (QW-062)', () => {
+    expect(parseSearchText('author:thephez')).toMatchObject({ author: null, authorLogin: 'thephez', q: '' })
+    expect(parseSearchText('author:@thephez')).toMatchObject({ authorLogin: 'thephez' })
+    // An id (or a DPNS name rewritten to one) replaces the login, and the reverse.
+    expect(parseSearchText(`author:thephez author:${ID}`)).toMatchObject({ author: ID, authorLogin: null })
+    expect(parseSearchText('author:thephez', { ...DEFAULT_ISSUE_QUERY, author: ID })).toMatchObject({ author: null, authorLogin: 'thephez' })
+    // A DPNS-shaped name is never a login: said as not applied.
+    expect(unresolvedQualifiers('author:alice.dash')).toEqual(['author:alice.dash'])
+  })
+
+  it('carries the extra qualifiers in ?q= and reads them back (a reload keeps them)', () => {
+    const q = { ...DEFAULT_ISSUE_QUERY, notLabels: ['wontfix'], milestone: 'v1 0', authorLogin: 'thephez', scope: 'body' as const, comments: '1..3', q: 'crash' }
+    const url = new URLSearchParams(issueQueryParams(q))
+    expect(url.get('q')).toBe('-label:wontfix milestone:"v1 0" author:thephez in:body comments:1..3 crash')
+    expect(parseIssueQuery(url)).toEqual(q)
+    expect(hasFilters({ ...DEFAULT_ISSUE_QUERY, noMilestone: true })).toBe(true)
+    expect(hasFilters({ ...DEFAULT_ISSUE_QUERY, scope: 'title' })).toBe(false)
+  })
+
   it('writes the query back as text that parses to the same query', () => {
     const q = { ...DEFAULT_ISSUE_QUERY, state: 'all' as const, labels: ['bug', 'two words'], assignee: 'none', sort: 'oldest' as const, q: 'crash' }
     const text = searchText(q)
@@ -136,8 +197,103 @@ describe('search-box qualifiers', () => {
   })
 })
 
+describe('rowMatches with the extra filters', () => {
+  const MIRROR = 'MirrorIdentity1111111111111111111111111111'
+  const base = { labels: [], author: null, assignee: null, mentions: null, text: '' }
+  const row = {
+    title: 'Update DIP-2 table',
+    number: 119,
+    body: 'The table is out of date.',
+    author: MIRROR,
+    origin: { author: 'thephez', createdAt: 0, url: 'https://github.com/dashpay/dips/issues/119', host: 'github.com' },
+    comments: 3,
+    milestone: 'v1.0',
+    state: { labels: ['bug'], assignees: [] },
+  }
+  const filters = (q: Partial<typeof DEFAULT_ISSUE_QUERY>, trust: ReadonlySet<string> | null = new Set([MIRROR])) =>
+    ({ ...base, ...rowFiltersOf({ ...DEFAULT_ISSUE_QUERY, ...q }, trust) })
+
+  it('filters by milestone and no:milestone (QW-018)', () => {
+    expect(rowMatches(row, filters({ milestone: 'v1.0' }))).toBe(true)
+    expect(rowMatches(row, filters({ milestone: 'v2.0' }))).toBe(false)
+    expect(rowMatches(row, filters({ noMilestone: true }))).toBe(false)
+    expect(rowMatches({ ...row, milestone: null }, filters({ noMilestone: true }))).toBe(true)
+  })
+
+  it('filters by -label: and no:label', () => {
+    expect(rowMatches(row, filters({ notLabels: ['bug'] }))).toBe(false)
+    expect(rowMatches(row, filters({ notLabels: ['wontfix'] }))).toBe(true)
+    expect(rowMatches(row, filters({ noLabel: true }))).toBe(false)
+    expect(rowMatches({ ...row, state: { labels: [], assignees: [] } }, filters({ noLabel: true }))).toBe(true)
+  })
+
+  it('filters by comment count, never counting an uncounted row', () => {
+    expect(rowMatches(row, filters({ comments: '>2' }))).toBe(true)
+    expect(rowMatches(row, filters({ comments: '>3' }))).toBe(false)
+    expect(rowMatches({ ...row, comments: null }, filters({ comments: '>=0' }))).toBe(false)
+  })
+
+  it("matches a mirrored author's login only on a trusted mirror's items (QW-062)", () => {
+    expect(rowMatches(row, filters({ authorLogin: 'THEPHEZ' }))).toBe(true)
+    expect(rowMatches(row, filters({ authorLogin: 'coolaj86' }))).toBe(false)
+    // Anyone can write an `imported` author into their own issue: an untrusted signer's never matches.
+    expect(rowMatches(row, filters({ authorLogin: 'thephez' }, new Set()))).toBe(false)
+    expect(rowMatches(row, filters({ authorLogin: 'thephez' }, null))).toBe(false)
+  })
+
+  it('scopes free text with in:', () => {
+    expect(rowMatches(row, { ...filters({ scope: 'title' }), text: 'out' })).toBe(false)
+    expect(rowMatches(row, { ...filters({}), text: 'out' })).toBe(true)
+  })
+})
+
+describe('comment-count ranges (QW-020)', () => {
+  it("reads GitHub's comments: forms", () => {
+    expect(commentRange('3')).toEqual({ min: 3, max: 3 })
+    expect(commentRange('>2')).toEqual({ min: 3, max: Infinity })
+    expect(commentRange('>=2')).toEqual({ min: 2, max: Infinity })
+    expect(commentRange('<2')).toEqual({ min: 0, max: 1 })
+    expect(commentRange('<=2')).toEqual({ min: 0, max: 2 })
+    expect(commentRange('1..3')).toEqual({ min: 1, max: 3 })
+    expect(commentRange('2..*')).toEqual({ min: 2, max: Infinity })
+    expect(commentRange('*..2')).toEqual({ min: 0, max: 2 })
+    for (const bad of ['', '<0', '3..1', '*..*', 'lots', '>', '-1']) expect(commentRange(bad)).toBeNull()
+  })
+})
+
+describe('pastLastPage (QW-068)', () => {
+  it('names the last page only when the page lies past it', () => {
+    expect(pastLastPage(9, 140, 25)).toBe(6)
+    expect(pastLastPage(6, 140, 25)).toBeNull()
+    expect(pastLastPage(2, 0, 25)).toBe(1)
+    expect(pastLastPage(9, null, 25)).toBeNull()
+    expect(pastLastPage(1, 0, 25)).toBeNull()
+  })
+})
+
 describe('free-text match', () => {
   const row = { title: 'Crash when the Config is empty', number: 12 }
+  it('matches a quoted phrase as a whole, without its quotes (QW-021)', () => {
+    const dip = { title: 'DIP-15: DashPay', number: 3 }
+    expect(matchesText('"DIP-15"', dip)).toBe(true)
+    expect(matchesText('DIP-15', dip)).toBe(true)
+    expect(matchesText('"the config"', row)).toBe(true)
+    expect(matchesText('"config the"', row)).toBe(false)
+    expect(searchTerms('"DIP-15" crash "two words"')).toEqual(['dip-15', 'crash', 'two words'])
+  })
+  it('looks in titles and bodies by default, and in one of them with in: (QW-020)', () => {
+    const r = { title: 'Crash on start', number: 4, body: 'The HMAC check fails.' }
+    expect(matchesText('hmac', r)).toBe(true)
+    expect(matchesText('hmac', r, 'title')).toBe(false)
+    expect(matchesText('hmac', r, 'body')).toBe(true)
+    expect(matchesText('crash', r, 'body')).toBe(false)
+  })
+  it("never matches a mirrored body's provenance quote", () => {
+    const r = { title: 'Update DIP-2', number: 5, body: '> Mirrored from github.com/dashpay/dips#119 by @thephez (issue, 2022-01-01)\n>\n\nThe table is out of date.' }
+    expect(matchesText('dashpay', r)).toBe(false)
+    expect(matchesText('thephez', r)).toBe(false)
+    expect(matchesText('table', r)).toBe(true)
+  })
   it('needs every word, ignoring case', () => {
     expect(matchesText('crash config', row)).toBe(true)
     expect(matchesText('crash network', row)).toBe(false)

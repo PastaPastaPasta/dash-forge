@@ -2,8 +2,9 @@
 
 /**
  * IssuesContent — the issue list (`platform-parity-spec.md` §1.2): Open / Closed tabs with exact
- * counts, filters for label, author, assignee and "mentions me", sort, a search box with
- * GitHub's qualifiers, pages of 50 past the first 100 issues, label chips and assignee avatars.
+ * counts, filters for label, milestone, author, assignee and "mentions me", sort, a search box
+ * with GitHub's qualifiers (`lib/view/issue-query`), pages of 50 past the first 100 issues, label
+ * chips and assignee avatars.
  * Everything the list shows is in the URL (D-913), so a reload or a shared link shows the same.
  *
  * Reads go through the issue index (`lib/repo/issue-index`): one composite for the first 100
@@ -30,6 +31,7 @@ import {
   issueQueryParams,
   parseIssueQuery,
   parseSearchText,
+  pastLastPage,
   searchSubmitBase,
   searchText,
   unresolvedQualifiers,
@@ -37,7 +39,7 @@ import {
   utf8Length,
   type IssueListQuery,
 } from '@/lib/view/issue-query'
-import { createIssue, issueFirsts, queryIssues, repoContractIds, repoKey, type IssueListPage, type IssueSelection } from '@/lib/repo'
+import { createIssue, issueFirsts, queryIssues, repoContractIds, repoKey, rowFiltersOf, type IssueListPage, type IssueSelection } from '@/lib/repo'
 import { SupersededWriteError } from '@/lib/sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
@@ -58,11 +60,14 @@ import { MirrorComposeHint, MirrorNote } from '@/components/repo/mirror-note'
 import { useRepoLinks } from '@/components/repo/target-href'
 import { AssigneeAvatars, MarkdownEditor } from '@/components/repo/issue-bits'
 import {
+  AuthorLoginNote,
   CommentCount,
   DroppedNote,
   LabelChipFilter,
   LabelFilter,
+  MilestoneFilter,
   Pager,
+  PastLastPage,
   PersonFilter,
   RowLink,
   SearchBox,
@@ -75,6 +80,7 @@ import {
 } from '@/components/repo/list-controls'
 import { IssueTemplatePicker } from '@/components/repo/issue-templates'
 import { useRepoTotals } from '@/components/repo/use-repo-totals'
+import { useMilestones } from '@/components/repo/use-milestones'
 import { BodyCounter, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { repoHref } from '@/hooks/use-query-param'
@@ -91,6 +97,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const generation = useRepoWriteGeneration(home.repo)
   const trust = useMirrorTrust(home.repo)
   const totals = useRepoTotals(home.repo)
+  const milestones = useMilestones(home.repo)
   // A private repo's issues are sealed on write (`lib/repo/private-writes.ts`); only a member
   // holding the current key can open one, and non-members see no button (ux-dx-spec §9).
   const canCompose = privateComposeBlock(home) === null
@@ -102,6 +109,9 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
 
   // `me` needs a signed-in viewer; signed out, a `me` filter shows nothing rather than everything.
   const needsViewer = query.author === 'me' || query.assignee === 'me' || query.mentions
+  // `author:<login>` matches only what a trusted mirror signed: until the trust set is read, every
+  // row would fail it (an empty list, after walking every chunk), so the read waits for it.
+  const awaitingTrust = query.authorLogin !== null && trust === null
   const { data, loading, error, reload } = useAsync<IssueListPage>(
     async () => {
       const me = identity ?? ''
@@ -116,16 +126,18 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         text: query.q,
         page: query.page,
         pageSize: ISSUE_PAGE_SIZE,
+        ...rowFiltersOf(query, trust),
       }
       return queryIssues(sdk!, home.repo, selection, totals, network)
     },
-    [ready, repoKey(home.repo), generation, JSON.stringify(query), identity ?? '', totals ?? -1],
-    { enabled: ready && sdk !== null && (!needsViewer || identity !== null) },
+    [ready, repoKey(home.repo), generation, JSON.stringify(query), identity ?? '', totals ?? -1, query.authorLogin !== null && trust !== null ? [...trust].sort().join(',') : null],
+    { enabled: ready && sdk !== null && (!needsViewer || identity !== null) && !awaitingTrust },
   )
 
   const labelDefs = useMemo(() => new Map((data?.labels ?? []).map((l) => [l.name, l])), [data])
   const empty = data !== null && data.rows.length === 0
   const filtered = hasFilters(query)
+  const lastPage = empty ? pastLastPage(query.page, data?.matching ?? null, ISSUE_PAGE_SIZE) : null
 
   return (
     <div className="mx-auto max-w-4xl">
@@ -138,6 +150,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         ) : null}
       </div>
       <DroppedNote search={search} reason={droppedQualifiersReason(search.dropped, search.notFound)} testId="issue-search-dropped" />
+      <AuthorLoginNote login={query.authorLogin} notFound={search.notFound} />
 
       <MirrorNote home={home} kind="issue" />
 
@@ -181,11 +194,12 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
           </div>
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <LabelFilter labels={data?.labels ?? []} selected={query.labels} onChange={(labels) => change({ labels })} />
+            <MilestoneFilter milestones={milestones.data} value={query.milestone} none={query.noMilestone} onChange={(c) => change(c)} />
             <PersonFilter
               label="Author"
               value={query.author}
               signedIn={identity !== null}
-              onChange={(author) => change({ author })}
+              onChange={(author) => change({ author, authorLogin: null })}
             />
             <PersonFilter
               label="Assignee"
@@ -210,10 +224,12 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
 
         {needsViewer && identity === null ? (
           <p className="px-4 py-6 text-dense text-anvil-500 dark:text-anvil-400">Sign in to filter by your own issues, assignments and mentions.</p>
-        ) : loading && !data ? (
+        ) : (loading || awaitingTrust) && !data ? (
           <LoadingBlock label="Reading issues" />
         ) : error ? (
           <div className="p-4"><ErrorState message={error} onRetry={reload} /></div>
+        ) : lastPage !== null ? (
+          <PastLastPage page={query.page} last={lastPage} onPage={(page) => change({ page })} />
         ) : empty ? (
           <EmptyState
             icon={CircleDot}

@@ -41,12 +41,29 @@ describe('PR list query (L-44)', () => {
     // Values are exact: `is:MERGED` is not a state, and is said as not applied, with the PR states.
     expect(parsePullSearch('is:MERGED').state).toBe('open')
     expect(unresolvedPullQualifiers('is:MERGED')).toEqual(['is:MERGED'])
-    expect(pullDroppedReason(['is:MERGED'])).toBe('is: and state: take open, closed, merged or all.')
+    expect(pullDroppedReason(['is:MERGED'])).toBe('is: and state: take open, closed, merged, draft or all.')
   })
 
   it('reports what it cannot apply: a DPNS author, and mentions (an Issues filter)', () => {
-    expect(unresolvedPullQualifiers('author:alice mentions:@me')).toEqual(['author:alice', 'mentions:@me'])
+    expect(unresolvedPullQualifiers('author:alice.dash mentions:@me')).toEqual(['author:alice.dash', 'mentions:@me'])
     expect(parsePullSearch('mentions:@me fix').q).toBe('fix')
+  })
+
+  it('reads draft:, is:draft and review-requested:, and round-trips them through the URL (QW-020)', () => {
+    expect(parsePullSearch('is:draft').draft).toBe(true)
+    expect(parsePullSearch('draft:false').draft).toBe(false)
+    expect(parsePullSearch('Draft:TRUE').draft).toBe(true)
+    expect(parsePullSearch('review-requested:@me').reviewRequested).toBe('me')
+    expect(parsePullSearch(`review-requested:${ID} fix`)).toMatchObject({ reviewRequested: ID, q: 'fix' })
+    // A quoted value is one token: none of it leaks into the free text.
+    expect(parsePullSearch('review-requested:"a b" fix')).toMatchObject({ reviewRequested: null, q: 'fix' })
+    expect(unresolvedPullQualifiers('review-requested:"a b" fix')).toEqual(['review-requested:"a b"'])
+    expect(unresolvedPullQualifiers('draft:maybe review-requested:bob.dash review:approved')).toEqual(['review:approved', 'draft:maybe', 'review-requested:bob.dash'])
+    expect(pullDroppedReason(['draft:maybe', 'review-requested:bob.dash'], ['bob.dash'])).toBe('draft: takes true or false. No DPNS name `bob.dash` was found.')
+    const q = { ...DEFAULT_PULL_QUERY, draft: true, reviewRequested: ID, milestone: 'v1', q: 'fix' }
+    const back = parsePullQuery(new URLSearchParams(pullQueryParams(q)))
+    expect(back).toEqual(q)
+    expect(pullSearchText(q)).toBe(`is:open milestone:v1 draft:true review-requested:${ID} fix`)
   })
 
   it('writes the query back as search text, the state first', () => {

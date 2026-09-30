@@ -376,17 +376,18 @@ export function transitionTargets<Row extends RowExtras>(sdk: EvoSDK, index: Lis
 }
 
 /**
- * Feed targets whose member events can pass the label and assignee filters, or null when neither
+ * Feed targets whose member events can pass the label, assignee and milestone filters, or null when none
  * applies. A loaded row is checked exactly (`loaded`); one not loaded yet is admitted on its
  * events and filtered once resolved.
  */
 export function metaCandidates<Row extends RowExtras>(
   index: ListIndex<Row>,
-  q: { readonly labels: readonly string[]; readonly assignee: string | null },
+  q: { readonly labels: readonly string[]; readonly assignee: string | null; readonly milestone?: string | null },
   loaded: (row: Row) => boolean,
 ): Set<string> | null {
   const assignee = q.assignee !== null && q.assignee !== 'none' ? q.assignee : null
-  if ((q.labels.length === 0 && assignee === null) || index.feed === null) return null
+  const milestone = q.milestone ?? null
+  if ((q.labels.length === 0 && assignee === null && milestone === null) || index.feed === null) return null
   const out = new Set<string>()
   for (const [id, log] of index.feed) {
     if (id === '' || index.notRows.has(id)) continue
@@ -397,6 +398,7 @@ export function metaCandidates<Row extends RowExtras>(
     }
     if (q.labels.length > 0 && !log.events.some((e) => e.kind === 'labelAdd')) continue
     if (assignee !== null && !log.events.some((e) => e.kind === 'assign' && e.value === assignee)) continue
+    if (milestone !== null && !log.events.some((e) => e.kind === 'milestoneSet' && e.value === milestone)) continue
     out.add(id)
   }
   return out
