@@ -112,7 +112,7 @@ export function MarkdownEditor({
   const [tab, setTab] = useState<'write' | 'preview'>('write')
   const tabClass = (on: boolean) =>
     cn(
-      'rounded-t px-3 py-1.5 text-dense font-medium',
+      'rounded-t px-3 py-1.5 text-dense font-medium coarse:min-h-11',
       on ? 'border border-b-0 border-anvil-200 bg-white text-anvil-900 dark:border-anvil-750 dark:bg-anvil-950 dark:text-anvil-50' : 'text-anvil-500 dark:text-anvil-400 hover:text-anvil-800 dark:text-anvil-400',
     )
   return (

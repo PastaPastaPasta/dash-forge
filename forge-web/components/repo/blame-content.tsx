@@ -280,7 +280,9 @@ function BlameTable({
         data-oid={unresolved ? undefined : hunk.oid}
         data-unresolved-at={unresolved ? hunk.oid : undefined}
         data-selected={on || undefined}
-        className={cn('h-5', k % 2 === 1 && 'bg-anvil-50/60 dark:bg-anvil-900/40', on && 'bg-caution/15', first && i > 0 && 'border-t border-anvil-100 dark:border-anvil-850')}
+        // A hunk's first row is 24 px: its commit link (a tab stop) then keeps the 24 px spacing
+        // from the next hunk's that WCAG 2.5.8 asks for; the other code rows stay 20 px.
+        className={cn(first ? 'h-6' : 'h-5', k % 2 === 1 && 'bg-anvil-50/60 dark:bg-anvil-900/40', on && 'bg-caution/15', first && i > 0 && 'border-t border-anvil-100 dark:border-anvil-850')}
       >
         <td className="w-20 max-w-[5rem] truncate whitespace-nowrap border-r sm:w-72 sm:max-w-[18rem] border-anvil-100 px-3 py-0 align-top text-[12px] text-anvil-500 dark:border-anvil-850 dark:text-anvil-400">
           {first && unresolved ? (

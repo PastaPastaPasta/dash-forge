@@ -860,7 +860,7 @@ function PullPage({
             <>
               {/* Description */}
               <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
-                <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense dark:border-anvil-800 dark:bg-anvil-900">
+                <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
                   <Byline author={pull.author} createdAt={pull.createdAt} origin={origin} verb="opened this" />
                   <EditedMarker createdAt={pull.createdAt} updatedAt={pull.updatedAt} />
                 </div>
@@ -1368,7 +1368,7 @@ function ChecksRow({ summary, headOid, onOpen }: { summary: ChecksSummary | null
         ) : null}
       </span>
       {summary.total + summary.untrusted > 0 ? (
-        <button type="button" onClick={onOpen} className="text-[12px] text-forge-700 underline-offset-2 hover:underline dark:text-forge-400">
+        <button type="button" onClick={onOpen} className="hit-area text-[12px] text-forge-700 underline-offset-2 hover:underline dark:text-forge-400">
           Details
         </button>
       ) : null}
@@ -1543,7 +1543,7 @@ function commentSlots({
             <MarkdownView source={r.body} links={links} imported={importedUrlOf(r.importedRaw)} />
           </div>
         ))}
-        <button type="button" onClick={onShowFiles} className="text-[12px] text-forge-700 underline-offset-2 hover:underline dark:text-forge-400">
+        <button type="button" onClick={onShowFiles} className="hit-area text-[12px] text-forge-700 underline-offset-2 hover:underline dark:text-forge-400">
           View in Files changed
         </button>
       </div>

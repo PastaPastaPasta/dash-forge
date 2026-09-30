@@ -27,7 +27,7 @@ export function MirrorNote({ home, kind }: { home: RepoHome; kind: MirrorKind })
   return (
     <p role="note" className="mb-3 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="mirror-note">
       Mirrored from {source.label} ·{' '}
-      <a href={source.listUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-0.5 text-forge-700 hover:underline dark:text-forge-400">
+      <a href={source.listUrl} target="_blank" rel="noopener noreferrer" className="hit-area inline-flex items-center gap-0.5 text-forge-700 hover:underline dark:text-forge-400">
         view the full history on {source.host} <ExternalLink className="h-3 w-3" aria-hidden />
       </a>
     </p>

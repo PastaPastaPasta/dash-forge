@@ -31,7 +31,7 @@ export function RepoCard({
         ) : (
           <GitBranch className="h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
         )}
-        <Link href={href} className="truncate font-mono text-prose text-anvil-900 hover:text-forge-800 coarse:-my-3 coarse:py-3 dark:text-anvil-50 dark:hover:text-forge-400">
+        <Link href={href} className="truncate font-mono text-prose text-anvil-900 hover:text-forge-800 coarse:-my-3 coarse:min-w-11 coarse:py-3 dark:text-anvil-50 dark:hover:text-forge-400">
           {repo.name}
         </Link>
         {repo.role ? (

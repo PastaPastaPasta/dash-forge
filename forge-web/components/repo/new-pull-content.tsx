@@ -184,7 +184,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
         <h1 className="text-xl">Open a pull request</h1>
         <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">
           Propose merging a branch into {repo.name}. Anyone can open one; maintainers and writers merge.{' '}
-          <Link href={repoHref('/repo/compare', addr, { base: branchName(base), head: head === null || head.repo.repoId !== repo.repoId ? '' : branchName(head.refName) })} className="text-forge-700 underline underline-offset-2 dark:text-forge-400">
+          <Link href={repoHref('/repo/compare', addr, { base: branchName(base), head: head === null || head.repo.repoId !== repo.repoId ? '' : branchName(head.refName) })} className="hit-area text-forge-700 underline underline-offset-2 dark:text-forge-400">
             Compare tags or commits
           </Link>{' '}
           without opening one.
@@ -307,7 +307,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
         <div className="flex flex-wrap items-center justify-between gap-3">
           <CostPreview cost={cost} />
           <div className="flex flex-wrap items-center gap-3">
-            <label className="flex items-center gap-1.5 text-dense text-anvil-700 dark:text-anvil-200">
+            <label className="flex items-center gap-1.5 text-dense text-anvil-700 coarse:min-h-11 dark:text-anvil-200">
               <input type="checkbox" className="h-4 w-4 accent-forge-700" checked={asDraft} onChange={(e) => setAsDraft(e.target.checked)} />
               Open as a draft
             </label>

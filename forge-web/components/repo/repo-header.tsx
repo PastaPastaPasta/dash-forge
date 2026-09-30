@@ -110,7 +110,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
           {home.repo.visibility === 'private' ? <PrivateChip home={home} /> : null}
           <BackendBadge backend={home.backend} />
         </div>
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex flex-wrap items-center gap-2">
           <CopyLinkButton repo={addr} />
           {home.repo.visibility === 'public' ? <ForkButton parent={home.repo} /> : null}
           <WatchButton repo={home.repo} />

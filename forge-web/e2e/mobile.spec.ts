@@ -243,6 +243,43 @@ test.describe('signed in with a low balance', () => {
       await context.close()
     })
   }
+
+  // QW-030: at 768 px the signed-in header ran to x=778: the account menu was cut off and the
+  // balance pill wrapped onto two lines.
+  test('iPad Mini: the signed-in header fits, the account menu whole and the balance on one line', async ({ browser, browserName }) => {
+    const context = await browser.newContext(contextFor('iPad Mini', browserName, 'light'))
+    const page = await context.newPage()
+    await page.goto('/', { waitUntil: 'domcontentloaded' })
+    await page.getByRole('button', { name: /^sign in$/i }).first().click()
+    await page.getByTestId('tile-import').click()
+    await page.setInputFiles('input[type="file"]', { name: 'id.json', mimeType: 'application/json', buffer: readFileSync(LOW_ID_FILE) })
+    await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
+    await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
+    await page.getByRole('button', { name: /create this browser's key/i }).click()
+    const pill = page.getByTestId('funds-pill')
+    await expect(pill).toBeVisible({ timeout: 120_000 })
+    expect(await overflowX(page)).toBeLessThanOrEqual(1)
+    const width = page.viewportSize()!.width
+    const account = await page.getByRole('button', { name: 'Account menu' }).boundingBox()
+    expect(account!.x + account!.width).toBeLessThanOrEqual(width)
+    expect(account!.width).toBeGreaterThanOrEqual(43.5)
+    // One line of text: the pill is no taller than its text plus the budget bar.
+    expect((await pill.boundingBox())!.height).toBeLessThanOrEqual(34)
+    await context.close()
+  })
+})
+
+// QW-088: a phone's header (bar and jump box, ~114 px) scrolls away with the page, as GitHub's
+// does, instead of pinning a seventh of the screen; from `sm` up the one-row bar stays pinned.
+test('Pixel 7 and iPad Mini: the header scrolls away on a phone and stays pinned on a tablet', async ({ browser, browserName }) => {
+  for (const [device, position] of [['Pixel 7', 'relative'], ['iPad Mini', 'sticky']] as const) {
+    const context = await browser.newContext(contextFor(device, browserName))
+    const page = await context.newPage()
+    await page.goto('/explore/', { waitUntil: 'domcontentloaded' })
+    await expect(page.getByRole('heading', { name: 'Explore' })).toBeVisible({ timeout: 60_000 })
+    expect(await page.getByRole('banner').evaluate((h) => getComputedStyle(h).position), device).toBe(position)
+    await context.close()
+  }
 })
 
 // FG-8 (dash showcase QA): phone chrome.

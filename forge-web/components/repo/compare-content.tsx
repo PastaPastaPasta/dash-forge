@@ -235,7 +235,7 @@ function Compared({
         ) : null}
       </div>
       <details open={commits.commits.length <= 10} className="group">
-        <summary className="mb-2 cursor-pointer text-dense font-semibold text-anvil-700 dark:text-anvil-200">
+        <summary className="mb-2 cursor-pointer text-dense font-semibold text-anvil-700 coarse:py-3 dark:text-anvil-200">
           Commits ({commitCount})
         </summary>
         <CommitList commits={commits} addr={addr} allHint={`Clone the repo and run git log ${shortOid(mergeBase)}..${shortOid(headOid)} to see them all.`} />
