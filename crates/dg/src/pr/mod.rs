@@ -230,13 +230,18 @@ pub(crate) async fn open_pr(ctx: &Ctx, repo: &str, number: u64, action: &str) ->
     Ok(Pr { s, view })
 }
 
+/// The label `dg pr list` / `dg pr view` show for a PR's state: `merged` (terminal), `closed`
+/// (state code 1 or 9 — closed takes precedence over draft, as the web's `pullStatus` does),
+/// `draft` (open, state code 8) or `open`.
 pub(crate) fn state_label(v: &PatchView) -> &'static str {
     if v.state.merged {
         "merged"
-    } else if v.state.open {
-        "open"
-    } else {
+    } else if !v.state.open {
         "closed"
+    } else if v.state.draft {
+        "draft"
+    } else {
+        "open"
     }
 }
 
@@ -702,10 +707,9 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
         }),
         || {
             println!(
-                "#{} [{}{}] {}",
+                "#{} [{}] {}",
                 v.patch.number,
                 state_label(&v),
-                if v.state.draft && v.state.open { ", draft" } else { "" },
                 safe(&v.patch.title)
             );
             println!("author: {}", v.patch.author);
@@ -2098,6 +2102,26 @@ mod tests {
             log: forge_core::collab::v2::TargetLog::default(),
             patch,
         }
+    }
+
+    /// `dg pr list` / `dg pr view` show an open draft (state code 8) as `draft`, not `open`
+    /// (it used to fall through to the `open` branch and read as a plain open PR). A closed
+    /// draft (code 9) still reads as `closed`, matching the web's `pullStatus` precedence.
+    #[test]
+    fn state_label_shows_an_open_draft_as_draft() {
+        let ok = "2".repeat(40);
+        let with = |merged: bool, open: bool, draft: bool| {
+            let mut v = view_with("refs/heads/main", &ok);
+            v.state.merged = merged;
+            v.state.open = open;
+            v.state.draft = draft;
+            v
+        };
+        assert_eq!(state_label(&with(false, true, false)), "open");
+        assert_eq!(state_label(&with(false, true, true)), "draft");
+        assert_eq!(state_label(&with(false, false, true)), "closed");
+        assert_eq!(state_label(&with(false, false, false)), "closed");
+        assert_eq!(state_label(&with(true, false, false)), "merged");
     }
 
     /// A merge is recorded only from an open, ready PR (`c3_mergedAfter`): a draft or closed
