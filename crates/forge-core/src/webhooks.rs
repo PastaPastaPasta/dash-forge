@@ -40,7 +40,7 @@ use crate::platform::{
     self, FetchedDocument, FieldValue, IdentityKeyInfo, LoadedContract, LoadedIdentity,
     PlatformClient, QueryFilter, QueryOrder, WriteEngine,
 };
-use crate::rules::v2::Role;
+use crate::rules::v2::{Role, Visibility};
 use crate::scope::RepoRef;
 
 /// The forge-community document type.
@@ -455,6 +455,49 @@ pub struct NewWebhook {
     pub allow_credentials_in_url: bool,
 }
 
+/// The `webhook` document [`WebhookService::prepare`] writes for `input` on `repo_id`:
+/// addressed to `relay_id`, its secret `ciphertext` already encrypted from the signer's key
+/// (`senderKeyId`) to the relay's (`relayKeyId`), and stamped `vis` = `visibility` (always
+/// "public" from `prepare`, after `require_public`; the contract's `publicOnly` agrees).
+pub(crate) fn webhook_props(
+    repo_id: [u8; 32],
+    relay_id: [u8; 32],
+    input: &NewWebhook,
+    (relay_key_id, sender_key_id): (u32, u32),
+    ciphertext: Vec<u8>,
+    visibility: Visibility,
+) -> BTreeMap<String, FieldValue> {
+    let mut properties = BTreeMap::from([
+        ("repoId".to_string(), FieldValue::identifier(repo_id)),
+        ("hookId".to_string(), FieldValue::bytes32(input.hook_id)),
+        ("url".to_string(), FieldValue::text(input.url.clone())),
+        (
+            "relayIdentityId".to_string(),
+            FieldValue::identifier(relay_id),
+        ),
+        (
+            "relayKeyId".to_string(),
+            FieldValue::integer(u64::from(relay_key_id)),
+        ),
+        (
+            "senderKeyId".to_string(),
+            FieldValue::integer(u64::from(sender_key_id)),
+        ),
+        ("secret".to_string(), FieldValue::bytes(ciphertext)),
+    ]);
+    if !input.events.is_empty() {
+        properties.insert(
+            "events".to_string(),
+            FieldValue::text_list(input.events.iter().cloned()),
+        );
+    }
+    if input.disabled {
+        properties.insert("disabled".to_string(), FieldValue::boolean(true));
+    }
+    crate::layout::stamp_vis(&mut properties, visibility);
+    properties
+}
+
 /// A signed, ready-to-send webhook document: its properties and the key ids it names.
 #[derive(Debug, Clone)]
 pub struct PreparedWebhook {
@@ -557,42 +600,18 @@ impl<'a> WebhookService<'a> {
         })?;
         let ciphertext = envelope::encrypt(sender, &recipient.public_key, input.secret.expose())?;
 
-        let repo_id = platform::decode_identifier(repo.id())?;
-        let relay_id = platform::decode_identifier(&input.relay_identity_id)?;
-        let mut properties = BTreeMap::from([
-            ("repoId".to_string(), FieldValue::identifier(repo_id)),
-            ("hookId".to_string(), FieldValue::bytes32(input.hook_id)),
-            ("url".to_string(), FieldValue::text(input.url.clone())),
-            (
-                "relayIdentityId".to_string(),
-                FieldValue::identifier(relay_id),
-            ),
-            (
-                "relayKeyId".to_string(),
-                FieldValue::integer(u64::from(recipient.id)),
-            ),
-            (
-                "senderKeyId".to_string(),
-                FieldValue::integer(u64::from(*sender_key_id)),
-            ),
-            ("secret".to_string(), FieldValue::bytes(ciphertext.clone())),
-        ]);
-        if !input.events.is_empty() {
-            properties.insert(
-                "events".to_string(),
-                FieldValue::text_list(input.events.iter().cloned()),
-            );
-        }
-        if input.disabled {
-            properties.insert("disabled".to_string(), FieldValue::boolean(true));
-        }
-        // Always "public" here (`require_public` above; `publicOnly`), and consensus checks it
-        // against the signer's maintainer document.
-        crate::layout::stamp_vis(&mut properties, repo.visibility);
         // Ids, key ids and the ciphertext, the text fields, and ~100 bytes of document and
         // index overhead.
         let approx_bytes = (32 * 3 + 8 + ciphertext.len() + input.url.len() + 100) as u64
             + input.events.iter().map(|e| e.len() as u64 + 2).sum::<u64>();
+        let properties = webhook_props(
+            platform::decode_identifier(repo.id())?,
+            platform::decode_identifier(&input.relay_identity_id)?,
+            input,
+            (recipient.id, *sender_key_id),
+            ciphertext,
+            repo.visibility,
+        );
         Ok(PreparedWebhook {
             properties,
             relay_key_id: recipient.id,

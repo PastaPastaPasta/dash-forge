@@ -418,6 +418,14 @@ function keyTag(keys: EpochKeys): string {
 }
 
 /**
+ * A `repoKey` document of `repoId`: `props`, the wrap `sealWrap` sealed (`wrapped`,
+ * `recipientKeyId`, `senderKeyId`), addressed to `identity` for `epoch`.
+ */
+export function repoKeyData(repoId: string, identity: string, epoch: number, props: Record<string, unknown>): Record<string, unknown> {
+  return { repoId: decodeIdentifier(repoId), memberId: decodeIdentifier(identity), epoch, ...props }
+}
+
+/**
  * Post one `repoKey` wrapping `raw` (epoch `keys.epoch`) to `identity`'s key `keyId`. The write's
  * intent names the key, so a retry never replays a wrap of another key. When this signer's wrap
  * for (member, epoch) already stands (the unique index), it is read back — a sender opens its own
@@ -433,7 +441,7 @@ async function postWrap(
   intent: string,
 ): Promise<WrapOutcome> {
   const props = await c.ops.wrap({ keys, raw, senderKey: senderKey(session, c), recipientKey: keyOf(session, identity, keyId) })
-  const data = { repoId: decodeIdentifier(c.repo.repoId), memberId: decodeIdentifier(identity), epoch: keys.epoch, ...props }
+  const data = repoKeyData(c.repo.repoId, identity, keys.epoch, props)
   assertNoPlaintext(c.repo, DOC.repoKey, data)
   try {
     await createDocumentIdempotent(c.sdk, c.auth, {
