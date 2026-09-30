@@ -120,7 +120,7 @@ export function StorageUnreachableCard({
           {role !== null ? (
             <div className="mt-4">
               <p className="mb-1 text-dense text-anvil-600 dark:text-anvil-300">Have a clone? This restores it:</p>
-              <CopyRow text={`dg reseed ${slug} --from-local`} />
+              <CopyRow text={`dg reseed ${slug} --from-local`} label="Copy the reseed command" />
             </div>
           ) : null}
         </div>

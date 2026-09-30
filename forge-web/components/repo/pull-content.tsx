@@ -1488,10 +1488,10 @@ function PullPage({
                     The branch was deleted. The PR&apos;s head is <Oid value={pull.headOid} chars={7} copyable={false} />
                     {merged ? `, in ${shortBranch(pull.state.baseRef ?? pull.baseRefName)}'s history:` : '.'}
                   </p>
-                  {merged ? <CopyRow text={`git switch --detach ${pull.headOid}`} className="mt-2" /> : null}
+                  {merged ? <CopyRow text={`git switch --detach ${pull.headOid}`} label="Copy the checkout command" className="mt-2" /> : null}
                 </>
               ) : (
-                <CopyRow text={checkout} className="mt-2" />
+                <CopyRow text={checkout} label="Copy the checkout command" className="mt-2" />
               )}
             </SidebarSection>
             {/* Lock conversation (GitHub: the rail's last entry): a member transition, for maintainers and writers. */}

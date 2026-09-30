@@ -2,7 +2,9 @@
 // Reproduces mainnet-bridge/src/ui/components.ts createKeyBackup (create mode):
 //   { network, created, mode, depositAddress, txid, mnemonic, identityId,
 //     identityKeys[...], assetLockKey }
-import { writeFileSync, chmodSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { closeSync, fsyncSync, openSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { bytesToHex, privateKeyToWif } from './bytes.mjs';
 import { getAssetLockDerivationPath } from './hd.mjs';
 
@@ -40,8 +42,54 @@ export function buildIdentityBackup(role, networkConfig) {
   };
 }
 
+/**
+ * Write a file holding secrets (a mnemonic, a WIF) as a new 0600 inode: a unique temp sibling
+ * created exclusively (`wx`, so nothing already there is opened or followed), synced, then
+ * renamed over `path`. rename replaces a symlink at `path` rather than writing through it, and
+ * the result is 0600 whatever the permissions of a file it replaces. A temp file this call
+ * created is removed on failure (one that was already there is left alone); the directory is
+ * synced after the rename, so the new name survives a crash too. `nonce`: tests only.
+ */
+export function writeSecretFile(path, data, { nonce = randomBytes(8).toString('hex') } = {}) {
+  const tmp = `${path}.${process.pid}.${nonce}.tmp`;
+  let fd;
+  let created = false;
+  try {
+    fd = openSync(tmp, 'wx', 0o600);
+    created = true;
+    writeFileSync(fd, data);
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    renameSync(tmp, path);
+  } catch (err) {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* the write already failed: report that error */
+      }
+    }
+    if (created) rmSync(tmp, { force: true });
+    throw err;
+  }
+  syncDir(dirname(path));
+}
+
+/** Best effort: not every platform can fsync a directory (Windows cannot open one). */
+function syncDir(dir) {
+  let fd;
+  try {
+    fd = openSync(dir, 'r');
+    fsyncSync(fd);
+  } catch {
+    /* the file itself is written and synced */
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 // Write a backup JSON with 0600 perms (contains private keys — never world-readable).
 export function writeIdentityFile(path, backupObject) {
-  writeFileSync(path, JSON.stringify(backupObject, null, 2) + '\n', { mode: 0o600 });
-  chmodSync(path, 0o600);
+  writeSecretFile(path, JSON.stringify(backupObject, null, 2) + '\n');
 }

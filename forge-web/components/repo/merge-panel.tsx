@@ -526,7 +526,7 @@ export function MergePanel({
               {conflictPaths.length > 20 ? <li>… and {conflictPaths.length - 20} more</li> : null}
             </ul>
           ) : null}
-          <CopyRow text={button.checkout} />
+          <CopyRow text={button.checkout} label="Copy the checkout command" />
         </div>
       ) : null}
       {mergeable && method === 'squash' && policyAllows(4) && squash.problem !== null ? (

@@ -498,7 +498,7 @@ export function KeyStep({
         </button>
         {otherWay ? (
           <div className="mt-2 space-y-2">
-            <CopyRow text={`dg auth export --new-key --budget ${RUNNER_KEY_DEFAULTS.budgetDash} --expires ${RUNNER_KEY_DEFAULTS.days}d --format dfk1 --reveal-secrets -o runner.dfk1`} />
+            <CopyRow text={`dg auth export --new-key --budget ${RUNNER_KEY_DEFAULTS.budgetDash} --expires ${RUNNER_KEY_DEFAULTS.days}d --format dfk1 --reveal-secrets -o runner.dfk1`} label="Copy the dg auth export command" />
             <Hint>The file&apos;s one line is the secret. Paste it as DASH_FORGE_KEY, then delete the file.</Hint>
             <Button variant="outline" onClick={() => onDone({ keyId: -1, budgetCredits: '0', expiresAt: 0, saved: true })}>
               I added DASH_FORGE_KEY myself

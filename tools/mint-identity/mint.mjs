@@ -2,6 +2,7 @@
 // Dash Forge — headless identity-minting CLI for testnet and devnets (spike S0.4).
 //
 //   node mint.mjs [--network testnet|devnet --devnet-name moutai] --out <dir> [--label OWNER] [--amount 0.5]
+//                 [--mnemonic-file <path> | --mnemonic -]   (an existing recovery phrase; - reads stdin)
 //   node mint.mjs pool --out <dir> [--amount 0.05] [--role-amounts DEPLOYER=50]
 //   node mint.mjs topup --identity <file> [--amount 0.1]
 //   node mint.mjs balance --identity <file>
@@ -12,7 +13,7 @@
 // --funding-key-file <path> or FORGE_DEVNET_FUNDING_WIF) | manual (alias --skip-faucet).
 //
 // See README.md for the full flag reference, rate-limit strategy, and security notes.
-import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { resolveNetwork, networkFromName, dashToDuffs } from './src/config.mjs';
 import { ChainClient } from './src/chain.mjs';
@@ -30,7 +31,8 @@ import {
 } from './src/flow.mjs';
 import { loadFundingKey, fundFromKey } from './src/funding.mjs';
 import { waitForFundingTx } from './src/lock.mjs';
-import { buildIdentityBackup, writeIdentityFile } from './src/backup.mjs';
+import { buildIdentityBackup, writeIdentityFile, writeSecretFile } from './src/backup.mjs';
+import { resolveMnemonicArg } from './src/mnemonic-arg.mjs';
 import { generateKeyPair, getPublicKey, publicKeyToAddress } from './src/keys.mjs';
 import { privateKeyToWif, wifToPrivateKey } from './src/bytes.mjs';
 import * as platform from './src/platform.mjs';
@@ -197,7 +199,7 @@ function loadOrCreateRole(file, label, network, mnemonic) {
   if (existsSync(file)) {
     const saved = readJson(file);
     if (saved.network !== network.name) throw new Error(`${file} is a ${saved.network} identity, not ${network.name}`);
-    if (mnemonic && mnemonic !== saved.mnemonic) throw new Error(`${file} already holds a different mnemonic than --mnemonic`);
+    if (mnemonic && mnemonic !== saved.mnemonic) throw new Error(`${file} already holds a different mnemonic than the one given`);
     const role = createRole(label, network, saved.mnemonic);
     if (role.depositAddress !== saved.depositAddress) throw new Error(`${file}: mnemonic does not match its depositAddress`);
     role.txid = saved.txid;
@@ -220,7 +222,7 @@ async function cmdMint(args) {
   const funding = fundingMode(args, network);
   const outFile = fileForLabel(dir, label);
 
-  const role = loadOrCreateRole(outFile, label, network, str(args.mnemonic));
+  const role = loadOrCreateRole(outFile, label, network, resolveMnemonicArg(args));
   if (role.identityId) throw new Error(`${outFile} already holds identity ${role.identityId}; use topup to add credits`);
   const utxoFrom = str(args['utxo-from']);
   if (utxoFrom && utxoFrom !== role.depositAddress) {
@@ -374,7 +376,9 @@ async function cmdTopup(args) {
   // timeout or crash stay recoverable, and a rerun reuses the same deposit address (and,
   // once broadcast, the same asset-lock tx).
   const pendingPath = `${resolve(idFile)}.topup-pending.json`;
-  const savePending = (p) => writeFileSync(pendingPath, JSON.stringify(p, null, 2), { mode: 0o600 });
+  // A fresh 0600 file renamed into place (it holds a WIF); the existsSync check below only
+  // decides whether to reuse a key, it is not what keeps the file private.
+  const savePending = (p) => writeSecretFile(pendingPath, JSON.stringify(p, null, 2));
   let pending;
   let assetLockKeyPair;
   if (existsSync(pendingPath)) {

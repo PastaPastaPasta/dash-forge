@@ -8,7 +8,7 @@
  * the unlock (a renewal, a revoke, a wallet login over the stored key).
  */
 
-import { useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { Fingerprint, Lock } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
@@ -30,14 +30,25 @@ export function UnlockMore({
 }): JSX.Element {
   const { identity, vaults, controller, isLoading } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
-  const [passphrase, setPassphrase] = useState('')
+  // The passphrase lives only in the input's value property (an uncontrolled input): React
+  // mirrors a controlled input's value into the `value` attribute, which puts it in the DOM.
+  const passphraseRef = useRef<HTMLInputElement | null>(null)
+  const [hasPassphrase, setHasPassphrase] = useState(false)
+  // Wipe the field as React detaches it (a cleanup effect runs too late: the ref is null); a
+  // remounted field is empty, and so is the flag.
+  const bindPassphrase = useCallback((el: HTMLInputElement | null) => {
+    if (el === null && passphraseRef.current) passphraseRef.current.value = ''
+    if (el === null) setHasPassphrase(false)
+    passphraseRef.current = el
+  }, [])
   const [error, setError] = useState<string | null>(null)
   const methods = vaults.find((v) => v.identityId === identity)?.methods ?? []
   const go = async (method: { passphrase: string } | 'passkey'): Promise<void> => {
     setError(null)
     try {
       await controller.unlockMore(method)
-      setPassphrase('')
+      if (passphraseRef.current) passphraseRef.current.value = ''
+      setHasPassphrase(false)
       then?.()
     } catch (e) {
       setError(errorMessage(e))
@@ -61,7 +72,8 @@ export function UnlockMore({
           className="flex flex-wrap items-center gap-2"
           onSubmit={(e) => {
             e.preventDefault()
-            void go({ passphrase })
+            const passphrase = passphraseRef.current?.value ?? ''
+            if (passphrase !== '') void go({ passphrase })
           }}
         >
           <label htmlFor={`${testId}-passphrase`} className="sr-only">
@@ -72,11 +84,11 @@ export function UnlockMore({
             type="password"
             autoComplete="current-password"
             placeholder="Passphrase"
-            value={passphrase}
-            onChange={(e) => setPassphrase(e.target.value)}
+            ref={bindPassphrase}
+            onChange={(e) => setHasPassphrase(e.target.value !== '')}
             className="h-8 max-w-xs"
           />
-          <Button type="submit" variant={methods.includes('passkey') ? 'outline' : 'primary'} size="sm" loading={isLoading} disabled={passphrase === '' || isLoading}>
+          <Button type="submit" variant={methods.includes('passkey') ? 'outline' : 'primary'} size="sm" loading={isLoading} disabled={!hasPassphrase || isLoading}>
             Unlock
           </Button>
         </form>

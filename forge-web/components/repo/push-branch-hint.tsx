@@ -110,7 +110,7 @@ export function PushBranchHint({
         Need to push a branch first? {messageOf(hint, repo.name)}
       </p>
       {commands.map((c) => (
-        <CopyRow key={c} text={c} />
+        <CopyRow key={c} text={c} label={`Copy ${c}`} />
       ))}
       {fork ? (
         <div>
