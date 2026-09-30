@@ -347,7 +347,7 @@ function NewReleaseDialog({
           }
           if (e.step === 'reused') {
             setProgress(Object.fromEntries(newFiles.map((f) => [f.name, { state: 'reused' } as AssetState])))
-            setStatus('An earlier attempt already stored these files and the asset list: nothing is uploaded again.')
+            setStatus(newFiles.length > 0 ? 'An earlier attempt already stored these files and their asset list: nothing is uploaded again.' : 'An earlier attempt already stored the asset list: nothing is uploaded again.')
           }
           if (e.step === 'release') setStatus(sealedRepo ? 'Sealing and writing the release…' : 'Writing the release…')
         },
@@ -364,16 +364,18 @@ function NewReleaseDialog({
       if (!(e instanceof ReleaseWriteError) && failedFile !== null) setProgress((p) => (p[failedFile]?.state === 'done' ? p : { ...p, [failedFile]: { state: 'failed' } }))
       const inner = e instanceof ReleaseWriteError ? e.cause : e
       const message = guard.failed(inner)
-      // A sealed file gets a fresh file key every time it is sealed: publishing again uploads it
-      // again, under a new asset list, so even the same content is a new revision.
-      const again = sealedRepo ? 'publishing again seals and uploads them afresh, a new revision even with the same content' : 'publishing again reuses them'
+      // A sealed file gets a fresh file key every time it is sealed, so only a stored asset list
+      // brings files back: after the release write failed, publishing the same files and notes
+      // again names that list (§16.5); an upload that stopped before the list seals them afresh.
+      const againListed = sealedRepo ? 'publishing the same files and notes again reuses them and their asset list, unless the key changes first' : 'publishing again reuses them'
+      const againUnlisted = sealedRepo ? 'publishing again seals and uploads them afresh' : 'publishing again reuses them'
       const context =
         e instanceof ReleaseWriteError && e.assetsStored > 0
           ? ` The ${e.assetsStored === 1 ? 'asset was' : `${e.assetsStored} assets were`} uploaded and verified${sealedRepo ? '' : ' (content-addressed)'}: ${
-              sealedRepo && inner instanceof UnconfirmedWriteError ? 'retrying reuses them' : again
+              sealedRepo && inner instanceof UnconfirmedWriteError ? 'retrying reuses them' : againListed
             }.`
           : stored > 0
-            ? ` ${plural(stored, 'asset')} ${stored === 1 ? 'was' : 'were'} stored before this; ${again}.`
+            ? ` ${plural(stored, 'asset')} ${stored === 1 ? 'was' : 'were'} stored before this; ${againUnlisted}.`
             : ''
       if (inner instanceof UnconfirmedWriteError && e instanceof ReleaseWriteError) {
         // The write may still land: keep the content AND its stored assets fixed, so a retry

@@ -11,7 +11,8 @@
  * anchors finds the write key moved during the upload, everything new is sealed and stored again
  * under the new one (at most twice). A re-run after a failed release write names the list (and
  * so the files) its earlier attempt stored instead of sealing a new one, when one of the signer's
- * unnamed lists opens under the write key and states exactly the same list (§16.5). The document is exactly `{repoId, tagName, vis: "private",
+ * unnamed lists opens under the write key, states exactly the same list and its files are still
+ * stored (§16.5). The document is exactly `{repoId, tagName, vis: "private",
  * delta: 0, epoch, enc}`, with no `oneLive` retry: consensus keeps no ledger for a sealed tag,
  * so the tag is read again after the write and a revision that is not its newest is reported.
  */
@@ -146,6 +147,8 @@ export interface SealedReleaseEnv {
   openManifest(fields: ReleaseFields, keys: EpochKeyring): Promise<ReleaseManifest>
   /** The repo's newest kind-4 `packManifest`s, newest first: where an earlier attempt's list may be ({@link storedAssetList}). */
   storedLists(): Promise<readonly PackManifest[]>
+  /** The first `HEADER_LEN` bytes of the sealed object `entry` names, from its first copy that answers. */
+  storedHeader(entry: SealedAsset): Promise<Uint8Array>
   /** Store sealed bytes on the user's own storage, named by their own SHA-256 (`sha256Hex`, already computed). */
   store(sealed: Uint8Array, sha256Hex: string, onStep: (e: UploadEvent) => void): Promise<StoredFile>
 }
@@ -169,8 +172,12 @@ export interface SealedReleaseOptions {
 /** A sealed asset entry holds at most 8 URIs (§16.5). */
 const ASSET_MAX_URIS = 8
 
-/** The newest kind-4 lists read when looking for an earlier attempt's ({@link storedAssetList}). */
-const STORED_LIST_WINDOW = 16
+/**
+ * The newest kind-4 lists read when looking for an earlier attempt's ({@link storedAssetList}): one
+ * page, every uploader's (no index narrows by `$ownerId`). Never bounded by the carried revision's
+ * `$createdAt` in the query: that would tell the node which revision the next one is of (§16.3).
+ */
+const STORED_LIST_WINDOW = 100
 /** Of those, how many of the signer's unnamed ones are opened (each is a fetch; forge-core `STORED_LIST_CANDIDATES`). */
 const STORED_LIST_CANDIDATES = 4
 
@@ -196,6 +203,7 @@ export function sealedReleaseEnv(
     // `push.ts` reaches this module through `writes.ts`, so a static import would load it mid-cycle.
     openManifest: async (fields, keys) => (await import('../view/release-download')).loadReleaseManifest(sdk, repo, fields, keys),
     storedLists: () => readNewestManifestsOfKind(sdk, repo, PACK_KIND.RELEASE_ASSETS, STORED_LIST_WINDOW),
+    storedHeader: async (entry) => (await import('../view/release-download')).readSealedAssetHeader(entry),
     store: (sealed, sha256Hex, onStep) => {
       // Nothing of a private repo reaches storage unsealed (as `storeArtifact` refuses).
       if (!isSealedPack(sealed)) throw new Error('refusing to upload an unencrypted release file for a private repo')
@@ -420,10 +428,24 @@ async function buildAssetList(
   env: SealedReleaseEnv,
   keys: EpochKeys,
   from: { readonly base: ReleaseFields; readonly notes: string; readonly files: readonly SealedReleaseFile[]; readonly prev: ReleaseManifest | null; readonly intent: string | undefined },
+  scope: StoredListScope,
   onEvent: (e: SealedReleaseEvent) => void,
 ): Promise<BuiltList> {
   const replaced = new Set(from.files.map((f) => f.name))
   const assets: SealedAsset[] = (from.prev?.assets ?? []).filter((a) => !replaced.has(a.name))
+  // TLV 21's 35 bytes are counted before the notes are fitted when there will be a list (each
+  // new file is one entry, so whether there is one is known before anything is stored).
+  const hasAssets = assets.length > 0 || from.files.length > 0
+  const fit = fitReleaseNotes({ ...from.base, assetManifest: hasAssets ? PLACEHOLDER_ASSET_MANIFEST : undefined }, from.notes)
+  if (!hasAssets && !fit.notesContinue) return { fields: statement({ ...fit.fields, assetManifest: undefined }), assets, stored: [] }
+  const notes = fit.notesContinue ? from.notes : undefined
+  // An earlier attempt at this revision stored its list, and the release write failed: named
+  // again, nothing sealed or uploaded again (§16.5). Named by nothing if the key moves before signing.
+  const found = await storedAssetList(env, keys, { tag: from.base.tag, kept: assets, files: from.files, notes, source: from.prev?.source }, scope)
+  if (found !== null) {
+    onEvent({ step: 'reused', assets: found.assets })
+    return { fields: statement({ ...fit.fields, assetManifest: found.hash }), assets: [...found.assets], stored: [found.hash] }
+  }
   // Refused before anything is stored: a list whose plaintext alone is over the 1 MiB cap (the
   // new entries sized with one short URI, so this never refuses a list that would fit).
   const estimate = canonicalJson({
@@ -456,15 +478,12 @@ async function buildAssetList(
     assets.push(entry)
     onEvent({ step: 'uploaded', asset: f.name, entry, copies: copy.confirmed.length, failures: copy.failures })
   }
-  // TLV 21's 35 bytes are counted before the notes are fitted when there will be a list.
-  const fit = fitReleaseNotes({ ...from.base, assetManifest: assets.length > 0 ? PLACEHOLDER_ASSET_MANIFEST : undefined }, from.notes)
-  if (assets.length === 0 && !fit.notesContinue) return { fields: statement({ ...fit.fields, assetManifest: undefined }), assets, stored }
   const manifest: ReleaseManifest = {
     v: 1,
     tag: from.base.tag,
     total: assets.length,
     ...(from.prev?.source !== undefined ? { source: from.prev.source } : {}),
-    ...(fit.notesContinue ? { notes: from.notes } : {}),
+    ...(notes !== undefined ? { notes } : {}),
     assets,
   }
   let sealed: Uint8Array
@@ -551,25 +570,37 @@ export function listStates(m: ReleaseManifest, want: WantedList): boolean {
 }
 
 /**
+ * Whether `header` is that of the sealed object `entry` names under `epoch` (forge-core
+ * `header_fits`): sealed under that epoch, at its recorded sealed size, holding at least its
+ * plaintext (§3.2).
+ */
+export function headerFits(header: Uint8Array, entry: SealedAsset, epoch: number): boolean {
+  if (entry.sealedSizeBytes === undefined) return false
+  try {
+    const h = parseHeader(header)
+    return h.epoch === epoch && sealedLength(h.plaintextLen, h.segLog2) === entry.sealedSizeBytes && h.plaintextLen >= entry.sizeBytes
+  } catch {
+    return false
+  }
+}
+
+/**
  * The asset list an earlier attempt at this revision stored under `keys` before its release write
- * failed (§16.5: a sealed list is not content-addressed, so a re-run reuses the one on chain rather
- * than sealing and uploading a new one; forge-core `stored_asset_list`). A candidate is one of the
- * signer's kind-4 lists recorded after the carried revision that no readable revision names, and
- * it is reused only when it opens under exactly `keys` (so under the write epoch, as a new list
- * would be) and states exactly the list {@link buildAssetList} would build. Best-effort: a
- * candidate that cannot be read is skipped, and null builds the list anew.
+ * failed, as its hash and entries (§16.5: a sealed list is not content-addressed, so a re-run
+ * reuses the one on chain rather than sealing and uploading a new one; forge-core
+ * `stored_asset_list`). A candidate is one of the signer's kind-4 lists that `scope` admits
+ * ({@link admitsStoredList}), and it is reused only when it opens under exactly `keys` (so under
+ * the write epoch, as a new list would be), states exactly `want` ({@link listStates}), and each
+ * new file it names is still stored under that epoch at its recorded size (the header of its
+ * first copy that answers, {@link headerFits}). Best-effort: a candidate that cannot be read or
+ * checked is skipped, and null builds the list anew.
  */
 async function storedAssetList(
   env: SealedReleaseEnv,
   keys: EpochKeys,
-  from: { readonly base: ReleaseFields; readonly notes: string; readonly files: readonly SealedReleaseFile[]; readonly prev: ReleaseManifest | null },
+  want: { readonly tag: string; readonly kept: readonly SealedAsset[]; readonly files: readonly SealedReleaseFile[]; readonly notes: string | undefined; readonly source: string | undefined },
   scope: StoredListScope,
-): Promise<BuiltList | null> {
-  const replaced = new Set(from.files.map((f) => f.name))
-  const kept = (from.prev?.assets ?? []).filter((a) => !replaced.has(a.name))
-  const hasAssets = kept.length > 0 || from.files.length > 0
-  const fit = fitReleaseNotes({ ...from.base, assetManifest: hasAssets ? PLACEHOLDER_ASSET_MANIFEST : undefined }, from.notes)
-  if (!hasAssets && !fit.notesContinue) return null
+): Promise<{ readonly hash: string; readonly assets: readonly SealedAsset[] } | null> {
   let candidates: PackManifest[]
   try {
     candidates = (await env.storedLists()).filter((m) => admitsStoredList(scope, m)).slice(0, STORED_LIST_CANDIDATES)
@@ -578,22 +609,25 @@ async function storedAssetList(
   }
   if (candidates.length === 0) return null
   const files = []
-  for (const f of from.files) {
+  for (const f of want.files) {
     const plain = new Uint8Array(await f.arrayBuffer())
     files.push({ name: f.name, sha256: hex256(plain), sizeBytes: plain.length })
     plain.fill(0)
   }
-  const want: WantedList = { kept, files, notes: fit.notesContinue ? from.notes : undefined, source: from.prev?.source }
+  const wanted: WantedList = { kept: want.kept, files, notes: want.notes, source: want.source }
   // Under the write key only: a list sealed under another epoch is not this attempt's.
   const onlyWriteKey: EpochKeyring = new Map([[keys.epoch, keys]])
   for (const c of candidates) {
-    let m: ReleaseManifest
+    const hash = c.packHash.toLowerCase()
     try {
-      m = await env.openManifest(statement({ tag: from.base.tag, notesContinue: fit.notesContinue, assetManifest: c.packHash.toLowerCase() }), onlyWriteKey)
+      const m = await env.openManifest(statement({ tag: want.tag, notesContinue: want.notes !== undefined, assetManifest: hash }), onlyWriteKey)
+      if (!listStates(m, wanted)) continue
+      const added = m.assets.slice(want.kept.length)
+      const stored = await Promise.all(added.map(async (a) => headerFits(await env.storedHeader(a), a, keys.epoch)))
+      if (stored.every(Boolean)) return { hash, assets: m.assets }
     } catch {
-      continue
+      // unreadable, or a file no longer answers: not this one
     }
-    if (listStates(m, want)) return { fields: statement({ ...fit.fields, assetManifest: c.packHash.toLowerCase() }), assets: [...m.assets], stored: [] }
   }
   return null
 }
@@ -693,11 +727,7 @@ export async function createSealedRelease(
       fields = plan === 'reuse' ? statement(fitReleaseNotes(base, notes).fields) : base
       break
     }
-    // An earlier attempt stored this revision's list and its release write failed: named again,
-    // nothing sealed or uploaded again (§16.5).
-    const found = await storedAssetList(env, w, { base, notes, files, prev }, scope)
-    if (found !== null) onEvent({ step: 'reused', assets: found.assets })
-    const built = found ?? (await buildAssetList(sdk, auth, repo, env, w, { base, notes, files, prev, intent: input.intent }, onEvent))
+    const built = await buildAssetList(sdk, auth, repo, env, w, { base, notes, files, prev, intent: input.intent }, scope, onEvent)
     // The final anchor re-read before signing (§5.3, §16.5): a rotation during the upload would
     // leave the new artifacts readable to the member it removed.
     const now = await env.writeKeys()
