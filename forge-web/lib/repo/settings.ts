@@ -17,7 +17,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { decodeIdentifier } from '../auth/base58'
-import { compareKey, isLegalRefName, matchesProtected } from '../rules'
+import { compareKey, isRc1BranchName, isRc1RefName, matchesProtected } from '../rules'
 import type { Policy } from '../rules/v2'
 import { branchName } from '../view/format'
 import {
@@ -40,7 +40,7 @@ import {
 } from '../sdk'
 import { readConfigBundle, type RepoConfig } from './config'
 import { repoContentWritten } from './push'
-import { DOC, num, str, type RepoRef } from './contract'
+import { DOC, asIdentifierString, num, str, stringArray, withVis, type RepoRef } from './contract'
 import { repoSource } from './source'
 
 // ---------------------------------------------------------------------------------------------
@@ -50,8 +50,16 @@ import { repoSource } from './source'
 /** `config.protectedPatterns`: at most 8 globs of 1–100 characters (forge-core schema). */
 export const MAX_PROTECTED_PATTERNS = 8
 export const MAX_PATTERN_CHARS = 100
-/** `repo.topics`: at most 10, unique, `^[a-z0-9][a-z0-9-]*$`, 1–30 characters. */
-export const MAX_TOPICS = 10
+/**
+ * `repo.topics` (RC1 R-20): at most 20, unique, 1–30 characters of {@link TOPIC_PATTERN}. A
+ * public repo has one `topic` document per topic, and consensus caps those at 20 per repo too
+ * (`atMost20`).
+ */
+export const MAX_TOPICS = 20
+/** A topic: lowercase words of a–z and 0–9 joined by single dashes (`repo.topics.items`, `topic.name`). */
+export const TOPIC_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/
+/** `topic.name` / `repo.topics.items` `maxLength`. */
+export const MAX_TOPIC_CHARS = 30
 /** `repo.description`: at most 500 characters and 1000 UTF-8 bytes. */
 export const DESCRIPTION_LIMITS = { chars: 500, bytes: 1000 } as const
 
@@ -81,13 +89,16 @@ export function fullPattern(entry: string): string {
   return p.startsWith('refs/') ? p : `refs/heads/${p}`
 }
 
-/** Why `name` cannot be a default branch, or null. */
+/**
+ * Why `name` cannot be a default branch, or null: `config.defaultBranch` must match RC1
+ * `$defs.branch` ({@link isRc1BranchName}: git's ref grammar, no leading `-`), and the branch it
+ * names must be one a push can create (`refs/heads/<name>`, {@link isRc1RefName}).
+ */
 export function branchProblem(name: string): string | null {
   const short = shortBranch(name.trim())
-  const full = `refs/heads/${short}`
   if (short === '') return 'Name a branch.'
-  if (new TextEncoder().encode(full).length > 255 || !isLegalRefName(full)) {
-    return 'Not a branch name: no spaces or control characters, at most 244 bytes.'
+  if (!isRc1BranchName(short) || !isRc1RefName(`refs/heads/${short}`)) {
+    return 'Not a branch name git accepts: no spaces, control characters or any of ~ ^ : ? * [ \\; no leading - or .; no .. or @{; not ending in /, . or .lock; at most 244 bytes.'
   }
   return null
 }
@@ -197,12 +208,14 @@ export function patternMatches(pattern: string, branches: readonly string[]): st
   return branches.filter((b) => matchesProtected(`refs/heads/${b}`, [pattern]))
 }
 
-/** Why `topics` would be refused by the `repo` schema, or null. */
+/** Why `topics` would be refused by the `repo` schema (or its `topic` documents), or null. */
 export function topicsProblem(topics: readonly string[]): string | null {
   if (topics.length > MAX_TOPICS) return `A repo has at most ${MAX_TOPICS} topics.`
   const seen = new Set<string>()
   for (const t of topics) {
-    if (!/^[a-z0-9][a-z0-9-]{0,29}$/.test(t)) return `${t}: use 1–30 of a–z, 0–9 and -, not starting with -.`
+    if (t.length > MAX_TOPIC_CHARS || !TOPIC_PATTERN.test(t)) {
+      return `${t}: use up to ${MAX_TOPIC_CHARS} of a–z and 0–9, words joined by single dashes (no leading, trailing or double -).`
+    }
     if (seen.has(t)) return `${t} is listed twice.`
     seen.add(t)
   }
@@ -242,14 +255,23 @@ export function newestPolicy(docs: readonly { createdAt: number; id: string; pol
   return best?.policy ?? null
 }
 
-/** A raw `policy` document as a {@link Policy}. */
+/**
+ * A raw `policy` document as a {@link Policy}. Required checks and their sources (RC1 R-08,
+ * paired by position; set by `dg`) are read so the merge box pins them and a rewrite keeps them.
+ */
 export function toPolicy(doc: PlainDocument): Policy {
   const small = (field: string): number => (typeof doc[field] === 'number' ? num(doc, field) : 0)
+  const checks = stringArray(doc, 'requiredChecks') ?? []
+  const raw = doc['requiredCheckSources']
+  const sources = Array.isArray(raw) ? raw.map(asIdentifierString).filter((id) => id !== '') : []
   return {
     requiredApprovals: small('requiredApprovals'),
     approverRole: small('approverRole'),
     requireChecks: doc['requireChecks'] === true,
     mergeMethods: small('mergeMethods'),
+    ...(checks.length > 0 ? { requiredChecks: checks } : {}),
+    // Kept only when paired with the names one for one (the contract's rule), else ignored.
+    ...(sources.length > 0 && sources.length === checks.length ? { requiredCheckSources: sources } : {}),
   }
 }
 
@@ -321,7 +343,8 @@ export async function updateConfig(
     return await write(sdk, auth, {
       contractId: repo.forge.core,
       documentType: DOC.config,
-      data: { repoId: decodeIdentifier(repo.repoId), ...configData(next) },
+      // RC1 stamps the repo's visibility (always public here: a private repo was refused above).
+      data: withVis(repo.visibility, DOC.config, { repoId: decodeIdentifier(repo.repoId), ...configData(next) }),
       ...(intent ? { intent } : {}),
     })
   } finally {
@@ -347,18 +370,22 @@ export function repoEditChanges(edit: RepoDocEdit): Record<string, unknown> {
 
 /**
  * The pre-sign cost of an edit of the repo document, and of the `topic` documents a topics edit
- * creates and deletes so Explore can count repos per topic. `held`: the topic documents the repo
- * has ({@link readTopicDocNames}); null while unknown, priced as the worst case (every listed
- * topic created, none deleted).
+ * creates and deletes so Explore can count repos per topic (a public repo only: see
+ * {@link syncTopicDocs}). `held`: the topic documents the repo has ({@link readTopicDocNames});
+ * null while unknown, priced as the worst case (every listed topic created, none deleted).
  */
-export function previewRepoEdit(edit: RepoDocEdit, held: readonly string[] | null = []): CostPreview {
+export function previewRepoEdit(
+  edit: RepoDocEdit,
+  held: readonly string[] | null = [],
+  visibility: RepoRef['visibility'] = 'public',
+): CostPreview {
   const changes = repoEditChanges(edit)
   if (Object.keys(changes).length === 0) return previewCredits(0)
-  if (edit.topics === undefined) return previewReplace(DOC.repo, changes)
+  if (edit.topics === undefined || visibility === 'private') return previewReplace(DOC.repo, changes)
   const { added, removed } = held === null ? { added: [...edit.topics], removed: [] } : topicChanges(held, edit.topics)
   return sumPreviews([
     previewReplace(DOC.repo, changes),
-    ...added.map((name) => previewCreate(DOC.topic, { name })),
+    ...added.map((name) => previewCreate(DOC.topic, withVis('public', DOC.topic, { name }))),
     ...removed.map(() => previewDelete(DOC.topic)),
   ])
 }
@@ -381,22 +408,33 @@ export async function readTopicDocNames(sdk: EvoSDK, repo: RepoRef): Promise<str
 
 /**
  * Bring the repo's `topic` documents (forge-core, owner-granted, C-1: what Explore counts per
- * topic) in line with `topics`: create the missing ones, delete the extra ones. Idempotent; the
- * owner only (consensus refuses anyone else).
+ * topic) in line with `topics`: delete the extra ones, then create the missing ones. Idempotent;
+ * the owner only (consensus refuses anyone else).
+ *
+ * RC1 R-20: a topic document is public-only (`vis: "public"`, proved against the repo's
+ * visibility), so a private repo has none; its `repo.topics` stays, unindexed. Consensus caps a
+ * repo at 20 topic documents (`atMost20`), so the deletes go first: on a full repo, swapping a
+ * topic would otherwise be refused as a 21st.
  */
 export async function syncTopicDocs(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, topics: readonly string[]): Promise<void> {
+  if (repo.visibility === 'private') return
   const held = await readTopicDocs(sdk, repo)
   const { added, removed } = topicChanges([...held.keys()], topics)
+  for (const name of removed) {
+    await deleteDocumentIdempotent(sdk, auth, { contractId: repo.forge.core, documentType: DOC.topic, documentId: held.get(name) as string, repo: repo.repoId })
+  }
   for (const name of added) {
     try {
-      await createDocumentIdempotent(sdk, auth, { contractId: repo.forge.core, documentType: DOC.topic, data: { repoId: repo.repoId, name } })
+      await createDocumentIdempotent(sdk, auth, {
+        contractId: repo.forge.core,
+        documentType: DOC.topic,
+        // `repoId` as the identifier's 32 bytes, like every other write.
+        data: withVis(repo.visibility, DOC.topic, { repoId: decodeIdentifier(repo.repoId), name }),
+      })
     } catch (e) {
       // Tagged in between (another device): the (repoId, name) index is unique.
       if (!(e instanceof ConsensusRefusal && e.code === DUPLICATE_UNIQUE_CODE)) throw e
     }
-  }
-  for (const name of removed) {
-    await deleteDocumentIdempotent(sdk, auth, { contractId: repo.forge.core, documentType: DOC.topic, documentId: held.get(name) as string, repo: repo.repoId })
   }
 }
 

@@ -9,7 +9,7 @@
  */
 
 import { Author } from '@/components/author'
-import { timeAgo } from '@/lib/view'
+import { formatDate, timeAgo } from '@/lib/view'
 import type { Origin } from '@/lib/repo/provenance'
 
 /** An exact timestamp for a `title` and `dateTime`: `2026-08-03 14:05 UTC`. */
@@ -21,13 +21,14 @@ function exactTime(ms: number): string {
  * `<time>` with the relative text and the exact time on hover; `dateOnly` for a time known only to
  * the day (a mirrored release's publish date), which then shows and says just the date.
  */
-export function Time({ ms, prefix = '', dateOnly = false }: { ms: number; prefix?: string; dateOnly?: boolean }): JSX.Element | null {
+export function Time({ ms, prefix = '', dateOnly = false, withDate = false }: { ms: number; prefix?: string; dateOnly?: boolean; withDate?: boolean }): JSX.Element | null {
   if (!ms) return null
   const iso = new Date(ms).toISOString()
   return (
     <time dateTime={dateOnly ? iso.slice(0, 10) : iso} title={dateOnly ? iso.slice(0, 10) : exactTime(ms)}>
       {prefix}
       {timeAgo(ms)}
+      {withDate ? ` · ${formatDate(ms)}` : ''}
     </time>
   )
 }

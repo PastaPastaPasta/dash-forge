@@ -124,6 +124,8 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
     // Release notes and assets are not encrypted in this release: refuse before any asset
     // leaves the machine.
     s.repo.require_public("releases")?;
+    // A tag the contract would refuse is refused before any asset is uploaded.
+    forge_core::collab::v2::check_tag_name(&args.tag)?;
     let collab = s.collab();
     let tag = &args.tag;
     // Maintainer-only at consensus: find out before uploading anything.
@@ -790,6 +792,7 @@ mod tests {
             assets: vec![asset("app.tar.gz", 'a'), asset("CHANGES.txt", 'b')],
             publisher: "M".into(),
             created_at: 1,
+            delta: 1,
         }
     }
 

@@ -62,6 +62,10 @@ vi.mock('../sdk/write', async (orig) => {
   return {
     ...real,
     createDocumentIdempotent: async (_sdk: unknown, auth: { identityId: string }, p: { documentType: string; data: Doc; intent?: string }) => {
+      // RC1 `wrap_member`: a wrap to an identity removed meanwhile is refused (40120 on memberId).
+      if (p.documentType === 'repoKey' && removedAtWrap.has(asB58(p.data['memberId']))) {
+        throw new real.ConsensusRefusal(real.GATE_REFUSED_CODE, `referenced document ${asB58(p.data['memberId'])} not found for path memberId`)
+      }
       if ((failNext[p.documentType] ?? 0) > 0) {
         failNext[p.documentType] = (failNext[p.documentType] ?? 0) - 1
         throw new Error('network: request failed')
@@ -118,6 +122,8 @@ const oldKey = new Set<string>()
 const newerKey = new Set<string>()
 /** What a lagging node answers for the member list (null: the truth). */
 let staleMembers: Membership[] | null = null
+/** Identities consensus no longer holds a member document for when their wrap is sent. */
+const removedAtWrap = new Set<string>()
 /** How many more member-list reads fail (a node that does not answer). */
 let membersFail = 0
 /** One-off answers for the next member-list reads, in order (a node per read). */
@@ -142,6 +148,8 @@ vi.mock('./writes', async (orig) => {
   const real = await orig<typeof import('./writes')>()
   return {
     ...real,
+    // Every identity here accepted its invitation (RC1 consent); the consent flow has its own tests.
+    findConsent: async () => 'consent',
     grantMembershipDoc: async (_s: unknown, _a: unknown, _r: unknown, memberId: string, role: Membership['role']) => {
       members.push({ identity: memberId, role, createdAt: 99 })
       return { documentId: 'm', confirmed: true, actualCredits: 0 }
@@ -241,6 +249,7 @@ beforeEach(async () => {
   for (const k of Object.keys(unconfirm)) delete unconfirm[k]
   for (const k of Object.keys(failNext)) delete failNext[k]
   revokeFails = false
+  removedAtWrap.clear()
   staleMembers = null
   readQueue.length = 0
   membersFail = 0
@@ -284,6 +293,23 @@ describe('rotation retries', () => {
     expect(s.resolution.alerts).toEqual([])
     // CAROL got nothing for epoch 1 or 2.
     expect((chain['repoKey'] ?? []).some((d) => (d['epoch'] as number) >= 1 && d['memberId'] === b58(CAROL))).toBe(false)
+  })
+})
+
+describe('a member removed while the wraps go out (RC1 R-13, 40120 on memberId)', () => {
+  it('a rotation re-plans without them: no burn, and they get no key', async () => {
+    removedAtWrap.add(b58(BOB))
+    await expect(rotateRepoKey(ctx, [b58(CAROL)], 'rm-carol')).resolves.toBe(1)
+    const s = await aliceSession()
+    expect(s.resolution.currentEpoch).toBe(1)
+    expect(s.resolution.burned.has(1)).toBe(false)
+    expect((chain['repoKey'] ?? []).some((d) => d['epoch'] === 1 && (d['memberId'] === b58(BOB) || d['memberId'] === b58(CAROL)))).toBe(false)
+  })
+
+  it('an add whose wrap is refused says they are not a member any more', async () => {
+    const dave = new Uint8Array(32).fill(0x0d)
+    removedAtWrap.add(b58(dave))
+    await expect(addPrivateMember(ctx, b58(dave), 'writer', 'add-dave')).rejects.toThrow(/not a maintainer or writer of this repo any more/)
   })
 })
 

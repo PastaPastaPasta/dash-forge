@@ -423,18 +423,75 @@ fn cycle_to_break(block: &[&RefUpdate], placed: &[bool]) -> usize {
         .expect("a component the others do not wait on has every member's predecessors inside")
 }
 
-/// Whether a ref name is legal to advertise on the git wire protocol.
+/// Whether a ref name is one the RC1 contract accepts on `refUpdate` / `protectedRefUpdate`
+/// (and `patch.baseRefName` / `sourceRefName`): the `$defs.refName` pattern (`refs/` then
+/// the git check-ref-format grammar, `@{` included), at most 255 bytes, and the `noLock`
+/// rule (no trailing `.lock`).
 ///
-/// `refName` is stored as an arbitrary Platform string (≤255 chars) and never passed
-/// `git check-ref-format`, so a hostile writer could store a name containing a
-/// newline (`refs/heads/x\n<oid> refs/heads/main`) to **inject a spoofed
-/// ref-advertisement line** into every clone/fetch, or a NUL/space to corrupt parsing.
-/// The security-critical rule (shared by the write guard, the fold side, and the helper
-/// emission): non-empty, no leading `-` (would read as a git option), and no ASCII
-/// whitespace or control byte (`b <= 0x20`, covering space/tab/newline/NUL, plus DEL).
+/// It is also the fold's and the helper's rule: a ref name reaches the git wire protocol,
+/// so one carrying a newline (`refs/heads/x\n<oid> refs/heads/main`) would **inject a
+/// spoofed ref-advertisement line** into every clone/fetch, and a NUL/space would corrupt
+/// parsing. Anything outside the contract's grammar is inert on read, including a sealed
+/// private ref name (consensus cannot see inside `enc`). forge-web's `isLegalRefName` must
+/// apply the same predicate (PR-4).
 #[must_use]
 pub fn is_legal_ref_name(name: &str) -> bool {
-    !name.is_empty() && !name.starts_with('-') && !name.bytes().any(|b| b <= 0x20 || b == 0x7f)
+    name.len() <= MAX_REF_NAME_BYTES
+        && name.strip_prefix("refs/").is_some_and(is_legal_ref_path)
+        && !name.as_bytes().ends_with(b".lock")
+}
+
+/// [`is_legal_ref_name`] plus the one rule of `git check-ref-format` the contract's regex
+/// cannot express: no component may end with `.lock`. What a client refuses before it signs
+/// a ref update (git itself could never create such a ref).
+#[must_use]
+pub fn is_git_ref_name(name: &str) -> bool {
+    is_legal_ref_name(name) && !name.split('/').any(|c| c.as_bytes().ends_with(b".lock"))
+}
+
+/// Whether `branch` is a legal `repo.defaultBranch` / `config.defaultBranch` (RC1
+/// `$defs.branch`): the ref grammar without the `refs/` prefix, at most 255 bytes, no leading
+/// `-` (it would read as a git option), and a first component that is not only `@`s (`@` is
+/// git's name for `HEAD`).
+#[must_use]
+pub fn is_legal_branch_name(branch: &str) -> bool {
+    let after_ats = branch.trim_start_matches('@');
+    let only_ats = after_ats.len() < branch.len()
+        && (after_ats.is_empty() || after_ats.starts_with(['.', '/']));
+    branch.len() <= MAX_REF_NAME_BYTES
+        && !branch.starts_with('-')
+        && !only_ats
+        && is_legal_ref_path(branch)
+}
+
+/// Whether `tag` is a legal `release.tagName` (RC1): the ref grammar without the `refs/`
+/// prefix, 1-63 bytes. A leading `-` is allowed (a private repository's keyed tag hash is
+/// base64url).
+#[must_use]
+pub fn is_legal_tag_name(tag: &str) -> bool {
+    tag.len() <= MAX_TAG_NAME_BYTES && is_legal_ref_path(tag)
+}
+
+/// The longest ref name (and default branch) the contract stores, in bytes.
+pub const MAX_REF_NAME_BYTES: usize = 255;
+/// The longest `release.tagName`, in bytes.
+pub const MAX_TAG_NAME_BYTES: usize = 63;
+
+/// The contract's ref grammar after `refs/` (`C(?:(?:\.?/|\.)C)*`, where a component `C` is a
+/// non-empty run without `.`, `/`, control bytes, space, DEL, `~^:?*[\` or `@{`): components
+/// split by `/` are non-empty and do not start with `.`; no `..`; no trailing `.`.
+fn is_legal_ref_path(path: &str) -> bool {
+    const FORBIDDEN: &[u8] = b"~^:?*[\\";
+    !path.is_empty()
+        && !path.contains("..")
+        && !path.contains("@{")
+        && !path.ends_with('.')
+        && !path
+            .bytes()
+            .any(|b| b <= 0x20 || b == 0x7f || FORBIDDEN.contains(&b))
+        && path
+            .split('/')
+            .all(|c| !c.is_empty() && !c.starts_with('.'))
 }
 
 /// Whether `h` is a SHA-256 rendered as 64 hex digits (either case): a real content hash,
@@ -475,6 +532,11 @@ pub enum Verdict {
     RequestChanges,
     /// Comment only, no verdict (3).
     Comment,
+    /// A non-member's approval (4): shown, never counted. The contract refuses it with
+    /// `asMember` (`memberVerdict`), so a member's approval is always 1.
+    ApproveNonMember,
+    /// A non-member's request for changes (5): shown, never counted.
+    RequestChangesNonMember,
     /// A code this client does not know.
     Unknown(u64),
 }
@@ -486,6 +548,8 @@ impl Verdict {
             1 => Self::Approve,
             2 => Self::RequestChanges,
             3 => Self::Comment,
+            4 => Self::ApproveNonMember,
+            5 => Self::RequestChangesNonMember,
             other => Self::Unknown(other),
         }
     }
@@ -496,6 +560,8 @@ impl Verdict {
             Self::Approve => 1,
             Self::RequestChanges => 2,
             Self::Comment => 3,
+            Self::ApproveNonMember => 4,
+            Self::RequestChangesNonMember => 5,
             Self::Unknown(c) => c,
         }
     }
@@ -506,8 +572,32 @@ impl Verdict {
             Self::Approve => "approved",
             Self::RequestChanges => "changes requested",
             Self::Comment => "commented",
+            Self::ApproveNonMember => "approved (not a member)",
+            Self::RequestChangesNonMember => "changes requested (not a member)",
             Self::Unknown(_) => "unknown verdict",
         }
+    }
+
+    /// The code this verdict is written as by a signer who is (`member`) or is not a proved
+    /// member: members' approve / request changes are 1 / 2 (with `asMember`), everyone
+    /// else's 4 / 5 (without). A comment is 3 either way.
+    #[must_use]
+    pub fn as_written_by(self, member: bool) -> Self {
+        match (self, member) {
+            (Self::Approve | Self::ApproveNonMember, true) => Self::Approve,
+            (Self::Approve | Self::ApproveNonMember, false) => Self::ApproveNonMember,
+            (Self::RequestChanges | Self::RequestChangesNonMember, true) => Self::RequestChanges,
+            (Self::RequestChanges | Self::RequestChangesNonMember, false) => {
+                Self::RequestChangesNonMember
+            }
+            (other, _) => other,
+        }
+    }
+
+    /// Whether this verdict must carry `asMember` (1 and 2, `memberVerdict`).
+    #[must_use]
+    pub fn needs_member_proof(self) -> bool {
+        matches!(self, Self::Approve | Self::RequestChanges)
     }
 }
 
@@ -1795,6 +1885,12 @@ mod tests {
 
     #[derive(Deserialize, Serialize)]
     #[serde(deny_unknown_fields)]
+    struct Sums {
+        sums: Vec<i64>,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
     struct Transitions {
         transitions: Vec<v2::Transition>,
     }
@@ -1845,6 +1941,18 @@ mod tests {
                 let got: Vec<v2::StateStatus> =
                     inp.codes.iter().map(|&c| v2::status_of_code(c)).collect();
                 assert_eq!(got, expected::<Vec<v2::StateStatus>>(v), "vector `{ctx}`");
+            }
+            "transition_fold" => {
+                let inp: Sums = input(v);
+                let got: Vec<serde_json::Value> = inp
+                    .sums
+                    .iter()
+                    .map(|&s| {
+                        let (code, locked) = v2::fold_sum(s);
+                        serde_json::json!({ "code": code, "locked": locked })
+                    })
+                    .collect();
+                assert_eq!(serde_json::Value::from(got), v.expected, "vector `{ctx}`");
             }
             "transition_sum" => {
                 let inp: Transitions = input(v);
@@ -1944,8 +2052,9 @@ mod tests {
         let ctx = &v.name;
         match v.case.as_str() {
             "fold_issue" | "fold_pr" => run_fold_case(v),
-            "transition_moves" | "transition_status" | "transition_sum" | "repo_counts"
-            | "dense_number" | "dense_refusal" | "upstream_number" | "check_run_write" => {
+            "transition_moves" | "transition_status" | "transition_sum" | "transition_fold"
+            | "repo_counts" | "dense_number" | "dense_refusal" | "upstream_number"
+            | "check_run_write" => {
                 run_transition_case(v);
             }
             "pack_copies" => run_pack_copies(v),

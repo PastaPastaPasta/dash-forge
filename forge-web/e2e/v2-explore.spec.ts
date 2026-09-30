@@ -69,8 +69,9 @@ test('x2. the header: New menu, jump box, and the landing links Explore', async 
 
 /**
  * Which numbers the demo repo has as issues and as PRs, read from Platform in Node. Issues and
- * PRs number independently (forge-v2.md §6), and other suites keep opening PRs on this repo,
- * so the spec picks its cases from what is on chain instead of hard-coding them.
+ * PRs share one dense, per-repo number sequence (forge-v2.md §6.2: `tk` 0 for issues, 1 for
+ * PRs) — a number can only ever be one or the other — and other suites keep opening PRs on this
+ * repo, so the spec picks its cases from what is on chain instead of hard-coding them.
  */
 async function demoNumbers(): Promise<{ issues: Set<number>; pulls: Set<number> }> {
   const root = resolve(__dirname, '../..')
@@ -88,14 +89,17 @@ async function demoNumbers(): Promise<{ issues: Set<number>; pulls: Set<number> 
   return { issues: await numbers('issue'), pulls: await numbers('patch') }
 }
 
-test('x3. #n in a repo opens the issue or PR, and offers both when both exist', async ({ page }) => {
+test('x3. #n in a repo opens the issue or the PR', async ({ page }) => {
   const { issues, pulls } = await demoNumbers()
-  const both = [...issues].find((n) => pulls.has(n))
-  const issueOnly = [...issues].find((n) => !pulls.has(n))
-  const pullOnly = [...pulls].find((n) => !issues.has(n))
+  // Dense, shared numbering (forge-v2.md §6.2): a number is an issue XOR a PR, never both, so
+  // the two sets are disjoint by construction. The old "both" chooser (app-header.tsx `goNumber`)
+  // is defensive/unreachable code for this repo's own numbers now; nothing here exercises it.
+  const overlap = [...issues].filter((n) => pulls.has(n))
+  expect(overlap, 'issue and PR numbers must be disjoint under dense shared numbering').toEqual([])
+  const issueOnly = [...issues][0]
+  const pullOnly = [...pulls][0]
   const absent = Math.max(0, ...issues, ...pulls) + 1000
   test.info().annotations.push({ type: 'numbers', description: `issues ${[...issues]} · PRs ${[...pulls]}` })
-  expect(both, 'the fixture has an issue and a PR with the same number').toBeDefined()
 
   await page.goto(`/repo/?owner=${DEMO_OWNER}&name=forge-v2-demo`, { waitUntil: 'domcontentloaded' })
   const jump = page.getByLabel(/jump to a repo/i).first()
@@ -104,19 +108,12 @@ test('x3. #n in a repo opens the issue or PR, and offers both when both exist', 
     await jump.press('Enter')
   }
 
-  // Both exist: the chooser offers each, and the issue link opens the issue.
-  await go(both ?? 1)
-  const note = page.getByRole('status').filter({ hasText: new RegExp(`#${both} is both`) })
-  await expect(note).toBeVisible({ timeout: 60_000 })
-  await expect(note.getByRole('link', { name: `PR #${both}` })).toHaveAttribute('href', new RegExp(`/repo/pull/?\\?.*number=${both}`))
-  await note.getByRole('link', { name: `issue #${both}` }).click()
-  await expect(page).toHaveURL(new RegExp(`/repo/issue/?\\?.*number=${both}`))
-
-  // Only one exists: straight there.
+  // An issue number: straight to the issue.
   if (issueOnly !== undefined) {
     await go(issueOnly)
     await expect(page).toHaveURL(new RegExp(`/repo/issue/?\\?.*number=${issueOnly}(&|$)`), { timeout: 60_000 })
   }
+  // A PR number: straight to the PR.
   if (pullOnly !== undefined) {
     await go(pullOnly)
     await expect(page).toHaveURL(new RegExp(`/repo/pull/?\\?.*number=${pullOnly}(&|$)`), { timeout: 60_000 })

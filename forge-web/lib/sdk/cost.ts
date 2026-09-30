@@ -99,6 +99,9 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
   watch: 27_400_000,
   milestone: 45_000_000,
   checkRun: 45_000_000,
+  // Not yet measured (RC1): a member's consent, one unique index and a repo reference, priced
+  // like a `watch` until measured on the fresh chain.
+  consent: 28_000_000,
 }
 
 /** Which index subtrees a create may be the first to write. Unknown fields count as first. */

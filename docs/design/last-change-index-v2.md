@@ -1,6 +1,8 @@
 # History index v2: per-path version lists for blame and History (proposal)
 
-Status: proposed. It follows v1 (`docs/design/history-index.md`, branch `feat/last-change-index`) once v1 merges. Until then, blame walks first-parent history in the browser behind one function, `pathVersions(reader, tip, path)` (`forge-web/lib/view/path-history.ts`), and a file's History page still calls `logPage` directly (moving it onto `pathVersions` is the follow-up). An index can then replace the walk without touching the views.
+Status: implemented on branch `feat/history-index-v2-path-versions`. The design, as built, is in [`history-index.md`](history-index.md#v2-per-path-version-lists). It differs from this proposal in two places, both measured on dashpay/dash: K is 256, not 32, and blobs are named by a 6-byte oid prefix, not the whole oid. The size estimate below was far off: the full v2 index is 753 KB gzip, not v1 + 25 KB, because 20-byte oids and the extra commit table do not compress. The text below is the original proposal.
+
+Original status: proposed. It follows v1 (`docs/design/history-index.md`, branch `feat/last-change-index`) once v1 merges. Until then, blame walks first-parent history in the browser behind one function, `pathVersions(reader, tip, path)` (`forge-web/lib/view/path-history.ts`), and a file's History page still calls `logPage` directly (moving it onto `pathVersions` is the follow-up). An index can then replace the walk without touching the views.
 
 ## Problem
 

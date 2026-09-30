@@ -1,0 +1,114 @@
+{
+  "name": "lock_moves",
+  "description": "Lock and unlock (RC1 R-15: kinds 3/4 on an issue, 18/19 on a PR, delta +/-16, members only). The input is the target's delta sum: a lock needs it below 16, an unlock at 16 or more, and the state beneath is untouched. `after` is the sum after the move.",
+  "case": "transition_moves",
+  "rules": "v2",
+  "input": {
+    "cases": [
+      {
+        "target": "issue",
+        "code": 0,
+        "action": "lock",
+        "actor": "member",
+        "targetNumber": 3
+      },
+      {
+        "target": "issue",
+        "code": 1,
+        "action": "lock",
+        "actor": "member",
+        "targetNumber": 3
+      },
+      {
+        "target": "issue",
+        "code": 16,
+        "action": "lock",
+        "actor": "member",
+        "targetNumber": 3
+      },
+      {
+        "target": "issue",
+        "code": 17,
+        "action": "unlock",
+        "actor": "member",
+        "targetNumber": 3
+      },
+      {
+        "target": "issue",
+        "code": 0,
+        "action": "unlock",
+        "actor": "member",
+        "targetNumber": 3
+      },
+      {
+        "target": "issue",
+        "code": 0,
+        "action": "lock",
+        "actor": "author",
+        "targetNumber": 3
+      },
+      {
+        "target": "patch",
+        "code": 9,
+        "action": "lock",
+        "actor": "member",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 25,
+        "action": "unlock",
+        "actor": "member",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 24,
+        "action": "unlock",
+        "actor": "author",
+        "targetNumber": 7
+      }
+    ]
+  },
+  "expected": [
+    {
+      "kind": 3,
+      "delta": 16,
+      "targetKind": 0,
+      "asAuthor": 0,
+      "after": 16
+    },
+    {
+      "kind": 3,
+      "delta": 16,
+      "targetKind": 0,
+      "asAuthor": 0,
+      "after": 17
+    },
+    null,
+    {
+      "kind": 4,
+      "delta": -16,
+      "targetKind": 0,
+      "asAuthor": 0,
+      "after": 1
+    },
+    null,
+    null,
+    {
+      "kind": 18,
+      "delta": 16,
+      "targetKind": 1,
+      "asAuthor": 0,
+      "after": 25
+    },
+    {
+      "kind": 19,
+      "delta": -16,
+      "targetKind": 1,
+      "asAuthor": 0,
+      "after": 9
+    },
+    null
+  ]
+}

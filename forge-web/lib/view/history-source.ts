@@ -56,13 +56,15 @@ export function historySource(
   const fulls = new Map(live.filter((e) => e.baseTip === null).map((e) => [e.manifest.packHash.toLowerCase(), e]))
   const fullTips = new Set([...fulls.values()].map((e) => e.tip))
   // A delta covers its tip only while a live full index of its base tip stands behind it
-  // (forge-core `plan_history_index`). Per tip: a full index over a delta, and the newer of two
-  // of the same kind (`live` is in first-upload order, oldest first).
+  // (forge-core `plan_history_index`). Per tip: a full index over a delta, then the newer of two
+  // alike (`live` is in first-upload order, oldest first). RC1 drops `offsetIndexParts`, which
+  // carried the format: every index reads as v2 until the format comes from the artifact header.
+  const rank = (e: HistoryEntry): number => (e.baseTip === null ? 1 : 0)
   const byTip = new Map<string, HistoryEntry>()
   for (const e of live) {
     if (e.baseTip !== null && !fullTips.has(e.baseTip)) continue
     const had = byTip.get(e.tip)
-    if (had === undefined || had.baseTip !== null || e.baseTip === null) byTip.set(e.tip, e)
+    if (had === undefined || rank(e) >= rank(had)) byTip.set(e.tip, e)
   }
   const parsed = new Map<string, Promise<HistoryIndex>>()
   const read = (e: HistoryEntry): Promise<HistoryIndex> => {

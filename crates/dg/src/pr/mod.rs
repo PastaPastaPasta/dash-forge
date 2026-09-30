@@ -85,6 +85,7 @@ pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
         }
         PrCommand::Ready { repo, number } => state::set_draft(ctx, repo, *number, false).await,
         PrCommand::Draft { repo, number } => state::set_draft(ctx, repo, *number, true).await,
+        PrCommand::Lock { repo, number, off } => state::set_locked(ctx, repo, *number, !off).await,
         PrCommand::Resolve {
             repo,
             number,
@@ -1429,12 +1430,15 @@ async fn required_checks(
     oracle: &forge_core::rules::v2::RoleOracle,
     policy: &forge_core::rules::review::Policy,
 ) -> Result<Option<forge_core::rules::v2::ChecksState>> {
+    // Checks are judged only when `requireChecks` is set (the web merge box's gate); then the
+    // named checks and their pinned sources, when the policy has them, decide.
     if !policy.require_checks {
         return Ok(None);
     }
     let rules = forge_core::rules::v2::ChecksPolicy {
         require_checks: true,
-        required_checks: Vec::new(),
+        required_checks: policy.required_checks.clone(),
+        required_check_sources: policy.required_check_sources.clone(),
     };
     Ok(Some(
         collab
@@ -2162,6 +2166,7 @@ mod tests {
             approver_role: u8::from(maintainers),
             require_checks: false,
             merge_methods: methods,
+            ..Default::default()
         }
     }
 
@@ -2211,7 +2216,7 @@ mod tests {
         let runners = std::collections::BTreeSet::from(["r".to_string()]);
         let policy = ChecksPolicy {
             require_checks: true,
-            required_checks: vec![],
+            ..ChecksPolicy::default()
         };
         // The runner's newer failing run decides it, over the writer's older passing one.
         let runs = [

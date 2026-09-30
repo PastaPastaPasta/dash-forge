@@ -30,7 +30,8 @@ import type { EvoSDK, StateTransition } from '@dashevo/evo-sdk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
-import type { Network } from '../constants'
+import { NETWORKS, type Network } from '../constants'
+import { rc1WriteProblem } from '../layout'
 import { base58Encode } from '../auth/base58'
 import { controlsKey } from '../auth/wif'
 import { previewCreate, previewCredits, previewDelete, previewReplace, type CostPreview } from './cost'
@@ -1078,6 +1079,10 @@ function wrote<T>(sdk: EvoSDK, write: Promise<T>): Promise<T> {
  * taken is re-signed once with the next nonce.
  */
 export function createDocumentIdempotent(sdk: EvoSDK, auth: WriteAuth, params: CreateParams): Promise<WriteResult> {
+  // The one chokepoint every create passes: a forge-v2 document routed to the wrong contract, or
+  // missing its `vis` stamp, is refused here, before anything is signed (RC1 layout).
+  const problem = rc1WriteProblem(NETWORKS[auth.network]?.v2 ?? null, params.contractId, params.documentType, params.data)
+  if (problem !== null) return Promise.reject(new Error(`refusing this write: ${problem}`))
   // A write can be the page's first proved exchange: serialize with the version the SDK knows now.
   followSdkVersion(sdk)
   return serialized(auth.identityId, () => wrote(sdk, createDocumentUnlocked(sdk, auth, params))).then((r) => {

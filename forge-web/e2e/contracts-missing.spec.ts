@@ -2,9 +2,10 @@ import { test, expect, type Page, type Route } from '@playwright/test'
 import { collectPageErrors, repoUrl, shot } from './helpers'
 
 /**
- * The network does not have this build's contracts (devnet moutai reset to beta.6, 2026-09-28):
- * one clear app-wide state instead of every view's "That read did not land" with a raw gRPC
- * string and a Try again that can never succeed.
+ * The network does not have this build's contracts (devnet moutai upgraded in place to Platform
+ * v4.2.0-beta.7, 2026-09-29, which retired the old contracts): one clear app-wide state instead
+ * of every view's "That read did not land" with a raw gRPC string and a Try again that can never
+ * succeed. On moutai specifically this is worded as a move to devnet bonsia, not a generic reset.
  *
  * Hermetic: nothing reaches the chain. The quorum service answers with empty quorum lists (an
  * error reply carries no proof, so no key is needed), and every DAPI call gets the refusal a
@@ -67,8 +68,8 @@ const STATE = (page: Page) => page.getByTestId('contracts-missing')
 
 async function expectContractsMissing(page: Page): Promise<void> {
   await expect(STATE(page)).toBeVisible({ timeout: 60_000 })
-  await expect(STATE(page).getByRole('heading')).toHaveText("Dash Forge isn't deployed on devnet moutai right now")
-  await expect(STATE(page)).toContainText('devnets are reset from time to time')
+  await expect(STATE(page).getByRole('heading')).toHaveText('Dash Forge is moving to a new devnet')
+  await expect(STATE(page)).toContainText('devnet bonsia')
   // Not the generic read failure, not the outage banner, and no endless retry.
   await expect(page.getByText('That read did not land')).toHaveCount(0)
   await expect(page.getByTestId('platform-unreachable')).toHaveCount(0)

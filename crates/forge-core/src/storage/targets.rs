@@ -58,7 +58,10 @@ impl UriBudget {
 
     /// Whether `uris` fits.
     pub fn fits(&self, uris: &[String]) -> bool {
-        uris.len() <= self.max_items && uris.iter().all(|u| u.len() <= self.max_item_len)
+        uris.len() <= self.max_items
+            && uris
+                .iter()
+                .all(|u| !u.is_empty() && u.len() <= self.max_item_len)
     }
 }
 

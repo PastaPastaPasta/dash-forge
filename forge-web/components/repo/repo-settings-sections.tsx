@@ -47,6 +47,7 @@ import {
   type ConfigChange,
   type RepoDocEdit,
 } from '@/lib/repo'
+import { MAX_TOPICS } from '@/lib/repo/settings'
 import type { Policy } from '@/lib/rules/v2'
 import { previewCreate, type CostPreview as Cost } from '@/lib/sdk'
 import { retryWhileMissing } from '@/lib/view/retry'
@@ -273,7 +274,7 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
   }
   const changed = Object.keys(edit).length > 0
   const problem = descriptionProblem(description) ?? topicsProblem(topics)
-  const cost = previewRepoEdit(edit, held.data)
+  const cost = previewRepoEdit(edit, held.data, home.repo.visibility)
   const run = async (): Promise<void> => {
     if (!sdk || !signer || pending === null) throw new Error('sign in to continue')
     await editRepoDoc(sdk, signer, home.repo, pending)
@@ -299,12 +300,19 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
           onChange={(e) => setDescription(e.target.value)}
         />
       </Field>
-      <Field label="Topics" htmlFor="repo-topics" hint="Comma-separated, up to 10: lowercase letters, digits and dashes.">
+      <Field
+        label="Topics"
+        htmlFor="repo-topics"
+        hint={`Comma-separated, up to ${MAX_TOPICS}: lowercase letters and digits, words joined by single dashes (web-dev).`}
+      >
         <Input id="repo-topics" value={topicsText} disabled={!owner} onChange={(e) => setTopicsText(e.target.value)} placeholder="rust, dash-platform" />
       </Field>
       {problem ? <p className="text-[12px] text-danger-700 dark:text-danger-400">{problem}</p> : null}
       {home.repo.visibility === 'private' ? (
-        <Note>The description and topics are public even for a private repo: they live on its repo document, which is not encrypted.</Note>
+        <Note>
+          The description and topics are public even for a private repo: they live on its repo document, which is not encrypted. A private repo is not
+          listed on Explore&apos;s topic pages.
+        </Note>
       ) : null}
       {owner ? (
         <div className="flex flex-wrap items-center gap-2">
@@ -327,8 +335,12 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
         open={pending !== null}
         onClose={() => setPending(null)}
         title="Edit the repo details"
-        description="Replaces the description and topics on the repo document; each topic added or removed is also one small topic document (what Explore counts per topic). Its name, visibility and fork origin cannot change."
-        cost={pending ? previewRepoEdit(pending, held.data) : null}
+        description={
+          home.repo.visibility === 'private'
+            ? 'Replaces the description and topics on the repo document. Its name, visibility and fork origin cannot change.'
+            : 'Replaces the description and topics on the repo document; each topic added or removed is also one small topic document (what Explore counts per topic). Its name, visibility and fork origin cannot change.'
+        }
+        cost={pending ? previewRepoEdit(pending, held.data, home.repo.visibility) : null}
         confirmLabel="Sign & save"
         onConfirm={run}
       />
@@ -550,8 +562,9 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
             Require passing checks
           </label>
           <Note>
-            Required checks by name need the next forge-collab revision (<span className="font-mono">policy.requiredChecks</span>, platform-parity spec
-            §6.2); until then this is one switch, and the web does not read check runs yet.
+            {(shown.requiredChecks?.length ?? 0) > 0
+              ? `Also required by name: ${(shown.requiredChecks ?? []).join(', ')}${(shown.requiredCheckSources?.length ?? 0) > 0 ? ', each from its pinned runner or maintainer' : ''}. Set with the CLI; saving here keeps them.`
+              : 'Checks can also be required by name, each from a pinned runner or maintainer, with the CLI; saving here keeps them.'}
           </Note>
           {maintainer ? (
             <div className="flex flex-wrap items-center gap-2">

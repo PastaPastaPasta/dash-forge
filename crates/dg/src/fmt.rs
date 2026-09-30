@@ -68,6 +68,8 @@ pub fn transition_phrase(kind: u8) -> &'static str {
         t::PR_MERGE => "merged this",
         t::PR_DRAFT => "marked this as draft",
         t::PR_READY => "marked this ready for review",
+        t::ISSUE_LOCK | t::PR_LOCK => "locked the conversation",
+        t::ISSUE_UNLOCK | t::PR_UNLOCK => "unlocked the conversation",
         _ => "changed the state",
     }
 }

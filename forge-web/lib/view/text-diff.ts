@@ -1,14 +1,17 @@
 /**
- * Small, dependency-free line diff for reviewable text blobs.
- *
- * Myers' O(ND) algorithm after trimming the common prefix and suffix, so cost tracks the size
- * of the edit rather than the size of the file: a one-line change to a 20 000-line file is as
- * cheap as one to a 20-line file. Work and trace memory are both bounded; past the bound the
- * diff is declined (`null`) and the caller says so instead of freezing the tab.
+ * Line diff for reviewable text blobs, as git computes it: git's own xdiff (`xdiff.ts`, Myers with
+ * xdiff's record cleanup and cost heuristics, then `xdiff-compact.ts`'s hunk compaction), so a
+ * patch shows the hunks `git diff` shows and counts the lines `git diff --numstat` counts (L-25;
+ * a minimal edit script is not always git's). Work is bounded; past the bound, or past
+ * `maxEdits` changed lines, the diff is declined (`null`) and the caller says so instead of
+ * freezing the tab.
  *
  * Loaded by plain Node (type stripping) in `render-fuzz.test.ts`: keep imports relative and
  * the syntax erasable (no enums, namespaces or `@/` aliases).
  */
+
+import { xdiffChanges } from './xdiff.ts'
+import { compactChanges } from './xdiff-compact.ts'
 
 export interface TextDiffLine {
   readonly kind: 'context' | 'added' | 'deleted'
@@ -24,6 +27,8 @@ export interface TextDiffLine {
 export interface DiffGap {
   readonly kind: 'gap'
   readonly hidden: number
+  /** The index of its first line in the full diff (what "show more" reveals from). */
+  readonly from: number
 }
 
 export type CompactDiffLine = TextDiffLine | DiffGap
@@ -31,9 +36,8 @@ export type CompactDiffLine = TextDiffLine | DiffGap
 /** Bounds for {@link diffTextLines}. */
 export interface DiffLimits {
   /**
-   * Max edit distance (lines added + deleted) the diff will reconstruct. The backtracking
-   * trace holds O(D²) integers — 2000 edits is ~16 MB, briefly. A change that only adds or
-   * only deletes lines skips the search and is not subject to this bound.
+   * Max changed lines (added + deleted) a diff shows. A change that only adds or only deletes
+   * lines skips the search and is not subject to this bound.
    */
   readonly maxEdits: number
   /** Max inner-loop steps (snake extensions + diagonal probes) before giving up. */
@@ -61,68 +65,40 @@ function toLine(
 type Op = 0 | 1 | 2 // equal | delete | insert
 
 /**
- * Myers' greedy shortest-edit-script with a per-round trace for backtracking. Returns the
- * edit ops in order, or null when the edit distance or the work exceeds `limits`.
+ * git's edit script for `a` → `b` ({@link xdiffChanges}, then {@link compactChanges}): each hunk's
+ * deletions before its additions, as git prints them. Null past `limits`.
  */
-function myers(a: readonly string[], b: readonly string[], limits: DiffLimits): Op[] | null {
-  const n = a.length
-  const m = b.length
-  // Pure insertion or deletion (a new file, a deleted file, lines appended): nothing to search.
-  if (n === 0 || m === 0) return new Array<Op>(n + m).fill(n === 0 ? 2 : 1)
-  const max = n + m
-  const offset = max + 1
-  const v = new Int32Array(2 * max + 3)
-  const trace: Int32Array[] = []
-  let work = 0
-  let found = -1
-
-  for (let d = 0; d <= max; d++) {
-    if (d > limits.maxEdits) return null
-    // Snapshot of v over k ∈ [-(d+1), d+1] before round d — all the backtrack reads.
-    trace.push(v.slice(offset - d - 1, offset + d + 2))
-    for (let k = -d; k <= d; k += 2) {
-      let x =
-        k === -d || (k !== d && (v[offset + k - 1] as number) < (v[offset + k + 1] as number))
-          ? (v[offset + k + 1] as number)
-          : (v[offset + k - 1] as number) + 1
-      let y = x - k
-      while (x < n && y < m && a[x] === b[y]) {
-        x += 1
-        y += 1
-        work += 1
-      }
-      work += 1
-      if (work > limits.maxWork) return null
-      v[offset + k] = x
-      if (x >= n && y >= m) {
-        found = d
-        break
-      }
-    }
-    if (found >= 0) break
+function gitOps(a: readonly string[], b: readonly string[], limits: DiffLimits): Op[] | null {
+  if (a.length === 0 || b.length === 0) return new Array<Op>(a.length + b.length).fill(a.length === 0 ? 2 : 1)
+  const marks = xdiffChanges(a, b, limits)
+  if (marks === null) return null
+  let c: { readonly oldChanged: Uint8Array; readonly newChanged: Uint8Array }
+  try {
+    c = compactChanges(a, b, marks.oldChanged, marks.newChanged)
+  } catch {
+    // Compaction asserts what xdiff asserts; the uncompacted alignment is still a valid diff.
+    c = marks
   }
-
   const ops: Op[] = []
-  let x = n
-  let y = m
-  for (let d = found; d >= 0; d--) {
-    const snap = trace[d] as Int32Array
-    const at = (k: number): number => snap[k + d + 1] as number
-    const k = x - y
-    const prevK = k === -d || (k !== d && at(k - 1) < at(k + 1)) ? k + 1 : k - 1
-    const prevX = d === 0 ? 0 : at(prevK)
-    const prevY = d === 0 ? 0 : prevX - prevK
-    while (x > prevX && y > prevY) {
+  let edits = 0
+  let i = 0
+  let j = 0
+  while (i < a.length || j < b.length) {
+    if (i < a.length && c.oldChanged[i] === 1) {
+      ops.push(1)
+      i++
+      edits++
+    } else if (j < b.length && c.newChanged[j] === 1) {
+      ops.push(2)
+      j++
+      edits++
+    } else {
       ops.push(0)
-      x -= 1
-      y -= 1
+      i++
+      j++
     }
-    if (d === 0) break
-    ops.push(x === prevX ? 2 : 1)
-    x = prevX
-    y = prevY
   }
-  return ops.reverse()
+  return edits > limits.maxEdits ? null : ops
 }
 
 /**
@@ -143,28 +119,9 @@ export function diffTextLines(
   const oldKeys = options.ignoreWhitespace ? oldLines.map(key) : oldLines
   const newKeys = options.ignoreWhitespace ? newLines.map(key) : newLines
 
-  let prefix = 0
-  while (
-    prefix < oldKeys.length &&
-    prefix < newKeys.length &&
-    oldKeys[prefix] === newKeys[prefix]
-  ) {
-    prefix += 1
-  }
-  let suffix = 0
-  while (
-    suffix < oldKeys.length - prefix &&
-    suffix < newKeys.length - prefix &&
-    oldKeys[oldKeys.length - 1 - suffix] === newKeys[newKeys.length - 1 - suffix]
-  ) {
-    suffix += 1
-  }
-
-  const ops = myers(
-    oldKeys.slice(prefix, oldKeys.length - suffix),
-    newKeys.slice(prefix, newKeys.length - suffix),
-    limits,
-  )
+  // xdiff sees the whole files: it trims their common ends itself, after counting every record
+  // (which lines its cleanup drops depends on how often they occur in the whole file).
+  const ops = gitOps(oldKeys, newKeys, limits)
   if (ops === null) return null
 
   const lines: TextDiffLine[] = []
@@ -175,7 +132,6 @@ export function diffTextLines(
     o += 1
     w += 1
   }
-  for (let i = 0; i < prefix; i++) context()
   for (const op of ops) {
     if (op === 0) {
       context()
@@ -187,7 +143,6 @@ export function diffTextLines(
       w += 1
     }
   }
-  for (let i = 0; i < suffix; i++) context()
   return lines
 }
 
@@ -202,10 +157,20 @@ export function diffStat(lines: readonly TextDiffLine[]): { added: number; delet
   return { added, deleted }
 }
 
-/** Keep `context` unchanged lines around edits and replace each omitted run with one gap row. */
+/** Lines of the full diff shown in addition to the context around edits: `[from, to)` ranges. */
+export type Revealed = readonly (readonly [number, number])[]
+
+/** Unchanged lines shown around each change, as git shows them (`-U3`). */
+export const DIFF_CONTEXT = 3
+
+/**
+ * Keep `context` unchanged lines around edits (and the `revealed` ranges a reader expanded, L-69)
+ * and replace each omitted run with one gap row saying where it starts.
+ */
 export function compactDiffLines(
   lines: readonly TextDiffLine[],
-  context = 3,
+  context = DIFF_CONTEXT,
+  revealed: Revealed = [],
 ): CompactDiffLine[] {
   const visible = new Uint8Array(lines.length)
   for (let i = 0; i < lines.length; i++) {
@@ -214,25 +179,39 @@ export function compactDiffLines(
     const to = Math.min(lines.length - 1, i + context)
     visible.fill(1, from, to + 1)
   }
+  for (const [from, to] of revealed) visible.fill(1, Math.max(0, from), Math.min(lines.length, to))
 
   const out: CompactDiffLine[] = []
   let hidden = 0
   for (let i = 0; i < lines.length; i++) {
     if (visible[i] === 1) {
-      if (hidden > 0) out.push({ kind: 'gap', hidden })
+      if (hidden > 0) out.push({ kind: 'gap', hidden, from: i - hidden })
       hidden = 0
       out.push(lines[i] as TextDiffLine)
     } else {
       hidden += 1
     }
   }
-  if (hidden > 0) out.push({ kind: 'gap', hidden })
+  if (hidden > 0) out.push({ kind: 'gap', hidden, from: lines.length - hidden })
   return out
+}
+
+/** Lines a gap's "show more" reveals at a time (GitHub's step). */
+export const EXPAND_STEP = 20
+
+/**
+ * The range a gap's expander reveals: `all` of it, or {@link EXPAND_STEP} lines from its top
+ * (`down`, continuing the hunk above) or from its bottom (`up`, leading into the hunk below).
+ */
+export function expandGap(gap: DiffGap, how: 'up' | 'down' | 'all'): readonly [number, number] {
+  const end = gap.from + gap.hidden
+  if (how === 'all' || gap.hidden <= EXPAND_STEP) return [gap.from, end]
+  return how === 'down' ? [gap.from, gap.from + EXPAND_STEP] : [end - EXPAND_STEP, end]
 }
 
 /** One row of a side-by-side diff: the old line on the left, the new one on the right. */
 export type SplitRow =
-  | { readonly kind: 'gap'; readonly hidden: number }
+  | DiffGap
   | { readonly kind: 'pair'; readonly left: TextDiffLine | null; readonly right: TextDiffLine | null }
 
 /**

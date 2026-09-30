@@ -1,0 +1,67 @@
+{
+  "name": "fold_lock_bit",
+  "description": "A delta sum read as its state code (sum mod 16, Euclidean) and its lock bit (sum >= 16), as readers fold the proved sum query.",
+  "case": "transition_fold",
+  "rules": "v2",
+  "input": {
+    "sums": [
+      0,
+      1,
+      2,
+      8,
+      9,
+      16,
+      17,
+      18,
+      24,
+      25,
+      -1
+    ]
+  },
+  "expected": [
+    {
+      "code": 0,
+      "locked": false
+    },
+    {
+      "code": 1,
+      "locked": false
+    },
+    {
+      "code": 2,
+      "locked": false
+    },
+    {
+      "code": 8,
+      "locked": false
+    },
+    {
+      "code": 9,
+      "locked": false
+    },
+    {
+      "code": 0,
+      "locked": true
+    },
+    {
+      "code": 1,
+      "locked": true
+    },
+    {
+      "code": 2,
+      "locked": true
+    },
+    {
+      "code": 8,
+      "locked": true
+    },
+    {
+      "code": 9,
+      "locked": true
+    },
+    {
+      "code": 15,
+      "locked": false
+    }
+  ]
+}

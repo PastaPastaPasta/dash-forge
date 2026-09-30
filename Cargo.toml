@@ -40,11 +40,11 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # with no out-of-tree setup.
 #
 # To develop against a local Platform checkout, override without editing this file, using
-# `[patch]` on the git URL — cargo's `paths` override does NOT apply to git sources. All
-# five packages must be patched together or the graph ends up with two copies of dpp /
+# `[patch]` on the git URL — cargo's `paths` override does NOT apply to git sources. Every
+# Platform package below must be patched together or the graph ends up with two copies of dpp /
 # drive-proof-verifier and forge-core stops compiling. See docs/BUILDING.md.
 #
-# Bumping the tag: change PLATFORM_TAG below in ALL FIVE entries together, run
+# Bumping the tag: change PLATFORM_TAG below in ALL SEVEN entries together, run
 # `cargo update -p dash-sdk`, and commit the resulting Cargo.lock.
 # PLATFORM_TAG = v4.2.0-beta.7
 # TODO(sdk-4.2-final): a pre-release tag, pinned for protocol 14 (forge-v2 on devnets). Move
@@ -62,6 +62,10 @@ simple-signer = { git = "https://github.com/dashpay/platform.git", tag = "v4.2.0
 # same tag, so forge-core's envelope matches Platform byte for byte. Small (no dashcore); used
 # by `forge_core::envelope`. `secp256k1` is the version it exposes in its API (it must unify).
 platform-encryption = { git = "https://github.com/dashpay/platform.git", tag = "v4.2.0-beta.7" }
+# rs-dpp itself, for forge-core's test-only RC1 conformance runner (`validation` +
+# `json-conversion`: parse the generated contracts and run document-property validation). It is
+# the package the SDK re-exports, so it unifies to one copy; no normal build depends on it.
+dpp = { git = "https://github.com/dashpay/platform.git", tag = "v4.2.0-beta.7", default-features = false }
 secp256k1 = { version = "0.30", features = ["std"] }
 
 # Workspace-wide lints. CI runs `cargo clippy --all-targets -- -D warnings`, which

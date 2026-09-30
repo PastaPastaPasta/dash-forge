@@ -245,11 +245,15 @@ pub struct Release {
     pub yanked: bool,
     /// Assets (parsed from the `assets` JSON-string field).
     pub assets: Vec<ReleaseAsset>,
-    /// Who published this revision (`$ownerId`). Always shown: a maintainer who is later
-    /// revoked can still delete (not edit) their release, so readers name the publisher.
+    /// Who published this revision (`$ownerId`). Always shown: readers name the publisher
+    /// of each revision.
     pub publisher: String,
     /// Consensus `$createdAt` (ms).
     pub created_at: u64,
+    /// `release.delta` (RC1 `release_ledger`): `+1` publishes the tag, `0` edits, yanks or
+    /// seals it, `-1` unpublishes it. A tag is live while its revisions sum to 1; releases
+    /// cannot be deleted.
+    pub delta: i64,
 }
 
 /// Build a [`Release`] from a fetched document.
@@ -283,6 +287,11 @@ pub(crate) fn release_from_doc(d: &platform::FetchedDocument) -> Release {
         assets,
         publisher: d.owner_id.clone(),
         created_at: d.created_at.unwrap_or(0),
+        delta: d
+            .fields
+            .get("delta")
+            .and_then(FieldValue::as_i64)
+            .unwrap_or(0),
     }
 }
 
@@ -330,10 +339,25 @@ mod tests {
             (Verdict::Approve, 1),
             (Verdict::RequestChanges, 2),
             (Verdict::Comment, 3),
+            (Verdict::ApproveNonMember, 4),
+            (Verdict::RequestChangesNonMember, 5),
         ] {
             assert_eq!(v.code(), code, "{v:?} encodes as {code}");
             assert_eq!(Verdict::from_code(code), v, "{code} decodes as {v:?}");
         }
+    }
+
+    #[test]
+    fn a_verdict_is_written_as_the_signer_s_membership_allows() {
+        use Verdict::{
+            Approve, ApproveNonMember, Comment, RequestChanges, RequestChangesNonMember,
+        };
+        assert_eq!(Approve.as_written_by(false), ApproveNonMember);
+        assert_eq!(ApproveNonMember.as_written_by(true), Approve);
+        assert_eq!(RequestChanges.as_written_by(false), RequestChangesNonMember);
+        assert_eq!(RequestChangesNonMember.as_written_by(true), RequestChanges);
+        assert_eq!(Comment.as_written_by(false), Comment);
+        assert!(Approve.needs_member_proof() && !ApproveNonMember.needs_member_proof());
     }
 
     #[test]

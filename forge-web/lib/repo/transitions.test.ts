@@ -11,7 +11,8 @@ import { describe, expect, it } from 'vitest'
 import { base58Decode, base58Encode } from '../auth/base58'
 import { ConsensusRefusal, uintGroupKey, uintOfGroupKey, type DocumentQuery, type WriteResult } from '../sdk'
 import type { RepoRef } from './contract'
-import { IllegalTransitionError, isStaleStateRefusal, readKindCounts, readStateCodes, transitionData, writeTransition, type StateTarget } from './transitions'
+import { ISSUE_LOCK, ISSUE_UNLOCK, PR_CLOSE, PR_DRAFT, PR_DRAFT_CLOSE, PR_LOCK, isLocked, stateCode, statusOfCode, threadStateOf } from '../rules/transition'
+import { IllegalTransitionError, isStaleStateRefusal, readKindCounts, readStateCodes, readThreadStates, transitionData, writeLock, writeTransition, type StateTarget } from './transitions'
 
 const id = (name: string): string => base58Encode(sha256(new TextEncoder().encode(name)))
 const hex = (b58: string): string => [...base58Decode(b58)].map((b) => b.toString(16).padStart(2, '0')).join('')
@@ -194,5 +195,64 @@ describe('proved reads', () => {
     expect([...(await readKindCounts(sdk([['81', 5n], ['82', 2n], ['8d', 1n]]), REPO))]).toEqual([[1, 5], [2, 2], [13, 1]])
     // A u32-sized kind (a contract without sized integers) reads the same; unknown kinds are dropped.
     expect([...(await readKindCounts(sdk([['80000001', 4n], ['80000003', 9n]]), REPO))]).toEqual([[1, 4]])
+  })
+})
+
+describe('the lock bit (RC1 R-15: kinds 3/4 and 18/19, delta ±16, sums read mod 16)', () => {
+  const auth = (who: string) => ({ identityId: who, network: 'devnet' as const, getSigningKeyWif: () => '' })
+
+  it('reads a locked target as its state code mod 16 plus the lock bit', async () => {
+    const sums = { [PR.id]: 16 + 9, [ISSUE.id]: 16 + 1 }
+    expect(await readStateCodes(sumSdk(() => sums), REPO, [PR.id, ISSUE.id])).toEqual(new Map([[PR.id, 9], [ISSUE.id, 1]]))
+    expect(await readThreadStates(sumSdk(() => sums), REPO, [PR.id])).toEqual(new Map([[PR.id, { code: 9, locked: true }]]))
+    expect(threadStateOf(0)).toEqual({ code: 0, locked: false })
+    expect(threadStateOf(-3)).toEqual({ code: 13, locked: false })
+  })
+
+  it('folds a timeline: a lock and an unlock leave the state untouched', () => {
+    const t = (kind: number) => ({ kind })
+    expect(stateCode([t(PR_CLOSE), t(PR_LOCK)])).toBe(1)
+    expect(isLocked([t(PR_CLOSE), t(PR_LOCK)])).toBe(true)
+    expect(isLocked([t(ISSUE_LOCK), t(ISSUE_UNLOCK)])).toBe(false)
+    // A lock on a closed draft still leaves it a closed draft.
+    expect(statusOfCode(stateCode([t(PR_DRAFT), t(PR_DRAFT_CLOSE), t(PR_LOCK)]))).toEqual({ open: false, merged: false, draft: true })
+  })
+
+  it('a state move on a locked target is picked from the code, not the raw sum', async () => {
+    const writes: Record<string, unknown>[] = []
+    await writeTransition(sumSdk(() => ({ [ISSUE.id]: 16 })), auth(MAINT), REPO, async (_type, data) => {
+      writes.push(data)
+      return OK
+    }, { target: ISSUE, action: 'close', isMember: true })
+    expect(writes[0]).toMatchObject({ kind: 1, delta: 1 })
+  })
+
+  it('locks as a member (asAuthor 0), and writes nothing when already in the asked state', async () => {
+    const writes: Record<string, unknown>[] = []
+    const write = async (_type: string, data: Record<string, unknown>) => {
+      writes.push(data)
+      return OK
+    }
+    await writeLock(sumSdk(() => ({ [PR.id]: 1 })), auth(MAINT), REPO, write, { target: PR, lock: true, isMember: true })
+    await writeLock(sumSdk(() => ({ [ISSUE.id]: 16 })), auth(MAINT), REPO, write, { target: ISSUE, lock: false, isMember: true })
+    const done = await writeLock(sumSdk(() => ({ [ISSUE.id]: 17 })), auth(MAINT), REPO, write, { target: ISSUE, lock: true, isMember: true })
+    expect(writes).toEqual([
+      expect.objectContaining({ kind: PR_LOCK, delta: 16, targetKind: 1, asAuthor: 0 }),
+      expect.objectContaining({ kind: ISSUE_UNLOCK, delta: -16, targetKind: 0, asAuthor: 0 }),
+    ])
+    expect(done.documentId).toBe('')
+    await expect(writeLock(sumSdk(() => ({})), auth(AUTHOR), REPO, write, { target: ISSUE, lock: true, isMember: false })).rejects.toThrow(/maintainer or writer/)
+  })
+
+  it('re-reads once when c6 refuses (someone locked it meanwhile)', async () => {
+    let sum = 0
+    let calls = 0
+    const done = await writeLock(sumSdk(() => ({ [PR.id]: sum })), auth(MAINT), REPO, async () => {
+      calls++
+      sum = 16
+      throw new ConsensusRefusal(10422, 'breaks its propertyConstraints rule "c6_lockedAfter"')
+    }, { target: PR, lock: true, isMember: true })
+    expect(calls).toBe(1)
+    expect(done.documentId).toBe('')
   })
 })

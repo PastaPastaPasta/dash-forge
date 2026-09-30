@@ -95,8 +95,9 @@ else
   bad "non-member clone failed without E307"
 fi
 
-step "OWNER adds COLLAB (writer): membership + key wrap"
-if ! dg_as "$ID_OWNER" -y --json collab add "$REPO" "$IDID_COLLAB" --role writer >"$LOG-add.json" 2>"$LOG-add.err"; then
+step "COLLAB accepts; OWNER adds COLLAB (writer): membership + key wrap"
+if ! collab_accept "$ID_COLLAB" "$REPO" "$LOG-add" \
+   || ! dg_as "$ID_OWNER" -y --json collab add "$REPO" "$IDID_COLLAB" --role writer >"$LOG-add.json" 2>"$LOG-add.err"; then
   cat "$LOG-add.err" "$LOG-add.json" >&2
   is_flake "$LOG-add.err" && skip_scenario "add failed on a flake"
   bad "collab add failed"; finish_scenario

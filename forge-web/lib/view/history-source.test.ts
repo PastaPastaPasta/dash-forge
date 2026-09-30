@@ -104,4 +104,13 @@ describe('historySource', () => {
   it('is null for a repository with no history index', () => {
     expect(historySource([manifest(new Uint8Array([1]), [], { kind: 1 })], async () => new Uint8Array())).toBeNull()
   })
+
+  it('prefers a full index at a tip over a delta (the format moves to the artifact header with RC1)', () => {
+    const tip = 'bb'.repeat(20)
+    const base = manifest(fullOf('aa'.repeat(20)), ['aa'.repeat(20)])
+    const v2Delta = manifest(fullOf('cc'.repeat(20)), [tip, 'aa'.repeat(20)])
+    const v2Full = manifest(fullOf(tip), [tip])
+    const both = historySource([base, v2Delta, v2Full], () => Promise.reject(new Error('unused')))
+    expect(both?.byTip.get(tip)?.baseTip).toBeNull()
+  })
 })

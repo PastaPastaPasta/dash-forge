@@ -1,0 +1,42 @@
+{
+  "name": "sum_with_lock",
+  "description": "Lock and unlock transitions add +/-16: the state code is the sum mod 16, so a closed issue locked, unlocked and locked again reads closed.",
+  "case": "transition_sum",
+  "rules": "v2",
+  "input": {
+    "transitions": [
+      {
+        "id": "t1",
+        "kind": 1,
+        "actor": "maint",
+        "asAuthor": 0,
+        "createdAt": 1
+      },
+      {
+        "id": "t2",
+        "kind": 3,
+        "actor": "maint",
+        "asAuthor": 0,
+        "createdAt": 2
+      },
+      {
+        "id": "t3",
+        "kind": 4,
+        "actor": "maint",
+        "asAuthor": 0,
+        "createdAt": 3
+      },
+      {
+        "id": "t4",
+        "kind": 3,
+        "actor": "maint",
+        "asAuthor": 0,
+        "createdAt": 4
+      }
+    ]
+  },
+  "expected": {
+    "code": 1,
+    "mergeId": null
+  }
+}

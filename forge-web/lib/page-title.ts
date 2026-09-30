@@ -36,6 +36,7 @@ const REPO_TITLES: Readonly<Record<string, (q: Query, repo: string) => string>> 
   '/repo/blame': (q, repo) => `Blame ${q.get('path') ?? ''} · ${repo}`,
   '/repo/commits': (q, repo) => (q.get('path') ? `History for ${q.get('path')} · ${repo}` : `Commits · ${repo}`),
   '/repo/commit': (q, repo) => `Commit ${(q.get('oid') ?? '').slice(0, 7)} · ${repo}`,
+  '/repo/compare': (q, repo) => (q.get('head') ? `Comparing ${q.get('base') ?? ''}...${q.get('head')} · ${repo}` : `Compare · ${repo}`),
   '/repo/issues': (_q, repo) => `Issues · ${repo}`,
   '/repo/issue': (q, repo) => `Issue #${q.get('number') ?? ''} · ${repo}`,
   '/repo/pulls': (_q, repo) => `Pull requests · ${repo}`,

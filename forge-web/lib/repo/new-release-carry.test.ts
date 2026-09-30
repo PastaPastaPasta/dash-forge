@@ -20,6 +20,7 @@ const current: ReleaseView = {
   tagName: 'v1',
   name: 'One',
   notes: 'first notes',
+  delta: 1,
   yanked: false,
   assets: [
     { name: 'app.tar.gz', sha256: H, size: 10, uris: ['https://a.example/app'] },

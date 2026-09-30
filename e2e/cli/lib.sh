@@ -145,6 +145,12 @@ dg_as() { # dg_as <identity_file> <dg args...>
   DASH_FORGE_KEY="$id" RUST_LOG="${RUST_LOG:-error}" NO_COLOR=1 _tmo "${DG}" "$@"
 }
 
+# The member's consent before an owner's `dg collab add` (RC1 member_consent): the member
+# writes its own `consent` document for the repo. Idempotent. stdout/stderr -> <log>.accept.*
+collab_accept() { # collab_accept <member_identity_file> <repo> <log-prefix>
+  dg_as "$1" -y --json collab accept "$2" >"$3.accept.json" 2>"$3.accept.err"
+}
+
 # A READ-ONLY dg command as a given identity, retried like git_dash_retry.
 # stdout -> <out>, stderr -> <err>. Never use this for a write: a dg write is not
 # guaranteed idempotent to re-run (a second `collab add` mints again).
@@ -376,4 +382,49 @@ seed_tiny_repo() { # seed_tiny_repo <dir> <branch> [tagname]
     git -C "$dir" tag -a "$tag" -m "e2e tag ${RUN_ID}"
   fi
   git -C "$dir" rev-parse HEAD
+}
+
+# --- forge-v2-demo read fixture: PR numbers under dense numbering ------------
+# Issues and PRs on a forge-v2 repo share one number sequence (docs/contracts/forge-v2.md
+# §6: patch "sharing the issues' number sequence"), so on the seeded `forge-v2-demo` fixture
+# (forge-contracts/scripts/seed-v2-fixture.mjs) issues take #1-#4 and the three PRs follow at
+# #5 (open, approved), #6 (merged) and #7 (the review-parity draft). The seeder writes its
+# summary JSON, with `pulls: {approved, merged, reviewParity}`, to the committed
+# forge-contracts/deployments/fixtures/devnet-<devnet>.json, the file forge-web's e2e reads too
+# (forge-web/e2e/seed-summary.ts). `demo_pull_number` reads `pulls.<key>` (top-level or nested
+# under `demo`) from $FORGE_SEED_SUMMARY when set, else from that file, and otherwise falls back
+# to the RC1 layout's fixed numbers, so scenarios never need to know which case applied. A
+# summary path that does not exist is skipped for the next one. E2E_V2_SEED_SUMMARY is a
+# deprecated alias of FORGE_SEED_SUMMARY.
+demo_pull_number() { # demo_pull_number approved|merged|reviewParity
+  local key="$1" fallback
+  case "$key" in
+    approved) fallback=5 ;;
+    merged) fallback=6 ;;
+    reviewParity) fallback=7 ;;
+    *) echo "demo_pull_number: unknown key '$key'" >&2; return 1 ;;
+  esac
+  local netkey="${DASH_FORGE_NETWORK:-devnet}"
+  [[ "$netkey" == devnet ]] && netkey="devnet-${DASH_FORGE_DEVNET_NAME:-moutai}"
+  # The first summary that exists, as forge-web/e2e/seed-summary.ts tries them.
+  local f summary=""
+  for f in "${FORGE_SEED_SUMMARY:-}" "${E2E_V2_SEED_SUMMARY:-}" "${E2E_REPO_ROOT}/forge-contracts/deployments/fixtures/${netkey}.json"; do
+    [[ -n "$f" && -f "$f" ]] && { summary="$f"; break; }
+  done
+  [[ -n "$summary" ]] || { echo "$fallback"; return 0; }
+  local n
+  n="$(python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+except (OSError, ValueError):
+    sys.exit(1)
+pulls = d.get("pulls") or (d.get("demo") or {}).get("pulls") or {}
+v = pulls.get(sys.argv[2])
+if v is None:
+    sys.exit(1)
+print(int(v))
+' "$summary" "$key" 2>/dev/null)"
+  echo "${n:-$fallback}"
 }

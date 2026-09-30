@@ -1,5 +1,5 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
-import { DEMO, EMPTY, expectLanded, repoUrl, runAxe } from './helpers'
+import { DEMO, EMPTY, expectLanded, loadSeedPulls, repoUrl, runAxe } from './helpers'
 
 /**
  * Accessibility via axe-core (WCAG 2.1 A/AA), on the forge-v2 read fixture (e2e/helpers.ts
@@ -13,7 +13,11 @@ import { DEMO, EMPTY, expectLanded, repoUrl, runAxe } from './helpers'
  * the app, whose default is dark — which is how an earlier "light" run was really a dark run.
  */
 
-const PAGES: [label: string, href: string, ready: (page: Page) => Locator][] = [
+// A page whose URL needs a fixture PR number, resolved lazily (inside the test body) so
+// importing this file never throws merely because the seed summary is absent.
+type Href = string | (() => string)
+
+const PAGES: [label: string, href: Href, ready: (page: Page) => Locator][] = [
   [
     'landing',
     '/',
@@ -35,7 +39,7 @@ const PAGES: [label: string, href: string, ready: (page: Page) => Locator][] = [
   ['issues', repoUrl('issues'), (page) => page.getByRole('list', { name: 'Issues', exact: true }).getByText('README should explain the event split')],
   ['issue', repoUrl('issue', '&number=3'), (page) => page.getByText('Done in docs/rules.md; closing.')],
   ['pulls', repoUrl('pulls'), (page) => page.locator('a[href*="/repo/pull/"]').first()],
-  ['pull', repoUrl('pull', '&number=1'), (page) => page.getByRole('region', { name: 'Approvals' })],
+  ['pull', () => repoUrl('pull', `&number=${loadSeedPulls().approved}`), (page) => page.getByRole('region', { name: 'Approvals' })],
   ['stargazers', repoUrl('stargazers'), (page) => page.getByRole('main').locator('a[href*="/u"]').first()],
   ['releases', repoUrl('releases'), (page) => page.getByText(/No releases|Latest/).first()],
   ['settings-repo', repoUrl('settings'), (page) => page.getByRole('region', { name: 'Collaborators' }).getByText('WRITER', { exact: true })],
@@ -51,7 +55,7 @@ for (const theme of ['dark', 'light'] as const) {
 
     for (const [label, href, ready] of PAGES) {
       test(`a11y: ${label} (${theme}) has no serious/critical axe violations`, async ({ page }) => {
-        await page.goto(href, { waitUntil: 'domcontentloaded' })
+        await page.goto(typeof href === 'function' ? href() : href, { waitUntil: 'domcontentloaded' })
         await expectLanded(page, ready(page))
         expect(await page.evaluate(() => document.documentElement.className)).toContain(theme)
         const serious = await runAxe(page, `${label}-${theme}`)

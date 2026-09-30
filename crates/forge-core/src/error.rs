@@ -125,6 +125,22 @@ pub enum Error {
         detail: String,
     },
 
+    /// Consensus refused a write because a document, identity or contract one of its properties
+    /// refers to does not exist (code 40120 on a path other than the membership gates): a
+    /// `repoKey` wrapped to a member since revoked (`memberId`), a member enrolled before their
+    /// `consent` (`consentBy`), a deleted parent comment (`replyTo`). Nothing landed.
+    #[error(
+        "consensus refused {document_type}: the reference at {path} does not exist ({detail})"
+    )]
+    ReferenceNotFound {
+        /// The refused document type.
+        document_type: String,
+        /// The property whose reference is missing.
+        path: String,
+        /// The consensus error.
+        detail: String,
+    },
+
     /// Consensus refused a document because a rule of its type's `propertyConstraints` does not
     /// hold (code 10422): refused before execution, so nothing landed. `rule` is the rule's name
     /// (forge-v2 `dense`, `c1_closedAfter`, …), `detail` the node's message.

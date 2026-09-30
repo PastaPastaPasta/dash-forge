@@ -41,6 +41,11 @@ export interface ChecksPolicy {
   readonly requireChecks?: boolean
   /** These checks must be reported and pass (overrides "every reported check" when set). */
   readonly requiredChecks?: readonly string[]
+  /**
+   * The identity (a runner or a maintainer, base58) each required check must come from, paired
+   * by position with `requiredChecks` (RC1 R-08); empty: any trusted reporter counts.
+   */
+  readonly requiredCheckSources?: readonly string[]
 }
 
 export type CheckState = 'passed' | 'failing' | 'pending' | 'missing'
@@ -60,8 +65,35 @@ export interface ChecksState {
   readonly untrusted: number
 }
 
+/**
+ * Each pinned check name and the sources that may decide it: empty unless `requiredCheckSources`
+ * pairs up with `requiredChecks` one for one; an empty name or source pins nothing. Parity:
+ * forge-core `pinned_sources`.
+ */
+function pinnedSources(policy: ChecksPolicy): Map<string, Set<string>> {
+  const names = policy.requiredChecks ?? []
+  const sources = policy.requiredCheckSources ?? []
+  const pins = new Map<string, Set<string>>()
+  if (sources.length !== names.length) return pins
+  names.forEach((name, i) => {
+    const source = sources[i] as string
+    if (name === '' || source === '') return
+    pins.set(name, (pins.get(name) ?? new Set()).add(source))
+  })
+  return pins
+}
+
 /** The conclusions that pass a required check. */
 export const PASSING_CONCLUSIONS: readonly string[] = ['success', 'neutral', 'skipped']
+
+/**
+ * A run's `outcome` (RC1 O-07 `outcomeOf`): 0 not completed, 1 completed with a passing
+ * conclusion, 2 completed otherwise. Consensus refuses a run whose `outcome` disagrees.
+ */
+export function checkRunOutcome(status: string, conclusion: string | null | undefined): 0 | 1 | 2 {
+  if (status !== 'completed') return 0
+  return PASSING_CONCLUSIONS.includes(conclusion ?? '') ? 1 : 2
+}
 
 function checkStateOf(run: CheckRunRow): CheckState {
   if (run.status !== 'completed') return 'pending'
@@ -72,8 +104,9 @@ function checkStateOf(run: CheckRunRow): CheckState {
  * Whether the check runs on `headOid` meet `policy`. A run counts only when its reporter is a
  * current maintainer or writer (`oracle`) or a current runner (`runners`); the newest counting
  * run per name by `($createdAt, $id)` decides it. `requiredChecks` names what must pass;
- * otherwise `requireChecks` means every counting name must pass and at least one exist.
- * A client rule for the merge box, never consensus. Parity: forge-core `checks_state`.
+ * otherwise `requireChecks` means every counting name must pass and at least one exist. A
+ * required check with a pinned source (`requiredCheckSources`, by position) counts only that
+ * source's runs. A client rule for the merge box, never consensus. Parity: forge-core `checks_state`.
  */
 export function checksState(
   runs: readonly CheckRunRow[],
@@ -83,6 +116,7 @@ export function checksState(
   policy: ChecksPolicy,
 ): ChecksState {
   const trusted = (who: string) => oracle.currentRole(who) !== null || runners.has(who)
+  const pinned = pinnedSources(policy)
   const newest = new Map<string, CheckRunRow>()
   let untrusted = 0
   const head = headOid.toLowerCase()
@@ -92,6 +126,8 @@ export function checksState(
       untrusted += 1
       continue
     }
+    const sources = pinned.get(run.name)
+    if (sources !== undefined && !sources.has(run.reporter)) continue
     const held = newest.get(run.name)
     if (held === undefined || compareKey(run, held) > 0) newest.set(run.name, run)
   }

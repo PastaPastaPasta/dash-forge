@@ -17,7 +17,7 @@ import { hexToBytes } from '@noble/hashes/utils.js'
 
 import { decodeIdentifier } from '../auth/base58'
 import { idbDelete, idbGet, idbPut } from '../idb'
-import { isLegalRefName } from '../rules'
+import { isLegalRefName, isRc1OidHex } from '../rules'
 import { anchorOf, groupReviewComments, isAuthorKind, type AnchorFields, type Policy } from '../rules/v2'
 import type { EventKind } from '../rules'
 import {
@@ -34,12 +34,31 @@ import {
 } from '../sdk'
 import { DOC, asIdentifierString, byteFieldToHex, num, str, type RepoRef } from './contract'
 import { invalidateRepoFeed, readReviews } from './issues'
+import { readMemberships } from './members'
+import { readRunners } from './checks'
 import { sealEdit } from './private-writes'
 import { repoSource } from './source'
 import { admitAll, gateFor } from './private-content'
 import { privateWriterWithSession, type PrivateWriter } from './private-writes'
 import type { PrivateSession } from './private-session'
-import { EVENT_KIND_CODE, VERDICT_INT, contractFor, eventRoute, refusePlaintextInPrivate, writeRepoDoc, type VerdictInput, type WriteTarget } from './writes'
+import {
+  EVENT_KIND_CODE,
+  LOCKED_REASON,
+  OUTSIDER_VERDICT_INT,
+  TRANSITION_EVENT_KINDS,
+  VERDICT_INT,
+  commentProof,
+  contractFor,
+  eventRoute,
+  lockedOut,
+  refusePlaintextInPrivate,
+  settledPost,
+  reviewVerdictFields,
+  writeRepoDoc,
+  type PostContext,
+  type VerdictInput,
+  type WriteTarget,
+} from './writes'
 
 export { EVENT_KIND_CODE, eventRoute }
 
@@ -64,6 +83,8 @@ const ASSIGN_KINDS: ReadonlySet<EventKind> = new Set<EventKind>(['assign', 'unas
  * value. Parity: forge-core `event_payload_props`.
  */
 export function targetEventData(target: WriteTarget, kind: EventKind, payload: EventPayload = {}): Record<string, unknown> {
+  // RC1: state changes and locks are transitions; the contract refuses them as events (`noState`, kind ≥ 4).
+  if (TRANSITION_EVENT_KINDS.has(kind)) throw new Error(`${kind} is a transition, not an event`)
   if (REF_KINDS.has(kind) && !payload.refId) throw new Error(`a ${kind} event needs a refId`)
   const oid = payload.oidHex ? hexToBytes(payload.oidHex) : null
   // The folds read only 40- or 64-hex heads (SHA-1 or SHA-256): anything else would be inert.
@@ -147,6 +168,7 @@ export function anchorData(a: AnchorInput): Record<string, unknown> {
   if (a.line === undefined && (a.side !== undefined || a.startLine !== undefined)) throw new Error('a side or start line needs a line')
   if (a.line !== undefined && a.side === undefined) throw new Error('a line needs a side')
   if (a.startLine !== undefined && a.line !== undefined && a.startLine > a.line) throw new Error('a range must start at or before its last line')
+  if (a.commitOid && !isRc1OidHex(a.commitOid)) throw new Error('an inline comment names a 20- or 32-byte commit')
   const data: Record<string, unknown> = { path: a.path }
   if (a.line !== undefined) data['line'] = a.line
   if (a.side !== undefined) data['side'] = a.side
@@ -164,21 +186,27 @@ export interface CommentInput {
   /** The review this comment belongs to (the signer's, on the same PR: consensus). */
   readonly reviewId?: string
   readonly intent?: string
+  /** Whether the signer is a member and the thread locked (a member's post to a locked thread proves membership). */
+  readonly post?: PostContext
 }
 
-/** The document data of a comment. */
-export function commentData(input: CommentInput): Record<string, unknown> {
+/**
+ * The document data of a comment signed by `signer`. `replyTo` must be a thread's root (RC1
+ * R-14); a member's comment on a locked thread carries the membership proof ({@link commentProof}).
+ */
+export function commentData(input: CommentInput, signer: string): Record<string, unknown> {
   if (input.body.trim() === '') throw new Error('a comment needs a body')
+  if (lockedOut(input.post)) throw new Error(LOCKED_REASON)
   const data: Record<string, unknown> = { targetId: decodeIdentifier(input.targetId), body: input.body }
   if (input.replyTo) data['replyTo'] = decodeIdentifier(input.replyTo)
   if (input.anchor) Object.assign(data, anchorData(input.anchor))
   if (input.reviewId) data['reviewId'] = decodeIdentifier(input.reviewId)
-  return data
+  return { ...data, ...commentProof(signer, input.post) }
 }
 
 /** Post one comment (a "single comment", review-parity R2). */
 export function postComment(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, input: CommentInput): Promise<WriteResult> {
-  return write(sdk, auth, repo, DOC.comment, commentData(input), input.intent)
+  return write(sdk, auth, repo, DOC.comment, commentData(input, auth.identityId), input.intent)
 }
 
 /** A review verdict with the number of comments the submit will attach. */
@@ -190,13 +218,17 @@ export interface ReviewInput {
   readonly body?: string
   readonly commentCount?: number
   readonly intent?: string
+  /** Whether the signer is a member and the PR locked: picks 1/2 with a proof or 4/5 ({@link reviewVerdictFields}). */
+  readonly post: PostContext
 }
 
-/** The document data of a review. */
-export function reviewData(input: ReviewInput): Record<string, unknown> {
+/** The document data of a review signed by `signer`. */
+export function reviewData(input: ReviewInput, signer: string): Record<string, unknown> {
+  if (lockedOut(input.post)) throw new Error(LOCKED_REASON)
+  if (!isRc1OidHex(input.commitOid)) throw new Error('a review names a 20- or 32-byte commit')
   const data: Record<string, unknown> = {
     patchId: decodeIdentifier(input.patchId),
-    verdict: VERDICT_INT[input.verdict],
+    ...reviewVerdictFields(input.verdict, signer, input.post),
     commitOid: hexToBytes(input.commitOid),
   }
   if (input.body) data['body'] = input.body
@@ -379,6 +411,11 @@ function sameComment(stored: ChainComment, c: DraftComment, headOid: string): bo
   return a !== null && want !== null && stored.body === c.body && JSON.stringify(a) === JSON.stringify(want)
 }
 
+/** Whether a landed verdict code is `verdict`, as a member (1/2/3) or a non-member (4/5) wrote it. */
+function sameVerdict(code: number, verdict: VerdictInput): boolean {
+  return code === VERDICT_INT[verdict] || (verdict !== 'comment' && code === OUTSIDER_VERDICT_INT[verdict])
+}
+
 /** How far the client clock may be ahead of block time when matching a landed review. */
 const CLOCK_SKEW_MS = 10 * 60 * 1000
 
@@ -401,7 +438,7 @@ export async function reconcileReviewDraft(draft: ReviewDraft, reads: SubmitRead
       .filter(
         (r) =>
           r.reviewer === draft.identity &&
-          r.verdict === VERDICT_INT[draft.verdict] &&
+          sameVerdict(r.verdict, draft.verdict) &&
           r.commitOid === draft.headOid &&
           r.body === draft.summary &&
           r.commentCount === draft.comments.length &&
@@ -438,6 +475,7 @@ export async function submitReviewDraft(
   auth: WriteAuth,
   repo: RepoRef,
   draft: ReviewDraft,
+  post: PostContext,
   onProgress?: (p: SubmitProgress) => void,
   reads?: SubmitReads,
 ): Promise<SubmittedReview> {
@@ -448,7 +486,7 @@ export async function submitReviewDraft(
   // One writer (one fresh key read) for the review and all its comments.
   const fresh = repo.visibility === 'private' ? await privateWriterWithSession(sdk, auth, repo) : undefined
   try {
-    return await submitWith(sdk, auth, repo, draft, fresh, onProgress, reads)
+    return await submitWith(sdk, auth, repo, draft, post, fresh, onProgress, reads)
   } finally {
     fresh?.session.close()
   }
@@ -459,6 +497,7 @@ async function submitWith(
   auth: WriteAuth,
   repo: RepoRef,
   draft: ReviewDraft,
+  post: PostContext,
   fresh: { writer: PrivateWriter; session: PrivateSession } | undefined,
   onProgress?: (p: SubmitProgress) => void,
   reads?: SubmitReads,
@@ -475,6 +514,8 @@ async function submitWith(
   const total = 1 + draft.comments.length
   const done = () => (current.reviewId ? 1 : 0) + current.comments.filter((c) => c.landedId).length
   onProgress?.({ done: done(), total })
+  // Settled once for the review and all its comments: they must agree on who is writing.
+  const settled = await settledPost(sdk, repo, auth.identityId, post, draft.verdict)
   let reviewId = current.reviewId
   if (reviewId === undefined) {
     const r = await write(sdk, auth, repo, DOC.review, reviewData({
@@ -483,7 +524,8 @@ async function submitWith(
       commitOid: draft.headOid,
       body: draft.summary,
       commentCount: draft.comments.length,
-    }), `review:${draft.draftId}:review`, writer)
+      post: settled,
+    }, auth.identityId), `review:${draft.draftId}:review`, writer)
     reviewId = r.documentId
     current = { ...current, reviewId }
     await saveReviewDraft(current)
@@ -500,7 +542,8 @@ async function submitWith(
       body: c.body,
       anchor: { ...c.anchor, commitOid: c.anchor.commitOid ?? draft.headOid },
       reviewId,
-    }), `review:${draft.draftId}:comment:${c.localId}`, writer)
+      post: settled,
+    }, auth.identityId), `review:${draft.draftId}:comment:${c.localId}`, writer)
     ids.push(r.documentId)
     const comments = [...current.comments]
     comments[i] = { ...c, landedId: r.documentId }
@@ -516,17 +559,47 @@ async function submitWith(
 // Policy and edits
 // ---------------------------------------------------------------------------
 
-/** Set the branch policy (maintainers only at consensus). */
-export function setPolicy(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, policy: Policy, intent?: string): Promise<WriteResult> {
+/**
+ * The `policy` document data for `policy`, refusing what the contract refuses (RC1 R-08): 0-10
+ * approvals, `mergeMethods` 0-15, at most 10 distinct required checks, and `requiredCheckSources`
+ * either empty or one source (a runner or maintainer id) per required check, in the same order.
+ * A policy read with required checks keeps them (and their sources) on a rewrite.
+ */
+export function policyData(policy: Policy): Record<string, unknown> {
   if (!Number.isInteger(policy.requiredApprovals) || policy.requiredApprovals < 0 || policy.requiredApprovals > 10) throw new Error('a policy requires 0-10 approvals')
   const role = policy.approverRole ?? 0
   if (role !== 0 && role !== 1) throw new Error('approverRole is 0 (any member) or 1 (maintainers)')
-  return write(sdk, auth, repo, DOC.policy, {
+  const methods = policy.mergeMethods ?? 0
+  if (!Number.isInteger(methods) || methods < 0 || methods > 15) throw new Error('mergeMethods is a 4-bit set (0-15)')
+  const checks = policy.requiredChecks ?? []
+  const sources = policy.requiredCheckSources ?? []
+  if (checks.length > 10 || new Set(checks).size !== checks.length || checks.some((c) => c === '')) throw new Error('a policy names at most 10 distinct required checks')
+  if (sources.length !== 0 && sources.length !== checks.length) throw new Error('each required check needs its source (or none has one)')
+  return {
     requiredApprovals: policy.requiredApprovals,
     approverRole: role,
     requireChecks: policy.requireChecks ?? false,
-    mergeMethods: policy.mergeMethods ?? 0,
-  }, intent)
+    mergeMethods: methods,
+    ...(checks.length > 0 ? { requiredChecks: [...checks] } : {}),
+    ...(sources.length > 0 ? { requiredCheckSources: sources.map((id) => decodeIdentifier(id)) } : {}),
+  }
+}
+
+/** Set the branch policy (maintainers only at consensus). */
+export async function setPolicy(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, policy: Policy, intent?: string): Promise<WriteResult> {
+  const data = policyData(policy)
+  // Consensus re-checks every pinned source (a runner or maintainer of the repo): one removed
+  // since would refuse every save, so say which before signing.
+  const sources = policy.requiredCheckSources ?? []
+  if (sources.length > 0) {
+    const [members, runners] = await Promise.all([readMemberships(sdk, repo), readRunners(sdk, repo)])
+    const valid = new Set([...members.filter((m) => m.role === 'maintainer').map((m) => m.identity), ...runners])
+    const gone = sources.filter((id) => !valid.has(id))
+    if (gone.length > 0) {
+      throw new Error(`a required check's pinned source (${gone.join(', ')}) is no longer a runner or maintainer of this repo; update the check sources with the CLI before saving`)
+    }
+  }
+  return write(sdk, auth, repo, DOC.policy, data, intent)
 }
 
 /**
@@ -543,15 +616,17 @@ export async function setAssignee(
   return write(sdk, auth, repo, DOC.event, data, input.intent)
 }
 
-/** Pin / unpin or lock / unlock an issue or PR (event kinds 19-22, members only at consensus). */
+/**
+ * Pin / unpin an issue or PR (event kinds 19/20, members only at consensus). Lock and unlock are
+ * transitions in RC1 (`setLock` in `writes.ts`); the retired lock events 21/22 are refused.
+ */
 export async function setThreadFlag(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { target: WriteTarget; flag: 'pin' | 'lock'; on: boolean; intent?: string },
+  input: { target: WriteTarget; on: boolean; intent?: string },
 ): Promise<WriteResult> {
-  const kind = input.flag === 'pin' ? (input.on ? 'pin' : 'unpin') : input.on ? 'lock' : 'unlock'
-  return write(sdk, auth, repo, DOC.event, targetEventData(input.target, kind), input.intent)
+  return write(sdk, auth, repo, DOC.event, targetEventData(input.target, input.on ? 'pin' : 'unpin'), input.intent)
 }
 
 /** Put an issue or PR in milestone `title` (null: take it out). Members only at consensus. */
@@ -590,6 +665,9 @@ export interface SealContext {
   readonly imported?: Readonly<Record<string, unknown>> | null
 }
 
+/** A comment's plaintext references an edit may remove (never sealed). */
+const REFERENCE_FIELDS: readonly string[] = ['reviewId', 'replyTo', 'asMember']
+
 /** The content fields a sealed replace clears when a legacy plaintext copy sits next to `enc`. */
 const PLAINTEXT_OF: Readonly<Record<'issue' | 'patch' | 'comment', readonly string[]>> = { issue: ['title', 'body'], patch: ['title', 'body'], comment: ['body'] }
 
@@ -619,7 +697,9 @@ async function replace(
     const sealed = await sealEdit(sdk, auth, repo, documentType, { ...seal!.bind }, seal!.current, changes, seal!.patchEpoch, seal!.imported)
     // Legacy plaintext stored next to `enc` goes in the same replace (as the CLI's re-seal does):
     // `undefined` removes a field from the stored document.
-    replaced = { ...sealed, ...Object.fromEntries(PLAINTEXT_OF[documentType].map((f) => [f, undefined])) }
+    // Removed references (a deleted review or parent, a lapsed proof) are plaintext fields: kept.
+    const drops = Object.fromEntries(Object.entries(changes).filter(([k, v]) => v === undefined && REFERENCE_FIELDS.includes(k)))
+    replaced = { ...sealed, ...Object.fromEntries(PLAINTEXT_OF[documentType].map((f) => [f, undefined])), ...drops }
   }
   try {
     return await replaceDocumentIdempotent(sdk, auth, {
@@ -655,19 +735,24 @@ export function updateTarget(
 }
 
 /**
- * Edit a comment's body (its author only; the anchor, thread and review are immutable). Pass
- * `dropReviewId` when the comment's review was deleted: every replace re-validates
- * `reviewId`, and removing it is the one change consensus allows on a dead reference.
+ * Edit a comment's body (its author only; the anchor, thread and review are immutable). Every
+ * replace re-validates the comment's references, and removing one is the change consensus allows
+ * on a dead reference: pass `dropReviewId` when its review was deleted, `dropReplyTo` when the
+ * comment it replies to was (RC1 R-14; the replace would carry the dead `replyTo` over), and
+ * `dropProof` when it carries `asMember` but the signer is no longer a member (the proof is
+ * re-checked too). An imported comment keeps its proof (`i_provenance`): it cannot be edited then.
  */
 export function updateComment(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { id: string; body: string; dropReviewId?: boolean; expectedRevision?: bigint; seal?: SealContext },
+  input: { id: string; body: string; dropReviewId?: boolean; dropReplyTo?: boolean; dropProof?: boolean; expectedRevision?: bigint; seal?: SealContext },
 ): Promise<ReplaceResult> {
   if (input.body.trim() === '') throw new Error('a comment needs a body')
   const changes: Record<string, unknown> = { body: input.body }
   if (input.dropReviewId) changes['reviewId'] = undefined
+  if (input.dropReplyTo) changes['replyTo'] = undefined
+  if (input.dropProof) changes['asMember'] = undefined
   return replace(sdk, auth, repo, 'comment', input.id, changes, input.expectedRevision, input.seal)
 }
 
