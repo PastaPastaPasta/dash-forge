@@ -706,6 +706,52 @@ async fn a_run_crashed_mid_pipeline_resumes_to_the_same_mirror() {
     }
 }
 
+/// An item mirrored without a part GitHub refused to list (dashpay/dash#6498's reviews) is
+/// still an item on chain: a later incremental run, with the part still refused or readable
+/// again, passes the order check (it concerns missing items, not missing parts), writes
+/// nothing else, and adds just what was left out.
+#[tokio::test(start_paused = true)]
+async fn an_item_mirrored_without_its_reviews_does_not_stop_a_later_run() {
+    let src = source(12);
+    let mut partial = src.clone();
+    let pr = partial.targets.iter_mut().find(|t| t.number == 7).unwrap();
+    let left_out = std::mem::take(&mut pr.reviews).len() as u64;
+    let pr = partial.targets.iter_mut().find(|t| t.number == 2).unwrap();
+    let left_out = left_out + std::mem::take(&mut pr.reviews).len() as u64;
+    assert!(left_out > 0);
+    partial.incomplete = true;
+
+    let chain = Recorded::new();
+    import(&chain, &partial, 8, None).await.result.unwrap();
+    let incremental = |s: &SrcCollab| SrcCollab {
+        incremental: true,
+        ..s.clone()
+    };
+    let still = import(&chain, &incremental(&partial), 8, None).await;
+    still.result.unwrap();
+    assert_eq!(still.counts.item_documents(), 0, "the partial item alone");
+
+    let readable = import(&chain, &incremental(&src), 8, None).await;
+    readable.result.unwrap();
+    assert_eq!(readable.counts.reviews, left_out);
+    assert_eq!(
+        readable.counts.item_documents(),
+        left_out,
+        "only the reviews"
+    );
+    let logs = chain.logs();
+    for n in [2, 7] {
+        let want = &expected(&src)[&n];
+        let (number, got) = &logs[&n];
+        assert_eq!(*number, n, "still at its number");
+        let mut got = got.clone();
+        let mut want = want.clone();
+        got.sort();
+        want.sort();
+        assert_eq!(got, want, "#{n} now has everything");
+    }
+}
+
 /// `--max-spend` with lanes in flight together: the run stops at the cap with the spend-cap
 /// error, the measured drop never crosses the cap, every write it counted landed (in-flight
 /// writes finish before it reports), and a re-run with a higher cap completes the mirror.
