@@ -620,6 +620,8 @@ mod tests {
                 !input.files.iter().any(|f| f.name == a.name)
                     && !input.assets.iter().any(|l| l.name == a.name)
             });
+            // the builder's order: the kept entries, the links, then the new files
+            assets.extend(input.assets.iter().map(external_link));
             assets.extend(input.files.iter().map(|f| ManifestAsset {
                 name: f.name.clone(),
                 sha256: hex_sha(&f.bytes),
@@ -628,7 +630,6 @@ mod tests {
                 sealed_sha256: Some("5e".repeat(32)),
                 sealed_size_bytes: Some(f.bytes.len() as u64 + 52),
             }));
-            assets.extend(input.assets.iter().map(external_link));
             let (imported_author, imported_url, imported_created_at) =
                 input.imported.as_ref().map_or_else(
                     || {
@@ -853,7 +854,7 @@ mod tests {
             .iter()
             .map(|a| a.name.as_str())
             .collect();
-        assert_eq!(names, ["fd.tar.gz", "gone.bin", "big.iso"]);
+        assert_eq!(names, ["gone.bin", "big.iso", "fd.tar.gz"]);
     }
 
     /// Notes past the 1507 bytes of `enc` continue in the sealed list, and an empty author

@@ -7336,6 +7336,60 @@ mod tests {
         assert!(!lists.admits(&big, "me"), "over the reader's cap");
     }
 
+    /// §16.5, an import's retry: its external links are kept entries, after the previous
+    /// list's and before the new files (the builder's order), and its source is stated.
+    #[test]
+    fn an_imports_stored_asset_list_is_recognised_with_its_links_and_source() {
+        use crate::private::release::{ManifestAsset, ReleaseManifest};
+        let entry = |name: &str, sha: &str, sealed: bool| ManifestAsset {
+            name: name.into(),
+            sha256: sha.into(),
+            size_bytes: 5,
+            uris: vec![format!("https://bucket.example/{name}")],
+            sealed_sha256: sealed.then(|| "ab".repeat(32)),
+            sealed_size_bytes: sealed.then_some(100),
+        };
+        let page = "https://github.com/o/r/releases/tag/v1";
+        let new_sha = hex::encode(sha256(b"hello"));
+        let (old, link) = (
+            entry("old.txt", &"11".repeat(32), true),
+            entry("gone.bin", "", false),
+        );
+        let kept = vec![old.clone(), link.clone()];
+        let import = ReleaseManifest {
+            v: 1,
+            tag: "v1".into(),
+            total: 3,
+            source: Some(page.into()),
+            notes: None,
+            assets: vec![old.clone(), link, entry("new.txt", &new_sha, true)],
+        };
+        let files = [crate::collab::ReleaseFile {
+            name: "new.txt".into(),
+            bytes: b"hello".to_vec(),
+        }];
+        let want = WantedList {
+            kept: &kept,
+            files: &files,
+            notes: None,
+            source: Some(page.into()),
+        };
+        let hashes = [new_sha.clone()];
+        assert!(want.is_stated_by(&import, &hashes));
+        let mut other_link = import.clone();
+        other_link.assets[1].uris = vec!["https://github.com/o/r/other".into()];
+        assert!(!want.is_stated_by(&other_link, &hashes), "another link");
+        let mut no_link = import.clone();
+        no_link.assets.remove(1);
+        assert!(!want.is_stated_by(&no_link, &hashes), "the link missing");
+        let mut no_source = import;
+        no_source.source = None;
+        assert!(
+            !want.is_stated_by(&no_source, &hashes),
+            "the source missing"
+        );
+    }
+
     /// §16.5: an earlier attempt's list is reused only when it opens under the write key and
     /// states exactly the list the retry would build.
     #[test]
