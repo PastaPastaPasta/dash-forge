@@ -99,7 +99,9 @@ export function MirrorWizard(): JSX.Element {
   const [made, setMade] = useState<{ identity: string; value: string } | null>(null)
   const secret = made !== null && made.identity === identity ? made.value : null
   // A sign-out or switch drops the value itself, not only from view: switching back must not
-  // bring the last identity's key back.
+  // bring the last identity's key back. A key that finishes after a switch is not kept either.
+  const identityRef = useRef(identity)
+  identityRef.current = identity
   useEffect(() => setMade(null), [identity])
 
   const show = useCallback((next: MirrorProgress): void => {
@@ -196,7 +198,7 @@ export function MirrorWizard(): JSX.Element {
             secret={secret}
             suggestedBudget={suggestedRunnerBudget(choice?.ok ? choice.kind : 's3', gh.sizeKib, PUSH_COST_DASH.perMib)}
             onCreated={(runnerKey, value) => {
-              setMade({ identity, value })
+              if (identityRef.current === identity) setMade({ identity, value })
               update({ runnerKey })
             }}
             onDone={(runnerKey) => update({ runnerKey })}
