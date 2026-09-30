@@ -1,20 +1,21 @@
-//! TEST FIXTURE ONLY: write one `checkRun` document, so an e2e scenario has a run for
-//! `dg pr checks` to read. Nothing in the tools writes check runs yet: the writer and `dg ci`
-//! belong to platform-parity I-1, so this stays out of the public API.
+//! TEST FIXTURE ONLY: report one check run, so an e2e scenario has a run for `dg pr checks` to
+//! read.
 //!
 //! ```text
-//! DASH_FORGE_NETWORK=devnet DASH_FORGE_DEVNET_NAME=moutai \
+//! DASH_FORGE_NETWORK=devnet DASH_FORGE_DEVNET_NAME=bonsia \
 //!   cargo run -p forge-core --example seed_check_run -- \
 //!   <identity file> <repo id> <head oid> <name> <status> [conclusion] [details url]
 //! ```
 //!
-//! The signer must be a maintainer or writer of the repo (consensus gates `checkRun`). Prints
-//! the new document id.
+//! It goes through forge-core's check-run writer ([`CheckRuns`], as `dg ci report` does), so
+//! the document is what forge-community (RC1) accepts: `outcome`, the `vis` stamp, millisecond
+//! times set once, and no text on a private repository. A report for a run that already exists
+//! updates it. The signer must be a runner, maintainer or writer of the repo. Prints the
+//! document id and what was done.
 
-use std::collections::BTreeMap;
-
+use forge_core::ci::{CheckReport, CheckRuns};
 use forge_core::keystore::BridgeIdentity;
-use forge_core::platform::{FieldValue, PlatformClient, WriteEngine};
+use forge_core::platform::PlatformClient;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -30,22 +31,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let repo = forge_core::resolve::resolve_id(&client, repo_id).await?;
     let bridge = BridgeIdentity::load_from_file(identity)?;
     let signer = client.fetch_identity(&bridge.identity_id).await?;
-    let engine = WriteEngine::new(&client, &signer, bridge.doc_op_key()?)?;
-    let mut props = BTreeMap::from([
-        ("headOid".to_string(), FieldValue::bytes(hex::decode(head)?)),
-        ("name".to_string(), FieldValue::text(name.as_str())),
-        ("status".to_string(), FieldValue::text(status.as_str())),
-    ]);
-    if let Some(c) = rest.first() {
-        props.insert("conclusion".into(), FieldValue::text(c.as_str()));
-    }
-    if let Some(u) = rest.get(1) {
-        props.insert("detailsUrl".into(), FieldValue::text(u.as_str()));
-    }
-    let collab = client.fetch_contract(&repo.forge().collab).await?;
-    let id = engine
-        .create_document(&collab, "checkRun", repo.scope()?.scoped(props))
+    let report = CheckReport {
+        head_oid: head.to_ascii_lowercase(),
+        name: name.clone(),
+        status: status.clone(),
+        conclusion: rest.first().cloned(),
+        details_url: rest.get(1).cloned(),
+        ..CheckReport::default()
+    };
+    let done = CheckRuns::new(&client, &signer, &bridge)
+        .report(&repo, &report)
         .await?;
-    println!("{id}");
+    println!("{} {}", done.document_id, done.action);
     Ok(())
 }

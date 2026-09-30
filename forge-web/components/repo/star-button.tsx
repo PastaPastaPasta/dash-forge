@@ -20,7 +20,7 @@ import { useFirstWrite } from '@/hooks/use-first-write'
 import { useRelationToggle } from '@/hooks/use-relation-toggle'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Button } from '@/components/ui/button'
-import { starBeatFirsts, starFirsts, starRelation, type RepoRef } from '@/lib/repo'
+import { beatAllowed, starBeatFirsts, starFirsts, starRelation, type RepoRef } from '@/lib/repo'
 import { trendingPref } from '@/lib/repo/trending'
 import { previewCreate, previewDelete, sumPreviews } from '@/lib/sdk'
 import { creditsAsDash } from '@/lib/view/format'
@@ -52,13 +52,15 @@ export function StarButton({
   const [interested, setInterested] = useState(false)
   const pricing = interested && ready && sdk !== null && identity !== null && !starred
   const first = useFirstWrite(() => starFirsts(sdk!, repo, identity!, count), [repo.repoId, identity ?? '', count], pricing)
-  const beatFirst = useFirstWrite(() => starBeatFirsts(sdk!, repo, identity!), [repo.repoId, identity ?? ''], trending && pricing)
+  // No beat on a private repo or on your own (RC1: consensus refuses both).
+  const beats = trending && beatAllowed(repo, identity ?? '')
+  const beatFirst = useFirstWrite(() => starBeatFirsts(sdk!, repo, identity!), [repo.repoId, identity ?? ''], beats && pricing)
   // An upper bound: a beat is skipped when an earlier star of this repo already wrote one.
   const starCost = previewCreate('star', {}, first)
-  const cost = trending ? sumPreviews([starCost, previewCreate('starBeat', {}, beatFirst)]) : starCost
+  const cost = beats ? sumPreviews([starCost, previewCreate('starBeat', {}, beatFirst)]) : starCost
   const refund = previewDelete('star')
   const onClick = (): void => {
-    if (!starred && !guard.check(cost, 'collab', 'star this repo')) return
+    if (!starred && !guard.check(cost, 'community', 'star this repo')) return
     if (!identity || !signer) return
     void star.toggle()
   }
@@ -68,7 +70,7 @@ export function StarButton({
   const unknown = signedIn && star.on === null
   const price = starred
     ? `Unstar · refunds at least ${creditsAsDash(-refund.credits)} DASH`
-    : `Star · ~${creditsAsDash(cost.credits)} DASH${trending ? ' · counts toward Trending (turn off in Settings)' : ''}`
+    : `Star · ~${creditsAsDash(cost.credits)} DASH${beats ? ' · counts toward Trending (turn off in Settings)' : ''}`
 
   return (
     <span className="inline-flex items-center gap-2">

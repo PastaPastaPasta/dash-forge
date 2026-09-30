@@ -1,12 +1,11 @@
 {
   "name": "issue_default_open",
-  "description": "No event or authorEvent: an issue is open with no labels or assignees.",
+  "description": "No transitions and no events: an issue is open with no labels or assignees.",
   "case": "fold_issue",
   "rules": "v2",
   "input": {
-    "events": [],
-    "authorEvents": [],
-    "targetAuthor": "alice"
+    "transitions": [],
+    "events": []
   },
   "expected": {
     "open": true,

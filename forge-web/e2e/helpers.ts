@@ -5,31 +5,41 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-/**
- * The devnet the build under test reads (`E2E_DEVNET`, default moutai). Must match the
- * default in playwright.config.ts, which builds the app for it.
- */
-export const E2E_DEVNET = process.env['E2E_DEVNET'] || 'moutai'
+import { E2E_DEVNET, loadSeedPulls, seedRepo, type SeedPulls } from './seed-summary'
+export { E2E_DEVNET, loadSeedPulls, type SeedPulls }
 
-/** The MAINTAINER test identity: a maintainer of {@link DEMO} and the owner of {@link EMPTY}. */
-export const MAINTAINER = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'
+/**
+ * Stands in for a fixture owner when this devnet has no committed seed summary: a readable
+ * value that no identity id can be, so a spec that needs the fixture fails naming the cause.
+ */
+const UNSEEDED = `no-seed-summary-for-devnet-${E2E_DEVNET}`
+
+/**
+ * The MAINTAINER test identity: a maintainer of {@link DEMO} and the owner of {@link EMPTY}, as
+ * the seed summary (`forge-contracts/deployments/fixtures/devnet-<E2E_DEVNET>.json`) records it.
+ */
+export const MAINTAINER = seedRepo('empty')?.owner ?? UNSEEDED
 
 /**
  * The forge-v2 READ fixture, written only by `forge-contracts/scripts/seed-v2-fixture.mjs`:
  * repo `forge-v2-demo` owned by OWNER (maintainers OWNER + MAINTAINER, writer COLLAB); main =
  * README.md, src/main.rs, lib/util.ts, docs/rules.md; branch feature/greeting; tag v0.1.0; a
- * published objectLocator; issue #1 open + labelled `question`, #2 closed by its author, #3
- * closed + labelled `docs`, #4 open; PR #1 open with MAINTAINER's approval, PR #2 merged; PR #3
- * by CONTRIB (not a member), the review-parity fixture: opened as a draft, head moved to c3 by
- * the author (`headUpdate`), MAINTAINER requested, MAINTAINER's request-changes review with one
- * multi-line inline comment (`reviewId`), CONTRIB's reply, the thread resolved by the author, the
- * review dismissed by OWNER; a branch `policy`; one star.
- * Only its seeder writes it (v2-writes w6 adds OWNER's approval to PR #1, nothing else; the
- * live test `lib/repo/v2.live.test.ts` writes its own scratch repo).
- * Override with E2E_V2_OWNER / E2E_V2_NAME.
+ * published objectLocator. Issues and PRs share one dense per-repo number sequence
+ * (forge-v2.md §6.2): issue #1 open + labelled `question` (pinned), #2 closed by its author, #3
+ * closed + labelled `docs` (both #1 and #3 in milestone v0.2), #4 open; then three PRs, whose
+ * numbers are read from the seed summary at runtime ({@link loadSeedPulls}) rather than
+ * hard-coded here — `pulls.approved` open with MAINTAINER's approval, `pulls.merged` merged,
+ * `pulls.reviewParity` by CONTRIB (not a member), the review-parity fixture: opened as a draft
+ * (a kind-14 `transition`), head moved to c3 by the author (`headUpdate`), MAINTAINER requested,
+ * MAINTAINER's request-changes review with one multi-line inline comment (`reviewId`), CONTRIB's
+ * reply, the thread resolved by the author, the review dismissed by OWNER; a branch `policy`;
+ * one star.
+ * Only its seeder writes it (v2-writes w6 adds OWNER's approval to `pulls.approved`, nothing
+ * else; the live test `lib/repo/v2.live.test.ts` writes its own scratch repo).
+ * Its owner is read from the seed summary; override with E2E_V2_OWNER / E2E_V2_NAME.
  */
 export const DEMO = {
-  owner: process.env['E2E_V2_OWNER'] ?? 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr',
+  owner: process.env['E2E_V2_OWNER'] ?? seedRepo('demo')?.owner ?? UNSEEDED,
   name: process.env['E2E_V2_NAME'] ?? 'forge-v2-demo',
 } as const
 
@@ -110,6 +120,13 @@ export async function showcaseRepo(
       if (!id) throw new Error(`${label} does not resolve on ${E2E_DEVNET}: the showcase mirrors are not there (set E2E_SHOWCASE_${key})`)
       return String(id)
     })
+    // A rejection (name unresolved, or the lookup itself failed, e.g. mid a quorum rotation)
+    // is not cached: the next call — this devnet's next spec file, or a caller that waited
+    // out the rotation — gets to try again instead of replaying the same failure forever.
+    owner.catch(() => {
+      showcaseOwnerCache.delete(key)
+      showcaseSdk = undefined
+    })
     showcaseOwnerCache.set(key, owner)
   }
   return { owner: await owner, name }
@@ -123,6 +140,14 @@ export function shot(page: Page, name: string) {
 }
 
 export const DAPI_METHOD = /\/org\.dash\.platform\.dapi\.v0\.Platform\/(\w+)$/
+
+/**
+ * Room a request budget leaves for reads the SDK itself sends again to another node (a node
+ * lagging behind, or mid quorum rotation, answers with an error the SDK retries): each retry is
+ * one more request at the network. It is not room for any read the page's shape does not
+ * account for; a budget built on it names every read it expects.
+ */
+export const DAPI_RESEND_SLACK = 2
 
 /** Count the DAPI requests of `page` by gRPC method, from now on (P-1, #72). */
 export function countDapi(page: Page): Map<string, number> {
@@ -155,6 +180,8 @@ export interface DocumentsRequest {
   readonly documentType: string
   /** Each where clause's field, and for an `in` the number of values. */
   readonly where: readonly { readonly field: string; readonly inCount: number | null }[]
+  /** It selects a COUNT (a proved count), not documents. */
+  readonly count: boolean
 }
 
 function readVarint(b: Uint8Array, at: number): [number, number] {
@@ -195,7 +222,8 @@ const text = (b: Uint8Array | undefined): string => (b ? Buffer.from(b).toString
 /**
  * Decode a `getDocuments` gRPC-web body (5-byte frame header, then `GetDocumentsRequest`) as
  * `platform.proto` defines v1: `document_type` 2, `where_clauses` 3 (`WhereClause`: `field` 1,
- * `value` 3; an `IN`'s value is a `list`, field 7, of values). Null for another shape (v0).
+ * `value` 3; an `IN`'s value is a `list`, field 7, of values), `selects` 9 (`Select`: `function`
+ * 1, COUNT = 1). Null for another shape (v0).
  */
 export function decodeDocumentsRequest(body: Buffer | null): DocumentsRequest | null {
   if (body === null || body.length < 6) return null
@@ -213,6 +241,8 @@ export function decodeDocumentsRequest(body: Buffer | null): DocumentsRequest | 
         const inCount = list ? protoFields(list).filter(([f]) => f === 1).length : null
         return { field: text(fieldOf(c, 1)), inCount }
       }),
+    // `function` is a varint (key 0x08), which protoFields skips: read it in place.
+    count: fields.some(([f, select]) => f === 9 && select[0] === 0x08 && select[1] === 1),
   }
 }
 

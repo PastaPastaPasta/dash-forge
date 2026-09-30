@@ -164,14 +164,17 @@ const TEXT_FIELDS: [&str; 6] = [
     "value",
 ];
 
-/// Dump the raw issue / patch / comment / review documents of a repo, and its member events
-/// that carry a value (a label or milestone name, …), as stored (diagnostic: in a private repo
-/// every free-text property is absent and `enc` carries it). Comments, reviews and events are
-/// found through their issue or patch (they are indexed by target, not by repo).
+/// Dump the raw issue / patch / comment / review documents of a repo, its member events that
+/// carry a value (a label or milestone name, …), and its state transitions, as stored
+/// (diagnostic: in a private repo every free-text property is absent and `enc` carries it; a
+/// transition is never sealed). Comments, reviews, events and transitions are found through
+/// their issue or patch (they are indexed by target).
 async fn dump_collab(owner: &str, repo: &str) -> Result<()> {
     let (client, _bridge) = connect().await?;
     let repo = resolve_named(&client, owner, repo).await?;
     let collab = client.fetch_contract(&repo.forge().collab).await?;
+    // RC1: events live in forge-community
+    let community = client.fetch_contract(&repo.forge().community).await?;
     let scope = repo.scope()?;
     let print = |doc_type: &str, docs: &[FetchedDocument]| {
         for d in docs {
@@ -207,12 +210,26 @@ async fn dump_collab(owner: &str, repo: &str) -> Result<()> {
             );
             // an event without a value (close, merge, …) has nothing to seal
             let valued: Vec<FetchedDocument> =
-                by_target(&client, &collab, "event", "targetId", &d.id)
+                by_target(&client, &community, "event", "targetId", &d.id)
                     .await?
                     .into_iter()
                     .filter(|e| e.fields.contains_key("value") || e.fields.contains_key("enc"))
                     .collect();
             print("event", &valued);
+            for t in by_target(&client, &collab, "transition", "targetId", &d.id).await? {
+                println!(
+                    "  type=transition id={} target={} kind={} delta={} asAuthor={} oid={}",
+                    t.id,
+                    d.id,
+                    t.field_u64("kind").unwrap_or_default(),
+                    t.fields
+                        .get("delta")
+                        .and_then(FieldValue::as_i64)
+                        .unwrap_or_default(),
+                    t.field_u64("asAuthor").unwrap_or_default(),
+                    t.field_hex("oid").unwrap_or_else(|| "-".into()),
+                );
+            }
             if doc_type == "patch" {
                 print(
                     "review",
@@ -224,7 +241,9 @@ async fn dump_collab(owner: &str, repo: &str) -> Result<()> {
     Ok(())
 }
 
-/// Every `doc_type` document whose `field` names `id` (the `target` / `patch` indexes).
+/// Every `doc_type` document whose `field` names `id` (the `target` / `patch` indexes; a
+/// `transition`'s `perTarget (targetId)`, which has no `$createdAt`, is ordered by the field
+/// alone).
 async fn by_target(
     client: &PlatformClient,
     collab: &LoadedContract,
@@ -238,7 +257,11 @@ async fn by_target(
             collab,
             doc_type,
             &[QueryFilter::eq(field, FieldValue::identifier(id))],
-            &[QueryOrder::asc(field), QueryOrder::asc("$createdAt")],
+            &if doc_type == "transition" {
+                vec![QueryOrder::asc(field)]
+            } else {
+                vec![QueryOrder::asc(field), QueryOrder::asc("$createdAt")]
+            },
         )
         .await?)
 }

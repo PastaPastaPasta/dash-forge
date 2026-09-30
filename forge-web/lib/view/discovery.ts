@@ -3,7 +3,7 @@
  *
  * A repo IS a `repo` document in forge-core, so every feed is one proof-checked composite
  * (`documents.composite`, protocol 14): the page of repos plus, in the same verified round
- * trip, their star and issue counts (forge-collab's countable `star.byRepo` and `issue.number`
+ * trip, their star and issue counts (forge-community's countable `star.byRepo` and forge-collab's `issue.number`
  * indexes, bound to the page's ids), their owners' DPNS names, and their latest pushes.
  *
  * - **Recent**: the `repo.recent` index (`$createdAt`), newest first.
@@ -29,7 +29,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { DEFAULT_NETWORK, NETWORKS, type Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import type { Role } from '../rules/v2'
-import { queryDocumentsWithProof, type PlainDocument, type WhereClause } from '../sdk'
+import { queryDocumentsWithProof, RANGE_OPERATORS, type PlainDocument, type WhereClause } from '../sdk'
 import { countsAt, docsAt, queryComposite, type CompositeSub, type CompositeResult } from '../sdk/composite'
 import { DOC, readMemberRepoIds, toRepoDoc, type RepoDoc } from '../repo'
 import { readMostForked, readMostStarred, readTrending, type TrendingWindow } from '../repo/trending'
@@ -149,13 +149,14 @@ export function searchPrefix(text: string): string | null {
  * The sub-queries a repo page carries, bound to the repos (`$id`) found at `source`: star and
  * issue counts, the owners' DPNS names and, with `pushesSince`, the pushes since then. A push
  * is a `packManifest` (one per push that uploads objects; `refUpdate` rows are one per ref, and
- * a mirror's tag push is hundreds). The lookup walks the page's direction, so a descending page
- * sees each repo's newest push first.
+ * a mirror's tag push is hundreds). The lookup's outer (`repoId`) ordering must match the
+ * direction the node walks the page in (else it refuses the composite; see {@link pageWalk}).
+ * Each repo's pushes are newest first either way; the newest is what is kept.
  */
-function repoSubs(forge: ForgeIds, network: Network, source: 'page' | number, pushesSince: number | null): CompositeSub[] {
+function repoSubs(forge: ForgeIds, network: Network, source: 'page' | number, pushesSince: number | null, pushesOuter: 'asc' | 'desc' = 'desc'): CompositeSub[] {
   const bind = { source, sourceProperty: '$id', field: 'repoId' }
   return [
-    { dataContractId: forge.collab, documentType: DOC.star, kind: 'counts', bind },
+    { dataContractId: forge.community, documentType: DOC.star, kind: 'counts', bind },
     { dataContractId: forge.collab, documentType: DOC.issue, kind: 'counts', bind },
     {
       dataContractId: NETWORKS[network].dpnsContractId,
@@ -171,7 +172,7 @@ function repoSubs(forge: ForgeIds, network: Network, source: 'page' | number, pu
             documentType: DOC.packManifest,
             bind,
             where: [['$createdAt', '>', pushesSince]] as WhereClause[],
-            orderBy: [['repoId', 'desc'], ['$createdAt', 'desc']] as const,
+            orderBy: [['repoId', pushesOuter], ['$createdAt', 'desc']] as const,
             limit: MAX_ROWS,
           },
         ]),
@@ -201,6 +202,21 @@ function reposOf(res: CompositeResult, repoDocs: readonly PlainDocument[], first
 }
 
 /**
+ * The direction the node walks a page, which is the one a composite's bound documents sub-query
+ * must be ordered in (drive's `page_direction`: the page path query's `left_to_right`). A page
+ * whose last clause is a range (`in` counts as one) walks in its order's direction; a page whose
+ * clauses are all `==` walks ascending, whatever its order asks; a page with no clause walks in
+ * its order's direction (drive `single_in_path_query`). Measured on bonsia: `repo.recent
+ * (visibility, $createdAt)` pages `$createdAt desc`; its first page needed `asc`, and its later
+ * pages, which add `$createdAt <=`, needed `desc`. A later page sent with the first page's `asc`
+ * was refused, fell back to the plain query, and lost its counts and names.
+ */
+export function pageWalk(where: readonly WhereClause[], order: { field: string; direction: 'asc' | 'desc' }): 'asc' | 'desc' {
+  const walks = where.length === 0 || where.some(([, op]) => op === 'in' || RANGE_OPERATORS.has(op))
+  return walks ? order.direction : 'asc'
+}
+
+/**
  * One keyset page of `repo` documents ordered by `field`, with the page's counts, names and
  * pushes in the same composite. If the composite surface is refused, the same page is read as
  * a plain query without counts (never one count request per repo).
@@ -227,7 +243,7 @@ async function readRepoPage<T extends string | number>(
   try {
     res = await queryComposite(
       sdk,
-      { dataContractId: forge.core, documentType: DOC.repo, where: pageWhere, orderBy, limit: requested, subQueries: repoSubs(forge, network, 'page', pushesSince) },
+      { dataContractId: forge.core, documentType: DOC.repo, where: pageWhere, orderBy, limit: requested, subQueries: repoSubs(forge, network, 'page', pushesSince, pageWalk(pageWhere, order)) },
       { plainFallback: false },
     )
     rows = res.page
@@ -256,7 +272,12 @@ function forgeOf(network: Network): ForgeIds | null {
   return NETWORKS[network].v2
 }
 
-/** A page of the newest repos, newest first (`$createdAt <=` the previous page's oldest). */
+/**
+ * A page of the newest public repos, newest first (`$createdAt <=` the previous page's oldest).
+ * RC1's `repo.recent` index is `(visibility, $createdAt)`: the page binds `visibility ==
+ * "public"` and pages on `$createdAt` within it (a query ordered by `$createdAt` alone names
+ * no index, and consensus refuses it), so private repos are no longer listed.
+ */
 export async function recentReposPage(
   sdk: EvoSDK,
   opts: { network?: Network; limit?: number; after?: Keyset<number> | null } = {},
@@ -269,14 +290,14 @@ export async function recentReposPage(
     forge,
     network,
     { field: '$createdAt', direction: 'desc' },
-    (after, strict) => (after === null ? [] : [['$createdAt', strict ? '<' : '<=', after.at]]),
+    (after, strict) => [['visibility', '==', 'public'], ...(after === null ? [] : [['$createdAt', strict ? '<' : '<=', after.at] as WhereClause])],
     opts.limit ?? REPO_PAGE,
     opts.after ?? null,
   )
 }
 
 /**
- * The landing feed: the newest repos, newest first. Empty on a network without a forge-v2
+ * The landing feed: the newest public repos, newest first. Empty on a network without a forge-v2
  * deployment (the caller shows "not deployed" before asking).
  */
 export async function listRecentRepos(sdk: EvoSDK, opts: { network?: Network; limit?: number } = {}): Promise<DiscoveredRepo[]> {

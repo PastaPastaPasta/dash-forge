@@ -22,9 +22,15 @@ export interface ContractSnapshot {
 
 export type ContractSnapshots = Readonly<Record<string, ContractSnapshot>>
 
-/** Deployment key → snapshot loader. Add an entry when a deployment gets a snapshot. */
+/**
+ * Deployment key → snapshot loader. Add an entry when a deployment gets a snapshot.
+ *
+ * devnet moutai has none: its beta.6 registration's `lookup` / `propertyAgreement` bytes are
+ * refused by beta.7 on every parse (platform#5197), so a moutai build fetches its contracts
+ * (one request each, cached).
+ */
 const SNAPSHOTS: Readonly<Record<string, () => Promise<{ default: ContractSnapshots }>>> = {
-  'devnet-moutai': () => import('../../../forge-contracts/deployments/contracts/devnet-moutai.json'),
+  'devnet-bonsia': () => import('../../../forge-contracts/deployments/contracts/devnet-bonsia.json'),
 }
 
 /** The deployment keys that have a snapshot. */

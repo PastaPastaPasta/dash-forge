@@ -4,7 +4,6 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { isUpstreamItem } from './jump'
 import { splitRefs } from './markdown'
 import { importedHost, importedUrlOf, refTarget, upstreamItemUrl, type RefContext } from './ref-targets'
 
@@ -99,27 +98,6 @@ describe('commit ids (L-40, L-67)', () => {
 })
 
 describe('the #N resolver (L-39)', () => {
-  const MIRROR_ID = 'MirrorIdentity'
-  const trusted = new Set([MIRROR_ID])
-  const row = (importedUrl: string, owner = MIRROR_ID) => ({ importedUrl, owner })
-
-  it('knows the row an import wrote for upstream number N', () => {
-    expect(isUpstreamItem(row('https://github.com/dashpay/dash/pull/7669'), 7669, DASH, trusted)).toBe(true)
-    expect(isUpstreamItem(row('https://github.com/DashPay/Dash/issues/7669#issuecomment-1'), 7669, DASH, trusted)).toBe(true)
-    expect(isUpstreamItem(row('https://gitlab.com/g/p/-/merge_requests/3'), 3, { host: 'gitlab.com', path: 'g/p' }, trusted)).toBe(true)
-    // A moved item (its number was squatted) or a native row at the number is not it.
-    expect(isUpstreamItem(row('https://github.com/dashpay/dash/issues/7762'), 7669, DASH, trusted)).toBe(false)
-    expect(isUpstreamItem(row(''), 7669, DASH, trusted)).toBe(false)
-  })
-
-  it('does not believe a squatter\'s imported record (review finding 5)', () => {
-    // Anyone may write `imported`: a stranger's row, or one naming another repo or host, is not the upstream item.
-    expect(isUpstreamItem(row('https://github.com/dashpay/dash/issues/7669', 'Stranger'), 7669, DASH, trusted)).toBe(false)
-    expect(isUpstreamItem(row('https://evil.example/x/issues/7669'), 7669, DASH, trusted)).toBe(false)
-    expect(isUpstreamItem(row('https://github.com/dashpay/dash-evil/issues/7669'), 7669, DASH, trusted)).toBe(false)
-    expect(isUpstreamItem(row('https://github.com/other/repo/issues/7669'), 7669, DASH, trusted)).toBe(false)
-  })
-
   it('leaves a native [bot] mention as text: a GitHub app has no Forge profile (review finding 9)', () => {
     expect(targets('@dependabot[bot]', native)).toEqual([null])
   })

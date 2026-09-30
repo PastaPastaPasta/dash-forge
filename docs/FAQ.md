@@ -42,7 +42,7 @@ You, directly, and only for what you write. Platform fees come from your identit
 
 ## How much does it cost?
 
-Measured on devnet moutai: creating a repository costs about **0.0013 DASH**. A push to your own bucket costs about **0.002–0.003 DASH**. An issue costs about 0.0006–0.0017 DASH, depending on its length. Storing packs on Platform costs about 0.33 DASH per MiB. A fork of a small repository costs about 0.01 DASH, and a first GitHub mirror of a small repository about 0.08 DASH. On devnet moutai all of it is paid in free test Dash. The full table is in [Costs](guides/costs.md).
+Measured on devnet moutai: creating a repository costs about **0.0013 DASH**. A push to your own bucket costs about **0.002–0.003 DASH**. An issue costs about 0.0006–0.0017 DASH, depending on its length. Storing packs on Platform costs about 0.33 DASH per MiB. A fork of a small repository costs about 0.01 DASH, and a first GitHub mirror of a small repository about 0.08 DASH. On a devnet all of it is paid in free test Dash. The full table is in [Costs](guides/costs.md).
 
 ## When is it on mainnet?
 
@@ -50,7 +50,8 @@ After **Dash Platform protocol 14** activates on mainnet and the project owner r
 
 | Network | Status |
 |---|---|
-| **Devnet moutai** | Live, with the whole product: `dg`, `git-remote-dash`, `forge-import`, the Mirror Action, the relay and forge.dashhq.org all use it. |
+| **Devnet bonsia** | **Registered (RC1), site not cut over yet.** Forge's contracts were registered on bonsia (Platform v4.2.0-beta.7) on 2026-09-29, and the CLI targets it. forge.dashhq.org moves here at the cut-over. See [the root README's status table](../README.md#status) for the current state. |
+| **Devnet moutai** | **Retired for Forge.** Moutai was upgraded in place to Platform v4.2.0-beta.7, which retired its forge-v2 contracts. forge.dashhq.org was built for moutai and is down until it cuts over to bonsia. |
 | **Testnet** | Not deployed yet. Testnet runs protocol 13; forge-v2 is registered there as soon as protocol 14 reaches it, expected soon. |
 | **Mainnet** | Not deployed yet. After protocol 14 activates, the owner registers the forge-v2 contracts ([runbook](mainnet-runbook.md)). |
 
@@ -60,7 +61,7 @@ An earlier version of Forge (forge-v1, one contract per repository) ran on testn
 
 ## Can I have private repositories?
 
-Yes, on devnet moutai today: `dg repo create --private` (or `dg init --private`), and **New → Repository → Private** in the web app. Contents are encrypted in the client with a per-repository key that only members hold, and branch names, issues, PRs, comments and reviews are encrypted too. Anyone can still see that the repository exists, its name, its members, its size and when it changes. Releases, forks and webhooks are refused on private repositories, because release notes and assets would not be encrypted. Label definitions are allowed but stay public. Removing a member rotates the key for future content, but cannot take back what they could already read. [Collaborating](guides/collaborating.md#private-repositories) lists exactly what is hidden and what is not; the design is in [private-repos.md](security/private-repos.md) and [forge-v2.md §5](contracts/forge-v2.md#5-private-repositories).
+Yes, on devnet bonsia today: `dg repo create --private` (or `dg init --private`), and **New → Repository → Private** in the web app. Contents are encrypted in the client with a per-repository key that only members hold, and branch names, issues, PRs, comments and reviews are encrypted too. Anyone can still see that the repository exists, its name, its members, its size and when it changes. Releases, forks and webhooks are refused on private repositories, because release notes and assets would not be encrypted. Label definitions are allowed but stay public. Removing a member rotates the key for future content, but cannot take back what they could already read. [Collaborating](guides/collaborating.md#private-repositories) lists exactly what is hidden and what is not; the design is in [private-repos.md](security/private-repos.md) and [forge-v2.md §5](contracts/forge-v2.md#5-private-repositories).
 
 ## How does this relate to GitHub?
 

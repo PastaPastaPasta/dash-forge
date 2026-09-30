@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 COMPOSE_FILE := infra/docker-compose.yml
 
-.PHONY: check check-rust check-web build build-rust build-web infra-up infra-down e2e e2e-fixture devnet-identities devnet-identities-verify storage-it storage-e2e
+.PHONY: check check-rust check-web build build-rust build-web infra-up infra-down e2e e2e-fixture devnet-identities devnet-identities-verify storage-it survivability storage-e2e
 
 ## check: run rust + web lint/test suites; tolerant of dirs that don't exist yet
 check: check-rust check-web
@@ -56,7 +56,7 @@ infra-up:
 infra-down:
 	docker compose -f $(COMPOSE_FILE) down -v
 
-## e2e: run the CLI end-to-end suite (LIVE devnet moutai, forge-v2) against the
+## e2e: run the CLI end-to-end suite (LIVE devnet bonsia, forge-v2) against the
 ## OWNER-owned e2e-cli repo (created on first run).
 ## Builds the binaries if needed, then drives real git push/clone through the
 ## dash:// helper. See e2e/cli/README-less run.sh header for env knobs
@@ -73,9 +73,12 @@ e2e-fixture:
 ## funded from the devnet's faucet wallet key, then verify every identity on
 ## Platform. The key is read from dash-network-configs at runtime (process
 ## substitution, never copied to disk) unless FORGE_DEVNET_FUNDING_WIF is set.
-## Knobs: DEVNET (moutai), DEVNET_CONFIGS (~/workspace/dash-network-configs),
+## Devnet bonsia is not in dash-network-configs: run with DEVNET=bonsia and
+## FORGE_DEVNET_FUNDING_WIF set (or use the QA harness outside this repo,
+## dash-forge-qa's `QA_NETWORK=bonsia qa mint`).
+## Knobs: DEVNET (bonsia), DEVNET_CONFIGS (~/workspace/dash-network-configs),
 ## DEVNET_IDENTITY_DIR, DEVNET_POOL_AMOUNT (DASH per role), DEVNET_ROLE_AMOUNTS.
-DEVNET ?= moutai
+DEVNET ?= bonsia
 DEVNET_CONFIGS ?= $(HOME)/workspace/dash-network-configs
 DEVNET_IDENTITY_DIR ?= $(HOME)/.config/dash-forge/test-identities/devnet-$(DEVNET)
 DEVNET_POOL_AMOUNT ?= 5
@@ -89,6 +92,9 @@ tools/mint-identity/node_modules: tools/mint-identity/package.json tools/mint-id
 	@touch $@
 
 devnet-identities: tools/mint-identity/node_modules
+	@if [ -z "$${FORGE_DEVNET_FUNDING_WIF:-}" ] && ! git -C "$(DEVNET_CONFIGS)" cat-file -e origin/master:devnet-$(DEVNET).yml 2>/dev/null; then \
+		echo "devnet-$(DEVNET) is not in $(DEVNET_CONFIGS): set FORGE_DEVNET_FUNDING_WIF to its funding key" >&2; exit 1; \
+	fi
 	@if [ -n "$${FORGE_DEVNET_FUNDING_WIF:-}" ]; then \
 		$(DEVNET_POOL); \
 	else \
@@ -119,8 +125,24 @@ storage-it: infra-up
 	done
 	FORGE_IT_S3=1 FORGE_IT_IPFS=1 cargo test --locked -p forge-core --lib -- backends::live_tests storage::
 
+## survivability: the survivability drill (roadmap Phase 1 gate) against the LOCAL fixture:
+## deletes buckets of its own and STOPS/STARTS the kubo container (forge-e2e-kubo), so it is
+## not part of storage-it. Clone (forge-core), browse (web reader) and web host (the static
+## build killed, served again from a second host and from kubo as an IPFS build). No chain.
+## CI: .github/workflows/survivability.yml.
+survivability: infra-up
+	@for i in $$(seq 1 60); do \
+		curl -fsS -o /dev/null http://127.0.0.1:9000/health/ready && \
+		curl -fsS -o /dev/null http://127.0.0.1:8081/ipfs/bafkqaaa && break; \
+		[ "$$i" = 60 ] && { echo "storage fixture not ready after 120 s (docker compose -f $(COMPOSE_FILE) ps)" >&2; exit 1; }; \
+		sleep 2; \
+	done
+	FORGE_DRILL=1 cargo test --locked -p forge-core --lib survivability -- --test-threads=1
+	cd forge-web && FORGE_DRILL=1 pnpm exec vitest run lib/view/survivability.drill.test.ts && \
+		pnpm build && FORGE_DRILL=1 pnpm exec playwright test -c e2e-drill/playwright.config.ts
+
 ## storage-e2e: a REAL `git push` / `git clone` through git-remote-dash with packs stored
-## on local RustFS (S3) + kubo and only the manifest + ref on devnet moutai, against the
+## on local RustFS (S3) + kubo and only the manifest + ref on devnet bonsia, against the
 ## dedicated storage-e2e-a / storage-e2e-b repos (e2e/README.md; ~0.001 DASH each, once).
 ## Builds the helper with the `test-hooks` fault-injection feature. Opt-in.
 storage-e2e: infra-up

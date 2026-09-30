@@ -1,13 +1,13 @@
 import { test, expect, devices, type Browser, type Page } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
-import { PASSPHRASE, expectLanded, repoUrl, waitForRepoResolved } from './helpers'
+import { loadSeedPulls, PASSPHRASE, expectLanded, repoUrl, waitForRepoResolved } from './helpers'
 
 /**
  * Phones and tablets, on the forge-v2 read fixture (e2e/helpers.ts `DEMO`; read only).
  *
- *   E2E_DEVNET=moutai pnpm exec playwright test --project=mobile                         # Chromium
- *   E2E_DEVNET=moutai E2E_ALL_ENGINES=1 pnpm exec playwright test --project=mobile-webkit   # WebKit
- *   E2E_DEVNET=moutai E2E_ALL_ENGINES=1 pnpm exec playwright test --project=mobile-firefox  # Firefox
+ *   E2E_DEVNET=bonsia pnpm exec playwright test --project=mobile                         # Chromium
+ *   E2E_DEVNET=bonsia E2E_ALL_ENGINES=1 pnpm exec playwright test --project=mobile-webkit   # WebKit
+ *   E2E_DEVNET=bonsia E2E_ALL_ENGINES=1 pnpm exec playwright test --project=mobile-firefox  # Firefox
  *
  * On iPhone SE (375×667), Pixel 7 and iPad Mini, a representative set of routes, each checked
  * once its real content has landed: nothing wider than the screen, every visible control at
@@ -32,7 +32,11 @@ function contextFor(device: DeviceName, browserName: string, theme: 'dark' | 'li
   return opts
 }
 
-const ROUTES: [label: string, href: string, ready: (page: Page) => ReturnType<Page['getByRole']>][] = [
+// A page whose URL needs a fixture PR number, resolved lazily (inside the test body) so
+// importing this file never throws merely because the seed summary is absent.
+type Href = string | (() => string)
+
+const ROUTES: [label: string, href: Href, ready: (page: Page) => ReturnType<Page['getByRole']>][] = [
   ['repo', repoUrl(), (page) => page.getByRole('link', { name: 'README.md' }).first()],
   ['tree', repoUrl('tree', '&path=src'), (page) => page.getByRole('link', { name: 'main.rs' }).first()],
   // F-5: the file view with a selected range (permalink, Raw, the line numbers exempt as code lines).
@@ -41,7 +45,7 @@ const ROUTES: [label: string, href: string, ready: (page: Page) => ReturnType<Pa
   ['blame', repoUrl('blame', '&path=src/main.rs'), (page) => page.getByTestId('blame-table')],
   ['commits', repoUrl('commits'), (page) => page.getByRole('link', { name: 'Initial import' }).first()],
   ['issues', repoUrl('issues'), (page) => page.getByRole('list', { name: 'Issues', exact: true }).getByRole('link', { name: 'README should explain the event split' })],
-  ['pull', repoUrl('pull', '&number=3&tab=files'), (page) => page.getByRole('heading', { name: /Files changed/ })],
+  ['pull', () => repoUrl('pull', `&number=${loadSeedPulls().approved}&tab=files`), (page) => page.getByRole('heading', { name: /Files changed/ })],
   ['explore', '/explore/', (page) => page.getByRole('heading', { name: 'Explore' })],
   ['repo settings', repoUrl('settings'), (page) => page.getByRole('navigation', { name: 'Settings sections' })],
 ]
@@ -109,7 +113,7 @@ for (const device of Object.keys(DEVICES) as DeviceName[]) {
       test(`${label}: fits the screen, every control is 44 px to tap`, async ({ browser, browserName }) => {
         const context = await browser.newContext(contextFor(device, browserName))
         const page = await context.newPage()
-        await page.goto(href, { waitUntil: 'domcontentloaded' })
+        await page.goto(typeof href === 'function' ? href() : href, { waitUntil: 'domcontentloaded' })
         await expectLanded(page, ready(page), 60_000)
         expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches), 'a touch device').toBe(true)
         expect(await overflowX(page), 'nothing wider than the screen').toBeLessThanOrEqual(1)
@@ -171,7 +175,8 @@ test('Pixel 7: the PR diff is unified even with a saved split preference', async
     localStorage.setItem('forge.prefs.v1', JSON.stringify({ diffLayout: 'split', ignoreWhitespace: false, palette: 'standard' })),
   )
   const page = await context.newPage()
-  await page.goto(repoUrl('pull', '&number=3&tab=files'), { waitUntil: 'domcontentloaded' })
+  // The review-parity PR: the only one of the fixture's PRs with an inline review thread.
+  await page.goto(repoUrl('pull', `&number=${loadSeedPulls().reviewParity}&tab=files`), { waitUntil: 'domcontentloaded' })
   await expectLanded(page, page.locator('table[data-layout]').first(), 60_000)
   await expect(page.locator('table[data-layout="split"]')).toHaveCount(0)
   await expect(page.locator('table[data-layout="unified"]').first()).toBeVisible()

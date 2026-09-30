@@ -12,9 +12,20 @@ import { releasePublishedOf, type ReleasePublished } from './provenance'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { z } from 'zod'
 
-import { queryAllDocuments, type PlainDocument } from '../sdk'
-import { DOC, str, type RepoRef } from './contract'
-import { repoSource } from './source'
+import {
+  bytesToHex,
+  foldReleases,
+  openRelease,
+  type FoldRevision,
+  type OpenContext,
+  type ReleaseFields,
+  type ReleaseOpenResult,
+  type StoredRelease,
+} from '../private'
+import { queryAllDocuments, sumDocumentsGrouped, type PlainDocument } from '../sdk'
+import { DOC, num, str, type RepoRef } from './contract'
+import { bytesField, idField } from './private-content'
+import { contractOf, repoSource } from './source'
 import { isPrerelease } from './ref-order'
 
 export { compareRefNames, compareTagNames, isPrerelease, naturalRuns, tagVersion, type TagVersion } from './ref-order'
@@ -39,6 +50,8 @@ export interface ReleaseView {
   readonly name: string
   readonly notes: string
   readonly yanked: boolean
+  /** RC1 `delta`: +1 a publish, 0 an edit or yank, −1 an unpublish (0 when absent: a pre-RC1 document). */
+  readonly delta: number
   readonly assets: readonly ReleaseAssetView[]
   /** Assets that could not be parsed (shown as a count, never guessed at). */
   readonly badAssets: number
@@ -57,6 +70,18 @@ export interface ReleaseView {
   readonly published: ReleasePublished | null
   readonly publisher: string
   readonly createdAt: number
+  /**
+   * A private repo's sealed revision (`private-repos.md` §16): its key epoch and every field it
+   * states. Absent on a public release.
+   */
+  readonly sealed?: SealedReleaseInfo
+}
+
+/** What a sealed revision states besides the fields {@link ReleaseView} flattens. */
+export interface SealedReleaseInfo {
+  readonly epoch: number
+  /** The opened TLV: tag, flags, target, provenance and the asset manifest's hash. */
+  readonly fields: ReleaseFields
 }
 
 export interface ReleaseList {
@@ -64,6 +89,38 @@ export interface ReleaseList {
   readonly current: readonly ReleaseView[]
   /** Superseded revisions, newest first. */
   readonly previous: readonly ReleaseView[]
+  /**
+   * Release revisions that could not be read (§16.3 "n release revisions could not be read");
+   * on a public repo, any carrying `enc`. Absent: none.
+   */
+  readonly hidden?: number
+  /** Tags whose newest revision could not be read: their state is unknown (§16.3). */
+  readonly unknownTags?: readonly string[]
+  /** Newer revisions are under a key this reader does not hold yet (§16.3). */
+  readonly stale?: boolean
+  /**
+   * A private repo read without its keys (signed out, or not a member): nothing is listed, and
+   * nothing is ever named by its keyed hash.
+   */
+  readonly locked?: boolean
+}
+
+/** A draft: a sealed-only label, never access control (§16.3). */
+export function isDraft(r: ReleaseView): boolean {
+  return r.sealed?.fields.draft === true
+}
+
+/**
+ * Whether `r` is a pre-release: its tag has a pre-release suffix, or a sealed revision sets the
+ * flag (§16.2: never less of a pre-release than the public rule makes it).
+ */
+export function isPrereleaseView(r: ReleaseView): boolean {
+  return r.sealed?.fields.prerelease === true || isPrerelease(r.tagName)
+}
+
+/** The releases count: live tags whose release is not a draft; a yanked one counts (§16.3). */
+export function releaseCountOf(list: ReleaseList): number {
+  return list.current.filter((r) => !isDraft(r)).length
 }
 
 /** What forge-import says it left out of an imported release (see {@link omittedAssets}). */
@@ -198,6 +255,7 @@ function toRelease(doc: PlainDocument): ReleaseView {
     omitted,
     published,
     yanked: doc['yanked'] === true,
+    delta: typeof doc['delta'] === 'number' ? doc['delta'] : 0,
     assets,
     badAssets: bad,
     publisher: str(doc, '$ownerId'),
@@ -234,9 +292,13 @@ export function releaseOrder(a: ReleaseView, b: ReleaseView): number {
   return publishedAt(b) - publishedAt(a) || newestFirst(a, b)
 }
 
-/** The repo's latest release, as GitHub picks it: the first in {@link releaseOrder} that is not a pre-release or yanked. */
+/**
+ * The repo's latest release, as GitHub picks it: the first in {@link releaseOrder} that is not a
+ * pre-release or yanked. A draft is never the latest (§16.3).
+ */
 export function latestRelease(list: ReleaseList): ReleaseView | undefined {
-  return list.current.find((r) => !r.yanked && !isPrerelease(r.tagName)) ?? list.current.find((r) => !r.yanked)
+  const candidates = list.current.filter((r) => !r.yanked && !isDraft(r))
+  return candidates.find((r) => !isPrereleaseView(r)) ?? candidates[0]
 }
 
 /** Split revisions into the newest per tag and the rest (forge-core `newest_per_tag`). */
@@ -247,17 +309,143 @@ export function newestPerTag(all: readonly ReleaseView[]): ReleaseList {
   const previous: ReleaseView[] = []
   for (const revs of byTag.values()) {
     const [head, ...rest] = [...revs].sort(newestFirst)
-    if (head !== undefined) current.push(head)
+    // An unpublish (RC1 `delta` −1) takes the tag's release down; its revisions stay history.
+    if (head !== undefined && head.delta !== -1) current.push(head)
+    else if (head !== undefined) previous.push(head)
     previous.push(...rest)
   }
   return { current: current.sort(releaseOrder), previous: previous.sort(newestFirst) }
 }
 
-/** Every release of a repo (proof-checked, complete), folded newest per tag. */
+/**
+ * Every release of a repo (proof-checked, complete), folded newest per tag.
+ *
+ * A private repo's revisions are opened with the reader's session and folded by their decrypted
+ * tag (§16.3, {@link sealedReleases}); without a session nothing is read or listed. Every read
+ * lists the repo through `created` (`repoId, $createdAt`) and filters locally: nothing queries a
+ * keyed `tagName`, which would show the answering node which hashes across epochs are one tag.
+ */
 export async function readReleases(sdk: EvoSDK, repo: RepoRef): Promise<ReleaseList> {
+  if (repo.visibility === 'private' && repo.session === undefined) return { current: [], previous: [], locked: true }
   const docs = await queryAllDocuments(
     sdk,
     repoSource(repo).repoQuery(DOC.release, { orderBy: [['$createdAt', 'asc']] }),
   )
-  return newestPerTag(docs.map(toRelease).filter((r) => r.tagName !== ''))
+  if (repo.visibility === 'private' && repo.session !== undefined) return sealedReleases(docs, repo.session.ctx)
+  // A public reader holds no key: a revision carrying `enc` is malformed (§16.2), never a release
+  // named by its hash.
+  const plain = docs.filter((d) => d['enc'] == null)
+  return { ...newestPerTag(plain.map(toRelease).filter((r) => r.tagName !== '')), hidden: docs.length - plain.length }
+}
+
+/** The plaintext fields of a `release` document, as {@link openRelease} judges them. */
+function storedRelease(doc: PlainDocument): StoredRelease | null {
+  const ownerId = idField(doc, '$ownerId')
+  if (ownerId === undefined) return null
+  const epoch = doc['epoch'] == null ? undefined : num(doc, 'epoch')
+  const enc = bytesField(doc, 'enc')
+  return {
+    ownerId,
+    ...(epoch !== undefined ? { epoch } : {}),
+    tagName: str(doc, 'tagName'),
+    vis: str(doc, 'vis'),
+    delta: num(doc, 'delta'),
+    ...(enc !== undefined ? { enc } : {}),
+    // `noPlain`'s fields, and `yanked` / `imported`, which a writer never puts next to `enc`
+    hasPlaintextContent: ['name', 'notes', 'assets', 'assetManifest', 'yanked', 'imported'].some((k) => doc[k] !== undefined && doc[k] !== null),
+  }
+}
+
+/** A sealed revision that opened to `fields`, as a {@link ReleaseView}. */
+function sealedView(doc: PlainDocument, epoch: number, fields: ReleaseFields): ReleaseView {
+  const created = doc['$createdAt']
+  const notes = fields.notes ?? ''
+  // The importer's provenance, sealed in TLV 13, 14 and 20: the web orders by the source's date.
+  let published: ReleasePublished | null = null
+  if (fields.importedUrl !== undefined && fields.importedCreatedAt !== undefined) {
+    let host = ''
+    try {
+      host = new URL(fields.importedUrl).host
+    } catch {
+      // not a URL: no host
+    }
+    published = { host, author: fields.importedAuthor ?? '', at: fields.importedCreatedAt }
+  }
+  return {
+    id: str(doc, '$id'),
+    tagName: fields.tag,
+    name: fields.name ?? '',
+    notes,
+    notesBody: notes,
+    omitted: null,
+    published,
+    yanked: fields.yanked === true,
+    delta: 0,
+    // the asset list is in the sealed kind-4 manifest `fields.assetManifest` names (§16.5)
+    assets: [],
+    badAssets: 0,
+    publisher: str(doc, '$ownerId'),
+    createdAt: typeof created === 'number' ? created : 0,
+    sealed: { epoch, fields },
+  }
+}
+
+type SealedRow = FoldRevision & { readonly doc: PlainDocument }
+
+/**
+ * A private repo's releases (§16.3): every revision opened with the reader's keys, then folded
+ * by its decrypted tag across epochs. Unreadable revisions are counted and replays ignored.
+ */
+export async function sealedReleases(docs: readonly PlainDocument[], ctx: OpenContext): Promise<ReleaseList> {
+  const rows = await Promise.all(
+    docs.map(async (doc): Promise<SealedRow> => {
+      const stored = storedRelease(doc)
+      const opened: ReleaseOpenResult = stored === null ? { status: 'malformed' } : await openRelease(ctx, stored)
+      return {
+        doc,
+        id: idField(doc, '$id') ?? new Uint8Array(0),
+        createdAt: typeof doc['$createdAt'] === 'number' ? doc['$createdAt'] : 0,
+        epoch: stored?.epoch ?? -1,
+        tagName: str(doc, 'tagName'),
+        status: opened.status === 'unreadable' ? opened.reason : opened.status,
+        enc: bytesToHex(bytesField(doc, 'enc') ?? new Uint8Array(0)),
+        ...(opened.status === 'readable' ? { fields: opened.fields } : {}),
+      }
+    }),
+  )
+  const fold = foldReleases(rows)
+  const view = (r: SealedRow): ReleaseView => sealedView(r.doc, r.epoch, r.fields as ReleaseFields)
+  return {
+    current: fold.live.map(view).sort(releaseOrder),
+    previous: fold.history.map(view),
+    hidden: fold.hidden,
+    unknownTags: fold.unknownTags,
+    stale: fold.stale,
+  }
+}
+
+/**
+ * How many tags have a live (published) release: GitHub's "Releases N". One proved sum of
+ * `release.delta` on `perTag` (`(repoId, tagName)`, `summable: "delta"`, `rangeSummable`; RC1
+ * O-04): a publish adds 1, an edit or yank 0, an unpublish takes 1 away, so each tag totals 1 or 0.
+ *
+ * The shape is Drive's carrier `AggregateSumOnRange` (`repoId in [R]` grouped by `repoId`, with
+ * `tagName > ""`, which ranges over every tag since a tag name is never empty). `perTag` is not
+ * `summable`-covered by `repoId` alone, and the plain range shape (`repoId == R`, no `groupBy`)
+ * proves its path key by existence only: for a repo that never had a release the proof fails to
+ * verify. The carrier proves an absent `R` as absent, an empty map: 0.
+ */
+export async function readReleaseCount(sdk: EvoSDK, repo: RepoRef): Promise<number> {
+  const sums = await sumDocumentsGrouped(
+    sdk,
+    {
+      dataContractId: contractOf(repo.forge, DOC.release),
+      documentTypeName: DOC.release,
+      where: [['repoId', 'in', [repo.repoId]], ['tagName', '>', '']],
+      orderBy: [['repoId', 'asc']],
+      groupBy: ['repoId'],
+    },
+    'delta',
+  )
+  return [...sums.values()].reduce((a, b) => a + b, 0)
 }

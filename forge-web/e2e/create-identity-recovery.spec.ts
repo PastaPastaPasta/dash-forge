@@ -7,7 +7,7 @@ import { E2E_DEVNET, PASSPHRASE, nodeSdk, shot, unlock } from './helpers'
 /**
  * L-06, live on a devnet (real spend: two 0.03 DASH deposits from the devnet funding key):
  *
- *   E2E_DEVNET=moutai E2E_WRITE=1 FORGE_DEVNET_FUNDING_KEY_FILE=… pnpm exec playwright test create-identity-recovery.spec.ts
+ *   E2E_DEVNET=bonsia E2E_WRITE=1 FORGE_DEVNET_FUNDING_KEY_FILE=… pnpm exec playwright test create-identity-recovery.spec.ts
  *
  * An IdentityCreate whose answer cannot be verified must not end in "Failed to create identity"
  * when Platform recorded it, and must not make the user pay again when it did not.

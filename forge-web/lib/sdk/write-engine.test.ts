@@ -87,6 +87,7 @@ import {
   createDocumentIdempotent,
   deleteDocumentIdempotent,
   isNonceSpent,
+  replaceDocumentIdempotent,
   setWriteClock,
   type SpendEvent,
   type WriteAuth,
@@ -101,8 +102,11 @@ interface Script {
   platformNonce: bigint
   broadcast: (st: { nonce: bigint; title?: unknown }) => void
   wait: (settings?: unknown) => Promise<unknown>
+  /** The affected-state wait (an indexOnly write's); defaults to refusing, so a test sees which wait ran. */
+  affected?: (settings?: unknown) => Promise<unknown>
   exists: (id: string) => Promise<unknown>
   del?: () => Promise<void>
+  replace?: () => Promise<void>
 }
 
 function sdkOf(s: Script, signed: bigint[]): EvoSDK {
@@ -119,6 +123,7 @@ function sdkOf(s: Script, signed: bigint[]): EvoSDK {
     documents: {
       get: async (_c: string, _t: string, id: string) => s.exists(id),
       delete: async () => (s.del ? s.del() : undefined),
+      replace: async () => (s.replace ? s.replace() : undefined),
     },
     stateTransitions: {
       broadcastStateTransition: async (st: { nonce: bigint; title?: unknown }) => {
@@ -127,6 +132,10 @@ function sdkOf(s: Script, signed: bigint[]): EvoSDK {
         balance -= 1000n
       },
       waitForResponse: async (_st: unknown, settings?: unknown) => s.wait(settings),
+      waitForAffectedState: async (_st: unknown, settings?: unknown) => {
+        if (!s.affected) throw new Error('the affected-state wait is only for an indexOnly write')
+        return s.affected(settings)
+      },
     },
     epoch: { current: async () => undefined },
     version: () => 14,
@@ -138,6 +147,24 @@ function auth(spends: SpendEvent[]): WriteAuth {
 }
 
 const write = { contractId: 'C', documentType: 'comment', data: { body: 'hi' }, confirmTimeoutMs: 0 }
+
+/**
+ * The SDK's two refusal shapes (wasm-sdk 4.2.0-beta.6 on, platform#5112): a refusal at the
+ * broadcast check is kind Protocol with the node's code (-1 for an error the SDK could not
+ * decode); a block's verdict from the result wait is kind StateTransitionBroadcastError.
+ */
+const sdkRefusal = (text: string, code = -1) => ({ name: 'Protocol', kind: 3, code, message: `Failed to broadcast: Protocol error: ${text}` })
+const sdkVerdict = (text: string, code: number) => ({ name: 'StateTransitionBroadcastError', kind: 22, code, message: `state transition broadcast error: ${text}` })
+const GATE_TEXT = 'referenced document Xyz not found for path repoId'
+const UNREADABLE_TEXT = 'platform deserialization error: unable to deserialize ConsensusError: UnexpectedEnd { additional: 18 }'
+
+/** A stored document as `documents.get` returns it, owned by OWNER, for a replace to read. */
+const storedDoc = (title: string, revision = 1n) => ({
+  revision,
+  ownerId: { toBase58: () => OWNER },
+  toObject: () => ({ $id: 'D', title }),
+  toJSON: () => ({ $id: 'D', title }),
+})
 
 /**
  * The engine's polls (the landed / gone checks, the balance read after a write) run on a
@@ -153,7 +180,12 @@ beforeEach(() => {
     },
   })
 })
-afterEach(() => setWriteClock(null))
+afterEach(async () => {
+  // A spend report still reading runs out on the virtual clock first: the next test's first write
+  // waits for it (the identity's next write waits for the last one's measurement).
+  await new Promise((r) => setTimeout(r, 0))
+  setWriteClock(null)
+})
 
 /**
  * Let the spend report finish (it runs after the write resolves). Its balance reads and sleeps
@@ -212,7 +244,7 @@ describe('write engine', () => {
       platformNonce: 1n,
       broadcast: () => undefined,
       wait: async () => {
-        throw Object.assign(new Error('duplicate unique properties'), { code: 40105 })
+        throw sdkVerdict('Document X has duplicate unique properties ["repoId", "number"] with other documents', 40105)
       },
       exists: async () => undefined,
     }
@@ -220,6 +252,96 @@ describe('write engine', () => {
     await reported()
     expect(spends.map((s) => s.kind)).toEqual(['refused:comment'])
     expect(spends[0]?.balanceBefore).toBe(1_000_000_000n)
+  })
+
+  it('an indexOnly create (star) waits with the affected-state wait and lands on its proof', async () => {
+    let strict = 0
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: () => undefined,
+      wait: async () => {
+        strict += 1
+        throw new Error('received a verified VerifiedDocuments snapshot for this transition family')
+      },
+      affected: async () => ({}),
+      exists: async () => undefined,
+    }
+    const r = await createDocumentIdempotent(sdkOf(script, []), auth([]), { ...write, contractId: 'I1', documentType: 'star', probe: async () => true })
+    expect(r.confirmed).toBe(true)
+    expect(strict).toBe(0)
+  })
+
+  it('an indexOnly create refused in a block is a charged refusal, not a landing', async () => {
+    const spends: SpendEvent[] = []
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: () => undefined,
+      wait: async () => ({}),
+      affected: async () => {
+        throw sdkVerdict(GATE_TEXT, 40120)
+      },
+      exists: async () => undefined,
+    }
+    const err = await createDocumentIdempotent(sdkOf(script, []), auth(spends), { ...write, contractId: 'I2', documentType: 'star', probe: async () => false }).catch((e: unknown) => e)
+    expect((err as ConsensusRefusal).code).toBe(40120)
+    expect((err as ConsensusRefusal).feeCharged).toBe(true)
+    await reported()
+    expect(spends.map((s) => s.kind)).toEqual(['refused:star'])
+  })
+
+  it('an indexOnly delete (unstar) resolves on the SDK delete, with no snapshot to read', async () => {
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: () => undefined,
+      wait: async () => ({}),
+      exists: async () => ({}),
+      del: async () => undefined,
+    }
+    const r = await deleteDocumentIdempotent(sdkOf(script, []), auth([]), {
+      contractId: 'I3', documentType: 'star', documentId: 'S', document: { values: 'the star' }, probeGone: async () => false, confirmTimeoutMs: 0,
+    })
+    expect(r.deleted).toBe(true)
+  })
+
+  it('a replace whose refusal the SDK cannot decode has an unknown charge, never "nothing was charged"', async () => {
+    const spends: SpendEvent[] = []
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: () => undefined,
+      wait: async () => ({}),
+      exists: async () => storedDoc('old'),
+      replace: async () => {
+        throw sdkRefusal(UNREADABLE_TEXT)
+      },
+    }
+    const err = await replaceDocumentIdempotent(sdkOf(script, []), auth(spends), {
+      contractId: 'I5', documentType: 'issue', documentId: 'D', changes: { title: 'new' }, confirmTimeoutMs: 0,
+    }).catch((e: unknown) => e)
+    expect((err as ConsensusRefusal).code).toBe(UNREADABLE_REFUSAL_CODE)
+    expect((err as ConsensusRefusal).charged).toBeNull()
+    expect((err as ConsensusRefusal).feeCharged).toBeNull()
+  })
+
+  it('a stored document never uses the affected-state wait', async () => {
+    let affected = 0
+    let strict = 0
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: () => undefined,
+      wait: async () => {
+        strict += 1
+        return {}
+      },
+      affected: async () => {
+        affected += 1
+        return {}
+      },
+      exists: async () => ({}),
+    }
+    const r = await createDocumentIdempotent(sdkOf(script, []), auth([]), { ...write, contractId: 'I4' })
+    expect(r.confirmed).toBe(true)
+    expect(strict).toBe(1)
+    expect(affected).toBe(0)
   })
 
   it('does not read an index-only snapshot as landed for a stored document', async () => {
@@ -384,8 +506,6 @@ function withStorage(): () => void {
   return () => vi.unstubAllGlobals()
 }
 
-/** The SDK's error for a refusal at broadcast: kind Generic, `code` -1, Drive's text. */
-const sdkRefusal = (text: string) => ({ name: 'Generic', kind: 18, code: -1, message: `Failed to broadcast: Protocol error: ${text}` })
 const BUDGET_TEXT = `Identity ${OWNER} public key 5 has 90000000 credits of budget left, the state transition requires 100224000`
 
 describe('refusals at broadcast (D-007)', () => {
@@ -396,7 +516,7 @@ describe('refusals at broadcast (D-007)', () => {
       const script: Script = {
         platformNonce: 1n,
         broadcast: () => {
-          throw sdkRefusal(BUDGET_TEXT)
+          throw sdkRefusal(BUDGET_TEXT, 40218)
         },
         wait: async () => ({}),
         exists: async () => undefined,
@@ -421,7 +541,7 @@ describe('refusals at broadcast (D-007)', () => {
       const script: Script = {
         platformNonce: 1n,
         broadcast: () => {
-          if (refuse) throw sdkRefusal(`Insufficient identity ${OWNER} balance 111153640 required 137618340`)
+          if (refuse) throw sdkRefusal(`Insufficient identity ${OWNER} balance 111153640 required 137618340`, 40210)
         },
         wait: async () => ({}),
         exists: async () => ({}),
@@ -446,13 +566,174 @@ describe('refusals at broadcast (D-007)', () => {
       platformNonce: 1n,
       broadcast: () => undefined,
       wait: async () => {
-        throw sdkRefusal(BUDGET_TEXT)
+        throw sdkVerdict(BUDGET_TEXT, 40218)
       },
       exists: async () => undefined,
     }
     await expect(createDocumentIdempotent(sdkOf(script, []), auth(spends), { ...write, contractId: 'R3' })).rejects.toBeInstanceOf(ConsensusRefusal)
     await reported()
     expect(spends).toEqual([])
+  })
+})
+
+describe('replace and delete refusals carry the charge the SDK says (wasm-sdk 4.2.0-beta.6)', () => {
+  const MAX_BYTES = 'Property title is 2000 bytes in UTF-8, over its maxBytes of 1024'
+
+  it('a replace refused at the broadcast check (Protocol, coded) charged nothing and records nothing', async () => {
+    const spends: SpendEvent[] = []
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: () => undefined,
+      wait: async () => ({}),
+      exists: async () => storedDoc('old'),
+      replace: async () => {
+        throw sdkRefusal(MAX_BYTES, 10421)
+      },
+    }
+    const err = await replaceDocumentIdempotent(sdkOf(script, []), auth(spends), {
+      contractId: 'P1', documentType: 'issue', documentId: 'D', changes: { title: 'x'.repeat(2000) }, confirmTimeoutMs: 0,
+    }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ConsensusRefusal)
+    expect((err as ConsensusRefusal).code).toBe(10421)
+    expect((err as ConsensusRefusal).feeCharged).toBe(false)
+    await reported()
+    expect(spends).toEqual([])
+  })
+
+  it("a replace refused in a block (the wait's verdict) is charged and recorded", async () => {
+    const spends: SpendEvent[] = []
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: () => undefined,
+      wait: async () => ({}),
+      exists: async () => storedDoc('old'),
+      replace: async () => {
+        throw sdkVerdict(GATE_TEXT, 40120)
+      },
+    }
+    const err = await replaceDocumentIdempotent(sdkOf(script, []), auth(spends), {
+      contractId: 'P2', documentType: 'issue', documentId: 'D', changes: { title: 'new' }, confirmTimeoutMs: 0,
+    }).catch((e: unknown) => e)
+    expect((err as ConsensusRefusal).code).toBe(40120)
+    expect((err as ConsensusRefusal).feeCharged).toBe(true)
+    await reported()
+    expect(spends.map((s) => s.kind)).toEqual(['refused:issue'])
+  })
+
+  it('a delete refused at the broadcast check charged nothing; one refused in a block did', async () => {
+    for (const [thrown, charged] of [
+      [sdkRefusal(GATE_TEXT, 40120), false],
+      [sdkVerdict(GATE_TEXT, 40120), true],
+    ] as const) {
+      const spends: SpendEvent[] = []
+      const script: Script = {
+        platformNonce: 1n,
+        broadcast: () => undefined,
+        wait: async () => ({}),
+        exists: async () => ({}),
+        del: async () => {
+          throw thrown
+        },
+      }
+      const err = await deleteDocumentIdempotent(sdkOf(script, []), auth(spends), { contractId: 'P3', documentType: 'writer', documentId: 'X', confirmTimeoutMs: 0 }).catch((e: unknown) => e)
+      expect((err as ConsensusRefusal).feeCharged).toBe(charged)
+      await reported()
+      expect(spends.map((s) => s.kind)).toEqual(charged ? ['refused:writer'] : [])
+    }
+  })
+
+  it('a refusal of another kind has an unknown charge, and says nothing was charged only when known', async () => {
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: () => undefined,
+      wait: async () => ({}),
+      exists: async () => ({}),
+      del: async () => {
+        throw { name: 'Generic', kind: 18, code: 40120, message: GATE_TEXT }
+      },
+    }
+    const err = await deleteDocumentIdempotent(sdkOf(script, []), auth([]), { contractId: 'P4', documentType: 'writer', documentId: 'X', confirmTimeoutMs: 0 }).catch((e: unknown) => e)
+    expect((err as ConsensusRefusal).charged).toBeNull()
+    expect((err as ConsensusRefusal).feeCharged).toBeNull()
+  })
+
+  it('an undecodable verdict from the result wait has an unknown charge', async () => {
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: () => undefined,
+      wait: async () => {
+        throw sdkRefusal(UNREADABLE_TEXT)
+      },
+      exists: async () => undefined,
+    }
+    const err = await createDocumentIdempotent(sdkOf(script, []), auth([]), { ...write, contractId: 'P5' }).catch((e: unknown) => e)
+    expect((err as ConsensusRefusal).code).toBe(UNREADABLE_REFUSAL_CODE)
+    expect((err as ConsensusRefusal).charged).toBeNull()
+  })
+})
+
+describe('a stale document id (10405) is re-prepared, then thrown as is', () => {
+  const STALE = 'Invalid document transition id 9x, expected 8y'
+
+  it('a coded 10405 on the first attempt re-prepares the write and lands', async () => {
+    const signed: bigint[] = []
+    let calls = 0
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: () => {
+        calls += 1
+        if (calls === 1) throw sdkRefusal(STALE, 10405)
+      },
+      wait: async () => ({}),
+      exists: async () => ({}),
+    }
+    const r = await createDocumentIdempotent(sdkOf(script, signed), auth([]), { ...write, contractId: 'S1' })
+    expect(r.confirmed).toBe(true)
+    expect(signed).toEqual([2n, 2n])
+  })
+
+  it('a coded refusal whose figures contain "10405" is a refusal, not a stale id', async () => {
+    const restore = withStorage()
+    try {
+      const signed: bigint[] = []
+      const script: Script = {
+        platformNonce: 1n,
+        broadcast: () => {
+          throw sdkRefusal(`Insufficient identity ${OWNER} balance 1 required 104050000`, 40210)
+        },
+        wait: async () => ({}),
+        exists: async () => undefined,
+      }
+      const err = await createDocumentIdempotent(sdkOf(script, signed), auth([]), { ...write, contractId: 'S3', intent: 'i' }).catch((e: unknown) => e)
+      expect((err as ConsensusRefusal).code).toBe(40210)
+      expect((err as ConsensusRefusal).isBalance).toBe(true)
+      // Refused once, never re-prepared as a stale id
+      expect(signed).toEqual([2n])
+    } finally {
+      restore()
+    }
+  })
+
+  it('a coded 10405 again on the second attempt is the stale-id error, not a plain refusal', async () => {
+    const restore = withStorage()
+    try {
+      const spends: SpendEvent[] = []
+      const script: Script = {
+        platformNonce: 1n,
+        broadcast: () => {
+          throw sdkRefusal(STALE, 10405)
+        },
+        wait: async () => ({}),
+        exists: async () => undefined,
+      }
+      const err = await createDocumentIdempotent(sdkOf(script, []), auth(spends), { ...write, contractId: 'S2', intent: 'i' }).catch((e: unknown) => e)
+      expect(err).not.toBeInstanceOf(ConsensusRefusal)
+      expect((err as { code: number }).code).toBe(10405)
+      await reported()
+      expect(spends).toEqual([])
+    } finally {
+      restore()
+    }
   })
 })
 
@@ -578,7 +859,7 @@ describe('a nonce refusal is never a "refused, try again" (review C1)', () => {
           // First attempt: the answer is lost, though it lands (read a moment later).
           if (calls === 1) throw new Error('grpc: deadline exceeded')
           // The retry's rebroadcast of the same bytes: Drive says the nonce is taken (by itself).
-          throw sdkRefusal(NONCE_TEXT)
+          throw sdkRefusal(NONCE_TEXT, 40204)
         },
         wait: async () => ({}),
         exists: async () => {
@@ -606,7 +887,7 @@ describe('a nonce refusal is never a "refused, try again" (review C1)', () => {
     const script: Script = {
       platformNonce: 1n,
       broadcast: () => {
-        if (signed.length > 1) throw sdkRefusal(NONCE_TEXT)
+        if (signed.length > 1) throw sdkRefusal(NONCE_TEXT, 40204)
       },
       wait: async () => {
         waits += 1
@@ -710,7 +991,7 @@ describe('after "your earlier attempt was posted" (review N1, N4)', () => {
         broadcast: (st) => {
           signed.push({ nonce: st.nonce, title: st.title })
           if (phase === 'A') throw new Error('grpc: deadline exceeded')
-          if (phase === 'B') throw sdkRefusal('Identity key 5 is disabled')
+          if (phase === 'B') throw sdkRefusal('Identity key 5 is disabled', 20006)
         },
         wait: async () => ({}),
         exists: async () => undefined,
@@ -742,7 +1023,7 @@ describe('after "your earlier attempt was posted" (review N1, N4)', () => {
       platformNonce: 1n,
       broadcast: () => undefined,
       wait: async () => {
-        throw sdkRefusal('referenced document Xyz not found for path repoId')
+        throw sdkVerdict(GATE_TEXT, 40120)
       },
       exists: async () => undefined,
     }
@@ -843,7 +1124,7 @@ describe('a damaged cached transition, and 10002 (protocol 14)', () => {
   it('a rebroadcast Drive refuses as 10002 is discarded, not replayed, and the retry signs afresh', async () => {
     const store = new Map<string, string>()
     const { sdk, signed } = lostAttempt(store, () => {
-      throw sdkRefusal('Parsing of serialized object failed due to: unable to deserialize dpp::state_transition::StateTransition: 1 bytes left over after the value')
+      throw sdkRefusal('Parsing of serialized object failed due to: unable to deserialize dpp::state_transition::StateTransition: 1 bytes left over after the value', 10002)
     })
     try {
       const params = { ...write, contractId: 'T2', intent: 'pad-2' }
@@ -859,10 +1140,10 @@ describe('a damaged cached transition, and 10002 (protocol 14)', () => {
     }
   })
 
-  it('a refusal whose reason the SDK cannot decode (platform#5053) is discarded, never left pending', async () => {
+  it('a refusal whose reason the SDK cannot decode (a newer error variant) is discarded, never left pending', async () => {
     const store = new Map<string, string>()
     const { sdk, signed } = lostAttempt(store, () => {
-      throw sdkRefusal('platform deserialization error: unable to deserialize ConsensusError: UnexpectedEnd { additional: 18 }')
+      throw sdkRefusal(UNREADABLE_TEXT)
     })
     try {
       const params = { ...write, contractId: 'T3', intent: 'undecodable' }
@@ -914,5 +1195,126 @@ describe('isNonceSpent (Drive validate_identity_nonce_update)', () => {
   it('is spent more than 24 behind the tip', () => {
     expect(isNonceSpent(100n | skipped(24n), 76n)).toBe(false)
     expect(isNonceSpent(100n, 75n)).toBe(true)
+  })
+})
+
+/**
+ * The ledger's per-write charge (D-2): a review with inline comments is several writes in a row,
+ * and a node's balance lags a block behind the proof. Each row must be that write's own fee,
+ * and the rows must add up to the balance change.
+ */
+describe('spend measurement across back-to-back writes (D-2)', () => {
+  const START = 1_000_000_000n
+  /** How long a fee takes to show in a balance read (the proof comes back before that). */
+  const LAG = 1500
+
+  /**
+   * A chain whose balance reads lag the proof by {@link LAG} on the virtual clock. `stale(n)`:
+   * the next n reads come from a node far behind (they see none of the fees yet).
+   */
+  function laggingChain(fees: bigint[], verdicts: ReadonlyArray<unknown> = []) {
+    let now = 0
+    setWriteClock({
+      now: () => now,
+      sleep: async (ms) => {
+        now += ms
+      },
+    })
+    const charged: Array<{ fee: bigint; at: number }> = []
+    let staleReads = 0
+    const visible = (lag: number) => charged.filter((c) => c.at + lag <= now).reduce((b, c) => b - c.fee, START)
+    let nonce = 1n
+    const sdk = {
+      identities: {
+        fetch: async () => {
+          const lag = staleReads > 0 ? Number.MAX_SAFE_INTEGER : LAG
+          if (staleReads > 0) staleReads -= 1
+          return {
+            balance: visible(lag),
+            publicKeys: [{ keyId: 1, purposeNumber: 0, securityLevelNumber: 2, validatePrivateKey: () => true }],
+            getPublicKeyById: () => ({}),
+          }
+        },
+        contractNonce: async () => nonce,
+      },
+      documents: { get: async () => ({}) },
+      stateTransitions: {
+        broadcastStateTransition: async () => {
+          nonce += 1n
+          charged.push({ fee: fees[charged.length] ?? 0n, at: now })
+        },
+        // The i-th write's verdict: a block's refusal (its fee paid) when `verdicts[i]` is set.
+        waitForResponse: async () => {
+          const verdict = verdicts[charged.length - 1]
+          if (verdict !== undefined) throw verdict
+          return {}
+        },
+      },
+      epoch: { current: async () => undefined },
+      version: () => 14,
+    } as unknown as EvoSDK
+    return {
+      sdk,
+      stale: (n: number) => {
+        staleReads = n
+      },
+      /** The balance once every fee has settled. */
+      settled: () => charged.reduce((b, c) => b - c.fee, START),
+    }
+  }
+
+  const doc = (documentType: string, contractId: string) => ({ contractId, documentType, data: { body: documentType }, confirmTimeoutMs: 0 })
+
+  it('a review with an inline comment records each document at its own fee, and the ledger adds up', async () => {
+    const chain = laggingChain([700n, 800n])
+    const spends: SpendEvent[] = []
+    await createDocumentIdempotent(chain.sdk, auth(spends), doc('comment', 'D2a'))
+    await createDocumentIdempotent(chain.sdk, auth(spends), doc('review', 'D2a'))
+    await reported()
+    await reported()
+    expect(spends.map((s) => [s.kind, s.actualCredits])).toEqual([
+      ['create:comment', 700],
+      ['create:review', 800],
+    ])
+    const ledger = spends.reduce((sum, s) => sum + (s.actualCredits ?? 0), 0)
+    expect(BigInt(ledger)).toBe(spends[0]!.balanceBefore! - chain.settled())
+  })
+
+  it('three writes in a row (a repo create, a merge) sum to the balance change', async () => {
+    const chain = laggingChain([500n, 600n, 900n])
+    const spends: SpendEvent[] = []
+    for (const t of ['repo', 'refUpdate', 'packManifest']) await createDocumentIdempotent(chain.sdk, auth(spends), doc(t, 'D2b'))
+    for (let i = 0; i < 3; i++) await reported()
+    expect(spends.map((s) => s.actualCredits)).toEqual([500, 600, 900])
+    expect(spends.map((s) => s.balanceBefore)).toEqual([START, START - 500n, START - 1100n])
+  })
+
+  it('a balance read from a node still behind an earlier write is not taken for the next write’s', async () => {
+    const chain = laggingChain([700n, 800n])
+    const spends: SpendEvent[] = []
+    await createDocumentIdempotent(chain.sdk, auth(spends), doc('comment', 'D2c'))
+    await reported()
+    expect(spends[0]?.actualCredits).toBe(700)
+    // The review's "before" read and its first "after" read both hit a node that has not seen
+    // the comment's fee yet.
+    chain.stale(2)
+    await createDocumentIdempotent(chain.sdk, auth(spends), doc('review', 'D2c'))
+    await reported()
+    expect(spends.map((s) => s.actualCredits)).toEqual([700, 800])
+    expect(spends[1]?.balanceBefore).toBe(START - 700n)
+  })
+
+  it('a write refused in a block (its fee paid) and the write after it are each recorded at their own fee', async () => {
+    const duplicate = sdkVerdict('Document X has duplicate unique properties ["repoId", "number"] with other documents', 40105)
+    const chain = laggingChain([300n, 800n], [duplicate])
+    const spends: SpendEvent[] = []
+    await expect(createDocumentIdempotent(chain.sdk, auth(spends), doc('issue', 'D2d'))).rejects.toBeInstanceOf(ConsensusRefusal)
+    await createDocumentIdempotent(chain.sdk, auth(spends), doc('issue', 'D2d'))
+    await reported()
+    await reported()
+    expect(spends.map((s) => [s.kind, s.actualCredits])).toEqual([
+      ['refused:issue', 300],
+      ['create:issue', 800],
+    ])
   })
 })

@@ -1,0 +1,30 @@
+{
+  "name": "pr_merge_oid_equals_base_tip_on_base",
+  "description": "A merge oid equal to the base tip is on the base (reflexive).",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "transitions": [
+      {
+        "id": "t1",
+        "kind": 13,
+        "actor": "maint",
+        "asAuthor": 0,
+        "createdAt": 100,
+        "oid": "T"
+      }
+    ],
+    "events": [],
+    "baseTip": "T",
+    "ancestry": []
+  },
+  "expected": {
+    "open": false,
+    "merged": true,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": [],
+    "mergeOnBase": true
+  }
+}

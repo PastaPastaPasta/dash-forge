@@ -1,32 +1,26 @@
 {
   "name": "pr_author_close_member_reopen",
-  "description": "The author closes with an authorEvent and a member reopens with an event.",
+  "description": "The author closes (asAuthor = 7), a member reopens: open.",
   "case": "fold_pr",
   "rules": "v2",
   "input": {
-    "events": [
+    "transitions": [
       {
-        "id": "e1",
-        "targetId": "T",
-        "kind": "reopen",
+        "id": "t1",
+        "kind": 11,
+        "actor": "alice",
+        "asAuthor": 7,
+        "createdAt": 100
+      },
+      {
+        "id": "t2",
+        "kind": 12,
         "actor": "maint",
-        "value": null,
-        "oid": null,
+        "asAuthor": 0,
         "createdAt": 200
       }
     ],
-    "authorEvents": [
-      {
-        "id": "a1",
-        "targetId": "T",
-        "kind": "close",
-        "actor": "alice",
-        "value": null,
-        "oid": null,
-        "createdAt": 100
-      }
-    ],
-    "targetAuthor": "alice",
+    "events": [],
     "baseTip": "T",
     "ancestry": []
   },
@@ -36,6 +30,7 @@
     "draft": false,
     "baseRef": null,
     "labels": [],
-    "assignees": []
+    "assignees": [],
+    "mergeOnBase": null
   }
 }

@@ -1,0 +1,213 @@
+name: Survivability drill
+
+# Roadmap Phase 1 gate / launch criterion 3: any single storage source can disappear and
+# clone and browse keep working from the rest, and say which one failed. Local stores only (an
+# S3 store and a kubo node as service containers), no chain: Platform documents are recorded
+# offline (Rust) or mocked (web), so the run is deterministic.
+#
+#   clone  — forge-core `src/survivability_tests.rs`: packs pushed through the production
+#            replication engine to a bucket, kubo and recorded Platform chunks, then cloned
+#            through the production reader rule after the bucket is DELETED and after kubo is
+#            STOPPED (`docker stop` of the service container). Asserts the data and the exact
+#            `warning:` lines git-remote-dash prints. Also: no read-path crate links the relay.
+#   browse — forge-web `lib/view/survivability.drill.test.ts`: the same breaks against the
+#            browser reader (in-browser clone and ranged reads) and its trust-panel source row;
+#            then `e2e-drill/web-host.spec.ts`: the static build's host is killed and the app
+#            runs from a second host and from its IPFS build (kubo's subdomain gateway), and
+#            reads the bucket (CORS) and the gateway from there.
+#
+# The S3 store is RustFS, not MinIO: the minio/minio images stopped pulling in 2026-04 (see
+# infra/docker-compose.yml); RustFS is the S3 fixture everywhere else in this repo. Images are
+# pinned by digest.
+#
+# Locally: `make survivability` (against infra/docker-compose.yml).
+
+on:
+  pull_request:
+    paths:
+      # The Rust reader and the push-side replication it reads back.
+      - 'crates/forge-core/src/storage/**'
+      - 'crates/forge-core/src/backends/**'
+      - 'crates/forge-core/src/repo.rs'
+      - 'crates/forge-core/src/pack.rs'
+      - 'crates/forge-core/src/pack/**'
+      - 'crates/forge-core/src/survivability_tests.rs'
+      - 'crates/forge-core/src/repo_roundtrip_tests.rs'
+      - 'crates/git-remote-dash/src/helper.rs'
+      # The web reader, its source indicator, and the static build.
+      - 'forge-web/lib/view/browse-source.ts'
+      - 'forge-web/lib/view/browse-fallback.ts'
+      - 'forge-web/lib/view/content-checks.ts'
+      - 'forge-web/lib/view/storage-status.ts'
+      - 'forge-web/lib/view/trust.ts'
+      - 'forge-web/lib/view/survivability.drill.test.ts'
+      - 'forge-web/lib/browse/**'
+      - 'forge-web/lib/storage/**'
+      - 'forge-web/lib/net.ts'
+      - 'forge-web/e2e-drill/**'
+      - 'forge-web/e2e/static-server.mjs'
+      - 'forge-web/next.config.js'
+      - 'forge-contracts/config/storage-defaults.json'
+      # Dependency and toolchain bumps (an HTTP client, Next.js) can break either reader.
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'crates/forge-core/Cargo.toml'
+      - 'forge-web/package.json'
+      - 'forge-web/pnpm-lock.yaml'
+      - 'infra/**'
+      - 'Makefile'
+      - '.github/workflows/survivability.yml'
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: survivability-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  clone:
+    name: clone (forge-core reader)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      s3:
+        image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
+        env:
+          RUSTFS_ACCESS_KEY: minioadmin
+          RUSTFS_SECRET_KEY: minioadmin
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "curl -fsS -o /dev/null http://127.0.0.1:9000/health/ready"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      kubo:
+        image: ipfs/kubo:v0.43.1@sha256:b293923d66e490e70ced64df42ea7a6cf7eac2740e3fb29101df18070fa7be48
+        # The `test` profile: no bootstrap peers, no discovery; nothing leaves the runner.
+        env:
+          IPFS_PROFILE: test
+        ports:
+          - 5001:5001
+          - 8081:8080
+        options: >-
+          --health-cmd "ipfs id"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      # No debug info: the drill needs none, and it halves the build and the cache.
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # tenderdash-proto (under the Platform SDK forge-core links) needs a modern protoc; see
+      # rust.yml for why not Ubuntu's.
+      - name: Install protoc
+        env:
+          PROTOC_VERSION: '28.3'
+        run: |
+          curl -sSLo /tmp/protoc.zip \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
+          sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
+          sudo chmod +x /usr/local/bin/protoc
+
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: survivability
+
+      - name: Build the drill
+        run: cargo test --locked -p forge-core --lib --no-run
+
+      - name: Drill (bucket deleted, gateway stopped, relay off the read path)
+        env:
+          FORGE_DRILL: '1'
+          FORGE_DRILL_KUBO_CONTAINER: ${{ job.services.kubo.id }}
+        run: cargo test --locked -p forge-core --lib survivability -- --test-threads=1 --nocapture
+
+      - name: Fixture logs
+        if: failure()
+        env:
+          S3_ID: ${{ job.services.s3.id }}
+          KUBO_ID: ${{ job.services.kubo.id }}
+        run: |
+          docker logs --tail 100 "$S3_ID" || true
+          docker logs --tail 100 "$KUBO_ID" || true
+
+  browse:
+    name: browse (web reader, web host)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      s3:
+        image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
+        env:
+          RUSTFS_ACCESS_KEY: minioadmin
+          RUSTFS_SECRET_KEY: minioadmin
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "curl -fsS -o /dev/null http://127.0.0.1:9000/health/ready"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      kubo:
+        image: ipfs/kubo:v0.43.1@sha256:b293923d66e490e70ced64df42ea7a6cf7eac2740e3fb29101df18070fa7be48
+        env:
+          IPFS_PROFILE: test
+        ports:
+          - 5001:5001
+          - 8081:8080
+        options: >-
+          --health-cmd "ipfs id"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    defaults:
+      run:
+        working-directory: forge-web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: forge-web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+
+      - name: Browse drill (bucket deleted, gateway stopped)
+        env:
+          FORGE_DRILL: '1'
+          FORGE_DRILL_KUBO_CONTAINER: ${{ job.services.kubo.id }}
+        run: pnpm exec vitest run lib/view/survivability.drill.test.ts
+
+      # Any network works: the spec refuses every request but the page's own origin and the
+      # storage fixture, so it never reads a chain.
+      - name: Build the static app
+        env:
+          NEXT_PUBLIC_NETWORK: devnet
+          NEXT_PUBLIC_DEVNET_NAME: bonsia
+        run: pnpm build
+
+      - name: Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Web host drill (host killed; second host and IPFS build serve the app)
+        env:
+          FORGE_DRILL: '1'
+          FORGE_DRILL_KUBO_CONTAINER: ${{ job.services.kubo.id }}
+        run: pnpm exec playwright test -c e2e-drill/playwright.config.ts
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: survivability-web-host
+          path: forge-web/e2e-drill/test-results
+          retention-days: 7

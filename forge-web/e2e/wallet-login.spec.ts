@@ -9,7 +9,7 @@ import { E2E_DEVNET, PASSPHRASE, idFile, repoUrl, shot, unlock } from './helpers
  * Sign in with a mobile Dash wallet, live on a devnet (real spend), with a scripted wallet
  * (e2e/wallet-responder.mjs) that does what Dash Wallet does with the QR the page shows:
  *
- *   E2E_DEVNET=moutai E2E_WRITE=1 pnpm exec playwright test wallet-login.spec.ts
+ *   E2E_DEVNET=bonsia E2E_WRITE=1 pnpm exec playwright test wallet-login.spec.ts
  *
  * m1. Desktop: on a devnet the wallet tile comes after Create and Import, and the request says
  *     plainly that Dash Wallet answers on testnet only. The sheet shows a dash-key QR (its text is
@@ -17,15 +17,15 @@ import { E2E_DEVNET, PASSPHRASE, idFile, repoUrl, shot, unlock } from './helpers
  *     (dash-st); the wallet registers the key; the page shows the identity, the "no spending
  *     limit" warning and asks for a passkey; the user confirms and signs in with a passphrase;
  *     Settings shows the grant prompt for issues and pull requests. On the demo repo, Star (a
- *     forge-collab write) opens the one-tap grant sheet by itself, before anything is signed;
- *     the wallet approves it, and the star lands.
+ *     forge-community write in RC1) opens the one-tap "Approve stars, watches and follows" grant
+ *     sheet by itself, before anything is signed; the wallet approves it, and the star lands.
  * m2. Phone viewport: the sheet offers "Open in DashPay (Dash Wallet)" (the dash-key: link)
  *     instead of a QR, with the QR behind a disclosure.
  *
  * RELAY's keys that this run adds are disabled at the end.
  */
 
-test.skip(E2E_DEVNET === '' || process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_DEVNET=moutai E2E_WRITE=1')
+test.skip(E2E_DEVNET === '' || process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_DEVNET=bonsia E2E_WRITE=1')
 test.skip(!existsSync(idFile('RELAY')), 'devnet test identities not found')
 test.describe.configure({ mode: 'serial', timeout: 15 * 60_000 })
 
@@ -33,7 +33,7 @@ const ROOT = resolve(__dirname, '../..')
 const CHAIN_KEY = randomBytes(32).toString('hex')
 type Responder = typeof import('./wallet-responder.mjs')
 const responder = (): Promise<Responder> => import(pathToFileURL(join(__dirname, 'wallet-responder.mjs')).href)
-const DEPLOYMENT = (): Promise<{ default: { v2: { forgeCore: { contractId: string }; forgeCollab: { contractId: string } } } }> =>
+const DEPLOYMENT = (): Promise<{ default: { v2: { forgeCore: { contractId: string }; forgeCollab: { contractId: string }; forgeCommunity: { contractId: string } } } }> =>
   import(pathToFileURL(join(ROOT, `forge-contracts/deployments/devnet-${E2E_DEVNET}.json`)).href, { with: { type: 'json' } })
 
 /** The URI a QR on the page encodes (the Qr component prints it as its caption). */
@@ -57,7 +57,7 @@ async function walletAnswers(page: Page, contractId: string, label: string): Pro
   }
 }
 
-test('m1. desktop: scan, register, confirm, sign in; then the one-tap grant for issues and PRs', async ({ browser }) => {
+test('m1. desktop: scan, register, confirm, sign in; then the one-tap grant for stars', async ({ browser }) => {
   const dep = (await DEPLOYMENT()).default.v2
   const relay = (JSON.parse((await import('node:fs')).readFileSync(idFile('RELAY'), 'utf8')) as { identityId: string }).identityId
   const page = await (await browser.newContext()).newPage()
@@ -93,18 +93,19 @@ test('m1. desktop: scan, register, confirm, sign in; then the one-tap grant for 
     await expect(page.getByTestId('keys-panel').getByTestId('unlimited-key-warning')).toBeVisible()
     await shot(page, 'wallet-login-04-settings')
 
-    // A forge-collab write opens the grant sheet by itself (nothing is signed first).
+    // A star is a forge-community write (RC1): it opens that contract's grant sheet by itself
+    // (nothing is signed first).
     await page.goto(repoUrl(), { waitUntil: 'domcontentloaded' })
     await unlock(page)
     const star = page.getByRole('button', { name: /^star/i })
     await expect(star).toBeEnabled({ timeout: 60_000 })
     await star.click()
-    await expect(page.getByRole('dialog', { name: /approve issues and pull requests/i })).toBeVisible({ timeout: 30_000 })
+    await expect(page.getByRole('dialog', { name: /approve stars, watches and follows/i })).toBeVisible({ timeout: 30_000 })
     await shot(page, 'wallet-login-05-grant-sheet')
-    await walletAnswers(page, dep.forgeCollab.contractId, 'grant')
-    await expect(page.getByRole('dialog', { name: /approve issues and pull requests/i })).toBeHidden({ timeout: 120_000 })
+    await walletAnswers(page, dep.forgeCommunity.contractId, 'grant')
+    await expect(page.getByRole('dialog', { name: /approve stars, watches and follows/i })).toBeHidden({ timeout: 120_000 })
 
-    // Now the star is signed by the forge-collab grant and lands.
+    // Now the star is signed by the forge-community grant and lands.
     await page.getByRole('button', { name: /^star/i }).click()
     await expect(page.getByRole('button', { name: /starred/i })).toBeVisible({ timeout: 90_000 })
     await page.getByRole('button', { name: /starred/i }).click()
@@ -112,7 +113,7 @@ test('m1. desktop: scan, register, confirm, sign in; then the one-tap grant for 
     await shot(page, 'wallet-login-06-starred')
   } finally {
     const wallet = await responder()
-    await wallet.disableDerived({ identityFile: idFile('RELAY'), chainKeyHex: CHAIN_KEY, contractIds: [dep.forgeCore.contractId, dep.forgeCollab.contractId], devnet: E2E_DEVNET })
+    await wallet.disableDerived({ identityFile: idFile('RELAY'), chainKeyHex: CHAIN_KEY, contractIds: [dep.forgeCore.contractId, dep.forgeCollab.contractId, dep.forgeCommunity.contractId], devnet: E2E_DEVNET })
   }
 })
 

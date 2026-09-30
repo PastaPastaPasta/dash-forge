@@ -1,22 +1,25 @@
 import { test, expect, type Page } from '@playwright/test'
 import { existsSync } from 'node:fs'
-import { fixtureWriteBlocked, idFile, idOrEmpty, repoUrl, shot, signedIn, unlock } from './helpers'
+import { fixtureWriteBlocked, idFile, idOrEmpty, loadSeedPulls, repoUrl, shot, signedIn, unlock } from './helpers'
 
 /**
  * forge-v2 WRITES, live on a devnet (real spend, a few thousandths of a DASH per run):
  *
- *   E2E_DEVNET=moutai E2E_WRITE=1 pnpm exec playwright test v2-writes.spec.ts
+ *   E2E_DEVNET=bonsia E2E_WRITE=1 pnpm exec playwright test v2-writes.spec.ts
  *
  * One story, four identities from ~/.config/dash-forge/test-identities/devnet-<name>/, each in
- * its own browser context: OWNER creates a repo and adds COLLAB as a writer; CONTRIB opens an
- * issue, comments and closes it with an `authorEvent`; COLLAB labels it with a member `event`;
+ * its own browser context: OWNER creates a repo, COLLAB accepts its invite link, and OWNER adds
+ * COLLAB as a writer; CONTRIB opens an
+ * issue, comments and closes it as its author (a `transition`, asAuthor = its number); COLLAB labels
+ * it with a member `event`;
  * CONTRIB stars and unstars the repo (the unstar is an index-only delete); OWNER approves the
  * fixture's open PR and finally removes COLLAB. Every write goes through the confirm dialog and
  * its cost preview, and the spend ledger in /settings records it.
  */
 
-// The identities it signs as (E2E_IDENTITY_DIR, else the fixture pool); w6 approves PR #1 of the
-// read fixture (`DEMO`), so a run under minted identities points E2E_V2_OWNER at their own copy.
+// The identities it signs as (E2E_IDENTITY_DIR, else the fixture pool); w6 approves the read
+// fixture's open PR (`DEMO`, `loadSeedPulls().approved`), so a run under minted identities
+// points E2E_V2_OWNER at their own copy.
 const OWNER = idOrEmpty('OWNER')
 const COLLAB = idOrEmpty('COLLAB')
 const REPO = `e2e-${Date.now().toString(36)}`
@@ -51,7 +54,17 @@ test('w1. owner creates a repo and sees the push commands', async ({ browser }) 
   await shot(page, 'v2w-01-created')
 })
 
-test('w2. owner adds COLLAB as a writer', async ({ browser }) => {
+test('w2. owner adds COLLAB as a writer, once COLLAB accepted the invitation', async ({ browser }) => {
+  // RC1 consent (R-06): the member accepts the invitation link before the owner can add them;
+  // the consent stands until deleted, so w8's re-grants need no second one.
+  const invited = await signedIn(browser, 'COLLAB', repoPath('', '&invite=1'))
+  const accept = invited.getByRole('button', { name: 'Accept invitation' })
+  await expect(accept).toBeVisible({ timeout: 90_000 })
+  await accept.click()
+  await confirmWrite(invited, /sign & accept/i)
+  await expect(invited.getByText(/You accepted the invitation/)).toBeVisible({ timeout: 60_000 })
+  await invited.context().close()
+
   const page = await signedIn(browser, 'OWNER', repoPath('settings'))
   await page.getByLabel('Identity ID').fill(COLLAB)
   await page.getByRole('radio', { name: 'writer' }).click()
@@ -106,7 +119,7 @@ test('w5. contributor stars and unstars the repo (index-only delete)', async ({ 
 })
 
 test('w6. owner approves the fixture PR, then removes the writer', async ({ browser }) => {
-  const page = await signedIn(browser, 'OWNER', repoUrl('pull', '&number=1'))
+  const page = await signedIn(browser, 'OWNER', repoUrl('pull', `&number=${loadSeedPulls().approved}`))
   await page.getByRole('button', { name: /^approve$/i }).click()
   await confirmWrite(page, /submit review/i)
   await expect(page.getByRole('region', { name: 'Approvals' })).toBeVisible()

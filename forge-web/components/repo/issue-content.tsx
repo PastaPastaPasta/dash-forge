@@ -19,10 +19,13 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
-import { useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { CheckCircle2, CircleDot, Milestone, Pencil, Pin, Tag, UserPlus } from 'lucide-react'
 import type { RepoHome, IssueThread, TimelineItem } from '@/lib/view'
-import { ACL_NAME, ARCHIVED_REASON, loadIssueThread } from '@/lib/view'
+import { ACL_NAME, ARCHIVED_REASON, issueWriteShows, loadIssueThread } from '@/lib/view'
+import { commentEditDrops } from '@/lib/view/issues-view'
+import { totalHidden } from '@/lib/repo/private-content'
+import { ISSUE_LOCK, ISSUE_UNLOCK } from '@/lib/rules/transition'
 import {
   commentFirsts,
   createComment,
@@ -35,12 +38,15 @@ import {
   setLabel,
   setMilestone,
   setThreadFlag,
+  setLock,
+  LOCKED_REASON,
+  lockedOut,
   setTargetState,
   updateComment,
   updateTarget,
 } from '@/lib/repo'
 import type { Holdings } from '@/lib/rules'
-import { SupersededWriteError, previewCreate, previewReplace, sumPreviews, type CostPreview as Cost } from '@/lib/sdk'
+import { SupersededWriteError, UnconfirmedWriteError, previewCreate, previewReplace, sumPreviews, type CostPreview as Cost } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useIntent } from '@/hooks/use-intent'
@@ -49,7 +55,7 @@ import { useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { useRepoLinks } from '@/components/repo/target-href'
 import { importedUrlOf } from '@/lib/view/ref-targets'
 import { CopyLinkButton } from '@/components/ui/copy-link'
-import { retryWhileMissing } from '@/lib/view/retry'
+import { readUntil, retryWhileMissing } from '@/lib/view/retry'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Timeline, type CommentSlots } from '@/components/repo/timeline'
@@ -63,8 +69,10 @@ import { EditedMarker, MarkdownEditor } from '@/components/repo/issue-bits'
 import { AssigneePicker, LabelPicker, MilestonePicker, SidebarSection } from '@/components/repo/target-rail'
 import { readMilestones } from '@/lib/repo/milestones'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
+import { LockToggle, LockedBanner, lockConfirm, lockStateText, lockViewerOf } from '@/components/repo/locked-banner'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
+import { numberLabel, shownUpstreamNumber } from '@/lib/view/upstream'
 
 /** The write the confirm dialog is about to sign. */
 type Pending =
@@ -88,10 +96,38 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   // Just created here: a node that has not applied the block yet answers "not found", so keep
   // asking for a few seconds rather than telling the author their issue does not exist.
   const justCreated = useParam('created') === '1'
+  // After a write the page re-reads until the write shows (`refresh(expect)`), as the PR page does
+  // (L-77): a node a block behind answers without it, and one plain re-read would drop it from
+  // view (a posted comment missing until a reload). Expectations accumulate until one read
+  // satisfies them all; a newer read aborts the older one's polling.
+  const expectations = useRef<((t: IssueThread) => boolean)[]>([])
+  const current = useRef<{ aborted: boolean }>({ aborted: false })
   const { data, loading, error, reload } = useAsync<IssueThread | null>(
-    () => retryWhileMissing(() => loadIssueThread(sdk!, home.repo, number, network), justCreated ? 8 : 0),
+    async (stop) => {
+      current.current.aborted = true
+      const own = { aborted: false }
+      current.current = own
+      // Stopped by a newer read, or by useAsync (deps changed, or the page unmounted).
+      const signal = { get aborted() { return own.aborted || stop.aborted } }
+      const want = [...expectations.current]
+      const load = (): Promise<IssueThread | null> => loadIssueThread(sdk!, home.repo, number, network)
+      const first = await retryWhileMissing(load, justCreated ? 8 : 0, undefined, signal)
+      if (first === null || want.length === 0) return first
+      // A re-read that fails keeps the thread just read rather than replacing the page with an error.
+      const reread = (): Promise<IssueThread | null> => load().catch(() => first)
+      const t = await readUntil(reread, want, { signal, first })
+      if (!signal.aborted && t !== null) expectations.current = expectations.current.filter((w) => !w(t))
+      return t
+    },
     [ready, repoKey(home.repo), number, network],
     { enabled: ready && sdk !== null && Number.isFinite(number) },
+  )
+  const refresh = useCallback(
+    (want?: (t: IssueThread) => boolean) => {
+      if (want) expectations.current.push(want)
+      reload()
+    },
+    [reload],
   )
 
   // Who may mirror: an imported item of theirs shows its original author and date (FG-6).
@@ -130,8 +166,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const viewerMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
   const firstsReady = (comment !== '' || pending !== null) && ready && sdk !== null && identity !== null && issueId !== ''
   const commentFirst = useFirstWrite(() => commentFirsts(sdk!, home.repo, issueId, identity!, hasComments), [issueId, identity ?? '', hasComments ?? ''], firstsReady)
-  const stateType = viewerMember ? 'event' : 'authorEvent'
-  const eventFirst = useFirstWrite(() => eventFirsts(sdk!, home.repo, stateType, issueId, identity!), [issueId, identity ?? '', stateType], firstsReady)
+  const stateFirst = useFirstWrite(() => eventFirsts(sdk!, home.repo, 'transition', issueId, identity!), [issueId, identity ?? ''], firstsReady)
+  const eventFirst = useFirstWrite(() => eventFirsts(sdk!, home.repo, 'event', issueId, identity!), [issueId, identity ?? ''], firstsReady && viewerMember)
 
   if (!Number.isFinite(number)) return <EmptyState icon={CircleDot} title="No issue addressed" body="Add &number= to the URL." />
   if (loading && !data) return <LoadingBlock label="Folding issue" />
@@ -143,17 +179,19 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const whileLocked = commentsWhileLocked(timeline, new Set(members.map((m) => m.identity)))
   const open = issue.state.open
   const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
+  const postContext = { isMember, locked: meta.locked }
   const isAuthor = identity !== null && identity === issue.author
   const canToggle = identity !== null && (isAuthor || isMember)
   // A private repo is written sealed (issues, comments and edits: `private-writes.ts`); only a
   // member holding the current key can, so everyone else sees why not instead of a composer.
   // An archived repo takes no writes (client-side gate: consensus cannot enforce it).
   const archived = home.config?.archived === true
-  const composeBlock = archived
-    ? ARCHIVED_REASON
-    : meta.locked && !isMember
-      ? 'This conversation is locked: only maintainers and writers can comment.'
-      : privateComposeBlock(home)
+  // Locked to members: the banner speaks to this viewer, and replaces a non-member's composer (an
+  // archived repo's own note wins: nobody can comment there).
+  const lockApplies = meta.locked && !archived
+  const lockedOutNow = lockApplies && lockedOut(postContext)
+  const lockViewer = lockViewerOf(identity, holdings)
+  const composeBlock = archived ? ARCHIVED_REASON : lockedOutNow ? LOCKED_REASON : privateComposeBlock(home)
   const isPrivate = home.repo.visibility === 'private'
   const toggleHint =
     !canToggle && identity !== null && holdings.settled && holdings.data === null
@@ -161,8 +199,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       : null
   const target = { id: issue.id, number: issue.number }
   const commentCost = composeCost(home.repo, 'comment', { body: comment.trim() }, commentFirst)
-  // A member's close is an `event`; the author who is not a member uses `authorEvent`.
-  const stateCost = previewCreate(isMember ? 'event' : 'authorEvent', {}, eventFirst)
+  // A close or reopen is one `transition`, by a member or by the author.
+  const stateCost = previewCreate('transition', {}, stateFirst)
   const labelDefs = new Map(labels.map((l) => [l.name, l]))
 
   const postComment = async (): Promise<void> => {
@@ -171,16 +209,19 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     setPosting(true)
     setCommentError(null)
     try {
-      await createComment(sdk, signer, home.repo, { targetId: issue.id, body: comment.trim(), intent: draft.intent })
+      const posted = await createComment(sdk, signer, home.repo, { targetId: issue.id, body: comment.trim(), intent: draft.intent, post: postContext })
       setComment('')
       draft.renew()
-      reload()
+      refresh((t) => issueWriteShows(t, { kind: 'comment', id: posted.documentId }))
     } catch (e) {
       if (e instanceof SupersededWriteError) {
         // The earlier version was posted: show it, and never post this draft a second time.
         setComment('')
         draft.renew()
-        reload()
+        refresh((t) => issueWriteShows(t, { kind: 'comment', id: e.documentId }))
+      } else if (e instanceof UnconfirmedWriteError) {
+        // Sent, not yet visible: keep reading until it shows (the draft stays, as the error says).
+        refresh((t) => issueWriteShows(t, { kind: 'comment', id: e.documentId }))
       }
       setCommentError(guard.failed(e))
     } finally {
@@ -190,9 +231,10 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
 
   const runPending = async (intent: string): Promise<void> => {
     if (!sdk || !signer || pending === null) throw new Error('sign in to continue')
+    const write = pending
     switch (pending.kind) {
       case 'state':
-        await setTargetState(sdk, signer, home.repo, { target, kind: open ? 'close' : 'reopen', author: issue.author, isMember, intent })
+        await setTargetState(sdk, signer, home.repo, { target: { ...target, type: 'issue', author: issue.author }, action: open ? 'close' : 'reopen', isMember, intent })
         break
       case 'label':
         await setLabel(sdk, signer, home.repo, { target, label: pending.label, add: !pending.remove, intent })
@@ -201,7 +243,9 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         await setAssignee(sdk, signer, home.repo, { target, assignee: pending.who, assign: !pending.remove, intent })
         break
       case 'flag':
-        await setThreadFlag(sdk, signer, home.repo, { target, flag: pending.flag, on: pending.on, intent })
+        // A lock is a member transition since RC1 (consensus then refuses non-members' comments).
+        if (pending.flag === 'lock') await setLock(sdk, signer, home.repo, { target: { ...target, type: 'issue', author: issue.author }, lock: pending.on, isMember, intent })
+        else await setThreadFlag(sdk, signer, home.repo, { target, on: pending.on, intent })
         break
       case 'milestone':
         await setMilestone(sdk, signer, home.repo, { target, title: pending.title, intent })
@@ -228,13 +272,14 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         await updateComment(sdk, signer, home.repo, {
           id: pending.id,
           body: pending.body,
+          ...commentEditDropsOf(timeline, pending.id, { isMember, allReadable: totalHidden(hidden) === 0 }),
           ...(timelineComment(timeline, pending.id)?.revision !== undefined ? { expectedRevision: BigInt(timelineComment(timeline, pending.id)?.revision as number) } : {}),
           seal: { current: { body: timelineComment(timeline, pending.id)?.body ?? '' }, bind: { targetId: issue.id }, imported: timelineComment(timeline, pending.id)?.importedRaw ?? null },
         })
         setEditingComment(null)
         break
     }
-    reload()
+    refresh((t) => issueWriteShows(t, write.kind === 'state' ? { kind: 'state', open: !open } : write))
   }
 
   const pendingCost = ((): Cost => {
@@ -244,7 +289,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       case 'assign':
         return composeCost(home.repo, 'event', { value: pending.who }, eventFirst)
       case 'flag':
-        return composeCost(home.repo, 'event', {}, eventFirst)
+        // A lock is a transition; a pin an event.
+        return pending.flag === 'lock' ? stateCost : composeCost(home.repo, 'event', {}, eventFirst)
       case 'milestone':
         return composeCost(home.repo, 'event', pending.title === null ? {} : { value: pending.title }, eventFirst)
       case 'defineLabel': {
@@ -288,7 +334,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           ) : (
             <div className="flex items-start gap-3">
               <h1 className="flex-1 text-2xl">
-                {issue.title || '(untitled)'} <span className="font-mono font-normal text-anvil-500 dark:text-anvil-400">#{issue.number}</span>
+                {issue.title || '(untitled)'} <span className="font-mono font-normal text-anvil-500 dark:text-anvil-400" data-testid="issue-number">{numberLabel(issue.number, shownUpstreamNumber(issue, home.repo, members))}</span>
               </h1>
               {isAuthor ? (
                 <Button
@@ -371,13 +417,17 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         <EventValuesNote counts={eventValues} />
 
         {/* Composer */}
-        <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
-          <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
-          {composeBlock !== null ? <PrivateComposeNote reason={composeBlock} /> : null}
-          <MarkdownEditor id="comment-body" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} />
-          <SealedLimit repo={home.repo} kind="comment" text={comment.trim()} />
+        <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="issue-composer">
+          {/* Locked: a non-member's composer is replaced by the banner (consensus would refuse the post). */}
+          <LockedBanner locked={lockApplies} viewer={lockViewer} target="issue">
+            <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
+            {composeBlock !== null ? <PrivateComposeNote reason={composeBlock} /> : null}
+            <MarkdownEditor id="comment-body" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} />
+            <SealedLimit repo={home.repo} kind="comment" text={comment.trim()} />
+          </LockedBanner>
+          {lockedOutNow && !canToggle ? null : (
           <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-            <CostPreview cost={commentCost} />
+            {lockedOutNow ? <span /> : <CostPreview cost={commentCost} />}
             <div className="flex items-center gap-2">
               {canToggle ? (
                 <Button
@@ -389,18 +439,21 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   {open ? 'Close issue' : 'Reopen issue'}
                 </Button>
               ) : null}
-              <Button
-                variant="primary"
-                onClick={postComment}
-                loading={posting}
-                disabled={composeBlock !== null || comment.trim() === '' || utf8Length(comment) > BODY_MAX || guard.disabledReason !== null}
-                title={guard.disabledReason ?? undefined}
-              >
-                {identity ? 'Comment' : locked ? 'Unlock to comment' : 'Sign in to comment'}
-              </Button>
+              {lockedOutNow ? null : (
+                <Button
+                  variant="primary"
+                  onClick={postComment}
+                  loading={posting}
+                  disabled={composeBlock !== null || comment.trim() === '' || utf8Length(comment) > BODY_MAX || guard.disabledReason !== null}
+                  title={guard.disabledReason ?? undefined}
+                >
+                  {identity ? 'Comment' : locked ? 'Unlock to comment' : 'Sign in to comment'}
+                </Button>
+              )}
             </div>
           </div>
-          <BodyCounter repo={home.repo} text={comment} field="comment" />
+          )}
+          {lockedOutNow ? null : <BodyCounter repo={home.repo} text={comment} field="comment" />}
           {toggleHint !== null ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{toggleHint}</p> : null}
           {commentError ? (
             <div role="alert" className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words">{commentError}</div>
@@ -431,16 +484,14 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         {isMember || meta.pinned || meta.locked ? (
           <SidebarSection title="Conversation" icon={Pin}>
             <p className="text-anvil-600 dark:text-anvil-300" data-testid="thread-flags">
-              {meta.pinned ? 'Pinned' : 'Not pinned'} · {meta.locked ? 'Locked to members' : 'Open to everyone'}
+              {meta.pinned ? 'Pinned' : 'Not pinned'} · {lockStateText(meta.locked)}
             </p>
             {isMember && !archived && guard.disabledReason === null ? (
               <div className="mt-2 flex flex-wrap gap-2">
                 <Button size="sm" variant="outline" onClick={() => setPending({ kind: 'flag', flag: 'pin', on: !meta.pinned })} data-testid="pin-toggle">
                   {meta.pinned ? 'Unpin' : 'Pin'}
                 </Button>
-                <Button size="sm" variant="outline" onClick={() => setPending({ kind: 'flag', flag: 'lock', on: !meta.locked })} data-testid="lock-toggle">
-                  {meta.locked ? 'Unlock' : 'Lock'}
-                </Button>
+                <LockToggle locked={meta.locked} onToggle={(on) => setPending({ kind: 'flag', flag: 'lock', on })} />
               </div>
             ) : null}
           </SidebarSection>
@@ -482,19 +533,11 @@ function confirmText(pending: Pending, number: number, open: boolean, isMember: 
         description: `${pending.remove ? 'Unassigns' : 'Assigns'} ${pending.who.slice(0, 10)}… with a member event, which also names them as its addressee so it shows up under "assigned to me".`,
         label: pending.remove ? 'Sign & unassign' : 'Sign & assign',
       }
-    case 'flag': {
-      const verb = pending.flag === 'pin' ? (pending.on ? 'Pin' : 'Unpin') : pending.on ? 'Lock' : 'Unlock'
-      return {
-        title: `${verb} issue #${number}`,
-        description:
-          pending.flag === 'pin'
-            ? pending.on ? 'Appends a pin event: the issue is listed first on the repo\'s issues page (and in dg issue list).' : 'Appends an unpin event.'
-            : pending.on
-              ? 'Appends a lock event: Forge clients (this app and dg) then offer commenting to maintainers and writers only. Consensus cannot stop anyone else from commenting (fees are the only floor); a comment posted after the lock is marked so.'
-              : 'Appends an unlock event: everyone is offered the comment box again.',
-        label: `Sign & ${verb.toLowerCase()}`,
-      }
-    }
+    case 'flag':
+      if (pending.flag === 'lock') return lockConfirm(pending.on, `issue #${number}`, 'issue')
+      return pending.on
+        ? { title: `Pin issue #${number}`, description: 'Appends a pin event: the issue is listed first on the repo\'s issues page (and in dg issue list).', label: 'Sign & pin' }
+        : { title: `Unpin issue #${number}`, description: 'Appends an unpin event.', label: 'Sign & unpin' }
     case 'milestone':
       return pending.title === null
         ? { title: 'Clear the milestone', description: 'Appends a milestone-clear event.', label: 'Sign & clear' }
@@ -565,18 +608,25 @@ function commentSlots({
 }
 
 /**
- * The comments a non-member posted while the conversation was locked (the member `event`s
- * kinds 21/22, in timeline order, as `foldThreadMetaV2` reads them). Consensus admits such a
- * comment; readers mark it.
+ * The comments a non-member posted while the conversation was locked (the lock and unlock
+ * `transition`s, kinds 3/4, in timeline order). Consensus refuses such a comment since RC1, so
+ * this only marks one the timeline order cannot tell apart (a comment in the lock's own block).
  */
 function commentsWhileLocked(items: readonly TimelineItem[], members: ReadonlySet<string>): Set<string> {
   const out = new Set<string>()
   let locked = false
   for (const it of [...items].sort((a, b) => a.at - b.at)) {
-    if (it.kind === 'event' && !it.byAuthor && (it.event.kind === 'lock' || it.event.kind === 'unlock')) locked = it.event.kind === 'lock'
+    if (it.kind === 'transition' && (it.transition.kind === ISSUE_LOCK || it.transition.kind === ISSUE_UNLOCK)) locked = it.transition.kind === ISSUE_LOCK
     else if (it.kind === 'comment' && locked && !members.has(it.comment.author)) out.add(it.comment.id)
   }
   return out
+}
+
+/** What an edit of the comment `id` must drop (`commentEditDrops`), or nothing when it is not on the timeline. */
+function commentEditDropsOf(items: readonly TimelineItem[], id: string, opts: { isMember: boolean; allReadable: boolean }): ReturnType<typeof commentEditDrops> {
+  const comments = items.flatMap((it) => (it.kind === 'comment' ? [it.comment] : []))
+  const c = comments.find((x) => x.id === id)
+  return c === undefined ? {} : commentEditDrops(c, comments, opts)
 }
 
 /** A comment of the timeline by id (the text an edit re-seals from). */

@@ -1,22 +1,19 @@
 {
   "name": "author_marks_draft",
-  "description": "The author may put their open PR back into draft (authorEvent kind 9).",
+  "description": "The author puts their open PR back into draft (kind 14, asAuthor = 7).",
   "case": "fold_pr",
   "rules": "v2",
   "input": {
-    "events": [],
-    "authorEvents": [
+    "transitions": [
       {
-        "id": "a1",
-        "targetId": "T",
-        "kind": "draft",
+        "id": "t1",
+        "kind": 14,
         "actor": "alice",
-        "value": null,
-        "oid": null,
+        "asAuthor": 7,
         "createdAt": 100
       }
     ],
-    "targetAuthor": "alice",
+    "events": [],
     "baseTip": "B",
     "ancestry": []
   },
@@ -26,6 +23,7 @@
     "draft": true,
     "baseRef": null,
     "labels": [],
-    "assignees": []
+    "assignees": [],
+    "mergeOnBase": null
   }
 }

@@ -4,7 +4,7 @@
 //
 //   (cd forge-contracts/sdk-v2 && npm ci)
 //   node forge-contracts/scripts/deploy-key-exchange.mjs --identity <deployer.identity.json> \
-//        [--network devnet --devnet-name moutai] [--dry-run]
+//        [--network devnet --devnet-name bonsia] [--dry-run]
 //
 // The schema is forge-contracts/contracts/third-party/key-exchange.json (fetched from testnet).
 // The result goes to deployments/<key>.json as a top-level `keyExchange` record, which forge-web
@@ -43,7 +43,7 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const network = args.network || 'devnet';
   if (network !== 'devnet') throw new Error('only devnets: testnet has yappr’s copy, which the wallets pin');
-  const devnetName = args['devnet-name'] || 'moutai';
+  const devnetName = args['devnet-name'] || 'bonsia';
   if (!args.identity || args.identity === true) throw new Error('--identity <deployer.identity.json> required');
   const key = `devnet-${devnetName}`;
   const depFile = join(ROOT, 'deployments', `${key}.json`);

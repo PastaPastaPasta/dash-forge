@@ -2,13 +2,17 @@ import { test, expect } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { collectPageErrors, countDocumentQueries, E2E_DEVNET, nodeSdk, shot } from './helpers'
+import { quorumGuard } from './quorum-sync'
+
+// Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
+test.beforeEach(quorumGuard)
 
 /**
  * Trending on Explore is the network's proved ranking of new stargazers, and it agrees with a
  * recount of the stars themselves (platform-parity-spec §4.3, C-1):
  *
  *   E2E_TRENDING_SEED=<file written by forge-contracts/scripts/seed-trending.mjs> \
- *   E2E_DEVNET=moutai pnpm exec playwright test trending.spec.ts
+ *   E2E_DEVNET=bonsia pnpm exec playwright test trending.spec.ts
  *
  * The seed script mints nothing and writes as identities minted for the run (never the shared
  * fixtures): it creates repos, stars them from several identities (each star writing its
@@ -63,7 +67,8 @@ test('t1. Trending this week matches a recount of the seeded stars in the window
   const sdk = await nodeSdk()
   const dep = JSON.parse(readFileSync(join(__dirname, '..', '..', 'forge-contracts', 'deployments', `devnet-${E2E_DEVNET}.json`), 'utf8'))
   const ranked = await sdk.documents.ranked({
-    dataContractId: dep.v2.forgeCollab.contractId,
+    // starBeat is forge-community's since the RC1 split (a pre-split record has only forge-collab).
+    dataContractId: (dep.v2.forgeCommunity ?? dep.v2.forgeCollab).contractId,
     documentTypeName: 'starBeat',
     groupBy: 'repoId',
     aggregate: { type: 'count' },

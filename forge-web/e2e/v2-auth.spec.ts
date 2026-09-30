@@ -7,7 +7,7 @@ import { E2E_DEVNET, PASSPHRASE, deployment, idFile, importIdentity, nodeSdk, sh
 /**
  * Limited-key sign-in, live on a devnet (real spend):
  *
- *   E2E_DEVNET=moutai E2E_WRITE=1 pnpm exec playwright test v2-auth.spec.ts
+ *   E2E_DEVNET=bonsia E2E_WRITE=1 pnpm exec playwright test v2-auth.spec.ts
  *
  * a1. Import an identity file: the master key registers a limited key for this browser; the
  *     spec then reads the identity from Platform itself and checks the key is live, HIGH,

@@ -1,13 +1,13 @@
 /**
- * Live review-parity writes and folds on devnet moutai — SKIPPED by default (network, WASM,
+ * Live review-parity writes and folds on devnet bonsia — SKIPPED by default (network, WASM,
  * about 0.01 DASH of spend).
  *
  * Run with:
- *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=moutai \
+ *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia \
  *     pnpm exec vitest run lib/repo/review-parity.live.test.ts
  *
  * Through the web's own writers (`review-writes.ts`, `replaceDocumentIdempotent`) and readers
- * (`readPull`, `readReviews`, the thread view), with the moutai test identities: OWNER creates
+ * (`readPull`, `readReviews`, the thread view), with the devnet's test identities: OWNER creates
  * a scratch repo (maintainer) with COLLAB as writer; CONTRIB (not a member) opens a draft PR;
  * the author marks it ready and moves its head; OWNER requests COLLAB as a reviewer; COLLAB submits a pending review (request changes + a single-line, a range and a
  * file-level comment) as one review and three `reviewId` comments; CONTRIB replies and resolves
@@ -46,10 +46,10 @@ import {
   updateTarget,
   type ReviewDraft,
 } from './review-writes'
-import { createRepo, grantMember, nextNumber } from './writes'
+import { createRepo, grantMember, nextNumber, setTargetState } from './writes'
 
 const LIVE = process.env['FORGE_LIVE'] === '1' && DEFAULT_NETWORK === 'devnet'
-const ID_DIR = join(homedir(), '.config/dash-forge/test-identities/devnet-moutai')
+const ID_DIR = join(homedir(), '.config/dash-forge/test-identities', NETWORKS[DEFAULT_NETWORK].key)
 // The fixture's history (forge-contracts/scripts/seed-v2-fixture.mjs): c2 then c3.
 const C2 = 'b35c50122cd51b2cc0345760721e6398fa0c31f5'
 const C3 = '3a1300eb2441ef94fd927dbfc7548d34fbb8edc5'
@@ -59,7 +59,7 @@ function authOf(name: string): WriteAuth {
   return { identityId: parsed.identityId, network: 'devnet', getSigningKeyWif: () => parsed.signingKeyWif }
 }
 
-describe.skipIf(!LIVE)('live review parity (moutai)', () => {
+describe.skipIf(!LIVE)('live review parity (bonsia)', () => {
   it(
     'writes every review-parity document through the web writers and folds it back',
     async () => {
@@ -76,10 +76,10 @@ describe.skipIf(!LIVE)('live review parity (moutai)', () => {
       await grantMember(sdk, OWNER, repo, COLLAB.identityId, 'writer')
 
       // --- CONTRIB opens a draft PR --------------------------------------------------------
-      // (The PR composer's `createPatch` lands with the web launch branches; the document is
-      // written directly here, as forge-core `patch_props` does, with `draft`.)
+      // The patch as forge-core `patch_props` writes it (dense number, `tk` 1), then its
+      // author's draft transition (kind 14).
       const sha = (s: string) => new Uint8Array(createHash('sha256').update(s).digest())
-      const number = (await nextNumber(sdk, repo, 'patch')) ?? 1
+      const number = (await nextNumber(sdk, repo)) ?? 1
       const opened = await createDocumentIdempotent(sdk, CONTRIB, {
         contractId: forge.collab,
         documentType: DOC.patch,
@@ -94,11 +94,13 @@ describe.skipIf(!LIVE)('live review parity (moutai)', () => {
           sourceRefNameHash: sha('refs/heads/feature/greeting'),
           sourceRefName: 'refs/heads/feature/greeting',
           headOid: Buffer.from(C2, 'hex'),
-          draft: true,
+          tk: 1,
         },
       })
       const pr = { documentId: opened.documentId, number }
       const target = { id: pr.documentId, number: pr.number }
+      const stateTarget = { ...target, type: 'patch' as const, author: CONTRIB.identityId }
+      await setTargetState(sdk, CONTRIB, repo, { target: stateTarget, action: 'draft', isMember: false })
       // A node one block behind may not show a write the wait proved yet: retry briefly.
       const docOf = async () => {
         const read = async () =>
@@ -113,7 +115,7 @@ describe.skipIf(!LIVE)('live review parity (moutai)', () => {
 
       // the author (not a member) marks it ready and moves the head
       const author = { author: CONTRIB.identityId, isMember: false }
-      expect((await postTargetEvent(sdk, CONTRIB, repo, { target, kind: 'ready', ...author })).route).toBe('authorEvent')
+      await setTargetState(sdk, CONTRIB, repo, { target: stateTarget, action: 'ready', isMember: false })
       await postTargetEvent(sdk, CONTRIB, repo, { target, kind: 'headUpdate', ...author, payload: { oidHex: C3 } })
       pull = await readPull(sdk, repo, await docOf())
       expect(pull.state.draft).toBe(false)
@@ -142,7 +144,8 @@ describe.skipIf(!LIVE)('live review parity (moutai)', () => {
         startedAt: Date.now(),
       }
       await saveReviewDraft(draft)
-      const submitted = await submitReviewDraft(sdk, COLLAB, repo, draft)
+      // COLLAB is a writer of this scratch repo (granted above): a member's post.
+      const submitted = await submitReviewDraft(sdk, COLLAB, repo, draft, { isMember: true, locked: false })
       expect(submitted.commentIds).toHaveLength(3)
 
       // CONTRIB replies to the range thread and resolves it; OWNER dismisses the review

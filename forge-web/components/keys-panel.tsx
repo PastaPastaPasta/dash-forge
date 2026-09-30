@@ -9,6 +9,7 @@
  */
 
 import { useRef, useState } from 'react'
+import { GRANT_COPY, nextGrant } from '@/lib/auth/key-registration'
 import { BatteryCharging, Lock, LogOut, RefreshCw, ShieldOff, Wallet } from 'lucide-react'
 import { UnlimitedKeyWarning } from '@/components/auth/wallet-connect-flow'
 import { UnlockNeededError } from '@/lib/auth/controller'
@@ -48,6 +49,7 @@ export function KeysPanel(): JSX.Element {
     }
   }
   const openLogin = useUiStore((s) => s.openLogin)
+  const missingGrant = nextGrant(grants)
   const [explorer, setExplorer] = useState(() =>
     typeof window === 'undefined' ? '' : window.localStorage.getItem(INSIGHT_OVERRIDE_KEY) ?? '',
   )
@@ -102,10 +104,10 @@ export function KeysPanel(): JSX.Element {
           </p>
         </div>
       ) : null}
-      {storage === 'vault' && grants && !grants.collab ? (
+      {storage === 'vault' && missingGrant !== null ? (
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800" data-testid="grant-collab">
-          <span>This sign-in covers repositories and pushes. Issues, pull requests and stars need one more wallet approval.</span>
-          <Button variant="outline" size="sm" onClick={() => openLogin('grant')}>
+          <span>This sign-in covers repositories and pushes. {GRANT_COPY[missingGrant].what} need one more wallet approval.</span>
+          <Button variant="outline" size="sm" onClick={() => openLogin('grant', missingGrant)}>
             <Wallet className="h-3.5 w-3.5" aria-hidden /> Approve in wallet
           </Button>
         </div>

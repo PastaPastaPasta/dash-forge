@@ -38,7 +38,7 @@ Additional levers on top:
 Two headline numbers fall out:
 
 - **A retained byte costs ~27,400 credits** (~$9.30/MiB @ $34/DASH) — almost all of it a storage deposit.
-- **Pack bytes on the Platform tier are permanent.** `chunk`, `packManifest` and `manifestPart` are non-deletable on forge-v2 (owner decision 2026-09-25: an unbreakable repository outweighs the refund), so their deposit is a one-time cost, never refunded. A byte in a *deletable* document (comment, review, release, label, ...) that is later deleted permanently costs only the **non-refundable ~1.5%** (≈ 412 credits + the elapsed-epoch share of storage, §3).
+- **Pack bytes on the Platform tier are permanent.** `chunk` and `packManifest` are non-deletable on forge-v2 (owner decision 2026-09-25: an unbreakable repository outweighs the refund), so their deposit is a one-time cost, never refunded. A byte in a *deletable* document (comment, review, label, ...) that is later deleted permanently costs only the **non-refundable ~1.5%** (≈ 412 credits + the elapsed-epoch share of storage, §3).
 
 This is why chunk geometry maximizes fill (3 × 4,900 B fields → ~14.4 KiB/doc): per-doc base fees amortize to noise, and why external backends exist: a manifest-only push is a few hundred bytes total, and bulky pack bytes in a bucket the user controls can be garbage-collected there.
 
@@ -56,7 +56,7 @@ Mechanics (verified: `fee/epoch/distribution.rs::calculate_storage_fee_refund_am
 Constraints:
 
 - **Only the document's owner can delete it** — refunds are per-writer. A delete is never reference-checked, so this holds even after the writer's membership is revoked.
-- **Non-deletable types forgo refunds deliberately** ([forge-v2.md §4](contracts/forge-v2.md#4-non-deletable-audit-types)): `refUpdate`, `protectedRefUpdate`, `config`, `packManifest`, `manifestPart`, `chunk`, `event`, `authorEvent`, `issue`, `patch`, `repo`, `repoKey`. Deleting any of them would let a writer rewind a branch, rewrite a thread, or pull pack bytes out from under refs that other people's history points into. Still deletable, and so refundable to their author: `comment`, `review`, `release`, `label`, `checkRun`, `webhook`, `profile`, `star`, `follow`, and the membership documents.
+- **Non-deletable types forgo refunds deliberately** ([forge-v2.md §4](contracts/forge-v2.md#4-non-deletable-audit-types)): `refUpdate`, `protectedRefUpdate`, `config`, `packManifest`, `chunk`, `release` (unpublishing is a new revision, RC1 O-04), `event`, `authorEvent`, `transition`, `issue`, `patch`, `repo`, `repoKey`. Deleting any of them would let a writer rewind a branch, rewrite a thread, or pull pack bytes out from under refs that other people's history points into. Still deletable, and so refundable to their author: `comment`, `review`, `label`, `checkRun`, `webhook`, `profile`, `star`, `follow`, and the membership documents.
 - Honesty about aggregates: the audit trail **grows unbounded with activity and is never reclaimed** — ~0.08 DASH per 1,000 pushes in ref updates alone, so a monorepo with 50k historical pushes has ~4 DASH (~$135) permanently locked in reflog. A checkpoint/compaction scheme for ancient reflog is a named open design question.
 
 ## 4. Old, no-longer-relevant data
@@ -67,7 +67,7 @@ Git never deletes eagerly and neither does Forge — objects become *unreachable
 
 1. **`dg repack`** builds one consolidated max-compression pack of all *currently reachable* objects and uploads it.
 2. The new `packManifest` lists `supersedes: [old packHashes]` — readers prefer it and read fewer packs.
-3. Nothing is deleted: the superseded `chunk`/`packManifest`/`manifestPart` documents are non-deletable, stay readable as a fallback, and keep their deposit. The consolidated pack is an *additional* deposit.
+3. Nothing is deleted: the superseded `chunk`/`packManifest` documents are non-deletable, stay readable as a fallback, and keep their deposit. The consolidated pack is an *additional* deposit.
 
 So on the Platform tier **a repo's locked deposit is its cumulative push history plus any repacks**, not its current size. Repack there for read performance, not for cost.
 
@@ -88,7 +88,7 @@ So on the Platform tier **a repo's locked deposit is its cumulative push history
 
 1. External or mixed backend for anything bulky (the biggest lever by 100×).
 2. Store the smaller of the two locator-quality push-pack candidates (`build_pack`); max-effort compression at repack.
-3. Fill chunks to ~14.4 KiB. Each push also publishes its **browse-index fragment** — a locator over just that pack, 36 B per object the push added. It is the only random-access path to objects newer than the last repack, and it replaces the `manifestPart` per-pack offset index the design originally called for: same role, but it is the same artifact and the same reader as the repack-time index, rather than a second format. Nothing writes a `manifestPart`, so `packManifest.offsetIndexParts` is 0 on every kind except a history index (kind 3), which records its format version there (0 = v1, 2 = with per-path version lists).
+3. Fill chunks to ~14.4 KiB. Each push also publishes its **browse-index fragment** — a locator over just that pack, 36 B per object the push added. It is the only random-access path to objects newer than the last repack, and it replaces the per-pack offset index (`manifestPart`) the design originally called for: same role, but it is the same artifact and the same reader as the repack-time index, rather than a second format. RC1 removed `manifestPart` and `packManifest.offsetIndexParts` from the contract (R-09), so the format version a history index (kind 3) kept there (0 = v1, 2 = with per-path version lists) moves into the artifact's own header (the client follow-up to #168).
 4. Repack on the external tier and garbage-collect the bucket; on the Platform tier repack only for read performance (it adds a deposit and refunds nothing).
 5. Keep social docs lean (5 KiB body cap already enforces this); `documentsKeepHistory` means every edit re-deposits the doc — the UI shows edit cost like any write.
 6. Cost engine displays deposit vs burn separately (DASH primary).

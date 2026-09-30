@@ -64,7 +64,9 @@ use dash_sdk::platform::fetch_current_no_parameters::FetchCurrent;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::{DataContract, Fetch, FetchMany, Identifier, Identity, IdentityPublicKey};
 use dash_sdk::{RequestSettings, Sdk, SdkBuilder};
-use drive_proof_verifier::DocumentCount;
+use drive_proof_verifier::{
+    DocumentCount, DocumentSplitCounts, DocumentSplitSums, SplitCountEntry, SplitSumEntry,
+};
 use rs_sdk_trusted_context_provider::TrustedHttpContextProvider;
 use simple_signer::single_key_signer::SingleKeySigner;
 
@@ -80,6 +82,40 @@ pub const NONCE_MASK: u64 = (1 << 40) - 1;
 /// the *identical* signed bytes (same nonce + entropy), so extra attempts can only make
 /// the write land once — never twice.
 const MAX_BROADCAST_ATTEMPTS: u32 = 4;
+
+/// The `propertyConstraints` rules that read a total (`countOf` / `sumOf`), by document type: a
+/// `packManifest`'s chunks, a release tag's revisions, an issue or PR number's predecessors, a
+/// thread's transitions, a repo's topics. A node one block behind the documents that feed the
+/// total (the writer's own chunks, a revision just published) judges it without them and refuses
+/// a correct write (10422). At CheckTx that refusal comes before the nonce is spent, so the same
+/// signed bytes can be sent again once the node has caught up ([`MAX_LAG_RETRIES`]). Every one
+/// of these rules is judged by whichever node answers: a real refusal is final after the
+/// retries, a few seconds later.
+const TOTAL_READING_RULES: [(&str, &str); 13] = [
+    ("packManifest", "platformChunks"),
+    ("release", "oneLive"),
+    ("topic", "atMost20"),
+    ("issue", "dense"),
+    ("patch", "dense"),
+    ("transition", "c1_closedAfter"),
+    ("transition", "c2_openAfter"),
+    ("transition", "c3_mergedAfter"),
+    ("transition", "c4_draftAfter"),
+    ("transition", "c5_draftClosedAfter"),
+    ("transition", "c6_lockedAfter"),
+    ("comment", "lockGate"),
+    ("review", "lockGate"),
+];
+
+/// Re-broadcasts of a transition a total-reading rule refused ([`TOTAL_READING_RULES`]): after
+/// about one block, then two (1.5 and 3 times the retry backoff: 3 s and 6 s). A refusal that
+/// outlasts them is the rule's answer, not lag.
+const MAX_LAG_RETRIES: u32 = 2;
+
+/// Whether `rule` of `document_type` reads a total that lags behind the writer's own writes.
+fn reads_a_total(document_type: &str, rule: &str) -> bool {
+    TOTAL_READING_RULES.contains(&(document_type, rule))
+}
 
 /// How long one `waitForStateTransitionResult` may take, on one node, before the write loop
 /// re-broadcasts instead.
@@ -120,6 +156,7 @@ const DAPI_RETRIES: usize = 6;
 pub use crate::network::{Network, NetworkTarget};
 
 pub mod identity_keys;
+mod quorum;
 pub mod wrap;
 
 pub mod core_chain;
@@ -323,6 +360,11 @@ pub struct PlatformClient {
     /// contract is fetched at most once per process (it was re-fetched by nearly every read,
     /// the dominant cost of `dg pr list`, D-500).
     contracts: Mutex<HashMap<String, LoadedContract>>,
+    /// DPNS name resolutions in this process, keyed by the homograph-safe label
+    /// (`resolve_dpns_name`'s label, without `.dash`): `Some(id)` when registered, `None`
+    /// when a proved read found no such name. A repository lookup that spells its owner as a
+    /// name (`dash://alice/project`) resolves it again on every reference otherwise.
+    dpns_cache: Mutex<HashMap<String, Option<String>>>,
     /// Set once the network refused a composite query: [`Self::query_batch`] then reads one
     /// by one for the rest of the process.
     no_composite: AtomicBool,
@@ -427,11 +469,15 @@ impl PlatformClient {
             .with_context_provider(context_provider.clone())
             .build()
             .map_err(|e| Error::Platform(format!("building SDK: {e}")))?;
+        // A quorum rotation the quorum service lags gets every node banned for proofs no node
+        // could have made verifiable: the retries unban them ([`quorum`]).
+        quorum::register(sdk.address_list(), &context_provider);
 
         Ok(Self {
             sdk,
             target,
             contracts: Mutex::default(),
+            dpns_cache: Mutex::default(),
             no_composite: AtomicBool::new(std::env::var_os("DASH_FORGE_NO_COMPOSITE").is_some()),
             history: crate::history::HistoryStore::default(),
             context_provider,
@@ -646,7 +692,7 @@ impl PlatformClient {
     /// build records for the network; `None` for any other contract (a repository's own).
     fn forge_contract_missing(&self, contract_id: &str, detail: &str) -> Option<Error> {
         let forge = self.target.v2.as_ref()?;
-        if contract_id != forge.core && contract_id != forge.collab {
+        if !forge.contains(contract_id) {
             return None;
         }
         let network = &self.target.network;
@@ -1137,6 +1183,87 @@ impl PlatformClient {
         Ok(count.map_or(0, |c| c.0))
     }
 
+    /// Proved counts of `document_type` documents matching `filters`, one per value of the
+    /// `In` filter on `group_field` (`select count(*) … group by group_field`,
+    /// [`DocumentSplitCounts`]): Drive answers one count tree per `In` value of a countable
+    /// index the filters cover exactly (`PointLookupProof`). Keyed by the value's tree-key
+    /// bytes ([`decode_u8_key`] for an integer ≤ 255, the 32 raw bytes for an identifier); a
+    /// value with no documents is absent (read it as 0). No `limit` is sent: Drive refuses one
+    /// on a group-by-`In` aggregate (the `In` array, ≤ 100 values, bounds the result).
+    pub async fn count_documents_grouped(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        filters: &[QueryFilter],
+        group_field: &str,
+    ) -> Result<BTreeMap<Vec<u8>, u64>> {
+        let query = Self::grouped_query(contract, document_type, filters, group_field)?
+            .with_select(SelectProjection::count_star());
+        let counts = retry_transient_read("grouped count", || {
+            DocumentSplitCounts::fetch(&self.sdk, query.clone())
+        })
+        .await
+        .map_err(|e| {
+            self.read_error(
+                &contract.id(),
+                &e,
+                &format!("counting {document_type} documents by {group_field}"),
+            )
+        })?;
+        Ok(split_counts(counts.map(|c| c.0).unwrap_or_default()))
+    }
+
+    /// Proved sums of `sum_field` over `document_type` documents matching `filters`, one per
+    /// value of the `In` filter on `group_field` (`select sum(sum_field) … group by
+    /// group_field`, [`DocumentSplitSums`]) on an index whose `summable` names `sum_field`.
+    /// Keyed like [`Self::count_documents_grouped`]; a value with no documents is absent.
+    pub async fn sum_documents_grouped(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        filters: &[QueryFilter],
+        group_field: &str,
+        sum_field: &str,
+    ) -> Result<BTreeMap<Vec<u8>, i64>> {
+        let query = Self::grouped_query(contract, document_type, filters, group_field)?
+            .with_select(SelectProjection::sum(sum_field));
+        let sums = retry_transient_read("grouped sum", || {
+            DocumentSplitSums::fetch(&self.sdk, query.clone())
+        })
+        .await
+        .map_err(|e| {
+            self.read_error(
+                &contract.id(),
+                &e,
+                &format!("summing {document_type}.{sum_field} by {group_field}"),
+            )
+        })?;
+        Ok(split_sums(sums.map(|s| s.0).unwrap_or_default()))
+    }
+
+    /// The query of a grouped aggregate: `filters`, grouped by `group_field`, no limit.
+    fn grouped_query(
+        contract: &LoadedContract,
+        document_type: &str,
+        filters: &[QueryFilter],
+        group_field: &str,
+    ) -> Result<DocumentQuery> {
+        if !filters
+            .iter()
+            .any(|f| f.op == QueryOp::In && f.field == group_field)
+        {
+            return Err(Error::Config(format!(
+                "a grouped aggregate groups by an `in` filter; none on {group_field}"
+            )));
+        }
+        let mut query = DocumentQuery::new(Arc::clone(&contract.0), document_type)
+            .map_err(|e| Error::Platform(format!("building grouped query: {e}")))?;
+        for f in filters {
+            query = query.with_where(f.to_where_clause());
+        }
+        Ok(query.with_group_by(group_field))
+    }
+
     /// What is left of key `key_id`'s budget on `identity_id` (protocol 14), proof-verified.
     /// `None` when the key has no budget (or does not exist); `Some(0)` when it is spent.
     pub async fn key_remaining_budget(
@@ -1158,6 +1285,43 @@ impl PlatformClient {
         .map_err(|e| Error::Platform(format!("reading key {key_id}'s remaining budget: {e}")))?;
         Ok(budgets.and_then(|b| b.get(&key_id).copied().flatten()))
     }
+}
+
+/// Flat grouped counts: entries summed per key across `In` forks (a flat query has none), an
+/// absent or unproved count read as 0.
+fn split_counts(entries: Vec<SplitCountEntry>) -> BTreeMap<Vec<u8>, u64> {
+    let mut out: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
+    for e in entries {
+        let slot = out.entry(e.key).or_default();
+        *slot = slot.saturating_add(e.count.unwrap_or(0));
+    }
+    out
+}
+
+/// Flat grouped sums, as [`split_counts`].
+fn split_sums(entries: Vec<SplitSumEntry>) -> BTreeMap<Vec<u8>, i64> {
+    let mut out: BTreeMap<Vec<u8>, i64> = BTreeMap::new();
+    for e in entries {
+        let slot = out.entry(e.key).or_default();
+        *slot = slot.saturating_add(e.sum.unwrap_or(0));
+    }
+    out
+}
+
+/// The value of a `u8` property from its tree key (one byte, sign bit flipped: rs-dpp
+/// `DocumentPropertyType::encode_u8`). `None` for a key of another width.
+#[must_use]
+pub fn decode_u8_key(key: &[u8]) -> Option<u8> {
+    match key {
+        [b] => Some(b ^ 0x80),
+        _ => None,
+    }
+}
+
+/// The identifier (base58) an identifier property's tree key names (its 32 raw bytes).
+#[must_use]
+pub fn decode_identifier_key(key: &[u8]) -> Option<String> {
+    <[u8; 32]>::try_from(key).ok().map(encode_identifier)
 }
 
 /// A read-only where-operator, mapped to the SDK's [`WhereOperator`] inside this module.
@@ -1635,6 +1799,8 @@ impl<'a> WriteEngine<'a> {
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
             creator_id: None,
+            moderated_at: None,
+            moderated_by: None,
             // Assigned by Drive on create; not part of the client-built document.
             contract_version: None,
         });
@@ -1715,6 +1881,8 @@ impl<'a> WriteEngine<'a> {
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
             creator_id: None,
+            moderated_at: None,
+            moderated_by: None,
             // Assigned by Drive on create; not part of the client-built document.
             contract_version: None,
         });
@@ -1804,6 +1972,9 @@ impl<'a> WriteEngine<'a> {
             // execution-proved outcomes too, so nothing weakens for the other types, and for a
             // sign-once write "the proven state holds it" is exactly the success condition — a
             // duplicate of the same signed bytes is rejected on its nonce, not proved again.
+            // Still needed on v4.2.0-beta.7: platform#5136 made the SDK's own document put and
+            // delete wait this way for an indexOnly type, but this engine broadcasts and waits
+            // itself, and the strict `wait_for_response` still refuses such an outcome.
             || async {
                 state_transition
                     .wait_for_affected_state::<StateTransitionProofResult>(
@@ -1816,6 +1987,7 @@ impl<'a> WriteEngine<'a> {
             },
             || self.nonce_spent(&state_transition, prepared.signed.nonce),
             RETRY_BACKOFF_BASE,
+            &quorum::QUORUM_WAITS,
             document_type,
         )
         .await
@@ -2366,6 +2538,10 @@ pub enum FieldValue {
     /// a minimal-width encoding (e.g. `U32`) mismatches Drive's stored width and fails proof
     /// verification. `imported.createdAt` is the case in point (data-contracts §2.4).
     Uint64(u64),
+    /// A signed integer field (forge-v2 `transition.delta`, −8..8). Serialized at its minimal
+    /// signed width; a top-level typed field (`I8` under sized integer types) coerces it. Reads
+    /// of a negative integer land here; a non-negative one reads back as [`FieldValue::Integer`].
+    Signed(i64),
     /// A UTF-8 string field (e.g. `defaultBranch`, `normalizedName`).
     Text(String),
     /// A boolean field (e.g. `force`, `archived`).
@@ -2427,8 +2603,23 @@ impl FieldValue {
     pub fn as_u64(&self) -> Option<u64> {
         match self {
             FieldValue::Integer(n) | FieldValue::Uint64(n) => Some(*n),
+            FieldValue::Signed(n) => u64::try_from(*n).ok(),
             _ => None,
         }
+    }
+
+    /// The signed value of any integer field, if this is one that fits an `i64`.
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            FieldValue::Integer(n) | FieldValue::Uint64(n) => i64::try_from(*n).ok(),
+            FieldValue::Signed(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// A signed integer field ([`FieldValue::Signed`]).
+    pub fn signed(n: i64) -> Self {
+        FieldValue::Signed(n)
     }
 
     /// A string list: the items of a [`FieldValue::List`] of `Text`. An empty array reads
@@ -2462,7 +2653,7 @@ impl FieldValue {
         }
     }
 
-    fn into_value(self) -> Value {
+    pub(crate) fn into_value(self) -> Value {
         match self {
             FieldValue::Bytes(b) => Value::Bytes(b),
             FieldValue::Bytes32(b) => Value::Bytes32(b),
@@ -2478,6 +2669,7 @@ impl FieldValue {
             FieldValue::Integer(n) => minimal_uint(n),
             // Full-width u64 for an unbounded nested integer (matches Drive's stored width).
             FieldValue::Uint64(n) => Value::U64(n),
+            FieldValue::Signed(n) => minimal_int(n),
             FieldValue::Text(s) => Value::Text(s),
             FieldValue::Bool(b) => Value::Bool(b),
             FieldValue::Object(map) => Value::Map(
@@ -2506,11 +2698,13 @@ impl FieldValue {
             Value::U128(n) => FieldValue::Integer(u64::try_from(*n).ok()?),
             Value::I128(n) => FieldValue::Integer(u64::try_from(*n).ok()?),
             Value::U64(n) => FieldValue::Integer(*n),
-            Value::I64(n) => FieldValue::Integer(u64::try_from(*n).ok()?),
+            Value::I64(n) => signed_or_unsigned(*n),
             Value::U32(n) => FieldValue::Integer(u64::from(*n)),
-            Value::I32(n) => FieldValue::Integer(u64::try_from(*n).ok()?),
+            Value::I32(n) => signed_or_unsigned(i64::from(*n)),
             Value::U16(n) => FieldValue::Integer(u64::from(*n)),
+            Value::I16(n) => signed_or_unsigned(i64::from(*n)),
             Value::U8(n) => FieldValue::Integer(u64::from(*n)),
+            Value::I8(n) => signed_or_unsigned(i64::from(*n)),
             // A byteArray that came back as an array of U8 → repack to bytes. Anything else
             // is a typed array (forge-v2 string lists).
             Value::Array(items) if items.iter().all(|i| matches!(i, Value::U8(_))) => {
@@ -2733,6 +2927,28 @@ pub fn encode_identifier(bytes: [u8; 32]) -> String {
     Identifier::from(bytes).to_string(Encoding::Base58)
 }
 
+/// A read integer: non-negative ones stay [`FieldValue::Integer`] (every existing reader), a
+/// negative one is [`FieldValue::Signed`] (sized integer types store `transition.delta` as `I8`).
+fn signed_or_unsigned(n: i64) -> FieldValue {
+    u64::try_from(n).map_or(FieldValue::Signed(n), FieldValue::Integer)
+}
+
+/// The smallest signed `Value` holding `n` ([`minimal_uint`] for a non-negative one).
+fn minimal_int(n: i64) -> Value {
+    if let Ok(u) = u64::try_from(n) {
+        return minimal_uint(u);
+    }
+    if let Ok(v) = i8::try_from(n) {
+        Value::I8(v)
+    } else if let Ok(v) = i16::try_from(n) {
+        Value::I16(v)
+    } else if let Ok(v) = i32::try_from(n) {
+        Value::I32(v)
+    } else {
+        Value::I64(n)
+    }
+}
+
 /// The smallest-width unsigned `Value` holding `n` — the canonical CBOR integer form
 /// (integer `0` decodes back as `U8(0)`, not `U64(0)`). Matching it keeps a nested-object
 /// integer's signed value equal to what the network stores and the proof returns; a
@@ -2811,6 +3027,10 @@ enum WriteFailure {
     /// A transient failure (stale node, timeout, proof mismatch). Safe to re-broadcast
     /// the same signed bytes — the SDK's authoritative `CanRetry::can_retry()` says so.
     Retryable(String),
+    /// A proof no node could make verifiable yet: the quorum that signed it rotated in and the
+    /// quorum service has not caught up ([`quorum`]). Retried like [`Self::Retryable`], after
+    /// the longer [`quorum::QUORUM_WAITS`].
+    QuorumMiss(String),
     /// A terminal failure surfaced as a crate error.
     Fatal(Error),
 }
@@ -2856,6 +3076,20 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
         return WriteFailure::Fatal(Error::StaleProtocolVersion(format!("{err:?}")));
     }
 
+    // 10422: a `propertyConstraints` rule of the type does not hold (forge-v2: a dense number
+    // another create took, a state move the target's transitions no longer allow). Refused
+    // before execution, so nothing landed; the caller re-reads and decides.
+    if let Some(ConsensusError::BasicError(BasicError::DocumentPropertyConstraintViolatedError(
+        err,
+    ))) = consensus_error_of(e)
+    {
+        return WriteFailure::Fatal(Error::RuleRefused {
+            document_type: err.document_type_name().to_string(),
+            rule: err.constraint().to_string(),
+            detail: err.to_string(),
+        });
+    }
+
     if let Some(ConsensusError::StateError(state_error)) = consensus_error_of(e) {
         match state_error {
             // The document is already present, or the baked nonce was already consumed
@@ -2883,15 +3117,31 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
             }
             // 40120 on the writer path: a protocol-14 `ownerRefersTo` gate found no
             // membership document for the writer (forge-v2: never granted, or revoked; or a
-            // writer where the type needs a maintainer).
-            StateError::ReferencedEntityNotFoundError(err) if err.path() == "$ownerId" => {
-                return WriteFailure::Fatal(Error::NotAMember {
-                    document_type: document_type.to_string(),
-                    detail: format!("40120: {err}"),
-                })
+            // writer where the type needs a maintainer). RC1's `asMember` proof is the same
+            // gate on a property: the signer's maintainer/writer document.
+            StateError::ReferencedEntityNotFoundError(err) => {
+                let document_type = document_type.to_string();
+                let detail = format!("40120: {err}");
+                return WriteFailure::Fatal(match err.path() {
+                    "$ownerId" | "asMember" => Error::NotAMember {
+                        document_type,
+                        detail,
+                    },
+                    // Any other path: what a property refers to is missing (a revoked member a
+                    // `repoKey` wraps to, a `consent` not written yet, a deleted parent).
+                    path => Error::ReferenceNotFound {
+                        document_type,
+                        path: path.to_string(),
+                        detail,
+                    },
+                });
             }
             _ => {}
         }
+    }
+
+    if quorum::is_quorum_miss(e) {
+        return WriteFailure::QuorumMiss(e.to_string());
     }
 
     // The SDK's retry signal (StaleNode / TimeoutReached / Proof) plus node-level transport
@@ -2983,6 +3233,7 @@ async fn drive_write<B, BFut, W, WFut, N, NFut>(
     mut wait: W,
     mut nonce_spent: N,
     backoff: std::time::Duration,
+    quorum_waits: &[std::time::Duration],
     document_type: &str,
 ) -> Result<BroadcastOutcome>
 where
@@ -2994,6 +3245,10 @@ where
     NFut: std::future::Future<Output = bool>,
 {
     let mut attempt: u32 = 0;
+    let mut lag_retries: u32 = 0;
+    let mut quorum_retries: u32 = 0;
+    // An earlier send of this call may have reached a node: a later TxKnown is then ours.
+    let mut tried = false;
     // Whether a broadcast in THIS call was accepted. A transition the node already knew on
     // our first send was broadcast by an earlier call (a replayed journal): its landing is
     // reported as `AlreadyExists`, not as a fresh `Applied`.
@@ -3002,11 +3257,18 @@ where
         attempt += 1;
         let started = std::time::Instant::now();
         let sent_now = broadcast().await;
+        // A refusal the broadcast returned is CheckTx's (nonce unspent: may be sent again); one
+        // the wait returns (after a send or TxKnown) came from block execution: final.
+        let at_check_tx = matches!(sent_now, Err(ref f) if !matches!(f, WriteFailure::TxKnown));
+        let tried_before = tried;
+        // Only a send that may have reached a node: accepted, or no answer (not one refused
+        // before it left, such as every node banned).
+        tried |= matches!(sent_now, Ok(()) | Err(WriteFailure::Retryable(_)));
         let failure = match sent_now {
             Ok(()) | Err(WriteFailure::TxKnown) => {
-                // A plain Ok is our own send. TxKnown on a later attempt is too: an earlier
-                // attempt's bytes reached the node even though its answer did not reach us.
-                sent |= sent_now.is_ok() || attempt > 1;
+                // Ok is our own send, and so is TxKnown after an earlier send of ours; TxKnown on
+                // every send so far (a replayed journal) is not.
+                sent |= sent_now.is_ok() || tried_before;
                 match wait().await {
                     Ok(()) => {
                         tracing::debug!(
@@ -3021,31 +3283,44 @@ where
                             BroadcastOutcome::AlreadyExists
                         });
                     }
-                    // No answer: can the transition still land at all?
-                    Err(WriteFailure::Retryable(reason)) => {
+                    // No answer: can it still land? (A quorum miss asks after its pause.)
+                    Err(f @ WriteFailure::Retryable(_)) => {
                         if nonce_spent().await {
                             tracing::warn!(
                                 document_type,
                                 attempt,
                                 elapsed_elapsed_ms = duration_ms(started.elapsed()),
-                                error = %reason,
                                 "no result, and the write's nonce is spent: it landed or another \
                                  write by this identity took the nonce"
                             );
                             return Ok(BroadcastOutcome::NonceConsumed);
                         }
-                        WriteFailure::Retryable(reason)
+                        f
                     }
                     Err(f) => f,
                 }
             }
             Err(f) => f,
         };
+        let failure = match wait_out_quorum(
+            failure,
+            quorum_waits,
+            &mut quorum_retries,
+            document_type,
+            &mut nonce_spent,
+        )
+        .await
+        {
+            QuorumStep::Retry => continue,
+            QuorumStep::Landed => return Ok(BroadcastOutcome::NonceConsumed),
+            QuorumStep::Failure(f) => f,
+        };
+        let used = attempt - lag_retries - quorum_retries;
         match failure {
             WriteFailure::AlreadyLanded => return Ok(BroadcastOutcome::AlreadyExists),
             WriteFailure::NonceConsumed => return Ok(BroadcastOutcome::NonceConsumed),
-            WriteFailure::Retryable(reason) if attempt < MAX_BROADCAST_ATTEMPTS => {
-                let delay = backoff_delay(backoff, attempt);
+            WriteFailure::Retryable(reason) if used < MAX_BROADCAST_ATTEMPTS => {
+                let delay = backoff_delay(backoff, used);
                 tracing::warn!(
                     document_type,
                     attempt,
@@ -3056,13 +3331,91 @@ where
                 );
                 tokio::time::sleep(delay).await;
             }
-            // Only a broadcast answers TxKnown, and that is handled above; a wait cannot.
-            WriteFailure::Retryable(_) | WriteFailure::TxKnown => {
+            // Only a broadcast answers TxKnown, and that is handled above; a wait cannot. A
+            // quorum miss was made Retryable above.
+            WriteFailure::Retryable(_) | WriteFailure::TxKnown | WriteFailure::QuorumMiss(_) => {
                 tracing::warn!(document_type, attempt, "write not confirmed; giving up");
                 return Err(Error::Timeout { retryable: true });
             }
+            // A total-reading rule refused it: the judging node may not hold this identity's
+            // documents of the last block yet (a manifest right after its chunks). Nothing was
+            // spent; send the same bytes again once it has caught up.
+            WriteFailure::Fatal(Error::RuleRefused {
+                document_type: refused,
+                rule,
+                detail,
+            }) if at_check_tx
+                && reads_a_total(&refused, &rule)
+                && lag_retries < MAX_LAG_RETRIES =>
+            {
+                lag_retries += 1;
+                wait_out_lag(document_type, &rule, &detail, backoff, lag_retries).await;
+            }
             WriteFailure::Fatal(err) => return Err(err),
         }
+    }
+}
+
+/// Before lag retry `n` (1-based) of a write a total-reading rule refused at CheckTx: wait about
+/// a block, then two ([`MAX_LAG_RETRIES`]), for the node to catch up.
+async fn wait_out_lag(
+    document_type: &str,
+    rule: &str,
+    detail: &str,
+    backoff: std::time::Duration,
+    n: u32,
+) {
+    let delay = backoff_delay(backoff * 3 / 2, n);
+    tracing::warn!(
+        document_type,
+        rule,
+        delay_ms = duration_ms(delay),
+        error = %detail,
+        "refused by a rule that reads a total; re-broadcasting once the node has caught up \
+         with this identity's latest writes"
+    );
+    tokio::time::sleep(delay).await;
+}
+
+/// What [`drive_write`] does after [`wait_out_quorum`].
+enum QuorumStep {
+    /// Send the same bytes again.
+    Retry,
+    /// The nonce was spent while it waited: the write landed, or another took the nonce.
+    Landed,
+    /// Handle this failure as usual.
+    Failure(WriteFailure),
+}
+
+/// A quorum the quorum service has not caught up with ([`WriteFailure::QuorumMiss`]): wait for
+/// it ([`quorum::wait_for_quorum`]: unbanning the nodes banned over it), then ask whether the
+/// nonce was spent meanwhile before sending again, without spending an ordinary attempt. When
+/// no wait is due (past the pacing or the rotation's budget, or an unreachable quorum service)
+/// it is an ordinary retryable failure, asked the same question first. Any other failure is
+/// returned as it is.
+async fn wait_out_quorum<N, NFut>(
+    failure: WriteFailure,
+    waits: &[std::time::Duration],
+    retries: &mut u32,
+    document_type: &str,
+    nonce_spent: &mut N,
+) -> QuorumStep
+where
+    N: FnMut() -> NFut,
+    NFut: std::future::Future<Output = bool>,
+{
+    let WriteFailure::QuorumMiss(reason) = failure else {
+        return QuorumStep::Failure(failure);
+    };
+    let waited = quorum::wait_for_quorum(document_type, waits, *retries as usize).await;
+    if nonce_spent().await {
+        return QuorumStep::Landed;
+    }
+    if waited {
+        *retries += 1;
+        QuorumStep::Retry
+    } else {
+        QuorumStep::Failure(WriteFailure::Retryable(reason))
     }
 }
 
@@ -3087,11 +3440,12 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = std::result::Result<T, dash_sdk::Error>>,
 {
-    retry_with_backoff(
+    retry_with_quorum_waits(
         label,
         RETRY_BACKOFF_BASE,
         is_transient_node_error,
         rate_limit_reset,
+        (quorum::is_quorum_miss, &quorum::QUORUM_WAITS),
         || {
             let fut = op();
             async move {
@@ -3155,18 +3509,47 @@ fn rate_limit_reset(e: &dash_sdk::Error) -> Option<std::time::Duration> {
     }
 }
 
-/// The loop behind [`retry_transient_read`], generic over the error and the delay so the
-/// attempt count and backoff are testable without a network or a real clock.
-///
-/// A rate-limit refusal (`rate_limited` returns the reset the gateway asked for) is not a
-/// failed attempt: the loop waits out the reset (plus jitter) and asks again, up to
-/// [`crate::budget::MAX_RATE_LIMIT_WAITS`] times, and says so on stderr once per wait
-/// (D-902: a rate limit used to ban every node and fail the command).
+/// [`retry_with_quorum_waits`] with no quorum waits: what the attempt-count and rate-limit tests
+/// drive.
+#[cfg(test)]
 async fn retry_with_backoff<T, E, F, Fut>(
     label: &str,
     base: std::time::Duration,
     transient: impl Fn(&E) -> bool,
     rate_limited: impl Fn(&E) -> Option<std::time::Duration>,
+    op: F,
+) -> std::result::Result<T, E>
+where
+    E: std::fmt::Display,
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<T, E>>,
+{
+    retry_with_quorum_waits(
+        label,
+        base,
+        transient,
+        rate_limited,
+        (|_: &E| false, &[]),
+        op,
+    )
+    .await
+}
+
+/// The loop behind [`retry_transient_read`], generic over the error and the delays so the
+/// attempt count and backoff are testable without a network or a real clock.
+///
+/// A rate-limit refusal (`rate_limited` returns the reset the gateway asked for) is not a
+/// failed attempt: the loop waits out the reset (plus jitter) and asks again, up to
+/// [`crate::budget::MAX_RATE_LIMIT_WAITS`] times, and says so on stderr once per wait
+/// (D-902: a rate limit used to ban every node and fail the command). Nor is a quorum miss
+/// (`quorum.0`, [`quorum::is_quorum_miss`]): it is retried after each pause of `quorum.1` in
+/// turn, every node unbanned first. Past those, failures take the ordinary attempts.
+async fn retry_with_quorum_waits<T, E, F, Fut>(
+    label: &str,
+    base: std::time::Duration,
+    transient: impl Fn(&E) -> bool,
+    rate_limited: impl Fn(&E) -> Option<std::time::Duration>,
+    quorum: (impl Fn(&E) -> bool, &[std::time::Duration]),
     mut op: F,
 ) -> std::result::Result<T, E>
 where
@@ -3174,13 +3557,19 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = std::result::Result<T, E>>,
 {
+    let (quorum_miss, quorum_waits) = quorum;
     let mut attempt: u32 = 1;
     let mut waits: u32 = 0;
+    let mut quorum_retries: usize = 0;
     loop {
         let e = match op().await {
             Ok(v) => return Ok(v),
             Err(e) => e,
         };
+        if quorum_miss(&e) && quorum::wait_for_quorum(label, quorum_waits, quorum_retries).await {
+            quorum_retries += 1;
+            continue;
+        }
         match rate_limited(&e) {
             Some(reset) if waits < crate::budget::MAX_RATE_LIMIT_WAITS => {
                 waits += 1;
@@ -3360,6 +3749,85 @@ mod tests {
     use crate::error::{Error, Result};
     use std::cell::RefCell;
     use std::collections::BTreeMap;
+
+    /// The grouped-count keys of `transition.kind` (a `u8` under sized integer types) and the
+    /// grouped-sum keys of `targetId` (an identifier), as Drive serializes them
+    /// (`encode_value_for_tree_keys`): checked against rs-dpp's own encoder.
+    #[test]
+    fn grouped_aggregate_keys_decode_as_drive_encodes_them() {
+        use dash_sdk::dpp::data_contract::document_type::DocumentPropertyType;
+        use dash_sdk::dpp::platform_value::Value;
+        for kind in [1u8, 2, 11, 12, 13, 14, 15, 16, 17, 0, 255] {
+            let key = DocumentPropertyType::U8
+                .encode_value_for_tree_keys(&Value::U8(kind))
+                .unwrap();
+            assert_eq!(key, DocumentPropertyType::encode_u8(kind));
+            assert_eq!(super::decode_u8_key(&key), Some(kind), "kind {kind}");
+        }
+        assert_eq!(super::decode_u8_key(&[1, 2]), None);
+        let id = [7u8; 32];
+        let key = DocumentPropertyType::Identifier
+            .encode_value_for_tree_keys(&Value::Identifier(id))
+            .unwrap();
+        assert_eq!(
+            super::decode_identifier_key(&key),
+            Some(super::encode_identifier(id))
+        );
+        assert_eq!(super::decode_identifier_key(&key[..31]), None);
+    }
+
+    /// Split entries flatten per key; an unproved (`None`) value reads 0.
+    #[test]
+    fn split_entries_flatten_per_key() {
+        use drive_proof_verifier::{SplitCountEntry, SplitSumEntry};
+        let counts = super::split_counts(vec![
+            SplitCountEntry {
+                in_key: None,
+                key: vec![0x81],
+                count: Some(3),
+            },
+            SplitCountEntry {
+                in_key: None,
+                key: vec![0x82],
+                count: None,
+            },
+        ]);
+        assert_eq!(counts, BTreeMap::from([(vec![0x81], 3), (vec![0x82], 0)]));
+        let sums = super::split_sums(vec![
+            SplitSumEntry {
+                in_key: None,
+                key: vec![1; 32],
+                sum: Some(-1),
+            },
+            SplitSumEntry {
+                in_key: Some(vec![9]),
+                key: vec![1; 32],
+                sum: Some(9),
+            },
+        ]);
+        assert_eq!(sums, BTreeMap::from([(vec![1; 32], 8)]));
+    }
+
+    /// `transition.delta` is signed: a negative value goes out as a signed `Value` and reads
+    /// back as [`FieldValue::Signed`]; a non-negative one stays [`FieldValue::Integer`].
+    #[test]
+    fn signed_integers_round_trip() {
+        use dash_sdk::dpp::platform_value::Value;
+        assert_eq!(FieldValue::signed(-8).into_value(), Value::I8(-8));
+        assert_eq!(FieldValue::signed(2).into_value(), Value::U8(2));
+        assert_eq!(FieldValue::signed(-300).into_value(), Value::I16(-300));
+        assert_eq!(
+            FieldValue::from_value(&Value::I8(-1)),
+            Some(FieldValue::Signed(-1))
+        );
+        assert_eq!(
+            FieldValue::from_value(&Value::I8(8)),
+            Some(FieldValue::Integer(8))
+        );
+        assert_eq!(FieldValue::Signed(-1).as_i64(), Some(-1));
+        assert_eq!(FieldValue::Signed(-1).as_u64(), None);
+        assert_eq!(FieldValue::Integer(5).as_i64(), Some(5));
+    }
 
     #[test]
     fn a_replace_against_a_newer_revision_is_refused() {
@@ -3921,6 +4389,7 @@ mod tests {
             },
             || std::future::ready(n.borrow_mut().next().unwrap_or(false)),
             std::time::Duration::ZERO,
+            &[std::time::Duration::ZERO; 3],
             "comment",
         )
         .await;
@@ -3929,6 +4398,234 @@ mod tests {
 
     fn timeout() -> super::WriteFailure {
         super::WriteFailure::Retryable("wait timed out".into())
+    }
+
+    fn quorum_miss() -> super::WriteFailure {
+        super::WriteFailure::QuorumMiss("Quorum not found for type 107".into())
+    }
+
+    /// A quorum rotation the quorum service lags (bonsia, 01:48Z): the proofs cannot be
+    /// verified for minutes. The write waits for it without spending its ordinary re-broadcasts,
+    /// asks whether its nonce is spent before each re-send (so it never lands twice), and lands
+    /// once the quorum is known; past the waits it gives up as a timeout.
+    #[tokio::test]
+    async fn a_write_waits_out_a_quorum_rotation() {
+        // The wait cannot verify the proof twice, then can: the same bytes land.
+        let (out, nb, nw) = scripted_write(
+            vec![Ok(()), Ok(()), Ok(())],
+            vec![Err(quorum_miss()), Err(quorum_miss()), Ok(())],
+            vec![false, false],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
+        assert_eq!((nb, nw), (3, 3));
+        // The nonce probe finds it landed during the rotation: not sent again.
+        let (out, nb, _) = scripted_write(vec![Ok(())], vec![Err(quorum_miss())], vec![true]).await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::NonceConsumed);
+        assert_eq!(nb, 1);
+        // A broadcast the SDK gave up on (every node banned over the quorum: a bare "no
+        // available addresses", classified as a quorum miss) waits too.
+        let (out, nb, _) =
+            scripted_write(vec![Err(quorum_miss()), Ok(())], vec![Ok(())], vec![]).await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
+        assert_eq!(nb, 2);
+        // A replayed journal: the node held the bytes on every send, across a quorum wait. Not
+        // this call's send: AlreadyExists.
+        let (out, nb, nw) = scripted_write(
+            vec![
+                Err(super::WriteFailure::TxKnown),
+                Err(super::WriteFailure::TxKnown),
+            ],
+            vec![Err(quorum_miss()), Ok(())],
+            vec![false],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::AlreadyExists);
+        assert_eq!((nb, nw), (2, 2));
+        // A first send that never left (every node banned over the quorum) is not ours either:
+        // the TxKnown after it is the replay's.
+        let (out, nb, nw) = scripted_write(
+            vec![Err(quorum_miss()), Err(super::WriteFailure::TxKnown)],
+            vec![Ok(())],
+            vec![false],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::AlreadyExists);
+        assert_eq!((nb, nw), (2, 1));
+        // Past its three scripted waits: ordinary retries (4), then a timeout.
+        let (out, nb, _) = scripted_write(
+            (0..7).map(|_| Ok(())).collect(),
+            vec![
+                Err(quorum_miss()),
+                Err(quorum_miss()),
+                Err(quorum_miss()),
+                Err(quorum_miss()),
+                Err(quorum_miss()),
+                Err(quorum_miss()),
+                Err(quorum_miss()),
+            ],
+            vec![false; 7],
+        )
+        .await;
+        assert!(
+            matches!(out, Err(Error::Timeout { retryable: true })),
+            "{out:?}"
+        );
+        assert_eq!(nb, 3 + super::MAX_BROADCAST_ATTEMPTS as usize);
+    }
+
+    /// A read through the quorum wait: the same pauses, without spending its ordinary attempts.
+    #[tokio::test(start_paused = true)]
+    async fn a_read_waits_out_a_quorum_rotation() {
+        let script = vec![Err("quorum"), Err("quorum"), Err("quorum"), Ok(7)];
+        let calls = RefCell::new(script.into_iter());
+        let waits = [std::time::Duration::from_secs(15); 3];
+        let started = tokio::time::Instant::now();
+        let out = super::retry_with_quorum_waits(
+            "test",
+            std::time::Duration::ZERO,
+            |_: &&str| false,
+            |_: &&str| None,
+            (|e: &&str| *e == "quorum", &waits),
+            || std::future::ready(calls.borrow_mut().next().expect("script exhausted")),
+        )
+        .await;
+        assert_eq!(out, Ok(7));
+        assert!(started.elapsed() >= std::time::Duration::from_secs(45));
+        // Past the waits a quorum miss is an ordinary failure (not transient here: returned).
+        let calls = RefCell::new(vec![Err("quorum"); 5].into_iter());
+        let out: std::result::Result<u32, &str> = super::retry_with_quorum_waits(
+            "test",
+            std::time::Duration::ZERO,
+            |_: &&str| false,
+            |_: &&str| None,
+            (|e: &&str| *e == "quorum", &waits),
+            || std::future::ready(calls.borrow_mut().next().expect("script exhausted")),
+        )
+        .await;
+        assert_eq!(out, Err("quorum"));
+    }
+
+    fn refused(document_type: &str, rule: &str) -> super::WriteFailure {
+        super::WriteFailure::Fatal(Error::RuleRefused {
+            document_type: document_type.into(),
+            rule: rule.into(),
+            detail: "10422".into(),
+        })
+    }
+
+    /// A manifest refused by `platformChunks` on a node a block behind its chunks is sent
+    /// again (the same bytes: nothing was spent) and lands; a rule that reads no total, or a
+    /// refusal that outlasts the retries, is final.
+    #[tokio::test]
+    async fn a_lagging_total_is_retried_and_a_real_refusal_is_final() {
+        let (out, nb, nw) = scripted_write(
+            vec![Err(refused("packManifest", "platformChunks")), Ok(())],
+            vec![Ok(())],
+            vec![],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
+        assert_eq!((nb, nw), (2, 1));
+
+        let (out, nb, _) = scripted_write(
+            vec![
+                Err(refused("packManifest", "platformChunks")),
+                Err(refused("packManifest", "platformChunks")),
+                Err(refused("packManifest", "platformChunks")),
+            ],
+            vec![],
+            vec![],
+        )
+        .await;
+        assert!(
+            matches!(out, Err(Error::RuleRefused { ref rule, .. }) if rule == "platformChunks"),
+            "{out:?}"
+        );
+        assert_eq!(nb, 1 + super::MAX_LAG_RETRIES as usize);
+
+        // A rule that reads no total (a sealed private ref named in plaintext) is final at once.
+        // Returned by the wait, the refusal came from block execution (the nonce is spent, the
+        // fee paid): final at once, nothing to wait out.
+        let (out, nb, nw) = scripted_write(
+            vec![Ok(())],
+            vec![Err(refused("packManifest", "platformChunks"))],
+            vec![],
+        )
+        .await;
+        assert!(matches!(out, Err(Error::RuleRefused { .. })), "{out:?}");
+        assert_eq!((nb, nw), (1, 1));
+        // Also when the node already held the bytes (a resend or a replayed journal of a
+        // transition a block refused: "already in chain").
+        let (out, nb, nw) = scripted_write(
+            vec![Err(super::WriteFailure::TxKnown)],
+            vec![Err(refused("packManifest", "platformChunks"))],
+            vec![],
+        )
+        .await;
+        assert!(matches!(out, Err(Error::RuleRefused { .. })), "{out:?}");
+        assert_eq!((nb, nw), (1, 1));
+
+        // Lag retries do not use up the re-broadcasts a lost answer gets.
+        let mut sends = vec![
+            Err(refused("release", "oneLive")),
+            Err(refused("release", "oneLive")),
+        ];
+        sends.extend([Ok(()), Ok(()), Ok(()), Ok(())]);
+        let (out, nb, nw) = scripted_write(
+            sends,
+            vec![Err(timeout()), Err(timeout()), Err(timeout()), Ok(())],
+            vec![false, false, false],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
+        assert_eq!((nb, nw), (6, 4));
+
+        let (out, nb, _) =
+            scripted_write(vec![Err(refused("refUpdate", "noPlain"))], vec![], vec![]).await;
+        assert!(matches!(out, Err(Error::RuleRefused { .. })));
+        assert_eq!(nb, 1);
+        for (t, r) in [
+            ("release", "oneLive"),
+            ("issue", "dense"),
+            ("transition", "c6_lockedAfter"),
+        ] {
+            assert!(super::reads_a_total(t, r), "{t}.{r}");
+        }
+        assert!(!super::reads_a_total("patch", "platformChunks"));
+    }
+
+    /// Every rule of the RC1 contracts that reads a total is one the write loop waits out, and
+    /// every one listed is such a rule (a renamed rule does not linger).
+    #[test]
+    fn every_total_reading_rule_is_listed() {
+        let mut found = Vec::new();
+        for name in ["forge-core", "forge-collab", "forge-community"] {
+            let path = format!(
+                "{}/../../forge-contracts/contracts/{name}.json",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let c: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            for (t, schema) in c["documentSchemas"].as_object().unwrap() {
+                let Some(rules) = schema["propertyConstraints"].as_object() else {
+                    continue;
+                };
+                for (r, rule) in rules {
+                    let text = rule.to_string();
+                    if text.contains("countOf") || text.contains("sumOf") {
+                        assert!(super::reads_a_total(t, r), "{name}: {t}.{r}");
+                        found.push((t.clone(), r.clone()));
+                    }
+                }
+            }
+        }
+        for (t, r) in super::TOTAL_READING_RULES {
+            assert!(
+                found.iter().any(|(ft, fr)| ft == t && fr == r),
+                "{t}.{r} is listed but reads no total in the contracts"
+            );
+        }
     }
 
     #[tokio::test]
@@ -4019,6 +4716,68 @@ mod tests {
         .await;
         assert!(matches!(out, Err(Error::NotAMember { .. })));
         assert_eq!((nb, nw), (1, 0));
+    }
+
+    /// 40120 on the membership gates (`$ownerId`, `asMember`) is not being a member; on any
+    /// other path it is a missing reference, typed with its path. 10422 names its rule.
+    #[test]
+    fn consensus_refusals_are_typed_by_path_and_rule() {
+        use dash_sdk::dpp::consensus::basic::document::{
+            DocumentPropertyConstraintViolatedError, PropertyConstraintViolation,
+        };
+        use dash_sdk::dpp::consensus::basic::BasicError;
+        use dash_sdk::dpp::consensus::state::document::referenced_entity_not_found_error::ReferencedEntityNotFoundError;
+        use dash_sdk::dpp::consensus::state::state_error::StateError;
+        use dash_sdk::dpp::consensus::ConsensusError;
+        use dash_sdk::dpp::data_contract::document_type::DocumentPropertyReferenceTarget;
+        let refused = |ce: ConsensusError| {
+            dash_sdk::Error::Protocol(dash_sdk::dpp::ProtocolError::ConsensusError(Box::new(ce)))
+        };
+        let missing = |path: &str| {
+            refused(ConsensusError::StateError(
+                StateError::ReferencedEntityNotFoundError(ReferencedEntityNotFoundError::new(
+                    [9; 32].into(),
+                    DocumentPropertyReferenceTarget::Identity,
+                    path.into(),
+                )),
+            ))
+        };
+        for path in ["$ownerId", "asMember"] {
+            assert!(
+                matches!(
+                    super::classify_write_error(&missing(path), "comment"),
+                    super::WriteFailure::Fatal(Error::NotAMember { .. })
+                ),
+                "{path}"
+            );
+        }
+        match super::classify_write_error(&missing("memberId"), "repoKey") {
+            super::WriteFailure::Fatal(Error::ReferenceNotFound {
+                document_type,
+                path,
+                detail,
+            }) => {
+                assert_eq!(
+                    (document_type.as_str(), path.as_str()),
+                    ("repoKey", "memberId")
+                );
+                assert!(detail.starts_with("40120: "), "{detail}");
+            }
+            _ => panic!("a missing memberId is a missing reference"),
+        }
+        let rule = refused(ConsensusError::BasicError(
+            BasicError::DocumentPropertyConstraintViolatedError(
+                DocumentPropertyConstraintViolatedError::new(
+                    "review".into(),
+                    "memberVerdict".into(),
+                    PropertyConstraintViolation::NotMet,
+                ),
+            ),
+        ));
+        assert!(matches!(
+            super::classify_write_error(&rule, "review"),
+            super::WriteFailure::Fatal(Error::RuleRefused { rule, .. }) if rule == "memberVerdict"
+        ));
     }
 
     /// An indexOnly create whose nonce was found spent is settled by its probe: present means

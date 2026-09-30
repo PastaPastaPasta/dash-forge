@@ -1,19 +1,19 @@
 /**
- * Live issue numbering on devnet moutai (forge-v2.md §6 trusted numbers) — SKIPPED by default
- * (network, WASM, about 0.01 DASH of spend).
+ * Live dense numbering and transitions on devnet bonsia, fresh beta.7 registration only
+ * (forge-v2.md §6, STATE-COUNTS §2–§4) — SKIPPED by default (network, WASM, about 0.01 DASH).
+ * WIPE-PLAN §3 step 9 runs it once the three contracts are registered.
  *
  * Run with:
- *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=moutai \
+ *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia \
  *     E2E_NUMBERING_OWNER=<identity.json> E2E_NUMBERING_STRANGER=<identity.json> \
  *     pnpm exec vitest run lib/repo/numbering.live.test.ts
  *
- * 1. Read only: the dashpay/dash showcase mirror (`unofficial-dashpay-dash-mirror.dash/dash`)
- *    holds a recent window of upstream issues (#2142 … #7761). The next number is the owner's
- *    largest + 1, not #1 or #2: the imported numbers are trusted, not squatters.
- * 2. A throwaway repo (never a fixture): OWNER writes an "imported" #5000; STRANGER (never a
- *    member) squats #9000 and #5001. `createIssue` as STRANGER then claims #5002: the owner's
- *    number is trusted, the stranger's far squatter is not, and the one right above the base
- *    is stepped over.
+ * A throwaway repo (never a fixture):
+ * 1. OWNER opens an issue (#1), STRANGER a PR (#2), OWNER an issue (#3): one sequence.
+ * 2. A number that is not the dense next one is refused by the `dense` rule (10422).
+ * 3. STRANGER closes and reopens their own PR as its author; a second close in a row is
+ *    refused by `c1_closedAfter`. OWNER (maintainer) merges it; a reopen is refused.
+ * 4. The proved counts read issues 2 open, PR 1 merged, from three requests.
  *
  * Never gates CI.
  */
@@ -25,15 +25,14 @@ import { describe, expect, it } from 'vitest'
 import { decodeIdentifier } from '../auth/base58'
 import { parseIdentityFileText } from '../auth'
 import { DEFAULT_NETWORK, NETWORKS } from '../constants'
-import { createDocumentIdempotent, evoSdkService, queryDocumentsWithProof, type WriteAuth } from '../sdk'
+import { ConsensusRefusal, createDocumentIdempotent, evoSdkService, type WriteAuth } from '../sdk'
 import { DOC, type RepoRef } from './contract'
-import { resolveAnyRepo } from './resolveRepo'
-import { repoSource } from './source'
-import { createIssue, createRepo, nextNumber } from './writes'
+import { readRepoCounts } from './transitions'
+import { createIssue, createPatch, createRepo, setTargetState } from './writes'
 
 const OWNER_FILE = process.env['E2E_NUMBERING_OWNER'] ?? ''
 const STRANGER_FILE = process.env['E2E_NUMBERING_STRANGER'] ?? ''
-const LIVE = process.env['FORGE_LIVE'] === '1' && DEFAULT_NETWORK === 'devnet'
+const LIVE = process.env['FORGE_LIVE'] === '1' && DEFAULT_NETWORK === 'devnet' && OWNER_FILE !== '' && STRANGER_FILE !== ''
 
 function authOf(file: string): WriteAuth {
   const parsed = parseIdentityFileText(readFileSync(file, 'utf8'))
@@ -47,47 +46,38 @@ async function liveSdk() {
   return { sdk: evoSdkService.getSdk(), forge }
 }
 
-describe.skipIf(!LIVE)('live issue numbering (moutai)', () => {
-  it('continues the dash mirror’s upstream numbering (read only)', async () => {
-    const { sdk } = await liveSdk()
-    const resolved = await resolveAnyRepo(sdk, { network: 'devnet', owner: 'unofficial-dashpay-dash-mirror', name: 'dash' })
-    if (resolved === null) throw new Error('the dash showcase mirror does not resolve on moutai')
-    const repo = resolved.repo
-    // Issues and PRs number independently; both continue after the owner's largest.
-    for (const type of ['issue', 'patch'] as const) {
-      const { documents } = await queryDocumentsWithProof(sdk, {
-        ...repoSource(repo).targetQuery(DOC[type]),
-        where: [['$ownerId', '==', repo.ownerId], ['repoId', '==', repo.repoId]],
-        orderBy: [['number', 'desc']],
-        limit: 1,
-      })
-      const ownersMax = Number(documents[0]?.['number'] ?? 0)
-      expect(ownersMax).toBeGreaterThan(1000)
-      const next = await nextNumber(sdk, repo, type)
-      expect(next, `dash mirror ${repo.repoId}: the owner's largest ${type} is #${ownersMax}`).toBe(ownersMax + 1)
-    }
-  }, 120_000)
-
-  it.skipIf(OWNER_FILE === '' || STRANGER_FILE === '')(
-    'trusts the owner’s imported number and steps over a stranger’s squatters (throwaway repo)',
+describe.skipIf(!LIVE)('live dense numbering and transitions (bonsia, fresh registration)', () => {
+  it(
+    'numbers issues and PRs in one sequence and moves state only by legal transitions',
     async () => {
       const { sdk, forge } = await liveSdk()
       const [OWNER, STRANGER] = [authOf(OWNER_FILE), authOf(STRANGER_FILE)]
       const name = `numbering-live-${Date.now().toString(36)}`
       const created = await createRepo(sdk, OWNER, forge, { name })
       const repo: RepoRef = { forge, repoId: created.repoId, ownerId: OWNER.identityId, name, visibility: 'public' }
-      const issueAt = (auth: WriteAuth, number: number, title: string, imported?: Record<string, unknown>) =>
-        createDocumentIdempotent(sdk, auth, {
-          contractId: forge.collab,
-          documentType: DOC.issue,
-          data: { repoId: decodeIdentifier(repo.repoId), number, title, ...(imported ? { imported } : {}) },
-        })
-      await issueAt(OWNER, 5000, 'imported upstream #5000', { author: 'upstream', createdAt: 1_700_000_000_000, url: 'https://github.com/o/r/issues/5000' })
-      await issueAt(STRANGER, 9000, 'far squatter')
-      await issueAt(STRANGER, 5001, 'squatter right above the base')
-      // Count 3 → ceiling 106: without trust every number is a squatter and the next is #1.
-      const { number } = await createIssue(sdk, STRANGER, repo, { title: 'a new issue after the import', body: '' })
-      expect(number, `throwaway ${name} (${repo.repoId})`).toBe(5002)
+
+      const first = await createIssue(sdk, OWNER, repo, { title: 'first', body: '' })
+      const head = 'ab'.repeat(20)
+      const pr = await createPatch(sdk, STRANGER, repo, { title: 'a PR', body: '', baseRefName: 'refs/heads/main', sourceRepoId: repo.repoId, sourceRefName: 'refs/heads/x', headOid: head })
+      const third = await createIssue(sdk, OWNER, repo, { title: 'third', body: '' })
+      expect([first.number, pr.number, third.number]).toEqual([1, 2, 3])
+
+      // Not the dense next number: refused by the `dense` rule.
+      const skip = createDocumentIdempotent(sdk, OWNER, {
+        contractId: forge.collab,
+        documentType: DOC.issue,
+        data: { repoId: decodeIdentifier(repo.repoId), number: 9, tk: 0, title: 'skips' },
+      })
+      await expect(skip).rejects.toSatisfy((e: unknown) => e instanceof ConsensusRefusal && e.code === 10422 && /"dense"/.test(e.message))
+
+      const target = { id: pr.documentId, number: pr.number, type: 'patch' as const, author: STRANGER.identityId }
+      await setTargetState(sdk, STRANGER, repo, { target, action: 'close', isMember: false })
+      await setTargetState(sdk, STRANGER, repo, { target, action: 'reopen', isMember: false })
+      await setTargetState(sdk, OWNER, repo, { target, action: 'merge', isMember: true, oidHex: head })
+      await expect(setTargetState(sdk, STRANGER, repo, { target, action: 'reopen', isMember: false })).rejects.toThrow(/merged/)
+
+      const counts = await readRepoCounts(sdk, repo)
+      expect(counts).toMatchObject({ issues: 2, patches: 1, issuesOpen: 2, prsMerged: 1, prsOpen: 0 })
     },
     300_000,
   )

@@ -8,9 +8,11 @@
  * same list.
  *
  * Reads go through the pull index (`lib/repo/pull-index`): one composite for the newest 100 PRs,
- * their comment counts and author names, the labels and the first feed pages; the rest of the
- * feed once per repo (shared with the issue index and the header); keyset composites of 100 for
- * later pages (L-77). PR state is the FORGE_RULES fold with the historical-tips merge predicate.
+ * their comment counts and author names, the labels and the first feed page, and one proved sum
+ * of their transitions for their states; the rest of the feed once per repo (shared with the
+ * issue index); keyset composites of 100 for later pages (L-77). The tab counts are the proved
+ * totals. The search box and filters are the Issues list's (`./list-controls`). Once the page is
+ * shown, each row's head gets its CI status dot (`./check-dot`: three proved counts for the page, plus a run read per head whose re-runs disagree).
  *
  * "New pull request" opens `/repo/pulls/new` to propose an already-pushed branch.
  */
@@ -18,14 +20,12 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useMemo } from 'react'
 import Link from 'next/link'
-import { usePathname, useRouter, useSearchParams } from 'next/navigation'
-import { GitMerge, GitPullRequest, GitPullRequestClosed, Loader2, MessageSquare, Search, X } from 'lucide-react'
+import { GitMerge, GitPullRequest, GitPullRequestClosed, X } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { branchName, plural, resolveDpnsId } from '@/lib/view'
+import { branchName } from '@/lib/view'
 import {
-  DEFAULT_PULL_QUERY,
   PULL_PAGE_SIZE,
   emptyPullsBody,
   hasPullFilters,
@@ -33,30 +33,51 @@ import {
   parsePullSearch,
   pullDroppedReason,
   pullQueryParams,
+  pullSubmitBase,
   pullSearchText,
   unresolvedPullQualifiers,
   type PullListQuery,
 } from '@/lib/view/pull-query'
-import { dpnsAuthorCandidates, resolveSearchNames, withQuery } from '@/lib/view/issue-query'
 import { queryPulls, repoContractIds, repoKey, type PullListPage, type PullRow, type PullSelection } from '@/lib/repo'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useAuth } from '@/contexts/auth-context'
 import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
 import { useRepoTotals } from '@/components/repo/use-repo-totals'
-import { LabelFilter, Pager, PersonFilter, StateTab } from '@/components/repo/issues-content'
-import { AssigneeAvatars, LabelChip } from '@/components/repo/issue-bits'
+import {
+  CommentCount,
+  DroppedNote,
+  LabelChipFilter,
+  LabelFilter,
+  Pager,
+  PersonFilter,
+  RowLink,
+  SearchBox,
+  SearchedNote,
+  SortSelect,
+  StateTab,
+  tabCount,
+  useListQuery,
+  type ListGrammar,
+} from '@/components/repo/list-controls'
+import { AssigneeAvatars } from '@/components/repo/issue-bits'
+import { CheckDot, useCheckOutcomes } from '@/components/repo/check-dot'
 import { HiddenNote } from '@/components/repo/hidden-note'
 import { MirrorNote } from '@/components/repo/mirror-note'
-import { Input } from '@/components/ui/input'
-import { Oid } from '@/components/ui/oid'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
 
+/** The PR list's search grammar (`lib/view/pull-query`): a submit keeps the state tab. */
+const PULL_GRAMMAR: ListGrammar<PullListQuery> = {
+  text: pullSearchText,
+  parse: parsePullSearch,
+  unresolved: unresolvedPullQualifiers,
+  submitBase: pullSubmitBase,
+}
+
 function pullStatus(p: PullRow): { label: string; icon: JSX.Element; klass: string } {
-  // A fold over a partial event log is not a state. Say unverified rather than guess.
-  if (!p.stateComplete) return { label: 'Unverified', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, klass: 'text-danger-700 dark:text-danger-400' }
+  // State is the proved transition sum, even when the event feed (labels, assignees) was incomplete.
   if (p.state.merged) return { label: 'Merged', icon: <GitMerge className="h-4 w-4" aria-hidden />, klass: 'text-dash' }
   if (!p.state.open) return { label: 'Closed', icon: <GitPullRequestClosed className="h-4 w-4" aria-hidden />, klass: 'text-danger-700 dark:text-danger-400' }
   if (p.state.draft) return { label: 'Draft', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, klass: 'text-anvil-500 dark:text-anvil-400' }
@@ -66,28 +87,13 @@ function pullStatus(p: PullRow): { label: string; icon: JSX.Element; klass: stri
 export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   const { identity } = useAuth()
-  const router = useRouter()
-  const pathname = usePathname()
-  const params = useSearchParams()
   const generation = useRepoWriteGeneration(home.repo)
   const trust = useMirrorTrust(home.repo)
   const total = useRepoTotals(home.repo, 'pulls')
 
-  // The list query lives in the URL: parse it on every render, write it with router.replace.
-  const query = useMemo(() => parsePullQuery(params), [params])
-  const setQuery = (next: PullListQuery): void => {
-    const q = new URLSearchParams({ owner: addr.owner, name: addr.name })
-    if (addr.repoId) q.set('repo', addr.repoId)
-    for (const [k, v] of pullQueryParams(next)) q.append(k, v)
-    router.replace(`${pathname}?${q.toString()}`, { scroll: false })
-  }
-  // A tab, filter or page change wins over a name lookup still in flight from an earlier submit.
-  const submitId = useRef(0)
-  const change = (c: Partial<PullListQuery>): void => {
-    submitId.current++
-    setSearching(false)
-    setQuery(withQuery(query, c))
-  }
+  // The list query lives in the URL (a reload or a shared link shows the same list).
+  const { query, search } = useListQuery({ addr, parse: parsePullQuery, toParams: pullQueryParams, grammar: PULL_GRAMMAR, sdk, ready, network })
+  const change = search.change
 
   // `me` needs a signed-in viewer; signed out, a `me` filter shows nothing rather than everything.
   const needsViewer = query.author === 'me' || query.assignee === 'me'
@@ -111,52 +117,10 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
   )
 
   const labelDefs = useMemo(() => new Map((data?.labels ?? []).map((l) => [l.name, l])), [data])
-  const [search, setSearch] = useState<string | null>(null)
-  const searchValue = search ?? pullSearchText(query)
-  // Qualifiers typed (or linked in `?q=`) that could not be used: said, not silently dropped.
-  const [dropped, setDropped] = useState<string[]>(() => unresolvedPullQualifiers(params.get('q') ?? ''))
-  // DPNS names DPNS was asked for and does not know (said as such, not as a malformed value).
-  const [notFound, setNotFound] = useState<readonly string[]>([])
-  const [searching, setSearching] = useState(false)
-  // Not connected yet, so a DPNS name in the search could not be looked up (said, not dropped silently).
-  const [notReady, setNotReady] = useState(false)
-  // As on the Issues list (L-43): `author:`/`assignee:` DPNS names are resolved to ids first, then
-  // the qualifiers lifted onto `base`; the newest submit (or tab, filter or page change) wins.
-  const resolveAndApply = async (text: string, base: PullListQuery): Promise<void> => {
-    const id = ++submitId.current
-    setNotReady(!sdk && dpnsAuthorCandidates(text).length > 0)
-    setSearching(true)
-    const resolved = sdk
-      ? await resolveSearchNames(text, (name) => resolveDpnsId(sdk, name, network)).catch(() => ({ text, notFound: [] as string[] }))
-      : { text, notFound: [] as string[] }
-    if (submitId.current !== id) return
-    setSearching(false)
-    setDropped(unresolvedPullQualifiers(resolved.text))
-    setNotFound(resolved.notFound)
-    setQuery({ ...parsePullSearch(resolved.text, base), page: base.page })
-    setSearch((current) => (current === text ? null : current))
-  }
-  // A submit keeps only the state tab; every other filter is what the box says now.
-  const submitSearch = async (e: FormEvent): Promise<void> => {
-    e.preventDefault()
-    await resolveAndApply(searchValue, { ...DEFAULT_PULL_QUERY, state: query.state })
-  }
-  // A DPNS name linked in `?q=` goes through the same lookup once the SDK is ready, unless the
-  // viewer already changed the list meanwhile (the URL no longer holds that `q`).
-  const linkedQ = useRef(params.get('q')?.slice(0, 200) ?? null)
-  useEffect(() => {
-    const raw = linkedQ.current
-    if (raw === null) return
-    const hasNames = dpnsAuthorCandidates(raw).length > 0
-    if (hasNames && (!ready || !sdk)) return
-    linkedQ.current = null
-    if (hasNames && params.get('q')?.slice(0, 200) === raw) void resolveAndApply(raw, { ...query, q: '' })
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, when the SDK becomes ready; linkedQ guards re-entry.
-  }, [ready, sdk])
-  const droppedReason = pullDroppedReason(dropped, notFound)
-
-  const count = (n: number | null | undefined): string => (n == null ? '' : `${n} `)
-  const SearchIcon = searching ? Loader2 : Search
+  // The page's heads, for the status dots, read once the rows are shown. A row's head is the one
+  // the list knows (the member feed's): a newer head the author pushed shows on the PR's page.
+  const heads = useMemo(() => (data?.rows ?? []).map((p) => p.headOid), [data])
+  const outcomes = useCheckOutcomes(home.repo, heads)
   const filtered = hasPullFilters(query)
   const counts = data?.counts
   const settled = counts?.merged != null && counts.closed != null ? counts.merged + counts.closed : null
@@ -164,13 +128,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
   return (
     <div className="mx-auto max-w-4xl">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <form onSubmit={submitSearch} className="flex min-w-[16rem] flex-1 items-center gap-2" role="search">
-          <label htmlFor="pull-search" className="sr-only">Search pull requests</label>
-          <div className="relative flex-1">
-            <SearchIcon className={cn('pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-anvil-500 dark:text-anvil-400', searching && 'animate-spin')} aria-hidden />
-            <Input id="pull-search" value={searchValue} onChange={(e) => setSearch(e.target.value)} className="pl-8 font-mono text-[13px]" placeholder="is:open label:bug author:@me" />
-          </div>
-        </form>
+        <SearchBox id="pull-search" label="Search pull requests" search={search} placeholder="is:open label:bug author:@me" />
         <Link
           href={repoHref('/repo/pulls/new', addr)}
           className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md bg-forge-700 px-2.5 text-dense font-medium text-white hover:bg-forge-800 coarse:h-11"
@@ -178,26 +136,14 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
           <GitPullRequest className="h-3.5 w-3.5" aria-hidden /> New pull request
         </Link>
       </div>
-      {dropped.length > 0 ? (
-        <p role="note" className="mb-3 text-[12px] text-caution-700 dark:text-caution-400" data-testid="pull-search-dropped">
-          Not applied: {dropped.join(' ')}. {droppedReason}
-          {notReady ? ' Not connected yet, so a DPNS name could not be looked up — try again once connected.' : ''}
-        </p>
-      ) : null}
+      <DroppedNote search={search} reason={pullDroppedReason(search.dropped, search.notFound)} testId="pull-search-dropped" />
 
       <MirrorNote home={home} kind="pull" />
 
       {filtered ? (
         <button
           type="button"
-          onClick={() => {
-            submitId.current++
-            setSearching(false)
-            setNotReady(false)
-            setDropped([])
-            setNotFound([])
-            setQuery({ ...DEFAULT_PULL_QUERY, state: query.state })
-          }}
+          onClick={search.clear}
           className="mb-3 inline-flex items-center gap-1 text-dense text-anvil-500 hover:text-forge-700 dark:text-anvil-400 dark:hover:text-forge-400"
         >
           <X className="h-3.5 w-3.5" aria-hidden /> Clear filters
@@ -208,13 +154,13 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 dark:border-anvil-800 dark:bg-anvil-900">
           <div className="flex items-center gap-3" role="tablist" aria-label="Pull request state">
             <StateTab active={query.state === 'open'} onClick={() => change({ state: 'open' })}>
-              <GitPullRequest className="h-3.5 w-3.5" aria-hidden /> {count(counts?.open)}Open
+              <GitPullRequest className="h-3.5 w-3.5" aria-hidden /> {tabCount(counts?.open)}Open
             </StateTab>
             <StateTab active={query.state === 'merged'} onClick={() => change({ state: 'merged' })}>
-              <GitMerge className="h-3.5 w-3.5" aria-hidden /> {count(counts?.merged)}Merged
+              <GitMerge className="h-3.5 w-3.5" aria-hidden /> {tabCount(counts?.merged)}Merged
             </StateTab>
             <StateTab active={query.state === 'closed'} onClick={() => change({ state: 'closed' })}>
-              <GitPullRequestClosed className="h-3.5 w-3.5" aria-hidden /> {count(counts?.closed)}Closed
+              <GitPullRequestClosed className="h-3.5 w-3.5" aria-hidden /> {tabCount(counts?.closed)}Closed
             </StateTab>
             <StateTab active={query.state === 'all'} onClick={() => change({ state: 'all' })}>
               All
@@ -224,17 +170,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
             <LabelFilter labels={data?.labels ?? []} selected={query.labels} onChange={(labels) => change({ labels })} />
             <PersonFilter label="Author" value={query.author} signedIn={identity !== null} onChange={(author) => change({ author })} />
             <PersonFilter label="Assignee" value={query.assignee} signedIn={identity !== null} allowNone onChange={(assignee) => change({ assignee })} />
-            <label className="sr-only" htmlFor="pull-sort">Sort</label>
-            <select
-              id="pull-sort"
-              value={query.sort}
-              onChange={(e) => change({ sort: e.target.value as PullListQuery['sort'] })}
-              className="rounded-md border border-anvil-300 bg-white px-2 py-1 text-dense dark:border-anvil-700 dark:bg-anvil-950 coarse:h-11"
-            >
-              <option value="newest">Newest</option>
-              <option value="oldest">Oldest</option>
-              <option value="comments">Most commented</option>
-            </select>
+            <SortSelect id="pull-sort" value={query.sort} onChange={(sort) => change({ sort })} />
           </div>
         </div>
 
@@ -259,30 +195,21 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
                   <span className={cn('mt-0.5 shrink-0', st.klass)}>{st.icon}</span>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <Link href={repoHref('/repo/pull', addr, { number: String(p.number) })} className="hit-area text-dense font-medium text-anvil-900 hover:text-forge-700 dark:text-anvil-50 dark:hover:text-forge-400">
-                        {p.title || '(untitled)'}
-                      </Link>
+                      <RowLink href={repoHref('/repo/pull', addr, { number: String(p.number) })} title={p.title} />
+                      <CheckDot counts={outcomes.get(p.headOid)} />
                       {p.state.labels.map((l) => (
-                        <button key={l} type="button" onClick={() => change({ labels: query.labels.includes(l) ? query.labels : [...query.labels, l] })} aria-label={`Filter by label ${l}`} className="hit-area">
-                          <LabelChip name={l} def={labelDefs.get(l)} />
-                        </button>
+                        <LabelChipFilter key={l} name={l} def={labelDefs.get(l)} selected={query.labels} onChange={(labels) => change({ labels })} />
                       ))}
                     </div>
                     <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
                       <span className="font-mono">#{p.number}</span>
                       <span>{st.label} · into <span className="font-mono">{branchName(p.baseRefName) || '?'}</span> · opened by</span>
                       <Byline author={p.author} createdAt={p.createdAt} origin={trustedOrigin(p.origin, p.author, trust)} link={false} />
-                      {p.headOid ? <Oid value={p.headOid} chars={7} copyable={false} /> : null}
                     </div>
                   </div>
                   <div className="flex shrink-0 items-center gap-3 pt-0.5">
                     <AssigneeAvatars ids={p.state.assignees} />
-                    {p.comments ? (
-                      <span className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="pull-comments">
-                        <MessageSquare className="h-3.5 w-3.5" aria-hidden /> <span aria-hidden>{p.comments}</span>
-                        <span className="sr-only">{plural(p.comments, 'comment')}</span>
-                      </span>
-                    ) : null}
+                    <CommentCount n={p.comments} />
                   </div>
                 </li>
               )
@@ -291,25 +218,14 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
         )}
       </div>
 
-      {data?.searchedOf ? (
-        <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-          Searched the newest {data.searchedOf.searched}
-          {data.searchedOf.total !== null ? ` of ${data.searchedOf.total}` : ''} pull requests; older ones were not read for this search.
-        </p>
-      ) : null}
+      <SearchedNote searchedOf={data?.searchedOf} noun="pull requests" />
       {data !== null && !data.stateComplete ? (
         <p className="mt-2 text-[12px] text-danger-700 dark:text-danger-400">
-          This repository&apos;s event history is too large to read completely, so states, labels and assignees are unverified.
+          This repository&apos;s event history is too large to read completely, so labels and assignees are unverified.
         </p>
       ) : null}
 
-      <Pager
-        label="Pull request pages"
-        page={query.page}
-        hasNext={data?.hasNext ?? false}
-        pages={data?.matching != null ? Math.max(1, Math.ceil(data.matching / PULL_PAGE_SIZE)) : null}
-        onPage={(page) => change({ page })}
-      />
+      <Pager label="Pull request pages" page={query.page} hasNext={data?.hasNext ?? false} matching={data?.matching ?? null} pageSize={PULL_PAGE_SIZE} onPage={(page) => change({ page })} />
 
       <HiddenNote hidden={data?.hidden ?? 0} what={data?.hidden === 1 ? 'pull request' : 'pull requests'} home={home} by={data?.hiddenBy} />
     </div>

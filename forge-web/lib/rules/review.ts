@@ -15,11 +15,8 @@ import type { Event, EventKind, Oid } from './types'
 // The review fold
 // ---------------------------------------------------------------------------
 
+/** The `authorEvent` kind enum (11–14, 16); an author's close, reopen, draft and ready are transitions. */
 const AUTHOR_KINDS: ReadonlySet<EventKind> = new Set<EventKind>([
-  'close',
-  'reopen',
-  'draft',
-  'ready',
   'threadResolve',
   'threadUnresolve',
   'reviewRequest',
@@ -162,6 +159,10 @@ export interface Policy {
   readonly requireChecks?: boolean
   /** 1 ff, 2 merge commit, 4 squash, 8 rebase; 0 any. */
   readonly mergeMethods?: number
+  /** Checks that must pass by name (set by `dg`; the web keeps them on a rewrite). */
+  readonly requiredChecks?: readonly string[]
+  /** Each required check's source, a runner or maintainer id (base58), paired by position; empty: any. */
+  readonly requiredCheckSources?: readonly string[]
 }
 
 export interface PolicyStatus {

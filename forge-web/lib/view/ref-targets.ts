@@ -78,7 +78,7 @@ function userUrl(host: string, login: string, bot: boolean): string {
   return host === GITHUB && bot ? `https://${host}/apps/${login}` : `https://${host}/${login}`
 }
 
-/** The upstream page of this repo's item `n` (a mirror's source), or null when it mirrors nothing. */
+/** The source forge's page of its item `n` (a mirror's upstream number), or null when the repo mirrors nothing. */
 export function upstreamItemUrl(source: ForgeRepo | null, n: number): string | null {
   return source === null ? null : forgeUrl(source.host, source.path, 'issue', String(n))
 }

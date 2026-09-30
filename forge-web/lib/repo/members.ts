@@ -124,12 +124,11 @@ export function invalidateMembers(repo: RepoRef, network: Network = DEFAULT_NETW
 }
 
 /**
- * The identities whose issue and PR numbers a repo's allocation trusts (`forge-v2.md` §6), and
- * whose `imported` provenance the lists show: the owner and its current maintainers, the
- * owner first, once each. When the membership cannot be read, the owner alone: a numbering
- * gap or a missing note is better than a failed create.
+ * The identities whose `imported` provenance names the repo's mirror source: the owner (the
+ * mirror signer) and its current maintainers, the owner first, once each. When the membership
+ * cannot be read, the owner alone: a missing note is better than a failed page.
  */
-export async function readNumberTrust(sdk: EvoSDK, repo: RepoRef, network: Network = DEFAULT_NETWORK): Promise<string[]> {
+export async function readProvenanceTrust(sdk: EvoSDK, repo: RepoRef, network: Network = DEFAULT_NETWORK): Promise<string[]> {
   const maintainers = await readMembershipsCached(sdk, repo, network).then(
     (ms) => ms.filter((m) => m.role === 'maintainer').map((m) => m.identity),
     () => [],
@@ -199,4 +198,15 @@ export async function readMemberRepoIds(
     if (row.repoId !== '' && !byRepo.has(row.repoId)) byRepo.set(row.repoId, row)
   }
   return [...byRepo.values()].sort((a, b) => b.createdAt - a.createdAt)
+}
+
+/**
+ * Re-read the signer's role, uncached (the CLI's `require_role` before uploading): a maintainer
+ * revoked since the page loaded must not upload for a write consensus will refuse.
+ */
+export async function requireMaintainer(sdk: EvoSDK, repo: RepoRef, identityId: string, network: Network): Promise<void> {
+  invalidateMembers(repo, network)
+  const holdings = await readViewerPermissions(sdk, repo, identityId, network)
+  if (holdings === null) throw new Error("couldn't read this repo's members to confirm you are a maintainer; try again")
+  if (!holdings.maintain) throw new Error('you are no longer a maintainer of this repo: only maintainers can publish releases')
 }

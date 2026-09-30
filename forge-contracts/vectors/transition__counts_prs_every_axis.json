@@ -1,0 +1,27 @@
+{
+  "name": "counts_prs_every_axis",
+  "description": "20 PRs: 5 merged; 3 closes and 1 reopen of ready PRs; 6 drafts, 2 readied, 2 draft closes and 1 draft reopen. Closed = 2 + 1, open = 20 - 5 - 3, open drafts = (6 - 2) - 1.",
+  "case": "repo_counts",
+  "rules": "v2",
+  "input": {
+    "issues": 0,
+    "patches": 20,
+    "kinds": {
+      "11": 3,
+      "12": 1,
+      "13": 5,
+      "14": 6,
+      "15": 2,
+      "16": 2,
+      "17": 1
+    }
+  },
+  "expected": {
+    "issuesOpen": 0,
+    "issuesClosed": 0,
+    "prsOpen": 12,
+    "prsClosed": 3,
+    "prsMerged": 5,
+    "prsDraft": 3
+  }
+}

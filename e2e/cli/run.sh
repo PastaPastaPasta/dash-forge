@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # run.sh — Dash Forge CLI end-to-end suite driver.
 #
-# Runs every scenario against LIVE devnet moutai (forge-v2), on the suite's reserved
-# OWNER-owned repo (config.sh; created on the first run). Prints a PASS/FAIL/SKIP matrix
+# Runs every scenario against LIVE devnet bonsia (RC1 contracts; DASH_FORGE_DEVNET_NAME picks
+# another devnet), on the suite's reserved OWNER-owned repo (config.sh; created on the first
+# run). Prints a PASS/FAIL/SKIP matrix
 # and exits non-zero if ANY scenario FAILs. A scenario SKIPs only when a check flaked on every retry; one SKIP is reported
 # but tolerated, more than E2E_MAX_SKIPS fails the run.
 #

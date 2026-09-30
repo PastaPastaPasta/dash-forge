@@ -29,9 +29,9 @@ import type { Network } from '../constants'
 import { DEFAULT_NETWORK, NETWORKS } from '../constants'
 import { errorMessage } from '../utils'
 import { stepClock, timed } from '../step-timing'
-import { DEPLOYMENTS, groupTrust, type ForgeIds, type GroupTrust } from '../deployments'
+import { DEPLOYMENTS, FORGE_CONTRACT_KINDS, contractKind, groupTrust, type ForgeIds, type GroupTrust } from '../deployments'
 import { assertGroupHolds, type GroupCheck } from './group-trust'
-import { SECURITY_LEVEL, WriteAuthError, findSigningKey, measureActual, readIdentityBalance, serialized, type SpendEvent, type WriteAuth } from '../sdk/write'
+import { SECURITY_LEVEL, WriteAuthError, balanceBeforeWrite, findSigningKey, measureActual, readIdentityBalance, serialized, type SpendEvent, type WriteAuth } from '../sdk/write'
 import { KEY_LIMITS_UPDATE_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS } from '../sdk/cost'
 import { authSdk, type WasmIdentity } from '../sdk/facade'
 import type { HeldBrowserKey } from './create-identity'
@@ -41,9 +41,9 @@ import { retryWhileMissing } from '../view/retry'
 import { identityFileMatchesNetwork, masterMaterialFromFile } from './identity-file'
 import { deriveMasterKey, isValidMnemonic } from './hd'
 import { identityOfMasterKey } from './identity-lookup'
-import { PLATFORM_READ_MS } from './connect'
+import { PLATFORM_READ_MS, withPlatformRead } from './connect'
 import { withTimeout } from '../timeout'
-import { checkWalletKey, hasNoLimits, keyScope, scopeCovers, type KeyScope, type WalletKey } from './key-registration'
+import { checkWalletKey, hasNoLimits, isForgeContract, keyScope, scopeCovers, type KeyScope, type WalletKey } from './key-registration'
 import { PRIVATE_REPOS_FLOW, encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
 import {
   disableHeldKeys,
@@ -108,6 +108,11 @@ export interface AuthSession {
   readonly identityId: string
   /** Credit balance (bigint-safe as a decimal string; parsed by the UI). */
   readonly balance: string
+  /**
+   * When this tab read `balance` from Platform (client ms). Absent while a reload shows a kept
+   * session's hint: its balance is from when the session was kept, possibly many writes ago.
+   */
+  readonly balanceReadAt?: number
   readonly network: Network
   /** The signing key's budget and expiry, when it is a PV14 limited key. */
   readonly keyLimits?: KeyLimits | null
@@ -116,7 +121,7 @@ export interface AuthSession {
   /** `vault`: a stored limited key; `session`: a tab-only key (advanced raw key). */
   readonly storage: 'vault' | 'session'
   /** Which Forge contracts this session's keys can sign on. */
-  readonly grants?: { readonly core: boolean; readonly collab: boolean }
+  readonly grants?: { readonly core: boolean; readonly collab: boolean; readonly community: boolean }
   /**
    * A key this session holds has no budget or no expiry (a shipped wallet's key): whoever copies
    * it can spend until it is disabled. The UI warns.
@@ -150,7 +155,7 @@ const FULL_UNLOCK_NEEDED =
 /** A write to a Forge contract no key of this session covers: ask the wallet for that grant. */
 export class MissingGrantError extends WriteAuthError {
   constructor(readonly contractId: string) {
-    super('This sign-in only covers repositories and pushes. Approve issues, pull requests and stars in your wallet too.')
+    super('This sign-in does not cover this write yet. Approve it in your wallet (issues and pull requests, or stars, watches and CI runs).')
     this.name = 'MissingGrantError'
   }
 }
@@ -235,7 +240,7 @@ interface SessionHint {
 
 function isScope(v: unknown): v is KeyScope {
   const s = v as Partial<KeyScope> | null
-  return typeof s === 'object' && s !== null && typeof s.core === 'boolean' && typeof s.collab === 'boolean' && typeof s.unbounded === 'boolean'
+  return typeof s === 'object' && s !== null && typeof s.core === 'boolean' && typeof s.collab === 'boolean' && typeof s.community === 'boolean' && typeof s.unbounded === 'boolean'
 }
 
 /**
@@ -354,8 +359,13 @@ export class AuthController {
    */
   private async charged<T>(identityId: string, kind: KeySpendKind, keyIdOf: (result: T | null) => number | null, update: () => Promise<T>): Promise<T> {
     const sdk = await this.getSdk()
+    // A read from a node still behind an earlier measured write counts as the last measured balance.
+    const readBalance = (): Promise<bigint | null> =>
+      readIdentityBalance(sdk, identityId)
+        .then((read) => balanceBeforeWrite(sdk, identityId, read))
+        .catch(() => null)
     return serialized(identityId, async () => {
-      const before = await readIdentityBalance(sdk, identityId).catch(() => null)
+      const before = await readBalance()
       const listening = before !== null && this.spendListener !== null
       let result: T
       try {
@@ -364,7 +374,7 @@ export class AuthController {
         // One read, no polling: most failures happen before anything is sent, and the error
         // should not wait on a balance that will not move.
         if (listening) {
-          const now = await readIdentityBalance(sdk, identityId).catch(() => null)
+          const now = await readBalance()
           if (now !== null && now !== before) this.emitSpend(identityId, { kind, keyId: keyIdOf(null), balanceBefore: before }, Number(before! - now))
         }
         throw e
@@ -451,9 +461,9 @@ export class AuthController {
       if (!secret) throw new WriteAuthError('this browser is locked — unlock it to sign')
       // A pasted key (tab-only, advanced) is the user's own choice of power: no scoping.
       if (current.storage !== 'vault') return secret.wif
-      // A vault key only ever signs on Forge's two contracts, named by the write.
+      // A vault key only ever signs on Forge's contracts, named by the write.
       const forge = NETWORKS[network].v2
-      if (forge === null || (contractId !== forge.core && contractId !== forge.collab)) {
+      if (forge === null || !isForgeContract(forge, contractId)) {
         throw new WriteAuthError(`this browser's key signs only Dash Forge writes${contractId ? ` (not ${contractId})` : ''}`)
       }
       if (this.scopes.main && scopeCovers(this.scopes.main, forge, contractId)) {
@@ -513,6 +523,7 @@ export class AuthController {
     const generation = vaultLockGeneration()
     try {
       const sdk = await this.getSdk()
+      const balanceReadAt = Date.now()
       const identity = await authSdk(sdk).identities.fetch(secret.identityId)
       if (!identity) throw new WriteAuthError(`identity ${secret.identityId} not found on ${this.network}`)
       const match = await findSigningKey(identity, secret.wif, this.network, SECURITY_LEVEL.HIGH)
@@ -530,7 +541,8 @@ export class AuthController {
         .map((e) => e.keyId)
       const session: AuthSession = {
         identityId: secret.identityId,
-        balance: identity.balance.toString(),
+        balance: balanceBeforeWrite(sdk, secret.identityId, identity.balance).toString(),
+        balanceReadAt,
         network: this.network,
         keyLimits,
         keyId: match.keyId,
@@ -565,7 +577,9 @@ export class AuthController {
 
   /** What a later page load shows at once for a kept session (no key material). */
   private sessionHint(session: AuthSession): SessionHint {
-    return { session, scopes: { main: this.scopes.main, extra: [...this.scopes.extra] } }
+    // The read time means nothing to a later page load: its balance is shown as not yet read.
+    const { balanceReadAt: _readAt, ...kept } = session
+    return { session: kept, scopes: { main: this.scopes.main, extra: [...this.scopes.extra] } }
   }
 
   /**
@@ -601,7 +615,9 @@ export class AuthController {
     // One update: the header never shows "Sign in" between the two. The background check
     // replaces the hint's facts (balance, scopes) with what the chain says.
     this.scopes = hint.scopes
-    this.setState({ session: hint.session, resuming: false, scope: 'signing' })
+    // The hint's balance is from when the session was kept: shown, but not as a fresh read.
+    const { balanceReadAt: _keptAt, ...shown } = hint.session
+    this.setState({ session: shown, resuming: false, scope: 'signing' })
     void this.open(secret, 'vault', undefined, false).catch(async (e: unknown) => {
       if (!(e instanceof KeyNotUsableError)) return
       // Replaced by another tab's renewal meanwhile: pick up the new key.
@@ -676,6 +692,7 @@ export class AuthController {
     const extraScopes = new Map<number, KeyScope>()
     let core = main.core
     let collab = main.collab
+    let community = main.community
     let unbounded = main.unbounded
     let unlimited = hasNoLimits(mainKey)
     for (const e of secret.extra ?? []) {
@@ -693,11 +710,12 @@ export class AuthController {
       extraScopes.set(e.keyId, scope)
       core ||= scope.core
       collab ||= scope.collab
+      community ||= scope.community
       unbounded ||= scope.unbounded
       unlimited ||= hasNoLimits(k)
     }
     this.scopes = { main, extra: extraScopes }
-    return { grants: { core, collab }, unlimited, unbounded }
+    return { grants: { core, collab, community }, unlimited, unbounded }
   }
 
   /**
@@ -787,9 +805,8 @@ export class AuthController {
         // The words alone: the identity is the one holding their master key.
         if (identityId === '') {
           this.step('Finding the identity of these words')
-          identityId = await withTimeout(
+          identityId = await withPlatformRead(
             identityOfMasterKey(await this.getSdk(), master.publicKeyHex, this.network),
-            PLATFORM_READ_MS,
             'Finding the identity of these words',
           )
           foundByWords = true
@@ -992,8 +1009,8 @@ export class AuthController {
       if (!secret) throw new VaultLockedError('unlock to continue')
       try {
         const opened = await this.open(secret, 'vault', session.keyLimits ?? undefined, false)
-        const want = requested === forge.collab ? 'collab' : 'core'
-        if (!opened.grants?.[want]) throw new Error('the granted key is not live on the identity yet')
+        const want = contractKind(forge, requested)
+        if (want === null || !opened.grants?.[want]) throw new Error('the granted key is not live on the identity yet')
         return opened
       } catch (e) {
         // The grant is stored; keep the session that was working (unless it locked meanwhile:
@@ -1189,6 +1206,8 @@ export class AuthController {
     const session = this.state.session
     if (!session) return
     const sdk = await this.getSdk()
+    // Stamped before the read: a write recorded while it runs is not taken to be in it.
+    const balanceReadAt = Date.now()
     const [identity, keyLimits] = await Promise.all([
       authSdk(sdk).identities.fetch(session.identityId),
       session.keyId === undefined ? Promise.resolve(null) : readKeyLimits(sdk, session.identityId, session.keyId).catch(() => session.keyLimits ?? null),
@@ -1212,7 +1231,16 @@ export class AuthController {
         return
       }
     }
-    this.setState({ session: { ...current, balance: (identity?.balance ?? 0n).toString(), keyLimits } })
+    // Not shown by this node: the balance is unknown, and the one shown stays (M1). A refresh that
+    // started before one already applied does not replace it.
+    if (!identity || (current.balanceReadAt !== undefined && balanceReadAt < current.balanceReadAt)) {
+      this.setState({ session: { ...current, keyLimits } })
+      return
+    }
+    // A node still behind a write this tab measured answers a balance that write replaced: the
+    // measured one stands (write.ts `balanceBeforeWrite`, D-2).
+    const balance = balanceBeforeWrite(sdk, current.identityId, identity.balance)
+    this.setState({ session: { ...current, balance: balance.toString(), balanceReadAt, keyLimits } })
   }
 
   /** Lock (keep the stored key; unlock to continue). The session ends with it. */
@@ -1440,6 +1468,7 @@ function keyFailure(identity: WasmIdentity, keyId: number): KeyNotUsableError {
  * forge-collab grant), else under the one Forge contract it covers.
  */
 function toExtraKey(key: WalletKey, forge: ForgeIds, requested?: string): ExtraKey {
-  const contractId = requested !== undefined && scopeCovers(key.scope, forge, requested) ? requested : key.scope.core ? forge.core : forge.collab
+  const covered = FORGE_CONTRACT_KINDS.find((k) => key.scope[k]) ?? 'community'
+  const contractId = requested !== undefined && scopeCovers(key.scope, forge, requested) ? requested : forge[covered]
   return { contractId, keyId: key.keyId, wif: key.wif }
 }

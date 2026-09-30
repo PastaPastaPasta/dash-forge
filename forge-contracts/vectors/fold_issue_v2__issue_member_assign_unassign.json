@@ -4,6 +4,7 @@
   "case": "fold_issue",
   "rules": "v2",
   "input": {
+    "transitions": [],
     "events": [
       {
         "id": "e3",
@@ -32,9 +33,7 @@
         "oid": null,
         "createdAt": 200
       }
-    ],
-    "authorEvents": [],
-    "targetAuthor": "alice"
+    ]
   },
   "expected": {
     "open": true,

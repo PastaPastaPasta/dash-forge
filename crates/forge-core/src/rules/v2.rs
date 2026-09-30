@@ -2,16 +2,18 @@
 //! forge-collab contracts, `docs/contracts/forge-v2.md`).
 //!
 //! Consensus does most of the authorization: an `event` exists only if its
-//! writer held a `maintainer`/`writer` document for the repo when it was written, and an
+//! writer held a `maintainer`/`writer` document for the repo when it was written, an
 //! `authorEvent` exists only if its writer authored the target and its kind is one the author
-//! may use (close, reopen, draft, ready, thread resolve/unresolve, review request/remove, head
-//! update). What is left client-side, and must be identical in every client, is here:
+//! may use (thread resolve/unresolve, review request/remove, head update), and a `transition`
+//! (close, reopen, merge, draft, ready) only if it is a legal move by a member or the author.
+//! What is left client-side, and must be identical in every client, is here:
 //!
 //! * [`RoleOracle`] — membership as the set of *current* `maintainer`/`writer` documents
 //!   (a revoked member's document is deleted, so it is simply absent).
-//! * [`fold_issue_state_v2`] / [`fold_pr_state_v2`] — the issue/PR fold over `event` and
-//!   `authorEvent` (§3).
-//! * [`allocate_number`] — issue/PR numbering that tolerates squatters (§6).
+//! * [`issue_state_v2`] / [`pr_state_v2`] — issue/PR state from the transitions' state code,
+//!   labels, assignees and the base ref from `event` (§3); the moves themselves are
+//!   [`super::transition`].
+//! * [`dense_number`] — the dense next issue/PR number (§6).
 //! * [`order_pack_copies`] / [`select_pack_copy`] / [`pack_read_order`] — the pack reader
 //!   rule (§4), over copies whose hash the caller has already checked.
 //! * [`count_approvals`] — PR approvals from members only, dismissed reviews skipped (§6).
@@ -25,7 +27,7 @@
 //! * [`is_valid_repo_name`] / [`normalize_repo_name`] — the `repo.name` slug (§2).
 //!
 //! The event ordering and per-kind state changes are the parent module's base rules
-//! (`apply_issue_event`, `apply_pr_event`, `event_order`, `merge_reachable`), alongside ref
+//! (`apply_issue_event`, `apply_pr_event`, `event_order`), alongside ref
 //! resolution and protected-pattern matching.
 //!
 //! Every function is pure. The conformance vectors with `"rules": "v2"` in
@@ -33,13 +35,12 @@
 
 use std::collections::BTreeSet;
 
-use super::review::merged_log;
-
 pub use super::parity::{
-    checks_state, fold_milestones_v2, fold_thread_meta_v2, pinned_targets, trending_recount,
-    trending_window, CheckRunRow, CheckState, ChecksPolicy, ChecksState, Milestone, MilestoneDoc,
-    MilestoneItem, PinnedTarget, RequiredCheck, StarBeat, ThreadMeta, TimeGrid, TrendingEntry,
-    TrendingSelector, Window, PASSING_CONCLUSIONS, STAR_BEAT_GRID,
+    check_run_write, checks_state, fold_milestones_v2, fold_thread_meta_v2, pinned_targets,
+    trending_recount, trending_window, CheckRunRow, CheckState, ChecksPolicy, ChecksState,
+    Milestone, MilestoneDoc, MilestoneItem, PinnedTarget, RequiredCheck, RunReport, RunWrite,
+    RunWriteAction, StarBeat, StoredRun, ThreadMeta, TimeGrid, TrendingEntry, TrendingSelector,
+    Window, PASSING_CONCLUSIONS, STAR_BEAT_GRID,
 };
 pub use super::review::{
     anchor_of, apply_suggestion, fold_pr_review_v2, group_review_comments, is_author_kind,
@@ -47,12 +48,17 @@ pub use super::review::{
     Policy, PolicyStatus, PrReviewState, RequestedReviewer, ReviewComment, ReviewGroup, Suggestion,
     SuggestionError,
 };
+pub use super::transition::{
+    delta_of, dense_number, fold_sum, is_locked, merge_transition, names_dense_rule,
+    next_transition, repo_counts, state_code, state_sum, status_of_code, Actor, RepoCounts,
+    StateAction, StateStatus, Transition, TransitionMove, TransitionTarget, DENSE_RULE, LOCK_DELTA,
+    TRANSITION_KINDS,
+};
 
 use serde::{Deserialize, Serialize};
 
 use super::{
-    apply_issue_event, apply_pr_event, merge_reachable, Event, EventKind, IssueState, Oid, PrState,
-    Verdict,
+    apply_issue_event, apply_pr_event, Event, EventKind, IssueState, Oid, PrState, Verdict,
 };
 
 /// The versioned rules identifier for forge-v2 repositories.
@@ -128,108 +134,95 @@ impl RoleOracle {
 }
 
 // ===========================================================================
-// Issue / PR fold
+// Issue / PR state (transitions) and metadata fold
 // ===========================================================================
 
-/// Fold an issue's `event` and `authorEvent` documents into its [`IssueState`].
-///
-/// * Every `event` applies, whoever wrote it and whatever has happened to their membership
-///   since (PR-only kinds do nothing to an issue).
-/// * An `authorEvent` applies only if it is an author kind by `target_author` (of those only
-///   close and reopen change an issue).
-/// * Both are applied as one log ordered by `(createdAt, id)`, with the base per-kind effects.
+/// Whether `kind` is one of the state kinds (close, reopen, merge, draft, ready, and since RC1
+/// lock and unlock) that live only in `transition` on the fresh registration. The contract refuses them on `event` (`kind ≥ 4`,
+/// `noState`) and `authorEvent` (its enum); handed one anyway, the metadata fold ignores it.
 #[must_use]
-pub fn fold_issue_state_v2(
-    events: &[Event],
-    author_events: &[Event],
-    target_author: &str,
-) -> IssueState {
+pub fn is_state_kind(kind: EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::Close
+            | EventKind::Reopen
+            | EventKind::Merge
+            | EventKind::Draft
+            | EventKind::Ready
+            | EventKind::Lock
+            | EventKind::Unlock
+    )
+}
+
+/// The member events that fold into labels, assignees and the base ref, in `(createdAt, id)`
+/// order. State kinds are dropped ([`is_state_kind`]).
+fn meta_log(events: &[Event]) -> Vec<&Event> {
+    let mut log: Vec<&Event> = events.iter().filter(|e| !is_state_kind(e.kind)).collect();
+    log.sort_by(|a, b| super::event_order(a, b));
+    log
+}
+
+/// An issue's state: open or closed from its state code (the proved `transition.delta` sum,
+/// [`super::transition`]), labels and assignees from its member `event`s.
+#[must_use]
+pub fn issue_state_v2(state_code: i64, events: &[Event]) -> IssueState {
     let mut state = IssueState::default();
-    for e in merged_log(events, author_events, target_author) {
+    for e in meta_log(events) {
         apply_issue_event(&mut state, e);
     }
+    state.open = super::transition::status_of_code(state_code).open;
     state
 }
 
-/// Fold a PR's `event` and `authorEvent` documents into its [`PrState`].
+/// A PR's state: open, merged and draft from its state code, labels, assignees and the base
+/// ref from its member `event`s.
 ///
-/// As [`fold_issue_state_v2`], and a `merge` (which can only come from `event`) applies only
-/// if its `oid` is reachable from `base_tip`. A merged PR cannot be reopened. `initial_draft`
-/// is the patch's `draft` (opened as a draft); `draft` / `ready` events, from members or the
-/// author, override it in order. Review kinds (11–18) do not change [`PrState`].
+/// "Merged" is the chain fact (a member recorded a merge, D-9). `merge_oid` is that merge
+/// transition's `oid` when the reader has it; [`PrState::merge_on_base`] then says whether it
+/// was a valid tip of the base (`is_ancestor(oid, base_tip)`, the historical-tips predicate).
+/// A merge that fails it is still merged and is labelled "merge commit not found on the base".
+///
+/// A reader that has not loaded the base ref's history must pass `merge_oid = None` (the answer
+/// is then "unknown", `None`), never a `base_tip` of `None` with an oid: that reads as "the base
+/// has no tip", so the merge would be labelled not found.
 #[must_use]
-pub fn fold_pr_state_v2(
+pub fn pr_state_v2(
+    state_code: i64,
+    merge_oid: Option<&str>,
     events: &[Event],
-    author_events: &[Event],
-    target_author: &str,
     base_tip: Option<&str>,
     is_ancestor: impl Fn(&str, &str) -> bool,
-    initial_draft: bool,
 ) -> PrState {
-    let mut state = PrState {
-        draft: initial_draft,
-        ..PrState::default()
-    };
-    for e in merged_log(events, author_events, target_author) {
-        if e.kind == EventKind::Merge && !merge_reachable(e, base_tip, &is_ancestor) {
-            continue;
-        }
+    let mut state = PrState::default();
+    for e in meta_log(events) {
         apply_pr_event(&mut state, e);
     }
+    let status = super::transition::status_of_code(state_code);
+    state.open = status.open;
+    state.merged = status.merged;
+    state.draft = status.draft;
+    // An empty oid is "not known", as in the TS port.
+    let merge_oid = merge_oid.filter(|o| !o.is_empty());
+    state.merge_on_base = match (status.merged, merge_oid, base_tip) {
+        (false, _, _) | (true, None, _) => None,
+        (true, Some(_), None) => Some(false),
+        (true, Some(oid), Some(tip)) => Some(is_ancestor(oid, tip)),
+    };
     state
 }
 
-// ===========================================================================
-// Numbering
-// ===========================================================================
-
-/// The numbering ceiling for a repo with `count` issues (or PRs): `min(2 × count + 100,
-/// 2^32 − 1)`. Taken numbers above it are ignored as squatters.
+/// The upstream number to show beside a mirrored issue's or PR's own (`#12 · upstream #7761`),
+/// and to resolve `#7761` in a body through: `upstreamNumber` is a free field, so it is trusted
+/// only from the repo owner (the mirror signer) or a current maintainer or writer.
 #[must_use]
-pub fn number_ceiling(count: u64) -> u64 {
-    count
-        .saturating_mul(2)
-        .saturating_add(100)
-        .min(u64::from(u32::MAX))
-}
-
-/// The number to claim for a new issue (or PR), `forge-v2.md` §6.
-///
-/// `count` is the provable count of the repo's issues (the rangeCountable `number` index).
-/// `taken_numbers_desc` are claimed numbers as the `number` index returns them (descending;
-/// the order is not relied on). It must hold `base` (below) and every taken number in the
-/// contiguous run directly above it: a caller that queries ascending from `base + 1` must page
-/// to the end of that run (the first gap), not stop after one page, or it hands in a run cut
-/// short and gets back a number that is already taken.
-///
-/// `trusted_max` is the largest number among the repo's issues written by its owner or a
-/// current maintainer (the `author` index, one `number desc, limit 1` read each), or 0.
-/// Those numbers are trusted wherever they sit: a mirror's owner writes the upstream numbers
-/// (#7761 with 15 issues on chain), and the ceiling alone would call them squatters.
-///
-/// 1. `ceiling = min(2 × count + 100, 2^32 − 1)`.
-/// 2. `base` = the larger of the largest taken number `≤ ceiling` (or 0) and `trusted_max`.
-/// 3. Claim the first number `> base` that is not taken. Below the ceiling that is always
-///    `base + 1`. Only when `base` is at or above the ceiling can squatters just above it be
-///    in the way, and the probe steps over them.
-///
-/// `None` when every number from `base + 1` to `2^32 − 1` is taken. Gaps below `base` are never
-/// filled.
-#[must_use]
-pub fn allocate_number(count: u64, taken_numbers_desc: &[u32], trusted_max: u32) -> Option<u32> {
-    let ceiling = number_ceiling(count);
-    let taken: BTreeSet<u64> = taken_numbers_desc.iter().map(|&n| u64::from(n)).collect();
-    let base = taken
-        .range(..=ceiling)
-        .next_back()
-        .copied()
-        .unwrap_or(0)
-        .max(u64::from(trusted_max));
-    let mut candidate = base + 1;
-    while taken.contains(&candidate) {
-        candidate += 1;
-    }
-    u32::try_from(candidate).ok()
+pub fn trusted_upstream_number(
+    upstream_number: Option<u32>,
+    author: &str,
+    repo_owner: &str,
+    oracle: &RoleOracle,
+) -> Option<u32> {
+    let n = upstream_number.filter(|&n| n > 0)?;
+    (author == repo_owner || oracle.current_role(author).is_some()).then_some(n)
 }
 
 // ===========================================================================
@@ -645,6 +638,9 @@ pub enum ContentKind {
     RefUpdate,
     /// `config`: plaintext `defaultBranch`, `protectedPatterns` (neither required).
     Config,
+    /// `release`: plaintext `name`, `notes`, `assets`, `assetManifest`, `yanked`, `imported`
+    /// (none required); a private repository's is sealed (`private-repos.md` §16).
+    Release,
 }
 
 /// The content fields of a document, flattened. An absent field, an empty string and an
@@ -693,7 +689,22 @@ pub struct ContentDoc {
     /// `epoch`.
     #[serde(default)]
     pub epoch: Option<u32>,
+    /// A release's plaintext content fields that are present, by name: `name`, `notes`,
+    /// `assets`, `assetManifest`, `yanked`, `imported` (`private-repos.md` §16.2).
+    #[serde(default)]
+    pub release_fields: Vec<String>,
 }
+
+/// A release's plaintext content fields: the contract's `noPlain` ones, and `yanked` and
+/// `imported`, which a sealed release never carries either (§16.2).
+pub const RELEASE_PLAINTEXT_FIELDS: [&str; 6] = [
+    "name",
+    "notes",
+    "assets",
+    "assetManifest",
+    "yanked",
+    "imported",
+];
 
 fn present(s: Option<&String>) -> bool {
     s.is_some_and(|s| !s.is_empty())
@@ -741,6 +752,8 @@ impl ContentDoc {
                         .as_ref()
                         .is_some_and(|p| !p.is_empty()),
             ),
+            // `tagName` is the key, not content: nothing is required
+            ContentKind::Release => (None, !self.release_fields.is_empty()),
         };
         Plaintext {
             required_missing: required.is_some_and(|f| !present(f)),

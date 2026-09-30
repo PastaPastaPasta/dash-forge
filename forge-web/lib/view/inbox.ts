@@ -9,7 +9,8 @@
  *
  * **Feeds**, one proof-checked query each, `$createdAt > cursor` ascending, {@link PAGE} rows:
  *   - my repos: new issues and PRs (`issue`/`patch` `created`), pushes (opt-in, the reflogs);
- *   - repos holding my threads: state changes on those threads (`event`/`authorEvent` `feed`);
+ *   - repos holding my threads: what happened on those threads (`event` `feed`: labels, assignees)
+ *     and their state changes (`transition` `feed`);
  *   - each thread: comments (`comment.target`); each PR I opened: reviews (`review.patch`).
  * A poll runs at most {@link ROUND_BUDGET} feeds, round-robin, so a big watch list is spread
  * over several minutes instead of bursting DAPI. My own documents never become items.
@@ -25,6 +26,7 @@ import type { Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 import { DOC } from '../repo/contract'
+import { contractOf } from '../repo/source'
 import { queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from '../sdk'
 import { listReposByOwner } from './discovery'
 import {
@@ -132,7 +134,7 @@ export interface InboxItem {
 export type Feed =
   | { readonly kind: 'new'; readonly type: 'issue' | 'patch'; readonly repo: RepoLite }
   | { readonly kind: 'push'; readonly type: 'refUpdate' | 'protectedRefUpdate'; readonly repo: RepoLite }
-  | { readonly kind: 'state'; readonly type: 'event' | 'authorEvent'; readonly repo: RepoLite; readonly threads: readonly ThreadSub[] }
+  | { readonly kind: 'state'; readonly type: 'event' | 'transition'; readonly repo: RepoLite; readonly threads: readonly ThreadSub[] }
   | { readonly kind: 'comments'; readonly thread: ThreadSub }
   | { readonly kind: 'reviews'; readonly thread: ThreadSub }
 
@@ -160,7 +162,7 @@ export function planFeeds(subs: Subscriptions, prefs: InboxPrefs): Feed[] {
   for (const t of subs.threads) threadsByRepo.set(t.repo.id, [...(threadsByRepo.get(t.repo.id) ?? []), t])
   for (const [, threads] of threadsByRepo) {
     const repo = threads[0]!.repo
-    feeds.push({ kind: 'state', type: 'event', repo, threads }, { kind: 'state', type: 'authorEvent', repo, threads })
+    feeds.push({ kind: 'state', type: 'event', repo, threads }, { kind: 'state', type: 'transition', repo, threads })
   }
   for (const { repo, reason } of subs.repos) {
     if (reason === 'starred' && !prefs.stars) continue
@@ -216,9 +218,8 @@ export function feedQuery(forge: ForgeIds, f: Feed, cursor: Cursor): DocumentQue
   switch (f.kind) {
     case 'new':
     case 'state':
-      return { dataContractId: forge.collab, documentTypeName: f.type, where: [['repoId', '==', f.repo.id], after], ...shape }
     case 'push':
-      return { dataContractId: forge.core, documentTypeName: f.type, where: [['repoId', '==', f.repo.id], after], ...shape }
+      return { dataContractId: contractOf(forge, f.type), documentTypeName: f.type, where: [['repoId', '==', f.repo.id], after], ...shape }
     case 'comments':
       return { dataContractId: forge.collab, documentTypeName: DOC.comment, where: [['targetId', '==', f.thread.id], after], ...shape }
     case 'reviews':
@@ -236,8 +237,13 @@ export function feedQuery(forge: ForgeIds, f: Feed, cursor: Cursor): DocumentQue
 export function backfillQuery(forge: ForgeIds, f: Extract<Feed, { kind: 'state' }>, thread: ThreadSub, cursor: Cursor, floor: number): DocumentQuery | null {
   const from = Math.max(thread.since, floor)
   if (cursor.at <= from) return null
+  // A target's transitions are few and indexed by `targetId` alone (`perTarget`): read them all
+  // and let `toItems` keep the window (`backfillWindow`).
+  if (f.type === 'transition') {
+    return { dataContractId: contractOf(forge, f.type), documentTypeName: f.type, where: [['targetId', '==', thread.id]], orderBy: [['targetId', 'asc']], limit: 100 }
+  }
   return {
-    dataContractId: forge.collab,
+    dataContractId: contractOf(forge, f.type),
     documentTypeName: f.type,
     // `<= at`: a page that stopped inside a block at `at` read part of it; the rest comes here or
     // with the feed's next read (an item is stored once, by document id).
@@ -245,6 +251,12 @@ export function backfillQuery(forge: ForgeIds, f: Extract<Feed, { kind: 'state' 
     orderBy: [['$createdAt', 'desc']],
     limit: PAGE,
   }
+}
+
+/** The backfill window of {@link backfillQuery}, for a read that cannot bound it by time. */
+export function backfillWindow(thread: ThreadSub, cursor: Cursor, floor: number): (at: number) => boolean {
+  const from = Math.max(thread.since, floor)
+  return (at) => at > from && at <= cursor.at
 }
 
 /** Failed backfill attempts of one thread before it is given up (its future events still come). */
@@ -279,15 +291,31 @@ function asCursor(v: unknown): Cursor | undefined {
 const reviewDoc = baseDoc.extend({ verdict: int })
 const refDoc = baseDoc.extend({ refName: z.string().optional().catch(undefined) })
 
-/** What an `event` / `authorEvent` kind means to a reader of the inbox. */
-export function stateWhat(kind: number, value: string | undefined, me: string): string | null {
+/** What a `transition` kind means to a reader of the inbox. */
+export function transitionWhat(kind: number): string | null {
   switch (kind) {
     case 1:
+    case 11:
+    case 16:
       return 'closed'
     case 2:
+    case 12:
+    case 17:
       return 'reopened'
-    case 3:
-      return 'marked merged'
+    case 13:
+      return 'merged'
+    case 14:
+      return 'marked draft'
+    case 15:
+      return 'marked ready for review'
+    default:
+      return null
+  }
+}
+
+/** What an `event` kind means to a reader of the inbox (state kinds are transitions). */
+export function stateWhat(kind: number, value: string | undefined, me: string): string | null {
+  switch (kind) {
     case 4:
       return value ? `labelled ${value}` : 'labelled'
     case 5:
@@ -298,16 +326,13 @@ export function stateWhat(kind: number, value: string | undefined, me: string): 
       return value === me ? 'unassigned you' : 'unassigned someone'
     case 8:
       return 'retargeted'
-    case 9:
-      return 'marked draft'
-    case 10:
-      return 'marked ready for review'
     default:
       return null
   }
 }
 
-const VERDICT_WHAT: Readonly<Record<number, string>> = { 1: 'approved', 2: 'requested changes', 3: 'reviewed' }
+/** Review verdicts as the inbox words them; 4/5 are a non-member's approve and request changes (RC1). */
+const VERDICT_WHAT: Readonly<Record<number, string>> = { 1: 'approved', 2: 'requested changes', 3: 'reviewed', 4: 'approved', 5: 'requested changes' }
 
 function shortRef(name: string | undefined): string {
   if (!name) return 'a branch'
@@ -341,7 +366,7 @@ export function toItems(f: Feed, docs: readonly PlainDocument[], me: string): In
         const t = threads.get(d.targetId)
         // A private repo's value is sealed, or (plaintext) unchecked: the feed holds no keys,
         // so it names the change without it (private-repos.md §8.1).
-        const what = stateWhat(d.kind, f.repo.private ? undefined : d.value, me)
+        const what = f.type === 'transition' ? transitionWhat(d.kind) : stateWhat(d.kind, f.repo.private ? undefined : d.value, me)
         if (!t || what === null || !notMine(d) || d.$createdAt <= t.since) return []
         return [item(d, { kind: 'state', repo: t.repo, what, target: { kind: t.kind, number: t.number, title: t.title } })]
       })
@@ -586,7 +611,9 @@ export async function pollOnce(
             if (backfills >= BACKFILL_BUDGET) continue
             backfills++
             try {
-              await store(toItems({ ...f, threads: [t] }, (await queryDocumentsWithProof(sdk, q)).documents, me))
+              const inWindow = backfillWindow(t, cursor, start.at)
+              const docs = (await queryDocumentsWithProof(sdk, q)).documents.filter((d) => inWindow(typeof d['$createdAt'] === 'number' ? d['$createdAt'] : 0))
+              await store(toItems({ ...f, threads: [t] }, docs, me))
             } catch {
               // Retried next poll; given up after BACKFILL_TRIES (a count below zero).
               backfillsFailed++

@@ -16,9 +16,12 @@ dg webhook add <owner>/<repo> --url https://ci.example/hook \
 # no --secret-env: a random secret is generated and printed once
 ```
 
-This writes a forge-collab `webhook` document. **The URL and event list are public on
-chain**; `dg` refuses a URL with a query string or `user:password@` unless `--force`, so do
-not put tokens in it (the signature authenticates deliveries). The `secret` (32–96 printable
+This writes a forge-community `webhook` document. **The URL and event list are public on
+chain**; the contract accepts only `https://` to a DNS name (no IP address, `localhost` or
+`user:password@`), and `dg` refuses a query string unless `--force`, so do not put tokens in
+it (the signature authenticates deliveries). Private repositories cannot have webhooks. For
+local tests against `http://127.0.0.1`, use a static `[[webhook]]` block in `--config`
+(below): it never goes on chain. The `secret` (32–96 printable
 ASCII characters) is encrypted (`encryptedFor`, `ecdh-secp256k1-aes256-cbc`) from the
 maintainer's ENCRYPTION key to the relay identity's ENCRYPTION key. The relay:
 
@@ -46,7 +49,9 @@ export, so the host holds no signing keys or mnemonic:
   "identityKeys": [ { "id": 4, "purpose": "ENCRYPTION", "privateKeyHex": "<64 hex>" } ] }
 ```
 
-(A full bridge identity file works too; only its ENCRYPTION keys are read.) Mount it read-only:
+(A full bridge identity file works too; only its ENCRYPTION keys are read.) The ENCRYPTION key
+must be unbound or bound to forge-community, the contract `webhook` lives in: a maintainer's
+`dg webhook add` encrypts to such a key only. Mount it read-only:
 
 ```sh
 docker build -f crates/forge-relay/Dockerfile -t forge-relay .   # or ghcr.io/pastapastapasta/forge-relay:<version>
@@ -54,7 +59,7 @@ docker run --rm --read-only \
   -v "$PWD/relay-key.json:/id/relay.json:ro" \
   -v relay-state:/state \
   forge-relay --identity /id/relay.json --network testnet
-# a devnet: --network devnet --devnet-name moutai
+# a devnet: --network devnet --devnet-name bonsia
 ```
 
 Both images keep the retry queue in `/state` (`FORGE_RELAY_STATE_DIR=/state`, owned by the
@@ -160,9 +165,11 @@ octokit) reads them:
   earlier than the earliest hook that wants it.
 - What is reported: a `push` only for a ref update that moves its ref by forge's rules (a
   plain `refUpdate` on a protected branch is inert and is not reported). A merge is
-  `merged: true` only when a valid update set the PR's base branch to its commit (and the PR's
-  `baseRefNameHash` matches its `baseRefName`); otherwise `merged: false` with
-  `dash_merge_unverified: true`. A yanked release is `release` / `unpublished`.
+  `merged: true` when a member's transition landed a merge, even one an unverified base-branch
+  update could not confirm (`merged` is the chain fact); an unverified merge instead adds
+  `dash_merge_unverified: true`. A lock or unlock on an already-merged PR keeps reporting
+  `merged: true`. A newly-yanked release is `release` / `unpublished`; a further edit of one
+  already yanked is `edited`, not a repeated `unpublished`.
 - Comments and reviews: per cycle and repo, up to 40 open or recently active threads, plus 10
   of the others in rotation, so a quiet closed thread is read every few cycles (with N such
   threads, every N/10 cycles).
@@ -182,8 +189,8 @@ octokit) reads them:
     not. A replace to `in_progress`, or an edit of a completed run, has no GitHub action and is
     not sent.
   - Re-runs: a re-run is a new `checkRun` document, as on GitHub (re-running a check creates a
-    new check run), and gets its own `created` and `completed`. A completed document replaced
-    back to `queued` is re-read only while it is the head's newest run (or behind an open one).
+    new check run), and gets its own `created` and `completed`. forge-community's `checkRun` is
+    monotonic: a completed run is final (`dg ci report` of a finished run starts a new one).
   - Delivery ids: `created` uses the document id, `completed` the document id plus the
     `$revision` seen completed. Two relays that first see a completed run at different
     revisions send different ids, so dedupe on `check_run.id` and `status` as well.

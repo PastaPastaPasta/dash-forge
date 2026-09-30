@@ -4,19 +4,24 @@
 //! *produces* it. One `kind` field distinguishes the artifacts that share the entire
 //! pack storage/transport machinery:
 //!
-//! - `0` — a git packfile (kind-0 packs mandate `offset_index_parts >= 1`).
-//! - `1` — an `objectLocator` (locates itself; `offset_index_parts == 0`).
-//! - `2` — a `flatIndex` (locates itself; carries the indexed tip in `tips`).
-//! - `3` — a history index (locates itself; `tips` = `[tip]`, or `[tip, baseTip]` for a
-//!   delta over an earlier full index). `kind` is a plain `0..=255` integer in forge-core,
-//!   so this needed no contract change, and older clients, which select kinds 0 and 1,
-//!   ignore it.
+//! - `0` — a git packfile.
+//! - `1` — an `objectLocator` (the browse plane's object index).
+//! - `2` — a `flatIndex` (carries the indexed tip in `tips`).
+//! - `3` — a history column index (`tips` = `[tip]`, or `[tip, baseTip]` for a delta over an
+//!   earlier full index). The RC1 contract's `kindShape` rule refuses a kind-3 manifest
+//!   whose `tips` is not 20, 32, 40 or 64 bytes.
+//! - `4` — a release-asset manifest (docs/design/release-asset-manifest.md, D-4).
+//! - `5` — a history index's version lists, the companion of kind 3 with the same `tips` (a
+//!   reader rule: the contract checks tips on kind 3 only).
+//!
+//! `kind` is a plain `0..=255` integer in forge-core. RC1 removed the per-pack offset index
+//! (`manifestPart` documents and `packManifest.offsetIndexParts`): every artifact locates
+//! itself through the `objectLocator`.
 //!
 //! Hashes and OIDs are held as lowercase hex strings — the form the platform layer
 //! serializes (as JSON-in-string / packed byteArray; §0) — never native arrays.
 
 use super::build::Pack;
-use super::parse::OID_LEN;
 use serde::{Deserialize, Serialize};
 
 /// `packManifest.kind == 0`: a git packfile.
@@ -27,11 +32,12 @@ pub const KIND_OBJECT_LOCATOR: u8 = 1;
 pub const KIND_FLAT_INDEX: u8 = 2;
 /// `packManifest.kind == 3`: a history index ([`super::historyindex`]).
 pub const KIND_HISTORY_INDEX: u8 = 3;
-
-/// Bytes of one packed `manifestPart` offset-index payload (`d0..d2`, 3 × 4900 B).
-const OFFSET_PART_CAPACITY: usize = 4900 * 3;
-/// Packed offset-index row width: `oid(20) || offset(5) || length(4)`.
-const OFFSET_ROW_BYTES: usize = OID_LEN + 5 + 4;
+/// `packManifest.kind == 4`: a release-asset manifest (D-4; RC1 `pack_kind_shape`).
+pub const KIND_RELEASE_ASSETS: u8 = 4;
+/// `packManifest.kind == 5`: a history index's per-path version lists (the whole index, format
+/// 2), companion of the column index (kind 3, format 1) of the same tip. Blame and a path's
+/// History read it; the file list and the counts read only kind 3.
+pub const KIND_HISTORY_VERSIONS: u8 = 5;
 
 /// The `packManifest` document fields (data-contracts §2.3). List fields serialize as
 /// JSON-in-string / packed byteArray at the platform layer, not native arrays.
@@ -55,14 +61,11 @@ pub struct PackManifest {
     pub tips: Vec<String>,
     /// Prior artifact `packHash`es this one makes redundant, lowercase hex.
     pub supersedes: Vec<String>,
-    /// `manifestPart` offset-index document count; `>= 1` for kind 0, `0` otherwise.
-    pub offset_index_parts: u32,
 }
 
 impl PackManifest {
     /// Manifest for a kind-0 git pack. `chunk_count` is the number of `chunk` docs the
-    /// pack bytes split into (see [`super::split`]); the mandatory per-pack offset
-    /// index size is derived from the object count.
+    /// pack bytes split into (see [`super::split`]).
     pub fn for_pack(pack: &Pack, chunk_count: u64) -> Self {
         let object_count = pack.parsed.object_count() as u64;
         Self {
@@ -75,7 +78,6 @@ impl PackManifest {
             uris: Vec::new(),
             tips: Vec::new(),
             supersedes: Vec::new(),
-            offset_index_parts: offset_index_parts(pack.parsed.object_count()),
         }
     }
 
@@ -91,7 +93,6 @@ impl PackManifest {
             uris: Vec::new(),
             tips: Vec::new(),
             supersedes: Vec::new(),
-            offset_index_parts: 0,
         }
     }
 
@@ -112,7 +113,6 @@ impl PackManifest {
             uris: Vec::new(),
             tips: vec![tip_oid_hex.to_string()],
             supersedes: Vec::new(),
-            offset_index_parts: 0,
         }
     }
 }
@@ -146,14 +146,6 @@ pub fn plan_supersedes(
         .collect()
 }
 
-/// Number of `manifestPart` docs needed to hold a pack's offset index. `>= 1` for any
-/// kind-0 pack (the per-pack offset index is mandatory — data-contracts §2.3).
-fn offset_index_parts(object_count: usize) -> u32 {
-    let total = object_count * OFFSET_ROW_BYTES;
-    let parts = total.div_ceil(OFFSET_PART_CAPACITY).max(1);
-    u32::try_from(parts).unwrap_or(u32::MAX)
-}
-
 fn sha256(bytes: &[u8]) -> [u8; 32] {
     use sha2::{Digest as _, Sha256};
     let mut h = Sha256::new();
@@ -176,7 +168,6 @@ mod tests {
             uris: vec![],
             tips: vec![],
             supersedes: vec![],
-            offset_index_parts: 0,
         }
     }
 
@@ -218,14 +209,6 @@ mod tests {
         let existing = vec![manifest(KIND_FLAT_INDEX, "aa")];
         let new = manifest(KIND_FLAT_INDEX, "aa");
         assert!(plan_supersedes(&existing, &new, true).is_empty());
-    }
-
-    #[test]
-    fn offset_parts_at_least_one_for_kind0() {
-        assert_eq!(offset_index_parts(0), 1);
-        assert_eq!(offset_index_parts(1), 1);
-        // 507 rows * 29 B = 14703 B > 14700 → 2 parts.
-        assert_eq!(offset_index_parts(507), 2);
     }
 
     #[test]

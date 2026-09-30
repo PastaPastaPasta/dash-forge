@@ -6,8 +6,10 @@
 # races), plus the shared CONTRIB as a reader who never joins.
 #
 #   1. P_OWNER `dg repo create --private`, pushes main and a feature branch, adds P_MEMBER
-#   2. P_OWNER opens issue #1 and PR #1 (feature → main); P_MEMBER comments on the issue,
-#      labels it, and approves the PR with a body
+#   2. P_OWNER opens an issue and a PR (feature → main); with dense numbering (issues and PRs
+#      share one number sequence per repo) the PR is not #1 — both scripts read their numbers
+#      back from `dg ... create`'s own JSON rather than assuming any. P_MEMBER comments on the
+#      issue, labels it, and approves the PR with a body
 #   3. the stored documents carry no plaintext title, body, branch name, path or label name:
 #      every one has `epoch` + `enc`, and the PR's base hash is not sha256("refs/heads/main")
 #   4. P_MEMBER reads the issue (title, body, comment, label) and the PR (title, base, approval);
@@ -19,15 +21,14 @@
 #      public repo of theirs (which would otherwise write it in plaintext)
 #   6. P_OWNER merges the PR (1 approval counted from the sealed review)
 #
-# Needs the moutai funding key (MOUTAI_FUNDING, default the QA harness's) and
+# Needs the devnet's funding key (E2E_MINT_FUNDING, config.sh; default the QA harness's) and
 # tools/mint-identity's node modules; skips without them.
 SCENARIO_NAME="19 private repository: sealed issues, PRs, comments, reviews and labels"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
 
-: "${MOUTAI_FUNDING:=/Users/pasta/workspace/dash-forge-qa/secrets/moutai-funding.wif}"
 : "${MINT_DIR:=${E2E_REPO_ROOT}/tools/mint-identity}"
-[[ -n "${E2E_P_OWNER:-}" || -r "$MOUTAI_FUNDING" ]] || skip_scenario "no moutai funding key ($MOUTAI_FUNDING)"
+[[ -n "${E2E_P_OWNER:-}" || -r "$E2E_MINT_FUNDING" ]] || skip_scenario "no ${DASH_FORGE_DEVNET_NAME} funding key ($E2E_MINT_FUNDING)"
 [[ -n "${E2E_P_OWNER:-}" || -d "$MINT_DIR/node_modules/@dashevo/evo-sdk" ]] || skip_scenario "tools/mint-identity has no node_modules (npm ci there)"
 
 LOG="${WORKROOT}/s19"
@@ -35,13 +36,13 @@ IDS="${WORKROOT}/s19-ids"
 mkdir -p "$IDS" && chmod 700 "$IDS"
 json_field() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2], {"d": d}))' "$1" "$2" 2>/dev/null; }
 
-mint() { # mint <label>: a funded moutai identity with an ENCRYPTION key, for this run only
+mint() { # mint <label>: a funded devnet identity with an ENCRYPTION key, for this run only
   # One mint at a time across every agent sharing the funding key (its UTXOs), as `qa mint` does.
-  local lock=() lf="${E2E_MINT_LOCK:-/tmp/qa-mint.lock}"
+  local lock=() lf="$E2E_MINT_LOCK"
   if command -v lockf >/dev/null; then lock=(lockf -t 1200 "$lf")      # macOS
   elif command -v flock >/dev/null; then lock=(flock -w 1200 "$lf"); fi  # Linux
-  "${lock[@]}" node "$MINT_DIR/mint.mjs" --network devnet --devnet-name moutai --funding fund-from-key \
-    --funding-key-file "$MOUTAI_FUNDING" --out "$IDS" --label "$1" --amount 0.2 >"$LOG-mint-$1.log" 2>&1
+  "${lock[@]}" node "$MINT_DIR/mint.mjs" --network devnet --devnet-name "$DASH_FORGE_DEVNET_NAME" --funding fund-from-key \
+    --funding-key-file "$E2E_MINT_FUNDING" --out "$IDS" --label "$1" --amount 0.2 >"$LOG-mint-$1.log" 2>&1
 }
 
 step "this run's identities"
@@ -79,6 +80,7 @@ printf 'feature %s\n' "$RUN_ID" >"$SRC/feature.txt"
 git -C "$SRC" add -A && git -C "$SRC" commit -q -m "feature ${RUN_ID}"
 FEATURE="$(git -C "$SRC" rev-parse HEAD)"
 if git_dash_retry "$P_OWNER" "$LOG-push" -C "$SRC" push "$REMOTE" "refs/heads/main:refs/heads/main" "refs/heads/feature:refs/heads/feature" \
+   && collab_accept "$P_MEMBER" "$REPO" "$LOG-add" \
    && dg_as "$P_OWNER" -y --json collab add "$REPO" "$ID_P_MEMBER" >"$LOG-add.json" 2>"$LOG-add.err"; then
   ok "created, pushed main and feature @ ${FEATURE:0:12}, added P_MEMBER"
 else

@@ -78,10 +78,10 @@ Every roadmap item must keep all of these true:
 | D-G | **Users fund their own identities.** No sponsored grants and no faucet in the product (the testnet/devnet faucet links are only for development). |
 | D-H | **Private repos are in the first release.** |
 | D-I | **Hosting = GitHub Pages only** (plus a published IPFS build users can pin themselves). |
-| D-J | **Mainnet contracts are registered by the owner** once PV14 is active on mainnet (expected ~1 month after 2026-09-24; testnet ~1–2 weeks). All PV14 development happens on **devnet moutai** (protocol 14, drive 4.2.0-beta.5; reset 2026-09-27) until then. |
+| D-J | **Mainnet contracts are registered by the owner** once PV14 is active on mainnet (expected ~1 month after 2026-09-24; testnet ~1–2 weeks). All PV14 development happens on a devnet until then: **devnet bonsia** (protocol 14, drive 4.2.0-beta.7) since 2026-09-29, devnet moutai before that (drive 4.2.0-beta.5; reset 2026-09-27). |
 | D-L | **Sign in with a mobile Dash wallet (yappr / App Connect style)** is a launch requirement (owner, 2026-09-26). A user scans a QR (or taps a deep link on mobile) with the Dash Wallet app on iOS or Android, approves on the phone, and is signed in with a limited, contract-group-bound key. No key file and no key paste in the browser. See Phase 4. |
 | D-K | External accounts (Apple signing, pinning services, cloud buckets) are **out of scope for now**. S3 and IPFS are tested against local MinIO and kubo only. |
-| D-M | **2026-09-26: forge-v1 removed, no backwards compatibility; forge-v2 only.** The registry contract, the per-repo contract template, token ACLs, v1 read compatibility (`dash://<contract id>`, `?contract=` routes), the registry overrides and `dg collab suspend/unsuspend` are gone, and there is no migration path. The v1 data on testnet and on forge.dashhq.org was test data only the owner used. The hosted web app is built for devnet moutai until forge-v2 is registered on testnet (when PV14 reaches it) and mainnet. |
+| D-M | **2026-09-26: forge-v1 removed, no backwards compatibility; forge-v2 only.** The registry contract, the per-repo contract template, token ACLs, v1 read compatibility (`dash://<contract id>`, `?contract=` routes), the registry overrides and `dg collab suspend/unsuspend` are gone, and there is no migration path. The v1 data on testnet and on forge.dashhq.org was test data only the owner used. The hosted web app is built for the PV14 devnet (moutai, then bonsia) until forge-v2 is registered on testnet (when PV14 reaches it) and mainnet. |
 
 ### Still open
 | # | Question | Default until decided |
@@ -92,7 +92,7 @@ Every roadmap item must keep all of these true:
 
 ## 6. Roadmap
 
-Sizes: S ≈ days, M ≈ 1–2 weeks, L ≈ 3+ weeks of focused work. Phase 0 comes first. Phases 1 and 2 then run in parallel. Phase 2 targets moutai now and moves to testnet when PV14 activates there.
+Sizes: S ≈ days, M ≈ 1–2 weeks, L ≈ 3+ weeks of focused work. Phase 0 comes first. Phases 1 and 2 then run in parallel. Phase 2 targets devnet bonsia now (moutai until 2026-09-29) and moves to testnet when PV14 activates there.
 
 ### Phase 0 — Make it true and green (S–M) · *gate: nightly green 7 days, zero misleading UI*
 - [ ] Land PR #4 (browse index on push). Rebase and land `fix/pull-request-diff` (PR diff renderer).
@@ -109,7 +109,7 @@ Sizes: S ≈ days, M ≈ 1–2 weeks, L ≈ 3+ weeks of focused work. Phase 0 co
 - [ ] A replication policy chosen by the user (N targets; the push fails if fewer than N confirm).
 - [ ] `packMirror` document so anyone can record extra mirrors on-chain (`dg reseed`). Readers race every recorded URI plus a user-configurable gateway list, with Platform chunks as the last resort.
 - [ ] Web app IPFS build published on each release (users pin it themselves), reproducible, with its hash recorded on-chain so the loaded app can be verified.
-- [ ] **Survivability drill** in CI (local MinIO + kubo): delete the bucket, stop a gateway, take down the web host, kill the relay. Clone and browse must still work from the remaining sources and must say why.
+- [x] **Survivability drill** in CI (local S3 + kubo): delete the bucket, stop a gateway, take down the web host, kill the relay. Clone and browse must still work from the remaining sources and must say why. `.github/workflows/survivability.yml` (`make survivability`): the bucket is really deleted and kubo really stopped; the web host is killed and the app served from a second host and as an IPFS build; the relay is shown to be off the read path by the dependency graph, so a dead relay cannot affect either. The S3 store is RustFS, since the MinIO images no longer pull.
 
 ### Phase 2 — Shared contract on PV14 (L) · *gate: repo create ≤ 0.01 DASH on moutai; consensus rejects a revoked writer*
 - [ ] Bump the Platform SDK pins to `v4.2.0-beta.4` (Rust git tag + `@dashevo/evo-sdk@4.2.0-beta.4`); add `--network devnet --devnet-name moutai` (DAPI addresses + `quorums.moutai.networks.dash.org`).
@@ -129,7 +129,7 @@ Sizes: S ≈ days, M ≈ 1–2 weeks, L ≈ 3+ weeks of focused work. Phase 0 co
 ### Phase 4 — Adoptable (L) · *gate: public beta on testnet/moutai*
 - [ ] Release pipeline: `dg` + `git-remote-dash` binaries for Linux, macOS and Windows as GitHub Release assets (unsigned on macOS for now), plus a checksummed install script, `cargo binstall`, and a Docker image for the relay that users run themselves.
 - [ ] `dg auth`: OS keychain, 0600 fallback files; `dg auth new` guides the user through funding their own identity (QR asset lock; the faucet on test networks). DPNS username registration.
-- [ ] DPNS everywhere: `dash://alice/project`, web `/alice/project`, collaborator grants by name, profile names.
+- [x] DPNS everywhere: `dash://alice/project`, web `/alice/project`, collaborator grants by name, profile names.
 - [ ] Web onboarding: create an identity in the browser from the user's own funds (QR asset lock), an encrypted key vault (passphrase/passkey), and limited keys (Phase 2).
 - [ ] **Forge Mirror Action**: a GitHub Action that pushes every GitHub push into Forge using the repo's own bucket and a runner identity with a limited key. Issue/PR sync is incremental.
 - [ ] `dg import` → forge-import, plus a continuous mirror mode.
@@ -182,11 +182,11 @@ Landed on master:
 - **Adoption:** #13 release pipeline + install.sh (no release tagged yet) · #16 actionable errors (`docs/errors.md`) and `dg doctor` sections · #19 user guides, refreshed for the forge-v2 product.
 - **D-M:** #38 forge-v1 removed; forge.dashhq.org and the nightly ("Devnet Nightly") target moutai.
 
-Launch checklist (`ux-dx-spec.md` §11 P0), where it stands: done 1, 2, 3, 4, 5, 6, 7, 9, 11, 18, 19, 20 · done except a CLI-side part: 8 (the web spend ledger is done; `dg cost audit` totals pending), 10 (the private-repo state waits for private repos), 17 (pipeline merged; first tag pending) · in progress 12 and 13 (web PR create, inline review, browser merge) and 14 (web Fork; `dg repo fork` is done) · open 15 (private repos, after its security review) and 16 (`/mirror` wizard; the Action itself is done).
+Launch checklist (`ux-dx-spec.md` §11 P0), where it stands: done 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 18, 19, 20 (8: the web spend ledger and `dg cost audit`'s identity spend estimate are both done; forge-v2 keeps no on-chain ledger, so `dg cost audit` totals from proved document counts × each type's flat create cost rather than reconciling a local ledger against actuals) · done except a CLI-side part: 10 (the private-repo state waits for private repos), 17 (pipeline merged; first tag pending) · in progress 12 and 13 (web PR create, inline review, browser merge) and 14 (web Fork; `dg repo fork` is done) · open 15 (private repos, after its security review) and 16 (`/mirror` wizard; the Action itself is done).
 
 Next:
 - **In progress:** web PR create, inline review, Fork and browser merge · private-repo create/read paths (Phase 3; [docs/security/private-repos.md](security/private-repos.md) §13 lists contract changes required before mainnet registration) · the wallet-side changes D-L needs on mainnet (group-scoped, limited grants through App Connect; a signed responder), drafted for dashpay in `docs/upstream/` (not yet filed) · the D-L gate (a real Dash Wallet sign-in on a device, then a write) is not yet run.
-- **Not started:** DPNS in `dash://` and `dg` (the web app already resolves names) · the `/mirror` setup wizard · tag the first release so `install.sh`, `cargo binstall` and the Action's `install: 'true'` work · the published, reproducible IPFS build of the web app · the survivability drill in CI · `dg cost audit` spend totals.
+- **Not started:** the `/mirror` setup wizard · tag the first release so `install.sh`, `cargo binstall` and the Action's `install: 'true'` work · the published, reproducible IPFS build of the web app.
 - **Networks:** register forge-v2 on testnet when PV14 reaches it, and move the nightly and a testnet web build there; mainnet after PV14 (Phase 6, D-D, D-J).
 
 Launch UX/DX is specified in [docs/design/ux-dx-spec.md](design/ux-dx-spec.md) §11. Its **P0 backlog is the launch checklist** and supersedes the per-phase bullet lists below where they overlap.

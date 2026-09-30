@@ -35,6 +35,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use forge_core::layout::ForgeContract;
 use forge_core::platform::{
     decode_identifier, FetchedDocument, FieldValue, LoadedContract, PlatformClient, QueryFilter,
     QueryOrder,
@@ -50,7 +51,7 @@ use crate::error::{RelayError, Result};
 use crate::ingest::{
     self, poll_stream, Baseline, Cursor, LiveStream, TargetInfo, DOC_AUTHOR_EVENT, DOC_CHECK_RUN,
     DOC_COMMENT, DOC_EVENT, DOC_ISSUE, DOC_PATCH, DOC_PROTECTED_REF_UPDATE, DOC_REF_UPDATE,
-    DOC_RELEASE, DOC_REVIEW,
+    DOC_RELEASE, DOC_REVIEW, DOC_TRANSITION,
 };
 use crate::payload::{CheckRunAction, RepositoryMeta, ALL_EVENTS};
 use crate::queue::RetryQueue;
@@ -85,10 +86,26 @@ const ROTATING_THREADS: usize = 10;
 /// At most this many head oids tracked per repo for `checkRun` streams (newest kept).
 const MAX_HEADS: usize = 50;
 
-/// The two forge-v2 contracts.
+/// The three forge-v2 contracts.
 struct Contracts {
     core: LoadedContract,
     collab: LoadedContract,
+    /// forge-community: `event`, `authorEvent`, `checkRun` and `webhook` (RC1 layout).
+    community: LoadedContract,
+}
+
+impl Contracts {
+    /// The contract that holds `doc_type` in the RC1 layout ([`forge_core::layout`]): `event`
+    /// and `authorEvent` moved to forge-community.
+    fn of(&self, doc_type: &str) -> &LoadedContract {
+        let contract = ForgeContract::of(doc_type);
+        debug_assert!(contract.is_some(), "{doc_type} is no RC1 type");
+        match contract {
+            Some(ForgeContract::Collab) => &self.collab,
+            Some(ForgeContract::Community) => &self.community,
+            Some(ForgeContract::Core) | None => &self.core,
+        }
+    }
 }
 
 /// What every task shares.
@@ -152,6 +169,10 @@ struct RepoState {
     last_head: String,
     /// Which stage group a poll starts at (it resumes where the deadline last stopped it).
     next_stage: usize,
+    /// Tags whose newest release revision seen so far was yanked (by `tagName`): a further
+    /// delta-0 revision on one of these is `edited`, not a repeated `unpublished`
+    /// ([`ingest::translate_release`]).
+    yanked_tags: BTreeSet<String>,
 }
 
 /// A served repo: its state, and what its hooks want (set by discovery, read by polls).
@@ -193,11 +214,12 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
     let contracts = Contracts {
         core: client.fetch_contract(&forge.core).await?,
         collab: client.fetch_contract(&forge.collab).await?,
+        community: client.fetch_contract(&forge.community).await?,
     };
 
     let identity = match &cfg.identity_path {
         Some(path) if cfg.use_platform_webhooks => {
-            let id = RelayIdentity::load(&client, path, &forge.collab).await?;
+            let id = RelayIdentity::load(&client, path, &forge.community).await?;
             tracing::info!(relay_identity = %id.id, encryption_keys = ?id.key_ids(), "loaded relay identity");
             Some(id)
         }
@@ -493,7 +515,7 @@ impl Discovery {
                 subscriptions::platform_subscriptions(
                     &shared.client,
                     identity,
-                    &shared.contracts.collab.id(),
+                    &shared.contracts.community.id(),
                     &self.repo_filter,
                 ),
             )
@@ -712,9 +734,9 @@ async fn fold_head_updates(
     targets: &mut BTreeMap<String, TargetInfo>,
     heads: &mut BTreeMap<String, Head>,
 ) -> Result<()> {
-    let collab = &shared.contracts.collab;
     for (doc_type, author_path) in [(DOC_EVENT, false), (DOC_AUTHOR_EVENT, true)] {
-        for d in read_all(shared, collab, doc_type, repo_id).await? {
+        let contract = shared.contracts.of(doc_type);
+        for d in read_all(shared, contract, doc_type, repo_id).await? {
             let Some(t) = d
                 .field_bytes32("targetId")
                 .map(forge_core::platform::encode_identifier)
@@ -844,8 +866,8 @@ async fn init_repo(shared: &Shared, repo_id: &str, baseline: Baseline) -> Result
         },
         baseline,
         cursors,
+        closed: seed_states(shared, &mut targets).await,
         targets,
-        closed: BTreeSet::new(),
         heads,
         runs,
         saved_runs: None,
@@ -855,6 +877,7 @@ async fn init_repo(shared: &Shared, repo_id: &str, baseline: Baseline) -> Result
         rotation: 0,
         last_head: String::new(),
         next_stage: 0,
+        yanked_tags: BTreeSet::new(),
     };
     // Valid tips of the PRs' base refs only (what merges are checked against).
     state.backfill_tips(shared).await?;
@@ -989,22 +1012,15 @@ impl RepoState {
         }
     }
 
-    /// Whether `d` is a close (kind 1) of a target this relay has already seen closed or
-    /// merged. GitHub sends one `closed` per closing (with `merged: true` for a merge), so a
-    /// close after a merge, or a second close, is not delivered again: it would reach
-    /// receivers as a separate `closed` with `merged: false` (D-602). A reopen clears it.
-    fn repeats_a_close(&self, d: &FetchedDocument) -> bool {
-        d.field_u64("kind") == Some(1)
-            && d.field_bytes32("targetId")
-                .map(forge_core::platform::encode_identifier)
-                .is_some_and(|id| self.closed.contains(&id))
-    }
-
-    /// Whether a merge event's `oid` was set on the PR's base ref by a valid update (see
-    /// [`ingest::translate_event`]). `true` for other kinds (nothing to verify). The base ref's
-    /// hash must be `sha256(baseRefName)`, or the merge is unverified.
-    fn merge_verified(&self, d: &FetchedDocument) -> bool {
-        if d.field_u64("kind") != Some(3) {
+    /// Whether a merge transition's `oid` was set on the PR's base ref by a valid update (see
+    /// [`ingest::translate_transition`]). `true` for other kinds (nothing to check). The base
+    /// ref's hash must be `sha256(baseRefName)`, or the merge commit is "not found on the base".
+    ///
+    /// A second close, or a close after a merge, needs no filter here: consensus refuses both
+    /// (the target's state code allows one close per open, and a merge is terminal), so each
+    /// stored transition is one GitHub action (D-602).
+    fn merge_on_base(&self, d: &FetchedDocument) -> bool {
+        if d.field_u64("kind") != Some(u64::from(forge_core::rules::transition::PR_MERGE)) {
             return true;
         }
         let target = d
@@ -1142,24 +1158,25 @@ async fn poll_repo_rest(
     deadline: Instant,
 ) -> (u64, bool) {
     let prefix = [rf.clone()];
-    let (core, collab) = (&shared.contracts.core, &shared.contracts.collab);
     let base = st.baseline;
     let mut high = 0;
 
-    let streams: [(&str, &LoadedContract); 5] = [
-        (DOC_RELEASE, core),
-        (DOC_ISSUE, collab),
-        (DOC_PATCH, collab),
-        (DOC_EVENT, collab),
-        (DOC_AUTHOR_EVENT, collab),
+    let streams = [
+        DOC_RELEASE,
+        DOC_ISSUE,
+        DOC_PATCH,
+        DOC_TRANSITION,
+        DOC_EVENT,
+        DOC_AUTHOR_EVENT,
     ];
-    for (doc_type, contract) in streams {
+    for doc_type in streams {
+        let contract = shared.contracts.of(doc_type);
         if Instant::now() >= deadline {
             return (high, false);
         }
-        if matches!(doc_type, DOC_EVENT | DOC_AUTHOR_EVENT) {
+        if matches!(doc_type, DOC_TRANSITION | DOC_EVENT | DOC_AUTHOR_EVENT) {
             if !pushes_read {
-                // Merges would be judged against tips missing this cycle's pushes.
+                // Merges would be checked against tips missing this cycle's pushes.
                 continue;
             }
             // Tips of new PRs' base refs, before their merges are judged.
@@ -1176,7 +1193,10 @@ async fn poll_repo_rest(
         };
         for d in &r.docs {
             let event = match doc_type {
-                DOC_RELEASE => ingest::translate_release(&st.meta, d),
+                DOC_RELEASE => {
+                    let was_yanked = note_release_yanked(st, d);
+                    ingest::translate_release(&st.meta, d, was_yanked)
+                }
                 DOC_ISSUE | DOC_PATCH => {
                     // A thread first seen live: everything on it is new (bounded below by the
                     // hooks that want its comments; see `no_earlier_than`).
@@ -1199,17 +1219,20 @@ async fn poll_repo_rest(
                         ingest::translate_issue(&st.meta, d)
                     }
                 }
+                DOC_TRANSITION => {
+                    let on_base = st.merge_on_base(d);
+                    note_transition(st, d);
+                    ingest::translate_transition(&st.meta, d, &st.targets, on_base, &st.closed)
+                }
                 _ => {
-                    let verified = st.merge_verified(d);
-                    let repeat_close = st.repeats_a_close(d);
                     note_activity(st, d);
                     // A head update that did not move the head (older, stranger's, malformed)
                     // is not a `synchronize`.
                     let moved = follow_head(st, d, doc_type == DOC_AUTHOR_EVENT);
-                    if (d.field_u64("kind") == Some(16) && !moved) || repeat_close {
+                    if d.field_u64("kind") == Some(16) && !moved {
                         None
                     } else {
-                        ingest::translate_event(&st.meta, d, &st.targets, verified)
+                        ingest::translate_event(&st.meta, d, &st.targets, &st.closed)
                     }
                 }
             };
@@ -1302,7 +1325,7 @@ async fn poll_threads(
                     t.last_activity = t.last_activity.max(d.created_at.unwrap_or(0));
                 }
                 let event = if doc_type == DOC_REVIEW {
-                    ingest::translate_review(&st.meta, d, &st.targets)
+                    ingest::translate_review(&st.meta, d, &st.targets, &st.closed)
                 } else {
                     ingest::translate_comment(&st.meta, d, &st.targets)
                 };
@@ -1353,7 +1376,7 @@ async fn poll_check_runs(
         ];
         let source = LiveStream {
             client: &shared.client,
-            contract: &shared.contracts.collab,
+            contract: &shared.contracts.community,
             doc_type: DOC_CHECK_RUN,
             prefix: &prefix,
         };
@@ -1383,26 +1406,119 @@ async fn poll_check_runs(
     (high, finished)
 }
 
-/// Record an event's effect on its target: activity time, and open/closed.
-fn note_activity(s: &mut RepoState, d: &FetchedDocument) {
-    let Some(tid) = d
+/// The targets' state now, from their proved state codes (one grouped sum of
+/// `transition.delta` per 100 targets): each PR's draft flag is set, and the targets that are
+/// closed or merged are returned (which threads a poll reads first). A read that fails starts
+/// every thread open and ready (it only orders reads and fills payloads) and says so.
+async fn seed_states(
+    shared: &Shared,
+    targets: &mut BTreeMap<String, TargetInfo>,
+) -> BTreeSet<String> {
+    let mut codes = BTreeMap::new();
+    let ids: Vec<[u8; 32]> = targets
+        .keys()
+        .filter_map(|id| decode_identifier(id).ok())
+        .collect();
+    for chunk in ids.chunks(100) {
+        let filter = QueryFilter::in_list(
+            "targetId",
+            chunk.iter().map(|id| FieldValue::identifier(*id)).collect(),
+        );
+        match shared
+            .client
+            .sum_documents_grouped(
+                &shared.contracts.collab,
+                DOC_TRANSITION,
+                &[filter],
+                "targetId",
+                "delta",
+            )
+            .await
+        {
+            Ok(sums) => codes.extend(sums),
+            Err(e) => {
+                tracing::warn!(error = %e, "target states unavailable; every thread starts as open");
+                return BTreeSet::new();
+            }
+        }
+    }
+    apply_codes(&codes, targets)
+}
+
+/// Apply a grouped sum's state codes: set each PR's draft and merged flags, and return the
+/// targets that are not open (closed, or merged).
+fn apply_codes(
+    codes: &BTreeMap<Vec<u8>, i64>,
+    targets: &mut BTreeMap<String, TargetInfo>,
+) -> BTreeSet<String> {
+    let mut closed = BTreeSet::new();
+    for (k, &code) in codes {
+        let Some(id) = forge_core::platform::decode_identifier_key(k) else {
+            continue;
+        };
+        let status = rules::v2::status_of_code(code);
+        if let Some(t) = targets.get_mut(&id) {
+            t.draft = t.is_pr && status.draft;
+            t.merged = t.is_pr && status.merged;
+        }
+        if !status.open {
+            closed.insert(id);
+        }
+    }
+    closed
+}
+
+/// Record an event's effect on its target: its activity time.
+fn note_activity(s: &mut RepoState, d: &FetchedDocument) -> Option<String> {
+    let tid = d
         .field_bytes32("targetId")
-        .map(forge_core::platform::encode_identifier)
-    else {
-        return;
-    };
+        .map(forge_core::platform::encode_identifier)?;
     if let Some(t) = s.targets.get_mut(&tid) {
         t.last_activity = t.last_activity.max(d.created_at.unwrap_or(0));
     }
-    match d.field_u64("kind") {
-        Some(1 | 3) => {
-            s.closed.insert(tid);
-        }
-        Some(2) => {
-            s.closed.remove(&tid);
-        }
-        _ => {}
+    Some(tid)
+}
+
+/// Record a transition's effect on its target: activity time, and open / closed (which
+/// threads are read first, [`threads_this_cycle`]).
+fn note_transition(s: &mut RepoState, d: &FetchedDocument) {
+    let Some(tid) = note_activity(s, d) else {
+        return;
+    };
+    // A lock or unlock is no state move: it leaves the draft flag and open / closed alone.
+    let Some(kind) = d.field_u64("kind") else {
+        return;
+    };
+    let Some((_, open, merged)) = ingest::transition_action(kind) else {
+        return;
+    };
+    if let Some(t) = s.targets.get_mut(&tid) {
+        t.draft = t.is_pr && ingest::draft_after(kind);
+        // Consensus refuses every state move out of merged (it is terminal, lock/unlock
+        // aside), so `merged` should never legitimately go back to `false` here; `||` is
+        // defensive, not load-bearing.
+        t.merged = t.merged || merged;
     }
+    if open {
+        s.closed.remove(&tid);
+    } else {
+        s.closed.insert(tid);
+    }
+}
+
+/// Record a release revision's tag against [`RepoState::yanked_tags`], returning whether the
+/// tag's *previous* revision was already yanked (before this update) -- the `was_yanked` a
+/// delta-0 revision needs to tell a fresh yank from a further edit of one already yanked
+/// ([`ingest::translate_release`]).
+fn note_release_yanked(s: &mut RepoState, d: &FetchedDocument) -> bool {
+    let tag = d.field_str("tagName").unwrap_or_default();
+    let was_yanked = s.yanked_tags.contains(&tag);
+    if d.field_bool("yanked") {
+        s.yanked_tags.insert(tag);
+    } else {
+        s.yanked_tags.remove(&tag);
+    }
+    was_yanked
 }
 
 /// A live `headUpdate`: move the PR's head, and watch the new head for check runs from now.
@@ -1569,6 +1685,8 @@ mod tests {
                         base_ref_hash: String::new(),
                         baseline: Baseline::Beginning,
                         last_activity: 0,
+                        draft: false,
+                        merged: false,
                     },
                 )
             })
@@ -1594,6 +1712,7 @@ mod tests {
             rotation: 0,
             last_head: String::new(),
             next_stage: 0,
+            yanked_tags: BTreeSet::new(),
         }
     }
 
@@ -1645,6 +1764,8 @@ mod tests {
             base_ref_hash: base_ref_hash.into(),
             baseline: Baseline::Beginning,
             last_activity: 0,
+            draft: false,
+            merged: false,
         };
         st.tips
             .entry(hash.clone())
@@ -1660,25 +1781,27 @@ mod tests {
             revision: None,
             fields: BTreeMap::from([
                 ("targetId".into(), FieldValue::identifier([4; 32])),
-                ("kind".into(), FieldValue::integer(3)),
+                ("kind".into(), FieldValue::integer(13)),
                 ("oid".into(), FieldValue::bytes(hex::decode(oid).unwrap())),
             ]),
         };
         st.targets.insert(target.clone(), pr(base, &hash));
-        assert!(st.merge_verified(&merge(&"ab".repeat(20))));
-        assert!(!st.merge_verified(&merge(&"cd".repeat(20))), "not a tip");
-        // A baseRefName that does not hash to baseRefNameHash: unverified.
+        assert!(st.merge_on_base(&merge(&"ab".repeat(20))));
+        assert!(!st.merge_on_base(&merge(&"cd".repeat(20))), "not a tip");
+        // A baseRefName that does not hash to baseRefNameHash: not found on the base.
         st.targets.insert(target, pr("refs/heads/other", &hash));
-        assert!(!st.merge_verified(&merge(&"ab".repeat(20))));
+        assert!(!st.merge_on_base(&merge(&"ab".repeat(20))));
     }
 
-    /// D-602: a merge then a close on one PR reached receivers as `closed` merged:true and a
-    /// second `closed` merged:false. GitHub sends one `closed`.
+    /// Open / closed follows the transitions (which threads are read first): a close, a merge
+    /// or a draft close closes the target; a reopen (either axis) opens it; a draft or ready
+    /// leaves it open.
     #[test]
-    fn a_close_after_a_merge_or_close_is_not_delivered_again() {
+    fn transitions_open_and_close_their_target() {
         let mut st = state_with_threads(0);
-        let event = |kind: u64| FetchedDocument {
-            id: format!("e{kind}"),
+        let tid = forge_core::platform::encode_identifier([4; 32]);
+        let tr = |kind: u64| FetchedDocument {
+            id: format!("t{kind}"),
             owner_id: "M".into(),
             created_at: Some(1),
             created_at_block_height: None,
@@ -1689,20 +1812,22 @@ mod tests {
                 ("kind".into(), FieldValue::integer(kind)),
             ]),
         };
-        assert!(
-            !st.repeats_a_close(&event(1)),
-            "the first close is delivered"
-        );
-        note_activity(&mut st, &event(3));
-        assert!(!st.repeats_a_close(&event(3)), "only closes are dropped");
-        assert!(
-            st.repeats_a_close(&event(1)),
-            "a close after the merge is not"
-        );
-        note_activity(&mut st, &event(2));
-        assert!(!st.repeats_a_close(&event(1)), "a close after a reopen is");
-        note_activity(&mut st, &event(1));
-        assert!(st.repeats_a_close(&event(1)), "a second close is not");
+        for (kind, closed) in [
+            (11, true),
+            (12, false),
+            (14, false),
+            (16, true),
+            (17, false),
+            (15, false),
+            (13, true),
+        ] {
+            note_transition(&mut st, &tr(kind));
+            assert_eq!(st.closed.contains(&tid), closed, "after kind {kind}");
+        }
+        // An event does not change it.
+        st.closed.clear();
+        note_activity(&mut st, &tr(4));
+        assert!(!st.closed.contains(&tid));
     }
 
     /// A poll the deadline cuts short resumes after the last head it read, so later heads are
@@ -1747,5 +1872,113 @@ mod tests {
         assert_eq!(heads.len(), MAX_HEADS);
         assert!(!heads.contains_key(&format!("{:040x}", 0)));
         assert!(heads.contains_key(&format!("{:040x}", MAX_HEADS as u64 + 9)));
+    }
+
+    /// The startup seed: closed, merged and closed-draft targets are closed; open, draft and
+    /// never-moved (absent) ones are not; a PR at a draft code is a draft.
+    #[test]
+    fn the_state_is_seeded_from_state_codes() {
+        let id = |b: u8| forge_core::platform::encode_identifier([b; 32]);
+        let pr = |b: u8| {
+            let mut t = TargetInfo::from_patch(
+                &FetchedDocument {
+                    id: id(b),
+                    owner_id: "A".into(),
+                    created_at: Some(1),
+                    created_at_block_height: None,
+                    updated_at_block_height: None,
+                    revision: None,
+                    fields: BTreeMap::new(),
+                },
+                Baseline::Beginning,
+            );
+            t.draft = b == 1;
+            (id(b), t)
+        };
+        let mut targets: BTreeMap<String, TargetInfo> = (1..=7).map(pr).collect();
+        let codes = BTreeMap::from([
+            (vec![1; 32], 0),
+            (vec![2; 32], 1),
+            (vec![3; 32], 2),
+            (vec![4; 32], 8),
+            (vec![5; 32], 9),
+            // Locked and merged (2 + 16): the realistic "lock on a merged PR, seen only after a
+            // restart" case -- merged must fold out of the sum the same as an unlocked 2 does.
+            (vec![7; 32], 18),
+        ]);
+        assert_eq!(
+            apply_codes(&codes, &mut targets),
+            [id(2), id(3), id(5), id(7)].into_iter().collect()
+        );
+        let drafts: Vec<bool> = (1..=7).map(|b| targets[&id(b)].draft).collect();
+        assert_eq!(drafts, [false, false, false, true, true, false, false]);
+        // Code 2 (merged) seeds `merged`; so does a locked 18; nothing else does.
+        let merges: Vec<bool> = (1..=7).map(|b| targets[&id(b)].merged).collect();
+        assert_eq!(merges, [false, false, true, false, false, false, true]);
+        // A transition seen live moves the flag.
+        let mut st = state_with_threads(0);
+        st.targets = targets;
+        let tr = |target: u8, kind: u64| FetchedDocument {
+            id: format!("t{kind}"),
+            owner_id: "M".into(),
+            created_at: Some(2),
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            revision: None,
+            fields: BTreeMap::from([
+                ("targetId".into(), FieldValue::identifier([target; 32])),
+                ("kind".into(), FieldValue::integer(kind)),
+            ]),
+        };
+        note_transition(&mut st, &tr(4, 15));
+        assert!(!st.targets[&id(4)].draft);
+        note_transition(&mut st, &tr(4, 14));
+        assert!(st.targets[&id(4)].draft);
+        // A merge transition, seen live, sets `merged` and never clears it again (D-4: a
+        // lock/unlock on the now-merged PR must keep reporting `merged: true`).
+        assert!(!st.targets[&id(6)].merged);
+        note_transition(&mut st, &tr(6, 13));
+        assert!(st.targets[&id(6)].merged);
+        note_transition(&mut st, &tr(6, 18));
+        assert!(st.targets[&id(6)].merged, "a lock does not touch merged");
+    }
+
+    /// `note_release_yanked` returns the *previous* revision's yanked state (`was_yanked`),
+    /// updating `RepoState::yanked_tags` only after reading it -- the ordering
+    /// `ingest::translate_release` relies on to tell a fresh yank from an edit of one already
+    /// yanked. A full publish/yank/edit/edit/un-yank/yank sequence, combined with
+    /// `translate_release`'s own `release_action`, must read back `published, unpublished,
+    /// edited, edited, edited, unpublished`.
+    #[test]
+    fn note_release_yanked_tracks_the_previous_revision_before_updating() {
+        let mut st = state_with_threads(0);
+        let rel = |seq: u64, delta: i64, yanked: bool| FetchedDocument {
+            id: format!("rel{seq}"),
+            owner_id: "M".into(),
+            created_at: Some(seq),
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            revision: None,
+            fields: BTreeMap::from([
+                ("tagName".into(), FieldValue::text("v1")),
+                ("delta".into(), FieldValue::signed(delta)),
+                ("yanked".into(), FieldValue::boolean(yanked)),
+            ]),
+        };
+        let step = |st: &mut RepoState, d: &FetchedDocument| -> String {
+            let was_yanked = note_release_yanked(st, d);
+            ingest::translate_release(&st.meta, d, was_yanked)
+                .unwrap()
+                .payload["action"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        assert_eq!(step(&mut st, &rel(1, 1, false)), "published");
+        assert_eq!(step(&mut st, &rel(2, 0, true)), "unpublished");
+        assert_eq!(step(&mut st, &rel(3, 0, true)), "edited");
+        assert_eq!(step(&mut st, &rel(4, 0, true)), "edited");
+        assert_eq!(step(&mut st, &rel(5, 0, false)), "edited");
+        assert_eq!(step(&mut st, &rel(6, 0, true)), "unpublished");
     }
 }

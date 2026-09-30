@@ -13,12 +13,12 @@
 // Re-run after deploy-v2.mjs registers new contracts. `lib/sdk/contract-seed.test.ts` in
 // forge-web fails while the snapshot and the deployment file disagree.
 //
-//   node scripts/snapshot-contracts.mjs [--network devnet --devnet-name moutai]
+//   node scripts/snapshot-contracts.mjs [--network devnet --devnet-name bonsia]
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { loadEvoSdk, writeDep } from './deploy-v2.mjs';
+import { DEPENDENT_CONTRACTS, loadEvoSdk, writeDep } from './deploy-v2.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
@@ -37,14 +37,14 @@ function parseArgs(argv) {
 
 /** The contract ids a web build of this deployment reads. */
 export function snapshotIds(dep) {
-  const ids = [DPNS_CONTRACT_ID, dep.v2?.forgeCore?.contractId, dep.v2?.forgeCollab?.contractId, dep.keyExchange?.contractId];
+  const ids = [DPNS_CONTRACT_ID, dep.v2?.forgeCore?.contractId, ...DEPENDENT_CONTRACTS.map((c) => dep.v2?.[c.key]?.contractId), dep.keyExchange?.contractId];
   return [...new Set(ids.filter((id) => typeof id === 'string' && id.length > 0))];
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const network = args.network || 'devnet';
-  const devnetName = network === 'devnet' ? args['devnet-name'] || 'moutai' : undefined;
+  const devnetName = network === 'devnet' ? args['devnet-name'] || 'bonsia' : undefined;
   const key = network === 'devnet' ? `devnet-${devnetName}` : network;
   const depFile = join(ROOT, 'deployments', `${key}.json`);
   if (!existsSync(depFile)) throw new Error(`no deployment file ${depFile}`);

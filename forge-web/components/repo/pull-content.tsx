@@ -39,6 +39,8 @@ import {
   HardDrive,
   Link2,
   ListChecks,
+  Lock,
+  LockOpen,
   MessageSquare,
   Pencil,
   RefreshCw,
@@ -53,10 +55,11 @@ import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
 import { deleteBranchOffer, deleteBranchProblem } from '@/lib/view/pull-actions'
 import {
-  addEvent,
   createComment,
   commentFirsts,
   createReview,
+  LOCKED_REASON,
+  lockedOut,
   eventFirsts,
   reviewFirsts,
   deleteComment,
@@ -71,19 +74,21 @@ import {
   repoKey,
   setAssignee,
   setLabel,
+  setLock,
   setTargetState,
   updateComment,
   updateTarget,
   type RepoRef,
   type VerdictInput,
 } from '@/lib/repo'
-import { checksPhrase, readCheckRuns, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
+import { checksPhrase, expectedChecks, readCheckRuns, requiredSources, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
 import { headSync, readBranchState, readBranchTip } from '@/lib/repo/source-branch'
 import type { Event, EventKind, Holdings, RefState } from '@/lib/rules'
 import { linkedIssues, RoleOracle, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { checksState } from '@/lib/rules/parity'
 import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, type CostPreview as Cost } from '@/lib/sdk'
-import { pullSinceYourReview } from '@/lib/view/issues-view'
+import { commentEditDrops, pullSinceYourReview } from '@/lib/view/issues-view'
+import { totalHidden } from '@/lib/repo/private-content'
 import { headUpdatePhrases } from '@/lib/view/head-updates'
 import { inlineCommentIds, lineKey, repliesByRoot } from '@/lib/view/inline-threads'
 import { appliedSuggestions, prCommits, prHaveSet } from '@/lib/view/pr-commits'
@@ -105,6 +110,7 @@ import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Timeline, type CommentSlots } from '@/components/repo/timeline'
 import { ComparisonView, pullBase, pullSpec, usePullComparison } from '@/components/repo/pull-diff'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
+import { numberLabel, shownUpstreamNumber } from '@/lib/view/upstream'
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
@@ -116,6 +122,7 @@ import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { InlineCommentsProvider, type ThreadActions } from '@/components/repo/inline-comments'
+import { LockToggle, LockedBanner, lockConfirm, lockStateText, lockViewerOf } from '@/components/repo/locked-banner'
 import { ReviewDrawer, useReviewDraft } from '@/components/repo/review-drawer'
 import { BranchCommitCost, IdentityNote, buildUpdateBranch, useSuggestions } from '@/components/repo/branch-commit-panel'
 import { PullMerge, useMergeSlot } from '@/components/repo/pull-merge'
@@ -123,7 +130,7 @@ import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
 import { EditedMarker, MarkdownEditor } from '@/components/repo/issue-bits'
 import { AssigneePicker, LabelPicker, SidebarSection } from '@/components/repo/target-rail'
 import { ReviewersCard } from '@/components/repo/reviewers-card'
-import { Approvals } from '@/components/repo/approvals'
+import { Approvals, VerdictLine } from '@/components/repo/approvals'
 import { ChecksTab, CommitsTab } from '@/components/repo/pull-tabs'
 import { cn } from '@/lib/utils'
 
@@ -165,6 +172,7 @@ type Pending =
   | { kind: 'edit-comment'; id: string; body: string }
   | { kind: 'delete-comment'; id: string }
   | { kind: 'resolve'; root: string; resolve: boolean }
+  | { kind: 'lock'; on: boolean }
 
 export function PullContent({
   home,
@@ -274,12 +282,17 @@ function PullPage({
   const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
   const isAuthor = identity !== null && identity === pull.author
   const archived = home.config?.archived === true
-  const composeBlock = archived ? ARCHIVED_REASON : privateComposeBlock(home)
+  // A locked PR takes comments and reviews from members only (RC1: consensus refuses the rest).
+  const postContext = { isMember, locked: thread.locked }
+  const composeBlock = archived ? ARCHIVED_REASON : lockedOut(postContext) ? LOCKED_REASON : privateComposeBlock(home)
   const writeBlocked = composeBlock !== null
+  // Who the composer's lock banner speaks to (a member keeps the composer).
+  const lockViewer = lockViewerOf(identity, holdings)
   const open = pull.state.open
   const { slot: mergeSlot, onRunning: setMergeRunning } = useMergeSlot(tab, open && pull.state.draft)
   const merged = pull.state.merged
   const target = { id: pull.id, number: pull.number }
+  const stateTarget = { ...target, type: 'patch' as const, author: pull.author }
   /**
    * Delete the PR's source branch in its repo (M7): a ref update to the null oid from the merged
    * head. Refused (`deleteBranchProblem`) for the base or default branch, and when the branch
@@ -317,12 +330,17 @@ function PullPage({
   // Trust is by the current member set: keyed on the set itself (a swap of members re-reads).
   const membersKnown = thread.approvals !== null
   const memberKey = thread.members.map((m) => m.identity).sort().join(',')
+  const rules = policyOf(thread.approvals)
+  const policyNow = rules.policy === 'unknown' ? null : rules.policy
+  // The policy's pinned check sources (RC1 R-08): a pinned check lists and counts its source's run.
+  const pins = requiredSources(policyNow)
+  const pinKey = JSON.stringify([...pins])
   const checks = useAsync(
     async () => {
       const members = new Set(memberKey === '' ? [] : memberKey.split(','))
-      return readCheckRuns(sdk!, repo, pull.headOid, members)
+      return readCheckRuns(sdk!, repo, pull.headOid, members, pins)
     },
-    [ready, repoKey(repo), pull.headOid, memberKey],
+    [ready, repoKey(repo), pull.headOid, memberKey, pinKey],
     { enabled: ready && sdk !== null && pull.headOid !== '' },
   )
   const checkSummary = checks.data === null ? null : summarizeChecks(checks.data.runs, membersKnown)
@@ -354,13 +372,13 @@ function PullPage({
   const stillArriving = arriving !== null && !arrivedAll && !refreshing ? { shown: commentsShown(thread, arriving.commentIds), total: arriving.commentIds.length } : null
 
   // ---- controls ---------------------------------------------------------------------------------
-  const rules = policyOf(thread.approvals)
-  const policyNow = rules.policy === 'unknown' ? null : rules.policy
   // `requireChecks`: the newest trusted run per name on the head passed, and at least one was
-  // reported (`checksState`, forge-core `checks_state`: `dg pr merge` applies the same rule).
+  // reported; named `requiredChecks` (set by `dg`) must each pass, from their pinned source when
+  // the policy names one (`checksState`, forge-core `checks_state`: `dg pr merge` applies the same rule).
+  const checksRequired = policyNow !== null && (policyNow.requireChecks === true || (policyNow.requiredChecks?.length ?? 0) > 0)
   const checksBlocking =
-    policyNow?.requireChecks === true &&
-    (checks.data === null || !membersKnown || !checksState(checks.data.rows, pull.headOid, new RoleOracle(thread.members), checks.data.runners, { requireChecks: true }).met)
+    checksRequired &&
+    (checks.data === null || !membersKnown || !checksState(checks.data.rows, pull.headOid, new RoleOracle(thread.members), checks.data.runners, policyNow).met)
   const actions = pullActions({
     pull,
     viewer: identity,
@@ -369,6 +387,8 @@ function PullPage({
     policy: rules.status,
     checksBlocking,
   })
+  // "Mark as merged" is offered on a ready PR only.
+  const showMarkMerged = actions.canMarkMerged && !pull.state.draft
   const base = shortBranch(pull.baseRefName) || 'the base branch'
   const canAuthorOrMember = authorOrMember && !archived
   const canMember = identity !== null && isMember && !archived && guard.disabledReason === null
@@ -389,8 +409,11 @@ function PullPage({
   const firstsReady = (comment !== '' || pending !== null) && ready && sdk !== null && identity !== null
   const commentFirst = useFirstWrite(() => commentFirsts(sdk!, repo, pull.id, identity!, hasComments), [pull.id, identity ?? '', hasComments], firstsReady)
   const reviewFirst = useFirstWrite(() => reviewFirsts(sdk!, repo, identity!, hasReviews), [pull.id, identity ?? '', hasReviews], firstsReady)
+  // Review kinds are a member `event` or the author's `authorEvent`; state changes a `transition`.
   const stateType = isMember ? 'event' : 'authorEvent'
   const eventFirst = useFirstWrite(() => eventFirsts(sdk!, repo, stateType, pull.id, identity!), [pull.id, identity ?? '', stateType], firstsReady)
+  const transitionFirst = useFirstWrite(() => eventFirsts(sdk!, repo, 'transition', pull.id, identity!), [pull.id, identity ?? ''], firstsReady)
+  const transitionCost = previewCreate('transition', {}, transitionFirst)
 
 
   const links: MarkdownLinks = useRepoLinks(addr, home.description)
@@ -460,7 +483,7 @@ function PullPage({
     setPosting(true)
     setCommentError(null)
     try {
-      const r = await createComment(sdk, signer, repo, { targetId: pull.id, body: comment.trim(), intent: commentIntent.intent })
+      const r = await createComment(sdk, signer, repo, { targetId: pull.id, body: comment.trim(), intent: commentIntent.intent, post: postContext })
       setComment('')
       commentIntent.renew()
       refresh((t) => t.comments.some((c) => c.id === r.documentId))
@@ -489,22 +512,22 @@ function PullPage({
     const p = pending
     switch (p.kind) {
       case 'state':
-        await setTargetState(sdk, signer, repo, { target, kind: p.to, author: pull.author, isMember, intent })
+        await setTargetState(sdk, signer, repo, { target: stateTarget, action: p.to, isMember, intent })
         refresh((t) => t.pull.state.open === (p.to === 'reopen'))
         return
       case 'mark-merged':
-        await addEvent(sdk, signer, repo, { target, kind: 'merge', oidHex: pull.headOid, intent })
-        refresh()
+        await setTargetState(sdk, signer, repo, { target: stateTarget, action: 'merge', isMember, oidHex: pull.headOid, intent })
+        refresh((t) => t.pull.state.merged)
         return
       case 'review': {
-        const r = await createReview(sdk, signer, repo, { patchId: pull.id, verdict: p.verdict, commitOid: pull.headOid, body: p.body, intent })
+        const r = await createReview(sdk, signer, repo, { patchId: pull.id, verdict: p.verdict, commitOid: pull.headOid, body: p.body, intent, post: postContext })
         setComment('')
         commentIntent.renew()
         refresh((t) => t.reviews.some((x) => x.id === r.documentId))
         return
       }
       case 'draft':
-        await post(p.to, intent)
+        await setTargetState(sdk, signer, repo, { target: stateTarget, action: p.to, isMember, intent })
         refresh((t) => t.pull.state.draft === (p.to === 'draft'))
         return
       case 'head':
@@ -561,11 +584,17 @@ function PullPage({
         await post(p.resolve ? 'threadResolve' : 'threadUnresolve', intent, { refId: p.root })
         refresh((t) => t.review.resolvedThreads.includes(p.root) === p.resolve)
         return
+      case 'lock':
+        // A member transition (18/19): from then on consensus refuses non-members' comments and reviews.
+        await setLock(sdk, signer, repo, { target: stateTarget, lock: p.on, isMember, intent })
+        refresh((t) => t.locked === p.on)
+        return
       case 'edit-comment': {
         const c = thread.comments.find((x) => x.id === p.id)
         await updateComment(sdk, signer, repo, {
           id: p.id,
           body: p.body,
+          ...(c ? commentEditDrops(c, thread.comments, { isMember, allReadable: totalHidden(thread.hidden) === 0 }) : {}),
           ...(c?.revision !== undefined ? { expectedRevision: BigInt(c.revision) } : {}),
           seal: { current: { body: c?.body ?? '', path: c?.anchor?.path }, bind: { targetId: pull.id }, imported: c?.importedRaw ?? null },
         })
@@ -581,8 +610,11 @@ function PullPage({
     switch (pending.kind) {
       case 'review':
         return composeCost(repo, 'review', { body: pending.body }, reviewFirst)
+      case 'state':
       case 'mark-merged':
-        return previewCreate('event')
+      case 'draft':
+      case 'lock':
+        return transitionCost
       case 'label':
         return previewCreate('event', { value: pending.label })
       case 'assign':
@@ -631,8 +663,8 @@ function PullPage({
         : { label: 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, bg: 'bg-verify-700' }
   const linked = linkedIssues(pull.body)
   // D-104: a merged PR's header says what happened ("2 commits merged into main"), not "wants to".
-  // Who signed the merge is in the timeline: the fold may have passed over earlier claims. A
-  // count only from a real comparison (not the first-parent fallback).
+  // Who recorded the merge is in the timeline. A count only from a real comparison (not the
+  // first-parent fallback).
   const mergedLead = counts.commits === null || cmp?.fellBack === true ? 'Merged' : `${plural(counts.commits, 'commit')} merged`
   const checkout = checkoutCommand(repo, pull.number)
   const sourceAddr = sourceRef === null ? null : { owner: sourceRef.ownerId, name: sourceRef.name }
@@ -663,7 +695,7 @@ function PullPage({
         ) : (
           <div className="flex items-start gap-3">
             <h1 className="min-w-0 flex-1 break-words text-2xl">
-              {pull.title || '(untitled)'} <span className="font-mono font-normal text-anvil-500 dark:text-anvil-400">#{pull.number}</span>
+              {pull.title || '(untitled)'} <span className="font-mono font-normal text-anvil-500 dark:text-anvil-400" data-testid="pull-number">{numberLabel(pull.number, shownUpstreamNumber(pull, repo, thread.members))}</span>
             </h1>
             {isAuthor ? (
               <Button variant="outline" size="sm" onClick={() => setEditing({ title: pull.title, body: pull.body })} disabled={writeBlocked} title={composeBlock ?? undefined}>
@@ -703,6 +735,13 @@ function PullPage({
             ) : null}{' '}
             · <Time ms={origin?.createdAt || pull.createdAt} prefix={merged || !open ? 'opened ' : ''} />
           </span>
+          {pull.state.mergeOnBase === false ? (
+            // D-9: merged is what a maintainer recorded; the recorded commit never became a tip
+            // of the base branch here (a mirror whose base was not imported, or a mistaken mark).
+            <span className="text-[12px] text-forge-700 dark:text-forge-400" data-testid="pr-merge-not-on-base" title="The merge was recorded by a maintainer or writer; its commit is not a tip the base branch ever had in this repo.">
+              merge commit not found on the base
+            </span>
+          ) : null}
           {pull.headOid ? (
             <span className="flex items-center gap-1 text-anvil-500 dark:text-anvil-400" data-testid="pr-head">
               head <Oid value={pull.headOid} chars={9} />
@@ -851,7 +890,7 @@ function PullPage({
                       size="sm"
                       disabled={guard.disabledReason !== null}
                       onClick={() => {
-                        confirmEvent({ kind: 'draft', to: 'ready' })
+                        confirmEvent({ kind: 'draft', to: 'ready' }, transitionCost)
                       }}
                     >
                       Ready for review
@@ -860,7 +899,14 @@ function PullPage({
                 </section>
               ) : (
                 <>
-                  {thread.approvals !== null ? <Approvals approvals={thread.approvals} headOid={pull.headOid} /> : null}
+                  {thread.approvals !== null ? (
+                    <Approvals approvals={thread.approvals} proved={thread.verdicts} headOid={pull.headOid} />
+                  ) : thread.verdicts !== null ? (
+                    // The members could not be read (no fold): the proved count alone, said to be an upper bound.
+                    <section aria-label="Approvals" className="rounded-lg border border-anvil-200 px-4 py-3 text-dense dark:border-anvil-800">
+                      <VerdictLine approvals={null} proved={thread.verdicts} headOid={pull.headOid} />
+                    </section>
+                  ) : null}
                   <ChecksRow summary={checkSummary} headOid={pull.headOid} onOpen={() => setTab('checks')} />
                   {open && baseTipOid !== '' && cmp !== null && cmp.upToDate !== true && cmp.comparedBaseOid !== baseTipOid && (suggest.write.can || isAuthor) ? (
                     <section aria-label="Update branch" className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-200 px-4 py-2 text-dense dark:border-anvil-800" data-testid="update-branch">
@@ -951,18 +997,21 @@ function PullPage({
               ) : null}
 
               {/* Composer */}
-              <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
-                <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
-                {composeBlock !== null ? (
-                  <PrivateComposeNote reason={composeBlock} />
-                ) : (
-                  <>
-                    <MarkdownEditor id="pr-comment" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} />
-                    <SealedLimit repo={repo} kind="comment" text={comment.trim()} />
-                    <BodyCounter repo={repo} text={comment.trim()} field="comment" />
-                  </>
-                )}
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="pr-composer">
+                {/* Locked: a non-member's composer is replaced by the banner (consensus would refuse the post). */}
+                <LockedBanner locked={thread.locked && !archived} viewer={lockViewer} target="pull">
+                  <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
+                  {composeBlock !== null ? (
+                    <PrivateComposeNote reason={composeBlock} />
+                  ) : (
+                    <>
+                      <MarkdownEditor id="pr-comment" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} />
+                      <SealedLimit repo={repo} kind="comment" text={comment.trim()} />
+                      <BodyCounter repo={repo} text={comment.trim()} field="comment" />
+                    </>
+                  )}
+                </LockedBanner>
+                <div className={cn('mt-3 flex flex-wrap items-center justify-between gap-3', writeBlocked && !actions.canCloseReopen && !showMarkMerged && 'hidden')}>
                   {writeBlocked ? <span /> : <CostPreview cost={commentCost} />}
                   <div className="flex flex-wrap items-center gap-2">
                     {actions.canCloseReopen ? (
@@ -970,7 +1019,7 @@ function PullPage({
                         {open ? 'Close pull request' : 'Reopen pull request'}
                       </Button>
                     ) : null}
-                    {actions.canMarkMerged && !pull.state.draft ? (
+                    {showMarkMerged ? (
                       <Button
                         variant={actions.policyOverride ? 'danger' : 'outline'}
                         onClick={() => setPending({ kind: 'mark-merged' })}
@@ -1003,7 +1052,8 @@ function PullPage({
                         key={v}
                         size="sm"
                         variant={v === 'approve' ? 'primary' : 'outline'}
-                        disabled={guard.disabledReason !== null}
+                        // Until the viewer's membership is read, a verdict would be recorded as a non-member's.
+                        disabled={guard.disabledReason !== null || (v !== 'comment' && !holdings.settled)}
                         onClick={() => {
                           if (!commentTooLong && guard.check(composeCost(repo, 'review', { body: comment.trim() }, reviewFirst), 'collab')) setPending({ kind: 'review', verdict: v, body: comment.trim() })
                         }}
@@ -1014,11 +1064,11 @@ function PullPage({
                     {!isMember && holdings.settled ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">Only approvals from maintainers and writers count.</span> : null}
                   </div>
                 ) : null}
-                {actions.canMarkMerged && !pull.state.draft ? (
+                {showMarkMerged ? (
                   <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
                     {actions.markCountsNow
-                      ? `The head commit is already on ${base}, so a merge mark counts as soon as it lands.`
-                      : `"Mark as merged" records a merge done elsewhere: it only counts once the head commit is on ${base}. Merge it above to move the branch.`}
+                      ? `The head commit is already on ${base}: marking it merged records that.`
+                      : `"Mark as merged" records a merge done elsewhere, and it is final. The head commit is not on ${base}, so the PR will say "merge commit not found on the base" until it gets there. Merge it above to move the branch.`}
                   </p>
                 ) : actions.mergeHint !== null ? (
                   <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{actions.mergeHint}</p>
@@ -1047,7 +1097,14 @@ function PullPage({
               onRetry={() => (comparison.error ? comparison.tryAgain() : commits.reload())}
             />
           ) : tab === 'checks' ? (
-            <ChecksTab runs={checks.data?.runs ?? null} summary={checkSummary} headOid={pull.headOid} error={checks.error} onRetry={checks.reload} />
+            <ChecksTab
+              runs={checks.data?.runs ?? null}
+              summary={checkSummary}
+              headOid={pull.headOid}
+              error={checks.error}
+              onRetry={checks.reload}
+              expected={expectedChecks(checks.data?.runs ?? [], policyNow)}
+            />
           ) : (
             <>
             {suggest.runner.view}
@@ -1065,6 +1122,7 @@ function PullPage({
                     update={reviewDraft.update}
                     ensure={reviewDraft.ensure}
                     isMember={isMember}
+                    locked={thread.locked}
                     lineExists={(path, side, line) => knownLines.current.get(path)?.has(lineKey(path, side, line)) ?? false}
                     onSubmitted={(s) => {
                       setArriving(s)
@@ -1076,6 +1134,7 @@ function PullPage({
               wrap={(c, diff) => (
                 <InlineCommentsProvider
                   repo={repo}
+                  post={postContext}
                   writeBlock={composeBlock}
                   pullId={pull.id}
                   headOid={pull.headOid}
@@ -1152,7 +1211,7 @@ function PullPage({
               <button
                 type="button"
                 onClick={() => {
-                  confirmEvent({ kind: 'draft', to: 'draft' })
+                  confirmEvent({ kind: 'draft', to: 'draft' }, transitionCost)
                 }}
                 className="text-[12px] text-anvil-500 underline-offset-2 hover:text-forge-700 hover:underline dark:text-anvil-400 dark:hover:text-forge-400"
               >
@@ -1184,6 +1243,19 @@ function PullPage({
               </p>
               <CopyRow text={checkout} className="mt-2" />
             </SidebarSection>
+            {/* Lock conversation (GitHub: the rail's last entry): a member transition, for maintainers and writers. */}
+            {isMember || thread.locked ? (
+              <SidebarSection title="Conversation" icon={thread.locked ? Lock : LockOpen}>
+                <p className="text-anvil-600 dark:text-anvil-300" data-testid="thread-lock-state">
+                  {lockStateText(thread.locked)}
+                </p>
+                {canMember ? (
+                  <div className="mt-2">
+                    <LockToggle locked={thread.locked} onToggle={(on) => confirmEvent({ kind: 'lock', on }, transitionCost)} />
+                  </div>
+                ) : null}
+              </SidebarSection>
+            ) : null}
             {holdings.settled && holdings.data === null && identity !== null ? (
               <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Couldn&apos;t read this repo&apos;s {ACL_NAME}, so your permissions are unknown.</p>
             ) : null}
@@ -1270,17 +1342,18 @@ function ChecksRow({ summary, headOid, onOpen }: { summary: ChecksSummary | null
 /** The confirm dialog's words for each pending write. */
 function confirmText(pending: Pending | null, number: number, isMember: boolean, head: string): { title: string; description: string; label: string } {
   const via = isMember ? 'a member event' : 'an author event (you opened this PR)'
+  const move = isMember ? 'a state change as a member' : 'a state change as the PR author'
   switch (pending?.kind) {
     case 'state':
       return {
         title: `${pending.to === 'close' ? 'Close' : 'Reopen'} PR #${number}`,
-        description: `Appends ${via}.`,
+        description: `Records ${move}. Platform accepts it only if the PR is still ${pending.to === 'close' ? 'open' : 'closed'}.`,
         label: pending.to === 'close' ? 'Close PR' : 'Reopen PR',
       }
     case 'mark-merged':
       return {
         title: `Mark PR #${number} as merged`,
-        description: `Appends a merge event naming ${head.slice(0, 9)}. This does not merge any code: it records a merge done elsewhere, and only counts once that commit is on the base branch.`,
+        description: `Records the PR as merged at ${head.slice(0, 9)}. This does not merge any code: it records a merge done elsewhere, and it is final. If that commit never reaches the base branch, the PR shows "merge commit not found on the base".`,
         label: 'Sign & mark merged',
       }
     case 'review':
@@ -1291,8 +1364,8 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
       }
     case 'draft':
       return pending.to === 'ready'
-        ? { title: `Mark PR #${number} ready for review`, description: `Appends ${via}. Reviewers see it as ready; it can be merged.`, label: 'Sign & mark ready' }
-        : { title: `Convert PR #${number} to a draft`, description: `Appends ${via}. A draft can be reviewed but not merged.`, label: 'Sign & convert' }
+        ? { title: `Mark PR #${number} ready for review`, description: `Records ${move}. Reviewers see it as ready; it can be merged.`, label: 'Sign & mark ready' }
+        : { title: `Convert PR #${number} to a draft`, description: `Records ${move}. A draft can be reviewed but not merged.`, label: 'Sign & convert' }
     case 'head':
       return {
         title: `Update PR #${number}'s head`,
@@ -1333,6 +1406,8 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
       return pending.resolve
         ? { title: 'Resolve conversation', description: `Appends ${via} naming the thread. It collapses for everyone; anyone who can resolve it can unresolve it.`, label: 'Sign & resolve' }
         : { title: 'Unresolve conversation', description: `Appends ${via} naming the thread.`, label: 'Sign & unresolve' }
+    case 'lock':
+      return lockConfirm(pending.on, `PR #${number}`, 'pull')
     default:
       return { title: '', description: '', label: 'Confirm' }
   }
@@ -1456,6 +1531,9 @@ function BranchRules({
   checksBlocking: boolean
 }): JSX.Element {
   const short = shortBranch(base)
+  // The checks the policy requires: by name, or (none named) every reported one. Null: no policy read.
+  const known = policy !== null && policy !== 'unknown' ? policy : null
+  const named = known?.requiredChecks ?? []
   return (
     <section aria-label="Branch rules" className="rounded-lg border border-anvil-200 px-4 py-3 text-dense dark:border-anvil-800">
       {baseProtected ? (
@@ -1481,10 +1559,13 @@ function BranchRules({
           </span>
         </p>
       ) : null}
-      {policy !== null && policy !== 'unknown' && policy.requireChecks ? (
+      {known !== null && (named.length > 0 || known.requireChecks === true) ? (
         <p className="mt-1 flex items-center gap-2" data-testid="policy-checks">
-          {checksBlocking ? <X className="h-4 w-4 text-danger" aria-hidden /> : <Check className="h-4 w-4 text-verify" aria-hidden />}
-          <span>{checksBlocking ? 'Required checks are not all passing on the head' : 'Required checks pass'}</span>
+          {checksBlocking ? <X className="h-4 w-4 shrink-0 text-danger" aria-hidden /> : <Check className="h-4 w-4 shrink-0 text-verify" aria-hidden />}
+          <span className="min-w-0 [overflow-wrap:anywhere]">
+            {checksBlocking ? 'Required checks are not all passing on the head' : 'Required checks pass'}
+            {named.length > 0 ? `: ${named.join(', ')}` : ''}
+          </span>
         </p>
       ) : null}
       {policy !== null && policy !== 'unknown' && (policy.mergeMethods ?? 0) !== 0 ? (

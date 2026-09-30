@@ -1,12 +1,12 @@
 /**
- * Issue / PR reads — list + fold (`forge-v2.md` §3, §5, §6).
+ * Issue / PR reads — list + state (`forge-v2.md` §3, §5, §6).
  *
- * Issue/PR *state* is not an on-chain field (mutation ownership forbids a maintainer editing
- * an author-owned doc); it is a deterministic fold of the append-only `event` + `authorEvent`
- * logs through FORGE_RULES_V2 (`foldIssueStateV2` / `foldPrStateV2`). `event` is member-gated
- * and `authorEvent` author-gated at consensus, so an event's existence is its authorization
- * and no ACL history is read. Lists read the repo's two feeds (`(repoId, $createdAt)`) once
- * and fold every row from them, rather than two queries per row. Documents that are not
+ * Issue/PR *state* (open, closed, merged, draft) is the sum of the target's `transition`
+ * deltas: consensus accepts a transition only as a legal move, so the proved sum is the state
+ * (`./transitions`). A list page reads it with one sum query for all its rows. Labels,
+ * assignees and a PR's base ref are still a fold of the member `event` log
+ * (`issueStateV2` / `prStateV2`); lists read the repo's `event` feed (`(repoId, $createdAt)`)
+ * once and fold every row from it, rather than a query per row. Documents that are not
  * well-formed for the repo's visibility (`isWellFormed`: plaintext xor `enc`) are skipped
  * everywhere.
  */
@@ -28,11 +28,10 @@ import {
 import {
   IncompleteReadError,
   queryAllDocuments,
-  queryDocumentsWithProof,
   type DocumentQuery,
   type PlainDocument,
 } from '../sdk'
-import { foldIssueStateV2, foldPrReviewV2, foldPrStateV2, type PrReviewState } from '../rules/v2'
+import { foldPrReviewV2, issueStateV2, mergeTransition, prStateV2, stateCode, statusOfCode, type PrReviewState } from '../rules/v2'
 import {
   asIdentifierString,
   byteFieldToHex,
@@ -46,10 +45,11 @@ import {
 import { repoTimelines, type RepoTimelines } from './chrome'
 import { configBundleOf, readConfigHistory } from './config'
 import { publicRefKey, readRefUpdates, refUpdatesFromRows } from './refs'
-import { HiddenTally, SEALED_EPOCH, admitAll, gateFor, readableEvents, type HiddenCounts } from './private-content'
+import { HiddenTally, SEALED_EPOCH, admitAll, gateFor, readableEvents } from './private-content'
 import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
 import { base64ToHex, hexToBase64 } from '../sdk'
+import { readRepoCounts, readStateCodes, readTransitions, type TransitionView } from './transitions'
 
 /** A row's title; ciphertext (a private repo's, which this client cannot decrypt) says so. */
 export function titleOf(doc: PlainDocument): string {
@@ -57,14 +57,6 @@ export function titleOf(doc: PlainDocument): string {
   if (title !== '') return title
   return byteFieldToHex(doc, 'enc') !== '' ? 'Encrypted (not readable here)' : ''
 }
-
-/**
- * A list page: the rows, and how many newer documents were skipped as not well-formed (or, in
- * a private repo, as unreadable: `hiddenBy` splits them by reason) — shown as "N hidden",
- * never silently. `complete` is true when the read reached the end of the list, so the rows
- * are every shown document of the repo, not just its newest page (an open count needs that).
- */
-export type Listed<T> = T[] & { readonly hidden: number; readonly hiddenBy: HiddenCounts; readonly complete: boolean }
 
 /** An issue with its folded state. */
 export interface IssueView {
@@ -88,6 +80,11 @@ export interface IssueView {
   /** The `imported` provenance object as read, for re-sealing an edit. */
   readonly importedRaw?: Readonly<Record<string, unknown>> | null
   /**
+   * The source forge's number (`upstreamNumber`) as stored, or null. Shown ("#12 · upstream
+   * #7761") only when its writer is trusted: see `trustedUpstreamNumber`.
+   */
+  readonly upstreamNumber: number | null
+  /**
    * The original author and time an import recorded (`imported`), or null. Shown only when the
    * signer is trusted to mirror ({@link trustedOrigin}).
    */
@@ -97,7 +94,7 @@ export interface IssueView {
    * False when the event log could not be read to completion, so `state` is a fold over a
    * partial history and must not be presented as authoritative. Only list surfaces can
    * produce this — a detail read throws instead, because there a wrong state is worse than
-   * an error. See {@link listIssues}.
+   * an error (the list indexes, `./issue-index`, `./pull-index`).
    */
   readonly stateComplete: boolean
 }
@@ -114,8 +111,8 @@ export function revisionOf(doc: PlainDocument): number {
   return typeof r === 'number' && r > 0 ? r : typeof r === 'bigint' ? Number(r) : 1
 }
 
-/** An issue document and its target log, folded (no reads). */
-export function issueViewOf(issueDoc: PlainDocument, log: TargetLog): IssueView {
+/** An issue document, its state code and its target log (no reads). */
+export function issueViewOf(issueDoc: PlainDocument, log: TargetLog, code: number): IssueView {
   const author = str(issueDoc, '$ownerId')
   return {
     id: str(issueDoc, '$id'),
@@ -127,7 +124,7 @@ export function issueViewOf(issueDoc: PlainDocument, log: TargetLog): IssueView 
     updatedAt: updatedAtOf(issueDoc),
     revision: revisionOf(issueDoc),
     ...readImported(issueDoc),
-    state: foldIssueStateV2(log.events, log.authorEvents, author),
+    state: issueStateV2(code, log.events),
     stateComplete: true,
   }
 }
@@ -190,6 +187,8 @@ export interface PullView {
   readonly importedUrl: string
   /** The `imported` provenance object as read (a private repo's decrypted), for re-sealing an edit. */
   readonly importedRaw?: Readonly<Record<string, unknown>> | null
+  /** See {@link IssueView.upstreamNumber}. */
+  readonly upstreamNumber: number | null
   /** See {@link IssueView.origin}. */
   readonly origin?: Origin | null
   readonly state: PrState
@@ -204,12 +203,15 @@ export interface PullView {
 }
 
 /** A review verdict, as recorded on-chain. Parity with forge-core `Verdict`. */
-export type VerdictName = 'approve' | 'requestChanges' | 'comment' | 'unknown'
+export type VerdictName = 'approve' | 'requestChanges' | 'comment' | 'approveNonMember' | 'requestChangesNonMember' | 'unknown'
 
 const VERDICT_BY_INT: Readonly<Record<number, VerdictName>> = {
   1: 'approve',
   2: 'requestChanges',
   3: 'comment',
+  // A non-member's approve and request changes (RC1 R-16): shown as such, never counted.
+  4: 'approveNonMember',
+  5: 'requestChangesNonMember',
 }
 
 /** Short label for a verdict, matching `dg pr view`. */
@@ -217,6 +219,8 @@ export const VERDICT_LABEL: Readonly<Record<VerdictName, string>> = {
   approve: 'approved',
   requestChanges: 'changes requested',
   comment: 'commented',
+  approveNonMember: 'approved (not a member)',
+  requestChangesNonMember: 'changes requested (not a member)',
   unknown: 'unknown verdict',
 }
 
@@ -252,8 +256,8 @@ export interface ReviewView {
 /**
  * Fetch a target's **complete** event log (ascending), converted to rules {@link Event}s.
  *
- * COMPLETENESS IS LOAD-BEARING, not a nicety. `foldIssueState` / `foldPrState` are folds
- * over the whole log: a close at row 101 that never arrives leaves the issue open forever.
+ * COMPLETENESS IS LOAD-BEARING, not a nicety. The label and assignee folds are folds over the
+ * whole log: a label removed at row 101 that never arrives stays on forever.
  * It pages to exhaustion, and
  * {@link queryAllDocuments} throws rather than returning a short answer if it cannot
  * prove it reached the end. Parity: forge-core `CollabEngine::fetch_events` uses
@@ -266,9 +270,9 @@ export async function readEvents(sdk: EvoSDK, repo: RepoRef, targetId: string): 
 }
 
 /**
- * A target's state documents, by the type that admitted them: member events (`event`) and
- * the author's own close/reopen (`authorEvent`, `forge-v2.md` §3). The fold needs to know
- * which is which.
+ * A target's event documents, by the type that admitted them: member events (`event`) and
+ * the author's own review kinds (`authorEvent`, `forge-v2.md` §3). The review fold needs to
+ * know which is which. State is not here: it is the target's `transition` sum.
  */
 export interface TargetLog {
   readonly events: Event[]
@@ -283,12 +287,11 @@ export interface TargetLog {
 export const EMPTY_LOG: TargetLog = { events: [], authorEvents: [] }
 
 /**
- * Pages of each feed type read before the feed is declared too large to fold (`authorEvent` can
- * be written by any issue author). The issue index, the pull index and the lists all share this
- * one read; past the bound a list page folds each row from its own target log instead.
+ * Pages of the repo's member-event feed read before it is declared too large to fold (the issue
+ * and pull indexes' labels and assignees are then unverified).
  */
 const FEED_MAX_PAGES = 30
-/** How long a repo feed, and the lists folded from it, serve later reads. */
+/** How long a settled repo feed serves later reads. */
 const FEED_TTL_MS = 30_000
 
 /** A cached read: `at` is when it settled (null while in flight). */
@@ -320,32 +323,11 @@ function ttlCached<T>(cache: Cache<T>, key: string, load: () => Promise<T>): Pro
   return entry.promise
 }
 
+const feedCache: Cache<Map<string, TargetLog> | null> = new Map()
+/** {@link sharedRepoCounts}' reads, by `feedKey@write generation`. */
+const countsCache: Cache<Awaited<ReturnType<typeof readRepoCounts>>> = new Map()
 /** Per repo: bumped by every {@link invalidateRepoFeed}, so a read started before a write can tell. */
 const epochs = new Map<string, number>()
-
-/**
- * The repo's write epoch. A reader captures it before its first request; a feed or count it
- * derives is shared only while the epoch is unchanged, so a read in flight across a write never
- * refills a cache the write just dropped (L-77 review).
- */
-export function repoEpoch(repo: RepoRef): number {
-  return epochs.get(feedKey(repo)) ?? 0
-}
-
-const feedCache: Cache<Map<string, TargetLog> | null> = new Map()
-/** The in-flight or fresh issue / PR list page per repo and type (the list pages and the header share it). */
-const listCache: Cache<Listed<IssueView> | Listed<PullView>> = new Map()
-/**
- * The newest list page that settled, per repo and type, and when (`at`; 0 once a write made
- * it stale). The header's open counts show it while a refold replaces it, so a write never
- * blanks the badge; {@link foldOpenCounts} refolds it once it is older than
- * {@link SETTLED_TTL_MS}, stale, or disagrees with the repo's total.
- */
-const settledLists = new Map<string, { at: number; list: Listed<IssueView> | Listed<PullView> }>()
-/** How long the header trusts a settled list before it refolds it. */
-const SETTLED_TTL_MS = 60_000
-/** Per repo: bumped when its list pages change (a read settles, or a write drops them). */
-const versions = new Map<string, number>()
 /** Per repo: bumped when a write that can change an open count drops its caches. */
 const writes = new Map<string, number>()
 const listeners = new Set<() => void>()
@@ -356,24 +338,24 @@ const feedKey = (repo: RepoRef): string => `${repo.forge.collab}:${repo.repoId}`
  * keyed by the reader's session too (`repoKey`) and go with it (below).
  */
 const pageKey = (repo: RepoRef): string => `${repo.forge.collab}:${repoKey(repo)}`
-const listKey = (repo: RepoRef, type: 'issue' | 'patch'): string => `${pageKey(repo)}:${type}`
 
 onPrivateSessionEnded((id) => {
-  for (const m of [feedCache, listCache, settledLists] as Map<string, unknown>[]) {
-    for (const k of [...m.keys()]) if (k.includes(`#${id}`)) m.delete(k)
-  }
+  for (const k of [...feedCache.keys()]) if (k.includes(`#${id}`)) feedCache.delete(k)
 })
+
+/**
+ * The repo's write epoch. A reader captures it before its first request; a feed it derives is
+ * shared only while the epoch is unchanged, so a read in flight across a write never refills the
+ * cache the write just dropped (L-77 review).
+ */
+export function repoEpoch(repo: RepoRef): number {
+  return epochs.get(feedKey(repo)) ?? 0
+}
 
 function changed(repo: RepoRef, counters: readonly Map<string, number>[]): void {
   const key = feedKey(repo)
   for (const counter of counters) counter.set(key, (counter.get(key) ?? 0) + 1)
   for (const listener of listeners) listener()
-}
-
-/** The repo feed another reader is reading or has read within {@link FEED_TTL_MS}, if any. */
-export function sharedRepoFeed(repo: RepoRef): Promise<Map<string, TargetLog> | null> | undefined {
-  const hit = feedCache.get(pageKey(repo))
-  return live(hit) ? hit!.promise : undefined
 }
 
 /** Group a repo feed's events by target. */
@@ -393,10 +375,9 @@ export function groupFeed(events: readonly Event[], authorEvents: readonly Event
 }
 
 /**
- * Drop a repo's cached feed and list pages (tests; and after a write lands). With `counts`
- * (the default) the write can change an open count — an issue, patch, event, authorEvent or
- * membership write — so the settled lists go stale and the subscribers
- * ({@link subscribeRepoLists}) are told, and the repo header refolds.
+ * Drop a repo's cached feed and indexes (tests; and after a write lands). With `counts` (the
+ * default) the write can change a count — an issue, patch or transition write — so the
+ * subscribers ({@link subscribeRepoLists}) are told, and the lists and the repo header re-read.
  */
 export function invalidateRepoFeed(repo: RepoRef, { counts = true }: { counts?: boolean } = {}): void {
   // Every session's pages of this repo (a write is visible to all of them).
@@ -404,15 +385,10 @@ export function invalidateRepoFeed(repo: RepoRef, { counts = true }: { counts?: 
   const ofRepo = (k: string): boolean => k === prefix || k.startsWith(`${prefix}:`) || k.startsWith(`${prefix}#`)
   epochs.set(feedKey(repo), repoEpoch(repo) + 1)
   for (const k of [...feedCache.keys()]) if (ofRepo(k)) feedCache.delete(k)
-  for (const k of [...listCache.keys()]) if (ofRepo(k)) listCache.delete(k)
   for (const drop of invalidationHooks) drop(repo)
   if (!counts) return
-  for (const [k, settled] of settledLists) if (ofRepo(k)) settled.at = 0
-  // A close or reopen changes the open count without changing the total the count was proved
-  // against: forget it, so the header refolds instead of showing the old number.
-  provedCounts.delete(countKey(repo, 'issue'))
-  provedCounts.delete(countKey(repo, 'patch'))
-  changed(repo, [writes, versions])
+  for (const k of [...countsCache.keys()]) if (k.startsWith(`${prefix}@`)) countsCache.delete(k)
+  changed(repo, [writes])
 }
 
 /** Other per-repo caches a write drops along with the feed (the issue index, `./issue-index`). */
@@ -423,40 +399,22 @@ export function onRepoInvalidated(drop: (repo: RepoRef) => void): void {
   invalidationHooks.add(drop)
 }
 
-/**
- * Exact open issue and PR counts the indexes proved (`./issue-index`, `./pull-index`: the complete
- * feed's closed (and merged) targets against the countable total), per repo and type, with the
- * total they were proved against.
- */
-const provedCounts = new Map<string, { open: number; total: number | null }>()
-const countKey = (repo: RepoRef, type: 'issue' | 'patch'): string => `${feedKey(repo)}:${type}`
-
-/**
- * Record an open issue or PR count an index proved against `total`; the header shows it. A count
- * from a read started before a write (`epoch` older than {@link repoEpoch}) is not recorded.
- */
-export function settleCount(repo: RepoRef, type: 'issue' | 'patch', open: number, total: number | null, epoch = repoEpoch(repo)): void {
-  if (epoch !== repoEpoch(repo)) return
-  const key = countKey(repo, type)
-  const held = provedCounts.get(key)
-  if (held?.open === open && held.total === total) return
-  provedCounts.set(key, { open, total })
-  changed(repo, [versions])
-}
-
-/** {@link settleCount} for issues (the issue index's call). */
-export function settleIssueCount(repo: RepoRef, open: number, total: number | null, epoch?: number): void {
-  settleCount(repo, 'issue', open, total, epoch)
-}
-
-/** How often `repo`'s list pages changed this session: what a view derived from them re-renders on. */
-export function repoListVersion(repo: RepoRef): number {
-  return versions.get(feedKey(repo)) ?? 0
-}
 
 /** How many writes to `repo` dropped its caches this session: a cache key for reads a write changes. */
 export function repoWriteGeneration(repo: RepoRef): number {
   return writes.get(feedKey(repo)) ?? 0
+}
+
+/**
+ * The repo's proved issue and PR totals by state ({@link readRepoCounts}: the issue and PR totals
+ * and one count of transitions by kind), read once for every reader on the page: the header's
+ * open-count tabs, the list's total and the issue or pull index all ask for the same three
+ * counts on the same load, and each used to read its own (the Issues list read them three
+ * times). Joined in flight and for {@link FEED_TTL_MS} after; a write that can change a count
+ * moves to a new write generation, so a read issued before it never answers after it.
+ */
+export function sharedRepoCounts(sdk: EvoSDK, repo: RepoRef): Promise<Awaited<ReturnType<typeof readRepoCounts>>> {
+  return ttlCached(countsCache, `${feedKey(repo)}@${repoWriteGeneration(repo)}`, () => readRepoCounts(sdk, repo))
 }
 
 /** Be told whenever any repo's list pages change; returns the unsubscribe. */
@@ -502,58 +460,47 @@ export async function readTargetLog(
   return toLog(repo, events, authorEvents)
 }
 
-/** The repo feed's query for one type (`(repoId, $createdAt)`, oldest first). */
-export function feedQuery(repo: RepoRef, type: 'event' | 'authorEvent'): DocumentQuery {
-  return repoSource(repo).repoQuery(DOC[type], { orderBy: [['$createdAt', 'asc']] })
-}
-
-/** The feed's first page of each type, read as siblings of a list composite. */
-export interface FeedFirstPages {
-  readonly event: readonly PlainDocument[]
-  readonly authorEvent: readonly PlainDocument[]
+/** The repo's member-event feed query (`(repoId, $createdAt)`, oldest first). */
+export function feedQuery(repo: RepoRef): DocumentQuery {
+  return repoSource(repo).repoQuery(DOC.event, { orderBy: [['$createdAt', 'asc']] })
 }
 
 /**
- * The repo feed, read once per repo through a short cache: a read another reader has in flight
- * or settled is joined, else this one starts — continued past `first` (a list index's composite
- * siblings) when given — and is shared the moment it starts, so the issue index, the pull index
- * and the header page the feed once between them (L-77). Null when it is too large to fold
- * ({@link FEED_MAX_PAGES}).
+ * The repo's member events, grouped by target: what the issue and pull indexes fold every row's
+ * labels and assignees from (state is the rows' transition sums; `event` is member-gated at
+ * consensus, so the feed is bounded by real activity). Read once per repo through a short
+ * cache: a read another reader has in flight or settled is joined, else this one starts,
+ * continued past `first` (an index's composite sibling page), and is shared the moment
+ * it starts, so the two indexes page the feed once between them (L-77). `epoch` is the
+ * {@link repoEpoch} `first` was read at: a first page from before a write is not shared. Null
+ * when the feed is too large to fold ({@link FEED_MAX_PAGES}).
  */
 export function readRepoFeedFrom(
   sdk: EvoSDK,
   repo: RepoRef,
-  first?: FeedFirstPages,
-  /** The {@link repoEpoch} the caller read `first` at: first pages from before a write are not shared. */
-  epoch = repoEpoch(repo),
+  first: readonly PlainDocument[],
+  epoch: number,
 ): Promise<Map<string, TargetLog> | null> {
   if (epoch !== repoEpoch(repo)) return readRepoFeed(sdk, repo, first)
   return ttlCached(feedCache, pageKey(repo), () => readRepoFeed(sdk, repo, first))
 }
 
-/**
- * Every `event` and `authorEvent` of a repo, grouped by target — the repo feed
- * (`(repoId, $createdAt)` on both types), read to completion once so a list page folds all of
- * its rows without a query per row. `event` is member-gated and `authorEvent` author-gated at
- * consensus, so the feed is bounded by real activity, not by what strangers post.
- */
-async function readRepoFeed(sdk: EvoSDK, repo: RepoRef, first?: FeedFirstPages): Promise<Map<string, TargetLog> | null> {
-  const read = (type: 'event' | 'authorEvent'): Promise<PlainDocument[]> =>
-    queryAllDocuments(sdk, feedQuery(repo, type), {
-      maxPages: FEED_MAX_PAGES,
-      ...(first === undefined ? {} : { firstPage: first[type] }),
-    })
-  let events: Event[]
-  let authorEvents: Event[]
+/** The feed another reader is reading, or read within {@link FEED_TTL_MS}, if any. */
+export function sharedRepoFeed(repo: RepoRef): Promise<Map<string, TargetLog> | null> | undefined {
+  const hit = feedCache.get(pageKey(repo))
+  return live(hit) ? hit!.promise : undefined
+}
+
+async function readRepoFeed(sdk: EvoSDK, repo: RepoRef, first: readonly PlainDocument[]): Promise<Map<string, TargetLog> | null> {
   try {
-    const [e, a] = await Promise.all([read(DOC.event), read(DOC.authorEvent)])
-    ;({ events, authorEvents } = await toLog(repo, e, a))
+    const docs = await queryAllDocuments(sdk, feedQuery(repo), { maxPages: FEED_MAX_PAGES, firstPage: first })
+    // A private repo's member events are read through `readableEvents` (values opened).
+    const log = await toLog(repo, docs, [])
+    return groupFeed(log.events, [])
   } catch (e) {
-    // Too much activity to read up front: the caller folds rows one target at a time.
     if (e instanceof IncompleteReadError) return null
     throw e
   }
-  return groupFeed(events, authorEvents)
 }
 
 /**
@@ -605,144 +552,26 @@ export function reviewViewOf(d: PlainDocument): ReviewView {
 }
 
 /**
- * Read one issue and fold its state (`log`, when given, is the target's slice of the repo
- * feed).
+ * Read one issue and its state (`log`, when given, is the target's slice of the repo feed;
+ * `code`, its state code from the page's sum query).
  */
 export async function readIssue(
   sdk: EvoSDK,
   repo: RepoRef,
   issueDoc: PlainDocument,
   log?: TargetLog,
+  code?: number,
 ): Promise<IssueView> {
-  return issueViewOf(issueDoc, log ?? (await readTargetLog(sdk, repo, str(issueDoc, '$id'))))
-}
-
-/** Pages a list read may take to fill `limit` shown rows past hidden ones. */
-const LIST_MAX_PAGES = 5
-
-/**
- * The newest `limit` issues or patches of a repo, `$createdAt` descending, and how many were
- * skipped on the way. It skips documents that are not well-formed for the repo's
- * visibility (`forge-v2.md` §5), and in a private repo every document that does not open with
- * the reader's keys (`docs/security/private-repos.md` §8). Skipped rows do
- * not shorten the page: the read continues (newest-first, by a `$createdAt <` bound, so no
- * cursor) until `limit` rows are found, the list ends, or {@link LIST_MAX_PAGES} pages.
- */
-async function newestTargets(
-  sdk: EvoSDK,
-  repo: RepoRef,
-  type: 'issue' | 'patch',
-  limit: number,
-): Promise<{ documents: PlainDocument[]; hidden: HiddenTally; complete: boolean }> {
-  // Public: well-formed documents. Private: the ones that open with the reader's keys
-  // (`open_content`), decrypted; without a session, none.
-  const gate = gateFor(repo)
-  const out: PlainDocument[] = []
-  const seen = new Set<string>()
-  const hidden = new HiddenTally()
-  let complete = false
-  let before: number | null = null
-  for (let page = 0; page < LIST_MAX_PAGES && out.length < limit; page++) {
-    const { documents } = await queryDocumentsWithProof(
-      sdk,
-      repoSource(repo).repoQuery(DOC[type], {
-        // `<=`, not `<`: rows sharing the boundary's timestamp may not all have fit the page.
-        ...(before === null ? {} : { where: [['$createdAt', '<=', before]] }),
-        orderBy: [['$createdAt', 'desc']],
-        limit,
-      }),
-    )
-    let cut = false
-    for (const d of documents) {
-      if (out.length >= limit) {
-        cut = true
-        break
-      }
-      const id = str(d, '$id')
-      if (seen.has(id)) continue
-      seen.add(id)
-      const a = await gate.admit(type, d)
-      if (a.ok) out.push(a.doc)
-      else hidden.add(a.reason)
-    }
-    // A short page is the end of the list: complete, unless the page was cut to fit `limit`.
-    if (documents.length < limit) {
-      complete = !cut
-      break
-    }
-    const oldest = documents[documents.length - 1]?.['$createdAt']
-    if (typeof oldest !== 'number' || oldest === before) break
-    before = oldest
-  }
-  return { documents: out, hidden, complete }
+  const id = str(issueDoc, '$id')
+  const [l, c] = await Promise.all([
+    log ?? readTargetLog(sdk, repo, id),
+    code ?? readStateCodes(sdk, repo, [id]).then((m) => m.get(id) ?? 0),
+  ])
+  return issueViewOf(issueDoc, l, c)
 }
 
 /**
- * Fold a page of issue or patch rows from the repo feed, read once for the whole page — or,
- * when the feed is too large, one row at a time, keeping a row (state unverified) whose event
- * log cannot be read to completion.
- */
-async function foldRows<T>(
-  sdk: EvoSDK,
-  repo: RepoRef,
-  documents: readonly PlainDocument[],
-  foldOne: (doc: PlainDocument, log: TargetLog | undefined) => Promise<T>,
-  incomplete: (doc: PlainDocument) => T,
-): Promise<T[]> {
-  // Fold from the repo feed while it is small; otherwise (feed = null) each row reads its own
-  // target log.
-  const feed = documents.length > 0 ? await readRepoFeedFrom(sdk, repo) : null
-  // Per-row tolerance. One target padded past the reader's completeness bound must not take
-  // down a whole page of issues — and
-  // dropping the row silently would be the same class of bug this all fixes. The row is
-  // kept with `stateComplete: false`; callers render the state as unverified. (A PR row also
-  // reads its base ref's history, which can fail the same way.)
-  return Promise.all(
-    documents.map((doc) =>
-      foldOne(doc, feed === null ? undefined : feed.get(str(doc, '$id')) ?? EMPTY_LOG).catch((e: unknown) => {
-        if (!(e instanceof IncompleteReadError)) throw e
-        return incomplete(doc)
-      }),
-    ),
-  )
-}
-
-/** List issues (newest first) with folded state. */
-export async function listIssues(
-  sdk: EvoSDK,
-  repo: RepoRef,
-  limit = 50,
-): Promise<Listed<IssueView>> {
-  const { documents, hidden, complete } = await newestTargets(sdk, repo, 'issue', limit)
-  const rows = await foldRows(
-    sdk,
-    repo,
-    documents,
-    (doc, log) => readIssue(sdk, repo, doc, log),
-    incompleteIssueView,
-  )
-  return Object.assign(rows, { hidden: hidden.total, hiddenBy: hidden.value, complete })
-}
-
-/** An issue row whose event log could not be read completely: identity only, no folded state. */
-function incompleteIssueView(doc: PlainDocument): IssueView {
-  return {
-    id: str(doc, '$id'),
-    number: num(doc, 'number'),
-    title: titleOf(doc),
-    body: str(doc, 'body'),
-    author: str(doc, '$ownerId'),
-    createdAt: num(doc, '$createdAt'),
-    updatedAt: updatedAtOf(doc),
-    revision: revisionOf(doc),
-    ...readImported(doc),
-    state: { open: true, labels: [], assignees: [] },
-    stateComplete: false,
-  }
-}
-
-/**
- * A historical-tips merge predicate for `foldPrStateV2`: a merge oid stays valid once
+ * A historical-tips merge predicate for `prStateV2`'s on-base label: a merge oid stays valid once
  * the base ref advances past it, so the predicate tests membership in the set of every tip
  * the base ref has EVER had — not reflexive equality (the BLOCKER-1 fix). Built from the
  * base ref's full `refUpdate`/`protectedRefUpdate` history.
@@ -752,20 +581,24 @@ export function historicalTipsPredicate(baseRefNewOidsHex: readonly string[]): I
   return (oid) => tips.has(oid)
 }
 
-/** An issue's or patch's `imported` provenance (present on items archived from another forge). */
+/** An issue's or patch's `imported` provenance and `upstreamNumber` (items archived from another forge). */
 function readImported(doc: PlainDocument): {
   imported: boolean
   importedUrl: string
   importedRaw: Readonly<Record<string, unknown>> | null
+  upstreamNumber: number | null
   origin: Origin | null
 } {
+  const up = doc['upstreamNumber']
+  const upstreamNumber = typeof up === 'number' && Number.isInteger(up) && up > 0 ? up : null
   const value = doc['imported']
-  if (typeof value !== 'object' || value === null) return { imported: false, importedUrl: '', importedRaw: null, origin: null }
+  if (typeof value !== 'object' || value === null) return { imported: false, importedUrl: '', importedRaw: null, upstreamNumber, origin: null }
   const url = (value as PlainDocument)['url']
   return {
     imported: true,
     importedUrl: typeof url === 'string' ? url : '',
     importedRaw: value as Readonly<Record<string, unknown>>,
+    upstreamNumber,
     origin: originOf(doc),
   }
 }
@@ -819,10 +652,11 @@ export function baseRefTips(
 }
 
 /**
- * Read one PR (patch) and fold its state, using the historical-tips merge predicate over the
- * base ref's VALID history. `configHistory` yields the repo's config timeline and
- * `refUpdates` a base ref's update history (each read here when not given; a list shares one
- * read of each across its rows).
+ * Read one PR (patch) and its state. `transitions`, when given, are the PR's own (a detail
+ * view: the merge oid is then known and labelled against the base's VALID history through the
+ * historical-tips predicate); else `code` is its state code from a list page's sum query.
+ * `configHistory` yields the repo's config timeline and `refUpdates` a base ref's update
+ * history (each read here when not given; a list shares one read of each across its rows).
  */
 export async function readPull(
   sdk: EvoSDK,
@@ -831,6 +665,7 @@ export async function readPull(
   log?: TargetLog,
   configHistory?: () => Promise<readonly ConfigDoc[]>,
   refUpdates?: (refNameHashB64: string) => Promise<RefUpdate[]>,
+  state?: { readonly code: number } | { readonly transitions: readonly TransitionView[] },
 ): Promise<PullView> {
   const id = str(patchDoc, '$id')
   const author = str(patchDoc, '$ownerId')
@@ -856,8 +691,13 @@ export async function readPull(
   }
   const baseTip = tips.tip
 
-  const l = log ?? (await readTargetLog(sdk, repo, id))
-  const state: PrState = foldPrStateV2(l.events, l.authorEvents, author, baseTip, isAncestor, patchDoc['draft'] === true)
+  const [l, s] = await Promise.all([
+    log ?? readTargetLog(sdk, repo, id),
+    state ?? readTransitions(sdk, repo, id).then((transitions) => ({ transitions })),
+  ])
+  const code = 'code' in s ? s.code : stateCode(s.transitions)
+  const mergeOid = 'transitions' in s ? mergeTransition(s.transitions)?.oid ?? null : null
+  const prState: PrState = prStateV2(code, mergeOid, l.events, baseTip, isAncestor)
   let initialHeadOid = ''
   if (typeof baseHeadOidRaw === 'string' && baseHeadOidRaw.length > 0) {
     try {
@@ -887,7 +727,7 @@ export async function readPull(
     sourceRefName: typeof patchDoc['sourceRefName'] === 'string' ? patchDoc['sourceRefName'] : null,
     headOnBase: headOid !== '' && baseTip !== undefined && isAncestor(headOid, baseTip),
     ...readImported(patchDoc),
-    state,
+    state: prState,
     stateComplete: true,
     ...editMeta(patchDoc),
   }
@@ -910,54 +750,39 @@ export interface BaseRefReaders {
 }
 
 /**
- * The config and base-ref histories PR folds share, each read at most once per reader set. A
+ * The config and base-ref histories PR reads share, each read at most once per reader set. A
  * public repo's come from the repo chrome store (`repoTimelines`): the page's own chrome read of
  * up to `maxAgeMs` ago (no request), else one delta request for what is new; the ref histories
- * are the complete timelines the Code tab folds, so a PR folds against the same ones. A private
- * repo's (no store) are read here: one config read, one update-history read per base ref, so a
- * list costs O(base refs), not O(PRs).
+ * are the complete timelines the Code tab folds. A private repo's (no store) are read here: one
+ * config read, one update-history read per base ref, so a list costs O(base refs), not O(PRs).
  */
 export function baseRefReaders(sdk: EvoSDK, repo: RepoRef, { maxAgeMs = FEED_TTL_MS }: { readonly maxAgeMs?: number } = {}): BaseRefReaders {
-  let timelines: Promise<RepoTimelines | null> | undefined
-  const stored = (): Promise<RepoTimelines | null> => (timelines ??= repoTimelines(sdk, repo, { maxAgeMs }))
-  let configs: Promise<readonly ConfigDoc[]> | undefined
-  const updates = new Map<string, Promise<RefUpdate[]>>()
+  // Each read is kept for the reader set's life, unless it fails transiently: then the next caller
+  // reads again (a node down must not stick to an index that lives for the session). A history too
+  // large to read (`IncompleteReadError`) would fail the same way again: that answer is kept.
+  const held = new Map<string, Promise<unknown>>()
+  const once = <T>(key: string, read: () => Promise<T>): Promise<T> => {
+    let hit = held.get(key) as Promise<T> | undefined
+    if (hit === undefined) {
+      hit = read()
+      held.set(key, hit)
+      const mine = hit
+      hit.catch((e: unknown) => {
+        if (!(e instanceof IncompleteReadError) && held.get(key) === mine) held.delete(key)
+      })
+    }
+    return hit
+  }
+  const stored = (): Promise<RepoTimelines | null> => once('timelines', () => repoTimelines(sdk, repo, { maxAgeMs }))
   return {
-    configHistory: () =>
-      (configs ??= stored().then((t) => (t === null ? readConfigHistory(sdk, repo) : configBundleOf(repo, t.config).history))),
-    refUpdates: (hash) => {
-      let read = updates.get(hash)
-      if (read === undefined) {
-        read = stored().then((t) =>
-          t === null ? readRefUpdates(sdk, repo, hash) : refUpdatesFromRows(repo, t.refUpdate, t.protectedRefUpdate, hash),
-        )
-        updates.set(hash, read)
-      }
-      return read
-    },
+    configHistory: () => once('config', () => stored().then((t) => (t === null ? readConfigHistory(sdk, repo) : configBundleOf(repo, t.config).history))),
+    refUpdates: (hash) =>
+      once(`ref:${hash}`, () => stored().then((t) => (t === null ? readRefUpdates(sdk, repo, hash) : refUpdatesFromRows(repo, t.refUpdate, t.protectedRefUpdate, hash)))),
   }
 }
 
-/** List PRs (patches, newest first) with folded state. */
-export async function listPulls(
-  sdk: EvoSDK,
-  repo: RepoRef,
-  limit = 50,
-): Promise<Listed<PullView>> {
-  const { documents, hidden, complete } = await newestTargets(sdk, repo, 'patch', limit)
-  const base = baseRefReaders(sdk, repo)
-  const rows = await foldRows(
-    sdk,
-    repo,
-    documents,
-    (doc, log) => readPull(sdk, repo, doc, log, base.configHistory, base.refUpdates),
-    incompletePullView,
-  )
-  return Object.assign(rows, { hidden: hidden.total, hiddenBy: hidden.value, complete })
-}
-
-/** A PR row whose event log could not be read completely: identity only, no folded state. */
-export function incompletePullView(doc: PlainDocument): PullView {
+/** A PR row whose base history could not be read completely: its proved state, no labels or head updates. */
+export function incompletePullView(doc: PlainDocument, code: number): PullView {
   let headOid = ''
   const raw = doc['headOid']
   if (typeof raw === 'string' && raw.length > 0) {
@@ -988,144 +813,14 @@ export function incompletePullView(doc: PlainDocument): PullView {
     sourceRefName: typeof doc['sourceRefName'] === 'string' ? doc['sourceRefName'] : null,
     headOnBase: false,
     ...readImported(doc),
-    state: { open: true, merged: false, draft: doc['draft'] === true, baseRef: null, labels: [], assignees: [] },
+    state: { ...statusOfCode(code), baseRef: null, labels: [], assignees: [], mergeOnBase: null },
     stateComplete: false,
     ...editMeta(doc),
   }
 }
 
-/**
- * How many rows a list page reads (the issues and pulls pages). The header's open counts come
- * from the same read, through the same cache, so the tab and the list never disagree.
- */
-export const LIST_PAGE = 100
-
-/** Read a list page through the session cache, recording it as the newest settled one. */
-function listCached<T extends Listed<IssueView> | Listed<PullView>>(
-  repo: RepoRef,
-  type: 'issue' | 'patch',
-  load: () => Promise<T>,
-): Promise<T> {
-  const key = listKey(repo, type)
-  const hit = listCache.get(key)
-  // A live read is joined as it is: it was recorded as settled by the call that started it.
-  if (live(hit)) return hit!.promise as Promise<T>
-  const promise = ttlCached(listCache, key, load) as Promise<T>
-  promise.then(
-    (list) => {
-      // Only a read that is still current records (a write may have dropped it meanwhile).
-      if (listCache.get(key)?.promise !== promise) return
-      settledLists.set(key, { at: Date.now(), list })
-      changed(repo, [versions])
-    },
-    () => undefined,
-  )
-  return promise
-}
-
-/** {@link listIssues} of one {@link LIST_PAGE}, cached per repo (see {@link invalidateRepoFeed}). */
-export function listIssuesCached(sdk: EvoSDK, repo: RepoRef): Promise<Listed<IssueView>> {
-  return listCached(repo, 'issue', () => listIssues(sdk, repo, LIST_PAGE))
-}
-
-/** {@link listPulls} of one {@link LIST_PAGE}, cached like {@link listIssuesCached}. */
-export function listPullsCached(sdk: EvoSDK, repo: RepoRef): Promise<Listed<PullView>> {
-  return listCached(repo, 'patch', () => listPulls(sdk, repo, LIST_PAGE))
-}
-
-/** A folded list, as far as counting needs it. */
-type CountedList = readonly { readonly state: { readonly open: boolean }; readonly stateComplete: boolean }[] & {
-  readonly complete: boolean
-  readonly hidden: number
-}
-
-/**
- * The open count a folded list proves, or null when it proves none: the list stopped before
- * the repo's oldest document, or some row's state is a fold over a partial event log (the
- * list marks that row unverified). A merged or closed PR, like a closed issue, is not open.
- */
-export function openCountOf(list: CountedList | null | undefined): number | null {
-  if (list == null || !list.complete || list.some((row) => !row.stateComplete)) return null
-  return list.filter((row) => row.state.open).length
-}
-
-/** A repo's issue and PR totals (every document ever created, open or closed): the countable indexes. */
+/** A repo's OPEN issue and PR counts for the tabs (null: not read). */
 export interface TargetTotals {
   readonly issues: number | null
   readonly pulls: number | null
-}
-
-/**
- * Whether the header folds a list itself to count what is open, given the type's total.
- *
- * Open is not a document field (it is the fold of `event` + `authorEvent`), so no index can
- * count it; only a list holding every row can. Below {@link LIST_PAGE} documents one list page
- * is the whole repo, so the header reads it — the very read and cache entry the list page
- * makes, so visiting both costs one read. At or above it, folding the repo's whole history for
- * a badge on every page is too dear: the header only uses a list the list page already read,
- * which proves a count only if it reached the end ({@link openCountOf}), and otherwise shows
- * no number. It never shows the total instead: a total beside "Issues" reads as the open
- * count, which is the bug this replaced.
- */
-export function foldsForCount(total: number | null): boolean {
-  return total !== null && total > 0 && total < LIST_PAGE
-}
-
-/**
- * Whether a complete list accounts for exactly `total` documents (shown + hidden). A list
- * folded before a newer issue or PR landed does not, so its open count is out of date.
- */
-function matchesTotal(total: number | null, list: CountedList): boolean {
-  return total !== null && list.length + list.hidden === total
-}
-
-/**
- * The open count to show for one type: its list's while that list is complete and accounts
- * for the current total, else 0 when the total says there are none, else no number.
- */
-export function openCountFor(total: number | null, list: CountedList | null | undefined): number | null {
-  if (total === 0) return 0
-  if (list == null || !matchesTotal(total, list)) return null
-  return openCountOf(list)
-}
-
-/**
- * The Issues and Pull requests tab counts — the OPEN ones, as GitHub's tabs show — from the
- * newest settled list pages; null for a count not (yet) proven. {@link foldOpenCounts} fills
- * them.
- */
-export function openCounts(repo: RepoRef, totals: TargetTotals | null): TargetTotals {
-  if (totals === null) return { issues: null, pulls: null }
-  // An index's count, when it was proved against the current total (a newer issue or PR makes it
-  // stale until the index refolds); else the folded list's.
-  const count = (type: 'issue' | 'patch', total: number | null): number | null => {
-    if (total === 0) return 0
-    const proved = provedCounts.get(countKey(repo, type))
-    return proved !== undefined && proved.total === total ? proved.open : openCountFor(total, settledLists.get(listKey(repo, type))?.list)
-  }
-  return { issues: count('issue', totals.issues), pulls: count('patch', totals.pulls) }
-}
-
-/**
- * Read the list pages {@link openCounts} needs: a small repo's types ({@link foldsForCount})
- * with no settled list, or one that a write made stale, that is older than
- * {@link SETTLED_TTL_MS}, or that does not account for the current total. A fresh list is not
- * re-read, so the header costs about one fold per repo per minute, plus one after each write
- * that can change a count. A failure leaves the count unshown.
- */
-export async function foldOpenCounts(
-  sdk: EvoSDK,
-  repo: RepoRef,
-  totals: TargetTotals,
-  { issues = true }: { issues?: boolean } = {},
-): Promise<void> {
-  const wants = (type: 'issue' | 'patch', total: number | null): boolean => {
-    if (!foldsForCount(total)) return false
-    const settled = settledLists.get(listKey(repo, type))
-    return settled === undefined || Date.now() - settled.at >= SETTLED_TTL_MS || !matchesTotal(total, settled.list)
-  }
-  await Promise.all([
-    issues && wants('issue', totals.issues) ? listIssuesCached(sdk, repo).catch(() => null) : null,
-    wants('patch', totals.pulls) ? listPullsCached(sdk, repo).catch(() => null) : null,
-  ])
 }

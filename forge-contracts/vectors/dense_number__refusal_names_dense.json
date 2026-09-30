@@ -1,0 +1,22 @@
+{
+  "name": "refusal_names_dense",
+  "description": "A 10422 naming the dense rule is retried with a fresh count; one naming any other rule is not.",
+  "case": "dense_refusal",
+  "rules": "v2",
+  "input": {
+    "messages": [
+      "A document of type \"issue\" breaks its propertyConstraints rule \"dense\": it does not hold",
+      "A document of type \"patch\" breaks its propertyConstraints rule \"dense\": it does not hold",
+      "A document of type \"issue\" breaks its propertyConstraints rule \"hasTitle\": it does not hold",
+      "A document of type \"issue\" breaks its propertyConstraints rule \"denseX\": it does not hold",
+      "duplicate unique index"
+    ]
+  },
+  "expected": [
+    true,
+    true,
+    false,
+    false,
+    false
+  ]
+}

@@ -38,14 +38,14 @@ use serde_json::json;
 
 use forge_core::collab::v2::{approvals_over, Collab, Patch, PatchInput, PatchView};
 use forge_core::create::default_journal_dir;
-use forge_core::rules::v2::Role;
-use forge_core::rules::{EventKind, RefState};
+use forge_core::rules::v2::{Role, StateAction};
+use forge_core::rules::RefState;
 use forge_core::scope::RepoRef as Repo;
 use forge_core::user_error::{codes, UserError};
 
 use crate::common::{number_arg, resolve, Reader, RepoRef, Session};
 use crate::context::Ctx;
-use crate::fmt::{cost_json, cost_line, dash_usd_price, route_text, safe, short};
+use crate::fmt::{cost_json, cost_line, dash_usd_price, safe, short, transition_route_text};
 use crate::git::{self, MergePlan};
 use crate::PrCommand;
 
@@ -85,6 +85,7 @@ pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
         }
         PrCommand::Ready { repo, number } => state::set_draft(ctx, repo, *number, false).await,
         PrCommand::Draft { repo, number } => state::set_draft(ctx, repo, *number, true).await,
+        PrCommand::Lock { repo, number, off } => state::set_locked(ctx, repo, *number, !off).await,
         PrCommand::Resolve {
             repo,
             number,
@@ -229,13 +230,33 @@ pub(crate) async fn open_pr(ctx: &Ctx, repo: &str, number: u64, action: &str) ->
     Ok(Pr { s, view })
 }
 
+/// The stable three-value `"state"` field in JSON output: `merged`, `closed` or `open`. Draft is
+/// already its own boolean field (`"draft"`), so unlike [`state_label`] this never returns
+/// `"draft"` — a consumer filtering on `state=="open"` (as `gh`'s `state: OPEN` / `isDraft` split
+/// encourages) must keep seeing open drafts as `open`.
+pub(crate) fn state_field(v: &PatchView) -> &'static str {
+    if v.state.merged {
+        "merged"
+    } else if !v.state.open {
+        "closed"
+    } else {
+        "open"
+    }
+}
+
+/// The label `dg pr list` / `dg pr view` print for a PR's state in plain text: `merged`
+/// (terminal), `closed` (state code 1 or 9 — closed takes precedence over draft, as the web's
+/// `pullStatus` does), `draft` (open, state code 8) or `open`. JSON output uses [`state_field`]
+/// instead, since it already carries a separate `"draft"` boolean.
 pub(crate) fn state_label(v: &PatchView) -> &'static str {
     if v.state.merged {
         "merged"
-    } else if v.state.open {
-        "open"
-    } else {
+    } else if !v.state.open {
         "closed"
+    } else if v.state.draft {
+        "draft"
+    } else {
+        "open"
     }
 }
 
@@ -311,7 +332,11 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
             short(&head_oid)
         );
     }
-    ctx.confirm_or_cancel("Open it? (one small document, ~0.0001 DASH)")?;
+    ctx.confirm_or_cancel(if args.draft {
+        "Open it as a draft? (the PR and a draft transition: two small documents, ~0.0002 DASH)"
+    } else {
+        "Open it? (one small document, ~0.0001 DASH)"
+    })?;
     let before = s.balance().await;
     let created = s
         .collab()
@@ -331,6 +356,7 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
             "sourceRepoId": source.id(),
             "sourceRepo": source.display(),
             "draft": args.draft,
+            "draftTransitionId": created.draft_transition,
             "resumed": created.resumed,
             "cost": cost_json(spent, price),
         }),
@@ -500,7 +526,7 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
                 "number": v.patch.number,
                 "title": v.patch.title,
                 "author": v.patch.author,
-                "state": state_label(v),
+                "state": state_field(v),
                 "baseRef": v.patch.base_ref_name,
                 "headOid": v.head,
                 "sourceRepoId": v.patch.source_repo_id,
@@ -659,7 +685,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
             "title": v.patch.title,
             "body": v.patch.body,
             "author": v.patch.author,
-            "state": state_label(&v),
+            "state": state_field(&v),
             "draft": v.state.draft,
             "labels": v.state.labels,
             "assignees": v.state.assignees,
@@ -696,10 +722,9 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
         }),
         || {
             println!(
-                "#{} [{}{}] {}",
+                "#{} [{}] {}",
                 v.patch.number,
                 state_label(&v),
-                if v.state.draft && v.state.open { ", draft" } else { "" },
                 safe(&v.patch.title)
             );
             println!("author: {}", v.patch.author);
@@ -858,19 +883,27 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()>
     let p = patch(&collab, &s.repo, repo, number).await?;
     let verb = if close { "Close" } else { "Reopen" };
     ctx.confirm_or_cancel(&format!("{verb} PR #{number}? (one small document)"))?;
-    let (route, id) = collab.set_open(&s.repo, &p.target(), close).await?;
+    let action = if close {
+        StateAction::Close
+    } else {
+        StateAction::Reopen
+    };
+    let change = collab.set_state(&s.repo, &p.target(), action, None).await?;
     ctx.emit(
         json!({
             "status": if close { "closed" } else { "reopened" },
             "pr": number,
-            "via": route,
-            "eventId": id,
+            "via": change.route,
+            "transitionId": change.transition_id,
+            "kind": change.kind,
+            // a closed draft stays a draft (kind 16/17)
+            "draft": forge_core::rules::v2::status_of_code(change.after).draft,
         }),
         || {
             println!(
-                "✓ {}d PR #{number} {}",
-                verb.to_lowercase(),
-                route_text(route)
+                "✓ {} PR #{number} {}",
+                if close { "closed" } else { "reopened" },
+                transition_route_text(change.route)
             );
         },
     );
@@ -943,6 +976,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         );
         return Ok(());
     }
+    refuse_unmergeable(&view, number)?;
     refuse_retargeted(&view, number)?;
     refuse_missing_base(&view, number, event_only)?;
     let merge_oid = event_only
@@ -982,9 +1016,9 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     ctx.confirm_or_cancel(&format!(
         "Merge PR #{number}? ({}{}; ~0.0003 DASH plus the pack if new objects are stored)",
         if event_only {
-            "posts the merge event only"
+            "records the merge only"
         } else {
-            "pushes to the base branch, then posts the merge event"
+            "pushes to the base branch, then records the merge"
         },
         if delete.is_some() {
             ", then deletes the source branch"
@@ -994,7 +1028,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     ))?;
 
     let merge_oid = if let Some(oid) = merge_oid {
-        steps.ok("plan", format!("event only, naming {}", short(&oid)));
+        steps.ok("plan", format!("record only, naming {}", short(&oid)));
         oid
     } else {
         let how = MergeHow {
@@ -1014,7 +1048,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         }
     };
 
-    let event_id = post_merge_event(&collab, handle, &view, &merge_oid, event_only, repo)
+    let transition_id = post_merge_event(&collab, handle, &view, &merge_oid, event_only, repo)
         .await
         .map_err(|u| {
             crate::errors::reported(
@@ -1022,7 +1056,10 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
                 json!({ "status": "pushed_no_event", "pr": number, "mergeOid": merge_oid, "steps": steps.done }),
             )
         })?;
-    steps.ok("event", format!("merge event {}", short(&event_id)));
+    steps.ok(
+        "record",
+        format!("merge transition {}", short(&transition_id)),
+    );
 
     let mut branch_deleted = false;
     if let Some(d) = &delete {
@@ -1043,37 +1080,45 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         }
     }
 
-    // Re-read the fold: "merged" is what readers will say, not what we hoped. The push above
-    // moved the base branch, so the ref history is read again.
+    // Re-read: "merged" is the chain fact (the transition landed); whether its commit is on
+    // the base is what readers label. The push above moved the base branch, so the ref
+    // history is read again.
     collab.refs_changed();
-    let merged = match collab.patch(handle, view.patch.number).await? {
-        Some(p) => collab
-            .patch_view(handle, p)
-            .await
-            .is_ok_and(|v| v.state.merged),
-        None => false,
+    let after = match collab.patch(handle, view.patch.number).await? {
+        Some(p) => collab.patch_view(handle, p).await.ok(),
+        None => None,
     };
+    let merged = after.as_ref().is_some_and(|v| v.state.merged);
+    let on_base = after.as_ref().and_then(|v| v.state.merge_on_base);
     ctx.emit(
         json!({
-            "status": if merged { "merged" } else { "merge_event_posted" },
+            "status": if merged { "merged" } else { "merge_recorded" },
             "pr": number,
             "method": method.as_str(),
             "mergeOid": merge_oid,
-            "eventId": event_id,
+            "transitionId": transition_id,
             "merged": merged,
+            "mergeOnBase": on_base,
             "branchDeleted": branch_deleted,
             "steps": steps.done,
         }),
         || {
-            if merged {
-                println!("✓ merged PR #{number} ({})", short(&merge_oid));
-            } else {
+            if !merged {
                 println!(
-                    "Posted the merge event for PR #{number}, but it does not read as merged: \
-                     {} is not (yet) a tip of {}.",
+                    "Recorded the merge of PR #{number} ({}); it does not read as merged yet \
+                     (the read may lag a block).",
+                    short(&merge_oid)
+                );
+            } else if on_base == Some(false) {
+                println!(
+                    "✓ merged PR #{number} ({}); note: {} is not (yet) a tip of {}, so \
+                     readers label the merge commit as not found on the base",
+                    short(&merge_oid),
                     short(&merge_oid),
                     view.patch.base_ref_name
                 );
+            } else {
+                println!("✓ merged PR #{number} ({})", short(&merge_oid));
             }
         },
     );
@@ -1092,8 +1137,8 @@ struct MergeHow<'a> {
     policy: Option<&'a forge_core::rules::review::Policy>,
 }
 
-/// Post the `merge` event naming `merge_oid`; on failure, the user error saying what
-/// already happened.
+/// Record the merge: a merge `transition` (kind 13, a member's) naming `merge_oid`; on
+/// failure, the user error saying what already happened.
 async fn post_merge_event(
     collab: &Collab<'_>,
     handle: &Repo,
@@ -1106,14 +1151,9 @@ async fn post_merge_event(
         let oid = hex::decode(merge_oid).context("merge oid")?;
         Ok::<_, anyhow::Error>(
             collab
-                .post_event(
-                    handle,
-                    &view.patch.target(),
-                    EventKind::Merge,
-                    None,
-                    Some(&oid),
-                )
-                .await?,
+                .set_state(handle, &view.patch.target(), StateAction::Merge, Some(&oid))
+                .await?
+                .transition_id,
         )
     }
     .await;
@@ -1122,7 +1162,7 @@ async fn post_merge_event(
             forge_core::user_error::classify(
                 e.chain(),
                 &forge_core::user_error::ErrorContext {
-                    goal: Some("merge event not posted"),
+                    goal: Some("merge not recorded"),
                     repo: Some(repo),
                     ..Default::default()
                 },
@@ -1137,6 +1177,31 @@ async fn post_merge_event(
             }),
         )
     })
+}
+
+/// A merge is legal only from an open, ready PR (the contract's `c3_mergedAfter`: the sum
+/// after it is 2, so 0 before): a draft is marked ready first, a closed PR reopened. Refused
+/// before anything is pushed, so the base never takes a merge the chain would refuse.
+fn refuse_unmergeable(view: &PatchView, number: u64) -> Result<()> {
+    let (why, fix) = match (view.state.open, view.state.draft) {
+        (true, false) => return Ok(()),
+        (true, true) => (
+            "it is a draft",
+            format!("`dg pr ready <owner>/<repo> {number}` marks it ready for review"),
+        ),
+        (false, _) => (
+            "it is closed",
+            format!("`dg pr reopen <owner>/<repo> {number}` reopens it"),
+        ),
+    };
+    Err(UserError::new(
+        codes::REJECTED,
+        format!("merge not attempted: PR #{number} cannot be merged, {why}"),
+    )
+    .cause("a merge is recorded only from an open PR that is ready for review")
+    .fix(fix)
+    .note("nothing was pushed or written")
+    .into())
 }
 
 /// A retarget event moves the PR's base; `dg pr merge` merges only into the base the PR was
@@ -1384,12 +1449,15 @@ async fn required_checks(
     oracle: &forge_core::rules::v2::RoleOracle,
     policy: &forge_core::rules::review::Policy,
 ) -> Result<Option<forge_core::rules::v2::ChecksState>> {
+    // Checks are judged only when `requireChecks` is set (the web merge box's gate); then the
+    // named checks and their pinned sources, when the policy has them, decide.
     if !policy.require_checks {
         return Ok(None);
     }
     let rules = forge_core::rules::v2::ChecksPolicy {
         require_checks: true,
-        required_checks: Vec::new(),
+        required_checks: policy.required_checks.clone(),
+        required_check_sources: policy.required_check_sources.clone(),
     };
     Ok(Some(
         collab
@@ -1775,11 +1843,18 @@ fn build_merge(
         }
         (MergePlan::FastForward { oid }, Method::Merge) => (oid.clone(), "fast-forward to"),
         (MergePlan::MergeCommit { base, head }, Method::Merge) => {
+            // The subject names the PR's source branch by its short name (`feature/x`, not
+            // `refs/heads/feature/x`), matching the browser merge's short-name format
+            // (`forge-web` `lib/merge/engine.ts` `mergeMessage`) and closer to GitHub's
+            // `owner/branch` (Forge has no login to put before the branch).
+            let source = view
+                .patch
+                .source_ref_name
+                .as_deref()
+                .map_or(head.as_str(), forge_core::repo::short_branch_name);
             let message = format!(
                 "Merge pull request #{} from {}\n\n{}",
-                view.patch.number,
-                view.patch.source_ref_name.as_deref().unwrap_or(head),
-                view.patch.title
+                view.patch.number, source, view.patch.title
             );
             let c = git::merge_commit(dir, base, head, &message, &author())?
                 .ok_or_else(|| conflict(base, head))?;
@@ -2029,9 +2104,9 @@ mod tests {
             source_ref_name: Some("refs/heads/f".into()),
             head_oid: head.into(),
             patch_manifest_hash: None,
-            draft: false,
             created_at: 0,
             imported: None,
+            upstream_number: None,
         };
         PatchView {
             state: forge_core::rules::PrState::default(),
@@ -2049,6 +2124,66 @@ mod tests {
             log: forge_core::collab::v2::TargetLog::default(),
             patch,
         }
+    }
+
+    /// `dg pr list` / `dg pr view` show an open draft (state code 8) as `draft`, not `open`
+    /// (it used to fall through to the `open` branch and read as a plain open PR). A closed
+    /// draft (code 9) still reads as `closed`, matching the web's `pullStatus` precedence.
+    #[test]
+    fn state_label_shows_an_open_draft_as_draft() {
+        let ok = "2".repeat(40);
+        let with = |merged: bool, open: bool, draft: bool| {
+            let mut v = view_with("refs/heads/main", &ok);
+            v.state.merged = merged;
+            v.state.open = open;
+            v.state.draft = draft;
+            v
+        };
+        assert_eq!(state_label(&with(false, true, false)), "open");
+        assert_eq!(state_label(&with(false, true, true)), "draft");
+        assert_eq!(state_label(&with(false, false, true)), "closed");
+        assert_eq!(state_label(&with(false, false, false)), "closed");
+        assert_eq!(state_label(&with(true, false, false)), "merged");
+    }
+
+    /// JSON's `"state"` field stays a stable three-value enum (`open`/`closed`/`merged`) even
+    /// for a draft, since `"draft"` is already its own boolean field: an open draft must keep
+    /// matching `dg pr list --state open --json | jq 'select(.state=="open")'`, unlike the
+    /// plain-text label which collapses it to `draft` ([`state_label_shows_an_open_draft_as_draft`]).
+    #[test]
+    fn state_field_never_reports_draft() {
+        let ok = "2".repeat(40);
+        let with = |merged: bool, open: bool, draft: bool| {
+            let mut v = view_with("refs/heads/main", &ok);
+            v.state.merged = merged;
+            v.state.open = open;
+            v.state.draft = draft;
+            v
+        };
+        assert_eq!(state_field(&with(false, true, false)), "open");
+        assert_eq!(state_field(&with(false, true, true)), "open");
+        assert_eq!(state_field(&with(false, false, true)), "closed");
+        assert_eq!(state_field(&with(false, false, false)), "closed");
+        assert_eq!(state_field(&with(true, false, false)), "merged");
+    }
+
+    /// A merge is recorded only from an open, ready PR (`c3_mergedAfter`): a draft or closed
+    /// PR is refused before anything is pushed to the base.
+    #[test]
+    fn only_an_open_ready_pr_is_merged() {
+        let ok = "2".repeat(40);
+        let with = |open: bool, draft: bool| {
+            let mut v = view_with("refs/heads/main", &ok);
+            v.state.open = open;
+            v.state.draft = draft;
+            v
+        };
+        assert!(refuse_unmergeable(&with(true, false), 3).is_ok());
+        let draft = refuse_unmergeable(&with(true, true), 3).unwrap_err();
+        assert!(format!("{draft:#}").contains("it is a draft"), "{draft:#}");
+        let closed = refuse_unmergeable(&with(false, false), 3).unwrap_err();
+        assert!(format!("{closed:#}").contains("it is closed"), "{closed:#}");
+        assert!(refuse_unmergeable(&with(false, true), 3).is_err());
     }
 
     /// `update-branch`, `suggestion apply`, `merge` and `commits` all fetch through
@@ -2084,13 +2219,7 @@ mod tests {
 
     fn dummy_repo() -> Repo {
         Repo {
-            forge: forge_core::network::ForgeIds {
-                core: "c".into(),
-                collab: "l".into(),
-                group: "g".into(),
-                superseded_in_group: Vec::new(),
-                group_owner: None,
-            },
+            forge: forge_core::network::ForgeIds::test_forge(),
             repo_id: "r".into(),
             owner_id: "o".into(),
             name: "n".into(),
@@ -2104,6 +2233,7 @@ mod tests {
             approver_role: u8::from(maintainers),
             require_checks: false,
             merge_methods: methods,
+            ..Default::default()
         }
     }
 
@@ -2153,7 +2283,7 @@ mod tests {
         let runners = std::collections::BTreeSet::from(["r".to_string()]);
         let policy = ChecksPolicy {
             require_checks: true,
-            required_checks: vec![],
+            ..ChecksPolicy::default()
         };
         // The runner's newer failing run decides it, over the writer's older passing one.
         let runs = [

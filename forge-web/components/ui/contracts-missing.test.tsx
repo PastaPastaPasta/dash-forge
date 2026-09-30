@@ -15,7 +15,7 @@ import { ContractsMissingState } from './contracts-missing'
 const RAW =
   'transport error: grpc error: code: \'Client specified an invalid argument\', message: "contract not found error: contract not found when querying from value with contract info"'
 
-const forge = { core: 'CoreId111', collab: 'CollabId222', group: 'GroupId333' }
+const forge = { core: 'CoreId111', collab: 'CollabId222', community: 'CollabId222', group: 'GroupId333' }
 const MOUTAI: NetworkConfig = {
   network: 'devnet',
   devnetName: 'moutai',

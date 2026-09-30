@@ -1,0 +1,212 @@
+{
+  "name": "pr_moves_by_other",
+  "description": "Anyone who is neither a member nor the PR author: no move at all.",
+  "case": "transition_moves",
+  "rules": "v2",
+  "input": {
+    "cases": [
+      {
+        "target": "patch",
+        "code": 0,
+        "action": "close",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 0,
+        "action": "reopen",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 0,
+        "action": "merge",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 0,
+        "action": "draft",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 0,
+        "action": "ready",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 1,
+        "action": "close",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 1,
+        "action": "reopen",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 1,
+        "action": "merge",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 1,
+        "action": "draft",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 1,
+        "action": "ready",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 2,
+        "action": "close",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 2,
+        "action": "reopen",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 2,
+        "action": "merge",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 2,
+        "action": "draft",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 2,
+        "action": "ready",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 8,
+        "action": "close",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 8,
+        "action": "reopen",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 8,
+        "action": "merge",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 8,
+        "action": "draft",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 8,
+        "action": "ready",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 9,
+        "action": "close",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 9,
+        "action": "reopen",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 9,
+        "action": "merge",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 9,
+        "action": "draft",
+        "actor": "other",
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 9,
+        "action": "ready",
+        "actor": "other",
+        "targetNumber": 7
+      }
+    ]
+  },
+  "expected": [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+  ]
+}

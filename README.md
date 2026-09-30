@@ -11,13 +11,14 @@
 
 | Network | Platform protocol | Forge |
 |---|---|---|
-| **Devnet moutai** | 14 | **Moving to devnet bonsia.** Moutai was upgraded in place to Platform v4.2.0-beta.7, which retired the forge-v2 contracts; forge-v2 is being re-registered on devnet bonsia, the new public devnet. The web app at [forge.dashhq.org](https://forge.dashhq.org) is down until the cut-over. |
+| **Devnet bonsia** | 14 | **Registered (RC1), site not cut over yet.** Forge's three contracts (forge-core, forge-collab, forge-community) were registered on 2026-09-29, on Platform v4.2.0-beta.7. `dg` and `git-remote-dash` built from this source target bonsia. The web app at [forge.dashhq.org](https://forge.dashhq.org) moves here at the cut-over. |
+| **Devnet moutai** | 14 | **Retired for Forge.** Moutai was upgraded in place to Platform v4.2.0-beta.7, which retired the forge-v2 contracts registered there. The web app at [forge.dashhq.org](https://forge.dashhq.org) was built for moutai and is down until it cuts over to bonsia. |
 | **Testnet** | 13 | **Not deployed yet.** forge-v2 is registered on testnet as soon as Platform protocol 14 reaches it, which is expected soon. |
 | **Mainnet** | 13 | **Not deployed yet.** After protocol 14 activates on mainnet, the project owner registers the forge-v2 contracts ([runbook](docs/mainnet-runbook.md)). |
 
 On a network with no forge-v2 deployment, `dg`, `git-remote-dash` and the web app stop with a "not deployed" error ([E702](docs/errors.md#e702)). The first version of Forge (forge-v1) was removed on 2026-09-26 with no backwards compatibility; see the [FAQ](docs/FAQ.md#when-is-it-on-mainnet).
 
-## Quick start (devnet moutai)
+## Quick start (devnet bonsia)
 
 You need Rust and `protoc` 25 or newer to build ([BUILDING.md](docs/BUILDING.md)). Prebuilt binaries and the one-line `install.sh` are **coming soon**: the release pipeline is merged, but no release has been tagged yet ([INSTALL.md](docs/INSTALL.md)).
 
@@ -28,9 +29,9 @@ You need Rust and `protoc` 25 or newer to build ([BUILDING.md](docs/BUILDING.md)
    ```
 2. **Get an identity:**
    ```sh
-   dg auth new --network devnet --devnet-name moutai
+   dg auth new --network devnet --devnet-name bonsia
    ```
-   It shows 12 words to write down and a deposit QR code; fund it from the [moutai faucet](https://faucet.moutai.networks.dash.org). It then registers the identity and keeps a **limited key** (0.25 DASH budget, 180 days, Forge only) in your OS keychain, which `dg` and `git push` both use. Already have an identity (a bridge key backup, or the 12 words)? `dg auth login <file>` or `dg auth login --mnemonic` instead.
+   It shows 12 words to write down and a deposit QR code; fund it from the [bonsia faucet](https://faucet.bonsia.networks.dash.org). It then registers the identity and keeps a **limited key** (0.25 DASH budget, 180 days, Forge only) in your OS keychain, which `dg` and `git push` both use. Already have an identity (a bridge key backup, or the 12 words)? `dg auth login <file>` or `dg auth login --mnemonic` instead.
 3. **Publish** any git repository:
    ```sh
    dg storage add                          # optional: your own bucket or IPFS node, tested as you go
@@ -95,8 +96,8 @@ the pinned Platform tag, and how to develop against a local Platform checkout.
 [docs/INSTALL.md](docs/INSTALL.md) covers the release pipeline, `install.sh`, checksums and
 attestations, `cargo binstall` and shell completions (`dg completions <shell>`).
 
-**Networks.** Testnet is the default network, but only devnet moutai has a forge-v2
-deployment today, so pass `--network devnet --devnet-name moutai` (`dg auth new` / `dg auth login` record
+**Networks.** Testnet is the default network, but only devnet bonsia has a forge-v2
+deployment today, so pass `--network devnet --devnet-name bonsia` (`dg auth new` / `dg auth login` record
 it as your default; `--dapi-addresses` sets the devnet's nodes). The helper reads the same
 settings from `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME`, git config
 (`dash.network`, `dash.devnetName`, `dash.dapiAddresses`), or else the default `dg` recorded, and the web build reads them from
@@ -121,7 +122,7 @@ network's ids. See [BUILDING.md § Networks](docs/BUILDING.md#networks).
 6. [Economics & fee minimization](docs/economics.md) — compression pipeline, deposit-vs-burn cost model, repack/refund GC.
 7. [Style guide](docs/design/style-guide.md) — visual system + engineering conventions.
 8. [Implementation plan](docs/implementation-plan.md) — Phase 0 de-risk gate → mainnet protocol → CLI+relay → web+import → hardening.
-9. [E2E & production test plan](docs/testing/e2e-test-plan.md) — devnet moutai identities and funds, the nightly suites, mainnet smoke.
+9. [E2E & production test plan](docs/testing/e2e-test-plan.md) — devnet identities and funds, the nightly suites, mainnet smoke.
 10. [Spike results & Design Freeze #1](docs/research/spike-results.md) — the 9 de-risking spikes (GO verdict), run for forge-v1.
 11. [Building from source](docs/BUILDING.md) — prerequisites, the pinned Platform SDK tag, local overrides. [Installing prebuilt binaries](docs/INSTALL.md) — install.sh, checksums + attestations, cargo binstall, cutting a release.
 12. [Design Freeze #2 (as-built)](docs/design-freeze-2.md) — what the forge-v1 implementation established (historical).
@@ -132,7 +133,7 @@ network's ids. See [BUILDING.md § Networks](docs/BUILDING.md#networks).
 
 ### Verification
 
-The web app at **https://forge.dashhq.org** (GitHub Pages) is down: it was built for devnet moutai, whose forge-v2 contracts were retired when moutai was upgraded to Platform v4.2.0-beta.7. It comes back once the site cuts over to devnet bonsia. The CLI end-to-end suite (`e2e/cli/`) and the Playwright specs (`forge-web/e2e/`) run nightly against moutai ("Devnet Nightly"); see [e2e/README.md](e2e/README.md).
+The web app at **https://forge.dashhq.org** (GitHub Pages) is down: it was built for devnet moutai, whose forge-v2 contracts were retired when moutai was upgraded to Platform v4.2.0-beta.7. It comes back once the site cuts over to devnet bonsia. The CLI end-to-end suite (`e2e/cli/`) and the Playwright specs (`forge-web/e2e/`) run nightly ("Devnet Nightly", from master's workflow file: against bonsia from the cut-over); see [e2e/README.md](e2e/README.md).
 
 Proven end-to-end on moutai: `git clone dash://…` / `git push` byte-identical round-trip; a revoked writer's push and a non-member's push rejected at consensus; third-party "no trust in any server" verification; issue and PR lifecycles, including a PR from a fork with a real merge; the browser app rendering proof-verified data with the Verification card; `dg init` publishing to a bucket; an import re-run costing 0; relay deliveries surviving a restart; CLI↔web parity via the shared conformance vectors. See [forge-v2.md](docs/contracts/forge-v2.md) for the contract design and [mainnet-runbook.md](docs/mainnet-runbook.md) for the (not-yet-executed) mainnet deployment.
 

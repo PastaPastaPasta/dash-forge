@@ -23,6 +23,7 @@ use forge_core::repo::credits_to_dash;
 use crate::budget::Budget;
 use crate::dest::{self, Outcome, Signer, REPO_CREATE_CREDITS};
 use crate::gitsync::{GitPusher, PackStorage, ProofRepo, PushReport, Refs};
+use crate::model::SrcCollab;
 use crate::sink::Ledger;
 use crate::source::{Classes, Source};
 use crate::state::{self, SyncState};
@@ -73,7 +74,14 @@ pub async fn run(cfg: &ImportConfig) -> Summary {
         ledger: None,
         signer: signer.as_ref().map(|s| (&client, s)),
     };
-    let result = run_inner(cfg, &client, signer.as_ref(), &mut summary, &mut outcome).await;
+    let result = Box::pin(run_inner(
+        cfg,
+        &client,
+        signer.as_ref(),
+        &mut summary,
+        &mut outcome,
+    ))
+    .await;
     dest::finish(summary, outcome, result).await
 }
 
@@ -111,12 +119,16 @@ async fn run_inner<'a>(
         &state::destination(existing_id.as_deref().unwrap_or_default(), &collab_contract),
     );
     let since = sync_state.since();
-    let collab_src = src.collect(
+    let mut collab_src = src.collect(
         cfg.classes,
         since.as_deref(),
         sync_state.pending_revisits(),
         cfg.limit,
     )?;
+    // An incremental run cannot place an earlier item it finds missing (dense numbers), except
+    // one the destination already refused (its content, not its order, is the problem).
+    collab_src.incremental = since.is_some();
+    collab_src.refused = sync_state.refused_items();
     summary.warnings.extend(collab_src.warnings.iter().cloned());
     summary.incomplete = collab_src.incomplete;
     if collab_src.truncated && cfg.state_path.is_some() {
@@ -341,21 +353,27 @@ async fn run_inner<'a>(
             .expect("the write phase has a ledger");
         push_optional(ledger, &git_pusher(dest.url(), heads), signer).await;
     }
-    // Advance the incremental state only when every item was read and mirrored: items past
-    // `--limit`, or skipped, are retried by the next run.
-    let skipped = outcome.ledger.as_ref().map_or(0, |l| l.counts.skipped);
-    if collab_src.truncated || collab_src.incomplete || skipped > 0 {
+    // Advance the incremental state only when every item was read and mirrored, or refused
+    // for its content: items past `--limit`, or skipped for another reason, are retried by
+    // the next run.
+    let (skipped, refused) = outcome.ledger.as_ref().map_or((0, BTreeSet::new()), |l| {
+        (l.counts.skipped, l.refused.clone())
+    });
+    if !state_advances(&collab_src, skipped, &refused) {
         return Ok(());
     }
-    // A merge not proved yet (the code is not on chain, or the base could not be fetched) is
-    // read again next run, whatever `since` says (a merge into a base gone at the source
-    // never can be).
-    let revisit = outcome
-        .ledger
-        .as_ref()
-        .map(|l| l.unproved.clone())
-        .unwrap_or_default();
-    sync_state.save(started, revisit)
+    sync_state.set_refused(&collab_src.refused.union(&refused).copied().collect());
+    // Nothing to revisit: a merge is recorded as soon as the source says merged (D-9), with
+    // the base tip that proves it when there is one, else the source's merge commit.
+    sync_state.save(started, Vec::new())
+}
+
+/// Whether a run's incremental state may advance: every item was read (no `--limit` cut, no
+/// unreadable listing), and every skip was an item the destination refused for its content
+/// (`refused`), which the next run leaves out of the order check and retries only once it
+/// changes at the source.
+fn state_advances(src: &SrcCollab, skipped: u64, refused: &BTreeSet<(u8, u32)>) -> bool {
+    !src.truncated && !src.incomplete && skipped <= refused.len() as u64
 }
 
 /// After the code push, when it did not publish one itself: publish the default branch's history
@@ -698,6 +716,7 @@ mod tests {
             body: String::new(),
             imported: forge_core::collab::Imported::default(),
             closed: true,
+            merged_without_sha: false,
             merged_oid: Some(vec![1; 20]),
             labels: std::collections::BTreeSet::new(),
             draft: false,
@@ -730,5 +749,50 @@ mod tests {
             [Refs::Code]
         );
         assert!(planned_pushes(Classes::parse("issues,prs").unwrap(), Some(&[1])).is_empty());
+    }
+
+    /// One item the destination refuses must not hold every later run: run 1 skips it and still
+    /// advances the state, recording it refused; run 2 (incremental, the item still in its
+    /// window, and a later item already mirrored) does not call it missing, so the order check
+    /// lets the run through. Another kind of skip still holds the state.
+    #[test]
+    fn a_refused_item_does_not_stop_the_next_incremental_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.json");
+        // Run 1: a full scan; issue #5 refused (content), nothing else skipped.
+        let mut state = SyncState::load(Some(&path), "src", "R");
+        let run1 = SrcCollab::default();
+        let refused: BTreeSet<(u8, u32)> = [(0, 5)].into();
+        assert!(state_advances(&run1, 1, &refused));
+        assert!(
+            !state_advances(&run1, 2, &refused),
+            "another skip holds the state"
+        );
+        assert!(!state_advances(
+            &SrcCollab {
+                truncated: true,
+                ..SrcCollab::default()
+            },
+            0,
+            &BTreeSet::new()
+        ));
+        state.set_refused(&refused);
+        state.save(1_000_000, Vec::new()).unwrap();
+        // Run 2: incremental; #5 is back in the window (edited upstream, still bad), #7 is
+        // held. #5 is not missing, a real gap (#6) still is.
+        let state = SyncState::load(Some(&path), "src", "R");
+        assert!(state.since().is_some());
+        let run2 = SrcCollab {
+            incremental: true,
+            refused: state.refused_items(),
+            ..SrcCollab::default()
+        };
+        assert_eq!(run2.refused, refused);
+        let below: Vec<(u32, bool)> = [(5u32, false), (6, false)]
+            .into_iter()
+            .filter(|(n, _)| !run2.refused.contains(&(0, *n)))
+            .collect();
+        assert_eq!(crate::sink::missing_below(&below), vec![6]);
+        assert!(crate::sink::missing_below(&[(6, true)]).is_empty());
     }
 }

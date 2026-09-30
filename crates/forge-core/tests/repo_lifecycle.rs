@@ -1,6 +1,6 @@
-//! Live forge-v2 repo lifecycle on devnet moutai (gated `#[ignore]`).
+//! Live forge-v2 repo lifecycle on devnet bonsia (gated `#[ignore]`).
 //!
-//! With the moutai OWNER / COLLAB / CONTRIB fixtures:
+//! With the bonsia OWNER / COLLAB / CONTRIB fixtures:
 //!
 //! 1. create a repo (the `repo` + owner `maintainer` + `config` session) and check the cost
 //!    is under 0.01 DASH; re-running the create costs nothing and writes nothing;
@@ -13,7 +13,7 @@
 //! ```text
 //! cargo test -p forge-core --test repo_lifecycle -- --ignored --nocapture
 //! ```
-//! Identities: `$E2E_IDENTITY_DIR` (default `~/.config/dash-forge/test-identities/devnet-moutai`).
+//! Identities: `$E2E_IDENTITY_DIR` (default `~/.config/dash-forge/test-identities/devnet-bonsia`).
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -21,7 +21,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use forge_core::backends::PackMeta;
 use forge_core::create::{create_repo, CreateRepoOpts, StepOutcome};
 use forge_core::keystore::BridgeIdentity;
-use forge_core::members::{MemberReader, MemberService};
+use forge_core::members::{ConsentService, MemberReader, MemberService};
 use forge_core::network::NetworkSettings;
 use forge_core::platform::{LoadedIdentity, PlatformClient};
 use forge_core::repo::{credits_to_dash, PackManifestInput, RepoService};
@@ -35,7 +35,7 @@ fn fixture(role: &str) -> BridgeIdentity {
     let dir = std::env::var_os("E2E_IDENTITY_DIR").map_or_else(
         || {
             PathBuf::from(std::env::var_os("HOME").expect("HOME"))
-                .join(".config/dash-forge/test-identities/devnet-moutai")
+                .join(".config/dash-forge/test-identities/devnet-bonsia")
         },
         PathBuf::from,
     );
@@ -66,18 +66,18 @@ async fn ref_tip(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "live devnet moutai; spends ~0.01 DASH; run manually"]
+#[ignore = "live devnet bonsia; spends ~0.01 DASH; run manually"]
 #[allow(clippy::too_many_lines)]
-async fn forge_v2_repo_lifecycle_on_moutai() {
+async fn forge_v2_repo_lifecycle_on_bonsia() {
     let target = NetworkSettings {
-        devnet_name: Some("moutai".into()),
+        devnet_name: Some("bonsia".into()),
         ..Default::default()
     }
     .resolve()
     .unwrap();
     let client = PlatformClient::connect(target)
         .await
-        .expect("connect moutai");
+        .expect("connect bonsia");
     let owner_b = fixture("OWNER");
     let collab_b = fixture("COLLAB");
     let contrib_b = fixture("CONTRIB");
@@ -158,12 +158,13 @@ async fn forge_v2_repo_lifecycle_on_moutai() {
         &repo,
         &PackManifestInput {
             pack_hash: meta.pack_hash_bytes().unwrap(),
-            kind: 3, // not a git pack: stays out of fetch and the locator space
+            // Not a git pack (it stays out of fetch and the locator space), and no tips: kind 3
+            // (a history index) must name one on RC1.
+            kind: u64::from(forge_core::pack::KIND_RELEASE_ASSETS),
             size_bytes: payload.len() as u64,
             object_count: 0,
             chunk_count: forge_core::pack::split(&payload).len() as u64,
             storage: 0,
-            offset_index_parts: 0,
             uris: uris.iter().map(|u| u.0.clone()).collect(),
             supersedes: Vec::new(),
             tips: Vec::new(),
@@ -184,6 +185,11 @@ async fn forge_v2_repo_lifecycle_on_moutai() {
     assert_eq!(got, payload);
 
     // --- 4. writer grant → write → revoke → 40120 ---
+    // RC1 member_consent: the collaborator accepts first.
+    ConsentService::new(&client, &collab, &collab_b)
+        .accept(&repo)
+        .await
+        .expect("accept");
     let members = MemberService::new(&client, &owner, &owner_b);
     members
         .grant(&repo, &collab.id(), Role::Writer)
@@ -220,7 +226,7 @@ async fn forge_v2_repo_lifecycle_on_moutai() {
     let core = client
         .fetch_contract(
             &forge_core::network::NetworkSettings {
-                devnet_name: Some("moutai".into()),
+                devnet_name: Some("bonsia".into()),
                 ..Default::default()
             }
             .resolve()
@@ -233,7 +239,7 @@ async fn forge_v2_repo_lifecycle_on_moutai() {
         .unwrap();
     let mut backend = std::collections::BTreeMap::new();
     backend.insert("mode".into(), forge_core::platform::FieldValue::integer(0));
-    let props = repo.scope().unwrap().props([
+    let mut props = repo.scope().unwrap().props([
         (
             "defaultBranch",
             forge_core::platform::FieldValue::text("main"),
@@ -244,6 +250,7 @@ async fn forge_v2_repo_lifecycle_on_moutai() {
         ),
         ("backend", forge_core::platform::FieldValue::Object(backend)),
     ]);
+    forge_core::layout::stamp_public(&mut props);
     forge_core::platform::WriteEngine::new(&client, &owner, owner_b.doc_op_key().unwrap())
         .unwrap()
         .create_document(&core, "config", props)

@@ -12,12 +12,12 @@
  */
 
 import { Time } from '@/components/repo/byline'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
-import { AlertTriangle, CheckCircle2, Download, FileArchive, Loader2, Tag, XCircle } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Download, FileArchive, Loader2, Lock, Tag, XCircle } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { formatBytes, plural, tipOidOf } from '@/lib/view'
-import type { ReleaseAssetView, ReleaseView } from '@/lib/repo'
+import type { ReleaseAssetView, ReleaseView, RepoRef } from '@/lib/repo'
 import {
   AssetHashMismatchError,
   browserReadable,
@@ -29,7 +29,7 @@ import {
   type DownloadProgress,
 } from '@/lib/view/release-download'
 import { urlHost } from '@/lib/view/format'
-import { NOT_VERIFIED_YET, UNVERIFIABLE_ASSET, assetVerifiable, importedAssetUrl, isPrerelease, latestRelease, type OmittedAssets } from '@/lib/repo/releases'
+import { NOT_VERIFIED_YET, UNVERIFIABLE_ASSET, assetVerifiable, importedAssetUrl, isDraft, isPrereleaseView, latestRelease, type OmittedAssets, type ReleaseList } from '@/lib/repo/releases'
 import { useReleases } from '@/hooks/use-repo-chrome'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
@@ -38,7 +38,8 @@ import { sourceUrl, useRepoLinks } from '@/components/repo/target-href'
 import { Button } from '@/components/ui/button'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
-import { NewReleaseButton } from '@/components/repo/new-release'
+import { EditReleaseButton, NewReleaseButton, useReleaseEditor } from '@/components/repo/new-release'
+import { SealedAssets, useSealedManifest } from '@/components/repo/sealed-release-assets'
 import { useSdk } from '@/hooks/use-sdk'
 import { invalidateSessionCache } from '@/lib/view/session-cache'
 import { repoKey } from '@/lib/repo'
@@ -47,24 +48,30 @@ import { errorMessage, cn } from '@/lib/utils'
 /** L-49: releases per page, with a "Show more" button for the rest. */
 const PAGE_SIZE = 10
 
+/** After a publish the node answering may be a block behind: the releases, re-read a few times. */
+function useRefreshAfterPublish(repo: RepoRef, reload: () => void): () => void {
+  const { network } = useSdk()
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([])
+  useEffect(() => () => timers.current.forEach(clearTimeout), [])
+  return () => {
+    timers.current.forEach(clearTimeout)
+    timers.current = [0, 3000, 8000].map((delay) =>
+      setTimeout(() => {
+        invalidateSessionCache(`releases:${network}:${repoKey(repo)}`)
+        reload()
+      }, delay),
+    )
+  }
+}
+
 export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const { data, error, reload } = useReleases(home.repo)
   const links = useRepoLinks(addr, home.description)
   const [showPrevious, setShowPrevious] = useState(false)
   const [shown, setShown] = useState(PAGE_SIZE)
-  const { network } = useSdk()
-  const timers = useRef<ReturnType<typeof setTimeout>[]>([])
-  useEffect(() => () => timers.current.forEach(clearTimeout), [])
-  // After a publish the node answering may be a block behind: re-read a few times.
-  const refreshAfterPublish = (): void => {
-    timers.current.forEach(clearTimeout)
-    timers.current = [0, 3000, 8000].map((delay) =>
-      setTimeout(() => {
-        invalidateSessionCache(`releases:${network}:${repoKey(home.repo)}`)
-        reload()
-      }, delay),
-    )
-  }
+  const refreshAfterPublish = useRefreshAfterPublish(home.repo, reload)
+  // Outside the keyed cards: the revision an edit writes remounts (or, unpublished, removes) its card.
+  const editor = useReleaseEditor(home, data, refreshAfterPublish)
   // L-48: the one release GitHub would mark "Latest" — the newest non-prerelease, non-yanked one.
   const latest = data ? latestRelease(data) : undefined
 
@@ -81,18 +88,33 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
         <ErrorState message={error} onRetry={reload} />
       ) : data === null ? (
         <LoadingBlock label="Reading releases" />
+      ) : data.locked === true ? (
+        <EmptyState icon={Lock} title="Releases are encrypted" body="This private repo's releases are readable only by its members, with their keys." />
       ) : data.current.length === 0 ? (
-        <EmptyState
-          icon={Tag}
-          title="No releases yet"
-          body="A maintainer publishes one with dg release create --tag v1 --asset ./dist/app.tar.gz."
-        />
+        <>
+          <EmptyState
+            icon={Tag}
+            title="No releases yet"
+            body="A maintainer publishes one with dg release create --tag v1 --asset ./dist/app.tar.gz."
+          />
+          <SealedListNotes list={data} />
+        </>
       ) : (
         <>
+          <SealedListNotes list={data} />
           <ul className="space-y-3">
             {data.current.slice(0, shown).map((r) => (
               <li key={r.id}>
-                <ReleaseCard release={r} addr={addr} links={links} tagTip={releaseTagTip(home, r.tagName)} isLatest={r.id === latest?.id} />
+                <ReleaseCard
+                  release={r}
+                  repo={home.repo}
+                  addr={addr}
+                  links={links}
+                  tagTip={releaseTagTip(home, r.tagName)}
+                  isLatest={r.id === latest?.id}
+                  stateUnknown={data.unknownTags?.includes(r.tagName) === true}
+                  actions={r.sealed ? <EditReleaseButton home={home} tag={r.tagName} onEdit={editor.edit} /> : null}
+                />
               </li>
             ))}
           </ul>
@@ -119,7 +141,7 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
                 <ul className="mt-2 space-y-3">
                   {data.previous.map((r) => (
                     <li key={r.id}>
-                      <ReleaseCard release={r} addr={addr} links={links} previous />
+                      <ReleaseCard release={r} repo={home.repo} addr={addr} links={links} previous />
                     </li>
                   ))}
                 </ul>
@@ -128,6 +150,26 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
           ) : null}
         </>
       )}
+      {editor.dialog}
+    </div>
+  )
+}
+
+/**
+ * What a private repo's list could not show (§16.3): newer revisions under a key the reader does
+ * not hold yet, and revisions that do not open. Nothing for a public repo's list.
+ */
+function SealedListNotes({ list }: { list: ReleaseList }): JSX.Element | null {
+  const hidden = list.hidden ?? 0
+  if (list.stale !== true && hidden === 0) return null
+  return (
+    <div className="space-y-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="releases-incomplete">
+      {list.stale === true ? (
+        <p className="flex items-center gap-1 text-caution-700 dark:text-caution-400">
+          <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden /> Releases may be out of date: newer revisions are under a key you don&apos;t hold yet.
+        </p>
+      ) : null}
+      {hidden > 0 ? <p>{plural(hidden, 'release revision')} could not be read.</p> : null}
     </div>
   )
 }
@@ -140,6 +182,36 @@ function releaseTagTip(home: RepoHome, tag: string): string | null {
 export function ReleaseContent({ home, addr, tag }: { home: RepoHome; addr: RepoAddress; tag: string }): JSX.Element {
   const { data, error, reload } = useReleases(home.repo)
   const links = useRepoLinks(addr, home.description)
+  const refreshAfterPublish = useRefreshAfterPublish(home.repo, reload)
+  // Rendered whatever the page shows: an unpublish replaces the release with "not found".
+  const editor = useReleaseEditor(home, data, refreshAfterPublish)
+  return (
+    <>
+      <ReleasePage home={home} addr={addr} tag={tag} data={data} error={error} reload={reload} links={links} onEdit={editor.edit} />
+      {editor.dialog}
+    </>
+  )
+}
+
+function ReleasePage({
+  home,
+  addr,
+  tag,
+  data,
+  error,
+  reload,
+  links,
+  onEdit,
+}: {
+  home: RepoHome
+  addr: RepoAddress
+  tag: string
+  data: ReleaseList | null
+  error: string | null
+  reload: () => void
+  links: MarkdownLinks
+  onEdit: (tag: string) => void
+}): JSX.Element {
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (data === null) return <LoadingBlock label="Reading releases" />
   const release = data.current.find((r) => r.tagName === tag)
@@ -163,12 +235,23 @@ export function ReleaseContent({ home, addr, tag }: { home: RepoHome; addr: Repo
       <Link href={repoHref('/repo/releases', addr)} className="text-dense text-anvil-600 underline dark:text-anvil-300">
         ← All releases
       </Link>
-      <ReleaseCard release={release} addr={addr} links={links} full tagTip={releaseTagTip(home, tag)} isLatest={release.id === latestRelease(data)?.id} />
+      <SealedListNotes list={data} />
+      <ReleaseCard
+        release={release}
+        repo={home.repo}
+        addr={addr}
+        links={links}
+        full
+        tagTip={releaseTagTip(home, tag)}
+        isLatest={release.id === latestRelease(data)?.id}
+        stateUnknown={data.unknownTags?.includes(tag) === true}
+        actions={release.sealed ? <EditReleaseButton home={home} tag={tag} onEdit={onEdit} /> : null}
+      />
       {previous.length > 0 ? (
         <section aria-label="Previous revisions" className="space-y-3">
           <h2 className="text-prose">Previous revisions of {tag}</h2>
           {previous.map((r) => (
-            <ReleaseCard key={r.id} release={r} addr={addr} links={links} previous />
+            <ReleaseCard key={r.id} release={r} repo={home.repo} addr={addr} links={links} previous />
           ))}
         </section>
       ) : null}
@@ -178,14 +261,18 @@ export function ReleaseContent({ home, addr, tag }: { home: RepoHome; addr: Repo
 
 function ReleaseCard({
   release: r,
+  repo,
   addr,
   links,
   previous = false,
   full = false,
   tagTip = null,
   isLatest = false,
+  stateUnknown = false,
+  actions = null,
 }: {
   release: ReleaseView
+  repo: RepoRef
   addr: RepoAddress
   links: MarkdownLinks
   previous?: boolean
@@ -194,9 +281,24 @@ function ReleaseCard({
   tagTip?: string | null
   /** L-48: this is the release GitHub would mark "Latest" (never true for a superseded revision). */
   isLatest?: boolean
+  /** A newer revision of this sealed release could not be read (§16.3). */
+  stateUnknown?: boolean
+  /** A maintainer's controls for this release (a sealed one's edit, yank and unpublish). */
+  actions?: ReactNode
 }): JSX.Element {
   const [assetsOpen, setAssetsOpen] = useState(false)
+  const prerelease = isPrereleaseView(r)
+  const sealedFields = r.sealed?.fields
   const accesses = r.assets.map(assetAccess)
+  // A sealed revision's assets, and notes that continue, are in its encrypted asset list (§16.5):
+  // opened on the release's page, or when its assets are shown.
+  const sealedList = sealedFields?.assetManifest !== undefined
+  const manifest = useSealedManifest(repo, sealedFields, sealedList && (full || assetsOpen))
+  const continued = sealedFields?.notesContinue === true
+  const sealedAssetsId = useId()
+  // A list that holds only the continued notes has no assets to show.
+  const noSealedAssets = manifest.data?.assets.length === 0
+  const notes = full && continued && manifest.data?.notes !== undefined ? manifest.data.notes : r.notesBody
   return (
     <article
       data-testid="release"
@@ -218,12 +320,17 @@ function ReleaseCard({
         {/* latestRelease() falls back to the newest release when every one is a pre-release
             (so the rail still names something); that fallback should not draw a "Latest" badge
             here, since GitHub shows none in that case either. */}
-        {isLatest && !isPrerelease(r.tagName) ? (
+        {isLatest && !prerelease ? (
           <span className="rounded bg-verify-100 px-1.5 text-[11px] font-medium uppercase text-verify-700 dark:bg-verify-900/40 dark:text-verify-400">
             Latest
           </span>
-        ) : isPrerelease(r.tagName) ? (
+        ) : prerelease ? (
           <span className="rounded bg-anvil-100 px-1.5 text-[11px] uppercase text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300">Pre-release</span>
+        ) : null}
+        {isDraft(r) ? (
+          <span className="rounded bg-anvil-100 px-1.5 text-[11px] uppercase text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300" data-testid="release-draft">
+            Draft
+          </span>
         ) : null}
         {previous ? (
           <span className="rounded bg-anvil-100 px-1.5 text-[11px] uppercase text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300">previous</span>
@@ -233,7 +340,12 @@ function ReleaseCard({
             <AlertTriangle className="h-3 w-3" aria-hidden /> yanked
           </span>
         ) : null}
-        {full ? <CopyLinkButton repo={addr} target={{ kind: 'release', tag: r.tagName }} className="ml-auto" /> : null}
+        {actions || full ? (
+          <span className="ml-auto flex items-center gap-1.5">
+            {actions}
+            {full ? <CopyLinkButton repo={addr} target={{ kind: 'release', tag: r.tagName }} /> : null}
+          </span>
+        ) : null}
       </header>
       <p className="mt-1 flex flex-wrap items-center gap-1 text-[12px] text-anvil-600 dark:text-anvil-300">
         {r.published !== null ? (
@@ -266,14 +378,23 @@ function ReleaseCard({
           </>
         )}
       </p>
-      {r.notesBody && (full || !previous) ? (
+      {notes && (full || !previous) ? (
         <div className={cn('mt-3 text-prose', !full && 'line-clamp-6')}>
           {/* A mirror's release notes are the source's (its import copied them): their mentions are that forge's. */}
-          <MarkdownView source={r.notesBody} images="auto" links={links} imported={sourceUrl(links)} />
+          <MarkdownView source={notes} images="auto" links={links} imported={sourceUrl(links)} />
         </div>
       ) : null}
+      {continued && (full || !previous) && notes === r.notesBody ? (
+        <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="release-notes-continue">
+          {full && manifest.error !== null
+            ? 'These are the first part of the notes: the rest is in the encrypted asset list, which could not be opened.'
+            : full
+              ? 'The notes continue in the encrypted asset list…'
+              : 'The notes continue on the release’s page.'}
+        </p>
+      ) : null}
       {/* L-79: line-clamp-6 silently cuts notes with no way back to the rest. */}
-      {r.notesBody && !full && !previous ? (
+      {notes && !full && !previous ? (
         <Link
           href={repoHref('/repo/release', addr, { tag: r.tagName })}
           className="mt-1 inline-block text-dense text-anvil-600 underline dark:text-anvil-300"
@@ -298,6 +419,27 @@ function ReleaseCard({
             {assetsOpen ? <AssetList assets={r.assets} accesses={accesses} className="mt-2" /> : null}
           </div>
         )
+      ) : null}
+      {stateUnknown ? (
+        <p className="mt-2 flex items-center gap-1 text-[12px] text-caution-700 dark:text-caution-400" data-testid="release-state-unknown">
+          <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden /> A newer revision of this release could not be read; its state is unknown.
+        </p>
+      ) : null}
+      {sealedList && full ? <SealedAssets repo={repo} state={manifest} className="mt-3" /> : null}
+      {sealedList && !full && !noSealedAssets ? (
+        <div className="mt-3">
+          <button
+            type="button"
+            onClick={() => setAssetsOpen((o) => !o)}
+            aria-expanded={assetsOpen}
+            aria-controls={sealedAssetsId}
+            className="inline-flex items-center gap-1 text-dense text-anvil-600 underline dark:text-anvil-300"
+          >
+            <Lock className="h-3 w-3 shrink-0" aria-hidden />
+            {assetsOpen ? 'Hide' : 'Show'} {manifest.data ? plural(manifest.data.assets.length, 'asset') : 'assets'}
+          </button>
+          {assetsOpen ? <SealedAssets repo={repo} state={manifest} className="mt-2" id={sealedAssetsId} /> : null}
+        </div>
       ) : null}
       {r.omitted ? <OmittedAssetsNote omitted={r.omitted} /> : null}
       {r.badAssets > 0 ? (
@@ -458,7 +600,7 @@ export function AssetRow({
     >
       <FileArchive className={cn('h-4 w-4 shrink-0', bad ? 'text-danger-700 dark:text-danger-400' : 'text-anvil-500 dark:text-anvil-400')} aria-hidden />
       {/* L-07: 12 of 15 names clip at 1440 px, 16 of 16 clip on a phone, with no way to read the rest. */}
-      <span className="min-w-0 flex-1 truncate font-mono" title={asset.name}>
+      <span className="min-w-0 flex-1 basis-40 truncate font-mono" title={asset.name}>
         {asset.name}
       </span>
       {asset.size !== null ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{formatBytes(asset.size)}</span> : null}

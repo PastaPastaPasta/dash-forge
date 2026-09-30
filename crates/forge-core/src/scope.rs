@@ -128,14 +128,15 @@ impl DocScope {
     /// The filters that select one pack's chunks, in `seq` order.
     ///
     /// Chunks are keyed `(repoId, $ownerId, packHash, seq)`: each uploader has its own copy,
-    /// so a chunk read names whose copy it reads (the manifest's `$ownerId`).
+    /// so a chunk read names whose copy it reads (the manifest's `$ownerId`). `packHash` is a
+    /// 32-byte identifier on RC1 (`$defs.hid`).
     pub fn chunk_filters(&self, owner: &str, pack_hash: [u8; 32]) -> Result<Vec<QueryFilter>> {
         Ok(self.filters([
             QueryFilter::eq(
                 "$ownerId",
                 FieldValue::identifier(platform::decode_identifier(owner)?),
             ),
-            QueryFilter::eq("packHash", FieldValue::bytes32(pack_hash)),
+            QueryFilter::eq("packHash", FieldValue::identifier(pack_hash)),
         ]))
     }
 
@@ -187,13 +188,7 @@ mod tests {
 
     fn repo() -> RepoRef {
         RepoRef {
-            forge: ForgeIds {
-                core: "CORE".into(),
-                collab: "COLLAB".into(),
-                group: "GROUP".into(),
-                superseded_in_group: vec![],
-                group_owner: None,
-            },
+            forge: ForgeIds::test_forge(),
             repo_id: REPO.into(),
             owner_id: OWNER.into(),
             name: "proj".into(),
@@ -205,7 +200,7 @@ mod tests {
     fn scope_filters_every_query_by_repo_id_first() {
         let scope = repo().scope().unwrap();
         assert_eq!(scope.contract_id, "CORE");
-        let f = scope.filters([QueryFilter::eq("packHash", FieldValue::bytes32([1; 32]))]);
+        let f = scope.filters([QueryFilter::eq("packHash", FieldValue::identifier([1; 32]))]);
         assert_eq!(f.len(), 2);
         assert_eq!(f[0].field, "repoId");
         assert_eq!(f[0].op, QueryOp::Eq);
@@ -237,6 +232,7 @@ mod tests {
         let f = scope.chunk_filters(OWNER, [7; 32]).unwrap();
         let fields: Vec<_> = f.iter().map(|f| f.field.as_str()).collect();
         assert_eq!(fields, ["repoId", "$ownerId", "packHash"]);
+        assert_eq!(f[2].value, FieldValue::identifier([7; 32]));
         assert!(scope.chunk_filters("not base58!", [7; 32]).is_err());
     }
 

@@ -24,10 +24,10 @@ import Link from 'next/link'
 import { GitMerge, Loader2 } from 'lucide-react'
 
 import { readConfigHistory, refNameHash, resolveRefByHash, type PullView, type RepoRef } from '@/lib/repo'
-import { isLegalRefName, matchesProtected } from '@/lib/rules'
+import { matchesProtected } from '@/lib/rules'
 import { bytesToBase64, previewCreate, sumPreviews } from '@/lib/sdk'
 import { mergeReaders, missingFromClosure } from '@/lib/merge/verify'
-import { squashDraft, type MergeCheck, type MergeInput, type SquashAuthors } from '@/lib/merge/engine'
+import { mergeSourceLabel, squashDraft, type MergeCheck, type MergeInput, type SquashAuthors } from '@/lib/merge/engine'
 import { checkMergeInWorker, runMergeInWorker } from '@/lib/merge/client'
 import { MERGE_STEPS, MergeStepError, retryLabel, runFor, runMergeSteps, type MergeRun, type MergeStepId } from '@/lib/merge/runner'
 import { mergeButton, mergeRefProblem } from '@/lib/view/pull-actions'
@@ -133,8 +133,7 @@ export function MergePanel({
       baseTip: baseTipOid,
       headOid: pull.headOid,
       prNumber: pull.number,
-      // The PR author wrote `sourceRefName`: only a legal ref name goes into the message.
-      sourceLabel: pull.sourceRefName !== null && isLegalRefName(pull.sourceRefName) ? pull.sourceRefName : pull.headOid,
+      sourceLabel: mergeSourceLabel(pull.sourceRefName, pull.headOid),
       title: pull.title,
       author: { name: prefs.mergeName.trim(), email: prefs.mergeEmail.trim() },
       headInBase: sameRepo,
@@ -261,7 +260,7 @@ export function MergePanel({
           sdk,
           auth: signer,
           repo,
-          pull: { id: pull.id, number: pull.number, baseRefName, openedBaseRefName: pull.baseRefName },
+          pull: { id: pull.id, number: pull.number, author: pull.author, baseRefName, openedBaseRefName: pull.baseRefName },
           input,
           merge: (i, onPhase) => runMergeInWorker(reader, i, (p) => onPhase(p.phase)),
           upload,
@@ -306,7 +305,7 @@ export function MergePanel({
     } finally {
       setBusy(false)
     }
-  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete])
+  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, pull.author, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete])
 
   // A run in this panel keeps it on screen to the end (the PR reads Merged meanwhile).
   const started = Object.keys(steps).length > 0

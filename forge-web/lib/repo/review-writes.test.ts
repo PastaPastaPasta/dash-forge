@@ -52,6 +52,7 @@ vi.mock('./private-writes', async (importOriginal) => {
 })
 
 import { resetMemoryStores } from '../idb'
+import { decodeIdentifier } from '../auth/base58'
 import { clearSignedWrites, lockVault } from '../auth/vault'
 import type { RepoRef } from './contract'
 import {
@@ -60,6 +61,7 @@ import {
   loadReviewDraft,
   postComment,
   postTargetEvent,
+  reconcileReviewDraft,
   reviewData,
   saveReviewDraft,
   setAssignee,
@@ -77,9 +79,11 @@ import type { WriteAuth } from '../sdk'
 
 const ALICE = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const BOB = 'CJao2MVHL4x3f2Ko2xTUibnZ8G1t9exTPtvJnCbHAgDH'
+/** A member posting to an unlocked PR. */
+const MEMBER = { isMember: true }
 const PR = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'
 const REPO: RepoRef = {
-  forge: { core: 'A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1', collab: 'C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS', group: '6dV3kMBWHGR7pLKrHToMBQgbTpjqeE2VAyCEWmLbrkWC' },
+  forge: { core: 'A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1', collab: 'C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS', community: 'C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS', group: '6dV3kMBWHGR7pLKrHToMBQgbTpjqeE2VAyCEWmLbrkWC' },
   repoId: '8H5JaQm8Z765UunuttoUuVsVMCmDoy2EBKgmGKYpdB2z',
   ownerId: ALICE,
   name: 'demo',
@@ -133,17 +137,18 @@ describe('event payloads and routes', () => {
     expect(eventRoute({ viewer: BOB, author: ALICE, isMember: true, kind: 'reviewDismiss' })).toBe('event')
     expect(eventRoute({ viewer: ALICE, author: ALICE, isMember: false, kind: 'headUpdate' })).toBe('authorEvent')
     expect(eventRoute({ viewer: ALICE, author: ALICE, isMember: false, kind: 'threadResolve' })).toBe('authorEvent')
-    for (const kind of ['merge', 'labelAdd', 'reviewDismiss', 'milestoneSet', 'retarget'] as const) {
+    // The state kinds are transitions now: no authorEvent carries them.
+    for (const kind of ['merge', 'close', 'reopen', 'draft', 'ready', 'labelAdd', 'reviewDismiss', 'milestoneSet', 'retarget'] as const) {
       expect(eventRoute({ viewer: ALICE, author: ALICE, isMember: false, kind })).toBeNull()
     }
     expect(eventRoute({ viewer: BOB, author: ALICE, isMember: false, kind: 'threadResolve' })).toBeNull()
   })
 
   it('posts the author route as an authorEvent document', async () => {
-    const r = await postTargetEvent(sdk, auth(ALICE), REPO, { target, kind: 'ready', author: ALICE, isMember: false })
+    const r = await postTargetEvent(sdk, auth(ALICE), REPO, { target, kind: 'headUpdate', author: ALICE, isMember: false, payload: { oidHex: HEAD } })
     expect(r.route).toBe('authorEvent')
     expect(writes[0]?.documentType).toBe('authorEvent')
-    expect(writes[0]?.data['kind']).toBe(10)
+    expect(writes[0]?.data['kind']).toBe(16)
     await expect(postTargetEvent(sdk, auth(ALICE), REPO, { target, kind: 'reviewDismiss', author: ALICE, isMember: false, payload: { refId: BOB } })).rejects.toThrow(/maintainer or writer/)
     expect(writes).toHaveLength(1)
   })
@@ -203,6 +208,10 @@ describe('assignees and labels (F-1)', () => {
     // The comment's provenance is re-sealed, and the edit names the revision and the repo it read.
     expect(sealed[1]?.[5]).toEqual({ author: 'octocat', url: 'u' })
     expect(replaces[1]).toMatchObject({ expectedRevision: 2n, expectRepoId: PRIVATE.repoId })
+    // RC1: a dead parent and a lapsed proof are removed in the sealed replace too (plaintext references).
+    await updateComment(sdk, auth(ALICE), PRIVATE, { id: PR, body: 'again', dropReplyTo: true, dropProof: true, expectedRevision: 3n, seal: { current: { body: 'edited' }, bind: { targetId: PR } } })
+    expect(replaces[2]?.changes).toEqual({ enc: new Uint8Array([1, 2, 3]), epoch: 4, body: undefined, replyTo: undefined, asMember: undefined })
+    expect(Object.keys(replaces[2]?.changes ?? {})).toEqual(expect.arrayContaining(['replyTo', 'asMember']))
     // A private comment edit without the revision it read is refused (both clients guard edits by revision).
     await expect(updateComment(sdk, auth(ALICE), PRIVATE, { id: PR, body: 'x', seal: { current: { body: 'was' }, bind: { targetId: PR } } })).rejects.toThrow(/revision/)
     // The author (and repo, revision) is checked before any key work: a refused precheck seals nothing.
@@ -214,7 +223,7 @@ describe('assignees and labels (F-1)', () => {
     expect(prechecks.length).toBeGreaterThan(0)
     // A public edit is plaintext, as before.
     await updateTarget(sdk, auth(ALICE), REPO, { type: 'issue', id: PR, title: 'pub' })
-    expect(replaces[2]?.changes).toEqual({ title: 'pub' })
+    expect(replaces[3]?.changes).toEqual({ title: 'pub' })
   })
 })
 
@@ -230,8 +239,8 @@ describe('anchors and reviews', () => {
   })
 
   it('writes commentCount on a review and bounds it', () => {
-    expect(reviewData({ patchId: PR, verdict: 'requestChanges', commitOid: HEAD, commentCount: 2 })).toMatchObject({ verdict: 2, commentCount: 2 })
-    expect(() => reviewData({ patchId: PR, verdict: 'approve', commitOid: HEAD, commentCount: 65536 })).toThrow()
+    expect(reviewData({ patchId: PR, verdict: 'requestChanges', commitOid: HEAD, commentCount: 2, post: MEMBER }, BOB)).toMatchObject({ verdict: 2, commentCount: 2 })
+    expect(() => reviewData({ patchId: PR, verdict: 'approve', commitOid: HEAD, commentCount: 65536, post: MEMBER }, BOB)).toThrow()
   })
 })
 
@@ -241,10 +250,10 @@ describe('private repos', () => {
     await expect(postComment(sdk, auth(BOB), PRIVATE, { targetId: PR, body: 'secret' })).rejects.toThrow(/private repo/)
     await expect(updateComment(sdk, auth(BOB), PRIVATE, { id: PR, body: 'secret' })).rejects.toThrow(/private repo/)
     const d = { draftId: 'p', network: 'devnet', identity: BOB, repoId: REPO.repoId, prId: PR, headOid: HEAD, verdict: 'approve' as const, summary: '', comments: [], startedAt: 0 }
-    await expect(submitReviewDraft(sdk, auth(BOB), PRIVATE, d, undefined, NO_CHAIN)).rejects.toThrow(/private repo/)
+    await expect(submitReviewDraft(sdk, auth(BOB), PRIVATE, d, MEMBER, undefined, NO_CHAIN)).rejects.toThrow(/private repo/)
     expect(writes).toHaveLength(0)
     // Events are plaintext by design, and still allowed.
-    await postTargetEvent(sdk, auth(ALICE), PRIVATE, { target, kind: 'ready', author: ALICE, isMember: false })
+    await postTargetEvent(sdk, auth(ALICE), PRIVATE, { target, kind: 'headUpdate', author: ALICE, isMember: false, payload: { oidHex: HEAD } })
     expect(writes[0]?.documentType).toBe('authorEvent')
   })
 })
@@ -296,7 +305,7 @@ describe('pending review submit', () => {
   it('writes the review first with commentCount, then each comment with reviewId and the head', async () => {
     await saveReviewDraft(draft())
     const progress: number[] = []
-    const out = await submitReviewDraft(sdk, auth(BOB), REPO, draft(), (p) => progress.push(p.done), NO_CHAIN)
+    const out = await submitReviewDraft(sdk, auth(BOB), REPO, draft(), MEMBER, (p) => progress.push(p.done), NO_CHAIN)
     expect(writes.map((w) => w.documentType)).toEqual(['review', 'comment', 'comment', 'comment'])
     expect(writes[0]?.data).toMatchObject({ verdict: 2, body: 'two things', commentCount: 3 })
     for (const w of writes.slice(1)) {
@@ -313,11 +322,11 @@ describe('pending review submit', () => {
   it('resumes after a failure at comment 2 of 3 without rewriting what landed', async () => {
     await saveReviewDraft(draft())
     failAt = 2 // the review and comment 1 land, comment 2 fails
-    await expect(submitReviewDraft(sdk, auth(BOB), REPO, draft(), undefined, NO_CHAIN)).rejects.toThrow('network dropped')
+    await expect(submitReviewDraft(sdk, auth(BOB), REPO, draft(), MEMBER, undefined, NO_CHAIN)).rejects.toThrow('network dropped')
     const saved = await loadReviewDraft('devnet', BOB, PR)
     expect(saved?.reviewId).toBe(D(1))
     expect(saved?.comments.map((c) => c.landedId ?? null)).toEqual([D(2), null, null])
-    const out = await submitReviewDraft(sdk, auth(BOB), REPO, saved as ReviewDraft, undefined, NO_CHAIN)
+    const out = await submitReviewDraft(sdk, auth(BOB), REPO, saved as ReviewDraft, MEMBER, undefined, NO_CHAIN)
     expect(writes.map((w) => w.documentType)).toEqual(['review', 'comment', 'comment', 'comment'])
     expect(out.commentIds).toEqual([D(2), D(3), D(4)])
     expect(await loadReviewDraft('devnet', BOB, PR)).toBeUndefined()
@@ -326,12 +335,16 @@ describe('pending review submit', () => {
   it('adopts writes that landed without their save instead of posting them twice', async () => {
     // The review and comment 1 landed on chain, but the tab died before either was saved:
     // the draft in IndexedDB knows nothing of them.
-    const d = { ...draft(), attemptedAt: 5 }
+    // x0 is an earlier review of Bob's, identical, recorded as prior before the first write.
+    const d = { ...draft(), attemptedAt: 5, priorReviews: ['x0'] }
     await saveReviewDraft(d)
     const landedReview: ChainReview = { id: D(1), reviewer: BOB, verdict: 2, commitOid: HEAD, body: 'two things', commentCount: 3, createdAt: 5 }
     const landedComment: ChainComment = { id: D(2), owner: BOB, reviewId: D(1), body: 'one', anchor: { path: 'a.rs', line: 3, side: 1, commitOid: HEAD }, createdAt: 6 }
     const reads: SubmitReads = {
       reviews: async () => [
+        { ...landedReview, id: 'x0', createdAt: 4 },
+        // an earlier identical review a lagging node left out of priorReviews: older than ours
+        { ...landedReview, id: 'x7', createdAt: 3 },
         landedReview,
         // not ours: another reviewer, an older head, another count, before the draft started
         { ...landedReview, id: 'x1', reviewer: ALICE },
@@ -350,7 +363,7 @@ describe('pending review submit', () => {
     writes.length = 0
     const pad = (n: number) => { while (writes.length < n) writes.push({ documentType: 'pad', data: {} }) }
     pad(2) // the next fake id the engine hands out is D(3)
-    const out = await submitReviewDraft(sdk, auth(BOB), REPO, d, undefined, reads)
+    const out = await submitReviewDraft(sdk, auth(BOB), REPO, d, MEMBER, undefined, reads)
     const posted = writes.filter((w) => w.documentType !== 'pad')
     expect(posted.map((w) => w.documentType)).toEqual(['comment', 'comment'])
     expect(posted.map((w) => w.intent)).toEqual(['review:d1:comment:c2', 'review:d1:comment:c3'])
@@ -363,20 +376,61 @@ describe('pending review submit', () => {
     // the same person): a first submit must still write its own.
     const d = { ...draft(), comments: [] }
     const earlier: ChainReview = { id: D(5), reviewer: BOB, verdict: 2, commitOid: HEAD, body: 'two things', commentCount: 0, createdAt: Date.now() + 60_000 }
-    const out = await submitReviewDraft(sdk, auth(BOB), REPO, d, undefined, { reviews: async () => [earlier], comments: async () => [] })
+    const out = await submitReviewDraft(sdk, auth(BOB), REPO, d, MEMBER, undefined, { reviews: async () => [earlier], comments: async () => [] })
     expect(writes.map((w) => w.documentType)).toEqual(['review'])
     expect(out.reviewId).toBe(D(1))
+  })
+
+  it("files a second review's comments under the second review, as the drawer submits it (attempt stamped first)", async () => {
+    // Bob's first review (same verdict, head, summary and one comment) landed a minute ago. The
+    // drawer stamps `attemptedAt` before the first submit (`startSubmit`): the reconcile must not
+    // take the first review for this draft's own and write the new comment with its id.
+    const now = Date.now()
+    const first: ChainReview = { id: D(5), reviewer: BOB, verdict: 2, commitOid: HEAD, body: 'two things', commentCount: 1, createdAt: now - 60_000 }
+    const firstComment: ChainComment = { id: 'f1', owner: BOB, reviewId: D(5), body: 'earlier', anchor: { path: 'a.rs', line: 1, side: 1, commitOid: HEAD }, createdAt: now - 59_000 }
+    const reads: SubmitReads = { reviews: async () => [first], comments: async () => [firstComment] }
+    const d: ReviewDraft = { ...draft(), comments: [{ localId: 'c1', anchor: { path: 'a.rs', line: 3, side: 1 }, body: 'one' }], attemptedAt: now }
+    await saveReviewDraft(d)
+    const out = await submitReviewDraft(sdk, auth(BOB), REPO, d, MEMBER, undefined, reads)
+    expect(writes.map((w) => w.documentType)).toEqual(['review', 'comment'])
+    expect(out.reviewId).toBe(D(1))
+    expect(writes[1]?.data['reviewId']).toEqual(decodeIdentifier(D(1)))
+  })
+
+  it('records the earlier reviews before the first write, and a resume never adopts one of them', async () => {
+    const now = Date.now()
+    const first: ChainReview = { id: D(5), reviewer: BOB, verdict: 2, commitOid: HEAD, body: 'two things', commentCount: 3, createdAt: now - 60_000 }
+    const other: ChainReview = { ...first, id: 'x1', reviewer: ALICE }
+    let chain: ChainReview[] = [first, other]
+    const reads: SubmitReads = { reviews: async () => chain, comments: async () => [] }
+    failAt = 0 // the review write throws (a timeout) although it landed, so its id is never saved
+    await expect(submitReviewDraft(sdk, auth(BOB), REPO, { ...draft(), attemptedAt: now }, MEMBER, undefined, reads)).rejects.toThrow('network dropped')
+    const saved = (await loadReviewDraft('devnet', BOB, PR)) as ReviewDraft
+    expect(saved.priorReviews).toEqual([D(5)])
+    // The resume sees the first review and this draft's own, which landed without its save.
+    const own: ChainReview = { ...first, id: D(4), createdAt: now + 1_000 }
+    chain = [first, other, own]
+    const out = await submitReviewDraft(sdk, auth(BOB), REPO, saved, MEMBER, undefined, reads)
+    expect(out.reviewId).toBe(D(4))
+    expect(writes.map((w) => w.documentType)).toEqual(['comment', 'comment', 'comment'])
+  })
+
+  it('adopts no review for a draft without its record of earlier reviews (nothing of it was written)', async () => {
+    const now = Date.now()
+    const earlier: ChainReview = { id: D(5), reviewer: BOB, verdict: 2, commitOid: HEAD, body: 'two things', commentCount: 3, createdAt: now }
+    const d: ReviewDraft = { ...draft(), attemptedAt: now }
+    expect(await reconcileReviewDraft(d, { reviews: async () => [earlier], comments: async () => [] })).toBe(d)
   })
 
   it('records the attempt before the first write, so a crash after it reconciles', async () => {
     await saveReviewDraft(draft())
     failAt = 0
-    await expect(submitReviewDraft(sdk, auth(BOB), REPO, draft(), undefined, NO_CHAIN)).rejects.toThrow('network dropped')
+    await expect(submitReviewDraft(sdk, auth(BOB), REPO, draft(), MEMBER, undefined, NO_CHAIN)).rejects.toThrow('network dropped')
     expect((await loadReviewDraft('devnet', BOB, PR))?.attemptedAt).toBeTypeOf('number')
   })
 
   it("refuses to submit another identity's draft", async () => {
-    await expect(submitReviewDraft(sdk, auth(ALICE), REPO, draft(), undefined, NO_CHAIN)).rejects.toThrow(/another identity/)
+    await expect(submitReviewDraft(sdk, auth(ALICE), REPO, draft(), MEMBER, undefined, NO_CHAIN)).rejects.toThrow(/another identity/)
     expect(writes).toHaveLength(0)
   })
 })

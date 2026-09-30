@@ -19,6 +19,8 @@ import { useMemo, useState } from 'react'
 import { KeyRound } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { plural, timeAgo } from '@/lib/view'
+import { ConsentMissingError, repoContractIds } from '@/lib/repo'
+import { Invitations } from '@/components/repo/invite-banner'
 import { decodeIdentifier } from '@/lib/auth'
 import { noEncryptionKeyMessage } from '@/lib/auth/encryption-key'
 import type { Role } from '@/lib/rules/v2'
@@ -86,7 +88,7 @@ function stepText(s: RotationStep): string {
 }
 
 export function PrivateMembers({ home, session }: { home: RepoHome; session: PrivateSession }): JSX.Element {
-  const { sdk, ready } = useSdk([home.repo.forge.core, home.repo.forge.collab])
+  const { sdk, ready } = useSdk(repoContractIds(home.repo))
   const { identity } = useAuth()
   const guard = useWriteGuard()
   const write = usePrivateWrite(home.repo)
@@ -97,6 +99,8 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
 
   const [memberId, setMemberId] = useState('')
   const [role, setRole] = useState<Role>('writer')
+  // The identity an add was refused for because they had not accepted the invitation (RC1 R-06).
+  const [awaiting, setAwaiting] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
   const [removing, setRemoving] = useState<{ member: string; role: Role } | null>(null)
   const [steps, setSteps] = useState<string[]>([])
@@ -222,6 +226,17 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
           {locked ? (
             <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">Unlock with your encryption key (Settings → Keys) to add or remove members.</p>
           ) : null}
+          <Invitations
+            repo={repo}
+            members={session.members.map((m) => m.identity)}
+            awaiting={awaiting}
+            disabled={locked}
+            onPick={(id, r) => {
+              // The add runs through the form: it checks their encryption key and hands them the key.
+              setMemberId(id)
+              setRole(r)
+            }}
+          />
         </div>
       ) : (
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Only the owner can add or remove members.</p>
@@ -239,6 +254,12 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
           try {
             await addPrivateMember(write.context, trimmed, role, intent)
             setMemberId('')
+            setAwaiting(null)
+          } catch (e) {
+            if (!(e instanceof ConsentMissingError)) throw e
+            // Nothing was signed: the invitation is pending on them.
+            setAwaiting(trimmed)
+            setAdding(false)
           } finally {
             write.done()
           }

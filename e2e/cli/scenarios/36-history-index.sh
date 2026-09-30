@@ -12,13 +12,13 @@
 #      no history index. `dg repo reindex --git-dir <clone>` publishes a full one (and the
 #      locator), measured spend positive and small; a second reindex finds nothing to do.
 #
-# Needs an identity with ~1 DASH (E2E_S36_IDENTITY, or minted from the moutai funding key under
-# `lockf /tmp/qa-mint.lock`). Two small new repos per run. Not in the default set (`run.sh 36`).
+# Needs an identity with ~1 DASH (E2E_S36_IDENTITY, or minted from the devnet's funding key
+# E2E_MINT_FUNDING under `lockf $E2E_MINT_LOCK`, config.sh). Two small new repos per run.
+# Not in the default set (`run.sh 36`).
 SCENARIO_NAME="36 a push publishes the history index; a later push a delta; reindex backfills"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
 
-: "${MOUTAI_FUNDING:=/Users/pasta/workspace/dash-forge-qa/secrets/moutai-funding.wif}"
 : "${MINT_DIR:=${E2E_REPO_ROOT}/tools/mint-identity}"
 LOG="${WORKROOT}/s36"
 IDS="${WORKROOT}/s36-ids"; mkdir -p -m 700 "$IDS"
@@ -28,12 +28,12 @@ step "this run's identity"
 if [[ -n "${E2E_S36_IDENTITY:-}" ]]; then
   cp "$E2E_S36_IDENTITY" "$IDS/S36.identity.json"
 else
-  [[ -r "$MOUTAI_FUNDING" ]] || skip_scenario "no moutai funding key ($MOUTAI_FUNDING); or set E2E_S36_IDENTITY"
+  [[ -r "$E2E_MINT_FUNDING" ]] || skip_scenario "no ${DASH_FORGE_DEVNET_NAME} funding key ($E2E_MINT_FUNDING); or set E2E_S36_IDENTITY"
   [[ -d "$MINT_DIR/node_modules/@dashevo/evo-sdk" ]] || skip_scenario "tools/mint-identity has no node_modules (npm ci there)"
-  lock=(); lf="${E2E_MINT_LOCK:-/tmp/qa-mint.lock}"
+  lock=(); lf="$E2E_MINT_LOCK"
   if command -v lockf >/dev/null; then lock=(lockf -t 1200 "$lf"); elif command -v flock >/dev/null; then lock=(flock -w 1200 "$lf"); fi
-  "${lock[@]}" node "$MINT_DIR/mint.mjs" --network devnet --devnet-name "${DASH_FORGE_DEVNET_NAME:-moutai}" \
-    --funding fund-from-key --funding-key-file "$MOUTAI_FUNDING" --out "$IDS" --label S36 --amount 1 \
+  "${lock[@]}" node "$MINT_DIR/mint.mjs" --network devnet --devnet-name "$DASH_FORGE_DEVNET_NAME" \
+    --funding fund-from-key --funding-key-file "$E2E_MINT_FUNDING" --out "$IDS" --label S36 --amount 1 \
     >"$LOG-mint.log" 2>&1 || { tail -5 "$LOG-mint.log" >&2; skip_scenario "minting failed (funding or network)"; }
 fi
 ID="$IDS/S36.identity.json"

@@ -185,6 +185,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Pr(P::Sync { repo, .. }) => ("pull request head not moved", Some(repo)),
         Command::Pr(P::Ready { repo, .. }) => ("pull request not marked ready", Some(repo)),
         Command::Pr(P::Draft { repo, .. }) => ("pull request not converted to a draft", Some(repo)),
+        Command::Pr(P::Lock { repo, .. }) => ("pull request lock not changed", Some(repo)),
         Command::Pr(P::Resolve { repo, .. }) => ("conversation not resolved", Some(repo)),
         Command::Pr(P::Unresolve { repo, .. }) => ("conversation not unresolved", Some(repo)),
         Command::Pr(P::RequestReview { repo, .. } | P::UnrequestReview { repo, .. }) => {
@@ -200,6 +201,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         // A download also fetches from storage and writes local files: "read" was wrong
         // for those failures (L-22).
         Command::Release(R::Download { repo, .. }) => ("release not downloaded", Some(repo)),
+        Command::Release(R::Unpublish { repo, .. }) => ("release not unpublished", Some(repo)),
         Command::Label(LabelCommand::List { repo, .. }) => ("could not list labels", Some(repo)),
         Command::Issue(I::Label { repo, .. })
         | Command::Label(
@@ -210,8 +212,10 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Collab(C::Add { repo, .. }) => ("collaborator not added", Some(repo)),
         Command::Collab(C::Remove { repo, .. }) => ("collaborator not removed", Some(repo)),
         Command::Collab(C::List { repo }) => ("could not list collaborators", Some(repo)),
+        Command::Collab(C::Accept { repo, .. }) => ("membership not accepted", Some(repo)),
         Command::Cost(CostCommand::Estimate { .. }) => ("no estimate", None),
-        Command::Cost(CostCommand::Audit { repo }) => ("audit failed", repo.as_ref()),
+        Command::Cost(CostCommand::Audit { repo, .. }) => ("audit failed", repo.as_ref()),
+        Command::Cost(CostCommand::Prices) => ("no price reference", None),
         Command::Repack { repo, .. } => ("repack failed", repo.as_ref()),
         Command::Reseed { repo, .. } => ("reseed failed", repo.as_ref()),
         Command::Storage(S::Status { repo } | S::Advertise { repo, .. }) => {

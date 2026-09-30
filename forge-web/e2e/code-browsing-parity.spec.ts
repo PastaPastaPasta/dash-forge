@@ -2,6 +2,10 @@ import { test, expect, type Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { collectPageErrors, countDapi, countDocumentQueries, DEMO, E2E_DEVNET, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
+import { quorumGuard, quorumHeldMs } from './quorum-sync'
+
+// Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
+test.beforeEach(quorumGuard)
 
 /**
  * F-5 code browsing parity with GitHub, on moutai:
@@ -17,6 +21,13 @@ const MAIN_RS = 'src/main.rs'
 
 /** Every DAPI request, summed. */
 const total = (counts: Map<string, number>): number => [...counts.values()].reduce((a, n) => a + n, 0)
+/**
+ * The page's own reads: every DAPI request but the Verification card's quorum-key cross-check
+ * (`getCurrentQuorumsInfo`, lib/view/quorum-check.ts), which runs in the background on its own
+ * schedule and re-asks 2 s later when the devnet has just rotated a quorum. It is no read of the
+ * page on screen.
+ */
+const pageReads = (counts: Map<string, number>): number => total(counts) - (counts.get('getCurrentQuorumsInfo') ?? 0)
 
 async function openBlob(page: Page, url: string): Promise<void> {
   await page.goto(url, { waitUntil: 'domcontentloaded' })
@@ -77,7 +88,7 @@ test.describe('permalinks and line anchors (read fixture)', () => {
     await expect(page.locator('main').getByText(oid.slice(0, 7)).first()).toBeVisible()
     await page.waitForTimeout(1500)
     test.info().annotations.push({ type: 'dapi', description: `y: ${total(counts)} DAPI requests ${JSON.stringify(Object.fromEntries(counts))}` })
-    expect(total(counts), 'y re-reads nothing: the pinned commit is the one on screen').toBe(0)
+    expect(pageReads(counts), 'y re-reads nothing: the pinned commit is the one on screen').toBe(0)
     await shot(page, 'f5-pl-03-y-permalink')
 
     // The copied short link opens the same file at the same commit, range selected.
@@ -239,7 +250,7 @@ test.describe('commits paging, History and Blame (showcase repos)', () => {
   })
 
   test('hb-5. blame of fzf main.go matches git blame --first-parent line for line; cancel stops a run', async ({ page }) => {
-    test.setTimeout(240_000)
+    test.setTimeout(240_000 + quorumHeldMs())
     const want = readFileSync(join(__dirname, 'fixtures/fzf-main-go-blame.txt'), 'utf8')
       .trim()
       .split('\n')

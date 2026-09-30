@@ -4,9 +4,10 @@
  * `/repo/number?…&number=N` — where a `#N` autolink goes (FG-2 L-39). GitHub numbers issues
  * and PRs in one sequence and Markdown cannot tell which a `#N` means, so this page reads
  * both (a `(repoId, number)` lookup each) and opens whichever exists. With `upstream=1` (a
- * `#N` in content copied from the forge this repo mirrors) a row counts only when the import
- * wrote it for that upstream number; otherwise, and when nothing is here, the page links to the
- * item on the source forge rather than dead-ending.
+ * `#N` in content copied from the forge this repo mirrors) N is the source's number: the item a
+ * trusted writer recorded with `upstreamNumber` N (D-2, `resolveUpstreamNumber`) is opened at
+ * its own native number; otherwise, and when nothing is here, the page links to the item on the
+ * source forge rather than dead-ending.
  */
 
 import { useEffect } from 'react'
@@ -14,9 +15,10 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { ExternalLink, Hash } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { readNumberTrust, repoContractIds, repoKey } from '@/lib/repo'
-import { isUpstreamItem, numberRows, type NumberRow } from '@/lib/view/jump'
-import { upstreamItemUrl, type ForgeRepo } from '@/lib/view/ref-targets'
+import { readMembershipsCached, repoContractIds, repoKey } from '@/lib/repo'
+import { numberTargets } from '@/lib/view/jump'
+import { upstreamItemUrl } from '@/lib/view/ref-targets'
+import { resolveUpstreamNumber } from '@/lib/view/upstream'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import type { RepoAddress } from '@/hooks/use-query-param'
@@ -28,22 +30,24 @@ export function NumberContent({ home, addr, number, upstream }: { home: RepoHome
   const router = useRouter()
   const valid = Number.isSafeInteger(number) && number > 0
   const source = mirrorRepo(home.description)
-  // Imported content's `#N` is the source's number: only the row the import wrote for N is it
-  // (so the trusted authors are read too). Elsewhere any row at N is.
-  const checkUpstream = upstream && source !== null
+  // Imported content's `#N` is the source's number: the native item a trusted writer recorded
+  // with that `upstreamNumber` (whatever the description says). Elsewhere any row at N is.
+  const checkUpstream = upstream
   const { data, error, reload } = useAsync(
-    async () => {
-      const [rows, trusted] = await Promise.all([numberRows(sdk!, home.repo, number), checkUpstream ? readNumberTrust(sdk!, home.repo, network) : []])
-      return { rows, trusted: new Set(trusted) }
+    async (): Promise<{ issue: number | null; pull: number | null }> => {
+      if (checkUpstream) {
+        const hit = await resolveUpstreamNumber(sdk!, home.repo, number, await readMembershipsCached(sdk!, home.repo, network))
+        return { issue: hit?.type === 'issue' ? hit.number : null, pull: hit?.type === 'patch' ? hit.number : null }
+      }
+      const found = await numberTargets(sdk!, home.repo, number)
+      return { issue: found.issue ? number : null, pull: found.pull ? number : null }
     },
-    [ready, repoKey(home.repo), number, checkUpstream],
+    [ready, repoKey(home.repo), number, checkUpstream, network],
     { enabled: ready && sdk !== null && valid },
   )
-  const counts = (row: NumberRow | null): boolean =>
-    row !== null && (!checkUpstream || isUpstreamItem(row, number, source as ForgeRepo, data?.trusted ?? new Set()))
-  const issue = data !== null && counts(data.rows.issue)
-  const pull = data !== null && counts(data.rows.pull)
-  const only = issue !== pull ? (issue ? issueHref(addr, number) : pullHref(addr, number)) : null
+  const issue = data?.issue ?? null
+  const pull = data?.pull ?? null
+  const only = issue !== null && pull === null ? issueHref(addr, issue) : pull !== null && issue === null ? pullHref(addr, pull) : null
   useEffect(() => {
     if (only !== null) router.replace(only)
   }, [only, router])
@@ -51,16 +55,17 @@ export function NumberContent({ home, addr, number, upstream }: { home: RepoHome
   if (!valid) return <EmptyState icon={Hash} title="No number addressed" body="Add &number= to the URL." />
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (data === null || only !== null) return <LoadingBlock label={`Finding #${number}`} />
-  const upstreamUrl = upstreamItemUrl(source, number)
-  if (issue && pull) {
+  // The source's own page, only for a source number (a native #N has nothing to do with it)
+  const upstreamUrl = checkUpstream ? upstreamItemUrl(source, number) : null
+  if (issue !== null && pull !== null) {
     return (
       <EmptyState
         icon={Hash}
         title={`#${number} is both an issue and a PR here`}
         action={
           <span className="flex gap-3">
-            <Link className="text-forge-700 underline dark:text-forge-400" href={issueHref(addr, number)}>Issue #{number}</Link>
-            <Link className="text-forge-700 underline dark:text-forge-400" href={pullHref(addr, number)}>PR #{number}</Link>
+            <Link className="text-forge-700 underline dark:text-forge-400" href={issueHref(addr, issue)}>Issue #{issue}</Link>
+            <Link className="text-forge-700 underline dark:text-forge-400" href={pullHref(addr, pull)}>PR #{pull}</Link>
           </span>
         }
       />

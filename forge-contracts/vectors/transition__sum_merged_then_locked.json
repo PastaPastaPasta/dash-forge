@@ -1,0 +1,29 @@
+{
+  "name": "sum_merged_then_locked",
+  "description": "A merged PR locked afterwards still reads merged (18 mod 16 = 2), and the merge is its kind 13.",
+  "case": "transition_sum",
+  "rules": "v2",
+  "input": {
+    "transitions": [
+      {
+        "id": "t1",
+        "kind": 13,
+        "actor": "maint",
+        "asAuthor": 0,
+        "createdAt": 1,
+        "oid": "M"
+      },
+      {
+        "id": "t2",
+        "kind": 18,
+        "actor": "maint",
+        "asAuthor": 0,
+        "createdAt": 2
+      }
+    ]
+  },
+  "expected": {
+    "code": 2,
+    "mergeId": "t1"
+  }
+}

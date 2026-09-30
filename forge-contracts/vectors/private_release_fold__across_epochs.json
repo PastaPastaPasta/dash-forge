@@ -1,0 +1,46 @@
+{
+  "name": "across_epochs",
+  "description": "revisions are grouped by the decrypted tag, not by tagName: a yank under epoch 1 supersedes the epoch-0 publish (a yanked release is still live and counted).",
+  "case": "private_release_fold",
+  "rules": "v2",
+  "input": {
+    "revisions": [
+      {
+        "id": "ef68fb8db87e0cc5dfa498227b092b005b4ae5f7e586b56b7d3531e234606cbd",
+        "createdAt": 100,
+        "epoch": 0,
+        "tagName": "tn-v1-e0",
+        "status": "readable",
+        "enc": "e-a",
+        "fields": {
+          "tag": "v1"
+        }
+      },
+      {
+        "id": "c72666dc00b61e990341322ae496a7fc23136137541b975a3121763846e2e4a9",
+        "createdAt": 200,
+        "epoch": 1,
+        "tagName": "tn-v1-e1",
+        "status": "readable",
+        "enc": "e-b",
+        "fields": {
+          "tag": "v1",
+          "yanked": true
+        }
+      }
+    ]
+  },
+  "expected": {
+    "live": {
+      "v1": "c72666dc00b61e990341322ae496a7fc23136137541b975a3121763846e2e4a9"
+    },
+    "history": [
+      "ef68fb8db87e0cc5dfa498227b092b005b4ae5f7e586b56b7d3531e234606cbd"
+    ],
+    "count": 1,
+    "replays": [],
+    "unknownTags": [],
+    "stale": false,
+    "hidden": 0
+  }
+}

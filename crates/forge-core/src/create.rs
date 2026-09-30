@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::keystore::BridgeIdentity;
+use crate::layout;
 use crate::members::{doc_type, MemberReader};
 use crate::network::ForgeIds;
 use crate::platform::{
@@ -249,9 +250,10 @@ fn repo_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
     p
 }
 
-/// The initial `config` document's properties (no protected patterns: an empty list is the
-/// same as none, and omitting it keeps the document small).
-fn config_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
+/// The initial `config` document's properties of a PUBLIC repository (no protected patterns:
+/// an empty list is the same as none, and omitting it keeps the document small). A private
+/// repository's first config is its sealed anchor (`private_epoch_zero`).
+pub(crate) fn config_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
     let mut p = BTreeMap::new();
     p.insert(
         "defaultBranch".into(),
@@ -259,6 +261,7 @@ fn config_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
     );
     p.insert("backend".into(), backend_props(opts));
     p.insert("archived".into(), FieldValue::boolean(false));
+    layout::stamp_public(&mut p);
     p
 }
 
@@ -286,7 +289,11 @@ fn backend_props(opts: &CreateRepoOpts) -> FieldValue {
 /// * `NonceConsumed`: this transition landed earlier, or another write by the identity took
 ///   its nonce; a proved read decides.
 /// * A consensus refusal that proves nothing executed (a stale protocol version, a unique
-///   index already taken, a gate): it never landed; re-deciding adopts or re-signs.
+///   index already taken, a membership gate, a reference to a document or identity that does
+///   not exist, a `propertyConstraints` rule such as forge-v2's `dense` when another create
+///   took the saved number): it never landed; re-deciding adopts or re-signs. A rule or
+///   reference refusal is conclusive because the node checks the nonce first, so a landed
+///   transition fails its replay on the nonce, never on the rule or the reference.
 /// * Anything else (the network) is returned: the transition may still land.
 pub(crate) async fn replay_landed(
     engine: &WriteEngine<'_>,
@@ -294,17 +301,28 @@ pub(crate) async fn replay_landed(
     doc_type: &str,
     intent: &WriteIntent,
 ) -> Result<bool> {
-    match engine.replay(doc_type, intent).await {
+    replay_verdict(engine.replay(doc_type, intent).await, || {
+        engine.landed(contract, doc_type, &intent.document_id, true)
+    })
+    .await
+}
+
+/// [`replay_landed`]'s decision over a replay's outcome; `landed` is the proved read asked
+/// after a consumed nonce.
+async fn replay_verdict<F, Fut>(outcome: Result<BroadcastOutcome>, landed: F) -> Result<bool>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<bool>>,
+{
+    match outcome {
         Ok(BroadcastOutcome::Applied | BroadcastOutcome::AlreadyExists) => Ok(true),
-        Ok(BroadcastOutcome::NonceConsumed) => {
-            engine
-                .landed(contract, doc_type, &intent.document_id, true)
-                .await
-        }
+        Ok(BroadcastOutcome::NonceConsumed) => landed().await,
         Err(
             Error::StaleProtocolVersion(_)
             | Error::DuplicateUniqueIndex(_)
-            | Error::NotAMember { .. },
+            | Error::NotAMember { .. }
+            | Error::ReferenceNotFound { .. }
+            | Error::RuleRefused { .. },
         ) => Ok(false),
         Err(e) => Err(e),
     }
@@ -380,7 +398,12 @@ pub async fn create_repo(
                 .await?
                 .map(|m| m.document_id))
         },
-        || scope.props([("memberId", FieldValue::identifier(owner_bytes))]),
+        || {
+            // The owner enrols itself: no `consentBy` (RC1 `member_consent`).
+            let mut p = scope.props([("memberId", FieldValue::identifier(owner_bytes))]);
+            layout::stamp_vis(&mut p, opts.visibility);
+            p
+        },
     )
     .await?;
     steps.push((Step::Maintainer.doc_type(), outcome));
@@ -469,11 +492,12 @@ async fn private_epoch_zero(
 
 /// `opts` with the name normalized to its slug, or why it cannot be created.
 fn validated(opts: &CreateRepoOpts) -> Result<CreateRepoOpts> {
-    if !crate::rules::is_legal_ref_name(&format!("refs/heads/{}", opts.default_branch)) {
-        return Err(Error::Config(format!(
-            "invalid default branch {:?}",
-            opts.default_branch
-        )));
+    crate::repo::check_default_branch(&opts.default_branch)?;
+    // RC1 `repo_shape`: a fork is public (`forkIsPublic`).
+    if opts.fork_of.is_some() && opts.visibility != Visibility::Public {
+        return Err(Error::Config(
+            "a fork is always public: a private repository cannot be a fork".into(),
+        ));
     }
     if !BACKEND_URIS_V2.fits(&opts.backend_uris) {
         return Err(Error::Config(format!(
@@ -483,6 +507,13 @@ fn validated(opts: &CreateRepoOpts) -> Result<CreateRepoOpts> {
     }
     let mut opts = opts.clone();
     opts.name = repo_slug(&opts.name)?;
+    // RC1 `nameNotDotGit`: `foo.git` would read as the bare-repository form of `foo`.
+    if opts.name.as_bytes().ends_with(b".git") {
+        return Err(Error::Config(format!(
+            "invalid repo name {:?}: a name may not end in .git",
+            opts.name
+        )));
+    }
     Ok(opts)
 }
 
@@ -558,6 +589,45 @@ async fn find_repo_after_create(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A saved create refused on replay by a rule (forge-v2 `dense`: another create took its
+    /// number) never landed: it is dropped, not retried with the same bytes forever.
+    #[tokio::test]
+    async fn a_replayed_create_refused_by_a_rule_never_landed() {
+        let no_read = || async { panic!("a refusal needs no read") };
+        let dense = Error::RuleRefused {
+            document_type: "issue".into(),
+            rule: "dense".into(),
+            detail: "A document of type \"issue\" breaks its propertyConstraints rule \"dense\": it does not hold".into(),
+        };
+        assert!(!super::replay_verdict(Err(dense), no_read).await.unwrap());
+        for e in [
+            Error::DuplicateUniqueIndex("number".into()),
+            Error::StaleProtocolVersion("13".into()),
+            Error::NotAMember {
+                document_type: "issue".into(),
+                detail: "40120".into(),
+            },
+            Error::ReferenceNotFound {
+                document_type: "patch".into(),
+                path: "sourceRepoId".into(),
+                detail: "40120".into(),
+            },
+        ] {
+            assert!(!super::replay_verdict(Err(e), no_read).await.unwrap());
+        }
+        // A consumed nonce asks the proved read; a network error may still land: returned.
+        assert!(
+            super::replay_verdict(Ok(BroadcastOutcome::NonceConsumed), || async { Ok(true) })
+                .await
+                .unwrap()
+        );
+        assert!(
+            super::replay_verdict(Err(Error::Platform("timeout".into())), no_read)
+                .await
+                .is_err()
+        );
+    }
 
     fn intent(id: &str) -> WriteIntent {
         WriteIntent {

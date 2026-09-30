@@ -1,0 +1,32 @@
+{
+  "name": "tag_name_not_43_base64url",
+  "description": "a sealed tagName that is not 43 base64url characters is malformed before any key is used.",
+  "case": "private_release_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "tagName": "v1.0.0",
+      "vis": "private",
+      "delta": 0,
+      "enc": "01000102030405060708090a0b1c703ab4aa409f0d7f0f60d2a247982ecb7813a304816aa94996842aa8b3f5df2171308684245164672e34ca3044f13df6aed239822c11b72160aaf5710b729c53b3aa03727feefeb272ab1c48a938ea8a155bc02d513d87c976c4447d35583d1ece6f0259a4661d29a4f7bba9d2ab92"
+    }
+  },
+  "expected": {
+    "status": "malformed"
+  }
+}

@@ -246,6 +246,8 @@ pub struct PullRequestObj {
     pub open: bool,
     /// Merged.
     pub merged: bool,
+    /// A draft (after a transition that makes or keeps it one: kinds 14, 16, 17).
+    pub draft: bool,
 }
 
 /// Build a `pull_request` event (`action` = `opened` / `closed` / `reopened`).
@@ -269,6 +271,7 @@ pub fn pull_request_event(
             "body": pr.body,
             "html_url": html_url,
             "merged": pr.merged,
+            "draft": pr.draft,
             "user": repo.user_json(&pr.author),
             "head": { "ref": Value::Null, "sha": pr.head_oid },
             "base": { "ref": pr.base_ref, "sha": Value::Null },
@@ -643,6 +646,7 @@ mod tests {
             head_oid: "cafe".into(),
             open: true,
             merged: false,
+            draft: false,
         };
         let e = pull_request_event(&repo(), "pr7doc", "opened", &pr);
         assert_eq!(e.event, "pull_request");
@@ -756,6 +760,7 @@ mod tests {
             head_oid: "cafe".into(),
             open: true,
             merged: false,
+            draft: false,
         };
         for (verdict, state) in [(1, "approved"), (2, "changes_requested"), (3, "commented")] {
             let e = pull_request_review_event(&repo(), "rv1", &pr, "rev", verdict, "cafe", "ok");
@@ -812,6 +817,7 @@ mod tests {
             head_oid: "ab".repeat(20),
             open: true,
             merged: false,
+            draft: false,
         };
         let issue = |is_pr| IssueObj {
             number: 1,

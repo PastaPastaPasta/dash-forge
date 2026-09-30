@@ -1,0 +1,43 @@
+{
+  "name": "member_draft_after_author_ready",
+  "description": "The author marks ready, then a member converts it back to a draft: a draft.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "transitions": [
+      {
+        "id": "t1",
+        "kind": 14,
+        "actor": "alice",
+        "asAuthor": 7,
+        "createdAt": 50
+      },
+      {
+        "id": "t2",
+        "kind": 15,
+        "actor": "alice",
+        "asAuthor": 7,
+        "createdAt": 100
+      },
+      {
+        "id": "t3",
+        "kind": 14,
+        "actor": "maint",
+        "asAuthor": 0,
+        "createdAt": 200
+      }
+    ],
+    "events": [],
+    "baseTip": "B",
+    "ancestry": []
+  },
+  "expected": {
+    "open": true,
+    "merged": false,
+    "draft": true,
+    "baseRef": null,
+    "labels": [],
+    "assignees": [],
+    "mergeOnBase": null
+  }
+}

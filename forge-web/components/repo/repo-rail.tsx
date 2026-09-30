@@ -13,7 +13,7 @@
 import { Time } from '@/components/repo/byline'
 import { useEffect, useLayoutEffect, useSyncExternalStore } from 'react'
 import Link from 'next/link'
-import { ExternalLink, GitBranch, Scale, Star, Tag, Users } from 'lucide-react'
+import { ExternalLink, GitBranch, HardDrive, Rocket, Scale, Star, Tag, Users } from 'lucide-react'
 import {
   beginView,
   contentChecks,
@@ -41,7 +41,7 @@ import { TrustPanel } from '@/components/ui/trust-panel'
 import { BackendBadge } from '@/components/ui/backend-badge'
 import { CloneBox } from '@/components/repo/clone-box'
 import { LanguageBar, useRepoFacts } from '@/components/repo/repo-facts-card'
-import { repoFactsLoading, subscribeRepoFacts, wantRepoFacts } from '@/lib/view/repo-facts'
+import { readAboutTotals, repoFactsLoading, repoSizeOf, subscribeRepoFacts, wantRepoFacts, type AboutTotals } from '@/lib/view/repo-facts'
 import { peeledCommitOf } from '@/lib/view/tip'
 import { Author } from '@/components/author'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
@@ -115,6 +115,8 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
 }
 
 function About({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; selected: SelectedRef }): JSX.Element {
+  const [countsRef, countsInView] = useInView<HTMLDivElement>()
+  const totals = useAboutTotals(home.repo, countsInView)
   return (
     <Card title="About">
       {home.description ? <p className="mb-2 text-anvil-700 dark:text-anvil-200">{home.description}</p> : null}
@@ -128,24 +130,92 @@ function About({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; se
           ))}
         </ul>
       ) : null}
-      <Row icon={<GitBranch className="h-3.5 w-3.5" aria-hidden />} label="Default branch">
-        <span className="font-mono">{home.defaultBranch}</span>
-      </Row>
-      <Row icon={<GitBranch className="h-3.5 w-3.5" aria-hidden />} label="Branches" href={repoHref('/repo/branches', addr)}>
-        {home.branches.filter(isLive).length}
-      </Row>
-      <Row icon={<Tag className="h-3.5 w-3.5" aria-hidden />} label="Tags" href={repoHref('/repo/tags', addr)}>
-        {home.tags.filter(isLive).length}
-      </Row>
-      <Row icon={<Star className="h-3.5 w-3.5" aria-hidden />} label="Stars" href={repoHref('/repo/stargazers', addr)}>
-        {home.starCount ?? <span title="Couldn't read the star count from Platform">–</span>}
-      </Row>
+      <div ref={countsRef}>
+        <Row icon={<GitBranch className="h-3.5 w-3.5" aria-hidden />} label="Default branch">
+          <span className="font-mono">{home.defaultBranch}</span>
+        </Row>
+        <Row icon={<GitBranch className="h-3.5 w-3.5" aria-hidden />} label="Branches" href={repoHref('/repo/branches', addr)}>
+          {home.branches.filter(isLive).length}
+        </Row>
+        <Row icon={<Tag className="h-3.5 w-3.5" aria-hidden />} label="Tags" href={repoHref('/repo/tags', addr)}>
+          {home.tags.filter(isLive).length}
+        </Row>
+        {/* A private repo's count is the member's decrypted list's, never the proved sum
+            (readAboutTotals); a reader without keys never gets this far. */}
+        <Row
+          icon={<Rocket className="h-3.5 w-3.5" aria-hidden />}
+          label="Releases"
+          href={repoHref('/repo/releases', addr)}
+          testId="repo-releases"
+          busy={totals === null}
+        >
+          {totals === null ? <ValuePending label="Reading the release count" /> : (totals.releases ?? <ValueUnavailable what="release count" />)}
+        </Row>
+        <Row icon={<Star className="h-3.5 w-3.5" aria-hidden />} label="Stars" href={repoHref('/repo/stargazers', addr)}>
+          {home.starCount ?? <ValueUnavailable what="star count" />}
+        </Row>
+        <RepoSize totals={totals} />
+      </div>
       <Facts home={home} addr={addr} selected={selected} />
       <div className="mt-2 flex items-center justify-between gap-2 border-t border-anvil-100 pt-2 dark:border-anvil-850">
         <span className="text-anvil-500 dark:text-anvil-400">Storage</span>
         <BackendBadge backend={home.backend} />
       </div>
     </Card>
+  )
+}
+
+/**
+ * The About card's release count and repo size ({@link readAboutTotals}: two proved sums), read
+ * once the card's rows are in view (S-1) and each kept for a minute, as the releases list is. Null
+ * while reading; a failed read shows as a failed row, never as a zero, and is not kept.
+ */
+function useAboutTotals(repo: RepoRef, wanted: boolean): AboutTotals | null {
+  const { sdk, ready, network } = useSdk(repoContractIds(repo))
+  return useAsync<AboutTotals>(
+    () => readAboutTotals(sdk!, repo, network),
+    [ready, repoKey(repo), network],
+    { enabled: wanted && ready && sdk !== null },
+  ).data
+}
+
+/** The About card's Size row ({@link repoSizeOf}); none for a repo with no packs. */
+function RepoSize({ totals }: { totals: AboutTotals | null }): JSX.Element | null {
+  let value: JSX.Element
+  if (totals === null) value = <ValuePending label="Reading the repo size" />
+  else if (totals.gitPacks === null) value = <ValueUnavailable what="repo size" />
+  else {
+    const size = repoSizeOf(totals.gitPacks)
+    if (size === null) return null
+    value = (
+      <span title={size.tooltip}>
+        {size.text}
+        <span className="sr-only"> ({size.tooltip})</span>
+      </span>
+    )
+  }
+  return (
+    <Row icon={<HardDrive className="h-3.5 w-3.5" aria-hidden />} label="Size" testId="repo-size" busy={totals === null}>
+      {value}
+    </Row>
+  )
+}
+
+/** A row value Platform couldn't give: a dash, with why in its tooltip. */
+function ValueUnavailable({ what }: { what: string }): JSX.Element {
+  return <span title={`Couldn't read the ${what} from Platform`}>–</span>
+}
+
+/**
+ * A row value still being read: a short pulsing bar, with its label as text a screen reader reads
+ * in the row (the row is `aria-busy` meanwhile). No live region: inside a link it would only
+ * lengthen the link's name, and it is replaced, not updated, when the value comes.
+ */
+function ValuePending({ label }: { label: string }): JSX.Element {
+  return (
+    <span className="inline-block h-3 w-8 animate-pulse rounded bg-anvil-100 align-middle dark:bg-anvil-800">
+      <span className="sr-only">{label}</span>
+    </span>
   )
 }
 
@@ -212,7 +282,7 @@ function MirrorProvenance({ home }: { home: RepoHome }): JSX.Element | null {
 }
 
 function Members({ repo }: { repo: RepoRef }): JSX.Element {
-  const { sdk, ready, network } = useSdk([repo.forge.core, repo.forge.collab])
+  const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const members = useAsync<Membership[]>(
     async () => {
       const list = await readMembershipsCached(sdk!, repo, network)
@@ -298,12 +368,15 @@ function Row({
   label,
   href,
   testId,
+  busy,
   children,
 }: {
   icon: React.ReactNode
   label: string
   href?: string
   testId?: string
+  /** The value is still being read (`aria-busy`). */
+  busy?: boolean
   children: React.ReactNode
 }): JSX.Element {
   const body = (
@@ -320,6 +393,7 @@ function Row({
       <Link
         href={href}
         data-testid={testId}
+        aria-busy={busy || undefined}
         className="-mx-1 flex items-center justify-between gap-2 rounded px-1 py-1 text-anvil-600 transition-colors hover:bg-anvil-50 hover:text-forge-800 coarse:min-h-11 dark:text-anvil-300 dark:hover:bg-anvil-850 dark:hover:text-forge-400"
       >
         {body}
@@ -327,7 +401,7 @@ function Row({
     )
   }
   return (
-    <div data-testid={testId} className="flex items-center justify-between gap-2 py-1 text-anvil-600 dark:text-anvil-300">
+    <div data-testid={testId} aria-busy={busy || undefined} className="flex items-center justify-between gap-2 py-1 text-anvil-600 dark:text-anvil-300">
       {body}
     </div>
   )

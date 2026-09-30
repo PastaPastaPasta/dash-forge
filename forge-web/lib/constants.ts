@@ -25,7 +25,7 @@ import storageDefaults from '../../forge-contracts/config/storage-defaults.json'
 // Network
 // ---------------------------------------------------------------------------
 
-/** The network kinds forge-web can be built for. A devnet is further named (`moutai`). */
+/** The network kinds forge-web can be built for. A devnet is further named (`bonsia`). */
 export type Network = 'testnet' | 'mainnet' | 'devnet'
 
 /**
@@ -40,7 +40,7 @@ export const DEFAULT_DAPI_PORT = 1443
 /** One network's resolved configuration. */
 export interface NetworkConfig {
   readonly network: Network
-  /** The devnet name (`moutai`), or null for testnet/mainnet. */
+  /** The devnet name (`bonsia`), or null for testnet/mainnet. */
   readonly devnetName: string | null
   /** Deployment key / display label: `testnet`, `mainnet`, or `devnet-<name>`. */
   readonly key: string
@@ -109,7 +109,7 @@ export function parseDapiAddresses(list: string): string[] {
 function validateDevnetName(name: string): void {
   const reserved = ['mainnet', 'testnet', 'devnet', 'local', 'regtest']
   if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(name) || reserved.includes(name.toLowerCase())) {
-    throw new Error(`invalid NEXT_PUBLIC_DEVNET_NAME "${name}": use letters, digits and inner hyphens (e.g. moutai)`)
+    throw new Error(`invalid NEXT_PUBLIC_DEVNET_NAME "${name}": use letters, digits and inner hyphens (e.g. bonsia)`)
   }
 }
 
@@ -131,7 +131,7 @@ export function resolveNetworks(
   const active: Network = kind
   if (active === 'devnet') {
     if (devnetName === null) {
-      throw new Error('NEXT_PUBLIC_NETWORK=devnet needs NEXT_PUBLIC_DEVNET_NAME (e.g. moutai)')
+      throw new Error('NEXT_PUBLIC_NETWORK=devnet needs NEXT_PUBLIC_DEVNET_NAME (e.g. bonsia)')
     }
     validateDevnetName(devnetName)
   }
@@ -232,10 +232,10 @@ export function requireForge(network: Network): ForgeIds {
 // ---------------------------------------------------------------------------
 // Chunk / browse constants — MIRROR forge-core (parity via forge-contracts/vectors).
 // See docs/contracts/forge-v2.md and forge-contracts/contracts/forge-core.json for the
-// normative `chunk` / `manifestPart` / `packManifest` field definitions.
+// normative `chunk` / `packManifest` field definitions.
 // ---------------------------------------------------------------------------
 
-/** Max bytes per byteArray field on `chunk` (d0..d2) and per `manifestPart` entry column. */
+/** Max bytes per byteArray field on `chunk` (d0..d2). */
 export const FIELD_MAX = 4900
 
 /** `chunk` carries three byteArray fields d0..d2. */
@@ -249,8 +249,24 @@ export const PACK_KIND = {
   GIT_PACK: 0,
   OBJECT_LOCATOR: 1,
   FLAT_INDEX: 2,
-  /** The history index: each path's last change and the commit count of a tip. */
+  /**
+   * The history index: each path's last change and the commit count of a tip. RC1 `kindShape`
+   * requires its `tips` to be 20, 32, 40 or 64 bytes (one or two SHA-1 / SHA-256 oids).
+   */
   HISTORY_INDEX: 3,
+  /**
+   * A release's asset manifest (D-4, `release-asset-manifest.md`; RC1 R-11 renumbered it from 3
+   * so history readers never load asset JSON as an index). A public release made in the browser
+   * records its assets inline in `release.assets`; a private repo's sealed release names a sealed
+   * kind-4 list (`private-repos.md` §16.5, `lib/repo/sealed-release.ts`), which only that release's
+   * reader opens. Every other reader selects its own kind.
+   */
+  RELEASE_ASSETS: 4,
+  /**
+   * The history index's per-path version lists (format 2, the whole index), the companion of the
+   * column index (kind 3, format 1) of the same tip: only Blame and a path's History read it.
+   */
+  HISTORY_VERSIONS: 5,
 } as const
 export type PackKind = (typeof PACK_KIND)[keyof typeof PACK_KIND]
 
@@ -260,6 +276,13 @@ export const STORAGE = {
   EXTERNAL: 1,
 } as const
 export type Storage = (typeof STORAGE)[keyof typeof STORAGE]
+
+/**
+ * `packManifest.sizeBytes` bounds (RC1 `sizeNonNeg`: a plain integer, 0 to 1 TiB). A Platform
+ * copy (`storage` 0) must also fit its chunks (`storageShape`: at most `chunkCount` ×
+ * {@link CHUNK_PAYLOAD_MAX}), and an external-only one (`storage` 1) records no chunks.
+ */
+export const MANIFEST_SIZE_MAX = 2 ** 40
 
 /** `packManifest` array bounds (normative). */
 export const MANIFEST_MAX_URIS = 8

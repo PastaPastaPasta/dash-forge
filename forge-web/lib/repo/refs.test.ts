@@ -17,7 +17,7 @@ import { DOC, type RepoRef } from './contract'
 import { hasMissingParent, keysetScan, keysetSplits, readRefs, splitHashRange } from './refs'
 
 const REPO: RepoRef = {
-  forge: { core: 'CORE', collab: 'COLLAB', group: 'G' },
+  forge: { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'G' },
   repoId: 'R',
   ownerId: 'owner',
   name: 'n',

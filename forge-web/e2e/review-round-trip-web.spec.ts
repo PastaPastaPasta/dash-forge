@@ -9,7 +9,7 @@ import { answerStorageQuestion, expectPlatformPreAllowed, idFile, idOf, runAxe, 
  * The full GitHub-style review round trip in the browser (review-parity spec §7 PRs 3–6), two
  * users on a devnet with the spec's own identities (≈ 0.03 DASH plus a few KiB of storage):
  *
- *   E2E_DEVNET=moutai E2E_WRITE=1 E2E_IDENTITY_DIR=<dir with OWNER, CONTRIB, COLLAB> \
+ *   E2E_DEVNET=bonsia E2E_WRITE=1 E2E_IDENTITY_DIR=<dir with OWNER, CONTRIB, COLLAB> \
  *     E2E_BIN_DIR=<dir with dg, git-remote-dash, seed_check_run> \
  *     pnpm exec playwright test review-round-trip-web.spec.ts
  *
@@ -55,7 +55,7 @@ function env(who: string): NodeJS.ProcessEnv {
     ...process.env,
     DASH_FORGE_KEY: idFile(who),
     DASH_FORGE_NETWORK: 'devnet',
-    DASH_FORGE_DEVNET_NAME: process.env['E2E_DEVNET'] || 'moutai',
+    DASH_FORGE_DEVNET_NAME: process.env['E2E_DEVNET'] || 'bonsia',
     RUST_LOG: 'error',
     NO_COLOR: '1',
     PATH: `${BIN}:${process.env['PATH'] ?? ''}`,
@@ -244,7 +244,10 @@ test('r5. the maintainer re-reviews: resolves, approves; checks gate the merge u
   await expect(unavailable).toContainText(/can't write the contributor's fork; ask them to allow edits by maintainers/, { timeout: 180_000 })
   await expect(unavailable.getByRole('checkbox')).toBeDisabled()
   // The contributor allows edits by maintainers (OWNER becomes a writer of the fork): r6 deletes it.
-  dg('CONTRIB', 'collab', 'add', FORK_SLUG, ids.owner, '--role', 'writer')
+  // RC1 consent (R-06): the member accepts before the owner can add them (--wait rides out a
+  // node that has not seen the consent yet).
+  dg('OWNER', 'collab', 'accept', FORK_SLUG)
+  dg('CONTRIB', 'collab', 'add', FORK_SLUG, ids.owner, '--role', 'writer', '--wait', '60')
 })
 
 test('r6. squash and merge with an edited message; the branch is deleted', async ({ browser }) => {

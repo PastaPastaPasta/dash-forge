@@ -16,7 +16,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { DEFAULT_NETWORK, type Network } from '../constants'
-import { DOC, readNumberTrust, repoKey, repoSource, type RepoRef } from '../repo'
+import { DOC, readProvenanceTrust, repoKey, repoSource, type RepoRef } from '../repo'
 import { queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { mapPooled } from './pool'
 
@@ -97,7 +97,7 @@ export async function readMirrorSource(
 ): Promise<MirrorSource | null> {
   const described = mirrorSourceOfDescription(description, kind)
   if (described !== null) return described
-  const trusted = await readNumberTrust(sdk, repo, network)
+  const trusted = await readProvenanceTrust(sdk, repo, network)
   const type = kind === 'issue' ? DOC.issue : DOC.patch
   const found = await mapPooled(trusted, 8, async (author) => {
     // One author's failed read costs only that author's rows, not the others' answer.

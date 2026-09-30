@@ -8,7 +8,7 @@ import { E2E_DEVNET, idFile, runAxe, shot, signedIn, stateFile, unlock } from '.
  *
  *   docker compose -f infra/docker-compose.yml up -d rustfs s3-init
  *   cloudflared tunnel --url http://127.0.0.1:9000        # prints https://<name>.trycloudflare.com
- *   E2E_DEVNET=moutai E2E_WRITE=1 E2E_PUBLIC_MINIO=https://<name>.trycloudflare.com/forge-byo \
+ *   E2E_DEVNET=bonsia E2E_WRITE=1 E2E_PUBLIC_MINIO=https://<name>.trycloudflare.com/forge-byo \
  *     pnpm exec playwright test new-release.spec.ts
  *
  * r1. A non-maintainer (CONTRIB) sees no "New release" button on MAINTAINER's repo.

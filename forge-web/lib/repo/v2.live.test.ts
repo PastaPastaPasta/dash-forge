@@ -2,24 +2,26 @@
  * Live forge-v2 read smoke — SKIPPED by default (needs network + WASM).
  *
  * Run with:
- *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=moutai \
+ *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia \
  *     pnpm exec vitest run lib/repo/v2.live.test.ts
  *
- * Reads the forge-v2 fixture `forge-contracts/scripts/seed-v2-fixture.mjs` seeds on moutai
+ * Reads the forge-v2 fixture `forge-contracts/scripts/seed-v2-fixture.mjs` seeds on bonsia
  * end to end through the same functions the pages use: resolution by `(owner, name)` and by
  * DPNS-less id, refs, config, membership, the issue/PR folds over `event` + `authorEvent`,
  * approvals, and the browse plane (locator + Platform chunks, hash-checked objects).
  *
  * The second test is the review-parity contract (`docs/design/review-parity-spec.md` §3), with
- * the moutai test identities in `~/.config/dash-forge/test-identities/devnet-moutai/` (a few
+ * the devnet's test identities in `~/.config/dash-forge/test-identities/devnet-<name>/` (a few
  * cents of spend):
  *
- * 1. The fixture's PR #3 holds one document of every changed or new type, read back with
- *    proofs: a draft `patch`, the author's `headUpdate` / `threadResolve` (`authorEvent` kinds
- *    16, 11), a member's `reviewRequest` / `reviewDismiss` (`event` kinds 13, 15 with `refId`),
- *    a `review` with `commentCount`, a multi-line `comment` attached by `reviewId`, and a
- *    `policy`. The new indexes answer: `sourceRef`, `reply`, `addressee`, and the review and
- *    comment counts per PR.
+ * 1. The fixture's review-parity PR (`loadSeedPulls().reviewParity`; issues and PRs share one
+ *    dense per-repo number sequence, forge-v2.md §6.2, so it is no longer the small constant 3)
+ *    holds one document of every changed or new type, read back with proofs: a draft state (a
+ *    kind-14 `transition`, `PR_DRAFT`; `patch` itself carries no `draft` field), the author's
+ *    `headUpdate` / `threadResolve` (`authorEvent` kinds 16, 11), a member's `reviewRequest` /
+ *    `reviewDismiss` (`event` kinds 13, 15 with `refId`), a `review` with `commentCount`, a
+ *    multi-line `comment` attached by `reviewId`, and a `policy`. The new indexes answer:
+ *    `sourceRef`, `reply`, `addressee`, and the review and comment counts per PR.
  * 2. In a scratch repo (the read fixture is left as its seeder wrote it), what the spec says
  *    is refused is refused: a `comment` naming another reviewer's review
  *    (the `$ownerId` agreement, 40127), a `policy` by a writer (maintainer gate, 40120), an
@@ -33,26 +35,35 @@
  */
 
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
+import { loadSeedPulls, seedRepo } from '../../e2e/seed-summary'
 import { DEFAULT_NETWORK, NETWORKS } from '../constants'
+import { PR_DRAFT } from '../rules/v2'
 import { asConsensusRefusal, evoSdkService } from '../sdk'
 import { commitRootTree, loadBrowseContext, loadIssueThread, loadPullThread, loadRepoHome, readTree } from '../view'
 import { listRecentRepos, listReposByOwner } from '../view/discovery'
-import { listIssues, listPulls, readMemberships } from './index'
+import { queryIssues, queryPulls, readMemberships } from './index'
 import { readTargetCounts } from './social'
 
 const LIVE = process.env['FORGE_LIVE'] === '1' && DEFAULT_NETWORK === 'devnet'
 
-const OWNER = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
-const MAINTAINER = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'
-const COLLAB = 'CJao2MVHL4x3f2Ko2xTUibnZ8G1t9exTPtvJnCbHAgDH'
+const ID_DIR = join(homedir(), '.config/dash-forge/test-identities', NETWORKS[DEFAULT_NETWORK].key)
+/** An identity id from the devnet's fixture pool, or '' when the file is not here (not LIVE). */
+const poolId = (role: string): string => {
+  const file = join(ID_DIR, `${role}.identity.json`)
+  return existsSync(file) ? String((JSON.parse(readFileSync(file, 'utf8')) as { identityId: string }).identityId) : ''
+}
+// The fixture's seeders, as the committed seed summary records them (OWNER seeds forge-v2-demo,
+// MAINTAINER forge-v2-empty); COLLAB is the pool's writer.
+const OWNER = seedRepo('demo')?.owner ?? ''
+const MAINTAINER = seedRepo('empty')?.owner ?? ''
+const COLLAB = poolId('COLLAB')
 const MAIN_TIP = 'b35c50122cd51b2cc0345760721e6398fa0c31f5'
-const ID_DIR = join(homedir(), '.config/dash-forge/test-identities/devnet-moutai')
 const C2 = 'b35c50122cd51b2cc0345760721e6398fa0c31f5'
 const C3 = '3a1300eb2441ef94fd927dbfc7548d34fbb8edc5'
 
@@ -76,10 +87,11 @@ const hex = (v: unknown): string => {
   throw new TypeError('not bytes')
 }
 
-describe.skipIf(!LIVE)('live forge-v2 reads (moutai fixture)', () => {
+describe.skipIf(!LIVE)('live forge-v2 reads (bonsia fixture)', () => {
   it(
     'resolves, folds and browses the fixture repo',
     async () => {
+      const pulls = loadSeedPulls()
       await evoSdkService.initialize({ network: 'devnet', contractIds: [], timeoutMs: 20000 })
       const sdk = evoSdkService.getSdk()
 
@@ -108,19 +120,19 @@ describe.skipIf(!LIVE)('live forge-v2 reads (moutai fixture)', () => {
         [`maintainer:${OWNER}`, `maintainer:${MAINTAINER}`, `writer:${COLLAB}`].sort(),
       )
 
-      const issues = await listIssues(sdk, home.repo)
+      const issues = (await queryIssues(sdk, home.repo, { state: 'all', labels: [], author: null, assignee: null, mentions: null, sort: 'newest', text: '', page: 1, pageSize: 100 } as const, null)).rows
       const byNumber = new Map(issues.map((i) => [i.number, i]))
       expect(byNumber.get(1)?.state).toMatchObject({ open: true, labels: ['question'] })
       expect(byNumber.get(2)?.state.open).toBe(false) // the author's own authorEvent close
       expect(byNumber.get(3)?.state).toMatchObject({ open: false, labels: ['docs'] })
 
-      const pulls = await listPulls(sdk, home.repo)
-      const pr = new Map(pulls.map((p) => [p.number, p]))
-      expect(pr.get(1)?.state).toMatchObject({ open: true, merged: false })
-      expect(pr.get(2)?.state.merged).toBe(true)
-      expect(pr.get(1)?.sourceId).toBe(home.repo.repoId)
+      const prList = (await queryPulls(sdk, home.repo, { state: 'all', labels: [], author: null, assignee: null, sort: 'newest', text: '', page: 1, pageSize: 100 } as const, null)).rows
+      const pr = new Map(prList.map((p) => [p.number, p]))
+      expect(pr.get(pulls.approved)?.state).toMatchObject({ open: true, merged: false })
+      expect(pr.get(pulls.merged)?.state.merged).toBe(true)
+      expect(pr.get(pulls.approved)?.sourceId).toBe(home.repo.repoId)
 
-      const thread = await loadPullThread(sdk, home.repo, 1)
+      const thread = await loadPullThread(sdk, home.repo, pulls.approved)
       expect(thread?.approvals?.approvers).toEqual([MAINTAINER])
       const issue2 = await loadIssueThread(sdk, home.repo, 2)
       expect(issue2?.timeline.some((t) => t.kind === 'event' && t.byAuthor === true)).toBe(true)
@@ -133,7 +145,7 @@ describe.skipIf(!LIVE)('live forge-v2 reads (moutai fixture)', () => {
       expect(names).toEqual(['README.md', 'docs', 'lib', 'src'])
 
       // The feed's composite read (a page of repos + star and issue counts under one proof).
-      // Other suites create many repos on moutai, so the fixture is not on its first page;
+      // Other suites create many repos on the devnet, so the fixture is not on its first page;
       // its provable counts are read directly (the same countable indexes).
       const feed = await listRecentRepos(sdk, { network: 'devnet', limit: 100 })
       expect(feed.length).toBeGreaterThan(0)
@@ -149,6 +161,7 @@ describe.skipIf(!LIVE)('live forge-v2 reads (moutai fixture)', () => {
   it(
     'reads every changed type from the fixture and refuses what the spec refuses',
     async () => {
+      const pulls = loadSeedPulls()
       const ids = NETWORKS.devnet.v2
       if (ids === null) throw new Error('no forge-v2 deployment for the devnet')
       const evo: Evo = await import('@dashevo/evo-sdk')
@@ -232,10 +245,13 @@ describe.skipIf(!LIVE)('live forge-v2 reads (moutai fixture)', () => {
       const repo = [...repoRes.values()][0]?.toJSON(14) as Record<string, unknown> | undefined
       if (repo === undefined) throw new Error('forge-v2-demo not found')
       const repoId = String(repo['$id'])
-      const [pr] = await query('patch', [['repoId', '==', repoId], ['number', '==', 3]])
-      if (pr === undefined) throw new Error('fixture PR #3 not found: run seed-v2-fixture.mjs')
+      const [pr] = await query('patch', [['repoId', '==', repoId], ['number', '==', pulls.reviewParity]])
+      if (pr === undefined) throw new Error(`fixture review-parity PR #${pulls.reviewParity} not found: run seed-v2-fixture.mjs`)
       const prId = String(pr['$id'])
-      expect(pr['draft']).toBe(true)
+      // `patch` itself no longer carries a `draft` field: draft is folded from `transition`s
+      // (kind 14 = PR_DRAFT, docs/contracts/forge-v2.md §3).
+      const draftTransitions = await query('transition', [['targetId', '==', prId], ['kind', '==', PR_DRAFT]])
+      expect(draftTransitions.length).toBeGreaterThan(0)
       expect(hex(pr['headOid'])).toBe(C2)
       expect(pr['$updatedAt']).toBeDefined()
 
@@ -265,7 +281,7 @@ describe.skipIf(!LIVE)('live forge-v2 reads (moutai fixture)', () => {
         ['sourceRepoId', '==', repoId],
         ['sourceRefNameHash', '==', pr['sourceRefNameHash']],
       ])
-      expect(fromBranch.map((p) => p['number'])).toContain(3)
+      expect(fromBranch.map((p) => p['number'])).toContain(pulls.reviewParity)
       const replies = await query('comment', [['replyTo', '==', resolvedRoot]])
       expect(replies.map((c) => c['$ownerId'])).toEqual([CONTRIB.id])
       const addressed = await query('event', [['refId', '==', MAINTAINER.id]])

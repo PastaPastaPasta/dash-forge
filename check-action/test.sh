@@ -116,6 +116,9 @@ refuse "bad status" INPUT_STATUS=done INPUT_JOB_STATUS=success
 refuse "bad sha" INPUT_JOB_STATUS=success INPUT_SHA=xyz
 refuse "bad repo" INPUT_JOB_STATUS=success 'INPUT_REPO=alice/$(id)'
 refuse "http details url" INPUT_JOB_STATUS=success INPUT_DETAILS_URL=http://x/y
+refuse "details url with userinfo" INPUT_JOB_STATUS=success INPUT_DETAILS_URL=https://github.com@evil.example/x
+refuse "details url without a host" INPUT_JOB_STATUS=success INPUT_DETAILS_URL=https:///x
+refuse "details url in capitals" INPUT_JOB_STATUS=success INPUT_DETAILS_URL=HTTPS://a.b
 refuse "devnet without a name" INPUT_JOB_STATUS=success INPUT_NETWORK=devnet
 refuse "devnet name with odd characters" INPUT_JOB_STATUS=success INPUT_NETWORK=devnet 'INPUT_DEVNET_NAME=a b'
 refuse "a newline in the name" INPUT_JOB_STATUS=success INPUT_NAME=$'a\n--public-log'
@@ -133,7 +136,13 @@ case="log with storage"
 resolve INPUT_JOB_STATUS=success INPUT_LOG="$tmp/job.log" INPUT_LOG_STORAGE=r2-logs INPUT_PUBLIC_LOG=true || fail "exit $?"
 has "--log=$tmp/job.log"
 has "--storage=r2-logs"
-has "--public-log"
+# A private repository's check run cannot carry a log: public-log is inert, with a warning.
+args | grep -qx -- --public-log && fail "--public-log is no longer passed"
+grep -q '::warning title=Dash Forge check::public-log has no effect' "$tmp/stdout" || fail "public-log warns"
+
+case="a plain-http GitHub Enterprise Server gets no details link"
+resolve INPUT_JOB_STATUS=success GITHUB_SERVER_URL=http://ghes.internal || fail "exit $?"
+lacks_prefix "--details-url"
 
 # report.sh against a fake dg that records its argv.
 mkdir -p "$tmp/bin"

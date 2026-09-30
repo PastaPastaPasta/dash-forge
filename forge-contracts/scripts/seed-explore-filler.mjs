@@ -1,0 +1,46 @@
+#!/usr/bin/env node
+// seed-explore-filler.mjs — N public repos (`explore-fill-01`..`N`) owned by one scratch
+// identity, so Explore's "recent repos" has more than one 24-repo page (forge-web e2e g2).
+//
+//   node forge-contracts/scripts/seed-explore-filler.mjs --identity <explore-filler.identity.json> \
+//        [--count 25] [--network devnet --devnet-name bonsia] [--deployment <file>] [--pace-ms 700]
+//
+// Writes RC1 documents; needs `npm ci` in forge-contracts/sdk-v2 (evo-sdk 4.2.0-beta.7). The
+// network defaults to DASH_FORGE_NETWORK / DASH_FORGE_DEVNET_NAME, else devnet bonsia. Each repo
+// is what `dg repo create <name> --storage platform` writes for a public repo with nothing
+// pushed: the repo and its owner's own maintainer enrolment.
+//
+// Idempotent: a repo the identity already owns under that name is skipped (its enrolment is
+// written if it is missing). Cost: about 0.001 DASH per repo.
+import { VIS, idBytes, loadIdentity, log, membership, openSession, parseArgs, runIfMain, sleep } from './lib/seed-io.mjs';
+
+export async function main(argv, injected) {
+  const a = { count: '25', 'pace-ms': '700', ...parseArgs(argv) };
+  if (!a.identity) throw new Error('--identity <file> is required');
+  const count = Number(a.count);
+  const pace = Number(a['pace-ms']);
+  const { net, evo, write, read } = await openSession(a, injected);
+  const me = loadIdentity(evo, a.identity, 'FILLER');
+  const create = async (type, data) => {
+    const created = await write(me, type, data);
+    await sleep(pace);
+    return created.id.toBase58();
+  };
+
+  const repos = [];
+  for (let i = 1; i <= count; i++) {
+    const name = `explore-fill-${String(i).padStart(2, '0')}`;
+    let repoId = (await read.first('repo', [['$ownerId', '==', me.id], ['name', '==', name]]))?.$id;
+    if (!repoId) repoId = await create('repo', { name, visibility: VIS, description: 'Explore paging filler (forge-web e2e g2)' });
+    if (!(await read.first('maintainer', [['repoId', '==', repoId], ['memberId', '==', me.id]]))) {
+      await create('maintainer', membership(idBytes(repoId), me.id, me.id));
+    }
+    repos.push({ name, repoId });
+    log(`${name} ${repoId}`);
+  }
+  const summary = { network: net.key, owner: me.id, repos: repos.length };
+  console.log(JSON.stringify(summary));
+  return summary;
+}
+
+runIfMain(import.meta.url, main);

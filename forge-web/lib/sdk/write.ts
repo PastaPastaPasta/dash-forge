@@ -30,11 +30,11 @@ import type { EvoSDK, StateTransition } from '@dashevo/evo-sdk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
-import type { Network } from '../constants'
+import { NETWORKS, type Network } from '../constants'
+import { rc1WriteProblem } from '../layout'
 import { base58Encode } from '../auth/base58'
 import { controlsKey } from '../auth/wif'
 import { previewCreate, previewCredits, previewDelete, previewReplace, type CostPreview } from './cost'
-import { trueCodeOf } from './consensus-shift'
 import { base64ToBytes, bytesToBase64, followSdkVersion, noteSdkWrite } from './query'
 
 export type { CostPreview } from './cost'
@@ -79,6 +79,8 @@ interface DocumentsFacadeLike {
 interface StateTransitionsFacadeLike {
   broadcastStateTransition(st: StateTransition): Promise<void>
   waitForResponse(st: StateTransition, settings?: WaitSettings): Promise<unknown>
+  /** Accepts a proof of the state the transition affected: the only proof an indexOnly write has. */
+  waitForAffectedState(st: StateTransition, settings?: WaitSettings): Promise<unknown>
 }
 
 /**
@@ -516,9 +518,8 @@ const UNPAID_CODES: ReadonlySet<number> = new Set([40204, 10002])
 
 /**
  * A refusal at the broadcast check whose reason the pinned SDK could not decode ("unable to
- * deserialize ConsensusError": an error variant newer than the SDK, or one platform#5053 moved
- * onto a variant of another shape, e.g. 10420 or 10424 from a beta.6 node). The node refused
- * the transition, so it is a refusal (its cached bytes are dropped and the next attempt signs
+ * deserialize ConsensusError": an error variant newer than the SDK). The node refused the
+ * transition, so it is a refusal (its cached bytes are dropped and the next attempt signs
  * afresh), not a lost answer; only the reason is unknown.
  */
 export const UNREADABLE_REFUSAL_CODE = 0
@@ -553,16 +554,19 @@ export const DUPLICATE_UNIQUE_CODE = 40105
 
 /** An `ownerRefersTo` gate was not satisfied (not a member, not the author). */
 export const GATE_REFUSED_CODE = 40120
+/** A document breaks one of its type's `propertyConstraints` rules (the message names the rule). */
+export const RULE_REFUSED_CODE = 10422
 
 /** A replace named a revision other than the stored one + 1 (`InvalidDocumentRevisionError`). */
 export const INVALID_REVISION_CODE = 40106
 
 /**
  * The consensus refusals a write can meet, by the text Drive's error renders (`#[error(...)]`
- * in rs-dpp 4.2.0-beta.5, `packages/rs-dpp/src/errors/consensus`). A refusal at broadcast
- * (CheckTx) reaches the browser as the SDK's `Protocol error: <that text>` with no numeric
- * code (the wasm error's `code` is -1), so the text is how it is recognised. Named groups
- * carry the figures the UI shows (`remaining`, `balance`, `required`).
+ * in rs-dpp 4.2.0-beta.6, `packages/rs-dpp/src/errors/consensus`). From wasm-sdk 4.2.0-beta.6
+ * (platform#5112) a refusal at broadcast (CheckTx) carries the node's numeric code as well as
+ * its `Protocol error: <that text>`, so the code decides and the text is a fallback for errors
+ * that still arrive without one (`code` -1). Named groups carry the figures the UI shows
+ * (`remaining`, `balance`, `required`), which only the text holds.
  *
  * A nonce refusal (40204) is deliberately not among them: for a rebroadcast of bytes already
  * sent it means "a transition with this nonce is in", possibly this very one, so callers
@@ -588,11 +592,6 @@ const REFUSAL_PATTERNS: ReadonlyArray<readonly [number, RegExp]> = [
   [40140, /expired at \d+, its \$createdAt plus the type's time to live/i],
   [40141, /already has \d+ contenders, the most a contest accepts/i],
   [10002, /Parsing of serialized object failed due to/i],
-  // Texts only a shifted decode produces here (platform#5053, see ./consensus-shift): the SDK
-  // renders a beta.6 node's 10421 as the 11001 text and its 10419 as the 10904 text (its 10422
-  // as the 10421 text above). `asConsensusRefusal` maps each to the code the node sent.
-  [11001, /The moderation charter's reward split of/i],
-  [10904, /The documents a contract moderation reason cites are invalid/i],
   [UNREADABLE_REFUSAL_CODE, /unable to deserialize ConsensusError/i],
 ]
 
@@ -608,6 +607,28 @@ function consensusCodeOf(e: unknown): number | null {
   return null
 }
 
+/**
+ * Whether a refusal the SDK threw was charged, by the error's kind (wasm-sdk 4.2.0-beta.6,
+ * platform#5112; `WasmSdkError::with_context` keeps the kind of the error it wraps):
+ * - `StateTransitionBroadcastError`: the result wait's verdict on a transition in a block,
+ *   which pays its processing fee (unless Drive leaves that refusal unpaid): `true`;
+ * - `Protocol`: a consensus error the node sent at the broadcast check (CheckTx), or one the
+ *   SDK caught before sending; neither reached a block: `false`;
+ * - anything else, or no kind: not known, `null` (no "nothing was charged" claim).
+ * Call sites that know where the error came from override this (a broadcast's catch, the wait).
+ */
+function chargedByKind(e: unknown): boolean | null {
+  let name: unknown
+  try {
+    name = (e as { name?: unknown } | null)?.name
+  } catch {
+    return null
+  }
+  if (name === 'StateTransitionBroadcastError') return true
+  if (name === 'Protocol') return false
+  return null
+}
+
 function figuresOf(groups: Record<string, string> | undefined): RefusalFigures {
   const out: { remaining?: bigint; balance?: bigint; required?: bigint } = {}
   if (groups?.['remaining']) out.remaining = BigInt(groups['remaining'])
@@ -619,32 +640,26 @@ function figuresOf(groups: Record<string, string> | undefined): RefusalFigures {
 /**
  * The consensus refusal `e` is, or null when it is transport noise or unclassified.
  *
- * Where it came from sets `charged`: a numeric code is the SDK's `StateTransitionBroadcastError`
- * from a result wait, i.e. the transition's verdict in a block; Drive's text without a code is
- * the SDK's `Protocol error` for a refusal at the broadcast check (CheckTx), where nothing is
- * charged (measured live on moutai: a refused write leaves the balance unchanged).
+ * Where it came from sets `charged` ({@link chargedByKind}): the SDK's
+ * `StateTransitionBroadcastError` is the transition's verdict in a block; a `Protocol` error is
+ * a refusal at the broadcast check (CheckTx) or before sending, where nothing is charged
+ * (measured live on moutai: a refused write leaves the balance unchanged); another kind is
+ * unknown.
  */
 export function asConsensusRefusal(e: unknown): ConsensusRefusal | null {
   if (e instanceof ConsensusRefusal) return e
   const message = errorMessage(e)
   const code = consensusCodeOf(e)
+  const charged = chargedByKind(e)
   for (const [patternCode, re] of REFUSAL_PATTERNS) {
     if (code !== null && code !== patternCode) continue
     const m = re.exec(message)
-    // Without a code the text is the SDK's own decode of the node's error, which the pinned
-    // SDK may have shifted by one variant (platform#5053); a coded verdict is the node's own.
-    if (m) return new ConsensusRefusal(code ?? trueCodeOf(patternCode), message, figuresOf(m.groups), code !== null)
+    // An error the SDK could not decode may be a CheckTx refusal or a block's verdict (both reach
+    // JS as kind Protocol, code -1): its charge is unknown. A broadcast's own catch still says
+    // "not charged" (`atBroadcast`).
+    if (m) return new ConsensusRefusal(code ?? patternCode, message, figuresOf(m.groups), patternCode === UNREADABLE_REFUSAL_CODE ? null : charged)
   }
-  return code === null ? null : new ConsensusRefusal(code, message, {}, true)
-}
-
-/**
- * The SDK proves an indexOnly write (star, follow) by the state it affected, not by the
- * transition, and says so by rejecting the strict wait with this message. Only an indexOnly
- * write may read this as "landed".
- */
-function isAffectedStateSnapshot(e: unknown): boolean {
-  return errorMessage(e).includes('VerifiedDocuments snapshot')
+  return code === null ? null : new ConsensusRefusal(code, message, {}, charged)
 }
 
 /**
@@ -664,12 +679,20 @@ export const WAIT_SETTINGS: WaitSettings = { retries: 0, timeoutMs: WAIT_REQUEST
  * Wait for Platform's verdict on a broadcast transition: `'landed'` once proven, a thrown
  * {@link ConsensusRefusal} when consensus rejected it, `'unknown'` when the wait itself failed
  * (timeout, transport) — the caller then settles it ({@link settleUnanswered}).
+ *
+ * An indexOnly write (star, follow) keeps no row: its proof shows the entry the create leaves,
+ * never that this transition wrote it, so the strict wait refuses it. Such a write waits with
+ * the SDK's affected-state wait, which accepts that proof (the one `documents.create` itself
+ * uses for an indexOnly type from 4.2.0-beta.7, platform#5136); every other write keeps the
+ * strict one.
  */
 async function awaitOutcome(sdk: EvoSDK, st: StateTransition, indexOnly: boolean): Promise<'landed' | 'unknown'> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     await Promise.race([
-      facades(sdk).stateTransitions.waitForResponse(st, WAIT_SETTINGS),
+      indexOnly
+        ? facades(sdk).stateTransitions.waitForAffectedState(st, WAIT_SETTINGS)
+        : facades(sdk).stateTransitions.waitForResponse(st, WAIT_SETTINGS),
       // The overall deadline (proof verification can add a quorum fetch to the 20 s request).
       new Promise((_, reject) => {
         timer = setTimeout(() => reject(new Error('result wait deadline exceeded')), WAIT_DEADLINE_MS)
@@ -677,12 +700,14 @@ async function awaitOutcome(sdk: EvoSDK, st: StateTransition, indexOnly: boolean
     ])
     return 'landed'
   } catch (e) {
-    if (indexOnly && isAffectedStateSnapshot(e)) return 'landed'
     // A nonce answer is settled by reading the chain (the caller's `settleUnanswered`).
     const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
-    // The result wait answers with the transition's verdict in a block, whatever shape the
-    // error takes: charged (unless Drive leaves that refusal unpaid).
-    if (refusal !== null) throw new ConsensusRefusal(refusal.code, refusal.message, refusal.figures, true)
+    // The result wait answers with the transition's verdict in a block, whatever kind the error
+    // has: charged (unless Drive leaves that refusal unpaid), or unknown when the SDK could not
+    // decode it.
+    if (refusal !== null) {
+      throw new ConsensusRefusal(refusal.code, refusal.message, refusal.figures, refusal.code === UNREADABLE_REFUSAL_CODE ? null : true)
+    }
     return 'unknown'
   } finally {
     clearTimeout(timer)
@@ -777,12 +802,44 @@ export function setWriteClock(c: WriteClock | null): void {
   clock = c ?? REAL_CLOCK
 }
 
+/**
+ * Per connection and identity: the balance after the last write this tab measured, and the
+ * balances earlier writes replaced (their "before"s). A node a block behind still answers one of
+ * those; a read equal to one is stale, not the balance a write starts from or ends at.
+ */
+interface BalanceTrail {
+  readonly latest: bigint
+  readonly replaced: readonly bigint[]
+}
+const trails = new WeakMap<object, Map<string, BalanceTrail>>()
+
+function trailOf(sdk: EvoSDK, identityId: string): BalanceTrail | undefined {
+  return trails.get(sdk)?.get(identityId)
+}
+
+function noteMeasured(sdk: EvoSDK, identityId: string, before: bigint, after: bigint): void {
+  let byId = trails.get(sdk)
+  if (!byId) trails.set(sdk, (byId = new Map()))
+  const replaced = [before, ...(byId.get(identityId)?.replaced ?? [])].filter((b) => b !== after).slice(0, 8)
+  byId.set(identityId, { latest: after, replaced })
+}
+
+/**
+ * The balance a write starts from, given what a read just answered: a stale answer (a balance an
+ * earlier measured write already replaced) is the last measured one instead, so the write's
+ * charge does not fold in the one before it.
+ */
+export function balanceBeforeWrite(sdk: EvoSDK, identityId: string, read: bigint): bigint {
+  const trail = trailOf(sdk, identityId)
+  return trail !== undefined && trail.replaced.includes(read) ? trail.latest : read
+}
+
 /** Read a balance until it moves off `before` (a write's fee settles a block later). */
 async function balanceAfter(sdk: EvoSDK, identityId: string, before: bigint): Promise<bigint | null> {
   for (let i = 0; i < 8; i++) {
     try {
       const now = (await facades(sdk).identities.fetch(identityId))?.balance
-      if (now !== undefined && now !== before) return now
+      if (now !== undefined && now !== before && !(trailOf(sdk, identityId)?.replaced.includes(now) ?? false)) return now
     } catch {
       /* transient read failure: try again */
     }
@@ -791,11 +848,62 @@ async function balanceAfter(sdk: EvoSDK, identityId: string, before: bigint): Pr
   return null
 }
 
-/** The credits a write took (negative: refunded), from the balance on each side of it. */
-export async function measureActual(sdk: EvoSDK, identityId: string, before: bigint | null): Promise<number | null> {
-  if (before === null) return null
-  const after = await balanceAfter(sdk, identityId, before)
-  return after === null ? null : Number(before - after)
+/**
+ * Per identity, the balance measurements still running for writes that released the writer lock.
+ * The identity's next write waits for them before it reads its own "before" ({@link serialized}):
+ * a measurement still reading once the next write lands sees both fees, and the next write's own
+ * row counts the second again (D-2: a review's inline comment recorded at the pair's fee, the
+ * ledger then off by the review's fee, shown as "top-ups").
+ */
+const measuring = new Map<string, Promise<void>>()
+
+/** Whether a write of this identity is still measuring its charge (its ledger row not yet out). */
+export function measurementPending(identityId: string): boolean {
+  return measuring.has(identityId)
+}
+
+function trackMeasurement(identityId: string, measurement: Promise<unknown>): void {
+  const all = Promise.all([measuring.get(identityId), measurement]).then(
+    () => undefined,
+    () => undefined,
+  )
+  measuring.set(identityId, all)
+  void all.then(() => {
+    if (measuring.get(identityId) === all) measuring.delete(identityId)
+  })
+}
+
+/**
+ * How long a write waits for the last one's measurement. A healthy one reads its "after" within
+ * a block; one still reading past this (DAPI slow or down) no longer holds writes up: its row may
+ * then fold in the next write's fee, as before D-2.
+ */
+const MEASUREMENT_WAIT_MS = 12_000
+
+/** Wait (bounded, in wall time) for this identity's measurements still reading. Never rejects. */
+function lastMeasurement(identityId: string): Promise<void> {
+  const pending = measuring.get(identityId)
+  if (pending === undefined) return Promise.resolve()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const cap = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, MEASUREMENT_WAIT_MS)
+  })
+  return Promise.race([pending, cap]).finally(() => clearTimeout(timer))
+}
+
+/**
+ * The credits a write took (negative: refunded), from the balance on each side of it. The
+ * identity's next write waits until this has read its "after".
+ */
+export function measureActual(sdk: EvoSDK, identityId: string, before: bigint | null): Promise<number | null> {
+  if (before === null) return Promise.resolve(null)
+  const measurement = balanceAfter(sdk, identityId, before).then((after) => {
+    if (after === null) return null
+    noteMeasured(sdk, identityId, before, after)
+    return Number(before - after)
+  })
+  trackMeasurement(identityId, measurement)
+  return measurement
 }
 
 // ---------------------------------------------------------------------------
@@ -941,7 +1049,7 @@ export function serialized<T>(identityId: string, run: () => Promise<T>, waitMs 
     // Gave up while queued in this tab: pass the turn on without writing.
     if (waiting.signal.aborted) return Promise.reject(new WriterBusyError())
     clearTimeout(timer)
-    return writeHold(run)
+    return lastMeasurement(identityId).then(() => writeHold(run))
   }
   // The chain's tail never rejects (see `tail` below).
   const prev = writeLocks.get(identityId) ?? Promise.resolve()
@@ -1018,7 +1126,10 @@ function documentForCreate(
   )
 }
 
-/** Report a charged write (after the lock is released: measuring takes up to 8 s). */
+/**
+ * Report a charged write. Started while the write still holds the lock, so the identity's next
+ * write waits for its measurement; it does not hold the lock itself (measuring takes up to 8 s).
+ */
 function reportSpend(
   sdk: EvoSDK,
   auth: WriteAuth,
@@ -1028,6 +1139,18 @@ function reportSpend(
   void measureActual(sdk, auth.identityId, event.balanceBefore).then((actualCredits) =>
     auth.onSpend?.({ ...event, identityId: auth.identityId, network: auth.network, actualCredits }),
   )
+}
+
+/**
+ * Run a document write as the identity's only writer. Its charge is reported before the lock
+ * passes on, so the next write waits for that measurement (not for the report itself).
+ */
+function serializedWrite<T>(sdk: EvoSDK, auth: WriteAuth, write: () => Promise<{ result: T; spend: Spend | null }>): Promise<T> {
+  return serialized(auth.identityId, async () => {
+    const r = await wrote(sdk, write())
+    if (r.spend) reportSpend(sdk, auth, r.spend)
+    return r.result
+  })
 }
 
 /**
@@ -1054,12 +1177,13 @@ function wrote<T>(sdk: EvoSDK, write: Promise<T>): Promise<T> {
  * taken is re-signed once with the next nonce.
  */
 export function createDocumentIdempotent(sdk: EvoSDK, auth: WriteAuth, params: CreateParams): Promise<WriteResult> {
+  // The one chokepoint every create passes: a forge-v2 document routed to the wrong contract, or
+  // missing its `vis` stamp, is refused here, before anything is signed (RC1 layout).
+  const problem = rc1WriteProblem(NETWORKS[auth.network]?.v2 ?? null, params.contractId, params.documentType, params.data)
+  if (problem !== null) return Promise.reject(new Error(`refusing this write: ${problem}`))
   // A write can be the page's first proved exchange: serialize with the version the SDK knows now.
   followSdkVersion(sdk)
-  return serialized(auth.identityId, () => wrote(sdk, createDocumentUnlocked(sdk, auth, params))).then((r) => {
-    reportSpend(sdk, auth, r.spend)
-    return r.result
-  })
+  return serializedWrite(sdk, auth, () => createDocumentUnlocked(sdk, auth, params))
 }
 
 export interface CreateParams {
@@ -1104,7 +1228,7 @@ async function createDocumentUnlocked(
   const cacheKey = pendingWriteKey(ownerId, contractId, documentType, params.intent ?? newIntent())
   const identity = await facades(sdk).identities.fetch(ownerId)
   if (!identity) throw new WriteAuthError(`identity ${ownerId} not found on ${auth.network}`)
-  const balanceBefore = identity.balance
+  const balanceBefore = balanceBeforeWrite(sdk, ownerId, identity.balance)
   const spend = (kind: string, documentId: string): Spend => ({
     kind: `${kind}:${documentType}`,
     repo: repoOf(data, contractId),
@@ -1273,14 +1397,16 @@ async function createDocumentUnlocked(
           signed = await build(pinnedNonce ?? undefined)
           continue
         }
-        // A nonce taken on a retry: settle it by reading the chain, like a lost answer below.
-        // Refused at the broadcast check (CheckTx): nothing ran, nothing was charged (D-007).
-        const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
-        if (refusal) await refused(refusal, signed.documentId, false)
+        // A nonce taken on a retry: settle it by reading the chain, like a lost answer below. A
+        // stale id on the second attempt as well is thrown as it is, before the refusal decode
+        // (from beta.6 it carries its code, 10405, and would otherwise read as a plain refusal).
         if (isNonceUsedError(e) || isStaleDocumentIdError(e)) {
           clearPendingST(cacheKey)
           throw e
         }
+        // Refused at the broadcast check (CheckTx): nothing ran, nothing was charged (D-007).
+        const refusal = asConsensusRefusal(e)
+        if (refusal) await refused(refusal, signed.documentId, false)
         // Unclassified (a timeout, a dropped connection): the node may have taken the bytes and
         // lost the answer. Keep them cached and poll; unseen, the next retry rebroadcasts the
         // same bytes instead of signing a second document.
@@ -1335,10 +1461,16 @@ async function pollUntil(check: () => Promise<boolean>, timeoutMs: number): Prom
   }
 }
 
+/** The consensus code of a document transition id derived at another protocol version. */
+const STALE_DOCUMENT_ID_CODE = 10405
+
 /** Consensus refused a create because its id was derived at another protocol version. */
 export function isStaleDocumentIdError(e: unknown): boolean {
+  // A coded error is that code, whatever figures its text holds ("required 104050000")
+  const code = consensusCodeOf(e)
+  if (code !== null) return code === STALE_DOCUMENT_ID_CODE
   const m = errorMessage(e).toLowerCase()
-  return m.includes('invalid document transition id') || m.includes('10405')
+  return m.includes('invalid document transition id') || m.includes(String(STALE_DOCUMENT_ID_CODE))
 }
 
 /**
@@ -1440,10 +1572,7 @@ interface DocumentsDeleteFacadeLike {
 export function deleteDocumentIdempotent(sdk: EvoSDK, auth: WriteAuth, params: DeleteParams): Promise<DeleteResult> {
   // A write can be the page's first proved exchange: serialize with the version the SDK knows now.
   followSdkVersion(sdk)
-  return serialized(auth.identityId, () => wrote(sdk, deleteDocumentUnlocked(sdk, auth, params))).then((r) => {
-    if (r.spend) reportSpend(sdk, auth, r.spend)
-    return r.result
-  })
+  return serializedWrite(sdk, auth, () => deleteDocumentUnlocked(sdk, auth, params))
 }
 
 export interface DeleteParams {
@@ -1481,19 +1610,19 @@ async function deleteDocumentUnlocked(
   if (!identity) throw new WriteAuthError(`identity ${ownerId} not found on ${auth.network}`)
   const signing = await findSigningKey(identity, wif, auth.network, requiredLevel)
   if (!signing) throw unusableKeyError(identity, wif, auth.network)
+  const balanceBefore = balanceBeforeWrite(sdk, ownerId, identity.balance)
   const spend = (kind: string): Spend => ({
     kind: `${kind}:${documentType}`,
     repo: params.repo ?? null,
     documentId,
     estimateCredits: previewDelete(documentType).credits,
-    balanceBefore: identity.balance,
+    balanceBefore,
   })
 
   const { IdentitySigner } = await import('@dashevo/evo-sdk')
   const signer = new IdentitySigner()
   signer.addKeyFromWif(wif)
   const document = params.document ?? { id: documentId, ownerId, dataContractId: contractId, documentTypeName: documentType }
-  let proven = false
   try {
     await (sdk as unknown as { documents: DocumentsDeleteFacadeLike }).documents.delete({
       document,
@@ -1504,30 +1633,26 @@ async function deleteDocumentUnlocked(
       // through; the gone-poll below then decides. No `waitTimeoutMs`: see WaitSettings.
       settings: { identityNonceStaleTimeS: 0, timeoutMs: WAIT_REQUEST_MS, retries: 2 },
     })
-    proven = true
   } catch (e) {
-    if (indexOnly && isAffectedStateSnapshot(e)) proven = true
-    else {
-      // The SDK rebroadcasts on its own retries: "nonce already present" may be this delete
-      // having landed, so the gone-poll below decides it, never as a refusal.
-      const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
-      if (refusal !== null) {
-        if (refusal.feeCharged === true) reportSpend(sdk, auth, spend('refused'))
-        throw refusal
-      }
-      // Anything else ("already exists in cache", a bounded wait that ran out): the gone-poll
-      // decides. Still there: an unclassified error stands, and "already exists" (which a
-      // transition dropped after a same-nonce race also answers) is unconfirmed.
-      if (!(await pollUntil(gone, confirmTimeoutMs))) {
-        if (isAlreadyExistsError(e)) throw new UnconfirmedWriteError(documentId)
-        throw e
-      }
-      proven = true
+    // From 4.2.0-beta.7 the SDK's delete of an indexOnly document resolves on the affected-state
+    // proof itself (platform#5136). The SDK rebroadcasts on its own retries: "nonce already
+    // present" may be this delete having landed, so the gone-poll below decides it, never as a
+    // refusal.
+    const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
+    if (refusal !== null) {
+      if (refusal.feeCharged === true) reportSpend(sdk, auth, spend('refused'))
+      throw refusal
+    }
+    // Anything else ("already exists in cache", a bounded wait that ran out): the gone-poll
+    // decides. Still there: an unclassified error stands, and "already exists" (which a
+    // transition dropped after a same-nonce race also answers) is unconfirmed.
+    if (!(await pollUntil(gone, confirmTimeoutMs))) {
+      if (isAlreadyExistsError(e)) throw new UnconfirmedWriteError(documentId)
+      throw e
     }
   } finally {
     signer.free()
   }
-  if (!(proven || (await pollUntil(gone, confirmTimeoutMs)))) throw new UnconfirmedWriteError(documentId)
   return { result: { deleted: true, actualCredits: null }, spend: spend('delete') }
 }
 
@@ -1618,10 +1743,7 @@ export function checkOwnRepo(storedRepoId: unknown, expected: string | undefined
 export function replaceDocumentIdempotent(sdk: EvoSDK, auth: WriteAuth, params: ReplaceParams): Promise<ReplaceResult> {
   // A write can be the page's first proved exchange: serialize with the version the SDK knows now.
   followSdkVersion(sdk)
-  return serialized(auth.identityId, () => wrote(sdk, replaceDocumentUnlocked(sdk, auth, params))).then((r) => {
-    if (r.spend) reportSpend(sdk, auth, r.spend)
-    return r.result
-  })
+  return serializedWrite(sdk, auth, () => replaceDocumentUnlocked(sdk, auth, params))
 }
 
 /**
@@ -1685,12 +1807,13 @@ async function replaceDocumentUnlocked(
   const signing = await findSigningKey(identity, wif, auth.network, requiredLevel)
   if (!signing) throw unusableKeyError(identity, wif, auth.network)
   const next = revision + 1n
+  const balanceBefore = balanceBeforeWrite(sdk, auth.identityId, identity.balance)
   const spend = (kind: string): Spend => ({
     kind: `${kind}:${documentType}`,
     repo: params.repo ?? null,
     documentId,
     estimateCredits: cost.credits,
-    balanceBefore: identity.balance,
+    balanceBefore,
   })
 
   const { Document, IdentitySigner } = await import('@dashevo/evo-sdk')

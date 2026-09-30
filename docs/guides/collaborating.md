@@ -9,7 +9,7 @@ Everything a team does on Forge is a signed document on Dash Platform: who may p
 5. [From the web app](#from-the-web-app)
 6. [Webhooks and CI](#webhooks-and-ci)
 
-The commands below take a repository as `<owner>/<name>`, where `<owner>` is the owner's **identity id** (base58) or **DPNS username** (`alice` or `alice.dash`, resolved with a proof-verified DPNS read). A bare `<name>` means one of your own repositories. `dg repo list --owner` and member arguments (`dg collab add`) take an identity id only.
+The commands below take a repository as `<owner>/<name>`, where `<owner>` is the owner's **identity id** (base58) or **DPNS username** (`alice` or `alice.dash`, resolved with a proof-verified DPNS read). A bare `<name>` means one of your own repositories. Every argument naming an identity — `dg repo list --owner`, `dg collab add`/`remove`, `dg issue --author`/`--assignee`, `dg pr request-review`, `dg ci runner add`/`revoke` — accepts either form; a name is resolved once per process and cached.
 
 Reading a public repository needs no identity: `dg repo view`, `dg repo list --owner`, `dg issue list` / `view`, `dg pr list` / `view` / `diff` / `checkout` / `checks` / `commits`, `dg label list`, `dg collab list`, `dg release list` / `download`, `dg repo protect list` and `dg repo policy show` work signed out, and never open a key you have configured, so a passphrase-sealed key file is not unlocked just to read. A private repository's content is encrypted to its members, so reading one uses your identity, and without one it stops with [`E301`](../errors.md#e301).
 
@@ -28,11 +28,18 @@ There are two roles:
 
 Anyone, member or not, can open issues and PRs, comment and review.
 
+Adding a collaborator is two steps: the owner adds them, and the collaborator accepts. Consensus admits a `writer`/`maintainer` document only when it names the member's own `consent` document for the repo (`member_consent`), so nobody can be made a member, or spammed with an invitation, without agreeing first.
+
 ```sh
+dg collab accept <owner>/<repo>              # the collaborator, first: records their consent
 dg collab list   <owner>/<repo>
-dg collab add    <owner>/<repo> <identity id> --role writer
-dg collab remove <owner>/<repo> <identity id> --role writer
+dg collab add    <owner>/<repo> <identity id or DPNS name> --role writer
+dg collab remove <owner>/<repo> <identity id or DPNS name> --role writer
 ```
+
+If the owner runs `dg collab add` before the invitee has accepted, it is refused before anything is signed: *"`<identity>` has not accepted membership of `<repo>` yet"*, with the fix to ask them to run `dg collab accept`, then add them again. `dg collab add <owner>/<repo> <identity id> --wait 300` instead waits (printing that it is waiting) up to that many seconds for the acceptance to land, then adds them; with no `--wait` it checks once. `dg collab accept --withdraw` withdraws an earlier acceptance (a membership already granted stands until the owner removes it).
+
+From the web app, the invitee opens the repository's **invite link** (Settings → Collaborators, on public and private repos alike) and clicks **Accept invitation**; the owner's Settings → Collaborators lists **Pending invitations** (accepted, not added yet) with an **Add as writer / maintainer** button for each, and shows who is still waiting to accept after a refused add.
 
 Adding or removing a collaborator is a write by the repository owner, signed with the owner's HIGH key.
 
@@ -61,11 +68,14 @@ What each one enforces:
 
 The description and topics live on the repository document, which only its owner can edit. They are public even for a private repository. A private repository's other settings are encrypted: the CLI writes them sealed, and the web app does not write them yet.
 
+**Topics.** Up to 20 per repository, each 1–30 characters of lowercase letters, digits and single hyphens (`^[a-z0-9]+(-[a-z0-9]+)*$`, the same pattern GitHub topics use). `--topics` replaces the whole list; deletes and creates happen together, so a topic removed from the list stops counting toward Explore's per-topic browsing at once. A private repository's topics stay set on its repo document (still visible, since topics are public even for a private repo), but Forge writes no per-topic index document for a private repo, so its topics don't show up when someone browses Explore by topic.
+
 ### How access works
 
 A collaborator is a `writer` or `maintainer` document in Forge's shared forge-core contract, keyed by (repository, member). Only the repository owner can create one, and consensus enforces that. Every write-path document type (ref updates, packs, releases, config, events) names its gate, and consensus refuses a write whose author has no current membership document ([`E601`](../errors.md#e601), Platform code 40120).
 
-- **Add** creates the membership document. **Remove** deletes it. The member's next write is refused.
+- **Add** creates the membership document, naming the member's `consent`. **Remove** deletes it. The member's next write is refused.
+- **Consent stands on its own.** A `consent` document is not deleted when the owner removes the member, so adding them again later needs no new acceptance.
 - **There is no suspend.** Remove the member, and add them again later.
 - **Past work stays valid.** A document's existence proves its writer was a member at the time it was written. Removing a maintainer later does not undo their past merges or ref updates.
 - The owner is enrolled as a maintainer when the repository is created.
@@ -95,9 +105,10 @@ dg repo keys status <you>/secret                # epochs, who holds a key, pendi
 | Branch and tag names | Members and their roles; when each joined; key epochs and who rotated them |
 | Default branch and protected-branch patterns | When pushes, issues, PRs, comments and reviews happen, and who wrote each |
 | Issue and PR titles and bodies, comment and review text, an inline comment's file path; the labels and milestones set on them, and a dismissal's reason | Commit ids (`newOid`, PR heads): anyone who already knows a commit id can confirm the repo contains it |
+| A release's tag, name, notes, draft, pre-release, yanked and unpublished flags, and its asset list; each asset file | That a release revision was written, when and by whom; revisions of one tag within a key epoch share a keyed tag name; each asset file's size |
 | | Sizes: pack sizes, object counts, the approximate length of every encrypted field |
 | | That a label was added, a milestone set or a review dismissed (the kind of each event), and when; who is assigned (the assignee identity is indexed for "assigned to me") |
-| | **Not encrypted in this release:** release names, notes and assets; label definitions (`dg label create`: name, colour, description); check runs; webhook URLs |
+| | **Not encrypted in this release:** label definitions (`dg label create`: name, colour, description); check runs; webhook URLs |
 
 Leave the description empty if the project's purpose is itself sensitive.
 
@@ -111,7 +122,9 @@ Leave the description empty if the project's purpose is itself sensitive.
 
 **No recovery.** If every member loses their encryption key (every copy of every identity file and mnemonic), the contents cannot be decrypted by anyone.
 
-Not supported for private repositories yet ([`E207`](../errors.md#e207)): forks (`dg repo fork`), releases (their notes and assets would be published unencrypted) and webhooks. Issues, PRs, comments and reviews are sealed; label definitions (`dg label create`) are allowed but stay public.
+Not supported for private repositories yet ([`E207`](../errors.md#e207)): forks (`dg repo fork`) and webhooks. Issues, PRs, comments and reviews are sealed; label definitions (`dg label create`) are allowed but stay public.
+
+**Releases** of a private repository are sealed ([private repositories §16](../security/private-repos.md#16-sealed-releases)). The web app publishes, edits, yanks and unpublishes them (a maintainer's **Edit** on each release), and members download their files verified in the browser; `dg release create`, `dg release unpublish` and `dg release download` do the same from the command line. Each file is encrypted in the tab before it goes to your own storage, named by the hash of the encrypted copy, and the asset list is an encrypted file too. A private release holds 1507 bytes of tag, name, notes preview and provenance: longer notes continue in the encrypted asset list, so they need storage of your own even without files. Draft and pre-release are labels every member sees, not access control. Every change is a new revision that carries the rest forward; two maintainers editing the same release at once both land, and the one written second is warned that it may have dropped the other's change.
 
 **Content a removed member wrote late.** A member removed from the repository who keeps writing under the old key, more than 240 blocks after the rotation, is hidden from every reader (the late-content rule). A clone that needs such a pack stops with [`E510`](../errors.md#e510) (`clone incomplete: N packs hidden by the late-content rule`).
 
@@ -143,9 +156,20 @@ dg issue assign <owner>/<repo> 12 me alice         # or: unassign; ids or DPNS n
 
 **Listing.** `dg issue list` reads every issue and the repository's event feed once, then filters, so a filter sees the whole repository rather than the newest page. The web issue list has the same filters, keeps them in the URL, and pages 50 at a time.
 
-**Numbers.** Issue numbers are claimed by the client, by a rule every client shares: the count of issues bounds how far ahead a number can be, so someone squatting #4294967295 does not move numbering. Numbers written by the repo's owner or a maintainer are trusted wherever they sit, so a mirror continues its source's numbering: after an imported #7761, the next issue is #7762. If two people take the same number at once, consensus rejects the second one, and `dg` retries with the next free number. An interrupted `dg issue create` resumes when run again rather than opening a second issue.
+**Numbers.** Issues and PRs share one dense number sequence: consensus requires a new issue or PR's number to equal the exact count of the repository's issues and PRs, counted with the new one (the `dense` rule), so a repository's first issue and first PR are never both #1 — whichever is opened second gets #2, and nobody can squat a high number to jump the line. If two people race for the same number at once, the second create is refused (consensus code 10422, rule "dense"), and `dg` retries with the next free number. An interrupted `dg issue create` resumes when run again rather than opening a second issue.
+
+A mirrored item's own number still follows this repo's dense sequence; mirroring never skips ahead to match the source. What a mirror (`forge-import`) can carry instead is the source's number in a separate `upstreamNumber` field, trusted only when it was written by the repo's owner or a current maintainer or writer. The web app shows it beside the local number, "#12 · upstream #7761", and a bare `#7761` in an imported body resolves to whichever local item recorded that upstream number ([Mirror a GitHub repo](mirror-a-github-repo.md) has the details). `dg` does not read `upstreamNumber` back today; the display is web-only.
 
 **No deletes.** Issues, PRs and their state events cannot be deleted, so nobody can rewrite a thread's history. Comments can be deleted by their author.
+
+**Locking.** A writer or maintainer locks a conversation to stop non-members from posting to it:
+
+```sh
+dg issue lock   <owner>/<repo> 12          # or: dg pr lock <owner>/<repo> 7
+dg issue lock   <owner>/<repo> 12 --off    # unlock
+```
+
+Locking and unlocking are transitions members write, folded the same way for issues and PRs. `dg issue view --json` shows the fold as `"locked": true|false`; `dg pr view` does not print it today. On the web, an issue's sidebar shows "Locked to members" or "Open to everyone" and has a **Lock** / **Unlock** button for members; a PR enforces the same lock (a non-member sees the compose box disabled, "This conversation is locked: only maintainers and writers can comment") but shows no status label and no button yet — it locks and unlocks from `dg pr lock` only. Once locked, a non-member's comment or review is refused at the CLI before anything is signed (*"comment not posted: issue #12 is locked to members"*); a member's still goes through. Locking does not require re-running a close or reopen — it is independent of the issue or PR's open/closed state.
 
 ---
 
@@ -235,7 +259,7 @@ A review records the commit it was made on, which is the PR's head at the time. 
 - Only reviews on the PR's **current** head count. When the head moves, older reviews go stale: `dg pr view` marks them, and tells a reviewer "new commits since your review".
 - A reviewer's newest approve or request-changes review is the one that stands.
 
-Anyone can post a review, but `dg` tells a non-member that theirs does not count.
+Anyone can post a review. A non-member's approve or request-changes is written, shown on the PR, and labelled "approved (not a member)" or "changes requested (not a member)" — it never counts toward the branch policy's required approvals, and `dg` says so.
 
 **The PR follows its branch.** When you `git push` the PR's branch, the helper moves the PR's head to the new commit (a `headUpdate`, about 0.0007 DASH) and says so. It does this for your own PRs only. `git config dash.prAutoSync false` turns it off, and `dg pr sync <owner>/project 7` then does it by hand. `dg pr update-branch <owner>/project 7` merges the base branch into the PR branch and moves the head.
 
@@ -283,15 +307,20 @@ dg release create <owner>/<repo> --tag v1.0.0 --name "1.0.0" --notes "First stab
   --asset ./dist/app-linux.tar.gz --asset ./dist/app-macos.tar.gz [--storage <profiles>]
 dg release list   <owner>/<repo>
 dg release download <owner>/<repo> v1.0.0 [--asset <name>] [--output <dir | file>]
+dg release unpublish <owner>/<repo> v1.0.0
 ```
 
 `--asset` uploads each file to your own storage and records its SHA-256, size and URLs in the release. The storage is the repository's `dash.storage` profiles, or `--storage`, and each copy is read back and verified. Platform stores packs, not arbitrary files, so publishing an asset needs an S3 or IPFS profile ([bring your own storage](bring-your-own-storage.md)).
 
 `dg release download` fetches every asset of the release, or only `--asset <name>`, and saves each under its own name in the current directory or in the `--output` directory. `--output <file>` names the file for a single asset. It never replaces a file of the same name that is already there. It accepts only bytes that hash to the recorded SHA-256. It needs no identity, and no credentials when the storage has a public URL.
 
-`dg release list` always names who published each release. A maintainer who is later removed can still delete, but not edit, the releases they published.
+`dg release list` always names who published each release. Every publish, edit or unpublish is a fresh revision that needs a *current* maintainer to sign it, so a maintainer who is later removed can no longer touch the releases they published — not edit them, and not unpublish them either. Only a maintainer still on the repo can do that.
 
-To withdraw a release, publish it again with `--yanked`. The newest release for a tag wins, so a new revision keeps what you leave out: its assets, name and notes carry over (an `--asset` of the same file name replaces that one asset), and `--yanked` alone withdraws the release without dropping its files. Publishing again without `--yanked` un-yanks it. Releases are listed by version (highest first), and the latest is the highest that is neither a pre-release nor yanked.
+**Yanking keeps the release, flagged; unpublishing takes it down.** To flag a release as withdrawn while keeping it listed, publish it again with `--yanked`. The newest release for a tag wins, so a new revision keeps what you leave out: its assets, name and notes carry over (an `--asset` of the same file name replaces that one asset), and `--yanked` alone marks the release without dropping its files. Publishing again without `--yanked` un-yanks it.
+
+`dg release unpublish <owner>/<repo> <tag>` goes further: it takes the tag off the release list entirely (it no longer shows in `dg release list` or counts toward the repo's release total), and only works while the tag currently has a live release — a tag that was never published, or is already unpublished, is refused. Publishing the same tag again afterwards starts a fresh release.
+
+**Releases are never deleted.** Releases are listed by version (highest first), and the latest is the highest that is neither a pre-release nor yanked. Every revision a release ever had — including an unpublish — stays on chain, so a tag's publication history can always be reconstructed.
 
 ### Labels
 
@@ -354,7 +383,7 @@ dg webhook list   <owner>/<repo>
 dg webhook remove <owner>/<repo> ci      # by the name it was added with, or its hook id
 ```
 
-The URL and event list are public on chain. The HMAC secret is encrypted to the relay identity's encryption key, so only that relay can read it; without `--secret-env <VAR>`, `dg` generates one and prints it once. The relay (`forge-relay run`, or its Docker image) needs only that encryption key, never signs and never spends. A delivery that fails is kept in a durable retry queue on the relay's disk and retried for up to 48 hours, across restarts (given a writable state dir; without one the relay warns and keeps the queue in memory); `forge-relay deliveries` lists the queue. Every delivery carries a stable `X-GitHub-Delivery` id, so receivers can drop duplicates.
+The URL and event list are public on chain. **The URL must be `https://` to a DNS hostname** — stricter than a check run's URL: no IP literal, no `localhost`, no userinfo. `dg webhook add` refuses one that doesn't parse that way before it signs anything. The HMAC secret is encrypted to the relay identity's encryption key, so only that relay can read it; without `--secret-env <VAR>`, `dg` generates one and prints it once. The relay (`forge-relay run`, or its Docker image) needs only that encryption key, never signs and never spends. A delivery that fails is kept in a durable retry queue on the relay's disk and retried for up to 48 hours, across restarts (given a writable state dir; without one the relay warns and keeps the queue in memory); `forge-relay deliveries` lists the queue. Every delivery carries a stable `X-GitHub-Delivery` id, so receivers can drop duplicates.
 
 Check results go the other way: CI reports them with `dg ci report` under a runner key that can sign nothing else. See [CI and check runs](ci.md).
 

@@ -161,6 +161,7 @@ function mapToDocuments(response: Map<string, unknown> | unknown): PlainDocument
 interface DocumentsFacadeLike {
   query: (q: DocumentQuery) => Promise<Map<string, unknown>>
   count: (q: DocumentQuery) => Promise<Map<string, bigint>>
+  sum: (q: DocumentQuery, sumProperty: string) => Promise<Map<string, bigint>>
   ranked: (q: unknown) => Promise<{
     startingRank: bigint
     entries: ReadonlyArray<{ groupKeyHex: string; groupValue: unknown; value: bigint; rank: bigint }>
@@ -291,9 +292,32 @@ export async function queryDocumentsWithProof(
 /**
  * Provable O(1) count over a countable index (`forge-v2.md` §2). Sums the grouped result
  * the SDK returns for `documents.count`. Use for star / follower / issue-total surfaces.
+ * Point shapes only ({@link ungroupedRangeProblem}): a range count goes through
+ * {@link countDocumentsGrouped} in its carrier form.
  */
 export function countDocuments(sdk: EvoSDK, query: DocumentQuery): Promise<number> {
+  const problem = ungroupedRangeProblem(query)
+  if (problem !== null) return Promise.reject(new Error(problem))
   return joinInFlight(sdk, 'count', query, () => readCount(sdk, query))
+}
+
+/** The operators that make a `where` a range (the aggregate walks a subtree, not a point). */
+export const RANGE_OPERATORS: ReadonlySet<WhereOperator> = new Set(['>', '>=', '<', '<=', 'startsWith'])
+
+/**
+ * Why an aggregate (count or sum) of `query` without `groupBy` cannot be proved, or null. An
+ * ungrouped range aggregate over a path that holds no document fails proof verification instead
+ * of answering 0 (grovedb `verify_v1_leaf_chain`; measured on bonsia, #176
+ * `rc1-empty-aggregates.mjs`): a new repo, or mainnet on day one, would show an error. Its carrier
+ * form answers an empty map there: the leading `==` as `in [value]` plus the range, grouped by
+ * that property (or grouped by the ranged property itself).
+ */
+export function ungroupedRangeProblem(query: DocumentQuery & { readonly groupBy?: readonly string[] }): string | null {
+  if ((query.groupBy?.length ?? 0) > 0) return null
+  const range = (query.where ?? []).find(([, op]) => RANGE_OPERATORS.has(op))
+  return range === undefined
+    ? null
+    : `an ungrouped aggregate over a range (${range[0]} ${range[1]}) cannot be proved where nothing matches; group it (the \`in [x]\` carrier plus groupBy)`
 }
 
 async function readCount(sdk: EvoSDK, query: DocumentQuery): Promise<number> {
@@ -304,6 +328,57 @@ async function readCount(sdk: EvoSDK, query: DocumentQuery): Promise<number> {
   }
   const n = Number(total)
   return Number.isSafeInteger(n) ? n : Number.MAX_SAFE_INTEGER
+}
+
+/** A read grouped by one property: `groupBy` on the query, one entry per group. */
+export type GroupedQuery = DocumentQuery & { readonly groupBy: readonly string[] }
+
+/**
+ * Per-group proved counts (`documents.count` with `in` + `groupBy`): the SDK keys each entry by
+ * the group value's tree-key encoding, hex. An absent group has no entry (read it as 0).
+ */
+export function countDocumentsGrouped(sdk: EvoSDK, query: GroupedQuery): Promise<Map<string, number>> {
+  const problem = ungroupedRangeProblem(query)
+  if (problem !== null) return Promise.reject(new Error(problem))
+  return joinInFlight(sdk, 'countGrouped', query, async () => bigintMap(await documentsOf(sdk).count(query as DocumentQuery)))
+}
+
+/**
+ * Per-group proved sums of `property` (`documents.sum`, a `summable` index; `in` + `groupBy`),
+ * keyed like {@link countDocumentsGrouped}. An absent group has no entry (its sum is 0).
+ */
+export function sumDocumentsGrouped(sdk: EvoSDK, query: GroupedQuery, property: string): Promise<Map<string, number>> {
+  const problem = ungroupedRangeProblem(query)
+  if (problem !== null) return Promise.reject(new Error(problem))
+  return joinInFlight(sdk, `sum:${property}`, query, async () => bigintMap(await documentsOf(sdk).sum(query as DocumentQuery, property)))
+}
+
+function bigintMap(m: Map<string, bigint> | unknown): Map<string, number> {
+  const out = new Map<string, number>()
+  if (m instanceof Map) for (const [k, v] of m) out.set(String(k), Number(v))
+  return out
+}
+
+/**
+ * The unsigned integer a group key encodes (`encode_u8` … `encode_u64`: big-endian, top bit
+ * flipped), whatever its width; null for a key that is not 1–8 bytes of hex.
+ */
+export function uintOfGroupKey(key: string): number | null {
+  if (!/^(?:[0-9a-f]{2}){1,8}$/i.test(key)) return null
+  let n = 0
+  for (let i = 0; i < key.length; i += 2) {
+    const b = Number.parseInt(key.slice(i, i + 2), 16) ^ (i === 0 ? 0x80 : 0)
+    n = n * 256 + b
+  }
+  return Number.isSafeInteger(n) ? n : null
+}
+
+/** The tree-key encoding of an unsigned integer group value (`encode_u8` etc.): big-endian, top bit flipped. */
+export function uintGroupKey(value: number, bytes: 1 | 2 | 4 = 1): string {
+  const b = new Uint8Array(bytes)
+  for (let i = bytes - 1, v = value; i >= 0; i--, v = Math.floor(v / 256)) b[i] = v & 0xff
+  b[0] = (b[0] as number) ^ 0x80
+  return [...b].map((x) => x.toString(16).padStart(2, '0')).join('')
 }
 
 /** A ranked (top-K) read: `documents.ranked` over a `rankedCountable` index (protocol 14). */
@@ -396,8 +471,8 @@ export class IncompleteReadError extends Error {
  * Page a query to exhaustion (the `query_all` pattern — parity with forge-core
  * `platform::query_all_documents`). Repeats the proof-verified query, advancing `startAfter`
  * past the last `$id` of each page, until a **short page** proves the end was reached. Used by
- * every read that MUST be complete: the deterministic folds (`resolve_ref`, `foldIssueStateV2`,
- * `foldPrStateV2`) are folds over a whole history, so a silently truncated input does not
+ * every read that MUST be complete: the deterministic folds (`resolve_ref`, the label and
+ * review folds over `event`) are folds over a whole history, so a silently truncated input does not
  * degrade the answer — it produces a confidently wrong one (a closed issue that reads open,
  * a branch pinned at its 100th push).
  *

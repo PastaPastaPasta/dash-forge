@@ -278,11 +278,10 @@ pub fn price_helper_estimate(mut r: PushReport, fallback: bool) -> PushReport {
         return r;
     }
     if fallback && r.chunks == 0 && r.pack_bytes > 0 {
-        // The pack's chunks and the history index's (it goes where the pack does), sealed.
+        // The pack's chunks and the history index's (it goes where the pack does), sealed: its
+        // two artifacts, the column index and the version lists, each stored as its own chunks.
         let history = if r.history_bytes > 0 {
-            push_fees::chunks(forge_core::private::pack::sealed_upper_bound(
-                r.history_bytes,
-            ))
+            push_fees::sealed_parts_chunks(r.history_bytes, 2)
         } else {
             0
         };
@@ -1219,12 +1218,13 @@ dash: push failed: ref did not converge to pushed tip"#;
             byo.est_credits,
             platform.est_credits
         );
-        // Manifests and refs only, plus the history index's manifest (its bytes go to the
-        // bucket with the pack).
+        // Manifests and refs only, plus the history index's two manifests, its column index and
+        // its version lists, each a first of its kind (their bytes go to the bucket with the
+        // pack).
         assert_eq!(
             byo.est_credits,
             fresh_push_credits(0, 0, 2, PackStorage::External { targets: 1 })
-                + push_fees::history_index(0, false, 1, false, true)
+                + 2 * push_fees::history_index(0, false, 1, false, true)
         );
         // A fallback to Platform keeps the Platform price (an upper bound).
         git(d, &["config", "dash.platformFallback", "true"]);

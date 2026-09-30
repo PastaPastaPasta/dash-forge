@@ -29,7 +29,7 @@ describe('comment documents as views (anchors read by anchorOf)', () => {
   const doc = (extra: Record<string, unknown>) => ({ $id: ID_A, $ownerId: ID_B, $createdAt: 5, targetId: REPO, body: 'hi', ...extra })
 
   it('writes the contract fields and reads them back, a range included', () => {
-    const data = commentData({ targetId: REPO, body: 'Nit', anchor: { path: 'src/a.ts', line: 7, startLine: 5, side: 0, commitOid: HEAD } })
+    const data = commentData({ targetId: REPO, body: 'Nit', anchor: { path: 'src/a.ts', line: 7, startLine: 5, side: 0, commitOid: HEAD } }, ID_B)
     expect(Object.keys(data)).toEqual(['targetId', 'body', 'path', 'line', 'side', 'startLine', 'commitOid'])
     const v = toCommentView(doc({ path: 'src/a.ts', line: 7, startLine: 5, side: 0, commitOid: hexToBytes(HEAD) }))
     expect(v.anchor).toEqual({ path: 'src/a.ts', line: 7, startLine: 5, side: 0, commitOid: HEAD })
@@ -108,7 +108,7 @@ describe('review comments are grouped under their review (groupReviewComments)',
 })
 
 function comment(id: string, extra: Partial<CommentView> = {}): CommentView {
-  return { id, author: 'A', body: id, createdAt: Number(id.replace(/\D/g, '')) || 0, replyTo: null, anchor: null, reviewId: null, ...extra }
+  return { id, author: 'A', body: id, createdAt: Number(id.replace(/\D/g, '')) || 0, replyTo: null, anchor: null, reviewId: null, imported: false, ...extra }
 }
 
 describe('inline thread placement', () => {
@@ -254,11 +254,10 @@ describe('document encodings (forge-core parity; packManifest is covered with li
     expect(() => patchData({ title: 't', body: '', baseRefName: 'refs/heads/a b', sourceRepoId: REPO, sourceRefName: 'x', headOid: HEAD })).toThrow()
   })
 
-  it('patch: a draft carries draft=true (review-parity P6); a ready PR carries no draft field', () => {
+  it('patch: carries no draft field (a draft is a kind-14 transition written after the patch)', () => {
     const input = { title: 't', body: '', baseRefName: 'refs/heads/main', sourceRepoId: REPO, sourceRefName: 'refs/heads/x', headOid: HEAD }
-    expect(patchData({ ...input, draft: true })['draft']).toBe(true)
+    expect('draft' in patchData({ ...input, draft: true })).toBe(false)
     expect('draft' in patchData(input)).toBe(false)
-    expect('draft' in patchData({ ...input, draft: false })).toBe(false)
   })
 
   it('ref update: sha256 name hash, raw oids, force, and protected routing', () => {

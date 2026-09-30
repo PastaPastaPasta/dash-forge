@@ -24,8 +24,10 @@ pub struct Counts {
     pub comments: u64,
     /// Reviews.
     pub reviews: u64,
-    /// State events (close, reopen, merge, labels, draft).
+    /// Label events.
     pub events: u64,
+    /// State transitions (close, reopen, merge, draft, ready).
+    pub transitions: u64,
     /// Releases.
     pub releases: u64,
     /// Label definitions.
@@ -37,9 +39,9 @@ pub struct Counts {
     /// the run is `partial`, but the state still advances (git data is compared with the
     /// destination on every run, whatever `--state` says).
     pub git_skipped: u64,
-    /// PRs the source merged that were recorded closed, because no base tip on chain was
-    /// shown to contain the merge commit (see the warnings). A re-run that can prove them
-    /// turns each into a merge.
+    /// PRs the source merged whose merge was recorded with the source's merge commit, because
+    /// no base tip on chain was shown to contain it (see the warnings): merged, and labelled by
+    /// readers as not found on the base (D-9).
     pub unproved_merges: u64,
     /// Release assets left out of the releases written this run: the rest did not fit a
     /// release's 4,096-byte `assets` field (the web links the source release for them).
@@ -178,7 +180,7 @@ impl Summary {
         eprintln!("{} → {} ({})", self.source, self.repo.url, self.network);
         eprintln!(
             "  {label}: {} ref updates · {} packs ({}) · {} issues · {} PRs · {} comments · \
-             {} reviews · {} events · {} releases · {} labels",
+             {} reviews · {} events · {} transitions · {} releases · {} labels",
             c.refs,
             c.packs,
             forge_core::storage::human_bytes(c.pack_bytes),
@@ -187,6 +189,7 @@ impl Summary {
             c.comments,
             c.reviews,
             c.events,
+            c.transitions,
             c.releases,
             c.labels
         );
@@ -216,7 +219,8 @@ impl Summary {
         }
         if c.unproved_merges > 0 {
             eprintln!(
-                "  warning: {} merged PR(s) recorded as closed: no merge proof (see below)",
+                "  warning: {} merged PR(s) recorded with the source's merge commit, not found \
+                 on the mirrored base (readers label them; see below)",
                 c.unproved_merges
             );
         }

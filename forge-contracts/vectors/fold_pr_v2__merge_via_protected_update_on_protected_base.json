@@ -1,22 +1,20 @@
 {
   "name": "merge_via_protected_update_on_protected_base",
-  "description": "The positive case: a maintainer moves protected main to X with a protectedRefUpdate, and a merge event naming X counts.",
+  "description": "A maintainer moves protected main to X with a protectedRefUpdate; a merge naming X is on the base.",
   "case": "fold_pr",
   "rules": "v2",
   "input": {
-    "events": [
+    "transitions": [
       {
-        "id": "e1",
-        "targetId": "T",
-        "kind": "merge",
+        "id": "t1",
+        "kind": 13,
         "actor": "writer",
-        "value": null,
-        "oid": "X",
-        "createdAt": 300
+        "asAuthor": 0,
+        "createdAt": 300,
+        "oid": "X"
       }
     ],
-    "authorEvents": [],
-    "targetAuthor": "alice",
+    "events": [],
     "baseHistory": {
       "updates": [
         {
@@ -60,6 +58,7 @@
     "draft": false,
     "baseRef": null,
     "labels": [],
-    "assignees": []
+    "assignees": [],
+    "mergeOnBase": true
   }
 }

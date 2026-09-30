@@ -152,6 +152,11 @@ export interface PrState {
   readonly baseRef: string | null
   readonly labels: readonly string[]
   readonly assignees: readonly string[]
+  /**
+   * Merged PRs whose merge oid is known: whether it was a valid base tip (`false`: "merge commit
+   * not found on the base"); null otherwise. Absent from the retired event fold.
+   */
+  readonly mergeOnBase?: boolean | null
 }
 
 /** One row of a `flatIndex` browse artifact (a full recursive tree listing entry). */

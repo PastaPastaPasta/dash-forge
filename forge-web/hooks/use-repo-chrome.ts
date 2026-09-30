@@ -6,8 +6,8 @@
  *
  *  - {@link useViewerRole}: what the signed-in viewer is on this repo (maintainer / writer /
  *    none), which decides the Settings tab and the member-only hints.
- *  - {@link useTargetCounts}: the Issues / Pull requests tab counts — the open ones, folded
- *    from the same cached list pages those tabs show.
+ *  - {@link useTargetCounts}: the Issues / Pull requests tab counts — the open ones, from
+ *    three proved count requests (the two totals and the transitions by kind).
  *  - {@link useReleases}: the repo's releases, newest per tag.
  */
 
@@ -17,17 +17,13 @@ import { useAuth } from '@/contexts/auth-context'
 import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import {
-  foldIssueOpenCount,
-  foldPullOpenCount,
   latestRelease,
-  openCounts,
   readReleases,
-  readTargetCounts,
   readViewerPermissions,
   repoContractIds,
   repoKey,
-  repoListVersion,
   repoWriteGeneration,
+  sharedRepoCounts,
   subscribeRepoLists,
   type ReleaseList,
   type ReleaseView,
@@ -67,40 +63,29 @@ export function useViewerRole(repo: RepoRef): {
 }
 
 /**
- * The OPEN issue and PR counts for the tabs (null: not proven, so no number is shown). The
- * countable indexes only give totals — open or closed — so the numbers come from the issue and
- * pull indexes the Issues and Pull requests tabs read (a small repo's is read here; a large one's
- * only once its tab has). A write drops those indexes and bumps the repo's write generation, which
- * re-reads the totals and refolds here.
+ * The OPEN issue and PR counts for the tabs (null: not read yet, so no number is shown), as
+ * GitHub's tabs show them. Every state change is a legal `transition`, so the proved issue and
+ * PR totals and one count of transitions by kind give them exactly, in three requests
+ * (`readRepoCounts`), shared with the list's index and total (`sharedRepoCounts`). A write bumps
+ * the repo's write generation, which re-reads them; the last numbers stay shown meanwhile, so the
+ * badge never blanks.
  */
 export function useTargetCounts(repo: RepoRef): TargetTotals {
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
-  // Re-render whenever a list page settles or a write drops them, on this page or another.
-  useSyncExternalStore(subscribeRepoLists, () => repoListVersion(repo), () => 0)
   const generation = useRepoWriteGeneration(repo)
-  // The last totals this repo resolved: shown while a write's generation re-reads them, so the
-  // badge keeps its number instead of blanking (a mismatched total refolds, never misleads).
-  const lastTotals = useRef<{ key: string; totals: TargetTotals } | null>(null)
+  const last = useRef<{ key: string; totals: TargetTotals } | null>(null)
   const { data } = useAsync(
-    async () => {
-      const totals = await sessionCached(`counts:${network}:${repo.repoId}:${generation}`, MINUTE, () =>
-        readTargetCounts(sdk!, repo.forge, repo.repoId),
-      )
-      // The issue and pull indexes (exact from the complete feed, shared with the Issues and Pull
-      // requests tabs). They share one read of the repo feed, whichever starts it (L-77).
-      await Promise.all([
-        foldIssueOpenCount(sdk!, repo, totals.issues, network).catch(() => null),
-        foldPullOpenCount(sdk!, repo, totals.pulls, network).catch(() => null),
-      ])
-      return totals
-    },
+    () =>
+      sessionCached(`openCounts:${network}:${repo.repoId}:${generation}`, MINUTE, async (): Promise<TargetTotals> => {
+        const c = await sharedRepoCounts(sdk!, repo)
+        return { issues: c.issuesOpen, pulls: c.prsOpen }
+      }),
     [ready, repoKey(repo), network, generation],
     { enabled: ready && sdk !== null },
   )
   const key = `${network}:${repoKey(repo)}`
-  if (data !== null) lastTotals.current = { key, totals: data }
-  const totals = data ?? (lastTotals.current?.key === key ? lastTotals.current.totals : null)
-  return openCounts(repo, totals)
+  if (data !== null) last.current = { key, totals: data }
+  return data ?? (last.current?.key === key ? last.current.totals : { issues: null, pulls: null })
 }
 
 /**

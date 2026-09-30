@@ -1,8 +1,10 @@
-//! `dg collab` — repository members: add / remove / list.
+//! `dg collab` — repository members: accept / add / remove / list.
 //!
 //! On forge-v2 a member is a `writer` or `maintainer` document the repo owner creates
 //! (add) or deletes (remove); consensus refuses the removed member's next write at once.
-//! There is no suspend: remove and re-add instead.
+//! There is no suspend: remove and re-add instead. Adding is a two-party invite: the member
+//! first accepts (`dg collab accept`, their own `consent` document), and the owner's add names
+//! that consent (RC1 `member_consent`); `dg collab add --wait` waits for it.
 //!
 //! On a **private** repository (`docs/security/private-repos.md` §5.5) add also wraps the
 //! current key epoch to the new member, and is refused before anything is written when the
@@ -14,20 +16,28 @@ use anyhow::{Context, Result};
 use serde_json::json;
 
 use forge_core::keyring::PrivateSigner;
-use forge_core::members::{doc_type as role_name, MemberReader, MemberService};
+use forge_core::members::{
+    awaiting_consent, doc_type as role_name, ConsentService, MemberReader, MemberService,
+};
 use forge_core::rules::v2::Visibility;
 use forge_core::user_error::{codes, UserError};
 
 use crate::fmt::{cost_line, dash_usd_price};
 
-use crate::common::{Reader, Session};
+use crate::common::{resolve_identity, Reader, Session};
 use crate::context::Ctx;
 use crate::{CollabCommand, RoleArg};
 
 /// Dispatch a `collab` subcommand.
 pub async fn run(ctx: &Ctx, cmd: &CollabCommand) -> Result<()> {
     match cmd {
-        CollabCommand::Add { repo, member, role } => add(ctx, repo, member, *role).await,
+        CollabCommand::Add {
+            repo,
+            member,
+            role,
+            wait,
+        } => add(ctx, repo, member, *role, *wait).await,
+        CollabCommand::Accept { repo, withdraw } => accept(ctx, repo, *withdraw).await,
         CollabCommand::Remove { repo, member, role } => remove(ctx, repo, member, *role).await,
         CollabCommand::List { repo } => list(ctx, repo).await,
     }
@@ -40,11 +50,115 @@ const MEMBER_DOC_ESTIMATE_CREDITS: u64 = 20_000_000;
 const DELETE_VISIBLE_ATTEMPTS: usize = 12;
 const DELETE_VISIBLE_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
 
-async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()> {
+/// How often `dg collab add --wait` looks for the member's acceptance.
+const CONSENT_POLL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Wait up to `wait` seconds for `member`'s consent to `handle` (none: look once). Refused with
+/// the fix when it does not come.
+async fn require_consent(
+    ctx: &Ctx,
+    client: &forge_core::platform::PlatformClient,
+    handle: &forge_core::scope::RepoRef,
+    member: &str,
+    wait: Option<u64>,
+) -> Result<()> {
+    if member == handle.owner_id() {
+        return Ok(());
+    }
+    let reader = MemberReader::new(client);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait.unwrap_or(0));
+    let mut told = false;
+    loop {
+        if reader.consented(handle, member).await? {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(awaiting_consent(handle, member).into());
+        }
+        if !told && !ctx.json {
+            eprintln!(
+                "waiting for {member} to run `dg collab accept {}` …",
+                handle.display()
+            );
+            told = true;
+        }
+        tokio::time::sleep(CONSENT_POLL).await;
+    }
+}
+
+async fn accept(ctx: &Ctx, repo: &str, withdraw: bool) -> Result<()> {
+    let s = Session::open(ctx, repo).await?;
+    let (client, handle) = (&s.client, &s.repo);
+    let consent = ConsentService::new(client, &s.identity, &s.bridge);
+    if withdraw {
+        let removed = consent
+            .withdraw(handle)
+            .await
+            .context("withdrawing your acceptance")?;
+        ctx.emit(
+            json!({
+                "status": if removed { "withdrawn" } else { "not_accepted" },
+                "repo": handle.display(),
+            }),
+            || {
+                if removed {
+                    println!("Withdrew your acceptance of {}.", handle.display());
+                } else {
+                    println!(
+                        "You had not accepted {}; nothing to withdraw.",
+                        handle.display()
+                    );
+                }
+            },
+        );
+        return Ok(());
+    }
+    if !ctx.confirm(&format!(
+        "Accept membership of {}? Its owner can then add you as a member (one small document)",
+        handle.display()
+    ))? {
+        return Err(crate::errors::cancelled());
+    }
+    let (document_id, written) = consent
+        .accept(handle)
+        .await
+        .context("accepting membership")?;
+    let me = s.identity.id();
+    ctx.emit(
+        json!({
+            "status": if written { "accepted" } else { "already_accepted" },
+            "repo": handle.display(),
+            "identityId": me,
+            "documentId": document_id,
+        }),
+        || {
+            println!(
+                "Accepted membership of {}. Its owner can now run `dg collab add {} {me}`.",
+                handle.display(),
+                handle.display()
+            );
+        },
+    );
+    Ok(())
+}
+
+async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u64>) -> Result<()> {
     let role = role.to_core();
     let s = Session::open(ctx, repo).await?;
     let (client, handle) = (&s.client, &s.repo);
+    // `member` is an identity id or a DPNS name; resolve it once so every check and write
+    // below sees a plain identity id.
+    let member: &str = &resolve_identity(client, member, "member").await?;
     let signer = crate::keys::signer(&s);
+    // The member's consent comes first (checked before any cost prompt or key work), unless
+    // they already hold the role: re-running an add to finish its key wrap needs none.
+    if MemberReader::new(client)
+        .role_doc(handle, member, role)
+        .await?
+        .is_none()
+    {
+        require_consent(ctx, client, handle, member, wait).await?;
+    }
     let private = handle.visibility == Visibility::Private;
     if private {
         // Checked before anything is written: a member with no encryption key could be
@@ -136,6 +250,9 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     let role = role.to_core();
     let s = Session::open(ctx, repo).await?;
     let (client, handle) = (&s.client, &s.repo);
+    // `member` is an identity id or a DPNS name; resolve it once so every check and write
+    // below sees a plain identity id.
+    let member: &str = &resolve_identity(client, member, "member").await?;
     let private = handle.visibility == Visibility::Private;
     if handle.owner_id() != s.identity.id() {
         return Err(forge_core::Error::NotPermitted {

@@ -91,7 +91,7 @@ pub enum Error {
     /// its deployment file). Returned instead of falling back to another network's
     /// contracts.
     #[error(
-        "forge-v2 isn't deployed on {network} yet; use --network devnet --devnet-name moutai \
+        "forge-v2 isn't deployed on {network} yet; use --network devnet --devnet-name bonsia \
          (see docs/mainnet-runbook.md)"
     )]
     V2NotDeployed {
@@ -104,7 +104,7 @@ pub enum Error {
     /// (a proof of absence, or Drive's `contract not found` refusal); retrying cannot help.
     #[error("the forge contracts are not on {network}: {detail}")]
     ContractsMissing {
-        /// The network as a person reads it (`devnet moutai`, `mainnet`); `user_error` tells a
+        /// The network as a person reads it (`devnet bonsia`, `mainnet`); `user_error` tells a
         /// devnet by the `devnet ` prefix.
         network: String,
         /// What Platform answered: the missing contract, or Drive's refusal.
@@ -122,6 +122,35 @@ pub enum Error {
         /// The refused document type.
         document_type: String,
         /// The consensus error.
+        detail: String,
+    },
+
+    /// Consensus refused a write because a document, identity or contract one of its properties
+    /// refers to does not exist (code 40120 on a path other than the membership gates): a
+    /// `repoKey` wrapped to a member since revoked (`memberId`), a member enrolled before their
+    /// `consent` (`consentBy`), a deleted parent comment (`replyTo`). Nothing landed.
+    #[error(
+        "consensus refused {document_type}: the reference at {path} does not exist ({detail})"
+    )]
+    ReferenceNotFound {
+        /// The refused document type.
+        document_type: String,
+        /// The property whose reference is missing.
+        path: String,
+        /// The consensus error.
+        detail: String,
+    },
+
+    /// Consensus refused a document because a rule of its type's `propertyConstraints` does not
+    /// hold (code 10422): refused before execution, so nothing landed. `rule` is the rule's name
+    /// (forge-v2 `dense`, `c1_closedAfter`, …), `detail` the node's message.
+    #[error("{detail}")]
+    RuleRefused {
+        /// The refused document type.
+        document_type: String,
+        /// The broken rule's key in `propertyConstraints`.
+        rule: String,
+        /// The consensus message.
         detail: String,
     },
 

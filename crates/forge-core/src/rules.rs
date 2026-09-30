@@ -48,6 +48,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod parity;
 pub mod review;
+pub mod transition;
 pub mod v2;
 
 /// A git object id, hex-encoded (the JSON-friendly representation the vectors use).
@@ -76,7 +77,7 @@ fn is_null_oid(oid: &str) -> bool {
 /// commit *A*") is an **input**: a precomputed set of `(ancestor, descendant)` pairs
 /// (typically the transitive closure over the relevant commits). This keeps ref
 /// resolution and merge-reachability pure and lets the vectors pin exactly which
-/// ancestry facts are in play. [`resolve_ref`]/[`v2::fold_pr_state_v2`] also accept any
+/// ancestry facts are in play. [`resolve_ref`]/[`v2::pr_state_v2`] also accept any
 /// `Fn(&str, &str) -> bool` directly for callers that have a real graph.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -422,18 +423,75 @@ fn cycle_to_break(block: &[&RefUpdate], placed: &[bool]) -> usize {
         .expect("a component the others do not wait on has every member's predecessors inside")
 }
 
-/// Whether a ref name is legal to advertise on the git wire protocol.
+/// Whether a ref name is one the RC1 contract accepts on `refUpdate` / `protectedRefUpdate`
+/// (and `patch.baseRefName` / `sourceRefName`): the `$defs.refName` pattern (`refs/` then
+/// the git check-ref-format grammar, `@{` included), at most 255 bytes, and the `noLock`
+/// rule (no trailing `.lock`).
 ///
-/// `refName` is stored as an arbitrary Platform string (≤255 chars) and never passed
-/// `git check-ref-format`, so a hostile writer could store a name containing a
-/// newline (`refs/heads/x\n<oid> refs/heads/main`) to **inject a spoofed
-/// ref-advertisement line** into every clone/fetch, or a NUL/space to corrupt parsing.
-/// The security-critical rule (shared by the write guard, the fold side, and the helper
-/// emission): non-empty, no leading `-` (would read as a git option), and no ASCII
-/// whitespace or control byte (`b <= 0x20`, covering space/tab/newline/NUL, plus DEL).
+/// It is also the fold's and the helper's rule: a ref name reaches the git wire protocol,
+/// so one carrying a newline (`refs/heads/x\n<oid> refs/heads/main`) would **inject a
+/// spoofed ref-advertisement line** into every clone/fetch, and a NUL/space would corrupt
+/// parsing. Anything outside the contract's grammar is inert on read, including a sealed
+/// private ref name (consensus cannot see inside `enc`). forge-web's `isLegalRefName` must
+/// apply the same predicate (PR-4).
 #[must_use]
 pub fn is_legal_ref_name(name: &str) -> bool {
-    !name.is_empty() && !name.starts_with('-') && !name.bytes().any(|b| b <= 0x20 || b == 0x7f)
+    name.len() <= MAX_REF_NAME_BYTES
+        && name.strip_prefix("refs/").is_some_and(is_legal_ref_path)
+        && !name.as_bytes().ends_with(b".lock")
+}
+
+/// [`is_legal_ref_name`] plus the one rule of `git check-ref-format` the contract's regex
+/// cannot express: no component may end with `.lock`. What a client refuses before it signs
+/// a ref update (git itself could never create such a ref).
+#[must_use]
+pub fn is_git_ref_name(name: &str) -> bool {
+    is_legal_ref_name(name) && !name.split('/').any(|c| c.as_bytes().ends_with(b".lock"))
+}
+
+/// Whether `branch` is a legal `repo.defaultBranch` / `config.defaultBranch` (RC1
+/// `$defs.branch`): the ref grammar without the `refs/` prefix, at most 255 bytes, no leading
+/// `-` (it would read as a git option), and a first component that is not only `@`s (`@` is
+/// git's name for `HEAD`).
+#[must_use]
+pub fn is_legal_branch_name(branch: &str) -> bool {
+    let after_ats = branch.trim_start_matches('@');
+    let only_ats = after_ats.len() < branch.len()
+        && (after_ats.is_empty() || after_ats.starts_with(['.', '/']));
+    branch.len() <= MAX_REF_NAME_BYTES
+        && !branch.starts_with('-')
+        && !only_ats
+        && is_legal_ref_path(branch)
+}
+
+/// Whether `tag` is a legal `release.tagName` (RC1): the ref grammar without the `refs/`
+/// prefix, 1-63 bytes. A leading `-` is allowed (a private repository's keyed tag hash is
+/// base64url).
+#[must_use]
+pub fn is_legal_tag_name(tag: &str) -> bool {
+    tag.len() <= MAX_TAG_NAME_BYTES && is_legal_ref_path(tag)
+}
+
+/// The longest ref name (and default branch) the contract stores, in bytes.
+pub const MAX_REF_NAME_BYTES: usize = 255;
+/// The longest `release.tagName`, in bytes.
+pub const MAX_TAG_NAME_BYTES: usize = 63;
+
+/// The contract's ref grammar after `refs/` (`C(?:(?:\.?/|\.)C)*`, where a component `C` is a
+/// non-empty run without `.`, `/`, control bytes, space, DEL, `~^:?*[\` or `@{`): components
+/// split by `/` are non-empty and do not start with `.`; no `..`; no trailing `.`.
+fn is_legal_ref_path(path: &str) -> bool {
+    const FORBIDDEN: &[u8] = b"~^:?*[\\";
+    !path.is_empty()
+        && !path.contains("..")
+        && !path.contains("@{")
+        && !path.ends_with('.')
+        && !path
+            .bytes()
+            .any(|b| b <= 0x20 || b == 0x7f || FORBIDDEN.contains(&b))
+        && path
+            .split('/')
+            .all(|c| !c.is_empty() && !c.starts_with('.'))
 }
 
 /// Whether `h` is a SHA-256 rendered as 64 hex digits (either case): a real content hash,
@@ -474,6 +532,11 @@ pub enum Verdict {
     RequestChanges,
     /// Comment only, no verdict (3).
     Comment,
+    /// A non-member's approval (4): shown, never counted. The contract refuses it with
+    /// `asMember` (`memberVerdict`), so a member's approval is always 1.
+    ApproveNonMember,
+    /// A non-member's request for changes (5): shown, never counted.
+    RequestChangesNonMember,
     /// A code this client does not know.
     Unknown(u64),
 }
@@ -485,6 +548,8 @@ impl Verdict {
             1 => Self::Approve,
             2 => Self::RequestChanges,
             3 => Self::Comment,
+            4 => Self::ApproveNonMember,
+            5 => Self::RequestChangesNonMember,
             other => Self::Unknown(other),
         }
     }
@@ -495,6 +560,8 @@ impl Verdict {
             Self::Approve => 1,
             Self::RequestChanges => 2,
             Self::Comment => 3,
+            Self::ApproveNonMember => 4,
+            Self::RequestChangesNonMember => 5,
             Self::Unknown(c) => c,
         }
     }
@@ -505,8 +572,32 @@ impl Verdict {
             Self::Approve => "approved",
             Self::RequestChanges => "changes requested",
             Self::Comment => "commented",
+            Self::ApproveNonMember => "approved (not a member)",
+            Self::RequestChangesNonMember => "changes requested (not a member)",
             Self::Unknown(_) => "unknown verdict",
         }
+    }
+
+    /// The code this verdict is written as by a signer who is (`member`) or is not a proved
+    /// member: members' approve / request changes are 1 / 2 (with `asMember`), everyone
+    /// else's 4 / 5 (without). A comment is 3 either way.
+    #[must_use]
+    pub fn as_written_by(self, member: bool) -> Self {
+        match (self, member) {
+            (Self::Approve | Self::ApproveNonMember, true) => Self::Approve,
+            (Self::Approve | Self::ApproveNonMember, false) => Self::ApproveNonMember,
+            (Self::RequestChanges | Self::RequestChangesNonMember, true) => Self::RequestChanges,
+            (Self::RequestChanges | Self::RequestChangesNonMember, false) => {
+                Self::RequestChangesNonMember
+            }
+            (other, _) => other,
+        }
+    }
+
+    /// Whether this verdict must carry `asMember` (1 and 2, `memberVerdict`).
+    #[must_use]
+    pub fn needs_member_proof(self) -> bool {
+        matches!(self, Self::Approve | Self::RequestChanges)
     }
 }
 
@@ -892,6 +983,10 @@ pub struct PrState {
     pub labels: BTreeSet<String>,
     /// Assignees.
     pub assignees: BTreeSet<String>,
+    /// Merged PRs only, when the reader has the merge's `oid`: whether it was a valid tip of the
+    /// base (`true`), or not (`false`: shown as "merge commit not found on the base"). `None`
+    /// when not merged or the oid is not known.
+    pub merge_on_base: Option<bool>,
 }
 
 impl Default for PrState {
@@ -903,20 +998,8 @@ impl Default for PrState {
             base_ref: None,
             labels: BTreeSet::new(),
             assignees: BTreeSet::new(),
+            merge_on_base: None,
         }
-    }
-}
-
-/// Whether a `merge` event's `oid` is reachable from (an ancestor of, or equal to) the base
-/// tip. No merge oid or no base tip means reachability cannot be proven, so the merge is inert.
-fn merge_reachable(
-    e: &Event,
-    base_tip: Option<&str>,
-    is_ancestor: &impl Fn(&str, &str) -> bool,
-) -> bool {
-    match (e.oid.as_deref(), base_tip) {
-        (Some(oid), Some(tip)) => is_ancestor(oid, tip),
-        _ => false,
     }
 }
 
@@ -1003,7 +1086,7 @@ fn apply_pr_event(state: &mut PrState, e: &Event) {
 }
 
 /// The `(createdAt, id)` total order every fold applies events in.
-fn event_order(a: &Event, b: &Event) -> std::cmp::Ordering {
+pub(crate) fn event_order(a: &Event, b: &Event) -> std::cmp::Ordering {
     a.created_at
         .cmp(&b.created_at)
         .then_with(|| a.id.cmp(&b.id))
@@ -1144,50 +1227,26 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use std::path::PathBuf;
 
-    /// A merge event by `actor` on `target` with merge commit `oid`.
-    fn merge_event(actor: &str, target: &str, oid: &str, created_at: u64) -> Event {
-        Event {
-            id: format!("merge-{oid}"),
-            target_id: target.into(),
-            kind: EventKind::Merge,
-            actor: actor.into(),
-            value: None,
-            oid: Some(oid.into()),
-            ref_id: None,
-            created_at,
-        }
-    }
-
-    /// BLOCKER-1 regression: a merge whose oid was ever a base tip must stay `merged` once
-    /// the base ref advances past it. The service supplies a monotonic historical-tips
-    /// membership predicate; the old reflexive `|a,b| a==b` stand-in wrongly flipped it back
-    /// to open the instant `base_tip != merge_oid`.
+    /// BLOCKER-1 regression, on the transition reader: a merge whose oid was ever a base tip
+    /// stays "on the base" once the base ref advances past it. The service supplies a
+    /// monotonic historical-tips membership predicate; the old reflexive `|a,b| a==b` stand-in
+    /// flipped it the instant `base_tip != merge_oid`.
     #[test]
     fn pr_merge_stays_merged_after_base_advances() {
-        let events = vec![merge_event("maint1", "pr1", "M", 10)];
-
         // The merge oid `M` and a later base commit `T` are both historical base tips.
         let historical: std::collections::BTreeSet<String> =
             ["M".to_string(), "T".to_string()].into_iter().collect();
-
-        // Base has advanced to `T` (T != M). Monotonic predicate keeps the PR merged.
-        let good = v2::fold_pr_state_v2(
-            &events,
-            &[],
-            "author1",
-            Some("T"),
-            |oid, _tip| historical.contains(oid),
-            false,
-        );
-        assert!(good.merged, "merge stays merged after base advances");
+        // State code 2 (merged); the base has advanced to `T` (T != M).
+        let good = v2::pr_state_v2(2, Some("M"), &[], Some("T"), |oid, _tip| {
+            historical.contains(oid)
+        });
+        assert!(good.merged, "merged is the chain fact");
         assert!(!good.open, "a merged PR is closed");
-
-        // The buggy reflexive stand-in rejects the merge once base_tip != merge_oid.
-        let bad = v2::fold_pr_state_v2(&events, &[], "author1", Some("T"), |a, b| a == b, false);
-        assert!(
-            !bad.merged,
-            "reflexive a==b wrongly un-merges once the base advances (the fixed bug)"
-        );
+        assert_eq!(good.merge_on_base, Some(true), "found on the base");
+        // The reflexive stand-in labels it "not found on the base", never un-merges it.
+        let bad = v2::pr_state_v2(2, Some("M"), &[], Some("T"), |a, b| a == b);
+        assert!(bad.merged);
+        assert_eq!(bad.merge_on_base, Some(false));
     }
 
     /// MAJOR-4 defense-in-depth: an illegal `Retarget` base ref name (injection shape) is
@@ -1215,17 +1274,10 @@ mod tests {
             ref_id: None,
             created_at: 10,
         };
-        let s1 = v2::fold_pr_state_v2(
-            std::slice::from_ref(&legal),
-            &[],
-            "a",
-            None,
-            |_, _| false,
-            false,
-        );
+        let s1 = v2::pr_state_v2(0, None, std::slice::from_ref(&legal), None, |_, _| false);
         assert_eq!(s1.base_ref.as_deref(), Some("refs/heads/dev"));
         // The newer illegal retarget must NOT overwrite with the injection payload.
-        let s2 = v2::fold_pr_state_v2(&[legal, illegal], &[], "a", None, |_, _| false, false);
+        let s2 = v2::pr_state_v2(0, None, &[legal, illegal], None, |_, _| false);
         assert_eq!(
             s2.base_ref.as_deref(),
             Some("refs/heads/dev"),
@@ -1407,33 +1459,91 @@ mod tests {
     // `input`), so a vector cannot carry a field, such as a token-era `tokenRecords` or a misspelt
     // `authorEvent` key, that the v2 rules would silently ignore -----------------------------
 
+    /// A target's state code and merge oid, from exactly one of its `transitions` and (a list
+    /// row) their proved `delta` `sum` (with `mergeOid` when the row knows it).
+    fn state_of(
+        ctx: &str,
+        transitions: Option<&[v2::Transition]>,
+        sum: Option<i64>,
+        merge_oid: Option<&String>,
+    ) -> (i64, Option<String>) {
+        match (transitions, sum) {
+            (Some(t), None) => {
+                assert!(
+                    merge_oid.is_none(),
+                    "vector `{ctx}`: mergeOid goes with sum"
+                );
+                (
+                    v2::state_code(t),
+                    v2::merge_transition(t).and_then(|m| m.oid.clone()),
+                )
+            }
+            (None, Some(sum)) => (sum, merge_oid.cloned()),
+            _ => panic!("vector `{ctx}`: give exactly one of transitions and sum"),
+        }
+    }
+
     #[derive(Debug, Deserialize, Serialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct FoldIssueV2Input {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transitions: Option<Vec<v2::Transition>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sum: Option<i64>,
         #[serde(default)]
         events: Vec<Event>,
-        #[serde(default)]
-        author_events: Vec<Event>,
-        target_author: String,
     }
 
     #[derive(Debug, Deserialize, Serialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct FoldPrV2Input {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transitions: Option<Vec<v2::Transition>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sum: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        merge_oid: Option<String>,
         #[serde(default)]
         events: Vec<Event>,
-        #[serde(default)]
-        author_events: Vec<Event>,
-        target_author: String,
         #[serde(default)]
         base_tip: Option<String>,
         #[serde(default)]
         ancestry: Ancestry,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base_history: Option<BaseHistory>,
-        /// The patch's `draft` (absent: false).
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        initial_draft: bool,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct TransitionMoveCase {
+        target: v2::TransitionTarget,
+        code: i64,
+        action: v2::StateAction,
+        actor: v2::Actor,
+        target_number: u32,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct TransitionMovesInput {
+        cases: Vec<TransitionMoveCase>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct RepoCountsInput {
+        issues: u64,
+        patches: u64,
+        kinds: std::collections::BTreeMap<String, u64>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct UpstreamNumberInput {
+        upstream_number: Option<u32>,
+        author: String,
+        repo_owner: String,
+        memberships: Vec<v2::Membership>,
     }
 
     #[derive(Debug, Deserialize, Serialize)]
@@ -1443,16 +1553,6 @@ mod tests {
         /// The epoch's `K_ref`, hex; absent for a public repo (`sha256`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ref_key: Option<String>,
-    }
-
-    #[derive(Debug, Deserialize, Serialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    struct AllocateNumberInput {
-        count: u64,
-        taken_numbers_desc: Vec<u32>,
-        /// The owner's and maintainers' largest number; absent is 0.
-        #[serde(default)]
-        trusted_max: u32,
     }
 
     #[derive(Debug, Deserialize, Serialize)]
@@ -1777,13 +1877,148 @@ mod tests {
         }
     }
 
-    fn run_case_v2(v: &Vector) {
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct Codes {
+        codes: Vec<i64>,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct Sums {
+        sums: Vec<i64>,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct Transitions {
+        transitions: Vec<v2::Transition>,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct Totals {
+        issues: u64,
+        patches: u64,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct Messages {
+        messages: Vec<String>,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct CheckRunWriteInput {
+        stored: Option<v2::StoredRun>,
+        report: v2::RunReport,
+        now: u64,
+    }
+
+    /// The transition, count, numbering and check-run cases (`transition__*`, `dense_number__*`,
+    /// `upstream_number__*`, `check_run_write__*`).
+    fn run_transition_case(v: &Vector) {
+        let ctx = &v.name;
+        match v.case.as_str() {
+            "transition_moves" => {
+                let inp: TransitionMovesInput = input(v);
+                let got: Vec<Option<v2::TransitionMove>> = inp
+                    .cases
+                    .iter()
+                    .map(|c| {
+                        v2::next_transition(c.target, c.code, c.action, c.actor, c.target_number)
+                    })
+                    .collect();
+                assert_eq!(
+                    got,
+                    expected::<Vec<Option<v2::TransitionMove>>>(v),
+                    "vector `{ctx}`"
+                );
+            }
+            "transition_status" => {
+                let inp: Codes = input(v);
+                let got: Vec<v2::StateStatus> =
+                    inp.codes.iter().map(|&c| v2::status_of_code(c)).collect();
+                assert_eq!(got, expected::<Vec<v2::StateStatus>>(v), "vector `{ctx}`");
+            }
+            "transition_fold" => {
+                let inp: Sums = input(v);
+                let got: Vec<serde_json::Value> = inp
+                    .sums
+                    .iter()
+                    .map(|&s| {
+                        let (code, locked) = v2::fold_sum(s);
+                        serde_json::json!({ "code": code, "locked": locked })
+                    })
+                    .collect();
+                assert_eq!(serde_json::Value::from(got), v.expected, "vector `{ctx}`");
+            }
+            "transition_sum" => {
+                let inp: Transitions = input(v);
+                let got = serde_json::json!({
+                    "code": v2::state_code(&inp.transitions),
+                    "mergeId": v2::merge_transition(&inp.transitions).map(|t| t.id.clone()),
+                });
+                assert_eq!(got, v.expected, "vector `{ctx}`");
+            }
+            "repo_counts" => {
+                let inp: RepoCountsInput = input(v);
+                let kinds = inp
+                    .kinds
+                    .iter()
+                    .map(|(k, &n)| {
+                        let k: u8 = k
+                            .parse()
+                            .unwrap_or_else(|_| panic!("vector `{ctx}`: kind {k}"));
+                        (k, n)
+                    })
+                    .collect();
+                let got = v2::repo_counts(inp.issues, inp.patches, &kinds);
+                assert_eq!(got, expected::<v2::RepoCounts>(v), "vector `{ctx}`");
+            }
+            "dense_number" => {
+                let inp: Totals = input(v);
+                let got = v2::dense_number(inp.issues, inp.patches);
+                assert_eq!(got, expected::<Option<u32>>(v), "vector `{ctx}`");
+            }
+            "dense_refusal" => {
+                let inp: Messages = input(v);
+                let got: Vec<bool> = inp
+                    .messages
+                    .iter()
+                    .map(|m| v2::names_dense_rule(m))
+                    .collect();
+                assert_eq!(got, expected::<Vec<bool>>(v), "vector `{ctx}`");
+            }
+            "upstream_number" => {
+                let inp: UpstreamNumberInput = input(v);
+                let oracle = v2::RoleOracle::new(inp.memberships);
+                let got = v2::trusted_upstream_number(
+                    inp.upstream_number,
+                    &inp.author,
+                    &inp.repo_owner,
+                    &oracle,
+                );
+                assert_eq!(got, expected::<Option<u32>>(v), "vector `{ctx}`");
+            }
+            "check_run_write" => {
+                let inp: CheckRunWriteInput = input(v);
+                let got = v2::check_run_write(inp.stored.as_ref(), &inp.report, inp.now);
+                assert_eq!(got, expected::<Option<v2::RunWrite>>(v), "vector `{ctx}`");
+            }
+            other => panic!("vector `{ctx}`: not a transition case `{other}`"),
+        }
+    }
+
+    /// The issue / PR state cases (`fold_issue_v2__*`, `fold_pr_v2__*`).
+    fn run_fold_case(v: &Vector) {
         let ctx = &v.name;
         match v.case.as_str() {
             "fold_issue" => {
                 let inp: FoldIssueV2Input = input(v);
-                let got =
-                    v2::fold_issue_state_v2(&inp.events, &inp.author_events, &inp.target_author);
+                let (code, _) = state_of(ctx, inp.transitions.as_deref(), inp.sum, None);
+                let got = v2::issue_state_v2(code, &inp.events);
                 assert_eq!(got, expected::<IssueState>(v), "vector `{ctx}`");
             }
             "fold_pr" => {
@@ -1794,20 +2029,33 @@ mod tests {
                     inp.base_tip.as_deref(),
                     &inp.ancestry,
                 );
-                let got = v2::fold_pr_state_v2(
+                let (code, merge_oid) = state_of(
+                    ctx,
+                    inp.transitions.as_deref(),
+                    inp.sum,
+                    inp.merge_oid.as_ref(),
+                );
+                let got = v2::pr_state_v2(
+                    code,
+                    merge_oid.as_deref(),
                     &inp.events,
-                    &inp.author_events,
-                    &inp.target_author,
                     base_tip.as_deref(),
                     |a, d| ancestry.is_ancestor(a, d),
-                    inp.initial_draft,
                 );
                 assert_eq!(got, expected::<PrState>(v), "vector `{ctx}`");
             }
-            "allocate_number" => {
-                let inp: AllocateNumberInput = input(v);
-                let got = v2::allocate_number(inp.count, &inp.taken_numbers_desc, inp.trusted_max);
-                assert_eq!(got, expected::<Option<u32>>(v), "vector `{ctx}`");
+            other => panic!("vector `{ctx}`: not a fold case `{other}`"),
+        }
+    }
+
+    fn run_case_v2(v: &Vector) {
+        let ctx = &v.name;
+        match v.case.as_str() {
+            "fold_issue" | "fold_pr" => run_fold_case(v),
+            "transition_moves" | "transition_status" | "transition_sum" | "transition_fold"
+            | "repo_counts" | "dense_number" | "dense_refusal" | "upstream_number"
+            | "check_run_write" => {
+                run_transition_case(v);
             }
             "pack_copies" => run_pack_copies(v),
             "v2_pack_list" => {

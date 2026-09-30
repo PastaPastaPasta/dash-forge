@@ -1,20 +1,24 @@
-// Register the forge-v2 contract pair (forge-core + forge-collab) in one PV14 contract group.
+// Register the forge-v2 contracts (forge-core, forge-collab, forge-community) in one PV14
+// contract group.
 //
-//   (cd forge-contracts/sdk-v2 && npm ci)           # @dashevo/evo-sdk@4.2.0-beta.5, pinned
+//   (cd forge-contracts/sdk-v2 && npm ci)           # @dashevo/evo-sdk@4.2.0-beta.7, pinned
 //   node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
-//        --network devnet --devnet-name moutai [--addresses https://ip:1443,...] [--dry-run]
-//        [--only collab] [--force-new [--same-group]] [--update core]
+//        --network devnet --devnet-name bonsia [--addresses https://ip:1443,...] [--dry-run]
+//        [--only collab|community] [--force-new [--same-group]] [--update core]
+//   node forge-contracts/scripts/deploy-v2.mjs --self-test    # offline: ids, schemas, sizes of the group fields
 //
-// --only collab registers forge-collab alone, against the forge-core and contract group already
-// recorded (and found on chain); it never touches forge-core. --force-new (with --only collab)
-// registers a NEW forge-collab when the recorded one was registered from a different schema:
-// every record carries `schemaHash` (sha256 of the schema JSON after placeholder substitution),
-// and only a registered record whose hash differs from the current schema's is superseded. The
-// old record moves to v2.forgeCollabSuperseded and the new one takes the next identity nonce, so
-// it gets a new id. The new contract joins the EXISTING contract group (keys bound to it can then
-// sign for it too), so this needs --same-group as well. Rerunning the same command after it succeeded, or after a crash, therefore
-// registers nothing new. That is how a schema change the update rules refuse (e.g. narrowing an
-// ownerRefersTo) ships; documents under the old contract stay where they are, under its id.
+// --only collab (or --only community) registers that contract alone, against the forge-core and
+// contract group already recorded (and found on chain); it never touches forge-core or the other
+// one. --force-new (with --only) registers a NEW one when the recorded one was registered from a
+// different schema: every record carries `schemaHash` (sha256 of the schema JSON after
+// placeholder substitution), and only a registered record whose hash differs from the current
+// schema's is superseded. The old record moves to v2.forgeCollabSuperseded (or
+// v2.forgeCommunitySuperseded) and the new one takes the next identity nonce, so it gets a new
+// id. The new contract joins the EXISTING contract group (keys bound to it can then sign for it
+// too), so this needs --same-group as well. Rerunning the same command after it succeeded, or
+// after a crash, therefore registers nothing new. That is how a schema change the update rules
+// refuse (e.g. narrowing an ownerRefersTo) ships; documents under the old contract stay where
+// they are, under its id.
 //
 // --update core updates the recorded forge-core IN PLACE (a DataContractUpdate: same id, same
 // group, every document kept) to the current forge-core.json, as the next version. Protocol 14
@@ -26,28 +30,35 @@
 // the previous schema hash). A rerun after it landed finds the on-chain version already at the
 // target and the hash already recorded, and broadcasts nothing.
 //
-// --force-new without --only does the same for the pair: when the recorded forge-core was
+// --force-new without --only does the same for the set: when the recorded forge-core was
 // registered from a different schema (a change such as a new `required` system field, which the
 // update rules refuse), its record moves to v2.forgeCoreSuperseded, the recorded group to
 // v2.contractGroupSuperseded, and a new forge-core (registering a new contract group) and a new
-// forge-collab against it are registered. forge-collab's substituted schema names forge-core's
-// id, so a new forge-core always supersedes the recorded forge-collab too. Rerunning it after it
-// succeeded registers nothing new.
+// forge-collab and forge-community against it are registered. Their substituted schemas name
+// forge-core's id, so a new forge-core always supersedes the recorded ones too. Rerunning it
+// after it succeeded registers nothing new.
 //
 // Steps, each skipped when deployments/<network>.json shows it already done and the chain
 // confirms it (so a failed run is resumed by running the same command again):
 //   1. forge-core: a DataContractCreate v1 that registers the contract group AND enrols
 //      forge-core in it (the group id derives from the owner and the same nonce, so the
 //      transition can name the group it creates);
-//   2. forge-collab: substitute forge-core's id for FORGE_CORE_CONTRACT_ID in its schema, then a
-//      DataContractCreate v1 enrolling forge-collab in the group.
-// Both are signed with the deployer's CRITICAL authentication key (contract create needs
+//   2. forge-collab, then 3. forge-community: substitute the ids of the contracts registered
+//      before it for their placeholders (forge-core's for FORGE_CORE_CONTRACT_ID, and in
+//      forge-community also forge-collab's for FORGE_COLLAB_CONTRACT_ID: its events refer to
+//      collab's issues and PRs), then a DataContractCreate v1 enrolling it in the group. The
+//      order is fixed: each takes the deployer's next identity nonce (1, 2, 3 for a deployer
+//      with no earlier transitions), and the ids derive from those nonces. With --only
+//      community, forge-collab's recorded id is substituted; a forge-collab re-registered with
+//      --only collab --force-new leaves forge-community naming the old one until forge-community
+//      is re-registered too (--only community --force-new --same-group).
+// All are signed with the deployer's CRITICAL authentication key (contract create needs
 // CRITICAL or HIGH; CRITICAL is used). The deployer owns the
 // contracts and the group; no moderation, not readonly (flip readonly in a later update once
 // the schema is final).
 //
-// Before anything is broadcast, the script checks the network runs protocol 14, rebuilds both
-// contracts with full validation locally (the same rs-dpp as the network, compiled to wasm), and
+// Before anything is broadcast, the script checks the network runs protocol 14, rebuilds every
+// contract with full validation locally (the same rs-dpp as the network, compiled to wasm), and
 // prints the transition sizes. --dry-run stops there.
 //
 // Protocol notes: the contract id is hash_double(owner || nonce) and the group id
@@ -73,14 +84,21 @@ export async function loadEvoSdk() {
 }
 const PROTOCOL_VERSION = 14;
 const MAX_STATE_TRANSITION_SIZE = 20480;
-const PLACEHOLDER = 'FORGE_CORE_CONTRACT_ID';
-const GROUP = { name: 'dash-forge', description: 'Dash Forge v2: forge-core and forge-collab' };
+/** `forge-core` -> `FORGE_CORE_CONTRACT_ID`: the placeholder a later schema names a contract by. */
+export const placeholderFor = (schemaName) => `${schemaName.toUpperCase().replace(/-/g, '_')}_CONTRACT_ID`;
+const PLACEHOLDER = placeholderFor('forge-core');
+const GROUP = { name: 'dash-forge', description: 'Dash Forge v2: forge-core, forge-collab and forge-community' };
+// The contracts that name forge-core's id, registered after it in this order. `key` is the
+// record's name under `v2` (its superseded list is `${key}Superseded`), `only` the --only value.
+export const DEPENDENT_CONTRACTS = [
+  { key: 'forgeCollab', schemaName: 'forge-collab', only: 'collab' },
+  { key: 'forgeCommunity', schemaName: 'forge-community', only: 'community' },
+];
+// Protocol 14 limits on the group's registration fields (rs-platform-version system_limits).
+const MAX_GROUP_NAME = 64;
+const MAX_GROUP_DESCRIPTION = 256;
 const PUT_SETTINGS = { connectTimeoutMs: 10000, timeoutMs: 90000, retries: 3 };
 const CREDITS_PER_DASH = 1e11;
-const DEFAULT_ADDRESSES = {
-  // devnet moutai (protocol 14, drive 4.2.0-beta.5; chain reset 2026-09-27)
-  moutai: [254, 207, 192, 194, 195, 196, 253, 198, 199, 84].map((o) => `https://68.67.122.${o}:1443`),
-};
 
 const log = (m) => console.error(`${new Date().toISOString().slice(11, 19)} ${m}`);
 
@@ -126,6 +144,8 @@ export function contractGroupId(ownerB58, nonce) {
   return b58encode(hashDouble(Buffer.concat([Buffer.from('contract_group'), b58decode(ownerB58), u64be(nonce)])));
 }
 
+// Offline checks, run before every deploy and alone with --self-test: the id derivation against
+// rs-dpp's known answer, and every schema loading with the earlier contracts' ids substituted.
 function selfTest() {
   // Printed by tools/contract-validate for owner 0x07 * 32, nonce 1
   const owner = b58encode(Buffer.alloc(32, 7));
@@ -135,6 +155,23 @@ function selfTest() {
     throw new Error(`id derivation self-test failed: ${JSON.stringify(got)} != ${JSON.stringify(want)}`);
   }
   log('id derivation self-test: ok (matches rs-dpp)');
+  if (GROUP.name.length > MAX_GROUP_NAME || GROUP.description.length > MAX_GROUP_DESCRIPTION) {
+    throw new Error('contract group name or description over the protocol limit');
+  }
+  const core = loadSchema('forge-core');
+  if (JSON.stringify(core).includes(PLACEHOLDER)) throw new Error('forge-core must not name its own id');
+  if (!readFileSync(join(ROOT, 'contracts', 'forge-community.json'), 'utf8').includes(placeholderFor('forge-collab'))) {
+    throw new Error('forge-community names no FORGE_COLLAB_CONTRACT_ID: its events would not refer to this forge-collab');
+  }
+  const ids = { [PLACEHOLDER]: want.contract };
+  for (const { schemaName } of DEPENDENT_CONTRACTS) {
+    const raw = readFileSync(join(ROOT, 'contracts', `${schemaName}.json`), 'utf8');
+    if (!raw.includes(PLACEHOLDER)) throw new Error(`${schemaName} names no ${PLACEHOLDER}: it would not refer to this forge-core`);
+    // Only a contract registered before it may be named (loadSchema refuses an unresolved one)
+    loadSchema(schemaName, ids, raw);
+    ids[placeholderFor(schemaName)] = want.contract;
+  }
+  log(`schemas self-test: ok (forge-core + ${DEPENDENT_CONTRACTS.map((c) => c.schemaName).join(', ')})`);
 }
 
 // ---- deployment record ----
@@ -153,6 +190,14 @@ export function writeDep(file, dep) {
 
 export { b58decode, b58encode, selfTest };
 
+/**
+ * A deployment record's forge-community id: its own, or forge-collab's on a deployment that
+ * predates the three-contract split (the community types were in forge-collab there).
+ */
+export function communityId(dep) {
+  return dep?.v2?.forgeCommunity?.contractId ?? dep?.v2?.forgeCollab?.contractId;
+}
+
 export function loadSchema(name, substitutions = {}, text = readFileSync(join(ROOT, 'contracts', `${name}.json`), 'utf8')) {
   for (const [k, v] of Object.entries(substitutions)) text = text.split(k).join(v);
   if (text.includes('_CONTRACT_ID"')) throw new Error(`${name}: unresolved contract id placeholder`);
@@ -163,6 +208,25 @@ export function loadSchema(name, substitutions = {}, text = readFileSync(join(RO
 // re-serialized compactly so whitespace and formatting do not count as a change.
 export function schemaHash(json) {
   return createHash('sha256').update(JSON.stringify(json)).digest('hex');
+}
+
+// Whether --force-new supersedes a record. Only a completed registration from a different
+// schema is superseded. A `broadcasting` record is the new contract of an interrupted
+// --force-new run (or an interrupted first run): registerContract completes it if it landed, or
+// retries its nonce if it did not. A registered record from this very schema is already the
+// contract wanted. Either way, rerunning the same command never registers another copy. A record
+// without a hash predates schemaHash and cannot be shown to match, so it is superseded.
+export function supersedes(rec, currentHash) {
+  return rec?.status === 'registered' && rec.schemaHash !== currentHash;
+}
+
+// A superseded forge-collab / forge-community joins the EXISTING contract group when forge-core
+// is kept, which widens every key bound to that group: that needs an explicit --same-group. With
+// a new forge-core the new contract joins the new group, which no key is bound to yet.
+export function dependentSupersedeError({ key, schemaName, contractId, coreSuperseded, sameGroup }) {
+  if (coreSuperseded || sameGroup) return null;
+  return `${key}: ${contractId} was registered from another schema but forge-core was not, so --force-new would add a new ${schemaName} ` +
+    'to the existing contract group, widening every key bound to it; re-run with --same-group to confirm';
 }
 
 function pickKey(rec, purpose, level) {
@@ -177,30 +241,35 @@ async function main() {
   if (args['self-test']) return;
 
   const network = args.network || 'devnet';
-  const devnetName = network === 'devnet' ? (args['devnet-name'] || 'moutai') : undefined;
+  const devnetName = network === 'devnet' ? (args['devnet-name'] || 'bonsia') : undefined;
   if (!['devnet', 'testnet', 'mainnet'].includes(network)) throw new Error(`unknown network ${network}`);
   if (!args.identity || args.identity === true) throw new Error('--identity <deployer.identity.json> required');
   const dryRun = Boolean(args['dry-run']);
   const only = args.only === undefined ? null : String(args.only);
-  if (only !== null && only !== 'collab') throw new Error(`--only accepts "collab", got ${only}`);
+  const onlyValues = DEPENDENT_CONTRACTS.map((c) => c.only);
+  if (only !== null && !onlyValues.includes(only)) throw new Error(`--only accepts ${onlyValues.map((v) => `"${v}"`).join(' or ')}, got ${only}`);
   const update = args.update === undefined ? null : String(args.update);
   if (update !== null && update !== 'core') throw new Error(`--update accepts "core", got ${update}`);
   if (update !== null && (only !== null || args['force-new'])) throw new Error('--update core runs alone: no --only, no --force-new');
   const forceNew = Boolean(args['force-new']);
-  // A new forge-collab registered into the EXISTING group adds a member that every key already
-  // bound to the group can sign for, and a group never drops members. dg accepts superseded
-  // contracts the deployment file lists in the same group, but the default for a schema change
-  // is a new pair in a new group (--force-new without --only). Adding to the old group needs an
-  // explicit --same-group.
-  if (only === 'collab' && forceNew && !args['same-group']) {
+  // A new contract registered into the EXISTING group adds a member that every key already bound
+  // to the group can sign for, and a group never drops members. dg accepts superseded contracts
+  // the deployment file lists in the same group, but the default for a schema change is a new set
+  // in a new group (--force-new without --only). Adding to the old group needs an explicit
+  // --same-group.
+  if (only !== null && forceNew && !args['same-group']) {
     throw new Error(
-      '--only collab --force-new adds a new forge-collab to the existing contract group, widening every key bound to it; ' +
-        're-run with --same-group to confirm, or use --force-new without --only for a new pair in a new group'
+      `--only ${only} --force-new adds a new forge-${only} to the existing contract group, widening every key bound to it; ` +
+        're-run with --same-group to confirm, or use --force-new without --only for a new set in a new group'
     );
   }
+  // A devnet's DAPI addresses: --addresses, else the deployment file's `dapiAddresses` (as
+  // deploy-key-exchange.mjs and snapshot-contracts.mjs read them), else SDK discovery
+  const depFile = depPath(network, devnetName);
+  const dep = readDep(depFile);
   const addresses = typeof args.addresses === 'string'
     ? args.addresses.split(',').map((s) => s.trim()).filter(Boolean)
-    : (devnetName && DEFAULT_ADDRESSES[devnetName]) || undefined;
+    : (devnetName && (dep.dapiAddresses ?? dep.v2?.devnet?.addresses)) || undefined;
 
   const rec = JSON.parse(readFileSync(resolve(String(args.identity)), 'utf8'));
   const ownerId = rec.identityId;
@@ -247,8 +316,6 @@ async function main() {
   });
   const privateKey = PrivateKey.fromWIF(critKey.privateKeyWif);
 
-  const depFile = depPath(network, devnetName);
-  const dep = readDep(depFile);
   dep.v2 ??= {};
   const v2 = dep.v2;
   const record = () => writeDep(depFile, dep);
@@ -269,7 +336,8 @@ async function main() {
     const onChain = await sdk.contracts.fetch(existing.contractId);
     if (onChain) {
       if (existing.schemaHash && existing.schemaHash !== currentHash) {
-        log(`${key}: WARNING ${existing.contractId} was registered from a different schema (${existing.schemaHash.slice(0, 12)}… != ${currentHash.slice(0, 12)}…); it is left as is${key === 'forgeCollab' ? ' (--only collab --force-new registers the current one)' : ''}`);
+        const dependent = DEPENDENT_CONTRACTS.find((c) => c.key === key);
+        log(`${key}: WARNING ${existing.contractId} was registered from a different schema (${existing.schemaHash.slice(0, 12)}… != ${currentHash.slice(0, 12)}…); it is left as is${dependent ? ` (--only ${dependent.only} --force-new --same-group registers the current one)` : ''}`);
       }
       if (existing.status !== 'registered') {
         const cost = existing.balanceBefore != null ? BigInt(existing.balanceBefore) - (await balance()) : null;
@@ -449,41 +517,45 @@ async function main() {
     return;
   }
 
-  // --force-new for the pair: supersede a forge-core registered from another schema (and so the
-  // group it registered, and the forge-collab that names its id). Same rules as for collab below:
-  // only a completed registration from a different schema is superseded, so a rerun is a no-op.
+  // Move a record to its `<key>Superseded` list (the caller writes the record).
+  const moveToSuperseded = (key, at) => {
+    v2[`${key}Superseded`] = [...(v2[`${key}Superseded`] ?? []), { ...v2[key], supersededAt: at }];
+    delete v2[key];
+  };
+  // A dry run with --force-new sizes the contracts it would register and records nothing: a
+  // record the real run would supersede is set aside, and put back at the end.
+  const restoreAfterDryRun = {};
+
+  // --force-new for the set: supersede a forge-core registered from another schema (and so the
+  // group it registered, and the contracts that name its id).
+  let coreSuperseded = false;
   if (forceNew && only === null && v2.forgeCore?.contractId) {
     const old = v2.forgeCore;
-    const currentHash = schemaHash(loadSchema('forge-core'));
-    if (old.status === 'registered' && old.schemaHash === currentHash) {
-      log(`forgeCore: ${old.contractId} was registered from the current schema; --force-new has nothing to supersede`);
-    } else if (old.status === 'registered') {
-      if (dryRun) {
-        log(`forgeCore: --force-new would supersede ${old.contractId} (and its group and forge-collab) with new contracts`);
-      } else {
-        const at = new Date().toISOString();
-        v2.forgeCoreSuperseded = [...(v2.forgeCoreSuperseded ?? []), { ...old, supersededAt: at }];
-        if (v2.contractGroup) {
-          v2.contractGroupSuperseded = [...(v2.contractGroupSuperseded ?? []), { ...v2.contractGroup, supersededAt: at }];
-        }
-        delete v2.forgeCore;
-        delete v2.contractGroupId;
-        delete v2.contractGroup;
-        record();
-        log(`forgeCore: ${old.contractId} moved to forgeCoreSuperseded; registering a new forge-core and contract group`);
-      }
+    if (!supersedes(old, schemaHash(loadSchema('forge-core')))) {
+      if (old.status === 'registered') log(`forgeCore: ${old.contractId} was registered from the current schema; --force-new has nothing to supersede`);
+    } else if (dryRun) {
+      coreSuperseded = true;
+      restoreAfterDryRun.forgeCore = old;
+      delete v2.forgeCore;
+      log(`forgeCore: --force-new would supersede ${old.contractId} (and its group, forge-collab and forge-community) with new contracts`);
+    } else {
+      coreSuperseded = true;
+      const at = new Date().toISOString();
+      moveToSuperseded('forgeCore', at);
+      if (v2.contractGroup) moveToSuperseded('contractGroup', at);
+      delete v2.contractGroupId;
+      record();
+      log(`forgeCore: ${old.contractId} moved to forgeCoreSuperseded; registering a new forge-core and contract group`);
     }
   }
-  const coreRecordBeforeDryRun = dryRun && forceNew && only === null ? v2.forgeCore : undefined;
-  if (coreRecordBeforeDryRun) delete v2.forgeCore; // a dry run sizes the new one, records nothing
 
   // forge-core registers the group, so the group id is derived from forge-core's own nonce,
   // whichever nonce that turns out to be (fresh, reused, or recorded by an earlier run).
   let coreId;
-  if (only === 'collab') {
+  if (only !== null) {
     // forge-core must already be registered and on chain; this mode never registers it
     coreId = await reconcile('forgeCore', schemaHash(loadSchema('forge-core')));
-    if (!coreId) throw new Error('--only collab: forge-core is not registered on this network; run without --only first');
+    if (!coreId) throw new Error(`--only ${only}: forge-core is not registered on this network; run without --only first`);
   } else {
     coreId = await registerContract({
       key: 'forgeCore',
@@ -503,55 +575,72 @@ async function main() {
     throw new Error(`recorded group ${v2.forgeCore.contractGroupId} does not derive from forge-core's nonce ${coreNonce}`);
   }
 
-  const collabSubstitutions = { [PLACEHOLDER]: coreId };
-  if (forceNew && v2.forgeCollab?.contractId) {
-    const old = v2.forgeCollab;
-    const currentHash = schemaHash(loadSchema('forge-collab', collabSubstitutions));
-    // Only a completed registration from a different schema is superseded. A `broadcasting`
-    // record is the new contract of an interrupted --force-new run (or an interrupted first
-    // run): registerContract below completes it if it landed, or retries its nonce if it did
-    // not. A registered record from this very schema is already the contract wanted. Either
-    // way, rerunning the same command never registers another copy. A record without a hash
-    // predates schemaHash and cannot be shown to match, so it is superseded.
-    if (old.status === 'registered' && old.schemaHash === currentHash) {
-      log(`forgeCollab: ${old.contractId} was registered from the current schema; --force-new has nothing to supersede`);
-    } else if (old.status === 'registered') {
-      if (dryRun) {
-        log(`forgeCollab: --force-new would supersede ${old.contractId} with a new contract`);
+  const substitutions = { [PLACEHOLDER]: coreId };
+  // Register the contracts that name forge-core's id, in order (all, or the one --only names).
+  // Each registered id is substituted into the ones after it; one --only skips lends its
+  // recorded id once it is confirmed on chain.
+  const dependents = DEPENDENT_CONTRACTS.filter((c) => only === null || c.only === only);
+  // (only the ones registered before the first this run registers can be named by it)
+  for (const c of DEPENDENT_CONTRACTS) {
+    if (dependents.includes(c)) break;
+    if (!v2[c.key]?.contractId) continue;
+    // Only a contract found on chain may be named (reconcile also settles an interrupted record)
+    const found = await reconcile(c.key, schemaHash(loadSchema(c.schemaName, substitutions)));
+    if (!found) throw new Error(`--only ${only}: ${c.key} is recorded but not on chain; run --only ${c.only} first`);
+    substitutions[placeholderFor(c.schemaName)] = found;
+  }
+  for (const { key, schemaName } of dependents) {
+    if (forceNew && v2[key]?.contractId) {
+      const old = v2[key];
+      if (!supersedes(old, schemaHash(loadSchema(schemaName, substitutions)))) {
+        if (old.status === 'registered') log(`${key}: ${old.contractId} was registered from the current schema; --force-new has nothing to supersede`);
       } else {
-        v2.forgeCollabSuperseded = [...(v2.forgeCollabSuperseded ?? []), { ...old, supersededAt: new Date().toISOString() }];
-        delete v2.forgeCollab;
-        record();
-        log(`forgeCollab: ${old.contractId} moved to forgeCollabSuperseded; registering a new forge-collab`);
+        const refused = dependentSupersedeError({ key, schemaName, contractId: old.contractId, coreSuperseded, sameGroup: Boolean(args['same-group']) });
+        if (refused) throw new Error(refused);
+        if (dryRun) {
+          restoreAfterDryRun[key] = old;
+          delete v2[key];
+          log(`${key}: --force-new would supersede ${old.contractId} with a new contract`);
+        } else {
+          moveToSuperseded(key, new Date().toISOString());
+          record();
+          log(`${key}: ${old.contractId} moved to ${key}Superseded; registering a new ${schemaName}`);
+        }
       }
     }
+    const id = await registerContract({
+      key,
+      schemaName,
+      substitutions,
+      registerGroup: false,
+      groupIdFor: () => groupIdFinal,
+    });
+    substitutions[placeholderFor(schemaName)] = id;
   }
-  const collabRecordBeforeDryRun = dryRun && forceNew ? v2.forgeCollab : undefined;
-  if (collabRecordBeforeDryRun) delete v2.forgeCollab; // a dry run sizes the new one, records nothing
-  await registerContract({
-    key: 'forgeCollab',
-    schemaName: 'forge-collab',
-    substitutions: collabSubstitutions,
-    registerGroup: false,
-    groupIdFor: () => groupIdFinal,
-  });
-  if (collabRecordBeforeDryRun) v2.forgeCollab = collabRecordBeforeDryRun;
-  if (coreRecordBeforeDryRun) v2.forgeCore = coreRecordBeforeDryRun;
+  if (only === 'collab' && v2.forgeCommunity?.contractId && schemaHash(loadSchema('forge-community', substitutions)) !== v2.forgeCommunity.schemaHash) {
+    log(`forgeCommunity: WARNING ${v2.forgeCommunity.contractId} names another forge-collab than ${substitutions[placeholderFor('forge-collab')]}; --only community --force-new --same-group registers one that names it`);
+  }
+  Object.assign(v2, restoreAfterDryRun);
 
   if (!dryRun) {
     const info = await sdk.contractGroups.info(groupIdFinal);
     if (!info || info.ownerId !== ownerId) throw new Error(`contract group ${groupIdFinal} not found or not owned by ${ownerId}`);
-    for (const key of ['forgeCore', 'forgeCollab']) {
+    // Every contract recorded for this deployment, not only the ones this run registered
+    for (const key of ['forgeCore', ...DEPENDENT_CONTRACTS.map((c) => c.key)]) {
+      if (!v2[key]?.contractId) {
+        if (only !== null) continue; // --only on a deployment that predates the contract
+        throw new Error(`${key} is not recorded after a full run`);
+      }
       const m = await sdk.contractGroups.forContract(v2[key].contractId);
       if (!m.contract.includes(groupIdFinal)) throw new Error(`${key} is not enrolled in ${groupIdFinal}`);
     }
     v2.contractGroupId = groupIdFinal;
     v2.contractGroup = { id: groupIdFinal, name: GROUP.name, owner: ownerId, verifiedAt: new Date().toISOString() };
     v2.protocolVersion = PROTOCOL_VERSION;
-    v2.sdk = '@dashevo/evo-sdk@4.2.0-beta.5';
+    v2.sdk = '@dashevo/evo-sdk@4.2.0-beta.7';
     if (devnetName) v2.devnet = { name: devnetName, addresses: addresses ?? null };
     record();
-    log(`contract group ${groupIdFinal} verified: owner ${ownerId}, both contracts enrolled`);
+    log(`contract group ${groupIdFinal} verified: owner ${ownerId}, every recorded contract enrolled`);
   }
   report.contractGroupId = groupIdFinal;
   report.deployment = depFile;

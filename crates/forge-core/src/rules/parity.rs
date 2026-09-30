@@ -56,6 +56,11 @@ pub struct ChecksPolicy {
     /// These checks must be reported and pass (overrides "every reported check" when set).
     #[serde(default)]
     pub required_checks: Vec<String>,
+    /// `requiredCheckSources` (RC1 `check_sources`): the identity (base58, a runner or a
+    /// maintainer of the repo) whose runs alone decide each of `required_checks`, paired by
+    /// position. Empty: any trusted reporter's run decides (the rule before RC1).
+    #[serde(default)]
+    pub required_check_sources: Vec<String>,
 }
 
 /// Where one required check stands.
@@ -127,6 +132,12 @@ fn check_state_of(run: &CheckRunRow) -> CheckState {
 /// * `requiredChecks` set: each named check must be decided by a passing run; a missing one is
 ///   `missing`. Otherwise `requireChecks`: every counting name must pass, and at least one
 ///   must exist. Neither: nothing is required and `met` is true.
+/// * **Pinned sources** (`requiredCheckSources`, paired with `requiredChecks` by position):
+///   a pinned name counts only the runs its source signed, so another member's or runner's run
+///   of that name neither passes nor blocks it (nor counts as untrusted). The source must still
+///   be a current member or runner. Consensus admits as many sources as names or none
+///   (`sourcesMatchNames`); a list that does not pair up pins nothing, and an empty one is the
+///   rule without pinning.
 ///
 /// A client rule for the merge box (a maintainer may override), never consensus.
 #[must_use]
@@ -138,6 +149,11 @@ pub fn checks_state(
     policy: &ChecksPolicy,
 ) -> ChecksState {
     let trusted = |who: &str| oracle.current_role(who).is_some() || runners.contains(who);
+    let pins = pinned_sources(policy);
+    let pinned_out = |run: &CheckRunRow| {
+        pins.get(run.name.as_str())
+            .is_some_and(|sources| !sources.contains(run.reporter.as_str()))
+    };
     let mut newest: BTreeMap<&str, &CheckRunRow> = BTreeMap::new();
     let mut untrusted = 0u32;
     for run in runs
@@ -146,6 +162,9 @@ pub fn checks_state(
     {
         if !trusted(&run.reporter) {
             untrusted = untrusted.saturating_add(1);
+            continue;
+        }
+        if pinned_out(run) {
             continue;
         }
         let newer = newest.get(run.name.as_str()).is_none_or(|held| {
@@ -192,6 +211,26 @@ pub fn checks_state(
     }
 }
 
+/// Each pinned check name and the sources that may decide it ([`checks_state`]): empty unless
+/// `requiredCheckSources` pairs up with `requiredChecks`. An empty name or source pins nothing.
+fn pinned_sources(policy: &ChecksPolicy) -> BTreeMap<&str, BTreeSet<&str>> {
+    let mut pins: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    if policy.required_check_sources.len() != policy.required_checks.len() {
+        return pins;
+    }
+    for (name, source) in policy
+        .required_checks
+        .iter()
+        .zip(&policy.required_check_sources)
+        .filter(|(n, s)| !n.is_empty() && !s.is_empty())
+    {
+        pins.entry(name.as_str())
+            .or_default()
+            .insert(source.as_str());
+    }
+    pins
+}
+
 // ===========================================================================
 // Milestone, pin, lock (event kinds 17–22)
 // ===========================================================================
@@ -206,7 +245,9 @@ pub struct ThreadMeta {
     pub pinned: bool,
     /// When the standing pin was made (ms); `None` when not pinned.
     pub pinned_at: Option<u64>,
-    /// Locked: clients offer the composer to members only.
+    /// Locked, from the retired lock events (kinds 21/22, refused on chain since RC1 by
+    /// `noState`). Kept for the shared vectors only: read a thread's lock from its transitions
+    /// (`TargetLog::locked`, a sum of 16 or more).
     pub locked: bool,
 }
 
@@ -514,4 +555,286 @@ pub fn trending_recount(
     rows.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| b.repo.cmp(&a.repo)));
     rows.truncate(limit);
     rows
+}
+
+// ===========================================================================
+// Check-run reports: monotonic status and times
+// ===========================================================================
+
+/// The stored run a report would update, as far as the monotonic rules read it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredRun {
+    /// `queued`, `in_progress` or `completed`.
+    pub status: String,
+    /// `startedAt` (ms), once set.
+    #[serde(default)]
+    pub started_at: Option<u64>,
+    /// `completedAt` (ms), once set.
+    #[serde(default)]
+    pub completed_at: Option<u64>,
+    /// `conclusion`, once set.
+    #[serde(default)]
+    pub conclusion: Option<String>,
+    /// `externalId` (the CI's own run id), once set.
+    #[serde(default)]
+    pub external_id: Option<String>,
+}
+
+/// What a reporter says now.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunReport {
+    /// `queued`, `in_progress` or `completed`.
+    pub status: String,
+    /// The conclusion of a completed run.
+    #[serde(default)]
+    pub conclusion: Option<String>,
+    /// A start time the CI gives (ms); else the report's time is used.
+    #[serde(default)]
+    pub started_at: Option<u64>,
+    /// A completion time the CI gives (ms); else the report's time is used.
+    #[serde(default)]
+    pub completed_at: Option<u64>,
+    /// The CI's own run id, when it gives one.
+    #[serde(default)]
+    pub external_id: Option<String>,
+}
+
+/// How a report is written ([`check_run_write`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RunWriteAction {
+    /// A new `checkRun` document.
+    Create,
+    /// A replace of the stored run.
+    Replace,
+}
+
+/// The write a report makes: create or replace, and the immutable-once-set fields it carries.
+/// On a replace, only a field the stored run does not have yet is set (`None` keeps the stored
+/// value: `startedAt`, `completedAt`, `conclusion` and `externalId` are `immutableAllowSetting`,
+/// so a set value never changes).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunWrite {
+    /// Create or replace.
+    pub action: RunWriteAction,
+    /// `startedAt` to write, if any.
+    pub started_at: Option<u64>,
+    /// `completedAt` to write, if any.
+    pub completed_at: Option<u64>,
+    /// `conclusion` to write, if any.
+    pub conclusion: Option<String>,
+    /// `externalId` to write, if any.
+    pub external_id: Option<String>,
+}
+
+fn status_rank(status: &str) -> Option<u8> {
+    match status {
+        "queued" => Some(0),
+        "in_progress" => Some(1),
+        "completed" => Some(2),
+        _ => None,
+    }
+}
+
+/// Whether `stored` can take `report` as a replace: same run (an `externalId` never changes)
+/// moving forwards, and a completed run's conclusion unchanged.
+fn continues(stored: &StoredRun, report: &RunReport, rank: u8) -> bool {
+    let Some(held) = status_rank(&stored.status) else {
+        return false;
+    };
+    let same_run = match (&stored.external_id, &report.external_id) {
+        (Some(a), Some(b)) => a == b,
+        _ => true,
+    };
+    let conclusion_kept = stored.conclusion.is_none() || stored.conclusion == report.conclusion;
+    same_run && rank >= held && conclusion_kept
+}
+
+/// The write that records `report` against `stored` (the reporter's run it would update, or
+/// none) at `now_ms`, so the forge-community `checkRun` rules hold (`conclusionIfDone`,
+/// `doneIfConclusion`, `startedIfRunning`, `runningIfStarted`, `completedAtIfDone`,
+/// `doneIfCompletedAt`, D-5):
+///
+/// * a conclusion comes with `completed` and only with it;
+/// * `startedAt` is set on the first report that is not `queued`, `completedAt` on the first
+///   `completed` one: the CI's own time when given, else `now_ms`; a completion never precedes
+///   the start it is paired with;
+/// * a stored time, conclusion or `externalId` is never changed or dropped;
+/// * a report that would move a run backwards (in progress to queued, completed to anything
+///   else), change a completed run's conclusion, or name another `externalId` is a re-run: a
+///   new document.
+///
+/// `None` when consensus would refuse the report whatever is stored: an unknown status, a
+/// `completed` without a conclusion, or a conclusion on a run that is not completed.
+#[must_use]
+pub fn check_run_write(
+    stored: Option<&StoredRun>,
+    report: &RunReport,
+    now_ms: u64,
+) -> Option<RunWrite> {
+    let rank = status_rank(&report.status)?;
+    if (rank == 2) != report.conclusion.is_some() {
+        return None;
+    }
+    let stored = stored.filter(|s| continues(s, report, rank));
+    let held_start = stored.and_then(|s| s.started_at);
+    let held_end = stored.and_then(|s| s.completed_at);
+    let start = held_start.or_else(|| (rank >= 1).then(|| report.started_at.unwrap_or(now_ms)));
+    let end = held_end.or_else(|| {
+        (rank == 2).then(|| {
+            let end = report.completed_at.unwrap_or(now_ms);
+            start.map_or(end, |s| end.max(s))
+        })
+    });
+    let unset = |held: Option<&String>, given: &Option<String>| {
+        if held.is_some() {
+            None
+        } else {
+            given.clone()
+        }
+    };
+    Some(RunWrite {
+        action: if stored.is_some() {
+            RunWriteAction::Replace
+        } else {
+            RunWriteAction::Create
+        },
+        started_at: if held_start.is_some() { None } else { start },
+        completed_at: if held_end.is_some() { None } else { end },
+        conclusion: unset(
+            stored.and_then(|s| s.conclusion.as_ref()),
+            &report.conclusion,
+        ),
+        external_id: unset(
+            stored.and_then(|s| s.external_id.as_ref()),
+            &report.external_id,
+        ),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::v2::{Membership, Role};
+    use super::*;
+
+    const HEAD: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    fn run(id: &str, name: &str, reporter: &str, at: u64, conclusion: &str) -> CheckRunRow {
+        CheckRunRow {
+            id: id.into(),
+            head_oid: HEAD.into(),
+            name: name.into(),
+            status: "completed".into(),
+            conclusion: Some(conclusion.into()),
+            reporter: reporter.into(),
+            created_at: at,
+        }
+    }
+
+    fn oracle() -> RoleOracle {
+        RoleOracle::new(vec![
+            Membership {
+                identity: "maint".into(),
+                role: Role::Maintainer,
+                created_at: 1,
+            },
+            Membership {
+                identity: "writ".into(),
+                role: Role::Writer,
+                created_at: 1,
+            },
+        ])
+    }
+
+    fn policy(names: &[&str], sources: &[&str]) -> ChecksPolicy {
+        ChecksPolicy {
+            require_checks: true,
+            required_checks: names.iter().map(|s| (*s).to_string()).collect(),
+            required_check_sources: sources.iter().map(|s| (*s).to_string()).collect(),
+        }
+    }
+
+    fn states(s: &ChecksState) -> Vec<(&str, CheckState)> {
+        s.required
+            .iter()
+            .map(|c| (c.name.as_str(), c.state))
+            .collect()
+    }
+
+    #[test]
+    fn a_pinned_check_counts_only_its_sources_runs() {
+        let runners = BTreeSet::from(["bot".to_string()]);
+        // A writer's newer passing `build` does not decide a `build` pinned to the runner,
+        // whose run failed; `lint`, pinned to the maintainer, passes by the maintainer's run.
+        let runs = [
+            run("r1", "build", "bot", 10, "failure"),
+            run("r2", "build", "writ", 20, "success"),
+            run("r3", "lint", "maint", 10, "success"),
+            run("r4", "lint", "bot", 20, "failure"),
+        ];
+        let s = checks_state(
+            &runs,
+            HEAD,
+            &oracle(),
+            &runners,
+            &policy(&["build", "lint"], &["bot", "maint"]),
+        );
+        assert_eq!(
+            states(&s),
+            [("build", CheckState::Failing), ("lint", CheckState::Passed)]
+        );
+        assert!(!s.met);
+        assert_eq!(s.untrusted, 0, "another member's run is not untrusted");
+        assert_eq!(s.required[0].run_id.as_deref(), Some("r1"));
+        // Only another reporter's run: the pinned check is missing.
+        let s = checks_state(
+            &runs[1..2],
+            HEAD,
+            &oracle(),
+            &runners,
+            &policy(&["build"], &["bot"]),
+        );
+        assert_eq!(states(&s), [("build", CheckState::Missing)]);
+    }
+
+    #[test]
+    fn no_sources_or_a_list_that_does_not_pair_up_is_the_unpinned_rule() {
+        let runners = BTreeSet::from(["bot".to_string()]);
+        let runs = [
+            run("r1", "build", "bot", 10, "failure"),
+            run("r2", "build", "writ", 20, "success"),
+        ];
+        for sources in [&[][..], &["bot", "maint"][..]] {
+            let s = checks_state(
+                &runs,
+                HEAD,
+                &oracle(),
+                &runners,
+                &policy(&["build"], sources),
+            );
+            assert_eq!(states(&s), [("build", CheckState::Passed)], "{sources:?}");
+            assert!(s.met);
+        }
+    }
+
+    #[test]
+    fn a_revoked_source_decides_nothing() {
+        // The pinned runner was revoked: its run is untrusted, and nobody else's counts.
+        let runs = [
+            run("r1", "build", "bot", 10, "success"),
+            run("r2", "build", "writ", 20, "success"),
+        ];
+        let s = checks_state(
+            &runs,
+            HEAD,
+            &oracle(),
+            &BTreeSet::new(),
+            &policy(&["build"], &["bot"]),
+        );
+        assert_eq!(states(&s), [("build", CheckState::Missing)]);
+        assert_eq!(s.untrusted, 1);
+    }
 }

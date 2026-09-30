@@ -1,0 +1,68 @@
+{
+  "name": "merge_naming_a_non_tip_ancestor_labelled",
+  "description": "The importer records the source's merge commit M (D-9), an ancestor of tip T2 that was never itself a tip: merged, and labelled, because readers check the base's valid tips, never ancestry.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "transitions": [
+      {
+        "id": "t1",
+        "kind": 13,
+        "actor": "maint",
+        "asAuthor": 0,
+        "createdAt": 500,
+        "oid": "M"
+      }
+    ],
+    "events": [],
+    "baseHistory": {
+      "updates": [
+        {
+          "id": "u1",
+          "refNameHash": "H",
+          "refName": "refs/heads/main",
+          "prevOid": "",
+          "newOid": "A",
+          "force": false,
+          "protected": false,
+          "author": "w",
+          "createdAt": 50
+        },
+        {
+          "id": "u2",
+          "refNameHash": "H",
+          "refName": "refs/heads/main",
+          "prevOid": "A",
+          "newOid": "T2",
+          "force": false,
+          "protected": false,
+          "author": "w",
+          "createdAt": 300
+        },
+        {
+          "id": "u3",
+          "refNameHash": "H",
+          "refName": "refs/heads/main",
+          "prevOid": "T2",
+          "newOid": "T3",
+          "force": false,
+          "protected": false,
+          "author": "w",
+          "createdAt": 400
+        }
+      ],
+      "configHistory": [],
+      "refNameHash": "H",
+      "openedAt": 100
+    }
+  },
+  "expected": {
+    "open": false,
+    "merged": true,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": [],
+    "mergeOnBase": false
+  }
+}

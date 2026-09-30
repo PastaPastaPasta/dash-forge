@@ -26,10 +26,12 @@
 //! (tag v | len v | bytes)*                                          extension sections
 //! ```
 //!
-//! **Extending it.** Everything up to the paths is fixed for every version. What a later
-//! version adds goes in a tagged section after them; a reader skips a tag it does not know, so
-//! v1 readers read a v2 index (the last-change column and the counts) and ignore what v2 added.
-//! `version` names the newest layout the writer used; a reader accepts any version from 1 on.
+//! **The format is the header's `version` byte**, the only place it is recorded: RC1 removed
+//! `packManifest.offsetIndexParts`, where #168 kept it, and no manifest field replaces it. A
+//! reader takes the format from the artifact it fetched and refuses a version it does not know
+//! with a clear error (update the client), rather than guessing. Every writer on an RC1 network
+//! writes version 2. Everything up to the paths is fixed for every version; what a version adds
+//! goes in a tagged section after them, and a reader skips a tag it does not know.
 //!
 //! **v2: the path versions section** (tag [`TAG_VERSIONS`]), one list per path row, in row order:
 //!
@@ -199,6 +201,71 @@ impl HistoryIndex {
         }
     }
 
+    /// The column index of this one: the same tip, base, counts and last-change column, without
+    /// the version lists, its commit table cut to the commits the paths name (in table order).
+    /// What `packManifest.kind == 3` stores (version 1); the whole index is kind 5 (version 2).
+    #[must_use]
+    pub fn column(&self) -> Self {
+        let mut keep: Vec<u32> = self.paths.values().copied().collect();
+        keep.sort_unstable();
+        keep.dedup();
+        let at: HashMap<u32, u32> = keep
+            .iter()
+            .enumerate()
+            .map(|(new, &old)| (old, u32::try_from(new).expect("fits the old table")))
+            .collect();
+        Self {
+            tip: self.tip,
+            base: self.base,
+            commit_count: self.commit_count,
+            first_parent_count: self.first_parent_count,
+            root_time: self.root_time,
+            tip_time: self.tip_time,
+            commits: keep
+                .iter()
+                .map(|&i| IndexedCommit {
+                    author: String::new(),
+                    ..self.commits[i as usize].clone()
+                })
+                .collect(),
+            paths: self.paths.iter().map(|(p, c)| (p.clone(), at[c])).collect(),
+            versions: None,
+        }
+    }
+
+    /// This index naming `base` as the full index it extends (a delta's header field).
+    #[must_use]
+    pub fn with_base(mut self, base: [u8; 32]) -> Self {
+        self.base = Some(base);
+        self
+    }
+
+    /// [`Self::parse`] an artifact recorded as `packManifest.kind == kind`, refusing one whose
+    /// header is not a format of that kind: a column index (kind 3) is written as version 1 and
+    /// read as 1 or 2 (2 is a superset: a column reader ignores the lists; an index published
+    /// before the split is one); version lists (kind 5) must be version 2. The header is the
+    /// only place the format is recorded.
+    pub fn parse_kind(compressed: &[u8], kind: u8) -> Result<Self> {
+        let formats: &[u8] = match kind {
+            super::KIND_HISTORY_INDEX => &[VERSION_V1, VERSION_V2],
+            super::KIND_HISTORY_VERSIONS => &[VERSION_V2],
+            _ => return Err(bad("not a history index kind")),
+        };
+        let ix = Self::parse(compressed)?;
+        if !formats.contains(&ix.version()) {
+            return Err(Error::Config(format!(
+                "history index: a kind-{kind} artifact must be format {}, not {}",
+                formats
+                    .iter()
+                    .map(u8::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" or "),
+                ix.version()
+            )));
+        }
+        Ok(ix)
+    }
+
     /// Serialize and gzip.
     pub fn to_compressed(&self) -> Result<Vec<u8>> {
         let b = self.body()?;
@@ -321,8 +388,15 @@ impl HistoryIndex {
             return Err(bad("inflates past its size limit"));
         }
         let mut r = Cursor { buf: &body, pos: 0 };
-        if r.take(4)? != MAGIC || r.take(1)?[0] < VERSION_V1 {
+        if r.take(4)? != MAGIC {
             return Err(bad("not a history index"));
+        }
+        let version = r.take(1)?[0];
+        if !(VERSION_V1..=VERSION_V2).contains(&version) {
+            return Err(Error::Config(format!(
+                "history index format {version} is not one this client reads (1-{VERSION_V2}); \
+                 update dg / git-remote-dash"
+            )));
         }
         let tip: [u8; OID_LEN] = r.take(OID_LEN)?.try_into().expect("20 bytes");
         let base: [u8; 32] = r.take(32)?.try_into().expect("32 bytes");

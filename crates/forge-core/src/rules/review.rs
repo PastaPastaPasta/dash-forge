@@ -24,17 +24,14 @@ use super::{event_order, Event, EventKind, Oid};
 // The review fold
 // ===========================================================================
 
-/// The kinds an `authorEvent` may carry (the forge-collab schema's `kind` enum): close, reopen,
-/// draft, ready, thread resolve / unresolve, review request / remove, head update.
+/// The kinds an `authorEvent` may carry (the forge-collab schema's `kind` enum, 11–14 and 16):
+/// thread resolve / unresolve, review request / remove, head update. An author's close, reopen,
+/// draft and ready are `transition`s ([`super::transition`]).
 #[must_use]
 pub fn is_author_kind(kind: EventKind) -> bool {
     matches!(
         kind,
-        EventKind::Close
-            | EventKind::Reopen
-            | EventKind::Draft
-            | EventKind::Ready
-            | EventKind::ThreadResolve
+        EventKind::ThreadResolve
             | EventKind::ThreadUnresolve
             | EventKind::ReviewRequest
             | EventKind::ReviewRequestRemove
@@ -132,8 +129,8 @@ pub(crate) fn merged_log<'a>(
 
 /// Fold a PR's `event` and `authorEvent` documents into its [`PrReviewState`].
 ///
-/// * Ordering is `(createdAt, id)` over both types, `event`s first at equal keys (as
-///   [`super::v2::fold_pr_state_v2`]); an `authorEvent` applies only if its kind is an author
+/// * Ordering is `(createdAt, id)` over both types, `event`s first at equal keys; an
+///   `authorEvent` applies only if its kind is an author
 ///   kind ([`is_author_kind`]) and its writer is `target_author`.
 /// * `headUpdate` (16) needs an `oid`; the newest applied one is the head.
 /// * `reviewRequest` / `reviewRequestRemove` (13/14) need a `ref_id` (the reviewer); the newest
@@ -235,7 +232,7 @@ pub fn fold_pr_review_v2(
 
 /// A `policy` document, flattened (forge-v2.md §2). The newest by `(createdAt, id)` among the
 /// repo's policies is the one in force; the reader picks it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Policy {
     /// Approvals a merge needs (0–10).
@@ -246,9 +243,18 @@ pub struct Policy {
     /// Passing checks required (informational to [`meets_policy`], which judges approvals).
     #[serde(default)]
     pub require_checks: bool,
-    /// Allowed merge methods, bitmask (1 ff, 2 merge commit, 4 squash, 8 rebase; 0 any).
+    /// Allowed merge methods, bitmask (1 ff, 2 merge commit, 4 squash, 8 rebase; 0 any; the
+    /// contract caps it at 15).
     #[serde(default)]
     pub merge_methods: u8,
+    /// The checks a merge needs by name (`requiredChecks`: at most 10, unique).
+    #[serde(default)]
+    pub required_checks: Vec<String>,
+    /// `requiredCheckSources`: the runner or maintainer (base58) whose runs alone decide each
+    /// of `required_checks`, paired by position; as many as the names, or none (any trusted
+    /// reporter's run decides). See [`super::parity::checks_state`].
+    #[serde(default)]
+    pub required_check_sources: Vec<String>,
 }
 
 /// How far the approvals are from a policy.

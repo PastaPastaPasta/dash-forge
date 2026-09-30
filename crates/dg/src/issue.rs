@@ -1,20 +1,22 @@
 //! `dg issue` — issue tracking (list/view/create/edit/comment/close/reopen/label/assign).
 //!
-//! forge-v2 repositories go through [`forge_core::collab::v2::Collab`]: issues are numbered
-//! by the `forge-v2.md` §6 rule, a create is journaled so a re-run resumes it, and close /
-//! reopen pick their gate automatically (a member's `event`, else the author's
-//! `authorEvent`).
+//! forge-v2 repositories go through [`forge_core::collab::v2::Collab`]: issues take the dense
+//! next number (`forge-v2.md` §6), a create is journaled so a re-run resumes it, and close /
+//! reopen are one `transition` each, written as a member or as the issue's author.
 
 use anyhow::Result;
 use serde_json::json;
 
 use forge_core::collab::v2::{Comment, IssueView, Target};
 use forge_core::create::default_journal_dir;
+use forge_core::rules::v2::{status_of_code, StateAction, Transition};
 use forge_core::rules::{Event, EventKind, IssueState};
 
 use crate::common::{number_arg, Reader, Session};
 use crate::context::Ctx;
-use crate::fmt::{cost_json, cost_line, dash_usd_price, route_text, safe};
+use crate::fmt::{
+    cost_json, cost_line, dash_usd_price, safe, transition_phrase, transition_route_text,
+};
 use crate::{IssueCommand, IssueListArgs};
 
 /// Dispatch an `issue` subcommand.
@@ -138,7 +140,7 @@ async fn milestone(ctx: &Ctx, repo: &str, number: u64, title: Option<&str>) -> R
 }
 
 /// Which thread flag [`thread_flag`] sets.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Flag {
     Pin,
     Lock,
@@ -155,21 +157,34 @@ async fn thread_flag(ctx: &Ctx, repo: &str, number: u64, flag: Flag, on: bool) -
         (Flag::Lock, false) => ("Unlock", "unlocked"),
     };
     let note = match (flag, on) {
-        (Flag::Lock, true) => "; clients then offer the comment box to members only",
+        (Flag::Lock, true) => "; then only members can comment",
         _ => "",
     };
+    let collab = s.collab();
+    // Already locked (or unlocked): nothing to write, as `dg pr lock` says.
+    if flag == Flag::Lock
+        && status_of_code(collab.state_sum(&s.repo, &target.id).await?).locked == on
+    {
+        ctx.emit(
+            json!({ "status": done, "issue": number, "written": false }),
+            || println!("issue #{number} is already {done}; nothing written"),
+        );
+        return Ok(());
+    }
     ctx.confirm_or_cancel(&format!(
         "{verb} issue #{number}? (one small document; members only{note})"
     ))?;
-    let collab = s.collab();
-    let id = match flag {
-        Flag::Pin => collab.set_pinned(&s.repo, &target, on).await?,
-        Flag::Lock => collab.set_locked(&s.repo, &target, on).await?,
+    // A pin is an event; a lock or unlock is a transition (RC1 kinds 3 / 4).
+    let (key, id) = match flag {
+        Flag::Pin => ("eventId", collab.set_pinned(&s.repo, &target, on).await?),
+        Flag::Lock => (
+            "transitionId",
+            collab.set_locked(&s.repo, &target, on).await?,
+        ),
     };
-    ctx.emit(
-        json!({ "status": done, "issue": number, "eventId": id }),
-        || println!("✓ {done} issue #{number}"),
-    );
+    ctx.emit(json!({ "status": done, "issue": number, key: id }), || {
+        println!("✓ {done} issue #{number}");
+    });
     Ok(())
 }
 
@@ -382,9 +397,12 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let values_note = crate::fmt::event_values_note(view.hidden_values, view.plaintext_values);
     let (hidden_values, plaintext_values) = (view.hidden_values, view.plaintext_values);
     let events: Vec<Event> = view.events().into_iter().cloned().collect();
-    let timeline = timeline(&comments, &events);
-    // Milestone, pin and lock: the member events folded (kinds 17-22).
+    let transitions = view.log.transitions.clone();
+    let timeline = timeline(&comments, &events, &transitions);
+    // Milestone and pin: the member events folded (kinds 17-20). Lock: the transitions'
+    // sum (16 or more is locked).
     let meta = forge_core::rules::v2::fold_thread_meta_v2(&view.log.events);
+    let locked = view.log.locked();
     let state = view.state;
     let i = view.issue;
     let (id, title, body, author) = (i.document_id, i.title, i.body, i.author);
@@ -399,7 +417,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             "state": { "open": state.open, "labels": state.labels, "assignees": state.assignees },
             "milestone": meta.milestone,
             "pinned": meta.pinned,
-            "locked": meta.locked,
+            "locked": locked,
             "comments": comments.iter().map(|c| json!({"id": c.document_id, "author": c.author, "body": c.body})).collect::<Vec<_>>(),
             "events": events.iter().map(|e| json!({
                 "id": e.id,
@@ -407,6 +425,13 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
                 "actor": e.actor,
                 "value": e.value,
                 "createdAt": e.created_at,
+            })).collect::<Vec<_>>(),
+            "transitions": transitions.iter().map(|t| json!({
+                "id": t.id,
+                "kind": t.kind,
+                "actor": t.actor,
+                "asAuthor": t.as_author,
+                "createdAt": t.created_at,
             })).collect::<Vec<_>>(),
             "hiddenComments": hidden,
             "hiddenEventValues": hidden_values,
@@ -428,6 +453,9 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
                         println!("\n— {} ({}):\n{}", c.author, c.document_id, safe(&c.body));
                     }
                     Item::Event(e) => println!("\n· {} {}", e.actor, safe(&event_phrase(e))),
+                    Item::Transition(t) => {
+                        println!("\n· {} {}", t.actor, transition_phrase(t.kind));
+                    }
                 }
             }
             if hidden > 0 {
@@ -445,10 +473,16 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
 enum Item<'a> {
     Comment(&'a Comment),
     Event(&'a Event),
+    Transition(&'a Transition),
 }
 
-/// Comments and events in one `(createdAt, id)` order, as the web's issue timeline has them.
-fn timeline<'a>(comments: &'a [Comment], events: &'a [Event]) -> Vec<Item<'a>> {
+/// Comments, events and state changes in one `(createdAt, id)` order, as the web's issue
+/// timeline has them.
+fn timeline<'a>(
+    comments: &'a [Comment],
+    events: &'a [Event],
+    transitions: &'a [Transition],
+) -> Vec<Item<'a>> {
     let mut items: Vec<(u64, &str, Item<'a>)> = comments
         .iter()
         .map(|c| (c.created_at, c.document_id.as_str(), Item::Comment(c)))
@@ -456,6 +490,11 @@ fn timeline<'a>(comments: &'a [Comment], events: &'a [Event]) -> Vec<Item<'a>> {
             events
                 .iter()
                 .map(|e| (e.created_at, e.id.as_str(), Item::Event(e))),
+        )
+        .chain(
+            transitions
+                .iter()
+                .map(|t| (t.created_at, t.id.as_str(), Item::Transition(t))),
         )
         .collect();
     items.sort_by_key(|&(at, id, _)| (at, id));
@@ -466,8 +505,6 @@ fn timeline<'a>(comments: &'a [Comment], events: &'a [Event]) -> Vec<Item<'a>> {
 fn event_phrase(e: &Event) -> String {
     let value = e.value.as_deref().unwrap_or("");
     match e.kind {
-        EventKind::Close => "closed this".into(),
-        EventKind::Reopen => "reopened this".into(),
         // A private repo's value this reader cannot open is absent: say what happened.
         EventKind::LabelAdd if value.is_empty() => "added a label (hidden)".into(),
         EventKind::LabelAdd => format!("added the {value} label"),
@@ -640,12 +677,12 @@ async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
     Ok(())
 }
 
-/// A locked thread takes comments from members only (a client rule: consensus cannot refuse
-/// anyone's comment, so every Forge client refuses it instead, before anything is signed).
+/// A locked thread takes comments from members only: consensus refuses a new comment on it
+/// without `asMember` (`lockGate`), so a non-member is refused here first, before anything is
+/// signed, with the reason.
 async fn refuse_if_locked(s: &Session, number: u64, target_id: &str) -> Result<()> {
     let collab = s.collab();
-    let log = collab.target_log(&s.repo, target_id).await?;
-    if !forge_core::rules::v2::fold_thread_meta_v2(&log.events).locked {
+    if !status_of_code(collab.state_sum(&s.repo, target_id).await?).locked {
         return Ok(());
     }
     if collab.signer_role(&s.repo).await?.is_some() {
@@ -676,7 +713,12 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()>
     let (done, prompt) = open_words(close);
     ctx.confirm_or_cancel(&format!("{prompt} issue #{number}? (one small document)"))?;
     let collab = s.collab();
-    let (route, id) = collab.set_open(&s.repo, &target, close).await?;
+    let action = if close {
+        StateAction::Close
+    } else {
+        StateAction::Reopen
+    };
+    let change = collab.set_state(&s.repo, &target, action, None).await?;
     let open_now = collab
         .issue_view(&s.repo, target.number)
         .await?
@@ -685,12 +727,16 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()>
         json!({
             "status": done,
             "issue": number,
-            "via": route,
-            "eventId": id,
+            "via": change.route,
+            "transitionId": change.transition_id,
+            "kind": change.kind,
             "open": open_now,
         }),
         || {
-            println!("✓ {done} issue #{number} {}", route_text(route));
+            println!(
+                "✓ {done} issue #{number} {}",
+                transition_route_text(change.route)
+            );
             if open_now == Some(close) {
                 println!(
                     "  note: it does not read as {} yet (the read may lag a block)",
@@ -781,7 +827,9 @@ async fn assign(ctx: &Ctx, repo: &str, number: u64, who: &[String], add: bool) -
 #[cfg(test)]
 mod tests {
     use super::{event_phrase, label_args, open_words, timeline, title_matches, Item};
+    use crate::fmt::transition_phrase;
     use forge_core::collab::v2::Comment;
+    use forge_core::rules::v2::Transition;
     use forge_core::rules::{Event, EventKind};
 
     #[test]
@@ -820,17 +868,23 @@ mod tests {
     /// in the web timeline's words.
     #[test]
     fn issue_view_interleaves_events_with_comments() {
-        let events = [
-            event("e1", 10, EventKind::LabelAdd, Some("bug")),
-            event("e3", 30, EventKind::Close, None),
-            event("e4", 40, EventKind::Reopen, None),
-        ];
+        let events = [event("e1", 10, EventKind::LabelAdd, Some("bug"))];
+        let transition = |id: &str, at: u64, kind: u8| Transition {
+            id: id.into(),
+            kind,
+            actor: "M".into(),
+            oid: None,
+            as_author: 0,
+            created_at: at,
+        };
+        let transitions = [transition("t3", 30, 1), transition("t4", 40, 2)];
         let comments = [comment("c2", 20)];
-        let order: Vec<String> = timeline(&comments, &events)
+        let order: Vec<String> = timeline(&comments, &events, &transitions)
             .iter()
             .map(|i| match i {
                 Item::Comment(c) => c.document_id.clone(),
                 Item::Event(e) => event_phrase(e),
+                Item::Transition(t) => transition_phrase(t.kind).to_string(),
             })
             .collect();
         assert_eq!(

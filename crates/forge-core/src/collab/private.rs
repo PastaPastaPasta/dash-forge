@@ -41,7 +41,10 @@ fn take_text(props: &mut BTreeMap<String, FieldValue>, name: &str) -> Option<Str
 }
 
 /// Take `imported.author` and `imported.url` out of the `imported` object (its `createdAt`
-/// stays plaintext).
+/// stays plaintext). A top-level `upstreamNumber` (the source forge's number, D-2) and the
+/// `tk` target-kind tag are not touched: both are indexed (the sparse `upstream` index, the
+/// `transition` agreement), and an indexed property cannot be sealed. They say no more than
+/// the plaintext `number` beside them.
 fn take_imported(props: &mut BTreeMap<String, FieldValue>, fields: &mut Fields) {
     if let Some(FieldValue::Object(m)) = props.get_mut("imported") {
         let mut take = |name: &str| match m.remove(name) {
@@ -194,7 +197,7 @@ fn seal_props_inner(
             header.target_id = id32(&props, "targetId");
             fields.event_value = take_text(&mut props, "value");
         }
-        DocKind::RefUpdate | DocKind::ProtectedRefUpdate | DocKind::Config => {
+        DocKind::RefUpdate | DocKind::ProtectedRefUpdate | DocKind::Config | DocKind::Release => {
             return Err(Error::Config(format!(
                 "{} is not a collaboration document",
                 kind.type_name()
@@ -496,11 +499,19 @@ mod tests {
         );
         let public: BTreeMap<String, FieldValue> = [
             ("number".to_string(), FieldValue::integer(12)),
+            ("tk".to_string(), FieldValue::integer(0)),
+            ("upstreamNumber".to_string(), FieldValue::integer(7761)),
             ("title".to_string(), FieldValue::text("Imported")),
             ("imported".to_string(), imported.clone()),
         ]
         .into();
         let sealed = seal_props(&keys(), DocKind::Issue, OWNER, public).unwrap();
+        // indexed, so plaintext (D-2): the upstream number and the target kind tag
+        assert_eq!(
+            sealed.get("upstreamNumber"),
+            Some(&FieldValue::integer(7761))
+        );
+        assert_eq!(sealed.get("tk"), Some(&FieldValue::integer(0)));
         // the source org, repo and people never reach the chain in plaintext
         let Some(FieldValue::Object(left)) = sealed.get("imported") else {
             panic!("imported kept")
@@ -615,9 +626,10 @@ mod tests {
     fn event_schema_is_member_gated_and_append_only() {
         let text = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../forge-contracts/contracts/forge-collab.json"
+            "/../../forge-contracts/contracts/forge-community.json"
         ));
         let c: serde_json::Value = serde_json::from_str(text).unwrap();
+        // `event` is a forge-community type (RC1 layout O-01)
         let e = c.get("documentSchemas").unwrap_or(&c)["event"].clone();
         assert_eq!(e["documentsMutable"], false);
         assert_eq!(e["canBeDeleted"], false);

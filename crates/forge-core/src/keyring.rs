@@ -26,7 +26,7 @@ use crate::envelope::{self, PrivateKey};
 use crate::error::{Error, Result};
 use crate::keystore::BridgeIdentity;
 use crate::members::{Member, MemberReader};
-use crate::platform::wrap::{open_wrap, seal_wrap, WrapParties, WrapSecret};
+use crate::platform::wrap::{open_wrap, seal_wrap, WrapParties, WrapProperties, WrapSecret};
 use crate::platform::{
     self, FetchedDocument, FieldValue, IdentityKeyInfo, LoadedContract, LoadedIdentity,
     PlatformClient, QueryFilter, QueryOrder, WriteEngine,
@@ -36,7 +36,7 @@ use crate::private::{
     open_content, resolve_epochs, Alert, DocHeader, EpochKey, EpochKeys, EpochResolution, Fields,
     OpenContext, Opened, Private, Unreadable,
 };
-use crate::private::{DocKind, PrivateError};
+use crate::private::{release, DocKind, PrivateError};
 use crate::rules::v2::Role;
 use crate::scope::{DocScope, RepoRef};
 use crate::user_error::{codes, UserError};
@@ -248,12 +248,14 @@ struct Rows {
     wraps: Vec<WrapRow>,
 }
 
-/// Everything [`Keyring::load`] reads, so a write path can re-use the contract.
+/// Everything [`Keyring::load`] reads, so a write path can re-use the contracts.
 pub struct KeyringIo<'a> {
     /// The connection.
     pub client: &'a PlatformClient,
-    /// forge-core, fetched.
+    /// forge-core, fetched (members and anchor configs).
     pub core: &'a LoadedContract,
+    /// forge-collab, fetched (the `repoKey` wraps; RC1 moved them out of forge-core).
+    pub collab: &'a LoadedContract,
     /// The repository's scope.
     pub scope: &'a DocScope,
 }
@@ -270,10 +272,12 @@ impl Keyring {
     ) -> Result<Self> {
         let scope = repo.scope()?;
         let core = client.fetch_contract(&scope.contract_id).await?;
+        let collab = client.fetch_contract(&repo.forge().collab).await?;
         Self::load_with(
             &KeyringIo {
                 client,
                 core: &core,
+                collab: &collab,
                 scope: &scope,
             },
             repo,
@@ -304,7 +308,7 @@ impl Keyring {
         let wraps: Vec<WrapDoc> = io
             .client
             .query_all_documents(
-                io.core,
+                io.collab,
                 DOC_REPO_KEY,
                 &io.scope.filters([]),
                 &[QueryOrder::asc("memberId")],
@@ -381,7 +385,7 @@ impl Keyring {
             if self.wraps[i].member != self.reader {
                 continue;
             }
-            let key = unwrap_own(io.core, &self.repo_id, &self.wraps[i], enc, &keys_of);
+            let key = unwrap_own(io.collab, &self.repo_id, &self.wraps[i], enc, &keys_of);
             if key.is_none() {
                 unreadable.push(self.wraps[i].epoch);
             }
@@ -698,6 +702,46 @@ impl Keyring {
         }
     }
 
+    /// [`release::open`] (§16.4) for a fetched `release` document. A `BadTag` revision created
+    /// before the block time of stated(e) is `EarlierUse`: a release has no block height, so
+    /// this is judged by its client-set `$createdAt`, best-effort (§16.3).
+    pub fn open_release(&self, d: &FetchedDocument) -> release::Opened {
+        let Some(stored) = stored_release(d) else {
+            return release::Opened::Malformed;
+        };
+        let opened = release::open(&self.ctx, &stored);
+        let earlier = matches!(opened, release::Opened::Unreadable(Unreadable::BadTag))
+            && matches!(
+                (stored.epoch.and_then(|e| self.stated_at(e)), d.created_at),
+                (Some(stated), Some(at)) if at < stated
+            );
+        if earlier {
+            release::Opened::Unreadable(Unreadable::EarlierUse)
+        } else {
+            opened
+        }
+    }
+
+    /// The subkeys of `epoch`, when this reader holds them: a sealed artifact names its own
+    /// epoch, which may be older than the document that points at it (§16.5).
+    pub fn epoch_keys(&self, epoch: u32) -> Option<&EpochKeys> {
+        self.ctx.keys.get(&epoch)
+    }
+
+    /// The `$createdAt` of stated(e): the earliest config of `epoch` at the block height where
+    /// its key was first stated on chain (§5.3).
+    fn stated_at(&self, epoch: u32) -> Option<u64> {
+        let height = self.resolution.anchors.get(&epoch)?.stated_height;
+        self.configs
+            .iter()
+            .filter(|c| {
+                c.created_at_block_height == Some(height)
+                    && c.field_u64("epoch") == Some(u64::from(epoch))
+            })
+            .filter_map(|c| c.created_at)
+            .min()
+    }
+
     /// Whether something written at `height` under `epoch` predates the moment the epoch's
     /// current key was first stated on chain (stated(e), §5.3; a re-anchor does not move it):
     /// it was sealed under an earlier use of the number, not tampered with.
@@ -865,8 +909,36 @@ pub fn header_of(kind: DocKind, d: &FetchedDocument) -> Option<DocHeader> {
             h.force = Some(d.field_bool("force"));
         }
         DocKind::Config => {}
+        DocKind::Release => h.tag_name = d.field_str("tagName"),
     }
     Some(h)
+}
+
+/// A release's plaintext fields as [`release::open`] judges them; `None` when its `$ownerId`
+/// does not decode.
+pub fn stored_release(d: &FetchedDocument) -> Option<release::StoredRelease> {
+    Some(release::StoredRelease {
+        owner_id: platform::decode_identifier(&d.owner_id).ok()?,
+        epoch: d.field_u64("epoch").and_then(|e| u32::try_from(e).ok()),
+        tag_name: d.field_str("tagName").unwrap_or_default(),
+        vis: d.field_str("vis").unwrap_or_default(),
+        delta: d
+            .fields
+            .get("delta")
+            .and_then(FieldValue::as_i64)
+            .unwrap_or(0),
+        enc: d.field_bytes("enc"),
+        plaintext: [
+            "name",
+            "notes",
+            "assets",
+            "assetManifest",
+            "yanked",
+            "imported",
+        ]
+        .iter()
+        .any(|k| d.fields.contains_key(*k)),
+    })
 }
 
 /// Why a document did not open, in the three buckets the UI and `dg` report (§9 Reading).
@@ -891,7 +963,7 @@ pub fn hidden_bucket(o: &Opened) -> Option<&'static str> {
 /// `recipientKeyId`, and the sender's public key named by `senderKeyId`. `None` when either is
 /// missing or the wrap does not open (version / KCV, §5.4 (4)).
 fn unwrap_own(
-    core: &LoadedContract,
+    collab: &LoadedContract,
     repo_id: &[u8; 32],
     w: &WrapDoc,
     enc: &EncryptionKeys,
@@ -904,11 +976,33 @@ fn unwrap_own(
         .find(|k| k.id == w.sender_key_id && k.purpose == "ENCRYPTION")?
         .public_key;
     let secret = secret_of(mine).ok()?;
-    open_wrap(core, repo_id, w.epoch, &w.wrapped, &secret, sender_pub).ok()
+    open_wrap(collab, repo_id, w.epoch, &w.wrapped, &secret, sender_pub).ok()
 }
 
 fn secret_of(k: &PrivateKey) -> Result<WrapSecret> {
     WrapSecret::from_bytes(&k.secret_bytes())
+}
+
+/// A `repoKey`'s fields besides `repoId`: `member`'s wrap of the key of `epoch`, sealed by
+/// [`seal_wrap`].
+pub(crate) fn repo_key_fields(
+    member: [u8; 32],
+    epoch: u32,
+    sealed: WrapProperties,
+) -> [(&'static str, FieldValue); 5] {
+    [
+        ("memberId", FieldValue::identifier(member)),
+        ("epoch", FieldValue::integer(u64::from(epoch))),
+        (
+            "recipientKeyId",
+            FieldValue::integer(u64::from(sealed.recipient_key_id)),
+        ),
+        (
+            "senderKeyId",
+            FieldValue::integer(u64::from(sealed.sender_key_id)),
+        ),
+        ("wrapped", FieldValue::bytes(sealed.wrapped)),
+    ]
 }
 
 /// A signer's view of a private repository: its client, identity, key file and the keys that
@@ -957,7 +1051,7 @@ impl<'a> PrivateSigner<'a> {
         key: &EpochKey,
         member: [u8; 32],
     ) -> Result<WrapOutcome> {
-        let (core, scope) = (&w.core, &w.scope);
+        let (collab, scope) = (&w.collab, &w.scope);
         let (sender_id, sender) = w
             .enc
             .sender()
@@ -969,7 +1063,7 @@ impl<'a> PrivateSigner<'a> {
         };
         let secret = secret_of(sender)?;
         let props = seal_wrap(
-            core,
+            collab,
             &scope.repo_id,
             epoch,
             key,
@@ -980,25 +1074,18 @@ impl<'a> PrivateSigner<'a> {
                 recipient_key_id: recipient.id,
             },
         )?;
-        let doc = scope.props([
-            ("memberId", FieldValue::identifier(member)),
-            ("epoch", FieldValue::integer(u64::from(epoch))),
-            (
-                "recipientKeyId",
-                FieldValue::integer(u64::from(props.recipient_key_id)),
-            ),
-            (
-                "senderKeyId",
-                FieldValue::integer(u64::from(props.sender_key_id)),
-            ),
-            ("wrapped", FieldValue::bytes(props.wrapped)),
-        ]);
+        let doc = scope.props(repo_key_fields(member, epoch, props));
         match self
             .engine()?
-            .create_document(core, DOC_REPO_KEY, doc)
+            .create_document(collab, DOC_REPO_KEY, doc)
             .await
         {
             Ok(_) => Ok(WrapOutcome::Posted),
+            // RC1 `wrap_member`: a wrap names a current maintainer or writer. They were removed
+            // since this plan was read; nothing landed, and the caller re-plans without them.
+            Err(Error::ReferenceNotFound { path, .. }) if path == "memberId" => {
+                Ok(WrapOutcome::NotAMember)
+            }
             // (repoId, memberId, epoch, $ownerId) is unique: this signer already wrapped this
             // epoch to them, and that wrap stands. It counts only if it holds the same key to
             // the member's current key; read it back and say which.
@@ -1028,7 +1115,7 @@ impl<'a> PrivateSigner<'a> {
         let docs = self
             .client
             .query_documents(
-                &w.core,
+                &w.collab,
                 DOC_REPO_KEY,
                 &w.scope.filters([
                     QueryFilter::eq("memberId", FieldValue::identifier(member)),
@@ -1054,7 +1141,7 @@ impl<'a> PrivateSigner<'a> {
         };
         let secret = secret_of(mine)?;
         Ok(open_wrap(
-            &w.core,
+            &w.collab,
             &w.scope.repo_id,
             epoch,
             &d.wrapped,
@@ -1090,6 +1177,8 @@ impl<'a> PrivateSigner<'a> {
             ("archived", FieldValue::boolean(anchor.archived)),
         ]);
         props.insert("backend".into(), anchor.backend.clone());
+        // anchors exist only in private repositories
+        crate::layout::stamp_vis(&mut props, crate::rules::v2::Visibility::Private);
         self.engine()?
             .create_document(core, DOC_CONFIG, props)
             .await
@@ -1110,12 +1199,16 @@ enum WrapOutcome {
     Different(Option<EpochKey>),
     /// The member has no usable `ENCRYPTION` key: nothing was written.
     NoRecipientKey,
+    /// The member holds no maintainer or writer document any more (removed since the plan was
+    /// read; consensus refused the wrap, 40120 on `memberId`): nothing was written.
+    NotAMember,
 }
 
 /// Everything a keyring write needs: the contract, the scope, the signer's keys and the
 /// keyring read now (§5.3: before every write).
 struct WriteCtx {
     core: LoadedContract,
+    collab: LoadedContract,
     scope: DocScope,
     me: [u8; 32],
     enc: EncryptionKeys,
@@ -1128,6 +1221,7 @@ impl PrivateSigner<'_> {
         let io = KeyringIo {
             client: self.client,
             core: &w.core,
+            collab: &w.collab,
             scope: &w.scope,
         };
         Keyring::load_with(&io, repo, &self.identity.id(), &w.enc).await
@@ -1155,11 +1249,13 @@ impl PrivateSigner<'_> {
     async fn open(&self, repo: &RepoRef) -> Result<WriteCtx> {
         let scope = repo.scope()?;
         let core = self.client.fetch_contract(&scope.contract_id).await?;
+        let collab = self.client.fetch_contract(&repo.forge().collab).await?;
         let enc = self.encryption_keys(repo);
         let kr = Keyring::load_with(
             &KeyringIo {
                 client: self.client,
                 core: &core,
+                collab: &collab,
                 scope: &scope,
             },
             repo,
@@ -1170,6 +1266,7 @@ impl PrivateSigner<'_> {
         let me = kr.reader;
         Ok(WriteCtx {
             core,
+            collab,
             scope,
             me,
             enc,
@@ -1267,6 +1364,13 @@ async fn self_wrap(
     match signer.post_wrap(w, epoch, &key, w.me).await? {
         WrapOutcome::Posted | WrapOutcome::Same => Ok((key, false)),
         WrapOutcome::Different(Some(standing)) => Ok((standing, true)),
+        WrapOutcome::NotAMember => Err(UserError::new(
+            codes::NOT_A_WRITER,
+            format!("you are not a maintainer of this repository any more (epoch {epoch})"),
+        )
+        .cause("a key wrap names a current member, and yours was removed")
+        .fix("ask the owner to add you again, or rotate from another maintainer")
+        .into()),
         WrapOutcome::Different(None) | WrapOutcome::NoRecipientKey => Err(UserError::new(
             codes::ROTATION_PENDING,
             format!("your own key wrap for epoch {epoch} stands and cannot be read back"),
@@ -1297,6 +1401,17 @@ pub async fn add_member_wrap(
     {
         WrapOutcome::Posted | WrapOutcome::Same => Ok(()),
         WrapOutcome::NoRecipientKey => Err(no_encryption_key(member, "cannot wrap the repo key")),
+        WrapOutcome::NotAMember => Err(UserError::new(
+            codes::NOT_A_WRITER,
+            format!("{member} is not a member of {} (any more)", repo.display()),
+        )
+        .cause("a key wrap names a current maintainer or writer (40120 on memberId)")
+        .fix(format!(
+            "`dg collab list {}` shows the members; add them again with `dg collab add`",
+            repo.display()
+        ))
+        .note("the key was not wrapped to them")
+        .into()),
         WrapOutcome::Different(_) => Err(UserError::new(
             codes::ROTATION_PENDING,
             format!("{member} already has a wrap of epoch {epoch} from you that it cannot use"),
@@ -1662,7 +1777,8 @@ async fn wrap_all(
             .await?
         {
             WrapOutcome::Posted | WrapOutcome::Same => wrapped.push(t.clone()),
-            WrapOutcome::NoRecipientKey => skipped.push(t.clone()),
+            // removed since the plan was read: not a member, so not wrapped (re-planned out)
+            WrapOutcome::NoRecipientKey | WrapOutcome::NotAMember => skipped.push(t.clone()),
             WrapOutcome::Different(_) => return Ok(Err(t.clone())),
         }
     }
@@ -2128,7 +2244,7 @@ pub async fn repair(signer: &PrivateSigner<'_>, repo: &RepoRef) -> Result<Repair
         let id = platform::encode_identifier(*m);
         match signer.post_wrap(&w, epoch, &key, *m).await? {
             WrapOutcome::Posted | WrapOutcome::Same => report.wrapped.push(id),
-            WrapOutcome::NoRecipientKey => report.skipped.push(id),
+            WrapOutcome::NoRecipientKey | WrapOutcome::NotAMember => report.skipped.push(id),
             // A standing wrap of ours to a key they no longer use cannot be replaced within
             // the epoch: a new epoch wraps everyone to their current key.
             WrapOutcome::Different(_) => {
@@ -2300,13 +2416,7 @@ mod tests {
 
     fn test_repo() -> RepoRef {
         RepoRef {
-            forge: crate::network::ForgeIds {
-                core: "C".into(),
-                collab: "L".into(),
-                group: "G".into(),
-                group_owner: None,
-                superseded_in_group: vec![],
-            },
+            forge: crate::network::ForgeIds::test_forge(),
             repo_id: "R".into(),
             owner_id: "alice".into(),
             name: "proj".into(),
@@ -2615,6 +2725,64 @@ mod tests {
         assert!(!kr.earlier_use(2, Some(30)));
         assert!(!kr.earlier_use(2, None));
         assert!(!kr.earlier_use(9, Some(1)), "no such epoch");
+    }
+
+    /// §16.3: a release has no block height, so a `BadTag` revision is an earlier use when its
+    /// `$createdAt` predates the block time of stated(e), and tampering after it.
+    #[test]
+    fn a_release_opens_and_an_old_bad_tag_is_an_earlier_use() {
+        let mut f = Fixture::new(&[(ALICE, Role::Maintainer)]);
+        f.config(ALICE, 0, 10, None, 10, false)
+            .wrap(ALICE, ALICE, 0, 10);
+        let mut kr = f.keyring(ALICE);
+        // stated(0) is the config at height 10, created at t = 50
+        let mut stated = doc(vec![("epoch", FieldValue::integer(0))]);
+        (stated.created_at, stated.created_at_block_height) = (Some(50), Some(10));
+        kr.configs = vec![stated];
+        let keys = EpochKeys::derive(&f.repo_id, 0, &k(10));
+        let fields = release::ReleaseFields {
+            tag: "v1.0.0".into(),
+            ..release::ReleaseFields::default()
+        };
+        let sealed = release::seal_with_nonce(&keys, &ALICE, &fields, [0; 12]).unwrap();
+        let rel = |enc: &[u8], at: u64, extra: Option<(&str, FieldValue)>| {
+            let mut d = doc(vec![
+                ("tagName", FieldValue::text(sealed.tag_name.clone())),
+                ("vis", FieldValue::text("private")),
+                ("delta", FieldValue::integer(0)),
+                ("epoch", FieldValue::integer(0)),
+                ("enc", FieldValue::bytes(enc.to_vec())),
+            ]);
+            d.owner_id = platform::encode_identifier(ALICE);
+            d.created_at = Some(at);
+            if let Some((k, v)) = extra {
+                d.fields.insert(k.into(), v);
+            }
+            d
+        };
+        assert_eq!(
+            kr.open_release(&rel(&sealed.enc, 60, None)),
+            release::Opened::Readable(Box::new(fields))
+        );
+        let mut tampered = sealed.enc.clone();
+        *tampered.last_mut().unwrap() ^= 1;
+        assert_eq!(
+            kr.open_release(&rel(&tampered, 40, None)),
+            release::Opened::Unreadable(Unreadable::EarlierUse)
+        );
+        assert_eq!(
+            kr.open_release(&rel(&tampered, 60, None)),
+            release::Opened::Unreadable(Unreadable::BadTag)
+        );
+        // a plaintext `yanked: false` next to `enc` is never written: malformed
+        assert_eq!(
+            kr.open_release(&rel(
+                &sealed.enc,
+                60,
+                Some(("yanked", FieldValue::Bool(false)))
+            )),
+            release::Opened::Malformed
+        );
     }
 
     #[test]

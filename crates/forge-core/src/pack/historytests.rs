@@ -852,6 +852,23 @@ fn the_shared_v2_decoder_fixture_matches() {
         HistoryIndex::parse(&ix.to_compressed().unwrap()).unwrap(),
         ix
     );
+    // Its column index (kind 3): the same paths and last changes, format 1, the commit table
+    // cut to the paths' commits. forge-web reads this fixture as a kind-3 artifact.
+    let column = ix.column();
+    bless_or_check("history-index-v2-column.hex", &body_of(&column));
+    let kind3 = super::KIND_HISTORY_INDEX;
+    let kind5 = super::KIND_HISTORY_VERSIONS;
+    let parsed = HistoryIndex::parse_kind(&column.to_compressed().unwrap(), kind3).unwrap();
+    assert_eq!(parsed, column);
+    for (path, commit) in &ix.paths {
+        let last = parsed.last_change(path).unwrap();
+        let want = &ix.commits[*commit as usize];
+        assert_eq!((last.oid, &last.subject), (want.oid, &want.subject));
+    }
+    assert!(HistoryIndex::parse_kind(&ix.to_compressed().unwrap(), kind5).is_ok());
+    // A whole index read as a column (one published before the split): accepted, a superset.
+    assert!(HistoryIndex::parse_kind(&ix.to_compressed().unwrap(), kind3).is_ok());
+    assert!(HistoryIndex::parse_kind(&column.to_compressed().unwrap(), kind5).is_err());
 }
 
 /// An index's body before gzip (gzip output is not byte-stable across implementations).
@@ -1024,3 +1041,25 @@ fn an_index_over_the_readers_bounds_is_cut_until_it_fits() {
 }
 
 const MAX_INFLATED_TEST: u64 = 64 * 1024 * 1024;
+
+/// The format lives only in the header (RC1 has no manifest field for it): a version this client
+/// does not know is refused with a clear error, not read as something else.
+#[test]
+fn an_unknown_header_version_is_refused_clearly() {
+    let d = fixture_v2();
+    let ix = compute(d.path(), "HEAD", None).unwrap().unwrap();
+    assert_eq!(ix.version(), 2, "every writer writes version 2");
+    let mut body = body_of(&ix);
+    for v in [0u8, 3, 255] {
+        body[4] = v;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut gz, &body).unwrap();
+        let err = HistoryIndex::parse(&gz.finish().unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains(&format!("format {v} is not one this client reads")),
+            "{err}"
+        );
+    }
+}

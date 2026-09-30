@@ -353,17 +353,18 @@ export interface UnwrapInput {
 }
 
 /**
- * The encryption operations of (network, identity) for forge-core `coreId`, or null when this
- * browser holds no encryption key for it. Each call opens the key from the unlocked vault and
- * wipes it after; a locked vault makes the call throw.
+ * The encryption operations of (network, identity), or null when this browser holds no
+ * encryption key for it. `repoKeyContractId` is the contract holding `repoKey` (forge-collab since
+ * RC1): its `encryptedFor` declaration is what a wrap is sealed and opened by. Each call opens the
+ * key from the unlocked vault and wipes it after; a locked vault makes the call throw.
  */
-export async function encryptionOps(sdk: EvoSDK, network: Network, identityId: string, coreId: string): Promise<EncryptionOps | null> {
+export async function encryptionOps(sdk: EvoSDK, network: Network, identityId: string, repoKeyContractId: string): Promise<EncryptionOps | null> {
   const keyId = await storedEncryptionKeyId(network, identityId)
   if (keyId === null) return null
   const facade = (sdk as unknown as { encryptedFor: WrapFacade }).encryptedFor
   const { Document, PrivateKey } = await import('@dashevo/evo-sdk')
-  const contract = (await authSdk(sdk).contracts.fetch(coreId)) as DataContract | undefined
-  if (contract === undefined) throw new Error('forge-core could not be read')
+  const contract = (await authSdk(sdk).contracts.fetch(repoKeyContractId)) as DataContract | undefined
+  if (contract === undefined) throw new Error('forge-collab could not be read')
   const version = (sdk as unknown as { version(): number }).version()
   const net = wasmNetwork(network)
   const withPrivate = <T>(use: (pk: WasmPrivateKey) => Promise<T>): Promise<T> =>

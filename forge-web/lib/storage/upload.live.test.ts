@@ -2,10 +2,10 @@
  * Live browser-upload path — SKIPPED by default (devnet writes + the local S3 store, RustFS).
  *
  *   docker compose -f infra/docker-compose.yml up -d rustfs s3-init
- *   FORGE_LIVE=1 FORGE_LIVE_PUBLIC_URL=https://…/forge-byo NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=moutai \
+ *   FORGE_LIVE=1 FORGE_LIVE_PUBLIC_URL=https://…/forge-byo NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia \
  *     pnpm exec vitest run lib/storage/upload.live.test.ts
  *
- * As the moutai MAINTAINER (a maintainer of its own `forge-v2-empty`, the fixture no push has
+ * As the devnet's MAINTAINER fixture (a maintainer of its own `forge-v2-empty`, the fixture no push has
  * touched): store a small artifact in the `forge-byo` bucket with SigV4 (the same code the
  * browser runs, on Node's WebCrypto + fetch), verified by re-read; write its `packManifest`
  * (kind 2, a flatIndex slot nothing reads for browsing); then read the manifest back from
@@ -38,7 +38,12 @@ import { sha256Hex } from './sigv4'
  */
 const PUBLIC_URL = (process.env['FORGE_LIVE_PUBLIC_URL'] ?? '').replace(/\/+$/, '')
 const LIVE = process.env['FORGE_LIVE'] === '1' && DEFAULT_NETWORK === 'devnet' && isPublicHttpsUrl(PUBLIC_URL)
-const MAINTAINER_FILE = join(homedir(), '.config/dash-forge/test-identities/devnet-moutai/MAINTAINER.identity.json')
+const MAINTAINER_FILE = join(
+  homedir(),
+  '.config/dash-forge/test-identities',
+  NETWORKS[DEFAULT_NETWORK].key,
+  'MAINTAINER.identity.json',
+)
 const EMPTY_REPO = 'F9puk5NBQyySFbgj9yUfubdXAVv1YV7Zk2KDvfyHzxLU'
 
 const MINIO: StorageProfile = {
@@ -56,7 +61,7 @@ const MINIO: StorageProfile = {
   secrets: { accessKeyId: 'minioadmin', secretAccessKey: 'minioadmin' },
 }
 
-describe.skipIf(!LIVE)('live browser upload to MinIO + manifest on moutai', () => {
+describe.skipIf(!LIVE)('live browser upload to MinIO + manifest on bonsia', () => {
   it(
     'stores, verifies, records, and reads back through the web reader',
     async () => {

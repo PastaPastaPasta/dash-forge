@@ -1,18 +1,24 @@
 import { test, expect, type Page } from '@playwright/test'
 import { collectPageErrors, countDapi, E2E_DEVNET, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
+import { quorumGuard, quorumHeldMs } from './quorum-sync'
+import { isStaleConnectionError } from '../lib/sdk/unreachable'
+
+// Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
+test.beforeEach(quorumGuard)
 
 /**
  * FG-5 on the dashpay/dash showcase mirror, read-only, with request and time budgets:
  *
- *   E2E_DEVNET=moutai pnpm exec playwright test fg5-dash.spec.ts
+ *   E2E_DEVNET=bonsia pnpm exec playwright test fg5-dash.spec.ts
  *
  * - fg5-1: the 747-file merge f5979f7c5: whole-commit totals equal `git diff --shortstat`
  *   (+1331 −1906, L-25) once "Count lines" has read every file, and the Tree-SHA512 trailer wraps
  *   (L-68).
  * - fg5-2: f1be1b800 moved three completion scripts: 69 files, the moves as renames (L-24), with
  *   the author and committer (L-26).
- * - fg5-3: compare v22.0.0...develop (a tag with a branch, L-30): 6,308 commits and the diff from
- *   their merge base 7f28292.
+ * - fg5-3: compare v22.0.0...v23.0.0 (L-30): 2,790 commits (`git rev-list --count v22.0.0..v23.0.0`)
+ *   and the diff from their merge base 7f28292. Two fixed tags, not a branch: develop moves with
+ *   every re-mirror, so a count against it goes stale (it read 6,308, then 6,312).
  *
  * The expected numbers are git's on the mirrored history (see lib/view/dash-compare.local.test.ts,
  * which checks the same code against a local clone). Budgets are env-overridable: the mirror's
@@ -25,7 +31,7 @@ const F1BE = 'f1be1b800cec7886973750a76b473542fa145347'
 const MERGE_OPEN_DAPI = Number(process.env['E2E_FG5_MERGE_OPEN_DAPI'] ?? 140)
 /** DAPI requests for counting every one of its 747 files (each file's two blobs are ranged reads). */
 const MERGE_COUNT_DAPI = Number(process.env['E2E_FG5_MERGE_COUNT_DAPI'] ?? 900)
-/** DAPI requests and time for compare v22.0.0...develop (New PR master...develop measured 124 requests, 18 s). */
+/** DAPI requests and time for compare v22.0.0...v23.0.0 (v22.0.0...develop, 6,308 commits, fit in 400 and 90 s). */
 const COMPARE_DAPI = Number(process.env['E2E_FG5_COMPARE_DAPI'] ?? 400)
 const COMPARE_MS = Number(process.env['E2E_FG5_COMPARE_MS'] ?? 90_000)
 
@@ -41,11 +47,25 @@ test.describe('FG-5 on the dash mirror (read-only)', () => {
   test.skip(E2E_DEVNET !== 'moutai' && E2E_DEVNET !== 'bonsia', 'the dash showcase mirror is imported on the live devnet')
   let DASH: { readonly owner: string; readonly name: string }
   test.beforeAll(async () => {
-    DASH = await showcaseRepo('DASHPAY', 'dash')
+    let skipReason = ''
+    const dash = await showcaseRepo('DASHPAY', 'dash').catch((e: unknown) => {
+      // Nothing to test against yet, so skip with the reason rather than failing every test in
+      // the file: the name does not resolve (no mirror on this devnet), or this Node-side lookup,
+      // which has none of the app's quorum retry (lib/sdk/service.ts), hit a stale connection
+      // (`quorum not found`, `no available addresses`) mid a quorum rotation (#212). Anything else
+      // (a broken build, a bad deployment config) is a real regression and still throws.
+      if (e instanceof Error && (e.message.includes('does not resolve') || isStaleConnectionError(e))) {
+        skipReason = e.message
+        return null
+      }
+      throw e
+    })
+    test.skip(dash === null, skipReason)
+    DASH = dash as NonNullable<typeof dash>
   })
 
   test('fg5-1. the 747-file merge: whole-commit totals equal git, within a request budget', async ({ browser }) => {
-    test.setTimeout(600_000)
+    test.setTimeout(600_000 + quorumHeldMs())
     const page = await (await browser.newContext()).newPage()
     const { errors } = collectPageErrors(page)
     const counts = countDapi(page)
@@ -66,6 +86,8 @@ test.describe('FG-5 on the dash mirror (read-only)', () => {
     const t1 = Date.now()
     await page.getByTestId('count-lines').click()
     await expect(page.getByTestId('diff-totals')).toContainText(/\+1331\s*−1906/, { timeout: 480_000 })
+    // Whole, not partial: src/validation.cpp and src/net_processing.cpp (~300 KiB each) are counted.
+    await expect(page.getByTestId('diff-totals-partial')).toHaveCount(0)
     note('count all 747', counts, Date.now() - t1)
     expect(total(counts) - before).toBeLessThanOrEqual(MERGE_COUNT_DAPI)
     await shot(page, 'fg5-01-merge-totals')
@@ -77,7 +99,8 @@ test.describe('FG-5 on the dash mirror (read-only)', () => {
     await page.goto(repoUrl('commit', `&oid=${F1BE}`, DASH), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
     await expect(page.getByText('69 files changed')).toBeVisible({ timeout: 120_000 })
-    await expect(page.getByText('contrib/completions/bash/dash-cli.bash-completion').first()).toBeVisible()
+    // The patch header's link (the file list is folded past 25 files, so its row is hidden).
+    await expect(page.getByRole('link', { name: 'contrib/dash-cli.bash → contrib/completions/bash/dash-cli.bash-completion' })).toBeVisible()
     await expect(page.locator('span[title="renamed (100% similar)"]')).toHaveCount(6) // 3 in the list, 3 headers
     await expect(page.getByTestId('diff-totals')).toContainText(/\+1264\s*−789/, { timeout: 240_000 })
     await expect(page.getByTestId('commit-byline').locator('time')).not.toHaveCount(0)
@@ -85,25 +108,25 @@ test.describe('FG-5 on the dash mirror (read-only)', () => {
     expect(errors, errors.join('\n')).toEqual([])
   })
 
-  test('fg5-3. compare v22.0.0...develop: commits and diff from the merge base, within budget', async ({ browser }) => {
-    test.setTimeout(300_000)
+  test('fg5-3. compare v22.0.0...v23.0.0: commits and diff from the merge base, within budget', async ({ browser }) => {
+    test.setTimeout(300_000 + quorumHeldMs())
     const page = await (await browser.newContext()).newPage()
     const { errors } = collectPageErrors(page)
     const counts = countDapi(page)
     const t0 = Date.now()
-    await page.goto(repoUrl('compare', '&base=v22.0.0&head=develop', DASH), { waitUntil: 'domcontentloaded' })
+    await page.goto(repoUrl('compare', '&base=v22.0.0&head=v23.0.0', DASH), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
     const summary = page.getByTestId('compare-summary')
-    await expect(summary).toContainText('6,308 commits', { timeout: COMPARE_MS })
+    await expect(summary).toContainText('2,790 commits', { timeout: COMPARE_MS })
     await expect(summary).toContainText('7f28292')
     const ms = Date.now() - t0
     await settle(page)
-    note('compare v22.0.0...develop', counts, ms)
+    note('compare v22.0.0...v23.0.0', counts, ms)
     expect(ms).toBeLessThan(COMPARE_MS)
     expect(total(counts), JSON.stringify(Object.fromEntries(counts))).toBeLessThanOrEqual(COMPARE_DAPI)
-    // A tag is not a branch: no "Create pull request" (base and head must be branches).
+    // Tags are not branches: no "Create pull request" (base and head must be branches).
     await expect(page.getByTestId('compare-create-pr')).toHaveCount(0)
-    await shot(page, 'fg5-03-compare-v22-develop')
+    await shot(page, 'fg5-03-compare-v22-v23')
     expect(errors, errors.join('\n')).toEqual([])
   })
 })

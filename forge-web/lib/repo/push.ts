@@ -9,39 +9,59 @@
  * idempotent here: the unique indexes are `(repoId, $ownerId, packHash)` for a manifest and
  * `(repoId, $ownerId, packHash, seq)` for a chunk, so each checks the signer's own copy first
  * and a duplicate-unique refusal (a lost answer to an earlier attempt) counts as done.
+ *
+ * RC1 (R-09/R-10/R-11, R-01, R-02): `packHash` is an identifier (`pack-hash.ts`), a manifest
+ * carries no `offsetIndexParts` and must satisfy `storageShape` / `kindShape` / `sizeNonNeg`
+ * ({@link manifestShapeProblem}), a ref update names an RC1-legal ref with 20- or 32-byte oids
+ * ({@link refUpdateData}) and carries the repo's `vis` stamp. Each is pre-checked here, so
+ * nothing is signed that consensus refuses.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { hexToBytes } from '@noble/hashes/utils.js'
 
-import { isLegalRefName, matchesProtected } from '../rules'
+import { isRc1OidHex, isRc1RefName, matchesProtected } from '../rules'
+import { isContentHash } from '../rules/oid'
 import { readConfigBundle } from './config'
 import { invalidateRepoFeed } from './issues'
 
-import { CHUNK_FIELDS, FIELD_MAX, MANIFEST_MAX_URIS, MANIFEST_URI_MAX_LEN } from '../constants'
+import {
+  CHUNK_FIELDS,
+  CHUNK_PAYLOAD_MAX,
+  FIELD_MAX,
+  MANIFEST_MAX_URIS,
+  MANIFEST_SIZE_MAX,
+  MANIFEST_URI_MAX_LEN,
+  PACK_KIND,
+} from '../constants'
 import { decodeIdentifier } from '../auth/base58'
 import {
   ConsensusRefusal,
   DUPLICATE_UNIQUE_CODE,
   createDocumentIdempotent,
-  hexToBase64,
   previewCredits,
   queryDocumentsWithProof,
   type WriteAuth,
   type WriteResult,
 } from '../sdk'
-import { DOC, type RepoRef } from './contract'
+import { DOC, withVis, type RepoRef } from './contract'
+import { packHashOperand } from './pack-hash'
+import { refusedAtBroadcast, retryAfterLag } from './lag-retry'
 import { privateWriter, sealForRepo, sealedIntent } from './private-writes'
 import { repoSource } from './source'
 import { assertNoPlaintext } from './writes'
 
+/** The manifest rule that counts its chunks (RC1 R-09). */
+const PLATFORM_CHUNKS_RULE: ReadonlySet<string> = new Set(['platformChunks'])
+
 /** The fields of a `packManifest` (forge-core `PackManifestInput`). */
 export interface PackManifestInput {
-  /** Hex SHA-256 of the artifact. */
+  /** Hex SHA-256 of the artifact (written as a 32-byte identifier). */
   readonly packHash: string
-  /** 0 git pack | 1 objectLocator | 2 flatIndex. */
+  /** 0 git pack | 1 objectLocator | 2 flatIndex | 3 history index | 4 release assets (`PACK_KIND`). */
   readonly kind: number
+  /** The artifact's byte length: 0 to 1 TiB. */
   readonly sizeBytes: number
   readonly objectCount: number
   /** Platform chunk documents holding a copy (0 when none). */
@@ -50,7 +70,10 @@ export interface PackManifestInput {
   readonly storage: 0 | 1
   /** Where the bytes are: a `platform://` locator first when chunks exist, then public URLs. */
   readonly uris: readonly string[]
-  /** flatIndex only: the tip commit oids it indexes (hex). */
+  /**
+   * The tip commit oids it indexes (hex, all one width: 40 or 64 digits): a flatIndex's tip, a
+   * history index's `[tip]` or `[tip, baseTip]` (RC1 requires one or two for kind 3).
+   */
   readonly tips?: readonly string[]
   /** Hex pack hashes this one supersedes. */
   readonly supersedes?: readonly string[]
@@ -100,6 +123,30 @@ export function manifestUrisProblem(uris: readonly string[]): string | null {
   return null
 }
 
+/**
+ * Why `input` would be refused by the RC1 `packManifest` rules, or null: `packHash` a 32-byte
+ * hash, `sizeNonNeg` (0 to 1 TiB), `storageShape` (a Platform copy's size fits its chunks, an
+ * external-only one has none) and `kindShape` (a history index's tips are one or two oids; every
+ * list entry whole). `platformChunks` (the chunks 0..n−1 exist) holds by construction: a manifest
+ * is written only after its chunks are confirmed.
+ */
+export function manifestShapeProblem(input: PackManifestInput): string | null {
+  if (!isContentHash(input.packHash)) return 'a pack hash is a 32-byte SHA-256 (64 hex digits)'
+  if (!Number.isSafeInteger(input.sizeBytes) || input.sizeBytes < 0 || input.sizeBytes > MANIFEST_SIZE_MAX) {
+    return 'a pack manifest records a size of 0 bytes to 1 TiB'
+  }
+  if (input.storage === 0 && input.sizeBytes > input.chunkCount * CHUNK_PAYLOAD_MAX) {
+    return `a Platform copy of ${input.sizeBytes} bytes needs more than ${input.chunkCount} chunks`
+  }
+  if (input.storage === 1 && input.chunkCount !== 0) return 'an external-only copy records no Platform chunks'
+  const tips = input.tips ?? []
+  if (tips.some((t) => !isRc1OidHex(t) || t.length !== tips[0]?.length)) return 'manifest tips are oids of one width (20 or 32 bytes)'
+  if (input.kind === PACK_KIND.HISTORY_INDEX && !(tips.length === 1 || tips.length === 2)) {
+    return 'a history index names its tip, and at most one base tip'
+  }
+  return null
+}
+
 function concatHex(list: readonly string[], width: number): Uint8Array {
   const out = new Uint8Array(list.length * width)
   list.forEach((h, i) => {
@@ -126,7 +173,8 @@ export async function findOwnManifest(sdk: EvoSDK, repo: RepoRef, ownerId: strin
     repoSource(repo).repoQuery(DOC.packManifest, {
       where: [
         ['$ownerId', '==', ownerId],
-        ['packHash', '==', hexToBase64(packHashHex)],
+        // An identifier: base58, like `repoId`.
+        ['packHash', '==', packHashOperand(packHashHex)],
       ],
       limit: 1,
     }),
@@ -146,25 +194,33 @@ export async function writePackManifest(
   input: PackManifestInput,
   intent?: string,
 ): Promise<WriteResult> {
-  const problem = manifestUrisProblem(input.uris)
+  const problem = manifestUrisProblem(input.uris) ?? manifestShapeProblem(input)
   if (problem) throw new Error(problem)
   const existing = await findOwnManifest(sdk, repo, auth.identityId, input.packHash)
   if (existing !== null) return alreadyRecorded(existing)
   const data: Record<string, unknown> = {
     repoId: decodeIdentifier(repo.repoId),
+    // An identifier: its 32 raw bytes, as `decodeIdentifier` gives `repoId`'s.
     packHash: hexToBytes(input.packHash),
     kind: input.kind,
     sizeBytes: input.sizeBytes,
     objectCount: input.objectCount,
     chunkCount: input.chunkCount,
     storage: input.storage,
-    offsetIndexParts: 0,
     uris: [...input.uris],
   }
-  if (input.tips && input.tips.length > 0) data['tips'] = concatHex(input.tips, 20)
+  if (input.tips && input.tips.length > 0) data['tips'] = concatHex(input.tips, (input.tips[0] as string).length / 2)
   if (input.supersedes && input.supersedes.length > 0) data['supersedes'] = concatHex(input.supersedes, 32)
   try {
-    return await createDocumentIdempotent(sdk, auth, { contractId: repo.forge.core, documentType: DOC.packManifest, data, ...(intent ? { intent } : {}) })
+    // `platformChunks` counts the chunks just written: a node a block behind refuses the manifest
+    // at the broadcast check until it has applied them, so that (free) refusal is retried after
+    // about a block. One inside a block is judged on current state: the chunks really are missing.
+    return await retryAfterLag(
+      () => createDocumentIdempotent(sdk, auth, { contractId: repo.forge.core, documentType: DOC.packManifest, data, ...(intent ? { intent } : {}) }),
+      PLATFORM_CHUNKS_RULE,
+      undefined,
+      refusedAtBroadcast,
+    )
   } catch (e) {
     if (!isDuplicate(e)) throw e
     const id = await findOwnManifest(sdk, repo, auth.identityId, input.packHash)
@@ -277,11 +333,17 @@ export function refNameHash(refName: string): Uint8Array {
   return sha256(new TextEncoder().encode(refName))
 }
 
-/** The ref-update document data (without `repoId`) forge-core writes. */
+/**
+ * The ref-update document data (without `repoId` and the `vis` stamp) forge-core writes. Refuses
+ * before signing what RC1 consensus would: a ref name outside `$defs.refName` or ending in
+ * `.lock` ({@link isRc1RefName}, which also keeps a line-injecting name from every clone's git),
+ * and an oid that is not 20 or 32 bytes (`oidWidth`; a delete's zero oid has its ref's width).
+ */
 export function refUpdateData(input: RefUpdateInput): Record<string, unknown> {
-  // `refName` is shown to every clone's git: refuse what could inject a line.
-  if (!isLegalRefName(input.refName) || new TextEncoder().encode(input.refName).length > 255) {
-    throw new Error(`illegal ref name ${JSON.stringify(input.refName)}`)
+  if (!isRc1RefName(input.refName)) throw new Error(`illegal ref name ${JSON.stringify(input.refName)}`)
+  if (!isRc1OidHex(input.newOid)) throw new Error(`a ref's new tip must be a 20- or 32-byte oid, not ${JSON.stringify(input.newOid)}`)
+  if (input.prevOid && !isRc1OidHex(input.prevOid)) {
+    throw new Error(`a ref's previous tip must be a 20- or 32-byte oid, not ${JSON.stringify(input.prevOid)}`)
   }
   const data: Record<string, unknown> = {
     refNameHash: refNameHash(input.refName),
@@ -330,7 +392,8 @@ export async function writeRefUpdate(
     const r = await createDocumentIdempotent(sdk, auth, {
       contractId: repo.forge.core,
       documentType,
-      data: { repoId: decodeIdentifier(repo.repoId), ...data },
+      // The stamp goes on after sealing: it is plaintext on chain, never part of `enc`.
+      data: { repoId: decodeIdentifier(repo.repoId), ...withVis(repo.visibility, documentType, data) },
       ...(options.intent ? { intent: options.intent } : {}),
     })
     moved = { refName: input.refName, newOid: input.newOid.toLowerCase() }

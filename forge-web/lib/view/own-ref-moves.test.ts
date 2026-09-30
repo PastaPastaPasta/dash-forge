@@ -11,7 +11,7 @@ import { repoContentWritten, type RepoRef, type ResolvedRef } from '../repo'
 import { OWN_MOVE_WAIT_MS, awaitingOwnRefMoves, forgetOwnRefMoves, resetOwnRefMoves, showsOwnRefMoves } from './own-ref-moves'
 import { retryUntil } from './retry'
 
-const REPO: RepoRef = { forge: { core: 'C', collab: 'L', group: 'G' }, repoId: 'MOVES', ownerId: 'o', name: 'n', visibility: 'public' }
+const REPO: RepoRef = { forge: { core: 'C', collab: 'L', community: 'L', group: 'G' }, repoId: 'MOVES', ownerId: 'o', name: 'n', visibility: 'public' }
 const OLD = 'a'.repeat(40)
 const NEW = 'b'.repeat(40)
 const main = (oid: string): ResolvedRef => ({ refName: 'refs/heads/main', refNameHash: 'x', state: { state: 'resolved', oid, author: 'id', createdAt: 1 } })

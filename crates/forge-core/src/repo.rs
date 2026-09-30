@@ -29,6 +29,7 @@ use crate::backends::{PackBackend, PackMeta, PlatformBackend, Uri};
 use crate::error::{Error, Result};
 use crate::keyring::{sealed_error, Keyring, PrivateSigner};
 use crate::keystore::BridgeIdentity;
+use crate::layout;
 use crate::platform::{
     self, FetchedDocument, FieldValue, JournalStore, LoadedContract, LoadedIdentity,
     PlatformClient, PushJournal, WriteEngine, WriteIntent,
@@ -67,8 +68,6 @@ pub struct PackManifestInfo {
     pub chunk_count: u64,
     /// Storage tier.
     pub storage: u64,
-    /// Offset-index part count.
-    pub offset_index_parts: u64,
     /// External copies (`uris`, a typed string array).
     pub uris: Vec<String>,
     /// Prior `packHash`es this manifest supersedes (parsed from the packed `byteArray`).
@@ -95,8 +94,6 @@ pub struct PackManifestInput {
     pub chunk_count: u64,
     /// Storage tier (`0` platform, `1` external).
     pub storage: u64,
-    /// Offset-index part count (`≥ 1` for kind-0 packs, `0` for artifacts).
-    pub offset_index_parts: u64,
     /// External mirror URIs.
     pub uris: Vec<String>,
     /// Prior artifact `packHash`es this manifest makes redundant (repack supersedes plan).
@@ -105,6 +102,105 @@ pub struct PackManifestInput {
     /// Tip OIDs this artifact covers (kind-2 flatIndex tip; a gitmirror pack's ref tips).
     /// Serialized as one packed `byteArray` = concatenated raw OID bytes.
     pub tips: Vec<Vec<u8>>,
+}
+
+/// The largest `packManifest.sizeBytes` the RC1 contract accepts (`sizeNonNeg`: 1 TiB).
+pub const MAX_MANIFEST_SIZE_BYTES: u64 = 1 << 40;
+
+/// The `tips` widths the RC1 `kindShape` rule accepts on a history index (kind 3): one or
+/// two SHA-1 or SHA-256 oids.
+const HISTORY_TIPS_BYTES: [usize; 4] = [20, 32, 40, 64];
+
+impl PackManifestInput {
+    /// Refuse what the RC1 `packManifest` schema and rules would refuse, before anything is
+    /// signed: `sizeNonNeg` (at most 1 TiB), `storageShape` (a Platform copy holds its bytes
+    /// in `chunkCount` chunks of 14,700 B; an external one has no chunks), `kindShape` (whole
+    /// supersedes hashes, and a history index's tips), and the `uris`/`tips`/`supersedes`
+    /// field sizes. `platformChunks` (the chunks are all on chain) is a consensus total the
+    /// writer satisfies by writing the manifest only after its chunks landed.
+    pub fn check(&self) -> Result<()> {
+        let refuse = |why: String| Err(Error::Config(format!("packManifest refused: {why}")));
+        if self.size_bytes > MAX_MANIFEST_SIZE_BYTES {
+            return refuse(format!("sizeBytes {} is over 1 TiB", self.size_bytes));
+        }
+        if self.kind > 255 {
+            return refuse(format!("kind {} is not 0-255", self.kind));
+        }
+        match self.storage {
+            0 if self.size_bytes
+                > self
+                    .chunk_count
+                    .saturating_mul(crate::pack::DOC_PAYLOAD_MAX as u64) =>
+            {
+                return refuse(format!(
+                    "{} bytes do not fit {} chunk(s)",
+                    self.size_bytes, self.chunk_count
+                ));
+            }
+            1 if self.chunk_count != 0 => {
+                return refuse("an external copy has no chunks".into());
+            }
+            0 | 1 => {}
+            other => return refuse(format!("storage {other} is not 0 or 1")),
+        }
+        if u32::try_from(self.chunk_count).is_err() {
+            return refuse(format!("chunkCount {} is over u32", self.chunk_count));
+        }
+        if !MANIFEST_URIS_V2.fits(&self.uris) {
+            return refuse("uris holds at most 8 URIs of at most 300 bytes each".into());
+        }
+        if self.supersedes.len() > MAX_SUPERSEDES {
+            return refuse(format!(
+                "it supersedes {} artifacts; at most {MAX_SUPERSEDES} fit",
+                self.supersedes.len()
+            ));
+        }
+        let tips: usize = self.tips.iter().map(Vec::len).sum();
+        if tips > 512 {
+            return refuse(format!("tips is {tips} bytes; at most 512 fit"));
+        }
+        let history = [
+            crate::pack::KIND_HISTORY_INDEX,
+            crate::pack::KIND_HISTORY_VERSIONS,
+        ]
+        .map(u64::from)
+        .contains(&self.kind);
+        // The contract checks kind 3 (`kindShape`); kind 5 is held to the same by its writer.
+        if history && !HISTORY_TIPS_BYTES.contains(&tips) {
+            return refuse(format!(
+                "a history index names one or two tips (20, 32, 40 or 64 bytes), not {tips} bytes"
+            ));
+        }
+        Ok(())
+    }
+
+    /// The `packManifest` document properties in `scope`, after [`Self::check`]: `packHash`
+    /// as an identifier, and `tips` / `supersedes` as packed byteArrays (concatenated
+    /// fixed-width entries).
+    pub fn props(&self, scope: &DocScope) -> Result<BTreeMap<String, FieldValue>> {
+        self.check()?;
+        let mut props = scope.props([
+            ("packHash", FieldValue::identifier(self.pack_hash)),
+            ("kind", FieldValue::integer(self.kind)),
+            ("sizeBytes", FieldValue::integer(self.size_bytes)),
+            ("objectCount", FieldValue::integer(self.object_count)),
+            ("chunkCount", FieldValue::integer(self.chunk_count)),
+            ("storage", FieldValue::integer(self.storage)),
+        ]);
+        if !self.uris.is_empty() {
+            props.insert("uris".into(), FieldValue::text_list(self.uris.clone()));
+        }
+        if !self.tips.is_empty() {
+            props.insert("tips".into(), FieldValue::bytes(self.tips.concat()));
+        }
+        if !self.supersedes.is_empty() {
+            props.insert(
+                "supersedes".into(),
+                FieldValue::bytes(self.supersedes.concat()),
+            );
+        }
+        Ok(props)
+    }
 }
 
 /// Live index fragments tolerated before a push folds them into one locator.
@@ -892,7 +988,7 @@ impl<'a> RepoService<'a> {
         prev_oid: Option<&[u8]>,
         force: bool,
     ) -> Result<String> {
-        check_ref_name(ref_name)?;
+        check_ref_write(ref_name, new_oid, prev_oid)?;
         let (scope, contract) = self.writable(repo).await?;
         if repo.visibility == Visibility::Private {
             return self
@@ -927,7 +1023,7 @@ impl<'a> RepoService<'a> {
         mut on_landed: impl FnMut(usize),
     ) -> Result<Vec<Result<String>>> {
         for u in updates {
-            check_ref_name(&u.ref_name)?;
+            check_ref_write(&u.ref_name, &u.new_oid, u.prev_oid.as_deref())?;
         }
         let mut results = Vec::with_capacity(updates.len());
         if repo.visibility == Visibility::Private || updates.len() < 2 {
@@ -1025,6 +1121,7 @@ impl<'a> RepoService<'a> {
         if let Some(prev) = prev_oid {
             props.insert("prevOid".into(), FieldValue::bytes(prev.to_vec()));
         }
+        layout::stamp_vis(&mut props, repo.visibility);
         self.doc_engine()?
             .create_document(contract, doc_type, props)
             .await
@@ -1186,12 +1283,13 @@ impl<'a> RepoService<'a> {
                 None => base,
             };
             let enc = w.seal_doc(&DocHeader::new(DocKind::Config, owner, epoch), &fields)?;
-            let props = scope.props([
+            let mut props = scope.props([
                 ("enc", FieldValue::bytes(enc)),
                 ("epoch", FieldValue::integer(u64::from(epoch))),
                 ("backend", next.backend_value()),
                 ("archived", FieldValue::boolean(next.archived)),
             ]);
+            layout::stamp_vis(&mut props, repo.visibility);
             return self
                 .doc_engine()?
                 .create_document(&contract, DOC_CONFIG, props)
@@ -1219,6 +1317,7 @@ impl<'a> RepoService<'a> {
                 FieldValue::text_list(next.protected_patterns.clone()),
             );
         }
+        layout::stamp_vis(&mut props, repo.visibility);
         self.doc_engine()?
             .create_document(&contract, DOC_CONFIG, props)
             .await
@@ -1259,39 +1358,50 @@ impl<'a> RepoService<'a> {
         manifest: &PackManifestInput,
     ) -> Result<String> {
         let (scope, contract) = self.writable(repo).await?;
-        let mut props = scope.props([
-            ("packHash", FieldValue::bytes32(manifest.pack_hash)),
-            ("kind", FieldValue::integer(manifest.kind)),
-            ("sizeBytes", FieldValue::integer(manifest.size_bytes)),
-            ("objectCount", FieldValue::integer(manifest.object_count)),
-            ("chunkCount", FieldValue::integer(manifest.chunk_count)),
-            ("storage", FieldValue::integer(manifest.storage)),
-            (
-                "offsetIndexParts",
-                FieldValue::integer(manifest.offset_index_parts),
-            ),
-        ]);
-        if !manifest.uris.is_empty() {
-            if !MANIFEST_URIS_V2.fits(&manifest.uris) {
-                return Err(Error::Config(
-                    "packManifest.uris holds at most 8 URIs of at most 300 bytes each".into(),
-                ));
-            }
-            props.insert("uris".into(), FieldValue::text_list(manifest.uris.clone()));
-        }
-        // `tips` / `supersedes` are packed byteArrays (concatenated fixed-width entries).
-        if !manifest.tips.is_empty() {
-            props.insert("tips".into(), FieldValue::bytes(manifest.tips.concat()));
-        }
-        if !manifest.supersedes.is_empty() {
-            props.insert(
-                "supersedes".into(),
-                FieldValue::bytes(manifest.supersedes.concat()),
-            );
-        }
-        self.doc_engine()?
+        let props = manifest.props(&scope)?;
+        match self
+            .doc_engine()?
             .create_document(&contract, DOC_PACK_MANIFEST, props)
             .await
+        {
+            // `platformChunks` still refuses it after the write loop waited out a lagging node
+            // (`TOTAL_READING_RULES`): say whether the chunks are really missing.
+            Err(Error::RuleRefused {
+                document_type,
+                rule,
+                detail,
+            }) if rule == "platformChunks" => {
+                let visible = match self.identity_id() {
+                    Ok(owner) => match scope.chunk_filters(&owner, manifest.pack_hash) {
+                        Ok(filters) => self
+                            .client
+                            .query_all_documents(
+                                &contract,
+                                crate::backends::platform::CHUNK_DOC_TYPE,
+                                &filters,
+                                &[crate::platform::QueryOrder::asc(
+                                    crate::backends::platform::FIELD_SEQ,
+                                )],
+                            )
+                            .await
+                            .map_or_else(|e| format!("unknown ({e})"), |d| d.len().to_string()),
+                        Err(e) => format!("unknown ({e})"),
+                    },
+                    Err(e) => format!("unknown ({e})"),
+                };
+                Err(Error::RuleRefused {
+                    document_type,
+                    rule,
+                    detail: format!(
+                        "{detail}; {visible} of the {} chunk(s) of pack {} are visible to the \
+                         network (a re-run of the push reuses the stored ones)",
+                        manifest.chunk_count,
+                        hex::encode(manifest.pack_hash)
+                    ),
+                })
+            }
+            other => other,
+        }
     }
 
     /// Read **every** `packManifest` document of a repo, newest first.
@@ -1488,76 +1598,32 @@ impl<'a> RepoService<'a> {
         manifest: &PackManifestInfo,
         reader: &PackReader,
     ) -> Result<Vec<u8>> {
-        let expected = hex::encode(manifest.pack_hash);
-        let scope = repo.scope()?;
-        let own = Uri(scope.locator(&manifest.owner_id, &expected));
-        // Platform copies to read, in order: chunks another repo's scope holds (a fork's
-        // manifest names its parent's this way), then this manifest's own chunks.
-        // Only locators of THIS pack: a manifest naming another pack's chunks would have
-        // readers download them in full before the hash check refused them.
-        let mut platform: Vec<Uri> = manifest
-            .uris
-            .iter()
-            .map(|u| Uri(u.clone()))
-            .filter(|u| {
-                *u != own
-                    && crate::backends::PlatformLocator::parse(u)
-                        .is_ok_and(|l| l.pack_hash == manifest.pack_hash)
-            })
-            .collect();
-        if manifest.storage == 0 {
-            platform.push(own);
-        }
-        // Every body is capped at the manifest's size (0 = unknown on very old manifests).
-        let size = (manifest.size_bytes > 0).then_some(manifest.size_bytes);
-        if reader.has_candidates(&manifest.uris) {
-            // With chunks to fall back on, the external copies get a size-scaled budget
-            // after which no new candidate starts — dead gateways must not cost minutes per
-            // pack before the on-chain read, but a big pack streaming from a healthy mirror
-            // is not abandoned mid-transfer.
-            let budget =
-                (!platform.is_empty()).then(|| crate::storage::read::external_budget(size));
-            match reader
-                .fetch_verified(&manifest.uris, &expected, size, budget)
-                .await
-            {
-                Ok(bytes) => return Ok(bytes),
-                Err(e) if platform.is_empty() => return Err(e),
-                Err(e) => tracing::info!(
-                    pack = %expected,
-                    error = %e,
-                    "no external copy verified; reading Platform chunks"
-                ),
-            }
-        } else if platform.is_empty() {
-            return Err(Error::Io(format!(
-                "artifact {expected} is stored externally but its manifest records no URI this \
-                 client can read ({:?})",
-                manifest.uris
-            )));
-        }
+        let pack = hex::encode(manifest.pack_hash);
+        self.fetch_copy(repo, contract, manifest, reader)
+            .await
+            .map(|served| served.note_on(reader, &pack))
+            .map_err(|missed| missed.error)
+    }
+
+    /// [`Self::fetch_artifact_from`] without recording a fallback: which copy served, or why
+    /// none did, with each failed place.
+    async fn fetch_copy(
+        &self,
+        repo: &RepoRef,
+        contract: &LoadedContract,
+        manifest: &PackManifestInfo,
+        reader: &PackReader,
+    ) -> std::result::Result<crate::storage::read::Served, Unserved> {
+        let own = Uri(repo
+            .scope()?
+            .locator(&manifest.owner_id, &hex::encode(manifest.pack_hash)));
         // A read: chunks are fetched with the connection alone, no signing key, so a clone of
         // a public repo works without an identity.
-        let mut last = Error::NotFound;
-        for locator in &platform {
-            let read = match crate::backends::PlatformLocator::parse(locator) {
-                Ok(loc) => {
-                    crate::backends::platform::read_platform_pack(self.client, contract, &loc).await
-                }
-                Err(e) => Err(e),
-            };
-            match read {
-                Ok(bytes) if hex::encode(crate::backends::sha256(&bytes)) == expected => {
-                    return Ok(bytes)
-                }
-                Ok(_) => last = Error::Integrity,
-                Err(e) => {
-                    tracing::info!(%locator, error = %e, "Platform copy unreadable");
-                    last = e;
-                }
-            }
-        }
-        Err(last)
+        let client = self.client;
+        read_copy(manifest, &own, reader, |loc| async move {
+            crate::backends::platform::read_platform_pack(client, contract, &loc).await
+        })
+        .await
     }
 
     /// Read `pack_hash` from the best copy that verifies (forge-v2 §4 reader rule):
@@ -1573,17 +1639,37 @@ impl<'a> RepoService<'a> {
         reader: &PackReader,
     ) -> Result<(Vec<u8>, &'m PackManifestInfo)> {
         let mut last = Error::NotFound;
+        // The places that failed before the copy that serves, over every uploader's copy
+        // tried: one Fallback for the pack, however many copies it took.
+        let mut failed: Vec<String> = Vec::new();
         for m in order_copies(copies, roles) {
-            match self.fetch_artifact_from(repo, contract, m, reader).await {
-                Ok(bytes) => return Ok((bytes, m)),
-                Err(e) => {
+            match self.fetch_copy(repo, contract, m, reader).await {
+                Ok(mut served) => {
+                    failed.append(&mut served.failed);
+                    let mut seen = BTreeSet::new();
+                    failed.retain(|p| seen.insert(p.clone()));
+                    served.failed = failed;
+                    return Ok((served.note_on(reader, &hex::encode(m.pack_hash)), m));
+                }
+                Err(Unserved {
+                    error,
+                    failed: places,
+                }) => {
                     tracing::info!(
                         pack = %hex::encode(m.pack_hash),
                         uploader = %m.owner_id,
-                        error = %e,
+                        error = %error,
                         "pack copy did not verify; trying the next copy"
                     );
-                    last = e;
+                    if places.is_empty() {
+                        failed.push(format!(
+                            "the copy uploaded by {} ({})",
+                            m.owner_id,
+                            crate::user_error::one_line(&error.to_string())
+                        ));
+                    }
+                    failed.extend(places);
+                    last = error;
                 }
             }
         }
@@ -1790,9 +1876,6 @@ impl<'a> RepoService<'a> {
                     object_count: pack.object_count,
                     chunk_count: pack.chunk_count,
                     storage: pack.storage,
-                    // 0 = no separate `manifestPart` offset-index doc written. The browse
-                    // plane's index is the `objectLocator` published alongside.
-                    offset_index_parts: 0,
                     uris: pack.uris.clone(),
                     supersedes: supersedes.clone(),
                     tips: tip_oids,
@@ -1845,7 +1928,6 @@ impl<'a> RepoService<'a> {
                         object_count: best.object_count,
                         chunk_count: 0,
                         storage: 1,
-                        offset_index_parts: 0,
                         uris: uris.clone(),
                         supersedes: best.supersedes.clone(),
                         tips: Vec::new(),
@@ -2369,7 +2451,6 @@ impl<'a> RepoService<'a> {
             rows: locator.object_count() as u64,
             supersedes,
             tips: Vec::new(),
-            format: 0,
         };
         self.store_artifact(repo, artifact, target).await
     }
@@ -2403,10 +2484,6 @@ impl<'a> RepoService<'a> {
                 object_count: artifact.rows,
                 chunk_count: stored.chunk_count,
                 storage: stored.storage,
-                // A browse artifact locates itself: no `manifestPart` offset index is
-                // written for it, so none is claimed. A history index records its format
-                // version there instead ([`HistoryEntry::format`]).
-                offset_index_parts: artifact.format,
                 uris: stored.uris,
                 supersedes: artifact.supersedes,
                 tips: artifact.tips.iter().map(|t| t.to_vec()).collect(),
@@ -2423,22 +2500,46 @@ impl<'a> RepoService<'a> {
         Ok(plan_history_index(&manifests, &roles, tip))
     }
 
-    /// Store a history index [`prepare_history_index`] computed, through `target`, and record
-    /// its `packManifest` (kind 3).
+    /// Store a history index [`prepare_history_index`] computed, through `target`: its version
+    /// lists (kind 5) first, then its column index (kind 3), each with its `packManifest`. The
+    /// column goes last so a reader that finds it can already find the lists of the same tip.
     pub async fn store_history_index(
         &self,
         repo: &RepoRef,
         prepared: PreparedHistory,
         target: RepackTarget<'_>,
     ) -> Result<HistoryPublished> {
+        // A delta when what is published extends a full index (the column alone, when the lists
+        // were already there).
+        let delta = prepared.is_delta();
         let PreparedHistory {
-            index, artifact, ..
+            index,
+            artifact,
+            column,
+            ..
         } = prepared;
-        let manifest_id = self.store_artifact(repo, artifact, target).await?;
+        let versions_manifest_id = match artifact {
+            Some(a) => Some(self.store_artifact(repo, a, target).await?),
+            None => None,
+        };
+        let manifest_id = match column {
+            Some(c) => Some(self.store_artifact(repo, c, target).await.map_err(|e| {
+                // Paid for, and readable by Blame and History: say so, so a retry is understood.
+                let lists = versions_manifest_id.as_deref().map_or(String::new(), |id| {
+                    format!(" (its version lists were published: {id})")
+                });
+                Error::Io(format!(
+                    "the history index's column was not published{lists}: {e}; `dg repo reindex` \
+                     publishes it"
+                ))
+            })?),
+            None => None,
+        };
         Ok(HistoryPublished {
             manifest_id,
+            versions_manifest_id,
             rows: index.paths.len() as u64,
-            delta: index.base.is_some(),
+            delta,
             commit_count: index.commit_count,
         })
     }
@@ -2453,8 +2554,6 @@ struct Artifact {
     rows: u64,
     supersedes: Vec<[u8; 32]>,
     tips: Vec<[u8; 20]>,
-    /// `offsetIndexParts`: 0, or a history index's format version.
-    format: u64,
 }
 
 /// A live history index, as the manifests describe it.
@@ -2468,53 +2567,52 @@ pub struct HistoryEntry {
     pub base_tip: Option<[u8; 20]>,
     /// Its stored size (sealed, for a private repository).
     pub size_bytes: u64,
-    /// Its format version, from the manifest's `offsetIndexParts` (a kind-3 artifact locates
-    /// itself, so the field is free): 2 for an index with per-path version lists, 0 from a
-    /// writer before them (v1).
-    pub format: u64,
     /// For a full index: the stored bytes of every v2 delta a current member published over its
     /// tip, superseded ones included. Each push pays for its whole cumulative delta, so this is
     /// what the deltas over this base have cost so far ([`prepare_history_index`]).
     pub deltas_paid: u64,
 }
 
-impl HistoryEntry {
-    /// It lists each path's versions (Blame and History read them): format 2 or later.
-    pub fn has_versions(&self) -> bool {
-        format_has_versions(self.format)
-    }
-}
-
-/// Whether a history index manifest's format (its `offsetIndexParts`) lists each path's
-/// versions: format 2 or later.
-fn format_has_versions(format: u64) -> bool {
-    format >= u64::from(crate::pack::historyindex::VERSION_V2)
-}
-
 /// What the next history index publish should do.
+///
+/// Its flags are independent facts of the manifests (what covers the tip, what is a first of
+/// its kind), not a state an enum would name.
+///
+/// A history index is two artifacts of the same tip: its **version lists** (kind 5, the whole
+/// index, format 2), which Blame and a path's History read, and its **column index** (kind 3,
+/// the last-change column and the counts, format 1), which the file list and the commit counts
+/// read. Each kind is its own series of full indexes and deltas (a delta's header names the full
+/// index of its own kind). The version lists decide full or delta; the column follows them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct HistoryPlan {
-    /// An index with version lists already covers the tip: nothing to publish. A v1 index
-    /// (the column and the count only) does not: a v2 one replaces it.
+    /// Both kinds already cover the tip: nothing to publish.
     pub covered: bool,
-    /// The live FULL indexes with version lists by current members, newest first: the bases a
-    /// delta may extend (the first on the new tip's first-parent chain). A v1 full index is no
-    /// base: a delta over it would leave every unchanged path without a list.
+    /// The version lists already cover the tip (only its column index is missing).
+    pub lists_covered: bool,
+    /// The live FULL version-lists indexes by current members, newest first: the bases a delta
+    /// may extend (the first on the new tip's first-parent chain).
     pub bases: Vec<HistoryEntry>,
-    /// Every live history index by a current member: what a full index supersedes, and the
-    /// deltas of a base a new delta supersedes.
+    /// Every live version-lists index by a current member: what a full index supersedes, and
+    /// the deltas of a base a new delta supersedes.
     pub live: Vec<HistoryEntry>,
-    /// The repository has no history index manifest at all yet: this one is its first, which
-    /// pays the first-of-kind fee ([`crate::cost::push_fees::HISTORY_FIRST_EXTRA`]).
+    /// The repository has no version-lists manifest yet: this one is its first, which pays the
+    /// first-of-kind fee ([`crate::cost::push_fees::HISTORY_FIRST_EXTRA`]).
     pub first: bool,
+    /// Every live column index by a current member (a column delta extends the full one of its
+    /// base tip; a full column supersedes them all).
+    pub columns: Vec<HistoryEntry>,
+    /// The repository has no column-index manifest yet (its first pays the first-of-kind fee).
+    pub columns_first: bool,
 }
 
 impl HistoryPlan {
     /// The plan for a repository with no history index yet (a first push into a new one): a
-    /// full index, its first.
+    /// full index of each kind, their first.
     pub fn fresh() -> Self {
         Self {
             first: true,
+            columns_first: true,
             ..Self::default()
         }
     }
@@ -2523,8 +2621,10 @@ impl HistoryPlan {
 /// What [`RepoService::store_history_index`] published.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryPublished {
-    /// The manifest document id.
-    pub manifest_id: String,
+    /// The column index's manifest document id (kind 3), when one was published.
+    pub manifest_id: Option<String>,
+    /// The version lists' manifest document id (kind 5), when they were published.
+    pub versions_manifest_id: Option<String>,
     /// Path rows it holds.
     pub rows: u64,
     /// A delta over a full index (else a full index).
@@ -2533,12 +2633,55 @@ pub struct HistoryPublished {
     pub commit_count: u64,
 }
 
+/// What storing a [`PreparedHistory`] costs: each artifact it publishes (the version lists, the
+/// column index) with its plaintext size and whether it is the repository's first of its kind.
+/// Each is a manifest of its own, priced separately (its manifest fee, its URIs, its chunks).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HistoryCost {
+    parts: [Option<(u64, bool)>; 2],
+}
+
+impl HistoryCost {
+    /// The plaintext size of the artifacts.
+    pub fn plain_len(&self) -> u64 {
+        self.parts.iter().flatten().map(|(bytes, _)| bytes).sum()
+    }
+
+    /// The `packManifest` documents they add.
+    pub fn manifests(&self) -> u32 {
+        u32::try_from(self.parts.iter().flatten().count()).expect("at most two parts")
+    }
+
+    /// Their price (an upper bound), sealed or not, with `external_targets` URIs each and, when
+    /// `platform`, their chunks.
+    pub fn credits(&self, sealed: bool, external_targets: u64, platform: bool) -> u64 {
+        self.parts
+            .iter()
+            .flatten()
+            .map(|&(bytes, first)| {
+                crate::cost::push_fees::history_index(
+                    bytes,
+                    sealed,
+                    external_targets,
+                    platform,
+                    first,
+                )
+            })
+            .sum()
+    }
+}
+
 /// A history index computed and ready to store ([`RepoService::store_history_index`]).
 pub struct PreparedHistory {
     index: crate::pack::HistoryIndex,
-    artifact: Artifact,
-    /// The repository's first history index (it pays the first-of-kind fee).
+    /// The version lists (kind 5); `None` when they already cover the tip.
+    artifact: Option<Artifact>,
+    /// The column index (kind 3); `None` when one already covers the tip.
+    column: Option<Artifact>,
+    /// The repository's first version-lists index (it pays the first-of-kind fee).
     first: bool,
+    /// The repository's first column index.
+    columns_first: bool,
     /// For a full index that replaces deltas which have cost as much as it: the delta over the
     /// same base, still readable, for a push whose cost guard declines the full index.
     fallback: Option<Box<PreparedHistory>>,
@@ -2555,21 +2698,40 @@ impl PreparedHistory {
         self.fallback.map(|b| *b)
     }
 
-    /// The plaintext artifact size (what the push prices; sealing adds a little).
-    pub fn plain_len(&self) -> u64 {
-        self.artifact.plain.len() as u64
+    /// What storing it costs, per artifact: what a push's cost guard prices.
+    pub fn cost(&self) -> HistoryCost {
+        let part =
+            |a: &Option<Artifact>, first: bool| a.as_ref().map(|a| (a.plain.len() as u64, first));
+        HistoryCost {
+            parts: [
+                part(&self.artifact, self.first),
+                part(&self.column, self.columns_first),
+            ],
+        }
     }
 
-    /// The price of storing it (an upper bound), sealed or not, with `external_targets` URIs
-    /// and, when `platform`, its chunks.
+    /// The plaintext size of both artifacts (what the push prices; sealing adds a little).
+    pub fn plain_len(&self) -> u64 {
+        self.cost().plain_len()
+    }
+
+    /// The price of storing both artifacts (an upper bound), sealed or not, with
+    /// `external_targets` URIs and, when `platform`, their chunks.
     pub fn credits(&self, sealed: bool, external_targets: u64, platform: bool) -> u64 {
-        crate::cost::push_fees::history_index(
-            self.plain_len(),
-            sealed,
-            external_targets,
-            platform,
-            self.first,
-        )
+        self.cost().credits(sealed, external_targets, platform)
+    }
+
+    /// It publishes the version lists (kind 5), not only a missing column index.
+    pub fn publishes_lists(&self) -> bool {
+        self.artifact.is_some()
+    }
+
+    /// What it publishes extends a full index (else it is full).
+    pub fn is_delta(&self) -> bool {
+        [&self.artifact, &self.column]
+            .into_iter()
+            .flatten()
+            .any(|a| a.tips.len() > 1)
     }
 
     /// The computed index.
@@ -2579,19 +2741,26 @@ impl PreparedHistory {
 
     /// Whether it is the repository's first history index.
     pub fn is_first(&self) -> bool {
-        self.first
+        self.first || self.columns_first
     }
 }
 
-/// Plan the history index publish for `tip` from the repository's manifests: which live
-/// indexes (kind 3, by a current member, not superseded by a member's manifest) exist, whether
-/// one already covers `tip`, and the newest full index a delta could extend.
-pub fn plan_history_index(
-    manifests: &[PackManifestInfo],
-    roles: &RoleMap,
-    tip: [u8; 20],
-) -> HistoryPlan {
-    let kind = u64::from(crate::pack::KIND_HISTORY_INDEX);
+/// One kind's live history indexes: what [`plan_history_index`] reads from the manifests.
+struct Series {
+    /// Live indexes by current members, not superseded by a member's manifest, newest first,
+    /// one per `packHash`.
+    live: Vec<HistoryEntry>,
+    /// Its full indexes, each with what the deltas over its tip have cost.
+    bases: Vec<HistoryEntry>,
+    /// An index of this kind covers `tip`.
+    covered: bool,
+    /// No manifest of this kind exists yet.
+    first: bool,
+}
+
+/// The live indexes of `kind` among `manifests` (see [`Series`]).
+fn series(manifests: &[PackManifestInfo], roles: &RoleMap, kind: u8, tip: [u8; 20]) -> Series {
+    let kind = u64::from(kind);
     let member = |m: &PackManifestInfo| roles.contains_key(&m.owner_id);
     let superseded: BTreeSet<[u8; 32]> = manifests
         .iter()
@@ -2610,40 +2779,27 @@ pub fn plan_history_index(
                 tip: *m.tips.first()?,
                 base_tip: m.tips.get(1).copied(),
                 size_bytes: m.size_bytes,
-                format: m.offset_index_parts,
                 deltas_paid: 0,
             })
         })
         .collect();
-    // What the v2 deltas over each base tip have cost: every such manifest by a member, once.
+    // What the deltas over each base tip have cost: every such manifest by a member, once.
     let mut paid: BTreeMap<[u8; 20], u64> = BTreeMap::new();
     let mut counted = BTreeSet::new();
     for m in manifests {
         let Some(base_tip) = m.tips.get(1) else {
             continue;
         };
-        if m.kind == kind
-            && member(m)
-            && format_has_versions(m.offset_index_parts)
-            && counted.insert(m.pack_hash)
-        {
+        if m.kind == kind && member(m) && counted.insert(m.pack_hash) {
             let sum = paid.entry(*base_tip).or_default();
             *sum = sum.saturating_add(m.size_bytes);
         }
     }
-    // A delta covers its tip only while a live full index of its base tip stands behind it:
-    // a reader could not overlay it otherwise (forge-web `historySource` applies the same rule).
-    // Only v2 indexes count here: a delta extends a v2 full index, and covers its tip only over
-    // one (an older writer's v1 delta over a v2 base answers the column, not the lists).
-    let full_v2 = |e: &&HistoryEntry| e.base_tip.is_none() && e.has_versions();
-    let full_tips: BTreeSet<[u8; 20]> = live.iter().filter(full_v2).map(|e| e.tip).collect();
-    let covers =
-        |e: &HistoryEntry| e.has_versions() && e.base_tip.is_none_or(|b| full_tips.contains(&b));
-    HistoryPlan {
-        covered: live.iter().any(|e| e.tip == tip && covers(e)),
+    Series {
+        covered: covers_tip(&live, tip),
         bases: live
             .iter()
-            .filter(full_v2)
+            .filter(|e| e.base_tip.is_none())
             .map(|e| HistoryEntry {
                 deltas_paid: paid.get(&e.tip).copied().unwrap_or(0),
                 ..e.clone()
@@ -2654,11 +2810,50 @@ pub fn plan_history_index(
     }
 }
 
+/// Whether one of `live` (one kind's live indexes) covers `tip`. A delta covers its tip only
+/// while a live full index of its base tip stands behind it: a reader could not overlay it
+/// otherwise (forge-web `historySource` applies the same rule).
+fn covers_tip(live: &[HistoryEntry], tip: [u8; 20]) -> bool {
+    let full_tips: BTreeSet<[u8; 20]> = live
+        .iter()
+        .filter(|e| e.base_tip.is_none())
+        .map(|e| e.tip)
+        .collect();
+    live.iter()
+        .any(|e| e.tip == tip && e.base_tip.is_none_or(|b| full_tips.contains(&b)))
+}
+
+/// Plan the history index publish for `tip` from the repository's manifests: the live version
+/// lists (kind 5) and column indexes (kind 3), each by a current member and not superseded by a
+/// member's manifest, whether both already cover `tip`, and the newest full version-lists index
+/// a delta could extend.
+pub fn plan_history_index(
+    manifests: &[PackManifestInfo],
+    roles: &RoleMap,
+    tip: [u8; 20],
+) -> HistoryPlan {
+    let versions = series(manifests, roles, crate::pack::KIND_HISTORY_VERSIONS, tip);
+    let columns = series(manifests, roles, crate::pack::KIND_HISTORY_INDEX, tip);
+    HistoryPlan {
+        covered: versions.covered && columns.covered,
+        lists_covered: versions.covered,
+        bases: versions.bases,
+        live: versions.live,
+        first: versions.first,
+        columns: columns.live,
+        columns_first: columns.first,
+    }
+}
+
 /// Compute the history index for `tip` in the local repository `git_dir` as `plan` says: a
 /// delta over the newest of `plan.bases` on `tip`'s first-parent chain while deltas stay the
-/// cheaper choice ([`delta_pays`]), else a full index superseding the live ones. `None` when
-/// `plan` says an index already covers `tip`. Local only: nothing is read from or written to the
-/// network.
+/// cheaper choice ([`delta_pays`]), else a full index superseding the live ones; and its column
+/// index ([`column_of`]). `None` when `plan` says both already cover `tip`. Local only: nothing
+/// is read from or written to the network.
+///
+/// A base counts only while a live full column index of the same tip stands beside it, so a
+/// column delta always has its own base: after a push whose column failed to store, both series
+/// go full together and are in step again from the next push.
 pub fn prepare_history_index(
     git_dir: &std::path::Path,
     tip: [u8; 20],
@@ -2669,29 +2864,35 @@ pub fn prepare_history_index(
         return Ok(None);
     }
     let tip_hex = hex::encode(tip);
+    let full_column = |at: [u8; 20]| {
+        plan.columns
+            .iter()
+            .find(|e| e.base_tip.is_none() && e.tip == at)
+    };
     // A delta over the newest live full index whose tip is on the new tip's first-parent chain
     // (and the local repository holds it), while deltas pay ([`delta_pays`]).
     let mut fallback = None;
     for base in &plan.bases {
+        let Some(column_base) = full_column(base.tip) else {
+            continue;
+        };
         let Ok(Some(mut delta)) = compute(git_dir, &tip_hex, Some(&hex::encode(base.tip))) else {
             continue;
         };
         delta.base = Some(base.pack_hash);
         let bytes = delta.to_compressed()?;
         let size = bytes.len() as u64;
-        // A delta is cumulative: it replaces the earlier deltas of the same base, and any index
-        // of this tip without version lists (a v1 index the web would read instead).
-        let earlier = plan
-            .live
-            .iter()
-            .filter(|e| e.base_tip == Some(base.tip) || (e.tip == tip && !e.has_versions()));
-        let delta = prepared(delta, bytes, vec![tip, base.tip], earlier, plan.first);
-        if delta_pays(size, base) {
-            return Ok(Some(delta));
-        }
+        let pays = delta_pays(size, base);
         // The deltas have cost a full index, but this one is still readable (at most half the
         // base): kept for a push whose cost guard declines the full index.
-        if size.saturating_mul(2) <= base.size_bytes {
+        if pays || size.saturating_mul(2) <= base.size_bytes {
+            // A delta is cumulative: it replaces the earlier deltas of the same base.
+            let earlier = plan.live.iter().filter(|e| e.base_tip == Some(base.tip));
+            let column = column_of(&delta, Some(column_base), plan, tip)?;
+            let delta = prepared(delta, bytes, vec![tip, base.tip], earlier, column, plan);
+            if pays {
+                return Ok(Some(delta));
+            }
             fallback = Some(Box::new(delta));
         }
         // The newest base on the chain is too far behind: a full index, not an older base.
@@ -2700,9 +2901,51 @@ pub fn prepare_history_index(
     let index = compute(git_dir, &tip_hex, None)?
         .ok_or_else(|| Error::Config("history index: no full index computed".into()))?;
     let bytes = index.to_compressed()?;
-    let mut full = prepared(index, bytes, vec![tip], plan.live.iter(), plan.first);
+    let column = column_of(&index, None, plan, tip)?;
+    let mut full = prepared(index, bytes, vec![tip], plan.live.iter(), column, plan);
     full.fallback = fallback;
     Ok(Some(full))
+}
+
+/// The column index (kind 3) to publish with the version lists `ix` of `tip`: for a delta, a
+/// delta over `base` (the live full column of the lists' base tip) superseding that base's
+/// earlier column deltas; for full lists, a full column superseding every live one. `None` when
+/// a live column already covers `tip` with a full column of its base tip behind it.
+///
+/// A column delta's size is not weighed against its base (rent or buy runs on the lists, which
+/// are the larger by far): it lists the same paths as the lists' delta, so it stays within the
+/// same fraction of its base.
+fn column_of(
+    ix: &crate::pack::HistoryIndex,
+    base: Option<&HistoryEntry>,
+    plan: &HistoryPlan,
+    tip: [u8; 20],
+) -> Result<Option<Artifact>> {
+    if covers_tip(&plan.columns, tip) {
+        return Ok(None);
+    }
+    let (column, tips, replaces): (_, _, Vec<&HistoryEntry>) = match base {
+        Some(base) => (
+            ix.column().with_base(base.pack_hash),
+            vec![tip, base.tip],
+            plan.columns
+                .iter()
+                .filter(|e| e.base_tip == Some(base.tip))
+                .collect(),
+        ),
+        None => (ix.column(), vec![tip], plan.columns.iter().collect()),
+    };
+    Ok(Some(Artifact {
+        kind: crate::pack::KIND_HISTORY_INDEX,
+        rows: column.paths.len() as u64,
+        plain: column.to_compressed()?,
+        supersedes: replaces
+            .into_iter()
+            .take(MAX_SUPERSEDES)
+            .map(|e| e.pack_hash)
+            .collect(),
+        tips,
+    }))
 }
 
 /// Whether a delta of `bytes` over `base` is worth publishing, rather than a full index.
@@ -2720,27 +2963,30 @@ fn delta_pays(bytes: u64, base: &HistoryEntry) -> bool {
         && base.deltas_paid.saturating_add(bytes) <= base.size_bytes
 }
 
-/// A computed index as the artifact to store, superseding `replaces` (at most
-/// [`MAX_SUPERSEDES`]).
+/// A computed index as the version-lists artifact to store (kind 5), superseding `replaces` (at
+/// most [`MAX_SUPERSEDES`]), with its column index. The version lists are left out when a live
+/// one already covers the tip (only the column was missing).
 fn prepared<'e>(
     index: crate::pack::HistoryIndex,
-    plain: Vec<u8>,
+    bytes: Vec<u8>,
     tips: Vec<[u8; 20]>,
     replaces: impl Iterator<Item = &'e HistoryEntry>,
-    first: bool,
+    column: Option<Artifact>,
+    plan: &HistoryPlan,
 ) -> PreparedHistory {
-    let artifact = Artifact {
-        kind: crate::pack::KIND_HISTORY_INDEX,
+    let artifact = (!plan.lists_covered).then(|| Artifact {
+        kind: crate::pack::KIND_HISTORY_VERSIONS,
         rows: index.paths.len() as u64,
-        plain,
+        plain: bytes,
         supersedes: replaces.take(MAX_SUPERSEDES).map(|e| e.pack_hash).collect(),
         tips,
-        format: u64::from(index.version()),
-    };
+    });
     PreparedHistory {
         index,
         artifact,
-        first,
+        column,
+        first: plan.first,
+        columns_first: plan.columns_first,
         fallback: None,
     }
 }
@@ -2780,8 +3026,21 @@ pub const MAX_PROTECTED_PATTERNS: usize = 8;
 pub const MAX_PATTERN_CHARS: usize = 100;
 /// `repo.description` holds at most this many characters and bytes (forge-core schema).
 pub const MAX_DESCRIPTION: (usize, usize) = (500, 1000);
-/// `repo.topics`: at most 10 unique, `^[a-z0-9][a-z0-9-]*$`, 1–30 characters.
-pub const MAX_TOPICS: usize = 10;
+/// `repo.topics`: at most 20 unique, [`is_topic_name`], 1–30 characters. Also the most `topic`
+/// documents a repository holds (`atMost20`).
+pub const MAX_TOPICS: usize = 20;
+
+/// Whether `name` is a topic RC1 accepts: 1–30 characters of `^[a-z0-9]+(-[a-z0-9]+)*$` (no
+/// leading, trailing or doubled `-`).
+pub fn is_topic_name(name: &str) -> bool {
+    (1..=30).contains(&name.len())
+        && name.split('-').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        })
+}
 
 /// A repository's current configuration, as a settings reader and writer sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2910,6 +3169,21 @@ pub fn short_branch_name(b: &str) -> &str {
     b.strip_prefix("refs/heads/").unwrap_or(b)
 }
 
+/// Refuse a default branch the RC1 contract would refuse (`$defs.branch`: the ref grammar
+/// with no leading `-`) or that no `git push` could create (`refs/heads/<branch>` must pass
+/// `git check-ref-format` in 255 bytes).
+pub fn check_default_branch(branch: &str) -> Result<()> {
+    if rules::is_legal_branch_name(branch)
+        && rules::is_git_ref_name(&format!("refs/heads/{branch}"))
+    {
+        return Ok(());
+    }
+    Err(Error::Config(format!(
+        "{branch:?} is not a branch name: 1-244 bytes, not starting with '-', and passing \
+         `git check-ref-format` (no spaces, control characters, `~^:?*[\\`, `..` or `@{{`)"
+    )))
+}
+
 /// A change to a repository's configuration; `None` fields carry over.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConfigChange {
@@ -2929,13 +3203,7 @@ impl ConfigChange {
     /// Refuse what the `config` schema would refuse, before anything is signed.
     pub fn validate(&self) -> Result<()> {
         if let Some(b) = &self.default_branch {
-            let short = short_branch_name(b);
-            let full = format!("refs/heads/{short}");
-            if short.is_empty() || full.len() > 255 || !rules::is_legal_ref_name(&full) {
-                return Err(Error::Config(format!(
-                    "{b:?} is not a branch name (1-244 bytes, no spaces or control characters)"
-                )));
-            }
+            check_default_branch(short_branch_name(b))?;
         }
         if let Some(p) = &self.protected_patterns {
             check_patterns(p)?;
@@ -3010,14 +3278,9 @@ impl RepoEdit {
             }
             let mut seen = BTreeSet::new();
             for topic in t {
-                let ok = (1..=30).contains(&topic.len())
-                    && topic
-                        .bytes()
-                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-                    && !topic.starts_with('-');
-                if !ok {
+                if !is_topic_name(topic) {
                     return Err(Error::Config(format!(
-                        "topic {topic:?}: use 1-30 of a-z, 0-9 and '-', not starting with '-'"
+                        "topic {topic:?}: use 1-30 of a-z and 0-9, words joined by single '-'"
                     )));
                 }
                 if !seen.insert(topic.as_str()) {
@@ -3041,6 +3304,149 @@ pub fn config_doc(d: &FetchedDocument) -> ConfigDoc {
 /// The `String`s of a list of [`Uri`]s.
 fn uri_strings(uris: Vec<Uri>) -> Vec<String> {
     uris.into_iter().map(|u| u.0).collect()
+}
+
+/// What [`RepoService::fetch_artifact_from`] does ([`read_copy`], then recording on `reader` a
+/// [`Fallback`](crate::storage::read::Fallback) naming the failed copies when a copy served
+/// after a preferred one failed), with the chunk read supplied: the offline survivability
+/// drill's entry point.
+#[cfg(test)]
+pub(crate) async fn read_manifest_copy<F, Fut>(
+    manifest: &PackManifestInfo,
+    own: &Uri,
+    reader: &PackReader,
+    read_chunks: F,
+) -> Result<Vec<u8>>
+where
+    F: Fn(crate::backends::PlatformLocator) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u8>>>,
+{
+    read_copy(manifest, own, reader, read_chunks)
+        .await
+        .map(|served| served.note_on(reader, &hex::encode(manifest.pack_hash)))
+        .map_err(|missed| missed.error)
+}
+
+/// No copy of an artifact verified: the last error, and each place that failed
+/// (`place (why)`), so a caller trying more copies can name them once one serves.
+struct Unserved {
+    error: Error,
+    failed: Vec<String>,
+}
+
+impl From<Error> for Unserved {
+    fn from(error: Error) -> Self {
+        Self {
+            error,
+            failed: Vec::new(),
+        }
+    }
+}
+
+/// The reader rule for one manifest copy, SHA-256-verified against it: every recorded
+/// external copy first, raced with `reader`'s IPFS gateway list (cheap, and needs no Platform
+/// queries), then the Platform `chunk` copies as the last resort — those another repo's scope
+/// holds (a fork's manifest names its parent's this way), then this manifest's own (`own`,
+/// when `storage == 0`). `read_chunks` reads one chunk locator: [`RepoService`] passes the
+/// Platform read, the offline survivability drill its recorded documents.
+///
+/// Records nothing: which copy served (and the preferred ones that failed first), or why none
+/// did, so a caller with more copies records one `Fallback` for the whole read.
+async fn read_copy<F, Fut>(
+    manifest: &PackManifestInfo,
+    own: &Uri,
+    reader: &PackReader,
+    read_chunks: F,
+) -> std::result::Result<crate::storage::read::Served, Unserved>
+where
+    F: Fn(crate::backends::PlatformLocator) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u8>>>,
+{
+    use crate::storage::read::Served;
+    let expected = hex::encode(manifest.pack_hash);
+    // Platform copies to read, in order: chunks another repo's scope holds, then this
+    // manifest's own chunks. Only locators of THIS pack: a manifest naming another pack's
+    // chunks would have readers download them in full before the hash check refused them.
+    let mut platform: Vec<Uri> = manifest
+        .uris
+        .iter()
+        .map(|u| Uri(u.clone()))
+        .filter(|u| {
+            u != own
+                && crate::backends::PlatformLocator::parse(u)
+                    .is_ok_and(|l| l.pack_hash == manifest.pack_hash)
+        })
+        .collect();
+    if manifest.storage == 0 {
+        platform.push(own.clone());
+    }
+    // Every body is capped at the manifest's size (0 = unknown on very old manifests).
+    let size = (manifest.size_bytes > 0).then_some(manifest.size_bytes);
+    // The copies that failed before the one that serves the pack, each `place (why)`.
+    let mut failed = Vec::new();
+    if reader.has_candidates(&manifest.uris) {
+        // With chunks to fall back on, the external copies get a size-scaled budget
+        // after which no new candidate starts — dead gateways must not cost minutes per
+        // pack before the on-chain read, but a big pack streaming from a healthy mirror
+        // is not abandoned mid-transfer.
+        let budget = (!platform.is_empty()).then(|| crate::storage::read::external_budget(size));
+        match reader.race(&manifest.uris, &expected, size, budget).await {
+            Ok(served) => return Ok(served),
+            Err(missed) => {
+                let (error, places) = missed.into_parts();
+                if platform.is_empty() {
+                    return Err(Unserved {
+                        error,
+                        failed: places,
+                    });
+                }
+                tracing::info!(
+                    pack = %expected,
+                    error = %error,
+                    "no external copy verified; reading Platform chunks"
+                );
+                failed = places;
+            }
+        }
+    } else if platform.is_empty() {
+        return Err(Error::Io(format!(
+            "artifact {expected} is stored externally but its manifest records no URI this \
+             client can read ({:?})",
+            manifest.uris
+        ))
+        .into());
+    }
+    let mut last = Error::NotFound;
+    for locator in &platform {
+        let read = match crate::backends::PlatformLocator::parse(locator) {
+            Ok(loc) => read_chunks(loc).await,
+            Err(e) => Err(e),
+        };
+        match read {
+            Ok(bytes) if hex::encode(crate::backends::sha256(&bytes)) == expected => {
+                return Ok(Served {
+                    bytes,
+                    by: "Platform chunks".into(),
+                    failed,
+                });
+            }
+            Ok(_) => {
+                failed.push(format!(
+                    "Platform chunks at {locator} (do not hash to the pack)"
+                ));
+                last = Error::Integrity;
+            }
+            Err(e) => {
+                tracing::info!(%locator, error = %e, "Platform copy unreadable");
+                failed.push(format!("Platform chunks at {locator} ({e})"));
+                last = e;
+            }
+        }
+    }
+    Err(Unserved {
+        error: last,
+        failed,
+    })
 }
 
 /// The repo's own public gateways a reader should try first: `config.backend.uris`'s
@@ -3461,7 +3867,6 @@ fn manifest_info(d: &FetchedDocument) -> Result<PackManifestInfo> {
         object_count: d.field_u64("objectCount").unwrap_or_default(),
         chunk_count: d.field_u64("chunkCount").unwrap_or_default(),
         storage: d.field_u64("storage").unwrap_or_default(),
-        offset_index_parts: d.field_u64("offsetIndexParts").unwrap_or_default(),
         uris,
         supersedes,
         tips: d
@@ -3523,18 +3928,40 @@ pub fn credits_to_dash(credits: u64) -> f64 {
     credits as f64 / 1e11
 }
 
-/// Injection defense (write-side guard, defense-in-depth with rules::is_update_valid):
-/// `refName` is an arbitrary Platform string that never passed `git check-ref-format`, so a
-/// control char / newline could inject a spoofed ref-advertisement line into every clone.
-/// Illegal names are refused before anything is written.
-fn check_ref_name(ref_name: &str) -> Result<()> {
-    if rules::is_legal_ref_name(ref_name) {
-        Ok(())
+/// Refuse a ref update the RC1 contract would refuse, before anything is signed: a name
+/// outside `git check-ref-format` ([`rules::is_git_ref_name`]: the `$defs.refName` pattern,
+/// `@{` and `noLock` included), or an oid that is not exactly 20 or 32 bytes (`oidWidth`).
+/// The name is also the injection defense (with [`rules::is_update_valid`] on the fold): a
+/// control char or newline could inject a spoofed ref-advertisement line into every clone.
+///
+/// A delete (an all-zero `new_oid`) only needs the contract's grammar, so a maintainer can
+/// remove a ref another client created that git itself could not (a middle `.lock` component).
+fn check_ref_write(ref_name: &str, new_oid: &[u8], prev_oid: Option<&[u8]>) -> Result<()> {
+    let delete = new_oid.iter().all(|&b| b == 0);
+    let legal = if delete {
+        rules::is_legal_ref_name(ref_name)
     } else {
-        Err(Error::Config(format!(
-            "illegal ref name {ref_name:?}: must be non-empty, no leading '-', no whitespace/control characters"
-        )))
+        rules::is_git_ref_name(ref_name)
+    };
+    if !legal {
+        return Err(Error::Config(format!(
+            "illegal ref name {ref_name:?}: it must pass `git check-ref-format` (refs/…, at most \
+             255 bytes; no spaces, control characters, `~^:?*[\\`, `..`, `@{{`, or a component \
+             that starts with `.` or ends with `.lock`)"
+        )));
     }
+    if !oid_widths_ok(new_oid, prev_oid) {
+        return Err(Error::Config(format!(
+            "ref update of {ref_name:?} refused: an object id is 20 (SHA-1) or 32 (SHA-256) bytes"
+        )));
+    }
+    Ok(())
+}
+
+/// RC1 `oidWidth` on a ref update: `newOid` is 20 or 32 bytes, and so is `prevOid` if present.
+fn oid_widths_ok(new_oid: &[u8], prev_oid: Option<&[u8]>) -> bool {
+    let ok = |o: &[u8]| matches!(o.len(), 20 | 32);
+    ok(new_oid) && prev_oid.is_none_or(ok)
 }
 
 /// The document type a public ref update is written as: `protectedRefUpdate` for a ref the
@@ -3548,7 +3975,7 @@ fn ref_doc_type(ref_name: &str, protected_patterns: &[String]) -> &'static str {
 }
 
 /// A public ref update's properties: the plain `refName`, its hash (the epoch is unused for
-/// a public repository), the oids and `force`.
+/// a public repository), the oids, `force` and `vis: "public"`.
 fn public_ref_props(
     scope: &DocScope,
     ref_name: &str,
@@ -3568,6 +3995,7 @@ fn public_ref_props(
     if let Some(prev) = prev_oid {
         props.insert("prevOid".into(), FieldValue::bytes(prev.to_vec()));
     }
+    layout::stamp_public(&mut props);
     Ok(props)
 }
 
@@ -3613,7 +4041,6 @@ mod tests {
             object_count: 0,
             chunk_count: 0,
             storage: 0,
-            offset_index_parts: 0,
             uris: Vec::new(),
             supersedes: Vec::new(),
             tips: Vec::new(),
@@ -3622,6 +4049,16 @@ mod tests {
     }
 
     /// A history index manifest (kind 3) by `owner` for `tip` (and `base_tip` for a delta).
+    /// `m` as the column index (kind 3) of the same tip, with packHash `[hash; 32]`.
+    fn as_column(m: &PackManifestInfo, hash: u8) -> PackManifestInfo {
+        PackManifestInfo {
+            kind: u64::from(crate::pack::KIND_HISTORY_INDEX),
+            pack_hash: [hash; 32],
+            document_id: format!("{}-column", m.document_id),
+            ..m.clone()
+        }
+    }
+
     fn history(
         id: &str,
         at: u64,
@@ -3630,19 +4067,18 @@ mod tests {
         tip: u8,
         base_tip: Option<u8>,
     ) -> PackManifestInfo {
-        let mut m = manifest(id, at, crate::pack::KIND_HISTORY_INDEX, hash);
+        let mut m = manifest(id, at, crate::pack::KIND_HISTORY_VERSIONS, hash);
         m.owner_id = owner.into();
         m.tips = std::iter::once(tip)
             .chain(base_tip)
             .map(|t| [t; 20])
             .collect();
         m.size_bytes = 1000;
-        m.offset_index_parts = 2;
         m
     }
 
     /// Rent or buy: deltas over a base go on while their cumulative cost stays under the base's
-    /// size; then a full index. Only v2 deltas by members count toward it.
+    /// size; then a full index. Only deltas by members count toward it.
     #[test]
     fn deltas_stop_once_they_have_cost_a_full_index() {
         use super::{delta_pays, plan_history_index};
@@ -3652,24 +4088,17 @@ mod tests {
             b.size_bytes = 10_000;
             b
         };
-        let delta = |id: &str, hash: u8, size: u64, owner: &str, format: u64| {
+        let delta = |id: &str, hash: u8, size: u64, owner: &str| {
             let mut d = history(id, 20, hash, owner, 0xb0 + hash, Some(0xa0));
             d.size_bytes = size;
-            d.offset_index_parts = format;
             d
         };
         // Two deltas paid 6,000 (one superseded by the other: both were paid for); a stranger's
-        // and a v1 writer's do not count.
-        let mut newer = delta("d2", 3, 4_000, "w", 2);
-        let older = delta("d1", 2, 2_000, "w", 2);
+        // does not count.
+        let mut newer = delta("d2", 3, 4_000, "w");
+        let older = delta("d1", 2, 2_000, "w");
         newer.supersedes = vec![older.pack_hash];
-        let manifests = [
-            delta("x", 4, 50_000, "stranger", 2),
-            delta("v1", 5, 50_000, "w", 0),
-            newer,
-            older,
-            base,
-        ];
+        let manifests = [delta("x", 4, 50_000, "stranger"), newer, older, base];
         let plan = plan_history_index(&manifests, &roles, [0xcc; 20]);
         let b = &plan.bases[0];
         assert_eq!(b.deltas_paid, 6_000);
@@ -3735,42 +4164,22 @@ mod tests {
         let mut paid = history("d", 20, 2, "w", 0x11, None);
         paid.tips = vec![[0x11; 20], base_tip];
         paid.size_bytes = 100_000;
-        let plan = plan_history_index(&[paid, base], &roles, tip);
+        let column = as_column(&base, 0x31);
+        let plan = plan_history_index(&[paid, column, base], &roles, tip);
         let full = prepare_history_index(p, tip, &plan).unwrap().unwrap();
         assert!(full.index().base.is_none(), "a full index is due");
         let fallback = full.fallback().expect("the delta is offered");
         assert_eq!(fallback.index().base, Some([1; 32]));
         assert!(fallback.plain_len() < full.plain_len());
         assert_eq!(
-            full.into_fallback().unwrap().artifact.tips,
+            full.into_fallback()
+                .unwrap()
+                .artifact
+                .as_ref()
+                .unwrap()
+                .tips,
             vec![tip, base_tip]
         );
-    }
-
-    /// A v1 index (a writer before version lists) covers nothing and is no delta base: the next
-    /// publish is a full v2 index superseding it. `dg repo reindex` backfills v2 this way.
-    #[test]
-    fn a_v1_index_is_replaced_by_a_full_v2_index() {
-        use super::plan_history_index;
-        let roles: RoleMap = [("w".to_string(), Role::Writer)].into();
-        let mut v1 = history("f", 10, 1, "w", 0xa0, None);
-        v1.offset_index_parts = 0;
-        let plan = plan_history_index(std::slice::from_ref(&v1), &roles, [0xa0; 20]);
-        assert!(!plan.covered, "a v1 index of the tip does not cover it");
-        assert!(plan.bases.is_empty(), "nor is it a delta base");
-        assert_eq!(
-            plan.live.len(),
-            1,
-            "but it is live: the full index supersedes it"
-        );
-        assert!(!plan.first);
-        // A v2 delta over a v2 base covers its tip; a v1 delta over it does not.
-        let base = history("b", 10, 2, "w", 0xa0, None);
-        let v2_delta = history("d", 20, 3, "w", 0xb0, Some(0xa0));
-        assert!(plan_history_index(&[v2_delta.clone(), base.clone()], &roles, [0xb0; 20]).covered);
-        let mut v1_delta = v2_delta;
-        v1_delta.offset_index_parts = 0;
-        assert!(!plan_history_index(&[v1_delta, base], &roles, [0xb0; 20]).covered);
     }
 
     /// Review M1: a delta covers its tip only while a live full index of its base tip stands
@@ -3782,15 +4191,19 @@ mod tests {
         let roles: RoleMap = [("w".to_string(), Role::Writer)].into();
         let delta = history("d", 20, 2, "w", 0xb0, Some(0xa0));
         let base = history("f", 10, 1, "w", 0xa0, None);
-        assert!(plan_history_index(&[delta.clone(), base.clone()], &roles, [0xb0; 20]).covered);
+        assert!(
+            plan_history_index(&[delta.clone(), base.clone()], &roles, [0xb0; 20]).lists_covered
+        );
         // The base's only copy is a stranger's: it is not live, so the delta is orphaned.
         let mut stranger_base = base.clone();
         stranger_base.owner_id = "x".into();
-        assert!(!plan_history_index(&[delta.clone(), stranger_base], &roles, [0xb0; 20]).covered);
+        assert!(
+            !plan_history_index(&[delta.clone(), stranger_base], &roles, [0xb0; 20]).lists_covered
+        );
         // A newer full index of another tip superseded the base: orphaned too.
         let mut newer = history("g", 30, 3, "w", 0xc0, None);
         newer.supersedes = vec![base.pack_hash];
-        assert!(!plan_history_index(&[newer, delta, base], &roles, [0xb0; 20]).covered);
+        assert!(!plan_history_index(&[newer, delta, base], &roles, [0xb0; 20]).lists_covered);
     }
 
     /// Review M2: the delta's base is the newest live full index on the new tip's first-parent
@@ -3850,7 +4263,8 @@ mod tests {
             m
         };
         // Newest first: the side branch's full index, then the one on main's chain.
-        let manifests = [full("s", 20, 9, side), full("m", 10, 1, on_chain)];
+        let (s, m) = (full("s", 20, 9, side), full("m", 10, 1, on_chain));
+        let manifests = [as_column(&s, 0x39), s, as_column(&m, 0x31), m];
         let plan = plan_history_index(&manifests, &roles, tip);
         let got = prepare_history_index(p, tip, &plan).unwrap().unwrap();
         assert_eq!(
@@ -3858,7 +4272,7 @@ mod tests {
             Some([1; 32]),
             "extends the index on the chain"
         );
-        assert_eq!(got.artifact.tips, vec![tip, on_chain]);
+        assert_eq!(got.artifact.as_ref().unwrap().tips, vec![tip, on_chain]);
     }
 
     #[test]
@@ -3882,9 +4296,9 @@ mod tests {
         ];
 
         let plan = plan_history_index(&all, &roles, [0xc0; 20]);
-        assert!(plan.covered, "the newest delta covers its tip");
+        assert!(plan.lists_covered, "the newest delta covers its tip");
         let plan = plan_history_index(&all, &roles, [0xd0; 20]);
-        assert!(!plan.covered);
+        assert!(!plan.lists_covered);
         // The base is the newest full index by a member: never a stranger's.
         let bases: Vec<[u8; 20]> = plan.bases.iter().map(|b| b.tip).collect();
         assert_eq!(bases, [[0xa0; 20]]);
@@ -3893,10 +4307,13 @@ mod tests {
         // The superseded delta is not live; the stranger's index never counts.
         let live: Vec<[u8; 32]> = plan.live.iter().map(|e| e.pack_hash).collect();
         assert_eq!(live, [delta_new.pack_hash, [1; 32]]);
-        assert!(!plan_history_index(&all, &roles, [0xee; 20]).covered);
+        assert!(!plan_history_index(&all, &roles, [0xee; 20]).lists_covered);
     }
 
     #[test]
+    // One repository history carried through each planning case in turn: full, delta, an
+    // unmatched base, back in step, covered.
+    #[allow(clippy::too_many_lines)]
     fn a_delta_over_a_nearby_base_is_published_and_supersedes_the_bases_earlier_deltas() {
         use super::{plan_history_index, prepare_history_index};
         let d = tempfile::TempDir::new().unwrap();
@@ -3940,7 +4357,7 @@ mod tests {
         let full = prepare_history_index(p, base_tip, &plan).unwrap().unwrap();
         assert!(full.index().base.is_none());
         assert_eq!(full.index().paths.len(), 400);
-        assert_eq!(full.artifact.tips, vec![base_tip]);
+        assert_eq!(full.artifact.as_ref().unwrap().tips, vec![base_tip]);
 
         // One file changes: a delta over the full index, superseding the base's older delta.
         std::fs::write(p.join("f3.txt"), "changed").unwrap();
@@ -3952,19 +4369,92 @@ mod tests {
         let mut older = history("d", 20, 2, "w", 0x11, None);
         older.tips = vec![[0x11; 20], base_tip];
         let manifests = [older, base];
-        let plan = plan_history_index(&manifests, &roles, new_tip);
+        // Each list base stands with a full column of its tip, and an older column delta over it.
+        let mut column_base = as_column(&manifests[1], 0x31);
+        column_base.tips = vec![base_tip];
+        let mut column_older = as_column(&manifests[0], 0x32);
+        column_older.tips = vec![[0x11; 20], base_tip];
+        let with_columns = [
+            column_older,
+            column_base,
+            manifests[0].clone(),
+            manifests[1].clone(),
+        ];
+        let plan = plan_history_index(&with_columns, &roles, new_tip);
         let delta = prepare_history_index(p, new_tip, &plan).unwrap().unwrap();
         assert_eq!(delta.index().base, Some([1; 32]));
         let rows: Vec<&[u8]> = delta.index().paths.keys().map(Vec::as_slice).collect();
         assert_eq!(rows, [b"f3.txt".as_slice()]);
-        assert_eq!(delta.artifact.tips, vec![new_tip, base_tip]);
-        assert_eq!(delta.artifact.supersedes, vec![[2; 32]]);
+        assert_eq!(
+            delta.artifact.as_ref().unwrap().tips,
+            vec![new_tip, base_tip]
+        );
+        assert_eq!(delta.artifact.as_ref().unwrap().supersedes, vec![[2; 32]]);
         assert_eq!(delta.index().commit_count, 2);
+        // Its column is a delta over the full column of the base tip (its header names the
+        // kind-3 base), superseding that base's older column delta.
+        let column = delta.column.as_ref().unwrap();
+        assert_eq!(column.kind, crate::pack::KIND_HISTORY_INDEX);
+        assert_eq!(column.tips, vec![new_tip, base_tip]);
+        assert_eq!(column.supersedes, vec![[0x32; 32]]);
+        let parsed = crate::pack::HistoryIndex::parse_kind(&column.plain, column.kind).unwrap();
+        assert_eq!(
+            parsed.base,
+            Some([0x31; 32]),
+            "the column delta extends the kind-3 base"
+        );
+        assert_eq!(parsed, delta.index().column().with_base([0x31; 32]));
 
-        // Covered: nothing to do.
+        // Review: the lists' full index at the base tip landed but its column did not (only a
+        // column of another tip is live). The base does not count: both series go full at the
+        // new tip together, the column superseding the stray one, rather than a full column on
+        // every later push beside list deltas.
+        let mut stray = as_column(&manifests[1], 0x34);
+        stray.tips = vec![[0x55; 20]];
+        let unmatched = [stray, manifests[0].clone(), manifests[1].clone()];
+        let plan = plan_history_index(&unmatched, &roles, new_tip);
+        let full = prepare_history_index(p, new_tip, &plan).unwrap().unwrap();
+        assert!(full.index().base.is_none(), "the lists go full");
+        assert_eq!(full.artifact.as_ref().unwrap().tips, vec![new_tip]);
+        let column = full.column.as_ref().unwrap();
+        assert_eq!(
+            (column.tips.clone(), column.supersedes.clone()),
+            (vec![new_tip], vec![[0x34; 32]])
+        );
+        assert!(
+            full.fallback().is_none(),
+            "no delta over an unmatched base is kept either"
+        );
+        // The next push finds both full indexes at that tip: deltas again, in step.
+        let mut lists_full = history("g", 40, 6, "w", 0, None);
+        lists_full.tips = vec![new_tip];
+        lists_full.size_bytes = full.plain_len() * 10;
+        let mut column_full = as_column(&lists_full, 0x36);
+        column_full.tips = vec![new_tip];
+        std::fs::write(p.join("f4.txt"), "changed").unwrap();
+        git(&["commit", "-q", "-am", "edit f4"]);
+        let next_tip = tip(&git);
+        let plan = plan_history_index(&[column_full, lists_full], &roles, next_tip);
+        let next = prepare_history_index(p, next_tip, &plan).unwrap().unwrap();
+        assert_eq!(next.index().base, Some([6; 32]));
+        assert_eq!(next.column.as_ref().unwrap().tips, vec![next_tip, new_tip]);
+
+        // Covered: nothing to do, once both kinds cover the tip.
         let mut covering = history("c", 30, 3, "w", 0, None);
         covering.tips = vec![new_tip];
-        let plan = plan_history_index(&[covering], &roles, new_tip);
+        let plan = plan_history_index(std::slice::from_ref(&covering), &roles, new_tip);
+        assert!(
+            plan.lists_covered && !plan.covered,
+            "the column is still missing"
+        );
+        let only_column = prepare_history_index(p, new_tip, &plan).unwrap().unwrap();
+        assert!(
+            only_column.artifact.is_none(),
+            "the lists are not published again"
+        );
+        assert!(only_column.column.is_some());
+        let both = [as_column(&covering, 0x33), covering];
+        let plan = plan_history_index(&both, &roles, new_tip);
         assert!(prepare_history_index(p, new_tip, &plan).unwrap().is_none());
     }
 
@@ -4008,7 +4498,7 @@ mod tests {
         let plan = plan_history_index(std::slice::from_ref(&unknown), &roles, head);
         let got = prepare_history_index(p, head, &plan).unwrap().unwrap();
         assert!(got.index().base.is_none());
-        assert_eq!(got.artifact.supersedes, vec![[1; 32]]);
+        assert_eq!(got.artifact.as_ref().unwrap().supersedes, vec![[1; 32]]);
         // A base on the chain but tiny: the delta (every path) is not under half of it.
         let parent: [u8; 20] = hex::decode(git(&["rev-parse", "HEAD~1"]))
             .unwrap()
@@ -4144,8 +4634,14 @@ mod tests {
             super::ref_doc_type("refs/heads/dev", &["refs/heads/main".into()]),
             crate::refs::DOC_REF_UPDATE
         );
-        assert!(super::check_ref_name("refs/heads/ok").is_ok());
-        assert!(super::check_ref_name("refs/heads/bad\nname").is_err());
+        let oid = [1u8; 20];
+        assert!(super::check_ref_write("refs/heads/ok", &oid, None).is_ok());
+        assert!(super::check_ref_write("refs/heads/bad\nname", &oid, None).is_err());
+        // git cannot create a middle `.lock` component, but a ref another client wrote with
+        // one (the contract accepts it) can still be deleted.
+        assert!(super::check_ref_write("refs/heads/x.lock/y", &oid, None).is_err());
+        assert!(super::check_ref_write("refs/heads/x.lock/y", &[0; 20], Some(&oid)).is_ok());
+        assert!(super::check_ref_write("refs/heads/bad\nname", &[0; 20], None).is_err());
     }
 
     #[test]
@@ -4847,7 +5343,16 @@ mod tests {
             assert!(topics(&["a_b"]).validate().is_err(), "underscore");
             assert!(topics(&["a", "a"]).validate().is_err(), "duplicate");
             assert!(topics(&[&"a".repeat(31)]).validate().is_err(), "too long");
-            let many: Vec<String> = (0..11).map(|i| format!("t{i}")).collect();
+            assert!(topics(&["x-"]).validate().is_err(), "trailing dash");
+            assert!(topics(&["a--b"]).validate().is_err(), "doubled dash");
+            let max: Vec<String> = (0..20).map(|i| format!("t{i}")).collect();
+            assert!(RepoEdit {
+                topics: Some(max),
+                ..RepoEdit::default()
+            }
+            .validate()
+            .is_ok());
+            let many: Vec<String> = (0..21).map(|i| format!("t{i}")).collect();
             assert!(RepoEdit {
                 topics: Some(many),
                 ..RepoEdit::default()
@@ -4868,3 +5373,247 @@ mod tests {
         }
     }
 }
+
+/// The write-side pre-checks this module owns agree with the frozen RC1 accept/refuse vectors
+/// (`forge-contracts/vectors/rc1/forge-core.json`): ref names, default branches, release tags,
+/// oid widths and the `packManifest` shape. A case whose refusal a pre-check cannot see (a
+/// consensus total, a `where`, a field this client never sends) is not asserted here.
+#[cfg(test)]
+mod rc1_tests {
+    use super::{
+        check_default_branch, oid_widths_ok, public_ref_props, PackManifestInput,
+        MAX_MANIFEST_SIZE_BYTES,
+    };
+    use crate::platform::FieldValue;
+    use crate::rules;
+    use serde_json::Value;
+
+    /// A JSON file of the `forge-contracts` checkout, by its path in it.
+    fn forge_contracts_json(rel: &str) -> Value {
+        let path = format!("{}/../../forge-contracts/{rel}", env!("CARGO_MANIFEST_DIR"));
+        serde_json::from_str(&std::fs::read_to_string(&path).expect(&path)).expect(&path)
+    }
+
+    /// `{"$b":[fill,len]}` or `{"$hex":"…"}` as bytes.
+    fn bytes(v: &Value) -> Option<Vec<u8>> {
+        if let Some(h) = v.get("$hex") {
+            return hex::decode(h.as_str()?).ok();
+        }
+        let b = v.get("$b")?.as_array()?;
+        let fill = u8::try_from(b[0].as_u64()?).ok()?;
+        Some(vec![fill; usize::try_from(b[1].as_u64()?).ok()?])
+    }
+
+    /// One accept/refuse vector: a document of type `ty`, and whether (and by which rule,
+    /// `why`) the contract refuses it.
+    struct Case {
+        name: String,
+        ty: String,
+        ok: bool,
+        why: String,
+        doc: Value,
+    }
+
+    /// Every frozen RC1 `forge-core` vector.
+    fn cases() -> Vec<Case> {
+        forge_contracts_json("vectors/rc1/forge-core.json")
+            .as_array()
+            .expect("vector list")
+            .iter()
+            .map(|c| Case {
+                name: c["name"].as_str().unwrap().to_string(),
+                ty: c["type"].as_str().unwrap().to_string(),
+                ok: c["expect"] == "ok",
+                why: c["why"].as_str().unwrap_or_default().to_string(),
+                doc: c["doc"].clone(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ref_names_and_oids_agree_with_the_contract() {
+        let mut seen = 0;
+        for c in cases()
+            .iter()
+            .filter(|c| c.ty == "refUpdate" || c.ty == "protectedRefUpdate")
+        {
+            let new = bytes(&c.doc["newOid"]).unwrap();
+            let prev = c.doc.get("prevOid").and_then(bytes);
+            assert_eq!(
+                oid_widths_ok(&new, prev.as_deref()),
+                c.why != "oidWidth",
+                "{}",
+                c.name
+            );
+            let Some(name) = c.doc["refName"].as_str() else {
+                continue;
+            };
+            let grammar = matches!(
+                c.why.as_str(),
+                "pattern" | "minLength" | "maxLength" | "maxBytes" | "noLock"
+            );
+            assert_eq!(rules::is_legal_ref_name(name), !grammar, "{}", c.name);
+            // The git pre-check is the contract's grammar plus no `.lock` component anywhere.
+            let lock_component = name
+                .split('/')
+                .any(|part| part.as_bytes().ends_with(b".lock"));
+            assert_eq!(
+                rules::is_git_ref_name(name),
+                !grammar && !lock_component,
+                "{}",
+                c.name
+            );
+            seen += 1;
+        }
+        assert!(seen > 40, "only {seen} ref vectors");
+    }
+
+    #[test]
+    fn default_branches_and_tags_agree_with_the_contract() {
+        let (mut branches, mut tags) = (0, 0);
+        for c in cases() {
+            if c.name.contains("defaultBranch") {
+                let b = c.doc["defaultBranch"].as_str().unwrap();
+                assert_eq!(rules::is_legal_branch_name(b), c.ok, "{}", c.name);
+                // What `dg` stores is the short name (`refs/heads/` is stripped first).
+                if !b.starts_with("refs/") {
+                    assert_eq!(check_default_branch(b).is_ok(), c.ok, "{}", c.name);
+                }
+                branches += 1;
+            }
+            if c.ty == "release" {
+                let tag = c.doc["tagName"].as_str().unwrap();
+                let refused_tag = matches!(
+                    c.why.as_str(),
+                    "pattern" | "minLength" | "maxLength" | "maxBytes"
+                );
+                assert_eq!(
+                    crate::collab::v2::check_tag_name(tag).is_ok(),
+                    !refused_tag,
+                    "{}",
+                    c.name
+                );
+                tags += 1;
+            }
+        }
+        assert!(
+            branches >= 10 && tags >= 10,
+            "{branches} branches, {tags} tags"
+        );
+    }
+
+    #[test]
+    fn manifest_pre_checks_agree_with_the_contract() {
+        let mut seen = 0;
+        for c in cases().iter().filter(|c| c.ty == "packManifest") {
+            let d = &c.doc;
+            let supersedes = d.get("supersedes").and_then(bytes).unwrap_or_default();
+            // A negative size or a partial hash is not representable here, and
+            // `offsetIndexParts` is a field this client no longer has.
+            let Some(size) = d["sizeBytes"].as_u64() else {
+                continue;
+            };
+            if supersedes.len() % 32 != 0 || c.why == "additionalProperties" {
+                continue;
+            }
+            let input = PackManifestInput {
+                pack_hash: [4; 32],
+                kind: d["kind"].as_u64().unwrap(),
+                size_bytes: size,
+                object_count: 1,
+                chunk_count: d["chunkCount"].as_u64().unwrap(),
+                storage: d["storage"].as_u64().unwrap(),
+                uris: Vec::new(),
+                supersedes: supersedes
+                    .chunks(32)
+                    .map(|h| h.try_into().unwrap())
+                    .collect(),
+                tips: d.get("tips").and_then(bytes).into_iter().collect(),
+            };
+            let checked = input.check();
+            assert_eq!(checked.is_ok(), c.ok, "{}: {checked:?}", c.name);
+            seen += 1;
+        }
+        assert!(seen >= 14, "only {seen} manifest vectors");
+    }
+
+    #[test]
+    fn the_size_cap_and_enc_minima_are_the_contracts() {
+        let core = forge_contracts_json("contracts/forge-core.json");
+        let size = &core["documentSchemas"]["packManifest"]["propertyConstraints"]["sizeNonNeg"];
+        assert_eq!(
+            size["allOf"][1]["lessThanOrEqual"][1].as_u64(),
+            Some(MAX_MANIFEST_SIZE_BYTES)
+        );
+        // Every sealed document is at least a v0x01 envelope, and a config a v0x02 one.
+        assert_eq!(
+            core["schemaDefs"]["enc"]["minItems"].as_u64(),
+            Some(crate::private::doc::MIN_V1 as u64)
+        );
+        let enc_v2 = &core["documentSchemas"]["config"]["propertyConstraints"]["encV2"];
+        assert_eq!(
+            enc_v2["anyOf"][1]["greaterThanOrEqual"][1].as_u64(),
+            Some(crate::private::doc::MIN_V2 as u64)
+        );
+    }
+
+    /// The manifest forms the push path writes besides a git pack: a full and a delta history
+    /// index, a browse artifact, a release-asset manifest and a history index's version lists
+    /// (kind 5), each accepted by RC1.
+    #[test]
+    fn every_manifest_kind_the_client_writes_is_rc1_valid() {
+        let scope = crate::scope::DocScope {
+            contract_id: "CORE".into(),
+            repo_id: [1; 32],
+        };
+        let history = u64::from(crate::pack::KIND_HISTORY_INDEX);
+        for (kind, tips, supersedes) in [
+            (history, vec![vec![1u8; 20]], vec![]),
+            (history, vec![vec![1u8; 20], vec![2u8; 20]], vec![[3u8; 32]]),
+            (
+                u64::from(crate::pack::KIND_OBJECT_LOCATOR),
+                vec![],
+                vec![[3u8; 32]; 2],
+            ),
+            (u64::from(crate::pack::KIND_RELEASE_ASSETS), vec![], vec![]),
+            (
+                u64::from(crate::pack::KIND_HISTORY_VERSIONS),
+                vec![vec![1u8; 20], vec![2u8; 20]],
+                vec![[3u8; 32]],
+            ),
+        ] {
+            let props = PackManifestInput {
+                pack_hash: [4; 32],
+                kind,
+                size_bytes: 20_000,
+                object_count: 3,
+                chunk_count: 2,
+                storage: 0,
+                uris: Vec::new(),
+                supersedes,
+                tips,
+            }
+            .props(&scope)
+            .unwrap();
+            crate::test_support::rc1::assert_valid("packManifest", &props);
+        }
+    }
+
+    #[test]
+    fn a_public_ref_update_is_stamped_public() {
+        let scope = crate::scope::DocScope {
+            contract_id: "CORE".into(),
+            repo_id: [1; 32],
+        };
+        let p = public_ref_props(&scope, "refs/heads/main", &[2; 20], None, false).unwrap();
+        assert_eq!(p.get("vis"), Some(&FieldValue::text("public")));
+    }
+}
+
+#[cfg(test)]
+#[path = "repo_roundtrip_tests.rs"]
+mod roundtrip_tests;
+
+#[cfg(test)]
+#[path = "survivability_tests.rs"]
+mod survivability_tests;

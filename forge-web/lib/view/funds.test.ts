@@ -2,8 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { affordability, fundsNotice, fundsState, LOW_BALANCE_CREDITS, nextFundsChange } from './funds'
 import { previewCreate } from '../sdk/cost'
-import { estimateMissed, reconcile, summarize, type SpendRow } from '../spend'
-import { stateEventRoute } from '../repo/writes'
+import { balanceSettled, estimateMissed, reconcile, summarize, type SpendRow } from '../spend'
 
 const NOW = 1_800_000_000_000
 const DAY = 86_400_000
@@ -138,12 +137,30 @@ describe('spend ledger', () => {
     expect(reconcile(100, 1000n, 880n)).toEqual({ balanceChange: 120, unexplained: 20 })
     expect(reconcile(100, null, 880n)).toBeNull()
   })
-})
-
-describe('state-event routing (forge-v2 §3)', () => {
-  it('uses event for members, authorEvent for a non-member author, nothing for strangers', () => {
-    expect(stateEventRoute({ viewer: 'a', author: 'a', isMember: true })).toBe('event')
-    expect(stateEventRoute({ viewer: 'a', author: 'a', isMember: false })).toBe('authorEvent')
-    expect(stateEventRoute({ viewer: 'b', author: 'a', isMember: false })).toBeNull()
+  it('reconciles only a balance read from Platform after the last row (not a reload’s kept balance)', () => {
+    // Unsorted on purpose: the last row is the latest, wherever it sits.
+    const rows = [row(300, 50, 55), row(100, 50, 60)]
+    const at = (readAt: number | null, credits: bigint | null = 885n) => ({ credits, readAt })
+    // A reload shows the kept session's balance (no read yet): its gap is the writes it predates.
+    expect(balanceSettled(at(null), rows)).toBe(false)
+    // Read before the last row landed: that write is not in it yet.
+    expect(balanceSettled(at(299), rows)).toBe(false)
+    expect(balanceSettled(at(300), rows)).toBe(true)
+    expect(balanceSettled(at(300, null), rows)).toBe(false)
+    expect(balanceSettled(at(null), [])).toBe(false)
+    expect(balanceSettled(at(1), [])).toBe(true)
+  })
+  it('does not reconcile while a write is measuring, or a balance a charged write started from', () => {
+    const rows = [
+      { ...row(100, 50, 60), balanceBefore: '1000' },
+      { ...row(200, 50, 55), balanceBefore: '940' },
+      // A write the measurement never saw move (no charge known): its "before" says nothing.
+      { ...row(250, 50, null), balanceBefore: '885' },
+    ]
+    expect(balanceSettled({ credits: 885n, readAt: 300 }, rows)).toBe(true)
+    expect(balanceSettled({ credits: 885n, readAt: 300, measuring: true }, rows)).toBe(false)
+    // A node one write behind answers 940 even when read after the last row (e.g. a new tab).
+    expect(balanceSettled({ credits: 940n, readAt: 300 }, rows)).toBe(false)
+    expect(balanceSettled({ credits: 1000n, readAt: 300 }, rows)).toBe(false)
   })
 })

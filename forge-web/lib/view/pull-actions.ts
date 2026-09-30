@@ -2,12 +2,12 @@
  * PR action gating (view glue) — which PR state controls a viewer is shown, and what the
  * merge control may honestly promise.
  *
- * The web app cannot merge code. What it can do is append a `merge` event naming the PR head.
- * Consensus admits an `event` only from a current maintainer or writer, and `foldPrStateV2`
- * applies the merge only when the head has been a tip of the base ref. So the control is
- * offered only to members, is labelled "Mark as merged", and says up front whether the mark
- * will count now (the head is already on the base branch) or stay inert until the code gets
- * there by a push.
+ * The web app cannot merge code. What it can do is record a merge `transition` naming the PR
+ * head. Consensus admits a merge only from a current maintainer or writer, and only from an open,
+ * ready PR; a recorded merge is final (D-9). Readers label a merge whose commit never was a tip
+ * of the base ref ("merge commit not found on the base"). So the control is offered only to
+ * members, is labelled "Mark as merged", and says up front whether the head is on the base
+ * branch already or the merge will carry that label until a push puts it there.
  *
  * Two branch rules then narrow it for a writer (`review-parity-spec.md` §4.8):
  *
@@ -18,13 +18,14 @@
  *   disabled; a maintainer is offered "Merge anyway (policy override)". Nothing at consensus
  *   requires approvals.
  *
- * Close/reopen stay available to the PR author as well (an `authorEvent`), but not to anyone
- * consensus would refuse.
+ * Close/reopen stay available to the PR author as well (a transition written as the author), but
+ * not to anyone consensus would refuse.
  */
 
 import { isOidHex, isPlainBranchRef, matchesProtected, type Holdings } from '../rules'
-import type { Policy, PolicyStatus } from '../rules/v2'
+import type { Approvals, Policy, PolicyStatus } from '../rules/v2'
 import type { PullView } from '../repo'
+import type { ProvedVerdicts } from '../repo/verdicts'
 import { branchName, plural } from './format'
 
 /** What the viewer may do from the PR page, and why not when not. */
@@ -34,9 +35,9 @@ export interface PullActions {
   /** Offer close (open PRs) / reopen (closed, unmerged PRs). */
   readonly canCloseReopen: boolean
   /**
-   * The mark would count right away: the head has already been a tip of the base branch.
-   * When false the event still lands, but the fold ignores it until a push puts the head
-   * there — the dialog must say so.
+   * The head has already been a tip of the base branch, so a merge mark is on the base. When
+   * false the mark still records the PR merged, labelled "merge commit not found on the base"
+   * until a push puts the head there — the dialog must say so.
    */
   readonly markCountsNow: boolean
   /** A short reason shown when the merge control is withheld; null when shown. */
@@ -161,6 +162,85 @@ export function policyOf(
   approvals: { readonly policy: Policy | null | 'unknown'; readonly policyStatus: PolicyStatus | null | 'unknown' } | null,
 ): { policy: Policy | null | 'unknown'; status: PolicyStatus | null | 'unknown' } {
   return approvals === null ? { policy: 'unknown', status: 'unknown' } : { policy: approvals.policy, status: approvals.policyStatus }
+}
+
+/**
+ * The merge box's review line, the GitHub way: "Changes requested", "2 of 3 required approvals",
+ * "2 approvals", "No approvals yet".
+ *
+ * **Which number gates the merge: the fold.** Every count here is the approval fold's
+ * (`countApprovals` on the head, dismissed reviews out, members at review time; `meetsPolicy`
+ * for "N of M"), the same fold {@link pullActions} gates a writer's merge on (its `policy`
+ * input is `approvals.policyStatus`). The proved count (`readProvedVerdicts`, RC1 R-16) is
+ * display only: an upper bound that folds nothing (re-reviews, dismissals and removed members
+ * all count), so where it disagrees with the fold the fold's number stands and the proved one is
+ * named "on chain" beside it. Only when the members could not be read (no fold, and the merge is
+ * withheld from writers anyway) does the line fall back to the proved count, said to be one.
+ */
+export interface VerdictSummary {
+  readonly tone: 'approved' | 'changes' | 'required' | 'none'
+  readonly headline: string
+  /** The other counts, e.g. "1 approval" beside "Changes requested"; null when there are none. */
+  readonly detail: string | null
+  /** The proved count where it differs from (or stands in for) the fold; null otherwise. */
+  readonly onChain: string | null
+  /** The proved count was read for this head and agrees with the fold. */
+  readonly proved: boolean
+}
+
+/** "3 member approvals and 1 change request". */
+function verdictCounts(approvals: number, changes: number): string {
+  const parts = [plural(approvals, 'member approval')]
+  if (changes > 0) parts.push(plural(changes, 'change request'))
+  return parts.join(' and ')
+}
+
+/** The headline for a count alone: "Changes requested", "N approvals" or "No approvals yet". */
+function countHeadline(approvals: number, changes: boolean): Pick<VerdictSummary, 'tone' | 'headline'> {
+  if (changes) return { tone: 'changes', headline: 'Changes requested' }
+  if (approvals > 0) return { tone: 'approved', headline: plural(approvals, 'approval') }
+  return { tone: 'none', headline: 'No approvals yet' }
+}
+
+/**
+ * The review line for a PR head: `approvals` is the fold (null: the members could not be read),
+ * `proved` the proved verdict count (null: not read). Null when neither is known.
+ */
+export function verdictSummary(
+  approvals: (Approvals & { readonly policyStatus: PolicyStatus | null | 'unknown' }) | null,
+  proved: ProvedVerdicts | null,
+  headOid: string,
+): VerdictSummary | null {
+  const chain = proved !== null && proved.headOid === headOid.toLowerCase() ? proved : null
+  if (approvals === null) {
+    if (chain === null) return null
+    return {
+      ...countHeadline(chain.approvals, chain.changesRequested > 0),
+      detail: null,
+      onChain: `${verdictCounts(chain.approvals, chain.changesRequested)} on chain. The members couldn't be read, so this is an upper bound: re-reviews, dismissed reviews and members removed since all count.`,
+      proved: false,
+    }
+  }
+  const a = approvals.approvers.length
+  const c = approvals.changesRequested.length
+  const status = approvals.policyStatus === 'unknown' ? null : approvals.policyStatus
+  const required = status !== null && status.need > 0 ? `${status.have} of ${plural(status.need, 'required approval')}` : null
+  const agrees = chain !== null && chain.approvals === a && chain.changesRequested === c
+  // A count below the fold's is a node not caught up yet (L-37, or this page's own new review): no
+  // upper bound, so it is not shown.
+  const covers = chain !== null && chain.approvals >= a && chain.changesRequested >= c
+  const base = {
+    onChain: chain !== null && !agrees && covers ?`${verdictCounts(chain.approvals, chain.changesRequested)} on chain (an upper bound: re-reviews, dismissed reviews and members removed since count there, not here)` : null,
+    proved: agrees,
+  }
+  if (c > 0) {
+    const others = [a > 0 ? plural(a, 'approval') : '', required ?? ''].filter((x) => x !== '')
+    return { ...base, tone: 'changes', headline: 'Changes requested', detail: others.length > 0 ? others.join(' · ') : null }
+  }
+  if (required !== null && status !== null) {
+    return { ...base, tone: status.met ? 'approved' : 'required', headline: required, detail: a !== status.have ? `${plural(a, 'approval')} in all` : null }
+  }
+  return { ...base, ...countHeadline(a, false), detail: null }
 }
 
 /** Decide the PR controls for a viewer. Pure — the unit-tested core of the PR page gate. */

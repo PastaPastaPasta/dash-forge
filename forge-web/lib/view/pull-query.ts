@@ -25,8 +25,6 @@ import {
 } from './issue-query'
 import { plural } from './format'
 
-export type { PullStateFilter }
-
 /** The structured PR list query. */
 export type PullListQuery = Omit<IssueListQuery, 'state' | 'mentions'> & { readonly state: PullStateFilter }
 
@@ -34,6 +32,11 @@ export const DEFAULT_PULL_QUERY: PullListQuery = toPull(DEFAULT_ISSUE_QUERY, 'op
 
 /** Rows per displayed page. */
 export const PULL_PAGE_SIZE = 25
+
+/** What a search-box submit keeps of the current query: the state tab (every other filter is what the box says). */
+export function pullSubmitBase(q: PullListQuery): PullListQuery {
+  return { ...DEFAULT_PULL_QUERY, state: q.state }
+}
 
 const STATES: readonly PullStateFilter[] = ['open', 'merged', 'closed', 'all']
 

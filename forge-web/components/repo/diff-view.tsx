@@ -26,6 +26,7 @@ import {
   mapPooled,
   modeString,
   plural,
+  uncountedReasons,
   type DiffSides,
   type FileChange,
   type FilePatch,
@@ -222,7 +223,9 @@ export function DiffView({
               <DiffStat added={totals.added} deleted={totals.deleted} />
               {truncated ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">in the {plural(changes.length, 'listed file')}</span> : null}
               {totals.uncounted > 0 ? (
-                <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{plural(totals.uncounted, 'file')} not counted</span>
+                <span className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="diff-totals-partial">
+                  partial: {plural(totals.uncounted, 'file')} not counted ({uncountedReasons(changes, (c) => patches.get(c.path))})
+                </span>
               ) : null}
             </span>
           ) : countAll ? (
@@ -261,7 +264,7 @@ export function DiffView({
                   <span className="min-w-0 flex-1 truncate font-mono">
                     <ChangePath change={c} />
                   </span>
-                  {p?.kind === 'text' ? <DiffStat added={p.added} deleted={p.deleted} /> : null}
+                  {p !== undefined && p.added !== undefined && p.deleted !== undefined ? <DiffStat added={p.added} deleted={p.deleted} /> : null}
                   {p?.kind === 'placeholder' ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{p.reason}</span> : null}
                 </button>
               </li>
@@ -406,7 +409,7 @@ function FilePatchView({
             {modeString(change.baseMode as number)} → {modeString(change.headMode as number)}
           </span>
         ) : null}
-        {patch?.kind === 'text' ? <DiffStat added={patch.added} deleted={patch.deleted} /> : null}
+        {patch !== undefined && patch.added !== undefined && patch.deleted !== undefined ? <DiffStat added={patch.added} deleted={patch.deleted} /> : null}
       </div>
       {open ? (
         <div className="border-t border-anvil-200 dark:border-anvil-800">

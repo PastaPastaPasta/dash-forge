@@ -1,23 +1,40 @@
 //! CI on forge-v2 (`docs/design/platform-parity-spec.md` §2): runner memberships and check runs.
 //!
-//! * **Runner** = a forge-core `runner` document `{repoId, memberId}`. Only the repo owner can
+//! * **Runner** = a forge-community `runner` document (RC1 O-02 moved it out of forge-core) `{repoId, memberId}`. Only the repo owner can
 //!   create it (`propertyAgreement {"$ownerId": "$ownerId"}` against `repo`, like `maintainer`),
 //!   the `(repoId, memberId)` index is unique, and deleting it revokes the runner: the checkRun
 //!   gate (`ownerRefersTo anyOf [runner, maintainer, writer]`) refuses its next create or
 //!   replace at consensus (40120).
-//! * **Check run** = a forge-collab `checkRun` `{repoId, headOid, name, status, conclusion?, …}`,
+//! * **Check run** = a forge-community `checkRun` `{repoId, headOid, name, status, conclusion?, …}`,
 //!   mutable, with `[repoId, headOid, name]` immutable. The newest per `(headOid, name)` by
 //!   `($createdAt, $id)` is what readers show ([`crate::collab::v2::newest_check_runs`]), so a
 //!   run's progress (`queued → in_progress → completed`) is a **replace** of the reporter's own
-//!   document, and a re-run of the same check on the same commit is a new document.
-//! * **The runner's key** is AUTHENTICATION / HIGH bound to `(forge-collab, checkRun)`
+//!   document, and a re-run of the same check on the same commit is a new document. The
+//!   contract's monotonic rules (D-5) pin `startedAt` / `completedAt` / `conclusion` /
+//!   `externalId` once set and tie them to the status; [`check_run_write`] decides each write
+//!   so they hold: `startedAt` on the first report that is not `queued`, `completedAt` on the
+//!   first `completed` one, a stored time never changed, and a report that would move a run
+//!   backwards or change its conclusion is a new run.
+//! * **The runner's key** is AUTHENTICATION / HIGH bound to `(forge-community, checkRun)`
 //!   ([`ContractBounds::SingleContractDocumentType`], admitted on AUTHENTICATION keys from protocol
 //!   14), with a budget and an expiry: consensus refuses anything else it signs with 20014
 //!   (`ContractBoundedKeyOutOfBoundsError`), and a non-batch transition with
 //!   `ContractBoundedKeyNonBatchError`.
 //!
-//! Contract lookups go through [`RepoRef::forge`] (`collab` for `checkRun`, `core` for `runner`),
-//! so moving either type to another contract is a deployment-file change here.
+//! * **RC1** (`forge-contracts/contracts/forge-community.json`): every write carries `outcome`
+//!   ([`outcome_of`]: 0 pending, 1 passed, 2 failed; `outcomeOf` binds it to the status and
+//!   conclusion, so a replace sets it again) and a create carries the `vis` stamp (immutable;
+//!   `repoId`'s `where` proves it equals the repository's visibility). Times are ms (`msEpoch`),
+//!   a completion never precedes its start (`doneAfterStart`) and no time is from the future
+//!   (`notFuture`: at most `$updatedAt` + 1 h), so a time the CI gives is capped at the
+//!   reporter's clock. `detailsUrl` is https and `logUrl` https or `ipfs://`
+//!   ([`is_details_url`], [`is_log_url`]). A **private** repository's run carries no summary,
+//!   details link, log, artifacts or external id (`privateNoText`):
+//!   [`CheckReport::for_visibility`] drops them and names what it dropped, so a caller warns
+//!   instead of failing the report; such a run is matched by name, as it has no external id.
+//!
+//! Contract lookups go through [`RepoRef::forge`] (`community` for `checkRun` and `runner`), so
+//! moving either type to another contract is a deployment-file change here.
 //!
 //! [`ContractBounds::SingleContractDocumentType`]: dash_sdk::dpp::identity::contract_bounds::ContractBounds
 
@@ -29,13 +46,18 @@ use crate::collab::doc_engine;
 use crate::collab::v2::{check_run_docs, DOC_CHECK_RUN};
 use crate::error::{Error, Result};
 use crate::keystore::BridgeIdentity;
+use crate::layout;
 use crate::members;
 use crate::platform::{
     self, FetchedDocument, FieldValue, LoadedContract, LoadedIdentity, PlatformClient, QueryOrder,
 };
+use crate::rules::v2::{
+    check_run_write, RunReport, RunWrite, RunWriteAction, StoredRun, Visibility,
+    PASSING_CONCLUSIONS,
+};
 use crate::scope::RepoRef;
 
-/// forge-core: a CI runner's membership of a repo.
+/// forge-community: a CI runner's membership of a repo.
 pub const DOC_RUNNER: &str = "runner";
 
 /// `status` values (the schema's enum).
@@ -59,6 +81,69 @@ const URL_MAX: (usize, usize) = (300, 300);
 const SUMMARY_MAX: (usize, usize) = (1000, 2000);
 const EXTERNAL_ID_MAX: (usize, usize) = (120, 120);
 const ARTIFACTS_MAX: (usize, usize) = (4096, 4096);
+
+/// The smallest `startedAt` the contract accepts (`msEpoch`): times are milliseconds, and a
+/// time in seconds is far below this.
+pub const MS_EPOCH: u64 = 1_000_000_000_000;
+
+/// The fields a private repository's run cannot carry (`privateNoText`), by property name.
+pub const PRIVATE_TEXT_FIELDS: [&str; 5] =
+    ["summary", "detailsUrl", "logUrl", "artifacts", "externalId"];
+
+/// A `checkRun`'s `outcome` (`outcomeOf`): 0 while the run is not completed, 1 for a completed
+/// run that passed (`success`, `neutral`, `skipped`), 2 for any other conclusion.
+#[must_use]
+pub fn outcome_of(status: &str, conclusion: Option<&str>) -> u64 {
+    if status != "completed" {
+        0
+    } else if conclusion.is_some_and(|c| PASSING_CONCLUSIONS.contains(&c)) {
+        1
+    } else {
+        2
+    }
+}
+
+/// POSIX `[[:space:]]` (ASCII): what the contract's URL patterns refuse anywhere.
+fn is_posix_space(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\u{0b}' | '\u{0c}' | '\r')
+}
+
+/// `rest` is empty, or starts with `/`, `?` or `#` and holds no whitespace: the patterns'
+/// `([/?#][^[:space:]]*)?$` tail.
+pub(crate) fn is_url_tail(rest: &str) -> bool {
+    rest.is_empty() || (rest.starts_with(['/', '?', '#']) && !rest.contains(is_posix_space))
+}
+
+/// An `https://` URL split into its authority (up to the first `/`, `?` or `#`) and the rest.
+pub(crate) fn split_https(url: &str) -> Option<(&str, &str)> {
+    let rest = url.strip_prefix("https://")?;
+    Some(rest.split_at(rest.find(['/', '?', '#']).unwrap_or(rest.len())))
+}
+
+/// Whether the contract's `checkRun.detailsUrl` pattern admits `url`:
+/// `^https://[^[:space:]/?#@]+([/?#][^[:space:]]*)?$` (https only, no userinfo, no whitespace;
+/// an IP host is allowed, for a self-hosted CI).
+#[must_use]
+pub fn is_details_url(url: &str) -> bool {
+    split_https(url).is_some_and(|(host, tail)| {
+        !host.is_empty() && !host.contains(|c| c == '@' || is_posix_space(c)) && is_url_tail(tail)
+    })
+}
+
+/// Whether the contract's `checkRun.logUrl` pattern admits `url`: an https URL as
+/// [`is_details_url`], or `ipfs://<alphanumeric CID>` with the same optional tail:
+/// `^(https://[^[:space:]/?#@]+|ipfs://[A-Za-z0-9]+)([/?#][^[:space:]]*)?$`.
+#[must_use]
+pub fn is_log_url(url: &str) -> bool {
+    if let Some(rest) = url.strip_prefix("ipfs://") {
+        let end = rest
+            .find(|c: char| !c.is_ascii_alphanumeric())
+            .unwrap_or(rest.len());
+        let (cid, tail) = rest.split_at(end);
+        return !cid.is_empty() && is_url_tail(tail);
+    }
+    is_details_url(url)
+}
 
 /// One runner membership of a repo.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -159,13 +244,13 @@ impl<'a> RunnerService<'a> {
         if let Some(existing) = reader.get(repo, member).await? {
             return Ok(existing);
         }
-        let core = self.client.fetch_contract(&repo.forge().core).await?;
+        let community = self.client.fetch_contract(&repo.forge().community).await?;
         let props = repo.scope()?.props([(
             "memberId",
             FieldValue::identifier(platform::decode_identifier(member)?),
         )]);
         let engine = doc_engine(self.client, self.identity, self.bridge)?;
-        match engine.create_document(&core, DOC_RUNNER, props).await {
+        match engine.create_document(&community, DOC_RUNNER, props).await {
             Ok(document_id) => Ok(Runner {
                 identity_id: member.to_string(),
                 document_id,
@@ -185,9 +270,9 @@ impl<'a> RunnerService<'a> {
         let Some(existing) = RunnerReader::new(self.client).get(repo, member).await? else {
             return Ok(false);
         };
-        let core = self.client.fetch_contract(&repo.forge().core).await?;
+        let community = self.client.fetch_contract(&repo.forge().community).await?;
         doc_engine(self.client, self.identity, self.bridge)?
-            .delete_document(&core, DOC_RUNNER, &existing.document_id)
+            .delete_document(&community, DOC_RUNNER, &existing.document_id)
             .await?;
         Ok(true)
     }
@@ -212,9 +297,11 @@ pub struct CheckReport {
     /// The CI's own run id: a report with the same `externalId` updates that run in place
     /// instead of starting a new one.
     pub external_id: Option<String>,
-    /// When the run started / completed (ms).
+    /// When the run started (ms), when the CI says; else the report's time is used, on the
+    /// first report that is not `queued` ([`check_run_write`]).
     pub started_at: Option<u64>,
-    /// When the run completed (ms).
+    /// When the run completed (ms), when the CI says; else the report's time, on the first
+    /// `completed` report.
     pub completed_at: Option<u64>,
     /// The log's URL and SHA-256 (both or neither: `dependentRequired`).
     pub log: Option<(String, [u8; 32])>,
@@ -281,6 +368,12 @@ impl CheckReport {
         }
         if let Some(u) = &self.details_url {
             check_text("the details URL", u, URL_MAX)?;
+            if !is_details_url(u) {
+                return Err(Error::Config(format!(
+                    "the details URL {u:?} must be an https:// link with a host, no \
+                     user:password@ and no spaces"
+                )));
+            }
         }
         if let Some(s) = &self.summary {
             check_text("the summary", s, SUMMARY_MAX)?;
@@ -290,109 +383,184 @@ impl CheckReport {
         }
         if let Some((u, _)) = &self.log {
             check_text("the log URL", u, URL_MAX)?;
+            if !is_log_url(u) {
+                return Err(Error::Config(format!(
+                    "the log URL {u:?} must be https:// (with a host, no user:password@) or \
+                     ipfs://"
+                )));
+            }
         }
         if let Some(a) = &self.artifacts {
             check_text("the artifacts list", a, ARTIFACTS_MAX)?;
         }
+        for (what, t) in [
+            ("start", self.started_at),
+            ("completion", self.completed_at),
+        ] {
+            if let Some(t) = t.filter(|t| *t < MS_EPOCH) {
+                return Err(Error::Config(format!(
+                    "the {what} time {t} is not in milliseconds since 1970 (a time in seconds?)"
+                )));
+            }
+        }
         Ok(oid)
     }
 
-    /// The full property set a create carries (the scope adds `repoId`).
-    fn create_props(&self, oid: Vec<u8>) -> BTreeMap<String, FieldValue> {
+    /// This report as a repository of `visibility` can take it, and the fields it left out. A
+    /// private repository's run carries no summary, details link, log, artifacts or external
+    /// id (the contract's `privateNoText`): they are dropped (named as in
+    /// [`PRIVATE_TEXT_FIELDS`]) rather than refused, so a CI that reports the same way
+    /// everywhere still records its status and conclusion, and the caller warns. A public
+    /// repository's report is unchanged.
+    #[must_use]
+    pub fn for_visibility(&self, visibility: Visibility) -> (CheckReport, Vec<&'static str>) {
+        let mut r = self.clone();
+        let mut dropped = Vec::new();
+        if visibility == Visibility::Private {
+            for (name, present) in [
+                ("summary", r.summary.take().is_some()),
+                ("detailsUrl", r.details_url.take().is_some()),
+                ("logUrl", r.log.take().is_some()),
+                ("artifacts", r.artifacts.take().is_some()),
+                ("externalId", r.external_id.take().is_some()),
+            ] {
+                if present {
+                    dropped.push(name);
+                }
+            }
+        }
+        (r, dropped)
+    }
+
+    /// What the monotonic rules read of this report at `now_ms`. A time the CI gives is capped
+    /// at the reporter's clock: the contract refuses a time more than an hour past the block's
+    /// (`notFuture`), and a CI host's clock may run ahead of this one.
+    fn run_report(&self, now_ms: u64) -> RunReport {
+        RunReport {
+            status: self.status.clone(),
+            conclusion: self.conclusion.clone(),
+            started_at: self.started_at.map(|t| t.min(now_ms)),
+            completed_at: self.completed_at.map(|t| t.min(now_ms)),
+            external_id: self.external_id.clone(),
+        }
+    }
+
+    /// This report's `outcome` ([`outcome_of`]).
+    #[must_use]
+    pub fn outcome(&self) -> u64 {
+        outcome_of(&self.status, self.conclusion.as_deref())
+    }
+
+    /// The write this report makes against `stored` (the run [`run_to_update`] picked, or
+    /// none) at `now_ms`: create or replace, and the set-once fields it sets
+    /// ([`check_run_write`]). `None` for a report the contract refuses (an unknown status, a
+    /// conclusion without `completed` or the reverse): [`Self::validate`] refuses it first.
+    #[must_use]
+    pub fn write(&self, stored: Option<&FetchedDocument>, now_ms: u64) -> Option<RunWrite> {
+        let stored = stored.map(stored_run);
+        check_run_write(stored.as_ref(), &self.run_report(now_ms), now_ms)
+    }
+
+    /// The full property set a create carries (the scope adds `repoId`): the `vis` stamp of a
+    /// repository of `visibility`, the status and outcome, the set-once fields `w` sets, and
+    /// everything else this report gives.
+    pub(crate) fn create_props(
+        &self,
+        oid: Vec<u8>,
+        w: &RunWrite,
+        visibility: Visibility,
+    ) -> BTreeMap<String, FieldValue> {
         let mut p = BTreeMap::from([
             ("headOid".to_string(), FieldValue::bytes(oid)),
             ("name".to_string(), FieldValue::text(&self.name)),
         ]);
+        layout::stamp_vis(&mut p, visibility);
         p.extend(
-            self.changes(None)
+            self.changes(w)
                 .into_iter()
                 .filter_map(|(k, v)| v.map(|v| (k, v))),
         );
         p
     }
 
-    /// What a replace of `stored` changes (`None` removes a property):
+    /// What a write of this report sets (never removes: the monotonic fields are set once,
+    /// and a report that would clear one is a new run, [`check_run_write`]):
     ///
-    /// * `status` and `conclusion` always: a conclusion left from an earlier report goes (the
-    ///   contract's `doneIfConclusion` refuses it on a run that is not completed).
-    /// * `completedAt` only on a completed run; any other status clears it.
-    /// * A re-queued run starts over: `startedAt` and the log pair are cleared unless this
-    ///   report gives them.
-    /// * `startedAt` is kept once set: a repeated `in_progress` (or the completion) does not move
-    ///   the start.
+    /// * `status` and `outcome` always (`outcomeOf` ties the outcome to the status).
+    /// * `startedAt`, `completedAt`, `conclusion`, `externalId` as `w` says: only those the
+    ///   stored run does not hold yet.
     /// * Everything else this report gives replaces what is stored; what it does not give stays.
-    fn changes(&self, stored: Option<&FetchedDocument>) -> BTreeMap<String, Option<FieldValue>> {
+    ///
+    /// `vis` is immutable: a create sets it ([`Self::create_props`]) and a replace keeps it.
+    pub(crate) fn changes(&self, w: &RunWrite) -> BTreeMap<String, Option<FieldValue>> {
         let text = |v: &Option<String>| v.as_deref().map(FieldValue::text);
-        let queued = self.status == "queued";
-        let completed = self.status == "completed";
-        let has = |k: &str| stored.is_some_and(|d| d.fields.contains_key(k));
         let mut c = BTreeMap::from([
             ("status".to_string(), Some(FieldValue::text(&self.status))),
-            ("conclusion".to_string(), text(&self.conclusion)),
+            (
+                "outcome".to_string(),
+                Some(FieldValue::integer(self.outcome())),
+            ),
         ]);
-        if completed {
-            if let Some(t) = self.completed_at {
-                c.insert("completedAt".into(), Some(FieldValue::integer(t)));
-            }
-        } else if has("completedAt") {
-            c.insert("completedAt".into(), None);
-        }
-        match self.started_at {
-            Some(t) if !queued && !has("startedAt") => {
-                c.insert("startedAt".into(), Some(FieldValue::integer(t)));
-            }
-            Some(t) if queued => {
-                c.insert("startedAt".into(), Some(FieldValue::integer(t)));
-            }
-            None if queued && has("startedAt") => {
-                c.insert("startedAt".into(), None);
-            }
-            _ => {}
-        }
-        match &self.log {
-            Some((u, h)) => {
-                c.insert("logUrl".into(), Some(FieldValue::text(u)));
-                c.insert("logSha256".into(), Some(FieldValue::bytes(h.to_vec())));
-            }
-            None if queued && (has("logUrl") || has("logSha256")) => {
-                c.insert("logUrl".into(), None);
-                c.insert("logSha256".into(), None);
-            }
-            None => {}
-        }
-        let given = [
+        let set = [
+            ("startedAt", w.started_at.map(FieldValue::integer)),
+            ("completedAt", w.completed_at.map(FieldValue::integer)),
+            ("conclusion", text(&w.conclusion)),
+            ("externalId", text(&w.external_id)),
             ("detailsUrl", text(&self.details_url)),
             ("summary", text(&self.summary)),
-            ("externalId", text(&self.external_id)),
             ("artifacts", text(&self.artifacts)),
         ];
         c.extend(
-            given
-                .into_iter()
+            set.into_iter()
                 .filter_map(|(k, v)| v.map(|v| (k.to_string(), Some(v)))),
         );
+        if let Some((u, h)) = &self.log {
+            c.insert("logUrl".into(), Some(FieldValue::text(u)));
+            c.insert("logSha256".into(), Some(FieldValue::bytes(h.to_vec())));
+        }
         c
     }
 }
 
+/// A stored `checkRun` as the monotonic rules read it.
+fn stored_run(d: &FetchedDocument) -> StoredRun {
+    StoredRun {
+        status: d.field_str("status").unwrap_or_default(),
+        started_at: d.field_u64("startedAt"),
+        completed_at: d.field_u64("completedAt"),
+        conclusion: d.field_str("conclusion"),
+        external_id: d.field_str("externalId"),
+    }
+}
+
 /// The run a report updates in place, among `docs` (the head's `checkRun` documents): the
-/// reporter's own newest run of that name, and only while it is not completed or when it
-/// carries the same `externalId`. A completed run is history; a new report of it (a re-run)
-/// is a new document.
+/// reporter's own newest run of that name ([`newest_run`]), when the report continues it
+/// ([`check_run_write`] answers a replace). A report that would move it backwards (a re-run
+/// queued after it started or completed) or change its conclusion is a new run: `None`.
 pub fn run_to_update<'d>(
     docs: &'d [FetchedDocument],
     reporter: &str,
     report: &CheckReport,
 ) -> Option<&'d FetchedDocument> {
-    let newest = docs
-        .iter()
+    let newest = newest_run(docs, reporter, report)?;
+    // Only the action is read: no time is capped (the report's times never decide it).
+    report
+        .write(Some(newest), u64::MAX)
+        .is_some_and(|w| w.action == RunWriteAction::Replace)
+        .then_some(newest)
+}
+
+/// The reporter's newest run that `report` names (by name, and by `externalId` when it gives
+/// one), whether or not the report may update it.
+fn newest_run<'d>(
+    docs: &'d [FetchedDocument],
+    reporter: &str,
+    report: &CheckReport,
+) -> Option<&'d FetchedDocument> {
+    docs.iter()
         .filter(|d| d.owner_id == reporter && d.field_str("name").as_deref() == Some(&report.name))
         .filter(|d| report.external_id.is_none() || d.field_str("externalId") == report.external_id)
-        .max_by(|a, b| {
-            (a.created_at.unwrap_or(0), &a.id).cmp(&(b.created_at.unwrap_or(0), &b.id))
-        })?;
-    (report.external_id.is_some() || newest.field_str("status").as_deref() != Some("completed"))
-        .then_some(newest)
+        .max_by(|a, b| (a.created_at.unwrap_or(0), &a.id).cmp(&(b.created_at.unwrap_or(0), &b.id)))
 }
 
 /// What [`CheckRuns::report`] did.
@@ -428,41 +596,59 @@ impl<'a> CheckRuns<'a> {
 
     /// Decide what `report` will do on `repo`, before anything is signed: replace the run it
     /// updates ([`run_to_update`]), else create one. Reads the `checkRun` index
-    /// `head (repoId, headOid, $createdAt)`. A report with an `externalId` that matches nothing
-    /// reads once more after a short pause: a run created a moment ago may not be on the node
-    /// this read reached yet, and a second create would split the run in two.
+    /// `head (repoId, headOid, $createdAt)`. A report with an `externalId` that matches no run
+    /// at all reads once more after a short pause: a run created a moment ago may not be on the
+    /// node this read reached yet, and a second create would split the run in two. A match that
+    /// may not be updated (completed, or a re-queue of a started run) is a new run at once.
+    ///
+    /// On a private repository the report's text is dropped first
+    /// ([`CheckReport::for_visibility`]; [`ReportPlan::dropped`] names it), so its run is
+    /// matched by name: it has no external id.
     pub async fn plan(&self, repo: &RepoRef, report: &CheckReport) -> Result<ReportPlan> {
+        // A report that names its run (by external id, even one a private repository drops)
+        // continues one that may have been created a moment ago.
+        let names_its_run = report.external_id.is_some();
+        let (report, dropped) = report.for_visibility(repo.visibility);
+        let report = &report;
         let oid = report.validate()?;
-        let collab = self.client.fetch_contract(&repo.forge().collab).await?;
+        let community = self.client.fetch_contract(&repo.forge().community).await?;
         let me = self.identity.id();
-        let mut docs = check_run_docs(self.client, &collab, repo, oid.clone()).await?;
-        if report.external_id.is_some() && run_to_update(&docs, &me, report).is_none() {
+        let mut docs = check_run_docs(self.client, &community, repo, oid.clone()).await?;
+        if names_its_run && newest_run(&docs, &me, report).is_none() {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            docs = check_run_docs(self.client, &collab, repo, oid.clone()).await?;
+            docs = check_run_docs(self.client, &community, repo, oid.clone()).await?;
         }
         let target = run_to_update(&docs, &me, report).cloned();
+        let write = report
+            .write(target.as_ref(), crate::cache::now_ms())
+            .ok_or_else(|| Error::Config("the report breaks the check run rules".into()))?;
         Ok(ReportPlan {
-            collab,
+            community,
             oid,
             target,
+            write,
+            dropped,
         })
     }
 
-    /// Write what [`Self::plan`] decided.
+    /// Write what [`Self::plan`] decided. `report` is the one planned, perhaps with a log added
+    /// since; on a private repository its text is dropped again, so none is ever written.
     pub async fn execute(
         &self,
         repo: &RepoRef,
         report: &CheckReport,
         plan: ReportPlan,
     ) -> Result<Reported> {
+        let (report, _) = report.for_visibility(repo.visibility);
+        report.validate()?;
         let engine = doc_engine(self.client, self.identity, self.bridge)?;
         if let Some(run) = &plan.target {
             let written = engine
                 .replace_document(
-                    &plan.collab,
+                    &plan.community,
                     DOC_CHECK_RUN,
                     &run.id,
-                    &report.changes(Some(run)),
+                    &report.changes(&plan.write),
                 )
                 .await?;
             return Ok(Reported {
@@ -470,9 +656,11 @@ impl<'a> CheckRuns<'a> {
                 action: if written { "updated" } else { "unchanged" },
             });
         }
-        let props = repo.scope()?.scoped(report.create_props(plan.oid));
+        let props =
+            repo.scope()?
+                .scoped(report.create_props(plan.oid, &plan.write, repo.visibility));
         let document_id = engine
-            .create_document(&plan.collab, DOC_CHECK_RUN, props)
+            .create_document(&plan.community, DOC_CHECK_RUN, props)
             .await?;
         Ok(Reported {
             document_id,
@@ -489,16 +677,27 @@ impl<'a> CheckRuns<'a> {
 
 /// What a report will do ([`CheckRuns::plan`]).
 pub struct ReportPlan {
-    collab: LoadedContract,
+    community: LoadedContract,
     oid: Vec<u8>,
     /// The run it replaces; `None`: it creates one.
     target: Option<FetchedDocument>,
+    /// What it writes ([`check_run_write`]).
+    write: RunWrite,
+    /// The fields a private repository's run cannot carry that the report gave
+    /// ([`CheckReport::for_visibility`]).
+    dropped: Vec<&'static str>,
 }
 
 impl ReportPlan {
     /// Whether the report replaces an existing run (else it creates one).
     pub fn replaces(&self) -> bool {
         self.target.is_some()
+    }
+
+    /// The report's fields left out because the repository is private (`privateNoText`), as
+    /// named in [`PRIVATE_TEXT_FIELDS`]; empty on a public repository.
+    pub fn dropped(&self) -> &[&'static str] {
+        &self.dropped
     }
 }
 
@@ -601,18 +800,33 @@ mod tests {
         );
         // Another identity's run is never replaced (consensus would refuse it anyway).
         assert_eq!(run_to_update(&docs, "nobody", &r), None);
-        // Completed newest: a re-run starts a new document.
+        // A re-run queued after the run started is a new document (never backwards).
+        assert_eq!(run_to_update(&docs, me, &report("queued", None)), None);
+        // Completed: the same completion again is the same run; another conclusion, or a
+        // re-run starting over, is new.
         let done = [doc(
             "a",
             me,
             1,
-            &[("name", "build"), ("status", "completed")],
+            &[
+                ("name", "build"),
+                ("status", "completed"),
+                ("conclusion", "success"),
+            ],
         )];
-        assert_eq!(run_to_update(&done, me, &r), None);
+        assert_eq!(
+            run_to_update(&done, me, &r).map(|d| d.id.as_str()),
+            Some("a")
+        );
+        assert_eq!(
+            run_to_update(&done, me, &report("completed", Some("failure"))),
+            None
+        );
+        assert_eq!(run_to_update(&done, me, &report("in_progress", None)), None);
     }
 
     #[test]
-    fn an_external_id_updates_exactly_that_run_even_once_completed() {
+    fn an_external_id_updates_exactly_that_run_while_it_continues() {
         let me = "runner";
         let docs = [
             doc(
@@ -622,6 +836,7 @@ mod tests {
                 &[
                     ("name", "build"),
                     ("status", "completed"),
+                    ("conclusion", "failure"),
                     ("externalId", "gh-1"),
                 ],
             ),
@@ -637,11 +852,20 @@ mod tests {
             ),
         ];
         let mut r = report("completed", Some("failure"));
+        r.external_id = Some("gh-2".into());
+        assert_eq!(
+            run_to_update(&docs, me, &r).map(|d| d.id.as_str()),
+            Some("b")
+        );
+        // The same completion of a completed run again: that run (nothing new to set). A
+        // different conclusion is a re-run: a new document.
         r.external_id = Some("gh-1".into());
         assert_eq!(
             run_to_update(&docs, me, &r).map(|d| d.id.as_str()),
             Some("a")
         );
+        r.conclusion = Some("success".into());
+        assert_eq!(run_to_update(&docs, me, &r), None);
         r.external_id = Some("gh-3".into());
         assert_eq!(run_to_update(&docs, me, &r), None);
     }
@@ -661,60 +885,110 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_requeue_clears_the_conclusion_completion_start_and_log() {
-        let done = stored(&[
-            ("status", FieldValue::text("completed")),
-            ("conclusion", FieldValue::text("failure")),
-            ("startedAt", FieldValue::integer(10)),
-            ("completedAt", FieldValue::integer(20)),
-            ("logUrl", FieldValue::text("https://x/log")),
-            ("logSha256", FieldValue::bytes(vec![1; 32])),
-            ("summary", FieldValue::text("old")),
-        ]);
-        let c = report("queued", None).changes(Some(&done));
-        for k in [
-            "conclusion",
-            "completedAt",
-            "startedAt",
-            "logUrl",
-            "logSha256",
-        ] {
-            assert_eq!(c.get(k), Some(&None), "{k} must be cleared: {c:?}");
-        }
-        assert!(!c.contains_key("summary"), "a field not given stays: {c:?}");
+    /// The fields a replace or create sets, as `dg ci report` writes them at `now`.
+    fn written(
+        r: &CheckReport,
+        stored: Option<&FetchedDocument>,
+        now: u64,
+    ) -> (RunWriteAction, BTreeMap<String, Option<FieldValue>>) {
+        let w = r.write(stored, now).expect("a valid report");
+        (w.action, r.changes(&w))
     }
 
     #[test]
-    fn a_repeated_in_progress_keeps_the_start_and_drops_a_stale_completion() {
+    fn a_run_that_jumps_to_completed_gets_both_times() {
+        // The old stamping dropped `startedAt` here (only `in_progress` set it), which the
+        // contract's `startedIfRunning` refuses.
+        let (action, c) = written(&report("completed", Some("success")), None, 50);
+        assert_eq!(action, RunWriteAction::Create);
+        assert_eq!(c.get("startedAt"), Some(&Some(FieldValue::integer(50))));
+        assert_eq!(c.get("completedAt"), Some(&Some(FieldValue::integer(50))));
+        assert_eq!(
+            c.get("conclusion"),
+            Some(&Some(FieldValue::text("success")))
+        );
+        let create = report("completed", Some("success")).create_props(
+            vec![0; 20],
+            &report("completed", Some("success"))
+                .write(None, 50)
+                .unwrap(),
+            Visibility::Public,
+        );
+        assert!(create.contains_key("startedAt") && create.contains_key("completedAt"));
+    }
+
+    #[test]
+    fn a_queued_run_has_no_times_and_its_start_is_set_once() {
+        let (action, c) = written(&report("queued", None), None, 10);
+        assert_eq!(action, RunWriteAction::Create);
+        assert!(!c.contains_key("startedAt") && !c.contains_key("completedAt"));
+        assert!(!c.contains_key("conclusion"));
+        // The first in_progress sets the start; a repeated one does not move it.
+        let queued = stored(&[("status", FieldValue::text("queued"))]);
+        let (action, c) = written(&report("in_progress", None), Some(&queued), 20);
+        assert_eq!(action, RunWriteAction::Replace);
+        assert_eq!(c.get("startedAt"), Some(&Some(FieldValue::integer(20))));
         let running = stored(&[
             ("status", FieldValue::text("in_progress")),
-            ("startedAt", FieldValue::integer(10)),
-            ("completedAt", FieldValue::integer(20)),
-            ("logUrl", FieldValue::text("https://x/log")),
-            ("logSha256", FieldValue::bytes(vec![1; 32])),
+            ("startedAt", FieldValue::integer(20)),
         ]);
         let mut again = report("in_progress", None);
         again.started_at = Some(99);
-        let c = again.changes(Some(&running));
-        assert!(
-            !c.contains_key("startedAt"),
-            "the start does not move: {c:?}"
-        );
+        let (action, c) = written(&again, Some(&running), 30);
+        assert_eq!(action, RunWriteAction::Replace);
+        assert!(!c.contains_key("startedAt"), "the start never moves: {c:?}");
+        assert!(c.values().all(Option::is_some), "nothing is ever removed");
+    }
+
+    #[test]
+    fn a_final_match_is_told_apart_from_no_match() {
+        let me = "runner";
+        let docs = [doc(
+            "a",
+            me,
+            1,
+            &[
+                ("name", "build"),
+                ("status", "completed"),
+                ("externalId", "gh-1"),
+            ],
+        )];
+        let mut r = report("completed", Some("success"));
+        r.external_id = Some("gh-1".into());
+        // matched: no retry read
+        assert!(newest_run(&docs, me, &r).is_some());
+        // no match at all: the plan reads again before creating
+        r.external_id = Some("gh-2".into());
+        assert!(newest_run(&docs, me, &r).is_none());
+    }
+
+    #[test]
+    fn a_requeue_of_a_started_run_is_a_new_run() {
+        let me = "runner";
+        let started = [doc(
+            "a",
+            me,
+            1,
+            &[("name", "build"), ("status", "in_progress")],
+        )];
+        let mut started = started;
+        started[0]
+            .fields
+            .insert("startedAt".into(), FieldValue::integer(10));
+        // forge-community refuses queued with startedAt (`runningIfStarted`) and removing a
+        // set-once startedAt: the re-queue starts a new document
+        assert_eq!(run_to_update(&started, me, &report("queued", None)), None);
+        // Moving it forward replaces it
         assert_eq!(
-            c.get("completedAt"),
-            Some(&None),
-            "not completed: no completion time"
+            run_to_update(&started, me, &report("completed", Some("success")))
+                .map(|d| d.id.as_str()),
+            Some("a")
         );
-        assert!(
-            !c.contains_key("logUrl"),
-            "an in-progress update keeps the log"
-        );
-        // A first in_progress sets the start.
-        let queued = stored(&[("status", FieldValue::text("queued"))]);
+        // A queued run may be re-queued in place (nothing set yet)
+        let queued = [doc("q", me, 1, &[("name", "build"), ("status", "queued")])];
         assert_eq!(
-            again.changes(Some(&queued)).get("startedAt"),
-            Some(&Some(FieldValue::integer(99)))
+            run_to_update(&queued, me, &report("queued", None)).map(|d| d.id.as_str()),
+            Some("q")
         );
     }
 
@@ -727,29 +1001,376 @@ mod tests {
         let mut done = report("completed", Some("success"));
         done.completed_at = Some(30);
         done.log = Some(("https://x/log".into(), [7; 32]));
-        let c = done.changes(Some(&running));
+        let (action, c) = written(&done, Some(&running), 99);
+        assert_eq!(action, RunWriteAction::Replace);
         assert_eq!(c.get("completedAt"), Some(&Some(FieldValue::integer(30))));
         assert_eq!(
             c.get("logSha256"),
             Some(&Some(FieldValue::bytes(vec![7; 32])))
         );
         assert!(!c.contains_key("startedAt"));
-        let create = report("queued", None).create_props(vec![0; 20]);
-        assert!(!create.contains_key("conclusion") && !create.contains_key("logUrl"));
-        assert_eq!(create.get("status"), Some(&FieldValue::text("queued")));
+        // A completion time the CI gives never precedes the start it pairs with.
+        done.completed_at = Some(5);
+        let (_, c) = written(&done, Some(&running), 99);
+        assert_eq!(c.get("completedAt"), Some(&Some(FieldValue::integer(10))));
+        // The same completion again sets nothing new.
+        let finished = stored(&[
+            ("status", FieldValue::text("completed")),
+            ("startedAt", FieldValue::integer(10)),
+            ("completedAt", FieldValue::integer(30)),
+            ("conclusion", FieldValue::text("success")),
+        ]);
+        let (action, c) = written(&report("completed", Some("success")), Some(&finished), 99);
+        assert_eq!(action, RunWriteAction::Replace);
+        assert_eq!(c.keys().collect::<Vec<_>>(), ["outcome", "status"]);
+        // A backwards report or a changed conclusion is a new run with its own times.
+        let (action, c) = written(&report("queued", None), Some(&finished), 99);
+        assert_eq!(action, RunWriteAction::Create);
+        assert!(!c.contains_key("startedAt"));
+        let (action, c) = written(&report("completed", Some("failure")), Some(&finished), 99);
+        assert_eq!(action, RunWriteAction::Create);
+        assert_eq!(c.get("startedAt"), Some(&Some(FieldValue::integer(99))));
+    }
+
+    /// The RC1 accept/refuse vectors of one document type (`forge-contracts/vectors/rc1`).
+    pub(crate) fn rc1_vectors(doc_type: &str) -> Vec<serde_json::Value> {
+        let all: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../forge-contracts/vectors/rc1/forge-community.json"
+        ))
+        .expect("the RC1 vectors parse");
+        let cases: Vec<_> = all.into_iter().filter(|c| c["type"] == doc_type).collect();
+        assert!(!cases.is_empty(), "no {doc_type} vectors");
+        cases
+    }
+
+    /// A vector's `{"$b": [fill, len]}` bytes.
+    fn vector_bytes(v: &serde_json::Value) -> Vec<u8> {
+        let fill = u8::try_from(v["$b"][0].as_u64().unwrap()).unwrap();
+        vec![fill; usize::try_from(v["$b"][1].as_u64().unwrap()).unwrap()]
+    }
+
+    /// What a CI reported to make the vector's `checkRun`.
+    fn report_of(doc: &serde_json::Value) -> CheckReport {
+        let text = |k: &str| doc[k].as_str().map(str::to_string);
+        CheckReport {
+            head_oid: hex::encode(vector_bytes(&doc["headOid"])),
+            name: text("name").unwrap(),
+            status: text("status").unwrap(),
+            conclusion: text("conclusion"),
+            details_url: text("detailsUrl"),
+            summary: text("summary"),
+            external_id: text("externalId"),
+            started_at: doc["startedAt"].as_u64(),
+            completed_at: doc["completedAt"].as_u64(),
+            log: text("logUrl").map(|u| {
+                let h = doc.get("logSha256").map_or(vec![0; 32], vector_bytes);
+                (u, h.try_into().unwrap())
+            }),
+            artifacts: text("artifacts"),
+        }
+    }
+
+    fn visibility_of(doc: &serde_json::Value) -> Visibility {
+        if doc["vis"] == "private" {
+            Visibility::Private
+        } else {
+            Visibility::Public
+        }
+    }
+
+    /// The vector document as the property map a create writes (without `repoId`, which the
+    /// scope adds).
+    fn vector_props(doc: &serde_json::Value) -> BTreeMap<String, FieldValue> {
+        doc.as_object()
+            .unwrap()
+            .iter()
+            .filter(|(k, _)| *k != "repoId")
+            .map(|(k, v)| {
+                let f = match v {
+                    serde_json::Value::String(s) => FieldValue::text(s.as_str()),
+                    serde_json::Value::Number(n) => FieldValue::integer(n.as_u64().unwrap()),
+                    other => FieldValue::bytes(vector_bytes(other)),
+                };
+                (k.clone(), f)
+            })
+            .collect()
+    }
+
+    /// After every time in the vectors, and no more than an hour after them (`notFuture`).
+    const VECTOR_NOW: u64 = 1_760_000_100_000;
+
+    #[test]
+    fn the_builder_writes_every_accepted_rc1_check_run_exactly() {
+        for case in rc1_vectors("checkRun")
+            .iter()
+            .filter(|c| c["expect"] == "ok")
+        {
+            let doc = &case["doc"];
+            let r = report_of(doc);
+            let oid = r
+                .validate()
+                .unwrap_or_else(|e| panic!("{}: {e}", case["name"]));
+            let (kept, dropped) = r.for_visibility(visibility_of(doc));
+            assert!(dropped.is_empty(), "{}", case["name"]);
+            let w = kept.write(None, VECTOR_NOW).unwrap();
+            assert_eq!(
+                kept.create_props(oid, &w, visibility_of(doc)),
+                vector_props(doc),
+                "{}",
+                case["name"]
+            );
+        }
+    }
+
+    #[test]
+    fn the_rc1_refusals_a_report_can_cause_are_refused_before_signing() {
+        for case in rc1_vectors("checkRun")
+            .iter()
+            .filter(|c| c["expect"] != "ok")
+        {
+            let (doc, why) = (&case["doc"], case["why"].as_str().unwrap());
+            let r = report_of(doc);
+            match why {
+                // A bad URL, a time in seconds, a bad head: refused.
+                "pattern" | "msEpoch" | "oidWidth" | "conclusionIfDone" => {
+                    assert!(r.validate().is_err(), "{} should be refused", case["name"]);
+                }
+                // Private text is dropped, and the write then carries none.
+                "privateNoText" => {
+                    let (kept, dropped) = r.for_visibility(Visibility::Private);
+                    assert!(!dropped.is_empty(), "{}", case["name"]);
+                    let oid = kept.validate().unwrap();
+                    let props = kept.create_props(
+                        oid,
+                        &kept.write(None, VECTOR_NOW).unwrap(),
+                        Visibility::Private,
+                    );
+                    for f in PRIVATE_TEXT_FIELDS {
+                        assert!(!props.contains_key(f), "{}: {f}", case["name"]);
+                    }
+                }
+                // A completion before the start is clamped to it.
+                "doneAfterStart" => {
+                    let w = r.write(None, VECTOR_NOW).unwrap();
+                    assert!(w.completed_at >= w.started_at, "{}", case["name"]);
+                }
+                // The builder sets the outcome, times and vis itself: a report cannot say
+                // them wrong.
+                "outcomeOf" => {
+                    assert_ne!(
+                        r.outcome(),
+                        doc["outcome"].as_u64().unwrap(),
+                        "{}",
+                        case["name"]
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn a_replace_never_touches_an_immutable_field() {
+        let full = CheckReport {
+            details_url: Some("https://ci.example.com/1".into()),
+            summary: Some("ok".into()),
+            external_id: Some("gh-1".into()),
+            started_at: Some(MS_EPOCH),
+            completed_at: Some(MS_EPOCH + 1),
+            ..report("completed", Some("success"))
+        };
+        let running = stored(&[
+            ("status", FieldValue::text("in_progress")),
+            ("startedAt", FieldValue::integer(MS_EPOCH)),
+            ("externalId", FieldValue::text("gh-1")),
+        ]);
+        let (action, c) = written(&full, Some(&running), MS_EPOCH + 5);
+        assert_eq!(action, RunWriteAction::Replace);
+        for immutable in [
+            "vis",
+            "repoId",
+            "headOid",
+            "name",
+            "startedAt",
+            "externalId",
+        ] {
+            assert!(!c.contains_key(immutable), "{immutable} in {c:?}");
+        }
+        assert_eq!(
+            c.get("completedAt"),
+            Some(&Some(FieldValue::integer(MS_EPOCH + 1)))
+        );
+    }
+
+    #[test]
+    fn url_patterns_match_the_contract() {
+        for ok in [
+            "https://ci.example.com/run/1",
+            "https://10.0.0.5:8443/job/1",
+            "https://ci.example.com",
+            "https://ci.example.com?x=1#y",
+            "https://ci.example.com/a@b",
+        ] {
+            assert!(is_details_url(ok) && is_log_url(ok), "{ok}");
+        }
+        for bad in [
+            "javascript:alert(1)",
+            "http://ci.example.com/1",
+            "https://github.com@evil.example/x",
+            "https://a b",
+            "https://a\n",
+            "https://a/\u{0b}",
+            "HTTPS://a.b",
+            "https:///x",
+            "https://",
+            "",
+        ] {
+            assert!(!is_details_url(bad) && !is_log_url(bad), "{bad:?}");
+        }
+        assert!(is_log_url("ipfs://bafy123") && is_log_url("ipfs://bafy123/log.txt"));
+        for bad in ["ipfs://", "ipfs://bafy-1", "s3://bucket/1", "ipfs://b x"] {
+            assert!(!is_log_url(bad), "{bad:?}");
+        }
+        assert!(!is_details_url("ipfs://bafy123"));
+    }
+
+    #[test]
+    fn a_private_report_drops_its_text_and_is_matched_by_name() {
+        let r = CheckReport {
+            details_url: Some("https://ci.example.com/1".into()),
+            summary: Some("ok".into()),
+            external_id: Some("gh-1".into()),
+            log: Some(("https://logs.example.com/1".into(), [1; 32])),
+            artifacts: Some("[]".into()),
+            ..report("completed", Some("success"))
+        };
+        let (public, none) = r.for_visibility(Visibility::Public);
+        assert_eq!((public, none), (r.clone(), vec![]));
+        let (private, dropped) = r.for_visibility(Visibility::Private);
+        assert_eq!(dropped, PRIVATE_TEXT_FIELDS);
+        assert_eq!(private, report("completed", Some("success")));
+        // Without the external id, the reporter's open run of that name is the one updated.
+        let me = "runner";
+        let docs = [doc(
+            "a",
+            me,
+            1,
+            &[("name", "build"), ("status", "in_progress")],
+        )];
+        assert_eq!(
+            run_to_update(&docs, me, &private).map(|d| d.id.as_str()),
+            Some("a")
+        );
+    }
+
+    #[test]
+    fn every_write_carries_the_outcome_and_times_are_capped_at_the_reporters_clock() {
+        assert_eq!(outcome_of("queued", None), 0);
+        assert_eq!(outcome_of("in_progress", None), 0);
+        for (c, o) in [
+            ("success", 1),
+            ("neutral", 1),
+            ("skipped", 1),
+            ("failure", 2),
+            ("cancelled", 2),
+            ("timed_out", 2),
+            ("action_required", 2),
+            ("stale", 2),
+        ] {
+            assert_eq!(outcome_of("completed", Some(c)), o, "{c}");
+        }
+        // A replace sets the outcome again, whatever else it leaves.
+        let running = stored(&[
+            ("status", FieldValue::text("in_progress")),
+            ("startedAt", FieldValue::integer(MS_EPOCH)),
+            ("outcome", FieldValue::integer(0)),
+        ]);
+        let (_, c) = written(
+            &report("completed", Some("failure")),
+            Some(&running),
+            MS_EPOCH + 10,
+        );
+        assert_eq!(c.get("outcome"), Some(&Some(FieldValue::integer(2))));
+        // A CI clock ahead of the reporter's: its times are capped at the reporter's.
+        let mut ahead = report("completed", Some("success"));
+        ahead.started_at = Some(MS_EPOCH + 5_000);
+        ahead.completed_at = Some(MS_EPOCH + 9_000);
+        let w = ahead.write(None, MS_EPOCH + 1_000).unwrap();
+        assert_eq!(
+            (w.started_at, w.completed_at),
+            (Some(MS_EPOCH + 1_000), Some(MS_EPOCH + 1_000))
+        );
+        // A time in seconds is refused before signing.
+        let mut seconds = report("in_progress", None);
+        seconds.started_at = Some(1_760_000_000);
+        assert!(seconds.validate().is_err());
+    }
+
+    #[test]
+    fn the_policy_writer_passes_the_rc1_policy_vectors_and_reads_back() {
+        use crate::collab::v2::{policy_from_doc, policy_props};
+        use crate::rules::review::Policy;
+        let id = |v: &serde_json::Value| [u8::try_from(v["$id"].as_u64().unwrap()).unwrap(); 32];
+        for case in rc1_vectors("policy") {
+            let (doc, name) = (&case["doc"], &case["name"]);
+            let list = |k: &str| doc[k].as_array().cloned().unwrap_or_default();
+            let policy = Policy {
+                required_approvals: u32::try_from(doc["requiredApprovals"].as_u64().unwrap())
+                    .unwrap(),
+                approver_role: 0,
+                require_checks: doc["requireChecks"].as_bool().unwrap_or(false),
+                merge_methods: u8::try_from(doc["mergeMethods"].as_u64().unwrap_or(0)).unwrap(),
+                required_checks: list("requiredChecks")
+                    .iter()
+                    .map(|n| n.as_str().unwrap().to_string())
+                    .collect(),
+                required_check_sources: list("requiredCheckSources")
+                    .iter()
+                    .map(|s| platform::encode_identifier(id(s)))
+                    .collect(),
+            };
+            let props = policy_props(&policy);
+            assert_eq!(props.is_ok(), case["expect"] == "ok", "{name}");
+            let Ok(props) = props else { continue };
+            if let Some(names) = doc["requiredChecks"].as_array() {
+                let want: Vec<_> = names.iter().map(|n| n.as_str().unwrap()).collect();
+                assert_eq!(
+                    props.get("requiredChecks"),
+                    Some(&FieldValue::text_list(want)),
+                    "{name}"
+                );
+            }
+            let sources = list("requiredCheckSources");
+            assert_eq!(
+                props.get("requiredCheckSources"),
+                (!sources.is_empty())
+                    .then(|| FieldValue::List(
+                        sources
+                            .iter()
+                            .map(|s| FieldValue::identifier(id(s)))
+                            .collect()
+                    ))
+                    .as_ref(),
+                "{name}"
+            );
+            let fetched = FetchedDocument {
+                id: "p".into(),
+                owner_id: "o".into(),
+                created_at: Some(1),
+                created_at_block_height: None,
+                updated_at_block_height: None,
+                fields: props,
+                revision: Some(1),
+            };
+            assert_eq!(policy_from_doc(&fetched), policy, "{name}");
+        }
     }
 
     #[test]
     fn the_commit_link_is_the_web_commit_page() {
         use crate::network::ForgeIds;
         let repo = RepoRef {
-            forge: ForgeIds {
-                core: "C".into(),
-                collab: "L".into(),
-                group: "G".into(),
-                superseded_in_group: vec![],
-                group_owner: None,
-            },
+            forge: ForgeIds::test_forge(),
             repo_id: "R".into(),
             owner_id: "alice".into(),
             name: "proj".into(),

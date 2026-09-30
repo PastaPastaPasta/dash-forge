@@ -28,7 +28,8 @@ import { bytesToBase64, previewCreate, type DocumentQuery } from '../sdk'
 import { openPrivateArtifact, readPrivateRange } from '../view/private-packs'
 import { readConfigBundle } from './config'
 import { readAllRefUpdates, readRefs } from './refs'
-import { listIssues, readReviews } from './issues'
+import { readReviews } from './issues'
+import { queryIssues } from './issue-index'
 import { anchorVerdict, epochsAnchoredBy, needsKeepWrap, planRepair, planRotation, removalEffect, rotationCost, wrapOutcome } from './private-members'
 import { privateGate, sealedGate } from './private-content'
 import { editFields, sealContent } from './private-writes'
@@ -48,7 +49,7 @@ const BOB = id(0x22) // writer
 const CAROL = id(0x23) // writer, removed at epoch 1
 const EVE = id(0x24) // outsider
 
-const FORGE = { core: 'CORE', collab: 'COLLAB', group: 'GROUP' }
+const FORGE = { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'GROUP' }
 const REPO_REF: RepoRef = { forge: FORGE, repoId: b58(REPO), ownerId: b58(ALICE), name: 'secret', visibility: 'private' }
 
 const K0 = Uint8Array.from({ length: 32 }, (_, i) => i)
@@ -187,7 +188,7 @@ function mockSdk(rows: Record<string, Record<string, unknown>[]>): EvoSDK {
     out = out.slice(0, Math.min(q.limit ?? 100, 100))
     return new Map(out.map((d) => [String(d['$id']), d]))
   }
-  return { documents: { query, count: async () => new Map() } } as unknown as EvoSDK
+  return { documents: { query, count: async () => new Map(), sum: async () => new Map() } } as unknown as EvoSDK
 }
 
 // ---------------------------------------------------------------------------
@@ -293,9 +294,10 @@ describe('private reads through the gate', () => {
       await sealed('issue', k0, CAROL, { number: 5 }, { title: 'in grace' }, { number: 5 }, 100 + GRACE_BLOCKS),
     ]
     const sdk = mockSdk({ issue: issues, event: [], authorEvent: [] })
-    const list = await listIssues(sdk, repo, 50)
+    const page = await queryIssues(sdk, repo, { state: 'all', labels: [], author: null, assignee: null, mentions: null, sort: 'newest', text: '', page: 1, pageSize: 100 } as const, null, 'devnet')
+    const list = page.rows
     expect(list.map((i) => i.title).sort()).toEqual(['in grace', 'readable'])
-    expect(list.hiddenBy).toEqual({ notEncrypted: 2, wrongKey: 0, late: 1, lateEdit: 0 })
+    expect(page.hiddenBy).toEqual({ notEncrypted: 2, wrongKey: 0, late: 1, lateEdit: 0 })
     const body = list.find((i) => i.title === 'readable')?.body
     expect(body).toBe('hello')
   })
@@ -312,9 +314,10 @@ describe('private reads through the gate', () => {
       await sealed('issue', k0, CAROL, { number: 6 }, { title: 'edited late' }, { number: 6, $updatedAtBlockHeight: 100 + GRACE_BLOCKS + 50 }, 90),
       await sealed('issue', k0, CAROL, { number: 7 }, { title: 'edited in grace' }, { number: 7, $updatedAtBlockHeight: 100 + GRACE_BLOCKS }, 90),
     ]
-    const list = await listIssues(mockSdk({ issue: issues, event: [], authorEvent: [] }), repo, 50)
+    const page = await queryIssues(mockSdk({ issue: issues, event: [], authorEvent: [] }), repo, { state: 'all', labels: [], author: null, assignee: null, mentions: null, sort: 'newest', text: '', page: 1, pageSize: 100 } as const, null, 'devnet')
+    const list = page.rows
     expect(list.map((i) => i.title)).toEqual(['edited in grace'])
-    expect(list.hiddenBy).toEqual({ notEncrypted: 0, wrongKey: 0, late: 0, lateEdit: 1 })
+    expect(page.hiddenBy).toEqual({ notEncrypted: 0, wrongKey: 0, late: 0, lateEdit: 1 })
     // Maintainers read why (the CLI's bucket text is the same).
     const { HIDDEN_REASON_TEXT } = await import('./private-content')
     expect(HIDDEN_REASON_TEXT.lateEdit).toBe('edited after its author was removed; the original text is gone')

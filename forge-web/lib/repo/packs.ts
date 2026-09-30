@@ -1,7 +1,9 @@
 /**
  * packManifest reads — locating browse-plane artifacts (`forge-v2.md` §4).
  *
- * `packManifest.kind`: 0 = git pack, 1 = objectLocator, 2 = flatIndex. The `(kind,
+ * `packManifest.kind`: 0 = git pack, 1 = objectLocator, 2 = flatIndex, 3 = history index,
+ * 4 = release assets (`PACK_KIND`). Every reader selects its kind ({@link packsOfKind}), so a
+ * kind it does not know (an asset manifest's JSON) is never read as a pack. The `(kind,
  * $createdAt desc)` index lets a reader grab the newest locator / flatIndex in one query.
  * The manifest's `uris` (external) or platform `chunk` documents (storage 0) carry the
  * actual bytes the browse reader range-fetches.
@@ -10,21 +12,22 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
-import { DEFAULT_NETWORK, PACK_KIND, type Network, type PackKind } from '../constants'
+import { DEFAULT_NETWORK, PACK_KIND, STORAGE, type Network, type PackKind } from '../constants'
 import { repoTimelines } from './chrome'
-import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
+import { queryAllDocuments, queryDocumentsWithProof, sumDocumentsGrouped, uintOfGroupKey, type PlainDocument } from '../sdk'
 import { v2PackList, type Role } from '../rules/v2'
 import { DOC, str, stringArray, type RepoRef } from './contract'
-import { base64ToBytes, base64ToHex, hexToBase64 } from '../sdk'
+import { base64ToBytes } from '../sdk'
 import { readRoleOracle } from './members'
+import { packHashHex, packHashOperand } from './pack-hash'
 import { blockHeightOf } from './private-content'
 import { repoSource } from './source'
 
 /** A parsed `packManifest`. */
 export interface PackManifest {
-  /** SHA-256 of the pack, hex. */
+  /** SHA-256 of the pack, lowercase hex (an identifier on chain: see `pack-hash.ts`). */
   readonly packHash: string
-  /** 0 git pack | 1 objectLocator | 2 flatIndex | 3 history index. */
+  /** 0 git pack | 1 objectLocator | 2 flatIndex | 3 history index | 4 release assets. */
   readonly kind: PackKind
   readonly sizeBytes: number
   readonly objectCount: number
@@ -57,12 +60,6 @@ export interface PackManifest {
   readonly copies?: readonly PackManifest[]
   /** Raw copies: the uploader's current role (null: not a member). */
   readonly ownerRole?: Role | null
-  /**
-   * A history index's (kind 3) format version: 2 lists each path's versions, 0 is a v1 writer's.
-   * Carried in `offsetIndexParts`, which a self-locating artifact does not otherwise use (forge-core
-   * `HistoryEntry::format`; to move when the contract rework drops that field).
-   */
-  readonly historyFormat?: number
 }
 
 /**
@@ -92,17 +89,8 @@ function parsePackedHashes(doc: PlainDocument, field: string, entryLen: number):
 function toManifest(doc: PlainDocument): PackManifest {
   const height = blockHeightOf(doc)
   const num = (f: string): number => (typeof doc[f] === 'number' ? (doc[f] as number) : 0)
-  const packHashRaw = doc['packHash']
-  let packHash = ''
-  if (typeof packHashRaw === 'string') {
-    try {
-      packHash = base64ToHex(packHashRaw)
-    } catch {
-      packHash = packHashRaw
-    }
-  }
   return {
-    packHash,
+    packHash: packHashHex(doc['packHash']),
     kind: num('kind') as PackKind,
     sizeBytes: num('sizeBytes'),
     objectCount: num('objectCount'),
@@ -115,7 +103,6 @@ function toManifest(doc: PlainDocument): PackManifest {
     documentId: str(doc, '$id'),
     uploader: str(doc, '$ownerId'),
     ...(height !== undefined ? { createdAtBlockHeight: height } : {}),
-    ...(num('kind') === 3 ? { historyFormat: num('offsetIndexParts') } : {}),
   }
 }
 
@@ -140,6 +127,43 @@ export async function readPackManifests(sdk: EvoSDK, repo: RepoRef): Promise<Pac
     repoSource(repo).repoQuery(DOC.packManifest, { orderBy: [['$createdAt', 'desc']] }),
   )
   return documents.map(toManifest)
+}
+
+/** Bytes of git packs stored for a repo, by where they live ({@link readGitPackBytes}). */
+export interface GitPackBytes {
+  /** `storage` 0: in `chunk` documents on Platform. */
+  readonly platform: number
+  /** `storage` 1: at the manifests' external URIs. */
+  readonly external: number
+}
+
+/**
+ * The stored size of a repo's git packs (kind 0), on Platform and external: the closest to
+ * GitHub's repo size, which also counts the git objects rather than the checkout. One proved
+ * grouped sum of `sizeBytes` on `packManifest.bytes` (`(repoId, storage, kind)`, `summable`; RC1
+ * O-05), which covers only a query binding all three: `storage in [0, 1]` grouped by `storage`,
+ * `kind == 0`. It counts every manifest: a pack a later push superseded, and each member's copy.
+ */
+export async function readGitPackBytes(sdk: EvoSDK, repo: RepoRef): Promise<GitPackBytes> {
+  const sums = await sumDocumentsGrouped(
+    sdk,
+    {
+      ...repoSource(repo).repoQuery(DOC.packManifest, {
+        where: [['storage', 'in', [STORAGE.PLATFORM, STORAGE.EXTERNAL]], ['kind', '==', PACK_KIND.GIT_PACK]],
+        orderBy: [['storage', 'asc']],
+      }),
+      groupBy: ['storage'],
+    },
+    'sizeBytes',
+  )
+  // Keys decoded whatever the integer's width (`uintOfGroupKey`), as the kind counts are.
+  const out = { platform: 0, external: 0 }
+  for (const [key, bytes] of sums) {
+    const storage = uintOfGroupKey(key)
+    if (storage === STORAGE.PLATFORM) out.platform += bytes
+    else if (storage === STORAGE.EXTERNAL) out.external += bytes
+  }
+  return out
 }
 
 /** A `(createdAt, id)` bound; a bare `$createdAt` includes every document of that time. */
@@ -205,15 +229,16 @@ export async function readRepoPackManifests(sdk: EvoSDK, repo: RepoRef): Promise
 /**
  * {@link readRepoPackManifests} for a browse context: a public repo's manifests come from the
  * repo chrome store ({@link repoTimelines}: the home's own read when it is a few seconds old, else
- * one request for what is new), and the membership from the cache that read seeded. `fresh`: a
- * read started now (a re-resolve after a miss or a push), never an earlier one's answer.
+ * one request for what is new), and the membership from the cache that read seeded. `after`: a
+ * re-resolve of a pack list read by then (after a miss or a push): only a read issued after it
+ * answers (the home's revalidation of a moment ago, else a new one), never the read it checks.
  */
 export async function readBrowseManifests(
   sdk: EvoSDK,
   repo: RepoRef,
-  { fresh = false, network = DEFAULT_NETWORK }: { readonly fresh?: boolean; readonly network?: Network } = {},
+  { after, network = DEFAULT_NETWORK }: { readonly after?: number; readonly network?: Network } = {},
 ): Promise<PackManifest[]> {
-  const timelines = await repoTimelines(sdk, repo, { network, ...(fresh ? { maxAgeMs: 0 } : {}) })
+  const timelines = await repoTimelines(sdk, repo, { network, ...(after === undefined ? {} : { issuedAfter: after }) })
   if (timelines === null) return readRepoPackManifests(sdk, repo)
   const oracle = await readRoleOracle(sdk, repo, network)
   // Newest first, as `readPackManifests` answers (the store holds them oldest first).
@@ -231,19 +256,27 @@ export async function readBrowseManifests(
 export async function readPackCopies(
   sdk: EvoSDK,
   repo: RepoRef,
-  packHashHex: string,
+  hashHex: string,
   kind: number,
+  /**
+   * Drop copies of any other kind before ranking (a sealed release's asset list, which only
+   * TLV 21 names: a co-writer's other-kind copy of the same hash must not outrank and hide it).
+   */
+  onlyKind = false,
 ): Promise<PackManifest | null> {
   const [documents, oracle] = await Promise.all([
     queryAllDocuments(
       sdk,
       repoSource(repo).repoQuery(DOC.packManifest, {
-        where: [['packHash', '==', hexToBase64(packHashHex)]],
+        where: [['packHash', '==', packHashOperand(hashHex)]],
       }),
     ),
     readRoleOracle(sdk, repo),
   ])
-  const copies = documents.map(toManifest).map((m) => ({ ...m, ownerRole: oracle.currentRole(m.uploader) }))
+  const copies = documents
+    .map(toManifest)
+    .filter((m) => !onlyKind || m.kind === kind)
+    .map((m) => ({ ...m, ownerRole: oracle.currentRole(m.uploader) }))
   return packsOfKind(copies, kind)[0] ?? null
 }
 

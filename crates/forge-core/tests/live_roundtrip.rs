@@ -88,7 +88,7 @@ async fn create_verify_delete_refund_roundtrip() {
     }
 
     let mut props: BTreeMap<String, FieldValue> = BTreeMap::new();
-    props.insert("packHash".to_string(), FieldValue::bytes32(pack_hash));
+    props.insert("packHash".to_string(), FieldValue::identifier(pack_hash));
     props.insert("seq".to_string(), FieldValue::integer(0));
     props.insert("d0".to_string(), FieldValue::bytes(vec![0xAB; 256]));
 

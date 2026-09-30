@@ -86,6 +86,10 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
   comment: 52_000_000,
   event: 43_000_000,
   authorEvent: 41_500_000,
+  // Not yet measured (fresh registration): a close event's cost plus the estimated 3–6 % for the
+  // sum read and the count/sum index upkeep (STATE-COUNTS §5). Measure on wipe day (WIPE-PLAN §3
+  // step 8) and replace with `documentCreateCost` once the SDK is beta.7.
+  transition: 46_000_000,
   review: 35_900_000,
   policy: 34_000_000,
   // C-1: the ranked star, steady (the starrer holds stars, the repo has some): 17.8M
@@ -95,6 +99,9 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
   watch: 27_400_000,
   milestone: 45_000_000,
   checkRun: 45_000_000,
+  // Not yet measured (RC1): a member's consent, one unique index and a repo reference, priced
+  // like a `watch` until measured on the fresh chain.
+  consent: 28_000_000,
 }
 
 /** Which index subtrees a create may be the first to write. Unknown fields count as first. */

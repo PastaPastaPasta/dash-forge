@@ -1,5 +1,5 @@
 /**
- * Trending (platform-parity-spec §4.3, §4.4): a star can also write a `starBeat`, a forge-collab
+ * Trending (platform-parity-spec §4.3, §4.4): a star can also write a `starBeat`, a forge-community
  * indexOnly document whose weekly window index ranks repos by their new stargazers. It is
  * separate from the star so an unstar always works (the star keeps no `$createdAt`), and it is
  * optional: "Count my stars toward Trending" in Settings, on by default.
@@ -49,7 +49,7 @@ export type TrendingWindow = 'week' | 'today'
 /** The top repos by new stargazers in the window: `starBeat.byWeek`, proved. */
 export function readTrending(sdk: EvoSDK, forge: ForgeIds, span: TrendingWindow, limit = 25): Promise<RankedPage> {
   return rankedDocuments(sdk, {
-    dataContractId: forge.collab,
+    dataContractId: forge.community,
     documentTypeName: DOC.starBeat,
     groupBy: 'repoId',
     limit,
@@ -59,7 +59,7 @@ export function readTrending(sdk: EvoSDK, forge: ForgeIds, span: TrendingWindow,
 
 /** The most starred repos of all time: `star.byRepo`, proved. */
 export function readMostStarred(sdk: EvoSDK, forge: ForgeIds, limit = 25): Promise<RankedPage> {
-  return rankedDocuments(sdk, { dataContractId: forge.collab, documentTypeName: DOC.star, groupBy: 'repoId', limit })
+  return rankedDocuments(sdk, { dataContractId: forge.community, documentTypeName: DOC.star, groupBy: 'repoId', limit })
 }
 
 /**
@@ -75,5 +75,5 @@ export async function readMostForked(sdk: EvoSDK, forge: ForgeIds, limit = 25): 
 
 /** The most followed identities: `follow.byTarget`, proved. */
 export function readMostFollowed(sdk: EvoSDK, forge: ForgeIds, limit = 25): Promise<RankedPage> {
-  return rankedDocuments(sdk, { dataContractId: forge.collab, documentTypeName: DOC.follow, groupBy: 'identityId', limit })
+  return rankedDocuments(sdk, { dataContractId: forge.community, documentTypeName: DOC.follow, groupBy: 'identityId', limit })
 }

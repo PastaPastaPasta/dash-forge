@@ -25,10 +25,11 @@ export interface WriteGuard {
   /**
    * Run before signing: true when the write may go ahead (else a sheet opened). `need`: the
    * write's cost preview (or a bare estimate). `contract`: which Forge contract the write goes
-   * to, `'collab'` for issues, comments, reviews, stars and follows (default `'core'`).
+   * to, `'collab'` for issues, comments and reviews, `'community'` for stars, watches, follows
+   * and branch policies (default `'core'`).
    * `action`: what the click does, for the sign-in sheet when signed out (`star this repo`).
    */
-  readonly check: (need: WriteNeed, contract?: 'core' | 'collab', action?: string) => boolean
+  readonly check: (need: WriteNeed, contract?: 'core' | 'collab' | 'community', action?: string) => boolean
   /** Run when a write throws: opens the fix it calls for and returns the message to show. */
   readonly failed: (e: unknown) => string
   /** Why every write button is disabled (empty state), or null. */
@@ -47,7 +48,7 @@ export function useWriteGuard(): WriteGuard {
   const openTopUp = useUiStore((s) => s.openTopUp)
 
   const check = useCallback(
-    (need: WriteNeed, contract: 'core' | 'collab' = 'core', action?: string): boolean => {
+    (need: WriteNeed, contract: 'core' | 'collab' | 'community' = 'core', action?: string): boolean => {
       if (!identity || !signer) {
         // A kept session is still being picked up (a moment after a reload): not a sign-in.
         if (resuming) {
@@ -57,14 +58,15 @@ export function useWriteGuard(): WriteGuard {
         // Opens on Unlock when this browser holds a key (a locked session), else the sign-in tiles,
         // naming what the click was for and its cost (L-62).
         const credits = typeof need === 'number' ? need : need.credits
-        openLogin(undefined, action ? { action, ...(credits > 0 ? { credits } : {}) } : undefined)
+        openLogin(undefined, undefined, action ? { action, ...(credits > 0 ? { credits } : {}) } : undefined)
         return false
       }
       if (grants && !grants[contract]) {
         // A reloaded tab holds the main key only: this browser may already hold that grant,
         // sealed with the vault. Unlock first (a new wallet grant would register a key this tab
         // cannot store).
-        openLogin(unlockScope === 'signing' ? 'unlock' : 'grant')
+        if (unlockScope === 'signing') openLogin('unlock')
+        else openLogin('grant', contract)
         return false
       }
       if (funds?.level === 'empty') {

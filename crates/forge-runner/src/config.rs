@@ -2,7 +2,7 @@
 //!
 //! ```toml
 //! network = "devnet"            # passed to dg / git-remote-dash as DASH_FORGE_NETWORK
-//! devnet_name = "moutai"
+//! devnet_name = "bonsia"
 //! state_dir = "/var/lib/forge-runner"
 //! interval_secs = 120           # poll period (ls-remote per repo); at least 30
 //! log_storage = "r2-logs"       # a `dg storage add` profile for job logs (optional)
@@ -77,7 +77,8 @@ pub struct Config {
     /// it, reports carry no log.
     #[serde(default)]
     pub log_storage: Option<String>,
-    /// Publish logs of private repositories too (`dg ci report --public-log`).
+    /// No longer has any effect (kept so existing configs still load): a private repository's
+    /// check run cannot carry a log URL, so `dg` never uploads its logs.
     #[serde(default)]
     pub public_log: bool,
     /// The `dg`, `git` and `act` binaries (default: from PATH).

@@ -7,10 +7,9 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import type { Network } from '../constants'
-import { asIdentifierString, DOC, repoSource, resolveOwner, type RepoRef } from '../repo'
+import { DOC, repoSource, resolveOwner, type RepoRef } from '../repo'
 import { queryDocumentsWithProof } from '../sdk'
 import { reposNamed, type DiscoveredRepo } from './discovery'
-import { importedUrlOf, type ForgeRepo } from './ref-targets'
 import { isIdentityId } from '../utils'
 
 export type Jump =
@@ -100,38 +99,10 @@ export function wordTarget(m: WordMatches): WordTarget {
 
 /** Which of issue n and PR n exist in `repo` (a `(repoId, number)` lookup each). */
 export async function numberTargets(sdk: EvoSDK, repo: RepoRef, number: number): Promise<{ issue: boolean; pull: boolean }> {
-  const found = await numberRows(sdk, repo, number)
-  return { issue: found.issue !== null, pull: found.pull !== null }
-}
-
-/** An issue or PR row found at a number: its `imported.url` ('' when written here) and author. */
-export interface NumberRow {
-  readonly importedUrl: string
-  readonly owner: string
-}
-
-/** Issue n and PR n of `repo`, when they exist (a `(repoId, number)` lookup each). */
-export async function numberRows(sdk: EvoSDK, repo: RepoRef, number: number): Promise<{ issue: NumberRow | null; pull: NumberRow | null }> {
-  const row = async (type: string): Promise<NumberRow | null> => {
+  const exists = async (type: string): Promise<boolean> => {
     const { documents } = await queryDocumentsWithProof(sdk, repoSource(repo).repoQuery(type, { where: [['number', '==', number]], limit: 1 }))
-    const doc = documents[0]
-    return doc === undefined ? null : { importedUrl: importedUrlOf(doc['imported']), owner: asIdentifierString(doc['$ownerId']) }
+    return documents.length > 0
   }
-  const [issue, pull] = await Promise.all([row(DOC.issue), row(DOC.patch)])
+  const [issue, pull] = await Promise.all([exists(DOC.issue), exists(DOC.patch)])
   return { issue, pull }
-}
-
-/**
- * Whether `row` is the one a mirror's import wrote for upstream item `n` of `source`: its
- * `imported.url` is that item (`https://github.com/o/r/issues/n`, `…/pull/n`,
- * `…/-/merge_requests/n`) and its author is one the repo trusts to number items (the owner or a
- * maintainer, `forge-v2.md` §6). Anyone may write an `imported` record, so a squatter at `n`
- * claiming to be it is not; nor is a native issue there, or an upstream item moved elsewhere.
- */
-export function isUpstreamItem(row: NumberRow, n: number, source: ForgeRepo, trusted: ReadonlySet<string>): boolean {
-  if (!trusted.has(row.owner)) return false
-  const prefix = `https://${source.host}/${source.path}/`
-  if (!row.importedUrl.toLowerCase().startsWith(prefix.toLowerCase())) return false
-  const m = /^(?:-\/)?(?:issues|pull|merge_requests)\/(\d+)\/?(?:[?#].*)?$/.exec(row.importedUrl.slice(prefix.length))
-  return m !== null && Number(m[1]) === n
 }

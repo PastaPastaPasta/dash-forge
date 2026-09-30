@@ -9,7 +9,7 @@ import { idFile, idOf, shot, signedIn, unlock, waitForRepoResolved } from './hel
  * Repository settings, live on a devnet (QA D-503: no product path wrote `config` after a repo
  * was created). Real spend, about 0.02 DASH per run:
  *
- *   E2E_DEVNET=moutai E2E_WRITE=1 E2E_IDENTITY_DIR=<dir with OWNER, COLLAB> \
+ *   E2E_DEVNET=bonsia E2E_WRITE=1 E2E_IDENTITY_DIR=<dir with OWNER, COLLAB> \
  *     E2E_BIN_DIR=<dir with dg + git-remote-dash> pnpm exec playwright test repo-settings.spec.ts
  *
  * The identities are the spec's own (`E2E_IDENTITY_DIR`), never the shared fixtures: OWNER owns
@@ -46,7 +46,7 @@ function env(who: string): NodeJS.ProcessEnv {
     ...process.env,
     DASH_FORGE_KEY: idFile(who),
     DASH_FORGE_NETWORK: 'devnet',
-    DASH_FORGE_DEVNET_NAME: process.env['E2E_DEVNET'] || 'moutai',
+    DASH_FORGE_DEVNET_NAME: process.env['E2E_DEVNET'] || 'bonsia',
     RUST_LOG: 'error',
     NO_COLOR: '1',
     PATH: `${BIN}:${process.env['PATH'] ?? ''}`,
@@ -93,7 +93,10 @@ test.beforeAll(() => {
   dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform', '--description', 'Dash Forge e2e: repo settings from the web')
   const push = git('OWNER', ['push', REMOTE, 'main', 'trunk'])
   if (!push.ok) throw new Error(`owner push failed:\n${push.out}`)
-  dg('OWNER', 'collab', 'add', SLUG, idOf('COLLAB'), '--role', 'writer')
+  // RC1 consent (R-06): the member accepts before the owner can add them (--wait rides out a
+  // node that has not seen the consent yet).
+  dg('COLLAB', 'collab', 'accept', SLUG)
+  dg('OWNER', 'collab', 'add', SLUG, idOf('COLLAB'), '--role', 'writer', '--wait', '60')
 })
 
 test.afterAll(() => rmSync(SRC, { recursive: true, force: true }))

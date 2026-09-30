@@ -6,7 +6,7 @@ import { DEMO, E2E_DEVNET, expectPlatformPreAllowed, fixtureWriteBlocked, idFile
  * Pull requests, forks and the browser merge engine, live on a devnet (real spend, about
  * 0.01 DASH per run):
  *
- *   E2E_PORT=4324 E2E_DEVNET=moutai E2E_WRITE=1 pnpm exec playwright test v2-pulls.spec.ts
+ *   E2E_PORT=4324 E2E_DEVNET=bonsia E2E_WRITE=1 pnpm exec playwright test v2-pulls.spec.ts
  *
  * OWNER creates a repo; CONTRIB forks the read fixture `forge-v2-demo` (the fork browses
  * through the parent's packs) and opens a PR on it from the fork's `feature/greeting`, the
@@ -21,7 +21,7 @@ const REPO = `e2e-c-${RUN}`
 const FORK = `e2e-c-fork-${RUN}`
 const PR_TITLE = 'Greet by name'
 
-test.skip(E2E_DEVNET === '' || process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_DEVNET=moutai E2E_WRITE=1')
+test.skip(E2E_DEVNET === '' || process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_DEVNET=bonsia E2E_WRITE=1')
 test.skip(!['OWNER', 'COLLAB', 'CONTRIB'].every((n) => existsSync(idFile(n))), 'devnet test identities not found')
 test.skip(fixtureWriteBlocked('demo') !== null, fixtureWriteBlocked('demo') ?? '')
 test.describe.configure({ mode: 'serial', timeout: 300_000 })
@@ -118,6 +118,10 @@ test('c4. a signed-out visitor keeps the draft through the sign-in sheet', async
   await page.goto(demo('pulls/new'), { waitUntil: 'domcontentloaded' })
   await waitForRepoResolved(page)
   await page.getByLabel('Title', { exact: true }).fill('Draft kept across sign-in')
+  // Nothing can be created until a branch to propose is picked (the button stays disabled).
+  const head = page.locator('#pr-head')
+  await expect(head.locator('option', { hasText: 'feature/greeting' })).toBeAttached({ timeout: 90_000 })
+  await head.selectOption({ label: 'feature/greeting' })
   await page.getByRole('button', { name: /sign in to create/i }).click()
   await expect(page.getByRole('dialog')).toBeVisible()
   await page.keyboard.press('Escape')
@@ -135,7 +139,8 @@ test('c5. a writer comments inline and requests changes; merge is maintainers-on
   await expect(line).toBeVisible({ timeout: 120_000 })
   await line.click()
   await page.getByRole('textbox', { name: 'Your comment on src/main.rs line 2 (new)' }).fill('Should this fall back to the user name?')
-  await page.getByRole('button', { name: 'Add comment' }).click()
+  // A member can review, so the composer offers GitHub's two buttons: this one posts now.
+  await page.getByRole('button', { name: 'Add single comment' }).click()
   await eventually(page, visible(page.getByTestId('inline-thread').getByText('Should this fall back to the user name?')))
 
   // main is protected in the fixture: a writer cannot move it. Since #66 (repo settings) the

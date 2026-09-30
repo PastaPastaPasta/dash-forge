@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
             .collect::<Vec<_>>()
             .join(", ")
     );
-    let (releases, _) = c.releases(&repo).await?;
+    let releases = c.releases(&repo).await?.current;
     println!(
         "releases: {}",
         releases

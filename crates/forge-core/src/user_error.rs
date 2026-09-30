@@ -655,12 +655,27 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
         } if MAINTAINER_ONLY.contains(&document_type.as_str()) => {
             needs_maintainer(ctx, document_type, detail)
         }
+        CoreError::NotAMember { detail, .. } if detail.ends_with("for path asMember") => {
+            as_member_refused(ctx, detail)
+        }
         CoreError::NotAMember { detail, .. } => not_a_writer(ctx, detail),
+        CoreError::ReferenceNotFound {
+            document_type,
+            path,
+            detail,
+        } => missing_reference(ctx, Some(document_type), path, detail),
         CoreError::NotPermitted {
             action,
             reason,
             needs,
         } => not_permitted(ctx, action, reason, needs),
+        // 10422: a `propertyConstraints` rule of the type does not hold (forge-v2: a state move
+        // the target's transitions do not allow, an author's merge, a stale dense number).
+        CoreError::RuleRefused {
+            document_type,
+            rule,
+            detail,
+        } => rule_refused(ctx, document_type, rule, detail),
         CoreError::V2NotDeployed { network } => not_deployed(ctx, network),
         CoreError::ContractsMissing { network, detail } => contracts_missing(ctx, network, detail),
         CoreError::Timeout { retryable } => timed_out(ctx, *retryable),
@@ -840,9 +855,9 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
         return Some(insufficient(ctx, &detail));
     }
     // 40120 ReferencedEntityNotFound. On path `$ownerId` it is forge-v2's writer gate
-    // (`ownerRefersTo`): no current `writer`/`maintainer` document for the signer. On any
-    // other path a referenced document, contract or identity is missing — a rejection,
-    // but not about membership.
+    // (`ownerRefersTo`), and on `asMember` RC1's membership proof: no current
+    // `writer`/`maintainer` document for the signer. On any other path a referenced document,
+    // contract or identity is missing — a rejection, but not about membership.
     if let Some(path) = referenced_path(msg) {
         if path == "$ownerId" {
             return Some(not_a_writer(
@@ -850,14 +865,22 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
                 "40120: no writer/maintainer document for your identity",
             ));
         }
-        return Some(
-            UserError::new(
-                codes::REJECTED,
-                ctx.rejected_headline(&format!("a document it refers to at {path} does not exist")),
-            )
-            .cause(format!("40120: {}", one_line(msg)))
-            .fix("check the id you passed for that field; the cause names the missing entity"),
-        );
+        if path == "asMember" {
+            return Some(as_member_refused(
+                ctx,
+                "40120: no writer/maintainer document for your identity, which asMember claims",
+            ));
+        }
+        return Some(missing_reference(
+            ctx,
+            None,
+            path,
+            &format!("40120: {}", one_line(msg)),
+        ));
+    }
+    // 10422 DocumentPropertyConstraintViolated, as text: the same rendering as the typed error.
+    if let Some((document_type, rule)) = violated_rule(msg) {
+        return Some(rule_refused(ctx, &document_type, &rule, &one_line(msg)));
     }
     if is_network_text(&m) {
         return Some(unreachable(ctx, msg));
@@ -905,8 +928,16 @@ fn insufficient(ctx: &ErrorContext<'_>, detail: &str) -> UserError {
     .note("reads, clones and browsing are free and unaffected")
 }
 
-/// forge-core document types only a `maintainer` may create (forge-v2.md §2).
-const MAINTAINER_ONLY: [&str; 4] = ["protectedRefUpdate", "config", "release", "repoKey"];
+/// The document types only a `maintainer` may create: their `ownerRefersTo` gate admits a
+/// maintainer document alone (RC1 contracts; checked against them in the tests).
+const MAINTAINER_ONLY: [&str; 6] = [
+    "protectedRefUpdate",
+    "config",
+    "release",
+    "repoKey",
+    "policy",
+    "webhook",
+];
 
 /// E601 for a maintainer-only write by someone who is not a maintainer (possibly a writer).
 fn needs_maintainer(ctx: &ErrorContext<'_>, document_type: &str, why: &str) -> UserError {
@@ -914,6 +945,10 @@ fn needs_maintainer(ctx: &ErrorContext<'_>, document_type: &str, why: &str) -> U
     let what = match document_type {
         "protectedRefUpdate" => "a protected ref",
         "config" => "the repository's configuration",
+        "release" => "its releases",
+        "repoKey" => "who holds its keys",
+        "policy" => "its merge policy",
+        "webhook" => "its webhooks",
         _ => "this",
     };
     let u = UserError::new(
@@ -934,6 +969,201 @@ fn needs_maintainer(ctx: &ErrorContext<'_>, document_type: &str, why: &str) -> U
     } else {
         u
     }
+}
+
+/// E601 for a write whose `asMember` proof found no maintainer/writer document. Membership is
+/// read once per command, so the likeliest cause is a revocation since: run again, the command
+/// writes as a non-member, which an issue, a comment or a comment review needs no proof for.
+fn as_member_refused(ctx: &ErrorContext<'_>, why: &str) -> UserError {
+    let u = not_a_writer(ctx, why);
+    let mut fix = vec![
+        "if you were a member when the command started, your membership was revoked since: run it again, and it writes as a non-member (an import or an approval still needs membership)".to_string(),
+    ];
+    fix.extend(u.fix.iter().cloned());
+    UserError { fix, ..u }
+}
+
+/// A 40120 on a property (not the membership gates): what it refers to does not exist.
+/// `document_type` is known for a typed error; from text, a `memberId` referring to a
+/// maintainer/writer document can only be a `repoKey`'s.
+fn missing_reference(
+    ctx: &ErrorContext<'_>,
+    document_type: Option<&str>,
+    path: &str,
+    detail: &str,
+) -> UserError {
+    let wraps_to_member = path == "memberId"
+        && match document_type {
+            Some(t) => t == "repoKey",
+            // From text the type is unknown: only a repoKey's memberId refers to a member document.
+            None => {
+                detail.contains("document type maintainer")
+                    || detail.contains("document type writer")
+            }
+        };
+    if wraps_to_member {
+        // RC1: a `repoKey` may only wrap to a current maintainer or writer.
+        return UserError::new(
+            codes::REJECTED,
+            ctx.rejected_headline("a key wrap names someone who is not (or no longer) a member"),
+        )
+        .cause(detail)
+        .fix("run the command again: it re-reads the members and plans the wraps afresh")
+        .note("the wrap's recipient holds no maintainer or writer document (revoked after the wraps were planned, or never enrolled); nothing was written");
+    }
+    if path == "consentBy" {
+        // RC1: a maintainer/writer enrolled by the owner names the member's own `consent`.
+        return UserError::new(
+            codes::REJECTED,
+            ctx.rejected_headline("the member has not accepted the invitation yet"),
+        )
+        .cause(detail)
+        .fix("ask them to accept it (they write a consent document for the repository), then run the command again")
+        .note("nothing was written");
+    }
+    UserError::new(
+        codes::REJECTED,
+        ctx.rejected_headline(&format!("a document it refers to at {path} does not exist")),
+    )
+    .cause(detail)
+    .fix("check the id you passed for that field; the cause names the missing entity")
+}
+
+/// E604 for a 10422: the document breaks `rule` of its type's `propertyConstraints`. The
+/// headline names the rule; the cause says what it asks for when the rule does not hold and
+/// this build knows it. A fault evaluating the rule (an overflow, a division by zero, a value
+/// that is not an integer) is the node's words alone: it is not about what the rule asks.
+fn rule_refused(
+    ctx: &ErrorContext<'_>,
+    document_type: &str,
+    rule: &str,
+    detail: &str,
+) -> UserError {
+    let u = UserError::new(
+        codes::REJECTED,
+        ctx.headline(&format!("consensus refused it by the rule {rule:?}")),
+    );
+    let not_met = detail.contains("it does not hold");
+    match rule_explanation(document_type, rule).filter(|_| not_met) {
+        Some(why) => u
+            .cause(format!("{why} (10422: {document_type} rule {rule})"))
+            .note(format!(
+                "refused before execution: nothing was written. Platform said: {detail}"
+            )),
+        None => u
+            .cause(detail)
+            .note("refused before execution: nothing was written"),
+    }
+}
+
+/// `(document type, rule)` of a 10422 message: `A document of type "issue" breaks its
+/// propertyConstraints rule "dense": …`, quotes plain or escaped (a `Debug`-printed error).
+fn violated_rule(msg: &str) -> Option<(String, String)> {
+    let msg = msg.replace("\\\"", "\"");
+    let quoted = |after: &str| -> Option<String> {
+        let rest = &msg[msg.find(after)? + after.len()..];
+        Some(rest[..rest.find('"')?].to_string())
+    };
+    let rule = quoted("breaks its propertyConstraints rule \"")?;
+    Some((quoted("document of type \"").unwrap_or_default(), rule))
+}
+
+/// What each RC1 `propertyConstraints` rule asks for, in a user's words, by rule name (the keys
+/// of the generated contracts; the tests keep this table and the contracts equal). Where a rule
+/// of the same name asks something else on one type, [`RULE_EXPLANATIONS_BY_TYPE`] says it.
+const RULE_EXPLANATIONS: &[(&str, &str)] = &[
+    // forge-core
+    ("forkIsPublic", "a fork must be public"),
+    ("privateNoBranch", "a private repository does not store its default branch in plaintext"),
+    ("nameNotDotGit", "a repository name may not end in .git"),
+    ("ownerOrConsented", "only the owner may enrol itself; anyone else is enrolled once they have accepted (consentBy names the member)"),
+    ("noPlain", "a private or sealed document may not also carry its content in plaintext"),
+    ("hasName", "a ref update needs its ref name (sealed in a private repository)"),
+    ("noLock", "a ref name may not end in .lock"),
+    ("oidWidth", "a commit id is 20 bytes (SHA-1) or 32 bytes (SHA-256)"),
+    ("encV2", "a sealed config needs at least 61 bytes (the v2 sealing format)"),
+    ("platformChunks", "not every chunk of the pack is on Platform yet (their count and sequence numbers must match chunkCount); run the push again to upload the rest"),
+    ("storageShape", "the pack size does not fit its chunks (at most 14,700 bytes a chunk on Platform, and no chunks for external storage)"),
+    ("kindShape", "a pack's supersedes list holds whole 32-byte hashes, and a tips pack (kind 3) carries 20, 32, 40 or 64 bytes of tips"),
+    ("sizeNonNeg", "a pack size is between 0 and 1 TiB"),
+    ("oneLive", "a tag has at most one live release: publish (+1) only when none is live, and unpublish (-1), edit or yank (0) only a live one; a sealed release always carries 0. Re-read the releases and run it again"),
+    ("atMost20", "a repository has at most 20 topics; remove one first"),
+    // forge-collab
+    ("hasTitle", "an issue or pull request needs a title (sealed in a private repository)"),
+    ("dense", "the number was taken by another issue or pull request created at the same time; run it again for the next number"),
+    ("p_sealedIfPrivate", "a private repository's issues, pull requests and comments are sealed (encrypted)"),
+    ("m_self", "asMember must name the signer itself"),
+    ("i_provenance", "an imported item (imported or upstreamNumber) is written by a maintainer or writer, with asMember set"),
+    ("a_kindOfTarget", "the state change does not fit its target (issue kinds on an issue, pull request kinds on a pull request)"),
+    ("b1_closeDelta", "a close carries delta +1"),
+    ("b2_reopenDelta", "a reopen carries delta -1"),
+    ("b3_otherDelta", "a merge carries delta +2, a draft +8 and ready -8"),
+    ("c1_closedAfter", "it was not open when the close landed (another state change came first); re-read it and run the command again"),
+    ("c2_openAfter", "it was not closed (or not a draft) when this landed (another state change came first); re-read it and run the command again"),
+    ("c3_mergedAfter", "the pull request was not open and ready when the merge landed (another state change came first); re-read it and run the command again"),
+    ("c4_draftAfter", "the pull request was not in the state this moves from when it landed (another state change came first); re-read it and run the command again"),
+    ("c5_draftClosedAfter", "the pull request was not an open draft when the close landed (another state change came first); re-read it and run the command again"),
+    ("e_mergeOid", "a merge names its merge commit (oid)"),
+    ("f_authorNoMerge", "a pull request's author cannot merge it unless they are a maintainer or writer"),
+    ("b4_lockDelta", "a lock carries delta +16 and an unlock -16"),
+    ("c6_lockedAfter", "the thread was already locked (or already unlocked) when this landed; re-read it and run the command again"),
+    ("g_memberLock", "only a maintainer or writer can lock or unlock a thread"),
+    ("hasBody", "a comment needs a body (sealed in a private repository)"),
+    ("noParentSet", "noParent is reserved and is never set"),
+    ("rangeOrder", "a range comment needs a line, and its start line may not follow it"),
+    ("lockGate", "the thread is locked: only maintainers and writers (writing with asMember) can post"),
+    ("memberVerdict", "approve and request changes (verdicts 1 and 2) are a member's and need asMember; a non-member's are verdicts 4 and 5, without asMember"),
+    // forge-community
+    ("publicOnly", "webhooks are for public repositories only"),
+    ("conclusionIfDone", "a completed check run needs a conclusion"),
+    ("doneIfConclusion", "only a completed check run has a conclusion"),
+    ("startedIfRunning", "a check run past queued needs its start time (startedAt)"),
+    ("runningIfStarted", "a queued check run has no start time (startedAt)"),
+    ("completedAtIfDone", "a completed check run needs its completion time (completedAt)"),
+    ("doneIfCompletedAt", "only a completed check run has a completion time (completedAt)"),
+    ("doneAfterStart", "a check run cannot complete before it started"),
+    ("msEpoch", "check-run times are in milliseconds since 1970"),
+    ("notFuture", "a check-run time is more than an hour past the block time; check the reporting machine's clock"),
+    ("outcomeOf", "outcome must match the run: 0 while pending, 1 for success, neutral or skipped, 2 for any other conclusion"),
+    ("privateNoText", "a private repository's check runs carry no summary, links, log, artifacts or external id"),
+    ("sourcesMatchNames", "requiredCheckSources lists one source per required check (or none)"),
+    ("needValue", "this event needs a value (a label, a retarget base or a milestone)"),
+    ("needAssignee", "an assign or unassign event names the assignee as both value and refId"),
+    ("needRefId", "this event needs refId (a thread, a reviewer or a review)"),
+    ("needOid", "a head update names the new head commit (oid)"),
+    ("noState", "a state change (draft, ready, lock, unlock) is a transition, not an event"),
+];
+
+/// The rules whose meaning on one document type differs from [`RULE_EXPLANATIONS`]' entry.
+const RULE_EXPLANATIONS_BY_TYPE: &[(&str, &str, &str)] = &[
+    (
+        "review",
+        "p_sealedIfPrivate",
+        "a private repository's review carries no plaintext body or import details (seal them)",
+    ),
+    (
+        "comment",
+        "i_provenance",
+        "an imported comment is written by a maintainer or writer, with asMember set",
+    ),
+    (
+        "authorEvent",
+        "needRefId",
+        "this event needs refId (a thread or a reviewer)",
+    ),
+];
+
+/// What `rule` asks of a `document_type`: its entry in [`RULE_EXPLANATIONS_BY_TYPE`], else in
+/// [`RULE_EXPLANATIONS`].
+fn rule_explanation(document_type: &str, rule: &str) -> Option<&'static str> {
+    RULE_EXPLANATIONS_BY_TYPE
+        .iter()
+        .find_map(|(t, name, why)| (*t == document_type && *name == rule).then_some(*why))
+        .or_else(|| {
+            RULE_EXPLANATIONS
+                .iter()
+                .find_map(|(name, why)| (*name == rule).then_some(*why))
+        })
 }
 
 fn not_a_writer(ctx: &ErrorContext<'_>, why: &str) -> UserError {
@@ -1775,7 +2005,7 @@ mod tests {
             &PUSH,
         );
         assert_eq!(u.code, "E702");
-        assert!(u.fix[0].contains("--devnet-name moutai"), "{u:?}");
+        assert!(u.fix[0].contains("--devnet-name bonsia"), "{u:?}");
     }
 
     /// Moutai after its reset to beta.6 (2026-09-28): the build's forge contracts are gone.
@@ -1851,10 +2081,10 @@ mod tests {
         assert_eq!(u.code, "E702");
         assert_eq!(
             u.fix[0],
-            "use a network where it is: `git config --global dash.network devnet && git config --global dash.devnetName moutai`, then run the git command again"
+            "use a network where it is: `git config --global dash.network devnet && git config --global dash.devnetName bonsia`, then run the git command again"
         );
         assert!(
-            u.fix[1].contains("DASH_FORGE_DEVNET_NAME=moutai git"),
+            u.fix[1].contains("DASH_FORGE_DEVNET_NAME=bonsia git"),
             "{u:?}"
         );
         assert!(u.fix.iter().all(|f| !f.contains("--network ")), "{u:?}");
@@ -1894,6 +2124,283 @@ mod tests {
             "push rejected: a document it refers to at assignee does not exist"
         );
         assert!(u.cause.unwrap().starts_with("40120: "));
+    }
+
+    /// The RC1 contracts' document schemas, by type.
+    fn rc1_schemas() -> Vec<(String, serde_json::Value)> {
+        let root = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../forge-contracts/contracts"
+        );
+        ["forge-core", "forge-collab", "forge-community"]
+            .iter()
+            .flat_map(|name| {
+                let text = std::fs::read_to_string(format!("{root}/{name}.json")).unwrap();
+                let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+                json["documentSchemas"]
+                    .as_object()
+                    .unwrap()
+                    .clone()
+                    .into_iter()
+            })
+            .collect()
+    }
+
+    /// Every `propertyConstraints` rule of the RC1 contracts, on every type, has an explanation,
+    /// and every explanation (by name, and by type and name) names a rule the contracts have.
+    #[test]
+    fn every_rc1_rule_has_an_explanation() {
+        let mut names = std::collections::BTreeSet::new();
+        let mut pairs = std::collections::BTreeSet::new();
+        for (ty, schema) in rc1_schemas() {
+            for rule in schema["propertyConstraints"]
+                .as_object()
+                .into_iter()
+                .flat_map(serde_json::Map::keys)
+            {
+                assert!(
+                    rule_explanation(&ty, rule).is_some(),
+                    "{ty}: rule {rule} has no entry in RULE_EXPLANATIONS"
+                );
+                names.insert(rule.clone());
+                pairs.insert((ty.clone(), rule.clone()));
+            }
+        }
+        let listed: std::collections::BTreeSet<String> = RULE_EXPLANATIONS
+            .iter()
+            .map(|(r, _)| (*r).to_string())
+            .collect();
+        assert_eq!(
+            listed.len(),
+            RULE_EXPLANATIONS.len(),
+            "a rule is listed twice"
+        );
+        assert_eq!(listed, names);
+        for (ty, rule, _) in RULE_EXPLANATIONS_BY_TYPE {
+            assert!(
+                pairs.contains(&((*ty).to_string(), (*rule).to_string())),
+                "{ty} has no rule {rule}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_explanation_follows_the_type_where_the_rule_differs() {
+        let issue = rule_explanation("issue", "p_sealedIfPrivate").unwrap();
+        let review = rule_explanation("review", "p_sealedIfPrivate").unwrap();
+        assert!(
+            issue.contains("sealed") && !issue.contains("review"),
+            "{issue}"
+        );
+        assert!(review.contains("no plaintext body"), "{review}");
+        assert!(!rule_explanation("comment", "i_provenance")
+            .unwrap()
+            .contains("upstreamNumber"));
+        assert!(rule_explanation("issue", "i_provenance")
+            .unwrap()
+            .contains("upstreamNumber"));
+    }
+
+    /// MAINTAINER_ONLY is exactly the types whose `ownerRefersTo` admits a maintainer alone.
+    #[test]
+    fn maintainer_only_matches_the_rc1_gates() {
+        let mut gated: Vec<String> = rc1_schemas()
+            .into_iter()
+            .filter(|(_, s)| s["ownerRefersTo"]["documentType"] == "maintainer")
+            .map(|(ty, _)| ty)
+            .collect();
+        gated.sort_unstable();
+        let mut listed: Vec<&str> = MAINTAINER_ONLY.to_vec();
+        listed.sort_unstable();
+        assert_eq!(gated, listed);
+    }
+
+    const ISSUE: ErrorContext<'static> = ErrorContext {
+        goal: Some("issue not created"),
+        rejected: None,
+        repo: Some("alice/project"),
+        retry_is_idempotent: false,
+        via_git: false,
+    };
+
+    #[test]
+    fn a_10422_names_the_rule_and_explains_it() {
+        let detail = "A document of type \"issue\" breaks its propertyConstraints rule \"i_provenance\": it does not hold";
+        let u = core_chain(
+            CoreError::RuleRefused {
+                document_type: "issue".into(),
+                rule: "i_provenance".into(),
+                detail: detail.into(),
+            },
+            &ISSUE,
+        );
+        assert_eq!(u.code, "E604");
+        assert_eq!(
+            u.message,
+            "issue not created: consensus refused it by the rule \"i_provenance\""
+        );
+        let cause = u.cause.as_deref().unwrap();
+        assert!(cause.starts_with("an imported item"), "{cause}");
+        assert!(
+            cause.ends_with("(10422: issue rule i_provenance)"),
+            "{cause}"
+        );
+        assert!(u.note.as_deref().unwrap().contains(detail), "{u:?}");
+
+        // The same refusal as text (a broadcast error printed with escaped quotes) reads alike.
+        let text = format!(
+            "state transition broadcast error: {}",
+            detail.replace('"', "\\\"")
+        );
+        let t = core_chain(CoreError::Platform(text), &ISSUE);
+        assert_eq!((t.code, &t.message), (u.code, &u.message));
+        assert_eq!(t.cause, u.cause);
+
+        // A rule this build does not know keeps the node's words.
+        let u = core_chain(
+            CoreError::RuleRefused {
+                document_type: "issue".into(),
+                rule: "newRule".into(),
+                detail: "breaks newRule".into(),
+            },
+            &ISSUE,
+        );
+        assert_eq!(u.cause.as_deref(), Some("breaks newRule"));
+
+        // A fault evaluating a known rule is not what the rule asks: the node's words stay.
+        let fault = "A document of type \"issue\" breaks its propertyConstraints rule \"dense\": a value it reads or computes does not fit a 128-bit signed integer";
+        let u = core_chain(
+            CoreError::RuleRefused {
+                document_type: "issue".into(),
+                rule: "dense".into(),
+                detail: fault.into(),
+            },
+            &ISSUE,
+        );
+        assert_eq!(u.cause.as_deref(), Some(fault));
+    }
+
+    /// A 40120 broadcast error as rs-dpp prints it: a document of `document_type` (a
+    /// deletable one, as the membership documents are), or else an identity, missing for `path`.
+    fn broadcast_40120(document_type: Option<&str>, path: &str) -> String {
+        use dash_sdk::dpp::consensus::state::document::referenced_entity_not_found_error::ReferencedEntityNotFoundError;
+        use dash_sdk::dpp::data_contract::document_type::DocumentPropertyReferenceTarget;
+        let target = match document_type {
+            Some(t) => DocumentPropertyReferenceTarget::DeletableDocument {
+                contract_id: Some([5; 32].into()),
+                document_type_name: t.into(),
+                property_agreement: std::collections::BTreeMap::new(),
+            },
+            None => DocumentPropertyReferenceTarget::Identity,
+        };
+        let err = ReferencedEntityNotFoundError::new([9; 32].into(), target, path.into());
+        format!("state transition broadcast error: {err}")
+    }
+
+    #[test]
+    fn violated_rule_reads_the_type_and_rule() {
+        assert_eq!(
+            violated_rule("A document of type \"review\" breaks its propertyConstraints rule \"memberVerdict\": it does not hold"),
+            Some(("review".into(), "memberVerdict".into()))
+        );
+        assert_eq!(
+            violated_rule("referenced identity x not found for path y"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_40120_on_as_member_is_not_a_member() {
+        let text = broadcast_40120(Some("writer"), "asMember");
+        let u = core_chain(CoreError::Platform(text.clone()), &ISSUE);
+        assert_eq!(u.code, "E601");
+        assert!(u.fix[0].contains("revoked since: run it again"), "{u:?}");
+        // Typed (platform classifies asMember as NotAMember), it reads the same.
+        let bare = text.trim_start_matches("state transition broadcast error: ");
+        let typed = core_chain(
+            CoreError::NotAMember {
+                document_type: "comment".into(),
+                detail: format!("40120: {bare}"),
+            },
+            &ISSUE,
+        );
+        assert_eq!((typed.code, &typed.message), (u.code, &u.message));
+        assert_eq!(typed.fix, u.fix);
+        // The writer gate on `$ownerId` does not suggest it.
+        let gate = broadcast_40120(Some("writer"), "$ownerId");
+        let owner = core_chain(CoreError::Platform(gate), &ISSUE);
+        assert!(!owner.fix[0].contains("revoked since"), "{owner:?}");
+    }
+
+    #[test]
+    fn a_40120_on_a_repo_key_member_asks_to_replan_the_wrap() {
+        let ctx = ErrorContext {
+            goal: Some("member not added"),
+            repo: Some("alice/project"),
+            ..Default::default()
+        };
+        let typed = core_chain(
+            CoreError::ReferenceNotFound {
+                document_type: "repoKey".into(),
+                path: "memberId".into(),
+                detail: "40120: …".into(),
+            },
+            &ctx,
+        );
+        assert_eq!(typed.code, "E604");
+        assert_eq!(
+            typed.message,
+            "member not added: a key wrap names someone who is not (or no longer) a member"
+        );
+        assert!(typed.fix[0].contains("plans the wraps afresh"), "{typed:?}");
+
+        for member_type in ["maintainer", "writer"] {
+            let u = core_chain(
+                CoreError::Platform(broadcast_40120(Some(member_type), "memberId")),
+                &ctx,
+            );
+            assert_eq!(u.message, typed.message);
+        }
+
+        // A runner's memberId refers to an identity: a missing identity, not a stale wrap.
+        let u = core_chain(CoreError::Platform(broadcast_40120(None, "memberId")), &ctx);
+        assert_eq!(
+            u.message,
+            "member not added: a document it refers to at memberId does not exist"
+        );
+    }
+
+    #[test]
+    fn a_40120_on_consent_by_says_the_member_has_not_accepted() {
+        let u = core_chain(
+            CoreError::ReferenceNotFound {
+                document_type: "writer".into(),
+                path: "consentBy".into(),
+                detail: "40120: …".into(),
+            },
+            &ISSUE,
+        );
+        assert_eq!(u.code, "E604");
+        assert!(u
+            .message
+            .ends_with("the member has not accepted the invitation yet"));
+    }
+
+    #[test]
+    fn maintainer_only_rc1_types_ask_for_maintainer() {
+        for (ty, what) in [("policy", "its merge policy"), ("webhook", "its webhooks")] {
+            let u = core_chain(
+                CoreError::NotAMember {
+                    document_type: ty.into(),
+                    detail: "40120: …".into(),
+                },
+                &PUSH,
+            );
+            assert_eq!(
+                u.message,
+                format!("push rejected: only maintainers of alice/project can change {what}")
+            );
+        }
     }
 
     #[test]

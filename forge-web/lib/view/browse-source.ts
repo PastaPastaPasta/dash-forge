@@ -324,6 +324,15 @@ const PER_ORIGIN_CONCURRENCY = 4
 
 /** How many of an artifact's URLs are raced at once (an `ipfs://` fans out per gateway). */
 const MIRROR_RACE_WIDTH = 3
+let mirrorRaceWidth = MIRROR_RACE_WIDTH
+
+/**
+ * Test hook: race `width` URLs at a time (`null` restores {@link MIRROR_RACE_WIDTH}). The
+ * survivability drill tries one at a time, so the places a fallback names are exact.
+ */
+export function overrideMirrorRaceWidth(width: number | null): void {
+  mirrorRaceWidth = width ?? MIRROR_RACE_WIDTH
+}
 
 /**
  * Why a URL failed: a timeout is worth one more sequential try, anything else is not.
@@ -380,8 +389,9 @@ async function withSlot<T>(key: string, run: () => Promise<T>): Promise<T> {
  * same failure again. Keyed by URL, not host: one gateway may lack one CID and hold another.
  */
 // Only URLs whose host answered (FetchFailure `answered`): one nothing answered (offline,
-// refused) is tried again once the connection is back (L-10).
-const deadUrls = new Set<string>()
+// refused) is tried again once the connection is back (L-10). Each keeps why it failed, so a
+// read that skips it still names it among the places that did not serve.
+const deadUrls = new Map<string, string>()
 
 
 /** "Try again": ask every mirror afresh, including the ones that failed this session. */
@@ -479,7 +489,7 @@ function hostsOf(urls: readonly string[]): string[] {
 async function skipDeadGateways(
   urls: readonly string[],
   recorded: ReadonlySet<string>,
-): Promise<{ readonly live: string[]; readonly reasons: string[] }> {
+): Promise<{ readonly live: string[]; readonly down: Failure[] }> {
   const verdicts = await Promise.all(
     urls.map(async (url) => {
       const gw = recorded.has(url) ? null : gatewayOf(url)
@@ -487,51 +497,107 @@ async function skipDeadGateways(
     }),
   )
   const live: string[] = []
-  const reasons = new Set<string>()
-  for (const { url, down } of verdicts) {
-    if (down === null) live.push(url)
-    else reasons.add(gatewayDownReason(externalSourceName(url), down))
+  const down: Failure[] = []
+  for (const verdict of verdicts) {
+    if (verdict.down === null) live.push(verdict.url)
+    else down.push({ url: verdict.url, reason: gatewayDownReason(externalSourceName(verdict.url), verdict.down) })
   }
-  if (live.length === 0) return { live: [...urls], reasons: [] }
-  return { live, reasons: [...reasons] }
+  if (live.length === 0) return { live: [...urls], down: [] }
+  return { live, down }
 }
 
-/** An artifact's fetchable URLs, and those still worth trying (not failed this session, gateway up). */
+/** One URL that did not serve an artifact, and why (`host: why`, the {@link PackUnavailableError} reason format). */
+interface Failure {
+  readonly url: string
+  readonly reason: string
+}
+
+/** `url` failed because `why`, as a {@link Failure} (its reason prefixed with the URL's source name). */
+function failureAt(url: string, why: string): Failure {
+  return { url, reason: `${externalSourceName(url)}: ${why}` }
+}
+
+/** The distinct reasons of `failures`, in order. */
+function reasonsOf(failures: readonly Failure[]): string[] {
+  return [...new Set(failures.map((f) => f.reason))]
+}
+
+/** An artifact's fetchable URLs, those still worth trying (not failed this session, gateway up), and why the rest are not. */
 async function mirrorUrls(
   manifest: PackManifest,
   gateways: readonly string[],
-): Promise<{ readonly urls: string[]; readonly live: string[]; readonly downReasons: string[] }> {
+): Promise<{ readonly urls: string[]; readonly live: string[]; readonly down: Failure[] }> {
   const urls = externalFetchUrls(manifest.uris, gateways)
-  const { live, reasons } = await skipDeadGateways(
+  const skipped = urls.flatMap((url) => {
+    const why = deadUrls.get(url)
+    return why === undefined ? [] : [failureAt(url, why)]
+  })
+  const { live, down } = await skipDeadGateways(
     urls.filter((u) => !deadUrls.has(u)),
     new Set(manifest.uris),
   )
-  return { urls, live, downReasons: reasons }
+  return { urls, live, down: [...skipped, ...down] }
+}
+
+/** The CID of a path-style gateway URL (`…/ipfs/<cid>`), or null. */
+function gatewayCid(url: string): string | null {
+  return /\/ipfs\/([A-Za-z0-9]+)(?:[/?#]|$)/.exec(url)?.[1] ?? null
 }
 
 /**
+ * The failures worth naming once `winner` served (parity with forge-core
+ * `preferred_failures`): only URLs ranked before it in `urls` (one ranked after it that lost
+ * the race, or was never needed, is no fallback), and not another gateway's miss for the CID a
+ * gateway served — the IPFS copy is fine; a default gateway lacking it, or one known to be
+ * down, is not a lost copy. A gateway URL the manifest records (`recorded`) is kept.
+ */
+function preferredFailures(
+  urls: readonly string[],
+  recorded: ReadonlySet<string>,
+  winner: string,
+  failures: readonly Failure[],
+): string[] {
+  const won = urls.indexOf(winner)
+  const cid = gatewayCid(winner)
+  return reasonsOf(
+    failures.filter((f) => {
+      const otherGateway = cid !== null && gatewayCid(f.url) === cid && !recorded.has(f.url)
+      return f.url !== winner && urls.indexOf(f.url) < won && !otherGateway
+    }),
+  )
+}
+
+/**
+ * Which URL served an artifact, and the preferred copies that failed before it (`host: why`,
+ * {@link preferredFailures}), so the trust panel can name both the host the bytes came from and
+ * the recorded copies that are down.
+ */
+type OnServed = (uri: string, failed: readonly string[]) => void
+
+/**
  * Fetch a contiguous range of an external artifact via HTTP Range, trying each fetchable
- * mirror in turn. `onServed` is told which URL answered, so the trust panel can name the host
- * bytes actually came from. A range cannot be hashed on its own: the reader re-hashes every
- * object it reconstructs from it.
+ * mirror in turn. `onServed` is told which URL answered (and which failed first). A range
+ * cannot be hashed on its own: the reader re-hashes every object it reconstructs from it.
  */
 async function fetchExternalRange(
   manifest: PackManifest,
   start: number,
   end: number,
   gateways: readonly string[],
-  onServed?: (uri: string) => void,
+  onServed?: OnServed,
 ): Promise<Uint8Array> {
-  const { urls, live, downReasons } = await mirrorUrls(manifest, gateways)
-  let lastErr: unknown = downReasons.join('; ') || 'no browser-fetchable mirror'
+  const { urls, live, down } = await mirrorUrls(manifest, gateways)
+  let lastErr: unknown = reasonsOf(down).join('; ') || 'no browser-fetchable mirror'
+  const failed = [...down]
   for (const url of live) {
     try {
       const buf = await fetchBody(url, { headers: { Range: `bytes=${start}-${end - 1}` } })
-      onServed?.(url)
+      onServed?.(url, preferredFailures(urls, new Set(manifest.uris), url, failed))
       // Some hosts ignore Range and return the whole body — slice defensively.
       return buf.length > end - start ? buf.subarray(start, end) : buf
     } catch (e) {
-      if (e instanceof FetchFailure && e.answered) deadUrls.add(url)
+      if (e instanceof FetchFailure && e.answered) deadUrls.set(url, errorText(e))
+      failed.push(failureAt(url, errorText(e)))
       lastErr = e
     }
   }
@@ -556,21 +622,21 @@ function errorText(e: unknown): string {
 async function fetchExternalWhole(
   manifest: PackManifest,
   gateways: readonly string[],
-  onServed?: (uri: string) => void,
+  onServed?: OnServed,
   cancel?: AbortSignal,
 ): Promise<Uint8Array> {
-  const { urls, live, downReasons } = await mirrorUrls(manifest, gateways)
+  const { urls, live, down } = await mirrorUrls(manifest, gateways)
   const want = manifest.packHash.toLowerCase()
   if (live.length === 0) {
     throw new PackUnavailableError(
       manifest.packHash,
       hostsOf(urls),
       false,
-      urls.length === 0 ? 'nothing to try' : downReasons.join('; ') || 'every mirror already failed this session',
+      urls.length === 0 ? 'nothing to try' : reasonsOf(down).join('; ') || 'every mirror already failed this session',
     )
   }
   let corrupt = false
-  const reasons: string[] = [...downReasons]
+  const failures: Failure[] = [...down]
   const timedOut: string[] = []
   // Cancels the losing mirrors once one has served the pack (or the whole clone gave up):
   // an ipfs:// URI fans out to one request per gateway, and each would otherwise download
@@ -590,24 +656,25 @@ async function fetchExternalWhole(
       return { url, bytes }
     } catch (e) {
       if (!winner.signal.aborted) {
-        reasons.push(`${externalSourceName(url)}: ${errorText(e)}`)
+        failures.push(failureAt(url, errorText(e)))
         if (e instanceof FetchFailure && e.timedOut) timedOut.push(url)
-        else if (e instanceof FetchFailure && e.answered) deadUrls.add(url)
+        else if (e instanceof FetchFailure && e.answered) deadUrls.set(url, errorText(e))
       }
       throw e
     }
   }
 
   try {
-    const got = (await raceBounded(live, MIRROR_RACE_WIDTH, attempt, winner.signal)) ??
+    const got = (await raceBounded(live, mirrorRaceWidth, attempt, winner.signal)) ??
       (await firstSequential(timedOut, attempt, winner.signal))
     if (got !== null) {
       winner.abort()
-      onServed?.(got.url)
+      // The winner's own earlier timeout (it served on its retry) is not a failure: dropped.
+      onServed?.(got.url, preferredFailures(urls, new Set(manifest.uris), got.url, failures))
       return got.bytes
     }
     if (cancel?.aborted) throw new Error('the in-browser clone was cancelled')
-    throw new PackUnavailableError(manifest.packHash, hostsOf(urls), corrupt, reasons.join('; '))
+    throw new PackUnavailableError(manifest.packHash, hostsOf(urls), corrupt, reasonsOf(failures).join('; '))
   } finally {
     cancel?.removeEventListener('abort', onCancel)
   }
@@ -740,6 +807,27 @@ function noteSource(repo: RepoRef, packHash: string, uri?: string, copy?: string
   })
 }
 
+/**
+ * Record in the repo's ledger the preferred copies that failed (`host: why` each) before
+ * another served pack `packHash`: the read worked, but a recorded copy is down, and the trust
+ * panel's source row names it instead of the fallback passing unnoticed.
+ */
+function noteFailedPlaces(repo: RepoRef, packHash: string, failed: readonly string[]): void {
+  if (failed.length === 0) return
+  const hosts = [...new Set(failed.map((f) => f.slice(0, Math.max(0, f.indexOf(': ')))).filter((h) => h !== ''))]
+  noteContentCheck(repoKey(repo), {
+    fellBackFrom: describePack({ packHash, hosts, reason: failed.join('; '), corrupt: false }, readGatewaysFor(repoKey(repo))),
+  })
+}
+
+/** The {@link OnServed} for pack `packHash` (copy `copy`): the source, and what failed before it (`before`, then the mirrors'). */
+function servedBy(repo: RepoRef, packHash: string, copy?: string, before: readonly string[] = []): OnServed {
+  return (uri, failed) => {
+    noteSource(repo, packHash, uri, copy)
+    noteFailedPlaces(repo, packHash, [...before, ...failed])
+  }
+}
+
 /** A ranged reader over one artifact (platform chunks or external URIs), optionally one copy. */
 export function artifactRangeFetch(
   sdk: EvoSDK,
@@ -751,6 +839,7 @@ export function artifactRangeFetch(
       // Chunks a `platform://` locator names first: on-chain, so no mirror can hold a browse
       // hostage. A range cannot be hashed on its own; the reader re-hashes what it builds.
       let lastErr: unknown
+      const chunkFailures: string[] = []
       for (const at of platformLocatorReads(repo, copy)) {
         try {
           const bytes = await fetchPlatformRange(sdk, at.repo, at.manifest, start, end)
@@ -758,13 +847,14 @@ export function artifactRangeFetch(
           return bytes
         } catch (e) {
           lastErr = e
+          chunkFailures.push(`platform: ${errorText(e)}`)
         }
       }
       const gateways = readGatewaysFor(repoKey(repo))
       if (lastErr !== undefined && externalFetchUrls(copy.uris, gateways).length === 0) {
         throw new PackUnavailableError(copy.packHash, ['platform'], false, errorText(lastErr))
       }
-      return fetchExternalRange(copy, start, end, gateways, (uri) => noteSource(repo, copy.packHash, uri, copy.documentId))
+      return fetchExternalRange(copy, start, end, gateways, servedBy(repo, copy.packHash, copy.documentId, chunkFailures))
     }
     const bytes = await fetchPlatformRange(sdk, repo, copy, start, end)
     noteSource(repo, copy.packHash, undefined, copy.documentId)
@@ -972,12 +1062,13 @@ async function loadExternalCopy(
     }
   }
   const gateways = readGatewaysFor(repoKey(repo))
-  if (reasons.length === 0) return fetchExternalWhole(manifest, gateways, (uri) => noteSource(repo, manifest.packHash, uri), cancel)
+  const served = servedBy(repo, manifest.packHash, undefined, reasons)
+  if (reasons.length === 0) return fetchExternalWhole(manifest, gateways, served, cancel)
   const unavailable = (hosts: readonly string[], why: readonly string[], bad: boolean): PackUnavailableError =>
     new PackUnavailableError(manifest.packHash, ['platform', ...hosts], corrupt || bad, [...reasons, ...why].join('; '))
   if (externalFetchUrls(manifest.uris, gateways).length === 0) throw unavailable([], [], false)
   try {
-    return await fetchExternalWhole(manifest, gateways, (uri) => noteSource(repo, manifest.packHash, uri), cancel)
+    return await fetchExternalWhole(manifest, gateways, served, cancel)
   } catch (e) {
     // Report the chunk failures alongside the mirrors', not only the mirrors'.
     if (e instanceof PackUnavailableError) throw unavailable(e.hosts, [errorText(e)], e.corrupt)
@@ -1157,8 +1248,11 @@ export type UnindexedReason =
 export async function loadBrowseContext(
   sdk: EvoSDK,
   repo: RepoRef,
-  /** A read started now: a re-resolve must not be answered by the read it is checking. */
-  { fresh = false }: { readonly fresh?: boolean } = {},
+  /**
+   * A re-resolve of a context whose pack list was read by `after`: only a read issued after it
+   * answers (the home's revalidation of a moment ago, else a new one), never the one it checks.
+   */
+  { after }: { readonly after?: number } = {},
 ): Promise<BrowseState> {
   // A private repo's artifacts are sealed: nothing is fetched without the reader's session.
   if (repo.visibility === 'private' && repo.session === undefined) throw new PrivateRepoLockedError()
@@ -1169,7 +1263,7 @@ export async function loadBrowseContext(
   // resolves to the wrong pack silently. That is the same misalignment the completeness fix
   // exists to prevent, reintroduced through the back door. A public repo's list comes from the
   // repo chrome store: the home's own read of a moment ago (zero requests), else its delta.
-  const manifests = await readBrowseManifests(sdk, repo, { fresh, network: ACTIVE_NETWORK.network })
+  const manifests = await readBrowseManifests(sdk, repo, { after, network: ACTIVE_NETWORK.network })
   // The gateways this repo's CURRENT members' pushes recorded reach its IPFS node: try them
   // first. A past writer's or a stranger's manifest cannot steer every read.
   noteRepoGateways(
@@ -1362,6 +1456,12 @@ interface BrowseCacheEntry {
   at: number
   promise: Promise<BrowseState>
   settled?: BrowseState
+  /**
+   * With `settled`: when its pack list was last checked (it settled, or a re-resolve behind it
+   * came back). Every read behind that was issued by then, so the next re-resolve takes only a
+   * later one ({@link loadBrowseContext} `after`).
+   */
+  checkedAt?: number
   /** A re-resolve in flight behind this settled entry (a background revalidation, or a miss). */
   refresh?: Promise<BrowseState>
 }
@@ -1445,6 +1545,7 @@ function startEntry(sdk: EvoSDK, repo: RepoRef, key: string): BrowseCacheEntry {
   entry.promise
     .then((state) => {
       entry.settled = state
+      entry.checkedAt = Date.now()
     })
     .catch(() => {
       if (browseCache.get(key) === entry) browseCache.delete(key)
@@ -1456,20 +1557,22 @@ function startEntry(sdk: EvoSDK, repo: RepoRef, key: string): BrowseCacheEntry {
  * Resolve `repo` again behind a settled entry, joining a re-resolve already in flight. A state
  * that {@link supersedes} the cached one replaces it; any other keeps the entry and its warm
  * reader (the same pack list, or a lagging node's older one). Resolves with the state the cache
- * holds afterwards.
+ * holds afterwards. `after`: only a timelines read issued after it answers ({@link loadBrowseContext}).
  */
-function refreshEntry(sdk: EvoSDK, repo: RepoRef, key: string, hit: BrowseCacheEntry & { settled: BrowseState }): Promise<BrowseState> {
+function refreshEntry(sdk: EvoSDK, repo: RepoRef, key: string, hit: BrowseCacheEntry & { settled: BrowseState }, after: number): Promise<BrowseState> {
   if (hit.refresh !== undefined) return hit.refresh
-  const refresh = loadBrowseContext(sdk, repo, { fresh: true })
+  const refresh = loadBrowseContext(sdk, repo, { after })
     .then((state) => {
       // An explicit reload may have dropped the entry meanwhile: leave its successor alone.
       if (browseCache.get(key) !== hit) return state
+      const now = Date.now()
       if (!supersedes(state, hit.settled)) {
+        hit.checkedAt = now
         // Only a read that saw this very pack list counts as fresh: a lagging node's does not.
-        if (manifestsOf(state).size === manifestsOf(hit.settled).size) hit.at = Date.now()
+        if (manifestsOf(state).size === manifestsOf(hit.settled).size) hit.at = now
         return hit.settled
       }
-      browseCache.set(key, { at: Date.now(), promise: Promise.resolve(state), settled: state })
+      browseCache.set(key, { at: now, promise: Promise.resolve(state), settled: state, checkedAt: now })
       return state
     })
     .finally(() => {
@@ -1498,8 +1601,9 @@ export function loadBrowseContextCached(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   if (hit === undefined || !browseEntryLive(hit)) return startEntry(sdk, repo, key).promise
   const settled = settledEntry(key)
   if (settled !== undefined && Date.now() - settled.at >= BROWSE_REVALIDATE_MS) {
-    // A failure keeps serving the last good state; the TTL forces a fresh resolve.
-    refreshEntry(sdk, repo, key, settled).catch(() => undefined)
+    // A failure keeps serving the last good state; the TTL forces a fresh resolve. Any read issued
+    // since the entry was last checked will do (the home's revalidation of a moment ago, D-11).
+    refreshEntry(sdk, repo, key, settled, settled.checkedAt ?? Date.now()).catch(() => undefined)
   }
   return hit.promise
 }
@@ -1531,7 +1635,9 @@ function readerAfterMiss(sdk: EvoSDK, repo: RepoRef, stale: BrowseReader, oidHex
   const before = peekBrowseState(key)
   const resolveAgain = (): Promise<BrowseState> => {
     const hit = settledEntry(key)
-    if (hit !== undefined) return refreshEntry(sdk, repo, key, hit)
+    // A read issued now (or one in flight): the object may come from a push newer than any read
+    // held, such as a PR head or a linked commit.
+    if (hit !== undefined) return refreshEntry(sdk, repo, key, hit, Date.now())
     const pending = browseCache.get(key)
     // The first resolve is still in flight: it started after `stale` was made.
     if (pending !== undefined && browseEntryLive(pending)) return pending.promise

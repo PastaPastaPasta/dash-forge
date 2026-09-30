@@ -14,15 +14,25 @@ GitHub precomputes both on its servers. Forge has no server. The pusher has the 
 
 A push that moves the default branch publishes a **history index** for the new tip. It is stored and transported exactly like the objectLocator and the flatIndex: through the push's replication targets (your own storage honoured, Platform `chunk` documents when the policy includes Platform), sealed for a private repository, and recorded by a `packManifest` whose `kind` is `3`.
 
-**No contract change.** `packManifest.kind` is `{"type": "integer", "minimum": 0, "maximum": 255}` in forge-core, both in the source and in the registered `forge-core.v1.json` (A2KL77ng…). Every existing reader filters by kind: git packs are kind 0, index fragments kind 1, and `v2PackList` is kind-agnostic. So a kind-3 manifest is invisible to older clients. It does not shift any `packRef`, because the locator space is kind-0 packs only.
+**No contract change.** `packManifest.kind` is `{"type": "integer", "minimum": 0, "maximum": 255}` in forge-core, both in the source and in the registered `forge-core.v1.json` (`6SbihK14…` on bonsia). Every existing reader filters by kind: git packs are kind 0, index fragments kind 1, and `v2PackList` is kind-agnostic. So a kind-3 manifest is invisible to older clients. It does not shift any `packRef`, because the locator space is kind-0 packs only.
 
 **Why not a section inside the objectLocator artifact.** The owner preferred riding on the locator. Both shipped locator parsers refuse any other length: `ObjectLocator::parse` in forge-core and `ObjectLocator.parse` in forge-web accept only `bytes.length == fanout + n × 36`. A locator carrying an extra section would be refused by every deployed CLI and web build, so those repos would read as `index-behind` and fall back to the in-browser clone. It would also tie the history to the locator's fragment/fold cycle: a fold rewrites 36 bytes per object, 9.6 MB on dash. A sibling artifact reuses all the locator's machinery (storage, sealing, copies, the reader rule) without either problem.
 
 **The manifest's fields for kind 3:**
 - `tips` = `[tip]` for a full index, or `[tip, baseTip]` for a delta, so a reader chooses one before downloading anything;
 - `objectCount` = the number of path rows;
-- `offsetIndexParts` = the index's format version: 2 for an index with per-path version lists, 0 from a v1 writer. A kind-3 artifact locates itself, so the field is otherwise unused, and no reader validates it for kind 3. The writer reads it to tell a v1 index from a v2 one without downloading either, and the web prefers a v2 index at a tip. The contract rework at the next wipe (beta.7) drops `offsetIndexParts` and `manifestPart`, so the format moves to whatever field replaces them; one place reads it on each side (forge-core `HistoryEntry::format`, forge-web `PackManifest.historyFormat`);
 - `supersedes` = the history indexes it makes redundant.
+
+**Two artifacts per tip (RC1).** A push publishes the index as two artifacts of the same tip, so the file list does not download what only Blame and History read (on dashpay/dash the version lists are most of the 753 KB):
+
+| kind | artifact | header format | read by |
+|---|---|---|---|
+| 3 | the **column index**: tip, base, counts, the commits the paths name, the paths | 1 (no versions section) | the file list's column, the ref bar's count, the log total |
+| 5 | the **version lists**: the whole index | 2 (with the versions section) | Blame and a path's History |
+
+Both have `tips` = `[tip]` or `[tip, baseTip]`. Each kind is its own series of full indexes and cumulative deltas: a delta's header `base` names the full index **of its own kind**, and each supersedes only its own kind. The version lists decide full or delta (`delta_pays`); the column follows them, as a delta over the live full column of the same base tip when there is one, else as a full column. A tip is covered only when both kinds cover it; a push that finds one kind missing publishes that one alone. The contract needs no change: `kind` is an open 0..255 integer, and `kindShape` checks tips on kind 3 only, so kind 5's tip width is a reader rule.
+
+**The format is recorded only in the artifact header** (the `version` byte after `"DFHI"`). The RC1 contract removed `packManifest.offsetIndexParts`, which carried it before the wipe, and no manifest field replaces it: a manifest is only the artifact's address. A reader takes the format from the artifact it fetched, refuses a version it does not know with an error that says to update the client, and refuses an artifact whose format is not one of its kind's (a kind-3 artifact is written as format 1 and read as 1 or 2, since 2 is a superset whose lists a column reader ignores, which also reads an index published before the split; a kind-5 artifact must be format 2: forge-core `HistoryIndex::parse_kind`, forge-web `parseHistoryIndexOfKind`, over the shared fixtures including `history-index-v2-column.hex`). A tip is published with both kinds together; a version-lists base counts for a delta only while a live full column of the same tip stands beside it, so after a push whose column failed to store, both series go full together and are in step from the next push.
 
 ### Format (v1)
 
@@ -113,7 +123,7 @@ The writer's choice, from its local repository and the manifest list (it never d
 
 ### Reader (forge-web)
 
-The browse resolve already reads the repository's whole manifest list, so the kind-3 manifests cost no extra query.
+The browse resolve already reads the repository's whole manifest list, so the history manifests cost no extra query. `historySource` keeps the two kinds apart: `load`/`covers` read the column index (kind 3), which is all the file list, the commit count and the log total touch, and `loadVersions`/`coversVersions` read the version lists (kind 5), which only Blame and a path's History touch (`history-source.test.ts` checks that the column and the count fetch kind 3 alone).
 
 **Candidates.** A candidate is a kind-3 pack whose representative copy is from a **current member**. A delta counts only while a live full index of its base tip stands behind it. If two indexes cover one tip, a full index wins over a delta, and the newer wins between two of the same kind. An index that fails to load (a missing artifact, bad bytes) counts as none: the column walks and the count walks on. Artifacts inflate to at most 64 MB. `packManifest` can only be written by a maintainer or writer (`ownerRefersTo`), and a revoked writer's claims no longer count.
 

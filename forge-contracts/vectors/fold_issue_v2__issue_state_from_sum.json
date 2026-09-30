@@ -1,0 +1,15 @@
+{
+  "name": "issue_state_from_sum",
+  "description": "A list row reads only the target's proved delta sum (no transitions): sum 1 is closed.",
+  "case": "fold_issue",
+  "rules": "v2",
+  "input": {
+    "sum": 1,
+    "events": []
+  },
+  "expected": {
+    "open": false,
+    "labels": [],
+    "assignees": []
+  }
+}

@@ -20,6 +20,8 @@
 //! - [`rules`] — `FORGE_RULES_V2`: ref resolution, event folds, protected-pattern matching,
 //!   membership, numbering, approvals and the pack reader rule.
 //! - [`cost`] — fee constants and the storage-cost estimator.
+//! - [`cost_audit`] — `dg cost audit`: an identity's estimated Forge spend, from proved
+//!   counts of what it created (there is no spend ledger on forge-v2).
 //! - [`keystore`] — bridge-format identity JSON parsing with redacted secrets.
 //! - [`keyring`] — a private repository's keys on Platform: load and resolve the epochs,
 //!   open sealed documents, and write wraps, anchors, rotations and repairs.
@@ -28,9 +30,12 @@
 //! - [`error`] — the `thiserror` taxonomy mirroring the product error classes.
 //! - [`user_error`] — [`user_error::UserError`]: stable code + cause + fix, the exit-code
 //!   table, and the mapping from [`Error`] / SDK messages that `dg` and the helper render.
+//! - `test_support` (tests and the `test-support` feature only) — the RC1 conformance
+//!   validator other crates' tests call.
 //!
 //! The async rs-sdk integration is confined to [`platform`] (style guide §B: the SDK
-//! is touched in exactly one module); every other module is synchronous and SDK-free.
+//! is touched in exactly one module); every other module is synchronous and SDK-free
+//! (`test_support` validates with rs-dpp directly, and never ships).
 
 pub mod backends;
 pub mod budget;
@@ -39,6 +44,7 @@ pub mod ci;
 pub mod collab;
 pub mod config_file;
 pub mod cost;
+pub mod cost_audit;
 pub mod create;
 pub mod envelope;
 pub mod error;
@@ -49,6 +55,7 @@ pub mod key_handoff;
 pub mod keychain;
 pub mod keyring;
 pub mod keystore;
+pub mod layout;
 #[cfg(feature = "cli-logging")]
 pub mod logging;
 pub mod members;
@@ -65,6 +72,8 @@ pub mod sealed;
 pub mod storage;
 #[cfg(test)]
 pub(crate) mod test_http;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 pub mod user_error;
 pub mod webhooks;
 

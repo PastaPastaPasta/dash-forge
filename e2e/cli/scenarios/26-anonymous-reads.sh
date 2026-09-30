@@ -6,6 +6,9 @@
 #   1. `dg repo view`, `dg issue list` / `view`, `dg pr list` / `view` on the read fixture
 #      (forge-v2-demo) succeed. They used to fail with E301 and a `DASH_FORGE_KEY=[redacted]>`
 #      fix line. `dg issue view` shows issue #3's label and close events, as the web does.
+#      Issues and PRs share one number sequence (dense numbering): the fixture's issues are
+#      #1-#4, and its open/approved PR is `demo_pull_number approved` (lib.sh; #5 unless the
+#      seeder's summary says otherwise).
 #   2. A configured key that cannot be opened here (a passphrase-sealed file, no passphrase, no
 #      terminal) does not stop a public read: it used to fail with E303.
 #   3. A private repo read with no identity stops with a clear E301 saying it is private.
@@ -23,11 +26,10 @@ SCENARIO_NAME="26 anonymous reads: repo/issue/pr view and list, release download
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
 
-: "${MOUTAI_FUNDING:=/Users/pasta/workspace/dash-forge-qa/secrets/moutai-funding.wif}"
 : "${MINT_DIR:=${E2E_REPO_ROOT}/tools/mint-identity}"
-: "${E2E_V2_OWNER:=HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr}"
+: "${E2E_V2_OWNER:=${IDID_OWNER}}"  # the read fixture is OWNER-owned (make e2e-fixture)
 : "${E2E_V2_NAME:=forge-v2-demo}"
-DEVNET="${DASH_FORGE_DEVNET_NAME:-moutai}"
+DEVNET="$DASH_FORGE_DEVNET_NAME"
 DEMO="${E2E_V2_OWNER}/${E2E_V2_NAME}"
 LOG="${WORKROOT}/s26"
 S3="http://127.0.0.1:9000"
@@ -56,6 +58,9 @@ anon() { local err="$2"; _retry "$err" anon_once "$@"; }
 # No prompt was shown and no key was asked for.
 unprompted() { ! grep -qiE 'passphrase|recovery words|\[y/N\]|\[Y/n\]' "$1"; }
 
+# Dense numbering: issues #1-#4, PRs #5 (open, approved), #6 (merged), #7 (review-parity draft).
+PR_APPROVED="$(demo_pull_number approved)"
+
 step "1. repo, issues and PRs of ${E2E_V2_NAME} with no identity"
 if anon "$LOG-repo.json" "$LOG-repo.err" -- --json repo view "$DEMO"; then
   check "repo view: ${E2E_V2_NAME}" assert_eq "$E2E_V2_NAME" "$(jq_py "$LOG-repo.json" 'd["name"]')"
@@ -65,7 +70,7 @@ else
   cat "$LOG-repo.err" >&2; bad "anonymous dg repo view"
 fi
 if anon "$LOG-il.json" "$LOG-il.err" -- --json issue list "$DEMO" --state all; then
-  check "issue list: the fixture's issues" test "$(jq_py "$LOG-il.json" 'd["total"]')" -ge 3
+  check "issue list: the fixture's issues" test "$(jq_py "$LOG-il.json" 'd["total"]')" -ge 4
 else
   cat "$LOG-il.err" >&2; bad "anonymous dg issue list"
 fi
@@ -83,12 +88,12 @@ else
   cat "$LOG-iv-h.err" >&2; bad "anonymous dg issue view"
 fi
 if anon "$LOG-pl.json" "$LOG-pl.err" -- --json pr list "$DEMO" --state all; then
-  check "pr list: the fixture's PRs" test "$(jq_py "$LOG-pl.json" 'd["count"]')" -ge 2
+  check "pr list: the fixture's PRs" test "$(jq_py "$LOG-pl.json" 'd["count"]')" -ge 3
 else
   cat "$LOG-pl.err" >&2; bad "anonymous dg pr list"
 fi
-if anon "$LOG-pv.json" "$LOG-pv.err" -- --json pr view "$DEMO" 1; then
-  check "pr view: #1" assert_eq "1" "$(jq_py "$LOG-pv.json" 'd["number"]')"
+if anon "$LOG-pv.json" "$LOG-pv.err" -- --json pr view "$DEMO" "$PR_APPROVED"; then
+  check "pr view: #${PR_APPROVED}" assert_eq "$PR_APPROVED" "$(jq_py "$LOG-pv.json" 'd["number"]')"
 else
   cat "$LOG-pv.err" >&2; bad "anonymous dg pr view"
 fi
@@ -118,13 +123,13 @@ mkdir -p "$IDS" && chmod 700 "$IDS"
 if [[ -n "${E2E_S26_OWNER:-}" ]]; then
   cp "$E2E_S26_OWNER" "$IDS/S26.identity.json"
 else
-  [[ -r "$MOUTAI_FUNDING" ]] || skip_scenario "no moutai funding key ($MOUTAI_FUNDING); set E2E_S26_OWNER"
+  [[ -r "$E2E_MINT_FUNDING" ]] || skip_scenario "no ${DASH_FORGE_DEVNET_NAME} funding key ($E2E_MINT_FUNDING); set E2E_S26_OWNER"
   [[ -d "$MINT_DIR/node_modules/@dashevo/evo-sdk" ]] || skip_scenario "tools/mint-identity has no node_modules (npm ci there)"
-  lock=() lf="${E2E_MINT_LOCK:-/tmp/qa-mint.lock}"
+  lock=() lf="$E2E_MINT_LOCK"
   if command -v lockf >/dev/null; then lock=(lockf -t 1200 "$lf")
   elif command -v flock >/dev/null; then lock=(flock -w 1200 "$lf"); fi
   "${lock[@]}" node "$MINT_DIR/mint.mjs" --network devnet --devnet-name "$DEVNET" --funding fund-from-key \
-    --funding-key-file "$MOUTAI_FUNDING" --out "$IDS" --label S26 --amount 0.05 >"$LOG-mint.log" 2>&1 \
+    --funding-key-file "$E2E_MINT_FUNDING" --out "$IDS" --label S26 --amount 0.05 >"$LOG-mint.log" 2>&1 \
     || { tail -5 "$LOG-mint.log" >&2; skip_scenario "minting failed (funding or network)"; }
 fi
 W="$IDS/S26.identity.json"

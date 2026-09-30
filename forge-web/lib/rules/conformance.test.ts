@@ -214,30 +214,88 @@ function onlyKeys(
 function runCaseV2(v: Vector): void {
   switch (v.case) {
     case 'fold_issue': {
-      onlyKeys(v, ['events', 'authorEvents', 'targetAuthor'])
-      const inp = v.input as V2FoldInput
-      expect(v2.foldIssueStateV2(inp.events ?? [], inp.authorEvents ?? [], inp.targetAuthor)).toEqual(
-        v.expected,
-      )
+      onlyKeys(v, ['transitions', 'sum', 'events'], TRANSITION_NESTED)
+      const inp = v.input as StateInput
+      const [code] = stateOf(v, inp)
+      expect(v2.issueStateV2(code, inp.events ?? [])).toEqual(v.expected)
       break
     }
     case 'fold_pr': {
-      onlyKeys(v, ['events', 'authorEvents', 'targetAuthor', 'baseTip', 'ancestry', 'baseHistory', 'initialDraft'])
-      const inp = v.input as V2FoldInput & {
+      onlyKeys(v, ['transitions', 'sum', 'mergeOid', 'events', 'baseTip', 'ancestry', 'baseHistory'], TRANSITION_NESTED)
+      const inp = v.input as StateInput & {
         readonly baseTip?: string | null
         readonly ancestry?: Pairs
         readonly baseHistory?: BaseHistory
-        readonly initialDraft?: boolean
       }
       const [baseTip, isAncestor] = foldBase(v, inp)
-      const got = v2.foldPrStateV2(inp.events ?? [], inp.authorEvents ?? [], inp.targetAuthor, baseTip, isAncestor, inp.initialDraft ?? false)
-      expect(got).toEqual(v.expected)
+      const [code, mergeOid] = stateOf(v, inp)
+      expect(v2.prStateV2(code, mergeOid, inp.events ?? [], baseTip, isAncestor)).toEqual(v.expected)
       break
     }
-    case 'allocate_number': {
-      onlyKeys(v, ['count', 'takenNumbersDesc', 'trustedMax'])
-      const inp = v.input as { readonly count: number; readonly takenNumbersDesc: readonly number[]; readonly trustedMax?: number }
-      expect(v2.allocateNumber(inp.count, inp.takenNumbersDesc, inp.trustedMax ?? 0)).toEqual(v.expected)
+    case 'transition_moves': {
+      onlyKeys(v, ['cases'], { cases: ['target', 'code', 'action', 'actor', 'targetNumber'] })
+      const { cases } = v.input as {
+        readonly cases: readonly {
+          readonly target: v2.TransitionTarget
+          readonly code: number
+          readonly action: v2.MoveAction
+          readonly actor: v2.Actor
+          readonly targetNumber: number
+        }[]
+      }
+      expect(cases.map((c) => v2.nextTransition(c.target, c.code, c.action, c.actor, c.targetNumber))).toEqual(v.expected)
+      break
+    }
+    case 'transition_fold': {
+      onlyKeys(v, ['sums'])
+      expect((v.input as { readonly sums: readonly number[] }).sums.map(v2.threadStateOf)).toEqual(v.expected)
+      break
+    }
+    case 'transition_status': {
+      onlyKeys(v, ['codes'])
+      expect((v.input as { readonly codes: readonly number[] }).codes.map(v2.statusOfCode)).toEqual(v.expected)
+      break
+    }
+    case 'transition_sum': {
+      onlyKeys(v, ['transitions'], TRANSITION_NESTED)
+      const { transitions } = v.input as { readonly transitions: readonly v2.Transition[] }
+      expect({ code: v2.stateCode(transitions), mergeId: v2.mergeTransition(transitions)?.id ?? null }).toEqual(v.expected)
+      break
+    }
+    case 'repo_counts': {
+      onlyKeys(v, ['issues', 'patches', 'kinds'])
+      const inp = v.input as { readonly issues: number; readonly patches: number; readonly kinds: Readonly<Record<string, number>> }
+      const kinds = new Map(Object.entries(inp.kinds).map(([k, n]) => [Number(k), n] as const))
+      expect(v2.repoCounts(inp.issues, inp.patches, kinds)).toEqual(v.expected)
+      break
+    }
+    case 'dense_number': {
+      onlyKeys(v, ['issues', 'patches'])
+      const inp = v.input as { readonly issues: number; readonly patches: number }
+      expect(v2.denseNumber(inp.issues, inp.patches)).toEqual(v.expected)
+      break
+    }
+    case 'dense_refusal': {
+      onlyKeys(v, ['messages'])
+      expect((v.input as { readonly messages: readonly string[] }).messages.map(v2.namesDenseRule)).toEqual(v.expected)
+      break
+    }
+    case 'check_run_write': {
+      const run = ['status', 'startedAt', 'completedAt', 'conclusion', 'externalId']
+      onlyKeys(v, ['stored', 'report', 'now'], { stored: run, report: run })
+      const inp = v.input as { readonly stored: v2.StoredRun | null; readonly report: v2.RunReport; readonly now: number }
+      expect(v2.checkRunWrite(inp.stored, inp.report, inp.now)).toEqual(v.expected)
+      break
+    }
+    case 'upstream_number': {
+      onlyKeys(v, ['upstreamNumber', 'author', 'repoOwner', 'memberships'])
+      const inp = v.input as {
+        readonly upstreamNumber: number | null
+        readonly author: string
+        readonly repoOwner: string
+        readonly memberships: readonly v2.Membership[]
+      }
+      expect(v2.trustedUpstreamNumber(inp.upstreamNumber, inp.author, inp.repoOwner, new v2.RoleOracle(inp.memberships))).toEqual(v.expected)
       break
     }
     case 'pack_copies': {
@@ -335,7 +393,7 @@ function runCaseV2(v: Vector): void {
       onlyKeys(v, ['runs', 'headOid', 'memberships', 'runners', 'policy'], {
         runs: ['id', 'headOid', 'name', 'status', 'conclusion', 'reporter', 'createdAt'],
         memberships: MEMBERSHIP_KEYS,
-        policy: ['requireChecks', 'requiredChecks'],
+        policy: ['requireChecks', 'requiredChecks', 'requiredCheckSources'],
       })
       const inp = v.input as {
         readonly runs: readonly v2.CheckRunRow[]
@@ -437,6 +495,30 @@ interface V2FoldInput {
   readonly events?: readonly Event[]
   readonly authorEvents?: readonly Event[]
   readonly targetAuthor: string
+}
+
+/** A target's state: its transitions, or (a list row) only their proved `delta` sum. */
+interface StateInput {
+  readonly transitions?: readonly v2.Transition[]
+  readonly sum?: number
+  readonly mergeOid?: string
+  readonly events?: readonly Event[]
+}
+
+const TRANSITION_NESTED: Readonly<Record<string, readonly string[]>> = {
+  ...NESTED_KEYS,
+  transitions: ['id', 'kind', 'actor', 'oid', 'asAuthor', 'createdAt'],
+}
+
+/** The state code and merge oid, from exactly one of `transitions` and `sum` (parity: Rust `state_of`). */
+function stateOf(v: Vector, inp: StateInput): [number, string | null] {
+  expect(inp.sum !== null, `vector ${v.name}: sum is a number or absent`).toBe(true)
+  expect((inp.transitions === undefined) !== (inp.sum === undefined), `vector ${v.name}: exactly one of transitions and sum`).toBe(true)
+  if (inp.transitions !== undefined) {
+    expect(inp.mergeOid, `vector ${v.name}: mergeOid goes with sum`).toBeUndefined()
+    return [v2.stateCode(inp.transitions), v2.mergeTransition(inp.transitions)?.oid ?? null]
+  }
+  return [inp.sum as number, inp.mergeOid ?? null]
 }
 
 describe('FORGE_RULES conformance vectors', () => {

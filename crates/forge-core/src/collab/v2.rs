@@ -6,16 +6,18 @@
 //! needs a `maintainer` or `writer` document for the repo, `authorEvent` needs the signer to
 //! be the target's author (close / reopen only), `release` needs a maintainer, `label` any
 //! member; issues, patches, comments, reviews and stars are un-gated. What is left
-//! client-side is `FORGE_RULES_V2` ([`crate::rules::v2`]): numbering ([`allocate_number`]),
-//! the state fold, approvals and well-formedness.
+//! client-side is `FORGE_RULES_V2` ([`crate::rules::v2`]): the next state move
+//! ([`next_transition`]), the metadata fold, approvals and well-formedness. Issue and PR state
+//! is a chain fact: each close, reopen, merge, draft or ready is one `transition` document, and
+//! the running sum of their `delta` is the target's state code (`STATE-COUNTS.md` §2). Numbers
+//! are dense: the contract's `dense` rule pins `number` to the repo's issue + PR count.
 //!
 //! [`Collab`] is the one entry point. Reads need only a client ([`Collab::reader`]); writes
-//! need the signer ([`Collab::new`]). The explicit-number creates
-//! ([`Collab::create_issue_numbered`], [`Collab::create_patch_numbered`]) are the primitive
-//! the importer builds on; [`Collab::create_issue`] / [`Collab::create_patch`] allocate the
-//! number by the §6 rule and are resumable: the signed create is journaled before it is
-//! broadcast, so re-running an interrupted create re-broadcasts the same bytes instead of
-//! opening a second issue.
+//! need the signer ([`Collab::new`]). [`Collab::create_issue`] / [`Collab::create_patch`] take
+//! the dense next number (one count read) and are resumable: the signed create is journaled
+//! before it is broadcast, so re-running an interrupted create re-broadcasts the same bytes
+//! instead of opening a second issue. The importer creates through
+//! [`Collab::create_imported`], which records the source number as `upstreamNumber`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -26,8 +28,9 @@ use serde::{Deserialize, Serialize};
 use super::private::{self, EventValue};
 use super::{
     check_len, check_text, doc_engine, event_kind_to_u64, insert_imported, label_from_doc,
-    release_from_doc, u64_to_event_kind, CommentAnchor, Imported, Label, Release, ReleaseInput,
-    Verdict, DEFAULT_PAGE,
+    release_from_doc, release_from_sealed, u64_to_event_kind, CommentAnchor, Imported, Label,
+    Release, ReleaseFile, ReleaseInput, ReleaseList, ReleaseStore, ReleaseWritten, Verdict,
+    DEFAULT_PAGE,
 };
 use crate::backends::sha256;
 use crate::create::replay_landed;
@@ -42,16 +45,18 @@ use crate::platform::{
 };
 use crate::private::DocKind;
 use crate::rules::v2::{
-    allocate_number, checks_state, count_approvals, fold_issue_state_v2, fold_pr_review_v2,
-    fold_pr_state_v2, is_author_kind, is_well_formed, number_ceiling, Approvals, CheckRunRow,
-    ChecksPolicy, ChecksState, ContentDoc, ContentKind, Policy, PrReviewState,
-    Review as RuleReview, Role, RoleOracle, Visibility,
+    checks_state, count_approvals, dense_number, fold_pr_review_v2, is_author_kind, is_state_kind,
+    is_well_formed, issue_state_v2, merge_transition, names_dense_rule, next_transition,
+    pr_state_v2, repo_counts, state_code, status_of_code, Actor, Approvals, CheckRunRow,
+    ChecksPolicy, ChecksState, ContentDoc, ContentKind, Policy, PrReviewState, RepoCounts,
+    Review as RuleReview, Role, RoleOracle, StateAction, Transition, TransitionMove,
+    TransitionTarget, Visibility, TRANSITION_KINDS,
 };
 use crate::rules::{self, Event, EventKind, IssueState, PrState};
 use crate::scope::RepoRef;
 use crate::user_error::{codes, UserError};
 
-/// forge-collab document types.
+/// forge-collab document types (issue through milestone); forge-community ones are marked.
 pub const DOC_ISSUE: &str = "issue";
 /// A pull request.
 pub const DOC_PATCH: &str = "patch";
@@ -59,21 +64,24 @@ pub const DOC_PATCH: &str = "patch";
 pub const DOC_COMMENT: &str = "comment";
 /// A review verdict on a patch.
 pub const DOC_REVIEW: &str = "review";
-/// A member-gated state event.
+/// A member-gated event (labels, assignees, retarget, milestones, review kinds, …).
 pub const DOC_EVENT: &str = "event";
-/// An author-gated state event (close, reopen, draft, ready, thread resolution, review
-/// requests, head update).
+/// An author-gated event (thread resolution, review requests, head update).
 pub const DOC_AUTHOR_EVENT: &str = "authorEvent";
-/// A branch policy (maintainer-gated).
+/// A state change of an issue or PR (close, reopen, merge, draft, ready): immutable,
+/// non-deletable, gated to members or the target's author, and judged against the target's
+/// state code by the contract's rules.
+pub const DOC_TRANSITION: &str = "transition";
+/// forge-community: a branch policy (maintainer-gated).
 pub const DOC_POLICY: &str = "policy";
-/// A check run reported on a head (maintainer- or writer-gated).
+/// forge-community: a check run reported on a head (maintainer- or writer-gated).
 pub const DOC_CHECK_RUN: &str = "checkRun";
-/// A star (`indexOnly`).
+/// forge-community: a star (`indexOnly`).
 pub const DOC_STAR: &str = "star";
-/// A trending beat (`indexOnly`, non-deletable): written beside a star when the starrer counts
+/// forge-community: a trending beat (`indexOnly`, non-deletable): written beside a star when the starrer counts
 /// toward Trending (platform-parity-spec §4.3).
 pub const DOC_STAR_BEAT: &str = "starBeat";
-/// A watch (`indexOnly`): cross-device "watching this repo".
+/// forge-community: a watch (`indexOnly`): cross-device "watching this repo".
 pub const DOC_WATCH: &str = "watch";
 /// A milestone definition (maintainer- or writer-gated).
 pub const DOC_MILESTONE: &str = "milestone";
@@ -90,8 +98,8 @@ pub const TRENDING_DEFAULT: bool = true;
 /// The most PRs one push follows ([`Collab::prs_following`]): each costs a few reads.
 pub const MAX_FOLLOWING: usize = 20;
 
-/// Attempts at claiming a number before giving up: each collision re-reads the index, so
-/// the next attempt starts above whatever took the number.
+/// Attempts at claiming the dense next number before giving up: each refusal (another create
+/// took the number first) re-reads the count.
 const MAX_NUMBER_ATTEMPTS: usize = 8;
 
 /// The environment variable that turns the client-side role checks off, so a write reaches
@@ -106,18 +114,6 @@ pub fn precheck_enabled() -> bool {
 // ===========================================================================
 // Types
 // ===========================================================================
-
-/// Concurrent `author`-index reads one allocation makes (one per trusted identity).
-const TRUSTED_READS: usize = 8;
-
-/// The owner, then each other maintainer once (sorted).
-fn trusted_authors<'a>(owner: &str, maintainers: impl IntoIterator<Item = &'a str>) -> Vec<String> {
-    let rest: BTreeSet<&str> = maintainers.into_iter().filter(|m| *m != owner).collect();
-    std::iter::once(owner)
-        .chain(rest)
-        .map(str::to_string)
-        .collect()
-}
 
 /// Issue or pull request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,6 +134,7 @@ fn doc_kind(kind: ContentKind) -> DocKind {
         ContentKind::Review => DocKind::Review,
         ContentKind::RefUpdate => DocKind::RefUpdate,
         ContentKind::Config => DocKind::Config,
+        ContentKind::Release => DocKind::Release,
     }
 }
 
@@ -175,6 +172,15 @@ fn open_with(
 }
 
 impl TargetKind {
+    /// The `transition` target this is ([`TransitionTarget`]; its code is the stored `tk`).
+    #[must_use]
+    pub fn transition_target(self) -> TransitionTarget {
+        match self {
+            TargetKind::Issue => TransitionTarget::Issue,
+            TargetKind::Patch => TransitionTarget::Patch,
+        }
+    }
+
     /// The content kind of this target's document.
     fn content_kind(self) -> ContentKind {
         match self {
@@ -230,6 +236,9 @@ pub struct Issue {
     pub created_at: u64,
     /// Importer provenance, when the issue was archived from another forge.
     pub imported: Option<Imported>,
+    /// The source forge's number (`upstreamNumber`), when an importer recorded it. A free
+    /// field: show it only through [`crate::rules::v2::trusted_upstream_number`].
+    pub upstream_number: Option<u32>,
 }
 
 impl Issue {
@@ -269,12 +278,12 @@ pub struct Patch {
     pub head_oid: String,
     /// A `packManifest` hash in the source repo, when the author recorded one (hex).
     pub patch_manifest_hash: Option<String>,
-    /// Opened as a draft (`draft`); `draft` / `ready` events override it ([`PatchView::state`]).
-    pub draft: bool,
     /// Consensus `$createdAt` (ms).
     pub created_at: u64,
     /// Importer provenance.
     pub imported: Option<Imported>,
+    /// The source forge's number (`upstreamNumber`), as on [`Issue::upstream_number`].
+    pub upstream_number: Option<u32>,
 }
 
 /// The base a PR's merge is folded against: `baseRefName` as of the patch's `$createdAt`
@@ -325,7 +334,8 @@ pub struct PatchInput {
     pub head_oid: Vec<u8>,
     /// A `packManifest` hash in the source repo, if the author published one.
     pub patch_manifest_hash: Option<[u8; 32]>,
-    /// Open as a draft.
+    /// Open as a draft: the create is followed by a draft transition (kind 14), since a
+    /// `patch` carries no draft flag of its own.
     pub draft: bool,
 }
 
@@ -371,12 +381,15 @@ pub struct Review {
     pub imported: Option<Imported>,
 }
 
-/// A target's state documents, by the gate that admitted them (§3).
+/// A target's history: its state changes (`transition`) and its events, by the gate that
+/// admitted them (§3).
 #[derive(Debug, Clone, Default)]
 pub struct TargetLog {
-    /// Member `event`s.
+    /// The target's `transition`s, oldest first: their `delta` sum is its state code.
+    pub transitions: Vec<Transition>,
+    /// Member `event`s (labels, assignees, retarget, milestones, review kinds).
     pub events: Vec<Event>,
-    /// The author's own close / reopen (`authorEvent`).
+    /// The author's own review-kind events (`authorEvent`).
     pub author_events: Vec<Event>,
     /// Private repos: member events whose sealed value is not readable here (kept, without
     /// their value).
@@ -395,6 +408,26 @@ pub struct Listed<T> {
     pub hidden: usize,
     /// The page was full: older rows exist beyond it.
     pub more: bool,
+}
+
+impl TargetLog {
+    /// The target's state code: the sum of its transitions' `delta`, mod 16.
+    #[must_use]
+    pub fn state_code(&self) -> i64 {
+        state_code(&self.transitions)
+    }
+
+    /// The whole sum of its transitions' `delta` (a lock adds 16).
+    #[must_use]
+    pub fn state_sum(&self) -> i64 {
+        rules::v2::state_sum(&self.transitions)
+    }
+
+    /// Whether the conversation is locked (members only may post).
+    #[must_use]
+    pub fn locked(&self) -> bool {
+        rules::v2::is_locked(&self.transitions)
+    }
 }
 
 impl<T> Listed<T> {
@@ -418,13 +451,13 @@ pub struct IssueView {
     pub hidden_values: usize,
     /// Events whose value is in plaintext ([`TargetLog::plaintext_values`]).
     pub plaintext_values: usize,
-    /// The issue's `event` and `authorEvent` documents.
+    /// The issue's `transition`, `event` and `authorEvent` documents.
     pub log: TargetLog,
 }
 
 impl IssueView {
     /// The events that applied to the issue (every member `event`, and the author's own
-    /// close / reopen), in fold order: its history as the web's timeline shows it.
+    /// review-kind events), in fold order. Its state changes are [`TargetLog::transitions`].
     #[must_use]
     pub fn events(&self) -> Vec<&Event> {
         rules::review::merged_log(
@@ -452,9 +485,9 @@ pub struct PatchView {
     pub base_tip: Option<String>,
     /// Whether the head has been a tip of the base ref (a merge naming it would count).
     pub head_on_base: bool,
-    /// Every commit the base ref has pointed at (what a merge event may name).
+    /// Every commit the base ref has pointed at (what a merge may name).
     pub base_tips: BTreeSet<String>,
-    /// The PR's `event` and `authorEvent` documents.
+    /// The PR's `transition`, `event` and `authorEvent` documents.
     pub log: TargetLog,
 }
 
@@ -571,13 +604,13 @@ pub fn newest_check_runs(
 /// Every `checkRun` on commit `oid` in `repo` (the `head (repoId, headOid, $createdAt)` index).
 pub(crate) async fn check_run_docs(
     client: &PlatformClient,
-    collab: &LoadedContract,
+    community: &LoadedContract,
     repo: &RepoRef,
     oid: Vec<u8>,
 ) -> Result<Vec<FetchedDocument>> {
     client
         .query_all_documents(
-            collab,
+            community,
             DOC_CHECK_RUN,
             &[
                 Collab::repo_filter(repo)?,
@@ -603,24 +636,6 @@ pub struct EventPayload<'a> {
     pub ref_id: Option<&'a str>,
 }
 
-/// How a create with an explicit number ended.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Numbered {
-    /// Written by this call.
-    Created {
-        /// The new document id.
-        document_id: String,
-    },
-    /// The number is already taken in this repo (consensus refused the duplicate, or a read
-    /// found it first). `existing` is the document holding it, when it could be read.
-    Taken {
-        /// The document id holding the number.
-        existing_id: Option<String>,
-        /// Its author.
-        existing_author: Option<String>,
-    },
-}
-
 /// How an allocated, journaled create ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Created {
@@ -631,16 +646,83 @@ pub struct Created {
     /// `true` when an interrupted earlier run's transition was re-broadcast and confirmed
     /// (nothing was paid twice).
     pub resumed: bool,
+    /// A PR opened as a draft: the draft transition's id.
+    pub draft_transition: Option<String>,
 }
 
-/// Which gate a close / reopen went through.
+/// One issue or PR as [`Collab::imported_targets`] reads it.
+#[derive(Debug, Clone)]
+pub struct ImportedRow {
+    /// The target.
+    pub target: Target,
+    /// Its `imported` provenance (opened, in a private repo).
+    pub imported: Option<Imported>,
+    /// Its `upstreamNumber`.
+    pub upstream_number: Option<u32>,
+    /// A PR's base (for its merge check); `None` for an issue.
+    pub base: Option<PrBase>,
+}
+
+/// A fetched (and opened) issue or patch as an [`ImportedRow`].
+fn imported_row(kind: TargetKind, d: &FetchedDocument) -> ImportedRow {
+    match kind {
+        TargetKind::Issue => {
+            let i = issue_from_doc(d);
+            ImportedRow {
+                target: i.target(),
+                imported: i.imported,
+                upstream_number: i.upstream_number,
+                base: None,
+            }
+        }
+        TargetKind::Patch => {
+            let p = patch_from_doc(d);
+            ImportedRow {
+                target: p.target(),
+                base: Some(p.base()),
+                imported: p.imported,
+                upstream_number: p.upstream_number,
+            }
+        }
+    }
+}
+
+/// What [`Collab::create_imported`] creates.
+#[derive(Debug, Clone, Copy)]
+pub enum ImportedTarget<'a> {
+    /// An issue.
+    Issue {
+        /// Title.
+        title: &'a str,
+        /// Body.
+        body: &'a str,
+    },
+    /// A pull request (its `draft` is ignored: the importer writes state as transitions).
+    Patch(&'a PatchInput),
+}
+
+/// Which gate an event, or a state change, went through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StateRoute {
-    /// A member `event` (maintainer or writer).
+    /// A member (maintainer or writer): an `event`, or a `transition` with `asAuthor` 0.
     Member,
-    /// The author's `authorEvent`.
+    /// The target's author: an `authorEvent`, or a `transition` with `asAuthor` = its number.
     Author,
+}
+
+/// A state change written ([`Collab::set_state`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StateChange {
+    /// The gate: a member, or the target's author.
+    pub route: StateRoute,
+    /// The `transition` document id.
+    pub transition_id: String,
+    /// Its kind (1, 2, 11–17).
+    pub kind: u8,
+    /// The state code after it.
+    pub after: i64,
 }
 
 // ===========================================================================
@@ -669,6 +751,13 @@ fn imported_of(d: &FetchedDocument) -> Option<Imported> {
     }
 }
 
+/// `upstreamNumber`, when set and in range.
+fn upstream_number_of(d: &FetchedDocument) -> Option<u32> {
+    d.field_u64("upstreamNumber")
+        .and_then(|n| u32::try_from(n).ok())
+        .filter(|&n| n > 0)
+}
+
 fn number_of(d: &FetchedDocument) -> u32 {
     d.field_u64("number")
         .and_then(|n| u32::try_from(n).ok())
@@ -685,6 +774,7 @@ pub fn issue_from_doc(d: &FetchedDocument) -> Issue {
         body: d.field_str("body").unwrap_or_default(),
         created_at: d.created_at.unwrap_or_default(),
         imported: imported_of(d),
+        upstream_number: upstream_number_of(d),
     }
 }
 
@@ -705,10 +795,35 @@ pub fn patch_from_doc(d: &FetchedDocument) -> Patch {
         source_ref_name: d.field_str("sourceRefName"),
         head_oid: d.field_hex("headOid").unwrap_or_default(),
         patch_manifest_hash: d.field_hex("patchManifestHash"),
-        draft: d.field_bool("draft"),
         created_at: d.created_at.unwrap_or_default(),
         imported: imported_of(d),
+        upstream_number: upstream_number_of(d),
     }
+}
+
+/// A fetched `transition` as a rules [`Transition`]; `None` for a kind the contract does not
+/// have (a newer client's).
+pub fn transition_from_doc(d: &FetchedDocument) -> Option<Transition> {
+    let kind = d
+        .field_u64("kind")
+        .and_then(|k| u8::try_from(k).ok())
+        .filter(|k| TRANSITION_KINDS.contains(k))?;
+    Some(Transition {
+        id: d.id.clone(),
+        kind,
+        actor: d.owner_id.clone(),
+        oid: d.field_hex("oid"),
+        as_author: d
+            .field_u64("asAuthor")
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(0),
+        created_at: d.created_at.unwrap_or_default(),
+    })
+}
+
+/// The target a fetched `transition` names (`targetId`, base58).
+fn transition_target_of(d: &FetchedDocument) -> Option<String> {
+    id_field(d, "targetId")
 }
 
 fn id_field(d: &FetchedDocument, name: &str) -> Option<String> {
@@ -764,6 +879,16 @@ pub fn policy_from_doc(d: &FetchedDocument) -> Policy {
         approver_role: small("approverRole"),
         require_checks: d.field_bool("requireChecks"),
         merge_methods: small("mergeMethods"),
+        required_checks: crate::scope::doc_text_list(d, "requiredChecks"),
+        // Identifiers (base58); an empty array reads back as empty bytes.
+        required_check_sources: match d.fields.get("requiredCheckSources") {
+            Some(FieldValue::List(items)) => items
+                .iter()
+                .filter_map(|i| i.as_bytes()?.try_into().ok())
+                .map(platform::encode_identifier)
+                .collect(),
+            _ => Vec::new(),
+        },
     }
 }
 
@@ -848,9 +973,10 @@ fn patch_epoch_keys<'k>(
     })
 }
 
-/// An issue's state from its log (§3 fold).
-fn fold_issue(log: &TargetLog, issue: &Issue) -> IssueState {
-    fold_issue_state_v2(&log.events, &log.author_events, &issue.author)
+/// An issue's state: open or closed from its transitions, labels and assignees from its
+/// member events.
+fn fold_issue(log: &TargetLog) -> IssueState {
+    issue_state_v2(log.state_code(), &log.events)
 }
 
 /// An `event` / `authorEvent` document as a fold [`Event`]; `None` for an unknown kind.
@@ -888,6 +1014,15 @@ fn content_of(kind: ContentKind, d: &FetchedDocument) -> ContentDoc {
         protected_patterns: None,
         enc: d.field_hex("enc").filter(|h| !h.is_empty()),
         epoch: d.field_u64("epoch").and_then(|e| u32::try_from(e).ok()),
+        release_fields: if kind == ContentKind::Release {
+            crate::rules::v2::RELEASE_PLAINTEXT_FIELDS
+                .iter()
+                .filter(|k| d.fields.contains_key(**k))
+                .map(|k| (*k).to_string())
+                .collect()
+        } else {
+            Vec::new()
+        },
     }
 }
 
@@ -901,58 +1036,93 @@ pub fn well_formed(kind: ContentKind, d: &FetchedDocument, visibility: Visibilit
     is_well_formed(&content_of(kind, d), visibility)
 }
 
+/// The source of an imported issue or PR: its provenance and, when known, the source forge's
+/// number (`upstreamNumber`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Provenance<'a> {
+    /// The `imported` object.
+    pub imported: Option<&'a Imported>,
+    /// The source number.
+    pub upstream_number: Option<u32>,
+}
+
+/// `tk` (the target kind tag `transition.targetKind` agrees on), `number`, and the
+/// provenance of a new issue or PR.
+///
+/// `upstreamNumber` is a plain top-level integer (D-2): the sparse `upstream (repoId,
+/// upstreamNumber)` index keys it, and an indexed property cannot be sealed, so it stays
+/// plaintext in a private repo too (it says no more than the number itself does).
+fn target_head(
+    kind: TargetKind,
+    number: u32,
+    from: Provenance<'_>,
+) -> Result<BTreeMap<String, FieldValue>> {
+    let mut p = BTreeMap::new();
+    p.insert("number".to_string(), FieldValue::integer(u64::from(number)));
+    p.insert(
+        "tk".to_string(),
+        FieldValue::integer(u64::from(kind.transition_target().code())),
+    );
+    if let Some(n) = from.upstream_number.filter(|&n| n > 0) {
+        p.insert(
+            "upstreamNumber".to_string(),
+            FieldValue::integer(u64::from(n)),
+        );
+    }
+    insert_imported(&mut p, from.imported)?;
+    Ok(p)
+}
+
 /// The creator-side properties of a new `issue`.
 pub fn issue_props(
     number: u32,
     title: &str,
     body: &str,
-    imported: Option<&Imported>,
+    from: Provenance<'_>,
 ) -> Result<BTreeMap<String, FieldValue>> {
     check_title(title)?;
     check_text("issue body", body, 5120, 5120)?;
-    let mut p = BTreeMap::new();
-    p.insert("number".to_string(), FieldValue::integer(u64::from(number)));
+    let mut p = target_head(TargetKind::Issue, number, from)?;
     p.insert("title".to_string(), FieldValue::text(title));
     if !body.is_empty() {
         p.insert("body".to_string(), FieldValue::text(body));
     }
-    insert_imported(&mut p, imported)?;
     Ok(p)
 }
 
-/// The creator-side properties of a new `patch`.
+/// The creator-side properties of a new `patch`. A draft is not a property: it is a kind-14
+/// transition written after the create ([`Collab::create_patch`]).
 pub fn patch_props(
     number: u32,
     input: &PatchInput,
-    imported: Option<&Imported>,
+    from: Provenance<'_>,
 ) -> Result<BTreeMap<String, FieldValue>> {
     check_title(&input.title)?;
     check_text("PR body", &input.body, 5120, 5120)?;
-    // Written into un-gated data a maintainer's client renders and hands to git: refuse a
-    // name that could smuggle a newline or an option (the `refUpdate` guard, mirrored).
-    if !rules::is_legal_ref_name(&input.base_ref_name) || input.base_ref_name.len() > 255 {
+    // Written into un-gated data a maintainer's client renders and hands to git: refuse what
+    // the contract's ref-name grammar refuses (the `refUpdate` guard, mirrored). The "illegal
+    // PR" prefix is what forge-import's item errors match on.
+    if !rules::is_legal_ref_name(&input.base_ref_name) {
         return Err(Error::Config(format!(
-            "illegal PR base ref name {:?}: 1-255 bytes, no leading '-', no whitespace or \
-             control characters",
+            "illegal PR base ref name {:?}: {REF_NAME_RULE}",
             input.base_ref_name
         )));
     }
     if let Some(s) = &input.source_ref_name {
-        if !rules::is_legal_ref_name(s) || s.len() > 255 {
+        if !rules::is_legal_ref_name(s) {
             return Err(Error::Config(format!(
-                "illegal PR source ref name {s:?}: 1-255 bytes, no leading '-', no whitespace \
-                 or control characters"
+                "illegal PR source ref name {s:?}: {REF_NAME_RULE}"
             )));
         }
     }
-    if !(20..=32).contains(&input.head_oid.len()) {
+    // R-10 `oidWidth`: a SHA-1 (20) or SHA-256 (32) commit id, nothing in between.
+    if !matches!(input.head_oid.len(), 20 | 32) {
         return Err(Error::Config(format!(
-            "PR head oid must be 20-32 bytes, got {}",
+            "PR head oid must be 20 or 32 bytes (SHA-1 or SHA-256), got {}",
             input.head_oid.len()
         )));
     }
-    let mut p = BTreeMap::new();
-    p.insert("number".to_string(), FieldValue::integer(u64::from(number)));
+    let mut p = target_head(TargetKind::Patch, number, from)?;
     p.insert("title".to_string(), FieldValue::text(&input.title));
     if !input.body.is_empty() {
         p.insert("body".to_string(), FieldValue::text(&input.body));
@@ -983,12 +1153,13 @@ pub fn patch_props(
     if let Some(h) = input.patch_manifest_hash {
         p.insert("patchManifestHash".to_string(), FieldValue::bytes32(h));
     }
-    if input.draft {
-        p.insert("draft".to_string(), FieldValue::boolean(true));
-    }
-    insert_imported(&mut p, imported)?;
     Ok(p)
 }
+
+/// What a legal ref name is, for a refusal: the contract's grammar (git check-ref-format).
+const REF_NAME_RULE: &str = "a full ref name under refs/ (such as refs/heads/main) that git \
+     check-ref-format accepts: no '..', '@{', control characters, spaces or ~^:?*[\\, no \
+     component starting with '.' or ending in '.lock', at most 255 bytes";
 
 fn check_title(title: &str) -> Result<()> {
     if title.trim().is_empty() {
@@ -1024,6 +1195,12 @@ pub fn event_payload_props(
     payload: &EventPayload<'_>,
 ) -> Result<BTreeMap<String, FieldValue>> {
     let EventPayload { value, oid, ref_id } = *payload;
+    if is_state_kind(kind) {
+        return Err(Error::Config(format!(
+            "a {} is a state change: it is written as a `transition`, not an event",
+            kind_verb(kind)
+        )));
+    }
     // an empty value is no value: never written, and a kind that needs one is refused
     let value = value.filter(|v| !v.is_empty());
     if let Some(v) = value {
@@ -1038,7 +1215,7 @@ pub fn event_payload_props(
     match kind {
         EventKind::Retarget if !value.is_some_and(rules::is_legal_ref_name) => {
             return Err(Error::Config(format!(
-                "illegal retarget base ref name {value:?}"
+                "illegal retarget base ref name {value:?}: {REF_NAME_RULE}"
             )));
         }
         EventKind::ThreadResolve
@@ -1090,12 +1267,172 @@ pub fn event_payload_props(
     Ok(p)
 }
 
-/// The properties of an `authorEvent` close or reopen.
-pub fn author_event_props(target: &Target, close: bool) -> Result<BTreeMap<String, FieldValue>> {
-    event_props(target, close_kind(close), None, None)
+/// The properties of the `transition` that carries out `mv` on `target` (without `repoId`):
+/// `targetId`, `targetNumber`, `targetKind`, `kind`, `delta`, `asAuthor`, and for a merge
+/// (kind 13) the merge commit `oid` (20 or 32 bytes; the contract's `e_mergeOid`).
+pub fn transition_props(
+    target: &Target,
+    mv: &TransitionMove,
+    oid: Option<&[u8]>,
+) -> Result<BTreeMap<String, FieldValue>> {
+    if mv.target_kind != target.kind.transition_target().code() {
+        return Err(Error::Config(format!(
+            "a kind-{} transition does not apply to {} #{}",
+            mv.kind,
+            target.kind.noun(),
+            target.number
+        )));
+    }
+    let merge = mv.kind == crate::rules::transition::PR_MERGE;
+    let oid = oid.filter(|o| !o.is_empty());
+    match oid {
+        Some(o) if !matches!(o.len(), 20 | 32) => {
+            return Err(Error::Config(format!(
+                "a merge names a 20- or 32-byte commit oid, got {} bytes",
+                o.len()
+            )))
+        }
+        None if merge => return Err(Error::Config("a merge names the merge commit (oid)".into())),
+        Some(_) if !merge => {
+            return Err(Error::Config(format!(
+                "only a merge names a commit; a kind-{} transition does not",
+                mv.kind
+            )))
+        }
+        _ => {}
+    }
+    let mut p = target_props(target)?;
+    p.insert(
+        "targetKind".to_string(),
+        FieldValue::integer(u64::from(mv.target_kind)),
+    );
+    p.insert("kind".to_string(), FieldValue::integer(u64::from(mv.kind)));
+    p.insert("delta".to_string(), FieldValue::signed(mv.delta));
+    p.insert(
+        "asAuthor".to_string(),
+        FieldValue::integer(u64::from(mv.as_author)),
+    );
+    if let Some(o) = oid {
+        p.insert("oid".to_string(), FieldValue::bytes(o.to_vec()));
+    }
+    Ok(p)
 }
 
-/// The properties of a `policy` (without `repoId`).
+/// The request a state change is: its [`StateAction`], and the verb the messages use.
+fn action_verb(action: StateAction) -> &'static str {
+    match action {
+        StateAction::Close => "close",
+        StateAction::Reopen => "reopen",
+        StateAction::Merge => "merge",
+        StateAction::Draft => "convert to a draft",
+        StateAction::Ready => "mark ready",
+        StateAction::Lock => "lock",
+        StateAction::Unlock => "unlock",
+    }
+}
+
+/// What a target's state code reads as, for a refusal ("it is already closed").
+fn state_words(kind: TargetKind, code: i64) -> &'static str {
+    let s = status_of_code(code);
+    match (s.merged, s.open, kind == TargetKind::Patch && s.draft) {
+        (true, _, _) => "merged",
+        (_, true, true) => "an open draft",
+        (_, true, false) => "open",
+        (_, false, true) => "a closed draft",
+        (_, false, false) => "closed",
+    }
+}
+
+/// The transition sum `action` is a legal move from (a PR's close and reopen also have draft
+/// forms, 8 → 9 and 9 → 8; an unlock needs a lock).
+fn legal_from(action: StateAction) -> i64 {
+    match action {
+        StateAction::Close | StateAction::Merge | StateAction::Draft | StateAction::Lock => 0,
+        StateAction::Reopen => 1,
+        StateAction::Ready => 8,
+        StateAction::Unlock => rules::v2::LOCK_DELTA,
+    }
+}
+
+/// The move `action` is from the state it is legal from ([`legal_from`]), written as `actor`
+/// with no actor gate: what the client attempts with the pre-check off, so consensus judges
+/// every rule (a non-member's gate, `f_authorNoMerge` for an author's merge, the `c*` state
+/// rules). `None` for an action the target kind has no transition for.
+fn forced_move(
+    target: TransitionTarget,
+    action: StateAction,
+    actor: Actor,
+    number: u32,
+) -> Option<TransitionMove> {
+    let mv = next_transition(target, legal_from(action), action, Actor::Member, number)?;
+    Some(TransitionMove {
+        as_author: if actor == Actor::Author { number } else { 0 },
+        ..mv
+    })
+}
+
+/// Why `action` cannot be carried out on `target` in state `code` by `actor` (no legal
+/// move): the user error, raised before anything is signed.
+fn no_move(target: &Target, code: i64, action: StateAction, actor: Actor) -> Error {
+    let what = format!(
+        "{} {} #{}",
+        action_verb(action),
+        target.kind.noun(),
+        target.number
+    );
+    if actor == Actor::Other {
+        return Error::NotPermitted {
+            action: what,
+            reason: format!(
+                "you are neither a member nor the {}'s author",
+                target.kind.noun()
+            ),
+            needs: "writer".into(),
+        };
+    }
+    if action == StateAction::Merge && actor == Actor::Author && status_of_code(code).open {
+        return Error::NotPermitted {
+            action: what,
+            reason: "only a maintainer or writer can merge".into(),
+            needs: "writer".into(),
+        };
+    }
+    if matches!(action, StateAction::Lock | StateAction::Unlock) {
+        if actor == Actor::Author {
+            return Error::NotPermitted {
+                action: what,
+                reason: "only a maintainer or writer can lock or unlock a conversation".into(),
+                needs: "writer".into(),
+            };
+        }
+        let state = if status_of_code(code).locked {
+            "already locked"
+        } else {
+            "not locked"
+        };
+        return UserError::new(codes::REJECTED, format!("cannot {what}: it is {state}"))
+            .note("checked before anything was signed; nothing was written or paid")
+            .into();
+    }
+    let hint = match (action, status_of_code(code)) {
+        (StateAction::Merge, s) if s.draft && s.open => " (mark it ready first)",
+        _ => "",
+    };
+    UserError::new(
+        codes::REJECTED,
+        format!(
+            "cannot {what}: it is {}{hint}",
+            state_words(target.kind, code)
+        ),
+    )
+    .note("checked before anything was signed; nothing was written or paid")
+    .into()
+}
+
+/// The properties of a `policy` (without `repoId`). Refuses what forge-community would: over
+/// 10 approvals, an unknown approver role, merge methods over 15, more than 10 required checks
+/// (or a repeated, empty or oversized name), and check sources that do not pair up with the
+/// names (`sourcesMatchNames`: as many as the names, or none).
 pub fn policy_props(policy: &Policy) -> Result<BTreeMap<String, FieldValue>> {
     if policy.required_approvals > 10 || policy.approver_role > 1 {
         return Err(Error::Config(
@@ -1104,6 +1441,37 @@ pub fn policy_props(policy: &Policy) -> Result<BTreeMap<String, FieldValue>> {
                 .into(),
         ));
     }
+    if policy.merge_methods > 15 {
+        return Err(Error::Config(format!(
+            "merge methods {} is not a mask of ff (1), merge (2), squash (4) and rebase (8)",
+            policy.merge_methods
+        )));
+    }
+    let names = &policy.required_checks;
+    let unique: BTreeSet<&String> = names.iter().collect();
+    if names.len() > 10
+        || unique.len() != names.len()
+        || names
+            .iter()
+            .any(|n| n.is_empty() || n.chars().count() > 100 || n.len() > 200)
+    {
+        return Err(Error::Config(
+            "a policy takes at most 10 required checks, each named once in 1-100 characters".into(),
+        ));
+    }
+    let sources = &policy.required_check_sources;
+    if !sources.is_empty() && sources.len() != names.len() {
+        return Err(Error::Config(format!(
+            "{} check source(s) for {} required check(s): name one source per check, in the \
+             same order, or none",
+            sources.len(),
+            names.len()
+        )));
+    }
+    let source_ids = sources
+        .iter()
+        .map(|s| platform::decode_identifier(s).map(FieldValue::identifier))
+        .collect::<Result<Vec<_>>>()?;
     let mut p = BTreeMap::new();
     p.insert(
         "requiredApprovals".to_string(),
@@ -1121,6 +1489,18 @@ pub fn policy_props(policy: &Policy) -> Result<BTreeMap<String, FieldValue>> {
         "mergeMethods".to_string(),
         FieldValue::integer(u64::from(policy.merge_methods)),
     );
+    if !names.is_empty() {
+        p.insert(
+            "requiredChecks".to_string(),
+            FieldValue::text_list(names.iter().cloned()),
+        );
+    }
+    if !source_ids.is_empty() {
+        p.insert(
+            "requiredCheckSources".to_string(),
+            FieldValue::List(source_ids),
+        );
+    }
     Ok(p)
 }
 
@@ -1191,7 +1571,7 @@ pub fn review_props(
     comment_count: Option<u16>,
     imported: Option<&Imported>,
 ) -> Result<BTreeMap<String, FieldValue>> {
-    if !(1..=3).contains(&verdict.code()) {
+    if !(1..=5).contains(&verdict.code()) {
         return Err(Error::Config(format!("unknown verdict {}", verdict.code())));
     }
     check_text("review body", body, 5120, 5120)?;
@@ -1218,11 +1598,34 @@ pub fn review_props(
     Ok(p)
 }
 
-fn close_kind(close: bool) -> EventKind {
-    if close {
-        EventKind::Close
-    } else {
-        EventKind::Reopen
+/// Whether a star of `repo` by `signer` also beats for Trending: RC1's `starBeat` names a public
+/// repository (`vis: "public"`, proved against it) and its owner (`repoOwner`, which may not be
+/// the signer: an owner's own star does not trend).
+fn beats(repo: &RepoRef, signer: &str) -> bool {
+    repo.visibility == Visibility::Public && signer != repo.owner_id()
+}
+
+/// Whether a document's `asMember` proof is required rather than optional: an import or an
+/// upstream number (`i_provenance`), or a member verdict (1 / 2, `memberVerdict`). (A post to a
+/// locked thread needs it too, `lockGate`, which a write cannot see from its properties.)
+fn proof_required(props: &BTreeMap<String, FieldValue>) -> bool {
+    props.contains_key("imported")
+        || props.contains_key("upstreamNumber")
+        || props
+            .get("verdict")
+            .and_then(FieldValue::as_u64)
+            .is_some_and(|v| Verdict::from_code(v).needs_member_proof())
+}
+
+/// Refuse a write of `doc_type` into a contract the RC1 layout does not put it in.
+fn check_layout(repo: &RepoRef, contract: &LoadedContract, doc_type: &str) -> Result<()> {
+    match repo.forge().contract_id_of(doc_type) {
+        Some(id) if id == contract.id() => Ok(()),
+        want => Err(Error::Config(format!(
+            "internal: a {doc_type} belongs in {}, not in contract {}",
+            want.unwrap_or("no forge-v2 contract"),
+            contract.id()
+        ))),
     }
 }
 
@@ -1239,24 +1642,32 @@ fn target_props(target: &Target) -> Result<BTreeMap<String, FieldValue>> {
     Ok(p)
 }
 
-/// How a close / reopen by `signer` must be written (§3): a member writes an `event`, the
-/// target's author (who is not a member) an `authorEvent`. `None`: neither, so consensus
-/// would refuse both. A member who is also the author uses the member route, which carries
-/// every kind.
-pub fn state_route(signer_role: Option<Role>, signer: &str, target: &Target) -> Option<StateRoute> {
-    kind_route(signer_role, signer, target, EventKind::Close)
+/// Who `signer` is to a state change of `target` (§3): a member (`asAuthor` 0), else the
+/// target's author (`asAuthor` = its number), else no one the contract admits. A member who is
+/// also the author writes as a member, which admits every kind (a merge too).
+pub fn state_actor(signer_role: Option<Role>, signer: &str, target: &Target) -> Actor {
+    if signer_role.is_some() {
+        Actor::Member
+    } else if signer == target.author {
+        Actor::Author
+    } else {
+        Actor::Other
+    }
 }
 
-/// [`state_route`] for any kind: the author route only for an author kind
-/// ([`is_author_kind`]); merge, labels, assignees, retarget, dismissals and milestones are
-/// members only.
+/// How an event of `kind` by `signer` is written: a member's `event`, else — for an author
+/// kind ([`is_author_kind`]) — the author's `authorEvent`. `None`: consensus admits neither.
+/// A state kind (close, reopen, merge, draft, ready) is never an event: it is `None` here
+/// ([`state_actor`] routes it).
 pub fn kind_route(
     signer_role: Option<Role>,
     signer: &str,
     target: &Target,
     kind: EventKind,
 ) -> Option<StateRoute> {
-    if signer_role.is_some() {
+    if is_state_kind(kind) {
+        None
+    } else if signer_role.is_some() {
         Some(StateRoute::Member)
     } else if signer == target.author && is_author_kind(kind) {
         Some(StateRoute::Author)
@@ -1265,46 +1676,139 @@ pub fn kind_route(
     }
 }
 
-/// Every taken number the §6 allocator needs, from a probe of the `number` index: `base`
-/// and the contiguous run above it. `page(after)` returns up to one page of taken numbers
-/// `> after`, ascending; this pages until the run breaks (a gap, or a short page).
-pub async fn contiguous_run_above<F, Fut>(
-    base: u32,
-    page_size: usize,
-    mut page: F,
-) -> Result<Vec<u32>>
-where
-    F: FnMut(u32) -> Fut,
-    Fut: std::future::Future<Output = Result<Vec<u32>>>,
-{
-    let mut run = Vec::new();
-    let mut last = base;
-    loop {
-        let rows = page(last).await?;
-        let full = rows.len() >= page_size;
-        for n in rows {
-            if u64::from(n) != u64::from(last) + 1 {
-                return Ok(run);
-            }
-            run.push(n);
-            last = n;
-        }
-        if !full || last == u32::MAX {
-            return Ok(run);
-        }
+/// Whether `e` says the dense number was taken: consensus refused the number (a 10422 naming
+/// `dense`, or the unique `number` index once the rules pass) because another create took it
+/// between the count read and the write. Nothing landed; count again.
+fn number_taken(e: &Error) -> bool {
+    match e {
+        Error::DuplicateUniqueIndex(_) => true,
+        Error::RuleRefused { rule, .. } if rule == crate::rules::v2::DENSE_RULE => true,
+        Error::RuleRefused { detail, .. } | Error::Platform(detail) => names_dense_rule(detail),
+        _ => false,
     }
 }
 
-/// A PR's view folded from its log and its base ref's tips (pure; [`Collab::patch_view`] and
-/// [`Collab::list_patch_views`] read the inputs).
+/// The fields that identify a create's content: an issue's or PR's number, kind tag, text,
+/// provenance and (a PR's) refs and head, as the signer wrote them.
+const CONTENT_FIELDS: [&str; 9] = [
+    "number",
+    "tk",
+    "title",
+    "body",
+    "upstreamNumber",
+    "imported",
+    "headOid",
+    "baseRefName",
+    "sourceRefName",
+];
+
+/// Whether two field values hold the same data (integers by value whatever their width,
+/// byte arrays whatever their kind, objects field by field).
+fn same_value(a: Option<&FieldValue>, b: Option<&FieldValue>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            if let (Some(x), Some(y)) = (a.as_i64(), b.as_i64()) {
+                return x == y;
+            }
+            if let (Some(x), Some(y)) = (a.as_bytes(), b.as_bytes()) {
+                return x == y;
+            }
+            match (a, b) {
+                (FieldValue::Object(x), FieldValue::Object(y)) => {
+                    x.len() == y.len() && x.iter().all(|(k, v)| same_value(Some(v), y.get(k)))
+                }
+                _ => a == b,
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Whether `stored` (the document now at the number a create was refused, opened in a private
+/// repo) is the signer's own create of `plain`: an earlier attempt of the same create landed
+/// (a consumed nonce whose read lagged), so it is the result, not a reason to take the next
+/// number and write the issue twice.
+fn is_own_copy(
+    stored: &FetchedDocument,
+    signer: &str,
+    plain: &BTreeMap<String, FieldValue>,
+) -> bool {
+    stored.owner_id == signer
+        && CONTENT_FIELDS
+            .iter()
+            .all(|k| same_value(stored.fields.get(*k), plain.get(*k)))
+}
+
+/// Whether the document now at a refused number is this create's own landed attempt: one of
+/// the ids this call signed (`attempts`), and the signer's copy of `plain` ([`is_own_copy`]).
+/// Content alone is not enough: the signer may file the same title and body twice on purpose,
+/// and the earlier issue must never stand in for the new one.
+fn adoptable(
+    stored: &FetchedDocument,
+    signer: &str,
+    plain: &BTreeMap<String, FieldValue>,
+    attempts: &[(u32, String)],
+) -> bool {
+    attempts.iter().any(|(_, id)| *id == stored.id) && is_own_copy(stored, signer, plain)
+}
+
+/// Whether `e` is a refusal of a state move by the contract's sum rules (`c1`…`c5`): the
+/// target's state changed between the read and the write.
+fn is_state_rule_refusal(e: &Error) -> bool {
+    matches!(e, Error::RuleRefused { document_type, rule, .. }
+        if document_type == DOC_TRANSITION
+            && rule.starts_with('c')
+            && rule.as_bytes().get(1).is_some_and(u8::is_ascii_digit)
+            && rule.as_bytes().get(2) == Some(&b'_'))
+}
+
+/// A grouped answer's key that does not decode: the contract's encoding is not the one this
+/// reader expects, so nothing read from it can be trusted (never silently "open").
+fn undecodable(what: &str, key: &[u8]) -> Error {
+    Error::Platform(format!(
+        "a grouped {what} came back keyed by {} ({} bytes), which this client cannot read",
+        hex::encode(key),
+        key.len()
+    ))
+}
+
+/// The per-target transition sums of a grouped sum ([`Collab::state_sums`]), by target id: a
+/// target with no transitions is absent from the answer and reads 0.
+fn sums_by_target(sums: BTreeMap<Vec<u8>, i64>) -> Result<BTreeMap<String, i64>> {
+    sums.into_iter()
+        .map(|(k, v)| {
+            platform::decode_identifier_key(&k)
+                .map(|id| (id, v))
+                .ok_or_else(|| undecodable("sum of transition.delta", &k))
+        })
+        .collect()
+}
+
+/// A grouped count of `transition.kind` ([`Collab::repo_state_counts`]) as counts per kind.
+fn counts_by_kind(counts: BTreeMap<Vec<u8>, u64>) -> Result<BTreeMap<u8, u64>> {
+    counts
+        .into_iter()
+        .map(|(k, v)| {
+            platform::decode_u8_key(&k)
+                .map(|kind| (kind, v))
+                .ok_or_else(|| undecodable("count of transition.kind", &k))
+        })
+        .collect()
+}
+
+/// A PR's view from its log and its base ref's tips (pure; [`Collab::patch_view`] and
+/// [`Collab::list_patch_views`] read the inputs). "Merged" is the chain fact (a member
+/// recorded a merge, D-9); [`PrState::merge_on_base`] says whether its commit was a tip of the
+/// base, so readers label a merge they cannot find there.
 fn view_of(patch: Patch, log: TargetLog, base: rules::MergeBaseTips) -> PatchView {
-    let state = fold_pr_state_v2(
+    let merge_oid = merge_transition(&log.transitions).and_then(|t| t.oid.clone());
+    let state = pr_state_v2(
+        log.state_code(),
+        merge_oid.as_deref(),
         &log.events,
-        &log.author_events,
-        &patch.author,
         base.tip.as_deref(),
         |oid, _| base.contains(oid),
-        patch.draft,
     );
     let review = fold_pr_review_v2(
         &log.events,
@@ -1457,6 +1961,10 @@ pub struct Collab<'a> {
     /// row's base against them), keyed by repository id. Dropped by
     /// [`Collab::refs_changed`] after a push this command made.
     private_updates: std::sync::Mutex<Option<([u8; 32], Arc<crate::refs::PrivateUpdates>)>>,
+    /// Whether the signer holds a maintainer or writer document of the repository (by id),
+    /// read once per `Collab`: what `asMember` proves on every issue, PR, comment and review
+    /// the command writes ([`Self::stamp`]).
+    member: std::sync::Mutex<Option<(String, bool)>>,
 }
 
 impl<'a> Collab<'a> {
@@ -1471,6 +1979,7 @@ impl<'a> Collab<'a> {
             signer: Some((identity, bridge)),
             keyring: crate::repo::KeyringCache::default(),
             private_updates: std::sync::Mutex::default(),
+            member: std::sync::Mutex::default(),
         }
     }
 
@@ -1486,6 +1995,7 @@ impl<'a> Collab<'a> {
             signer: None,
             keyring: crate::repo::KeyringCache::default(),
             private_updates: std::sync::Mutex::default(),
+            member: std::sync::Mutex::default(),
         }
     }
 
@@ -1651,6 +2161,12 @@ impl<'a> Collab<'a> {
         self.client.fetch_contract(&repo.forge().collab).await
     }
 
+    /// forge-community: stars, beats, watches, follows, check runs, policies, webhooks and
+    /// profiles (`docs/contracts/forge-v2.md` §2).
+    pub(super) async fn community_contract(&self, repo: &RepoRef) -> Result<LoadedContract> {
+        self.client.fetch_contract(&repo.forge().community).await
+    }
+
     pub(super) async fn core_contract(&self, repo: &RepoRef) -> Result<LoadedContract> {
         self.client.fetch_contract(&repo.forge().core).await
     }
@@ -1673,7 +2189,9 @@ impl<'a> Collab<'a> {
         Ok(props)
     }
 
-    /// Create one document of `repo` (its `repoId` added) in `contract`, as the signer.
+    /// Create one document of `repo` (its `repoId` added, stamped by [`Self::stamp`]) in
+    /// `contract`, as the signer. `contract` must be the one the RC1 layout puts `doc_type` in
+    /// ([`crate::layout`]); anything else is refused before signing.
     pub(super) async fn write(
         &self,
         repo: &RepoRef,
@@ -1681,6 +2199,7 @@ impl<'a> Collab<'a> {
         doc_type: &str,
         props: BTreeMap<String, FieldValue>,
     ) -> Result<String> {
+        check_layout(repo, contract, doc_type)?;
         // A private repo's member `event` carries its `value` (label or milestone name, dismiss
         // reason, assignee, retarget base) sealed (§7): every event write passes here.
         let props = if doc_type == DOC_EVENT && props.contains_key("value") {
@@ -1689,9 +2208,127 @@ impl<'a> Collab<'a> {
         } else {
             props
         };
-        self.engine()?
-            .create_document(contract, doc_type, Self::with_repo(repo, props)?)
-            .await
+        let engine = self.engine()?;
+        self.create_stamped(repo, doc_type, Self::with_repo(repo, props)?, async |all| {
+            engine.create_document(contract, doc_type, all).await
+        })
+        .await
+    }
+
+    /// Run `create` on `props` stamped for `doc_type` ([`Self::stamp`]). When consensus refuses
+    /// an optional `asMember` ([`Self::proof_refused`]), the props are re-stamped without it and
+    /// `create` runs once more; a required proof keeps the refusal.
+    async fn create_stamped<T>(
+        &self,
+        repo: &RepoRef,
+        doc_type: &str,
+        props: BTreeMap<String, FieldValue>,
+        mut create: impl AsyncFnMut(BTreeMap<String, FieldValue>) -> Result<T>,
+    ) -> Result<T> {
+        let mut retried = false;
+        loop {
+            let mut all = props.clone();
+            self.stamp(repo, doc_type, &mut all).await?;
+            let optional = !proof_required(&all);
+            match create(all).await {
+                Err(e) if !retried && optional && self.proof_refused(repo, &e) => retried = true,
+                res => return res,
+            }
+        }
+    }
+
+    /// Whether `e` refused the write's `asMember` (40120 on it: the signer's membership was
+    /// removed after this `Collab` read it). The membership is then known to be gone, so the
+    /// cache says so: a write whose proof was optional is re-stamped without it and retried
+    /// once; one that needs the proof keeps the refusal.
+    fn proof_refused(&self, repo: &RepoRef, e: &Error) -> bool {
+        let refused =
+            matches!(e, Error::NotAMember { detail, .. } if detail.ends_with("for path asMember"));
+        if refused {
+            *crate::history::lock(&self.member) = Some((repo.id().to_string(), false));
+        }
+        refused
+    }
+
+    /// Whether the signer holds a maintainer or writer document of `repo` now (read once per
+    /// `Collab` and repository).
+    pub async fn is_member(&self, repo: &RepoRef) -> Result<bool> {
+        if let Some((_, m)) = crate::history::lock(&self.member)
+            .as_ref()
+            .filter(|(id, _)| id == repo.id())
+        {
+            return Ok(*m);
+        }
+        let m = self.signer_role(repo).await?.is_some();
+        *crate::history::lock(&self.member) = Some((repo.id().to_string(), m));
+        Ok(m)
+    }
+
+    /// Stamp a new `doc_type` document's properties as RC1 requires: `vis` (the repository's
+    /// visibility, or `"public"` where only that is accepted) and, on an issue, PR, comment or
+    /// review, `asMember` = the signer when the signer is a member. The proof is what admits an
+    /// import (`i_provenance`), a member verdict (`memberVerdict`, 1 and 2) and a post to a
+    /// locked thread (`lockGate`); a non-member's verdict (4 or 5) never carries it. A write that
+    /// needs the proof from a non-member is refused here, before signing (with the pre-check off
+    /// it is attempted, and consensus refuses it).
+    pub(super) async fn stamp(
+        &self,
+        repo: &RepoRef,
+        doc_type: &str,
+        props: &mut BTreeMap<String, FieldValue>,
+    ) -> Result<()> {
+        crate::layout::stamp_vis_for(doc_type, props, repo.visibility);
+        if !crate::layout::MEMBER_PROOF_TYPES.contains(&doc_type) {
+            return Ok(());
+        }
+        let verdict = props
+            .get("verdict")
+            .and_then(FieldValue::as_u64)
+            .map(Verdict::from_code);
+        if matches!(
+            verdict,
+            Some(Verdict::ApproveNonMember | Verdict::RequestChangesNonMember)
+        ) {
+            return Ok(());
+        }
+        let needs = proof_required(props);
+        let member = self.is_member(repo).await?;
+        if member || (needs && !precheck_enabled()) {
+            props.insert(
+                crate::layout::AS_MEMBER.to_string(),
+                FieldValue::identifier(platform::decode_identifier(&self.signer_id()?)?),
+            );
+        } else if needs {
+            return Err(Error::NotPermitted {
+                action: format!("write this {doc_type}"),
+                reason: format!(
+                    "it carries a member's proof (an imported item, an upstream number or an \
+                     approve / request-changes verdict), and you are not a member of {}",
+                    repo.display()
+                ),
+                needs: "writer".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Refuse, before signing, a non-member's post to a locked conversation (`lockGate`: only a
+    /// write with `asMember` passes). Off when [`SKIP_PRECHECK_ENV`] is set.
+    pub async fn require_unlocked_or_member(&self, repo: &RepoRef, target_id: &str) -> Result<()> {
+        if !precheck_enabled() || self.is_member(repo).await? {
+            return Ok(());
+        }
+        if status_of_code(self.state_sum(repo, target_id).await?).locked {
+            return Err(Error::NotPermitted {
+                action: "post to this conversation".into(),
+                reason: format!(
+                    "it is locked, and only members of {} can post to a locked conversation",
+                    repo.display()
+                ),
+                needs: "writer".into(),
+            });
+        }
+        Ok(())
     }
 
     /// A private repo's member events as the folds read them ([`private::readable_event`]):
@@ -1842,14 +2479,11 @@ impl<'a> Collab<'a> {
     }
 
     /// Every readable issue and pull request of `repo` (complete, oldest first), as flattened
-    /// targets with their importer provenance: in a private repo `imported.author` / `.url`
-    /// are sealed, so this is the only way an importer finds what it already mirrored. A pull
-    /// request also carries the base its merge is folded against (`baseRefName`, and its
-    /// `$createdAt`: see [`Self::base_ref_tips`]).
-    pub async fn imported_targets(
-        &self,
-        repo: &RepoRef,
-    ) -> Result<Vec<(Target, Option<Imported>, Option<PrBase>)>> {
+    /// targets with their importer provenance and source number: in a private repo
+    /// `imported.author` / `.url` are sealed, so this is the only way an importer finds what it
+    /// already mirrored. A pull request also carries the base its merge is checked against
+    /// (`baseRefName`, and its `$createdAt`: see [`Self::base_ref_tips`]).
+    pub async fn imported_targets(&self, repo: &RepoRef) -> Result<Vec<ImportedRow>> {
         let collab = self.collab_contract(repo).await?;
         let mut out = Vec::new();
         for kind in [TargetKind::Issue, TargetKind::Patch] {
@@ -1863,19 +2497,72 @@ impl<'a> Collab<'a> {
                 )
                 .await?;
             let (docs, _) = self.readable_all(repo, kind.content_kind(), docs).await?;
-            out.extend(docs.iter().map(|d| match kind {
-                TargetKind::Issue => {
-                    let i = issue_from_doc(d);
-                    (i.target(), i.imported, None)
-                }
-                TargetKind::Patch => {
-                    let p = patch_from_doc(d);
-                    let base = p.base();
-                    (p.target(), p.imported, Some(base))
-                }
-            }));
+            out.extend(docs.iter().map(|d| imported_row(kind, d)));
         }
         Ok(out)
+    }
+
+    /// The `kind` documents of `repo` whose `upstreamNumber` is `n` (the sparse `upstream
+    /// (repoId, upstreamNumber)` index; whoever wrote them), opened in a private repo: how an
+    /// importer finds the copy of source item #n in one read. The number is plaintext (it is
+    /// indexed); the provenance beside it may be sealed.
+    pub async fn upstream_targets(
+        &self,
+        repo: &RepoRef,
+        kind: TargetKind,
+        n: u32,
+    ) -> Result<Vec<ImportedRow>> {
+        let filters = [
+            Self::repo_filter(repo)?,
+            QueryFilter::eq("upstreamNumber", FieldValue::integer(u64::from(n))),
+        ];
+        self.upstream_rows(repo, kind, &filters, &[], None).await
+    }
+
+    /// The `kind` documents of `repo` that carry an `upstreamNumber`, highest first: one page
+    /// of 100 (`all`: every one). A range from 1 up binds the sparse index (a missing value
+    /// never meets it), so Drive answers from it. Whoever wrote them: the caller filters.
+    pub async fn upstream_numbered(
+        &self,
+        repo: &RepoRef,
+        kind: TargetKind,
+        all: bool,
+    ) -> Result<Vec<ImportedRow>> {
+        let filters = [
+            Self::repo_filter(repo)?,
+            QueryFilter::gte("upstreamNumber", FieldValue::integer(1)),
+        ];
+        let order = [QueryOrder::desc("upstreamNumber")];
+        let mut rows = self
+            .upstream_rows(repo, kind, &filters, &order, (!all).then_some(DEFAULT_PAGE))
+            .await?;
+        rows.sort_by_key(|r| std::cmp::Reverse(r.upstream_number));
+        Ok(rows)
+    }
+
+    async fn upstream_rows(
+        &self,
+        repo: &RepoRef,
+        kind: TargetKind,
+        filters: &[QueryFilter],
+        order: &[QueryOrder],
+        page: Option<u32>,
+    ) -> Result<Vec<ImportedRow>> {
+        let collab = self.collab_contract(repo).await?;
+        let docs = match page {
+            Some(limit) => {
+                self.client
+                    .query_documents(&collab, kind.doc_type(), filters, order, limit, None)
+                    .await?
+            }
+            None => {
+                self.client
+                    .query_all_documents(&collab, kind.doc_type(), filters, order)
+                    .await?
+            }
+        };
+        let (docs, _) = self.readable_all(repo, kind.content_kind(), docs).await?;
+        Ok(docs.iter().map(|d| imported_row(kind, d)).collect())
     }
 
     /// The newest `limit` issues (0 = one page of 100), newest first.
@@ -1886,31 +2573,39 @@ impl<'a> Collab<'a> {
             .map(|d| issue_from_doc(&d)))
     }
 
-    /// The repository's event feed (`event`, `authorEvent`) as history specs, in
-    /// [`Self::feed_logs`] order. Both types are immutable and non-deletable, so the feed is
-    /// read through the delta cache ([`crate::history`]): after the first read each call costs
-    /// one request for what landed since.
+    /// The repository's feed (`transition` in forge-collab, `event` and `authorEvent` in
+    /// forge-community) as history specs, in [`Self::feed_logs`] order. All three are immutable
+    /// and non-deletable with a `(repoId, $createdAt)` index, so the feed is read through the
+    /// delta cache ([`crate::history`]): after the first read each call costs one request for
+    /// what landed since.
     fn feed_specs<'c>(
         collab: &'c LoadedContract,
+        community: &'c LoadedContract,
         scope: &crate::scope::DocScope,
-    ) -> [crate::history::HistorySpec<'c>; 2] {
+    ) -> [crate::history::HistorySpec<'c>; 3] {
         [
-            crate::history::HistorySpec::new(collab, DOC_EVENT, scope),
-            crate::history::HistorySpec::new(collab, DOC_AUTHOR_EVENT, scope),
+            crate::history::HistorySpec::new(collab, DOC_TRANSITION, scope),
+            crate::history::HistorySpec::new(community, DOC_EVENT, scope),
+            crate::history::HistorySpec::new(community, DOC_AUTHOR_EVENT, scope),
         ]
     }
 
     /// The repo feed's rows (as Platform holds them; a private repo's member event values are
-    /// opened here, never stored opened) folded into one log per target.
+    /// opened here, never stored opened) as one log per target: the target's transitions
+    /// (its state) and its events (labels, assignees, the base ref, the review kinds).
     async fn feed_logs(
         &self,
         repo: &RepoRef,
-        events: Vec<FetchedDocument>,
-        author_events: Vec<FetchedDocument>,
+        [transitions, events, author_events]: [Vec<FetchedDocument>; 3],
     ) -> Result<BTreeMap<String, TargetLog>> {
         // A private repo's member events: their sealed values opened (§8.1).
         let (events, _, _) = self.readable_events(repo, events).await?;
         let mut logs: BTreeMap<String, TargetLog> = BTreeMap::new();
+        for d in &transitions {
+            if let (Some(tid), Some(t)) = (transition_target_of(d), transition_from_doc(d)) {
+                logs.entry(tid).or_default().transitions.push(t);
+            }
+        }
         for e in events.iter().filter_map(event_from_doc) {
             logs.entry(e.target_id.clone()).or_default().events.push(e);
         }
@@ -1923,12 +2618,12 @@ impl<'a> Collab<'a> {
         Ok(logs)
     }
 
-    /// Every well-formed issue of `repo` (newest first) with its folded state, and how many
-    /// were skipped as malformed: one keyset walk of the `created` index (`$createdAt <=` the
-    /// oldest row read, 100 per page, deduped by id) and ONE read of the repo feed (`event` /
-    /// `authorEvent` by `(repoId, $createdAt)`) through the delta cache, folded per issue.
-    /// Requests: about `⌈issues/100⌉` plus the feed's new rows, where the old list paid 2 per
-    /// row.
+    /// Every well-formed issue of `repo` (newest first) with its state, and how many were
+    /// skipped as malformed: one keyset walk of the `created` index (`$createdAt <=` the
+    /// oldest row read, 100 per page, deduped by id) and ONE read of the repo feed
+    /// (`transition` / `event` / `authorEvent` by `(repoId, $createdAt)`) through the delta
+    /// cache. Open or closed is the sum of each issue's transitions; labels and assignees fold
+    /// from its events. Requests: about `⌈issues/100⌉` plus the feed's new rows.
     pub async fn issues_with_state(&self, repo: &RepoRef) -> Result<(Vec<IssueView>, usize)> {
         let collab = self.collab_contract(repo).await?;
         let mut docs: Vec<FetchedDocument> = Vec::new();
@@ -1965,15 +2660,16 @@ impl<'a> Collab<'a> {
             }
             before = oldest;
         }
-        let [events, author_events] = crate::history::take(
+        let community = self.community_contract(repo).await?;
+        let feed: [Vec<FetchedDocument>; 3] = crate::history::take(
             crate::history::sync(
                 self.client,
-                &Self::feed_specs(&collab, &repo.scope()?),
+                &Self::feed_specs(&collab, &community, &repo.scope()?),
                 crate::history::Freshness::Now,
             )
             .await?,
         );
-        let logs = self.feed_logs(repo, events, author_events).await?;
+        let logs = self.feed_logs(repo, feed).await?;
         // Malformed rows, and in a private repo rows this reader cannot open, are hidden.
         let (readable, hidden) = self.readable_all(repo, ContentKind::Issue, docs).await?;
         let shown: Vec<IssueView> = readable
@@ -1982,7 +2678,7 @@ impl<'a> Collab<'a> {
                 let issue = issue_from_doc(d);
                 let log = logs.get(&issue.document_id).cloned().unwrap_or_default();
                 IssueView {
-                    state: fold_issue(&log, &issue),
+                    state: fold_issue(&log),
                     issue,
                     hidden_values: log.hidden_values,
                     plaintext_values: log.plaintext_values,
@@ -2055,22 +2751,52 @@ impl<'a> Collab<'a> {
             .await
     }
 
-    /// Every `event` and `authorEvent` of a target, complete.
+    /// Every `transition`, `event` and `authorEvent` of a target, complete. The transitions
+    /// are read on the `perTarget (targetId)` index (a target's history is short); their sum
+    /// is the state code, the same number the proved sum query returns.
     pub async fn target_log(&self, repo: &RepoRef, target_id: &str) -> Result<TargetLog> {
         let collab = self.collab_contract(repo).await?;
-        let events = self
-            .by_target(&collab, DOC_EVENT, "targetId", target_id)
-            .await?;
+        let community = self.community_contract(repo).await?;
+        // Boxed: three complete reads in parallel make a large future for every caller.
+        let (transitions, events, author_events) = Box::pin(async {
+            futures::try_join!(
+                self.transitions_of(&collab, target_id),
+                self.by_target(&community, DOC_EVENT, "targetId", target_id),
+                self.by_target(&community, DOC_AUTHOR_EVENT, "targetId", target_id),
+            )
+        })
+        .await?;
         let (events, hidden_values, plaintext_values) = self.readable_events(repo, events).await?;
-        let author_events = self
-            .by_target(&collab, DOC_AUTHOR_EVENT, "targetId", target_id)
-            .await?;
         Ok(TargetLog {
+            transitions,
             events: events.iter().filter_map(event_from_doc).collect(),
             author_events: author_events.iter().filter_map(event_from_doc).collect(),
             hidden_values,
             plaintext_values,
         })
+    }
+
+    /// A target's transitions, oldest first (`$createdAt`, then `$id`), complete.
+    async fn transitions_of(
+        &self,
+        collab: &LoadedContract,
+        target_id: &str,
+    ) -> Result<Vec<Transition>> {
+        let docs = self
+            .client
+            .query_all_documents(
+                collab,
+                DOC_TRANSITION,
+                &[QueryFilter::eq(
+                    "targetId",
+                    FieldValue::identifier(platform::decode_identifier(target_id)?),
+                )],
+                &[QueryOrder::asc("targetId")],
+            )
+            .await?;
+        let mut out: Vec<Transition> = docs.iter().filter_map(transition_from_doc).collect();
+        out.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+        Ok(out)
     }
 
     /// Every well-formed (and, private, readable) comment on a target, oldest first.
@@ -2114,10 +2840,10 @@ impl<'a> Collab<'a> {
 
     // --- reads: folded state --------------------------------------------------------
 
-    /// An issue's state (§3 fold).
+    /// An issue's state: its transitions' sum, and its events' labels and assignees.
     pub async fn issue_state(&self, repo: &RepoRef, issue: &Issue) -> Result<IssueState> {
         let log = self.target_log(repo, &issue.document_id).await?;
-        Ok(fold_issue(&log, issue))
+        Ok(fold_issue(&log))
     }
 
     /// The issue and its state, or `None`.
@@ -2127,7 +2853,7 @@ impl<'a> Collab<'a> {
         };
         let log = self.target_log(repo, &issue.document_id).await?;
         Ok(Some(IssueView {
-            state: fold_issue(&log, &issue),
+            state: fold_issue(&log),
             issue,
             hidden_values: log.hidden_values,
             plaintext_values: log.plaintext_values,
@@ -2208,8 +2934,9 @@ impl<'a> Collab<'a> {
     ///   `$id`s (reviews can be deleted, so they are read live), and the repo's `maintainer`
     ///   and `writer` documents as siblings;
     /// - ONE delta read ([`crate::history`]) of everything append-only the folds need: the
-    ///   repo's event feed (`event`, `authorEvent`) and its ref history (`refUpdate`,
-    ///   `protectedRefUpdate`, `config`), so every PR's state and base tips fold from it.
+    ///   repo's feed (`transition`, `event`, `authorEvent`) and its ref history (`refUpdate`,
+    ///   `protectedRefUpdate`, `config`), so every PR's state, merge commit, labels and base
+    ///   tips come from it.
     ///
     /// A review lookup or a member sibling that fills its 100-row cap may be cut short, so
     /// what it covers is re-read completely rather than folded from a partial list. A private
@@ -2222,22 +2949,23 @@ impl<'a> Collab<'a> {
     ) -> Result<Listed<(PatchView, Approvals)>> {
         let forge = repo.forge();
         self.client
-            .prefetch_contracts(&[&forge.collab, &forge.core])
+            .prefetch_contracts(&[&forge.collab, &forge.core, &forge.community])
             .await?;
         let collab = self.collab_contract(repo).await?;
         let core = self.core_contract(repo).await?;
+        let community = self.community_contract(repo).await?;
         let scope = repo.scope()?;
         let limit = page_limit(limit);
         let reads = pr_list_reads(&collab, &core, &scope, limit);
-        let [feed_a, feed_b] = Self::feed_specs(&collab, &scope);
+        let [feed_a, feed_b, feed_c] = Self::feed_specs(&collab, &community, &scope);
         let [refs_a, refs_b, refs_c] = crate::refs::GitState::specs(&core, &scope);
-        let history = [feed_a, feed_b, refs_a, refs_b, refs_c];
+        let history = [feed_a, feed_b, feed_c, refs_a, refs_b, refs_c];
         let (batch, synced) = futures::join!(
             self.client.query_batch(&reads),
             crate::history::sync(self.client, &history, crate::history::Freshness::Now)
         );
         let [page, reviews, maintainers, writers] = crate::history::take(batch?);
-        let [events, author_events, ref_updates, protected_ref_updates, configs] =
+        let [transitions, events, author_events, ref_updates, protected_ref_updates, configs] =
             crate::history::take(synced?);
         let state = crate::refs::GitState::from_rows([ref_updates, protected_ref_updates, configs]);
 
@@ -2253,7 +2981,9 @@ impl<'a> Collab<'a> {
         } else {
             oracle_of(&maintainers, &writers)
         };
-        let mut logs = self.feed_logs(repo, events, author_events).await?;
+        let mut logs = self
+            .feed_logs(repo, [transitions, events, author_events])
+            .await?;
         let reviews = self.complete_reviews(&collab, reviews, &page_ids).await?;
         let (reviews, _) = self
             .readable_all(repo, ContentKind::Review, reviews)
@@ -2382,11 +3112,11 @@ impl<'a> Collab<'a> {
     /// The branch policy in force: the newest `policy` of `repo` by `($createdAt, $id)`
     /// (forge-v2.md §2), or `None`.
     pub async fn policy(&self, repo: &RepoRef) -> Result<Option<Policy>> {
-        let collab = self.collab_contract(repo).await?;
+        let community = self.community_contract(repo).await?;
         let docs = self
             .client
             .query_all_documents(
-                &collab,
+                &community,
                 DOC_POLICY,
                 &[Self::repo_filter(repo)?],
                 &[QueryOrder::asc("$createdAt")],
@@ -2534,10 +3264,10 @@ impl<'a> Collab<'a> {
     }
 
     async fn check_run_docs(&self, repo: &RepoRef, head_oid: &str) -> Result<Vec<FetchedDocument>> {
-        let collab = self.collab_contract(repo).await?;
+        let community = self.community_contract(repo).await?;
         let oid = hex::decode(head_oid)
             .map_err(|_| Error::Config(format!("{head_oid:?} is not a hex commit id")))?;
-        check_run_docs(self.client, &collab, repo, oid).await
+        check_run_docs(self.client, &community, repo, oid).await
     }
 
     async fn runner_ids(&self, repo: &RepoRef) -> Result<BTreeSet<String>> {
@@ -2549,249 +3279,92 @@ impl<'a> Collab<'a> {
             .collect())
     }
 
+    // --- state and counts -----------------------------------------------------------------
+
+    /// The transition sums of `target_ids` (base58): the proved sum of `transition.delta` per
+    /// target (`perTarget`, `summable: delta`), one grouped request per 100 targets. A target
+    /// with no transitions reads 0 (open). A sum is not a state code: fold it
+    /// ([`status_of_code`], [`rules::v2::fold_sum`]; 16 or more is locked).
+    pub async fn state_sums(
+        &self,
+        repo: &RepoRef,
+        target_ids: &[String],
+    ) -> Result<BTreeMap<String, i64>> {
+        let collab = self.collab_contract(repo).await?;
+        let ids: BTreeSet<[u8; 32]> = target_ids
+            .iter()
+            .map(|id| platform::decode_identifier(id))
+            .collect::<Result<_>>()?;
+        let ids: Vec<[u8; 32]> = ids.into_iter().collect();
+        let mut out: BTreeMap<String, i64> = target_ids.iter().map(|id| (id.clone(), 0)).collect();
+        for chunk in ids.chunks(LOOKUP_CAP_LEN) {
+            let filter = QueryFilter::in_list(
+                "targetId",
+                chunk.iter().map(|id| FieldValue::identifier(*id)).collect(),
+            );
+            let sums = self
+                .client
+                .sum_documents_grouped(&collab, DOC_TRANSITION, &[filter], "targetId", "delta")
+                .await?;
+            out.extend(sums_by_target(sums)?);
+        }
+        Ok(out)
+    }
+
+    /// One target's transition sum ([`Self::state_sums`]).
+    pub async fn state_sum(&self, repo: &RepoRef, target_id: &str) -> Result<i64> {
+        Ok(self
+            .state_sums(repo, &[target_id.to_string()])
+            .await?
+            .get(target_id)
+            .copied()
+            .unwrap_or(0))
+    }
+
+    /// The repo's open / closed / merged / draft totals (`STATE-COUNTS.md` §4), from three
+    /// proved counts read in parallel: the `issue` and `patch` totals (`perRepo`), and the
+    /// `transition`s grouped by `kind` (`perRepoKind`, one count tree per kind).
+    pub async fn repo_state_counts(&self, repo: &RepoRef) -> Result<RepoCounts> {
+        let collab = self.collab_contract(repo).await?;
+        let by_repo = [Self::repo_filter(repo)?];
+        let kinds = [
+            Self::repo_filter(repo)?,
+            QueryFilter::in_list(
+                "kind",
+                TRANSITION_KINDS
+                    .iter()
+                    .map(|k| FieldValue::integer(u64::from(*k)))
+                    .collect(),
+            ),
+        ];
+        let (issues, patches, kinds) = futures::try_join!(
+            self.client.count_documents(&collab, DOC_ISSUE, &by_repo),
+            self.client.count_documents(&collab, DOC_PATCH, &by_repo),
+            self.client
+                .count_documents_grouped(&collab, DOC_TRANSITION, &kinds, "kind"),
+        )?;
+        Ok(repo_counts(issues, patches, &counts_by_kind(kinds)?))
+    }
+
     // --- numbering --------------------------------------------------------------------
 
-    /// The identities whose numbers a repo's allocation trusts (§6): the owner and its current
-    /// maintainers, once each. When the maintainers cannot be read, the owner alone: a
-    /// numbering gap is better than a failed create.
-    pub async fn numbering_trust(&self, repo: &RepoRef) -> Vec<String> {
-        let maintainers = match MemberReader::new(self.client).maintainers(repo).await {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!(error = %e, "maintainers unread; trusting the owner's numbers only");
-                Vec::new()
-            }
-        };
-        trusted_authors(
-            repo.owner_id(),
-            maintainers.iter().map(|m| m.identity_id.as_str()),
-        )
-    }
-
-    /// The largest number among `repo`'s issues (or PRs) written by one of `trusted`, or 0:
-    /// one `number desc, limit 1` read of the `author` index (`$ownerId, repoId, number`)
-    /// each, at most [`TRUSTED_READS`] at a time.
-    async fn trusted_max_number(
-        &self,
-        collab: &LoadedContract,
-        repo_filter: &QueryFilter,
-        kind: TargetKind,
-        trusted: &[String],
-    ) -> Result<u32> {
-        use futures::{StreamExt as _, TryStreamExt as _};
-        let highest: Vec<u32> = futures::stream::iter(trusted)
-            .map(|author| async move {
-                let owner = FieldValue::identifier(platform::decode_identifier(author)?);
-                Ok::<u32, Error>(
-                    self.client
-                        .query_documents(
-                            collab,
-                            kind.doc_type(),
-                            &[QueryFilter::eq("$ownerId", owner), repo_filter.clone()],
-                            &[QueryOrder::desc("number")],
-                            1,
-                            None,
-                        )
-                        .await?
-                        .first()
-                        .map_or(0, number_of),
-                )
-            })
-            .buffer_unordered(TRUSTED_READS)
-            .try_collect()
-            .await?;
-        Ok(highest.into_iter().max().unwrap_or(0))
-    }
-
-    /// The lowest number above `above` that no issue (or PR) of `repo` holds: an ascending
-    /// probe of the `number` index, paged to the end of the contiguous run. Not the §6 rule:
-    /// forge-import stores an upstream item whose number is taken here, where it cannot take
-    /// a number a later upstream item needs (on GitHub, issues and PRs share one number
-    /// space, so each kind's mirror has the other's numbers free).
-    pub async fn lowest_free_number(
-        &self,
-        repo: &RepoRef,
-        kind: TargetKind,
-        above: u32,
-    ) -> Result<u32> {
+    /// The number the next issue or PR of `repo` must carry: the contract's `dense` rule pins
+    /// it to the repo's issue count plus its PR count, the new document included (issues and
+    /// PRs share one sequence). Two proved counts (`perRepo`), read in parallel.
+    pub async fn next_number(&self, repo: &RepoRef) -> Result<u32> {
         let collab = self.collab_contract(repo).await?;
-        let repo_filter = Self::repo_filter(repo)?;
-        let run = contiguous_run_above(above, DEFAULT_PAGE as usize, |after| {
-            let filters = [
-                repo_filter.clone(),
-                QueryFilter::gt("number", FieldValue::integer(u64::from(after))),
-            ];
-            let collab = &collab;
-            async move {
-                Ok(self
-                    .client
-                    .query_documents(
-                        collab,
-                        kind.doc_type(),
-                        &filters,
-                        &[QueryOrder::asc("number")],
-                        DEFAULT_PAGE,
-                        None,
-                    )
-                    .await?
-                    .iter()
-                    .map(number_of)
-                    .collect())
-            }
-        })
-        .await?;
-        run.last()
-            .copied()
-            .unwrap_or(above)
-            .checked_add(1)
-            .ok_or_else(|| {
-                Error::Config(format!(
-                    "every {} number above {above} is taken",
-                    kind.noun()
-                ))
-            })
-    }
-
-    /// The number a new issue or PR would claim now (§6), trusting the numbers of `trusted`
-    /// ([`Self::numbering_trust`], read once per action and reused across its retries).
-    pub async fn next_number(
-        &self,
-        repo: &RepoRef,
-        kind: TargetKind,
-        trusted: &[String],
-    ) -> Result<u32> {
-        let collab = self.collab_contract(repo).await?;
-        let repo_filter = Self::repo_filter(repo)?;
-        let (count, trusted_max) = futures::future::try_join(
-            self.client.count_documents(
-                &collab,
-                kind.doc_type(),
-                std::slice::from_ref(&repo_filter),
-            ),
-            self.trusted_max_number(&collab, &repo_filter, kind, trusted),
-        )
-        .await?;
-        let ceiling = number_ceiling(count);
-        let base = self
-            .client
-            .query_documents(
-                &collab,
-                kind.doc_type(),
-                &[
-                    repo_filter.clone(),
-                    QueryFilter::lte("number", FieldValue::integer(ceiling)),
-                ],
-                &[QueryOrder::desc("number")],
-                1,
-                None,
-            )
-            .await?
-            .first()
-            .map_or(0, number_of)
-            .max(trusted_max);
-        let mut taken = vec![base];
-        // Below the ceiling `base + 1` is free by construction; only a base at or above it
-        // (the ceiling itself, or a trusted number past it) can have squatters directly
-        // above it, and the probe steps over the whole run.
-        if u64::from(base) >= ceiling {
-            let page = DEFAULT_PAGE as usize;
-            let run = contiguous_run_above(base, page, |after| {
-                let filters = [
-                    repo_filter.clone(),
-                    QueryFilter::gt("number", FieldValue::integer(u64::from(after))),
-                ];
-                let collab = &collab;
-                async move {
-                    Ok(self
-                        .client
-                        .query_documents(
-                            collab,
-                            kind.doc_type(),
-                            &filters,
-                            &[QueryOrder::asc("number")],
-                            DEFAULT_PAGE,
-                            None,
-                        )
-                        .await?
-                        .iter()
-                        .map(number_of)
-                        .collect())
-                }
-            })
-            .await?;
-            taken.extend(run);
-        }
-        taken.retain(|n| *n > 0);
-        allocate_number(count, &taken, trusted_max).ok_or_else(|| {
-            Error::Config(format!(
-                "every {} number above {base} is taken",
-                kind.noun()
-            ))
-        })
+        let by_repo = [Self::repo_filter(repo)?];
+        let (issues, patches) = futures::try_join!(
+            self.client.count_documents(&collab, DOC_ISSUE, &by_repo),
+            self.client.count_documents(&collab, DOC_PATCH, &by_repo),
+        )?;
+        dense_number(issues, patches)
+            .ok_or_else(|| Error::Config(format!("{} has used every issue number", repo.display())))
     }
 
     // --- writes: numbered creates ------------------------------------------------------
 
-    async fn create_numbered(
-        &self,
-        repo: &RepoRef,
-        kind: TargetKind,
-        number: u32,
-        props: BTreeMap<String, FieldValue>,
-    ) -> Result<Numbered> {
-        let collab = self.collab_contract(repo).await?;
-        let props = self
-            .seal_if_private(repo, kind.content_kind(), props)
-            .await?;
-        let props = Self::with_repo(repo, props)?;
-        match self
-            .engine()?
-            .create_document(&collab, kind.doc_type(), props)
-            .await
-        {
-            Ok(document_id) => Ok(Numbered::Created { document_id }),
-            Err(Error::DuplicateUniqueIndex(_)) => {
-                let existing = self.target_doc(repo, kind, number).await.ok().flatten();
-                Ok(Numbered::Taken {
-                    existing_id: existing.as_ref().map(|d| d.id.clone()),
-                    existing_author: existing.map(|d| d.owner_id),
-                })
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Create issue `number` of `repo` (the importer's primitive). A number already taken
-    /// is [`Numbered::Taken`], not an error.
-    pub async fn create_issue_numbered(
-        &self,
-        repo: &RepoRef,
-        number: u32,
-        title: &str,
-        body: &str,
-        imported: Option<&Imported>,
-    ) -> Result<Numbered> {
-        let props = issue_props(number, title, body, imported)?;
-        self.create_numbered(repo, TargetKind::Issue, number, props)
-            .await
-    }
-
-    /// Create pull request `number` of `repo` (the importer's primitive).
-    pub async fn create_patch_numbered(
-        &self,
-        repo: &RepoRef,
-        number: u32,
-        input: &PatchInput,
-        imported: Option<&Imported>,
-    ) -> Result<Numbered> {
-        let props = patch_props(number, input, imported)?;
-        self.create_numbered(repo, TargetKind::Patch, number, props)
-            .await
-    }
-
-    // --- writes: allocated, journaled creates ---------------------------------------------
-
-    /// Open an issue, numbered by the §6 rule. Resumable: see the module docs.
+    /// Open an issue at the dense next number. Resumable: see the module docs.
     pub async fn create_issue(
         &self,
         repo: &RepoRef,
@@ -2799,22 +3372,28 @@ impl<'a> Collab<'a> {
         body: &str,
         journal_dir: &Path,
     ) -> Result<Created> {
-        issue_props(1, title, body, None)?;
+        issue_props(1, title, body, Provenance::default())?;
         let fingerprint = [title, "\0", body].concat();
-        self.create_allocated(repo, TargetKind::Issue, &fingerprint, journal_dir, |n| {
-            issue_props(n, title, body, None)
-        })
+        self.create_dense(
+            repo,
+            TargetKind::Issue,
+            Some((journal_dir, &fingerprint)),
+            |n| issue_props(n, title, body, Provenance::default()),
+        )
         .await
     }
 
-    /// Open a pull request, numbered by the §6 rule. Resumable.
+    /// Open a pull request at the dense next number. Resumable. A draft (`input.draft`) is the
+    /// create followed by a draft transition (kind 14): a `patch` has no draft flag. When the
+    /// PR lands but the draft transition does not, the error says so (E106) and names the
+    /// command that finishes it.
     pub async fn create_patch(
         &self,
         repo: &RepoRef,
         input: &PatchInput,
         journal_dir: &Path,
     ) -> Result<Created> {
-        patch_props(1, input, None)?;
+        patch_props(1, input, Provenance::default())?;
         let fingerprint = format!(
             "{}\0{}\0{}\0{}\0{}",
             input.title,
@@ -2823,102 +3402,315 @@ impl<'a> Collab<'a> {
             input.source_repo_id,
             hex::encode(&input.head_oid)
         );
-        self.create_allocated(repo, TargetKind::Patch, &fingerprint, journal_dir, |n| {
-            patch_props(n, input, None)
-        })
-        .await
+        let mut created = self
+            .create_dense(
+                repo,
+                TargetKind::Patch,
+                Some((journal_dir, &fingerprint)),
+                |n| patch_props(n, input, Provenance::default()),
+            )
+            .await?;
+        if input.draft {
+            created.draft_transition = self.mark_new_draft(repo, &created).await?;
+        }
+        Ok(created)
     }
 
-    async fn create_allocated(
+    /// The draft transition of a PR this command opened: its id, or `None` when the PR already
+    /// reads as a draft (a resumed create whose transition landed on the earlier run). A PR
+    /// just created is at code 0. When the transition cannot be written the state is read
+    /// again first: a draft that landed anyway (a timed-out wait) is done, not an error.
+    async fn mark_new_draft(&self, repo: &RepoRef, created: &Created) -> Result<Option<String>> {
+        let target = Target {
+            kind: TargetKind::Patch,
+            id: created.document_id.clone(),
+            number: created.number,
+            author: self.signer_id()?,
+        };
+        let is_draft = |code: i64| status_of_code(code).draft;
+        let code = if created.resumed {
+            self.state_sum(repo, &target.id).await?
+        } else {
+            0
+        };
+        if is_draft(code) {
+            return Ok(None);
+        }
+        let e = match self
+            .set_state_from(repo, &target, StateAction::Draft, None, Some(code))
+            .await
+        {
+            Ok(c) => return Ok(Some(c.transition_id)),
+            Err(e) => e,
+        };
+        if self.state_sum(repo, &target.id).await.is_ok_and(is_draft) {
+            return Ok(None);
+        }
+        // A refusal is conclusive; anything else (the network) may hide a landed transition.
+        let refused = matches!(
+            e,
+            Error::RuleRefused { .. }
+                | Error::NotPermitted { .. }
+                | Error::NotAMember { .. }
+                | Error::ReferenceNotFound { .. }
+                | Error::User(_)
+        );
+        Err(UserError::new(
+            codes::PARTIAL,
+            format!(
+                "opened pull request #{} in {}, but {} as a draft",
+                created.number,
+                repo.display(),
+                if refused {
+                    "did not mark it"
+                } else {
+                    "could not confirm it is marked"
+                }
+            ),
+        )
+        .cause(e.to_string())
+        .fix(format!(
+            "`dg pr view {} {}` shows its state; `dg pr draft {} {}` marks it a draft",
+            repo.display(),
+            created.number,
+            repo.display(),
+            created.number
+        ))
+        .into())
+    }
+
+    /// Create an imported issue or PR (the importer's primitive) at the dense next number,
+    /// recording its provenance and source number (`upstreamNumber`). Not journaled: the
+    /// importer finds what it already wrote on chain (`imported.url`, `upstreamNumber`).
+    pub async fn create_imported(
+        &self,
+        repo: &RepoRef,
+        what: ImportedTarget<'_>,
+        from: Provenance<'_>,
+    ) -> Result<Created> {
+        match what {
+            ImportedTarget::Issue { title, body } => {
+                self.create_dense(repo, TargetKind::Issue, None, |n| {
+                    issue_props(n, title, body, from)
+                })
+                .await
+            }
+            ImportedTarget::Patch(input) => {
+                self.create_dense(repo, TargetKind::Patch, None, |n| {
+                    patch_props(n, input, from)
+                })
+                .await
+            }
+        }
+    }
+
+    /// Where a journaled create of `kind` by `me` is saved (`None`: not journaled). A private
+    /// repo's title and body must not be guessable from a local file name: the fingerprint is
+    /// keyed with a per-install secret there.
+    fn journal_path(
         &self,
         repo: &RepoRef,
         kind: TargetKind,
-        fingerprint: &str,
-        journal_dir: &Path,
+        me: &str,
+        journal: Option<(&Path, &str)>,
+    ) -> Result<Option<PathBuf>> {
+        let Some((dir, fingerprint)) = journal else {
+            return Ok(None);
+        };
+        let key = (repo.visibility == Visibility::Private)
+            .then(|| journal_secret(dir))
+            .transpose()?;
+        Ok(Some(create_journal_path(
+            dir,
+            &self.client.target().network.key(),
+            repo.id(),
+            kind,
+            me,
+            fingerprint,
+            key.as_ref(),
+        )))
+    }
+
+    /// Finish an interrupted create saved at `path`: re-broadcast its bytes and, when they
+    /// landed, return it. A saved create that never landed (refused, or its number taken) is
+    /// dropped, and the caller numbers afresh.
+    async fn resume_create(
+        &self,
+        engine: &WriteEngine<'_>,
+        collab: &LoadedContract,
+        kind: TargetKind,
+        path: Option<&Path>,
+    ) -> Result<Option<Created>> {
+        let Some(path) = path else { return Ok(None) };
+        let Some(saved) = CreateJournal::load(path, &collab.id()) else {
+            return Ok(None);
+        };
+        let landed = replay_landed(engine, collab, kind.doc_type(), &saved.intent).await?;
+        CreateJournal::remove(path);
+        if landed {
+            return Ok(Some(Created {
+                number: saved.number,
+                document_id: saved.intent.document_id,
+                resumed: true,
+                draft_transition: None,
+            }));
+        }
+        tracing::warn!(
+            document = %saved.intent.document_id,
+            "a saved create from an interrupted run never landed; numbering afresh"
+        );
+        Ok(None)
+    }
+
+    /// This call's own create of `plain` at `number`, when that is what holds it
+    /// ([`adoptable`]): an earlier attempt of it landed though its read lagged.
+    async fn own_create_at(
+        &self,
+        repo: &RepoRef,
+        kind: TargetKind,
+        number: u32,
+        (me, plain): (&str, &BTreeMap<String, FieldValue>),
+        signed: &[(u32, String)],
+    ) -> Option<Created> {
+        let d = self.readable_target(repo, kind, number).await.ok()??;
+        let own = adoptable(&d, me, plain, signed);
+        own.then_some(Created {
+            number,
+            document_id: d.id,
+            resumed: false,
+            draft_transition: None,
+        })
+    }
+
+    /// Create a `kind` document at the dense next number ([`Self::next_number`]), counting
+    /// again when another create took it first: consensus refuses a stale number by the
+    /// `dense` rule (10422, before execution: nothing landed, and a stale write is refused at
+    /// CheckTx for free) or, when the count moved on after the rules ran, by the unique
+    /// `number` index. `journal` (a directory and the content's fingerprint) makes it
+    /// resumable: the signed create is saved before its first broadcast.
+    #[allow(clippy::too_many_lines)] // one numbered-create loop, its outcomes side by side
+    async fn create_dense(
+        &self,
+        repo: &RepoRef,
+        kind: TargetKind,
+        journal: Option<(&Path, &str)>,
         props: impl Fn(u32) -> Result<BTreeMap<String, FieldValue>>,
     ) -> Result<Created> {
         let me = self.signer_id()?;
         let collab = self.collab_contract(repo).await?;
         let engine = self.engine()?;
-        // A private repo's title and body must not be guessable from a local file name: the
-        // fingerprint is keyed with a per-install secret there.
-        let key = (repo.visibility == Visibility::Private)
-            .then(|| journal_secret(journal_dir))
-            .transpose()?;
-        let path = create_journal_path(
-            journal_dir,
-            &self.client.target().network.key(),
-            repo.id(),
-            kind,
-            &me,
-            fingerprint,
-            key.as_ref(),
-        );
-        if let Some(saved) = CreateJournal::load(&path, &collab.id()) {
-            if replay_landed(&engine, &collab, kind.doc_type(), &saved.intent).await? {
-                CreateJournal::remove(&path);
-                return Ok(Created {
-                    number: saved.number,
-                    document_id: saved.intent.document_id,
-                    resumed: true,
-                });
-            }
-            tracing::warn!(
-                document = %saved.intent.document_id,
-                "a saved create from an interrupted run never landed; allocating afresh"
-            );
-            CreateJournal::remove(&path);
+        let path = self.journal_path(repo, kind, &me, journal)?;
+        if let Some(done) = self
+            .resume_create(&engine, &collab, kind, path.as_deref())
+            .await?
+        {
+            return Ok(done);
         }
-        // A read right after a collision can lag the block that took the number, so never
-        // try a number at or below one already refused.
+        // A read right after a refusal can lag the block that took the number, so never try
+        // a number at or below one already refused.
         let mut floor = 0u32;
-        let trusted = self.numbering_trust(repo).await;
+        // Every create this call signs, with its number (a retry re-signs with fresh entropy,
+        // so a number can have several): only these may be adopted as landed.
+        let mut signed: Vec<(u32, String)> = Vec::new();
+        let mut proof_retried = false;
         for attempt in 0..MAX_NUMBER_ATTEMPTS {
-            let number = self.next_number(repo, kind, &trusted).await?.max(floor);
+            let number = self.next_number(repo).await?.max(floor);
+            let plain = props(number)?;
             // sealed per number: the AD binds it (§4.4), so a renumbered retry re-seals
             let sealed = self
-                .seal_if_private(repo, kind.content_kind(), props(number)?)
+                .seal_if_private(repo, kind.content_kind(), plain.clone())
                 .await?;
-            let all = Self::with_repo(repo, sealed)?;
+            let mut all = Self::with_repo(repo, sealed)?;
+            self.stamp(repo, kind.doc_type(), &mut all).await?;
+            let optional_proof = !proof_required(&all);
             let res = engine
                 .create_journaled(&collab, kind.doc_type(), all, |p| {
-                    CreateJournal {
-                        saved_at: unix_now(),
-                        contract: collab.id(),
-                        number,
-                        intent: WriteIntent::for_prepared(0, p),
+                    signed.push((number, p.document_id().to_string()));
+                    match &path {
+                        Some(path) => CreateJournal {
+                            saved_at: unix_now(),
+                            contract: collab.id(),
+                            number,
+                            intent: WriteIntent::for_prepared(0, p),
+                        }
+                        .save(path),
+                        None => Ok(()),
                     }
-                    .save(&path)
                 })
                 .await;
+            let forget = || {
+                if let Some(path) = &path {
+                    CreateJournal::remove(path);
+                }
+            };
             match res {
                 Ok(prepared) => {
-                    CreateJournal::remove(&path);
+                    forget();
                     return Ok(Created {
                         number,
                         document_id: prepared.document_id().to_string(),
                         resumed: false,
+                        draft_transition: None,
                     });
                 }
-                // Someone claimed the number first: nothing landed; read again and retry.
-                Err(Error::DuplicateUniqueIndex(_)) => {
-                    CreateJournal::remove(&path);
+                // The number is taken: by an earlier attempt of this same create (it landed, but
+                // the read after its consumed nonce lagged), which is the result; else by
+                // another create, and nothing of ours landed: count again.
+                Err(e) if number_taken(&e) => {
+                    forget();
+                    let own = self.own_create_at(repo, kind, number, (&me, &plain), &signed);
+                    if let Some(done) = own.await {
+                        return Ok(done);
+                    }
                     floor = number.saturating_add(1);
-                    tracing::warn!(number, attempt, "number taken; allocating again");
+                    tracing::warn!(number, attempt, "number taken; counting again");
+                }
+                // The membership was removed since it was read: nothing landed; once, sign
+                // again without the (optional) proof.
+                Err(e) if !proof_retried && optional_proof && self.proof_refused(repo, &e) => {
+                    forget();
+                    proof_retried = true;
                 }
                 // Refusals that prove nothing landed: forget the transition, or the same
                 // command would replay it (and be refused) forever. Anything else — a failed
                 // read after the broadcast, an unrecognised SDK error — may hide a landed
                 // create, so the journal stays and the next run resumes it.
-                Err(e @ (Error::NotAMember { .. } | Error::StaleProtocolVersion(_))) => {
-                    CreateJournal::remove(&path);
+                Err(
+                    e @ (Error::NotAMember { .. }
+                    | Error::ReferenceNotFound { .. }
+                    | Error::StaleProtocolVersion(_)
+                    | Error::RuleRefused { .. }),
+                ) => {
+                    forget();
                     return Err(e);
                 }
-                Err(e) => return Err(e),
+                // Anything else (a wait that timed out, a failed read, a nonce lost after lagging
+                // reads) may hide a landed create: a proved read of every id this call signed
+                // settles it. Unsettled, a journaled create stays saved for the next run; the
+                // importer (not journaled) finds its copy on chain.
+                Err(e) => {
+                    for (n, id) in signed.iter().rev() {
+                        if engine
+                            .landed(&collab, kind.doc_type(), id, true)
+                            .await
+                            .unwrap_or(false)
+                        {
+                            forget();
+                            return Ok(Created {
+                                number: *n,
+                                document_id: id.clone(),
+                                resumed: false,
+                                draft_transition: None,
+                            });
+                        }
+                    }
+                    return Err(e);
+                }
             }
         }
         Err(Error::Platform(format!(
-            "could not claim a {} number after {MAX_NUMBER_ATTEMPTS} attempts",
+            "could not claim a {} number after {MAX_NUMBER_ATTEMPTS} attempts (other creates \
+             kept taking it); run the command again",
             kind.noun()
         )))
     }
@@ -3038,14 +3830,63 @@ impl<'a> Collab<'a> {
             .await?
             .ok_or(Error::NotFound)?;
         let revision = edit_check(repo, doc_type, &stored, &self.signer_id()?)?;
-        let changes = if repo.visibility == Visibility::Private {
+        let mut changes = if repo.visibility == Visibility::Private {
             self.private_edit(repo, kind, &stored, &changes).await?
         } else {
             changes
         };
+        for field in self.dead_references(repo, collab, &stored).await? {
+            changes.insert(field.to_string(), None);
+        }
         self.engine()?
             .replace_document_guarded(collab, doc_type, id, &changes, Some(revision))
             .await
+    }
+
+    /// The references of the signer's stored document that no longer hold, which a replace
+    /// must clear: a replace re-checks every reference to a deletable document, touched or not,
+    /// and an immutable one may be cleared once its target is gone. `replyTo` (the root was
+    /// deleted: the reply becomes a root of its own), `reviewId` (the review was deleted) and
+    /// `asMember` (the signer is no longer a member: what they wrote as one stays editable).
+    /// An imported item or one with an upstream number needs the proof (`i_provenance`), so its
+    /// former member cannot edit it: refused here, before signing.
+    async fn dead_references(
+        &self,
+        repo: &RepoRef,
+        collab: &LoadedContract,
+        stored: &FetchedDocument,
+    ) -> Result<Vec<&'static str>> {
+        let mut dead = Vec::new();
+        for (field, doc_type) in [("replyTo", DOC_COMMENT), ("reviewId", DOC_REVIEW)] {
+            if let Some(id) = id_field(stored, field) {
+                if self
+                    .client
+                    .fetch_document(collab, doc_type, &id)
+                    .await?
+                    .is_none()
+                {
+                    dead.push(field);
+                }
+            }
+        }
+        let proved = stored.fields.contains_key(crate::layout::AS_MEMBER);
+        if proved && !self.is_member(repo).await? {
+            if stored.fields.contains_key("imported")
+                || stored.fields.contains_key("upstreamNumber")
+            {
+                return Err(Error::NotPermitted {
+                    action: "edit this imported item".into(),
+                    reason: format!(
+                        "an imported item carries its importer's membership proof, and you are no \
+                         longer a member of {}",
+                        repo.display()
+                    ),
+                    needs: "writer".into(),
+                });
+            }
+            dead.push(crate::layout::AS_MEMBER);
+        }
+        Ok(dead)
     }
 
     /// The changes a private edit of the signer's `kind` document `stored` writes
@@ -3138,10 +3979,61 @@ impl<'a> Collab<'a> {
         anchor: Option<&CommentAnchor>,
         imported: Option<&Imported>,
     ) -> Result<String> {
-        let p = comment_props(target_id, body, anchor, imported)?;
         let collab = self.collab_contract(repo).await?;
+        // A reply names its thread's root ([`Self::thread_root`]).
+        let mut anchor = anchor.cloned();
+        if let Some(a) = &mut anchor {
+            if let Some(parent) = &a.reply_to {
+                a.reply_to = Some(self.thread_root(repo, &collab, target_id, parent).await?);
+            }
+        }
+        let p = comment_props(target_id, body, anchor.as_ref(), imported)?;
+        self.require_unlocked_or_member(repo, target_id).await?;
         let p = self.seal_if_private(repo, ContentKind::Comment, p).await?;
         self.write(repo, &collab, DOC_COMMENT, p).await
+    }
+
+    /// The root comment of the thread `comment_id` (a comment of `target_id`) belongs to: the
+    /// comment itself when it is a root, else the root it replies to. A reply names a root
+    /// (`replyTo.refersTo … where replyTo = noParent`), so one step always reaches it.
+    pub async fn thread_root(
+        &self,
+        repo: &RepoRef,
+        collab: &LoadedContract,
+        target_id: &str,
+        comment_id: &str,
+    ) -> Result<String> {
+        let parent = self
+            .client
+            .fetch_document(collab, DOC_COMMENT, comment_id)
+            .await?
+            .ok_or_else(|| {
+                Error::Config(format!(
+                    "comment {comment_id} does not exist (or was deleted)"
+                ))
+            })?;
+        let same_thread = id_field(&parent, "targetId").as_deref() == Some(target_id)
+            && id_field(&parent, "repoId").as_deref() == Some(repo.id());
+        if !same_thread {
+            return Err(Error::Config(format!(
+                "comment {comment_id} is not on this issue or pull request"
+            )));
+        }
+        let Some(root) = id_field(&parent, "replyTo") else {
+            return Ok(parent.id);
+        };
+        if self
+            .client
+            .fetch_document(collab, DOC_COMMENT, &root)
+            .await?
+            .is_none()
+        {
+            return Err(Error::Config(format!(
+                "the first comment of the thread of {comment_id} was deleted, so the thread takes \
+                 no replies; post a new comment instead"
+            )));
+        }
+        Ok(root)
     }
 
     /// Review a PR: `verdict` on `commit_oid` (the head a reviewer saw). Un-gated; only
@@ -3157,10 +4049,19 @@ impl<'a> Collab<'a> {
         comment_count: Option<u16>,
         imported: Option<&Imported>,
     ) -> Result<String> {
+        let verdict = self.verdict_for(repo, verdict).await?;
         let p = review_props(patch_id, verdict, commit_oid, body, comment_count, imported)?;
+        self.require_unlocked_or_member(repo, patch_id).await?;
         let p = self.seal_if_private(repo, ContentKind::Review, p).await?;
         let collab = self.collab_contract(repo).await?;
         self.write(repo, &collab, DOC_REVIEW, p).await
+    }
+
+    /// The code `verdict` is written as by the signer ([`Verdict::as_written_by`]): a member's
+    /// approve / request changes is 1 / 2, anyone else's 4 / 5. This decides what a legal
+    /// document looks like, not who may write it, so it holds with the pre-check off too.
+    pub async fn verdict_for(&self, repo: &RepoRef, verdict: Verdict) -> Result<Verdict> {
+        Ok(verdict.as_written_by(self.is_member(repo).await?))
     }
 
     /// Create one forge-collab document of `repo` exactly once across runs: the signed
@@ -3198,9 +4099,13 @@ impl<'a> Collab<'a> {
         }
         // Sealed only when signing afresh: a replay re-broadcasts the saved (sealed) bytes.
         let props = self.seal_if_private(repo, kind, props).await?;
-        let prepared = engine
-            .create_journaled(&collab, doc_type, Self::with_repo(repo, props)?, |p| {
-                persist(&WriteIntent::for_prepared(0, p))
+        let prepared = self
+            .create_stamped(repo, doc_type, Self::with_repo(repo, props)?, async |all| {
+                engine
+                    .create_journaled(&collab, doc_type, all, |p| {
+                        persist(&WriteIntent::for_prepared(0, p))
+                    })
+                    .await
             })
             .await?;
         Ok(prepared.document_id().to_string())
@@ -3208,8 +4113,9 @@ impl<'a> Collab<'a> {
 
     // --- writes: events ------------------------------------------------------------------
 
-    /// Post a member `event` (any kind). Consensus admits it only from a current
-    /// maintainer or writer; the client checks first unless [`SKIP_PRECHECK_ENV`] is set.
+    /// Post a member `event` (any kind but a state kind, which is a transition: see
+    /// [`Self::set_state`]). Consensus admits it only from a current maintainer or writer; the
+    /// client checks first unless [`SKIP_PRECHECK_ENV`] is set.
     pub async fn post_event(
         &self,
         repo: &RepoRef,
@@ -3230,48 +4136,118 @@ impl<'a> Collab<'a> {
             ),
         )
         .await?;
-        let collab = self.collab_contract(repo).await?;
-        self.write(repo, &collab, DOC_EVENT, props).await
+        let community = self.community_contract(repo).await?;
+        self.write(repo, &community, DOC_EVENT, props).await
     }
 
-    /// Close or reopen `target`, through whichever gate admits the signer: a member's
-    /// `event`, else the author's `authorEvent`. Neither is [`Error::NotPermitted`] before
-    /// anything is signed (unless [`SKIP_PRECHECK_ENV`] is set: then a member event is
-    /// attempted and consensus refuses it).
-    pub async fn set_open(
+    /// Carry out `action` (close, reopen, merge, draft, ready) on `target`: one `transition`
+    /// whose kind, `delta` and `asAuthor` follow from the target's state code (read now, a
+    /// proved sum) and who the signer is ([`state_actor`]: a member writes `asAuthor` 0, the
+    /// target's author its number). A merge names its commit (`merge_oid`).
+    ///
+    /// Refused before anything is signed when there is no legal move ("it is already
+    /// closed") or the signer is neither a member nor the author ([`Error::NotPermitted`]);
+    /// with [`SKIP_PRECHECK_ENV`] set, the move is attempted anyway and consensus judges it.
+    /// When consensus refuses it by a state rule (`c1`…`c5`: another client moved the target
+    /// first) the state is read again and the error says what it is now.
+    pub async fn set_state(
         &self,
         repo: &RepoRef,
         target: &Target,
-        close: bool,
-    ) -> Result<(StateRoute, String)> {
+        action: StateAction,
+        merge_oid: Option<&[u8]>,
+    ) -> Result<StateChange> {
+        self.set_state_from(repo, target, action, merge_oid, None)
+            .await
+    }
+
+    /// Write the transition `mv` on `target` as it is (the importer's primitive: it computed
+    /// the move from the state code it read, as a member). No pre-check: consensus judges it,
+    /// and a move the target's state no longer allows is refused before execution
+    /// ([`Error::RuleRefused`] naming a `c*` rule).
+    pub async fn write_transition(
+        &self,
+        repo: &RepoRef,
+        target: &Target,
+        mv: &TransitionMove,
+        merge_oid: Option<&[u8]>,
+    ) -> Result<String> {
+        let props = transition_props(target, mv, merge_oid)?;
+        let collab = self.collab_contract(repo).await?;
+        self.write(repo, &collab, DOC_TRANSITION, props).await
+    }
+
+    /// [`Self::set_state`] from a state code the caller already knows (`None`: read it).
+    async fn set_state_from(
+        &self,
+        repo: &RepoRef,
+        target: &Target,
+        action: StateAction,
+        merge_oid: Option<&[u8]>,
+        known_code: Option<i64>,
+    ) -> Result<StateChange> {
         let me = self.signer_id()?;
         let role = self.signer_role(repo).await?;
-        let verb = if close { "close" } else { "reopen" };
-        let route = match state_route(role, &me, target) {
-            Some(r) => r,
-            None if !precheck_enabled() => StateRoute::Member,
-            None => {
-                return Err(Error::NotPermitted {
-                    action: format!("{verb} {} #{}", target.kind.noun(), target.number),
-                    reason: format!(
-                        "you are neither a member of {} nor the {}'s author",
-                        repo.display(),
-                        target.kind.noun()
-                    ),
-                    needs: "writer".into(),
-                })
-            }
+        let mut actor = state_actor(role, &me, target);
+        if actor == Actor::Other && !precheck_enabled() {
+            // judged by consensus (the e2e suite proves the gate this way)
+            actor = Actor::Member;
+        }
+        let code = match known_code {
+            Some(c) => c,
+            None => self.state_sum(repo, &target.id).await?,
         };
-        let (doc_type, props) = match route {
-            StateRoute::Member => (
-                DOC_EVENT,
-                event_props(target, close_kind(close), None, None)?,
+        let route = match actor {
+            Actor::Author => StateRoute::Author,
+            _ => StateRoute::Member,
+        };
+        let tt = target.kind.transition_target();
+        let (mv, forced) = match next_transition(tt, code, action, actor, target.number) {
+            Some(mv) => (mv, false),
+            // With the pre-check off, the move is attempted from the state it is legal from,
+            // without the actor gate, and consensus judges it (the e2e suite proves the rules
+            // this way).
+            None if !precheck_enabled() => (
+                forced_move(tt, action, actor, target.number)
+                    .ok_or_else(|| no_move(target, code, action, actor))?,
+                true,
             ),
-            StateRoute::Author => (DOC_AUTHOR_EVENT, author_event_props(target, close)?),
+            None => return Err(no_move(target, code, action, actor)),
         };
+        let props = transition_props(target, &mv, merge_oid)?;
         let collab = self.collab_contract(repo).await?;
-        let id = self.write(repo, &collab, doc_type, props).await?;
-        Ok((route, id))
+        match self.write(repo, &collab, DOC_TRANSITION, props).await {
+            Ok(transition_id) => Ok(StateChange {
+                route,
+                transition_id,
+                kind: mv.kind,
+                after: mv.after,
+            }),
+            Err(e) if is_state_rule_refusal(&e) => {
+                let now = self.state_sum(repo, &target.id).await.unwrap_or(code);
+                // A move attempted though it was known illegal, or one whose target has not
+                // moved since the read: the rule refused this move itself, not a race.
+                let cause = if forced || now == code {
+                    format!("consensus refused it ({e})")
+                } else {
+                    format!("another change landed first; consensus refused this one ({e})")
+                };
+                Err(UserError::new(
+                    codes::REJECTED,
+                    format!(
+                        "cannot {} {} #{}: it is {} now",
+                        action_verb(action),
+                        target.kind.noun(),
+                        target.number,
+                        state_words(target.kind, now)
+                    ),
+                )
+                .cause(cause)
+                .note("refused before execution: nothing was written")
+                .into())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Post a PR/issue event of any kind through whichever gate admits the signer
@@ -3319,8 +4295,8 @@ impl<'a> Collab<'a> {
             StateRoute::Member => DOC_EVENT,
             StateRoute::Author => DOC_AUTHOR_EVENT,
         };
-        let collab = self.collab_contract(repo).await?;
-        let id = self.write(repo, &collab, doc_type, props).await?;
+        let community = self.community_contract(repo).await?;
+        let id = self.write(repo, &community, doc_type, props).await?;
         Ok((route, id))
     }
 
@@ -3330,21 +4306,66 @@ impl<'a> Collab<'a> {
         let props = policy_props(policy)?;
         self.require_role(repo, Role::Maintainer, "set the branch policy")
             .await?;
-        let collab = self.collab_contract(repo).await?;
-        self.write(repo, &collab, DOC_POLICY, props).await
+        let community = self.community_contract(repo).await?;
+        self.write(repo, &community, DOC_POLICY, props).await
     }
 
     // --- releases and labels (forge-core) ---------------------------------------------------
 
     /// Publish (or supersede) a release. Maintainer-only at consensus.
+    ///
+    /// RC1 `release_ledger`: the revision carries `delta` +1 when it publishes a tag that is not
+    /// live, and 0 when it edits (or yanks) a live one ([`release_delta`]); the contract's
+    /// `oneLive` rule refuses anything else, so a concurrent publish of the same tag loses.
+    ///
+    /// A private repository's release is sealed ([`Self::create_release_stored`]); one with
+    /// new files needs a store, so this refuses it.
     pub async fn create_release(&self, repo: &RepoRef, input: &ReleaseInput) -> Result<String> {
-        // release notes and assets are not encrypted in this release (§7, §12.5)
-        repo.require_public("releases")?;
-        if input.tag_name.is_empty() || input.tag_name.len() > 63 {
-            return Err(Error::Config("a release tag is 1-63 bytes".into()));
+        Ok(self
+            .create_release_stored(repo, input, None)
+            .await?
+            .document_id)
+    }
+
+    /// [`Self::create_release`], storing a private repository's new files in `store`.
+    ///
+    /// A private repository's revision is sealed (`private-repos.md` §16) under the write
+    /// epoch of keys read now. The tag's newest revision is carried forward (§16.3). New files
+    /// and a new asset list are sealed and stored first, as a kind-4 `packManifest`; if a final
+    /// re-read of the anchors finds the epoch moved meanwhile, they are sealed and stored again
+    /// under the new one (§16.5). The revision has `delta` 0, so consensus no longer keeps one
+    /// live release per tag: the tag is read again after the write, and
+    /// [`ReleaseWritten::warning`] says when this revision is not its newest.
+    pub async fn create_release_stored(
+        &self,
+        repo: &RepoRef,
+        input: &ReleaseInput,
+        store: Option<&ReleaseStore<'_>>,
+    ) -> Result<ReleaseWritten> {
+        if repo.visibility == Visibility::Private {
+            return self.create_sealed_release(repo, input, store).await;
         }
-        check_len("release name", &input.name, 120)?;
-        check_len("release notes", &input.notes, 5120)?;
+        Ok(ReleaseWritten {
+            document_id: self.create_public_release(repo, input).await?,
+            ..ReleaseWritten::default()
+        })
+    }
+
+    async fn create_public_release(&self, repo: &RepoRef, input: &ReleaseInput) -> Result<String> {
+        if !input.files.is_empty()
+            || input.prerelease.is_some()
+            || input.draft.is_some()
+            || input.unpublished
+        {
+            return Err(Error::Config(
+                "files to seal, and the draft, pre-release and unpublish flags, are for a \
+                 private repository's sealed release"
+                    .into(),
+            ));
+        }
+        check_tag_name(&input.tag_name)?;
+        check_text("release name", &input.name, 120, 480)?;
+        check_text("release notes", &input.notes, 5120, 5120)?;
         let mut p = BTreeMap::new();
         p.insert("tagName".to_string(), FieldValue::text(&input.tag_name));
         if !input.name.is_empty() {
@@ -3353,7 +4374,10 @@ impl<'a> Collab<'a> {
         if !input.notes.is_empty() {
             p.insert("notes".to_string(), FieldValue::text(&input.notes));
         }
-        p.insert("yanked".to_string(), FieldValue::boolean(input.yanked));
+        p.insert(
+            "yanked".to_string(),
+            FieldValue::boolean(input.yanked.unwrap_or(false)),
+        );
         if !input.assets.is_empty() {
             let json = serde_json::to_string(&input.assets)?;
             if json.len() > 4096 {
@@ -3372,12 +4396,434 @@ impl<'a> Collab<'a> {
         )
         .await?;
         let core = self.core_contract(repo).await?;
-        self.write(repo, &core, DOC_RELEASE, p).await
+        // The tag's revisions, read now: whether this one publishes or edits.
+        let revisions = self
+            .client
+            .query_all_documents(
+                &core,
+                DOC_RELEASE,
+                &[
+                    Self::repo_filter(repo)?,
+                    QueryFilter::eq("tagName", FieldValue::text(&input.tag_name)),
+                ],
+                &[QueryOrder::asc("$createdAt")],
+            )
+            .await?;
+        let live = tag_is_live(revisions.iter().map(|d| release_from_doc(d).delta));
+        crate::layout::stamp_vis(&mut p, repo.visibility);
+        let with_delta = |live: bool| {
+            let mut p = p.clone();
+            p.insert("delta".to_string(), FieldValue::signed(release_delta(live)));
+            p
+        };
+        match self.write(repo, &core, DOC_RELEASE, with_delta(live)).await {
+            // The node that answered the read had not seen the tag's newest revision (a
+            // publish, or another client's unpublish): `oneLive` refused the delta it implied,
+            // which proves the other one. Nothing was written; retry once with it.
+            Err(Error::RuleRefused { rule, .. }) if rule == ONE_LIVE_RULE => {
+                self.write(repo, &core, DOC_RELEASE, with_delta(!live))
+                    .await
+            }
+            other => other,
+        }
     }
 
-    /// Every release of `repo`, newest revision per tag, newest first; `previous` holds the
-    /// superseded revisions (a revoked maintainer can delete theirs, so readers fall back).
-    pub async fn releases(&self, repo: &RepoRef) -> Result<(Vec<Release>, Vec<Release>)> {
+    /// A private repository's release revision (§16): see [`Self::create_release_stored`].
+    async fn create_sealed_release(
+        &self,
+        repo: &RepoRef,
+        input: &ReleaseInput,
+        store: Option<&ReleaseStore<'_>>,
+    ) -> Result<ReleaseWritten> {
+        use crate::private::release::{self, ReleaseFields};
+        let tag = &input.tag_name;
+        check_sealed_input(input)?;
+        self.require_role(repo, Role::Maintainer, &format!("publish release {tag}"))
+            .await?;
+        let owner = platform::decode_identifier(&self.signer_id()?)?;
+        // Every revision of the tag, read now from the `created` listing (§16.3): what this
+        // one does not change is carried forward from the newest readable one.
+        let before = self.releases(repo).await?;
+        let carried = newest_revision(&before, tag)
+            .and_then(|r| r.sealed.as_ref())
+            .map(|s| s.fields.clone())
+            .unwrap_or_default();
+        let mut fields = ReleaseFields {
+            tag: tag.clone(),
+            name: non_empty(&input.name).or(carried.name.clone()),
+            target_oid: carried.target_oid.clone(),
+            imported_author: carried.imported_author.clone(),
+            imported_url: carried.imported_url.clone(),
+            imported_created_at: carried.imported_created_at,
+            prerelease: input.prerelease.unwrap_or(carried.prerelease),
+            draft: input.draft.unwrap_or(carried.draft),
+            yanked: input.yanked.unwrap_or(carried.yanked),
+            unpublished: input.unpublished,
+            // an edit of nothing but the name or the flags keeps the notes and the list as
+            // they are: the same prefix, flag and manifest
+            notes: carried.notes.clone(),
+            notes_continue: carried.notes_continue,
+            asset_manifest: carried.asset_manifest.clone(),
+        };
+        // New files or notes build a new asset list from the previous one, and so do carried
+        // notes that no longer fit beside a longer name (§16.2: the writer never refuses its
+        // own budget); anything else keeps naming the list, unopened.
+        let rebuild = !input.files.is_empty()
+            || !input.notes.is_empty()
+            || release::writer_tlv(&fields).is_err();
+        let prev_manifest = match &carried.asset_manifest {
+            Some(_) if rebuild => Some(self.release_manifest(repo, &carried).await?),
+            _ => None,
+        };
+        // the full notes, as the new revision states them
+        let full_notes = match (non_empty(&input.notes), &prev_manifest) {
+            (Some(n), _) => n,
+            (None, Some(m)) if carried.notes_continue => m.notes.clone().unwrap_or_default(),
+            (None, _) => carried.notes.clone().unwrap_or_default(),
+        };
+        let mut sealed_assets = Vec::new();
+        let mut orphaned = Vec::new();
+        let mut attempts = 0;
+        let (keys, epoch) = loop {
+            attempts += 1;
+            // the write epoch of keys read now (§5.3)
+            let w = self.fresh_keyring(repo).await?.writer(repo)?;
+            if !rebuild {
+                break (w.write_keys().clone(), w.write_epoch());
+            }
+            let list = self
+                .rebuild_asset_list(
+                    repo,
+                    w.write_keys(),
+                    RebuildFrom {
+                        fields: fields.clone(),
+                        notes: &full_notes,
+                        files: &input.files,
+                        prev: prev_manifest.as_ref(),
+                    },
+                    store,
+                )
+                .await?;
+            (fields, sealed_assets) = (list.fields, list.assets);
+            // The final anchor re-read before signing (§5.3, §16.5): a rotation during the
+            // upload would leave the new artifacts readable to the member it removed. The key
+            // is compared, not only its number: a dropped epoch number can be used again.
+            let now = self.fresh_keyring(repo).await?.writer(repo)?;
+            if now.write_epoch() == w.write_epoch()
+                && now.write_keys().kcv() == w.write_keys().kcv()
+            {
+                break (now.write_keys().clone(), now.write_epoch());
+            }
+            // what was stored under the superseded key stays where it is: say so
+            orphaned.extend(list.stored);
+            if attempts >= 2 {
+                return Err(epoch_moved_twice(repo, tag, &orphaned));
+            }
+        };
+        let (tag_name, enc) = release::seal(&keys, &owner, &fields).map_err(|e| match e {
+            crate::private::PrivateError::TooLarge(..) => Error::Config(format!(
+                "release {tag} not written: a private release holds 1507 bytes of tag, name, \
+                 notes preview and provenance, and this one does not fit (a shorter name)"
+            )),
+            other => other.into(),
+        })?;
+        let core = self.core_contract(repo).await?;
+        // delta 0 always (`oneLive`): there is no ledger to retry against (§16.3)
+        let document_id = self
+            .write(
+                repo,
+                &core,
+                DOC_RELEASE,
+                sealed_release_props(&tag_name, epoch, enc),
+            )
+            .await?;
+        let after = self.releases(repo).await?;
+        Ok(ReleaseWritten {
+            warnings: sealed_write_warnings(repo, tag, &before, &after, &document_id, &orphaned),
+            document_id,
+            sealed_assets,
+            asset_list_kept: !rebuild,
+        })
+    }
+
+    /// A revision's new asset list under `keys` (§16.5): the previous list's assets but those a
+    /// new file replaces, then the new files sealed and stored, and the full notes when they
+    /// do not fit `enc`. The list is named again, not stored again, when nothing in it changes
+    /// (no new file, and no notes in it before or now). Returns the fields with their notes
+    /// fitted and TLV 21 set (none when there is no asset and nothing continues), the list's
+    /// entries, and the sealed hashes it stored.
+    async fn rebuild_asset_list(
+        &self,
+        repo: &RepoRef,
+        keys: &crate::private::EpochKeys,
+        from: RebuildFrom<'_>,
+        store: Option<&ReleaseStore<'_>>,
+    ) -> Result<Rebuilt> {
+        use crate::private::release::{self, ReleaseFields, ReleaseManifest};
+        // the hash of `from.prev`, as the carried fields name it
+        let prev_hash = from.fields.asset_manifest.clone();
+        let mut assets = from.prev.map(|m| m.assets.clone()).unwrap_or_default();
+        assets.retain(|a| !from.files.iter().any(|f| f.name == a.name));
+        let uploaded = self.seal_release_files(keys, from.files, store).await?;
+        let mut stored: Vec<String> = uploaded
+            .iter()
+            .filter_map(|a| a.sealed_sha256.clone())
+            .collect();
+        assets.extend(uploaded);
+        // TLV 21 is part of the 1507-byte budget whenever the revision names a list (§16.2):
+        // a placeholder of its length is counted before the notes are fitted
+        let (mut fields, notes_continue) = release::fit_notes(
+            ReleaseFields {
+                asset_manifest: (!assets.is_empty()).then(|| "00".repeat(32)),
+                ..from.fields
+            },
+            from.notes,
+        );
+        let unchanged = from.files.is_empty()
+            && !notes_continue
+            && from.prev.is_some_and(|m| m.notes.is_none());
+        fields.asset_manifest = if assets.is_empty() && !notes_continue {
+            None
+        } else if unchanged {
+            prev_hash
+        } else {
+            let manifest = ReleaseManifest {
+                v: 1,
+                tag: fields.tag.clone(),
+                total: assets.len() as u64,
+                source: from.prev.and_then(|m| m.source.clone()),
+                notes: notes_continue.then(|| from.notes.to_string()),
+                assets: assets.clone(),
+            };
+            let hash = hex::encode(
+                self.store_release_manifest(repo, keys, &manifest, notes_continue, store)
+                    .await?,
+            );
+            stored.push(hash.clone());
+            Some(hash)
+        };
+        Ok(Rebuilt {
+            fields,
+            assets,
+            stored,
+        })
+    }
+
+    /// Seal each of `files` under `keys` and store it, as manifest entries (§16.5): the
+    /// plaintext's `sha256` and size, and the sealed object's, which also names it in storage
+    /// (never the plaintext hash).
+    async fn seal_release_files(
+        &self,
+        keys: &crate::private::EpochKeys,
+        files: &[ReleaseFile],
+        store: Option<&ReleaseStore<'_>>,
+    ) -> Result<Vec<crate::private::release::ManifestAsset>> {
+        let mut out = Vec::new();
+        for f in files {
+            let sealed = crate::private::pack::seal(keys, &f.bytes)?;
+            let uris = store_sealed(store, &sealed, &f.name).await?.uris();
+            out.push(crate::private::release::ManifestAsset {
+                name: f.name.clone(),
+                sha256: hex::encode(sha256(&f.bytes)),
+                size_bytes: f.bytes.len() as u64,
+                uris: asset_uris(uris),
+                sealed_sha256: Some(hex::encode(sha256(&sealed))),
+                sealed_size_bytes: Some(sealed.len() as u64),
+            });
+        }
+        Ok(out)
+    }
+
+    /// Seal `manifest` under `keys`, store it, and record it as a kind-4 `packManifest` that
+    /// publishes nothing about the list (`objectCount` 0, no `tips`, no `supersedes`, §16.5).
+    /// Returns its `packHash`.
+    async fn store_release_manifest(
+        &self,
+        repo: &RepoRef,
+        keys: &crate::private::EpochKeys,
+        manifest: &crate::private::release::ReleaseManifest,
+        notes_continue: bool,
+        store: Option<&ReleaseStore<'_>>,
+    ) -> Result<[u8; 32]> {
+        let sealed = crate::private::release::seal_manifest(keys, manifest, notes_continue)?;
+        let rep = store_sealed(store, &sealed, "the release's asset list").await?;
+        let stored = crate::repo::StoredArtifact::from_replication(&rep, &sealed)?;
+        let pack_hash = sha256(&sealed);
+        self.repo_service()?
+            .write_pack_manifest(repo, &release_manifest_input(pack_hash, &sealed, stored))
+            .await?;
+        Ok(pack_hash)
+    }
+
+    /// The kind-4 asset list a sealed revision names (§16.5): the size cap before anything is
+    /// fetched, then each copy by the reader rule, its hash against TLV 21, §3.5 under the key
+    /// of its header's epoch, and the canonical and per-key checks.
+    pub async fn release_manifest(
+        &self,
+        repo: &RepoRef,
+        fields: &crate::private::release::ReleaseFields,
+    ) -> Result<crate::private::release::ReleaseManifest> {
+        use crate::private::release::{open_manifest, ManifestError, MAX_MANIFEST_BYTES};
+        let hash = fields
+            .asset_manifest_hash()
+            .ok_or_else(|| Error::Config(format!("release {} has no asset list", fields.tag)))?;
+        let kr = self.keyring(repo).await?;
+        let svc = self.repo_service()?;
+        let copies: Vec<_> = svc
+            .read_pack_copies(repo, hash)
+            .await?
+            .into_iter()
+            .filter(|m| m.kind == u64::from(crate::pack::KIND_RELEASE_ASSETS))
+            .collect();
+        let reader = crate::storage::PackReader::from_user_config();
+        let mut last = format!("no copy of asset list {} is recorded", hex::encode(hash));
+        for copy in copies {
+            if copy.size_bytes > MAX_MANIFEST_BYTES {
+                last = format!(
+                    "a copy claims {} bytes, over the 1 MiB cap",
+                    copy.size_bytes
+                );
+                continue;
+            }
+            let sealed = match svc.fetch_artifact(repo, &copy, &reader).await {
+                Ok(b) => b,
+                Err(e) => {
+                    last = e.to_string();
+                    continue;
+                }
+            };
+            match open_manifest(
+                &sealed,
+                copy.size_bytes,
+                &hash,
+                &fields.tag,
+                fields.notes_continue,
+                |e| kr.epoch_keys(e),
+            ) {
+                Ok(m) => return Ok(m),
+                Err(ManifestError::Mismatch) => {
+                    last = "the asset list does not match the release that names it".into();
+                }
+                Err(ManifestError::Pack(e)) => last = e.to_string(),
+            }
+        }
+        Err(UserError::new(
+            codes::SEALED_PACK_CORRUPT,
+            format!("the asset list of release {} is unavailable", fields.tag),
+        )
+        .cause(last)
+        .into())
+    }
+
+    /// A sealed asset's file from its stored `sealed` bytes (already checked against
+    /// `sealedSha256`): opened, truncated to its size and checked against its `sha256` (§16.5).
+    pub async fn open_release_asset(
+        &self,
+        repo: &RepoRef,
+        entry: &crate::private::release::ManifestAsset,
+        sealed: &[u8],
+    ) -> Result<Vec<u8>> {
+        let kr = self.keyring(repo).await?;
+        crate::private::release::open_asset(sealed, entry, |e| kr.epoch_keys(e))
+            .map_err(|e| crate::keyring::sealed_error(&e))
+    }
+
+    /// The pack-manifest service for this signer, sharing this `Collab`'s keyring.
+    fn repo_service(&self) -> Result<crate::repo::RepoService<'a>> {
+        let (identity, bridge) = self.signer.ok_or_else(|| {
+            Error::from(crate::user_error::private_needs_identity("the repository"))
+        })?;
+        Ok(crate::repo::RepoService::with_keyring(
+            self.client,
+            identity,
+            bridge,
+            Arc::clone(&self.keyring),
+        ))
+    }
+
+    /// Whether `tag_name` is currently live for `repo`: its release revisions' `delta` sum to
+    /// at least 1 ([`tag_is_live`]), the same test [`Collab::create_release`] and
+    /// [`Collab::unpublish_release`] make before writing. Exposed for callers that want to fail
+    /// before an expensive step (a confirmation prompt, say) without going through
+    /// [`Collab::releases`]'s "newest per tag" pick -- that picks by `$createdAt` then `$id`,
+    /// which can disagree with the sum (and so with consensus) for two revisions written in the
+    /// same block.
+    pub async fn tag_is_live(&self, repo: &RepoRef, tag_name: &str) -> Result<bool> {
+        let core = self.core_contract(repo).await?;
+        let revisions = self
+            .client
+            .query_all_documents(
+                &core,
+                DOC_RELEASE,
+                &[
+                    Self::repo_filter(repo)?,
+                    QueryFilter::eq("tagName", FieldValue::text(tag_name)),
+                ],
+                &[QueryOrder::asc("$createdAt")],
+            )
+            .await?;
+        Ok(tag_is_live(revisions.iter().map(release_delta_of)))
+    }
+
+    /// Unpublish a live release: writes a revision of `tag_name` with `delta` −1, which the
+    /// contract's `oneLive` rule accepts only while the tag's revisions currently sum to 1
+    /// ([`tag_is_live`]). Maintainer-only at consensus. Refused before signing for a private
+    /// repository ([`RepoRef::require_public`]) and for a tag that is not currently live:
+    /// never published, already unpublished, or unpublished by another client meanwhile (the
+    /// same refusal `oneLive` would give at consensus, in that race).
+    pub async fn unpublish_release(&self, repo: &RepoRef, tag_name: &str) -> Result<String> {
+        // releases are not sealed in this release (§7, §12.5), same as create_release
+        repo.require_public("releases")?;
+        check_tag_name(tag_name)?;
+        self.require_role(
+            repo,
+            Role::Maintainer,
+            &format!("unpublish release {tag_name}"),
+        )
+        .await?;
+        let core = self.core_contract(repo).await?;
+        let revisions = self
+            .client
+            .query_all_documents(
+                &core,
+                DOC_RELEASE,
+                &[
+                    Self::repo_filter(repo)?,
+                    QueryFilter::eq("tagName", FieldValue::text(tag_name)),
+                ],
+                &[QueryOrder::asc("$createdAt")],
+            )
+            .await?;
+        if !tag_is_live(revisions.iter().map(release_delta_of)) {
+            return Err(not_live_error(tag_name));
+        }
+        let newest = revisions
+            .iter()
+            .max_by_key(|d| d.created_at.unwrap_or(0))
+            .expect("tag_is_live(revisions) implies revisions is non-empty");
+        let p = unpublish_props(tag_name, newest, repo.visibility);
+        match self.write(repo, &core, DOC_RELEASE, p).await {
+            // Another client changed the tag's live revision between our read and this write
+            // (an unpublish, landing first; or, within the same block, a write `oneLive` would
+            // resolve differently than the revision we read): the node we read from no longer
+            // matches consensus. Nothing was written; give the same refusal a fresh read would.
+            Err(Error::RuleRefused { rule, .. }) if rule == ONE_LIVE_RULE => {
+                Err(not_live_error(tag_name))
+            }
+            other => other,
+        }
+    }
+
+    /// Every release of `repo`: the newest revision of each tag not unpublished (see
+    /// [`newest_per_tag`]), in [`release_order`]; `previous` holds the other revisions, an
+    /// unpublished tag's included, newest first.
+    ///
+    /// A private repository's revisions are opened and folded per §16.3 ([`sealed_releases`]),
+    /// and need a member's keys: a reader without them gets the keyring's error, never a list
+    /// of tags named by their hash. Every read lists the repository through `created`
+    /// (`repoId, $createdAt`) and filters locally: nothing queries a keyed `tagName`.
+    pub async fn releases(&self, repo: &RepoRef) -> Result<ReleaseList> {
+        let keys = self.private_keys(repo).await?;
         let core = self.core_contract(repo).await?;
         let docs = self
             .client
@@ -3388,7 +4834,20 @@ impl<'a> Collab<'a> {
                 &[QueryOrder::asc("$createdAt")],
             )
             .await?;
-        Ok(newest_per_tag(docs.iter().map(release_from_doc).collect()))
+        if let Some(kr) = keys {
+            return Ok(sealed_releases(&docs, |d| kr.open_release(d)));
+        }
+        // a public reader holds no key: a revision carrying `enc` is malformed (§16.2)
+        let (plain, sealed): (Vec<_>, Vec<_>) = docs
+            .iter()
+            .partition(|d| well_formed(ContentKind::Release, d, repo.visibility));
+        let (current, previous) = newest_per_tag(plain.into_iter().map(release_from_doc).collect());
+        Ok(ReleaseList {
+            current,
+            previous,
+            hidden: sealed.len(),
+            ..ReleaseList::default()
+        })
     }
 
     /// Define (or supersede) a label. Member-gated.
@@ -3503,8 +4962,8 @@ impl<'a> Collab<'a> {
             ),
         )
         .await?;
-        let collab = self.collab_contract(repo).await?;
-        self.write(repo, &collab, DOC_EVENT, props).await
+        let community = self.community_contract(repo).await?;
+        self.write(repo, &community, DOC_EVENT, props).await
     }
 
     /// Every label of `repo`, newest definition per name.
@@ -3535,9 +4994,9 @@ impl<'a> Collab<'a> {
 
     /// The star count of `repo` (the countable `byRepo` index).
     pub async fn star_count(&self, repo: &RepoRef) -> Result<u64> {
-        let collab = self.collab_contract(repo).await?;
+        let community = self.community_contract(repo).await?;
         self.client
-            .count_documents(&collab, DOC_STAR, &[Self::repo_filter(repo)?])
+            .count_documents(&community, DOC_STAR, &[Self::repo_filter(repo)?])
             .await
     }
 
@@ -3576,19 +5035,17 @@ impl<'a> Collab<'a> {
         collab: &LoadedContract,
         repo: &RepoRef,
         doc_type: &str,
+        props: BTreeMap<String, FieldValue>,
     ) -> Result<bool> {
         if self.own_index_only(collab, repo, doc_type).await?.is_some() {
             return Ok(false);
         }
         let probe = || async { Ok(self.own_index_only(collab, repo, doc_type).await?.is_some()) };
+        let mut props = Self::with_repo(repo, props)?;
+        crate::layout::stamp_vis_for(doc_type, &mut props, repo.visibility);
         match self
             .engine()?
-            .create_index_only(
-                collab,
-                doc_type,
-                Self::with_repo(repo, BTreeMap::new())?,
-                probe,
-            )
+            .create_index_only(collab, doc_type, props, probe)
             .await
         {
             Ok(_) => Ok(true),
@@ -3599,30 +5056,34 @@ impl<'a> Collab<'a> {
 
     async fn own_star(
         &self,
-        collab: &LoadedContract,
+        community: &LoadedContract,
         repo: &RepoRef,
     ) -> Result<Option<FetchedDocument>> {
-        self.own_index_only(collab, repo, DOC_STAR).await
+        self.own_index_only(community, repo, DOC_STAR).await
     }
 
     /// Whether the signer has starred `repo`.
     pub async fn is_starred(&self, repo: &RepoRef) -> Result<bool> {
-        let collab = self.collab_contract(repo).await?;
-        Ok(self.own_star(&collab, repo).await?.is_some())
+        let community = self.community_contract(repo).await?;
+        Ok(self.own_star(&community, repo).await?.is_some())
     }
 
     /// Star `repo`; with `trending`, a new star also counts toward Trending (a `starBeat`,
     /// once per identity and repo, platform-parity-spec §4.3). Returns `false` when it was
     /// already starred (nothing written, no beat either).
     pub async fn star(&self, repo: &RepoRef, trending: bool) -> Result<bool> {
-        let collab = self.collab_contract(repo).await?;
-        let starred = self.create_own_index_only(&collab, repo, DOC_STAR).await?;
-        if starred && trending {
+        let community = self.community_contract(repo).await?;
+        let starred = self
+            .create_own_index_only(&community, repo, DOC_STAR, BTreeMap::new())
+            .await?;
+        if starred && trending && beats(repo, &self.signer_id()?) {
             // The star stands whatever happens to the beat, which only feeds a ranking. A beat
             // from an earlier star of this repo makes this a no-op (one per identity and repo,
             // ever: it cannot be deleted).
+            let owner = FieldValue::identifier(platform::decode_identifier(repo.owner_id())?);
+            let beat = BTreeMap::from([("repoOwner".to_string(), owner)]);
             if let Err(e) = self
-                .create_own_index_only(&collab, repo, DOC_STAR_BEAT)
+                .create_own_index_only(&community, repo, DOC_STAR_BEAT, beat)
                 .await
             {
                 tracing::warn!(error = %e, "the star landed; its Trending beat did not");
@@ -3634,8 +5095,8 @@ impl<'a> Collab<'a> {
     /// Unstar `repo` (the values-carrying `indexOnly` delete). Returns `false` when it was
     /// not starred.
     pub async fn unstar(&self, repo: &RepoRef) -> Result<bool> {
-        let collab = self.collab_contract(repo).await?;
-        self.delete_own_index_only(&collab, repo, DOC_STAR).await
+        let community = self.community_contract(repo).await?;
+        self.delete_own_index_only(&community, repo, DOC_STAR).await
     }
 
     /// Delete the signer's row of an indexOnly `doc_type` for `repo` (the values-carrying
@@ -3807,12 +5268,13 @@ fn natural(a: &str, b: &str) -> std::cmp::Ordering {
 }
 
 /// The repo's latest release, as GitHub picks it: the first in [`release_order`] that is
-/// neither a pre-release nor yanked (else the first not yanked).
+/// neither a pre-release nor yanked (else the first not yanked). A draft is never the latest
+/// (§16.3).
 pub fn latest_release(current: &[Release]) -> Option<&Release> {
-    current
-        .iter()
-        .find(|r| !r.yanked && !is_prerelease(&r.tag_name))
-        .or_else(|| current.iter().find(|r| !r.yanked))
+    let candidates = || current.iter().filter(|r| !r.yanked && !r.is_draft());
+    candidates()
+        .find(|r| !r.is_prerelease())
+        .or_else(|| candidates().next())
 }
 
 /// `a` vs `b`, newest revision first (`$createdAt`, then `$id`).
@@ -3820,8 +5282,99 @@ fn newest_first(a: &Release, b: &Release) -> std::cmp::Ordering {
     (b.created_at, &b.document_id).cmp(&(a.created_at, &a.document_id))
 }
 
-/// Split release revisions into the newest per tag (in [`release_order`]) and the rest
-/// (newest first).
+/// The RC1 `release` rule that keeps one live release per tag.
+const ONE_LIVE_RULE: &str = "oneLive";
+
+/// Whether a public tag is live: its `release.delta` sum, as the contract's `perTag` summable
+/// index holds it, is 1 while the tag is live, 0 before its first publish and after an
+/// unpublish.
+fn tag_is_live(deltas: impl IntoIterator<Item = i64>) -> bool {
+    deltas.into_iter().sum::<i64>() >= 1
+}
+
+/// A release revision's `delta`, straight off its raw field (0 for a pre-RC1 document that
+/// predates the field): the input [`tag_is_live`] sums, without going through [`release_from_doc`]
+/// and its `Release`/`ReleaseAsset` parse.
+fn release_delta_of(d: &FetchedDocument) -> i64 {
+    d.fields
+        .get("delta")
+        .and_then(FieldValue::as_i64)
+        .unwrap_or(0)
+}
+
+/// [`Collab::unpublish_release`]'s write: `tag_name` with `delta` −1, and every other field
+/// carried forward from `newest` unchanged -- its raw `name`/`notes`/`yanked`/`assets` fields,
+/// not reparsed and reserialized through [`release_from_doc`]'s `Release`/`ReleaseAsset` struct.
+/// Reserializing could grow `assets` past the contract's 4096-byte cap (an older document can
+/// gain bytes on a round trip, e.g. a bare `uri` becoming a one-element `uris` array), and a
+/// document the contract already accepted needs no revalidation here.
+fn unpublish_props(
+    tag_name: &str,
+    newest: &FetchedDocument,
+    visibility: Visibility,
+) -> BTreeMap<String, FieldValue> {
+    let mut p = BTreeMap::new();
+    p.insert("tagName".to_string(), FieldValue::text(tag_name));
+    if let Some(name) = newest.field_str("name").filter(|s| !s.is_empty()) {
+        p.insert("name".to_string(), FieldValue::text(name));
+    }
+    if let Some(notes) = newest.field_str("notes").filter(|s| !s.is_empty()) {
+        p.insert("notes".to_string(), FieldValue::text(notes));
+    }
+    p.insert(
+        "yanked".to_string(),
+        FieldValue::boolean(newest.field_bool("yanked")),
+    );
+    if let Some(assets) = newest.field_str("assets").filter(|s| !s.is_empty()) {
+        p.insert("assets".to_string(), FieldValue::text(assets));
+    }
+    crate::layout::stamp_vis(&mut p, visibility);
+    p.insert("delta".to_string(), FieldValue::signed(-1));
+    p
+}
+
+/// The `delta` of a new public revision of a tag (RC1 `oneLive`: the tag's sum after the write
+/// must be `min(delta + 1, 1)`): `+1` publishes a tag that is not live, `0` edits or yanks a
+/// live one. [`Collab::unpublish_release`] writes `-1` directly, since it only ever runs while
+/// the tag is live; a release document itself is never deleted.
+fn release_delta(live: bool) -> i64 {
+    i64::from(!live)
+}
+
+/// The refusal `dg release unpublish` and [`Collab::unpublish_release`] give for a tag that is
+/// not currently live: never published, already unpublished, or unpublished by another client
+/// between the precheck's read and the write.
+fn not_live_error(tag_name: &str) -> Error {
+    UserError::new(
+        codes::REJECTED,
+        format!("release {tag_name:?} not unpublished: it is not currently live"),
+    )
+    .cause("a release can be unpublished only while it is live (oneLive): never published, or already unpublished")
+    .fix("`dg release list <owner>/<repo>` shows which tags are currently live -- if you just \
+          published this tag, the node you read from may just be a block behind; wait a moment \
+          and retry before assuming it never went through")
+    .note("nothing was written")
+    .into()
+}
+
+/// Refuse a release tag the RC1 contract would refuse (`release.tagName`: 1-63 bytes of the
+/// git ref grammar, `@{` included), before anything is signed or uploaded.
+pub fn check_tag_name(tag: &str) -> Result<()> {
+    if rules::is_legal_tag_name(tag) {
+        return Ok(());
+    }
+    Err(Error::Config(format!(
+        "illegal release tag {tag:?}: a tag is 1-63 bytes and must pass `git check-ref-format` \
+         (no spaces, control characters, `~^:?*[\\`, `..`, `@{{`, or a component that starts \
+         with `.`)"
+    )))
+}
+
+/// Split release revisions into the newest per live tag (in [`release_order`]) and the rest
+/// (newest first). A tag whose newest revision unpublishes it (`delta` −1) is not live: every
+/// revision of it is previous. For a public tag this is exactly "its deltas sum below 1"
+/// (`oneLive` admits only +1 after an unpublish). Public revisions only: a private
+/// repository's are folded by [`sealed_releases`].
 fn newest_per_tag(all: Vec<Release>) -> (Vec<Release>, Vec<Release>) {
     let mut by_tag: BTreeMap<String, Vec<Release>> = BTreeMap::new();
     for r in all {
@@ -3831,13 +5384,258 @@ fn newest_per_tag(all: Vec<Release>) -> (Vec<Release>, Vec<Release>) {
     let mut previous = Vec::new();
     for (_, mut revs) in by_tag {
         revs.sort_by(newest_first);
-        let mut it = revs.into_iter();
-        current.extend(it.next());
+        let mut it = revs.into_iter().peekable();
+        if it.peek().is_some_and(|newest| newest.delta >= 0) {
+            current.extend(it.next());
+        }
         previous.extend(it);
     }
     current.sort_by(release_order);
     previous.sort_by(newest_first);
     (current, previous)
+}
+
+/// What a sealed revision's new asset list is built from ([`Collab::rebuild_asset_list`]).
+struct RebuildFrom<'i> {
+    /// The revision's fields so far (every field but the notes and TLV 21).
+    fields: crate::private::release::ReleaseFields,
+    /// Its full notes.
+    notes: &'i str,
+    /// The new files.
+    files: &'i [ReleaseFile],
+    /// The previous revision's asset list.
+    prev: Option<&'i crate::private::release::ReleaseManifest>,
+}
+
+/// What a sealed writer refuses before anything is read or stored: the tag and text caps,
+/// plaintext asset entries, and two files of one name.
+fn check_sealed_input(input: &ReleaseInput) -> Result<()> {
+    check_tag_name(&input.tag_name)?;
+    check_text("release name", &input.name, 120, 480)?;
+    check_text("release notes", &input.notes, 5120, 5120)?;
+    if !input.assets.is_empty() {
+        return Err(Error::Config(
+            "a private repository's assets are sealed files, never plaintext entries".into(),
+        ));
+    }
+    let mut names = BTreeSet::new();
+    if let Some(dup) = input.files.iter().find(|f| !names.insert(&f.name)) {
+        return Err(Error::Config(format!(
+            "two assets are named {:?}: a release lists each name once",
+            dup.name
+        )));
+    }
+    Ok(())
+}
+
+/// The refusal when the write epoch moved on both attempts: nothing was signed, and the copies
+/// stored under the superseded keys are named.
+fn epoch_moved_twice(repo: &RepoRef, tag: &str, orphaned: &[String]) -> Error {
+    Error::Config(format!(
+        "release {tag} not written: the key epoch of {} moved twice while its assets were \
+         uploaded; run the command again (copies stored under the old keys stay in your \
+         storage: {})",
+        repo.display(),
+        orphaned.join(", ")
+    ))
+}
+
+/// [`ReleaseWritten::warnings`] for the revision `ours` of `tag` (§16.3): the view it carried
+/// forward from missed a newer revision; it is not the newest after the write (or that could
+/// not be checked); a rotation during the upload left copies under the old key (`orphaned`).
+fn sealed_write_warnings(
+    repo: &RepoRef,
+    tag: &str,
+    before: &ReleaseList,
+    after: &ReleaseList,
+    ours: &str,
+    orphaned: &[String],
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if before.stale || before.unknown_tags.iter().any(|t| t == tag) {
+        warnings.push(format!(
+            "release {tag} was carried forward from the newest revision you can read; a newer \
+             one exists that you cannot read (`dg repo keys status {}`)",
+            repo.display()
+        ));
+    }
+    warnings.extend(not_newest_warning(after, tag, ours));
+    if !orphaned.is_empty() {
+        warnings.push(format!(
+            "the key epoch moved during the upload, so this release was sealed again; the first \
+             copies, under the old key, are still in your storage: {}",
+            orphaned.join(", ")
+        ));
+    }
+    warnings
+}
+
+/// What [`Collab::rebuild_asset_list`] built.
+struct Rebuilt {
+    /// The revision's fields, notes fitted and TLV 21 set.
+    fields: crate::private::release::ReleaseFields,
+    /// The list's entries.
+    assets: Vec<crate::private::release::ManifestAsset>,
+    /// The sealed hashes it stored (files, then the list).
+    stored: Vec<String>,
+}
+
+/// The newest readable revision of `tag`: its release when live, else the newest of its
+/// history (an unpublished tag's included).
+fn newest_revision<'l>(list: &'l ReleaseList, tag: &str) -> Option<&'l Release> {
+    list.current
+        .iter()
+        .find(|r| r.tag_name == tag)
+        .or_else(|| list.previous.iter().find(|r| r.tag_name == tag))
+}
+
+fn non_empty(s: &str) -> Option<String> {
+    (!s.is_empty()).then(|| s.to_string())
+}
+
+/// The URIs a sealed asset entry records: 1–8 (§16.5), private `s3://` copies dropped first.
+fn asset_uris(mut uris: Vec<String>) -> Vec<String> {
+    const MAX: usize = 8;
+    if uris.len() > MAX && uris.iter().any(|u| !u.starts_with("s3://")) {
+        uris.retain(|u| !u.starts_with("s3://"));
+    }
+    uris.truncate(MAX);
+    uris
+}
+
+/// Store `sealed` (a sealed asset or asset list, `what` for messages) on `store`, named by its
+/// own hash.
+async fn store_sealed(
+    store: Option<&ReleaseStore<'_>>,
+    sealed: &[u8],
+    what: &str,
+) -> Result<crate::storage::Replication> {
+    let store = store.ok_or_else(|| {
+        Error::Config(format!(
+            "{what} must be stored, and no storage was given: release assets are stored on \
+             your own storage (`--storage <name>`)"
+        ))
+    })?;
+    let meta = crate::backends::PackMeta::for_bytes(sealed);
+    crate::storage::replicate(&store.targets, sealed, &meta, store.required)
+        .await
+        .map_err(|e| UserError::storage_policy_not_met(&e, &format!("store {what}"), false).into())
+}
+
+/// The kind-4 `packManifest` of a sealed asset list (§16.5): `objectCount` 0, no `tips`, no
+/// `supersedes`, so the document publishes nothing about the list.
+fn release_manifest_input(
+    pack_hash: [u8; 32],
+    sealed: &[u8],
+    stored: crate::repo::StoredArtifact,
+) -> crate::repo::PackManifestInput {
+    crate::repo::PackManifestInput {
+        pack_hash,
+        kind: u64::from(crate::pack::KIND_RELEASE_ASSETS),
+        size_bytes: sealed.len() as u64,
+        object_count: 0,
+        chunk_count: stored.chunk_count,
+        storage: stored.storage,
+        uris: stored.uris,
+        supersedes: Vec::new(),
+        tips: Vec::new(),
+    }
+}
+
+/// A sealed revision's properties besides `repoId` (§16.2): exactly `tagName`, `vis`,
+/// `delta` 0, `epoch` and `enc`. Never `name`, `notes`, `assets`, `assetManifest`, `yanked`
+/// or `imported`.
+fn sealed_release_props(tag_name: &str, epoch: u32, enc: Vec<u8>) -> BTreeMap<String, FieldValue> {
+    let mut p = BTreeMap::new();
+    p.insert("tagName".to_string(), FieldValue::text(tag_name));
+    p.insert("delta".to_string(), FieldValue::integer(0));
+    p.insert("epoch".to_string(), FieldValue::integer(u64::from(epoch)));
+    p.insert("enc".to_string(), FieldValue::bytes(enc));
+    crate::layout::stamp_vis(&mut p, Visibility::Private);
+    p
+}
+
+/// The warning a sealed writer gives when its revision `ours` is not the newest of `tag`
+/// after the write (§16.3): a concurrent revision (a lost update) or a clock behind another
+/// writer's, since `$createdAt` is client-set. When the read does not show it yet, the check
+/// could not be made, and the warning says so. `None` when it is the newest.
+fn not_newest_warning(after: &ReleaseList, tag: &str, ours: &str) -> Option<String> {
+    let newest = newest_revision(after, tag);
+    if newest.is_some_and(|n| n.document_id == ours) {
+        return None;
+    }
+    // ours is visible but not the newest: then it is among the older revisions
+    let seen = after.previous.iter().any(|r| r.document_id == ours);
+    Some(match newest {
+        Some(n) if seen => format!(
+            "your revision of release {tag} is older than {}'s ({}): another maintainer wrote \
+             one meanwhile, or your clock is behind theirs; check it with `dg release list`",
+            n.publisher, n.document_id
+        ),
+        _ => format!(
+            "your revision of release {tag} ({ours}) is not visible yet, so whether it is the \
+             newest could not be checked; check it with `dg release list`"
+        ),
+    })
+}
+
+/// A private repository's releases (§16.3): every revision opened with `open`, then folded by
+/// its decrypted tag across epochs. Unreadable revisions are counted, replays ignored.
+fn sealed_releases(
+    docs: &[FetchedDocument],
+    open: impl Fn(&FetchedDocument) -> crate::private::release::Opened,
+) -> ReleaseList {
+    use crate::private::release::{self, Opened};
+    use crate::private::Unreadable;
+    let opened: Vec<Opened> = docs.iter().map(open).collect();
+    let ids: Vec<Vec<u8>> = docs
+        .iter()
+        .map(|d| platform::decode_identifier(&d.id).map_or_else(|_| Vec::new(), Vec::from))
+        .collect();
+    let encs: Vec<Vec<u8>> = docs
+        .iter()
+        .map(|d| d.field_bytes("enc").unwrap_or_default())
+        .collect();
+    let tag_names: Vec<String> = docs
+        .iter()
+        .map(|d| d.field_str("tagName").unwrap_or_default())
+        .collect();
+    let revs: Vec<release::Revision<'_>> = docs
+        .iter()
+        .enumerate()
+        .map(|(i, d)| release::Revision {
+            id: &ids[i],
+            created_at: d.created_at.unwrap_or(0),
+            epoch: d
+                .field_u64("epoch")
+                .and_then(|e| u32::try_from(e).ok())
+                .unwrap_or(u32::MAX),
+            tag_name: &tag_names[i],
+            opened: &opened[i],
+            enc: &encs[i],
+        })
+        .collect();
+    let fold = release::fold(&revs);
+    let release_at = |i: usize| {
+        let Opened::Readable(f) = &opened[i] else {
+            unreachable!("the fold lists readable revisions only")
+        };
+        release_from_sealed(&docs[i], revs[i].epoch, (**f).clone())
+    };
+    let mut current: Vec<Release> = fold.live.iter().map(|&i| release_at(i)).collect();
+    current.sort_by(release_order);
+    ReleaseList {
+        current,
+        previous: fold.history.iter().map(|&i| release_at(i)).collect(),
+        hidden: fold.hidden,
+        earlier_use: opened
+            .iter()
+            .filter(|o| matches!(o, Opened::Unreadable(Unreadable::EarlierUse)))
+            .count(),
+        replays: fold.replays.len(),
+        unknown_tags: fold.unknown_tags,
+        stale: fold.stale,
+    }
 }
 
 // ===========================================================================
@@ -3951,13 +5749,7 @@ mod tests {
 
     fn repo_ref(visibility: Visibility) -> RepoRef {
         RepoRef {
-            forge: ForgeIds {
-                core: "CORE".into(),
-                collab: "COLLAB".into(),
-                group: "GROUP".into(),
-                superseded_in_group: vec![],
-                group_owner: None,
-            },
+            forge: ForgeIds::test_forge(),
             repo_id: ME.into(),
             owner_id: ME.into(),
             name: "proj".into(),
@@ -4141,21 +5933,324 @@ mod tests {
     }
 
     #[test]
-    fn close_and_reopen_route_members_to_event_and_authors_to_author_event() {
+    fn a_state_change_is_a_member_s_or_the_author_s_transition() {
         let t = target("alice");
-        // A member always writes a member event, author or not.
+        // A member always writes as a member (asAuthor 0), author or not.
+        assert_eq!(state_actor(Some(Role::Writer), "bob", &t), Actor::Member);
         assert_eq!(
-            state_route(Some(Role::Writer), "bob", &t),
-            Some(StateRoute::Member)
+            state_actor(Some(Role::Maintainer), "alice", &t),
+            Actor::Member
         );
+        // The author who is not a member writes as the author.
+        assert_eq!(state_actor(None, "alice", &t), Actor::Author);
+        // Anyone else: no operand admits them.
+        assert_eq!(state_actor(None, "mallory", &t), Actor::Other);
+        // State kinds are never events, on either gate.
+        for kind in [
+            EventKind::Close,
+            EventKind::Reopen,
+            EventKind::Merge,
+            EventKind::Draft,
+            EventKind::Ready,
+        ] {
+            assert_eq!(kind_route(Some(Role::Writer), "bob", &t, kind), None);
+            assert_eq!(kind_route(None, "alice", &t, kind), None);
+            assert!(event_props(&t, kind, None, None).is_err(), "{kind:?}");
+        }
+    }
+
+    fn pr(author: &str) -> Target {
+        Target {
+            kind: TargetKind::Patch,
+            number: 9,
+            ..target(author)
+        }
+    }
+
+    fn mv(target: &Target, code: i64, action: StateAction, actor: Actor) -> TransitionMove {
+        next_transition(
+            target.kind.transition_target(),
+            code,
+            action,
+            actor,
+            target.number,
+        )
+        .unwrap()
+    }
+
+    /// Every action and role writes the exact transition fields the contract's rules pin:
+    /// `targetKind` = `kind / 10`, the per-kind `delta`, and `asAuthor` 0 for a member, the
+    /// target's number for its author; a merge carries its commit.
+    #[test]
+    fn transition_documents_carry_the_pinned_fields_for_each_action_and_role() {
+        use StateAction::{Close, Draft, Merge, Ready, Reopen};
+        let fields = |t: &Target, m: &TransitionMove, oid: Option<&[u8]>| {
+            let p = transition_props(t, m, oid).unwrap();
+            assert!(matches!(p.get("targetId"), Some(FieldValue::Identifier(_))));
+            assert!(!p.contains_key("repoId"), "the service adds repoId");
+            (
+                p.get("targetNumber").and_then(FieldValue::as_u64),
+                p.get("targetKind").and_then(FieldValue::as_u64),
+                p.get("kind").and_then(FieldValue::as_u64),
+                p.get("delta").and_then(FieldValue::as_i64),
+                p.get("asAuthor").and_then(FieldValue::as_u64),
+                p.get("oid").and_then(FieldValue::as_bytes),
+            )
+        };
+        let (issue, pr) = (target("alice"), pr("alice"));
+        let cases: [(&Target, i64, StateAction, Actor, u64, i64, u64); 14] = [
+            (&issue, 0, Close, Actor::Member, 1, 1, 0),
+            (&issue, 0, Close, Actor::Author, 1, 1, 3),
+            (&issue, 1, Reopen, Actor::Member, 2, -1, 0),
+            (&issue, 1, Reopen, Actor::Author, 2, -1, 3),
+            (&pr, 0, Close, Actor::Member, 11, 1, 0),
+            (&pr, 0, Close, Actor::Author, 11, 1, 9),
+            (&pr, 1, Reopen, Actor::Author, 12, -1, 9),
+            (&pr, 0, Draft, Actor::Author, 14, 8, 9),
+            (&pr, 0, Draft, Actor::Member, 14, 8, 0),
+            (&pr, 8, Ready, Actor::Author, 15, -8, 9),
+            (&pr, 8, Close, Actor::Member, 16, 1, 0),
+            (&pr, 9, Reopen, Actor::Author, 17, -1, 9),
+            (&pr, 1, Reopen, Actor::Member, 12, -1, 0),
+            (&pr, 8, Ready, Actor::Member, 15, -8, 0),
+        ];
+        for (t, code, action, actor, kind, delta, as_author) in cases {
+            let m = mv(t, code, action, actor);
+            let tk = u64::from(t.kind.transition_target().code());
+            assert_eq!(
+                fields(t, &m, None),
+                (
+                    Some(u64::from(t.number)),
+                    Some(tk),
+                    Some(kind),
+                    Some(delta),
+                    Some(as_author),
+                    None
+                ),
+                "{:?} {code} {action:?} {actor:?}",
+                t.kind
+            );
+        }
+        // A merge: a member's, from open and ready, with its commit.
+        let m = mv(&pr, 0, Merge, Actor::Member);
         assert_eq!(
-            state_route(Some(Role::Maintainer), "alice", &t),
-            Some(StateRoute::Member)
+            fields(&pr, &m, Some(&[7; 20])),
+            (
+                Some(9),
+                Some(1),
+                Some(13),
+                Some(2),
+                Some(0),
+                Some(vec![7; 20])
+            )
         );
-        // The author who is not a member writes an authorEvent.
-        assert_eq!(state_route(None, "alice", &t), Some(StateRoute::Author));
-        // Anyone else: no gate admits them.
-        assert_eq!(state_route(None, "mallory", &t), None);
+        // ... never without one, and only a merge names one.
+        assert!(transition_props(&pr, &m, None).is_err());
+        assert!(transition_props(&pr, &m, Some(&[7; 4])).is_err());
+        let close = mv(&pr, 0, Close, Actor::Member);
+        assert!(transition_props(&pr, &close, Some(&[7; 20])).is_err());
+        // A PR move never names an issue (a_kindOfTarget / the tk agreement).
+        assert!(transition_props(&issue, &close, None).is_err());
+    }
+
+    /// No legal move: a clear refusal before anything is signed.
+    #[test]
+    fn an_illegal_state_change_says_what_the_target_is() {
+        let pr = pr("alice");
+        let msg = |code, action, actor| no_move(&pr, code, action, actor).to_string();
+        assert!(msg(1, StateAction::Close, Actor::Member).contains("it is closed"));
+        assert!(msg(2, StateAction::Reopen, Actor::Member).contains("it is merged"));
+        assert!(msg(8, StateAction::Merge, Actor::Member).contains("mark it ready first"));
+        assert!(msg(0, StateAction::Ready, Actor::Member).contains("it is open"));
+        assert!(matches!(
+            no_move(&pr, 0, StateAction::Merge, Actor::Author),
+            Error::NotPermitted { .. }
+        ));
+        assert!(matches!(
+            no_move(&pr, 0, StateAction::Close, Actor::Other),
+            Error::NotPermitted { .. }
+        ));
+        assert_eq!(
+            state_words(TargetKind::Issue, 1),
+            "closed",
+            "an issue has no draft"
+        );
+        for a in [
+            StateAction::Close,
+            StateAction::Reopen,
+            StateAction::Merge,
+            StateAction::Draft,
+            StateAction::Ready,
+        ] {
+            assert!(
+                next_transition(TransitionTarget::Patch, legal_from(a), a, Actor::Member, 1)
+                    .is_some(),
+                "{a:?}"
+            );
+        }
+    }
+
+    /// With the pre-check off the move is attempted without the actor gate, so consensus
+    /// judges an author's merge (`f_authorNoMerge`) and a stranger's move (its gate).
+    #[test]
+    fn a_forced_move_skips_only_the_actor_gate() {
+        let tt = TransitionTarget::Patch;
+        let m = forced_move(tt, StateAction::Merge, Actor::Author, 9).unwrap();
+        assert_eq!((m.kind, m.delta, m.as_author), (13, 2, 9));
+        let m = forced_move(tt, StateAction::Close, Actor::Other, 9).unwrap();
+        assert_eq!((m.kind, m.as_author), (11, 0));
+        let m = forced_move(tt, StateAction::Ready, Actor::Member, 9).unwrap();
+        assert_eq!((m.kind, m.delta), (15, -8));
+        // An issue has no merge, draft or ready transition at all.
+        for a in [StateAction::Merge, StateAction::Draft, StateAction::Ready] {
+            assert!(forced_move(TransitionTarget::Issue, a, Actor::Member, 3).is_none());
+        }
+    }
+
+    /// A create refused as "taken" by an earlier attempt of itself (it landed; the read after
+    /// the consumed nonce lagged) is the result: the signer's own copy with the same content.
+    #[test]
+    fn a_landed_attempt_of_the_same_create_is_recognised() {
+        let imp = Imported {
+            author: "octocat".into(),
+            created_at: 1_600_000_000,
+            url: "https://github.com/o/r/issues/7".into(),
+        };
+        let from = Provenance {
+            imported: Some(&imp),
+            upstream_number: Some(7),
+        };
+        let plain = issue_props(4, "t", "b", from).unwrap();
+        let doc = |owner: &str, fields: BTreeMap<String, FieldValue>| FetchedDocument {
+            id: "landed".into(),
+            owner_id: owner.into(),
+            created_at: Some(5),
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            revision: Some(1),
+            fields,
+        };
+        // As stored: integers read back at another width, the nested createdAt too.
+        let mut stored = plain.clone();
+        stored.insert("imported".into(), {
+            let Some(FieldValue::Object(mut m)) = stored.get("imported").cloned() else {
+                unreachable!()
+            };
+            m.insert("createdAt".into(), FieldValue::Integer(1_600_000_000));
+            FieldValue::Object(m)
+        });
+        stored.insert("repoId".into(), FieldValue::identifier([1; 32]));
+        assert!(is_own_copy(&doc(ME, stored.clone()), ME, &plain));
+        // Only an id this create signed is adopted: the signer's earlier, separate issue with
+        // the same title and body (filed twice on purpose) is not.
+        let signed = [(4, "landed".to_string())];
+        assert!(adoptable(&doc(ME, stored.clone()), ME, &plain, &signed));
+        assert!(!adoptable(
+            &doc(ME, stored.clone()),
+            ME,
+            &plain,
+            &[(4, "another-attempt".to_string())]
+        ));
+        assert!(!adoptable(&doc(ME, stored.clone()), ME, &plain, &[]));
+        // Someone else's issue at that number, or other content: count again.
+        assert!(!is_own_copy(&doc("other", stored.clone()), ME, &plain));
+        let mut edited = stored;
+        edited.insert("title".into(), FieldValue::text("another"));
+        assert!(!is_own_copy(&doc(ME, edited), ME, &plain));
+    }
+
+    #[test]
+    fn only_imports_upstream_numbers_and_member_verdicts_require_the_proof() {
+        let with = |k: &str, v: FieldValue| BTreeMap::from([(k.to_string(), v)]);
+        assert!(!proof_required(&with("body", FieldValue::text("hi"))));
+        assert!(proof_required(&with(
+            "upstreamNumber",
+            FieldValue::integer(3)
+        )));
+        assert!(proof_required(&with(
+            "imported",
+            FieldValue::Object(BTreeMap::new())
+        )));
+        for (code, needs) in [(1, true), (2, true), (3, false), (4, false), (5, false)] {
+            assert_eq!(
+                proof_required(&with("verdict", FieldValue::integer(code))),
+                needs,
+                "verdict {code}"
+            );
+        }
+    }
+
+    /// A create refused because another took the number counts again; so does the unique
+    /// index; a state-rule refusal is recognised apart from both.
+    #[test]
+    fn a_dense_or_duplicate_refusal_means_count_again() {
+        let dense = Error::RuleRefused {
+            document_type: "issue".into(),
+            rule: "dense".into(),
+            detail: "A document of type \"issue\" breaks its propertyConstraints rule \"dense\": it does not hold".into(),
+        };
+        assert!(number_taken(&dense));
+        assert!(number_taken(&Error::DuplicateUniqueIndex("number".into())));
+        // The message alone (an error the SDK did not decode) still counts.
+        assert!(number_taken(&Error::Platform("state transition broadcast error: A document of type \"patch\" breaks its propertyConstraints rule \"dense\": it does not hold".into())));
+        let title = Error::RuleRefused {
+            document_type: "issue".into(),
+            rule: "hasTitle".into(),
+            detail: "…".into(),
+        };
+        assert!(!number_taken(&title));
+        assert!(!is_state_rule_refusal(&dense));
+        let closed = Error::RuleRefused {
+            document_type: "transition".into(),
+            rule: "c1_closedAfter".into(),
+            detail: "…".into(),
+        };
+        assert!(is_state_rule_refusal(&closed));
+        // Only the transition's c<digit>_ rules: checkRun's conclusionIfDone is not one.
+        for (doc, rule) in [
+            ("checkRun", "conclusionIfDone"),
+            ("checkRun", "completedAtIfDone"),
+            ("transition", "f_authorNoMerge"),
+            ("issue", "c1_closedAfter"),
+        ] {
+            let e = Error::RuleRefused {
+                document_type: doc.into(),
+                rule: rule.into(),
+                detail: String::new(),
+            };
+            assert!(!is_state_rule_refusal(&e), "{doc} {rule}");
+        }
+        assert!(!number_taken(&closed));
+    }
+
+    /// The per-target codes of a grouped sum (keys: the 32 id bytes) and the per-kind counts
+    /// of a grouped count (keys: the kind's u8 tree key), as the readers take them.
+    #[test]
+    fn grouped_answers_become_codes_and_repo_counts() {
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+        let codes = sums_by_target(BTreeMap::from([(a.to_vec(), 1), (b.to_vec(), 8)])).unwrap();
+        assert_eq!(codes.get(&platform::encode_identifier(a)), Some(&1));
+        assert_eq!(codes.get(&platform::encode_identifier(b)), Some(&8));
+        let key = |k: u8| vec![k ^ 0x80];
+        // A key of another width is an error, never a silent 0 or "open".
+        assert!(counts_by_kind(BTreeMap::from([(vec![1, 2], 1)])).is_err());
+        assert!(sums_by_target(BTreeMap::from([(vec![1; 31], 1)])).is_err());
+        let kinds = counts_by_kind(BTreeMap::from([
+            (key(1), 5),
+            (key(2), 1),
+            (key(13), 3),
+            (key(14), 2),
+            (key(11), 1),
+        ]))
+        .unwrap();
+        assert_eq!(kinds.get(&13), Some(&3));
+        let c = repo_counts(10, 7, &kinds);
+        assert_eq!((c.issues_open, c.issues_closed), (6, 4));
+        assert_eq!(
+            (c.prs_merged, c.prs_closed, c.prs_draft, c.prs_open),
+            (3, 1, 2, 3)
+        );
     }
 
     #[test]
@@ -4166,12 +6261,6 @@ mod tests {
         assert_eq!(p.get("kind"), Some(&FieldValue::integer(4)));
         assert_eq!(p.get("value"), Some(&FieldValue::text("bug")));
         assert!(!p.contains_key("repoId"), "the service adds repoId");
-        // authorEvent: close = 1, reopen = 2, and nothing else.
-        let a = author_event_props(&target("a"), true).unwrap();
-        assert_eq!(a.get("kind"), Some(&FieldValue::integer(1)));
-        assert_eq!(a.len(), 3);
-        let r = author_event_props(&target("a"), false).unwrap();
-        assert_eq!(r.get("kind"), Some(&FieldValue::integer(2)));
         // A retarget must name a legal ref.
         assert!(event_props(&target("a"), EventKind::Retarget, Some("-x"), None).is_err());
         assert!(event_props(&target("a"), EventKind::Retarget, None, None).is_err());
@@ -4271,16 +6360,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(head.get("kind"), Some(&FieldValue::integer(16)));
-        // The author may resolve and move the head, never dismiss, label or merge.
+        // The author may resolve and move the head, never dismiss or label (a merge is a
+        // transition, never an event).
         assert_eq!(
             kind_route(None, "alice", &t, EventKind::HeadUpdate),
             Some(StateRoute::Author)
         );
-        for kind in [
-            EventKind::ReviewDismiss,
-            EventKind::LabelAdd,
-            EventKind::Merge,
-        ] {
+        for kind in [EventKind::ReviewDismiss, EventKind::LabelAdd] {
             assert_eq!(kind_route(None, "alice", &t, kind), None);
             assert_eq!(
                 kind_route(Some(Role::Writer), "bob", &t, kind),
@@ -4300,6 +6386,7 @@ mod tests {
             approver_role: 1,
             require_checks: true,
             merge_methods: 3,
+            ..Policy::default()
         };
         let p = policy_props(&policy).unwrap();
         assert_eq!(p.get("requiredApprovals"), Some(&FieldValue::integer(2)));
@@ -4323,7 +6410,19 @@ mod tests {
             patch_manifest_hash: None,
             draft: false,
         };
-        let p = patch_props(7, &input, None).unwrap();
+        let p = patch_props(7, &input, Provenance::default()).unwrap();
+        // The target kind tag; a draft is never a property (a kind-14 transition instead).
+        assert_eq!(p.get("tk"), Some(&FieldValue::integer(1)));
+        assert!(!p.contains_key("draft"));
+        let drafted = PatchInput {
+            draft: true,
+            ..input.clone()
+        };
+        assert_eq!(
+            patch_props(7, &drafted, Provenance::default()).unwrap(),
+            p,
+            "the draft flag writes nothing on the patch"
+        );
         assert_eq!(
             p.get("baseRefNameHash"),
             Some(&FieldValue::bytes32(sha256(b"refs/heads/main")))
@@ -4339,13 +6438,13 @@ mod tests {
         assert!(!p.contains_key("body"), "an empty body is omitted");
         let mut bad = input.clone();
         bad.source_ref_name = Some("+refs/heads/x:refs/heads/main\n".into());
-        assert!(patch_props(7, &bad, None).is_err());
+        assert!(patch_props(7, &bad, Provenance::default()).is_err());
         let mut short = input.clone();
         short.head_oid = vec![1; 4];
-        assert!(patch_props(7, &short, None).is_err());
+        assert!(patch_props(7, &short, Provenance::default()).is_err());
         let mut untitled = input;
         untitled.title = "  ".into();
-        assert!(patch_props(7, &untitled, None).is_err());
+        assert!(patch_props(7, &untitled, Provenance::default()).is_err());
     }
 
     #[test]
@@ -4355,8 +6454,22 @@ mod tests {
             created_at: 1_600_000_000,
             url: "https://github.com/o/r/issues/1".into(),
         };
-        let p = issue_props(1, "t", "b", Some(&imp)).unwrap();
+        let from = Provenance {
+            imported: Some(&imp),
+            upstream_number: Some(7761),
+        };
+        let p = issue_props(1, "t", "b", from).unwrap();
         assert!(matches!(p.get("imported"), Some(FieldValue::Object(_))));
+        assert_eq!(p.get("tk"), Some(&FieldValue::integer(0)));
+        // A top-level integer (D-2), never inside `imported`.
+        assert_eq!(p.get("upstreamNumber"), Some(&FieldValue::integer(7761)));
+        let Some(FieldValue::Object(inner)) = p.get("imported") else {
+            unreachable!()
+        };
+        assert!(!inner.contains_key("number"));
+        // No source number, no property (the sparse index skips the document).
+        let plain = issue_props(1, "t", "b", Provenance::default()).unwrap();
+        assert!(!plain.contains_key("upstreamNumber") && !plain.contains_key("imported"));
         // Read back through the codec.
         let doc = FetchedDocument {
             id: "x".into(),
@@ -4369,80 +6482,53 @@ mod tests {
         };
         let issue = issue_from_doc(&doc);
         assert_eq!(issue.number, 1);
+        assert_eq!(issue.upstream_number, Some(7761));
         let got = issue.imported.unwrap();
         assert_eq!(got.author, "octocat");
         assert_eq!(got.created_at, 1_600_000_000);
     }
 
-    #[tokio::test]
-    async fn the_contiguous_run_is_paged_to_its_first_gap() {
-        // Taken above base 100: 101..=250 (a run across two full pages), then 252.
-        let taken: Vec<u32> = (101..=250).chain([252, 253]).collect();
-        let pages = std::sync::Mutex::new(0);
-        let run = contiguous_run_above(100, 100, |after| {
-            *pages.lock().unwrap() += 1;
-            let rows: Vec<u32> = taken
-                .iter()
-                .copied()
-                .filter(|n| *n > after)
-                .take(100)
-                .collect();
-            async move { Ok(rows) }
-        })
-        .await
-        .unwrap();
-        assert_eq!(run.first(), Some(&101));
-        assert_eq!(
-            run.last(),
-            Some(&250),
-            "the run ends at the first gap (251)"
-        );
-        assert_eq!(run.len(), 150);
-        assert_eq!(
-            *pages.lock().unwrap(),
-            2,
-            "a second page, not stopping after one"
-        );
-        // The allocator, fed the run, claims the gap.
-        let count = 0; // the ceiling is 100 = base
-        let mut all = vec![100];
-        all.extend(run);
-        assert_eq!(allocate_number(count, &all, 0), Some(251));
-    }
-
-    #[tokio::test]
-    async fn an_empty_probe_is_an_empty_run() {
-        let run = contiguous_run_above(7, 100, |_| async { Ok(Vec::new()) })
-            .await
-            .unwrap();
-        assert!(run.is_empty());
-        // A page starting with a gap ends the run at once.
-        let run = contiguous_run_above(7, 100, |_| async { Ok(vec![9, 10]) })
-            .await
-            .unwrap();
-        assert!(run.is_empty());
-    }
-
     #[test]
-    fn numbering_trusts_the_owner_and_each_maintainer_once() {
-        // The owner is trusted without a maintainer document of its own.
-        assert_eq!(trusted_authors("owner", []), vec!["owner"]);
-        // Duplicates, and the owner's own maintainer document, collapse.
+    fn transitions_read_back_with_their_target_and_kind() {
+        let doc = |kind: u64, delta: FieldValue| FetchedDocument {
+            id: format!("t{kind}"),
+            owner_id: "m".into(),
+            created_at: Some(5),
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            revision: None,
+            fields: BTreeMap::from([
+                ("targetId".into(), FieldValue::identifier([3; 32])),
+                ("kind".into(), FieldValue::integer(kind)),
+                ("delta".into(), delta),
+                ("asAuthor".into(), FieldValue::integer(4)),
+                ("oid".into(), FieldValue::bytes(vec![0xab; 20])),
+            ]),
+        };
+        let t = transition_from_doc(&doc(13, FieldValue::integer(2))).unwrap();
+        assert_eq!((t.kind, t.as_author), (13, 4));
+        assert_eq!(t.oid.as_deref(), Some("ab".repeat(20).as_str()));
         assert_eq!(
-            trusted_authors("owner", ["m2", "owner", "m1", "m2"]),
-            vec!["owner", "m1", "m2"]
+            transition_target_of(&doc(13, FieldValue::integer(2))),
+            Some(platform::encode_identifier([3; 32]))
         );
-    }
-
-    #[test]
-    fn a_squatter_far_ahead_does_not_move_numbering() {
-        // Three issues, and a squatter at 4294967295: the ceiling is 106, base 3.
-        assert_eq!(allocate_number(4, &[3], 0), Some(4));
+        // A reopen (a signed delta) reads too; its sum is the state code.
+        let log = TargetLog {
+            transitions: vec![
+                transition_from_doc(&doc(11, FieldValue::integer(1))).unwrap(),
+                transition_from_doc(&doc(12, FieldValue::Signed(-1))).unwrap(),
+                transition_from_doc(&doc(14, FieldValue::integer(8))).unwrap(),
+            ],
+            ..TargetLog::default()
+        };
+        assert_eq!(log.state_code(), 8);
+        // A kind the contract does not have is not a transition.
+        assert!(transition_from_doc(&doc(5, FieldValue::integer(2))).is_none());
     }
 
     #[test]
     fn the_newest_release_per_tag_wins_and_older_ones_are_previous() {
-        let rel = |tag: &str, at: u64, id: &str| Release {
+        let rel = |tag: &str, at: u64, id: &str, delta: i64| Release {
             document_id: id.into(),
             tag_name: tag.into(),
             name: String::new(),
@@ -4451,21 +6537,401 @@ mod tests {
             assets: Vec::new(),
             publisher: "m".into(),
             created_at: at,
+            delta,
+            sealed: None,
         };
         let (cur, prev) = newest_per_tag(vec![
-            rel("v1", 1, "a"),
-            rel("v1", 3, "b"),
-            rel("v2", 2, "c"),
+            rel("v1", 1, "a", 1),
+            rel("v1", 3, "b", 0),
+            rel("v2", 2, "c", 1),
+            // Published, then unpublished: every revision is previous.
+            rel("v3", 4, "d", 1),
+            rel("v3", 5, "e", -1),
+            // A sealed release (another client's): delta 0 always, still shown.
+            rel("v4", 6, "f", 0),
         ]);
         assert_eq!(
             cur.iter()
                 .map(|r| r.document_id.as_str())
                 .collect::<Vec<_>>(),
-            ["c", "b"],
-            "v2 before v1, by version"
+            ["f", "c", "b"],
+            "by version; v3 is unpublished"
         );
-        assert_eq!(prev.len(), 1);
-        assert_eq!(prev[0].document_id, "a");
+        assert_eq!(
+            prev.iter()
+                .map(|r| r.document_id.as_str())
+                .collect::<Vec<_>>(),
+            ["e", "d", "a"]
+        );
+    }
+
+    /// RC1 `oneLive`: a revision publishes (+1) a tag that is not live and edits (0) a live
+    /// one; the tag's sum after it is then 1 either way.
+    #[test]
+    fn a_release_publishes_a_tag_once_and_edits_it_after() {
+        for (history, want) in [
+            (vec![], 1),
+            (vec![1], 0),
+            (vec![1, 0, 0], 0),
+            (vec![1, -1], 1),
+            (vec![1, -1, 1], 0),
+        ] {
+            let delta = release_delta(tag_is_live(history.iter().copied()));
+            assert_eq!(delta, want, "{history:?}");
+            assert_eq!(history.into_iter().chain([delta]).sum::<i64>(), 1);
+        }
+    }
+
+    /// `unpublish_release`'s precheck (`!tag_is_live`) refuses exactly the histories a fresh
+    /// publish or an edit would not: never published, and already unpublished. It accepts a
+    /// tag with any positive sum, including one edited or yanked (still 1) many times over.
+    #[test]
+    fn unpublish_refuses_a_tag_that_is_not_live() {
+        for (history, live) in [
+            (vec![], false),
+            (vec![1], true),
+            (vec![1, 0, 0], true),
+            (vec![1, -1], false),
+            (vec![1, -1, 1], true),
+            (vec![1, -1, 1, -1], false),
+        ] {
+            assert_eq!(tag_is_live(history.iter().copied()), live, "{history:?}");
+        }
+    }
+
+    /// `release_delta_of` reads `delta` off the raw field, without a [`release_from_doc`]
+    /// parse: present (either sign), and absent (a pre-RC1 document).
+    #[test]
+    fn release_delta_of_reads_the_raw_field() {
+        let doc = |fields: BTreeMap<String, FieldValue>| FetchedDocument {
+            id: "r".into(),
+            owner_id: "m".into(),
+            created_at: Some(1),
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            revision: None,
+            fields,
+        };
+        assert_eq!(
+            release_delta_of(&doc(BTreeMap::from([(
+                "delta".into(),
+                FieldValue::signed(-1)
+            )]))),
+            -1
+        );
+        assert_eq!(
+            release_delta_of(&doc(BTreeMap::from([(
+                "delta".into(),
+                FieldValue::integer(1)
+            )]))),
+            1
+        );
+        assert_eq!(release_delta_of(&doc(BTreeMap::new())), 0);
+    }
+
+    /// `unpublish_props` carries the newest revision's `name`/`notes`/`yanked`/`assets` forward
+    /// as raw strings -- an oversized or oddly-formatted `assets` blob the contract already
+    /// accepted passes through unchanged, rather than being reparsed and regrown through
+    /// `Release`/`ReleaseAsset` (should-fix: a round trip can add bytes, e.g. a bare `uri`
+    /// becoming a one-element `uris` array). `delta` is always −1, and empty `name`/`notes`/
+    /// `assets` are omitted rather than sent as empty strings, matching `create_release`.
+    #[test]
+    fn unpublish_props_carries_the_newest_revision_forward_verbatim() {
+        let odd_assets = r#"[{"name":"a","uri":"ipfs://x","weird_extra_key":123}]"#;
+        let newest = FetchedDocument {
+            id: "r2".into(),
+            owner_id: "m".into(),
+            created_at: Some(9),
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            revision: None,
+            fields: BTreeMap::from([
+                ("tagName".into(), FieldValue::text("v1")),
+                ("name".into(), FieldValue::text("First cut")),
+                ("notes".into(), FieldValue::text("body")),
+                ("yanked".into(), FieldValue::boolean(true)),
+                ("assets".into(), FieldValue::text(odd_assets)),
+                ("delta".into(), FieldValue::integer(0)),
+            ]),
+        };
+        let p = unpublish_props("v1", &newest, Visibility::Public);
+        assert_eq!(p.get("tagName").and_then(FieldValue::as_str), Some("v1"));
+        assert_eq!(
+            p.get("name").and_then(FieldValue::as_str),
+            Some("First cut")
+        );
+        assert_eq!(p.get("notes").and_then(FieldValue::as_str), Some("body"));
+        assert!(matches!(p.get("yanked"), Some(FieldValue::Bool(true))));
+        // Byte-for-byte, not reparsed: the "weird_extra_key" a Release/ReleaseAsset round trip
+        // would drop is still there.
+        assert_eq!(
+            p.get("assets").and_then(FieldValue::as_str),
+            Some(odd_assets)
+        );
+        assert_eq!(p.get("delta").and_then(FieldValue::as_i64), Some(-1));
+
+        let bare = FetchedDocument {
+            id: "r3".into(),
+            owner_id: "m".into(),
+            created_at: Some(1),
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            revision: None,
+            fields: BTreeMap::from([("tagName".into(), FieldValue::text("v2"))]),
+        };
+        let p = unpublish_props("v2", &bare, Visibility::Public);
+        assert!(!p.contains_key("name"));
+        assert!(!p.contains_key("notes"));
+        assert!(!p.contains_key("assets"));
+        assert!(matches!(p.get("yanked"), Some(FieldValue::Bool(false))));
+    }
+
+    #[test]
+    fn not_live_error_is_a_user_facing_rejection_naming_the_tag() {
+        let err = not_live_error("v1.0.0");
+        assert!(
+            matches!(&err, crate::error::Error::User(u) if u.code == codes::REJECTED),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("v1.0.0"), "{err}");
+    }
+
+    #[test]
+    fn release_tags_follow_the_contract_grammar() {
+        for ok in [
+            "v1.2.3",
+            "release/2026",
+            "-Ab3_x9QkZ",
+            "v1@b",
+            &"a".repeat(63),
+        ] {
+            assert!(check_tag_name(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "",
+            "v1 beta",
+            "v1^0",
+            "v1..2",
+            ".hidden",
+            "v1@{0}",
+            "v1/",
+            &"a".repeat(64),
+        ] {
+            assert!(check_tag_name(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    /// §16.3 over stored documents: a sealed revision opens to its tag, a later yank is the
+    /// release, a replayed `enc` cannot un-yank it, a plaintext release in a private repo is
+    /// hidden, a draft is listed but not counted, and no tag is ever shown by its hash.
+    #[test]
+    fn sealed_releases_open_and_fold_and_never_show_a_hash() {
+        use crate::private::doc::{AnchorRef, OpenContext};
+        use crate::private::release::{self, ReleaseFields};
+        use crate::private::{EpochKey, EpochKeys};
+        let (repo_id, owner) = ([0x11; 32], [0x22; 32]);
+        let keys = EpochKeys::derive(&repo_id, 0, &EpochKey::from_bytes([1; 32]));
+        let ctx = OpenContext {
+            keys: [(0, keys.clone())].into(),
+            anchors: [(
+                0,
+                AnchorRef {
+                    id: [9; 32],
+                    height: 1,
+                },
+            )]
+            .into(),
+            ..OpenContext::default()
+        };
+        let seal = |f: &ReleaseFields, nonce: u8| {
+            let s = release::seal_with_nonce(&keys, &owner, f, [nonce; 12]).unwrap();
+            (s.tag_name, s.enc)
+        };
+        let doc = |id: u8, at: u64, (tag_name, enc): &(String, Vec<u8>)| {
+            let mut fields: BTreeMap<String, FieldValue> = [
+                ("tagName", FieldValue::text(tag_name.clone())),
+                ("vis", FieldValue::text("private")),
+                ("delta", FieldValue::integer(0)),
+                ("epoch", FieldValue::integer(0)),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+            if !enc.is_empty() {
+                fields.insert("enc".into(), FieldValue::bytes(enc.clone()));
+            }
+            FetchedDocument {
+                id: platform::encode_identifier([id; 32]),
+                owner_id: platform::encode_identifier(owner),
+                created_at: Some(at),
+                created_at_block_height: None,
+                updated_at_block_height: None,
+                revision: None,
+                fields,
+            }
+        };
+        let v1 = ReleaseFields {
+            tag: "v1.0.0".into(),
+            name: Some("One".into()),
+            ..ReleaseFields::default()
+        };
+        let published = seal(&v1, 1);
+        let yanked = seal(
+            &ReleaseFields {
+                yanked: true,
+                ..v1.clone()
+            },
+            2,
+        );
+        let draft = seal(
+            &ReleaseFields {
+                tag: "v2.0.0".into(),
+                draft: true,
+                ..ReleaseFields::default()
+            },
+            3,
+        );
+        let docs = [
+            doc(1, 100, &published),
+            doc(2, 200, &yanked),
+            doc(3, 300, &published), // a replay of the first revision
+            doc(4, 400, &("v9.9.9".into(), Vec::new())), // plaintext: malformed
+            doc(5, 500, &draft),
+        ];
+        let list = sealed_releases(&docs, |d| {
+            release::open(&ctx, &crate::keyring::stored_release(d).unwrap())
+        });
+        let tags: Vec<&str> = list.current.iter().map(|r| r.tag_name.as_str()).collect();
+        assert_eq!(tags, ["v2.0.0", "v1.0.0"]);
+        let v1_now = &list.current[1];
+        assert_eq!(v1_now.document_id, docs[1].id, "the yank is the release");
+        assert!(v1_now.yanked && v1_now.name == "One");
+        assert!(list.current[0].is_draft());
+        assert_eq!(
+            list.count(),
+            1,
+            "a draft is not counted; a yanked release is"
+        );
+        assert!(
+            latest_release(&list.current).is_none(),
+            "a draft or a yanked release is never the latest"
+        );
+        assert_eq!(list.previous.len(), 1);
+        assert_eq!(list.previous[0].document_id, docs[0].id);
+        assert_eq!((list.replays, list.hidden), (1, 1));
+        assert!(!list.stale && list.unknown_tags.is_empty());
+    }
+
+    /// Every document the sealed writer builds is one RC1 accepts (§16.2, §16.5): the revision
+    /// with exactly `tagName`, `vis`, `delta` 0, `epoch` and `enc`, and its kind-4 asset list
+    /// with `objectCount` 0 and no `tips`.
+    #[test]
+    fn the_sealed_writers_documents_are_rc1_valid() {
+        use crate::private::release::{self, ReleaseFields, ReleaseManifest};
+        use crate::private::{EpochKey, EpochKeys};
+        use crate::test_support::rc1;
+        let keys = EpochKeys::derive(&[0x11; 32], 3, &EpochKey::from_bytes([1; 32]));
+        let (fields, _) = release::fit_notes(
+            ReleaseFields {
+                tag: "v1.0.0-rc.1".into(),
+                name: Some("One".into()),
+                prerelease: true,
+                ..ReleaseFields::default()
+            },
+            &"notes ".repeat(600),
+        );
+        let (tag_name, enc) = release::seal(&keys, &rc1::OWNER, &fields).unwrap();
+        let scope = crate::scope::DocScope {
+            contract_id: "CORE".into(),
+            repo_id: [0x11; 32],
+        };
+        let props = scope.scoped(sealed_release_props(&tag_name, 3, enc));
+        let keys_of: Vec<&str> = props.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys_of,
+            ["delta", "enc", "epoch", "repoId", "tagName", "vis"]
+        );
+        // (`oneLive`, which refuses a sealed revision with delta 1, is a consensus total: the
+        // live suite judges it, `rc1-live.mjs` "a sealed release that publishes")
+        rc1::assert_valid("release", &props);
+
+        let manifest = ReleaseManifest {
+            v: 1,
+            tag: "v1.0.0-rc.1".into(),
+            total: 0,
+            source: None,
+            notes: Some("notes ".repeat(600)),
+            assets: Vec::new(),
+        };
+        let sealed = release::seal_manifest(&keys, &manifest, true).unwrap();
+        let stored = crate::repo::StoredArtifact {
+            storage: 1,
+            chunk_count: 0,
+            uris: vec!["https://bucket.example/o".into()],
+        };
+        let input = release_manifest_input(sha256(&sealed), &sealed, stored);
+        assert_eq!((input.object_count, input.tips.len()), (0, 0));
+        rc1::assert_valid("packManifest", &input.props(&scope).unwrap());
+    }
+
+    /// §16.3: a writer is warned when, read back, its revision is not the tag's newest; not
+    /// when it is, nor when it is not visible yet.
+    #[test]
+    fn a_sealed_writer_is_warned_when_its_revision_is_not_the_newest() {
+        let rel = |id: &str, at: u64| Release {
+            document_id: id.into(),
+            tag_name: "v1".into(),
+            name: String::new(),
+            notes: String::new(),
+            yanked: false,
+            assets: Vec::new(),
+            publisher: "bob".into(),
+            created_at: at,
+            delta: 0,
+            sealed: None,
+        };
+        let list = ReleaseList {
+            current: vec![rel("theirs", 2)],
+            previous: vec![rel("ours", 1)],
+            ..ReleaseList::default()
+        };
+        let w = not_newest_warning(&list, "v1", "ours").unwrap();
+        assert!(w.contains("bob") && w.contains("theirs"), "{w}");
+        assert_eq!(not_newest_warning(&list, "v1", "theirs"), None);
+        let unseen = not_newest_warning(&list, "v1", "unseen").unwrap();
+        assert!(unseen.contains("not visible yet"), "{unseen}");
+    }
+
+    /// `ContentKind::Release` (§16.2): a private release without `enc`, or with plaintext
+    /// content next to it, and a public one with `enc`, are malformed.
+    #[test]
+    fn release_well_formedness_follows_visibility() {
+        let doc = |fields: &[(&str, FieldValue)]| FetchedDocument {
+            id: "x".into(),
+            owner_id: "o".into(),
+            created_at: Some(1),
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            revision: None,
+            fields: fields
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), v.clone()))
+                .collect(),
+        };
+        let enc = ("enc", FieldValue::bytes(vec![1; 40]));
+        let epoch = ("epoch", FieldValue::integer(0));
+        let tag = ("tagName", FieldValue::text("v1"));
+        let sealed = doc(&[tag.clone(), enc.clone(), epoch.clone()]);
+        let plain = doc(&[tag.clone(), ("yanked", FieldValue::Bool(false))]);
+        let both = doc(&[tag, enc, epoch, ("yanked", FieldValue::Bool(false))]);
+        let (k, public, private) = (
+            ContentKind::Release,
+            Visibility::Public,
+            Visibility::Private,
+        );
+        assert!(well_formed(k, &sealed, private) && !well_formed(k, &sealed, public));
+        assert!(well_formed(k, &plain, public) && !well_formed(k, &plain, private));
+        assert!(!well_formed(k, &both, private));
     }
 
     /// L-14: the rail's "Latest release" was the OLDEST (an import writes newest-first, so
@@ -4474,6 +6940,7 @@ mod tests {
     #[test]
     fn releases_are_ordered_by_version_and_the_latest_skips_prereleases() {
         let rel = |tag: &str, at: u64| Release {
+            delta: 1,
             document_id: tag.into(),
             tag_name: tag.into(),
             name: String::new(),
@@ -4482,6 +6949,7 @@ mod tests {
             assets: Vec::new(),
             publisher: "m".into(),
             created_at: at,
+            sealed: None,
         };
         // Written in GitHub's listing order: newest release first (lowest $createdAt).
         let (cur, _) = newest_per_tag(vec![
@@ -4603,7 +7071,7 @@ mod tests {
             revision: None,
             fields,
         };
-        let ok = doc(issue_props(1, "t", "", None).unwrap());
+        let ok = doc(issue_props(1, "t", "", Provenance::default()).unwrap());
         assert!(well_formed(ContentKind::Issue, &ok, Visibility::Public));
         let mut enc = BTreeMap::new();
         enc.insert("number".into(), FieldValue::integer(1));
@@ -4637,7 +7105,7 @@ mod tests {
             revision: None,
             fields,
         };
-        let honest = patch_props(1, &input, None).unwrap();
+        let honest = patch_props(1, &input, Provenance::default()).unwrap();
         assert!(well_formed(
             ContentKind::Patch,
             &doc(honest.clone()),
@@ -4667,8 +7135,8 @@ mod tests {
     fn text_limits_count_bytes_too() {
         // 1500 three-byte characters: under 5120 characters, over 5120 bytes.
         let body = "€".repeat(1800);
-        assert!(issue_props(1, "t", &body, None).is_err());
-        assert!(issue_props(1, "t", &"€".repeat(1700), None).is_ok());
+        assert!(issue_props(1, "t", &body, Provenance::default()).is_err());
+        assert!(issue_props(1, "t", &"€".repeat(1700), Provenance::default()).is_ok());
     }
 
     #[test]

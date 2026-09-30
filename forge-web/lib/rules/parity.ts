@@ -41,6 +41,11 @@ export interface ChecksPolicy {
   readonly requireChecks?: boolean
   /** These checks must be reported and pass (overrides "every reported check" when set). */
   readonly requiredChecks?: readonly string[]
+  /**
+   * The identity (a runner or a maintainer, base58) each required check must come from, paired
+   * by position with `requiredChecks` (RC1 R-08); empty: any trusted reporter counts.
+   */
+  readonly requiredCheckSources?: readonly string[]
 }
 
 export type CheckState = 'passed' | 'failing' | 'pending' | 'missing'
@@ -60,8 +65,35 @@ export interface ChecksState {
   readonly untrusted: number
 }
 
+/**
+ * Each pinned check name and the sources that may decide it: empty unless `requiredCheckSources`
+ * pairs up with `requiredChecks` one for one; an empty name or source pins nothing. Parity:
+ * forge-core `pinned_sources`.
+ */
+export function pinnedSources(policy: ChecksPolicy): Map<string, Set<string>> {
+  const names = policy.requiredChecks ?? []
+  const sources = policy.requiredCheckSources ?? []
+  const pins = new Map<string, Set<string>>()
+  if (sources.length !== names.length) return pins
+  names.forEach((name, i) => {
+    const source = sources[i] as string
+    if (name === '' || source === '') return
+    pins.set(name, (pins.get(name) ?? new Set()).add(source))
+  })
+  return pins
+}
+
 /** The conclusions that pass a required check. */
 export const PASSING_CONCLUSIONS: readonly string[] = ['success', 'neutral', 'skipped']
+
+/**
+ * A run's `outcome` (RC1 O-07 `outcomeOf`): 0 not completed, 1 completed with a passing
+ * conclusion, 2 completed otherwise. Consensus refuses a run whose `outcome` disagrees.
+ */
+export function checkRunOutcome(status: string, conclusion: string | null | undefined): 0 | 1 | 2 {
+  if (status !== 'completed') return 0
+  return PASSING_CONCLUSIONS.includes(conclusion ?? '') ? 1 : 2
+}
 
 function checkStateOf(run: CheckRunRow): CheckState {
   if (run.status !== 'completed') return 'pending'
@@ -72,8 +104,9 @@ function checkStateOf(run: CheckRunRow): CheckState {
  * Whether the check runs on `headOid` meet `policy`. A run counts only when its reporter is a
  * current maintainer or writer (`oracle`) or a current runner (`runners`); the newest counting
  * run per name by `($createdAt, $id)` decides it. `requiredChecks` names what must pass;
- * otherwise `requireChecks` means every counting name must pass and at least one exist.
- * A client rule for the merge box, never consensus. Parity: forge-core `checks_state`.
+ * otherwise `requireChecks` means every counting name must pass and at least one exist. A
+ * required check with a pinned source (`requiredCheckSources`, by position) counts only that
+ * source's runs. A client rule for the merge box, never consensus. Parity: forge-core `checks_state`.
  */
 export function checksState(
   runs: readonly CheckRunRow[],
@@ -83,6 +116,7 @@ export function checksState(
   policy: ChecksPolicy,
 ): ChecksState {
   const trusted = (who: string) => oracle.currentRole(who) !== null || runners.has(who)
+  const pinned = pinnedSources(policy)
   const newest = new Map<string, CheckRunRow>()
   let untrusted = 0
   const head = headOid.toLowerCase()
@@ -92,6 +126,8 @@ export function checksState(
       untrusted += 1
       continue
     }
+    const sources = pinned.get(run.name)
+    if (sources !== undefined && !sources.has(run.reporter)) continue
     const held = newest.get(run.name)
     if (held === undefined || compareKey(run, held) > 0) newest.set(run.name, run)
   }
@@ -306,4 +342,81 @@ export function trendingRecount(beats: readonly StarBeat[], grid: TimeGrid, nowM
     .map(([repo, count]) => ({ repo, count }))
     .sort((a, b) => b.count - a.count || compareStrings(b.repo, a.repo))
     .slice(0, limit)
+}
+
+// ---------------------------------------------------------------------------
+// Check-run reports: monotonic status and times
+// ---------------------------------------------------------------------------
+
+/** The stored run a report would update, as the monotonic rules read it. */
+export interface StoredRun {
+  readonly status: string
+  readonly startedAt?: number | null
+  readonly completedAt?: number | null
+  readonly conclusion?: string | null
+  readonly externalId?: string | null
+}
+
+/** What a reporter says now. */
+export interface RunReport {
+  readonly status: string
+  readonly conclusion?: string | null
+  readonly startedAt?: number | null
+  readonly completedAt?: number | null
+  readonly externalId?: string | null
+}
+
+/** The write a report makes; on a replace only a field the stored run lacks is set (null keeps it). */
+export interface RunWrite {
+  readonly action: 'create' | 'replace'
+  readonly startedAt: number | null
+  readonly completedAt: number | null
+  readonly conclusion: string | null
+  readonly externalId: string | null
+}
+
+const STATUS_RANK: ReadonlyMap<string, number> = new Map([
+  ['queued', 0],
+  ['in_progress', 1],
+  ['completed', 2],
+])
+
+/** Whether `stored` can take the report as a replace (parity: forge-core `continues`). */
+function continues(stored: StoredRun, report: RunReport, rank: number): boolean {
+  const held = STATUS_RANK.get(stored.status)
+  if (held === undefined) return false
+  const sameRun = stored.externalId == null || report.externalId == null || stored.externalId === report.externalId
+  const conclusionKept = stored.conclusion == null || stored.conclusion === (report.conclusion ?? null)
+  return sameRun && rank >= held && conclusionKept
+}
+
+/**
+ * The write that records `report` against `stored` at `nowMs`, so the forge-community `checkRun`
+ * rules hold (D-5): a conclusion with `completed` and only with it; `startedAt` on the first
+ * non-queued report, `completedAt` on the first completed one (the CI's own time when given,
+ * never before the start); a stored time, conclusion or `externalId` never changed or dropped;
+ * a backwards move, a changed conclusion or another `externalId` is a new run. Null when
+ * consensus would refuse the report whatever is stored. Parity: forge-core `check_run_write`.
+ */
+export function checkRunWrite(stored: StoredRun | null, report: RunReport, nowMs: number): RunWrite | null {
+  const rank = STATUS_RANK.get(report.status)
+  if (rank === undefined) return null
+  if ((rank === 2) !== (report.conclusion != null)) return null
+  const keeps = stored !== null && continues(stored, report, rank)
+  const heldStart = keeps ? stored.startedAt ?? null : null
+  const heldEnd = keeps ? stored.completedAt ?? null : null
+  const start = heldStart ?? (rank >= 1 ? report.startedAt ?? nowMs : null)
+  let end = heldEnd
+  if (end === null && rank === 2) {
+    const e = report.completedAt ?? nowMs
+    end = start === null ? e : Math.max(e, start)
+  }
+  const unset = (held: string | null | undefined, given: string | null | undefined): string | null => (keeps && held != null ? null : given ?? null)
+  return {
+    action: keeps ? 'replace' : 'create',
+    startedAt: heldStart !== null ? null : start,
+    completedAt: heldEnd !== null ? null : end,
+    conclusion: unset(stored?.conclusion, report.conclusion),
+    externalId: unset(stored?.externalId, report.externalId),
+  }
 }

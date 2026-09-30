@@ -1,6 +1,12 @@
 /**
- * The history index (`packManifest.kind == 3`) a browse context carries: which published
- * indexes count, and loading the one a listing needs (`docs/design/history-index.md`).
+ * The history index a browse context carries: which published indexes count, and loading the one
+ * a view needs (`docs/design/history-index.md`).
+ *
+ * A push publishes two artifacts of a tip: the column index (`packManifest.kind == 3`, format 1:
+ * each path's last change and the commit counts), which the file list, the ref bar's count and
+ * the log total read, and the version lists (kind 5, format 2: the whole index), which only Blame
+ * and a path's History read. Each kind is its own series of full indexes and deltas, so the file
+ * list never downloads the lists.
  *
  * The manifests come from the browse resolve's own pack-list read, so finding an index costs
  * no query. An index counts when its representative copy (members first, `packsOfKind`) is a
@@ -10,7 +16,7 @@
 
 import { ACTIVE_NETWORK, PACK_KIND } from '../constants'
 import { packsOfKind, type PackManifest } from '../repo'
-import { overlayHistory, parseHistoryIndex, type HistoryIndex } from '../browse/history-index'
+import { overlayHistory, parseHistoryIndexOfKind, type HistoryIndex } from '../browse/history-index'
 import { loadIndexArtifact } from './index-cache'
 
 /** A published history index, from its manifest alone. */
@@ -21,21 +27,25 @@ export interface HistoryEntry {
   readonly baseTip: string | null
 }
 
-/** The history indexes of a repository, and a loader for the one covering a tip. */
+/** The history indexes of a repository, and loaders for the ones covering a tip. */
 export interface HistorySource {
-  /** Live indexes by tip (a full index and a delta of the same tip: the full one). */
+  /** Live column indexes by tip (a full index and a delta of the same tip: the full one). */
   readonly byTip: ReadonlyMap<string, HistoryEntry>
-  /** Whether an index covers `tip`. */
+  /** Whether a column index covers `tip`. */
   covers(tip: string): boolean
-  /** The index of `tip` (a delta overlaid on its base), downloaded once and cached. */
+  /** The column index of `tip` (a delta overlaid on its base), downloaded once and cached. */
   load(tip: string): Promise<HistoryIndex>
+  /** Whether version lists cover `tip`. */
+  coversVersions(tip: string): boolean
+  /** The version lists of `tip` (the whole index, a delta overlaid on its base). */
+  loadVersions(tip: string): Promise<HistoryIndex>
 }
 
-/** The live history indexes among `manifests` (raw copies carrying `ownerRole`). */
-export function liveHistoryIndexes(manifests: readonly PackManifest[]): HistoryEntry[] {
+/** The live history indexes of `kind` (the column index by default) among `manifests`. */
+export function liveHistoryIndexes(manifests: readonly PackManifest[], kind: number = PACK_KIND.HISTORY_INDEX): HistoryEntry[] {
   const member = (m: PackManifest): boolean => m.ownerRole !== null && m.ownerRole !== undefined
   const superseded = new Set(manifests.filter(member).flatMap((m) => m.supersedes.map((h) => h.toLowerCase())))
-  return packsOfKind(manifests, PACK_KIND.HISTORY_INDEX)
+  return packsOfKind(manifests, kind)
     .filter((p) => member(p) && !superseded.has(p.packHash.toLowerCase()))
     .flatMap((p) => {
       const [tip, baseTip] = p.tips
@@ -43,35 +53,36 @@ export function liveHistoryIndexes(manifests: readonly PackManifest[]): HistoryE
     })
 }
 
-/**
- * A {@link HistorySource} over `manifests`, or null when the repository has published none.
- * `fetch` loads an artifact's verified bytes (the browse source's `loadArtifactBytes`).
- */
-export function historySource(
+/** One kind's live indexes by tip, and a loader of a tip's index. */
+interface Series {
+  readonly byTip: ReadonlyMap<string, HistoryEntry>
+  load(tip: string): Promise<HistoryIndex>
+}
+
+/** The {@link Series} of `kind` among `manifests`, loading artifacts through `fetch`. */
+function series(
   manifests: readonly PackManifest[],
+  kind: number,
   fetch: (m: PackManifest) => Promise<Uint8Array>,
-): HistorySource | null {
-  const live = liveHistoryIndexes(manifests)
-  if (live.length === 0) return null
+): Series {
+  const live = liveHistoryIndexes(manifests, kind)
   const fulls = new Map(live.filter((e) => e.baseTip === null).map((e) => [e.manifest.packHash.toLowerCase(), e]))
   const fullTips = new Set([...fulls.values()].map((e) => e.tip))
   // A delta covers its tip only while a live full index of its base tip stands behind it
-  // (forge-core `plan_history_index`). Per tip: one with version lists (v2) over one without, then
-  // a full index over a delta, then the newer of two alike (`live` is in first-upload order,
-  // oldest first). A v1 index must not hide a v2 delta of the same tip from Blame and History.
-  const rank = (e: HistoryEntry): number => ((e.manifest.historyFormat ?? 0) >= 2 ? 2 : 0) + (e.baseTip === null ? 1 : 0)
+  // (forge-core `plan_history_index`). Per tip: a full index over a delta, then the newer of two
+  // alike (`live` is in first-upload order, oldest first).
   const byTip = new Map<string, HistoryEntry>()
   for (const e of live) {
     if (e.baseTip !== null && !fullTips.has(e.baseTip)) continue
     const had = byTip.get(e.tip)
-    if (had === undefined || rank(e) >= rank(had)) byTip.set(e.tip, e)
+    if (had === undefined || e.baseTip === null || had.baseTip !== null) byTip.set(e.tip, e)
   }
   const parsed = new Map<string, Promise<HistoryIndex>>()
   const read = (e: HistoryEntry): Promise<HistoryIndex> => {
     const key = e.manifest.packHash.toLowerCase()
     let p = parsed.get(key)
     if (p === undefined) {
-      p = loadIndexArtifact(ACTIVE_NETWORK.key, key, () => fetch(e.manifest)).then(parseHistoryIndex)
+      p = loadIndexArtifact(ACTIVE_NETWORK.key, key, () => fetch(e.manifest)).then((bytes) => parseHistoryIndexOfKind(bytes, kind))
       parsed.set(key, p)
       p.catch(() => parsed.delete(key))
     }
@@ -79,7 +90,6 @@ export function historySource(
   }
   return {
     byTip,
-    covers: (tip) => byTip.has(tip),
     async load(tip: string): Promise<HistoryIndex> {
       const e = byTip.get(tip)
       if (e === undefined) throw new Error(`no history index covers ${tip.slice(0, 12)}`)
@@ -92,6 +102,26 @@ export function historySource(
       if (full.base !== null || full.tip !== e.baseTip) throw new Error('the history index extends another tip')
       return overlayHistory(full, ix)
     },
+  }
+}
+
+/**
+ * A {@link HistorySource} over `manifests`, or null when the repository has published none.
+ * `fetch` loads an artifact's verified bytes (the browse source's `loadArtifactBytes`).
+ */
+export function historySource(
+  manifests: readonly PackManifest[],
+  fetch: (m: PackManifest) => Promise<Uint8Array>,
+): HistorySource | null {
+  const columns = series(manifests, PACK_KIND.HISTORY_INDEX, fetch)
+  const lists = series(manifests, PACK_KIND.HISTORY_VERSIONS, fetch)
+  if (columns.byTip.size === 0 && lists.byTip.size === 0) return null
+  return {
+    byTip: columns.byTip,
+    covers: (tip) => columns.byTip.has(tip),
+    load: (tip) => columns.load(tip),
+    coversVersions: (tip) => lists.byTip.has(tip),
+    loadVersions: (tip) => lists.load(tip),
   }
 }
 

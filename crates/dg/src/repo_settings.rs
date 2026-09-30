@@ -8,7 +8,7 @@
 //!   `RepoService::update_config` re-seals it under the current write epoch.
 //! - The description and topics live on the `repo` document, which only its owner can edit
 //!   (a document replace; `name`, `visibility` and `forkOf` are immutable).
-//! - The branch policy is forge-collab's `policy` (maintainers only, newest wins). It is a
+//! - The branch policy is forge-community's `policy` (maintainers only, newest wins). It is a
 //!   client rule: every Forge client applies it to its merge controls, a maintainer can
 //!   override it, and nothing at consensus requires approvals.
 //! - Protection itself is consensus-backed: a ref matching a protected pattern is updated
@@ -405,6 +405,8 @@ fn policy_json(p: &Policy) -> Value {
         "maintainersOnly": p.approver_role == 1,
         "requireChecks": p.require_checks,
         "mergeMethods": method_names(p.merge_methods),
+        "requiredChecks": p.required_checks,
+        "requiredCheckSources": p.required_check_sources,
     })
 }
 
@@ -440,6 +442,13 @@ pub async fn policy(ctx: &Ctx, cmd: &RepoPolicyCommand) -> Result<()> {
                             "merge methods:      {}",
                             method_names(p.merge_methods).join(", ")
                         );
+                        for (i, name) in p.required_checks.iter().enumerate() {
+                            let from = p
+                                .required_check_sources
+                                .get(i)
+                                .map_or(String::new(), |s| format!(" (runs by {s} only)"));
+                            println!("required check:     {}{from}", crate::fmt::safe(name));
+                        }
                         println!("note: {POLICY_NOTE}");
                     }
                 },
@@ -448,6 +457,47 @@ pub async fn policy(ctx: &Ctx, cmd: &RepoPolicyCommand) -> Result<()> {
         }
         RepoPolicyCommand::Set(args) => set_policy(ctx, args).await,
     }
+}
+
+/// Refuse, before signing, a policy whose check sources are no longer a runner or maintainer of
+/// the repo: forge-community admits each source only while one of those documents exists
+/// (`requiredCheckSources` `refersTo`), so the write would be refused on chain.
+async fn refuse_stale_sources(
+    s: &Session,
+    collab: &forge_core::collab::v2::Collab<'_>,
+    policy: &Policy,
+) -> Result<()> {
+    if policy.required_check_sources.is_empty() {
+        return Ok(());
+    }
+    let oracle = collab.member_oracle(&s.repo).await?;
+    let runners: std::collections::BTreeSet<String> = forge_core::ci::RunnerReader::new(&s.client)
+        .list(&s.repo)
+        .await?
+        .into_iter()
+        .map(|r| r.identity_id)
+        .collect();
+    let stale: Vec<&str> = policy
+        .required_check_sources
+        .iter()
+        .filter(|id| oracle.current_role(id) != Some(Role::Maintainer) && !runners.contains(*id))
+        .map(String::as_str)
+        .collect();
+    if stale.is_empty() {
+        return Ok(());
+    }
+    Err(UserError::new(
+        codes::REJECTED,
+        format!(
+            "the policy's required checks are pinned to {}, no longer a runner or maintainer of {}",
+            stale.join(", "),
+            s.repo.display()
+        ),
+    )
+    .cause("forge-community accepts a check source only while it is a runner or maintainer of the repository")
+    .fix("re-enrol it (`dg ci runner add`), or pass --clear-required-checks to drop the required checks and their sources")
+    .note("checked before anything was signed; nothing was written or paid")
+    .into())
 }
 
 async fn set_policy(ctx: &Ctx, args: &RepoPolicySetArgs) -> Result<()> {
@@ -465,18 +515,22 @@ async fn set_policy(ctx: &Ctx, args: &RepoPolicySetArgs) -> Result<()> {
         .require_role(&s.repo, Role::Maintainer, "set the branch policy")
         .await?;
     let current = collab.policy(&s.repo).await?;
-    let base = current.clone().unwrap_or(Policy {
-        required_approvals: 0,
-        approver_role: 0,
-        require_checks: false,
-        merge_methods: 0,
-    });
+    // What this command does not set (the required checks and their sources) is carried
+    // forward: a policy is append-only and the newest wins. `--clear-required-checks` drops
+    // them.
+    let mut base = current.clone().unwrap_or_default();
+    if args.clear_required_checks {
+        base.required_checks.clear();
+        base.required_check_sources.clear();
+    }
     let next = Policy {
         required_approvals: args.required_approvals.unwrap_or(base.required_approvals),
         approver_role: args.maintainers_only.map_or(base.approver_role, u8::from),
         require_checks: args.require_checks.unwrap_or(base.require_checks),
         merge_methods: methods.unwrap_or(base.merge_methods),
+        ..base
     };
+    refuse_stale_sources(&s, &collab, &next).await?;
     let price = dash_usd_price();
     if current.as_ref() == Some(&next) {
         ctx.emit(

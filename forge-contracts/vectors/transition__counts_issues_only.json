@@ -1,0 +1,22 @@
+{
+  "name": "counts_issues_only",
+  "description": "10 issues, 4 closes and 1 reopen: 3 closed, 7 open; no PR kinds present.",
+  "case": "repo_counts",
+  "rules": "v2",
+  "input": {
+    "issues": 10,
+    "patches": 0,
+    "kinds": {
+      "1": 4,
+      "2": 1
+    }
+  },
+  "expected": {
+    "issuesOpen": 7,
+    "issuesClosed": 3,
+    "prsOpen": 0,
+    "prsClosed": 0,
+    "prsMerged": 0,
+    "prsDraft": 0
+  }
+}

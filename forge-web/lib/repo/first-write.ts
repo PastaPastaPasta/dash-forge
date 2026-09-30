@@ -16,7 +16,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { STEADY, type FirstWrite } from '../sdk/cost'
 import { countDocuments, queryDocumentsWithProof, type DocumentQuery } from '../sdk'
 import { DOC, type RepoRef } from './contract'
-import { repoSource, type QueryShape } from './source'
+import { contractOf, repoSource, type QueryShape } from './source'
 
 /** A read's answer, or `undefined` (unknown) when the read fails. */
 async function orUnknown(read: () => Promise<boolean>): Promise<boolean | undefined> {
@@ -126,19 +126,21 @@ export async function commentFirsts(
   return known({ target, author: authorAny, contract })
 }
 
-/** A new `event` or `authorEvent` on the thread `targetId`, signed by `signer`. */
+/** A new `event`, `authorEvent` or `transition` on the thread `targetId`, signed by `signer`. */
 export async function eventFirsts(
   sdk: EvoSDK,
   repo: RepoRef,
-  type: 'event' | 'authorEvent',
+  type: 'event' | 'authorEvent' | 'transition',
   targetId: string,
   signer: string,
 ): Promise<FirstWrite> {
   const src = repoSource(repo)
+  // `transition` indexes a target by `perTarget (targetId)` alone.
+  const onTarget = type === 'transition' ? { where: [['targetId', '==', targetId]] as const, orderBy: [['targetId', 'asc']] as const } : threadQuery(targetId)
   const [target, feed, contract] = await Promise.all([
-    empty(sdk, src.targetQuery(type, threadQuery(targetId))),
+    empty(sdk, src.targetQuery(type, onTarget)),
     empty(sdk, src.repoQuery(type, { orderBy: [['$createdAt', 'desc']] })),
-    contractFirst(sdk, signer, repo.forge.collab),
+    contractFirst(sdk, signer, contractOf(repo.forge, type)),
   ])
   return known({ target, repo: feed, contract })
 }
@@ -148,24 +150,24 @@ export async function starFirsts(sdk: EvoSDK, repo: RepoRef, viewer: string, sta
   const [repoFirst, author, contract] = await Promise.all([
     typeof starCount === 'number'
       ? Promise.resolve(starCount === 0)
-      : none(sdk, { dataContractId: repo.forge.collab, documentTypeName: DOC.star, where: [['repoId', '==', repo.repoId]] }),
+      : none(sdk, { dataContractId: repo.forge.community, documentTypeName: DOC.star, where: [['repoId', '==', repo.repoId]] }),
     // The starrer's first star builds their `byOwner` value tree.
-    none(sdk, { dataContractId: repo.forge.collab, documentTypeName: DOC.star, where: [['$ownerId', '==', viewer]] }),
-    contractFirst(sdk, viewer, repo.forge.collab),
+    none(sdk, { dataContractId: repo.forge.community, documentTypeName: DOC.star, where: [['$ownerId', '==', viewer]] }),
+    contractFirst(sdk, viewer, repo.forge.community),
   ])
   return known({ repo: repoFirst, author, contract })
 }
 
 /** The viewer's trending beat (`starBeat`): their first builds their `byOwner` value tree. */
 export async function starBeatFirsts(sdk: EvoSDK, repo: RepoRef, viewer: string): Promise<FirstWrite> {
-  return known({ author: await none(sdk, { dataContractId: repo.forge.collab, documentTypeName: DOC.starBeat, where: [['$ownerId', '==', viewer]] }) })
+  return known({ author: await none(sdk, { dataContractId: repo.forge.community, documentTypeName: DOC.starBeat, where: [['$ownerId', '==', viewer]] }) })
 }
 
 /** A new follow by `viewer` (the author subtree of the `byOwner` index). */
-export async function followFirsts(sdk: EvoSDK, collab: string, viewer: string): Promise<FirstWrite> {
+export async function followFirsts(sdk: EvoSDK, community: string, viewer: string): Promise<FirstWrite> {
   const [author, contract] = await Promise.all([
-    none(sdk, { dataContractId: collab, documentTypeName: DOC.follow, where: [['$ownerId', '==', viewer]] }),
-    contractFirst(sdk, viewer, collab),
+    none(sdk, { dataContractId: community, documentTypeName: DOC.follow, where: [['$ownerId', '==', viewer]] }),
+    contractFirst(sdk, viewer, community),
   ])
   return known({ author, contract })
 }

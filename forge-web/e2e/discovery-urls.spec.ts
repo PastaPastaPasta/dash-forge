@@ -1,11 +1,15 @@
 import { test, expect, type Page } from '@playwright/test'
-import { collectPageErrors, countDapi, countDocumentQueries, DEMO, deployment, nodeSdk, repoUrl, runAxe, shot } from './helpers'
+import { collectPageErrors, countDapi, countDocumentQueries, DAPI_METHOD, DAPI_RESEND_SLACK, decodeDocumentsRequest, DEMO, deployment, loadSeedPulls, nodeSdk, repoUrl, runAxe, shot } from './helpers'
+import { quorumGuard } from './quorum-sync'
+
+// Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
+test.beforeEach(quorumGuard)
 
 /**
  * G14 (L-25, L-27, L-40): Explore search, the jump box, GitHub-style short URLs and the
  * Stargazers page, signed out, reads only, on moutai:
  *
- *   E2E_DEVNET=moutai E2E_PORT=<free port> pnpm exec playwright test discovery-urls.spec.ts
+ *   E2E_DEVNET=bonsia E2E_PORT=<free port> pnpm exec playwright test discovery-urls.spec.ts
  *
  * The search and jump cases use the read fixture (`forge-v2-demo`), which every devnet has.
  * The showcase cases resolve the mirrors' owners by DPNS name, so they survive a devnet
@@ -67,6 +71,10 @@ test('g1. Explore search finds the fixture repo by a name prefix, in one request
 test('g2. Explore: most starred (labelled with its bound), recently updated, and recent repos page', async ({ page }) => {
   const { errors } = collectPageErrors(page)
   const dapi = countDapi(page)
+  let domainReads = 0
+  page.on('request', (req) => {
+    if (DAPI_METHOD.exec(req.url())?.[1] === 'getDocuments' && decodeDocumentsRequest(req.postDataBuffer())?.documentType === 'domain') domainReads++
+  })
   await page.goto('/explore/', { waitUntil: 'domcontentloaded' })
   const starred = page.getByTestId('explore-most-starred')
   await expect(starred.locator('a[href*="/repo"], [data-empty]').first()).toBeVisible({ timeout: 60_000 })
@@ -91,12 +99,19 @@ test('g2. Explore: most starred (labelled with its bound), recently updated, and
   await expect.poll(() => recent.locator('a[href*="/repo"]').count(), { timeout: 60_000 }).toBeGreaterThan(firstPage)
   await shot(page, 'g14-explore-sections')
 
-  // Request budget: the signed-out page (recent + most starred + releases of 24 repos + one
-  // more recent page) stays well under the old 52 (perf-scale), with no per-repo count reads.
+  // Request budget, derived from the page's shape rather than from the devnet's size: trending,
+  // most starred and most forked are a proved ranked read and one composite each (6); recent is
+  // one composite per page (2 here); "Recently released" reads the latest release of each repo
+  // on the first recent page (one read per card, `firstPage`). Stars, issue counts, pushes and
+  // the owners' DPNS names ride in those composites, so however many repos or distinct owners
+  // the shared devnet grows, nothing else is read. A later recent page whose composite the node
+  // refused fell back to the plain query and read each new owner's name on its own (it stepped
+  // this past 40 as bonsia grew): no top-level `domain` read at all is allowed.
   const docs = dapi.get('getDocuments') ?? 0
   test.info().annotations.push({ type: 'dapi', description: JSON.stringify(Object.fromEntries(dapi)) })
   expect(dapi.get('getDocumentsCount') ?? 0, 'counts ride in the composites').toBe(0)
-  expect(docs, 'getDocuments on Explore (3 composites + 24 release reads + names)').toBeLessThanOrEqual(40)
+  expect(domainReads, 'owner names ride in the composites (no per-owner DPNS read)').toBe(0)
+  expect(docs, `getDocuments on Explore (6 ranked + 2 recent pages + ${firstPage} release reads)`).toBeLessThanOrEqual(6 + 2 + firstPage + DAPI_RESEND_SLACK)
   expect(errors, errors.join('\n')).toEqual([])
 })
 
@@ -159,13 +174,17 @@ test('g3. the jump box: a bare repo name opens the repo, not "No such identity"'
 
 test('g4. short URLs: branches, tags, stargazers, commit, releases/tag, tree, pull files, issues ?q=', async ({ page }) => {
   const base = `/${DEMO.owner}/${DEMO.name}`
+  // Any real PR works for the pull/files case (only the canonical URL and "Files changed" are
+  // checked): its number now comes from the seed summary, not the literal 1 (dense shared
+  // numbering, forge-v2.md §6.2 — #1 is an issue in this fixture).
+  const pr = loadSeedPulls().approved
   const cases: [string, RegExp, RegExp][] = [
     [`${base}/branches`, /\/repo\/branches\/?\?owner=/, /main/],
     [`${base}/tags`, /\/repo\/tags\/?\?owner=/, /v0\.1\.0/],
     [`${base}/stargazers`, /\/repo\/stargazers\/?\?owner=/, /Stargazers/],
     [`${base}/releases/tag/v0.1.0`, /\/repo\/release\/?\?owner=.*tag=v0\.1\.0/, /v0\.1\.0/],
     [`${base}/tree/main/src`, /\/repo\/tree\/?\?owner=.*ref=main&path=src/, /main\.rs/],
-    [`${base}/pull/1/files`, /\/repo\/pull\/?\?owner=.*number=1&tab=files/, /Files changed/],
+    [`${base}/pull/${pr}/files`, new RegExp(`/repo/pull/?\\?owner=.*number=${pr}&tab=files`), /Files changed/],
     [`${base}/issues?q=is%3Aclosed`, /\/repo\/issues\/?\?owner=.*q=is%3Aclosed/, /closed/i],
   ]
   for (const [short, canonical, content] of cases) {

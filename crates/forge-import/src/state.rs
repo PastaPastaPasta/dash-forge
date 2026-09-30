@@ -33,6 +33,13 @@ pub struct SyncState {
     /// next run whatever `since` says, so the cursor never skips past them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub revisit: Vec<u32>,
+    /// Items the destination refused (a content error: a field too long, an illegal ref name,
+    /// …), as `"<tk>:<source number>"` (0 issue, 1 PR). The state advances past them, so one
+    /// bad item does not hold every later run at the same window; one edited at the source
+    /// comes back into the window and is tried again. The dense-order check leaves them out
+    /// of what it calls missing ([`crate::sink::Sink`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refused: Vec<String>,
     #[serde(skip)]
     path: Option<PathBuf>,
 }
@@ -48,6 +55,7 @@ impl SyncState {
             destination: destination.to_string(),
             last_sync_started: None,
             revisit: Vec::new(),
+            refused: Vec::new(),
             path: path.map(Path::to_path_buf),
         };
         let Some(p) = path else { return fresh };
@@ -84,6 +92,24 @@ impl SyncState {
         } else {
             &[]
         }
+    }
+
+    /// The items the destination refused on earlier runs ([`Self::refused`]), as `(tk,
+    /// source number)`.
+    #[must_use]
+    pub fn refused_items(&self) -> std::collections::BTreeSet<(u8, u32)> {
+        self.refused
+            .iter()
+            .filter_map(|k| {
+                let (tk, n) = k.split_once(':')?;
+                Some((tk.parse().ok()?, n.parse().ok()?))
+            })
+            .collect()
+    }
+
+    /// Set the refused items to save ([`Self::refused`]).
+    pub fn set_refused(&mut self, items: &std::collections::BTreeSet<(u8, u32)>) {
+        self.refused = items.iter().map(|(tk, n)| format!("{tk}:{n}")).collect();
     }
 
     /// Record a successful run that started at `started` (unix seconds), with the items the

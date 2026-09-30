@@ -1,0 +1,11 @@
+{
+  "name": "exhausted",
+  "description": "Every u32 number is used: none left.",
+  "case": "dense_number",
+  "rules": "v2",
+  "input": {
+    "issues": 4294967295,
+    "patches": 0
+  },
+  "expected": null
+}

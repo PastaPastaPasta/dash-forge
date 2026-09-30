@@ -12,7 +12,7 @@
 #      from the fork.
 #   6. CONTRIB approves its own PR (not a member: does not count); OWNER approves (counts).
 #   7. OWNER `dg pr merge`s: fetch both, build a merge commit, push it to the base, post the
-#      merge event; the PR reads merged and the base tip is a merge whose parents are the old
+#      merge transition; the PR reads merged and the base tip is a merge whose parents are the old
 #      base and the PR head.
 SCENARIO_NAME="10 PR from a fork: review + real client-side merge"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
@@ -110,12 +110,13 @@ approved() {
 ap=1; for _ in $(seq 1 10); do approved && { ap=0; break; }; sleep 3; done
 check "exactly OWNER's approval counts" test "$ap" -eq 0
 
-step "OWNER merges (merge commit, push to base, merge event)"
+step "OWNER merges (merge commit, push to base, merge transition)"
 if dg_write "$ID_OWNER" "$LOG-merge" pr merge "$REPO" "$N"; then
   cat "$LOG-merge.err" >&2
   check "reads merged" assert_eq "True" "$(jq_py "$LOG-merge.json" 'd["merged"]')"
   MERGE="$(jq_py "$LOG-merge.json" 'd["mergeOid"]')"
-  check "the steps ran in order" assert_eq "fetch,merge,push,event" "$(jq_py "$LOG-merge.json" '",".join(s["step"] for s in d["steps"])')"
+  check "the steps ran in order" assert_eq "fetch,merge,push,record" "$(jq_py "$LOG-merge.json" '",".join(s["step"] for s in d["steps"])')"
+  check "the merge commit is on the base" assert_eq "True" "$(jq_py "$LOG-merge.json" 'd["mergeOnBase"]')"
   step "the base tip is a merge of the old base and the PR head"
   VER="${WORKROOT}/s10-verify"
   git_dash_retry "$ID_OWNER" "$LOG-vclone" clone -q --no-checkout -b "$BASE" "$E2E_REMOTE" "$VER" || fail_with "$LOG-vclone" "verify clone"

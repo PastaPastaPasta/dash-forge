@@ -216,7 +216,11 @@ pub struct ReleaseAsset {
 }
 
 /// Input for [`v2::Collab::create_release`].
-#[derive(Debug, Clone)]
+///
+/// A private repository's release is sealed (`private-repos.md` §16) and every revision is a
+/// complete statement: an empty `name` or `notes`, and a `None` flag, carry the tag's newest
+/// revision forward, and so do its assets, except those a new file of the same name replaces.
+#[derive(Debug, Clone, Default)]
 pub struct ReleaseInput {
     /// Tag name (the logical key; newest doc per tag wins).
     pub tag_name: String,
@@ -224,10 +228,64 @@ pub struct ReleaseInput {
     pub name: String,
     /// Release notes.
     pub notes: String,
-    /// Whether this release is yanked.
-    pub yanked: bool,
-    /// Assets.
+    /// Whether this release is yanked. A public revision states it afresh (`None` is not
+    /// yanked); a private one carries the tag's last revision's when `None` (§16.3).
+    pub yanked: Option<bool>,
+    /// Assets already stored (a public repository; a private one's are [`Self::files`]).
     pub assets: Vec<ReleaseAsset>,
+    /// A private repository: the files to seal and store as new assets.
+    pub files: Vec<ReleaseFile>,
+    /// A private repository: the sealed pre-release flag (§16.2), `None` to carry it forward.
+    pub prerelease: Option<bool>,
+    /// A private repository: the sealed draft flag, `None` to carry it forward.
+    pub draft: Option<bool>,
+    /// A private repository: unpublish the tag (flag `0x08`, every field carried forward;
+    /// `delta` stays 0, §16.3).
+    pub unpublished: bool,
+}
+
+/// One file a sealed release stores as an asset (§16.5).
+#[derive(Clone)]
+pub struct ReleaseFile {
+    /// The asset's name.
+    pub name: String,
+    /// The plaintext bytes.
+    pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for ReleaseFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReleaseFile")
+            .field("name", &self.name)
+            .field("len", &self.bytes.len())
+            .finish()
+    }
+}
+
+/// Where a sealed release's files and asset list go: the repository's external storage
+/// (release assets are external only), and how many copies must confirm.
+pub struct ReleaseStore<'t> {
+    /// The targets.
+    pub targets: Vec<&'t dyn crate::storage::StorageTarget>,
+    /// Confirmations required.
+    pub required: usize,
+}
+
+/// What [`v2::Collab::create_release_stored`] wrote.
+#[derive(Debug, Clone, Default)]
+pub struct ReleaseWritten {
+    /// The new revision's `$id`.
+    pub document_id: String,
+    /// A sealed release's asset list, as this revision names it (empty when it was kept
+    /// unopened: [`Self::asset_list_kept`]).
+    pub sealed_assets: Vec<crate::private::release::ManifestAsset>,
+    /// The revision names the previous asset list as it was, unopened.
+    pub asset_list_kept: bool,
+    /// What the writer of a sealed revision should know (§16.3): it is not the tag's newest
+    /// after the write (another maintainer's concurrent revision, or a clock behind theirs),
+    /// or that could not be checked; it carried forward from a view missing a newer revision;
+    /// or a rotation during the upload left copies under the old key in storage.
+    pub warnings: Vec<String>,
 }
 
 /// A release document, flattened (newest per `tagName`).
@@ -245,11 +303,72 @@ pub struct Release {
     pub yanked: bool,
     /// Assets (parsed from the `assets` JSON-string field).
     pub assets: Vec<ReleaseAsset>,
-    /// Who published this revision (`$ownerId`). Always shown: a maintainer who is later
-    /// revoked can still delete (not edit) their release, so readers name the publisher.
+    /// Who published this revision (`$ownerId`). Always shown: readers name the publisher
+    /// of each revision.
     pub publisher: String,
     /// Consensus `$createdAt` (ms).
     pub created_at: u64,
+    /// `release.delta` (RC1 `release_ledger`): `+1` publishes the tag, `0` edits, yanks or
+    /// seals it, `-1` unpublishes it. A tag is live while its revisions sum to 1; releases
+    /// cannot be deleted.
+    pub delta: i64,
+    /// A private repository's sealed revision (§16): its epoch and every field it states.
+    /// `None` on a public release.
+    pub sealed: Option<SealedRelease>,
+}
+
+/// What a sealed release revision states besides the fields [`Release`] flattens.
+#[derive(Debug, Clone)]
+pub struct SealedRelease {
+    /// The key epoch it was sealed under.
+    pub epoch: u32,
+    /// The opened TLV: the tag, flags, target, provenance and the asset manifest's hash.
+    pub fields: crate::private::release::ReleaseFields,
+}
+
+impl Release {
+    /// A draft: a sealed-only label, never access control (§16.3).
+    #[must_use]
+    pub fn is_draft(&self) -> bool {
+        self.sealed.as_ref().is_some_and(|s| s.fields.draft)
+    }
+
+    /// A pre-release: its tag has a pre-release suffix, or a sealed revision sets the flag
+    /// (§16.2: never less of a pre-release than the public rule makes it).
+    #[must_use]
+    pub fn is_prerelease(&self) -> bool {
+        self.sealed.as_ref().is_some_and(|s| s.fields.prerelease)
+            || v2::is_prerelease(&self.tag_name)
+    }
+}
+
+/// Every release of a repository as a reader sees it (§16.3 for a private one).
+#[derive(Debug, Clone, Default)]
+pub struct ReleaseList {
+    /// The release of each live tag, in [`v2::release_order`].
+    pub current: Vec<Release>,
+    /// The other revisions, an unpublished tag's included, newest first.
+    pub previous: Vec<Release>,
+    /// Release revisions that could not be read (§16.3 "n release revisions could not be
+    /// read"); on a public repository, any carrying `enc`.
+    pub hidden: usize,
+    /// Of `hidden`, revisions sealed under an earlier use of their epoch number: "sealed under
+    /// a key this repository no longer uses", not tampering (§16.3).
+    pub earlier_use: usize,
+    /// Revisions ignored as copies of an earlier `enc` (§16.3).
+    pub replays: usize,
+    /// Tags whose newest revision could not be read: their state is unknown.
+    pub unknown_tags: Vec<String>,
+    /// Newer revisions are under a key this reader does not hold yet.
+    pub stale: bool,
+}
+
+impl ReleaseList {
+    /// The releases count: live tags whose release is not a draft (a yanked one counts).
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.current.iter().filter(|r| !r.is_draft()).count()
+    }
 }
 
 /// Build a [`Release`] from a fetched document.
@@ -283,6 +402,33 @@ pub(crate) fn release_from_doc(d: &platform::FetchedDocument) -> Release {
         assets,
         publisher: d.owner_id.clone(),
         created_at: d.created_at.unwrap_or(0),
+        delta: d
+            .fields
+            .get("delta")
+            .and_then(FieldValue::as_i64)
+            .unwrap_or(0),
+        sealed: None,
+    }
+}
+
+/// A [`Release`] from a sealed revision that opened to `fields`. Its assets are in the sealed
+/// kind-4 manifest `fields.asset_manifest` names, read separately (§16.5).
+pub(crate) fn release_from_sealed(
+    d: &platform::FetchedDocument,
+    epoch: u32,
+    fields: crate::private::release::ReleaseFields,
+) -> Release {
+    Release {
+        document_id: d.id.clone(),
+        tag_name: fields.tag.clone(),
+        name: fields.name.clone().unwrap_or_default(),
+        notes: fields.notes.clone().unwrap_or_default(),
+        yanked: fields.yanked,
+        assets: Vec::new(),
+        publisher: d.owner_id.clone(),
+        created_at: d.created_at.unwrap_or(0),
+        delta: 0,
+        sealed: Some(SealedRelease { epoch, fields }),
     }
 }
 
@@ -330,10 +476,25 @@ mod tests {
             (Verdict::Approve, 1),
             (Verdict::RequestChanges, 2),
             (Verdict::Comment, 3),
+            (Verdict::ApproveNonMember, 4),
+            (Verdict::RequestChangesNonMember, 5),
         ] {
             assert_eq!(v.code(), code, "{v:?} encodes as {code}");
             assert_eq!(Verdict::from_code(code), v, "{code} decodes as {v:?}");
         }
+    }
+
+    #[test]
+    fn a_verdict_is_written_as_the_signer_s_membership_allows() {
+        use Verdict::{
+            Approve, ApproveNonMember, Comment, RequestChanges, RequestChangesNonMember,
+        };
+        assert_eq!(Approve.as_written_by(false), ApproveNonMember);
+        assert_eq!(ApproveNonMember.as_written_by(true), Approve);
+        assert_eq!(RequestChanges.as_written_by(false), RequestChangesNonMember);
+        assert_eq!(RequestChangesNonMember.as_written_by(true), RequestChanges);
+        assert_eq!(Comment.as_written_by(false), Comment);
+        assert!(Approve.needs_member_proof() && !ApproveNonMember.needs_member_proof());
     }
 
     #[test]

@@ -10,7 +10,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { describe, expect, it } from 'vitest'
 
-import type { ForgeIds } from '../deployments'
+import { contractKind, type ForgeIds } from '../deployments'
 import { hash160 } from './asset-lock'
 import { base58Decode, base58Encode } from './base58'
 import {
@@ -23,7 +23,7 @@ import {
   walletSignInSupported,
   type ResponseSource,
 } from './app-connect'
-import { buildKeyRegistration, isUnlimited, keyScope, loginKeys, scopeCovers, RevokedWalletKey } from './key-registration'
+import { buildKeyRegistration, isUnlimited, keyScope, loginKeys, nextGrant, scopeCovers, RevokedWalletKey } from './key-registration'
 import { heldToDisable } from './limited-key'
 import { authKeyFromLogin, encodeKeyRequest, encryptionKeyFromLogin, openEnvelope, protocolUri } from './wallet-protocol'
 import { deriveLoginKey, parseKeyRequest, parseStRequest, sealLoginKeys, DashConnectUriException } from './wallet-sim'
@@ -31,7 +31,7 @@ import { decodeWif, encodeWif } from './wif'
 
 const FORGE: ForgeIds = {
   core: 'A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1',
-  collab: 'C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS',
+  collab: 'C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS', community: 'C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS',
   group: '6dV3kMBWHGR7pLKrHToMBQgbTpjqeE2VAyCEWmLbrkWC',
 }
 const LEGACY = 'LegacyKeyExchange1111111111111111111111111111'.slice(0, 44)
@@ -174,10 +174,11 @@ describe('which keys Forge signs with', () => {
   const bound = (b: { $type: string; id: string } | null) => ({ contractBounds: b ? { toJSON: () => b } : undefined })
 
   it('scopes keys by their bounds', () => {
-    expect(keyScope(bound({ $type: 'contractGroup', id: FORGE.group }), FORGE)).toEqual({ core: true, collab: true, unbounded: false })
-    expect(keyScope(bound({ $type: 'singleContract', id: FORGE.core }), FORGE)).toEqual({ core: true, collab: false, unbounded: false })
-    expect(keyScope(bound({ $type: 'singleContract', id: FORGE.collab }), FORGE)).toEqual({ core: false, collab: true, unbounded: false })
-    expect(keyScope(bound(null), FORGE)).toEqual({ core: true, collab: true, unbounded: true })
+    // FORGE is moutai's pre-split deployment: forge-community is forge-collab there
+    expect(keyScope(bound({ $type: 'contractGroup', id: FORGE.group }), FORGE)).toEqual({ core: true, collab: true, community: true, unbounded: false })
+    expect(keyScope(bound({ $type: 'singleContract', id: FORGE.core }), FORGE)).toEqual({ core: true, collab: false, community: false, unbounded: false })
+    expect(keyScope(bound({ $type: 'singleContract', id: FORGE.collab }), FORGE)).toEqual({ core: false, collab: true, community: true, unbounded: false })
+    expect(keyScope(bound(null), FORGE)).toEqual({ core: true, collab: true, community: true, unbounded: true })
     // Another app's key, a superseded group, or a document-type bound: not Forge's to use.
     expect(keyScope(bound({ $type: 'singleContract', id: APP_CONNECT_CONTRACT_ID }), FORGE)).toBeNull()
     expect(keyScope(bound({ $type: 'contractGroup', id: '23iVLZABbVQ5a4heSa6GLVbVqSWr74JTSESSMTEYNd6o' }), FORGE)).toBeNull()
@@ -188,6 +189,23 @@ describe('which keys Forge signs with', () => {
     expect(scopeCovers(core, FORGE, 'SomeOtherContract')).toBe(false)
     // Even an unbounded key is only ever asked about Forge's two contracts.
     expect(scopeCovers(keyScope(bound(null), FORGE)!, FORGE, 'SomeOtherContract')).toBe(false)
+  })
+
+  it('scopes keys over three contracts: a forge-community key covers forge-community only', () => {
+    const three = { ...FORGE, community: 'CommunityContractId1111111111111111111111111' }
+    expect(keyScope(bound({ $type: 'singleContract', id: three.community }), three)).toEqual({ core: false, collab: false, community: true, unbounded: false })
+    expect(keyScope(bound({ $type: 'singleContract', id: three.collab }), three)).toEqual({ core: false, collab: true, community: false, unbounded: false })
+    expect(keyScope(bound({ $type: 'contractGroup', id: three.group }), three)).toEqual({ core: true, collab: true, community: true, unbounded: false })
+    const collabOnly = keyScope(bound({ $type: 'singleContract', id: three.collab }), three)!
+    expect(scopeCovers(collabOnly, three, three.community)).toBe(false)
+    expect(nextGrant({ collab: true, community: false })).toBe('community')
+    expect(nextGrant({ collab: false, community: false })).toBe('collab')
+    expect(nextGrant({ collab: true, community: true })).toBeNull()
+    expect(nextGrant(undefined)).toBeNull()
+    expect(contractKind(three, three.community)).toBe('community')
+    // Pre-split: the shared id reads as collab
+    expect(contractKind(FORGE, FORGE.community)).toBe('collab')
+    expect(contractKind(three, 'SomeOtherContract')).toBeNull()
   })
 
   it('flags a key without a budget or an expiry as unlimited', () => {
@@ -323,7 +341,7 @@ describe('login poll against a simulated wallet', () => {
     if (a.kind !== 'keys') throw new Error('unreachable')
     expect(a.identityId).toBe(ALICE)
     expect(a.source).toBe('legacy')
-    expect(a.keys[0]!.scope).toEqual({ core: true, collab: false, unbounded: false })
+    expect(a.keys[0]!.scope).toEqual({ core: true, collab: false, community: false, unbounded: false })
     expect(isUnlimited(a.keys[0]!)).toBe(true)
     expect(bytesToHex(decodeWif(a.keys[0]!.wif).privateKey)).toBe(bytesToHex(authPriv))
     expect(req.appEphemeralPriv.every((b) => b === 0)).toBe(true)
@@ -346,7 +364,7 @@ describe('login poll against a simulated wallet', () => {
     const a = await awaitWalletAnswer(chain.sdk, req, fast)
     if (a.kind !== 'keys') throw new Error('expected keys')
     expect(a.source).toBe('app-connect')
-    expect(a.keys[0]!.scope).toEqual({ core: true, collab: true, unbounded: false })
+    expect(a.keys[0]!.scope).toEqual({ core: true, collab: true, community: true, unbounded: false })
     expect(isUnlimited(a.keys[0]!)).toBe(false)
   })
 

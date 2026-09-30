@@ -1,11 +1,16 @@
 import { test, expect } from '@playwright/test'
-import { collectPageErrors, countDapi, repoUrl as url, shot, waitForRepoResolved } from './helpers'
+import { SNAPSHOT_KEYS } from '../lib/sdk/contract-seed'
+import { E2E_DEVNET, collectPageErrors, countDapi, loadSeedPulls, repoUrl as url, shot, waitForRepoResolved } from './helpers'
+import { quorumGuard } from './quorum-sync'
+
+// Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
+test.beforeEach(quorumGuard)
 
 /**
  * P-1: the shared DAPI request budget (`lib/sdk/budget.ts`) and the seeded contracts
  * (`lib/sdk/contract-seed.ts`), against the moutai read fixture:
  *
- *   E2E_DEVNET=moutai pnpm exec playwright test rate-budget.spec.ts
+ *   E2E_DEVNET=bonsia pnpm exec playwright test rate-budget.spec.ts
  *
  *  - A rate-limited node (a gateway `ResourceExhausted` reply with `ratelimit-reset`, mocked
  *    here) makes the page wait, showing "Platform is busy — waiting Ns", and then finish. It
@@ -87,11 +92,18 @@ test.describe('DAPI request budget', () => {
   for (const [id, path, extra, ready] of [
     ['home', '', '', 'section[aria-label=README]'],
     ['issues', 'issues', '', 'main a[href*="/repo/issue/"][href*="number="]'],
-    ['pull', 'pull', '&number=1', 'main h1'],
+    // Any real PR works here (only "no getDataContract" is checked): the number is resolved
+    // lazily below, since #1 is now an issue, not a PR (dense shared numbering, forge-v2.md §6.2).
+    ['pull', 'pull', '', 'main h1'],
   ] as const) {
     test(`rb-2 (${id}). no getDataContract request: the contracts are seeded`, async ({ page }) => {
+      // Expected until the wipe runbook step 5 (dash-forge-qa/WIPE-PLAN.md §3): the beta.6 snapshot was dropped with the beta.7
+      // schema (beta.7 cannot parse its bytes), and snapshot-contracts.mjs re-adds it after the
+      // fresh registration. Without a snapshot every page fetches its contracts.
+      test.skip(!SNAPSHOT_KEYS.includes(`devnet-${E2E_DEVNET}`), `no contract snapshot for devnet-${E2E_DEVNET} yet`)
       const counts = countDapi(page)
-      await page.goto(url(path, extra), { waitUntil: 'domcontentloaded' })
+      const resolvedExtra = id === 'pull' ? `&number=${loadSeedPulls().approved}` : extra
+      await page.goto(url(path, resolvedExtra), { waitUntil: 'domcontentloaded' })
       await waitForRepoResolved(page)
       await expect(page.locator(ready).first()).toBeVisible({ timeout: 60_000 })
       // Let the page's trailing reads (rail, counts) go out before counting.

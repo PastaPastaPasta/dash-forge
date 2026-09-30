@@ -13,8 +13,11 @@ use anyhow::{bail, Context, Result};
 use serde_json::json;
 
 use forge_core::backends::PackMeta;
-use forge_core::collab::{Release, ReleaseAsset, ReleaseInput};
-use forge_core::rules::v2::Role;
+use forge_core::collab::{
+    Release, ReleaseAsset, ReleaseFile, ReleaseInput, ReleaseList, ReleaseStore,
+};
+use forge_core::private::release::ManifestAsset;
+use forge_core::rules::v2::{Role, Visibility};
 use forge_core::storage::policy::git_config_scoped;
 use forge_core::storage::{
     replicate, ExternalTarget, PackReader, StoragePolicy, StorageProfiles, StorageTarget,
@@ -40,6 +43,7 @@ pub async fn run(ctx: &Ctx, cmd: &ReleaseCommand) -> Result<()> {
             asset,
             output,
         } => download(ctx, repo, tag, asset.as_deref(), output.clone()).await,
+        ReleaseCommand::Unpublish { repo, tag } => unpublish(ctx, repo, tag).await,
     }
 }
 
@@ -121,9 +125,12 @@ fn copies(n: usize) -> String {
 
 async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
     let s = Session::open_for_write(ctx, &args.repo, "release not created").await?;
-    // Release notes and assets are not encrypted in this release: refuse before any asset
-    // leaves the machine.
-    s.repo.require_public("releases")?;
+    // A tag the contract would refuse is refused before any asset is uploaded.
+    forge_core::collab::v2::check_tag_name(&args.tag)?;
+    if s.repo.visibility == Visibility::Private {
+        return create_sealed(ctx, args, &s).await;
+    }
+    refuse_sealed_only_flags(args)?;
     let collab = s.collab();
     let tag = &args.tag;
     // Maintainer-only at consensus: find out before uploading anything.
@@ -132,7 +139,7 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
         .await?;
     // A release for this tag supersedes the current one (newest per tag wins), so what the
     // command does not change is carried forward: `--yanked` alone must not drop the files.
-    let (current, _) = collab.releases(&s.repo).await?;
+    let current = collab.releases(&s.repo).await?.current;
     let existing = current.into_iter().find(|r| &r.tag_name == tag);
     let targets = if args.assets.is_empty() {
         None
@@ -161,7 +168,7 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
                 .iter()
                 .filter(|a| !uploads_replace(&args.assets, &a.name))
                 .count(),
-            if r.yanked && !args.yanked {
+            if r.yanked && args.yanked != Some(true) {
                 " (it is yanked now: without --yanked this un-yanks it)"
             } else {
                 ""
@@ -219,6 +226,266 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
     Ok(())
 }
 
+/// `dg release create` on a private repository (`private-repos.md` §16): every `--asset` is
+/// sealed before it leaves the machine and stored under its sealed hash, the asset list is a
+/// sealed kind-4 manifest, and the revision is sealed under the current key epoch. What the
+/// command does not change is carried forward from the tag's newest revision by forge-core.
+async fn create_sealed(ctx: &Ctx, args: &ReleaseCreateArgs, s: &Session) -> Result<()> {
+    let collab = s.collab();
+    let tag = &args.tag;
+    collab
+        .require_role(&s.repo, Role::Maintainer, &format!("publish release {tag}"))
+        .await?;
+    let files = read_release_files(&args.assets)?;
+    // New files need storage; so may new notes (the full notes move into the sealed asset list
+    // when they do not fit), so the policy is resolved whenever there is one.
+    let targets = match asset_targets(args.storage.as_deref()) {
+        Ok(t) => Some(t),
+        Err(e) if files.is_empty() => {
+            tracing::debug!(error = %e, "no asset storage; a revision without new files may not need it");
+            None
+        }
+        Err(e) => return Err(e),
+    };
+    let total: u64 = files.iter().map(|f| f.bytes.len() as u64).sum();
+    let with = if files.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " with {} sealed asset(s), {}",
+            files.len(),
+            forge_core::storage::human_bytes(total)
+        )
+    };
+    ctx.confirm_or_cancel(&format!(
+        "Publish sealed release {tag} of {}{with}? A private release holds 1507 bytes of tag, \
+         name, notes preview and provenance; longer notes continue in its sealed asset list. \
+         What you do not change is kept from the tag's last revision. (one small document, \
+         ~0.0002 DASH, plus one for a new asset list)",
+        s.repo.display()
+    ))?;
+    let store = targets.as_ref().map(|(t, required)| ReleaseStore {
+        targets: t.iter().map(|t| t as &dyn StorageTarget).collect(),
+        required: *required,
+    });
+    let input = ReleaseInput {
+        tag_name: tag.clone(),
+        name: args.name.clone(),
+        notes: args.notes.clone(),
+        yanked: args.yanked,
+        files,
+        prerelease: args.prerelease,
+        draft: args.draft,
+        ..ReleaseInput::default()
+    };
+    let before = s.balance().await;
+    let written = collab
+        .create_release_stored(&s.repo, &input, store.as_ref())
+        .await
+        .map_err(|e| {
+            // new files or notes may store sealed copies and an asset list before the release
+            // itself is signed
+            anyhow::Error::from(e).context(if input.files.is_empty() && input.notes.is_empty() {
+                "nothing was written"
+            } else {
+                "the release was not written; sealed copies and an asset list may have been \
+                 stored, and a re-run seals and stores them again"
+            })
+        })?;
+    let spent = s.spent_since(before).await;
+    let price = dash_usd_price();
+    ctx.emit(
+        json!({
+            "status": "created",
+            "tag": tag,
+            "sealed": true,
+            "documentId": written.document_id,
+            "assets": written.sealed_assets,
+            "assetListKept": written.asset_list_kept,
+            "warnings": written.warnings,
+            "cost": cost_json(spent, price),
+        }),
+        || {
+            for a in &written.sealed_assets {
+                eprintln!(
+                    "  ✓ {} ({}) sha256 {} sealed {}",
+                    crate::fmt::safe(&a.name),
+                    forge_core::storage::human_bytes(a.size_bytes),
+                    short(&a.sha256),
+                    a.sealed_sha256.as_deref().map_or("external", short)
+                );
+            }
+            let assets = if written.asset_list_kept {
+                "asset list unchanged".to_string()
+            } else {
+                format!("{} asset(s)", written.sealed_assets.len())
+            };
+            println!(
+                "✓ published sealed release {tag} of {} ({assets}) · {}",
+                s.repo.display(),
+                cost_line(spent, price)
+            );
+            print_warnings(&written.warnings);
+        },
+    );
+    Ok(())
+}
+
+fn print_warnings(warnings: &[String]) {
+    for w in warnings {
+        println!("warning: {w}");
+    }
+}
+
+/// `dg release unpublish <tag>`: writes a release revision with `delta` −1 (maintainers only),
+/// which the contract accepts only while the tag is currently live. The tag and its history
+/// stay: a release is never deleted, and publishing the tag again starts a fresh one. A
+/// private repository's is a sealed revision with the unpublished flag instead
+/// ([`unpublish_sealed`]).
+async fn unpublish(ctx: &Ctx, repo: &str, tag: &str) -> Result<()> {
+    let s = Session::open_for_write(ctx, repo, "release not unpublished").await?;
+    forge_core::collab::v2::check_tag_name(tag)?;
+    if s.repo.visibility == Visibility::Private {
+        return unpublish_sealed(ctx, repo, tag, &s).await;
+    }
+    let collab = s.collab();
+    // Maintainer-only at consensus: find out, and whether the tag is live, before confirming.
+    collab
+        .require_role(
+            &s.repo,
+            Role::Maintainer,
+            &format!("unpublish release {tag}"),
+        )
+        .await?;
+    // The same sum-based liveness test the write itself will make (not `releases()`'s "newest
+    // per tag" pick, which tie-breaks by `$id` within a block and so can disagree with the sum
+    // -- and so with consensus -- for two revisions landing there together).
+    if !collab.tag_is_live(&s.repo, tag).await? {
+        return Err(release_not_live(repo, tag).into());
+    }
+    ctx.confirm_or_cancel(&format!(
+        "Unpublish release {tag} of {}? (one small document, ~0.0002 DASH)",
+        s.repo.display()
+    ))?;
+    let before = s.balance().await;
+    let doc_id = collab.unpublish_release(&s.repo, tag).await?;
+    let spent = s.spent_since(before).await;
+    let price = dash_usd_price();
+    ctx.emit(
+        json!({
+            "status": "unpublished",
+            "tag": tag,
+            "documentId": doc_id,
+            "cost": cost_json(spent, price),
+        }),
+        || {
+            println!(
+                "✓ unpublished release {tag} of {} · {}",
+                s.repo.display(),
+                cost_line(spent, price)
+            );
+        },
+    );
+    Ok(())
+}
+
+/// `dg release unpublish` on a private repository (§16.3): a sealed revision under the
+/// current key epoch with flag `0x08` that carries every other field forward (the yank
+/// included), with `delta` 0. A later revision without the flag publishes the tag again.
+async fn unpublish_sealed(ctx: &Ctx, repo: &str, tag: &str, s: &Session) -> Result<()> {
+    let collab = s.collab();
+    collab
+        .require_role(
+            &s.repo,
+            Role::Maintainer,
+            &format!("unpublish release {tag}"),
+        )
+        .await?;
+    // Live is the fold's answer here: consensus keeps no ledger for a sealed tag (§16.3).
+    let Some(live) = collab
+        .releases(&s.repo)
+        .await?
+        .current
+        .into_iter()
+        .find(|r| r.tag_name == tag)
+    else {
+        return Err(release_not_live(repo, tag).into());
+    };
+    ctx.confirm_or_cancel(&format!(
+        "Unpublish sealed release {tag} of {}? (one small document, ~0.0002 DASH)",
+        s.repo.display()
+    ))?;
+    let input = ReleaseInput {
+        tag_name: tag.to_string(),
+        yanked: Some(live.yanked),
+        unpublished: true,
+        ..ReleaseInput::default()
+    };
+    let before = s.balance().await;
+    let written = collab
+        .create_release_stored(&s.repo, &input, None)
+        .await
+        .map_err(|e| anyhow::Error::from(e).context("nothing was written"))?;
+    let spent = s.spent_since(before).await;
+    let price = dash_usd_price();
+    ctx.emit(
+        json!({
+            "status": "unpublished",
+            "tag": tag,
+            "sealed": true,
+            "documentId": written.document_id,
+            "warnings": written.warnings,
+            "cost": cost_json(spent, price),
+        }),
+        || {
+            println!(
+                "✓ unpublished sealed release {tag} of {} · {}",
+                s.repo.display(),
+                cost_line(spent, price)
+            );
+            print_warnings(&written.warnings);
+        },
+    );
+    Ok(())
+}
+
+/// `--draft` and `--prerelease` on a public repository: they are sealed-only flags (§16.2).
+fn refuse_sealed_only_flags(args: &ReleaseCreateArgs) -> Result<()> {
+    if args.draft.is_some() || args.prerelease.is_some() {
+        return Err(crate::errors::usage(
+            "--draft and --prerelease are for a private repository's sealed releases; a public \
+             release is a pre-release when its tag has a pre-release suffix (-rc.1)",
+        ));
+    }
+    Ok(())
+}
+
+/// The `--asset` files, by the names an upload records.
+fn read_release_files(paths: &[PathBuf]) -> Result<Vec<ReleaseFile>> {
+    paths
+        .iter()
+        .map(|p| {
+            let name = upload_name(p)
+                .context("an asset path needs a file name")?
+                .to_string();
+            let bytes = std::fs::read(p).with_context(|| format!("reading {}", p.display()))?;
+            Ok(ReleaseFile { name, bytes })
+        })
+        .collect()
+}
+
+/// The refusal `dg release unpublish` gives for a tag that is not currently live: never
+/// published, or already unpublished.
+fn release_not_live(repo: &str, tag: &str) -> UserError {
+    UserError::new(
+        codes::REJECTED,
+        format!("release {tag:?} not unpublished: it is not currently live"),
+    )
+    .cause("a release can be unpublished only while it is live: never published, or already unpublished")
+    .fix(format!("`dg release list {repo}` shows which tags are currently live"))
+    .note("nothing was written")
+}
+
 /// The asset name an upload of `path` records.
 fn upload_name(path: &Path) -> Option<&str> {
     path.file_name().and_then(|n| n.to_str())
@@ -256,6 +523,7 @@ fn superseding_input(
         notes: keep(&args.notes, |r| &r.notes),
         yanked: args.yanked,
         assets,
+        ..ReleaseInput::default()
     }
 }
 
@@ -291,21 +559,88 @@ fn asset_json(a: &ReleaseAsset) -> serde_json::Value {
     json!({ "name": a.name, "sha256": a.sha256, "sizeBytes": a.size_bytes, "uris": a.uris })
 }
 
-/// The releases of `repo` (newest per tag, newest first) and the superseded revisions.
-async fn read_releases(ctx: &Ctx, repo: &str) -> Result<(Vec<Release>, Vec<Release>)> {
+/// The releases of `repo` (newest per tag, newest first) and the superseded revisions. A
+/// private repository's are opened with the identity's keys and folded (§16.3).
+async fn read_releases(ctx: &Ctx, repo: &str) -> Result<ReleaseList> {
     // No key is opened to read them for a public repository (L-12).
     let s = Reader::open(ctx, repo).await?;
     Ok(s.collab().releases(&s.repo).await?)
 }
 
+/// `(draft, pre-release, yanked)`, as `dg release list` prints them after the tag.
+fn labels(r: &Release) -> String {
+    let mut out = String::new();
+    for (on, label) in [
+        (r.is_draft(), "draft"),
+        (r.is_prerelease(), "pre-release"),
+        (r.yanked, "yanked"),
+    ] {
+        if on {
+            out.push_str(" (");
+            out.push_str(label);
+            out.push(')');
+        }
+    }
+    out
+}
+
+/// The lines a private repository's list ends with when it is incomplete (§16.3).
+fn incomplete_notes(list: &ReleaseList) -> Vec<String> {
+    let mut out = Vec::new();
+    if list.stale {
+        out.push(
+            "releases may be out of date: newer revisions are under a key you don't hold yet"
+                .to_string(),
+        );
+    }
+    if list.hidden > 0 {
+        let earlier = if list.earlier_use > 0 {
+            format!(
+                " ({} sealed under a key this repository no longer uses)",
+                list.earlier_use
+            )
+        } else {
+            String::new()
+        };
+        out.push(format!(
+            "{} release revision(s) could not be read{earlier}",
+            list.hidden
+        ));
+    }
+    out
+}
+
+/// Whether `r` keeps its asset list in a sealed kind-4 manifest, which this `dg` does not open
+/// yet (§16.5).
+fn has_sealed_asset_list(r: &Release) -> bool {
+    r.sealed
+        .as_ref()
+        .is_some_and(|s| s.fields.asset_manifest.is_some())
+}
+
+/// A release's asset count as `dg release list` shows it.
+fn asset_count(r: &Release) -> String {
+    if has_sealed_asset_list(r) {
+        "sealed asset list".to_string()
+    } else {
+        format!("{} asset(s)", r.assets.len())
+    }
+}
+
 async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
-    let (current, previous) = read_releases(ctx, repo).await?;
+    let list = read_releases(ctx, repo).await?;
     let row = |r: &Release| {
         json!({
             "tag": r.tag_name,
             "name": r.name,
             "notes": r.notes,
+            // the notes above are a prefix: the rest is in the sealed manifest (§16.2 flag 0x10)
+            "notesContinue": r.sealed.as_ref().is_some_and(|s| s.fields.notes_continue),
             "yanked": r.yanked,
+            "draft": r.is_draft(),
+            "prerelease": r.is_prerelease(),
+            "sealed": r.sealed.is_some(),
+            "stateUnknown": list.unknown_tags.contains(&r.tag_name),
             "publishedBy": r.publisher,
             "createdAt": r.created_at,
             "assets": r.assets.iter().map(asset_json).collect::<Vec<_>>(),
@@ -313,23 +648,32 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
     };
     ctx.emit(
         json!({
-            "count": current.len(),
-            "releases": current.iter().map(row).collect::<Vec<_>>(),
-            "previous": previous.iter().map(row).collect::<Vec<_>>(),
+            "count": list.count(),
+            "releases": list.current.iter().map(row).collect::<Vec<_>>(),
+            "previous": list.previous.iter().map(row).collect::<Vec<_>>(),
+            "hidden": list.hidden,
+            "earlierUse": list.earlier_use,
+            "stale": list.stale,
         }),
         || {
-            if current.is_empty() {
+            if list.current.is_empty() {
                 println!("no releases");
             }
-            for r in &current {
-                let y = if r.yanked { " (yanked)" } else { "" };
+            for r in &list.current {
                 println!(
-                    "{}{y}  {}  {} asset(s)  published by {}",
+                    "{}{}  {}  {}  published by {}",
                     r.tag_name,
+                    labels(r),
                     r.name,
-                    r.assets.len(),
+                    asset_count(r),
                     r.publisher
                 );
+                if list.unknown_tags.contains(&r.tag_name) {
+                    println!("  a newer revision of this release could not be read; its state is unknown");
+                }
+            }
+            for note in incomplete_notes(&list) {
+                println!("note: {note}");
             }
         },
     );
@@ -483,13 +827,16 @@ fn save(dest: &Dest, bytes: &[u8]) -> Result<()> {
 
 /// The assets of release `tag` to download: every one, or the one named `--asset`.
 async fn assets_to_download(
-    ctx: &Ctx,
+    s: &Reader,
     repo: &str,
     tag: &str,
     asset_name: Option<&str>,
-) -> Result<Vec<ReleaseAsset>> {
-    let (current, _) = read_releases(ctx, repo).await?;
-    let release = current
+) -> Result<Vec<Wanted>> {
+    let collab = s.collab();
+    let release = collab
+        .releases(&s.repo)
+        .await?
+        .current
         .into_iter()
         .find(|r| r.tag_name == tag)
         .ok_or_else(|| {
@@ -498,11 +845,25 @@ async fn assets_to_download(
                 format!("`dg release list {repo}` lists its releases"),
             )
         })?;
-    let assets: Vec<ReleaseAsset> = release
-        .assets
-        .into_iter()
-        .filter(|a| asset_name.is_none_or(|n| a.name == n))
-        .collect();
+    // A sealed release lists its assets in its sealed kind-4 manifest (§16.5).
+    let mut assets: Vec<Wanted> = match release.sealed.as_ref() {
+        Some(sealed) if sealed.fields.asset_manifest.is_some() => collab
+            .release_manifest(&s.repo, &sealed.fields)
+            .await?
+            .assets
+            .into_iter()
+            .map(Wanted::from_manifest)
+            .collect(),
+        _ => release
+            .assets
+            .into_iter()
+            .map(|asset| Wanted {
+                asset,
+                sealed: None,
+            })
+            .collect(),
+    };
+    assets.retain(|w| asset_name.is_none_or(|n| w.asset.name == n));
     if assets.is_empty() {
         return Err(crate::errors::not_found(
             match asset_name {
@@ -515,8 +876,66 @@ async fn assets_to_download(
     Ok(assets)
 }
 
+/// One asset to download: its plaintext name, `sha256`, size and URIs, and for a sealed
+/// release's sealed object, its manifest entry.
+struct Wanted {
+    asset: ReleaseAsset,
+    sealed: Option<ManifestAsset>,
+}
+
+impl Wanted {
+    /// A manifest entry: sealed when it names a sealed object, else an external link (§16.5).
+    fn from_manifest(e: ManifestAsset) -> Self {
+        Self {
+            asset: ReleaseAsset {
+                name: e.name.clone(),
+                sha256: e.sha256.clone(),
+                size_bytes: e.size_bytes,
+                uris: e.uris.clone(),
+                uri: None,
+            },
+            sealed: e.sealed_sha256.is_some().then_some(e),
+        }
+    }
+}
+
+/// One asset's verified bytes. A sealed object must hash to its `sealedSha256`, then opens,
+/// truncated to its size and checked against its `sha256` (§16.5); anything else must hash to
+/// its `sha256`.
+async fn fetch_asset(
+    reader: &PackReader,
+    collab: &forge_core::collab::v2::Collab<'_>,
+    repo: &forge_core::scope::RepoRef,
+    w: &Wanted,
+) -> Result<Vec<u8>> {
+    let a = &w.asset;
+    // a sealed entry's `uris` are its asset's (`Wanted::from_manifest`)
+    let (hash, size) = match &w.sealed {
+        Some(e) => (
+            e.sealed_sha256.clone().unwrap_or_default(),
+            e.sealed_size_bytes,
+        ),
+        None => (
+            a.sha256.to_ascii_lowercase(),
+            (a.size_bytes > 0).then_some(a.size_bytes),
+        ),
+    };
+    let bytes = reader
+        .fetch_verified(&a.uris, &hash, size, None)
+        .await
+        .with_context(|| format!("downloading and verifying {}", a.name))?;
+    let Some(e) = &w.sealed else {
+        return Ok(bytes);
+    };
+    collab
+        .open_release_asset(repo, e, &bytes)
+        .await
+        .with_context(|| format!("decrypting and verifying {}", a.name))
+}
+
 /// Download a release's assets (every one, or `--asset`), accepting only bytes that hash to
-/// the recorded sha256.
+/// the recorded sha256. A sealed asset is checked against its `sealedSha256`, decrypted,
+/// truncated to its size, then checked against its plaintext `sha256` (§16.5).
 async fn download(
     ctx: &Ctx,
     repo: &str,
@@ -524,7 +943,10 @@ async fn download(
     asset_name: Option<&str>,
     output: Option<PathBuf>,
 ) -> Result<()> {
-    let assets = assets_to_download(ctx, repo, tag, asset_name).await?;
+    // No key is opened to read them for a public repository (L-12).
+    let s = Reader::open(ctx, repo).await?;
+    let wanted = assets_to_download(&s, repo, tag, asset_name).await?;
+    let assets: Vec<&ReleaseAsset> = wanted.iter().map(|w| &w.asset).collect();
     // The gateways the uploaders recorded reach their nodes: try them before the shared list.
     let reader = PackReader::from_user_config().prefer_gateways(
         forge_core::storage::read::repo_gateways(assets.iter().flat_map(|a| a.uris.iter())),
@@ -532,7 +954,18 @@ async fn download(
     // Before anything is downloaded: every asset has a copy this reader follows (not plain
     // http, this machine, a private network, a bucket with no profile here: say that rather
     // than let an empty candidate list read as "not found"), and every destination is free.
-    for a in &assets {
+    for w in &wanted {
+        let a = &w.asset;
+        if s.repo.visibility == Visibility::Private && w.sealed.is_none() && !ctx.json {
+            // an import's link to its source: nothing sealed, and it contacts that host
+            eprintln!(
+                "note: {} is an external link, not a sealed copy: downloading it contacts {}",
+                crate::fmt::safe(&a.name),
+                a.uris
+                    .first()
+                    .map_or_else(String::new, |u| crate::fmt::safe(u).into_owned())
+            );
+        }
         if a.uris.is_empty() {
             bail!("asset {:?} records no URI to download from", a.name);
         }
@@ -553,8 +986,10 @@ async fn download(
             std::fs::create_dir_all(dir).map_err(|e| save_failed(dir, &e))?;
         }
     }
+    let collab = s.collab();
     let mut saved = Vec::new();
-    for (asset, dest) in assets.iter().zip(&dests) {
+    for (w, dest) in wanted.iter().zip(&dests) {
+        let asset = &w.asset;
         let shown = crate::fmt::safe(&dest.path.display().to_string()).into_owned();
         if !dest.replace && already_saved(&dest.path, &asset.sha256) {
             if !ctx.json {
@@ -572,15 +1007,7 @@ async fn download(
             }));
             continue;
         }
-        let bytes = reader
-            .fetch_verified(
-                &asset.uris,
-                &asset.sha256.to_ascii_lowercase(),
-                (asset.size_bytes > 0).then_some(asset.size_bytes),
-                None,
-            )
-            .await
-            .with_context(|| format!("downloading and verifying {}", asset.name))?;
+        let bytes = fetch_asset(&reader, &collab, &s.repo, w).await?;
         save(dest, &bytes)?;
         if !ctx.json {
             println!(
@@ -790,6 +1217,8 @@ mod tests {
             assets: vec![asset("app.tar.gz", 'a'), asset("CHANGES.txt", 'b')],
             publisher: "M".into(),
             created_at: 1,
+            delta: 1,
+            sealed: None,
         }
     }
 
@@ -816,7 +1245,7 @@ mod tests {
     #[test]
     fn yanking_keeps_the_assets_name_and_notes() {
         let input = superseding_input(Some(&current()), &args(&["--yanked"]), Vec::new());
-        assert!(input.yanked);
+        assert_eq!(input.yanked, Some(true));
         assert_eq!(
             (input.name.as_str(), input.notes.as_str()),
             ("One", "first")
@@ -828,7 +1257,11 @@ mod tests {
     fn given_fields_win_and_a_same_named_upload_replaces_its_asset() {
         let a = args(&["--notes", "second", "--asset", "dist/app.tar.gz"]);
         let input = superseding_input(Some(&current()), &a, vec![asset("app.tar.gz", 'c')]);
-        assert!(!input.yanked, "a republish without --yanked un-yanks");
+        assert_ne!(
+            input.yanked,
+            Some(true),
+            "a republish without --yanked un-yanks"
+        );
         assert_eq!(
             (input.name.as_str(), input.notes.as_str()),
             ("One", "second")
@@ -848,6 +1281,21 @@ mod tests {
     fn a_new_tag_has_only_what_was_given() {
         let input = superseding_input(None, &args(&["--yanked"]), Vec::new());
         assert!(input.assets.is_empty() && input.name.is_empty() && input.notes.is_empty());
+    }
+
+    /// `dg release unpublish` refuses a tag that is not live (never published, or already
+    /// unpublished) before any network round trip, naming the tag and pointing at `release
+    /// list` to check.
+    #[test]
+    fn release_not_live_names_the_tag_and_points_at_release_list() {
+        let e = release_not_live("o/r", "v9.9.9");
+        assert_eq!(e.code, codes::REJECTED);
+        assert!(e.message.contains("v9.9.9"), "{}", e.message);
+        assert!(
+            e.fix.iter().any(|f| f.contains("dg release list o/r")),
+            "{:?}",
+            e.fix
+        );
     }
 
     /// D-517: an asset with no recorded hash is refused with its own error, not E503.

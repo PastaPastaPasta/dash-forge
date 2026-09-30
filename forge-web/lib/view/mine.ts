@@ -22,6 +22,7 @@ import { z } from 'zod'
 
 import type { ForgeIds } from '../deployments'
 import { DOC, asIdentifierString } from '../repo/contract'
+import { contractOf } from '../repo/source'
 import { queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from '../sdk'
 import type { DiscoveredRepo } from './discovery'
 import { mapPooled } from './pool'
@@ -242,7 +243,7 @@ const repoIdDoc = z.object({ repoId: ident })
 
 /** The repos `me` holds a `star` or `watch` of (`byOwner`: index order; neither records a time). */
 async function ownRepoIds(sdk: EvoSDK, forge: ForgeIds, type: 'star' | 'watch', me: string, limit: number): Promise<Page<string>> {
-  const docs = await read(sdk, { dataContractId: forge.collab, documentTypeName: type, where: [['$ownerId', '==', me]], limit })
+  const docs = await read(sdk, { dataContractId: forge.community, documentTypeName: type, where: [['$ownerId', '==', me]], limit })
   return { rows: parseDocs(repoIdDoc, docs).map((d) => d.repoId), more: docs.length >= limit }
 }
 
@@ -309,7 +310,9 @@ export async function latestReleases(sdk: EvoSDK, forge: ForgeIds, repos: readon
       orderBy: [['$createdAt', 'desc']],
       limit: 1,
     })
-    const d = parseDocs(releaseDoc, docs)[0]
+    // A revision carrying `enc` is a sealed one (`private-repos.md` §16.2): never shown by its
+    // keyed `tagName`, even on a repo stamped public.
+    const d = parseDocs(releaseDoc, docs.filter((doc) => doc['enc'] == null))[0]
     return d ? { repo, tagName: d.tagName, name: d.name ?? '', createdAt: d.$createdAt } : null
   })
   const rows = ok.filter((r): r is ReleaseRow => r !== null).sort((a, b) => b.createdAt - a.createdAt)
@@ -372,7 +375,7 @@ export async function scanAssignedAndMentions(
   const { ok: scanned, failed } = await perRepo(repos, 3, async (repo) => {
     const feed = (type: string, limit: number): Promise<PlainDocument[]> =>
       read(sdk, {
-        dataContractId: forge.collab,
+        dataContractId: contractOf(forge, type),
         documentTypeName: type,
         where: [['repoId', '==', repo.id]],
         orderBy: [['$createdAt', 'desc']],
@@ -395,7 +398,7 @@ export async function scanAssignedAndMentions(
   // events can be assign kinds, and only those carrying `refId` are indexed. Newest first, so
   // past 100 addressed events the newest 100 are the ones read.
   const addressed = await read(sdk, {
-    dataContractId: forge.collab,
+    dataContractId: contractOf(forge, DOC.event),
     documentTypeName: DOC.event,
     where: [['refId', '==', me]],
     orderBy: [['refId', 'desc'], ['$createdAt', 'desc']],

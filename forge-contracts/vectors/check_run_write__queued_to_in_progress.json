@@ -1,0 +1,26 @@
+{
+  "name": "queued_to_in_progress",
+  "description": "Queued to in progress: a replace that sets startedAt.",
+  "case": "check_run_write",
+  "rules": "v2",
+  "input": {
+    "stored": {
+      "status": "queued",
+      "startedAt": null,
+      "completedAt": null,
+      "conclusion": null
+    },
+    "report": {
+      "status": "in_progress",
+      "conclusion": null
+    },
+    "now": 1000
+  },
+  "expected": {
+    "action": "replace",
+    "startedAt": 1000,
+    "completedAt": null,
+    "conclusion": null,
+    "externalId": null
+  }
+}

@@ -6,7 +6,7 @@
  * complete, tie-safe paging that active-repo correctness depends on.
  */
 
-export { ensureSdk, evoSdkService, type EvoSdkConfig, type SdkStatus } from './service'
+export { ensureSdk, evoSdkService, preloadContractIds, type EvoSdkConfig, type SdkStatus } from './service'
 export { isStaleConnectionError, isUnreachableError } from './unreachable'
 export { type DownloadProgress } from './wasm-fetch'
 export {
@@ -16,6 +16,7 @@ export {
   contentHash,
   DUPLICATE_UNIQUE_CODE,
   GATE_REFUSED_CODE,
+  RULE_REFUSED_CODE,
   KEY_LIMIT_CODES,
   UnconfirmedWriteError,
   BusyWriteError,
@@ -66,6 +67,11 @@ export {
   base64ToHex,
   bytesToBase64,
   countDocuments,
+  countDocumentsGrouped,
+  sumDocumentsGrouped,
+  uintGroupKey,
+  uintOfGroupKey,
+  type GroupedQuery,
   cursorPadded,
   hexToBase64,
   normalizeDocument,
@@ -74,6 +80,7 @@ export {
   IncompleteReadError,
   queryDocuments,
   queryDocumentsWithProof,
+  RANGE_OPERATORS,
   rankedDocuments,
   shareInFlight,
   tieProbeAllowed,

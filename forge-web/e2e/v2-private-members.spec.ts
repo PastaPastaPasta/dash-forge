@@ -6,7 +6,7 @@
  * every signed-in spec) and only reads: it opens OWNER's newest `private-smoke-*` repo, which
  * `lib/private/private.live.test.ts` creates; skipped when none exists.
  *
- *   E2E_DEVNET=moutai E2E_WRITE=1 pnpm exec playwright test v2-private-members.spec.ts
+ *   E2E_DEVNET=bonsia E2E_WRITE=1 pnpm exec playwright test v2-private-members.spec.ts
  */
 
 import { expect, test } from '@playwright/test'

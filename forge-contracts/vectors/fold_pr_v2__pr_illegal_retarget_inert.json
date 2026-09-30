@@ -4,6 +4,7 @@
   "case": "fold_pr",
   "rules": "v2",
   "input": {
+    "transitions": [],
     "events": [
       {
         "id": "e1",
@@ -24,8 +25,6 @@
         "createdAt": 110
       }
     ],
-    "authorEvents": [],
-    "targetAuthor": "alice",
     "baseTip": "T",
     "ancestry": []
   },
@@ -35,6 +34,7 @@
     "draft": false,
     "baseRef": "refs/heads/dev",
     "labels": [],
-    "assignees": []
+    "assignees": [],
+    "mergeOnBase": null
   }
 }

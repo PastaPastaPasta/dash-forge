@@ -10,7 +10,8 @@
  * How many pages are shown is in the URL (`?pages=3`, L-31), and the scroll position is kept for
  * the tab, so Back from a commit returns to the same place in the list. Each row's date is the
  * author date, labelled so, with the exact time on hover (L-27). The footer says how many commits
- * are shown, out of how many when a history index gives the count (L-35).
+ * are shown, out of how many when a history index gives the count (L-35). Each commit gets its CI
+ * status dot once its page is shown (`./check-dot`: three proved counts per page of commits, plus a run read per head whose re-runs disagree).
  */
 
 import Link from 'next/link'
@@ -18,6 +19,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { GitCommit, History } from 'lucide-react'
 import type { BrowseReader } from '@/lib/browse'
+import type { RepoRef } from '@/lib/repo'
 import type { RepoHome } from '@/lib/view'
 import { selectedTip, selectRef, type LogEntry } from '@/lib/view'
 import { historyWalker } from '@/lib/view/commit-log'
@@ -31,6 +33,7 @@ import { ResolvedTip } from '@/components/repo/resolved-tip'
 import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
 import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
 import { Oid } from '@/components/ui/oid'
+import { CheckDot, useCheckOutcomes } from '@/components/repo/check-dot'
 import { Button } from '@/components/ui/button'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
@@ -74,7 +77,7 @@ export function CommitsContent({
       <BrowseBoundary repo={home.repo} addr={addr}>
         {(reader, retry) => (
           <ResolvedTip reader={reader} retry={retry} repo={home.repo} tip={tipOid} pinned={selected.pinned !== undefined} name={selected.name} addr={addr} refParam={refParam} accepts="commit" label="Walking history">
-            {(tip) => <LogBody key={`${tip.oid}\0${path}`} reader={reader} retry={retry} tipOid={tip.oid} addr={addr} path={path} />}
+            {(tip) => <LogBody key={`${tip.oid}\0${path}`} repo={home.repo} reader={reader} retry={retry} tipOid={tip.oid} addr={addr} path={path} />}
           </ResolvedTip>
         )}
       </BrowseBoundary>
@@ -139,12 +142,14 @@ export function withPage(state: LogState, page: PathVersionsPage): LogState {
 const scrollKey = (): string => `forge:log-scroll:${window.location.pathname}${window.location.search}`
 
 function LogBody({
+  repo,
   reader,
   retry,
   tipOid,
   addr,
   path,
 }: {
+  repo: RepoRef
   reader: BrowseReader
   retry: () => void
   tipOid: string
@@ -164,6 +169,11 @@ function LogBody({
   const total = useAsync(async () => (await history!.load(tipOid)).firstParentCount, [tipOid, history !== null], {
     enabled: path === '' && history?.covers(tipOid) === true,
   })
+  // The status dots: read once a page is shown, only for the commits it adds; a `?pages=` restore
+  // waits for its last page, so its pages share batches of 100 rather than reading one by one.
+  const restoring = state.pages < wanted && state.next !== null && state.error === null
+  const oids = useMemo(() => (restoring ? [] : state.entries.map((e) => e.oid)), [restoring, state.entries])
+  const outcomes = useCheckOutcomes(repo, oids)
 
   /** Walk one more page from where the last one stopped (a capped path walk resumes there too). */
   const loadMore = useCallback(
@@ -247,9 +257,12 @@ function LogBody({
             {/* Touch: the message link stretches over its whole text column (both lines and the
                 row's padding): a 44px+ target that leaves the copy button beside it alone. */}
             <div className="relative min-w-0 flex-1">
-              <Link href={repoHref('/repo/commit', addr, { oid: entry.oid })} className="block truncate text-dense font-medium text-anvil-900 hover:text-forge-800 coarse:after:absolute coarse:after:inset-x-0 coarse:after:-inset-y-2.5 coarse:after:content-[''] dark:text-anvil-50 dark:hover:text-forge-400">
-                {entry.subject || '(no message)'}
-              </Link>
+              <div className="flex min-w-0 items-center gap-1.5">
+                <Link href={repoHref('/repo/commit', addr, { oid: entry.oid })} className="block min-w-0 truncate text-dense font-medium text-anvil-900 hover:text-forge-800 coarse:after:absolute coarse:after:inset-x-0 coarse:after:-inset-y-2.5 coarse:after:content-[''] dark:text-anvil-50 dark:hover:text-forge-400">
+                  {entry.subject || '(no message)'}
+                </Link>
+                <CheckDot counts={outcomes.get(entry.oid)} />
+              </div>
               <div className="mt-0.5 flex items-center gap-2 text-[12px] text-anvil-500 dark:text-anvil-400">
                 <span>{entry.author.name || 'unknown'}</span>
                 <span>

@@ -10,7 +10,7 @@
  * needs `dg` and `git-remote-dash` (E2E_BIN_DIR, else `target/release`). Its repo is
  * `forge-v2-private-<run>`, OWNER's, new each run (reserved in e2e/README.md).
  *
- *   E2E_DEVNET=moutai E2E_WRITE=1 E2E_BIN_DIR=… pnpm exec playwright test v2-private.spec.ts
+ *   E2E_DEVNET=bonsia E2E_WRITE=1 E2E_BIN_DIR=… pnpm exec playwright test v2-private.spec.ts
  */
 
 import { execFileSync } from 'node:child_process'
@@ -18,7 +18,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import { expect, test, type Browser, type Page } from '@playwright/test'
+import { expect, test, type Browser, type Locator, type Page } from '@playwright/test'
 import { E2E_DEVNET, PASSPHRASE, deployment, idFile, idOrEmpty, nodeSdk, stateFile, unlock, waitForRepoResolved } from './helpers'
 
 const RUN = Date.now().toString(36)
@@ -38,8 +38,26 @@ test.skip(!existsSync(join(BIN, 'dg')) || !existsSync(join(BIN, 'git-remote-dash
 const shot = (page: Page, name: string): Promise<Buffer> => page.screenshot({ path: join(SHOTS, `${name}.png`), fullPage: true })
 const url = (path: string, extra = ''): string => `/repo${path}/?owner=${OWNER}&name=${NAME}${extra}`
 
+/**
+ * A page load keeps only the spend-capped signing key (session persistence): this tab's
+ * encryption key opens again with the passphrase, in whichever inline prompt the page shows
+ * (the repo's "Unlock to view this private repo", Settings' encryption panel, New repo's).
+ * Waits for that prompt or for `ready` (what the page shows when no unlock is needed).
+ */
+async function unlockEncryption(page: Page, ready: Locator): Promise<void> {
+  const prompt = page.locator('[data-testid=private-unlock], [data-testid=encryption-unlock], [data-testid=new-private-unlock]').first()
+  await expect(prompt.or(ready).first()).toBeVisible({ timeout: 120_000 })
+  if (!(await prompt.isVisible())) return
+  await prompt.getByLabel('Passphrase').fill(PASSPHRASE)
+  await prompt.getByRole('button', { name: /^unlock$/i }).click()
+  await expect(prompt).toBeHidden({ timeout: 60_000 })
+}
+
 /** A context signed in as `name` whose vault holds the identity's encryption key. */
-async function member(browser: Browser, name: 'OWNER' | 'CONTRIB'): Promise<{ page: Page; go: (p: string) => Promise<void>; close: () => Promise<void> }> {
+async function member(
+  browser: Browser,
+  name: 'OWNER' | 'CONTRIB',
+): Promise<{ page: Page; go: (p: string) => Promise<void>; settings: () => Promise<void>; close: () => Promise<void> }> {
   const saved = stateFile(name)
   const context = await browser.newContext(existsSync(saved) ? { storageState: saved } : {})
   const page = await context.newPage()
@@ -62,7 +80,10 @@ async function member(browser: Browser, name: 'OWNER' | 'CONTRIB'): Promise<{ pa
   await page.goto('/settings/', { waitUntil: 'domcontentloaded' })
   await unlock(page)
   await expect(page.getByTestId('encryption-key-panel')).toBeVisible({ timeout: 60_000 })
-  if (!(await page.getByTestId('encryption-key-stored').isVisible({ timeout: 15_000 }).catch(() => false))) {
+  const stored = page.getByTestId('encryption-key-stored')
+  await unlockEncryption(page, stored.or(page.locator('#enc-file')))
+  await expect(stored.or(page.locator('#enc-file')).first()).toBeVisible({ timeout: 60_000 })
+  if (!(await stored.isVisible())) {
     await page.setInputFiles('#enc-file', idFile(name))
     await expect(page.getByTestId('encryption-key-stored')).toBeVisible({ timeout: 60_000 })
   }
@@ -70,8 +91,18 @@ async function member(browser: Browser, name: 'OWNER' | 'CONTRIB'): Promise<{ pa
     await page.goto(path, { waitUntil: 'domcontentloaded' })
     await unlock(page)
     await waitForRepoResolved(page, 120_000)
+    // Ready without a prompt: decrypted (the chip names the key epoch), or not a member at all.
+    const decrypted = page.getByTestId('private-chip').filter({ hasText: /decrypted with your key/ })
+    await unlockEncryption(page, decrypted.or(page.getByTestId('private-repo').filter({ hasText: /You're not one/ })))
   }
-  return { page, go, close: () => context.close() }
+  // The repo's Settings has no inline unlock after a page load: unlock on the repo home, then
+  // open Settings in-app (a hard navigation would lock the tab's encryption key again).
+  const settings = async (): Promise<void> => {
+    await go(url(''))
+    await page.getByRole('navigation', { name: 'Repository' }).getByRole('link', { name: /^settings/i }).click()
+    await expect(page.locator('#member-id')).toBeVisible({ timeout: 90_000 })
+  }
+  return { page, go, settings, close: () => context.close() }
 }
 
 /** Run `dg`/git with the CLI's moutai env as `role`. */
@@ -115,6 +146,7 @@ test('1. OWNER creates a private repo in the browser: four facts, key and sealed
   await unlock(page)
   await page.locator('#repo-name').fill(NAME)
   await page.getByTestId('visibility-private').click()
+  await unlockEncryption(page, page.getByTestId('private-facts'))
   await expect(page.getByTestId('private-facts')).toContainText('no recovery: if every member loses their encryption key, the contents are gone')
   await expect(page.getByTestId('private-no-key')).toHaveCount(0)
   await shot(page, '01-new-private')
@@ -172,8 +204,10 @@ test('3. OWNER browses the decrypted tree and file; opens an issue and comments 
 })
 
 test('4. OWNER adds CONTRIB as a writer; CONTRIB reads the code and the issue', async ({ browser }) => {
+  // RC1 consent (R-06): the member accepts before the owner can add them.
+  cli('CONTRIB', 'dg', ['collab', 'accept', `${OWNER}/${NAME}`, '--yes'])
   const owner = await member(browser, 'OWNER')
-  await owner.go(url('/settings'))
+  await owner.settings()
   await owner.page.locator('#member-id').fill(CONTRIB)
   await expect(owner.page.getByRole('button', { name: /^add$/i })).toBeEnabled({ timeout: 60_000 })
   await owner.page.getByRole('button', { name: /^add$/i }).click()
@@ -194,8 +228,8 @@ test('4. OWNER adds CONTRIB as a writer; CONTRIB reads the code and the issue', 
 })
 
 test('5. OWNER removes CONTRIB: the warning, then delete → rotation to epoch 1', async ({ browser }) => {
-  const { page, go, close } = await member(browser, 'OWNER')
-  await go(url('/settings'))
+  const { page, settings, close } = await member(browser, 'OWNER')
+  await settings()
   const row = page.getByTestId('private-members').locator('div', { hasText: /writer/ }).filter({ has: page.getByRole('button', { name: /remove/i }) }).last()
   await row.getByRole('button', { name: /remove/i }).click()
   await expect(page.getByRole('dialog')).toContainText(/rotates the repo key/)
@@ -203,7 +237,7 @@ test('5. OWNER removes CONTRIB: the warning, then delete → rotation to epoch 1
   await expect(page.getByRole('dialog').getByText(/confirmed on platform/i)).toBeVisible({ timeout: 480_000 })
   await shot(page, '10-removed')
   await page.keyboard.press('Escape')
-  await go(url('/settings'))
+  await settings()
   await expect(page.getByTestId('key-epoch')).toContainText('key epoch 1', { timeout: 120_000 })
   await shot(page, '11-rotated')
   await close()

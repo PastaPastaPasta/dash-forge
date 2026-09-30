@@ -13,6 +13,8 @@
 //! * [`pack`]: sealed artifacts: a 36-byte header and 16 KiB AES-GCM STREAM segments with a
 //!   hand-built nonce, whole, streaming and ranged (§3);
 //! * [`wrap`]: the 47-byte `repoKey` wrap plaintext (§5.1);
+//! * [`release`]: sealed releases: the keyed `tagName`, the TLV, the open, the kind-4 asset
+//!   manifest and the reader's fold over a tag's revisions (§16);
 //! * [`epoch`]: anchors, the current epoch, the chain walk, alerts and the repair check, as one
 //!   pure function over flattened rows (§5.3–§5.6).
 //!
@@ -29,6 +31,7 @@ pub mod doc;
 pub mod epoch;
 pub mod keys;
 pub mod pack;
+pub mod release;
 pub mod tlv;
 pub mod wrap;
 
@@ -71,6 +74,9 @@ pub enum DocKind {
     /// `event` (forge-collab): its `value` (a label or milestone name, a dismiss reason, an
     /// assignee, a retarget base) is sealed in a private repo.
     Event,
+    /// `release` (forge-core): its own TLV, keyed `tagName` and fold ([`release`], §16). The
+    /// generic [`doc::seal`] and [`doc::open_content`] refuse it.
+    Release,
 }
 
 impl DocKind {
@@ -86,6 +92,7 @@ impl DocKind {
             Self::ProtectedRefUpdate => "protectedRefUpdate",
             Self::Config => "config",
             Self::Event => "event",
+            Self::Release => "release",
         }
     }
 
@@ -94,7 +101,7 @@ impl DocKind {
     pub fn max_enc(self) -> usize {
         match self {
             Self::Issue | Self::Patch | Self::Comment | Self::Review | Self::Event => 5120,
-            Self::RefUpdate | Self::ProtectedRefUpdate | Self::Config => 1536,
+            Self::RefUpdate | Self::ProtectedRefUpdate | Self::Config | Self::Release => 1536,
         }
     }
 }

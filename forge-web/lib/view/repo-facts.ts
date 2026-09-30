@@ -9,13 +9,25 @@
  *
  * A private repo's keys carry its decryption session (`repoId#session`) and its facts name
  * decrypted paths: they go when the session ends, as the browse caches do.
+ *
+ * The card's release count and repo size are proved sums the rail reads itself
+ * ({@link readAboutTotals}).
  */
 
+import type { EvoSDK } from '@dashevo/evo-sdk'
+
 import { MODE_GITLINK, MODE_TREE, ObjectTooLargeError } from '../browse'
+import type { Network } from '../constants'
+import { repoKey, type RepoRef } from '../repo/contract'
+import { readGitPackBytes, type GitPackBytes } from '../repo/packs'
 import { onPrivateSessionEnded } from '../repo/private-session'
+import { onRepoContentWritten } from '../repo/push'
+import { readReleaseCount, readReleases, releaseCountOf } from '../repo/releases'
+import { invalidateSessionCache, sessionCached } from './session-cache'
 import { historyWalker } from './commit-log'
 import { readBlob, type ObjectReader } from './tree-nav'
 import { decodeTextBlob, type TreeEntry } from './git-objects'
+import { formatBytes } from './format'
 import { detectLicense, isLicenseFile, LICENSE_MAX_BYTES, type RepoLicense } from './license'
 import { languageStats, type LanguageStats } from './languages'
 import { mapPooled, trimOldest } from './pool'
@@ -217,6 +229,73 @@ function whenFactsWanted(repoKey: string, signal?: AbortSignal): Promise<void> {
     w.waiters.add(wake)
     signal?.addEventListener('abort', stop, { once: true })
   })
+}
+
+/** The About card's proved totals; null: that read failed (the row says so, the other still shows). */
+export interface AboutTotals {
+  /** Tags with a live release ({@link readReleaseCount}). */
+  readonly releases: number | null
+  /** Stored git pack bytes ({@link readGitPackBytes}). */
+  readonly gitPacks: GitPackBytes | null
+}
+
+/** How long a total is kept for the session (as the releases list is). */
+const TOTALS_TTL_MS = 60_000
+/** The size's cache prefix: keyed repo first, so a write drops it on every network's key. */
+const GIT_PACK_BYTES = 'gitPackBytes:'
+
+/**
+ * The About card's release count and repo size: two proved sums, sent together once the card is
+ * in view (S-1), whatever the repo's size. Unlike the facts above they are Platform reads of the
+ * repo, not of a tip, so the rail reads them itself. Neither fits the chrome's composite, which
+ * already carries the protocol's 10 sub-queries and takes documents and counts only.
+ *
+ * Each is kept for the session on its own ({@link sessionCached}) and its failure caught after the
+ * cache, which drops a rejected read: a failed total reads again next time, never kept as null.
+ * The count is keyed under the releases list's prefix, so a publish or an unpublish (which drop
+ * that prefix) drops it too; the size goes when this tab writes the repo's content (a push).
+ *
+ * A private repo's count is never the proved sum: a sealed release carries `delta` 0
+ * (`private-repos.md` §16.3), so the sum says 0 whatever it holds. A member's is counted from the
+ * decrypted list instead (the releases list's own cache entry), and a reader without keys gets none.
+ */
+export async function readAboutTotals(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<AboutTotals> {
+  const [releases, gitPacks] = await Promise.all([
+    readReleaseTotal(sdk, repo, network),
+    sessionCached(`${GIT_PACK_BYTES}${repoKey(repo)}:${network}`, TOTALS_TTL_MS, () => readGitPackBytes(sdk, repo)).catch(() => null),
+  ])
+  return { releases, gitPacks }
+}
+
+/** {@link readAboutTotals}'s release count: `null` when it cannot be read. */
+async function readReleaseTotal(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<number | null> {
+  const listKey = `releases:${network}:${repoKey(repo)}`
+  if (repo.visibility !== 'private') {
+    return sessionCached(`${listKey}:count`, TOTALS_TTL_MS, () => readReleaseCount(sdk, repo)).catch(() => null)
+  }
+  if (repo.session === undefined) return null
+  return sessionCached(listKey, TOTALS_TTL_MS, () => readReleases(sdk, repo)).then(releaseCountOf, () => null)
+}
+
+// This tab stored a pack or moved a ref in the repo: its size is read again.
+onRepoContentWritten((repo) => invalidateSessionCache(`${GIT_PACK_BYTES}${repo.repoId}`))
+
+/**
+ * The About card's repo size, GitHub-style: the git packs (kind 0) on Platform and external, which
+ * is what GitHub's size measures too (the objects, not a checkout). The proved sum counts every
+ * manifest, so a pack a later push superseded, or a second member's copy, counts again; the tooltip
+ * says "stored" and why. Null for a repo with no packs (GitHub shows no size for an empty one).
+ */
+export function repoSizeOf(packs: GitPackBytes): { readonly text: string; readonly tooltip: string } | null {
+  const total = packs.platform + packs.external
+  if (total === 0) return null
+  const where: string[] = []
+  if (packs.platform > 0) where.push(`${formatBytes(packs.platform)} on Platform`)
+  if (packs.external > 0) where.push(`${formatBytes(packs.external)} external`)
+  return {
+    text: formatBytes(total),
+    tooltip: `Git packs stored for this repo: ${where.join(', ')}. Every pack pushed counts, including ones a later push superseded.`,
+  }
 }
 
 /** Test hook. */

@@ -63,7 +63,7 @@ pub struct Cli {
     #[arg(long, global = true, value_enum)]
     pub network: Option<NetworkArg>,
 
-    /// Devnet name (e.g. `moutai`); implies `--network devnet`.
+    /// Devnet name (e.g. `bonsia`); implies `--network devnet`.
     #[arg(long, global = true, value_name = "NAME")]
     pub devnet_name: Option<String>,
 
@@ -336,7 +336,7 @@ pub enum RepoCommand {
     },
     /// List an owner's repositories.
     List {
-        /// The owner identity id (base58); defaults to the signing identity.
+        /// The owner (identity id or DPNS name); defaults to the signing identity.
         #[arg(long)]
         owner: Option<String>,
     },
@@ -454,6 +454,10 @@ pub struct RepoPolicySetArgs {
     /// Allowed merge methods, comma-separated: `ff`, `merge`, `squash`, `rebase`, or `any`.
     #[arg(long = "merge-methods")]
     pub merge_methods: Option<String>,
+    /// Drop the required check names and their pinned sources (otherwise the current policy's
+    /// are kept).
+    #[arg(long = "clear-required-checks")]
+    pub clear_required_checks: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -782,6 +786,16 @@ pub enum PrCommand {
         /// The PR number.
         number: u64,
     },
+    /// Lock a pull request's conversation to members (unlock with `--off`). Members only.
+    Lock {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The PR number.
+        number: u64,
+        /// Unlock.
+        #[arg(long)]
+        off: bool,
+    },
     /// Resolve a conversation (the thread of `comment_id`).
     Resolve {
         /// The repository (`owner/name`).
@@ -1058,6 +1072,15 @@ pub enum ReleaseCommand {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    /// Unpublish a live release (maintainers only): writes a revision with `delta` −1, so the
+    /// tag no longer shows as a release. The tag itself, and its previous revisions, are kept
+    /// (a release is never deleted); publishing the tag again starts a fresh one.
+    Unpublish {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The release tag.
+        tag: String,
+    },
 }
 
 /// `dg release create` arguments.
@@ -1074,15 +1097,25 @@ pub struct ReleaseCreateArgs {
     /// Release notes.
     #[arg(long, default_value = "")]
     pub notes: String,
-    /// Mark the release yanked.
-    #[arg(long)]
-    pub yanked: bool,
+    /// Mark the release yanked (`--yanked=false` un-yanks it). A public release is yanked only
+    /// when a revision says so; a private one keeps its last revision's by default.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true", value_name = "BOOL")]
+    pub yanked: Option<bool>,
     /// A file to attach (repeatable): uploaded to your storage, sha256 recorded.
     #[arg(long = "asset", value_name = "FILE")]
     pub assets: Vec<PathBuf>,
     /// Storage profiles for the assets (default: this repository's `dash.storage`).
     #[arg(long)]
     pub storage: Option<String>,
+    /// Mark the release a draft (`--draft=false` clears it). Private repositories only: a
+    /// sealed label every member sees, not access control. Default: as the tag's last revision.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true", value_name = "BOOL")]
+    pub draft: Option<bool>,
+    /// Mark the release a pre-release (`--prerelease=false` clears it). Private repositories
+    /// only; a tag with a pre-release suffix (`-rc.1`) is one anyway. Default: as the tag's
+    /// last revision.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true", value_name = "BOOL")]
+    pub prerelease: Option<bool>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1127,21 +1160,35 @@ pub enum LabelCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum CollabCommand {
-    /// Add a member (the repo owner creates a writer/maintainer document).
+    /// Add a member (the repo owner creates a writer/maintainer document). The member must
+    /// have run `dg collab accept <repo>` first.
     Add {
         /// The repository (`owner/name`).
         repo: String,
-        /// The collaborator identity id (base58).
+        /// The collaborator (identity id or DPNS name, e.g. `alice` or `alice.dash`).
         member: String,
         /// The role to grant.
         #[arg(long, value_enum, default_value = "writer")]
         role: RoleArg,
+        /// Wait up to this many seconds for the member to accept (`dg collab accept`) before
+        /// adding them. Without it, an add the member has not accepted yet is refused.
+        #[arg(long, value_name = "SECONDS")]
+        wait: Option<u64>,
+    },
+    /// Accept membership of a repository (write your consent), so its owner can add you.
+    Accept {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// Withdraw an earlier acceptance instead (a membership already granted stands until
+        /// the owner removes it).
+        #[arg(long)]
+        withdraw: bool,
     },
     /// Remove a member (the owner deletes their document; their next push is refused).
     Remove {
         /// The repository (`owner/name`).
         repo: String,
-        /// The collaborator identity id (base58).
+        /// The collaborator (identity id or DPNS name, e.g. `alice` or `alice.dash`).
         member: String,
         /// The role to revoke.
         #[arg(long, value_enum, default_value = "writer")]
@@ -1168,11 +1215,26 @@ pub enum CostCommand {
         #[arg(long)]
         path: Option<PathBuf>,
     },
-    /// Per-operation cost reference (running spend is not tracked yet).
+    /// An identity's estimated Forge spend: total, per repository, per document type.
     Audit {
-        /// The repository (`owner/name`), for a live storage tally.
+        /// The identity to audit (identity id or DPNS name); defaults to the signing
+        /// identity. Named `--owner`, not `--identity`, to avoid colliding with the global
+        /// `--identity <FILE>` (a key file, not the id being audited) and to mirror `repo
+        /// list --owner`'s same "defaults to the signing identity" meaning. Not combined
+        /// with the positional REPO argument (that mode audits a repository's storage, not
+        /// an identity).
+        #[arg(long, conflicts_with = "repo")]
+        owner: Option<String>,
+        /// Only count documents created at or after this: a duration (`24h`, `7d`, `2w`,
+        /// `1y`) or an absolute date (`2026-01-01`). Not combined with REPO.
+        #[arg(long, conflicts_with = "repo")]
+        since: Option<String>,
+        /// A repository (`owner/name`), for its live pack-storage tally instead of the
+        /// identity-wide spend estimate.
         repo: Option<String>,
     },
+    /// The per-operation price reference: what each kind of write costs, as an upper bound.
+    Prices,
 }
 
 #[derive(Debug, Subcommand)]
@@ -1564,6 +1626,49 @@ mod tests {
     }
 
     #[test]
+    fn cost_audit_owner_does_not_collide_with_the_global_identity_file_flag() {
+        // Regression test: `CostCommand::Audit` once named its "identity id to audit" field
+        // `identity`, the same clap arg id as the global `--identity <FILE>` key-file
+        // override. Both `Cli::try_parse_from` orders used to panic in `FromArgMatches`
+        // ("Mismatch between definition and access") instead of failing gracefully or
+        // parsing correctly, since `debug_assert()` does not catch a value-type mismatch on
+        // a shared id. Renaming the subcommand field to `--owner` fixed it; this pins both
+        // orders parsing cleanly, with each flag going to the right place.
+        let cli = Cli::try_parse_from([
+            "dg",
+            "cost",
+            "audit",
+            "--owner",
+            "9cBMULwtQUMtxhBkgaTKb4tJtoczd8TEQ8gmiroDWf4F",
+        ])
+        .expect("dg cost audit --owner <id> must parse");
+        assert!(matches!(
+            cli.command,
+            Command::Cost(CostCommand::Audit { owner: Some(o), .. })
+                if o == "9cBMULwtQUMtxhBkgaTKb4tJtoczd8TEQ8gmiroDWf4F"
+        ));
+
+        let cli = Cli::try_parse_from([
+            "dg",
+            "--identity",
+            "/tmp/id.json",
+            "cost",
+            "audit",
+            "--since",
+            "7d",
+        ])
+        .expect("dg --identity <file> cost audit --since <dur> must parse");
+        assert_eq!(
+            cli.identity.as_deref().unwrap().to_str().unwrap(),
+            "/tmp/id.json"
+        );
+        assert!(matches!(
+            cli.command,
+            Command::Cost(CostCommand::Audit { since: Some(s), .. }) if s == "7d"
+        ));
+    }
+
+    #[test]
     fn parses_devnet_flags() {
         let cli = Cli::parse_from([
             "dg",
@@ -1661,7 +1766,9 @@ mod tests {
             "maintain",
         ]);
         match cli.command {
-            Command::Collab(CollabCommand::Add { repo, member, role }) => {
+            Command::Collab(CollabCommand::Add {
+                repo, member, role, ..
+            }) => {
                 assert_eq!(repo, "o/r");
                 assert_eq!(member, "member123");
                 assert!(matches!(role, RoleArg::Maintainer));

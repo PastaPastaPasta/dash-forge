@@ -42,7 +42,7 @@ export function WatchButton({ repo }: { repo: RepoRef }): JSX.Element | null {
         variant={watching ? 'subtle' : 'outline'}
         size="sm"
         onClick={() => {
-          if (!watching && !guard.check(cost, 'collab', 'watch this repo')) return
+          if (!watching && !guard.check(cost, 'community', 'watch this repo')) return
           void watch.toggle()
         }}
         loading={watch.busy || (watch.on === null && watch.error === null)}

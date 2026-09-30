@@ -3,7 +3,7 @@
  * contracts its network never had. Platform answers a read that names a missing contract with
  * an error, not an empty result, and a retry can never succeed.
  *
- * wasm-sdk 4.2.0-beta.5 gives this no code of its own. Drive's refusal reaches JS as a
+ * wasm-sdk 4.2.0-beta.7 gives this no code of its own. Drive's refusal reaches JS as a
  * `WasmSdkError` of kind `DapiClientError` with `code` -1, and its gRPC status
  * (InvalidArgument) is only in the message text. So the message is matched, in two forms:
  *   - Drive's `QuerySyntaxError::DataContractNotFound` ("contract not found error: contract not

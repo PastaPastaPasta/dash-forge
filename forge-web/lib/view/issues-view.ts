@@ -1,11 +1,11 @@
 /**
- * Issue/PR thread composition (view glue) — read comments and interleave them with the folded
- * event log into a single chronological timeline for the detail view.
+ * Issue/PR thread composition (view glue) — read comments and interleave them with the event
+ * and transition logs into a single chronological timeline for the detail view.
  *
- * State itself (open/closed, labels) is the deterministic fold done by the core `readIssue` /
- * `readPull` (`foldIssueStateV2` / `foldPrStateV2` over `event` + `authorEvent`); this module
- * only adds the human thread (comments + rendered events + reviews) and the PR's counted
- * approvals (`countApprovals`, `forge-v2.md` §6).
+ * State (open, closed, merged, draft) is the target's `transition` sum; labels and assignees
+ * the fold of its member events (`issueStateV2` / `prStateV2`, via `issueViewOf` / `readPull`).
+ * This module adds the human thread (comments + rendered events, state changes and reviews) and
+ * the PR's counted approvals (`countApprovals`, `forge-v2.md` §6).
  */
 
 import { originOf, type Origin } from '../repo/provenance'
@@ -13,8 +13,8 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import {
   DOC,
-  asIdentifierString,
   baseRefReaders,
+  asIdentifierString,
   byteFieldToHex,
   issueViewOf,
   revisionOf,
@@ -32,6 +32,7 @@ import {
   toLog,
   updatedAtOf,
   readTargetLog,
+  readTransitions,
   repoSource,
   str,
   wellFormed,
@@ -41,7 +42,11 @@ import {
   type RepoRef,
   type ReviewView,
   type TargetLog,
+  type TransitionView,
 } from '../repo'
+import { sortTransitions, transitionOf } from '../repo/transitions'
+import { readProvedVerdicts, type ProvedVerdicts } from '../repo/verdicts'
+import { isLocked, stateCode } from '../rules/transition'
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import { compositeOf, docsAt, queryComposite, siblingOf } from '../sdk/composite'
 import { prefetchDpnsNames } from './dpns'
@@ -74,8 +79,29 @@ export interface CommentView {
   readonly revision?: number
   /** An imported comment's provenance as read, for re-sealing an edit. */
   readonly importedRaw?: Readonly<Record<string, unknown>> | null
+  /** Copied from another forge (`imported` provenance present). */
+  readonly imported: boolean
   /** See `IssueView.origin`. */
   readonly origin?: Origin | null
+  /** It carries a membership proof (`asMember`, RC1): consensus re-checks it on every edit. */
+  readonly proved?: boolean
+}
+
+/**
+ * What an edit of `comment` must remove so consensus takes the replace (RC1): `replyTo` when the
+ * comment it replies to is gone (a replace re-validates the reference; only when every comment of
+ * the thread was readable, so a hidden parent is never taken for a deleted one), and the
+ * membership proof when the editor is no longer a member (an imported comment keeps it: its
+ * provenance needs it, so such an edit is refused).
+ */
+export function commentEditDrops(
+  comment: CommentView,
+  thread: readonly CommentView[],
+  opts: { readonly isMember: boolean; readonly allReadable: boolean },
+): { dropReplyTo?: true; dropProof?: true } {
+  const parentGone = comment.replyTo !== null && opts.allReadable && !thread.some((c) => c.id === comment.replyTo)
+  const proofStale = comment.proved === true && !opts.isMember && !comment.imported
+  return { ...(parentGone ? { dropReplyTo: true } : {}), ...(proofStale ? { dropProof: true } : {}) }
 }
 
 /** A comment document as a {@link CommentView}. */
@@ -102,7 +128,9 @@ export function toCommentView(d: PlainDocument): CommentView {
     updatedAt: updatedAtOf(d),
     revision: revisionOf(d),
     importedRaw: typeof d['imported'] === 'object' && d['imported'] !== null ? (d['imported'] as Readonly<Record<string, unknown>>) : null,
+    imported: typeof d['imported'] === 'object' && d['imported'] !== null,
     origin: originOf(d),
+    proved: asIdentifierString(d['asMember']) !== '',
   }
 }
 
@@ -152,6 +180,12 @@ export type TimelineItem =
       readonly orphaned?: 'deleted' | 'hidden'
     }
   | {
+      /** A state change (`transition`): closed, reopened, merged, draft, ready. */
+      readonly kind: 'transition'
+      readonly at: number
+      readonly transition: TransitionView
+    }
+  | {
       readonly kind: 'event'
       readonly at: number
       readonly event: Event
@@ -183,8 +217,55 @@ export interface IssueThread {
   readonly members: readonly Membership[]
   /** Private repos: the target's event values not readable here, and those not encrypted. */
   readonly eventValues: EventValueCounts
-  /** Milestone, pinned and locked (the member events, folded: kinds 17-22). */
+  /**
+   * Milestone and pinned (the member events, folded: kinds 17-20), and locked: the lock bit of the
+   * issue's transitions (RC1 R-15; sum ≥ 16), which consensus enforces on every comment.
+   */
   readonly meta: ThreadMeta
+}
+
+/** A write the issue page made, for {@link issueWriteShows}. */
+export type IssueWrite =
+  | { readonly kind: 'comment'; readonly id: string }
+  | { readonly kind: 'state'; readonly open: boolean }
+  | { readonly kind: 'label'; readonly label: string; readonly remove: boolean }
+  | { readonly kind: 'assign'; readonly who: string; readonly remove: boolean }
+  | { readonly kind: 'flag'; readonly flag: 'pin' | 'lock'; readonly on: boolean }
+  | { readonly kind: 'milestone'; readonly title: string | null }
+  | { readonly kind: 'defineLabel'; readonly name: string; readonly apply: boolean }
+  | { readonly kind: 'editIssue'; readonly title: string; readonly body: string }
+  | { readonly kind: 'editComment'; readonly id: string; readonly body: string }
+
+/**
+ * Whether a read of the thread already shows `w`: the page re-reads after a write until it does,
+ * so a node a block behind cannot hide the write it just made (L-77, as on the PR page).
+ */
+export function issueWriteShows(t: IssueThread, w: IssueWrite): boolean {
+  const comment = (id: string): CommentView | undefined => {
+    for (const it of t.timeline) if (it.kind === 'comment' && it.comment.id === id) return it.comment
+    return undefined
+  }
+  const { state } = t.issue
+  switch (w.kind) {
+    case 'comment':
+      return comment(w.id) !== undefined
+    case 'state':
+      return state.open === w.open
+    case 'label':
+      return state.labels.includes(w.label) !== w.remove
+    case 'assign':
+      return state.assignees.includes(w.who) !== w.remove
+    case 'flag':
+      return (w.flag === 'pin' ? t.meta.pinned : t.meta.locked) === w.on
+    case 'milestone':
+      return t.meta.milestone === w.title
+    case 'defineLabel':
+      return t.labels.some((l) => l.name === w.name) && (!w.apply || state.labels.includes(w.name))
+    case 'editIssue':
+      return t.issue.title === w.title && t.issue.body === w.body
+    case 'editComment':
+      return comment(w.id)?.body === w.body
+  }
 }
 
 /** How a private repo's event values were read ({@link TargetLog}). */
@@ -217,8 +298,8 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
     sdk,
     compositeOf(page, 1, [
       { documentType: DOC.comment, bind: bound, limit: 100 },
-      { documentType: DOC.event, bind: bound, limit: 100 },
-      { documentType: DOC.authorEvent, bind: bound, limit: 100 },
+      { documentType: DOC.event, dataContractId: repo.forge.community, bind: bound, limit: 100 },
+      { documentType: DOC.transition, bind: bound, limit: 100 },
       siblingOf(labelQuery),
       siblingOf(memberQuery(DOC.maintainer)),
       siblingOf(memberQuery(DOC.writer)),
@@ -238,14 +319,18 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
     docs(i).length < 100
       ? docs(i)
       : queryAllDocuments(sdk, source.targetQuery(type, { where: [['targetId', '==', id]], orderBy: [['targetId', 'asc'], ['$createdAt', 'asc']] }))
-  const [commentDocs, eventDocs, authorEventDocs] = await Promise.all([
+  // `transition` is indexed by `targetId` alone (`perTarget`): its continuation cannot order by time.
+  const completeTransitions = async (i: number): Promise<TransitionView[]> =>
+    docs(i).length < 100 ? docs(i).map(transitionOf) : readTransitions(sdk, repo, id)
+  const [commentDocs, eventDocs, transitionRows] = await Promise.all([
     complete(0, DOC.comment),
     complete(1, DOC.event),
-    complete(2, DOC.authorEvent),
+    completeTransitions(2),
   ])
   const byTime = (a: PlainDocument, b: PlainDocument) => num(a, '$createdAt') - num(b, '$createdAt')
   // A private repo's member events are read through `readableEvents` (values opened, counted).
-  const log = await toLog(repo, [...eventDocs].sort(byTime), [...authorEventDocs].sort(byTime))
+  const log = await toLog(repo, [...eventDocs].sort(byTime), [])
+  const transitions = sortTransitions(transitionRows)
 
   // Members: complete when both sibling pages were short; recorded for the permission checks.
   const memberships = membershipsFromDocs(docs(4).length < 100 ? docs(4) : null, docs(5).length < 100 ? docs(5) : null)
@@ -257,6 +342,7 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
     str(doc, '$ownerId'),
     ...commentDocs.map((c) => str(c, '$ownerId')),
     ...[...log.events, ...log.authorEvents].flatMap((e) => [e.actor, ...(e.kind === 'assign' || e.kind === 'unassign' ? [e.value ?? ''] : []), e.refId ?? '']),
+    ...transitions.map((t) => t.actor),
     ...(memberships ?? []).map((m) => m.identity),
   ]
   await prefetchDpnsNames(sdk, shownIds.filter((id) => id !== ''), network)
@@ -266,13 +352,14 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
   const comments = (await admitAll(gate, 'comment', [...commentDocs].sort(byTime), tally)).docs.map(toCommentView)
   const labels = docs(3).length < 100 ? newestLabels(docs(3)) : await readLabels(sdk, repo)
   return {
-    issue: issueViewOf(doc, log),
-    timeline: mergeTimeline(comments, log.events, log.authorEvents, [], tally.total > 0),
+    issue: issueViewOf(doc, log, stateCode(transitions)),
+    timeline: mergeTimeline(comments, log.events, log.authorEvents, [], tally.total > 0, transitions),
     hidden: tally.value,
     eventValues: eventValues(log),
     labels,
     members: memberships ?? (await readMembershipsCached(sdk, repo, network)),
-    meta: foldThreadMetaV2(log.events),
+    // The lock is a transition since RC1 (kinds 3/4); the retired lock events 21/22 are refused.
+    meta: { ...foldThreadMetaV2(log.events), locked: isLocked(transitions) },
   }
 }
 
@@ -308,6 +395,12 @@ export interface PullThread {
    * could not be read.
    */
   readonly approvals: PullApprovals | null
+  /**
+   * The member approvals and change requests on the head as consensus proves them (RC1 R-16, one
+   * grouped count): shown in the merge box beside the fold, never a merge gate (`approvals` is).
+   * Null when it could not be read or the PR records no head.
+   */
+  readonly verdicts: ProvedVerdicts | null
   /** The Reviewers card (requested reviewers and everyone who reviewed); empty when members are unknown. */
   readonly reviewers: readonly ReviewerCardRow[]
   /** The repo's current members (the reviewer and assignee pickers). */
@@ -318,6 +411,11 @@ export interface PullThread {
   readonly hidden: HiddenCounts
   /** Private repos: the PR's event values not readable here, and those not encrypted. */
   readonly eventValues: EventValueCounts
+  /**
+   * The conversation is locked (RC1 R-15: the PR's transition sum is 16 or more): consensus
+   * refuses a comment or review from anyone who does not prove membership.
+   */
+  readonly locked: boolean
 }
 
 /**
@@ -325,9 +423,8 @@ export interface PullThread {
  * (`platform-parity-spec.md` §3.3, review-parity §3.10): the patch by `(repoId, number)`; its
  * comments, events and author events (bound `$id → targetId`) and reviews (`$id → patchId`);
  * the repo's labels, members and branch policies (siblings). A type past 100 rows continues
- * with a complete paged read of that type only. The base ref's history and the config timeline
- * come from the repo chrome store the page's own chrome read filled (no request; `baseRefReaders`),
- * or, `fresh` (a re-read after this page's own write), from a delta read of it. Null if not found.
+ * with a complete paged read of that type only. The base ref's history is read by `readPull`.
+ * Null if not found.
  *
  * A PR's timeline includes its `review` documents: an approve or a request for changes is a
  * paid-for record the contributor must see.
@@ -337,6 +434,7 @@ export async function loadPullThread(
   repo: RepoRef,
   number: number,
   network: Network = DEFAULT_NETWORK,
+  /** A re-read after this page's own write: the base ref's history is read afresh (a delta), not the chrome's. */
   { fresh = false }: { readonly fresh?: boolean } = {},
 ): Promise<PullThread | null> {
   const source = repoSource(repo)
@@ -348,13 +446,14 @@ export async function loadPullThread(
     sdk,
     compositeOf(page, 1, [
       { documentType: DOC.comment, bind: toTarget, limit: 100 },
-      { documentType: DOC.event, bind: toTarget, limit: 100 },
-      { documentType: DOC.authorEvent, bind: toTarget, limit: 100 },
+      { documentType: DOC.event, dataContractId: repo.forge.community, bind: toTarget, limit: 100 },
+      { documentType: DOC.authorEvent, dataContractId: repo.forge.community, bind: toTarget, limit: 100 },
       { documentType: DOC.review, bind: { sourceProperty: '$id', field: 'patchId' }, limit: 100 },
       siblingOf(source.repoQuery(DOC.label, { orderBy: [['name', 'asc'], ['$createdAt', 'asc']] })),
       siblingOf(memberQuery(DOC.maintainer)),
       siblingOf(memberQuery(DOC.writer)),
       siblingOf(source.repoQuery(DOC.policy, { orderBy: [['$createdAt', 'asc']] })),
+      { documentType: DOC.transition, bind: toTarget, limit: 100 },
     ]),
   )
   const raw = res.page[0]
@@ -370,12 +469,14 @@ export async function loadPullThread(
       ? docs(i)
       : queryAllDocuments(sdk, source.targetQuery(type, { where: [[field, '==', id]], orderBy: [[field, 'asc'], ['$createdAt', 'asc']] }))
   const byTime = (a: PlainDocument, b: PlainDocument) => num(a, '$createdAt') - num(b, '$createdAt')
-  const [commentDocs, eventDocs, authorEventDocs, reviewDocs] = await Promise.all([
+  const [commentDocs, eventDocs, authorEventDocs, reviewDocs, transitionRows] = await Promise.all([
     complete(0, DOC.comment),
     complete(1, DOC.event),
     complete(2, DOC.authorEvent),
     complete(3, DOC.review, 'patchId'),
+    docs(8).length < 100 ? Promise.resolve(docs(8).map(transitionOf)) : readTransitions(sdk, repo, id),
   ])
+  const transitions = sortTransitions(transitionRows)
   // A private repo's member events are read through `readableEvents` (values opened, counted).
   const log = await toLog(repo, [...eventDocs].sort(byTime), [...authorEventDocs].sort(byTime))
 
@@ -386,14 +487,19 @@ export async function loadPullThread(
     str(doc, '$ownerId'),
     ...commentDocs.map((c) => str(c, '$ownerId')),
     ...reviewDocs.map((r) => str(r, '$ownerId')),
+    ...transitions.map((t) => t.actor),
     ...[...log.events, ...log.authorEvents].flatMap((e) => [e.actor, ...(e.kind === 'assign' || e.kind === 'unassign' ? [e.value ?? ''] : []), e.refId ?? '']),
     ...(memberships ?? []).map((m) => m.identity),
   ]
+  // The base ref's history and config from the repo chrome store (no request), afresh after this page's own write.
   const base = baseRefReaders(sdk, repo, fresh ? { maxAgeMs: 0 } : {})
   const [pull] = await Promise.all([
-    readPull(sdk, repo, doc, log, base.configHistory, base.refUpdates),
+    readPull(sdk, repo, doc, log, base.configHistory, base.refUpdates, { transitions }),
     prefetchDpnsNames(sdk, shownIds.filter((x) => x !== ''), network).catch(() => undefined),
   ])
+  // The proved verdict count needs the folded head: one grouped count, alongside what follows.
+  // Display only, so a failed read shows nothing rather than failing the page.
+  const verdictsRead = readProvedVerdicts(sdk, repo, id, pull.headOid).catch(() => null)
 
   const tally = new HiddenTally()
   const comments = (await admitAll(gate, 'comment', [...commentDocs].sort(byTime), tally)).docs.map(toCommentView)
@@ -404,19 +510,21 @@ export async function loadPullThread(
   const policyDocs = docs(7).length < 100 ? docs(7) : null
   const policy: Promise<Policy | null> = policyDocs === null ? readPolicy(sdk, repo) : Promise.resolve(policyFromDocs(policyDocs))
   const members = memberships ?? (await readMembershipsCached(sdk, repo, network).catch(() => null))
-  const approvals = await readApprovals(members, policy, reviews, review, pull.author)
+  const [approvals, verdicts] = await Promise.all([readApprovals(members, policy, reviews, review, pull.author), verdictsRead])
   return {
     pull,
-    timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews, tally.total > 0),
+    timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews, tally.total > 0, transitions),
     comments,
     reviews,
     review,
     approvals: approvals?.approvals ?? null,
+    verdicts,
     reviewers: approvals?.reviewers ?? [],
     members: members ?? [],
     labels,
     hidden: tally.value,
     eventValues: eventValues(log),
+    locked: isLocked(transitions),
   }
 }
 
@@ -462,11 +570,12 @@ export function pullSinceYourReview(thread: Pick<PullThread, 'reviews' | 'review
 
 /** Read comments + events for a target and merge them into one chronological timeline. */
 export async function readThread(sdk: EvoSDK, repo: RepoRef, targetId: string): Promise<TimelineItem[]> {
-  const [comments, log] = await Promise.all([
+  const [comments, log, transitions] = await Promise.all([
     readComments(sdk, repo, targetId),
     readTargetLog(sdk, repo, targetId),
+    readTransitions(sdk, repo, targetId),
   ])
-  return mergeTimeline(comments, log.events, log.authorEvents, [])
+  return mergeTimeline(comments, log.events, log.authorEvents, [], false, transitions)
 }
 
 /**
@@ -480,6 +589,7 @@ export function mergeTimeline(
   reviews: readonly ReviewView[],
   /** Some comments could not be opened by this reader (private repo): a missing parent may be one. */
   someHidden = false,
+  transitions: readonly TransitionView[] = [],
 ): TimelineItem[] {
   const eventItem = (e: Event, byAuthor: boolean) => ({
     kind: 'event' as const,
@@ -502,6 +612,7 @@ export function mergeTimeline(
       .map((c) => ({ kind: 'comment' as const, at: c.createdAt, id: c.id, comment: c, ...(c.replyTo !== null && !byId.has(c.replyTo) ? { orphaned: someHidden ? ('hidden' as const) : ('deleted' as const) } : {}) })),
     ...events.map((e) => eventItem(e, false)),
     ...authorEvents.map((e) => eventItem(e, true)),
+    ...transitions.map((t) => ({ kind: 'transition' as const, at: t.createdAt, id: t.id, transition: t })),
     ...reviewItems,
   ]
   items.sort((a, b) => compareKey({ id: a.id, createdAt: a.at }, { id: b.id, createdAt: b.at }))

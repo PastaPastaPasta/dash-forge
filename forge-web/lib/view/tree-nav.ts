@@ -19,7 +19,7 @@ import { commitSubject, MalformedObjectError, parseCommit, parseTag, parseTree, 
 export interface ObjectReader {
   readObject(oidHex: string, options?: ReadObjectOptions): Promise<GitObject>
   locate?(oidHex: string): LocatorEntry | null
-  /** An object's type from its entry header, or null for a delta entry ({@link BrowseReader.objectType}). */
+  /** An object's type from entry headers alone, or null when not indexed ({@link BrowseReader.objectType}). */
   objectType?(oidHex: string): Promise<GitObject['type'] | null>
 
   /**
@@ -85,7 +85,7 @@ async function readForPeel(reader: ObjectReader, oid: string): Promise<GitObject
     return await reader.readObject(oid, { maxBytes: PEEL_READ_MAX })
   } catch (e) {
     if (!(e instanceof ObjectTooLargeError)) throw e
-    // Too large to be a tag: its type, from its entry header (a delta's is its base's: read it).
+    // Too large to be a tag: its type, from entry headers (a delta's is its chain's base's).
     const type = (await reader.objectType?.(oid)) ?? (await reader.readObject(oid)).type
     return { type, bytes: null }
   }

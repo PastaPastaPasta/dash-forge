@@ -12,7 +12,8 @@ import { useState } from 'react'
 import { Fingerprint, HardDrive, ShieldPlus, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { RepoRef } from '@/lib/repo'
-import { grantMember, invalidateMembers, readMembershipsCached, revokeMember } from '@/lib/repo'
+import { ConsentMissingError, grantMember, invalidateMembers, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
+import { Invitations } from '@/components/repo/invite-banner'
 import type { Membership, Role as MemberRole } from '@/lib/rules/v2'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { previewCreate, previewDelete } from '@/lib/sdk'
@@ -31,6 +32,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { RepoStoragePolicy } from '@/components/storage/repo-storage-policy'
 import { PrivateMembers } from '@/components/repo/private-members'
+import { UnlockMore } from '@/components/auth/unlock-more'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { BranchSettings, DangerZone, GeneralSettings, Section, SettingsNav } from '@/components/repo/repo-settings-sections'
 
@@ -44,17 +46,22 @@ export function SettingsContent({ home, reload }: { home: RepoHome; reload: () =
  * creating their document and removes one by deleting it; consensus refuses anyone else.
  */
 function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; reload: () => void }): JSX.Element {
-  const { sdk, ready, network } = useSdk([repo.forge.core, repo.forge.collab])
+  const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const { identity, signer } = useAuth()
   const guard = useWriteGuard()
   const isOwner = identity === repo.ownerId
   const viewerRole = useViewerRole(repo).role
+  // The encryption key is in this browser, but this tab resumed with the signing key only: the
+  // page's one unlock sits under Collaborators (Storage points to it).
+  const locked = home.private?.access === 'locked'
   const members = useAsync<Membership[]>(
     () => readMembershipsCached(sdk!, repo, network),
     [ready, repo.repoId, network],
     { enabled: ready && sdk !== null },
   )
   const memberRows = members.data ?? []
+  // The identity the owner tried to add before they accepted: the invite is pending on them.
+  const [awaiting, setAwaiting] = useState<string | null>(null)
   const [memberId, setMemberId] = useState('')
   const [role, setRole] = useState<MemberRole>('writer')
   const [action, setAction] = useState<{ kind: 'grant' | 'revoke'; member: string; role: MemberRole } | null>(null)
@@ -70,7 +77,16 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   const runAction = async (intent: string): Promise<void> => {
     if (!sdk || !signer || !action) throw new Error('sign in to continue')
     if (action.kind === 'grant') {
-      await grantMember(sdk, signer, repo, action.member, action.role, intent)
+      try {
+        await grantMember(sdk, signer, repo, action.member, action.role, intent)
+      } catch (e) {
+        if (!(e instanceof ConsentMissingError)) throw e
+        // Nothing was signed: show the invitation as pending on them instead of an error.
+        setAwaiting(action.member)
+        setAction(null)
+        return
+      }
+      setAwaiting(null)
       setMemberId('')
     } else {
       await revokeMember(sdk, signer, repo, action.member, action.role)
@@ -135,7 +151,11 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
             )}
           </div>
         )}
-        {isOwner && repo.visibility === 'private' ? (
+        {locked ? (
+          <div id="members-unlock" className="mt-4 scroll-mt-20">
+            <UnlockMore title={isOwner ? 'Unlock this tab to add or remove members' : "Unlock this tab to see the repo's key epoch"} testId="members-unlock" />
+          </div>
+        ) : isOwner && repo.visibility === 'private' ? (
           <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
             Adding or removing a member of a private repo hands out or rotates its key: add your encryption key to this browser
             (Settings → Keys → Enable private repos) to manage members.
@@ -176,9 +196,19 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
               </Button>
             </div>
             {idError ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">{idError}</p> : null}
+            <Invitations
+              repo={repo}
+              members={members.data === null ? null : memberRows.map((m) => m.identity)}
+              awaiting={awaiting}
+              disabled={guard.disabledReason !== null}
+              onPick={(id, r) => {
+                if (guard.check(previewCreate(r))) setAction({ kind: 'grant', member: id, role: r })
+              }}
+            />
             <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
               Writers can push, open refs and act on issues and PRs; maintainers can also update
-              protected branches, config and releases.
+              protected branches, config and releases. Nobody becomes a member without accepting
+              your invitation first.
             </p>
           </div>
         ) : null}
@@ -209,7 +239,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
         <h3 className="mb-2 mt-5 flex items-center gap-2 text-dense font-medium">
           <HardDrive className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden /> Your browser pushes
         </h3>
-        <RepoStoragePolicy repoId={repo.repoId} />
+        <RepoStoragePolicy repoId={repo.repoId} unlockAbove={locked} />
       </Section>
 
       <DangerZone home={home} maintainer={viewerRole === 'maintainer'} onSaved={reload} />
@@ -227,6 +257,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           </DetailRow>
           <DetailRow label="forge-collab">
             <Oid value={repo.forge.collab} chars={12} label="forge-collab contract id" />
+          </DetailRow>
+          <DetailRow label="forge-community">
+            <Oid value={repo.forge.community} chars={12} label="forge-community contract id" />
           </DetailRow>
           <DetailRow label="Network">
             <NetworkBadge always />

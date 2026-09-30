@@ -286,6 +286,7 @@ fn report_json(ctx: &Ctx, sections: &[Section], applied: &[Value], counts: &Coun
         "forgeV2": ctx.target.v2.as_ref().map(|ids| json!({
             "core": ids.core,
             "collab": ids.collab,
+            "community": ids.community,
             "group": ids.group,
         })),
         "failed": counts.failed,
@@ -728,8 +729,8 @@ async fn check_network(ctx: &Ctx) -> Vec<Check> {
 /// The DPNS system contract: its id is fixed by rs-dpp and identical on every network.
 const DPNS_CONTRACT_ID: &str = "GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec";
 
-/// The forge-v2 contracts recorded for this network: both must fetch with a verified proof
-/// and both must be enrolled, as whole contracts, in the recorded contract group. A network
+/// The forge-v2 contracts recorded for this network: each must fetch with a verified proof
+/// and be enrolled, as whole contracts, in the recorded contract group. A network
 /// with no forge-v2 deployment is reported by the contracts row, so this one only notes it.
 async fn check_forge_v2(client: &PlatformClient, target: &NetworkTarget) -> Check {
     let Some(ids) = &target.v2 else {
@@ -739,7 +740,10 @@ async fn check_forge_v2(client: &PlatformClient, target: &NetworkTarget) -> Chec
         );
     };
     let mut problems = Vec::new();
-    for (label, id) in [("forge-core", &ids.core), ("forge-collab", &ids.collab)] {
+    // forge-community is forge-collab on a deployment that predates the split: checked once
+    let mut contracts = ids.all().to_vec();
+    contracts.dedup_by(|a, b| a.1 == b.1);
+    for (label, id) in contracts {
         if let Err(e) = client.fetch_contract(id).await {
             problems.push(format!("{label} {id} not provable: {e}"));
             continue;
@@ -762,8 +766,8 @@ async fn check_forge_v2(client: &PlatformClient, target: &NetworkTarget) -> Chec
         Check::ok(
             "forge-v2",
             format!(
-                "core={} collab={} both proof-verified and enrolled in group {}",
-                ids.core, ids.collab, ids.group
+                "core={} collab={} community={} proof-verified and enrolled in group {}",
+                ids.core, ids.collab, ids.community, ids.group
             ),
         )
     } else {
@@ -807,9 +811,10 @@ fn check_contracts(target: &NetworkTarget, fresh_install: bool) -> Check {
         Ok(ids) => Check::ok(
             "forge-v2",
             format!(
-                "core={} collab={} group={} (source: forge-contracts/deployments/{}.json)",
+                "core={} collab={} community={} group={} (source: forge-contracts/deployments/{}.json)",
                 ids.core,
                 ids.collab,
+                ids.community,
                 ids.group,
                 target.network.key()
             ),
@@ -1449,7 +1454,8 @@ mod tests {
             c.fix
                 .as_deref()
                 .unwrap()
-                .contains("dg auth new --network devnet --devnet-name moutai"),
+                // the first devnet by name with forge-v2 (bonsia, since the RC1 registration)
+                .contains("dg auth new --network devnet --devnet-name bonsia"),
             "{:?}",
             c.fix
         );

@@ -5,24 +5,31 @@ import {
   E2E_DEVNET,
   EMPTY,
   expectLanded,
+  loadSeedPulls,
   MAINTAINER,
   repoUrl as url,
   shot,
   waitForRepoResolved,
 } from './helpers'
+import { quorumGuard } from './quorum-sync'
+
+// Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
+test.beforeEach(quorumGuard)
 
 /**
  * forge-v2 read paths against a real devnet (protocol 14): the fixture
  * `forge-contracts/scripts/seed-v2-fixture.mjs` seeds on moutai (e2e/helpers.ts `DEMO`):
  *
- *   E2E_DEVNET=moutai pnpm exec playwright test v2-reads.spec.ts
+ *   E2E_DEVNET=bonsia pnpm exec playwright test v2-reads.spec.ts
  *
  * The fixture: repo `forge-v2-demo` owned by OWNER (maintainers OWNER + MAINTAINER, writer
  * COLLAB), main = 3 files + docs/, a feature branch, tag v0.1.0; issue #1 open + labelled by a
- * writer, #2 closed by its author (`authorEvent`), #3 closed + labelled by a maintainer; PR #1
- * open with a maintainer approval, PR #2 merged; issue #4 open; PR #3 the review-parity
- * fixture (below); a branch `policy`; one star. `forge-v2-empty` (MAINTAINER) has
- * nothing pushed. The axe checks over these pages live in a11y.spec.ts.
+ * writer, #2 closed by its author (a `transition` written as the author), #3 closed + labelled by a
+ * maintainer, #4 open; then, in the same dense shared sequence (forge-v2.md §6.2), three PRs
+ * (numbers from the seed summary, see `loadSeedPulls`): the approved PR open with a maintainer
+ * approval, the merged PR, and the review-parity fixture (below); a branch `policy`; one star.
+ * `forge-v2-empty` (MAINTAINER) has nothing pushed. The axe checks over these pages live in
+ * a11y.spec.ts.
  */
 
 const { owner: OWNER, name: NAME } = DEMO
@@ -64,7 +71,8 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     const { errors } = collectPageErrors(page)
     await page.goto(url(), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
-    await expectLanded(page, page.getByRole('heading', { name: NAME }))
+    // The repo title (the README's own "forge-v2-demo" heading may already be there too).
+    await expectLanded(page, page.getByTestId('repo-title').filter({ hasText: NAME }))
     // The published locator serves the root tree and README from Platform chunks.
     for (const entry of ['README.md', 'src', 'lib', 'docs']) {
       await expect(page.getByRole('link', { name: entry, exact: true }).first()).toBeVisible()
@@ -88,7 +96,7 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     await shot(page, 'v2-03-blob')
   })
 
-  test('v2-4. issues list folds event + authorEvent', async ({ page }) => {
+  test('v2-4. issues list reads state from transitions and labels from events', async ({ page }) => {
     await page.goto(url('issues'), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
     await expectLanded(page, page.getByRole('list', { name: 'Issues', exact: true }).getByText('README should explain the event split'))
@@ -115,7 +123,8 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
   })
 
   test('v2-6. PR detail: counted approval, diff, merged PR', async ({ page }) => {
-    await page.goto(url('pull', '&number=1'), { waitUntil: 'domcontentloaded' })
+    const pulls = loadSeedPulls()
+    await page.goto(url('pull', `&number=${pulls.approved}`), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
     await expectLanded(page, page.getByRole('heading', { name: /Greet by name/ }))
     const approvals = page.getByRole('region', { name: 'Approvals' })
@@ -128,7 +137,7 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     await expect(page.getByText(/hello, \{name\}/).first()).toBeVisible({ timeout: 45_000 })
     await shot(page, 'v2-06-pull')
 
-    await page.goto(url('pull', '&number=2'), { waitUntil: 'domcontentloaded' })
+    await page.goto(url('pull', `&number=${pulls.merged}`), { waitUntil: 'domcontentloaded' })
     await expectLanded(page, page.getByRole('heading', { name: /Document the fold rules/ }))
     await expect(page.getByText('Merged', { exact: true }).first()).toBeVisible()
   })

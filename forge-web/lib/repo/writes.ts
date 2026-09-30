@@ -9,46 +9,61 @@
  * `docs/contracts/forge-v2.md`: a repo is three documents in forge-core (`repo`,
  * the owner's `maintainer`, the first `config`), created resumably; members are `maintainer` /
  * `writer` documents the owner creates and deletes; issues, comments, reviews, `event`
- * (members) and `authorEvent` (the author's close/reopen) live in forge-collab, and consensus
+ * (members), `authorEvent` (the author's review kinds) and `transition` (state changes) live in
+ * forge-collab, and consensus
  * enforces every gate. `star` and `follow` are `indexOnly`: a delete carries the document's
- * values (the SDK's index-only delete). Issue numbers follow the `allocateNumber` rule (§6).
+ * values (the SDK's index-only delete). Issue and PR numbers are dense (§6): the contract's `dense`
+ * rule requires the next number to be the repo's issue and PR totals plus one.
+ *
+ * RC1 (`forge-contracts/schema/build.py`): every stamped type carries `vis` ({@link withVis});
+ * a member proves membership with `asMember` (= the signer) where a rule needs it (approve and
+ * request-changes, posts to a locked thread); a member is added only with their `consent`.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { hexToBytes } from '@noble/hashes/utils.js'
 
-import { DEFAULT_NETWORK, type Network } from '../constants'
+import type { Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import { decodeIdentifier } from '../auth/base58'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
-import { isLegalRefName, type EventKind } from '../rules'
-import { allocateNumber, isAuthorKind, numberCeiling, normalizeRepoName as normalizeV2RepoName, type Role, type Visibility } from '../rules/v2'
+import { isGitRefName, type EventKind } from '../rules'
+import { denseNumber, isAuthorKind, namesDenseRule, normalizeRepoName as normalizeV2RepoName, type Role, type StateAction, type Visibility } from '../rules/v2'
 import { fetchIdentityKeys, usableEncryptionKey, type EncryptionOps } from '../auth/encryption-key'
 import {
   ConsensusRefusal,
   DUPLICATE_UNIQUE_CODE,
-  GATE_REFUSED_CODE,
+  RULE_REFUSED_CODE,
   UnconfirmedWriteError,
   contentHash,
   countDocuments,
   createDocumentIdempotent,
   deleteDocumentIdempotent,
   previewCredits,
+  queryAllDocuments,
   queryDocumentsWithProof,
+  sumDocumentsGrouped,
   type DeleteResult,
-  type DocumentQuery,
   type WriteAuth,
   type WriteResult,
 } from '../sdk'
-import { DOC, num, str, type RepoRef } from './contract'
-import { invalidateMembers, readNumberTrust } from './members'
+import { DOC, withVis, type RepoRef } from './contract'
+import { isRc1BranchName, isRc1OidHex, isRc1TagName } from '../rules'
+import { invalidateMembers, readMemberships } from './members'
 import { refNameHash, repoContentWritten } from './push'
-import { mapPooled } from '../view/pool'
 import type { PrivateDocType } from '../private'
 import { isSealedKind, privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter } from './private-writes'
 import { invalidateRepoFeed } from './issues'
+import { createSealedRelease, sealedReleaseEnv, type SealedReleaseOptions, type SealedReleaseWritten } from './sealed-release'
 import { noteTargetCreated } from './social'
 import { repoSource } from './source'
+import { writeLock, writeTransition, type StateTarget } from './transitions'
+import { LAG_RETRY_MS, retryAfterLag } from './lag-retry'
+import { sleep } from '../sdk/facade'
+import { retryWhileMissing } from '../view/retry'
+
+/** The release rule that reads the tag's live total (RC1 O-04). */
+const ONE_LIVE_RULE: ReadonlySet<string> = new Set(['oneLive'])
 
 // ---------------------------------------------------------------------------
 // event kind name → integer (parity with forge-core `event_kind_to_u64`)
@@ -83,9 +98,63 @@ export const EVENT_KIND_CODE: Readonly<Record<EventKind, number>> = {
   unlock: 22,
 }
 
-/** Review verdicts (`review.verdict`). */
+/** Review verdicts (`review.verdict`) a member writes: approve and request changes carry `asMember`. */
 export const VERDICT_INT = { approve: 1, requestChanges: 2, comment: 3 } as const
 export type VerdictInput = keyof typeof VERDICT_INT
+
+/**
+ * A non-member's approve and request-changes (RC1 R-16): recorded, never counted (consensus
+ * refuses 1/2 without a membership proof, and 4/5 with one).
+ */
+export const OUTSIDER_VERDICT_INT = { approve: 4, requestChanges: 5 } as const
+
+/** Where a comment or review is posted from: whether the signer is a member, and whether the thread is locked. */
+export interface PostContext {
+  /** The signer holds a maintainer or writer document of the repo (as last read). */
+  readonly isMember: boolean
+  /** The target's conversation is locked (its transition sum is 16 or more). */
+  readonly locked?: boolean
+}
+
+/** Why a non-member cannot comment on or review a locked thread. */
+export const LOCKED_REASON = 'This conversation is locked: only maintainers and writers can comment.'
+
+/** A non-member's post to a locked thread: consensus refuses it (`lockGate`). */
+export function lockedOut(post: PostContext | undefined): boolean {
+  return post?.locked === true && !post.isMember
+}
+
+/**
+ * The `verdict` and membership proof of a review (RC1 R-15, R-16): a member's approve or request
+ * changes proves membership (1/2 + `asMember`), a non-member's is 4/5; a comment verdict proves
+ * it only on a locked thread (where consensus refuses a non-member's review).
+ */
+export function reviewVerdictFields(verdict: VerdictInput, signer: string, post: PostContext): Record<string, unknown> {
+  if (verdict === 'comment') return { verdict: VERDICT_INT.comment, ...commentProof(signer, post) }
+  if (!post.isMember) return { verdict: OUTSIDER_VERDICT_INT[verdict] }
+  return { verdict: VERDICT_INT[verdict], asMember: decodeIdentifier(signer) }
+}
+
+/**
+ * The membership proof a comment carries (RC1 R-15): a member's post to a locked thread proves it,
+ * or consensus refuses it (`lockGate`). A post that needs none carries none: the proof is an
+ * extra read at consensus, and a stale membership read would get it refused.
+ */
+export function commentProof(signer: string, post: PostContext | undefined): Record<string, unknown> {
+  return post?.isMember === true && post.locked === true ? { asMember: decodeIdentifier(signer) } : {}
+}
+
+/**
+ * `post` with its membership settled for a review of `verdict`: a non-member's approve or request
+ * changes is recorded as 4/5, which never counts, and a non-member's post to a locked thread is
+ * refused, so a "not a member" read (still loading, failed, or cached from before they were
+ * added) is read again, uncached, before it decides either.
+ */
+export async function settledPost(sdk: EvoSDK, repo: RepoRef, signer: string, post: PostContext, verdict: VerdictInput): Promise<PostContext> {
+  if (post.isMember || (verdict === 'comment' && post.locked !== true)) return post
+  const members = await readMemberships(sdk, repo)
+  return members.some((m) => m.identity === signer) ? { ...post, isMember: true } : post
+}
 
 /** An issue or PR a write refers to: its document id and number. */
 export interface WriteTarget {
@@ -101,7 +170,7 @@ function isDuplicate(e: unknown): boolean {
   return e instanceof ConsensusRefusal && e.code === DUPLICATE_UNIQUE_CODE
 }
 
-/** The contract (forge-core or forge-collab) a write of `documentType` targets. */
+/** The contract (forge-core, forge-collab or forge-community) a write of `documentType` targets. */
 export function contractFor(repo: RepoRef, documentType: string): string {
   return repoSource(repo).repoQuery(documentType).dataContractId
 }
@@ -112,7 +181,7 @@ function scoped(repo: RepoRef, data: Record<string, unknown>): Record<string, un
 }
 
 /** The document types whose writes can change an open issue or PR count. */
-const COUNTED_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.event, DOC.authorEvent])
+const COUNTED_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.transition])
 
 /**
  * Drop the caches a write of `documentType` to `repo` invalidates, so the next read shows it.
@@ -138,6 +207,8 @@ const CONTENT_FIELDS: Readonly<Record<string, readonly string[]>> = {
   protectedRefUpdate: ['refName'],
   config: ['defaultBranch', 'protectedPatterns'],
   event: ['value'],
+  // `noPlain`'s fields, and `yanked` / `imported`, which a sealed release never carries (§16.2)
+  release: ['name', 'notes', 'assets', 'assetManifest', 'yanked', 'imported'],
 }
 
 /**
@@ -195,10 +266,15 @@ export async function writeRepoDoc(
   intent?: string,
   /** A private repo's writer for this action (resolved here when not given; see `privateWriter`). */
   writer?: PrivateWriter,
+  /**
+   * What the action says, for a document the caller sealed itself (a sealed release): the retry
+   * cache compares this instead of `data`, which is encrypted afresh on every attempt.
+   */
+  sealedContentKey?: string,
 ): Promise<WriteResult> {
   // What the action says, before sealing: the retry cache compares this (sealed fields are
   // encrypted afresh on every attempt, so the sealed data never matches itself).
-  let contentKey: string | undefined
+  let contentKey: string | undefined = sealedContentKey
   const sealedType = repo.visibility === 'private' ? sealedTypeOf(documentType, data) : null
   if (sealedType !== null) {
     contentKey = contentHash(documentType, scoped(repo, data))
@@ -211,7 +287,8 @@ export async function writeRepoDoc(
     return await createDocumentIdempotent(sdk, auth, {
       contractId: contractFor(repo, documentType),
       documentType,
-      data: scoped(repo, data),
+      // The stamp goes on after sealing: it is plaintext on chain, never part of `enc`.
+      data: scoped(repo, withVis(repo.visibility, documentType, data)),
       ...(intent ? { intent } : {}),
       ...(contentKey ? { contentKey } : {}),
     })
@@ -245,102 +322,23 @@ function firstId(documents: readonly Record<string, unknown>[]): string | null {
 }
 
 // ---------------------------------------------------------------------------
-// Issue numbering (forge-v2.md §6 `allocate_number`)
+// Issue numbering (forge-v2.md §6: dense, one sequence for issues and PRs)
 // ---------------------------------------------------------------------------
 
-/** The `number` field of a result row, or null. */
-function numberOf(doc: Record<string, unknown>): number | null {
-  const n = num(doc, 'number')
-  return n > 0 ? n : null
-}
-
-/** The number of a `number desc, limit 1` read's row, or 0 when it found none. */
-async function firstNumber(sdk: EvoSDK, query: DocumentQuery): Promise<number> {
-  const { documents } = await queryDocumentsWithProof(sdk, query)
-  return documents[0] ? numberOf(documents[0]) ?? 0 : 0
-}
-
-/** Concurrent `author`-index reads one allocation makes (one per trusted identity). */
-const TRUSTED_READS = 8
-
 /**
- * The largest number among `repo`'s issues (or PRs) written by one of `trusted`, or 0: one
- * `number desc, limit 1` read of the `author` index (`$ownerId, repoId, number`) each, at most
- * {@link TRUSTED_READS} at a time.
+ * The number the next issue or PR of a repo must carry: the proved `issue` and `patch` totals
+ * (`perRepo`) plus one (the contract's `dense` rule counts the new document). Null when no u32
+ * number is left.
  */
-async function trustedMaxNumber(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'patch', trusted: readonly string[]): Promise<number> {
+export async function nextNumber(sdk: EvoSDK, repo: RepoRef): Promise<number | null> {
   const source = repoSource(repo)
-  const highest = await mapPooled(trusted, TRUSTED_READS, (author) =>
-    firstNumber(sdk, {
-      ...source.targetQuery(DOC[type]),
-      where: [['$ownerId', '==', author], ['repoId', '==', repo.repoId]],
-      orderBy: [['number', 'desc']],
-      limit: 1,
-    }),
-  )
-  return Math.max(0, ...highest)
+  const [issues, patches] = await Promise.all([countDocuments(sdk, source.repoQuery(DOC.issue)), countDocuments(sdk, source.repoQuery(DOC.patch))])
+  return denseNumber(issues, patches)
 }
 
-/**
- * The number the allocation rule gives the next issue (or PR) of a repo:
- * `n` = the provable count, `base` = the larger of the largest taken number at or below the
- * ceiling and the owner's and maintainers' largest number, then — only when `base` is at or
- * above the ceiling — the contiguous run of taken numbers above it, paged to its end. Null
- * when nothing is left to allocate.
- */
-export async function nextNumber(
-  sdk: EvoSDK,
-  repo: RepoRef,
-  type: 'issue' | 'patch',
-  network: Network = DEFAULT_NETWORK,
-  trusted?: readonly string[],
-): Promise<number | null> {
-  const source = repoSource(repo)
-  const trust = trusted ?? (await readNumberTrust(sdk, repo, network))
-  const [count, trustedMax] = await Promise.all([countDocuments(sdk, source.repoQuery(DOC[type])), trustedMaxNumber(sdk, repo, type, trust)])
-  const ceiling = numberCeiling(count)
-  const belowCeiling = await firstNumber(
-    sdk,
-    source.repoQuery(DOC[type], {
-      where: [['number', '<=', ceiling]],
-      orderBy: [['number', 'desc']],
-      limit: 1,
-    }),
-  )
-  const base = Math.max(belowCeiling, trustedMax)
-  const taken: number[] = base > 0 ? [base] : []
-  // Below the ceiling `base + 1` is free by the choice of `base`. At or above it (the ceiling
-  // itself, or a trusted number past it) squatters may sit right above: walk the run to its
-  // first gap.
-  if (base >= ceiling) {
-    let expect = base + 1
-    let startAfter: string | undefined
-    for (;;) {
-      const page = await queryDocumentsWithProof(
-        sdk,
-        source.repoQuery(DOC[type], {
-          where: [['number', '>', base]],
-          orderBy: [['number', 'asc']],
-          limit: 100,
-          ...(startAfter ? { startAfter } : {}),
-        }),
-      )
-      let gap = false
-      for (const d of page.documents) {
-        const n = numberOf(d)
-        if (n !== expect) {
-          gap = true
-          break
-        }
-        taken.push(n)
-        expect += 1
-      }
-      const last = page.documents[page.documents.length - 1]
-      if (gap || page.documents.length < 100 || last === undefined) break
-      startAfter = str(last, '$id')
-    }
-  }
-  return allocateNumber(count, taken.sort((a, b) => b - a), trustedMax)
+/** Whether a refusal says the number was not the dense next one (another create landed first). */
+function isDenseRefusal(e: unknown): boolean {
+  return e instanceof ConsensusRefusal && e.code === RULE_REFUSED_CODE && namesDenseRule(e.message)
 }
 
 // ---------------------------------------------------------------------------
@@ -353,10 +351,10 @@ export interface CreateIssueResult extends WriteResult {
 }
 
 /**
- * Create an `issue` (ungated; anyone). The number comes from the repo's numbering rule; when
- * consensus refuses it as taken (someone claimed it between the read and the write), the
- * allocation runs again — the squatted number is now `base` — and `onRetry` is told, so the
- * UI can say "Someone claimed #42 a moment ago; retrying as #43" (`ux-dx-spec.md` §1d).
+ * Create an `issue` (ungated; anyone). The number is the dense next one ({@link nextNumber});
+ * when consensus refuses it (another issue or PR landed between the read and the write: a
+ * `dense` refusal, or the unique index), the totals are read again and `onRetry` is told, so
+ * the UI can say "Someone took #42 a moment ago; retrying as #43" (`ux-dx-spec.md` §1d).
  */
 export async function createIssue(
   sdk: EvoSDK,
@@ -382,7 +380,7 @@ export interface PatchInput {
   readonly sourceRefName: string
   /** The head commit, hex. */
   readonly headOid: string
-  /** Open as a draft (`patch.draft`, review-parity P6): not ready for review until marked so. */
+  /** Open as a draft (review-parity P6): the patch, then a draft `transition` (kind 14). */
   readonly draft?: boolean
 }
 
@@ -394,12 +392,12 @@ export interface PatchInput {
 export function patchData(input: PatchInput): Record<string, unknown> {
   if (input.title.trim() === '') throw new Error('a title is required')
   for (const name of [input.baseRefName, input.sourceRefName]) {
-    if (!isLegalRefName(name) || new TextEncoder().encode(name).length > 255) {
+    if (!isGitRefName(name)) {
       throw new Error(`illegal ref name ${JSON.stringify(name)}`)
     }
   }
+  if (!isRc1OidHex(input.headOid)) throw new Error('the PR head must be a 20- or 32-byte oid (SHA-1 or SHA-256)')
   const head = hexToBytes(input.headOid)
-  if (head.length < 20 || head.length > 32) throw new Error('the PR head must be a 20-32 byte oid')
   const data: Record<string, unknown> = { title: input.title }
   if (input.body.length > 0) data['body'] = input.body
   data['baseRefNameHash'] = refNameHash(input.baseRefName)
@@ -408,11 +406,14 @@ export function patchData(input: PatchInput): Record<string, unknown> {
   data['sourceRefNameHash'] = refNameHash(input.sourceRefName)
   data['sourceRefName'] = input.sourceRefName
   data['headOid'] = head
-  if (input.draft === true) data['draft'] = true
   return data
 }
 
-/** Open a PR (`patch`, ungated), numbered like an issue (PRs number independently). */
+/**
+ * Open a PR (`patch`, ungated), numbered in the issues' sequence. A draft is the patch and then
+ * its author's draft `transition`; when that second write fails the PR is open and ready, and the
+ * error says so (the author can convert it from the PR page).
+ */
 export async function createPatch(
   sdk: EvoSDK,
   auth: WriteAuth,
@@ -420,10 +421,36 @@ export async function createPatch(
   input: PatchInput & { intent?: string },
   onRetry?: (taken: number, next: number) => void,
 ): Promise<CreateIssueResult> {
-  return createNumbered(sdk, auth, repo, 'patch', patchData(input), input.intent, onRetry)
+  const created = await createNumbered(sdk, auth, repo, 'patch', patchData(input), input.intent, onRetry)
+  if (input.draft !== true) return created
+  const target: StateTarget = { id: created.documentId, number: created.number, type: 'patch', author: auth.identityId }
+  try {
+    await setTargetState(sdk, auth, repo, { target, action: 'draft', isMember: false, ...(input.intent ? { intent: `${input.intent}:draft` } : {}) })
+  } catch (e) {
+    throw new DraftMarkError(created, e)
+  }
+  return created
 }
 
-/** Create a numbered `issue` / `patch`, allocating again when the number is taken meanwhile. */
+/**
+ * The PR was opened, but marking it a draft did not confirm: it is open and ready for review, or
+ * (an unconfirmed write) may still become a draft. Never create the PR again on this error.
+ */
+export class DraftMarkError extends Error {
+  constructor(
+    readonly created: CreateIssueResult,
+    readonly cause: unknown,
+  ) {
+    super(
+      cause instanceof UnconfirmedWriteError
+        ? `PR #${created.number} was opened; marking it a draft was sent but is not confirmed yet. Check the PR page`
+        : `PR #${created.number} was opened, but marking it a draft failed (${cause instanceof Error ? cause.message : String(cause)}); convert it to a draft from the PR page`,
+    )
+    this.name = 'DraftMarkError'
+  }
+}
+
+/** Create a numbered `issue` / `patch`, taking the next dense number again when another landed first. */
 async function createNumbered(
   sdk: EvoSDK,
   auth: WriteAuth,
@@ -434,7 +461,7 @@ async function createNumbered(
   onRetry?: (taken: number, next: number) => void,
 ): Promise<CreateIssueResult> {
   const noun = type === 'issue' ? 'issue' : 'PR'
-  // A private repo: refuse over-long text before allocating, and seal every renumbered retry
+  // A private repo: refuse over-long text before numbering, and seal every renumbered retry
   // under the one writer of this action (the AD binds each new number).
   let writer: PrivateWriter | undefined
   if (repo.visibility === 'private') {
@@ -444,40 +471,50 @@ async function createNumbered(
     }
     writer = await privateWriter(sdk, auth, repo)
   }
-  // Whose numbers are trusted is read once per action, not once per renumbered retry.
-  const trusted = await readNumberTrust(sdk, repo, auth.network)
-  const next = (): Promise<number | null> => nextNumber(sdk, repo, type, auth.network, trusted)
+  const next = (): Promise<number | null> => nextNumber(sdk, repo)
   // A retry of this action first finishes the number its last attempt signed: once that
-  // attempt is visible, allocation would hand out the next number, a new cache key, and a
-  // second issue (the pending write under the old number would never be looked at).
+  // attempt is visible, the totals would give the next number, a new cache key, and a second
+  // issue (the pending write under the old number would never be looked at).
   const triedKey = intentBase ? `forge:numbered:${auth.network}:${repo.repoId}:${type}:${intentBase}` : null
   let number = readTriedNumber(triedKey) ?? (await next())
   for (let attempt = 0; attempt < 4; attempt++) {
-    if (number === null) throw new Error(`this repo has no ${noun} numbers left to allocate`)
+    if (number === null) throw new Error(`this repo has no ${noun} numbers left`)
     try {
       // Each number is its own write: a renumbered retry must not reuse the earlier bytes.
       const intent = intentBase ? `${intentBase}#${number}` : undefined
       writeTriedNumber(triedKey, number)
-      const result = await writeRepoDoc(sdk, auth, repo, DOC[type], { number, ...fields }, intent, writer)
+      const result = await writeRepoDoc(sdk, auth, repo, DOC[type], { number, tk: type === 'issue' ? 0 : 1, ...fields }, intent, writer)
       writeTriedNumber(triedKey, null)
       if (result.confirmed) noteTargetCreated(repo, type)
       return { ...result, number }
     } catch (e) {
-      // Refused for good (not a duplicate, which is renumbered below): nothing under this
+      // Refused for good (not a numbering race, which is renumbered below): nothing under this
       // number is pending, so the action does not pin it any more. After a SupersededWriteError
       // the number stays pinned on purpose: its intent `base#N` holds the tombstone, so every
-      // later retry of this action lands there and is answered the same way, never allocated a
+      // later retry of this action lands there and is answered the same way, never given a
       // fresh number and posted as a second document.
-      if (e instanceof ConsensusRefusal && !isDuplicate(e)) writeTriedNumber(triedKey, null)
+      const race = isDuplicate(e) || isDenseRefusal(e)
+      if (e instanceof ConsensusRefusal && !race) writeTriedNumber(triedKey, null)
       if (e instanceof UnconfirmedWriteError) {
         // Not seen yet. If someone else holds the number, ours was refused: renumber.
-        const holder = await numberHolder(sdk, repo, type, number).catch(() => undefined)
+        const holder = await numberHolder(sdk, repo, number).catch(() => undefined)
         if (holder === undefined || holder === null || holder === auth.identityId) throw e
-      } else if (!isDuplicate(e)) throw e
+      } else if (!race) throw e
       const taken: number = number
-      number = await next()
-      if (number !== null && number <= taken) number = taken + 1
-      if (number !== null) onRetry?.(taken, number)
+      if (isDenseRefusal(e)) {
+        // `dense` judges the totals the validating node holds: after about a block they are
+        // current, and the fresh read is the number to use (a node a block behind may have
+        // refused one that was right, so it is not skipped).
+        await sleep(LAG_RETRY_MS[0] as number)
+        number = await next()
+        // A read from a node further behind still never goes below the refused number.
+        if (number !== null && number < taken) number = taken
+      } else {
+        // The number is held (the unique index): the next one, even if a read still lags.
+        number = await next()
+        if (number !== null && number <= taken) number = taken + 1
+      }
+      if (number !== null && number !== taken) onRetry?.(taken, number)
     }
   }
   throw new Error(`could not claim ${type === 'issue' ? 'an issue' : 'a PR'} number after several attempts; try again`)
@@ -513,31 +550,46 @@ function writeTriedNumber(key: string | null, number: number | null): void {
   }
 }
 
-/** Who holds issue / PR `number` (its `$ownerId`), or null when nobody does. */
-async function numberHolder(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'patch', number: number): Promise<string | null> {
-  const { documents } = await queryDocumentsWithProof(sdk, repoSource(repo).repoQuery(DOC[type], { where: [['number', '==', number]], limit: 1 }))
-  const owner = documents[0]?.['$ownerId']
+/** Who holds `number` (its `$ownerId`) among the repo's issues and PRs (one sequence), or null. */
+async function numberHolder(sdk: EvoSDK, repo: RepoRef, number: number): Promise<string | null> {
+  const source = repoSource(repo)
+  const held = await Promise.all(
+    [DOC.issue, DOC.patch].map((t) => queryDocumentsWithProof(sdk, source.repoQuery(t, { where: [['number', '==', number]], limit: 1 }))),
+  )
+  const owner = held.flatMap((r) => r.documents)[0]?.['$ownerId']
   return typeof owner === 'string' ? owner : null
 }
 
-/** Create a `comment` on an issue or PR (ungated; author-owned). */
+/**
+ * Create a `comment` on an issue or PR (ungated; author-owned). `replyTo` must name a thread's
+ * root comment (RC1 R-14: consensus refuses a reply to a reply). On a locked thread only a
+ * member can post, with the proof ({@link commentProof}); a non-member is refused here.
+ */
 export async function createComment(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { targetId: string; body: string; replyTo?: string; intent?: string },
+  input: { targetId: string; body: string; replyTo?: string; intent?: string; post?: PostContext },
 ): Promise<WriteResult> {
+  if (lockedOut(input.post)) throw new Error(LOCKED_REASON)
   const data: Record<string, unknown> = { targetId: decodeIdentifier(input.targetId), body: input.body }
   if (input.replyTo) data['replyTo'] = decodeIdentifier(input.replyTo)
-  return writeRepoDoc(sdk, auth, repo, DOC.comment, data, input.intent)
+  return writeRepoDoc(sdk, auth, repo, DOC.comment, { ...data, ...commentProof(auth.identityId, input.post) }, input.intent)
 }
 
-/** The document data of a state event on `target`. */
+/**
+ * The event kinds RC1 refuses as a member `event` (`kind` ≥ 4, `noState`): close, reopen and
+ * merge, draft and ready, lock and unlock are transitions.
+ */
+export const TRANSITION_EVENT_KINDS: ReadonlySet<EventKindName> = new Set<EventKindName>(['close', 'reopen', 'merge', 'draft', 'ready', 'lock', 'unlock'])
+
+/** The document data of an event on `target`. */
 function eventData(
   target: WriteTarget,
   kind: EventKindName,
   extra: { value?: string; oidHex?: string } = {},
 ): Record<string, unknown> {
+  if (TRANSITION_EVENT_KINDS.has(kind)) throw new Error(`${kind} is a transition, not an event`)
   const data: Record<string, unknown> = {
     targetId: decodeIdentifier(target.id),
     targetNumber: target.number,
@@ -549,8 +601,8 @@ function eventData(
 }
 
 /**
- * Append a member `event` (close / reopen / label / assign / merge mark, …). Consensus admits
- * it only from a current maintainer or writer (40120 otherwise).
+ * Append a member `event` (a label, an assignee, a milestone, a pin, …). Consensus admits it only
+ * from a current maintainer or writer (40120 otherwise).
  */
 export async function addEvent(
   sdk: EvoSDK,
@@ -559,19 +611,6 @@ export async function addEvent(
   input: { target: WriteTarget; kind: EventKindName; value?: string; oidHex?: string; intent?: string },
 ): Promise<WriteResult> {
   return writeRepoDoc(sdk, auth, repo, DOC.event, eventData(input.target, input.kind, input), input.intent)
-}
-
-/**
- * The issue or PR author's own close / reopen: an `authorEvent`, gated to the target's author
- * (`forge-v2.md` §3).
- */
-export async function addAuthorEvent(
-  sdk: EvoSDK,
-  auth: WriteAuth,
-  repo: RepoRef,
-  input: { target: WriteTarget; kind: 'close' | 'reopen'; intent?: string },
-): Promise<WriteResult> {
-  return writeRepoDoc(sdk, auth, repo, DOC.authorEvent, eventData(input.target, input.kind), input.intent)
 }
 
 /**
@@ -590,45 +629,49 @@ export function eventRoute(params: {
   return params.viewer === params.author && isAuthorKind(params.kind) ? 'authorEvent' : null
 }
 
-/** Which state-event type a close/reopen by the viewer should be. */
-export function stateEventRoute(params: {
-  readonly viewer: string
-  readonly author: string
-  readonly isMember: boolean
-}): 'event' | 'authorEvent' | null {
-  return eventRoute({ ...params, kind: 'close' })
-}
-
-/** Close or reopen an issue/PR by whichever route the viewer holds. */
+/**
+ * Close, reopen, merge, draft or ready an issue or PR: one `transition`, the legal move from its
+ * current state, by a member or by its author ({@link writeTransition}).
+ */
 export async function setTargetState(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { target: WriteTarget; kind: 'close' | 'reopen'; author: string; isMember: boolean; intent?: string },
+  input: { target: StateTarget; action: StateAction; isMember: boolean; oidHex?: string; intent?: string },
 ): Promise<WriteResult> {
-  const route = stateEventRoute({ viewer: auth.identityId, author: input.author, isMember: input.isMember })
-  if (route === null) throw new Error('only the author or a maintainer or writer can do that')
-  if (route === 'authorEvent') return addAuthorEvent(sdk, auth, repo, input)
-  try {
-    return await addEvent(sdk, auth, repo, input)
-  } catch (e) {
-    // The membership read was stale (revoked meanwhile): the author path still holds.
-    const gateRefused = e instanceof ConsensusRefusal && e.code === GATE_REFUSED_CODE
-    if (gateRefused && auth.identityId === input.author) return addAuthorEvent(sdk, auth, repo, { ...input, intent: input.intent ? `${input.intent}:author` : undefined })
-    throw e
-  }
+  return writeTransition(sdk, auth, repo, (type, data, intent) => writeRepoDoc(sdk, auth, repo, type, data, intent), input)
 }
 
-/** Submit a PR review: a verdict on `commitOid` (the head it was made against). */
+/**
+ * Lock or unlock the conversation on an issue or PR: one member `transition` (kinds 3/4 or 18/19;
+ * {@link writeLock}). Once locked, consensus refuses comments and reviews from non-members.
+ */
+export async function setLock(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  input: { target: StateTarget; lock: boolean; isMember: boolean; intent?: string },
+): Promise<WriteResult> {
+  return writeLock(sdk, auth, repo, (type, data, intent) => writeRepoDoc(sdk, auth, repo, type, data, intent), input)
+}
+
+/**
+ * Submit a PR review: a verdict on `commitOid` (the head it was made against). A member's approve
+ * or request changes proves membership; a non-member's is recorded as 4/5
+ * ({@link reviewVerdictFields}); on a locked PR a non-member is refused here.
+ */
 export async function createReview(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { patchId: string; verdict: VerdictInput; commitOid: string; body?: string; intent?: string },
+  input: { patchId: string; verdict: VerdictInput; commitOid: string; body?: string; intent?: string; post: PostContext },
 ): Promise<WriteResult> {
+  if (!isRc1OidHex(input.commitOid)) throw new Error('a review names a 20- or 32-byte commit')
+  const post = await settledPost(sdk, repo, auth.identityId, input.post, input.verdict)
+  if (lockedOut(post)) throw new Error(LOCKED_REASON)
   const data: Record<string, unknown> = {
     patchId: decodeIdentifier(input.patchId),
-    verdict: VERDICT_INT[input.verdict],
+    ...reviewVerdictFields(input.verdict, auth.identityId, post),
     commitOid: hexToBytes(input.commitOid),
   }
   if (input.body && input.body.length > 0) data['body'] = input.body
@@ -652,19 +695,80 @@ export interface ReleaseAsset {
 /** The `assets` field's byte limit (the `release` schema's `maxBytes`). */
 export const RELEASE_ASSETS_MAX_BYTES = 4096
 
-/** Create a `release`: newest per tag wins. Maintainers only (consensus-gated). */
+/**
+ * The live-release total of `tagName` (`release.perTag`, summable `delta`): 1 when a release of the
+ * tag is published, 0 when none is (never published, or unpublished).
+ */
+export async function readTagLive(sdk: EvoSDK, repo: RepoRef, tagName: string): Promise<number> {
+  const sums = await sumDocumentsGrouped(
+    sdk,
+    { ...repoSource(repo).repoQuery(DOC.release, { where: [['tagName', 'in', [tagName]]], orderBy: [['tagName', 'asc']] }), groupBy: ['tagName'] },
+    'delta',
+  )
+  return [...sums.values()].reduce((a, b) => a + b, 0)
+}
+
+/**
+ * The `release.delta` of a publish, an edit or a yank (RC1 O-04 `oneLive`): +1 when the tag has no
+ * live release, 0 when it has one (the new document supersedes it). Releases are never deleted;
+ * an unpublish (-1) is not offered here.
+ */
+export function publishDelta(live: number): 1 | 0 {
+  return live >= 1 ? 0 : 1
+}
+
+/** The fields of a release revision a writer states (the sealed-only ones on a private repo). */
+export interface ReleaseInput {
+  readonly tagName: string
+  readonly name?: string
+  readonly notes?: string
+  /** A public release states it (absent: false); a sealed revision carries it when absent. */
+  readonly yanked?: boolean
+  /** A public release's asset list; a private repo's assets are sealed files ({@link SealedReleaseOptions}). */
+  readonly assets?: readonly ReleaseAsset[]
+  readonly intent?: string
+  /** Sealed only (§16.2): absent carries the tag's newest revision's flag. */
+  readonly prerelease?: boolean
+  /** Sealed only (§16.2): absent carries the tag's newest revision's flag. */
+  readonly draft?: boolean
+  /** Sealed only (§16.3): this revision unpublishes the tag. */
+  readonly unpublished?: boolean
+}
+
+/**
+ * Create a `release`: newest per tag wins. Maintainers only (consensus-gated). Refused before
+ * signing for a tag name the contract refuses. A public release's `delta` is read from the tag's
+ * live total ({@link publishDelta}); a private repo's is a sealed revision
+ * ({@link createSealedRelease}: `delta` 0, its files and asset list sealed and stored first).
+ */
 export async function createRelease(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { tagName: string; name?: string; notes?: string; yanked?: boolean; assets?: readonly ReleaseAsset[]; intent?: string },
-): Promise<WriteResult> {
-  const data: Record<string, unknown> = { tagName: input.tagName, yanked: input.yanked ?? false }
-  if (input.name && input.name.length > 0) data['name'] = input.name
-  if (input.notes && input.notes.length > 0) data['notes'] = input.notes
-  if (input.assets && input.assets.length > 0) data['assets'] = releaseAssetsJson(input.assets)
+  input: ReleaseInput,
+  sealed: SealedReleaseOptions = {},
+): Promise<WriteResult & { readonly sealed?: SealedReleaseWritten }> {
+  if (repo.visibility === 'private') {
+    if (input.assets !== undefined && input.assets.length > 0) throw new Error("a private repo's assets are sealed files, never plaintext entries")
+    const env = sealed.env ?? sealedReleaseEnv(sdk, auth, repo, sealed.storage ?? null)
+    const written = await createSealedRelease(sdk, auth, repo, { ...input, files: sealed.files, resolved: sealed.resolved }, env, sealed.onEvent)
+    return { ...written.release, sealed: written }
+  }
+  if (input.prerelease !== undefined || input.draft !== undefined || input.unpublished === true || sealed.files !== undefined) {
+    throw new Error("draft, pre-release, unpublish and sealed files are for a private repo's sealed release")
+  }
+  if (!isRc1TagName(input.tagName)) throw new Error(`${JSON.stringify(input.tagName)} is not a tag name git accepts`)
+  const fields: Record<string, unknown> = { tagName: input.tagName, yanked: input.yanked ?? false }
+  if (input.name && input.name.length > 0) fields['name'] = input.name
+  if (input.notes && input.notes.length > 0) fields['notes'] = input.notes
+  if (input.assets && input.assets.length > 0) fields['assets'] = releaseAssetsJson(input.assets)
+  const attempt = async (): Promise<WriteResult> =>
+    writeRepoDoc(sdk, auth, repo, DOC.release, { ...fields, delta: publishDelta(await readTagLive(sdk, repo, input.tagName)) }, input.intent)
   try {
-    return await writeRepoDoc(sdk, auth, repo, DOC.release, data, input.intent)
+    // The live total was read from (or judged by) a node a block behind a publish that just
+    // landed: `oneLive` refuses the delta and nothing is stored. Read it again after about a
+    // block and retry, bounded.
+    return await retryAfterLag(attempt, ONE_LIVE_RULE, LAG_RETRY_MS.slice(0, 2))
   } finally {
     // A release names a tag just pushed, often from another client: browse it afresh.
     repoContentWritten(repo)
@@ -709,7 +813,7 @@ async function findOwnIndexOnly(
 ): Promise<unknown | null> {
   const field = targetField(type)
   const rows = await (sdk as unknown as { documents: RawDocumentsFacade }).documents.query({
-    dataContractId: forge.collab,
+    dataContractId: forge.community,
     documentTypeName: type,
     where: [
       ['$ownerId', '==', ownerId],
@@ -722,14 +826,14 @@ async function findOwnIndexOnly(
   return null
 }
 
-/** Create the signer's `star` / `follow` (indexOnly). Idempotent: a duplicate is success. */
-function createIndexOnly(sdk: EvoSDK, auth: WriteAuth, forge: ForgeIds, type: IndexOnlyType, targetId: string): Promise<WriteResult> {
+/** Create the signer's `star` / `follow` (indexOnly), with `payload` besides the target. Idempotent: a duplicate is success. */
+function createIndexOnly(sdk: EvoSDK, auth: WriteAuth, forge: ForgeIds, type: IndexOnlyType, targetId: string, payload: Record<string, unknown> = {}): Promise<WriteResult> {
   const field = targetField(type)
   return createOrExisting(() =>
     createDocumentIdempotent(sdk, auth, {
-      contractId: forge.collab,
+      contractId: forge.community,
       documentType: type,
-      data: { [field]: decodeIdentifier(targetId) },
+      data: { [field]: decodeIdentifier(targetId), ...payload },
       probe: async () => (await findOwnIndexOnly(sdk, forge, type, auth.identityId, targetId)) !== null,
     }),
   )
@@ -740,7 +844,7 @@ async function deleteIndexOnly(sdk: EvoSDK, auth: WriteAuth, forge: ForgeIds, ty
   const own = await findOwnIndexOnly(sdk, forge, type, auth.identityId, targetId)
   if (own === null) return ALREADY_GONE
   return deleteDocumentIdempotent(sdk, auth, {
-    contractId: forge.collab,
+    contractId: forge.community,
     documentType: type,
     documentId: targetId,
     repo: targetField(type) === 'repoId' ? targetId : null,
@@ -757,16 +861,26 @@ export interface Relation {
 }
 
 /**
- * Write the signer's `starBeat` for `repoId` (trending, platform-parity-spec §4.3) unless one
- * exists: one per identity and repo, ever.
+ * Whether the signer may write a `starBeat` for `repo` (RC1 O-08): only on a public repo, and
+ * never on their own (`repoOwner` must differ from the signer, `distinctFrom`).
  */
-export async function writeStarBeat(sdk: EvoSDK, auth: WriteAuth, forge: ForgeIds, repoId: string): Promise<void> {
-  if ((await findOwnIndexOnly(sdk, forge, 'starBeat', auth.identityId, repoId)) !== null) return
-  await createIndexOnly(sdk, auth, forge, 'starBeat', repoId)
+export function beatAllowed(repo: RepoRef, signer: string): boolean {
+  return repo.visibility === 'public' && repo.ownerId !== signer
 }
 
 /**
- * The viewer's star on a repo (forge-collab `star`). With `trending` (the viewer's "Count my
+ * Write the signer's `starBeat` for `repo` (trending, platform-parity-spec §4.3) unless one
+ * exists: one per identity and repo, ever, carrying `{repoId, vis: "public", repoOwner}`.
+ * Nothing is written where consensus would refuse it ({@link beatAllowed}).
+ */
+export async function writeStarBeat(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef): Promise<void> {
+  if (!beatAllowed(repo, auth.identityId)) return
+  if ((await findOwnIndexOnly(sdk, repo.forge, 'starBeat', auth.identityId, repo.repoId)) !== null) return
+  await createIndexOnly(sdk, auth, repo.forge, 'starBeat', repo.repoId, { vis: 'public', repoOwner: decodeIdentifier(repo.ownerId) })
+}
+
+/**
+ * The viewer's star on a repo (forge-community `star`). With `trending` (the viewer's "Count my
  * stars toward Trending", on by default), a new star also writes its `starBeat`.
  */
 export function starRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string, repo: RepoRef, trending = false): Relation {
@@ -778,7 +892,7 @@ export function starRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string
       if (confirmed && trending) {
         // Best effort: the star stands without its beat, which only feeds a ranking.
         // eslint-disable-next-line no-console
-        await writeStarBeat(sdk, a, repo.forge, repo.repoId).catch((e: unknown) => console.warn('the star landed; its Trending beat did not', e))
+        await writeStarBeat(sdk, a, repo).catch((e: unknown) => console.warn('the star landed; its Trending beat did not', e))
       }
       return confirmed
     },
@@ -786,7 +900,7 @@ export function starRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string
   }
 }
 
-/** The viewer's watch of a repo (forge-collab `watch`, C-1): the inbox follows it on every device. */
+/** The viewer's watch of a repo (forge-community `watch`, C-1): the inbox follows it on every device. */
 export function watchRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string, repo: RepoRef): Relation {
   return {
     read: async () => (await findOwnIndexOnly(sdk, repo.forge, 'watch', viewer, repo.repoId)) !== null,
@@ -796,7 +910,7 @@ export function watchRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: strin
 }
 
 /**
- * The viewer's follow of `target` (forge-collab `follow`). `forge` null (not deployed): every
+ * The viewer's follow of `target` (forge-community `follow`). `forge` null (not deployed): every
  * call refuses, so a caller can build the relation unconditionally and gate on deployment.
  */
 export function followRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string, forge: ForgeIds | null, target: string): Relation {
@@ -845,10 +959,79 @@ export class PrivateMembershipError extends Error {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Consent (RC1 R-06: nobody is made a member without their own `consent`)
+// ---------------------------------------------------------------------------
+
+/**
+ * The member has not accepted yet: consensus refuses a `maintainer` or `writer` document without
+ * the member's `consent` for the repo. Nothing was written; the invite is pending on them.
+ */
+export class ConsentMissingError extends Error {
+  constructor(readonly memberId: string) {
+    super("they haven't accepted the invitation yet: send them this repo's invite link (Settings → Collaborators) to accept, then add them")
+    this.name = 'ConsentMissingError'
+  }
+}
+
+/** The signer's `consent` document for `repo` (`byRepoOwner`, unique), or null. */
+export async function findConsent(sdk: EvoSDK, repo: RepoRef, identityId: string): Promise<string | null> {
+  const { documents } = await queryDocumentsWithProof(
+    sdk,
+    repoSource(repo).repoQuery(DOC.consent, { where: [['$ownerId', '==', identityId]], orderBy: [['$ownerId', 'asc']], limit: 1 }),
+  )
+  return firstId(documents)
+}
+
+/**
+ * How many more times an add re-reads a consent it did not find (1.5 s apart) before refusing:
+ * the member may have accepted moments ago, on a node the owner's has not caught up with (D-10).
+ */
+export const CONSENT_LAG_RETRIES = 2
+
+/**
+ * Every identity that consented to join `repo` (their `consent` documents), in id order: the
+ * owner's pending invitations are the consents of identities that are not members yet.
+ */
+export async function readConsents(sdk: EvoSDK, repo: RepoRef): Promise<string[]> {
+  const docs = await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.consent, { orderBy: [['$ownerId', 'asc']] }))
+  return docs.map((d) => d['$ownerId']).filter((id): id is string => typeof id === 'string')
+}
+
+/**
+ * Accept an invitation to collaborate on `repo`: the signer's `consent` document, which lets the
+ * owner make them a maintainer or writer. Idempotent: an existing consent is success. A consent
+ * stands until deleted, so a later re-add needs no new one.
+ */
+export async function acceptInvite(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, intent?: string): Promise<WriteResult> {
+  if (auth.identityId === repo.ownerId) throw new Error('the owner is a member already')
+  const existing = await findConsent(sdk, repo, auth.identityId)
+  if (existing !== null) return alreadyThere(existing)
+  return createOrExisting(
+    () => createDocumentIdempotent(sdk, auth, { contractId: repo.forge.core, documentType: DOC.consent, data: { repoId: decodeIdentifier(repo.repoId) }, ...(intent ? { intent } : {}) }),
+    () => findConsent(sdk, repo, auth.identityId),
+  )
+}
+
+/**
+ * The `maintainer` / `writer` document data (RC1): the repo's `vis`, and `consentBy` = the member
+ * (their `consent` document must exist) unless the owner enrols itself.
+ */
+export function membershipData(repo: RepoRef, memberId: string): Record<string, unknown> {
+  const member = decodeIdentifier(memberId)
+  return {
+    repoId: decodeIdentifier(repo.repoId),
+    memberId: member,
+    vis: repo.visibility,
+    ...(memberId === repo.ownerId ? {} : { consentBy: member }),
+  }
+}
+
 /**
  * Grant `memberId` a role on a public repo: the owner creates a `maintainer` or `writer`
  * document (consensus refuses anyone else). Idempotent: an existing membership is success.
- * Refused on a private repo ({@link PrivateMembershipError}).
+ * Refused on a private repo ({@link PrivateMembershipError}), and while the member has not
+ * accepted ({@link ConsentMissingError}).
  */
 export async function grantMember(
   sdk: EvoSDK,
@@ -864,7 +1047,8 @@ export async function grantMember(
 
 /**
  * The membership document write alone, for any repo. Only `private-members.ts` calls it for a
- * private repo, inside the add flow (after its checks, before the key wrap).
+ * private repo, inside the add flow (after its checks, before the key wrap). Throws
+ * {@link ConsentMissingError} before signing when the member has not accepted.
  */
 export async function grantMembershipDoc(
   sdk: EvoSDK,
@@ -875,12 +1059,17 @@ export async function grantMembershipDoc(
   intent?: string,
 ): Promise<WriteResult> {
   if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can add members')
+  const held = await findMembership(sdk, repo, role, memberId)
+  if (held !== null) return alreadyThere(held)
+  if (memberId !== repo.ownerId && (await retryWhileMissing(() => findConsent(sdk, repo, memberId), CONSENT_LAG_RETRIES)) === null) {
+    throw new ConsentMissingError(memberId)
+  }
   const result = await createOrExisting(
     () =>
       createDocumentIdempotent(sdk, auth, {
         contractId: repo.forge.core,
         documentType: ROLE_DOC[role],
-        data: { repoId: decodeIdentifier(repo.repoId), memberId: decodeIdentifier(memberId) },
+        data: membershipData(repo, memberId),
         ...(intent ? { intent } : {}),
       }),
     () => findMembership(sdk, repo, role, memberId),
@@ -986,6 +1175,9 @@ export function checkRepoInput(input: CreateRepoInput): void {
     throw new Error(`The description is ${bytes(input.description)} bytes; the limit is ${REPO_LIMITS.description} (accented letters and emoji take more than one byte).`)
   }
   if (bytes(input.defaultBranch) > REPO_LIMITS.defaultBranch) throw new Error('The default branch name is too long.')
+  if (input.defaultBranch !== undefined && input.defaultBranch !== '' && !isRc1BranchName(input.defaultBranch)) {
+    throw new Error(`${JSON.stringify(input.defaultBranch)} is not a branch name git accepts.`)
+  }
   if (input.visibility === 'private' && input.forkOf !== undefined) throw new Error('a fork is public: a private repository cannot be a fork')
 }
 
@@ -1131,7 +1323,7 @@ export async function createRepo(
       await createDocumentIdempotent(sdk, auth, {
         contractId: forge.core,
         documentType: DOC.maintainer,
-        data: { repoId: R, memberId: decodeIdentifier(ownerId) },
+        data: membershipData(repo, ownerId),
         intent: `${key}:maintainer`,
       })
     } catch (e) {
@@ -1152,7 +1344,7 @@ export async function createRepo(
     await createDocumentIdempotent(sdk, auth, {
       contractId: forge.core,
       documentType: DOC.config,
-      data: { repoId: R, defaultBranch: input.defaultBranch ?? 'main', backend: { mode: 0 } },
+      data: withVis(visibility, DOC.config, { repoId: R, defaultBranch: input.defaultBranch ?? 'main', backend: { mode: 0 } }),
       intent: `${key}:config`,
     })
   })

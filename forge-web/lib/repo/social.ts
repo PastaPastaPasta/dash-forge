@@ -1,5 +1,6 @@
 /**
- * forge-v2 social reads — stars, follows and profiles in forge-collab (`forge-v2.md` §2).
+ * forge-v2 social reads — stars, follows and profiles in forge-community (`forge-v2.md` §2);
+ * issue and PR totals in forge-collab.
  *
  * `star` and `follow` are `indexOnly`: their countable indexes give star, follower and
  * following counts in O(1). A star is keyed by the `repo` document id.
@@ -10,11 +11,12 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { ForgeIds } from '../deployments'
 import { countDocuments, queryAllDocuments, queryDocuments } from '../sdk'
 import { DOC, asIdentifierString, str, type RepoRef } from './contract'
+import { packHashHex } from './pack-hash'
 
 /** A repo's star count (`star.byRepo`, countable). */
 export function readStarCount(sdk: EvoSDK, forge: ForgeIds, repoId: string): Promise<number> {
   return countDocuments(sdk, {
-    dataContractId: forge.collab,
+    dataContractId: forge.community,
     documentTypeName: DOC.star,
     where: [['repoId', '==', repoId]],
   })
@@ -31,7 +33,7 @@ export async function readStargazers(
   limit = 100,
 ): Promise<string[]> {
   const docs = await queryDocuments(sdk, {
-    dataContractId: forge.collab,
+    dataContractId: forge.community,
     documentTypeName: DOC.star,
     where: [['repoId', '==', repoId]],
     limit,
@@ -148,7 +150,8 @@ export async function readPublicRepoFacts(
   const at = newest[0]?.['$createdAt']
   const sizes = new Map<string, number>()
   for (const m of manifests) {
-    const hash = str(m, 'packHash')
+    // Keyed by the hash's hex, whichever form the SDK returned the identifier in.
+    const hash = packHashHex(m['packHash'])
     const size = typeof m['sizeBytes'] === 'number' ? m['sizeBytes'] : Number(m['sizeBytes'] ?? 0)
     if (hash !== '' && Number.isFinite(size)) sizes.set(hash, size)
   }
@@ -192,7 +195,7 @@ export async function readFollowPage(
 ): Promise<FollowPage> {
   const [pinned, terminal] = side === 'followers' ? (['identityId', '$ownerId'] as const) : (['$ownerId', 'identityId'] as const)
   const docs = await queryDocuments(sdk, {
-    dataContractId: forge.collab,
+    dataContractId: forge.community,
     documentTypeName: DOC.follow,
     where: [
       [pinned, '==', identityId],
@@ -213,12 +216,12 @@ export async function readFollowCounts(
 ): Promise<{ followers: number | null; following: number | null }> {
   const [followers, following] = await Promise.all([
     countDocuments(sdk, {
-      dataContractId: forge.collab,
+      dataContractId: forge.community,
       documentTypeName: DOC.follow,
       where: [['identityId', '==', identityId]],
     }).catch(() => null),
     countDocuments(sdk, {
-      dataContractId: forge.collab,
+      dataContractId: forge.community,
       documentTypeName: DOC.follow,
       where: [['$ownerId', '==', identityId]],
     }).catch(() => null),
