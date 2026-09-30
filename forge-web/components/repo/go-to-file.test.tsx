@@ -12,13 +12,15 @@ const push = vi.fn()
 vi.mock('next/link', () => ({ default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => <a href={href} {...rest}>{children}</a> }))
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push, replace: () => undefined }) }))
 
-/** The walk resolves when the test says; the index answers at once. */
-let finishWalk: (files: string[]) => void = () => undefined
+/** The walk resolves when the test says; the index answers at once (null: the repo has none). */
+const INDEX = ['src/validation.cpp', 'src/net_processing.cpp', 'src/deleted_since.cpp']
+let index: string[] | null = INDEX
+let finishWalk: (files: string[], truncated?: boolean) => void = () => undefined
 vi.mock('@/lib/view/repo-facts', () => ({
-  indexedFilePaths: async () => ['src/validation.cpp', 'src/net_processing.cpp', 'src/deleted_since.cpp'],
+  indexedFilePaths: async () => index,
   repoFilesWalk: () =>
     new Promise((resolve) => {
-      finishWalk = (files) => resolve({ files: files.map((path) => ({ path, oid: '', mode: 0o100644, size: 0 })), truncated: false })
+      finishWalk = (files, truncated = false) => resolve({ files: files.map((path) => ({ path, oid: '', mode: 0o100644, size: 0 })), truncated })
     }),
 }))
 
@@ -29,6 +31,7 @@ let el: HTMLDivElement
 beforeEach(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   push.mockClear()
+  index = INDEX
   // jsdom has no layout, so no scrollIntoView.
   Element.prototype.scrollIntoView = () => undefined
   el = document.createElement('div')
@@ -75,6 +78,38 @@ describe('GoToFile', () => {
     // The walk's list is exact: a file the index still named is gone.
     await act(async () => finishWalk(['src/validation.cpp', 'src/net_processing.cpp']))
     await vi.waitFor(() => expect(el.textContent).toContain('No matching file.'))
+  })
+
+  it('a walk cut off at its file cap does not replace a complete index', async () => {
+    await render()
+    await type('src')
+    await vi.waitFor(() => expect(results()).toHaveLength(3))
+    // Past the walk's cap: the index names more of the tip than the partial walk.
+    await act(async () => finishWalk(['src/validation.cpp'], true))
+    expect(results()).toHaveLength(3)
+    expect(el.textContent).not.toContain('Searched the first')
+  })
+
+  it('with no index, a cut-off walk is the list, and says so', async () => {
+    index = null
+    await render()
+    await type('src')
+    await act(async () => finishWalk(['src/validation.cpp', 'src/init.cpp'], true))
+    await vi.waitFor(() => expect(results()).toHaveLength(2))
+    expect(el.textContent).toContain('Searched the first 2 files')
+  })
+
+  it('a new list of results resets the highlight, so Enter still opens one', async () => {
+    await render()
+    await type('src')
+    await vi.waitFor(() => expect(results()).toHaveLength(3))
+    await key('ArrowDown')
+    await key('ArrowDown')
+    // The walk's exact list replaces the index's under the same query: one result now.
+    await act(async () => finishWalk(['src/validation.cpp']))
+    await vi.waitFor(() => expect(results()).toEqual(['src/validation.cpp']))
+    await key('Enter')
+    expect(push).toHaveBeenCalledWith(expect.stringContaining(`path=${encodeURIComponent('src/validation.cpp')}`))
   })
 
   it('ranks fuzzily, moves with the arrow keys and opens the choice with Enter', async () => {

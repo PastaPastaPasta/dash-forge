@@ -77,7 +77,11 @@ export function GoToFile({
   // The index's list (no read when the column already loaded it), then the walk's exact one.
   const indexed = useAsync(() => indexedFilePaths(reader, tipOid), [key, tipOid], { enabled: started })
   const walk = useAsync(async () => repoFilesWalk(key, tipOid, reader, await rootTree()), [key, tipOid], { enabled: started })
-  const paths = useMemo(() => walk.data?.files.map((f) => f.path) ?? indexed.data ?? null, [walk.data, indexed.data])
+  // A walk that stopped at its file cap names fewer paths than a complete index: the index then
+  // stays the list, and the walk's partial one answers only when there is no index.
+  const walkPaths = useMemo(() => walk.data?.files.map((f) => f.path) ?? null, [walk.data])
+  const walkInUse = walkPaths !== null && (!walk.data?.truncated || indexed.data == null)
+  const paths = walkInUse ? walkPaths : (indexed.data ?? walkPaths)
   const q = query.trim()
   const hits = useMemo(() => (q === '' || paths === null ? [] : fuzzyRank(q, paths, RESULTS)), [q, paths])
   const hrefOf = (path: string): string => repoHref('/repo/blob', addr, { path, ...(refParam ? { ref: refParam } : {}) })
@@ -97,8 +101,9 @@ export function GoToFile({
     return () => document.removeEventListener('keydown', onKey)
   }, [])
 
-  // A new query starts from its best match.
-  useEffect(() => setActive(0), [q])
+  // A new list of results (a new query, or the walk's list replacing the index's) starts from its
+  // best match, so the highlighted row always exists and Enter always opens something.
+  useEffect(() => setActive(0), [hits])
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>): void => {
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -174,7 +179,7 @@ export function GoToFile({
               </Link>
             </li>
           ))}
-          {walk.data?.truncated ? (
+          {walkInUse && walk.data?.truncated ? (
             <li className="px-3 py-1.5 text-[11px] text-anvil-500 dark:text-anvil-400">Searched the first {plural(walk.data.files.length, 'file')}.</li>
           ) : null}
         </ul>
