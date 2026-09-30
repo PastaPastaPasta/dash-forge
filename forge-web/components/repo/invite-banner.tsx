@@ -21,7 +21,7 @@ import { CopyRow } from '@/components/ui/copy-row'
 import { previewCreate } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
-import { retryUntil } from '@/lib/view/retry'
+import { readUntil } from '@/lib/view/retry'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Author } from '@/components/author'
@@ -47,14 +47,15 @@ export function InviteBanner({ repo }: { repo: RepoRef }): JSX.Element | null {
   const accepted = acceptedBy !== null && acceptedBy === identity
   const applies = invited && identity !== null && identity !== repo.ownerId
   const standing = useAsync<Standing>(
-    async () => {
+    async (signal) => {
       const read = async (): Promise<Standing> => {
         const members = await readMembershipsCached(sdk!, repo, network)
         if (members.some((m) => m.identity === identity)) return 'member'
         return (await findConsent(sdk!, repo, identity!)) !== null ? 'accepted' : 'invited'
       }
-      // After this tab's accept, re-read until a node shows it, as Settings does after a grant.
-      return accepted ? retryUntil(read, (s) => s !== 'invited', 8) : read()
+      if (!accepted) return read()
+      // After this tab's accept, re-read until a node shows it (bounded; stops on unmount).
+      return (await readUntil(read, [(s) => s !== 'invited'], { attempts: 8, signal })) ?? 'accepted'
     },
     [ready, repo.repoId, identity ?? '', network],
     { enabled: applies && ready && sdk !== null },

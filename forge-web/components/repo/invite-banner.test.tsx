@@ -16,7 +16,7 @@ import type { Membership } from '@/lib/rules/v2'
 const ME = 'CJao2MVHL4x3f2Ko2xTUibnZ8G1t9exTPtvJnCbHAgDH'
 const OWNER = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 
-/** What each `findConsent` answers, in order (then the last one again). */
+/** What each `findConsent` answers, in order (then the last one again); `'throw'` fails the read. */
 let consentReads: (string | null)[] = []
 let consentCalls = 0
 let members: Membership[] = []
@@ -40,8 +40,9 @@ vi.mock('@/lib/repo', async (orig) => ({
   repoContractIds: () => [],
   readMembershipsCached: async () => members,
   findConsent: async () => {
-    const i = Math.min(consentCalls++, consentReads.length - 1)
-    return consentReads[i] ?? null
+    const answer = consentReads[Math.min(consentCalls++, consentReads.length - 1)] ?? null
+    if (answer === 'throw') throw new Error('network: consent read failed')
+    return answer
   },
   acceptInvite: async () => ({ documentId: 'consent1', confirmed: true, cost: { credits: 0, dash: 0 }, actualCredits: null }),
 }))
@@ -111,6 +112,15 @@ describe('the invite banner after a confirmed accept', () => {
     await flush(1500 * 5)
     expect(q('invite-accepted')).not.toBeNull()
     expect(consentCalls).toBe(4)
+  })
+
+  it('a re-read that fails after the accept does not bring back the button either', async () => {
+    consentReads = [null, 'throw']
+    await render()
+    await accept()
+    expect(q('invite-accepted')).not.toBeNull()
+    expect(q('invite-error')).toBeNull()
+    expect(q('invite-accept')).toBeNull()
   })
 
   it('gives way to a read that finds the viewer a member', async () => {
