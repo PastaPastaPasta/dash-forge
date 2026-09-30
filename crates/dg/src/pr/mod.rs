@@ -622,11 +622,14 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
     // A fixed number of requests for the whole page (D-500: it was about 9 per PR).
     let page = collab.list_patch_views(handle, limit).await?;
     let (hidden, more) = (page.hidden, page.more);
+    let read = page.rows.len();
     let rows: Vec<_> = page
         .rows
         .into_iter()
         .filter(|(v, _)| state.matches(v.state.open))
         .collect();
+    // The PRs the state filter left out, for the empty list's hint.
+    let others = read - rows.len();
     let json_rows: Vec<_> = rows
         .iter()
         .map(|(v, a)| {
@@ -652,7 +655,18 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
         json!({ "count": rows.len(), "prs": json_rows, "hidden": hidden, "truncated": more }),
         || {
             if rows.is_empty() {
-                println!("no pull requests");
+                println!("{}", state.empty("pull requests"));
+                if others > 0 {
+                    println!(
+                        "({others} {}: `--state all` lists {})",
+                        if state.matches(true) {
+                            "closed or merged"
+                        } else {
+                            "open"
+                        },
+                        if others == 1 { "it" } else { "them" }
+                    );
+                }
             }
             for (v, a) in &rows {
                 let count = |mark: &str, n: usize| {

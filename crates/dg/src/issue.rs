@@ -351,7 +351,7 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
         }),
         || {
             if rows.is_empty() {
-                println!("no issues");
+                println!("{}", empty_issues_line(args));
             }
             for (n, title, _, st, pinned) in &rows {
                 let mark = state_word(st.open);
@@ -517,6 +517,20 @@ fn timeline<'a>(
         .collect();
     items.sort_by_key(|&(at, id, _)| (at, id));
     items.into_iter().map(|(_, _, i)| i).collect()
+}
+
+/// What an empty `dg issue list` says: the state filter named ("no open issues"), and whether
+/// other filters narrowed it.
+fn empty_issues_line(args: &IssueListArgs) -> String {
+    let filtered = !args.labels.is_empty()
+        || args.author.is_some()
+        || args.assignee.is_some()
+        || args.search.is_some();
+    format!(
+        "{}{}",
+        args.state.empty("issues"),
+        if filtered { " match the filters" } else { "" }
+    )
 }
 
 /// What an issue event did, in the web timeline's words.
