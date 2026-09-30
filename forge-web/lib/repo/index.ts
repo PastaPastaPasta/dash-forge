@@ -300,6 +300,7 @@ export {
   type ForkResult,
   type ForkStep,
 } from './fork'
+export { noteForkOf, readForkParent, resetForkParents } from './fork-parent'
 export {
   DEFAULT_CONFIG,
   MAX_PROTECTED_PATTERNS,

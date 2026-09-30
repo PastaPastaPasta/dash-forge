@@ -16,9 +16,10 @@
  * Each by-reference manifest is external-only (`storage` 1, no chunks: RC1 `storageShape`) and
  * keeps the parent's `sizeBytes`, which the parent's own manifest already held to 0–1 TiB.
  *
- * Browse locators are not copied: their `packRef`s index the parent's pack list. The fork
- * browses by the in-browser fallback clone (which follows `platform://` locators) until its
- * first push publishes a locator of its own.
+ * Browse locators are not copied: their `packRef`s index the parent's pack list, and nothing
+ * needs paying for twice. A reader of the fork reuses the parent's published index, remapped
+ * into the fork's pack list by `packHash`, and its history indexes (`loadBrowseContext`,
+ * QW-023); the fork's own pushes index just the packs they store.
  *
  * Resumable without a journal: each step checks what the fork already has, and a same-named
  * repo of the signer's that is not a fork of this parent is refused, so the parent's packs and

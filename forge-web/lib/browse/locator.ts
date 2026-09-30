@@ -201,6 +201,39 @@ export class ObjectLocator {
     return this.bytes
   }
 
+  /**
+   * This locator in another `packRef` space: each row's `packRef` replaced by `map`'s, and the
+   * rows of a pack `map` leaves out dropped. Sound because a row addresses bytes WITHIN a pack
+   * (`offset`, `length`, the delta span all stay the same), and a pack is the same bytes wherever
+   * it is listed: a fork reads its parent's index this way (QW-023), each parent `packRef`
+   * mapped to the fork's position of the same `packHash`. `map` must be one-to-one.
+   */
+  remapPacks(map: ReadonlyMap<number, number>): ObjectLocator {
+    const rows: Uint8Array[] = []
+    // An order-preserving map keeps the (oid, packRef) order, so no sort is needed.
+    let sorted = true
+    let identity = true
+    for (let i = 0; i < this.count; i++) {
+      const row = this.row(i)
+      const from = u16be(row, OFF_PACKREF)
+      const to = map.get(from)
+      if (to === undefined) {
+        identity = false
+        continue
+      }
+      if (to !== from) identity = false
+      const out = row.slice()
+      out[OFF_PACKREF] = (to >> 8) & 0xff
+      out[OFF_PACKREF + 1] = to & 0xff
+      const prev = rows[rows.length - 1]
+      if (prev !== undefined && compareBytes(prev, out, OID_LEN + 2) > 0) sorted = false
+      rows.push(out)
+    }
+    if (identity) return this
+    if (!sorted) rows.sort((a, b) => compareBytes(a, b, OID_LEN + 2))
+    return ObjectLocator.fromSortedRows(rows)
+  }
+
   /** The distinct `packRef`s this locator indexes — what a coverage check compares. */
   packRefsCovered(): Set<number> {
     const refs = new Set<number>()

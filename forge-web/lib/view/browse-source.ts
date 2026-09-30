@@ -20,7 +20,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 
 import { ACTIVE_NETWORK, CHUNK_PAYLOAD_MAX, PACK_KIND } from '../constants'
 import { loadIndexArtifact } from './index-cache'
-import { attachHistory, historySource } from './history-source'
+import { attachHistory, chainHistory, historySource } from './history-source'
 import {
   BrowseReader,
   FlatIndex,
@@ -35,6 +35,7 @@ import {
   type AsOf,
   readNewestManifestOfKind,
   readBrowseManifests,
+  readForkParent,
   staleRepoTimelines,
   onRepoContentWritten,
   repoKey,
@@ -1329,8 +1330,58 @@ export async function loadBrowseContext(
     manifests: ids,
   })
 
+  const own = await publishedLocator(sdk, repo, manifests, livePacks)
+  if (own === 'behind') return behind('index-behind')
+  let locator = own
+  // A fork's own fragments index only the packs it pushed itself; the packs it holds by
+  // reference to its parent are indexed by the parent's (QW-023).
+  let inherited: Inherited | null = null
+  if (locator === null || !coversSpace(locator, livePacks)) {
+    inherited = await inheritedIndex(sdk, repo, livePacks)
+    if (inherited !== null) locator = locator === null ? inherited.locator : ObjectLocator.merge([locator, inherited.locator])
+  }
+  if (locator === null) return behind('no-index')
+  // Coverage: every pack in the space that HOLDS anything must be indexed by some fragment.
+  // A gap means objects that exist on-chain are unreachable through the index — the honest
+  // answer is the fallback clone, not a reader that throws on the first uncovered object.
+  if (!coversSpace(locator, livePacks)) return behind('index-behind')
+
+  // The packRef space is the current live pack set: the fragments cover all of it, and each
+  // was built over a prefix of it (a parent's remapped into it), so every row's packRef means
+  // the same pack here.
+  const packs = buildPackSource(sdk, repo, manifests)
+  const reader = repoReader(sdk, repo, locator, packs, livePacks)
+  attachRepoHistory(sdk, repo, reader, manifests, inherited)
+  return { kind: 'ready', context: { locator, packs, reader }, manifests: ids }
+}
+
+/**
+ * Whether `locator` indexes every pack of `space` that holds anything.
+ *
+ * The `objectCount > 0` exemption is not a loophole: a zero-object pack contributes no
+ * rows, so its packRef could never appear in `covered` and the repo would read as
+ * index-behind forever. The push path no longer stores one (forge-core
+ * `upload_push_pack`), but repos pushed by an older client can already carry one — a new
+ * branch or tag at an already-stored commit packed nothing.
+ */
+function coversSpace(locator: ObjectLocator, space: readonly PackManifest[]): boolean {
+  const covered = locator.packRefsCovered()
+  return space.every((m, i) => m.objectCount === 0 || covered.has(i))
+}
+
+/**
+ * The merged index `repo`'s published fragments make over `space` (its live pack space): null
+ * when it published none, `behind` when they cannot be trusted over this space (or will not
+ * load). Coverage is the caller's: a fragment may index only part of the space.
+ */
+async function publishedLocator(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  manifests: readonly PackManifest[],
+  space: readonly PackManifest[],
+): Promise<ObjectLocator | null | 'behind'> {
   const fragments = locatorFragments(manifests)
-  if (fragments.length === 0) return behind('no-index')
+  if (fragments.length === 0) return null
 
   // Every fragment must index a PREFIX of the current pack space, or the `packRef`s merged
   // from different fragments would mean different packs. Between repacks the live pack list
@@ -1340,8 +1391,8 @@ export async function loadBrowseContext(
   for (const f of fragments) {
     // As of the fragment's first upload `(createdAt, id)`.
     const asOf = locatorPackSpace(manifests, { createdAt: f.createdAt, id: f.documentId })
-    if (asOf.length > livePacks.length) return behind('index-behind')
-    if (asOf.some((m, i) => m.packHash !== livePacks[i]?.packHash)) return behind('index-behind')
+    if (asOf.length > space.length) return 'behind'
+    if (asOf.some((m, i) => m.packHash !== space[i]?.packHash)) return 'behind'
   }
 
   // Oldest-first for a stable row order. Rows are keyed by `(oid, packRef)`, so the merge
@@ -1366,42 +1417,75 @@ export async function loadBrowseContext(
     )
     locator = ObjectLocator.merge(parts)
   } catch {
-    return behind('index-behind')
+    return 'behind'
   }
-
-  // Coverage: every pack in the space that HOLDS anything must be indexed by some fragment.
-  // A gap means objects that exist on-chain are unreachable through the index — the honest
-  // answer is the fallback clone, not a reader that throws on the first uncovered object.
-  //
-  // The `objectCount > 0` exemption is not a loophole: a zero-object pack contributes no
-  // rows, so its packRef could never appear in `covered` and the repo would read as
-  // index-behind forever. The push path no longer stores one (forge-core
-  // `upload_push_pack`), but repos pushed by an older client can already carry one — a new
-  // branch or tag at an already-stored commit packed nothing.
-  const covered = locator.packRefsCovered()
-  const complete = livePacks.every((m, i) => m.objectCount === 0 || covered.has(i))
-  if (!complete) return behind('index-behind')
   // Out-of-range refs mean the fragments were built over a different pack space than the
   // one derived here — a prefix check cannot see this, a bounds check can.
-  for (const r of covered) {
-    if (r >= livePacks.length) return behind('index-behind')
+  for (const r of locator.packRefsCovered()) {
+    if (r >= space.length) return 'behind'
   }
+  return locator
+}
 
-  // The packRef space is the current live pack set: the fragments cover all of it, and each
-  // was built over a prefix of it, so every row's packRef means the same pack here.
-  const packs = buildPackSource(sdk, repo, manifests)
-  const reader = repoReader(sdk, repo, locator, packs, livePacks)
-  attachRepoHistory(sdk, repo, reader, manifests)
-  return { kind: 'ready', context: { locator, packs, reader }, manifests: ids }
+/** What a fork reuses of its parent's published indexes. */
+interface Inherited {
+  readonly parent: RepoRef
+  /** The parent's index, in the fork's `packRef` space: only the packs the fork holds. */
+  readonly locator: ObjectLocator
+  /** The parent's pack list, for its history indexes. */
+  readonly manifests: readonly PackManifest[]
+}
+
+/**
+ * A fork's parent's index, remapped into the fork's pack space (QW-023). A fork records each
+ * parent pack by reference (`lib/repo/fork.ts`), the same `packHash` and so the same bytes, but
+ * the parent's fragments number packs by the PARENT's list. Each parent `packRef` is mapped to
+ * the fork's position of the same pack, and the rows of packs the fork does not hold (pushed to
+ * the parent since) are dropped, so a fork reads nothing it does not have. Without this every
+ * visitor of a fork rebuilt its whole index in the browser (the fallback clone).
+ *
+ * Null when `repo` is not a fork, the parent published no index this can trust, or none of it
+ * is the fork's; a failed read is null too (the fallback clone is still correct), never an error.
+ */
+async function inheritedIndex(sdk: EvoSDK, repo: RepoRef, space: readonly PackManifest[]): Promise<Inherited | null> {
+  if (repo.visibility !== 'public') return null
+  try {
+    const parent = await readForkParent(sdk, repo)
+    if (parent === null) return null
+    const manifests = await readBrowseManifests(sdk, parent, { network: ACTIVE_NETWORK.network })
+    const parentSpace = locatorPackSpace(manifests)
+    const published = await publishedLocator(sdk, parent, manifests, parentSpace)
+    if (published === null || published === 'behind') return null
+    const at = new Map(space.map((m, i) => [m.packHash.toLowerCase(), i]))
+    const map = new Map<number, number>()
+    parentSpace.forEach((m, i) => {
+      const j = at.get(m.packHash.toLowerCase())
+      if (j !== undefined) map.set(i, j)
+    })
+    if (map.size === 0) return null
+    const locator = published.remapPacks(map)
+    return locator.count === 0 ? null : { parent, locator, manifests }
+  } catch {
+    return null
+  }
 }
 
 /**
  * Give a context's reader the repository's history index ({@link historySource}): the file list's
  * commit column and the commit count read it instead of walking history. From the manifests the
- * resolve already read, so it costs nothing until a view loads an index.
+ * resolve already read, so it costs nothing until a view loads an index. A fork also reads its
+ * parent's: an index describes a tip commit's history, the same in every repository holding it.
  */
-function attachRepoHistory(sdk: EvoSDK, repo: RepoRef, reader: BrowseReader, manifests: readonly PackManifest[]): void {
-  attachHistory(reader.memoScope, historySource(manifests, (m) => loadArtifactBytes(sdk, repo, m)))
+function attachRepoHistory(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  reader: BrowseReader,
+  manifests: readonly PackManifest[],
+  inherited: Inherited | null,
+): void {
+  const own = historySource(manifests, (m) => loadArtifactBytes(sdk, repo, m))
+  const parent = inherited === null ? null : historySource(inherited.manifests, (m) => loadArtifactBytes(sdk, inherited.parent, m))
+  attachHistory(reader.memoScope, chainHistory(own, parent))
 }
 
 /**

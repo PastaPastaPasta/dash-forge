@@ -35,6 +35,7 @@ import { compositeOf, countsAt, docsAt, queryComposite, type CompositeSub } from
 import { cursorPadded, queryAllDocuments, shareInFlight, type PlainDocument, type WhereClause } from '../sdk'
 import { DOC, type RepoRef } from './contract'
 import { membersGeneration, membershipsFromDocs, seedMemberships } from './members'
+import { noteForkOf } from './fork-parent'
 import { repoRefOf, toRepoDoc, type RepoDoc } from './resolveRepo'
 import { seedTargetCounts } from './social'
 import { repoSource } from './source'
@@ -228,6 +229,7 @@ async function readChrome(
   if (raw === undefined) return null
   const doc = toRepoDoc(raw)
   const repo = repoRefOf(forge, doc)
+  noteForkOf(forge, doc.repoId, doc.forkOf)
   // The name now names another repo (the old one deleted, a new one made): what is held was the
   // old repo's, and the deltas were asked relative to it. Read the new one from the start.
   if (known !== undefined && held?.repoId !== repo.repoId) {
