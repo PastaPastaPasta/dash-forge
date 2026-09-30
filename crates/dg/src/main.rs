@@ -49,7 +49,10 @@ use forge_core::user_error::{codes, ErrorContext, UserError};
 #[command(
     name = "dg",
     version = env!("DASH_FORGE_VERSION"),
-    about = "Dash Forge CLI (gh-shaped)"
+    about = "Dash Forge CLI (gh-shaped)",
+    after_help = "Inside a dash:// clone, leave out <REPO> to use the clone's repository \
+                  (`dg issue label 3 add bug`), or name one anywhere on the line with \
+                  -R/--repo <REPO>, as with gh."
 )]
 pub struct Cli {
     /// Emit machine-readable JSON instead of human output.
@@ -1486,18 +1489,25 @@ fn main() {
     forge_core::logging::init_cli();
 
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    // `-R <REPO>` / `--repo <REPO>` names the repository wherever it is typed, as with `gh`.
+    let (args, explicit) = match infer::explicit_repo(&args) {
+        Some(a) => (a, true),
+        None => (args, false),
+    };
     let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
-        // Inside a `dash://` clone a left-out repository is the clone's, as with `gh`.
-        Err(e) if e.kind() == clap::error::ErrorKind::MissingRequiredArgument => {
-            match infer::with_repo(&args, storage::clone_repo)
-                .and_then(|a| Cli::try_parse_from(a).ok())
-            {
-                Some(cli) => cli,
-                None => exit_on_parse_error(&e),
+        Err(e) if explicit || is_help_or_version(&e) => exit_on_parse_error(&e),
+        // Inside a `dash://` clone a left-out repository is the clone's, as with `gh`
+        // (QW-041): the line is tried again with it in the repository slot.
+        Err(e) => match infer::with_repo(&args, storage::clone_repo)
+            .and_then(|a| Cli::try_parse_from(a).ok())
+        {
+            Some(cli) => {
+                infer::mark_repo_from_clone();
+                cli
             }
-        }
-        Err(e) => exit_on_parse_error(&e),
+            None => exit_on_parse_error(&e),
+        },
     };
 
     // Completions touch neither config nor the network: handle them before `Ctx::resolve`,
@@ -1534,16 +1544,22 @@ fn main() {
 fn print_completions(shell: clap_complete::Shell, out: &mut dyn std::io::Write) {
     clap_complete::generate(shell, &mut Cli::command(), "dg", out);
 }
-/// A command line clap rejected: `--help`/`--version` print and exit 0 as usual; a usage
-/// error exits 2 (E201), as `{"error": …}` on stdout when `--json` was asked for.
-fn exit_on_parse_error(e: &clap::Error) -> ! {
+/// Whether clap's "error" is a `--help` / `--version` page (or the help a bare `dg issue`
+/// prints), not a usage error.
+fn is_help_or_version(e: &clap::Error) -> bool {
     use clap::error::ErrorKind;
-    if matches!(
+    matches!(
         e.kind(),
         ErrorKind::DisplayHelp
             | ErrorKind::DisplayVersion
             | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
-    ) {
+    )
+}
+
+/// A command line clap rejected: `--help`/`--version` print and exit 0 as usual; a usage
+/// error exits 2 (E201), as `{"error": …}` on stdout when `--json` was asked for.
+fn exit_on_parse_error(e: &clap::Error) -> ! {
+    if is_help_or_version(e) {
         e.exit();
     }
     let text = e.to_string();

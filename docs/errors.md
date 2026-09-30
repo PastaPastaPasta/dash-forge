@@ -47,7 +47,7 @@ Fix: run the command again with `RUST_LOG=debug` for more detail. If it keeps ha
 
 Fix: check the owner id and the name (`dg repo list --owner <identity id>`). Also check the network, because a repo created on testnet does not exist on mainnet: `dg doctor` shows which network and contracts are in use.
 
-`dg` also reports E102 before anything is written when a command names a ref the repository does not have: a pull request's base branch (`dg pr create --base`), or a release's tag (`dg release create --tag`; push the tag first). The message lists the branches or tags it does have.
+`dg` also reports E102 before anything is written when a command names a ref the repository does not have: a pull request's base branch (`dg pr create --base`), or a release's tag (`dg release create --tag`; push the tag first). The message lists the branches or tags it does have. `dg issue label … add` does the same for a label the repository does not define (define it first with `dg label create`), and a DPNS name that is not registered names the network it was looked up on.
 
 ## E103
 
@@ -79,7 +79,7 @@ Fix: apply the suggestions that still fit, one by one or with `--all`, and edit 
 
 ## E201
 
-**Invalid arguments.** The flags or arguments do not make sense together, for example `dg issue label` without exactly one of `--add` or `--remove`, or a value is not of the form the flag takes (a `--color` that is not a hex color). A command line `dg` cannot parse at all (a missing argument, an unknown flag) is E201 too: the cause quotes what is wrong, and the command's usage line follows the error block. Inside a `dash://` clone, a command that leaves out the repository uses the clone's, so `dg issue list` there is not an error.
+**Invalid arguments.** The flags or arguments do not make sense together, for example `dg issue label` without exactly one of `--add` or `--remove`, or a value is not of the form the flag takes (a `--color` that is not a hex color). A command line `dg` cannot parse at all (a missing argument, an unknown flag) is E201 too: the cause quotes what is wrong, and the command's usage line follows the error block. Inside a `dash://` clone, a command that leaves out the repository uses the clone's, so `dg issue list`, `dg issue label 3 add bug` or `dg release download v1.0` there is not an error. What you typed where the repository goes is kept when it names one: the clone's own repository (`dg label create project` in a clone of `alice/project` is a label name left out), or an `owner/name` whose owner is an identity id, `@name` or `name.dash`. `-R <repo>` (`--repo`) names the repository anywhere on the line, as with `gh`. In a clone of a fork, `dg pr create` with no repository opens the PR in the fork's parent.
 
 Fix: see `dg <command> --help`.
 
@@ -91,7 +91,7 @@ Fix: pick a name like `my-project`.
 
 ## E203
 
-**Invalid repository reference or `dash://` URL.** `dg` takes `owner/name`, where `owner` is the owner's base58 identity id or DPNS username (`alice`, `alice.dash`), a bare `name` for your own repositories, or the repository's id. The helper takes `dash://<owner>/<repo>` (identity id or DPNS username) or `dash://<repo id>`. A reference with more than one `/` (`alice/b/c`) is E203 too.
+**Invalid repository reference or `dash://` URL.** `dg` takes `owner/name`, where `owner` is the owner's base58 identity id or DPNS username (`alice`, `@alice`, `alice.dash`), a bare `name` for your own repositories, or the repository's id. The helper takes `dash://<owner>/<repo>` (identity id or DPNS username) or `dash://<repo id>`. A reference with more than one `/` (`alice/b/c`) is E203 too.
 
 Fix: use `owner/name`, e.g. `dg repo view alice/project` or `dg repo view 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB/project`.
 
