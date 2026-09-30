@@ -4448,13 +4448,6 @@ impl<'a> Collab<'a> {
             .and_then(|r| r.sealed.as_ref())
             .map(|s| s.fields.clone())
             .unwrap_or_default();
-        // New files or notes build a new asset list from the previous one; anything else
-        // keeps naming it, unopened.
-        let rebuild = !input.files.is_empty() || !input.notes.is_empty();
-        let prev_manifest = match &carried.asset_manifest {
-            Some(_) if rebuild => Some(self.release_manifest(repo, &carried).await?),
-            _ => None,
-        };
         let mut fields = ReleaseFields {
             tag: tag.clone(),
             name: non_empty(&input.name).or(carried.name.clone()),
@@ -4471,6 +4464,16 @@ impl<'a> Collab<'a> {
             notes: carried.notes.clone(),
             notes_continue: carried.notes_continue,
             asset_manifest: carried.asset_manifest.clone(),
+        };
+        // New files or notes build a new asset list from the previous one, and so do carried
+        // notes that no longer fit beside a longer name (§16.2: the writer never refuses its
+        // own budget); anything else keeps naming the list, unopened.
+        let rebuild = !input.files.is_empty()
+            || !input.notes.is_empty()
+            || release::writer_tlv(&fields).is_err();
+        let prev_manifest = match &carried.asset_manifest {
+            Some(_) if rebuild => Some(self.release_manifest(repo, &carried).await?),
+            _ => None,
         };
         // the full notes, as the new revision states them
         let full_notes = match (non_empty(&input.notes), &prev_manifest) {
