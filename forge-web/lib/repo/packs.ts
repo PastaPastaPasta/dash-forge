@@ -12,9 +12,9 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
-import { DEFAULT_NETWORK, PACK_KIND, type Network, type PackKind } from '../constants'
+import { DEFAULT_NETWORK, PACK_KIND, STORAGE, type Network, type PackKind } from '../constants'
 import { repoTimelines } from './chrome'
-import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
+import { queryAllDocuments, queryDocumentsWithProof, sumDocumentsGrouped, uintOfGroupKey, type PlainDocument } from '../sdk'
 import { v2PackList, type Role } from '../rules/v2'
 import { DOC, str, stringArray, type RepoRef } from './contract'
 import { base64ToBytes } from '../sdk'
@@ -127,6 +127,43 @@ export async function readPackManifests(sdk: EvoSDK, repo: RepoRef): Promise<Pac
     repoSource(repo).repoQuery(DOC.packManifest, { orderBy: [['$createdAt', 'desc']] }),
   )
   return documents.map(toManifest)
+}
+
+/** Bytes of git packs stored for a repo, by where they live ({@link readGitPackBytes}). */
+export interface GitPackBytes {
+  /** `storage` 0: in `chunk` documents on Platform. */
+  readonly platform: number
+  /** `storage` 1: at the manifests' external URIs. */
+  readonly external: number
+}
+
+/**
+ * The stored size of a repo's git packs (kind 0), on Platform and external: the closest to
+ * GitHub's repo size, which also counts the git objects rather than the checkout. One proved
+ * grouped sum of `sizeBytes` on `packManifest.bytes` (`(repoId, storage, kind)`, `summable`; RC1
+ * O-05), which covers only a query binding all three: `storage in [0, 1]` grouped by `storage`,
+ * `kind == 0`. It counts every manifest: a pack a later push superseded, and each member's copy.
+ */
+export async function readGitPackBytes(sdk: EvoSDK, repo: RepoRef): Promise<GitPackBytes> {
+  const sums = await sumDocumentsGrouped(
+    sdk,
+    {
+      ...repoSource(repo).repoQuery(DOC.packManifest, {
+        where: [['storage', 'in', [STORAGE.PLATFORM, STORAGE.EXTERNAL]], ['kind', '==', PACK_KIND.GIT_PACK]],
+        orderBy: [['storage', 'asc']],
+      }),
+      groupBy: ['storage'],
+    },
+    'sizeBytes',
+  )
+  // Keys decoded whatever the integer's width (`uintOfGroupKey`), as the kind counts are.
+  const out = { platform: 0, external: 0 }
+  for (const [key, bytes] of sums) {
+    const storage = uintOfGroupKey(key)
+    if (storage === STORAGE.PLATFORM) out.platform += bytes
+    else if (storage === STORAGE.EXTERNAL) out.external += bytes
+  }
+  return out
 }
 
 /** A `(createdAt, id)` bound; a bare `$createdAt` includes every document of that time. */
