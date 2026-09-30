@@ -32,7 +32,7 @@ coverage/
 # Spike build artifacts (throwaway binaries)
 spikes/**/artifacts/
 spikes/**/*.bin
-spikes/**/node_modules/
+spikes/**/node_modules
 spikes/**/.smoke/
 
 # forge-contracts local install
