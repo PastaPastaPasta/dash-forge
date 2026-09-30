@@ -55,7 +55,7 @@ With no storage profile the command stops before creating anything: *"No storage
 
 ### (d) Contributor: issue and PR from the browser
 - **Issue**: `Issues → New issue`: title, Markdown body with preview, `~0.0004 DASH`. Signed-out click opens the sign-in sheet with the draft preserved. On a duplicate-number race the client retries once, then says *"Someone claimed #42 a moment ago; retrying as #43."*
-- **PR from an existing branch**: source picker lists branches the user can write plus the user's forks of this repo (`forkOf` query); base defaults to the repo default; the diff renders before submit; `~0.0005 DASH`. Nothing is pushed here. Copy: *"Need to push a branch first? `git push dash://you/project HEAD:my-fix`."*
+- **PR from an existing branch**: source picker lists branches the user can write plus the user's forks of this repo (`forkOf` query); base defaults to the repo default; the diff renders before submit; `~0.0005 DASH`. Nothing is pushed here. Copy: *"Need to push a branch first?"* with a remote the viewer can push to: a maintainer or writer gets this repo's own `dash://owner/project`, anyone else their fork's `dash://you/<fork name>` or, with no fork yet, a Fork button (never `dash://you/project`, which usually does not exist).
 - **Fork** button: `repo` with `forkOf` + owner `maintainer` + `config` pointing at the parent's packs, no re-upload, `~0.0006 DASH`. P0, because outsider PRs depend on it. **Suggest a change** (edit → fork → push → PR) is P1.
 
 ### (e) Team: private repo
