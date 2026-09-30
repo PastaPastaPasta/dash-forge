@@ -102,6 +102,14 @@ const MILESTONE_MAX = 63
 /** A source forge's login (GitHub's shape: letters, digits and inner hyphens, at most 39). */
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/
 
+/**
+ * The longest `?q=` read (a crafted link cannot force unbounded parsing or DPNS reads). `q` also
+ * carries the qualifiers with no parameter of their own (a 63-character milestone, several
+ * `-label:`s, `comments:`, `in:`, a PR's `draft:` and `review-requested:`), so this leaves room
+ * for them beside the free text: a cut mid-qualifier would read back as a different filter.
+ */
+export const Q_MAX = 512
+
 /** The bytes an issue, PR or comment `body` may hold (the contract's `maxBytes`). */
 export const BODY_MAX = 5120
 
@@ -133,7 +141,7 @@ export function parseIssueQuery(params: { get(name: string): string | null; getA
     assignee: identityParam(params.get('assignee'), ['me', 'none']),
     mentions: params.get('mentions') === 'me',
     sort: SORTS.includes(sort as IssueSort) ? (sort as IssueSort) : 'newest',
-    q: (params.get('q') ?? '').slice(0, 200),
+    q: (params.get('q') ?? '').slice(0, Q_MAX),
     page: Number.isInteger(page) && page >= 1 && page <= 10_000 ? page : 1,
   }
   // A GitHub link carries its qualifiers inside `q` (`/issues?q=is:closed+label:bug`): lift
@@ -544,7 +552,9 @@ function liftQualifiers(text: string, base: IssueListQuery): { query: IssueListQ
         used = false
     }
     if (used) continue
-    if (isQualifierKey(key)) unresolved.push(tok)
+    // A GitHub key with nothing after its colon (`status: broken`, `type: error`) is prose, not a
+    // qualifier: it stays free text, as it does on GitHub. An applied key's empty value is reported.
+    if (isQualifierKey(key) && (value !== '' || APPLIED_KEYS.has(key))) unresolved.push(tok)
     else free.push(tok)
   }
   return {

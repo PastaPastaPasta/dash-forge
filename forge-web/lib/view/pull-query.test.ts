@@ -52,6 +52,7 @@ describe('PR list query (L-44)', () => {
   it('reads draft:, is:draft and review-requested:, and round-trips them through the URL (QW-020)', () => {
     expect(parsePullSearch('is:draft').draft).toBe(true)
     expect(parsePullSearch('draft:false').draft).toBe(false)
+    expect(parsePullSearch('Draft:TRUE').draft).toBe(true)
     expect(parsePullSearch('review-requested:@me').reviewRequested).toBe('me')
     expect(parsePullSearch(`review-requested:${ID} fix`)).toMatchObject({ reviewRequested: ID, q: 'fix' })
     expect(unresolvedPullQualifiers('draft:maybe review-requested:bob.dash review:approved')).toEqual(['review:approved', 'draft:maybe', 'review-requested:bob.dash'])

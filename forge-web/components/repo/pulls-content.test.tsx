@@ -24,7 +24,9 @@ vi.mock('next/navigation', () => ({
 }))
 vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: {}, ready: true, network: 'devnet', status: { phase: 'ready' } }) }))
 vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: null }) }))
-vi.mock('@/hooks/use-mirror-trust', () => ({ useMirrorTrust: () => null }))
+/** The mirror trust set the list reads (null: not read yet). */
+let mirrorTrust: ReadonlySet<string> | null = null
+vi.mock('@/hooks/use-mirror-trust', () => ({ useMirrorTrust: () => mirrorTrust }))
 vi.mock('@/hooks/use-repo-chrome', () => ({ useRepoWriteGeneration: () => 0 }))
 vi.mock('@/components/repo/use-repo-totals', () => ({ useRepoTotals: () => 203 }))
 vi.mock('@/components/repo/mirror-note', () => ({ MirrorNote: () => null }))
@@ -118,6 +120,7 @@ let el: HTMLDivElement
 beforeEach(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   search = ''
+  mirrorTrust = null
   lookupGate = null
   dotGate = null
   dotReads.length = 0
@@ -251,6 +254,12 @@ describe('PullsContent (L-44)', () => {
     expect(replaced.at(-1)).toBe('/repo/pulls/?owner=o&name=n&q=author%3Athephez+fix')
     expect(el.querySelector('[data-testid="pull-search-dropped"]')).toBeNull()
     search = 'owner=o&name=n&q=author%3Athephez+fix'
+    // Until the mirror trust set is read, no row could match: the list waits rather than read.
+    asked.length = 0
+    await render()
+    expect(asked).toEqual([])
+    expect(el.textContent).toContain('Reading pull requests')
+    mirrorTrust = new Set(['owner'])
     await render()
     expect(asked.at(-1)).toMatchObject({ author: null, authorLogin: 'thephez', text: 'fix' })
     expect(el.querySelector('[data-testid="author-login-note"]')?.textContent).toContain('mirrored from @thephez')

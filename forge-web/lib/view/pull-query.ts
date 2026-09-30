@@ -23,6 +23,7 @@ import {
   parseIssueQuery,
   parseSearchText,
   personValue,
+  Q_MAX,
   searchText,
   unresolvedQualifiers,
   type IssueListQuery,
@@ -108,7 +109,8 @@ function liftPullOnly(text: string): PullOnly {
     .replace(PR_VALUE_TOKEN, (_m, lead: string, token: string, key: string, raw: string) => {
       const value = raw.replace(/"/g, '')
       if (key.toLowerCase() === 'draft') {
-        if (value === 'true' || value === 'false') draft = value === 'true'
+        const flag = value.toLowerCase()
+        if (flag === 'true' || flag === 'false') draft = flag === 'true'
         else unresolved.push(token)
       } else {
         const who = personValue(value)
@@ -166,7 +168,7 @@ export function pullDroppedReason(dropped: readonly string[], notFound: readonly
 export function parsePullQuery(params: { get(name: string): string | null; getAll(name: string): string[] }): PullListQuery {
   const raw = params.get('state')
   const state = STATES.includes(raw as PullStateFilter) ? (raw as PullStateFilter) : 'open'
-  const q = (params.get('q') ?? '').slice(0, 200)
+  const q = (params.get('q') ?? '').slice(0, Q_MAX)
   // The rest as the Issues list reads it; `q`'s qualifiers (a GitHub link) are lifted below.
   const issue = parseIssueQuery({ get: (n) => (n === 'state' || n === 'q' ? null : params.get(n)), getAll: (n) => params.getAll(n) })
   const base = { ...toPull(issue, state), q }

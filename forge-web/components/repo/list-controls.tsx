@@ -15,7 +15,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { Network } from '@/lib/constants'
 import type { LabelDef } from '@/lib/repo'
 import { plural, resolveDpnsId } from '@/lib/view'
-import { dpnsAuthorCandidates, resolveSearchNames, withQuery } from '@/lib/view/issue-query'
+import { dpnsAuthorCandidates, Q_MAX, resolveSearchNames, withQuery } from '@/lib/view/issue-query'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -90,7 +90,7 @@ export function useListQuery<Q extends { readonly page: number }>({
     router.replace(`${pathname}?${q.toString()}`, { scroll: false })
   }
   // The linked `?q=`, capped as the query parsers cap it (a crafted link cannot force unbounded DPNS reads).
-  const linkedQ = params.get('q')?.slice(0, 200) ?? null
+  const linkedQ = params.get('q')?.slice(0, Q_MAX) ?? null
 
   const [search, setSearch] = useState<string | null>(null)
   const [dropped, setDropped] = useState<readonly string[]>(() => grammar.unresolved(linkedQ ?? ''))

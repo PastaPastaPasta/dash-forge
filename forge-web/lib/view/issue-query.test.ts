@@ -153,6 +153,23 @@ describe('search-box qualifiers', () => {
     expect(reason).toContain('Only -label: can be negated here.')
   })
 
+  it('keeps a GitHub key with no value as the prose it is ("status: broken")', () => {
+    expect(unresolvedQualifiers('status: broken type: error')).toEqual([])
+    expect(parseSearchText('status: broken type: error').q).toBe('status: broken type: error')
+    // An applied key with no value is still reported.
+    expect(unresolvedQualifiers('label: milestone:')).toEqual(['label:', 'milestone:'])
+  })
+
+  it('reads back a URL whose q carries long qualifiers, uncut', () => {
+    const q = parseSearchText(
+      '-label:"needs more discussion" -label:"blocked upstream" -label:wontfix-maybe milestone:"Release 2026 Q4 stabilisation and hardening sprint" in:title comments:>=10 a longer free text search for the crash on startup',
+    )
+    const text = issueQueryParams(q).find(([k]) => k === 'q')?.[1] ?? ''
+    expect(text.length).toBeGreaterThan(200)
+    const back = parseIssueQuery(new URLSearchParams(issueQueryParams(q)))
+    expect(back).toMatchObject({ notLabels: q.notLabels, milestone: q.milestone, scope: 'title', comments: '>=10', q: q.q })
+  })
+
   it('takes an author name with no identity behind it as a mirrored login (QW-062)', () => {
     expect(parseSearchText('author:thephez')).toMatchObject({ author: null, authorLogin: 'thephez', q: '' })
     expect(parseSearchText('author:@thephez')).toMatchObject({ authorLogin: 'thephez' })

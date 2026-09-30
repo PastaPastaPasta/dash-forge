@@ -109,6 +109,9 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
 
   // `me` needs a signed-in viewer; signed out, a `me` filter shows nothing rather than everything.
   const needsViewer = query.author === 'me' || query.assignee === 'me' || query.mentions
+  // `author:<login>` matches only what a trusted mirror signed: until the trust set is read, every
+  // row would fail it (an empty list, after walking every chunk), so the read waits for it.
+  const awaitingTrust = query.authorLogin !== null && trust === null
   const { data, loading, error, reload } = useAsync<IssueListPage>(
     async () => {
       const me = identity ?? ''
@@ -128,7 +131,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
       return queryIssues(sdk!, home.repo, selection, totals, network)
     },
     [ready, repoKey(home.repo), generation, JSON.stringify(query), identity ?? '', totals ?? -1, query.authorLogin !== null && trust !== null ? [...trust].sort().join(',') : null],
-    { enabled: ready && sdk !== null && (!needsViewer || identity !== null) },
+    { enabled: ready && sdk !== null && (!needsViewer || identity !== null) && !awaitingTrust },
   )
 
   const labelDefs = useMemo(() => new Map((data?.labels ?? []).map((l) => [l.name, l])), [data])
@@ -196,7 +199,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
               label="Author"
               value={query.author}
               signedIn={identity !== null}
-              onChange={(author) => change({ author })}
+              onChange={(author) => change({ author, authorLogin: null })}
             />
             <PersonFilter
               label="Assignee"
@@ -221,7 +224,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
 
         {needsViewer && identity === null ? (
           <p className="px-4 py-6 text-dense text-anvil-500 dark:text-anvil-400">Sign in to filter by your own issues, assignments and mentions.</p>
-        ) : loading && !data ? (
+        ) : (loading || awaitingTrust) && !data ? (
           <LoadingBlock label="Reading issues" />
         ) : error ? (
           <div className="p-4"><ErrorState message={error} onRetry={reload} /></div>

@@ -103,6 +103,8 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
 
   // `me` needs a signed-in viewer; signed out, a `me` filter shows nothing rather than everything.
   const needsViewer = query.author === 'me' || query.assignee === 'me' || query.reviewRequested === 'me'
+  // `author:<login>` matches only what a trusted mirror signed: the read waits for the trust set.
+  const awaitingTrust = query.authorLogin !== null && trust === null
   const { data, loading, error, reload } = useAsync<PullListPage>(
     () => {
       const who = (v: string | null): string | null => (v === 'me' ? identity ?? '' : v)
@@ -122,7 +124,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
       return queryPulls(sdk!, home.repo, selection, total, network)
     },
     [ready, repoKey(home.repo), generation, JSON.stringify(query), identity ?? '', total ?? -1, query.authorLogin !== null && trust !== null ? [...trust].sort().join(',') : null],
-    { enabled: ready && sdk !== null && (!needsViewer || identity !== null) },
+    { enabled: ready && sdk !== null && (!needsViewer || identity !== null) && !awaitingTrust },
   )
 
   const labelDefs = useMemo(() => new Map((data?.labels ?? []).map((l) => [l.name, l])), [data])
@@ -180,7 +182,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <LabelFilter labels={data?.labels ?? []} selected={query.labels} onChange={(labels) => change({ labels })} />
             <MilestoneFilter milestones={milestones.data} value={query.milestone} none={query.noMilestone} onChange={(c) => change(c)} />
-            <PersonFilter label="Author" value={query.author} signedIn={identity !== null} onChange={(author) => change({ author })} />
+            <PersonFilter label="Author" value={query.author} signedIn={identity !== null} onChange={(author) => change({ author, authorLogin: null })} />
             <PersonFilter label="Assignee" value={query.assignee} signedIn={identity !== null} allowNone onChange={(assignee) => change({ assignee })} />
             <SortSelect id="pull-sort" value={query.sort} onChange={(sort) => change({ sort })} />
           </div>
@@ -188,7 +190,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
 
         {needsViewer && identity === null ? (
           <p className="px-4 py-6 text-dense text-anvil-500 dark:text-anvil-400">Sign in to filter by your own pull requests, assignments and review requests.</p>
-        ) : loading && !data ? (
+        ) : (loading || awaitingTrust) && !data ? (
           <LoadingBlock label="Reading pull requests" />
         ) : error ? (
           <div className="p-4"><ErrorState message={error} onRetry={reload} /></div>
