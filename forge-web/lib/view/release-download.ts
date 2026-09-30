@@ -89,6 +89,13 @@ async function readHashed(
   return concatBytes(...parts)
 }
 
+/** How a verified download fetches: the fetch to use, its abort signal, the IPFS gateways. */
+interface DownloadOptions {
+  readonly fetch?: typeof fetch
+  readonly signal?: AbortSignal
+  readonly gateways?: readonly string[]
+}
+
 /**
  * Download an asset, trying each place in turn. Resolves only with bytes that hash to
  * `asset.sha256`; rejects with {@link AssetHashMismatchError} when a place served other bytes
@@ -97,19 +104,32 @@ async function readHashed(
 export async function downloadVerifiedAsset(
   asset: ReleaseAssetView,
   onProgress: (p: DownloadProgress) => void = () => undefined,
-  opts: { readonly fetch?: typeof fetch; readonly signal?: AbortSignal; readonly gateways?: readonly string[] } = {},
+  opts: DownloadOptions = {},
 ): Promise<Uint8Array> {
   // No recorded hash: nothing to verify against, so nothing is fetched (D-517).
   if (!assetVerifiable(asset)) throw new Error(UNVERIFIABLE_ASSET)
+  return readFirstHashed(asset, asset, onProgress, opts)
+}
+
+/**
+ * The bytes of the first of `at`'s places that hash to `object.sha256` (see
+ * {@link downloadVerifiedAsset}).
+ */
+async function readFirstHashed(
+  at: Pick<ReleaseAssetView, 'uris'>,
+  object: Pick<ReleaseAssetView, 'sha256' | 'size'>,
+  onProgress: (p: DownloadProgress) => void,
+  opts: DownloadOptions,
+): Promise<Uint8Array> {
   // A host that refuses cross-origin reads always fails here; the view links to it instead.
-  const urls = browserFetchUrls(asset, opts.gateways)
+  const urls = browserFetchUrls(at, opts.gateways)
   if (urls.length === 0) throw new Error('no place a browser can download this asset from is recorded')
   const fetchImpl = opts.fetch ?? ((input, init) => fetch(input, init))
   let mismatch: AssetHashMismatchError | null = null
   const reasons: string[] = []
   for (const url of urls) {
     try {
-      return await readHashed(url, asset, onProgress, fetchImpl, opts.signal)
+      return await readHashed(url, object, onProgress, fetchImpl, opts.signal)
     } catch (e) {
       if (opts.signal?.aborted) throw e
       if (e instanceof AssetHashMismatchError) mismatch ??= e
@@ -140,7 +160,7 @@ function noCorsHost(url: string): boolean {
  * is recorded at is not a host known to refuse cross-origin reads. Imported GitHub and GitLab
  * assets are not; the owner's own storage (S3, IPFS gateways) is.
  */
-export function browserReadable(asset: ReleaseAssetView, gateways?: readonly string[]): boolean {
+export function browserReadable(asset: Pick<ReleaseAssetView, 'uris'>, gateways?: readonly string[]): boolean {
   return browserFetchUrls(asset, gateways).length > 0
 }
 
@@ -236,7 +256,7 @@ export async function loadReleaseManifest(sdk: EvoSDK, repo: RepoRef, fields: Re
 }
 
 /** Whether `asset` is a sealed object; else an external link, never opened and never verified. */
-export function isSealedAsset(asset: ReleaseAsset): boolean {
+export function isSealedAsset(asset: ReleaseAsset): asset is ReleaseAsset & { readonly sealedSha256: string; readonly sealedSizeBytes: number } {
   return asset.sealedSha256 !== undefined && asset.sealedSizeBytes !== undefined
 }
 
@@ -246,11 +266,6 @@ export class SealedAssetCorruptError extends Error {
     super(`${name} does not match its recorded SHA-256 after decryption`)
     this.name = 'SealedAssetCorruptError'
   }
-}
-
-/** The places this page can read a sealed asset from: public ones, minus hosts that refuse pages. */
-export function sealedAssetUrls(asset: Pick<ReleaseAsset, 'uris'>, gateways?: readonly string[]): string[] {
-  return browserFetchUrls(asset, gateways)
 }
 
 /**
@@ -265,33 +280,15 @@ export async function downloadSealedAsset(
   asset: ReleaseAsset,
   keys: EpochKeyring,
   onProgress: (p: DownloadProgress) => void = () => undefined,
-  opts: { readonly fetch?: typeof fetch; readonly signal?: AbortSignal; readonly gateways?: readonly string[] } = {},
+  opts: DownloadOptions = {},
 ): Promise<Uint8Array> {
-  if (asset.sealedSha256 === undefined || asset.sealedSizeBytes === undefined) throw new Error('an external link is not downloaded here: open it at its source')
-  const urls = sealedAssetUrls(asset, opts.gateways)
-  if (urls.length === 0) throw new Error('no place a browser can download this asset from is recorded')
-  const fetchImpl = opts.fetch ?? ((input, init) => fetch(input, init))
-  const sealedObject = { sha256: asset.sealedSha256, size: asset.sealedSizeBytes }
-  let mismatch: AssetHashMismatchError | null = null
-  const reasons: string[] = []
-  for (const url of urls) {
-    let sealed: Uint8Array
-    try {
-      sealed = await readHashed(url, sealedObject, onProgress, fetchImpl, opts.signal)
-    } catch (e) {
-      if (opts.signal?.aborted) throw e
-      if (e instanceof AssetHashMismatchError) mismatch ??= e
-      reasons.push(e instanceof Error ? e.message : String(e))
-      continue
-    }
-    try {
-      return await openReleaseAsset(sealed, asset, keys)
-    } catch (e) {
-      if (e instanceof PackError && e.code === 'noKey') throw new Error(`${asset.name} is sealed under a key you don't hold yet`)
-      // These are the sealed bytes the manifest names: every copy opens the same way.
-      throw new SealedAssetCorruptError(asset.name)
-    }
+  if (!isSealedAsset(asset)) throw new Error('an external link is not downloaded here: open it at its source')
+  const sealed = await readFirstHashed(asset, { sha256: asset.sealedSha256, size: asset.sealedSizeBytes }, onProgress, opts)
+  try {
+    return await openReleaseAsset(sealed, asset, keys)
+  } catch (e) {
+    if (e instanceof PackError && e.code === 'noKey') throw new Error(`${asset.name} is sealed under a key you don't hold yet`)
+    // These are the sealed bytes the manifest names: every copy opens the same way.
+    throw new SealedAssetCorruptError(asset.name)
   }
-  if (mismatch !== null) throw mismatch
-  throw new Error(`the asset could not be downloaded: ${reasons.join('; ')}`)
 }

@@ -230,9 +230,9 @@ function NewReleaseDialog({
       {
         tagName: trimmedTag,
         name: title.trim(),
-        ...(yankedChoice !== null ? { yanked: yankedChoice } : {}),
-        ...(draftChoice !== null ? { draft: draftChoice } : {}),
-        ...(prereleaseChoice !== null ? { prerelease: prereleaseChoice } : {}),
+        yanked: yankedChoice ?? undefined,
+        draft: draftChoice ?? undefined,
+        prerelease: prereleaseChoice ?? undefined,
         unpublished: unpublishing,
       },
       sealedExisting,
@@ -289,17 +289,10 @@ function NewReleaseDialog({
           notes: notes.trimEnd(),
           files: unpublishing ? [] : files,
           draft,
-          ...(yankedChoice !== null ? { yanked: yankedChoice } : {}),
-          ...(sealedRepo
-            ? {
-                sealed: {
-                  ...(draftChoice !== null ? { draft: draftChoice } : {}),
-                  ...(prereleaseChoice !== null ? { prerelease: prereleaseChoice } : {}),
-                  unpublished: unpublishing,
-                },
-              }
-            : {}),
-          ...(pendingAssets ? { stored: pendingAssets } : {}),
+          // An untouched switch (null) is absent: carried.
+          yanked: yankedChoice ?? undefined,
+          sealed: sealedRepo ? { draft: draftChoice ?? undefined, prerelease: prereleaseChoice ?? undefined, unpublished: unpublishing } : undefined,
+          stored: pendingAssets ?? undefined,
         },
         { policy, profiles },
         (e) => {
@@ -429,7 +422,7 @@ function NewReleaseDialog({
         <Field label="Notes (optional)" htmlFor="release-notes" hint="Markdown supported.">
           <Textarea id="release-notes" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={existing?.notesBody || undefined} disabled={locked} />
         </Field>
-        {sealedPlan ? <SealedBudget used={sealedPlan.budget.used} limit={sealedPlan.budget.limit} notesContinue={sealedPlan.budget.notesContinue} /> : null}
+        {sealedPlan ? <SealedBudget {...sealedPlan.budget} /> : null}
         <label className="flex items-start gap-2 text-dense text-anvil-700 dark:text-anvil-200">
           <input type="checkbox" checked={yanked} onChange={(e) => setYanked(e.target.checked)} disabled={locked} className="mt-0.5" data-testid="release-yanked" />
           <span>

@@ -138,11 +138,16 @@ export interface SealedReleaseEnv {
   store(sealed: Uint8Array, onStep: (e: UploadEvent) => void): Promise<StoredFile>
 }
 
+/** The storage the files and the asset list go to (the repo's browser-push policy). */
+interface SealedReleaseStorage {
+  readonly policy: StoragePolicy | null
+  readonly profiles: readonly StorageProfile[]
+}
+
 /** What {@link createRelease} (`writes.ts`) takes besides the fields, for a private repo. */
 export interface SealedReleaseOptions {
   readonly files?: readonly SealedReleaseFile[]
-  /** The storage the files and the asset list go to (the repo's browser-push policy). */
-  readonly storage?: { readonly policy: StoragePolicy | null; readonly profiles: readonly StorageProfile[] } | null
+  readonly storage?: SealedReleaseStorage | null
   readonly resolved?: ResolvedSealedRelease
   readonly onEvent?: (e: SealedReleaseEvent) => void
   /** Replaces the default reads and storage (tests). */
@@ -157,7 +162,7 @@ export function sealedReleaseEnv(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  storage: { readonly policy: StoragePolicy | null; readonly profiles: readonly StorageProfile[] } | null,
+  storage: SealedReleaseStorage | null,
 ): SealedReleaseEnv {
   return {
     requireMaintainer: () => requireMaintainer(sdk, repo, auth.identityId, auth.network),
@@ -315,7 +320,7 @@ async function buildAssetList(
   repo: RepoRef,
   env: SealedReleaseEnv,
   keys: EpochKeys,
-  from: { readonly base: ReleaseFields; readonly notes: string; readonly files: readonly SealedReleaseFile[]; readonly prev: ReleaseManifest | null; readonly intent?: string },
+  from: { readonly base: ReleaseFields; readonly notes: string; readonly files: readonly SealedReleaseFile[]; readonly prev: ReleaseManifest | null; readonly intent: string | undefined },
   onEvent: (e: SealedReleaseEvent) => void,
 ): Promise<BuiltList> {
   const replaced = new Set(from.files.map((f) => f.name))
@@ -440,7 +445,8 @@ export async function createSealedRelease(
   const orphaned: string[] = []
   let keys: EpochKeys
   let fields: ReleaseFields
-  let assets: readonly SealedAsset[] = prev?.assets ?? []
+  // Only a rebuilt list's entries: a kept or reused list is not opened.
+  let assets: readonly SealedAsset[] = []
   for (let attempt = 1; ; attempt++) {
     // The write epoch of keys read now (§5.3).
     const w = await env.writeKeys()
@@ -449,7 +455,7 @@ export async function createSealedRelease(
       fields = plan === 'reuse' ? statement(fitReleaseNotes(base, notes).fields) : base
       break
     }
-    const built = await buildAssetList(sdk, auth, repo, env, w, { base, notes, files, prev, ...(input.intent !== undefined ? { intent: input.intent } : {}) }, onEvent)
+    const built = await buildAssetList(sdk, auth, repo, env, w, { base, notes, files, prev, intent: input.intent }, onEvent)
     // The final anchor re-read before signing (§5.3, §16.5): a rotation during the upload would
     // leave the new artifacts readable to the member it removed.
     const now = await env.writeKeys()

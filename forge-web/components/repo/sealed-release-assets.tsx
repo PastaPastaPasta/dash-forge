@@ -18,12 +18,12 @@ import { urlHost } from '@/lib/view/format'
 import {
   AssetHashMismatchError,
   SealedAssetCorruptError,
+  browserReadable,
   directDownloadUrls,
   downloadSealedAsset,
   isSealedAsset,
   loadReleaseManifest,
   saveBytes,
-  sealedAssetUrls,
   type DownloadProgress,
 } from '@/lib/view/release-download'
 import { useAsync, type AsyncState } from '@/hooks/use-async'
@@ -94,7 +94,7 @@ type RowState =
 function SealedAssetRow({ repo, asset }: { repo: RepoRef; asset: ReleaseAsset }): JSX.Element {
   const [state, setState] = useState<RowState>({ kind: 'idle' })
   const keys = repo.session?.ctx.keys
-  const readable = sealedAssetUrls(asset).length > 0
+  const readable = browserReadable(asset)
   const run = async (): Promise<void> => {
     if (keys === undefined) return
     setState({ kind: 'working', progress: null })
@@ -158,7 +158,7 @@ function SealedAssetRow({ repo, asset }: { repo: RepoRef; asset: ReleaseAsset })
  */
 function ExternalAssetRow({ asset }: { asset: ReleaseAsset }): JSX.Element {
   const [asking, setAsking] = useState(false)
-  const urls = directDownloadUrls({ uris: asset.uris })
+  const urls = directDownloadUrls(asset)
   return (
     <li data-testid="release-asset" data-state="external" className="flex flex-wrap items-center gap-2 px-3 py-2 text-dense">
       <FileArchive className="h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />

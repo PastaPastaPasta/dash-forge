@@ -749,7 +749,8 @@ export async function createRelease(
 ): Promise<WriteResult & { readonly sealed?: SealedReleaseWritten }> {
   if (repo.visibility === 'private') {
     if (input.assets !== undefined && input.assets.length > 0) throw new Error("a private repo's assets are sealed files, never plaintext entries")
-    const written = await createSealedRelease(sdk, auth, repo, { ...input, ...(sealed.files ? { files: sealed.files } : {}), ...(sealed.resolved ? { resolved: sealed.resolved } : {}) }, sealed.env ?? sealedReleaseEnv(sdk, auth, repo, sealed.storage ?? null), sealed.onEvent)
+    const env = sealed.env ?? sealedReleaseEnv(sdk, auth, repo, sealed.storage ?? null)
+    const written = await createSealedRelease(sdk, auth, repo, { ...input, files: sealed.files, resolved: sealed.resolved }, env, sealed.onEvent)
     return { ...written.release, sealed: written }
   }
   if (input.prerelease !== undefined || input.draft !== undefined || input.unpublished === true || sealed.files !== undefined) {

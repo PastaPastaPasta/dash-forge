@@ -272,6 +272,35 @@ export interface SealedFlags {
   readonly unpublished?: boolean
 }
 
+/** What {@link publishRelease} publishes. */
+interface PublishInput {
+  readonly tagName: string
+  readonly name: string
+  readonly notes: string
+  readonly files: readonly { readonly name: string; readonly size: number; arrayBuffer(): Promise<ArrayBuffer> }[]
+  /** The dialog's draft token; bound to the content digest here. */
+  readonly draft: string
+  /**
+   * Assets already stored by an attempt whose release write went unconfirmed: the retry
+   * writes the release with exactly these (same content, same intent: the same signed write)
+   * and uploads nothing.
+   */
+  readonly stored?: ResolvedRelease
+  /**
+   * Publish it yanked (withdrawn): shown with a warning, its assets kept. A public release
+   * states it (absent: not yanked); a private repo's revision carries it when absent.
+   */
+  readonly yanked?: boolean
+  /** A private repo's sealed-only flags. */
+  readonly sealed?: SealedFlags
+}
+
+/** Where {@link publishRelease} stores the files: the repo's browser-push policy and the user's profiles. */
+interface PublishStorage {
+  readonly policy: StoragePolicy | null
+  readonly profiles: readonly StorageProfile[]
+}
+
 /** A sealed manifest entry as the dialog's progress shows it. */
 function entryAsset(e: SealedAsset): ReleaseAsset {
   return { name: e.name, sha256: e.sha256, sizeBytes: e.sizeBytes, uris: e.uris }
@@ -286,8 +315,8 @@ async function publishSealedRelease(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: Parameters<typeof publishRelease>[3],
-  storage: Parameters<typeof publishRelease>[4],
+  input: PublishInput,
+  storage: PublishStorage,
   onEvent?: (e: PublishEvent) => void,
 ): Promise<Published> {
   const retry = input.stored?.sealed
@@ -309,21 +338,14 @@ async function publishSealedRelease(
       onEvent?.({ step: 'release' })
     }
   }
-  const flags = input.sealed ?? {}
   try {
+    // A blank title or notes, and an absent flag, are carried from the tag's newest revision.
     const release = await createRelease(
       sdk,
       auth,
       repo,
-      {
-        tagName: input.tagName,
-        ...(input.name ? { name: input.name } : {}),
-        ...(input.notes ? { notes: input.notes } : {}),
-        ...(input.yanked !== undefined ? { yanked: input.yanked } : {}),
-        ...flags,
-        intent: input.draft,
-      },
-      { files, storage, onEvent: onSealed, ...(retry ? { resolved: retry } : {}) },
+      { tagName: input.tagName, name: input.name, notes: input.notes, yanked: input.yanked, ...input.sealed, intent: input.draft },
+      { files, storage, onEvent: onSealed, resolved: retry },
     )
     const written = release.sealed
     return { release, assets: (written?.resolved.assets ?? []).map(entryAsset), warnings: written?.warnings ?? [], orphaned: written?.orphaned ?? [] }
@@ -345,28 +367,8 @@ export async function publishRelease(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: {
-    readonly tagName: string
-    readonly name: string
-    readonly notes: string
-    readonly files: readonly { readonly name: string; readonly size: number; arrayBuffer(): Promise<ArrayBuffer> }[]
-    /** The dialog's draft token; bound to the content digest here. */
-    readonly draft: string
-    /**
-     * Assets already stored by an attempt whose release write went unconfirmed: the retry
-     * writes the release with exactly these (same content, same intent: the same signed write)
-     * and uploads nothing.
-     */
-    readonly stored?: ResolvedRelease
-    /**
-     * Publish it yanked (withdrawn): shown with a warning, its assets kept. A public release
-     * states it (absent: not yanked); a private repo's revision carries it when absent.
-     */
-    readonly yanked?: boolean
-    /** A private repo's sealed-only flags. */
-    readonly sealed?: SealedFlags
-  },
-  storage: { readonly policy: StoragePolicy | null; readonly profiles: readonly StorageProfile[] },
+  input: PublishInput,
+  storage: PublishStorage,
   onEvent?: (e: PublishEvent) => void,
 ): Promise<Published> {
   if (repo.visibility === 'private') return publishSealedRelease(sdk, auth, repo, input, storage, onEvent)
