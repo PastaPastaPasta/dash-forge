@@ -196,7 +196,7 @@ function split(data) {
 
 export async function main(argv, injected) {
   const a = parseArgs(argv);
-  const { net, evo, sdk, write, read } = await openSession(a, injected);
+  const { net, evo, write, read, retry } = await openSession(a, injected);
   const { key, ids } = net;
 
   const idDir = a.identities ?? join(homedir(), '.config/dash-forge/test-identities', key);
@@ -212,27 +212,31 @@ export async function main(argv, injected) {
   if (!existsSync(statePath)) {
     // No local record: if the fixture is already on chain (seeded from another machine),
     // there is nothing to do. Re-seeding would fail on the unique `($ownerId, name)` index.
-    const found = await sdk.documents.query({
-      dataContractId: ids.core,
-      documentTypeName: 'repo',
-      where: [
-        ['$ownerId', '==', OWNER.id],
-        ['name', '==', DEMO],
-      ],
-      limit: 1,
-    });
+    const found = await retry((sdk) =>
+      sdk.documents.query({
+        dataContractId: ids.core,
+        documentTypeName: 'repo',
+        where: [
+          ['$ownerId', '==', OWNER.id],
+          ['name', '==', DEMO],
+        ],
+        limit: 1,
+      }),
+    );
     const doc = found instanceof Map ? [...found.values()].find((v) => v != null) : null;
     if (doc) {
       const repoId = String(doc.toJSON?.().$id ?? doc.id?.toBase58?.() ?? doc.id);
       // The last step the seeder writes is the pin; a fixture without it was interrupted on
       // the machine that holds its state file, and must be finished there.
-      const events = await sdk.documents.query({
-        dataContractId: ids.community,
-        documentTypeName: 'event',
-        where: [['repoId', '==', repoId]],
-        orderBy: [['$createdAt', 'asc']],
-        limit: 100,
-      });
+      const events = await retry((sdk) =>
+        sdk.documents.query({
+          dataContractId: ids.community,
+          documentTypeName: 'event',
+          where: [['repoId', '==', repoId]],
+          orderBy: [['$createdAt', 'asc']],
+          limit: 100,
+        }),
+      );
       if (![...events.values()].some((e) => e?.toJSON?.().kind === EVENT.pin)) {
         throw new Error(`${DEMO} exists on ${key} but has no pin under forge-community ${ids.community}: the seed was interrupted or a contract was re-registered since; run the seeder where ~/.cache/dash-forge/seed-v2-${key}.json lives`);
       }
