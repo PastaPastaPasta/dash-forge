@@ -42,7 +42,7 @@ pub(crate) fn doc_engine<'a>(
 pub(crate) fn check_len(field: &str, value: &str, max: usize) -> Result<()> {
     let len = value.chars().count();
     if len > max {
-        return Err(Error::Config(format!(
+        return Err(Error::InvalidInput(format!(
             "{field} too long: {len} chars (max {max})"
         )));
     }
@@ -59,7 +59,7 @@ pub(crate) fn check_text(
 ) -> Result<()> {
     check_len(field, value, max_chars)?;
     if value.len() > max_bytes {
-        return Err(Error::Config(format!(
+        return Err(Error::InvalidInput(format!(
             "{field} too long: {} bytes as UTF-8 (max {max_bytes})",
             value.len()
         )));

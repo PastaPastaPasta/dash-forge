@@ -619,7 +619,7 @@ pub async fn checks(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         json!({
             "pr": number,
             "headOid": pr.view.head,
-            "checks": runs,
+            "checks": crate::fmt::with_ids(&runs),
             "passed": passed,
             "failed": failed,
             "pending": pending,

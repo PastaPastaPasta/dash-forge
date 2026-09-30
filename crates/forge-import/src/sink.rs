@@ -339,10 +339,13 @@ fn item_error(e: &anyhow::Error) -> bool {
     ];
     e.chain()
         .any(|c| match c.downcast_ref::<forge_core::Error>() {
-            // A duplicate, or a rule of the type refusing this one document (a state move the
-            // target's transitions no longer allow: another client moved it first).
+            // A duplicate, a rule of the type refusing this one document (a state move the
+            // target's transitions no longer allow: another client moved it first), or a value
+            // of this item that does not fit (an empty title, a text over its limit).
             Some(
-                forge_core::Error::DuplicateUniqueIndex(_) | forge_core::Error::RuleRefused { .. },
+                forge_core::Error::DuplicateUniqueIndex(_)
+                | forge_core::Error::RuleRefused { .. }
+                | forge_core::Error::InvalidInput(_),
             ) => true,
             Some(forge_core::Error::Config(why)) => ITEM.iter().any(|m| why.contains(m)),
             _ => false,
@@ -361,7 +364,9 @@ fn content_error(e: &anyhow::Error) -> bool {
                 rule,
                 ..
             }) => document_type != "transition" && rule != forge_core::rules::v2::DENSE_RULE,
-            Some(forge_core::Error::Config(_)) => item_error(e),
+            Some(forge_core::Error::Config(_) | forge_core::Error::InvalidInput(_)) => {
+                item_error(e)
+            }
             _ => false,
         })
 }

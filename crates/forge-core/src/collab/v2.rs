@@ -527,6 +527,16 @@ impl PatchView {
     }
 }
 
+/// An absent value `null` in JSON, not `""` (QW-081): a URL or an enum a document leaves out.
+/// Free text a person typed (a title, a summary) keeps `""`.
+fn empty_as_null<S: serde::Serializer>(value: &str, s: S) -> std::result::Result<S::Ok, S::Error> {
+    if value.is_empty() {
+        s.serialize_none()
+    } else {
+        s.serialize_str(value)
+    }
+}
+
 /// A `checkRun` on a head: the newest by `($createdAt, $id)` per `name` ([`Collab::check_runs`]).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -537,9 +547,11 @@ pub struct CheckRun {
     pub name: String,
     /// `queued`, `in_progress` or `completed`.
     pub status: String,
-    /// The outcome once completed (`success`, `failure`, …); empty before.
+    /// The outcome once completed (`success`, `failure`, …); empty before (`null` in JSON).
+    #[serde(serialize_with = "empty_as_null")]
     pub conclusion: String,
-    /// A link to the run's details.
+    /// A link to the run's details; empty when the run gave none (`null` in JSON).
+    #[serde(serialize_with = "empty_as_null")]
     pub details_url: String,
     /// A short summary.
     pub summary: String,
@@ -1205,7 +1217,9 @@ const REF_NAME_RULE: &str = "a full ref name under refs/ (such as refs/heads/mai
 
 fn check_title(title: &str) -> Result<()> {
     if title.trim().is_empty() {
-        return Err(Error::Config("a title is required".into()));
+        return Err(Error::InvalidInput(
+            "the title is empty: a title is required".into(),
+        ));
     }
     check_text("title", title, 256, 1024)
 }
@@ -1555,7 +1569,9 @@ pub fn comment_props(
     imported: Option<&Imported>,
 ) -> Result<BTreeMap<String, FieldValue>> {
     if body.trim().is_empty() {
-        return Err(Error::Config("a comment needs a body".into()));
+        return Err(Error::InvalidInput(
+            "the comment is empty: a comment needs a body".into(),
+        ));
     }
     check_text("comment body", body, 5120, 5120)?;
     let mut p = BTreeMap::new();
@@ -3858,7 +3874,9 @@ impl<'a> Collab<'a> {
         body: &str,
     ) -> Result<bool> {
         if body.trim().is_empty() {
-            return Err(Error::Config("a comment needs a body".into()));
+            return Err(Error::InvalidInput(
+                "the comment is empty: a comment needs a body".into(),
+            ));
         }
         check_text("comment body", body, 5120, 5120)?;
         let collab = self.collab_contract(repo).await?;
@@ -5159,7 +5177,9 @@ impl<'a> Collab<'a> {
         retired: bool,
     ) -> Result<String> {
         if name.is_empty() {
-            return Err(Error::Config("a label needs a name".into()));
+            return Err(Error::InvalidInput(
+                "the label name is empty: a label needs a name".into(),
+            ));
         }
         check_len("label name", name, 30)?;
         check_len("label description", description, 200)?;
@@ -6227,6 +6247,40 @@ mod tests {
 
     const ME: &str = "GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL";
     const OTHER_REPO: &str = "9sGUjxras61DAe457iUfbJcKTfVT7qVj16PJ3xstqMKr";
+
+    /// QW-081: a run without a details URL, or not completed yet, reads `null`, not `""`; its
+    /// free text (a summary) stays as written.
+    #[test]
+    fn a_check_run_absent_url_and_conclusion_are_null_in_json() {
+        let run = CheckRun {
+            document_id: "D".into(),
+            name: "build".into(),
+            status: "in_progress".into(),
+            conclusion: String::new(),
+            details_url: String::new(),
+            summary: String::new(),
+            reporter: ME.into(),
+            trusted: true,
+            started_at: None,
+            completed_at: None,
+            log_url: None,
+            log_sha256: None,
+            artifacts: Vec::new(),
+            created_at: 1,
+        };
+        let v = serde_json::to_value(&run).unwrap();
+        assert!(v["conclusion"].is_null(), "{v}");
+        assert!(v["detailsUrl"].is_null(), "{v}");
+        assert_eq!(v["summary"], "");
+        let done = CheckRun {
+            conclusion: "success".into(),
+            details_url: "https://ci.example/1".into(),
+            ..run
+        };
+        let v = serde_json::to_value(&done).unwrap();
+        assert_eq!(v["conclusion"], "success");
+        assert_eq!(v["detailsUrl"], "https://ci.example/1");
+    }
 
     fn repo_ref(visibility: Visibility) -> RepoRef {
         RepoRef {

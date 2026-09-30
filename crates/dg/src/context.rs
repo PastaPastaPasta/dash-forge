@@ -76,6 +76,17 @@ fn prompt_blocker(yes: bool, json: bool, stdin_tty: bool) -> Option<&'static str
     }
 }
 
+/// The E802 fix for `prompt`: "check the estimate" only when the prompt quotes one (a DASH
+/// figure); a prompt that names the write without a price (`dg collab accept`, `dg issue
+/// close`) is reviewed instead (QW2-079).
+fn confirm_fix(prompt: &str) -> &'static str {
+    if prompt.contains(" DASH") {
+        "check the estimate, then run the same command with --yes"
+    } else {
+        "check what it will do, then run the same command with --yes"
+    }
+}
+
 /// The E802 for a prompt that cannot be asked, with `cause`; callers add the fixes.
 fn confirmation_required(cause: String) -> UserError {
     UserError::new(codes::CONFIRMATION_REQUIRED, "confirmation required")
@@ -481,7 +492,7 @@ impl Ctx {
         }
         if let Some(why) = prompt_blocker(self.yes, self.json, self.stdin_tty) {
             return Err(confirmation_required(format!("{prompt} — and {why}"))
-                .fix("check the estimate, then run the same command with --yes")
+                .fix(confirm_fix(prompt))
                 .into());
         }
         eprint!("{prompt} {} ", if default_yes { "[Y/n]" } else { "[y/N]" });
@@ -556,6 +567,20 @@ impl Ctx {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// QW2-079: "check the estimate" only when the prompt quotes one.
+    #[test]
+    fn the_e802_fix_mentions_an_estimate_only_when_there_is_one() {
+        assert!(
+            confirm_fix("Report build = queued? (create a check run, ~0.0013 DASH)")
+                .contains("estimate")
+        );
+        let fix = confirm_fix(
+            "Accept membership of a/b? Its owner can then add you (one small document)",
+        );
+        assert!(!fix.contains("estimate"), "{fix}");
+        assert!(fix.contains("--yes"), "{fix}");
+    }
 
     fn config(network: &str) -> Config {
         Config {

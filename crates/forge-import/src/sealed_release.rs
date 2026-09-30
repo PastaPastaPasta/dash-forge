@@ -408,6 +408,7 @@ fn release_error(e: &anyhow::Error) -> bool {
         matches!(
             e,
             Error::Config(_)
+                | Error::InvalidInput(_)
                 | Error::User(_)
                 | Error::Integrity
                 | Error::DuplicateUniqueIndex(_)

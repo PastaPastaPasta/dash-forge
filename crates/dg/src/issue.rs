@@ -417,6 +417,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         let actors = comments.iter().map(|c| c.author.as_str());
         let actors = actors.chain(events.iter().map(|e| e.actor.as_str()));
         let actors = actors.chain(transitions.iter().map(|t| t.actor.as_str()));
+        let actors = actors.chain(state.assignees.iter().map(String::as_str));
         s.client
             .dpns_first_names(std::iter::once(author.as_str()).chain(actors))
             .await
@@ -458,8 +459,10 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             let mark = state_word(state.open);
             println!("#{number} [{mark}] {}", safe(&title));
             println!("author: {}", who(&author));
-            if !state.labels.is_empty() {
-                println!("labels: {}", safe(&labels_of(&state)));
+            let labels: Vec<&str> = state.labels.iter().map(String::as_str).collect();
+            let assignees: Vec<String> = state.assignees.iter().map(|a| who(a)).collect();
+            for line in crate::fmt::triage_lines(&labels, &assignees, meta.milestone.as_deref()) {
+                println!("{line}");
             }
             if !body.is_empty() {
                 println!("\n{}", safe(&body));
@@ -548,7 +551,12 @@ fn event_phrase(e: &Event) -> String {
 }
 
 /// Edit one of the signer's comments (issue or PR): its body, re-sealed in a private repo.
+/// Where a comment's id is listed, for a refused comment id.
+const COMMENT_IDS: &str =
+    "`dg issue view <repo> <n> --json` (or `dg pr view <repo> <n> --comments --json`)";
+
 async fn edit_comment(ctx: &Ctx, repo: &str, comment_id: &str, body: &str) -> Result<()> {
+    crate::common::document_id_arg(comment_id, "comment id", COMMENT_IDS)?;
     let s = Session::open_for_write(ctx, repo, "comment not edited").await?;
     ctx.confirm_or_cancel(&format!(
         "Edit comment {comment_id}? (one document replace)"
@@ -580,6 +588,7 @@ async fn edit_comment(ctx: &Ctx, repo: &str, comment_id: &str, body: &str) -> Re
 /// Delete one of the signer's comments (QW-016): an owner-only document delete, refused before
 /// signing for someone else's comment.
 async fn delete_comment(ctx: &Ctx, repo: &str, comment_id: &str) -> Result<()> {
+    crate::common::document_id_arg(comment_id, "comment id", COMMENT_IDS)?;
     let s = Session::open_for_write(ctx, repo, "comment not deleted").await?;
     // Someone else's comment (or another repo's) is refused before the prompt, not after it.
     let there = s.collab().deletable_comment(&s.repo, comment_id).await?;
@@ -633,6 +642,7 @@ async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str) -> Result<()> {
             "status": "created",
             "number": created.number,
             "documentId": created.document_id,
+            "id": created.document_id,
             "title": title,
             "resumed": created.resumed,
             "cost": cost_json(spent, price),

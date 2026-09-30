@@ -3465,9 +3465,9 @@ where
         }
     } else if platform.is_empty() {
         return Err(Error::Io(format!(
-            "artifact {expected} is stored externally but its manifest records no URI this \
-             client can read ({:?})",
-            manifest.uris
+            "{}: its manifest records only {}",
+            crate::storage::read::NO_FOLLOWED_COPY,
+            reader.unfollowed(&manifest.uris).join("; ")
         ))
         .into());
     }

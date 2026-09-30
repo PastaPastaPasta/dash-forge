@@ -561,6 +561,7 @@ async fn set_policy(ctx: &Ctx, args: &RepoPolicySetArgs) -> Result<()> {
             "repo": s.repo.display(),
             "policy": policy_json(&next),
             "documentId": id,
+            "id": id,
             "note": POLICY_NOTE,
             "cost": cost_json(spent, price),
         }),

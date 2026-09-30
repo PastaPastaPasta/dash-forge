@@ -207,12 +207,7 @@ pub fn open(raw: &str, passphrase: &str) -> Result<Zeroizing<Vec<u8>>> {
             },
         )
         .map(Zeroizing::new)
-        .map_err(|_| {
-            Error::Config(
-                "wrong passphrase, or the sealed file was modified (it failed authentication)"
-                    .into(),
-            )
-        })
+        .map_err(|_| Error::WrongPassphrase)
 }
 
 /// The passphrase for `what`: [`PASSPHRASE_ENV`] when set, else a hidden prompt on the

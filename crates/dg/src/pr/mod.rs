@@ -46,12 +46,36 @@ use forge_core::user_error::{codes, UserError};
 use crate::common::{number_arg, resolve, Reader, RepoRef, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, dash_usd_price, safe, short, transition_route_text};
+
+/// Where a PR comment's id is listed, for a refused comment id.
+const PR_COMMENT_IDS: &str = "`dg pr view <repo> <n> --comments --json`";
 use crate::git::{self, MergePlan};
 use crate::PrCommand;
 
 /// Dispatch a `pr` subcommand.
+/// Refuse a comment or review id argument that cannot be a document id, before any read
+/// (QW2-076).
+fn check_id_args(cmd: &PrCommand) -> Result<()> {
+    use crate::common::document_id_arg;
+    match cmd {
+        PrCommand::Resolve { comment_id, .. } | PrCommand::Unresolve { comment_id, .. } => {
+            document_id_arg(comment_id, "comment id", PR_COMMENT_IDS)
+        }
+        PrCommand::DismissReview { review_id, .. } => document_id_arg(
+            review_id,
+            "review id",
+            "`dg pr view <repo> <n> --json` (`reviews[].id`)",
+        ),
+        PrCommand::Suggestion(crate::PrSuggestionCommand::Apply { comment_ids, .. }) => comment_ids
+            .iter()
+            .try_for_each(|id| document_id_arg(id, "comment id", PR_COMMENT_IDS)),
+        _ => Ok(()),
+    }
+}
+
 pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
     use crate::PrSuggestionCommand as Sg;
+    check_id_args(cmd)?;
     match cmd {
         PrCommand::Create(args) => create(ctx, args).await,
         PrCommand::List { repo, limit, state } => list(ctx, repo, *limit, *state).await,
@@ -351,6 +375,7 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
             "status": "created",
             "number": created.number,
             "documentId": created.document_id,
+            "id": created.document_id,
             "title": title,
             "baseRef": base,
             "headRef": head_ref,
@@ -855,6 +880,12 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
                 short(&v.head),
                 safe(&v.patch.base_ref_name)
             );
+            let labels: Vec<&str> = v.state.labels.iter().map(String::as_str).collect();
+            let assignees: Vec<String> = v.state.assignees.iter().cloned().collect();
+            let milestone = review_state.milestone.as_deref();
+            for line in crate::fmt::triage_lines(&labels, &assignees, milestone) {
+                println!("{line}");
+            }
             if let Some(m) = &since {
                 println!(
                     "! new commits since your review: you reviewed {}, the PR is at {} ({} head update{} since) — re-review with `dg pr review {repo} {number}`",

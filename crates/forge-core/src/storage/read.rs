@@ -32,6 +32,11 @@ const RACE_WIDTH: usize = 2;
 /// The floor of a candidate's whole-transfer deadline (connect + body).
 pub const MIN_TRANSFER_DEADLINE: Duration = Duration::from_secs(120);
 
+/// How a read that had no copy to try begins ([`PackReader::unfollowed`]): the recorded copies
+/// are all ones this computer does not follow. A caller tells that case from a copy that
+/// failed by this text, and gives the fix that applies (QW2-078).
+pub const NO_FOLLOWED_COPY: &str = "no recorded copy is one this computer reads from";
+
 /// The slowest sustained rate a candidate may deliver at before its deadline cuts it off
 /// (1 MiB/s): a 2 GiB pack gets ~34 minutes. A host that stalls outright is cut off much
 /// sooner by the HTTP client's idle `read_timeout` (see [`super::http_client`]).
@@ -556,6 +561,45 @@ impl PackReader {
         self.candidates(uris).iter().map(Candidate::place).collect()
     }
 
+    /// Why each of `uris` is not a copy this reader follows, one short phrase each, with the
+    /// place as `host[:port]` or a bucket name (no path, no scheme separator, so it survives
+    /// a caller's URL shortening): for a read that had no candidate at all.
+    pub fn unfollowed(&self, uris: &[String]) -> Vec<String> {
+        uris.iter()
+            .map(|raw| {
+                let uri = Uri(raw.clone());
+                match uri.scheme() {
+                    Some(scheme @ ("https" | "http")) => {
+                        let host = reqwest::Url::parse(raw).ok().and_then(|u| {
+                            u.host_str().map(|h| match u.port() {
+                                Some(p) => format!("{h}:{p}"),
+                                None => h.to_string(),
+                            })
+                        });
+                        let host = host.unwrap_or_else(|| "an unparseable address".into());
+                        let private = reqwest::Url::parse(raw)
+                            .ok()
+                            .and_then(|u| u.host_str().map(super::publish::is_private_host))
+                            .unwrap_or(false);
+                        let why = match (scheme, private) {
+                            (_, true) => "this machine or a private network",
+                            ("http", false) => "plain http",
+                            _ => "an address with credentials in it",
+                        };
+                        format!("{host} ({why}: never followed from a manifest)")
+                    }
+                    Some("s3") => {
+                        let bucket = uri.rest().and_then(|r| r.split('/').next()).unwrap_or("");
+                        format!("S3 bucket {bucket} (read only through a storage profile of yours for it)")
+                    }
+                    Some("ipfs") => "an IPFS copy (no read gateway configured)".to_string(),
+                    Some(other) => format!("a {other} copy (not a kind this client reads)"),
+                    None => "an unparseable address".to_string(),
+                }
+            })
+            .collect()
+    }
+
     /// Whether any candidate exists for `uris` (so the caller knows whether to bother).
     pub fn has_candidates(&self, uris: &[String]) -> bool {
         !self.candidates(uris).is_empty()
@@ -912,6 +956,28 @@ mod tests {
         )
         .unwrap();
         PackReader::new(vec!["https://gw1/".into(), "https://gw2".into()], &profiles)
+    }
+
+    #[test]
+    fn unfollowed_copies_say_why_with_a_place_but_no_url() {
+        // QW2-078: the cause was a mangled list ("127.0.0.1:9000 forge-byo").
+        let r = PackReader::new(Vec::new(), &StorageProfiles::default());
+        let uris = [
+            "http://127.0.0.1:9000/forge-byo/packs/x.pack".to_string(),
+            "http://files.example.org/x.pack".to_string(),
+            "s3://forge-byo/packs/x.pack".to_string(),
+        ];
+        assert!(!r.has_candidates(&uris));
+        let why = r.unfollowed(&uris);
+        assert_eq!(
+            why,
+            vec![
+                "127.0.0.1:9000 (this machine or a private network: never followed from a manifest)",
+                "files.example.org (plain http: never followed from a manifest)",
+                "S3 bucket forge-byo (read only through a storage profile of yours for it)",
+            ]
+        );
+        assert!(why.iter().all(|w| !w.contains("://")), "{why:?}");
     }
 
     #[test]

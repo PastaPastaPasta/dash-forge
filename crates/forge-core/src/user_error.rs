@@ -625,6 +625,16 @@ pub fn classify<'e>(
     {
         return UserError::storage_policy_not_met(r, ctx.goal.unwrap_or("push failed"), false);
     }
+    // A sealed file that did not open: the chain's context names which file (as typed, so
+    // not the lowercased text).
+    if layers.iter().any(|l| {
+        matches!(
+            l.downcast_ref::<CoreError>(),
+            Some(CoreError::WrongPassphrase)
+        )
+    }) {
+        return wrong_passphrase(&text);
+    }
     if let Some(core) = layers
         .iter()
         .rev()
@@ -733,6 +743,12 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
         .fix("if you know another IPFS gateway with the pack, add it to `[read] ipfs_gateways` in storage.toml and retry"),
         CoreError::Io(msg) if mentions_identity(chain) => identity_unreadable(msg),
         CoreError::Config(msg) => from_config(msg, chain, ctx),
+        // A command's own input (QW2-076): E201, not the E204 "invalid configuration" whose
+        // fix is `dg doctor`.
+        CoreError::InvalidInput(msg) => UserError::new(codes::USAGE, ctx.headline("invalid arguments"))
+            .cause(msg)
+            .fix("correct that value and run the command again (`--help` lists the arguments)")
+            .note("checked before anything was signed; nothing was written"),
         CoreError::Platform(msg) => return from_platform_text(msg, ctx),
         CoreError::User(u) => (**u).clone(),
         _ => return None,
@@ -1362,6 +1378,19 @@ pub fn private_needs_identity(repo: &str) -> UserError {
     .note("public repositories are read without an identity")
 }
 
+/// E303 for a sealed file whose passphrase was wrong (QW2-076: a `--runner` file was E204 with
+/// a `dg doctor` fix). `chain` is the whole error text; its context layers name the file.
+fn wrong_passphrase(chain: &str) -> UserError {
+    UserError::new(
+        codes::IDENTITY_UNREADABLE,
+        "a sealed file did not open: wrong passphrase",
+    )
+    .cause(chain)
+    .fix("run it again with the passphrase that file was sealed with (typed at the prompt, or in DASH_FORGE_PASSPHRASE)")
+    .fix("DASH_FORGE_PASSPHRASE opens every sealed file one command reads: when two files (your key and a `--runner` or `--master` file) were sealed with different passphrases, run the command in a terminal so each is asked for")
+    .note("nothing was written")
+}
+
 fn identity_unreadable(msg: &str) -> UserError {
     // A sealed key that cannot be asked for (QW-034): the way out is the passphrase, not a
     // new sign-in, which costs a key registration.
@@ -1988,6 +2017,54 @@ mod tests {
     fn core_chain(e: CoreError, ctx: &ErrorContext<'_>) -> UserError {
         let e = Box::new(e);
         classify([e.as_ref() as &(dyn StdError + 'static)], ctx)
+    }
+
+    /// An error with a context layer over it, as `anyhow`'s `.context` makes one.
+    #[derive(Debug)]
+    struct Loading(CoreError);
+    impl std::fmt::Display for Loading {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("loading the runner identity from /Home/Runner.json")
+        }
+    }
+    impl StdError for Loading {
+        fn source(&self) -> Option<&(dyn StdError + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    #[test]
+    fn a_bad_input_value_is_e201_and_a_wrong_passphrase_e303_naming_the_file() {
+        // QW2-076: both were E204 "invalid configuration" with a `dg doctor` fix.
+        let issue = ErrorContext {
+            goal: Some("issue not created"),
+            repo: Some("alice/project"),
+            ..Default::default()
+        };
+        let u = core_chain(
+            CoreError::InvalidInput("the title is empty: a title is required".into()),
+            &issue,
+        );
+        assert_eq!((u.code, u.exit_code()), ("E201", 2));
+        assert_eq!(u.message, "issue not created: invalid arguments");
+        assert_eq!(
+            u.cause.as_deref(),
+            Some("the title is empty: a title is required")
+        );
+        assert!(!u.fix.iter().any(|f| f.contains("doctor")), "{u:?}");
+
+        // The context layer names the file, as typed (not lowercased).
+        let outer = Loading(CoreError::WrongPassphrase);
+        let u = classify(
+            [&outer as &(dyn StdError + 'static), &outer.0],
+            &ErrorContext::default(),
+        );
+        assert_eq!((u.code, u.exit_code()), ("E303", 3));
+        let cause = u.cause.clone().unwrap();
+        assert!(cause.contains("/Home/Runner.json"), "{cause}");
+        assert!(cause.contains("wrong passphrase"), "{cause}");
+        assert!(u.fix.iter().any(|f| f.contains("--runner")), "{u:?}");
+        assert!(!u.fix.iter().any(|f| f.contains("doctor")), "{u:?}");
     }
 
     const PUSH: ErrorContext<'static> = ErrorContext {

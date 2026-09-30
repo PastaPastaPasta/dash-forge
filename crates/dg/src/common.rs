@@ -84,6 +84,25 @@ fn invalid_ref(input: &str, why: &str) -> anyhow::Error {
     .into()
 }
 
+/// Refuse a `what` argument (a comment, review or thread id) that cannot be a document id,
+/// before any read: E201 naming the argument and where the ids are listed (`listed_by`).
+/// Before, `dg issue delete-comment <repo> 2` was E204 "invalid configuration" with a raw
+/// "Identifier must be 32 bytes long" (QW2-076).
+pub fn document_id_arg(value: &str, what: &str, listed_by: &str) -> Result<()> {
+    if looks_like_identity_id(value) {
+        return Ok(());
+    }
+    Err(UserError::new(
+        codes::USAGE,
+        format!("{:?} is not a {what}", crate::fmt::safe(value)),
+    )
+    .cause(format!(
+        "a {what} is a document id (about 44 base58 characters), not a number"
+    ))
+    .fix(format!("{listed_by} lists the ids"))
+    .into())
+}
+
 /// Whether `s` is plausibly a base58 identity id (32-byte id ≈ 42-44 base58 chars, no
 /// `0OIl` and no `/`). Used to distinguish an identity owner from a DPNS label.
 fn looks_like_identity_id(s: &str) -> bool {
@@ -311,10 +330,27 @@ pub async fn resolve_identity(client: &PlatformClient, who: &str, what: &str) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{looks_like_identity_id, RepoRef};
+    use super::{document_id_arg, looks_like_identity_id, RepoRef};
 
     // A real testnet identity id shape (DEPLOYER).
     const ID: &str = "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB";
+
+    /// QW2-076: a number where a comment id goes is E201 naming the argument, not E204.
+    #[test]
+    fn a_document_id_argument_is_checked_before_any_read() {
+        assert!(document_id_arg(ID, "comment id", "`dg issue view`").is_ok());
+        let e =
+            document_id_arg("2", "comment id", "`dg issue view <repo> <n> --json`").unwrap_err();
+        let u = e
+            .downcast_ref::<forge_core::user_error::UserError>()
+            .unwrap();
+        assert_eq!((u.code, u.exit_code()), ("E201", 2));
+        assert_eq!(u.message, "\"2\" is not a comment id");
+        assert!(
+            u.fix[0].contains("dg issue view <repo> <n> --json"),
+            "{u:?}"
+        );
+    }
 
     #[test]
     fn parses_owner_slash_name() {

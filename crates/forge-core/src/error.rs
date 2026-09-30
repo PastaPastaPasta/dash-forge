@@ -100,6 +100,17 @@ pub enum Error {
     #[error("configuration error: {0}")]
     Config(String),
 
+    /// A value the caller passed in does not fit what it names (an empty title, a text over
+    /// its limit, a document id that is not one), refused before anything is signed. Unlike
+    /// [`Self::Config`] it is the command's input, not a setting: `dg` reports it as E201.
+    #[error("{0}")]
+    InvalidInput(String),
+
+    /// A sealed file did not open: the passphrase is wrong, or the file was modified (the
+    /// AEAD tag failed). The caller's context names the file.
+    #[error("wrong passphrase, or the sealed file was modified (it failed authentication)")]
+    WrongPassphrase,
+
     /// The selected network has no forge-v2 deployment (no fully registered `v2` record in
     /// its deployment file). Returned instead of falling back to another network's
     /// contracts.
