@@ -5,11 +5,20 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { E2E_DEVNET, loadSeedPulls, type SeedPulls } from './seed-summary'
+import { E2E_DEVNET, loadSeedPulls, seedRepo, type SeedPulls } from './seed-summary'
 export { E2E_DEVNET, loadSeedPulls, type SeedPulls }
 
-/** The MAINTAINER test identity: a maintainer of {@link DEMO} and the owner of {@link EMPTY}. */
-export const MAINTAINER = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'
+/**
+ * Stands in for a fixture owner when this devnet has no committed seed summary: a readable
+ * value that no identity id can be, so a spec that needs the fixture fails naming the cause.
+ */
+const UNSEEDED = `no-seed-summary-for-devnet-${E2E_DEVNET}`
+
+/**
+ * The MAINTAINER test identity: a maintainer of {@link DEMO} and the owner of {@link EMPTY}, as
+ * the seed summary (`forge-contracts/deployments/fixtures/devnet-<E2E_DEVNET>.json`) records it.
+ */
+export const MAINTAINER = seedRepo('empty')?.owner ?? UNSEEDED
 
 /**
  * The forge-v2 READ fixture, written only by `forge-contracts/scripts/seed-v2-fixture.mjs`:
@@ -27,10 +36,10 @@ export const MAINTAINER = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'
  * one star.
  * Only its seeder writes it (v2-writes w6 adds OWNER's approval to `pulls.approved`, nothing
  * else; the live test `lib/repo/v2.live.test.ts` writes its own scratch repo).
- * Override with E2E_V2_OWNER / E2E_V2_NAME.
+ * Its owner is read from the seed summary; override with E2E_V2_OWNER / E2E_V2_NAME.
  */
 export const DEMO = {
-  owner: process.env['E2E_V2_OWNER'] ?? 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr',
+  owner: process.env['E2E_V2_OWNER'] ?? seedRepo('demo')?.owner ?? UNSEEDED,
   name: process.env['E2E_V2_NAME'] ?? 'forge-v2-demo',
 } as const
 

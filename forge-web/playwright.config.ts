@@ -6,7 +6,7 @@ import { defineConfig, devices } from '@playwright/test'
  * Tests run headless Chromium against the LOCAL static build (`out/`) served on
  * port 4321 — same bytes deployed to GitHub Pages / IPFS, but local for speed and
  * request-interception control. The build targets a forge-v2 **devnet** (`E2E_DEVNET`,
- * default `moutai`), so the specs exercise real on-chain data: the read fixture that
+ * default `bonsia`), so the specs exercise real on-chain data: the read fixture that
  * `forge-contracts/scripts/seed-v2-fixture.mjs` seeds there (e2e/helpers.ts `DEMO`).
  * Testnet has no forge-v2 deployment, so a testnet build has nothing to read.
  *
@@ -18,7 +18,7 @@ const PORT = Number(process.env.E2E_PORT ?? 4321)
 const BASE_URL = `http://127.0.0.1:${PORT}`
 
 /** The devnet the build under test reads. Keep the default in step with e2e/helpers.ts. */
-const DEVNET = process.env.E2E_DEVNET || 'moutai'
+const DEVNET = process.env.E2E_DEVNET || 'bonsia'
 const BUILD_ENV = `NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=${DEVNET} `
 
 export default defineConfig({

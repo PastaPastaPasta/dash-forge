@@ -16,7 +16,7 @@ import {
  * forge-v2 read paths against a real devnet (protocol 14): the fixture
  * `forge-contracts/scripts/seed-v2-fixture.mjs` seeds on moutai (e2e/helpers.ts `DEMO`):
  *
- *   E2E_DEVNET=moutai pnpm exec playwright test v2-reads.spec.ts
+ *   E2E_DEVNET=bonsia pnpm exec playwright test v2-reads.spec.ts
  *
  * The fixture: repo `forge-v2-demo` owned by OWNER (maintainers OWNER + MAINTAINER, writer
  * COLLAB), main = 3 files + docs/, a feature branch, tag v0.1.0; issue #1 open + labelled by a

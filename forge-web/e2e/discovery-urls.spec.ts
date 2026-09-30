@@ -5,7 +5,7 @@ import { collectPageErrors, countDapi, countDocumentQueries, DEMO, deployment, l
  * G14 (L-25, L-27, L-40): Explore search, the jump box, GitHub-style short URLs and the
  * Stargazers page, signed out, reads only, on moutai:
  *
- *   E2E_DEVNET=moutai E2E_PORT=<free port> pnpm exec playwright test discovery-urls.spec.ts
+ *   E2E_DEVNET=bonsia E2E_PORT=<free port> pnpm exec playwright test discovery-urls.spec.ts
  *
  * The search and jump cases use the read fixture (`forge-v2-demo`), which every devnet has.
  * The showcase cases resolve the mirrors' owners by DPNS name, so they survive a devnet

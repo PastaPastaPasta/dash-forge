@@ -1,10 +1,10 @@
 import { test, expect, type Page, type Request } from '@playwright/test'
 import { existsSync } from 'node:fs'
-import { expectLanded, idFile, repoUrl, shot, signedIn, waitForRepoResolved } from './helpers'
+import { E2E_DEVNET, expectLanded, idFile, repoUrl, shot, signedIn, waitForRepoResolved } from './helpers'
 
 /**
  * GitHub-parity issues (platform-parity-spec §1.2, F-1; D-201, D-215, D-216, D-217, D-904,
- * D-913, SR-03), live on moutai.
+ * D-913, SR-03), live on the devnet under test (E2E_DEVNET).
  *
  * READS (always): the `issues-paging` fixture (owner F1OWNER, 112 issues, seeded by
  * `forge-contracts/scripts/seed-issues-paging.mjs`; e2e/README.md "Reserved fixture repos"):
@@ -14,15 +14,19 @@ import { expectLanded, idFile, repoUrl, shot, signedIn, waitForRepoResolved } fr
  *
  * WRITES (E2E_WRITE=1, ≈ 0.003 DASH): F1OWNER opens an issue in `f1-scratch`, edits its title
  * ("edited" appears), creates and applies a label, assigns F1COLLAB (a writer of f1-scratch);
- * F1COLLAB's "assigned to me" filter then finds it. Identity files: E2E_ID_DIR (default the
- * QA harness's identities/f1-issues).
+ * F1COLLAB's "assigned to me" filter then finds it. Identity files: `idFile` (E2E_IDENTITY_DIR,
+ * default `~/.config/dash-forge/test-identities/devnet-<E2E_DEVNET>/`).
  */
 
-const F1OWNER = '8dn4mwXbdruHrRtMbk2KpNevAGSfRsxpcxYip8Uk4LsX'
-const F1COLLAB = 'Abjm1HbHNzLJbSxwJrrDd4vyUkm5ymiCZswodKrqpcYW'
+/** The F-1 identities per devnet (the seed of `issues-paging`); E2E_F1_OWNER / E2E_F1_COLLAB override. */
+const F1_IDS: Readonly<Record<string, { readonly owner: string; readonly collab: string }>> = {
+  bonsia: { owner: 'BU4G4BdyHfEtWJdTXdnuTHqxnf46LCxfoEbHfYYuEsAH', collab: '41EeGdqGx6BnCCErZFZ7K6n9pp9QuAonc3GAKA8zKzAx' },
+  moutai: { owner: '8dn4mwXbdruHrRtMbk2KpNevAGSfRsxpcxYip8Uk4LsX', collab: 'Abjm1HbHNzLJbSxwJrrDd4vyUkm5ymiCZswodKrqpcYW' },
+}
+const F1OWNER = process.env['E2E_F1_OWNER'] ?? F1_IDS[E2E_DEVNET]?.owner ?? `no-f1-owner-on-devnet-${E2E_DEVNET}`
+const F1COLLAB = process.env['E2E_F1_COLLAB'] ?? F1_IDS[E2E_DEVNET]?.collab ?? `no-f1-collab-on-devnet-${E2E_DEVNET}`
 const PAGING = { owner: F1OWNER, name: 'issues-paging' } as const
 const SCRATCH = { owner: F1OWNER, name: 'f1-scratch' } as const
-process.env['E2E_ID_DIR'] ??= '/Users/pasta/workspace/dash-forge-qa/identities/f1-issues'
 
 test.describe.configure({ mode: 'serial', timeout: 240_000 })
 
@@ -120,7 +124,7 @@ test('r4. the issue page: one composite, labels, assignee, autolinks and preview
 
 test.describe('writes', () => {
   test.skip(process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_WRITE=1')
-  test.skip(!existsSync(idFile('F1OWNER')) || !existsSync(idFile('F1COLLAB')), 'F-1 identities not found (E2E_ID_DIR)')
+  test.skip(!existsSync(idFile('F1OWNER')) || !existsSync(idFile('F1COLLAB')), 'F-1 identities not found (idFile)')
   const TITLE = `F-1 e2e ${Date.now().toString(36)}`
   let number = 0
 
