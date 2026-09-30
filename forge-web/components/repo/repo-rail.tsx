@@ -140,18 +140,17 @@ function About({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; se
         <Row icon={<Tag className="h-3.5 w-3.5" aria-hidden />} label="Tags" href={repoHref('/repo/tags', addr)}>
           {home.tags.filter(isLive).length}
         </Row>
-        {/* Not for a private repo: its sealed releases carry no count (readAboutTotals). */}
-        {home.repo.visibility === 'private' ? null : (
-          <Row
-            icon={<Rocket className="h-3.5 w-3.5" aria-hidden />}
-            label="Releases"
-            href={repoHref('/repo/releases', addr)}
-            testId="repo-releases"
-            busy={totals === null}
-          >
-            {totals === null ? <ValuePending label="Reading the release count" /> : (totals.releases ?? <ValueUnavailable what="release count" />)}
-          </Row>
-        )}
+        {/* A private repo's count is the member's decrypted list's, never the proved sum
+            (readAboutTotals); a reader without keys never gets this far. */}
+        <Row
+          icon={<Rocket className="h-3.5 w-3.5" aria-hidden />}
+          label="Releases"
+          href={repoHref('/repo/releases', addr)}
+          testId="repo-releases"
+          busy={totals === null}
+        >
+          {totals === null ? <ValuePending label="Reading the release count" /> : (totals.releases ?? <ValueUnavailable what="release count" />)}
+        </Row>
         <Row icon={<Star className="h-3.5 w-3.5" aria-hidden />} label="Stars" href={repoHref('/repo/stargazers', addr)}>
           {home.starCount ?? <ValueUnavailable what="star count" />}
         </Row>

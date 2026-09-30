@@ -14,7 +14,7 @@
 import { Time } from '@/components/repo/byline'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
-import { AlertTriangle, CheckCircle2, Download, FileArchive, Loader2, Tag, XCircle } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Download, FileArchive, Loader2, Lock, Tag, XCircle } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { formatBytes, plural, tipOidOf } from '@/lib/view'
 import type { ReleaseAssetView, ReleaseView } from '@/lib/repo'
@@ -29,7 +29,7 @@ import {
   type DownloadProgress,
 } from '@/lib/view/release-download'
 import { urlHost } from '@/lib/view/format'
-import { NOT_VERIFIED_YET, UNVERIFIABLE_ASSET, assetVerifiable, importedAssetUrl, isPrerelease, latestRelease, type OmittedAssets } from '@/lib/repo/releases'
+import { NOT_VERIFIED_YET, UNVERIFIABLE_ASSET, assetVerifiable, importedAssetUrl, isDraft, isPrereleaseView, latestRelease, type OmittedAssets, type ReleaseList } from '@/lib/repo/releases'
 import { useReleases } from '@/hooks/use-repo-chrome'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
@@ -81,18 +81,31 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
         <ErrorState message={error} onRetry={reload} />
       ) : data === null ? (
         <LoadingBlock label="Reading releases" />
+      ) : data.locked === true ? (
+        <EmptyState icon={Lock} title="Releases are encrypted" body="This private repo's releases are readable only by its members, with their keys." />
       ) : data.current.length === 0 ? (
-        <EmptyState
-          icon={Tag}
-          title="No releases yet"
-          body="A maintainer publishes one with dg release create --tag v1 --asset ./dist/app.tar.gz."
-        />
+        <>
+          <EmptyState
+            icon={Tag}
+            title="No releases yet"
+            body="A maintainer publishes one with dg release create --tag v1 --asset ./dist/app.tar.gz."
+          />
+          <SealedListNotes list={data} />
+        </>
       ) : (
         <>
+          <SealedListNotes list={data} />
           <ul className="space-y-3">
             {data.current.slice(0, shown).map((r) => (
               <li key={r.id}>
-                <ReleaseCard release={r} addr={addr} links={links} tagTip={releaseTagTip(home, r.tagName)} isLatest={r.id === latest?.id} />
+                <ReleaseCard
+                  release={r}
+                  addr={addr}
+                  links={links}
+                  tagTip={releaseTagTip(home, r.tagName)}
+                  isLatest={r.id === latest?.id}
+                  stateUnknown={data.unknownTags?.includes(r.tagName) === true}
+                />
               </li>
             ))}
           </ul>
@@ -132,6 +145,25 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
   )
 }
 
+/**
+ * What a private repo's list could not show (§16.3): newer revisions under a key the reader does
+ * not hold yet, and revisions that do not open. Nothing for a public repo's list.
+ */
+function SealedListNotes({ list }: { list: ReleaseList }): JSX.Element | null {
+  const hidden = list.hidden ?? 0
+  if (list.stale !== true && hidden === 0) return null
+  return (
+    <div className="space-y-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="releases-incomplete">
+      {list.stale === true ? (
+        <p className="flex items-center gap-1 text-caution-700 dark:text-caution-400">
+          <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden /> Releases may be out of date: newer revisions are under a key you don&apos;t hold yet.
+        </p>
+      ) : null}
+      {hidden > 0 ? <p>{plural(hidden, 'release revision')} could not be read.</p> : null}
+    </div>
+  )
+}
+
 /** The tip of a release's tag (a commit, or an annotated tag object), or null when no live tag has the name. */
 function releaseTagTip(home: RepoHome, tag: string): string | null {
   return tipOidOf(home.tags.find((t) => t.refName === `refs/tags/${tag}`))
@@ -163,7 +195,16 @@ export function ReleaseContent({ home, addr, tag }: { home: RepoHome; addr: Repo
       <Link href={repoHref('/repo/releases', addr)} className="text-dense text-anvil-600 underline dark:text-anvil-300">
         ← All releases
       </Link>
-      <ReleaseCard release={release} addr={addr} links={links} full tagTip={releaseTagTip(home, tag)} isLatest={release.id === latestRelease(data)?.id} />
+      <SealedListNotes list={data} />
+      <ReleaseCard
+        release={release}
+        addr={addr}
+        links={links}
+        full
+        tagTip={releaseTagTip(home, tag)}
+        isLatest={release.id === latestRelease(data)?.id}
+        stateUnknown={data.unknownTags?.includes(tag) === true}
+      />
       {previous.length > 0 ? (
         <section aria-label="Previous revisions" className="space-y-3">
           <h2 className="text-prose">Previous revisions of {tag}</h2>
@@ -184,6 +225,7 @@ function ReleaseCard({
   full = false,
   tagTip = null,
   isLatest = false,
+  stateUnknown = false,
 }: {
   release: ReleaseView
   addr: RepoAddress
@@ -194,8 +236,12 @@ function ReleaseCard({
   tagTip?: string | null
   /** L-48: this is the release GitHub would mark "Latest" (never true for a superseded revision). */
   isLatest?: boolean
+  /** A newer revision of this sealed release could not be read (§16.3). */
+  stateUnknown?: boolean
 }): JSX.Element {
   const [assetsOpen, setAssetsOpen] = useState(false)
+  const prerelease = isPrereleaseView(r)
+  const sealedFields = r.sealed?.fields
   const accesses = r.assets.map(assetAccess)
   return (
     <article
@@ -218,12 +264,17 @@ function ReleaseCard({
         {/* latestRelease() falls back to the newest release when every one is a pre-release
             (so the rail still names something); that fallback should not draw a "Latest" badge
             here, since GitHub shows none in that case either. */}
-        {isLatest && !isPrerelease(r.tagName) ? (
+        {isLatest && !prerelease ? (
           <span className="rounded bg-verify-100 px-1.5 text-[11px] font-medium uppercase text-verify-700 dark:bg-verify-900/40 dark:text-verify-400">
             Latest
           </span>
-        ) : isPrerelease(r.tagName) ? (
+        ) : prerelease ? (
           <span className="rounded bg-anvil-100 px-1.5 text-[11px] uppercase text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300">Pre-release</span>
+        ) : null}
+        {isDraft(r) ? (
+          <span className="rounded bg-anvil-100 px-1.5 text-[11px] uppercase text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300" data-testid="release-draft">
+            Draft
+          </span>
         ) : null}
         {previous ? (
           <span className="rounded bg-anvil-100 px-1.5 text-[11px] uppercase text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300">previous</span>
@@ -298,6 +349,19 @@ function ReleaseCard({
             {assetsOpen ? <AssetList assets={r.assets} accesses={accesses} className="mt-2" /> : null}
           </div>
         )
+      ) : null}
+      {stateUnknown ? (
+        <p className="mt-2 flex items-center gap-1 text-[12px] text-caution-700 dark:text-caution-400" data-testid="release-state-unknown">
+          <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden /> A newer revision of this release could not be read; its state is unknown.
+        </p>
+      ) : null}
+      {sealedFields?.notesContinue === true ? (
+        <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">The notes continue in the release&apos;s encrypted asset list, which this page can&apos;t open yet.</p>
+      ) : null}
+      {sealedFields?.assetManifest !== undefined ? (
+        <p className="mt-2 flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="release-sealed-assets">
+          <Lock className="h-3 w-3 shrink-0" aria-hidden /> The assets are in an encrypted list this page can&apos;t open yet: download them with dg release download.
+        </p>
       ) : null}
       {r.omitted ? <OmittedAssetsNote omitted={r.omitted} /> : null}
       {r.badAssets > 0 ? (

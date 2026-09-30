@@ -310,7 +310,9 @@ export async function latestReleases(sdk: EvoSDK, forge: ForgeIds, repos: readon
       orderBy: [['$createdAt', 'desc']],
       limit: 1,
     })
-    const d = parseDocs(releaseDoc, docs)[0]
+    // A revision carrying `enc` is a sealed one (`private-repos.md` §16.2): never shown by its
+    // keyed `tagName`, even on a repo stamped public.
+    const d = parseDocs(releaseDoc, docs.filter((doc) => doc['enc'] == null))[0]
     return d ? { repo, tagName: d.tagName, name: d.name ?? '', createdAt: d.$createdAt } : null
   })
   const rows = ok.filter((r): r is ReleaseRow => r !== null).sort((a, b) => b.createdAt - a.createdAt)

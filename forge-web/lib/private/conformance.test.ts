@@ -28,11 +28,31 @@ import {
   type PrivateMembership,
   type WrapRow,
 } from './epoch'
-import { EpochKeys, refNameHash, subkeyInfo, type EpochKeyring } from './keys'
+import { EpochKeys, refNameHash, releaseTagHash, releaseTagName, subkeyInfo, type EpochKeyring } from './keys'
 import { PackError, PackHeaderCache, openPack, parseHeader, planRange, readPackRange, segmentCount } from './pack'
+import {
+  ManifestMismatchError,
+  foldReleases,
+  openRelease,
+  openReleaseManifest,
+  sealRelease,
+  sealReleaseManifest,
+  type ReleaseFields,
+  type ReleaseManifest,
+  type ReleaseOpenResult,
+  type ReleaseStatus,
+  type StoredRelease,
+} from './release'
 import { buildTlv, MalformedError, type DocFields, type PrivateDocType } from './tlv'
 import { WrapError, buildWrapPlaintext, openWrap, sealWrap, type WrapFacade } from './wrap'
-import { hedgedFileId, hedgedNonce, sealDocWithNonce, sealPackWithFileId } from './testing'
+import {
+  hedgedFileId,
+  hedgedNonce,
+  sealDocWithNonce,
+  sealPackWithFileId,
+  sealReleaseManifestWithFileId,
+  sealReleaseWithNonce,
+} from './testing'
 import { IdSet, encodePrivateId, privateId, type IdEncoding } from './ids'
 
 type Evo = typeof import('@dashevo/evo-sdk')
@@ -50,15 +70,8 @@ interface Vector {
 
 const ROOT = resolve(process.cwd(), '..')
 const VECTORS_DIR = resolve(ROOT, 'forge-contracts', 'vectors')
-/**
- * Sealed releases (`private-repos.md` §16) are specified but not implemented in the web app
- * yet: their vectors are checked by gen.py and forge-core's test-only reference, and this
- * harness takes them on with the web implementation (`lib/repo/releases.ts`), which removes
- * this filter.
- */
-const NOT_YET_IMPLEMENTED = /^private_release_(seal|open|fold)__/
 const PRIVATE_FILES = readdirSync(VECTORS_DIR)
-  .filter((f) => f.startsWith('private_') && f.endsWith('.json') && !NOT_YET_IMPLEMENTED.test(f))
+  .filter((f) => f.startsWith('private_') && f.endsWith('.json'))
   .sort()
 
 // ---------------------------------------------------------------------------------------------
@@ -89,6 +102,15 @@ const FIELDS = leaves(
 )
 const KEY_INPUT = ['repoId', 'key', 'epoch']
 const SEAL_PACK = leaves(...KEY_INPUT, 'fileId', 'plaintextMod251', 'plaintextHex')
+const OPEN_CONTEXT = object({ keys: values(LEAF), anchors: values(leaves('id', 'height')), members: LEAF, burned: LEAF })
+const RELEASE_FIELDS = leaves(
+  'tag', 'name', 'notes', 'targetOid', 'prerelease', 'draft', 'yanked', 'unpublished', 'notesContinue',
+  'importedAuthor', 'importedUrl', 'importedCreatedAt', 'assetManifest',
+)
+const RELEASE_MANIFEST = object({
+  ...leafFields('v', 'tag', 'total', 'source', 'notes'),
+  assets: each(object({ ...leafFields('name', 'sha256', 'sizeBytes', 'sealedSha256', 'sealedSizeBytes'), uris: LEAF })),
+})
 
 const SHAPES: Readonly<Record<string, Shape>> = {
   private_kdf: leaves(...KEY_INPUT, 'fileId'),
@@ -96,7 +118,7 @@ const SHAPES: Readonly<Record<string, Shape>> = {
   private_doc_seal: object({ ...leafFields('repoId', 'key', 'nonce', 'anchor'), doc: leaves(...DOC_KEYS), fields: FIELDS }),
   private_doc_open: object({
     repoId: LEAF,
-    context: object({ keys: values(LEAF), anchors: values(leaves('id', 'height')), members: LEAF, burned: LEAF }),
+    context: OPEN_CONTEXT,
     doc: leaves(...DOC_KEYS, 'id', 'createdAtBlockHeight', 'updatedAtBlockHeight', 'enc'),
   }),
   private_collab_seal: object({
@@ -120,6 +142,24 @@ const SHAPES: Readonly<Record<string, Shape>> = {
     manifestQueries: each(leaves('headerEpoch', 'createdAtBlockHeight', 'owner')),
   }),
   private_hedge: object({ ...leafFields(...KEY_INPUT, 'rnd', 'plaintextMod251'), doc: leaves(...DOC_KEYS), fields: FIELDS }),
+  private_release_seal: object({
+    ...leafFields(...KEY_INPUT, 'ownerId', 'nonce', 'fileId'),
+    fields: RELEASE_FIELDS,
+    manifest: RELEASE_MANIFEST,
+  }),
+  private_release_open: object({
+    repoId: LEAF,
+    context: OPEN_CONTEXT,
+    doc: object({ ...leafFields('ownerId', 'epoch', 'tagName', 'vis', 'delta', 'enc', 'yanked'), imported: leaves('url') }),
+    keys: values(LEAF),
+    manifest: leaves('sealed', 'sizeBytes', 'assetManifest', 'tag', 'notesContinue'),
+  }),
+  private_release_fold: object({
+    revisions: each(object({
+      ...leafFields('id', 'createdAt', 'epoch', 'tagName', 'status', 'enc'),
+      fields: leaves('tag', 'draft', 'unpublished', 'yanked'),
+    })),
+  }),
 }
 
 function isObj(v: Json | undefined): v is Obj {
@@ -309,6 +349,23 @@ async function keyring(repoId: Uint8Array, keys: Obj): Promise<EpochKeyring> {
   return ring
 }
 
+/** A reader's context in §11's vector shape. */
+async function openContextOf(repoId: Uint8Array, c: Obj): Promise<OpenContext> {
+  const members = c['members']
+  const burned = c['burned']
+  return {
+    keys: await keyring(repoId, obj(c, 'keys')),
+    anchors: new Map(
+      Object.entries(obj(c, 'anchors')).map(([e, a]) => [
+        Number(e),
+        { id: privateId(str(a as Obj, 'id')), height: num(a as Obj, 'height') },
+      ]),
+    ),
+    members: new IdSet(Array.isArray(members) ? members.map((m) => privateId(String(m))) : []),
+    burned: new Set(Array.isArray(burned) ? burned.map(Number) : []),
+  }
+}
+
 async function packErrorOf(f: () => Promise<Json>): Promise<Json> {
   try {
     return await f()
@@ -436,21 +493,8 @@ async function run(v: Vector): Promise<Json> {
       return collabSeal(inp)
     case 'private_doc_open': {
       const repoId = hex(inp, 'repoId')
-      const c = obj(inp, 'context')
       const d = obj(inp, 'doc')
-      const members = c['members']
-      const burned = c['burned']
-      const ctx: OpenContext = {
-        keys: await keyring(repoId, obj(c, 'keys')),
-        anchors: new Map(
-          Object.entries(obj(c, 'anchors')).map(([e, a]) => [
-            Number(e),
-            { id: privateId(str(a as Obj, 'id')), height: num(a as Obj, 'height') },
-          ]),
-        ),
-        members: new IdSet(Array.isArray(members) ? members.map((m) => privateId(String(m))) : []),
-        burned: new Set(Array.isArray(burned) ? burned.map(Number) : []),
-      }
+      const ctx = await openContextOf(repoId, obj(inp, 'context'))
       const doc: StoredPrivateDoc = {
         ...toDoc(d),
         id: 'id' in d ? privateId(str(d, 'id')) : undefined,
@@ -568,6 +612,12 @@ async function run(v: Vector): Promise<Json> {
     }
     case 'private_epoch':
       return runEpoch(inp)
+    case 'private_release_seal':
+      return releaseSeal(inp)
+    case 'private_release_open':
+      return releaseOpen(inp)
+    case 'private_release_fold':
+      return releaseFold(inp)
     case 'private_hedge': {
       const keys = await importKey(inp)
       const rnd = hex(inp, 'rnd')
@@ -581,6 +631,133 @@ async function run(v: Vector): Promise<Json> {
     }
     default:
       throw new Error(`unknown private vector case: ${v.case}`)
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Sealed releases (§16)
+// ---------------------------------------------------------------------------------------------
+
+/** The plaintext content fields a sealed release must not carry (§16.2). */
+const RELEASE_PLAINTEXT = ['name', 'notes', 'assets', 'assetManifest', 'yanked', 'imported']
+
+function releaseOpenJson(r: ReleaseOpenResult): Json {
+  if (r.status === 'readable') return { status: 'readable', fields: { ...r.fields } }
+  return r.status === 'unreadable' ? { status: 'unreadable', reason: r.reason } : { status: 'malformed' }
+}
+
+async function releaseSeal(inp: Obj): Promise<Json> {
+  const keys = await importKey(inp)
+  const ring = new Map([[keys.epoch, keys]])
+  if ('manifest' in inp) {
+    const manifest = obj(inp, 'manifest') as unknown as ReleaseManifest
+    const { canonical, sealed } = await sealReleaseManifestWithFileId(keys, manifest, hex(inp, 'fileId'))
+    // The production seal (hedged fileId) opens back to the same manifest
+    const prod = await sealReleaseManifest(keys, manifest)
+    expect(prod.canonical).toBe(canonical)
+    const back = await openReleaseManifest(prod.sealed, prod.sealed.length, await sha256(prod.sealed), manifest.tag, manifest.notes !== undefined, ring)
+    expect(back).toEqual(manifest)
+    return {
+      canonical,
+      header: bytesToHex(sealed.subarray(0, 36)),
+      sealedLen: sealed.length,
+      packHash: bytesToHex(await sha256(sealed)),
+      sealed: bytesToHex(sealed),
+    }
+  }
+  const fields = obj(inp, 'fields') as unknown as ReleaseFields
+  const owner = privateId(str(inp, 'ownerId'))
+  try {
+    const s = await sealReleaseWithNonce(keys, owner, fields, hex(inp, 'nonce'))
+    expect(await releaseTagName(keys, fields.tag)).toBe(s.tagName)
+    // The production seal (hedged nonce) opens back to the same fields
+    const prod = await sealRelease(keys, owner, fields)
+    expect(prod.tagName).toBe(s.tagName)
+    expect(prod.enc.length).toBe(s.enc.length)
+    const ctx: OpenContext = {
+      keys: ring,
+      anchors: new Map([[keys.epoch, { id: new Uint8Array(32), height: 1 }]]),
+      members: new IdSet([owner]),
+    }
+    const opened = await openRelease(ctx, {
+      ownerId: owner,
+      epoch: keys.epoch,
+      tagName: prod.tagName,
+      vis: 'private',
+      delta: 0,
+      enc: prod.enc,
+      hasPlaintextContent: false,
+    })
+    expect(opened).toEqual({ status: 'readable', fields })
+    return {
+      tagHash: bytesToHex(await releaseTagHash(keys, fields.tag)),
+      tagName: s.tagName,
+      ad: bytesToHex(s.ad),
+      tlv: bytesToHex(s.tlv),
+      enc: bytesToHex(s.enc),
+      props: { tagName: s.tagName, vis: 'private', delta: 0, epoch: keys.epoch, enc: bytesToHex(s.enc) },
+    }
+  } catch (e) {
+    if (e instanceof MalformedError) return { error: 'malformed' }
+    if (e instanceof TooLargeError) return { error: 'tooLarge' }
+    throw e
+  }
+}
+
+async function releaseOpen(inp: Obj): Promise<Json> {
+  const repoId = hex(inp, 'repoId')
+  if ('manifest' in inp) {
+    const m = obj(inp, 'manifest')
+    const ring = await keyring(repoId, obj(inp, 'keys'))
+    try {
+      const manifest = await openReleaseManifest(
+        hex(m, 'sealed'),
+        num(m, 'sizeBytes'),
+        hex(m, 'assetManifest'),
+        str(m, 'tag'),
+        m['notesContinue'] === true,
+        ring,
+      )
+      return { status: 'readable', manifest: manifest as unknown as Json }
+    } catch (e) {
+      if (e instanceof ManifestMismatchError) return { error: 'manifestMismatch' }
+      if (e instanceof PackError) return { error: e.code }
+      throw e
+    }
+  }
+  const d = obj(inp, 'doc')
+  const doc: StoredRelease = {
+    ownerId: privateId(str(d, 'ownerId')),
+    epoch: 'epoch' in d ? num(d, 'epoch') : undefined,
+    tagName: str(d, 'tagName'),
+    vis: str(d, 'vis'),
+    delta: num(d, 'delta'),
+    enc: optHex(d, 'enc'),
+    hasPlaintextContent: RELEASE_PLAINTEXT.some((k) => k in d),
+  }
+  return releaseOpenJson(await openRelease(await openContextOf(repoId, obj(inp, 'context')), doc))
+}
+
+function releaseFold(inp: Obj): Json {
+  const rows = arr(inp, 'revisions').map((r) => ({
+    idHex: str(r, 'id'),
+    id: hex(r, 'id'),
+    createdAt: num(r, 'createdAt'),
+    epoch: num(r, 'epoch'),
+    tagName: str(r, 'tagName'),
+    status: str(r, 'status') as ReleaseStatus,
+    enc: str(r, 'enc'),
+    fields: 'fields' in r ? (obj(r, 'fields') as unknown as ReleaseFields) : undefined,
+  }))
+  const f = foldReleases(rows)
+  return {
+    live: Object.fromEntries(f.live.map((r) => [r.fields?.tag ?? '', r.idHex])),
+    history: f.history.map((r) => r.idHex),
+    count: f.count,
+    replays: f.replays.map((r) => r.idHex),
+    unknownTags: f.unknownTags,
+    stale: f.stale,
+    hidden: f.hidden,
   }
 }
 

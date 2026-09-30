@@ -254,6 +254,63 @@ pub struct Release {
     /// seals it, `-1` unpublishes it. A tag is live while its revisions sum to 1; releases
     /// cannot be deleted.
     pub delta: i64,
+    /// A private repository's sealed revision (§16): its epoch and every field it states.
+    /// `None` on a public release.
+    pub sealed: Option<SealedRelease>,
+}
+
+/// What a sealed release revision states besides the fields [`Release`] flattens.
+#[derive(Debug, Clone)]
+pub struct SealedRelease {
+    /// The key epoch it was sealed under.
+    pub epoch: u32,
+    /// The opened TLV: the tag, flags, target, provenance and the asset manifest's hash.
+    pub fields: crate::private::release::ReleaseFields,
+}
+
+impl Release {
+    /// A draft: a sealed-only label, never access control (§16.3).
+    #[must_use]
+    pub fn is_draft(&self) -> bool {
+        self.sealed.as_ref().is_some_and(|s| s.fields.draft)
+    }
+
+    /// A pre-release: its tag has a pre-release suffix, or a sealed revision sets the flag
+    /// (§16.2: never less of a pre-release than the public rule makes it).
+    #[must_use]
+    pub fn is_prerelease(&self) -> bool {
+        self.sealed.as_ref().is_some_and(|s| s.fields.prerelease)
+            || v2::is_prerelease(&self.tag_name)
+    }
+}
+
+/// Every release of a repository as a reader sees it (§16.3 for a private one).
+#[derive(Debug, Clone, Default)]
+pub struct ReleaseList {
+    /// The release of each live tag, in [`v2::release_order`].
+    pub current: Vec<Release>,
+    /// The other revisions, an unpublished tag's included, newest first.
+    pub previous: Vec<Release>,
+    /// Release revisions that could not be read (§16.3 "n release revisions could not be
+    /// read"); on a public repository, any carrying `enc`.
+    pub hidden: usize,
+    /// Of `hidden`, revisions sealed under an earlier use of their epoch number: "sealed under
+    /// a key this repository no longer uses", not tampering (§16.3).
+    pub earlier_use: usize,
+    /// Revisions ignored as copies of an earlier `enc` (§16.3).
+    pub replays: usize,
+    /// Tags whose newest revision could not be read: their state is unknown.
+    pub unknown_tags: Vec<String>,
+    /// Newer revisions are under a key this reader does not hold yet.
+    pub stale: bool,
+}
+
+impl ReleaseList {
+    /// The releases count: live tags whose release is not a draft (a yanked one counts).
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.current.iter().filter(|r| !r.is_draft()).count()
+    }
 }
 
 /// Build a [`Release`] from a fetched document.
@@ -292,6 +349,28 @@ pub(crate) fn release_from_doc(d: &platform::FetchedDocument) -> Release {
             .get("delta")
             .and_then(FieldValue::as_i64)
             .unwrap_or(0),
+        sealed: None,
+    }
+}
+
+/// A [`Release`] from a sealed revision that opened to `fields`. Its assets are in the sealed
+/// kind-4 manifest `fields.asset_manifest` names, read separately (§16.5).
+pub(crate) fn release_from_sealed(
+    d: &platform::FetchedDocument,
+    epoch: u32,
+    fields: crate::private::release::ReleaseFields,
+) -> Release {
+    Release {
+        document_id: d.id.clone(),
+        tag_name: fields.tag.clone(),
+        name: fields.name.clone().unwrap_or_default(),
+        notes: fields.notes.clone().unwrap_or_default(),
+        yanked: fields.yanked,
+        assets: Vec::new(),
+        publisher: d.owner_id.clone(),
+        created_at: d.created_at.unwrap_or(0),
+        delta: 0,
+        sealed: Some(SealedRelease { epoch, fields }),
     }
 }
 
