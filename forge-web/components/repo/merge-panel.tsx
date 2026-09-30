@@ -61,7 +61,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 /** "Delete the branch after merging": runnable, or shown disabled with why. */
 export type DeleteBranchOption = { readonly label: string; readonly run: () => Promise<void> } | { readonly label: string; readonly disabled: string }
 
-/** A fast-forward's pack estimate grown by the merge commit a --no-ff adds (a bound: under 1 KiB). */
+/** A fast-forward's pack estimate grown by the merge commit a --no-ff adds (about 1 KiB; the estimate's slack covers a longer title). */
 function withMergeCommit(e: PackEstimate | null): PackEstimate | null {
   return e === null ? null : { bytes: e.bytes + 1024, objectCount: e.objectCount + 1 }
 }

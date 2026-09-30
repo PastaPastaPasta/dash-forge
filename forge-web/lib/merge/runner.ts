@@ -214,7 +214,8 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
   // A private repo's pack must be encrypted, which the browser merge does not do: refused
   // here too, not only by the panel, so no caller can store a plaintext pack for one.
   if (deps.repo.visibility !== 'public') throw new MergeStopped('Private repositories are merged with `dg pr merge` for now.')
-  if (from.baseTip !== deps.input.baseTip || from.headOid !== deps.input.headOid || from.squash !== deps.input.squash?.message) {
+  const noFf = deps.input.noFastForward === true && !deps.input.squash
+  if (from.baseTip !== deps.input.baseTip || from.headOid !== deps.input.headOid || from.squash !== deps.input.squash?.message || (from.noFastForward === true) !== noFf) {
     throw new MergeStopped('the base branch or the PR head changed since this merge started; merge again')
   }
   // The base ref and head come from the PR document, which its author wrote: refuse anything

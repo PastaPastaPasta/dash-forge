@@ -151,8 +151,8 @@ export function useInboxPoller(): void {
     const unsubscribe = useInboxStore.subscribe((state, prev) => {
       if (state.nudge.n !== prev.nudge.n) void run(state.nudge.refreshSubs)
     })
-    // QW-066: a thread this identity just took part in (a comment, a new issue or PR, a review,
-    // a watch or star) is watched from the next round, not after the subscriptions' next
+    // QW-066: a thread this identity just took part in (a comment, a new issue or PR, a watch
+    // or star) is watched from the next round, not after the subscriptions' next
     // refresh (up to SUBS_TTL_MS) or a reload. The write is confirmed; a short wait lets the
     // other nodes a read may reach catch up.
     let participation: ReturnType<typeof setTimeout> | null = null

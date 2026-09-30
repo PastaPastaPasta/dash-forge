@@ -88,6 +88,13 @@ describe('merge step runner', () => {
     expect(events).toEqual([])
   })
 
+  it('refuses to resume a run made for the other merge method (--no-ff vs fast-forward)', async () => {
+    const d = deps()
+    await expect(runMergeSteps({ ...d, input: { ...d.input, noFastForward: true } }, newRun({ baseTip: BASE, headOid: HEAD }), () => undefined)).rejects.toThrow(MergeStopped)
+    await expect(runMergeSteps(d, newRun({ baseTip: BASE, headOid: HEAD, noFastForward: true }), () => undefined)).rejects.toThrow(MergeStopped)
+    expect(calls).toEqual([])
+  })
+
   it('runs every step in order and writes the pack, the protected ref and the merge event', async () => {
     const events: StepEvent[] = []
     const run = await runMergeSteps(deps(), newRun({ baseTip: BASE, headOid: HEAD }), (e) => events.push(e))
