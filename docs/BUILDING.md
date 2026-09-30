@@ -252,8 +252,8 @@ NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia pnpm build  # forge-we
 ```
 
 The web header shows a network badge on every network except mainnet (the production build
-at forge.dashhq.org is built from master by `pages.yml`, for devnet moutai until the cut-over and
-for devnet bonsia after it, and shows "devnet"). On a network with no
+at forge.dashhq.org is built from master by `pages.yml`, for devnet bonsia since the 2026-09-30
+cut-over, and shows "devnet"). On a network with no
 forge-v2 deployment, the badge is amber and the pages that need the contracts show a "not
 deployed" state instead of querying.
 

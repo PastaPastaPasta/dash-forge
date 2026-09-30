@@ -50,8 +50,8 @@ After **Dash Platform protocol 14** activates on mainnet and the project owner r
 
 | Network | Status |
 |---|---|
-| **Devnet bonsia** | **Registered (RC1), site not cut over yet.** Forge's contracts were registered on bonsia (Platform v4.2.0-beta.7) on 2026-09-29, and the CLI targets it. forge.dashhq.org moves here at the cut-over. See [the root README's status table](../README.md#status) for the current state. |
-| **Devnet moutai** | **Retired for Forge.** Moutai was upgraded in place to Platform v4.2.0-beta.7, which retired its forge-v2 contracts. forge.dashhq.org was built for moutai and is down until it cuts over to bonsia. |
+| **Devnet bonsia** | **Registered (RC1), live.** Forge's contracts were registered on bonsia (Platform v4.2.0-beta.7) on 2026-09-29 and frozen (tag `contracts-rc1-frozen`). The CLI targets it, and forge.dashhq.org has been live on bonsia since 2026-09-30. See [the root README's status table](../README.md#status) for the current state. |
+| **Devnet moutai** | **Retired for Forge.** Moutai was upgraded in place to Platform v4.2.0-beta.7, which retired its forge-v2 contracts. forge.dashhq.org moved off moutai to bonsia on 2026-09-30. |
 | **Testnet** | Not deployed yet. Testnet runs protocol 13; forge-v2 is registered there as soon as protocol 14 reaches it, expected soon. |
 | **Mainnet** | Not deployed yet. After protocol 14 activates, the owner registers the forge-v2 contracts ([runbook](mainnet-runbook.md)). |
 

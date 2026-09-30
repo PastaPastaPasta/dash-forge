@@ -5,7 +5,7 @@
 - `node ../forge-contracts/scripts/seed-offline.mjs [--out <dir>]` runs every seed and verify script against an in-memory chain, with no network. It fails when one writes a document the chain-state rules refuse, or when a rerun writes anything. With `--out`, it saves every document as an rc1 vector for `tools/contract-validate --vectors <dir>`. The `Contracts` workflow runs both.
 - `../forge-web/e2e/`: the Playwright specs, run against a bonsia build (`E2E_DEVNET=bonsia`, the default). The read specs only read the read fixture.
 
-Everything runs on devnet bonsia because the RC1 contracts need Platform 4.2.0-beta.7, which testnet and mainnet do not run yet. Devnet moutai was upgraded in place to beta.7, which retired the forge-v2 contracts registered there; the public site moves to bonsia at the cut-over. Testnet runs resume once protocol 14 reaches testnet and forge-v2 is deployed there.
+Everything runs on devnet bonsia because the RC1 contracts need Platform 4.2.0-beta.7, which testnet and mainnet do not run yet. Devnet moutai was upgraded in place to beta.7, which retired the forge-v2 contracts registered there; the public site moved to bonsia on 2026-09-30. Testnet runs resume once protocol 14 reaches testnet and forge-v2 is deployed there.
 - `cli/storage-byo.sh`: bring-your-own storage (`make storage-e2e`). A real `git push` / `git clone` whose packs go to the local RustFS (S3) + kubo from `infra/docker-compose.yml`.
 
 | Scenario | Proves |

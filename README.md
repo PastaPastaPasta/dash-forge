@@ -11,8 +11,8 @@
 
 | Network | Platform protocol | Forge |
 |---|---|---|
-| **Devnet bonsia** | 14 | **Registered (RC1), site not cut over yet.** Forge's three contracts (forge-core, forge-collab, forge-community) were registered on 2026-09-29, on Platform v4.2.0-beta.7. `dg` and `git-remote-dash` built from this source target bonsia. The web app at [forge.dashhq.org](https://forge.dashhq.org) moves here at the cut-over. |
-| **Devnet moutai** | 14 | **Retired for Forge.** Moutai was upgraded in place to Platform v4.2.0-beta.7, which retired the forge-v2 contracts registered there. The web app at [forge.dashhq.org](https://forge.dashhq.org) was built for moutai and is down until it cuts over to bonsia. |
+| **Devnet bonsia** | 14 | **Registered (RC1), live.** Forge's three contracts (forge-core, forge-collab, forge-community) were registered on 2026-09-29, on Platform v4.2.0-beta.7, and frozen (tag `contracts-rc1-frozen`). `dg` and `git-remote-dash` built from this source target bonsia, and the web app at [forge.dashhq.org](https://forge.dashhq.org) has been live on bonsia since 2026-09-30. |
+| **Devnet moutai** | 14 | **Retired for Forge.** Moutai was upgraded in place to Platform v4.2.0-beta.7, which retired the forge-v2 contracts registered there. The public web app no longer targets moutai; it moved to bonsia on 2026-09-30. |
 | **Testnet** | 13 | **Not deployed yet.** forge-v2 is registered on testnet as soon as Platform protocol 14 reaches it, which is expected soon. |
 | **Mainnet** | 13 | **Not deployed yet.** After protocol 14 activates on mainnet, the project owner registers the forge-v2 contracts ([runbook](docs/mainnet-runbook.md)). |
 
@@ -133,9 +133,9 @@ network's ids. See [BUILDING.md § Networks](docs/BUILDING.md#networks).
 
 ### Verification
 
-The web app at **https://forge.dashhq.org** (GitHub Pages) is down: it was built for devnet moutai, whose forge-v2 contracts were retired when moutai was upgraded to Platform v4.2.0-beta.7. It comes back once the site cuts over to devnet bonsia. The CLI end-to-end suite (`e2e/cli/`) and the Playwright specs (`forge-web/e2e/`) run nightly ("Devnet Nightly", from master's workflow file: against bonsia from the cut-over); see [e2e/README.md](e2e/README.md).
+The web app at **https://forge.dashhq.org** (GitHub Pages) is live on devnet bonsia, running the frozen RC1 contracts (tag `contracts-rc1-frozen`). It moved from devnet moutai on 2026-09-30, after moutai was upgraded in place to Platform v4.2.0-beta.7 and its forge-v2 contracts were retired. The CLI end-to-end suite (`e2e/cli/`) and the Playwright specs (`forge-web/e2e/`) run nightly ("Devnet Nightly", from master's workflow file: against bonsia); see [e2e/README.md](e2e/README.md).
 
-Proven end-to-end on moutai: `git clone dash://…` / `git push` byte-identical round-trip; a revoked writer's push and a non-member's push rejected at consensus; third-party "no trust in any server" verification; issue and PR lifecycles, including a PR from a fork with a real merge; the browser app rendering proof-verified data with the Verification card; `dg init` publishing to a bucket; an import re-run costing 0; relay deliveries surviving a restart; CLI↔web parity via the shared conformance vectors. See [forge-v2.md](docs/contracts/forge-v2.md) for the contract design and [mainnet-runbook.md](docs/mainnet-runbook.md) for the (not-yet-executed) mainnet deployment.
+Proven end-to-end on bonsia: `git clone dash://…` / `git push` byte-identical round-trip; a revoked writer's push and a non-member's push rejected at consensus; third-party "no trust in any server" verification; issue and PR lifecycles, including a PR from a fork with a real merge; the browser app rendering proof-verified data with the Verification card; `dg init` publishing to a bucket; an import re-run costing 0; relay deliveries surviving a restart; CLI↔web parity via the shared conformance vectors. See [forge-v2.md](docs/contracts/forge-v2.md) for the contract design and [mainnet-runbook.md](docs/mainnet-runbook.md) for the (not-yet-executed) mainnet deployment.
 
 Components (all under this repo): `forge-contracts` · `forge-core` (Rust lib) · `git-remote-dash` · `dg` (CLI) · `forge-relay` · `forge-import` · `forge-web`.
 
