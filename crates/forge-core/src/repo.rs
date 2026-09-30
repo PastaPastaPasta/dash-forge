@@ -1366,28 +1366,39 @@ impl<'a> RepoService<'a> {
         {
             // `platformChunks` still refuses it after the write loop waited out a lagging node
             // (`TOTAL_READING_RULES`): say whether the chunks are really missing.
-            Err(Error::RuleRefused { rule, detail, .. }) if rule == "platformChunks" => {
-                let owner = self.identity_id()?;
-                let visible = self
-                    .client
-                    .query_all_documents(
-                        &contract,
-                        crate::backends::platform::CHUNK_DOC_TYPE,
-                        &scope.chunk_filters(&owner, manifest.pack_hash)?,
-                        &[crate::platform::QueryOrder::asc(
-                            crate::backends::platform::FIELD_SEQ,
-                        )],
-                    )
-                    .await
-                    .map_or_else(|e| format!("unknown ({e})"), |d| d.len().to_string());
-                Err(Error::Config(format!(
-                    "packManifest of {} refused by platformChunks: {visible} of its {} chunk(s) \
-                     are visible to the network ({detail}). Nothing was charged for the \
-                     manifest; re-run the push (stored chunks are reused, missing ones \
-                     re-uploaded)",
-                    hex::encode(manifest.pack_hash),
-                    manifest.chunk_count
-                )))
+            Err(Error::RuleRefused {
+                document_type,
+                rule,
+                detail,
+            }) if rule == "platformChunks" => {
+                let visible = match self.identity_id() {
+                    Ok(owner) => match scope.chunk_filters(&owner, manifest.pack_hash) {
+                        Ok(filters) => self
+                            .client
+                            .query_all_documents(
+                                &contract,
+                                crate::backends::platform::CHUNK_DOC_TYPE,
+                                &filters,
+                                &[crate::platform::QueryOrder::asc(
+                                    crate::backends::platform::FIELD_SEQ,
+                                )],
+                            )
+                            .await
+                            .map_or_else(|e| format!("unknown ({e})"), |d| d.len().to_string()),
+                        Err(e) => format!("unknown ({e})"),
+                    },
+                    Err(e) => format!("unknown ({e})"),
+                };
+                Err(Error::RuleRefused {
+                    document_type,
+                    rule,
+                    detail: format!(
+                        "{detail}; {visible} of the {} chunk(s) of pack {} are visible to the \
+                         network (a re-run of the push reuses the stored ones)",
+                        manifest.chunk_count,
+                        hex::encode(manifest.pack_hash)
+                    ),
+                })
             }
             other => other,
         }

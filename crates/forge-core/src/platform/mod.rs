@@ -83,12 +83,14 @@ pub const NONCE_MASK: u64 = (1 << 40) - 1;
 /// the write land once — never twice.
 const MAX_BROADCAST_ATTEMPTS: u32 = 4;
 
-/// The `propertyConstraints` rules that read a total (`countOf` / `sumOf`) the writer's own
-/// earlier documents feed, by document type: a `packManifest`'s chunks, a release tag's earlier
-/// revisions, an issue or PR number's predecessors, a thread's transitions. A node one block
-/// behind those documents judges the total without them and refuses a correct write (10422).
-/// That refusal is at CheckTx, before the nonce is spent, so the same signed bytes can be sent
-/// again once the node has caught up ([`MAX_LAG_RETRIES`]).
+/// The `propertyConstraints` rules that read a total (`countOf` / `sumOf`), by document type: a
+/// `packManifest`'s chunks, a release tag's revisions, an issue or PR number's predecessors, a
+/// thread's transitions, a repo's topics. A node one block behind the documents that feed the
+/// total (the writer's own chunks, a revision just published) judges it without them and refuses
+/// a correct write (10422). At CheckTx that refusal comes before the nonce is spent, so the same
+/// signed bytes can be sent again once the node has caught up ([`MAX_LAG_RETRIES`]). Every one
+/// of these rules is judged by whichever node answers: a real refusal is final after the
+/// retries, a few seconds later.
 const TOTAL_READING_RULES: [(&str, &str); 13] = [
     ("packManifest", "platformChunks"),
     ("release", "oneLive"),
@@ -3232,6 +3234,10 @@ where
         attempt += 1;
         let started = std::time::Instant::now();
         let sent_now = broadcast().await;
+        // A refusal the broadcast itself returned is CheckTx's: before the nonce is spent, so
+        // it can be sent again. One the wait returns came from block execution, which spent
+        // the nonce and charged a fee: final.
+        let at_check_tx = sent_now.is_err();
         let failure = match sent_now {
             Ok(()) | Err(WriteFailure::TxKnown) => {
                 // A plain Ok is our own send. TxKnown on a later attempt is too: an earlier
@@ -3274,7 +3280,7 @@ where
         match failure {
             WriteFailure::AlreadyLanded => return Ok(BroadcastOutcome::AlreadyExists),
             WriteFailure::NonceConsumed => return Ok(BroadcastOutcome::NonceConsumed),
-            WriteFailure::Retryable(reason) if attempt < MAX_BROADCAST_ATTEMPTS => {
+            WriteFailure::Retryable(reason) if attempt - lag_retries < MAX_BROADCAST_ATTEMPTS => {
                 let delay = backoff_delay(backoff, attempt);
                 tracing::warn!(
                     document_type,
@@ -3298,7 +3304,10 @@ where
                 document_type: refused,
                 rule,
                 detail,
-            }) if reads_a_total(&refused, &rule) && lag_retries < MAX_LAG_RETRIES => {
+            }) if at_check_tx
+                && reads_a_total(&refused, &rule)
+                && lag_retries < MAX_LAG_RETRIES =>
+            {
                 lag_retries += 1;
                 let delay = backoff_delay(backoff * 3 / 2, lag_retries);
                 tracing::warn!(
@@ -4299,6 +4308,32 @@ mod tests {
         assert_eq!(nb, 1 + super::MAX_LAG_RETRIES as usize);
 
         // A rule that reads no total (a sealed private ref named in plaintext) is final at once.
+        // Returned by the wait, the refusal came from block execution (the nonce is spent, the
+        // fee paid): final at once, nothing to wait out.
+        let (out, nb, nw) = scripted_write(
+            vec![Ok(())],
+            vec![Err(refused("packManifest", "platformChunks"))],
+            vec![],
+        )
+        .await;
+        assert!(matches!(out, Err(Error::RuleRefused { .. })), "{out:?}");
+        assert_eq!((nb, nw), (1, 1));
+
+        // Lag retries do not use up the re-broadcasts a lost answer gets.
+        let mut sends = vec![
+            Err(refused("release", "oneLive")),
+            Err(refused("release", "oneLive")),
+        ];
+        sends.extend([Ok(()), Ok(()), Ok(()), Ok(())]);
+        let (out, nb, nw) = scripted_write(
+            sends,
+            vec![Err(timeout()), Err(timeout()), Err(timeout()), Ok(())],
+            vec![false, false, false],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
+        assert_eq!((nb, nw), (6, 4));
+
         let (out, nb, _) =
             scripted_write(vec![Err(refused("refUpdate", "noPlain"))], vec![], vec![]).await;
         assert!(matches!(out, Err(Error::RuleRefused { .. })));
@@ -4313,9 +4348,11 @@ mod tests {
         assert!(!super::reads_a_total("patch", "platformChunks"));
     }
 
-    /// Every rule of the RC1 contracts that reads a total is one the write loop waits out.
+    /// Every rule of the RC1 contracts that reads a total is one the write loop waits out, and
+    /// every one listed is such a rule (a renamed rule does not linger).
     #[test]
     fn every_total_reading_rule_is_listed() {
+        let mut found = Vec::new();
         for name in ["forge-core", "forge-collab", "forge-community"] {
             let path = format!(
                 "{}/../../forge-contracts/contracts/{name}.json",
@@ -4331,9 +4368,16 @@ mod tests {
                     let text = rule.to_string();
                     if text.contains("countOf") || text.contains("sumOf") {
                         assert!(super::reads_a_total(t, r), "{name}: {t}.{r}");
+                        found.push((t.clone(), r.clone()));
                     }
                 }
             }
+        }
+        for (t, r) in super::TOTAL_READING_RULES {
+            assert!(
+                found.iter().any(|(ft, fr)| ft == t && fr == r),
+                "{t}.{r} is listed but reads no total in the contracts"
+            );
         }
     }
 
