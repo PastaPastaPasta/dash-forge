@@ -46,14 +46,17 @@ export function buildIdentityBackup(role, networkConfig) {
  * Write a file holding secrets (a mnemonic, a WIF) as a new 0600 inode: a unique temp sibling
  * created exclusively (`wx`, so nothing already there is opened or followed), synced, then
  * renamed over `path`. rename replaces a symlink at `path` rather than writing through it, and
- * the result is 0600 whatever the permissions of a file it replaces. The temp file is removed
- * on failure; the directory is synced after the rename, so the new name survives a crash too.
+ * the result is 0600 whatever the permissions of a file it replaces. A temp file this call
+ * created is removed on failure (one that was already there is left alone); the directory is
+ * synced after the rename, so the new name survives a crash too. `nonce`: tests only.
  */
-export function writeSecretFile(path, data) {
-  const tmp = `${path}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
+export function writeSecretFile(path, data, { nonce = randomBytes(8).toString('hex') } = {}) {
+  const tmp = `${path}.${process.pid}.${nonce}.tmp`;
   let fd;
+  let created = false;
   try {
     fd = openSync(tmp, 'wx', 0o600);
+    created = true;
     writeFileSync(fd, data);
     fsyncSync(fd);
     closeSync(fd);
@@ -67,7 +70,7 @@ export function writeSecretFile(path, data) {
         /* the write already failed: report that error */
       }
     }
-    rmSync(tmp, { force: true });
+    if (created) rmSync(tmp, { force: true });
     throw err;
   }
   syncDir(dirname(path));

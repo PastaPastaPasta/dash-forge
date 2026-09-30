@@ -2,6 +2,7 @@
 // users in `ps` and lands in shell history, so a file or stdin is preferred; `--mnemonic
 // <words>` still works, with a warning. The phrase itself is never printed.
 import { readFileSync } from 'node:fs';
+import { isatty } from 'node:tty';
 
 export const MNEMONIC_ARGV_WARNING =
   'WARNING: a recovery phrase passed with --mnemonic is visible to other users in ps and is saved in your shell history. ' +
@@ -24,7 +25,9 @@ export function resolveMnemonicArg(
   {
     readFile = (path) => readFileSync(path, 'utf8'),
     readStdin = () => readFileSync(0, 'utf8'),
-    stdinIsTTY = process.stdin.isTTY === true,
+    // isatty(0), not process.stdin.isTTY: touching process.stdin makes a pipe on fd 0
+    // non-blocking, and readFileSync(0) then fails with EAGAIN when the writer is slow.
+    stdinIsTTY = isatty(0),
     warn = (msg) => process.stderr.write(`${msg}\n`),
   } = {}
 ) {

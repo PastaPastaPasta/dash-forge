@@ -63,6 +63,18 @@ test('writeSecretFile removes its temp file when the write fails', (t) => {
   assert.deepEqual(readdirSync(dir), ['occupied']);
 });
 
+test('writeSecretFile never opens an existing temp file, and leaves one it did not create', (t) => {
+  const dir = tempDir(t);
+  const path = join(dir, 'OWNER.identity.json');
+  const squatter = `${path}.${process.pid}.fixednonce.tmp`;
+  writeFileSync(squatter, 'not ours\n');
+  chmodSync(squatter, 0o644);
+  assert.throws(() => writeSecretFile(path, 'fake secret\n', { nonce: 'fixednonce' }), { code: 'EEXIST' });
+  assert.equal(readFileSync(squatter, 'utf8'), 'not ours\n');
+  assert.equal(mode(squatter), 0o644);
+  assert.deepEqual(readdirSync(dir), [`OWNER.identity.json.${process.pid}.fixednonce.tmp`]);
+});
+
 test('--mnemonic-file reads the file, trimmed, without a warning', () => {
   const warnings = [];
   const got = resolveMnemonicArg(
