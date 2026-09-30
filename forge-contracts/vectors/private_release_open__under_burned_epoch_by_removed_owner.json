@@ -1,0 +1,41 @@
+{
+  "name": "under_burned_epoch_by_removed_owner",
+  "description": "the burned clause of §8.2 needs no height and still applies: a revision under burned epoch 1 whose author is no longer a maintainer is Unreadable(Late), so a key holder cannot plant a release before a burn.",
+  "case": "private_release_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "1": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        },
+        "1": {
+          "id": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86",
+          "height": 1000
+        }
+      },
+      "members": [],
+      "burned": [
+        1
+      ]
+    },
+    "doc": {
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 1,
+      "tagName": "RIgIOsyi-3hmGZTqr75wHSm48J_2WLR3WawK5CVj4Qg",
+      "vis": "private",
+      "delta": 0,
+      "enc": "01000102030405060708090a0bd4b9d6187db6a54be535f1aa8c818dfe2013648dc3e0be5636ad082078070556e5cb1dc98fce4e58d584d85e517f67b0b0e8944dddb3df770ff5de8e3987abce5016964ea1917cec8ebcade705c7318f6f97b0dd43b19e65e29a14329a34d111a1ea2f268ab4823ff0341cdae818aab1"
+    }
+  },
+  "expected": {
+    "status": "unreadable",
+    "reason": "late"
+  }
+}

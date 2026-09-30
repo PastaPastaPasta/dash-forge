@@ -35,7 +35,12 @@
 //!   the same push as its `packManifest`, so `Auditor::repo_scoped_pass` instead reads that
 //!   manifest's own required `chunkCount` and `$createdAt` and folds that many chunks in via
 //!   [`Totals::record_n`] — one proved read stands in for however many chunks the pack has, and
-//!   `--since` can actually date them.
+//!   `--since` can actually date them. This misses chunks with no live manifest to derive them
+//!   from: an interrupted push that uploaded chunks before failing (`RepoService::put_pack_resumable`
+//!   keeps them for a retry to reuse), or one where the target's membership was revoked between
+//!   its chunks and its manifest. Those chunks were still paid for; this audit cannot see them,
+//!   the same structural gap as the repository-scope one above, not a bug to be engineered
+//!   around further.
 //! * **`review`** is the one type left out entirely: its only index, `patch [patchId,
 //!   $createdAt]`, carries neither `repoId` nor `$ownerId`, so no proved query can find "every
 //!   review `target` wrote" — reaching them would mean reading every patch's reviews on the
@@ -352,13 +357,6 @@ struct Tally {
     credits: u64,
 }
 
-impl Tally {
-    fn add(&mut self, credits: u64) {
-        self.count += 1;
-        self.credits += credits;
-    }
-}
-
 /// The running totals [`audit`] folds documents into, split out so `audit` itself stays a
 /// short outline of the three passes (global, repo-scope discovery, repo-scoped).
 #[derive(Default)]
@@ -381,23 +379,15 @@ impl Totals {
     /// type has no `$createdAt` — see the module doc) is never excluded by `--since`: only a
     /// document with a known creation time strictly before the cutoff is dropped.
     fn record(&mut self, doc_type: &'static str, doc: &FetchedDocument) {
-        if let (Some(since), Some(created_at)) = (self.since_ms, doc.created_at) {
-            if created_at < since {
-                return;
-            }
-        }
-        let credits = base_credits(doc_type);
-        self.by_type.entry(doc_type).or_default().add(credits);
-        self.by_repo
-            .entry(repo_bucket_for(doc_type, doc))
-            .or_default()
-            .add(credits);
+        self.record_n(doc_type, 1, doc);
     }
 
-    /// Fold `n` documents of `doc_type` in at once, all dated and bucketed like `doc` — used
-    /// only for `chunk`, whose own documents are never queried directly (see the module doc
-    /// and [`Auditor::repo_scoped_pass`]). `since_ms` is applied against `doc`'s own
-    /// `$createdAt` (its `packManifest`), same rule as [`Totals::record`]. A no-op for `n == 0`.
+    /// Fold `n` documents of `doc_type` in at once, all dated and bucketed like `doc`.
+    /// [`Totals::record`] is `record_n(doc_type, 1, doc)`; `n` greater than one is used only for
+    /// `chunk`, whose own documents are never queried directly (see the module doc and
+    /// [`Auditor::repo_scoped_pass`]) — there, `doc` is the `packManifest` standing in for its
+    /// chunks, so `since_ms` is applied against the manifest's own `$createdAt`. A no-op for
+    /// `n == 0`.
     fn record_n(&mut self, doc_type: &'static str, n: u64, doc: &FetchedDocument) {
         if n == 0 {
             return;
@@ -872,6 +862,20 @@ mod tests {
                 "{doc_type} appears in more than one query table"
             );
         }
+    }
+
+    /// `chunk` must stay out of every query table: it is deliberately derived from each owned
+    /// `packManifest`'s `chunkCount` ([`Auditor::repo_scoped_pass`]), never queried as a
+    /// document type in its own right. Re-adding it to any table would double-count every
+    /// chunk (once queried, once derived) without the disjointness test above catching it,
+    /// since `chunk` does not appear in a second table today.
+    #[test]
+    fn chunk_is_never_a_query_table_entry() {
+        assert!(!GLOBAL_TYPES.iter().any(|g| g.doc_type == "chunk"));
+        assert!(!REPO_OWNER_FILTERED_TYPES
+            .iter()
+            .any(|t| t.doc_type == "chunk"));
+        assert!(!REPO_SCANNED_TYPES.iter().any(|t| t.doc_type == "chunk"));
     }
 
     #[test]

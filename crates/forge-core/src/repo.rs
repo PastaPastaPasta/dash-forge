@@ -1598,76 +1598,32 @@ impl<'a> RepoService<'a> {
         manifest: &PackManifestInfo,
         reader: &PackReader,
     ) -> Result<Vec<u8>> {
-        let expected = hex::encode(manifest.pack_hash);
-        let scope = repo.scope()?;
-        let own = Uri(scope.locator(&manifest.owner_id, &expected));
-        // Platform copies to read, in order: chunks another repo's scope holds (a fork's
-        // manifest names its parent's this way), then this manifest's own chunks.
-        // Only locators of THIS pack: a manifest naming another pack's chunks would have
-        // readers download them in full before the hash check refused them.
-        let mut platform: Vec<Uri> = manifest
-            .uris
-            .iter()
-            .map(|u| Uri(u.clone()))
-            .filter(|u| {
-                *u != own
-                    && crate::backends::PlatformLocator::parse(u)
-                        .is_ok_and(|l| l.pack_hash == manifest.pack_hash)
-            })
-            .collect();
-        if manifest.storage == 0 {
-            platform.push(own);
-        }
-        // Every body is capped at the manifest's size (0 = unknown on very old manifests).
-        let size = (manifest.size_bytes > 0).then_some(manifest.size_bytes);
-        if reader.has_candidates(&manifest.uris) {
-            // With chunks to fall back on, the external copies get a size-scaled budget
-            // after which no new candidate starts — dead gateways must not cost minutes per
-            // pack before the on-chain read, but a big pack streaming from a healthy mirror
-            // is not abandoned mid-transfer.
-            let budget =
-                (!platform.is_empty()).then(|| crate::storage::read::external_budget(size));
-            match reader
-                .fetch_verified(&manifest.uris, &expected, size, budget)
-                .await
-            {
-                Ok(bytes) => return Ok(bytes),
-                Err(e) if platform.is_empty() => return Err(e),
-                Err(e) => tracing::info!(
-                    pack = %expected,
-                    error = %e,
-                    "no external copy verified; reading Platform chunks"
-                ),
-            }
-        } else if platform.is_empty() {
-            return Err(Error::Io(format!(
-                "artifact {expected} is stored externally but its manifest records no URI this \
-                 client can read ({:?})",
-                manifest.uris
-            )));
-        }
+        let pack = hex::encode(manifest.pack_hash);
+        self.fetch_copy(repo, contract, manifest, reader)
+            .await
+            .map(|served| served.note_on(reader, &pack))
+            .map_err(|missed| missed.error)
+    }
+
+    /// [`Self::fetch_artifact_from`] without recording a fallback: which copy served, or why
+    /// none did, with each failed place.
+    async fn fetch_copy(
+        &self,
+        repo: &RepoRef,
+        contract: &LoadedContract,
+        manifest: &PackManifestInfo,
+        reader: &PackReader,
+    ) -> std::result::Result<crate::storage::read::Served, Unserved> {
+        let own = Uri(repo
+            .scope()?
+            .locator(&manifest.owner_id, &hex::encode(manifest.pack_hash)));
         // A read: chunks are fetched with the connection alone, no signing key, so a clone of
         // a public repo works without an identity.
-        let mut last = Error::NotFound;
-        for locator in &platform {
-            let read = match crate::backends::PlatformLocator::parse(locator) {
-                Ok(loc) => {
-                    crate::backends::platform::read_platform_pack(self.client, contract, &loc).await
-                }
-                Err(e) => Err(e),
-            };
-            match read {
-                Ok(bytes) if hex::encode(crate::backends::sha256(&bytes)) == expected => {
-                    return Ok(bytes)
-                }
-                Ok(_) => last = Error::Integrity,
-                Err(e) => {
-                    tracing::info!(%locator, error = %e, "Platform copy unreadable");
-                    last = e;
-                }
-            }
-        }
-        Err(last)
+        let client = self.client;
+        read_copy(manifest, &own, reader, |loc| async move {
+            crate::backends::platform::read_platform_pack(client, contract, &loc).await
+        })
+        .await
     }
 
     /// Read `pack_hash` from the best copy that verifies (forge-v2 §4 reader rule):
@@ -1683,17 +1639,37 @@ impl<'a> RepoService<'a> {
         reader: &PackReader,
     ) -> Result<(Vec<u8>, &'m PackManifestInfo)> {
         let mut last = Error::NotFound;
+        // The places that failed before the copy that serves, over every uploader's copy
+        // tried: one Fallback for the pack, however many copies it took.
+        let mut failed: Vec<String> = Vec::new();
         for m in order_copies(copies, roles) {
-            match self.fetch_artifact_from(repo, contract, m, reader).await {
-                Ok(bytes) => return Ok((bytes, m)),
-                Err(e) => {
+            match self.fetch_copy(repo, contract, m, reader).await {
+                Ok(mut served) => {
+                    failed.append(&mut served.failed);
+                    let mut seen = BTreeSet::new();
+                    failed.retain(|p| seen.insert(p.clone()));
+                    served.failed = failed;
+                    return Ok((served.note_on(reader, &hex::encode(m.pack_hash)), m));
+                }
+                Err(Unserved {
+                    error,
+                    failed: places,
+                }) => {
                     tracing::info!(
                         pack = %hex::encode(m.pack_hash),
                         uploader = %m.owner_id,
-                        error = %e,
+                        error = %error,
                         "pack copy did not verify; trying the next copy"
                     );
-                    last = e;
+                    if places.is_empty() {
+                        failed.push(format!(
+                            "the copy uploaded by {} ({})",
+                            m.owner_id,
+                            crate::user_error::one_line(&error.to_string())
+                        ));
+                    }
+                    failed.extend(places);
+                    last = error;
                 }
             }
         }
@@ -3328,6 +3304,149 @@ pub fn config_doc(d: &FetchedDocument) -> ConfigDoc {
 /// The `String`s of a list of [`Uri`]s.
 fn uri_strings(uris: Vec<Uri>) -> Vec<String> {
     uris.into_iter().map(|u| u.0).collect()
+}
+
+/// What [`RepoService::fetch_artifact_from`] does ([`read_copy`], then recording on `reader` a
+/// [`Fallback`](crate::storage::read::Fallback) naming the failed copies when a copy served
+/// after a preferred one failed), with the chunk read supplied: the offline survivability
+/// drill's entry point.
+#[cfg(test)]
+pub(crate) async fn read_manifest_copy<F, Fut>(
+    manifest: &PackManifestInfo,
+    own: &Uri,
+    reader: &PackReader,
+    read_chunks: F,
+) -> Result<Vec<u8>>
+where
+    F: Fn(crate::backends::PlatformLocator) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u8>>>,
+{
+    read_copy(manifest, own, reader, read_chunks)
+        .await
+        .map(|served| served.note_on(reader, &hex::encode(manifest.pack_hash)))
+        .map_err(|missed| missed.error)
+}
+
+/// No copy of an artifact verified: the last error, and each place that failed
+/// (`place (why)`), so a caller trying more copies can name them once one serves.
+struct Unserved {
+    error: Error,
+    failed: Vec<String>,
+}
+
+impl From<Error> for Unserved {
+    fn from(error: Error) -> Self {
+        Self {
+            error,
+            failed: Vec::new(),
+        }
+    }
+}
+
+/// The reader rule for one manifest copy, SHA-256-verified against it: every recorded
+/// external copy first, raced with `reader`'s IPFS gateway list (cheap, and needs no Platform
+/// queries), then the Platform `chunk` copies as the last resort — those another repo's scope
+/// holds (a fork's manifest names its parent's this way), then this manifest's own (`own`,
+/// when `storage == 0`). `read_chunks` reads one chunk locator: [`RepoService`] passes the
+/// Platform read, the offline survivability drill its recorded documents.
+///
+/// Records nothing: which copy served (and the preferred ones that failed first), or why none
+/// did, so a caller with more copies records one `Fallback` for the whole read.
+async fn read_copy<F, Fut>(
+    manifest: &PackManifestInfo,
+    own: &Uri,
+    reader: &PackReader,
+    read_chunks: F,
+) -> std::result::Result<crate::storage::read::Served, Unserved>
+where
+    F: Fn(crate::backends::PlatformLocator) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u8>>>,
+{
+    use crate::storage::read::Served;
+    let expected = hex::encode(manifest.pack_hash);
+    // Platform copies to read, in order: chunks another repo's scope holds, then this
+    // manifest's own chunks. Only locators of THIS pack: a manifest naming another pack's
+    // chunks would have readers download them in full before the hash check refused them.
+    let mut platform: Vec<Uri> = manifest
+        .uris
+        .iter()
+        .map(|u| Uri(u.clone()))
+        .filter(|u| {
+            u != own
+                && crate::backends::PlatformLocator::parse(u)
+                    .is_ok_and(|l| l.pack_hash == manifest.pack_hash)
+        })
+        .collect();
+    if manifest.storage == 0 {
+        platform.push(own.clone());
+    }
+    // Every body is capped at the manifest's size (0 = unknown on very old manifests).
+    let size = (manifest.size_bytes > 0).then_some(manifest.size_bytes);
+    // The copies that failed before the one that serves the pack, each `place (why)`.
+    let mut failed = Vec::new();
+    if reader.has_candidates(&manifest.uris) {
+        // With chunks to fall back on, the external copies get a size-scaled budget
+        // after which no new candidate starts — dead gateways must not cost minutes per
+        // pack before the on-chain read, but a big pack streaming from a healthy mirror
+        // is not abandoned mid-transfer.
+        let budget = (!platform.is_empty()).then(|| crate::storage::read::external_budget(size));
+        match reader.race(&manifest.uris, &expected, size, budget).await {
+            Ok(served) => return Ok(served),
+            Err(missed) => {
+                let (error, places) = missed.into_parts();
+                if platform.is_empty() {
+                    return Err(Unserved {
+                        error,
+                        failed: places,
+                    });
+                }
+                tracing::info!(
+                    pack = %expected,
+                    error = %error,
+                    "no external copy verified; reading Platform chunks"
+                );
+                failed = places;
+            }
+        }
+    } else if platform.is_empty() {
+        return Err(Error::Io(format!(
+            "artifact {expected} is stored externally but its manifest records no URI this \
+             client can read ({:?})",
+            manifest.uris
+        ))
+        .into());
+    }
+    let mut last = Error::NotFound;
+    for locator in &platform {
+        let read = match crate::backends::PlatformLocator::parse(locator) {
+            Ok(loc) => read_chunks(loc).await,
+            Err(e) => Err(e),
+        };
+        match read {
+            Ok(bytes) if hex::encode(crate::backends::sha256(&bytes)) == expected => {
+                return Ok(Served {
+                    bytes,
+                    by: "Platform chunks".into(),
+                    failed,
+                });
+            }
+            Ok(_) => {
+                failed.push(format!(
+                    "Platform chunks at {locator} (do not hash to the pack)"
+                ));
+                last = Error::Integrity;
+            }
+            Err(e) => {
+                tracing::info!(%locator, error = %e, "Platform copy unreadable");
+                failed.push(format!("Platform chunks at {locator} ({e})"));
+                last = e;
+            }
+        }
+    }
+    Err(Unserved {
+        error: last,
+        failed,
+    })
 }
 
 /// The repo's own public gateways a reader should try first: `config.backend.uris`'s
@@ -5494,3 +5613,7 @@ mod rc1_tests {
 #[cfg(test)]
 #[path = "repo_roundtrip_tests.rs"]
 mod roundtrip_tests;
+
+#[cfg(test)]
+#[path = "survivability_tests.rs"]
+mod survivability_tests;

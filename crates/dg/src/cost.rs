@@ -166,7 +166,7 @@ async fn audit(
 }
 
 /// An identity-wide spend estimate: total, per document type, per repository. With neither
-/// `--identity` nor a cached identity-id hint, this falls back to the signing identity
+/// `--owner` nor a cached identity-id hint, this falls back to the signing identity
 /// (`Ctx::signer_on`), which does open — and, if sealed, prompt to unseal — a key; the key is
 /// used only to learn its id, never to sign anything, since this is a read-only audit (mirrors
 /// `repo list`'s owner resolution, L-12).
@@ -218,6 +218,7 @@ fn audit_json(report: &AuditReport, price: f64) -> serde_json::Value {
         "excludedTypes": report.excluded_types,
         "note": "an estimate from proved document counts x each type's flat create cost; forge-v2 keeps no spend ledger",
         "scopeNote": SCOPE_NOTE,
+        "chunkGapNote": CHUNK_GAP_NOTE,
     })
 }
 
@@ -257,6 +258,7 @@ fn print_audit(report: &AuditReport, price: f64) {
         );
     }
     println!("  note: {SCOPE_NOTE}");
+    println!("  note: {CHUNK_GAP_NOTE}");
 }
 
 /// The repository-scope caveat every audit's output carries: which repositories it can find a
@@ -265,6 +267,13 @@ fn print_audit(report: &AuditReport, price: f64) {
 const SCOPE_NOTE: &str = "covers every repo owned, filed an issue/patch to, or still a \
     maintainer/writer/CI-runner/private-repo-key-holder of; a membership revoked with no other \
     trace in that repo cannot be found by any proved query";
+
+/// The `chunk`-counting caveat every audit's output carries: chunks are derived from each
+/// owned `packManifest`'s `chunkCount`, not queried directly (see `forge_core::cost_audit`'s
+/// module doc), so chunks written by an interrupted push or before a mid-push membership
+/// revocation — with no live manifest to derive them from — are not counted here.
+const CHUNK_GAP_NOTE: &str = "chunk counts come from each owned pack's own manifest; chunks \
+    uploaded by a push that never finished with a manifest are not counted";
 
 /// The refundable storage deposit for `bytes` (the deposit half of the estimate).
 fn est_deposit(bytes: u64) -> u64 {

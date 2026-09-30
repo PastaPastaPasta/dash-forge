@@ -28,7 +28,13 @@ import type { PackManifest, RepoRef } from '../repo'
 import { bytesToBase64 } from '../sdk'
 import { base58Decode } from '../auth/base58'
 import { cachedFallback, startFallback, type FallbackProgress } from './browse-fallback'
-import { externalFetchUrls, resetExternalFetchState, StorageUnreachableError } from './browse-source'
+import {
+  artifactRangeFetch,
+  externalFetchUrls,
+  overrideMirrorRaceWidth,
+  resetExternalFetchState,
+  StorageUnreachableError,
+} from './browse-source'
 import { beginView, contentChecks, resetContentChecks } from './content-checks'
 import { describeUnavailable, noteRepoGateways, overrideDefaultGateways, readGateways } from './storage-status'
 import { deriveTrust } from './trust'
@@ -290,6 +296,79 @@ describe('startFallback with external-storage packs', () => {
       [platform, external('b'), external('c')],
     )
     expect(ctx.unavailable).toHaveLength(1)
+  })
+
+  it('names a recorded copy that failed before another served the pack (survivability)', async () => {
+    const ext = blobPack('the bucket is gone, the gateway has it\n')
+    const external = manifestFor(ext.pack, 1, {
+      storage: 1,
+      chunkCount: 0,
+      uris: ['https://bucket.example/p.pack', 'https://mirror.example/p.pack'],
+    })
+    const repo = testRepo('fallback-names-dead-copy')
+    overrideMirrorRaceWidth(1)
+    const calls = stubFetch({ 'https://mirror.example/p.pack': () => ext.pack })
+    try {
+      const ctx = await startFallback(mockSdk(new Map()), repo, [external])
+      expect(ctx.unavailable).toEqual([])
+      expect(calls).toEqual(['https://bucket.example/p.pack', 'https://mirror.example/p.pack'])
+    } finally {
+      overrideMirrorRaceWidth(null)
+    }
+    const checks = contentChecks(repo.repoId)
+    expect(checks.sources).toEqual(['mirror.example'])
+    expect(checks.fellBackFrom).toEqual(["bucket.example (didn't answer)"])
+    // Nothing is missing: the copy is named, and no state is lowered for it.
+    expect(checks.unreachable).toEqual([])
+    const trust = deriveTrust({ network: 'devnet', connection: 'trusted', tip: 'missing', checks, configuredBackend: 's3' })
+    expect(trust.source.detail).toBe("mirror.example. Unavailable, another copy served instead: bucket.example (didn't answer).")
+    expect(trust.source.state).toBe(trust.content.state)
+  })
+
+  it('names no fallback when the first choice serves, or only another gateway lacked the CID', async () => {
+    const ext = blobPack('on ipfs\n')
+    // The first choice serves while the second has already failed: no fallback.
+    const first = manifestFor(ext.pack, 1, { storage: 1, chunkCount: 0, uris: ['https://own.example/p.pack', 'https://dead.example/p.pack'] })
+    vi.stubGlobal('fetch', async (url: string) => {
+      if (url.startsWith('https://dead.example/')) return Promise.reject(new TypeError('fetch failed'))
+      await new Promise((r) => setTimeout(r, 20))
+      return new Response(new Blob([ext.pack as BlobPart]), { status: 200 })
+    })
+    const repo = testRepo('fallback-first-choice')
+    await startFallback(mockSdk(new Map()), repo, [first])
+    expect(contentChecks(repo.repoId).fellBackFrom).toEqual([])
+    // A default gateway lacks the CID and the next one has it: the IPFS copy is fine.
+    const cidOnly = manifestFor(ext.pack, 1, { storage: 1, chunkCount: 0, uris: ['ipfs://bafkreionipfs'] })
+    overrideDefaultGateways(['https://lacking.example', 'https://having.example'])
+    overrideMirrorRaceWidth(1)
+    try {
+      stubFetch({ 'https://having.example/ipfs/bafkreionipfs': () => ext.pack })
+      const gw = testRepo('fallback-other-gateway')
+      await startFallback(mockSdk(new Map()), gw, [cidOnly])
+      expect(contentChecks(gw.repoId).sources).toEqual(['having.example'])
+      expect(contentChecks(gw.repoId).fellBackFrom).toEqual([])
+    } finally {
+      overrideMirrorRaceWidth(null)
+    }
+  })
+
+  it('a ranged read names the copy that failed before another served it', async () => {
+    const ext = blobPack('ranged\n')
+    const external = manifestFor(ext.pack, 1, {
+      storage: 1,
+      chunkCount: 0,
+      uris: ['https://bucket.example/r.pack', 'https://mirror.example/r.pack'],
+    })
+    const repo = testRepo('range-names-dead-copy')
+    vi.stubGlobal('fetch', (url: string) =>
+      url.startsWith('https://bucket.example/')
+        ? Promise.resolve(new Response('', { status: 403 }))
+        : Promise.resolve(new Response(new Blob([ext.pack as BlobPart]), { status: 206 })),
+    )
+    const got = await artifactRangeFetch(mockSdk(new Map()), repo, external)(0, ext.pack.length)
+    expect(Array.from(got)).toEqual(Array.from(ext.pack))
+    expect(contentChecks(repo.repoId).sources).toEqual(['mirror.example'])
+    expect(contentChecks(repo.repoId).fellBackFrom).toEqual(['bucket.example (access denied)'])
   })
 
   it('fetches an ipfs:// pack through a gateway and verifies it', async () => {

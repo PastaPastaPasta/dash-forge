@@ -109,7 +109,7 @@ describe('describePack', () => {
       ['https://gw.example'],
     )
     expect(places).toEqual([
-      'pub-1.r2.dev (didn\'t answer)',
+      'pub-1.r2.dev (access denied)',
       'ipfs gateway ipfs.io (down: HTTP 429 (retired) (really))',
       'ipfs gateway gw.example (timed out)',
     ])

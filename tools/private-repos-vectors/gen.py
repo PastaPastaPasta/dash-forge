@@ -9,11 +9,13 @@ written from a generator that still agrees with the normative document. Both the
 (`forge-core::private`) and the TypeScript (`forge-web/lib/private`) harnesses run every file
 this writes, and must reproduce it byte for byte.
 """
+import base64
 import glob
 import hashlib
 import hmac
 import json
 import os
+import re
 import struct
 import sys
 
@@ -311,6 +313,11 @@ def summary():
     out["wrap"] = dict(sender_priv=d_s.to_bytes(32, "big").hex(), sender_pub=H(comp(Ps)),
                        recipient_priv=d_r.to_bytes(32, "big").hex(), recipient_pub=H(comp(Pr)), shared=H(shared),
                        plaintext=H(wrap_pt(K0, 0)), wrapped=H(cbc(shared, IV, wrap_pt(K0, 0))))
+    tn = tag_name(K0, 0, "v1.0.0")
+    A, e = seal_release_raw(K0, 0, ownerId, tn, release_tlv(REL_V1))
+    out["release"] = dict(K_tag_e0=H(k_tag(K0, 0)), tagName_e0=tn, tagName_e1=tag_name(K1, 1, "v1.0.0"),
+                          tagName_branch_e0=tag_name(K0, 0, "refs/heads/main"), pt=H(release_tlv(REL_V1)), enc=H(e),
+                          manifest_packHash=MANIFEST_HASH)
     return out
 
 
@@ -376,6 +383,14 @@ DOC = {
     ("wrap", "shared"): "e6cf085ee93d30ba8b5f81451d11709e9856c12acef291ce4e084b18a4c4856b",
     ("wrap", "plaintext"): "017cab1ab77a4b34d31fa6ef954054000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
     ("wrap", "wrapped"): "0f0e0d0c0b0a09080706050403020100828afa35dca4dbd8eb40591d52f363f10671f7b77f5f619a25ee6d03fb88043c7fa0037e5c0d83ea667f9ba7289a82cc",
+    # §16 sealed releases
+    ("release", "K_tag_e0"): "c0fde38636cc9f84810a94cd882035292ca5891c5884563869b17b5231bf91ee",
+    ("release", "tagName_e0"): "A0TK3ZkbqTL94-CbAhgvnnKHPpCVVjvXTNKOyh6BhlM",
+    ("release", "tagName_e1"): "RIgIOsyi-3hmGZTqr75wHSm48J_2WLR3WawK5CVj4Qg",
+    ("release", "tagName_branch_e0"): "365b9_MPzBqkrDwjvQNRk03R0LJ96TexlyGFYJkoUbY",
+    ("release", "pt"): "020015466972737420737461626c652072656c656173652e10000676312e302e3011000d56657273696f6e20312e302e30120014aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa130001004000110000000000000000000000000000000000",
+    ("release", "enc"): "01000102030405060708090a0b1c703ab4aa409f0d7f0f60d2a247982ecb7813a304816aa94996842aa8b3f5df2171308684245164672e34ca3044f13df6aed239822c11b72160aaf5710b729c53b3aa03727feefeb272ab1c48a938ea8a155bc02d513d87c976c4447d35583d1ece6f0259a4661d29a4f7bba9d2ab92",
+    ("release", "manifest_packHash"): "4a3f5093cd8d639b3f998ec93e3ebb5628c53b819f12895a4a54c62f6e8746fa",
 }
 
 
@@ -1359,6 +1374,425 @@ def hedge_vectors():
            dict(repoId=H(repoId), key=H(K0), epoch=0, rnd=H(rnd), doc=ISSUE, fields=ISSUE_FIELDS), dict(nonce=H(nonce)))
 
 
+# --- §16 sealed releases -------------------------------------------------------------------------
+
+RELEASE_FLAGS = {"prerelease": 0x01, "draft": 0x02, "yanked": 0x04, "unpublished": 0x08, "notesContinue": 0x10}
+MAX_RELEASE_PT = 1536 - 29          # forge-core $defs.enc.maxItems minus the v0x01 framing
+PAD_TAG = 64                        # the first extension tag: readers skip it (§4.3)
+PAD_BUCKET = 32
+MAX_SAFE_INT = (1 << 53) - 1
+MAX_MANIFEST_BYTES = 1 << 20        # a reader refuses a kind-4 manifest whose sizeBytes is larger
+MANIFEST_FILE_ID = bytes.fromhex("a0a1a2a3a4a5a6a7a8a9aaabacadaeaf")
+B64URL_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+
+def _tag_pattern():
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(here, "..", "..", "forge-contracts", "contracts", "forge-core.json")) as f:
+        return json.load(f)["documentSchemas"]["release"]["properties"]["tagName"]["pattern"]
+
+
+TAG_PATTERN = re.compile(_tag_pattern())
+
+
+def legal_tag(tag):
+    """The contract's release.tagName: 1-63 bytes of the ref grammar."""
+    return 1 <= len(tag.encode()) <= 63 and TAG_PATTERN.fullmatch(tag) is not None
+
+
+def k_tag(K, e):
+    return subkey(K, b"tag", e)
+
+
+def b64url(b):
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+
+def tag_hash(K, e, tag):
+    return hmac.new(k_tag(K, e), tag.encode(), hashlib.sha256).digest()
+
+
+def tag_name(K, e, tag):
+    """The plaintext `tagName` of a sealed release: base64url(HMAC-SHA256(K_tag,e, tag)), 43 chars."""
+    return b64url(tag_hash(K, e, tag))
+
+
+def release_records(f):
+    """The records of a release's fields (§16.2), ascending; the flags record is always there."""
+    recs = []
+    if "notes" in f:
+        recs.append((2, f["notes"].encode()))
+    if "importedAuthor" in f:
+        recs.append((13, f["importedAuthor"].encode()))
+    if "importedUrl" in f:
+        recs.append((14, f["importedUrl"].encode()))
+    recs.append((16, f["tag"].encode()))
+    if "name" in f:
+        recs.append((17, f["name"].encode()))
+    if "targetOid" in f:
+        recs.append((18, bytes.fromhex(f["targetOid"])))
+    recs.append((19, bytes([sum(bit for k, bit in RELEASE_FLAGS.items() if f.get(k))])))
+    if "importedCreatedAt" in f:
+        recs.append((20, u64(f["importedCreatedAt"])))
+    if "assetManifest" in f:
+        recs.append((21, bytes.fromhex(f["assetManifest"])))
+    return tlv(*recs)
+
+
+def pad_record(n):
+    """The tag-64 padding record that brings a TLV of n bytes to a multiple of 32 (§16.2), or b""."""
+    if n + 3 > MAX_RELEASE_PT:
+        return b""
+    r = min((-(n + 3)) % PAD_BUCKET, MAX_RELEASE_PT - 3 - n)
+    return rec(PAD_TAG, bytes(r))
+
+
+def release_tlv(f):
+    body = release_records(f)
+    return body + pad_record(len(body))
+
+
+def release_ad(owner, e, tagname):
+    return b"dash-forge/v2/doc\x00" + b"\x01" + repoId + owner + u32(e) + b"release\x00" + tagname.encode()
+
+
+def seal_release_raw(K, e, owner, tagname, pt, nonce=NONCE):
+    A = release_ad(owner, e, tagname)
+    return A, b"\x01" + nonce + AESGCM(k_doc(K, e)).encrypt(nonce, pt, A)
+
+
+def release_writer_check(f):
+    """The writer's refusals (§16.2): None when the fields may be sealed, else the error code."""
+    def text(v, lo, chars, nbytes):
+        return lo <= len(v.encode()) and len(v) <= chars and len(v.encode()) <= nbytes
+    if "tag" not in f or not legal_tag(f["tag"]):
+        return "malformed"
+    if "name" in f and not text(f["name"], 1, 120, 480):
+        return "malformed"
+    if "notes" in f and not text(f["notes"], 1, 5120, 5120):
+        return "malformed"
+    if "targetOid" in f and len(bytes.fromhex(f["targetOid"])) not in (20, 32):
+        return "malformed"
+    # the release schema's imported caps (tighter than TLV 13's reader cap)
+    if "importedAuthor" in f and not text(f["importedAuthor"], 1, 64, 256):
+        return "malformed"
+    if "importedUrl" in f and not text(f["importedUrl"], 1, 300, 300):
+        return "malformed"
+    if "importedCreatedAt" in f and not 0 <= f["importedCreatedAt"] <= MAX_SAFE_INT:
+        return "malformed"
+    if ("importedAuthor" in f or "importedCreatedAt" in f) and "importedUrl" not in f:
+        return "malformed"
+    if "assetManifest" in f and len(bytes.fromhex(f["assetManifest"])) != 32:
+        return "malformed"
+    if f.get("notesContinue") and "assetManifest" not in f:
+        return "malformed"
+    if len(release_records(f)) > MAX_RELEASE_PT:
+        return "tooLarge"
+    return None
+
+
+def canonical_json(obj):
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+# The asset file of the §11 pack vector (40,000 bytes, i mod 251) sealed as it is stored, and the
+# kind-4 manifest that lists it, sealed with its own fileId.
+ASSET_PLAIN = mod251(40000)
+ASSET_SEALED = seal_pack(K0, 0, ASSET_PLAIN)[0]
+RELEASE_NOTES_FULL = ("Highlights\n\n- Sealed releases for private repositories.\n- Asset lists move into a sealed "
+                      "kind-4 manifest.\n\nThe whole changelog is longer than a release document holds.")
+RELEASE_MANIFEST = {
+    "v": 1,
+    "tag": "v23.1.8",
+    "total": 2,
+    "source": "https://github.com/acme/secret/releases/tag/v23.1.8",
+    "notes": RELEASE_NOTES_FULL,
+    "assets": [
+        {"name": "secret-23.1.8-x86_64-linux-gnu.tar.gz", "sha256": H(sha256(ASSET_PLAIN)), "sizeBytes": len(ASSET_PLAIN),
+         "uris": ["https://bucket.example/o/" + H(sha256(ASSET_SEALED))],
+         "sealedSha256": H(sha256(ASSET_SEALED)), "sealedSizeBytes": len(ASSET_SEALED)},
+        {"name": "SHA256SUMS.asc", "sha256": "", "sizeBytes": 2048,
+         "uris": ["https://github.com/acme/secret/releases/download/v23.1.8/SHA256SUMS.asc"]},
+    ],
+}
+MANIFEST_SEALED = seal_pack(K0, 0, canonical_json(RELEASE_MANIFEST), file_id=MANIFEST_FILE_ID)[0]
+MANIFEST_HASH = H(sha256(MANIFEST_SEALED))
+
+REL_V1 = {"tag": "v1.0.0", "name": "Version 1.0.0", "notes": "First stable release.", "targetOid": "aa" * 20}
+REL_IMPORTED = {"tag": "v23.1.8", "name": "Secret 23.1.8", "notes": "Highlights (the full notes are in the manifest)",
+                "targetOid": "bb" * 32, "notesContinue": True, "importedAuthor": "UdjinM6",
+                "importedUrl": "https://github.com/acme/secret/releases/tag/v23.1.8",
+                "importedCreatedAt": 1754179200000, "assetManifest": MANIFEST_HASH}
+AT_CAP_FILL = MAX_RELEASE_PT - (3 + len("v9.9.9")) - 4 - 3
+
+
+def release_seal_vectors():
+    def v(name, desc, f, K=K0, e=0):
+        inp = dict(repoId=H(repoId), key=H(K), epoch=e, ownerId=H(ownerId), nonce=H(NONCE), fields=f)
+        err = release_writer_check(f)
+        if err:
+            vector("private_release_seal", name, desc, inp, dict(error=err))
+            return
+        tn = tag_name(K, e, f["tag"])
+        pt = release_tlv(f)
+        A, enc = seal_release_raw(K, e, ownerId, tn, pt)
+        vector("private_release_seal", name, desc, inp,
+               dict(tagHash=H(tag_hash(K, e, f["tag"])), tagName=tn, ad=H(A), tlv=H(pt), enc=H(enc),
+                    props=dict(tagName=tn, vis="private", delta=0, epoch=e, enc=H(enc))))
+
+    v("v1_0_0", "a release under epoch 0: tag, name, notes and target commit are sealed (TLV 16, 17, 2, 18), with "
+      "the flags record (19) and the tag-64 padding to a multiple of 32 bytes; the plaintext tagName is "
+      "base64url(HMAC-SHA256(K_tag,0, tag)), and the AD binds it (§16.1-§16.3).", REL_V1)
+    v("v1_0_0_epoch1", "the same release under epoch 1: K_tag is per epoch, so the tagName differs (§16.1).", REL_V1, K1, 1)
+    v("tag_only", "the smallest release: the tag and a zero flags byte, padded to 32 bytes.", {"tag": "v0.1"})
+    v("prerelease_draft", "a draft pre-release: flags 0x01 | 0x02 in one byte (TLV 19).",
+      {"tag": "v2.0.0-rc.1", "name": "RC 1", "prerelease": True, "draft": True})
+    v("yanked", "a later revision that yanks v1.0.0 (flag 0x04), carrying every field forward: the same length as "
+      "the v1_0_0 revision it supersedes.", dict(REL_V1, yanked=True))
+    v("unpublished", "a revision that unpublishes v1.0.0 (flag 0x08), carrying every field forward, as a yank does: "
+      "what delta -1 does for a public tag.", dict(REL_V1, unpublished=True))
+    v("imported_with_manifest",
+      "an imported release whose assets and full notes are in a sealed kind-4 manifest: TLV 13, 14, 20 carry the "
+      "provenance, TLV 21 the manifest's packHash, flag 0x10 says the notes continue there; the target is a 32-byte "
+      "(SHA-256) commit id.", REL_IMPORTED)
+    v("tag_named_like_a_branch",
+      "a tag named refs/heads/main hashes under K_tag, never K_ref: its tagName is not the refNameHash of the "
+      "branch (e729d18b... under K_ref,0), so a release never matches a ref update.", {"tag": "refs/heads/main"})
+    v("at_enc_cap", f"tag, flags and notes at exactly {MAX_RELEASE_PT} bytes of TLV (no room for padding): a "
+      "1536-byte enc, the forge-core cap.", {"tag": "v9.9.9", "notes": "n" * AT_CAP_FILL})
+    v("over_enc_cap", "one byte more does not fit forge-core's 1536-byte enc: tooLarge, nothing sealed (§16.2).",
+      {"tag": "v9.9.9", "notes": "n" * (AT_CAP_FILL + 1)})
+    v("illegal_tag", "a tag the public grammar refuses (v1..2) is refused sealed too.", {"tag": "v1..2"})
+    v("tag_64_bytes", "a tag over 63 bytes is refused.", {"tag": "v" * 64})
+    v("empty_tag", "a release needs its tag.", {"tag": ""})
+    v("name_121_chars", "a name over 120 characters is refused (the schema's cap).", {"tag": "v1", "name": "n" * 121})
+    v("notes_continue_without_manifest", "flag 0x10 needs TLV 21: notes cannot continue in a manifest that is not named.",
+      {"tag": "v1", "notes": "preview", "notesContinue": True})
+    v("target_oid_21_bytes", "a target commit id is 20 or 32 bytes.", {"tag": "v1", "targetOid": "aa" * 21})
+    v("imported_author_65_chars", "a writer applies the release schema's imported.author cap (64 characters).",
+      {"tag": "v1", "importedAuthor": "a" * 65, "importedUrl": "https://x.example/r"})
+    v("imported_author_without_url", "provenance needs its URL, as the public imported object requires url.",
+      {"tag": "v1", "importedAuthor": "octocat"})
+
+    # the kind-4 manifest artifact: canonical JSON, sealed as §3 with its own fileId
+    vector("private_release_seal", "manifest_kind4",
+           "a sealed release's asset manifest: canonical JSON (keys sorted, no whitespace) with the plaintext tag, the "
+           "full notes and each asset's plaintext sha256/size plus sealedSha256/sealedSizeBytes, sealed as a §3 "
+           "artifact; packHash is what TLV 21 names (§16.5).",
+           dict(repoId=H(repoId), key=H(K0), epoch=0, fileId=H(MANIFEST_FILE_ID), manifest=RELEASE_MANIFEST),
+           dict(canonical=canonical_json(RELEASE_MANIFEST).decode(), header=H(MANIFEST_SEALED[:36]),
+                sealedLen=len(MANIFEST_SEALED), packHash=MANIFEST_HASH, sealed=H(MANIFEST_SEALED)))
+
+
+def release_open_vectors():
+    def v(name, desc, doc, context, expected, enc=None, f=None, K=K0):
+        d = dict(doc)
+        if enc is None:
+            _, enc = seal_release_raw(K, d["epoch"], bytes.fromhex(d["ownerId"]), d["tagName"], release_tlv(f))
+        if enc is not False:
+            d["enc"] = H(enc)
+        vector("private_release_open", name, desc, dict(repoId=H(repoId), context=context, doc=d), expected)
+
+    def doc_of(f, K=K0, e=0, owner=ownerId, **extra):
+        return dict(ownerId=H(owner), epoch=e, tagName=tag_name(K, e, f["tag"]), vis="private", delta=0, **extra)
+
+    _, v1_enc = seal_release_raw(K0, 0, ownerId, tag_name(K0, 0, "v1.0.0"), release_tlv(REL_V1))
+    v("v1_0_0", "the v1.0.0 release opens under K_0; the recomputed tagName matches the document's.",
+      doc_of(REL_V1), CTX0, readable(REL_V1), f=REL_V1)
+    v("v1_0_0_epoch1", "a revision sealed under epoch 1 opens with K_1.", doc_of(REL_V1, K1, 1), CTX01,
+      readable(REL_V1), f=REL_V1, K=K1)
+    v("imported_with_manifest", "every field of the imported release comes back.", doc_of(REL_IMPORTED), CTX0,
+      readable(REL_IMPORTED), f=REL_IMPORTED)
+    v("late_rule_not_applied",
+      "a release carries no $createdAtBlockHeight and is maintainer-gated at consensus, so the height part of the "
+      "late-content rule does not apply: a revision under superseded epoch 0 by a since-removed maintainer still "
+      "opens (§16.4).", doc_of(REL_V1), CTX01, readable(REL_V1), f=REL_V1)
+    burned1 = ctx({0: K0, 1: K1}, {0: ("c0", 10), 1: ("c1", 1000)}, burned=[1])
+    v("under_burned_epoch_by_removed_owner",
+      "the burned clause of §8.2 needs no height and still applies: a revision under burned epoch 1 whose author is "
+      "no longer a maintainer is Unreadable(Late), so a key holder cannot plant a release before a burn.",
+      doc_of(REL_V1, K1, 1), burned1, unreadable("late"), f=REL_V1, K=K1)
+    v("under_burned_epoch_by_current_maintainer", "the same revision by a current maintainer is shown.",
+      doc_of(REL_V1, K1, 1), dict(burned1, members=[H(ownerId)]), readable(REL_V1), f=REL_V1, K=K1)
+    v("no_key", "epoch 0 exists but the reader holds only K_1: Unreadable(NoKey).", doc_of(REL_V1),
+      ctx({1: K1}, {0: ("c0", 10), 1: ("c1", 1000)}), unreadable("noKey"), enc=v1_enc)
+    v("no_epoch", "an epoch without an anchor does not exist: Unreadable(NoEpoch).", doc_of(REL_V1),
+      ctx({0: K0}, {1: ("c1", 1000)}), unreadable("noEpoch"), enc=v1_enc)
+    v("other_owner", "the AD binds $ownerId: another maintainer cannot re-post this enc as theirs.",
+      doc_of(REL_V1, owner=bytes([0x23]) * 32), CTX0, unreadable("badTag"), enc=v1_enc)
+    v("enc_moved_to_other_tag", "the AD binds tagName: the enc moved under v1.0.1's tagName fails the tag.",
+      dict(doc_of(REL_V1), tagName=tag_name(K0, 0, "v1.0.1")), CTX0, unreadable("badTag"), enc=v1_enc)
+    v("enc_version_2", "a release enc is v0x01; a 0x02 frame is malformed before any key is used.", doc_of(REL_V1),
+      CTX0, MALFORMED, enc=b"\x02" + bytes(32) + v1_enc[1:])
+    v("tag_name_not_43_base64url", "a sealed tagName that is not 43 base64url characters is malformed before any key "
+      "is used.", dict(doc_of(REL_V1), tagName="v1.0.0"), CTX0, MALFORMED, enc=v1_enc)
+    v("private_without_enc", "the contract admits a private release with a plaintext tagName and no enc; readers do "
+      "not: Malformed.", dict(ownerId=H(ownerId), tagName="v1.0.0", vis="private", delta=0), CTX0, MALFORMED, enc=False)
+    v("public_with_enc", "a release carrying enc stamped public (a public repository) is malformed: public readers hold "
+      "no keys.", dict(doc_of(REL_V1), vis="public"), CTX0, MALFORMED, enc=v1_enc)
+    # a (malicious) writer binds and publishes one tagName but seals another tag: the tag verifies, the hash does not
+    bad_tn = tag_name(K0, 0, "v1.0.1")
+    _, e = seal_release_raw(K0, 0, ownerId, bad_tn, release_tlv(REL_V1))
+    v("tag_name_hash_mismatch", "the enc decrypts but its tag (v1.0.0) does not hash to the document's tagName "
+      "(v1.0.1's): Malformed, never shown under either tag.", dict(doc_of(REL_V1), tagName=bad_tn), CTX0, MALFORMED, enc=e)
+    good = tag_name(K0, 0, "v1.0.0")
+    # the last base64url char carries 2 unused bits: another char with the same 4 high bits decodes to the same bytes
+    noncanon = good[:-1] + B64URL_ALPHABET[B64URL_ALPHABET.index(good[-1]) ^ 1]
+    assert base64.urlsafe_b64decode(noncanon + "=") == base64.urlsafe_b64decode(good + "=")
+    _, e = seal_release_raw(K0, 0, ownerId, noncanon, release_tlv(REL_V1))
+    v("tag_name_noncanonical_base64",
+      "a tagName that decodes to the right hash but is not its canonical encoding (the last character's unused "
+      "bits set): readers compare strings, never decode, so it is Malformed (§16.1).",
+      dict(doc_of(REL_V1), tagName=noncanon), CTX0, MALFORMED, enc=e)
+    ref_tn = b64url(hmac.new(k_ref(K0, 0), b"v1.0.0", hashlib.sha256).digest())
+    _, e = seal_release_raw(K0, 0, ownerId, ref_tn, release_tlv(REL_V1))
+    v("tag_name_under_ref_key", "a writer that hashed the tag under K_ref instead of K_tag: Malformed.",
+      dict(doc_of(REL_V1), tagName=ref_tn), CTX0, MALFORMED, enc=e)
+    v("plaintext_yanked_next_to_enc", "a sealed release carries its flags only in enc: a plaintext yanked is Malformed.",
+      doc_of(REL_V1, yanked=True), CTX0, MALFORMED, enc=v1_enc)
+    v("plaintext_imported_next_to_enc",
+      "nor plaintext provenance: imported (whose url the schema requires) would publish the source.",
+      doc_of(REL_V1, imported={"url": "https://github.com/acme/secret/releases/tag/v1.0.0"}), CTX0, MALFORMED,
+      enc=v1_enc)
+
+    def raw(name, desc, tag, pt, expected):
+        tn = tag_name(K0, 0, tag)
+        _, e = seal_release_raw(K0, 0, ownerId, tn, pt)
+        v(name, desc, dict(ownerId=H(ownerId), epoch=0, tagName=tn, vis="private", delta=0), CTX0, expected, enc=e)
+
+    F0 = (19, b"\x00")
+    raw("tlv_without_tag", "TLV 16 is required: a release without its tag is Malformed.", "v1",
+        tlv((17, b"name only"), F0), MALFORMED)
+    raw("tlv_without_flags", "TLV 19 is always written (0x00 when no flag is set): a release without it is Malformed.",
+        "v1", tlv((16, b"v1")), MALFORMED)
+    raw("tlv_flags_zero", "a zero flags byte is the normal case: Readable, no flag set.", "v1",
+        tlv((16, b"v1"), F0), readable({"tag": "v1"}))
+    raw("tlv_flags_unknown_bit", "flag bits above 0x10 are Malformed.", "v1", tlv((16, b"v1"), (19, b"\x20")), MALFORMED)
+    raw("tlv_flags_two_bytes", "the flags record is exactly one byte.", "v1", tlv((16, b"v1"), (19, b"\x01\x00")),
+        MALFORMED)
+    raw("tlv_notes_continue_without_manifest", "flag 0x10 without TLV 21 is Malformed.", "v1",
+        tlv((2, b"preview"), (16, b"v1"), (19, b"\x10")), MALFORMED)
+    raw("tlv_notes_empty", "a zero-length notes record (tag 2 has no minimum) reads as empty notes; writers never "
+        "write it.", "v1", tlv((2, b""), (16, b"v1"), F0), readable({"tag": "v1", "notes": ""}))
+    raw("tlv_target_oid_21_bytes", "a target commit id is 20 or 32 bytes.", "v1",
+        tlv((16, b"v1"), (18, bytes([0xaa]) * 21), F0), MALFORMED)
+    raw("tlv_title_in_release", "tag 1 (title) is not a release field.", "v1", tlv((1, b"t"), (16, b"v1"), F0), MALFORMED)
+    raw("tlv_illegal_tag_grammar", "a sealed tag must pass the public tag grammar: v1..2 (with its own matching "
+        "tagName) is Malformed.", "v1..2", tlv((16, b"v1..2"), F0), MALFORMED)
+    raw("tlv_tag_twice", "a repeated tag 16 is Malformed.", "v1", tlv((16, b"v1"), (16, b"v1"), F0), MALFORMED)
+    raw("tlv_extension_before_tag", "records are strictly ascending, extensions included: tag 200 before tag 16 is "
+        "Malformed.", "v1", tlv((200, b"x"), (16, b"v1"), F0), MALFORMED)
+    raw("tlv_truncated", "two trailing bytes after the last record are Malformed.", "v1",
+        tlv((16, b"v1"), F0) + b"\x40\x00", MALFORMED)
+    raw("tlv_created_at_over_2_53", "importedCreatedAt is at most 2^53 - 1, the schema's bound.", "v1",
+        tlv((14, b"https://x.example/r"), (16, b"v1"), F0, (20, u64(1 << 53))), MALFORMED)
+    raw("tlv_imported_without_url", "provenance without its URL (tag 13 or 20 without 14) is Malformed.", "v1",
+        tlv((13, b"octocat"), (16, b"v1"), F0), MALFORMED)
+    raw("tlv_imported_author_100_chars", "the reader's tag-13 cap is §4.3's (120 characters); only the writer applies "
+        "the release schema's 64.", "v1", tlv((13, b"a" * 100), (14, b"https://x.example/r"), (16, b"v1"), F0),
+        readable({"tag": "v1", "importedAuthor": "a" * 100, "importedUrl": "https://x.example/r"}))
+    raw("tlv_manifest_31_bytes", "assetManifest is exactly 32 bytes.", "v1",
+        tlv((16, b"v1"), F0, (21, bytes([0x66]) * 31)), MALFORMED)
+    raw("tlv_extension_skipped", "an extension tag (200) is skipped: Readable.", "v1",
+        tlv((16, b"v1"), F0, (200, b"future")), readable({"tag": "v1"}))
+    raw("tlv_reserved_tag_22", "tags 22-63 stay reserved: Malformed.", "v1", tlv((16, b"v1"), F0, (22, b"x")), MALFORMED)
+
+    # the manifest: fetched by packHash, opened with the header epoch's key, checked against the release
+    def m(name, desc, sealed, expected, expect_hash=None, tag="v23.1.8", notes_continue=True, size=None):
+        vector("private_release_open", name, desc,
+               dict(repoId=H(repoId), keys={"0": H(K0)},
+                    manifest=dict(sealed=H(sealed), sizeBytes=len(sealed) if size is None else size,
+                                  assetManifest=expect_hash or H(sha256(sealed)), tag=tag,
+                                  notesContinue=notes_continue)),
+               expected)
+
+    def reseal(obj, fid, raw_bytes=None):
+        return seal_pack(K0, 0, raw_bytes if raw_bytes is not None else canonical_json(obj), file_id=fid)[0]
+
+    mm = dict(error="manifestMismatch")
+    m("manifest_kind4", "the kind-4 manifest named by TLV 21 opens, and its tag, total and entries check.",
+      MANIFEST_SEALED, dict(status="readable", manifest=RELEASE_MANIFEST), expect_hash=MANIFEST_HASH)
+    m("manifest_for_another_tag", "a manifest whose tag is not the release's is refused: one manifest cannot be "
+      "replayed onto another release.", MANIFEST_SEALED, mm, expect_hash=MANIFEST_HASH, tag="v23.1.9")
+    m("manifest_notes_without_flag", "a manifest carries notes exactly when the release sets flag 0x10.",
+      MANIFEST_SEALED, mm, expect_hash=MANIFEST_HASH, notes_continue=False)
+    m("manifest_over_size_cap", "a manifest whose sizeBytes is over 1 MiB is refused before anything is fetched.",
+      MANIFEST_SEALED, mm, expect_hash=MANIFEST_HASH, size=MAX_MANIFEST_BYTES + 1)
+    # each test manifest below has its own fileId: no two plaintexts share a pack key (§3.3), even in the vectors
+    other = reseal(dict(RELEASE_MANIFEST, total=1), bytes.fromhex("b0" * 16))
+    m("manifest_hash_mismatch", "a copy whose sealed bytes do not hash to TLV 21 is refused before decryption.", other,
+      mm, expect_hash=MANIFEST_HASH)
+    m("manifest_total_mismatch", "total must equal the number of assets.",
+      reseal(dict(RELEASE_MANIFEST, total=3), bytes.fromhex("b1" * 16)), mm)
+    pretty = json.dumps(RELEASE_MANIFEST, sort_keys=True, indent=1, ensure_ascii=False).encode()
+    m("manifest_not_canonical", "the plaintext must be its own canonical re-encoding: whitespace is refused, so two "
+      "JSON parsers can never read two different lists.", reseal(None, bytes.fromhex("b2" * 16), pretty), mm)
+    as_float = canonical_json(RELEASE_MANIFEST).replace(b'"v":1', b'"v":1.0')
+    m("manifest_version_float", "integers are written without a fraction: \"v\":1.0 is refused.",
+      reseal(None, bytes.fromhex("b3" * 16), as_float), mm)
+    bad_entry = json.loads(json.dumps(RELEASE_MANIFEST))
+    bad_entry["assets"][0]["sealedSizeBytes"] = len(ASSET_PLAIN)
+    m("manifest_sealed_size_too_small", "a sealed entry's sealedSizeBytes must hold its plaintext (at least "
+      "36 + sizeBytes + 16).", reseal(bad_entry, bytes.fromhex("b4" * 16)), mm)
+    unhashed = json.loads(json.dumps(RELEASE_MANIFEST))
+    unhashed["assets"][0]["sha256"] = ""
+    m("manifest_sealed_entry_without_sha256", "a sealed entry always has its plaintext sha256: the writer hashed the "
+      "file it sealed.", reseal(unhashed, bytes.fromhex("b5" * 16)), mm)
+
+
+def release_fold_vectors():
+    """§16.3 as a pure function over opened revisions."""
+    lo, hi = tie_ids()
+
+    def rid(label):
+        return H(cid("rel-" + label))
+
+    def r(label, at, tag, status="readable", epoch=0, enc=None, tn=None, **flags):
+        row = dict(id=rid(label) if isinstance(label, str) else H(label), createdAt=at, epoch=epoch,
+                   tagName=tn or ("tn-%s-e%d" % (tag, epoch)), status=status, enc=enc or ("e-" + str(label)))
+        if status == "readable":
+            row["fields"] = dict(tag=tag, **flags)
+        return row
+
+    def v(name, desc, rows, expected):
+        vector("private_release_fold", name, desc, dict(revisions=rows), expected)
+
+    def out(live, history, count, replays=(), unknown=(), stale=False, hidden=0):
+        return dict(live=live, history=list(history), count=count, replays=list(replays), unknownTags=list(unknown),
+                    stale=stale, hidden=hidden)
+
+    v("publish_edit_publish", "the newest revision of each tag is the release; older ones are history, newest first.",
+      [r("a", 100, "v1"), r("b", 200, "v1"), r("c", 300, "v2")],
+      out({"v1": rid("b"), "v2": rid("c")}, [rid("a")], 2))
+    v("across_epochs", "revisions are grouped by the decrypted tag, not by tagName: a yank under epoch 1 supersedes "
+      "the epoch-0 publish (a yanked release is still live and counted).",
+      [r("a", 100, "v1"), r("b", 200, "v1", epoch=1, yanked=True)], out({"v1": rid("b")}, [rid("a")], 1))
+    v("unpublish_and_republish", "an unpublish takes the tag down; a later revision without the flag publishes it again.",
+      [r("a", 100, "v1"), r("b", 200, "v1", unpublished=True), r("c", 300, "v2"), r("d", 400, "v2", unpublished=True),
+       r("e", 500, "v2")],
+      out({"v2": rid("e")}, [rid("d"), rid("c"), rid("b"), rid("a")], 1))
+    v("draft_not_counted", "a draft is live and listed, but not counted.",
+      [r("a", 100, "v1"), r("b", 200, "v2", draft=True)], out({"v1": rid("a"), "v2": rid("b")}, [], 1))
+    v("replay_ignored", "a revision whose enc repeats an earlier one's is a replay (a signing key without the "
+      "content key can copy an old enc): ignored, so it cannot un-yank.",
+      [r("a", 100, "v1", enc="e-A"), r("b", 200, "v1", yanked=True, enc="e-B"), r("c", 300, "v1", enc="e-A")],
+      out({"v1": rid("b")}, [rid("a")], 1, replays=[rid("c")]))
+    v("tie_by_raw_id_bytes", "equal $createdAt: the larger $id as raw bytes is newer, not the larger base58 string "
+      "(§5.3).", [r(lo, 100, "v1"), r(hi, 100, "v1", yanked=True)], out({"v1": H(hi)}, [H(lo)], 1))
+    v("newer_unopenable_same_tag_name", "a newer revision under a held epoch with the same tagName that does not open "
+      "(badTag) leaves the tag's state unknown; the readable revision is still listed.",
+      [r("a", 100, "v1", tn="T1"), r("b", 200, None, status="badTag", tn="T1")],
+      out({"v1": rid("a")}, [], 1, unknown=["v1"], hidden=1))
+    v("newer_revision_under_missing_key", "a revision under an epoch the reader holds no key for, newer than every "
+      "readable one, marks the list stale: its tag cannot be known.",
+      [r("a", 100, "v1"), r("b", 200, None, status="noKey", epoch=1)], out({"v1": rid("a")}, [], 1, stale=True, hidden=1))
+    v("older_revision_under_missing_key", "an older unreadable revision is hidden and counted, but the list is not "
+      "stale.", [r("b", 50, None, status="noKey", epoch=1), r("a", 100, "v1")], out({"v1": rid("a")}, [], 1, hidden=1))
+    v("late_and_malformed_hidden", "late and malformed revisions are hidden and counted.",
+      [r("a", 100, "v1"), r("b", 200, None, status="late", epoch=1, tn="X"), r("c", 300, None, status="malformed")],
+      out({"v1": rid("a")}, [], 1, hidden=2))
+
+
 def write_vectors(out_dir):
     kdf_vectors()
     ref_hash_vectors()
@@ -1369,6 +1803,9 @@ def write_vectors(out_dir):
     epoch_vectors()
     collab_seal_vectors()
     hedge_vectors()
+    release_seal_vectors()
+    release_open_vectors()
+    release_fold_vectors()
     for old in glob.glob(os.path.join(out_dir, "private_*.json")):
         os.remove(old)
     names = set()

@@ -232,12 +232,15 @@ export function gatewayOf(url: string): string | null {
 // Describing an unreadable pack
 // ---------------------------------------------------------------------------
 
-type Why = 'timed out' | 'not found' | 'served bad data' | 'missing' | "didn't answer"
+type Why = 'timed out' | 'not found' | 'served bad data' | 'missing' | 'access denied' | "didn't answer"
 
 function classify(message: string, platform: boolean): Why {
   if (/sha256|do not match|does not hash/i.test(message)) return 'served bad data'
   if (/no data for|timed? ?out|abort/i.test(message)) return 'timed out'
   if (/HTTP 404|not found|missing chunk/i.test(message)) return platform ? 'missing' : 'not found'
+  // It answered, and refused: a bucket made private, or deleted (S3 answers an anonymous read
+  // of a bucket that is gone 403, not 404).
+  if (/HTTP 40[13]\b/.test(message)) return 'access denied'
   return "didn't answer"
 }
 

@@ -11,6 +11,8 @@ use std::process::Command;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 
+use crate::gitlab::null_default;
+
 /// A parsed `owner/repo` GitHub source reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GithubRepoRef {
@@ -165,17 +167,18 @@ impl GhIssue {
     }
 }
 
-/// A PR head/base pointer.
+/// A PR head/base pointer. A PR from a fork that was deleted has `"label": null` and
+/// `"repo": null` (dashpay/dash #340, #1786, #2732, #3103), so each string reads `null` as empty.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct GhRef {
-    /// `owner:branch` (a fork's owner for a PR from a fork).
-    #[serde(default)]
+    /// `owner:branch` (a fork's owner for a PR from a fork; empty when the fork was deleted).
+    #[serde(default, deserialize_with = "null_default")]
     pub label: String,
     /// Branch name.
-    #[serde(default, rename = "ref")]
+    #[serde(default, rename = "ref", deserialize_with = "null_default")]
     pub ref_name: String,
     /// Commit.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub sha: String,
     /// The repository the branch is in (`None` when it was deleted, e.g. a removed fork).
     #[serde(default)]
@@ -911,6 +914,25 @@ mod tests {
         assert_eq!(r.user.login, GHOST);
         let alive: GhIssue = serde_json::from_str(r#"{"user":{"login":"bob"}}"#).unwrap();
         assert_eq!(alive.user.login, "bob");
+    }
+
+    /// A PR from a deleted fork: GitHub lists its head with `"label": null` and `"repo": null`
+    /// (dashpay/dash #3103). Such an element used to abort the whole PR listing.
+    #[test]
+    fn a_pr_from_a_deleted_fork_parses() {
+        let doc = r#"{"number":3103,"head":{"label":null,"ref":"master","sha":"3120bcd3551859c72f01b5f4d94452a4b67350cc","user":null,"repo":null},"base":{"label":"dashpay:master","ref":"master","sha":"b52294037f741482bef840e366563b5bfd553bd5","repo":{"full_name":"dashpay/dash"}},"merged_at":null,"merge_commit_sha":null,"draft":false,"updated_at":"2019-09-21T14:34:55Z"}"#;
+        let p: GhPull = serde_json::from_str(doc).unwrap();
+        assert_eq!(p.number, 3103);
+        assert_eq!(p.head.label, "");
+        assert_eq!(p.head.ref_name, "master");
+        assert!(p.head.repo.is_none());
+        assert_eq!(p.base.label, "dashpay:master");
+        let nulls: GhPull =
+            serde_json::from_str(r#"{"number":1,"head":{"label":null,"ref":null,"sha":null}}"#)
+                .unwrap();
+        assert_eq!(nulls.head.label, "");
+        assert_eq!(nulls.head.ref_name, "");
+        assert_eq!(nulls.head.sha, "");
     }
 
     /// F-7 against a whole recorded listing: set `FORGE_IMPORT_GH_NDJSON` to a file of

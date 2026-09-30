@@ -109,7 +109,7 @@ Sizes: S ≈ days, M ≈ 1–2 weeks, L ≈ 3+ weeks of focused work. Phase 0 co
 - [ ] A replication policy chosen by the user (N targets; the push fails if fewer than N confirm).
 - [ ] `packMirror` document so anyone can record extra mirrors on-chain (`dg reseed`). Readers race every recorded URI plus a user-configurable gateway list, with Platform chunks as the last resort.
 - [ ] Web app IPFS build published on each release (users pin it themselves), reproducible, with its hash recorded on-chain so the loaded app can be verified.
-- [ ] **Survivability drill** in CI (local MinIO + kubo): delete the bucket, stop a gateway, take down the web host, kill the relay. Clone and browse must still work from the remaining sources and must say why.
+- [x] **Survivability drill** in CI (local S3 + kubo): delete the bucket, stop a gateway, take down the web host, kill the relay. Clone and browse must still work from the remaining sources and must say why. `.github/workflows/survivability.yml` (`make survivability`): the bucket is really deleted and kubo really stopped; the web host is killed and the app served from a second host and as an IPFS build; the relay is shown to be off the read path by the dependency graph, so a dead relay cannot affect either. The S3 store is RustFS, since the MinIO images no longer pull.
 
 ### Phase 2 — Shared contract on PV14 (L) · *gate: repo create ≤ 0.01 DASH on moutai; consensus rejects a revoked writer*
 - [ ] Bump the Platform SDK pins to `v4.2.0-beta.4` (Rust git tag + `@dashevo/evo-sdk@4.2.0-beta.4`); add `--network devnet --devnet-name moutai` (DAPI addresses + `quorums.moutai.networks.dash.org`).
@@ -186,7 +186,7 @@ Launch checklist (`ux-dx-spec.md` §11 P0), where it stands: done 1, 2, 3, 4, 5,
 
 Next:
 - **In progress:** web PR create, inline review, Fork and browser merge · private-repo create/read paths (Phase 3; [docs/security/private-repos.md](security/private-repos.md) §13 lists contract changes required before mainnet registration) · the wallet-side changes D-L needs on mainnet (group-scoped, limited grants through App Connect; a signed responder), drafted for dashpay in `docs/upstream/` (not yet filed) · the D-L gate (a real Dash Wallet sign-in on a device, then a write) is not yet run.
-- **Not started:** DPNS in `dash://` and `dg` (the web app already resolves names) · the `/mirror` setup wizard · tag the first release so `install.sh`, `cargo binstall` and the Action's `install: 'true'` work · the published, reproducible IPFS build of the web app · the survivability drill in CI.
+- **Not started:** DPNS in `dash://` and `dg` (the web app already resolves names) · the `/mirror` setup wizard · tag the first release so `install.sh`, `cargo binstall` and the Action's `install: 'true'` work · the published, reproducible IPFS build of the web app.
 - **Networks:** register forge-v2 on testnet when PV14 reaches it, and move the nightly and a testnet web build there; mainnet after PV14 (Phase 6, D-D, D-J).
 
 Launch UX/DX is specified in [docs/design/ux-dx-spec.md](design/ux-dx-spec.md) §11. Its **P0 backlog is the launch checklist** and supersedes the per-phase bullet lists below where they overlap.
