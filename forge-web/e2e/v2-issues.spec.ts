@@ -1,6 +1,10 @@
 import { test, expect, type Page, type Request } from '@playwright/test'
 import { existsSync } from 'node:fs'
 import { E2E_DEVNET, expectLanded, idFile, repoUrl, shot, signedIn, waitForRepoResolved } from './helpers'
+import { quorumGuard } from './quorum-sync'
+
+// Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
+test.beforeEach(quorumGuard)
 
 /**
  * GitHub-parity issues (platform-parity-spec §1.2, F-1; D-201, D-215, D-216, D-217, D-904,

@@ -1,5 +1,9 @@
 import { test, expect, type Page } from '@playwright/test'
 import { DEMO, repoUrl, waitForRepoResolved } from './helpers'
+import { quorumGuardLong } from './quorum-sync'
+
+// Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
+test.beforeEach(quorumGuardLong)
 
 /**
  * FG-8 (the dash showcase QA ledger): the app shell's resilience and chrome, read-only against

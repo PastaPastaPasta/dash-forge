@@ -1,5 +1,9 @@
 import { test, expect, type Page } from '@playwright/test'
 import { collectPageErrors, countDapi, countDocumentQueries, DAPI_METHOD, DAPI_RESEND_SLACK, decodeDocumentsRequest, DEMO, deployment, loadSeedPulls, nodeSdk, repoUrl, runAxe, shot } from './helpers'
+import { quorumGuard } from './quorum-sync'
+
+// Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
+test.beforeEach(quorumGuard)
 
 /**
  * G14 (L-25, L-27, L-40): Explore search, the jump box, GitHub-style short URLs and the

@@ -2,6 +2,10 @@ import { test, expect, type Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { collectPageErrors, countDapi, countDocumentQueries, DEMO, E2E_DEVNET, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
+import { quorumGuard } from './quorum-sync'
+
+// Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
+test.beforeEach(quorumGuard)
 
 /**
  * F-5 code browsing parity with GitHub, on moutai:

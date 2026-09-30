@@ -2,6 +2,10 @@ import { test, expect } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { collectPageErrors, countDocumentQueries, E2E_DEVNET, nodeSdk, shot } from './helpers'
+import { quorumGuard } from './quorum-sync'
+
+// Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
+test.beforeEach(quorumGuard)
 
 /**
  * Trending on Explore is the network's proved ranking of new stargazers, and it agrees with a

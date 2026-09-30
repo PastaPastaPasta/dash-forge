@@ -4,6 +4,10 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PASSPHRASE, idFile, idOf, shot, signedIn, stateFile, unlock, waitForRepoResolved } from './helpers'
+import { quorumGuard } from './quorum-sync'
+
+// Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
+test.beforeEach(quorumGuard)
 
 /**
  * G5 + G18 of the live fix list, on a devnet with the spec's OWN identities (never the shared

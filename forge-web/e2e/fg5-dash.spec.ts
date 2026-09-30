@@ -1,5 +1,9 @@
 import { test, expect, type Page } from '@playwright/test'
 import { collectPageErrors, countDapi, E2E_DEVNET, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
+import { quorumGuard } from './quorum-sync'
+
+// Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
+test.beforeEach(quorumGuard)
 
 /**
  * FG-5 on the dashpay/dash showcase mirror, read-only, with request and time budgets:

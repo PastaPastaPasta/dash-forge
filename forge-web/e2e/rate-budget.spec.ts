@@ -1,6 +1,10 @@
 import { test, expect } from '@playwright/test'
 import { SNAPSHOT_KEYS } from '../lib/sdk/contract-seed'
 import { E2E_DEVNET, collectPageErrors, countDapi, loadSeedPulls, repoUrl as url, shot, waitForRepoResolved } from './helpers'
+import { quorumGuard } from './quorum-sync'
+
+// Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
+test.beforeEach(quorumGuard)
 
 /**
  * P-1: the shared DAPI request budget (`lib/sdk/budget.ts`) and the seeded contracts

@@ -1,5 +1,9 @@
 import { test, expect, type Page, type Request } from '@playwright/test'
 import { collectPageErrors, DAPI_METHOD, DAPI_RESEND_SLACK, decodeDocumentsRequest, E2E_DEVNET, EMPTY, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
+import { quorumGuardLong } from './quorum-sync'
+
+// Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
+test.beforeEach(quorumGuardLong)
 
 /**
  * S-1 (`platform-parity-spec.md`): every page ≤ 25 DAPI requests cold and ≤ 8 warm, counted

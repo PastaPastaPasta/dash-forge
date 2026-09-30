@@ -11,6 +11,10 @@ import {
   shot,
   waitForRepoResolved,
 } from './helpers'
+import { quorumGuard } from './quorum-sync'
+
+// Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
+test.beforeEach(quorumGuard)
 
 /**
  * forge-v2 read paths against a real devnet (protocol 14): the fixture
