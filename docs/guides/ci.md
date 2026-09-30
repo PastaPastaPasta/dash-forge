@@ -30,7 +30,7 @@ Other commands:
 
 | Command | Does |
 |---|---|
-| `dg ci runner add <repo> <identity>` | enrols an identity that already has a key (one you keyed yourself) |
+| `dg ci runner add <repo> <identity>` | enrols an identity that already has a key (one you keyed yourself); `<identity>` is an id or a DPNS name |
 | `dg ci runner list <repo>` | lists the repository's runners |
 | `dg ci runner revoke <repo> <identity>` | deletes the membership; the runner's next report is refused at consensus, and its old runs stop counting |
 
