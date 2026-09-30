@@ -305,7 +305,8 @@ fn select_anchors<'c>(
 ) -> (BTreeMap<u32, (&'c ConfigRow, u64)>, Vec<&'c ConfigRow>) {
     let order = |c: &ConfigRow| (c.created_at_block_height, c.id);
     let mut by_epoch: BTreeMap<u32, Vec<&ConfigRow>> = BTreeMap::new();
-    for c in configs {
+    // a config without `enc` states no key: never an anchor, a statement or a gap (§5.3)
+    for c in configs.iter().filter(|c| !c.enc.is_empty()) {
         by_epoch.entry(c.epoch).or_default().push(c);
     }
     for cs in by_epoch.values_mut() {
