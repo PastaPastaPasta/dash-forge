@@ -36,6 +36,10 @@ export interface MergeUpload {
   readonly questionStep: 'upload' | 'index'
   /** Call at each attempt with the pre-answer: credits allowed on Platform (null: none given). */
   readonly begin: (preAgreedCredits?: number | null) => void
+  /**
+   * Storage settings are stored in this browser and sealed in this tab (a resumed session):
+   * the upload waits for the in-page unlock. With none stored there is nothing to unlock.
+   */
   readonly storageNeedsUnlock: boolean
 }
 
@@ -67,7 +71,9 @@ export function useMergeUpload(repo: RepoRef): MergeUpload {
     })
   }, [])
 
-  const config = storage.config
+  // The settings the upload uses: after a reload with none stored in this browser, the empty
+  // ones (Platform, asked for) with no unlock; stored ones only once this tab is unlocked.
+  const config = storage.usable
   const policy = config === null ? null : policyForRepo(config, repo.repoId)
   const upload = useCallback<UploadPack>(
     async (bytes, info) => {
@@ -107,7 +113,7 @@ export function useMergeUpload(repo: RepoRef): MergeUpload {
     question,
     questionStep: asking,
     begin,
-    storageNeedsUnlock: storage.needsUnlock,
+    storageNeedsUnlock: storage.sealed,
   }
 }
 

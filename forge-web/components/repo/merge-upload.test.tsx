@@ -17,7 +17,7 @@ import { StorageRow, useMergeUpload, type MergeUpload } from './merge-upload'
 
 vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: {}, ready: true, network: 'devnet' }) }))
 vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ signer: { identityId: 'me' }, identity: 'me' }) }))
-vi.mock('@/hooks/use-storage-config', () => ({ useStorageConfig: () => ({ config: { profiles: [], policies: [] }, needsUnlock: false }) }))
+vi.mock('@/hooks/use-storage-config', () => ({ useStorageConfig: () => ({ config: { profiles: [], policies: [] }, usable: { profiles: [], policies: [] }, needsUnlock: false, sealed: false }) }))
 // Platform storage as the real `storeArtifact` gates it: ask unless the copy fits the cap.
 const asked: number[] = []
 vi.mock('@/lib/storage', async (importOriginal) => {

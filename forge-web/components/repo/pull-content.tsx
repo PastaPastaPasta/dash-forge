@@ -78,6 +78,7 @@ import {
   setTargetState,
   updateComment,
   updateTarget,
+  type DraftComment,
   type RepoRef,
   type VerdictInput,
 } from '@/lib/repo'
@@ -124,7 +125,7 @@ import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { InlineCommentsProvider, type ThreadActions } from '@/components/repo/inline-comments'
 import { LockToggle, LockedBanner, lockConfirm, lockStateText, lockViewerOf } from '@/components/repo/locked-banner'
 import { ReviewDrawer, useReviewDraft } from '@/components/repo/review-drawer'
-import { BranchCommitCost, IdentityNote, buildUpdateBranch, useSuggestions } from '@/components/repo/branch-commit-panel'
+import { BranchCommitCost, BranchRunContext, CommitIdentityPrompt, buildUpdateBranch, useSuggestions } from '@/components/repo/branch-commit-panel'
 import { PullMerge, useMergeSlot } from '@/components/repo/pull-merge'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
 import { EditedMarker, MarkdownEditor } from '@/components/repo/issue-bits'
@@ -133,6 +134,9 @@ import { ReviewersCard } from '@/components/repo/reviewers-card'
 import { Approvals, VerdictLine } from '@/components/repo/approvals'
 import { ChecksTab, CommitsTab } from '@/components/repo/pull-tabs'
 import { cn } from '@/lib/utils'
+
+/** No pending review comments (a stable empty list). */
+const NO_DRAFTS: readonly DraftComment[] = []
 
 /** The PR page's tabs (`?tab=`; absent: conversation). */
 export const PR_TABS = ['conversation', 'commits', 'checks', 'files'] as const
@@ -439,6 +443,7 @@ function PullPage({
     source: sourceRef,
     pull,
     comments: thread.comments,
+    drafts: reviewDraft.draft?.comments ?? NO_DRAFTS,
     headReader,
     headOnly: comparison.headOnly,
     applied,
@@ -931,7 +936,7 @@ function PullPage({
                           </Button>
                         </>
                       ) : suggest.write.can && suggest.who === null ? (
-                        <IdentityNote />
+                        <CommitIdentityPrompt what="update the branch" />
                       ) : (
                         <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{repo.visibility === 'private' ? 'Use `dg pr update-branch` for a private repo.' : 'Only the PR author or a maintainer, with write access to the source branch, can update it.'}</span>
                       )}
@@ -1106,8 +1111,10 @@ function PullPage({
               expected={expectedChecks(checks.data?.runs ?? [], policyNow)}
             />
           ) : (
-            <>
-            {suggest.runner.view}
+            <BranchRunContext.Provider value={{ at: suggest.runner.at, view: suggest.runner.view }}>
+            {/* A suggestion's run shows under its comment, the batch's in the batch bar (QW-007);
+                only an "Update branch" run started on the conversation shows here. */}
+            {suggest.runner.at === 'update' ? suggest.runner.view : null}
             <ComparisonView
               state={comparison}
               noHead="This PR does not record a head commit."
@@ -1151,7 +1158,7 @@ function PullPage({
               )}
             />
             {suggest.bar}
-            </>
+            </BranchRunContext.Provider>
           )}
         </div>
 

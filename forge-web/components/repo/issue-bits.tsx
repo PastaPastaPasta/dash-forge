@@ -6,11 +6,11 @@
  * marker.
  */
 
-import { useState, type ReactNode } from 'react'
+import { useState, type ReactNode, type Ref } from 'react'
 import { labelTextColor, type LabelDef } from '@/lib/repo'
 import { avatarFill, avatarHue } from '@/lib/design/avatar'
 import { timeAgo } from '@/lib/view'
-import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
+import { MarkdownView, type MarkdownLinks, type SuggestionContext } from '@/components/markdown-view'
 import { Textarea } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 
@@ -76,6 +76,8 @@ export function EditedMarker({ createdAt, updatedAt }: { createdAt: number; upda
   )
 }
 
+const EDITOR_HINT = 'Markdown supported. #12 links an issue, @name a profile.'
+
 /** A markdown field with Write / Preview tabs (the preview renders exactly what will be shown). */
 export function MarkdownEditor({
   id,
@@ -86,6 +88,10 @@ export function MarkdownEditor({
   links,
   className,
   autoFocus,
+  textareaRef,
+  tools,
+  suggestion = null,
+  hint = EDITOR_HINT,
 }: {
   id: string
   label: string
@@ -95,6 +101,13 @@ export function MarkdownEditor({
   links?: MarkdownLinks
   className?: string
   autoFocus?: boolean
+  textareaRef?: Ref<HTMLTextAreaElement>
+  /** Buttons beside the tabs (a review comment's "Insert a suggestion"). */
+  tools?: ReactNode
+  /** How the preview shows ```suggestion blocks (a review comment on lines); keep it stable. */
+  suggestion?: SuggestionContext | null
+  /** The line under the field; null: none. */
+  hint?: string | null
 }): JSX.Element {
   const [tab, setTab] = useState<'write' | 'preview'>('write')
   const tabClass = (on: boolean) =>
@@ -104,25 +117,28 @@ export function MarkdownEditor({
     )
   return (
     <div className={className}>
-      <div role="tablist" aria-label="Write or preview" className="flex gap-1">
-        <button type="button" role="tab" aria-selected={tab === 'write'} className={tabClass(tab === 'write')} onClick={() => setTab('write')}>
-          Write
-        </button>
-        <button type="button" role="tab" aria-selected={tab === 'preview'} className={tabClass(tab === 'preview')} onClick={() => setTab('preview')}>
-          Preview
-        </button>
+      <div className="flex flex-wrap items-end gap-1">
+        <div role="tablist" aria-label="Write or preview" className="flex gap-1">
+          <button type="button" role="tab" aria-selected={tab === 'write'} className={tabClass(tab === 'write')} onClick={() => setTab('write')}>
+            Write
+          </button>
+          <button type="button" role="tab" aria-selected={tab === 'preview'} className={tabClass(tab === 'preview')} onClick={() => setTab('preview')}>
+            Preview
+          </button>
+        </div>
+        {tools ? <div className="ml-auto flex items-center gap-1 pb-1">{tools}</div> : null}
       </div>
       {tab === 'write' ? (
         <>
           <label htmlFor={id} className="sr-only">{label}</label>
-          <Textarea id={id} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className="min-h-[120px] rounded-tl-none" autoFocus={autoFocus} />
+          <Textarea ref={textareaRef} id={id} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className="min-h-[120px] rounded-tl-none" autoFocus={autoFocus} />
         </>
       ) : (
         <div role="tabpanel" aria-label="Rendered preview" className="min-h-[120px] rounded-md rounded-tl-none border border-anvil-300 px-3 py-2 dark:border-anvil-700" data-testid="markdown-preview">
-          {value.trim() === '' ? <p className="italic text-anvil-500 dark:text-anvil-400">Nothing to preview.</p> : <MarkdownView source={value} links={links} />}
+          {value.trim() === '' ? <p className="italic text-anvil-500 dark:text-anvil-400">Nothing to preview.</p> : <MarkdownView source={value} links={links} suggestion={suggestion} />}
         </div>
       )}
-      <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">Markdown supported. #12 links an issue, @name a profile.</p>
+      {hint !== null ? <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">{hint}</p> : null}
     </div>
   )
 }
