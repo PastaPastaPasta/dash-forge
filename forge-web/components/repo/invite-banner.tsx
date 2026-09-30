@@ -11,7 +11,7 @@
  * this repo, and lets the owner add them again later.
  */
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { UserPlus } from 'lucide-react'
 import { acceptInvite, findConsent, readConsents, readMembershipsCached, repoContractIds, type RepoRef } from '@/lib/repo'
@@ -30,6 +30,9 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 
 /** The query parameter an invite link carries. */
 export const INVITE_PARAM = 'invite'
+
+/** How often the owner's Settings re-reads the pending invitations while the page is visible. */
+export const INVITES_POLL_MS = 10_000
 
 type Standing = 'member' | 'accepted' | 'invited'
 
@@ -145,7 +148,46 @@ export function Invitations({
   onPick: (identity: string, role: Role) => void
 }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
-  const consents = useAsync<string[]>(() => readConsents(sdk!, repo), [ready, repo.repoId, network, members.length], { enabled: ready && sdk !== null })
+  // Every consent this page has read for the repo: a re-read that reaches a node without a fresh
+  // accept keeps it listed, and a re-read that fails keeps the list rather than blanking it. (A
+  // consent withdrawn meanwhile stays listed until a reload; adding them then says they have not
+  // accepted, and nothing is signed.)
+  const seen = useRef<{ key: string; ids: string[] } | null>(null)
+  const key = `${network}:${repo.repoId}`
+  const consents = useAsync<string[]>(
+    async () => {
+      const known = seen.current?.key === key ? seen.current.ids : null
+      let ids: string[]
+      try {
+        ids = await readConsents(sdk!, repo)
+      } catch (e) {
+        if (known !== null) return known
+        throw e
+      }
+      const merged = known === null ? ids : [...known, ...ids.filter((id) => !known.includes(id))]
+      seen.current = { key, ids: merged }
+      return merged
+    },
+    [ready, repo.repoId, network, members.length],
+    { enabled: ready && sdk !== null },
+  )
+  // The invitee accepts in their own browser, and the node a read reaches may not have indexed it
+  // yet: re-read while this page is open and visible (and at once when it becomes visible again),
+  // so a fresh accept shows without a reload.
+  const { reload } = consents
+  const polling = ready && sdk !== null
+  useEffect(() => {
+    if (!polling) return
+    const tick = (): void => {
+      if (document.visibilityState === 'visible') reload()
+    }
+    const timer = setInterval(tick, INVITES_POLL_MS)
+    document.addEventListener('visibilitychange', tick)
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', tick)
+    }
+  }, [polling, reload])
   const pending = (consents.data ?? []).filter((id) => id !== repo.ownerId && !members.includes(id))
   const link = typeof window === 'undefined' ? '' : new URL(repoHref('/repo', { owner: repo.ownerId, name: repo.name }, { [INVITE_PARAM]: '1' }), window.location.origin).toString()
   return (

@@ -3,7 +3,8 @@
  * The invite banner after a confirmed accept (D-10): the node the next read reaches may not have
  * indexed the new `consent` yet and answer "none". The banner keeps "You accepted the invitation"
  * through such stale reads, re-reads until a node shows the consent, and still gives way to a
- * read that finds the viewer a member.
+ * read that finds the viewer a member. The owner's pending invitations re-read while Settings is
+ * open, so an accept made meanwhile (or one a lagging node hid) shows without a reload.
  */
 
 import { act } from 'react'
@@ -45,9 +46,18 @@ vi.mock('@/lib/repo', async (orig) => ({
     return answer
   },
   acceptInvite: async () => ({ documentId: 'consent1', confirmed: true, cost: { credits: 0, dash: 0 }, actualCredits: null }),
+  readConsents: async () => {
+    const answer = consentLists[Math.min(consentListCalls++, consentLists.length - 1)] ?? []
+    if (answer === 'throw') throw new Error('network: consents read failed')
+    return answer
+  },
 }))
 
-import { InviteBanner } from './invite-banner'
+/** What each `readConsents` answers, in order (then the last one again). */
+let consentLists: (string[] | 'throw')[] = []
+let consentListCalls = 0
+
+import { INVITES_POLL_MS, InviteBanner, Invitations } from './invite-banner'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -130,5 +140,75 @@ describe('the invite banner after a confirmed accept', () => {
     members = [{ identity: ME, role: 'writer', createdAt: 1 }]
     await flush(1500)
     expect(q('invite-banner')).toBeNull()
+  })
+})
+
+describe("the owner's pending invitations while Settings is open", () => {
+  const INVITEE = 'EA8HsynH63cw1i8xQLoARwk43sDf74HrKut1D4RV3L35'
+  const ownerRepo = { ...repo } as RepoRef
+  const pending = (): string => q('pending-invites')?.textContent ?? ''
+  let visibility: DocumentVisibilityState = 'visible'
+  const setVisibility = (v: DocumentVisibilityState): void => {
+    visibility = v
+    document.dispatchEvent(new Event('visibilitychange'))
+  }
+  beforeEach(() => {
+    consentListCalls = 0
+    visibility = 'visible'
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility })
+  })
+  async function renderInvitations(memberIds: string[] = []): Promise<void> {
+    act(() => root.render(<Invitations repo={ownerRepo} members={memberIds} awaiting={null} disabled={false} onPick={() => undefined} />))
+    await flush()
+  }
+
+  it('shows an accept made after the page read, without a reload', async () => {
+    consentLists = [[], [], [INVITEE]]
+    await renderInvitations()
+    expect(q('pending-invites')).toBeNull()
+    await flush(INVITES_POLL_MS)
+    expect(q('pending-invites')).toBeNull()
+    await flush(INVITES_POLL_MS)
+    expect(pending()).toContain(INVITEE.slice(0, 6))
+  })
+
+  it('keeps a shown accept through a lagging node and a failed re-read', async () => {
+    consentLists = [[INVITEE], [], 'throw', []]
+    await renderInvitations()
+    for (let i = 0; i < 4; i++) {
+      expect(pending()).toContain(INVITEE.slice(0, 6))
+      await flush(INVITES_POLL_MS)
+    }
+    expect(pending()).toContain(INVITEE.slice(0, 6))
+  })
+
+  it('drops an invitation once they are a member', async () => {
+    consentLists = [[INVITEE]]
+    await renderInvitations()
+    expect(pending()).toContain(INVITEE.slice(0, 6))
+    await renderInvitations([INVITEE])
+    expect(q('pending-invites')).toBeNull()
+  })
+
+  it('re-reads only while the page is visible, and at once when it is shown again', async () => {
+    consentLists = [[]]
+    await renderInvitations()
+    expect(consentListCalls).toBe(1)
+    setVisibility('hidden')
+    await flush(INVITES_POLL_MS * 3)
+    expect(consentListCalls).toBe(1)
+    await act(async () => setVisibility('visible'))
+    await flush()
+    expect(consentListCalls).toBe(2)
+    await flush(INVITES_POLL_MS)
+    expect(consentListCalls).toBe(3)
+  })
+
+  it('stops re-reading when the page closes', async () => {
+    consentLists = [[]]
+    await renderInvitations()
+    act(() => root.render(<></>))
+    await flush(INVITES_POLL_MS * 3)
+    expect(consentListCalls).toBe(1)
   })
 })
