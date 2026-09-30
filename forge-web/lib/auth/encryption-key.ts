@@ -8,7 +8,7 @@
  * - Getting it into the vault: from an identity file (its ENCRYPTION key, or derived from its
  *   mnemonic), a recovery phrase, or a pasted WIF/hex key. Every route checks that the public
  *   key matches an enabled ENCRYPTION key on the identity before anything is stored.
- * - Registering one (Settings → Keys → Enable private repos): an `IdentityUpdate` signed once by
+ * - Registering one (Settings → Private repos): an `IdentityUpdate` signed once by
  *   the master key, adding the next key id, derived from the recovery phrase at
  *   `m/9'/<coin>'/5'/0'/0'/<identityIndex>'/<keyId>'` (the CLI's path, so either client can
  *   re-derive it).
@@ -23,7 +23,7 @@ import type { Network } from '../constants'
 import { bytesToHex, unwrapKey, unwrapKeyRaw, sealWrap, type EpochKeys, type WrapFacade } from '../private'
 import { authSdk, sleep } from '../sdk/facade'
 import { timed } from '../step-timing'
-import { deriveAt, deriveMasterKey, identityKeyPath, isValidMnemonic, mnemonicProblem, normalizeMnemonic, wasmNetwork } from './hd'
+import { deriveAt, deriveMasterKey, identityKeyPath, isValidMnemonic, invalidMnemonicMessage, normalizeMnemonic, wasmNetwork } from './hd'
 import { parsePrivateKey } from './wif'
 import { VaultLockedError, storeEncryptionKey, storedEncryptionKeyId, unlockScope, unlockedSecret, withEncryptionKey } from './vault'
 
@@ -62,7 +62,7 @@ export function usableEncryptionKey<K extends EncKeyLike>(keys: readonly K[], co
 
 /** The verbatim add-member message for an identity with no encryption key (`ux-dx-spec.md` §9). */
 export function noEncryptionKeyMessage(name: string): string {
-  return `${name} has no encryption key yet. Send them this: \`dg auth keys add --encryption\`, or Settings → Keys → Enable private repos (one master-key signature).`
+  return `${name} has no encryption key yet. Send them this: \`dg auth keys add --encryption\`, or Settings → Private repos (one master-key signature).`
 }
 
 /** The blast-radius sentence of `private-repos.md` §5.2, verbatim. */
@@ -215,7 +215,7 @@ export async function importEncryptionKey(
   }
   const mnemonic = source.mnemonic
   if (mnemonic === null) return null
-  if (!(await isValidMnemonic(mnemonic))) throw new Error(mnemonicProblem(mnemonic))
+  if (!(await isValidMnemonic(mnemonic))) throw new Error(await invalidMnemonicMessage(mnemonic))
   for (const k of candidates) {
     const secret = await timed(PRIVATE_REPOS_FLOW, `derive key ${k.keyId} from the phrase`, () => deriveSecret(normalizeMnemonic(mnemonic), network, k.keyId, source.identityIndex ?? 0))
     if ((await publicKeyHex(secret, network)) === k.data.toLowerCase()) return adoptEncryptionKey(sdk, network, identityId, coreId, secret)
@@ -235,7 +235,7 @@ export class EncryptionKeyExistsError extends Error {
 }
 
 /**
- * Enable private repos from a recovery phrase (Settings → Keys → Enable private repos): when the
+ * Enable private repos from a recovery phrase (Settings → Private repos): when the
  * identity already has a usable ENCRYPTION key the phrase derives, that key is stored (nothing
  * is registered); when it has one the phrase does not derive, this refuses
  * ({@link EncryptionKeyExistsError}: registering another would strand the wraps to the old one,
@@ -250,7 +250,7 @@ export async function registerEncryptionKey(
   coreId: string,
   source: { readonly mnemonic: string; readonly identityIndex?: number },
 ): Promise<{ readonly keyId: number; readonly registered: boolean }> {
-  if (!(await isValidMnemonic(source.mnemonic))) throw new Error(mnemonicProblem(source.mnemonic))
+  if (!(await isValidMnemonic(source.mnemonic))) throw new Error(await invalidMnemonicMessage(source.mnemonic))
   // The new key must land in the vault: never pay for a key this browser cannot keep.
   if (unlockedSecret(network, identityId) === null) throw new VaultLockedError('unlock this browser first')
   // A reloaded tab holds the signing key only: the new key could not be stored with the vault.

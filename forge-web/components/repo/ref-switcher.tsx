@@ -8,14 +8,15 @@
 
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
-import { usePathname, useRouter } from 'next/navigation'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { Check, ChevronDown, GitBranch, Search, Tag } from 'lucide-react'
 import type { RepoHome, SelectedRef } from '@/lib/view'
-import { findBranch, isLive, matchesRefQuery, refParamFor } from '@/lib/view'
+import { findBranch, isLive, matchesRefQuery, refParamFor, splitRefPath } from '@/lib/view'
 import { compareRefNames, compareTagNames } from '@/lib/repo'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { Button } from '@/components/ui/button'
-import { EmptyState } from '@/components/ui/states'
+import { EmptyState, LoadingBlock } from '@/components/ui/states'
+import { SEALED_PARAMS } from '@/lib/view/private-nav'
 import { cn } from '@/lib/utils'
 
 /** One entry of the switcher's open list, flattened across both groups for keyboard navigation. */
@@ -253,6 +254,41 @@ export function RefDeletedState({
       }
     />
   )
+}
+
+/**
+ * A GitHub-style URL whose branch has a `/` in it (QW2-024), split where the repo's refs say
+ * ({@link splitRefPath}): the same page again with the ref and path corrected, keeping the rest of
+ * the query and the `#L` anchor. Replaces the history entry, so Back skips the wrong address.
+ */
+export function RefPathRedirect({ addr, split }: { addr: RepoAddress; split: { readonly ref: string; readonly path: string } }): JSX.Element {
+  const router = useRouter()
+  const pathname = usePathname()
+  const params = useSearchParams()
+  useEffect(() => {
+    const extra: Record<string, string> = {}
+    // The other params as they are (a sealed one is a token already, never sealed twice).
+    params.forEach((v, k) => {
+      if (!['owner', 'name', 'repo'].includes(k) && !SEALED_PARAMS.has(k)) extra[k] = v
+    })
+    extra['ref'] = split.ref
+    if (split.path !== '') extra['path'] = split.path
+    router.replace(`${repoHref(pathname, addr, extra)}${window.location.hash}`)
+  }, [router, pathname, params, addr, split.ref, split.path])
+  return <LoadingBlock label={`Opening ${split.ref}`} />
+}
+
+/**
+ * What a browse view shows instead of its content when `?ref=` names no branch or tag: the same
+ * page with a slashed branch split out of the path ({@link RefPathRedirect}, QW2-024), else "Ref
+ * not found" unless the ref is a commit id. Null when the ref is fine.
+ */
+export function unknownRefState(home: RepoHome, addr: RepoAddress, selected: SelectedRef, refParam: string, path: string): JSX.Element | null {
+  if (selected.ref) return null
+  const split = splitRefPath(home.branches, home.tags, refParam, path)
+  if (split !== null) return <RefPathRedirect addr={addr} split={split} />
+  if (refParam && !selected.pinned) return <RefNotFoundState addr={addr} refParam={refParam} defaultBranch={home.defaultBranch} />
+  return null
 }
 
 /** The bad-`?ref=` empty state shared by the browse views, with a way back to the default. */

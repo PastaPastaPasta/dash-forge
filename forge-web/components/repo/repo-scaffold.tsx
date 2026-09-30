@@ -184,9 +184,9 @@ export function RepoScaffold({
 
 /**
  * The Verification card's rows a repo page leads with. Not chain data: the app shell heads every
- * page with it. Not "where the bytes came from": it is Failed only when the content check failed
- * (listed already) or when no storage answered, which is an outage the page's own
- * "Code unavailable" state reports, not a check that found the data wrong.
+ * page with it. Not "where the bytes came from": it is Failed only when the content check failed,
+ * which is listed already (no storage answering is an outage, "Couldn't verify", which the
+ * page's own "Code unavailable" state reports).
  */
 const REPO_ROWS = ['tip', 'content'] as const
 

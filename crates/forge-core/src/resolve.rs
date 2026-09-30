@@ -68,36 +68,47 @@ pub fn dpns_label(owner: &str) -> Option<&str> {
     .then_some(label)
 }
 
-/// The identity id `owner` names: `owner` itself when it is a base58 identity id, else a
-/// DPNS name (`alice`, `alice.dash`) resolved to the identity its `domain` record points at
-/// (proof-verified). An unregistered name is E102 naming it; a string that is neither is
-/// E203.
-pub async fn resolve_owner(client: &PlatformClient, owner: &str) -> Result<String> {
+/// The identity id `who` names: `who` itself when it is a base58 identity id, else a DPNS
+/// name (`alice`, `@alice`, `alice.dash`) resolved to the identity its `domain` record points
+/// at (proof-verified). It resolves repository owners, members, assignees, reviewers and
+/// runners alike. An unregistered name is E102 naming it and the network it was looked up on
+/// (QW2-082: a name registered on another network reads the same as a typo); a string that
+/// is neither is E203.
+pub async fn resolve_owner(client: &PlatformClient, who: &str) -> Result<String> {
+    let owner = who.strip_prefix('@').unwrap_or(who);
     if looks_like_identity_id(owner) {
         return Ok(owner.to_string());
     }
     let Some(label) = dpns_label(owner) else {
         return Err(UserError::new(
             codes::INVALID_REPO_REF,
-            format!("owner {owner:?} is neither an identity id nor a DPNS name"),
+            format!("{who:?} is neither an identity id nor a DPNS name"),
         )
         .cause("a DPNS name is letters, digits and '-', optionally ending in .dash")
-        .fix("use the owner's base58 identity id or DPNS username, e.g. `alice/project`")
+        .fix(
+            "use the base58 identity id or a DPNS username, e.g. `alice`, `@alice` or `alice.dash`",
+        )
         .into());
     };
-    client.resolve_dpns_name(label).await?.ok_or_else(|| {
-        let id_shaped = owner.len() >= 40;
-        UserError::new(
-            codes::NOT_FOUND,
-            if id_shaped {
-                format!("owner {owner:?} is neither a valid identity id nor a registered DPNS name")
-            } else {
-                format!("no DPNS name {label}.dash is registered")
-            },
-        )
-        .fix("check the spelling, or use the owner's base58 identity id")
+    client
+        .resolve_dpns_name(label)
+        .await?
+        .ok_or_else(|| not_registered(owner, label, &client.target().network.key()))
+}
+
+/// E102 for a DPNS name `label` (typed as `typed`) that is not registered on `network`.
+fn not_registered(typed: &str, label: &str, network: &str) -> Error {
+    let message = if typed.len() >= 40 {
+        format!("{typed:?} is neither a valid identity id nor a DPNS name registered on {network}")
+    } else {
+        format!("no DPNS name {label}.dash is registered on {network}")
+    };
+    UserError::new(codes::NOT_FOUND, message)
+        .fix(format!(
+            "check the spelling, and that {network} is the network you meant (`--network`)"
+        ))
+        .fix("use the identity's base58 id")
         .into()
-    })
 }
 
 /// Resolve `owner/name`; `owner` is a base58 identity id or a DPNS name ([`resolve_owner`]).
@@ -238,7 +249,24 @@ pub struct RepoSummary {
 
 #[cfg(test)]
 mod tests {
-    use super::{dpns_label, looks_like_identity_id, repo_slug};
+    use super::{dpns_label, looks_like_identity_id, not_registered, repo_slug};
+
+    /// QW2-082: an unregistered name says which network it was looked up on, and the fix
+    /// does not call every identity an owner (it resolves assignees and runners too).
+    #[test]
+    fn an_unregistered_name_names_the_network() {
+        let crate::Error::User(u) = not_registered("qacli2dx7", "qacli2dx7", "devnet-moutai")
+        else {
+            panic!("expected a phrased error")
+        };
+        assert_eq!(u.code, "E102");
+        assert_eq!(
+            u.message,
+            "no DPNS name qacli2dx7.dash is registered on devnet-moutai"
+        );
+        assert!(u.fix[0].contains("devnet-moutai is the network you meant"));
+        assert!(u.fix.iter().all(|f| !f.contains("owner")), "{:?}", u.fix);
+    }
 
     #[test]
     fn dpns_labels_strip_the_suffix_case_insensitively() {

@@ -131,8 +131,10 @@ export interface BlameRename {
 }
 
 export interface BlameProgress {
-  /** Commits examined so far while looking for the file's versions. */
+  /** Commits examined so far while looking for the file's versions (none while the history index lists them). */
   readonly examined: number
+  /** Versions the push-time history index listed so far, in this run (none: the history is walked). */
+  readonly indexed: number
   /** Versions of the file compared so far (over every run of a continued walk). */
   readonly versions: number
   /** The most versions this run compares before it stops: the versions it started from plus its cap. */
@@ -262,9 +264,10 @@ export async function blameFile(
   // A page stops at its own cap without filling up (a file untouched for thousands of commits);
   // the walk goes on from where it stopped, within this run's commit budget.
   let examined = 0
+  let indexed = 0
   const examinedBefore = resume?.examined ?? 0
   const report = (searched: number): void =>
-    onProgress?.({ examined: examinedBefore + examined + searched, versions, versionLimit, pending: state.pending, total: state.lines.length })
+    onProgress?.({ examined: examinedBefore + examined + searched, indexed, versions, versionLimit, pending: state.pending, total: state.lines.length })
   // The tip as the oldest version reached, when no version was found (every line unresolved there).
   const standInTip = async (): Promise<Version> => {
     seen.set(tipOid, logEntryOf(tipOid, await commitVia(reader, walker, tipOid)))
@@ -299,6 +302,7 @@ export async function blameFile(
         onExamined: report,
       })
       examined += page.examined
+      indexed += page.indexed
       for (const [i, e] of page.entries.entries()) {
         signal?.throwIfAborted()
         // A continuation's first page starts at the version the last run compared: not compared twice.
@@ -385,7 +389,7 @@ export async function blameFile(
   // The walk reached the commit that added the file (or its first version as a file): what is still
   // open was added there, exactly git's answer. Stopped short of that, it stays unresolved.
   if (stop === null) state.finish(current.oid)
-  onProgress?.({ examined: examinedBefore + examined, versions, versionLimit, pending: state.pending, total: state.lines.length })
+  onProgress?.({ examined: examinedBefore + examined, indexed, versions, versionLimit, pending: state.pending, total: state.lines.length })
   return resultOf(stop)
 }
 

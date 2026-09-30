@@ -34,7 +34,7 @@ import { NETWORKS, type Network } from '../constants'
 import { rc1WriteProblem } from '../layout'
 import { base58Encode } from '../auth/base58'
 import { controlsKey } from '../auth/wif'
-import { previewCreate, previewCredits, previewDelete, previewReplace, type CostPreview } from './cost'
+import { previewCreate, previewCredits, previewDelete, previewReplace, STEADY, type CostPreview } from './cost'
 import { base64ToBytes, bytesToBase64, followSdkVersion, noteSdkWrite } from './query'
 
 export type { CostPreview } from './cost'
@@ -920,6 +920,11 @@ export interface SpendEvent {
   readonly repo: string | null
   readonly documentId: string
   readonly estimateCredits: number
+  /**
+   * The low end of the preview's range: the same write with no first-write surcharge (QW-043).
+   * Absent when the price is fixed (a replace, a delete, a key update).
+   */
+  readonly estimateMinCredits?: number
   /** The balance change the write caused, or null when it could not be read in time. */
   readonly actualCredits: number | null
   /** The identity's balance right before the write (the ledger's reconciliation baseline). */
@@ -1238,6 +1243,7 @@ async function createDocumentUnlocked(
     repo: repoOf(data, documentType, documentId),
     documentId,
     estimateCredits: cost.credits,
+    estimateMinCredits: previewCreate(documentType, data, STEADY).credits,
     balanceBefore,
   })
 

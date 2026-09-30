@@ -625,16 +625,6 @@ pub fn classify<'e>(
     {
         return UserError::storage_policy_not_met(r, ctx.goal.unwrap_or("push failed"), false);
     }
-    // A sealed file that did not open: the chain's context names which file (as typed, so
-    // not the lowercased text).
-    if layers.iter().any(|l| {
-        matches!(
-            l.downcast_ref::<CoreError>(),
-            Some(CoreError::WrongPassphrase)
-        )
-    }) {
-        return wrong_passphrase(&text);
-    }
     if let Some(core) = layers
         .iter()
         .rev()
@@ -781,10 +771,11 @@ fn not_permitted(ctx: &ErrorContext<'_>, action: &str, reason: &str, needs: &str
     }
 }
 
-/// How a member stores a key source that can open private repositories: the limited key
-/// `dg auth login` and `dg auth new` store is a signing key only, so the full identity is kept
-/// instead, from its file or from the recovery words (QW-040).
-pub const FIX_FULL_KEY_LOGIN: &str = "`dg auth login --full-key <identity file>`, or `dg auth login --mnemonic --full-key` with your 12 recovery words";
+/// How a member stores a key source that can open private repositories: `dg auth login`
+/// keeps the identity's encryption key beside the limited signing key (QW2-004), from its file
+/// or from the recovery words (QW-040). A key stored by an older `dg`, or with
+/// `--signing-only`, is a signing key only: signing in again fixes it.
+pub const FIX_FULL_KEY_LOGIN: &str = "`dg auth login <identity file> --replace <key id>` (the key `dg auth status` shows), or `dg auth login --mnemonic --replace <key id>` with your 12 recovery words: it stores a new limited key with your encryption key beside it (never the master key) and disables the old one";
 
 /// The E601 way in: the owner's add, and before it, for someone not a member yet, their own
 /// consent (`member_consent`: a `member` document naming the add is refused without it, E604;
@@ -1376,19 +1367,6 @@ pub fn private_needs_identity(repo: &str) -> UserError {
     .fix(format!("sign in as a member with a key source that holds your ENCRYPTION key: {FIX_FULL_KEY_LOGIN}"))
     .fix("for one command: --identity <identity file>, or DASH_FORGE_KEY=<identity file>")
     .note("public repositories are read without an identity")
-}
-
-/// E303 for a sealed file whose passphrase was wrong (QW2-076: a `--runner` file was E204 with
-/// a `dg doctor` fix). `chain` is the whole error text; its context layers name the file.
-fn wrong_passphrase(chain: &str) -> UserError {
-    UserError::new(
-        codes::IDENTITY_UNREADABLE,
-        "a sealed file did not open: wrong passphrase",
-    )
-    .cause(chain)
-    .fix("run it again with the passphrase that file was sealed with (typed at the prompt, or in DASH_FORGE_PASSPHRASE)")
-    .fix("DASH_FORGE_PASSPHRASE opens every sealed file one command reads: when two files (your key and a `--runner` or `--master` file) were sealed with different passphrases, run the command in a terminal so each is asked for")
-    .note("nothing was written")
 }
 
 fn identity_unreadable(msg: &str) -> UserError {
@@ -2019,23 +1997,9 @@ mod tests {
         classify([e.as_ref() as &(dyn StdError + 'static)], ctx)
     }
 
-    /// An error with a context layer over it, as `anyhow`'s `.context` makes one.
-    #[derive(Debug)]
-    struct Loading(CoreError);
-    impl std::fmt::Display for Loading {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("loading the runner identity from /Home/Runner.json")
-        }
-    }
-    impl StdError for Loading {
-        fn source(&self) -> Option<&(dyn StdError + 'static)> {
-            Some(&self.0)
-        }
-    }
-
     #[test]
-    fn a_bad_input_value_is_e201_and_a_wrong_passphrase_e303_naming_the_file() {
-        // QW2-076: both were E204 "invalid configuration" with a `dg doctor` fix.
+    fn a_bad_input_value_is_e201_not_invalid_configuration() {
+        // QW2-076: it was E204 "invalid configuration" with a `dg doctor` fix.
         let issue = ErrorContext {
             goal: Some("issue not created"),
             repo: Some("alice/project"),
@@ -2051,19 +2015,6 @@ mod tests {
             u.cause.as_deref(),
             Some("the title is empty: a title is required")
         );
-        assert!(!u.fix.iter().any(|f| f.contains("doctor")), "{u:?}");
-
-        // The context layer names the file, as typed (not lowercased).
-        let outer = Loading(CoreError::WrongPassphrase);
-        let u = classify(
-            [&outer as &(dyn StdError + 'static), &outer.0],
-            &ErrorContext::default(),
-        );
-        assert_eq!((u.code, u.exit_code()), ("E303", 3));
-        let cause = u.cause.clone().unwrap();
-        assert!(cause.contains("/Home/Runner.json"), "{cause}");
-        assert!(cause.contains("wrong passphrase"), "{cause}");
-        assert!(u.fix.iter().any(|f| f.contains("--runner")), "{u:?}");
         assert!(!u.fix.iter().any(|f| f.contains("doctor")), "{u:?}");
     }
 
@@ -2860,8 +2811,13 @@ mod tests {
             u.fix
         );
         let u = private_needs_identity("alice/secret");
-        assert!(u.fix[0].contains("--full-key"), "{:?}", u.fix);
-        assert!(u.fix[0].contains("--mnemonic --full-key"), "{:?}", u.fix);
+        // QW2-004: a limited key with the encryption key, not the master key
+        assert!(
+            u.fix[0].contains("dg auth login --mnemonic --replace"),
+            "{:?}",
+            u.fix
+        );
+        assert!(!u.fix[0].contains("--full-key"), "{:?}", u.fix);
     }
 
     #[test]

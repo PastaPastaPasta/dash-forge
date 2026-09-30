@@ -358,6 +358,12 @@ export class PackUnavailableError extends Error {
     readonly corrupt: boolean,
     /** Why, per host where known (`host: message; …`). */
     readonly reason: string,
+    /**
+     * Hosts of recorded http(s) URLs no browser fetches ({@link unfollowedHosts}): a push to a
+     * loopback, private-network or plain-http store. Named so a reader learns the copy exists
+     * but is not public, not that nothing is recorded.
+     */
+    readonly unfollowed: readonly string[] = [],
   ) {
     super(
       `pack ${packHash.slice(0, 12)}… could not be fetched from its storage (${
@@ -566,6 +572,15 @@ function hostsOf(urls: readonly string[]): string[] {
 }
 
 /**
+ * The hosts of `uris` that are http(s) URLs a reader never fetches ({@link externalFetchUrls}
+ * keeps only public https): loopback, a private network, plain http. The CLI can record one
+ * with `--allow-private-uri`; it serves its owner's machine, never a visitor's browser.
+ */
+export function unfollowedHosts(uris: readonly string[]): string[] {
+  return [...new Set(uris.filter((u) => /^https?:\/\//i.test(u) && !isPublicHttpsUrl(u)).map(externalSourceName))]
+}
+
+/**
  * Drop the URLs that `ipfs://` fanned out to on an IPFS gateway known to be down
  * ({@link gatewayHealth}: probed in parallel, once per gateway), with a `host: reason` line
  * each, so a retired gateway costs nothing instead of a timeout per pack and the storage card
@@ -688,7 +703,13 @@ async function fetchExternalRange(
   }
   // `host: why` per place, as the whole-body fetch reports it: a reason that also names the
   // Platform chunks tried first must not have every mirror read as that chunk failure.
-  throw new PackUnavailableError(manifest.packHash, hostsOf(urls), false, reasonsOf(failed).join('; ') || 'no browser-fetchable mirror')
+  throw new PackUnavailableError(
+    manifest.packHash,
+    hostsOf(urls),
+    false,
+    reasonsOf(failed).join('; ') || 'no browser-fetchable mirror',
+    unfollowedHosts(manifest.uris),
+  )
 }
 
 function errorText(e: unknown): string {
@@ -720,6 +741,7 @@ async function fetchExternalWhole(
       hostsOf(urls),
       false,
       urls.length === 0 ? 'nothing to try' : reasonsOf(down).join('; ') || 'every mirror already failed this session',
+      unfollowedHosts(manifest.uris),
     )
   }
   let corrupt = false
@@ -761,7 +783,7 @@ async function fetchExternalWhole(
       return got.bytes
     }
     if (cancel?.aborted) throw new Error('the in-browser clone was cancelled')
-    throw new PackUnavailableError(manifest.packHash, hostsOf(urls), corrupt, reasonsOf(failures).join('; '))
+    throw new PackUnavailableError(manifest.packHash, hostsOf(urls), corrupt, reasonsOf(failures).join('; '), unfollowedHosts(manifest.uris))
   } finally {
     cancel?.removeEventListener('abort', onCancel)
   }
@@ -878,7 +900,7 @@ export class StorageUnreachableError extends Error {
 
 /** The {@link UnavailablePack} a {@link PackUnavailableError} describes. */
 export function unavailableOf(e: PackUnavailableError): UnavailablePack {
-  return { packHash: e.packHash, hosts: e.hosts, reason: e.reason, corrupt: e.corrupt }
+  return { packHash: e.packHash, hosts: e.hosts, reason: e.reason, corrupt: e.corrupt, unfollowed: e.unfollowed }
 }
 
 /**
@@ -937,7 +959,7 @@ async function afterChunksFailed(
     return await read(gateways, servedBy(repo, copy.packHash, documentId, [chunks]))
   } catch (e) {
     if (!(e instanceof PackUnavailableError)) throw e
-    throw new PackUnavailableError(copy.packHash, ['platform', ...e.hosts], e.corrupt, `${chunks}; ${e.reason}`)
+    throw new PackUnavailableError(copy.packHash, ['platform', ...e.hosts], e.corrupt, `${chunks}; ${e.reason}`, e.unfollowed)
   }
 }
 
@@ -965,7 +987,7 @@ export function artifactRangeFetch(
       }
       const gateways = readGatewaysFor(repoKey(repo))
       if (lastErr !== undefined && externalFetchUrls(copy.uris, gateways).length === 0) {
-        throw new PackUnavailableError(copy.packHash, ['platform'], false, errorText(lastErr))
+        throw new PackUnavailableError(copy.packHash, ['platform'], false, errorText(lastErr), unfollowedHosts(copy.uris))
       }
       return fetchExternalRange(copy, start, end, gateways, servedBy(repo, copy.packHash, copy.documentId, chunkFailures))
     }
@@ -1198,7 +1220,13 @@ async function loadExternalCopy(
   const served = servedBy(repo, manifest.packHash, undefined, reasons)
   if (reasons.length === 0) return fetchExternalWhole(manifest, gateways, served, cancel)
   const unavailable = (hosts: readonly string[], why: readonly string[], bad: boolean): PackUnavailableError =>
-    new PackUnavailableError(manifest.packHash, ['platform', ...hosts], corrupt || bad, [...reasons, ...why].join('; '))
+    new PackUnavailableError(
+      manifest.packHash,
+      ['platform', ...hosts],
+      corrupt || bad,
+      [...reasons, ...why].join('; '),
+      unfollowedHosts(manifest.uris),
+    )
   if (externalFetchUrls(manifest.uris, gateways).length === 0) throw unavailable([], [], false)
   try {
     return await fetchExternalWhole(manifest, gateways, served, cancel)
@@ -1284,6 +1312,8 @@ export interface UnavailablePack {
   readonly reason: string
   /** Some mirror served bytes that failed the sha256 check — a misbehaving host, not an outage. */
   readonly corrupt: boolean
+  /** Recorded hosts no browser fetches (private or plain http; see {@link unfollowedHosts}). */
+  readonly unfollowed?: readonly string[]
 }
 
 /** The assembled browse context for a repo, or a reason it is unavailable. */

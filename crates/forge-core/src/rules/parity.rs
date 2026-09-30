@@ -213,7 +213,7 @@ pub fn checks_state(
 
 /// Each pinned check name and the sources that may decide it ([`checks_state`]): empty unless
 /// `requiredCheckSources` pairs up with `requiredChecks`. An empty name or source pins nothing.
-fn pinned_sources(policy: &ChecksPolicy) -> BTreeMap<&str, BTreeSet<&str>> {
+pub fn pinned_sources(policy: &ChecksPolicy) -> BTreeMap<&str, BTreeSet<&str>> {
     let mut pins: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     if policy.required_check_sources.len() != policy.required_checks.len() {
         return pins;

@@ -6,7 +6,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { resetMemoryStores } from '../idb'
+import { idbEntries, idbPut, resetMemoryStores } from '../idb'
 import type { DocumentQuery } from '../sdk'
 import {
   BACKFILL_BUDGET,
@@ -25,6 +25,7 @@ import {
   markRead,
   pickRound,
   planFeeds,
+  clearInbox,
   pollOnce,
   stateWhat,
   toItems,
@@ -35,7 +36,6 @@ import {
   type ThreadSub,
 } from './inbox'
 import { assignedTargets, mentions } from './mine'
-import { idbPut } from '../idb'
 
 const ME = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const OTHER = '7Ej2YTftCL23mVwvhviak8ZJMmpqcsVj7CU5KPxzyy4h'
@@ -313,6 +313,23 @@ describe('a thread watched after its state events landed (L-17)', () => {
     await pollOnce(sdk, 'devnet', FORGE, ME, { now: 3000 })
     expect(stateReads(queries)).toHaveLength(2)
     expect((await loadItems('devnet', ME)).map((i) => i.id)).toEqual(['EV-MERGE'])
+  })
+
+  it('a poll running when the inbox is cleared writes nothing after the clear (QW2-028)', async () => {
+    const { sdk } = chainSdk([{ ...MERGED, type: 'transition' }])
+    await watch([PR], 1000)
+    const poll = pollOnce(sdk, 'devnet', FORGE, ME, { now: 1000 })
+    await clearInbox('devnet', ME)
+    await poll
+    expect(await idbEntries('inbox', `devnet:${ME}:`)).toEqual([])
+  })
+
+  it('writes nothing once the poller has stopped (a forget must not be undone, QW2-028)', async () => {
+    const { sdk } = chainSdk([{ ...MERGED, type: 'transition' }])
+    await watch([PR], 1000)
+    const before = (await idbEntries('inbox')).map(([k]) => k)
+    await pollOnce(sdk, 'devnet', FORGE, ME, { now: 1000, stop: () => true })
+    expect((await idbEntries('inbox')).map(([k]) => k)).toEqual(before)
   })
 
   it('needs no backfill when the feed has not read past the thread yet', async () => {

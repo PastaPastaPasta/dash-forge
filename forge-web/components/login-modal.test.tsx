@@ -10,6 +10,10 @@
  *   repos" by default, and says what unticking it drops.
  * - QW-011: an import error shows above the button and is scrolled into view.
  * - QW-051: "Forget this key" asks in an in-app dialog, not `window.confirm`.
+ * - QA wave 2: Unlock preselects the identity used last (QW2-025); forgetting the last key moves
+ *   to the tile list (QW2-027); an unfinished identity creation is offered first (QW2-030);
+ *   signing in to read a private repo ticks "Enable private repos" (QW2-016); an identity file
+ *   for another network is refused as it is picked (QW2-031).
  */
 
 import { act } from 'react'
@@ -22,16 +26,36 @@ import { useUiStore } from '@/hooks/use-ui-store'
 
 const ID = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
 
+const OTHER = 'BTJPjCLCnRaJQkqakpcdLYFsaHgFf5XSEBNxFCyYBteH'
+
 const auth = {
   vaults: [] as VaultInfo[],
+  lastIdentity: null as string | null,
   importIdentity: vi.fn(),
   forget: vi.fn(async () => undefined),
   unlock: vi.fn(),
 }
 
+/** The unfinished identity creation this browser holds, if any. */
+let journal: { depositAddress: string } | undefined
+
+vi.mock('@/lib/auth/connect', async (orig) => ({
+  ...(await orig<typeof import('@/lib/auth/connect')>()),
+  connectPlatform: () => Promise.reject(new Error('offline in tests')),
+}))
+vi.mock('@/lib/auth/create-identity', async (orig) => ({
+  ...(await orig<typeof import('@/lib/auth/create-identity')>()),
+  readCreationJournal: async () => journal,
+}))
+vi.mock('@/lib/auth', async (orig) => ({
+  ...(await orig<typeof import('@/lib/auth')>()),
+  masterMaterialFromFile: (text: string) => ({ identityId: ID, networkKey: text, masterWif: null, mnemonic: null }),
+}))
+
 vi.mock('@/contexts/auth-context', () => ({
   useAuth: () => ({
     vaults: auth.vaults,
+    lastIdentity: auth.lastIdentity,
     vaultsLoaded: true,
     vaultsError: null,
     reloadVaults: () => undefined,
@@ -44,7 +68,13 @@ vi.mock('@/contexts/auth-context', () => ({
     identity: null,
     unlockScope: null,
     storage: null,
-    controller: { supportsLimitedKeys: () => false, checkGroup: async () => ({ notice: null }) },
+    controller: {
+      supportsLimitedKeys: () => false,
+      checkGroup: async () => ({ notice: null }),
+      checkFileNetwork: (key: string | null) => {
+        if (key !== null && key !== 'devnet-bonsia') throw new Error(`This identity file is for ${key}, but this site is on devnet-bonsia.`)
+      },
+    },
   }),
 }))
 
@@ -93,6 +123,8 @@ async function openImportWithWords(): Promise<void> {
 
 beforeEach(() => {
   auth.vaults = [{ identityId: ID, keyId: 6, createdAt: 1_700_000_000_000, methods: ['passphrase'] }]
+  auth.lastIdentity = null
+  journal = undefined
   auth.importIdentity.mockReset()
   auth.forget.mockClear()
   Element.prototype.scrollIntoView = vi.fn()
@@ -221,5 +253,65 @@ describe('QW-051: forgetting a key asks in the app', () => {
     await click(q('[data-testid="confirm-action"]'))
     expect(auth.forget).toHaveBeenCalledWith(ID)
     expect(native).not.toHaveBeenCalled()
+  })
+})
+
+describe('QA wave 2 (bonsia): sign-in intent and polish', () => {
+  it('QW2-025: Unlock preselects the identity signed in last', async () => {
+    auth.vaults = [...auth.vaults, { identityId: OTHER, keyId: 3, createdAt: 1_700_000_000_000, methods: ['passphrase'] }]
+    auth.lastIdentity = OTHER
+    act(() => useUiStore.getState().openLogin())
+    await flush()
+    expect(q<HTMLSelectElement>('select[aria-label="Identity"]')!.value).toBe('1')
+  })
+
+  it('QW2-027: forgetting the last stored key moves to the sign-in options', async () => {
+    auth.forget.mockImplementationOnce(async () => {
+      auth.vaults = []
+    })
+    act(() => useUiStore.getState().openLogin())
+    await flush()
+    await click(byText('Forget this key'))
+    await click(q('[data-testid="confirm-action"]'))
+    act(() => root.render(<LoginModal />))
+    await flush()
+    expect(q('[data-testid="tile-import"]')).not.toBeNull()
+    expect(host.ownerDocument.body.textContent).not.toMatch(/Unlock the key this browser already holds/)
+  })
+
+  it('QW2-030: an unfinished identity creation is offered first in the chooser', async () => {
+    auth.vaults = []
+    journal = { depositAddress: 'yZWGfAbCdEfGhIjKlMnOpQrStUvWxYz12' }
+    act(() => useUiStore.getState().openLogin())
+    await flush()
+    await flush()
+    const tile = q('[data-testid="tile-create-resume"]')
+    expect(tile?.textContent).toMatch(/Finish creating your identity/)
+    expect(tile?.textContent).toMatch(/yZWGfAbCdE/)
+  })
+
+  it('QW2-016: signing in to read a private repo says so and ticks "Enable private repos"', async () => {
+    auth.vaults = []
+    act(() => useUiStore.getState().openLogin(undefined, undefined, { action: 'read this private repo', privateRepo: true }))
+    await flush()
+    expect(host.ownerDocument.body.textContent).toMatch(/Sign in to read this private repo/)
+    expect(q('[data-testid="signin-intent"]')!.textContent).toMatch(/Enable private repos/)
+    await click(q('[data-testid="tile-import"]'))
+    expect(q<HTMLInputElement>('[data-testid="enable-private-repos"]')!.checked).toBe(true)
+  })
+
+  it('QW2-031: an identity file for another network is refused when it is picked', async () => {
+    auth.vaults = []
+    act(() => useUiStore.getState().openLogin('import'))
+    await flush()
+    const input = q<HTMLInputElement>('input[type="file"][aria-label="Identity file"]')!
+    const file = { name: 'DEMO.identity.json', text: async () => 'devnet-moutai' }
+    Object.defineProperty(input, 'files', { value: [file], configurable: true })
+    await act(async () => {
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await flush()
+    expect(q('[role="alert"]')!.textContent).toMatch(/for devnet-moutai, but this site is on devnet-bonsia/)
+    expect(byText(/Create this browser's key/)!.hasAttribute('disabled')).toBe(true)
   })
 })

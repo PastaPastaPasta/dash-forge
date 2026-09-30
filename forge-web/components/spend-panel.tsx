@@ -23,6 +23,7 @@ import {
   NO_REPO,
   balanceSettled,
   estimateMissed,
+  isCredit,
   isIdentityAction,
   readBaseline,
   readLedger,
@@ -36,11 +37,28 @@ import { creditsAsDash, plural, timeAgo } from '@/lib/view/format'
 import { LoadingBlock } from '@/components/ui/states'
 import { cn } from '@/lib/utils'
 
-function Dash({ credits }: { credits: number }): JSX.Element {
+/** A DASH amount; `signed` marks a positive one "+" too (a balance that grew, a top-up). */
+function Dash({ credits, signed = false }: { credits: number; signed?: boolean }): JSX.Element {
+  const amount = creditsAsDash(Math.abs(credits))
+  // No sign on an amount too small to show ("−0 DASH").
+  const sign = amount === '0' ? '' : credits < 0 ? '−' : signed && credits > 0 ? '+' : ''
   return (
     <span className="whitespace-nowrap font-mono">
-      {credits < 0 ? '−' : ''}
-      {creditsAsDash(Math.abs(credits))} DASH
+      {sign}
+      {amount} DASH
+    </span>
+  )
+}
+
+/** A write's preview as it was shown: its range (steady to upper bound), or its one figure. */
+function Estimate({ row }: { row: SpendRow }): JSX.Element {
+  const min = row.estimateMinCredits
+  if (min === undefined || min >= row.estimateCredits || row.estimateCredits < 0) return <Dash credits={row.estimateCredits} />
+  // May break after the dash: a phone's row keeps room for what the write was.
+  return (
+    <span className="font-mono">
+      {creditsAsDash(min)}–<wbr />
+      <span className="whitespace-nowrap">{creditsAsDash(row.estimateCredits)} DASH</span>
     </span>
   )
 }
@@ -93,9 +111,11 @@ export function SpendPanel(): JSX.Element {
   const settled =
     !ledger.loading &&
     balanceSettled({ credits: balance === null ? null : BigInt(balance), readAt: balanceReadAt, measuring: identity !== null && measurementPending(identity) }, rows)
-  // Only rows since the baseline explain the balance change (earlier ones predate it).
+  // Only rows since the baseline explain the balance change (earlier ones predate it): what they
+  // spent, less what this browser's top-ups added.
   const baseline = ledger.data?.baseline ?? null
-  const sinceBaseline = baseline === null ? 0 : summarize(rows.filter((r) => r.at >= baseline.at)).allTime
+  const since = baseline === null ? null : summarize(rows.filter((r) => r.at >= baseline.at))
+  const sinceBaseline = since === null ? 0 : since.allTime - since.credited
   const fresh = settled ? reconcile(sinceBaseline, baseline?.credits ?? null, balance === null ? null : BigInt(balance)) : null
   const rereading = ledger.loading
   // The line last shown, kept from committed renders only (a render React discards must not set it).
@@ -166,14 +186,26 @@ export function SpendPanel(): JSX.Element {
           <Dash credits={s.thisMonth} />
         </div>
         <div>
-          <div className="text-[12px] text-anvil-500 dark:text-anvil-400">All time ({plural(rows.length, 'write')})</div>
+          <div className="text-[12px] text-anvil-500 dark:text-anvil-400">All time ({plural(s.writes, 'write')})</div>
           <Dash credits={s.allTime} />
         </div>
       </div>
       {rec ? (
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="spend-reconcile" data-unexplained={rec.unexplained}>
-          Ledger <Dash credits={s.allTime} /> · balance change <Dash credits={rec.balanceChange} /> ·{' '}
-          <Dash credits={rec.unexplained} /> unexplained ({rec.unexplained >= 0 ? 'other apps or keys' : 'top-ups'})
+          Since the ledger began: <Dash credits={since?.allTime ?? 0} /> spent
+          {since !== null && since.credited > 0 ? (
+            <>
+              , <Dash credits={since.credited} signed /> topped up here
+            </>
+          ) : null}{' '}
+          · balance <Dash credits={rec.balanceChange} signed /> ·{' '}
+          {creditsAsDash(Math.abs(rec.unexplained)) === '0' ? (
+            'all of it in the ledger'
+          ) : (
+            <>
+              <Dash credits={rec.unexplained} signed /> not in the ledger ({rec.unexplained > 0 ? 'top-ups made elsewhere' : 'other apps or keys'})
+            </>
+          )}
         </p>
       ) : !settled && baseline !== null ? (
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="spend-reconcile-pending">
@@ -213,6 +245,20 @@ export function SpendPanel(): JSX.Element {
         <ul className="divide-y divide-anvil-100 text-[12px] dark:divide-anvil-850" data-testid="spend-rows">
           {latest.map((r) => {
             const missed = estimateMissed(r)
+            if (isCredit(r)) {
+              return (
+                <li key={`${r.at}:${r.documentId}`} className="grid grid-cols-[1fr_auto] gap-x-3 py-1.5" data-kind={r.kind}>
+                  <span className="min-w-0">
+                    <span className="block truncate text-anvil-800 dark:text-anvil-100">{spendKindLabel(r.kind)}</span>
+                    <span className="text-anvil-500 dark:text-anvil-400">{timeAgo(r.at)}</span>
+                  </span>
+                  <span className="text-right text-verify-700 dark:text-verify-400">
+                    {r.actualCredits === null ? '—' : <Dash credits={-r.actualCredits} signed />}
+                    <span className="block text-anvil-500 dark:text-anvil-400">credited</span>
+                  </span>
+                </li>
+              )
+            }
             return (
               <li key={`${r.at}:${r.documentId}`} className="grid grid-cols-[1fr_auto] gap-x-3 py-1.5" data-kind={r.kind}>
                 <span className="min-w-0">
@@ -228,7 +274,7 @@ export function SpendPanel(): JSX.Element {
                   </span>
                   {r.estimateCredits !== 0 ? (
                     <span className="text-anvil-500 dark:text-anvil-400">
-                      est. <Dash credits={r.estimateCredits} />
+                      est. <Estimate row={r} />
                     </span>
                   ) : null}
                 </span>

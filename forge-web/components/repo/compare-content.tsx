@@ -22,6 +22,7 @@ import { resolveTip } from '@/lib/view/tip'
 import { useAsync } from '@/hooks/use-async'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
+import { GoToFileHotkey } from '@/components/repo/go-to-file'
 import { DiffView } from '@/components/repo/diff-view'
 import { CommitList } from '@/components/repo/pull-tabs'
 import { ReadErrorState } from '@/components/repo/resolved-tip'
@@ -30,6 +31,8 @@ import { CopyLinkButton } from '@/components/ui/copy-link'
 import { Input } from '@/components/ui/input'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState, ErrorState, Spinner } from '@/components/ui/states'
+import { TrustPanel } from '@/components/ui/trust-panel'
+import { useRepoTrust } from '@/hooks/use-repo-trust'
 
 export function CompareContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const baseGiven = useParam('base')
@@ -53,6 +56,10 @@ export function CompareContent({ home, addr }: { home: RepoHome; addr: RepoAddre
         </p>
       </div>
       <ComparePicker key={`${baseParam}\0${headParam}`} home={home} addr={addr} base={baseParam} head={headParam} />
+      {/* The page has no rail (the diff takes the width), so its Verification card sits here,
+          collapsed to its one line, as on every other code page (QW2-042). It attests the
+          compare side: the ref whose changes are shown. */}
+      {head !== null && missing === undefined ? <CompareVerification home={home} selected={head} /> : null}
       {head === null ? null : missing !== undefined ? (
         <EmptyState icon={GitCompare} title="Nothing to compare" body={`No branch, tag or commit named ${missing.name} in ${home.repo.name}.`} />
       ) : (
@@ -62,6 +69,11 @@ export function CompareContent({ home, addr }: { home: RepoHome; addr: RepoAddre
       )}
     </div>
   )
+}
+
+/** The Verification card for the compared refs: a leaf, so a content check re-renders only it. */
+function CompareVerification({ home, selected }: { home: RepoHome; selected: SelectedRef }): JSX.Element {
+  return <TrustPanel report={useRepoTrust(home, selected)} />
 }
 
 /** Two ref fields (branches and tags offered; any commit id accepted), Swap and Compare. */
@@ -138,7 +150,13 @@ function Resolve({
   const [b, h] = tips.data
   const notCommit = ([[b, base], [h, head]] as const).find(([tip]) => tip.type !== 'commit')?.[1]
   if (notCommit !== undefined) return <EmptyState icon={GitCompare} title={`${notCommit.name} is not a commit`} body="Only commits (a branch, a tag of a commit, a commit id) have a history to compare." />
-  return <Compared key={`${b.oid}...${h.oid}`} reader={reader} addr={addr} base={base} head={head} params={params} baseOid={b.oid} headOid={h.oid} />
+  return (
+    <>
+      {/* `t`: a file at the head side (QW2-043). */}
+      <GoToFileHotkey reader={reader} repo={home.repo} tip={h} addr={addr} refParam={params[1]} />
+      <Compared key={`${b.oid}...${h.oid}`} reader={reader} addr={addr} base={base} head={head} params={params} baseOid={b.oid} headOid={h.oid} />
+    </>
+  )
 }
 
 function Progress({ label, onStop }: { label: string; onStop?: () => void }): JSX.Element {

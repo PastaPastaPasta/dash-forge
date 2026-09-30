@@ -123,6 +123,7 @@ export { QUORUM_CHECK_MAX_AGE_MS, crossCheckQuorumKeysCached, lastQuorumCheck, q
 export {
   describeUnavailable,
   onlyGatewaysFailed,
+  onlyUnfollowed,
   normalizeGateway,
   readGateways,
   readGatewaysFor,
@@ -157,6 +158,7 @@ export {
   refParamFor,
   selectedTip,
   selectRef,
+  splitRefPath,
   tipOidOf,
   type SelectedRef,
 } from './refs'

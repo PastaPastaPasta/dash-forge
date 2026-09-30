@@ -4,13 +4,14 @@
 //! next number (`forge-v2.md` §6), a create is journaled so a re-run resumes it, and close /
 //! reopen are one `transition` each, written as a member or as the issue's author.
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use serde_json::json;
 
 use forge_core::collab::v2::{Comment, IssueView, Target};
 use forge_core::create::default_journal_dir;
 use forge_core::rules::v2::{status_of_code, StateAction, Transition};
 use forge_core::rules::{Event, EventKind, IssueState};
+use forge_core::user_error::{codes, UserError};
 
 use crate::common::{number_arg, Reader, Session};
 use crate::context::Ctx;
@@ -351,7 +352,7 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
         }),
         || {
             if rows.is_empty() {
-                println!("no issues");
+                println!("{}", empty_issues_line(args, total, pages));
             }
             for (n, title, _, st, pinned) in &rows {
                 let mark = state_word(st.open);
@@ -520,6 +521,26 @@ fn timeline<'a>(
         .collect();
     items.sort_by_key(|&(at, id, _)| (at, id));
     items.into_iter().map(|(_, _, i)| i).collect()
+}
+
+/// What an empty `dg issue list` page says: a page past the last one of `total` matching
+/// issues, or the state filter named ("no open issues") and whether other filters narrowed it.
+fn empty_issues_line(args: &IssueListArgs, total: usize, pages: usize) -> String {
+    if total > 0 {
+        return format!(
+            "page {} is past the last page ({pages}) of {total} issue(s)",
+            args.page
+        );
+    }
+    let filtered = !args.labels.is_empty()
+        || args.author.is_some()
+        || args.assignee.is_some()
+        || args.search.is_some();
+    format!(
+        "{}{}",
+        args.state.empty("issues"),
+        if filtered { " match the filters" } else { "" }
+    )
 }
 
 /// What an issue event did, in the web timeline's words.
@@ -845,10 +866,24 @@ async fn label(ctx: &Ctx, repo: &str, number: u64, add: bool, names: &[String]) 
     };
     let s = Session::open_for_write(ctx, repo, "label not changed").await?;
     let collab = s.collab();
+    // Only a label the repository defines is put on an issue, spelt as defined (QW2-015:
+    // a typo was written as a permanent, paid event). Taking one off is never refused.
+    let names = if add {
+        let defined = collab
+            .labels(&s.repo)
+            .await
+            .context("reading the repository's labels")?;
+        defined_labels(names, &defined, &s.repo.display())?
+    } else {
+        names.to_vec()
+    };
     // A label already on (or already off) the issue is not written again: it would be paid
-    // for and show twice in the timeline (QW-035).
+    // for and show twice in the timeline (QW-035). One the issue carries in another case is
+    // the same label, as the web's picker treats it.
     let (target, current) = target_and_state(&s, repo, number).await?;
-    let (names, unchanged) = changes(names, current.as_ref().map(|c| &c.labels), add);
+    let labels = current.as_ref().map(|c| &c.labels);
+    let names = spelt_as_on_issue(&names, labels);
+    let (names, unchanged) = changes(&names, labels, add);
     if names.is_empty() {
         let already = if add { "already has" } else { "does not have" };
         ctx.emit(
@@ -950,6 +985,71 @@ fn changes(
         }
     }
     (write, unchanged)
+}
+
+/// `wanted` as the repository's live (not retired) label definitions spell them, matched
+/// without regard to case as the web's picker does; E102 naming the ones it lacks, and the
+/// labels it has, before anything is signed (QW2-015; `gh issue edit --add-label` refuses a
+/// label that does not exist the same way).
+fn defined_labels(
+    wanted: &[String],
+    defined: &[forge_core::collab::Label],
+    repo: &str,
+) -> Result<Vec<String>> {
+    let live: Vec<&str> = defined
+        .iter()
+        .filter(|l| !l.retired)
+        .map(|l| l.name.as_str())
+        .collect();
+    let mut out = Vec::with_capacity(wanted.len());
+    let mut missing = Vec::new();
+    for w in wanted {
+        match live.iter().find(|d| d.eq_ignore_ascii_case(w)) {
+            Some(d) => out.push((*d).to_string()),
+            None => missing.push(w.clone()),
+        }
+    }
+    if missing.is_empty() {
+        return Ok(out);
+    }
+    let have = if live.is_empty() {
+        "it defines no labels".to_string()
+    } else {
+        format!("its labels: {}", safe(&live.join(", ")))
+    };
+    let first = crate::storage_wizard::shell_word(missing.first().map_or("", String::as_str));
+    Err(UserError::new(
+        codes::NOT_FOUND,
+        format!(
+            "label not changed: {} {} not defined in {repo}",
+            label_list(&missing),
+            if missing.len() == 1 { "is" } else { "are" }
+        ),
+    )
+    .cause(have)
+    .fix(format!(
+        "define it first: `dg label create {repo} {}`",
+        safe(&first)
+    ))
+    .note("checked before anything was signed; nothing was written or paid")
+    .into())
+}
+
+/// `names` spelt as the issue's `current` labels spell them, where one matches without
+/// regard to case (`None`: unknown, left as they are).
+fn spelt_as_on_issue(
+    names: &[String],
+    current: Option<&std::collections::BTreeSet<String>>,
+) -> Vec<String> {
+    names
+        .iter()
+        .map(|n| {
+            current
+                .and_then(|c| c.iter().find(|l| l.eq_ignore_ascii_case(n)))
+                .unwrap_or(n)
+                .clone()
+        })
+        .collect()
 }
 
 /// `bug` or `bug, docs` for a message, terminal-safe.
@@ -1061,6 +1161,55 @@ mod tests {
             changes(&names(&["bug"]), None, true),
             (names(&["bug"]), vec![])
         );
+    }
+
+    /// QW2-015: only a defined, live label is put on an issue, spelt as defined; anything
+    /// else is refused (E102) with the labels the repository has, before anything is signed.
+    #[test]
+    fn only_a_defined_label_is_added() {
+        use super::defined_labels;
+        let def = |name: &str, retired: bool| forge_core::collab::Label {
+            document_id: String::new(),
+            name: name.into(),
+            color: "#d73a4a".into(),
+            description: String::new(),
+            retired,
+            created_at: 0,
+        };
+        let defs = [def("bug", false), def("Docs", false), def("old", true)];
+        let w = |v: &[&str]| v.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            defined_labels(&w(&["bug", "docs"]), &defs, "a/p").unwrap(),
+            w(&["bug", "Docs"])
+        );
+        for wanted in [&["nosuchlabel"][..], &["bug", "nosuchlabel"], &["old"]] {
+            let err = defined_labels(&w(wanted), &defs, "a/p").unwrap_err();
+            let u = err
+                .downcast_ref::<forge_core::user_error::UserError>()
+                .expect("a phrased error");
+            assert_eq!(u.code, "E102");
+            assert!(u.message.contains("not defined in a/p"), "{}", u.message);
+            assert!(!u.message.contains("bug,"), "{}", u.message);
+            assert_eq!(u.cause.as_deref(), Some("its labels: bug, Docs"));
+        }
+        let err = defined_labels(&w(&["good first issue"]), &[], "a/p").unwrap_err();
+        let u = err
+            .downcast_ref::<forge_core::user_error::UserError>()
+            .unwrap();
+        assert_eq!(u.cause.as_deref(), Some("it defines no labels"));
+        // the fix is a command that can be pasted
+        assert!(
+            u.fix[0].contains("`dg label create a/p 'good first issue'`"),
+            "{:?}",
+            u.fix
+        );
+        // an issue already carrying the label in another case has it
+        let on: std::collections::BTreeSet<String> = ["docs".to_string()].into();
+        assert_eq!(
+            super::spelt_as_on_issue(&w(&["Docs", "bug"]), Some(&on)),
+            w(&["docs", "bug"])
+        );
+        assert_eq!(super::spelt_as_on_issue(&w(&["Docs"]), None), w(&["Docs"]));
     }
     use crate::fmt::transition_phrase;
     use forge_core::collab::v2::Comment;

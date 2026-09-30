@@ -86,22 +86,21 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
   comment: 52_000_000,
   event: 43_000_000,
   authorEvent: 41_500_000,
-  // Not yet measured (fresh registration): a close event's cost plus the estimated 3–6 % for the
-  // sum read and the count/sum index upkeep (STATE-COUNTS §5). Measure on wipe day (WIPE-PLAN §3
-  // step 8) and replace with `documentCreateCost` once the SDK is beta.7.
-  transition: 46_000_000,
+  // Measured on bonsia (QA wave 2, IP-14): an issue close charged 74.1M, above the 46M this was
+  // priced at before any transition had been measured (the close then read "~0.000615", QW-043).
+  transition: 70_000_000,
   review: 35_900_000,
   policy: 34_000_000,
-  // C-1: the ranked star, steady (the starrer holds stars, the repo has some): 17.8M
-  star: 18_000_000,
+  // C-1: the ranked star, steady (the starrer holds stars, the repo has some): 17.8M on moutai,
+  // 19.4M on bonsia (QA wave 2, N-17)
+  star: 18_500_000,
   follow: 28_300_000,
   starBeat: 15_300_000,
   watch: 27_400_000,
   milestone: 45_000_000,
   checkRun: 45_000_000,
-  // Not yet measured (RC1): a member's consent, one unique index and a repo reference, priced
-  // like a `watch` until measured on the fresh chain.
-  consent: 28_000_000,
+  // A member's consent, one unique index and a repo reference: 30.8M on bonsia (QA wave 2, N-17).
+  consent: 29_500_000,
 }
 
 /** Which index subtrees a create may be the first to write. Unknown fields count as first. */
@@ -193,6 +192,9 @@ export const DELETE_CREDITS: Readonly<Record<string, number>> = {
   label: -25_000_000,
   comment: -25_000_000,
   review: -20_000_000,
+  // Deleting a webhook revision (its URL and sealed secret) refunded 81.8M on bonsia (QA wave 2,
+  // collab); it was promised the 20M default.
+  webhook: -70_000_000,
 }
 
 /**
@@ -209,13 +211,19 @@ export const KEY_LIMITS_UPDATE_CREDITS = 2_300_000
  * - the identity's first budgeted, contract-bound key added by an update: 44.1M (a minted
  *   identity) and 47.1M (QA B-COST sign-in);
  * - a later one, or a renewal (register + disable the old key): 27.2M-27.4M (the mobile QA
- *   pass, three registrations; a renewal here, 27.3M).
+ *   pass, three registrations; a renewal here, 27.3M); on bonsia (beta.7, QA wave 2) a sign-in's
+ *   key 26.8M-27.8M.
  * The preview is the upper bound for each case; the ledger records the measured actual.
  * (Disabling alone, a revoke, has not been measured, so it gets no estimate.)
  */
 export const KEY_REGISTER_CREDITS = 48_000_000
 /** Adding a key when the identity already holds a budgeted one, e.g. a renewal (see above). */
-export const KEY_RENEW_CREDITS = 30_000_000
+export const KEY_RENEW_CREDITS = 28_000_000
+/**
+ * The least adding this browser's key was measured to cost (bonsia, a sign-in's key: 26.8M): the
+ * low end of a key registration's range in Settings → Spend (QW-043).
+ */
+export const KEY_ADD_FLOOR_CREDITS = 26_500_000
 
 /**
  * What copy quotes for "an issue" (L-73): the preview a newcomer's first issue gets — a short

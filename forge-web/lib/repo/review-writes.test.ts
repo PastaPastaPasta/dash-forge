@@ -123,6 +123,16 @@ describe('event payloads and routes', () => {
     expect(() => targetEventData(target, 'milestoneSet')).toThrow(/name/)
   })
 
+  it('records a policy bypass as event 23 naming the rules and the merge commit (QW2-003)', () => {
+    const d = targetEventData(target, 'policyBypass', { value: 'required check `lint`: failing', oidHex: HEAD })
+    expect(d).toMatchObject({ kind: 23, value: 'required check `lint`: failing' })
+    expect((d['oid'] as Uint8Array).length).toBe(20)
+    // forge-core `event_payload_props` refuses the same: no rules, or no (or a malformed) merge commit
+    expect(() => targetEventData(target, 'policyBypass', { oidHex: HEAD })).toThrow(/bypass/)
+    expect(() => targetEventData(target, 'policyBypass', { value: 'x' })).toThrow(/bypass/)
+    expect(() => targetEventData(target, 'policyBypass', { value: 'x', oidHex: 'abcd' })).toThrow(/bypass/)
+  })
+
   it('checks a retarget ref name and the value bounds as forge-core does', () => {
     expect(targetEventData(target, 'retarget', { value: 'refs/heads/dev' })).toMatchObject({ kind: 8 })
     expect(() => targetEventData(target, 'retarget', { value: '-x' })).toThrow(/retarget/)

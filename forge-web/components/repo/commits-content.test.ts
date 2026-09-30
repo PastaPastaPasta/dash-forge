@@ -10,7 +10,8 @@ vi.mock('next/navigation', () => ({ usePathname: () => '/repo/commits/', useSear
 
 import type { LogEntry } from '@/lib/view'
 import type { PathVersionsPage } from '@/lib/view/path-history'
-import { freshLog, logStatus, MAX_URL_PAGES, pagesParam, withPage } from './commits-content'
+import { dayRuns } from '@/lib/view/commit-days'
+import { dayOf, freshLog, isFirstParent, logStatus, MAX_URL_PAGES, pagesParam, withPage } from './commits-content'
 
 const entry = (oid: string): LogEntry => ({ oid, subject: oid, author: { name: '', when: 0 } })
 const page = (oids: string[], next: string | null): PathVersionsPage => ({ entries: oids.map(entry), next, examined: oids.length, capped: false, indexed: 0 })
@@ -67,6 +68,11 @@ describe('logStatus', () => {
     expect(logStatus(shown, 99, 'src/a.c')).toBe('Showing 2 first-parent commits that changed src/a.c')
     expect(logStatus(withPage(shown, page(['c1'], null)), null, 'src/a.c')).toBe('The first-parent history of src/a.c: 3 commits')
   })
+  // QW2-041: a path's History with every commit (`?first-parent=0`).
+  it("as a path's full History, not called first-parent", () => {
+    expect(logStatus(shown, null, 'src/a.c', false)).toBe('Showing 2 commits that changed src/a.c')
+    expect(logStatus(withPage(shown, page(['c1'], null)), null, 'src/a.c', false)).toBe('The history of src/a.c: 3 commits')
+  })
   // QW-006: the first-parent log ended with "The whole history: 8,366 commits" on a repo of 34,007.
   it('never calls the first-parent log the whole history', () => {
     const end = withPage(shown, page(['c1'], null))
@@ -84,5 +90,33 @@ describe('the full log’s pages', () => {
     const s = withPage(freshLog('c3'), { entries: [entry('c3')], next: walk, examined: 3, capped: false, indexed: 0 })
     expect(s.next).toBe(walk)
     expect(withPage(s, { entries: [entry('c2')], next: null, examined: 1, capped: false, indexed: 0 }).next).toBeNull()
+  })
+})
+
+describe('?first-parent= (QW2-041)', () => {
+  it('the whole log lists every commit unless it is 1; a path’s History is first-parent unless it is 0', () => {
+    expect([isFirstParent('', ''), isFirstParent('', '1'), isFirstParent('', '0')]).toEqual([false, true, false])
+    expect([isFirstParent('src/a.c', ''), isFirstParent('src/a.c', '1'), isFirstParent('src/a.c', '0')]).toEqual([true, true, false])
+  })
+})
+
+describe('day headers (QW2-044)', () => {
+  const day = (d: number, h = 12): number => new Date(2026, 8, d, h).getTime()
+  const row = (oid: string, authored: number, committedAt?: number): LogEntry => ({
+    oid,
+    subject: oid,
+    author: { name: 'a', when: authored },
+    ...(committedAt !== undefined ? { committedAt } : {}),
+  })
+  it('group by the commit date the log is ordered by: one header per day, in order', () => {
+    // Merged work authored days before it landed, as in dash's log.
+    const rows = [row('1', day(29), day(29)), row('2', day(24), day(29, 11)), row('3', day(28), day(28)), row('4', day(25), day(28, 9)), row('5', day(26), day(26))]
+    expect(dayRuns(rows, dayOf).map((r) => r.rows.map((e) => e.oid))).toEqual([['1', '2'], ['3', '4'], ['5']])
+  })
+  it('fall back to the author date of a row without a commit date (index rows), leaving the others as they were', () => {
+    const rows = [row('1', day(24), day(29)), row('2', day(24))]
+    expect(dayOf(rows[0] as LogEntry)).toBe(day(29))
+    expect(dayOf(rows[1] as LogEntry)).toBe(day(24))
+    expect(dayRuns(rows, dayOf)).toHaveLength(2)
   })
 })

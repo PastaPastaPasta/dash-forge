@@ -649,6 +649,31 @@ pub fn create_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
     f.sync_all().map_err(io)
 }
 
+/// E303 for the sealed key file `shown` that did not open with the passphrase given (from the
+/// variable `via`, or typed), naming the file (QW2-022: it was an E204 that named neither of
+/// two sealed files). A malformed file keeps `err`'s own message.
+fn wrong_passphrase(shown: &str, via: Option<&str>, err: Error) -> Error {
+    match &err {
+        Error::Config(msg) if msg.contains("wrong passphrase") => {}
+        Error::Config(msg) => return Error::Config(format!("{shown}: {msg}")),
+        _ => return err,
+    }
+    let given = via.map_or_else(|| "the passphrase typed".to_string(), str::to_string);
+    crate::user_error::UserError::new(
+        crate::user_error::codes::IDENTITY_UNREADABLE,
+        format!("wrong passphrase for {shown}"),
+    )
+    .cause(format!(
+        "{given} does not open this sealed file (or the file was modified)"
+    ))
+    .fix("each sealed file keeps its own passphrase: in a terminal each is asked for")
+    .fix(
+        "in scripts, DASH_FORGE_PASSPHRASE opens your key and DASH_FORGE_RUNNER_PASSPHRASE \
+         the --runner file of `dg ci runner new`",
+    )
+    .into()
+}
+
 /// Security levels acceptable for signing a document create/delete, in preference
 /// order. Document ops accept HIGH (spike S0.7); CRITICAL also works and is the
 /// fallback when a HIGH key is absent.
@@ -680,6 +705,18 @@ impl BridgeIdentity {
     /// passphrase once). [`Self::from_source_text`] parses it; `dg` also hands it to
     /// `git-remote-dash` ([`crate::key_handoff`]) so the helper never asks again.
     pub fn unlock_source(path: impl AsRef<Path>) -> Result<Secret> {
+        Self::unlock_source_with(path, &[crate::sealed::PASSPHRASE_ENV])
+    }
+
+    /// [`Self::load_from_file`], a sealed file's passphrase read from the first of
+    /// `passphrase_envs` that is set (else asked for): a second sealed file in one command
+    /// keeps its own passphrase (QW2-022, `dg ci runner new --runner`).
+    pub fn load_from_file_with(path: impl AsRef<Path>, passphrase_envs: &[&str]) -> Result<Self> {
+        Self::from_source_text(Self::unlock_source_with(path, passphrase_envs)?.expose())
+    }
+
+    /// [`Self::unlock_source`] with [`Self::load_from_file_with`]'s passphrase variables.
+    pub fn unlock_source_with(path: impl AsRef<Path>, passphrase_envs: &[&str]) -> Result<Secret> {
         let path = path.as_ref();
         if let Some(inline) = path.to_str().filter(|s| s.starts_with(DFK1_PREFIX)) {
             // Refused here, with the format's own message, rather than later.
@@ -713,8 +750,10 @@ impl BridgeIdentity {
                 .map_err(|e| Error::Io(format!("reading identity file {shown}: {e}")))?,
         );
         if crate::sealed::is_sealed(&raw) {
-            let pass = crate::sealed::passphrase(&shown, false)?;
-            let plain = crate::sealed::open(&raw, pass.expose())?;
+            let pass = crate::sealed::passphrase_from(passphrase_envs, &shown, false)?;
+            let via = crate::sealed::passphrase_env_in_use(passphrase_envs);
+            let plain = crate::sealed::open(&raw, pass.expose())
+                .map_err(|e| wrong_passphrase(&shown, via, e))?;
             let text = std::str::from_utf8(&plain)
                 .map_err(|_| Error::Io("the sealed identity file does not hold text".into()))?;
             return Ok(Secret::new(text));
@@ -952,6 +991,41 @@ mod tests {
             "derivationPath": "m/44'/1'/0'/0/0"
         }
     }"#;
+
+    /// QW2-022: a sealed file that does not open is E303 naming the file and where the
+    /// passphrase came from (it was an E204 naming neither), and the first variable given wins.
+    #[test]
+    fn a_wrong_passphrase_names_the_file_and_the_variable() {
+        const ENV: &str = "DASH_FORGE_TEST_QW2_022_PASSPHRASE";
+        const OTHER: &str = "DASH_FORGE_TEST_QW2_022_UNSET";
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("runner.json");
+        std::fs::write(
+            &p,
+            crate::sealed::seal(FIXTURE.as_bytes(), "correct horse battery").unwrap(),
+        )
+        .unwrap();
+        std::env::set_var(ENV, "not the passphrase");
+        let err = BridgeIdentity::unlock_source_with(&p, &[OTHER, ENV]).unwrap_err();
+        std::env::set_var(ENV, "correct horse battery");
+        let opened = BridgeIdentity::load_from_file_with(&p, &[OTHER, ENV]);
+        std::env::remove_var(ENV);
+        let crate::Error::User(u) = err else {
+            panic!("expected a phrased error, got {err}")
+        };
+        assert_eq!(u.code, "E303");
+        assert!(u.message.contains("runner.json"), "{}", u.message);
+        assert!(
+            u.cause.as_deref().unwrap_or("").contains(ENV),
+            "{:?}",
+            u.cause
+        );
+        assert!(u
+            .fix
+            .iter()
+            .any(|f| f.contains("DASH_FORGE_RUNNER_PASSPHRASE")));
+        assert_eq!(opened.unwrap().network, "testnet");
+    }
 
     #[test]
     fn parses_bridge_fixture() {

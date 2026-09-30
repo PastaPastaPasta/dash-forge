@@ -51,6 +51,15 @@ export function dashValueNote(dash: number, network: Network): string {
 }
 
 /**
+ * What undoing a relation gives back, beside its button: `unstar +0.00012` (QW2-034: a bare
+ * "+0.00012 DASH" beside "Starred" read like earnings; its meaning was only in a tooltip).
+ * `refundCredits` is the preview's (negative) credits.
+ */
+export function refundLabel(undo: string, refundCredits: number): string {
+  return `${undo} +${creditsAsDash(Math.abs(refundCredits))}`
+}
+
+/**
  * A write's price on its button: `~0.0006` once the estimate's inputs were read, `≤0.001` while
  * it is still the upper bound (every first-write surcharge counted), so a figure that drops once
  * the page reads more reads as the bound it was, not a different price (QW-043).

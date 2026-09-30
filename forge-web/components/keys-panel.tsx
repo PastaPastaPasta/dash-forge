@@ -8,13 +8,10 @@
  * stored. Also: lock now, and sign out + forget.
  */
 
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import { GRANT_COPY, nextGrant } from '@/lib/auth/key-registration'
 import { BatteryCharging, Lock, LogOut, RefreshCw, ShieldOff, Wallet } from 'lucide-react'
 import { UnlimitedKeyWarning } from '@/components/auth/wallet-connect-flow'
-import { UnlockNeededError } from '@/lib/auth/controller'
-import { UnlockMore } from '@/components/auth/unlock-more'
-import { errorMessage } from '@/lib/utils'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { Button } from '@/components/ui/button'
@@ -22,6 +19,7 @@ import { Field, Input } from '@/components/ui/input'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { INSIGHT_OVERRIDE_KEY, coreEndpoints } from '@/lib/auth/asset-lock'
 import { KeyTopUpDialog } from '@/components/key-top-up-dialog'
+import { KeyRevokeDialog } from '@/components/key-revoke-dialog'
 import { PendingRenewal } from '@/components/pending-renewal'
 import { useConfirmAction, type ConfirmActionOptions } from '@/components/ui/confirm-action'
 
@@ -32,34 +30,12 @@ export const FORGET_CONFIRM: ConfirmActionOptions = {
   confirmLabel: 'Forget key',
 }
 
-/** Shown before a revoke, once the identity file is chosen. */
-const REVOKE_CONFIRM: ConfirmActionOptions = {
-  title: "Disable this browser's key on chain?",
-  body: "Your identity file's master key signs one identity update that disables this key everywhere, and is not stored. This browser then signs nothing until you sign in again.",
-  confirmLabel: 'Disable key',
-}
-
 export function KeysPanel(): JSX.Element {
-  const { identity, keyId, heldOnly, keyLimits, storage, funds, logout, forget, revokeStored, isLoading, grants, unlimitedKey, unboundedKey } = useAuth()
-  const revokeRef = useRef<HTMLInputElement>(null)
-  const [revokeError, setRevokeError] = useState<string | null>(null)
-  // A reloaded tab holds the signing key only: a revoke must see every key held, so unlock first.
-  const [unlockFirst, setUnlockFirst] = useState<(() => void) | null>(null)
+  const { identity, keyId, heldOnly, keyLimits, storage, funds, logout, forget, isLoading, grants, unlimitedKey, unboundedKey } = useAuth()
+  // Revoke opens a dialog that explains it and takes the identity file or the recovery phrase
+  // (QW2-017): a browser-created identity has no file.
+  const [revokeOpen, setRevokeOpen] = useState(false)
   const [confirm, confirmDialog] = useConfirmAction()
-  const revoke = async (file: File): Promise<void> => {
-    if (!identity) return
-    setRevokeError(null)
-    const fileText = await file.text()
-    try {
-      await revokeStored(identity, { fileText })
-    } catch (e) {
-      if (e instanceof UnlockNeededError) setUnlockFirst(() => () => {
-        setUnlockFirst(null)
-        void revokeStored(identity, { fileText }).catch((err: unknown) => setRevokeError(errorMessage(err)))
-      })
-      else setRevokeError(errorMessage(e))
-    }
-  }
   const openLogin = useUiStore((s) => s.openLogin)
   const missingGrant = nextGrant(grants)
   const [explorer, setExplorer] = useState(() =>
@@ -161,21 +137,9 @@ export function KeysPanel(): JSX.Element {
         )}
         {storage === 'vault' ? (
           <>
-            <Button variant="danger" size="sm" loading={isLoading} onClick={() => revokeRef.current?.click()}>
+            <Button variant="danger" size="sm" loading={isLoading} onClick={() => setRevokeOpen(true)} data-testid="key-revoke">
               <ShieldOff className="h-3.5 w-3.5" aria-hidden /> {unlimitedKey ? 'Disable key on chain' : 'Revoke on chain'}
             </Button>
-            <input
-              ref={revokeRef}
-              type="file"
-              aria-label="Identity file to revoke with"
-              accept="application/json,.json,.txt"
-              className="sr-only"
-              onChange={(e) => {
-                const f = e.target.files?.[0]
-                e.target.value = ''
-                if (f) void confirm(REVOKE_CONFIRM).then((ok) => (ok ? revoke(f) : undefined))
-              }}
-            />
           </>
         ) : null}
       </div>
@@ -193,14 +157,13 @@ export function KeysPanel(): JSX.Element {
             </p>
           )}
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-            Forgetting deletes the key from this device only. Revoking disables it on chain (needs your identity file once).
+            Forgetting deletes the key from this device only. Revoking disables it on chain (needs your identity file or recovery phrase once).
           </p>
         </>
       )}
       {topUpOpen ? <KeyTopUpDialog onClose={() => setTopUpOpen(false)} /> : null}
+      {revokeOpen ? <KeyRevokeDialog unlimited={unlimitedKey} onClose={() => setRevokeOpen(false)} /> : null}
       {confirmDialog}
-      {unlockFirst ? <UnlockMore title="Unlock this tab to revoke on chain" testId="revoke-unlock" then={unlockFirst} /> : null}
-      {revokeError ? <p role="alert" className="text-[12px] text-danger-700 dark:text-danger-400">{revokeError}</p> : null}
       <Field
         label="Fallback block explorer (asked only if the network's nodes cannot see an identity deposit)"
         htmlFor="explorer-url"

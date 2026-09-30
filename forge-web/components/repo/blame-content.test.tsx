@@ -27,7 +27,7 @@ vi.mock('@/lib/view/blame', async (importOriginal) => {
   }
 })
 
-import { BlameBody } from './blame-content'
+import { BlameBody, blameProgressText } from './blame-content'
 
 let root: Root
 let el: HTMLDivElement
@@ -182,5 +182,16 @@ describe('BlameBody rows', () => {
     await vi.waitFor(() => expect(el.querySelector('[data-testid="blame-table"] .hljs-keyword')).not.toBeNull())
     const code = [...el.querySelectorAll('[data-testid="blame-table"] tr[id] td:last-child')].map((td) => td.textContent)
     expect(code).toEqual(['fn main() {', '    let x = 1;', '}'])
+  })
+})
+
+describe('blameProgressText (QW2-039)', () => {
+  const base = { versions: 3, versionLimit: 200, pending: 10, total: 40, indexed: 0 }
+  it('counts commits only while they are walked', () => {
+    expect(blameProgressText({ ...base, examined: 0, indexed: 3 })).toBe('Compared 3 versions of up to 200 · 30 lines of 40 attributed')
+    expect(blameProgressText({ ...base, examined: 12 })).toBe('Compared 3 versions of up to 200 · 30 lines of 40 attributed · 12 commits examined')
+    expect(blameProgressText({ ...base, versions: 0, examined: 0 })).toBe('Looking for the file’s versions')
+    expect(blameProgressText({ ...base, versions: 0, examined: 1 })).toBe('Looking for the file’s versions · 1 commit examined')
+    expect(blameProgressText(null)).toBe('Reading the file’s history…')
   })
 })

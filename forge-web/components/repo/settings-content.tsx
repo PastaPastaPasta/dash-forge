@@ -170,7 +170,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
         ) : isOwner && repo.visibility === 'private' ? (
           <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
             Adding or removing a member of a private repo hands out or rotates its key: add your encryption key to this browser
-            (Settings → Keys → Enable private repos) to manage members.
+            (Settings → Private repos) to manage members.
           </p>
         ) : isOwner ? (
           <div className="mt-4 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">

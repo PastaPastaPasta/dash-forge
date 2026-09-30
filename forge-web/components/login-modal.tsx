@@ -19,7 +19,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import { ArrowLeft, Fingerprint, KeyRound, Lock, Plus, Upload, Wallet } from 'lucide-react'
+import { ArrowLeft, Fingerprint, KeyRound, Lock, Plus, RotateCw, Upload, Wallet } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore, type LoginView } from '@/hooks/use-ui-store'
 import { Dialog } from '@/components/ui/dialog'
@@ -40,6 +40,8 @@ import { UnlockMore } from '@/components/auth/unlock-more'
 import { Spinner } from '@/components/ui/states'
 import { walletLoginAvailable, walletSignInSupported } from '@/lib/auth/app-connect'
 import { ENCRYPTION_KEY_BLAST_RADIUS } from '@/lib/auth/encryption-key'
+import { lockedIdentityOf } from '@/lib/auth/last-identity'
+import { readCreationJournal } from '@/lib/auth/create-identity'
 import { PLATFORM_READ_MS, connectPlatform } from '@/lib/auth/connect'
 import { withTimeout } from '@/lib/timeout'
 import { KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS, PUSH_COST_DASH, dashRange, typicalIssueCredits } from '@/lib/sdk'
@@ -90,6 +92,12 @@ export function LoginModal(): JSX.Element {
     }
   }, [open, requested, hasVault, vaultsLoaded, vaultsError, reloadVaults])
 
+  // The last stored key was forgotten from the Unlock view: nothing is left to unlock, so the
+  // sheet offers the ways to sign in (QW2-027), not "Unlock the key this browser already holds".
+  useEffect(() => {
+    if (open && view === 'unlock' && vaultsLoaded && !vaultsError && !hasVault) setView('choose')
+  }, [open, view, vaultsLoaded, vaultsError, hasVault])
+
   const back = view === null || view === 'choose' || view === 'unlock' || view === 'grant' ? null : () => setView('choose')
   // Before the stored-key list is read (a few ms, or storage blocked): the Unlock line, the
   // likelier view for someone opening the sheet on a device that holds a key.
@@ -101,9 +109,11 @@ export function LoginModal(): JSX.Element {
     <Dialog open={open} onClose={close} title={title} description={description} className="max-w-lg">
       {intent && view !== 'grant' ? (
         <p data-testid="signin-intent" className="mb-3 rounded-md bg-anvil-100 px-3 py-2 text-dense text-anvil-700 dark:bg-anvil-800 dark:text-anvil-200">
-          {intent.credits !== undefined
-            ? `Once you're signed in, this costs at most about ${creditsAsDash(intent.credits)} DASH, paid from your identity's balance (often less: the exact price shows before you confirm).`
-            : "Once you're signed in, you see what it costs and confirm before anything is signed."}
+          {intent.privateRepo
+            ? 'Private repos are encrypted for their members. Import your identity with "Enable private repos" ticked: this browser then keeps your encryption key and opens the private repos you are a member of. Reading costs nothing.'
+            : intent.credits !== undefined
+              ? `Once you're signed in, this costs at most about ${creditsAsDash(intent.credits)} DASH, paid from your identity's balance (often less: the exact price shows before you confirm).`
+              : "Once you're signed in, you see what it costs and confirm before anything is signed."}
         </p>
       ) : null}
       {vaultsError && (view === null || view === 'choose' || view === 'unlock') ? (
@@ -159,6 +169,7 @@ function Tile({
   onClick,
   testId,
   muted = false,
+  highlight = false,
 }: {
   icon: typeof Wallet
   title: string
@@ -167,6 +178,8 @@ function Tile({
   testId: string
   /** An option most people cannot use here: dashed and dimmed, still reachable (L-62). */
   muted?: boolean
+  /** Something this browser has in progress: outlined in the accent colour. */
+  highlight?: boolean
 }): JSX.Element {
   return (
     <button
@@ -177,6 +190,7 @@ function Tile({
       className={cn(
         'flex w-full items-start gap-3 rounded-lg border border-anvil-200 px-3 py-3 text-left transition-colors hover:border-forge-400 hover:bg-anvil-50 dark:border-anvil-750 dark:hover:bg-anvil-850',
         muted && 'border-dashed opacity-75',
+        highlight && 'border-forge-500/60 bg-forge-500/5 dark:border-forge-500/50',
       )}
     >
       <Icon className={cn('mt-0.5 h-5 w-5 shrink-0', muted ? 'text-anvil-500 dark:text-anvil-400' : 'text-forge-500')} aria-hidden />
@@ -193,6 +207,7 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
   const closeLogin = useUiStore((s) => s.closeLogin)
   const walletAvailable = useWalletAvailability(limitedKeys)
   const [advanced, setAdvanced] = useState(false)
+  const creating = useCreationInProgress()
   // No forge-v2 here means no contract group to bind a key to: nothing to sign in to.
   if (!limitedKeys) return <NotDeployedState />
   // First only where Dash Wallet can answer (testnet); elsewhere last, saying why.
@@ -215,6 +230,20 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
   ) : null
   return (
     <div className="space-y-2">
+      {creating !== null ? (
+        <Tile
+          testId="tile-create-resume"
+          icon={RotateCw}
+          title="Finish creating your identity"
+          body={
+            creating.funded
+              ? 'Started in this browser, and its deposit has arrived: type your 12 words to finish registering it. Do not send another deposit.'
+              : `Started in this browser: fund deposit address ${creating.address.slice(0, 10)}… and type your 12 words to continue.`
+          }
+          onClick={() => onPick('create')}
+          highlight
+        />
+      ) : null}
       {walletFirst ? walletTile : null}
       <Tile testId="tile-create" icon={Plus} title="Create a new identity" body={`12 words you write down, then fund it from any Dash wallet. About ${creditsAsDash(typicalIssueCredits())} DASH per issue, ${dashRange(PUSH_COST_DASH.byo)} per push.`} onClick={() => onPick('create')} />
       <Tile
@@ -244,6 +273,26 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
       </p>
     </div>
   )
+}
+
+/**
+ * The deposit address of an identity creation this browser started and did not finish (its
+ * journal), or null: the chooser offers to finish it first (QW2-030).
+ */
+function useCreationInProgress(): { readonly address: string; readonly funded: boolean } | null {
+  const [state, setState] = useState<{ readonly address: string; readonly funded: boolean } | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    readCreationJournal(ACTIVE_NETWORK.network).then(
+      // Funded once the deposit was locked (or the identity exists): only the words are missing.
+      (j) => !cancelled && setState(j ? { address: j.depositAddress, funded: j.lockTxid != null || j.lockRaw != null || j.identityId != null } : null),
+      () => undefined,
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [])
+  return state
 }
 
 /**
@@ -301,9 +350,10 @@ function FilePicker({ label, detail, onFile, disabled }: { label: string; detail
 }
 
 function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | null; onDone: () => void; onOther: () => void; onRenew: () => void }): JSX.Element {
-  const { vaults, unlock, forget, isLoading, step } = useAuth()
+  const { vaults, unlock, forget, isLoading, step, lastIdentity } = useAuth()
   const [confirm, confirmDialog] = useConfirmAction()
-  const [pick, setPick] = useState(() => Math.max(0, vaults.findIndex((v) => v.identityId === initial)))
+  // The identity asked for, else the one signed in last (QW2-025), as an account switcher does.
+  const [pick, setPick] = useState(() => Math.max(0, vaults.findIndex((v) => v.identityId === (initial ?? lockedIdentityOf(vaults, lastIdentity)))))
   const [passphrase, setPassphrase] = useState('')
   const passphraseRef = useRef<HTMLInputElement>(null)
   const [error, setError] = useState<string | null>(null)
@@ -425,6 +475,7 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
 
 function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (identityId: string) => void }): JSX.Element {
   const { importIdentity, isLoading, step, vaults, identity, controller, unlockScope, storage } = useAuth()
+  const wantsPrivate = useUiStore((s) => s.loginIntent?.privateRepo === true)
   const [mode, setMode] = useState<'file' | 'mnemonic'>('file')
   // The identity file holds every private key: a ref (not React state), dropped on unmount
   // and after use; state only records that one was chosen.
@@ -459,7 +510,7 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
   }, [error])
   const { fields, protection, problem } = useProtection()
   // Opt-in (`ux-dx-spec.md` §2.3): also keep the identity's encryption key, for private repos.
-  const [enablePrivate, setEnablePrivate] = useState(false)
+  const [enablePrivate, setEnablePrivate] = useState(wantsPrivate)
   // The identity the words found, which this browser already holds a key for: filled into the ID
   // field, and cleared with it when the words change (other words, another identity).
   const [foundId, setFoundId] = useState<string | null>(null)
@@ -477,16 +528,20 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
   const dropsEncryption = previous?.encryptionKey === true && !(who === identity && storage === 'vault' && unlockScope === 'full')
   // The default follows it both ways: another identity (or mode) does not inherit the tick,
   // which stores an encryption key only where the user chose to.
+  // Opened to read a private repo: ticked too (QW2-016).
   useEffect(() => {
-    setEnablePrivate(dropsEncryption)
-  }, [dropsEncryption])
+    setEnablePrivate(dropsEncryption || wantsPrivate)
+  }, [dropsEncryption, wantsPrivate])
 
   const onFile = async (file: File): Promise<void> => {
     setError(null)
     let text: string
     try {
       text = await file.text()
-      setFileIdentity(masterMaterialFromFile(text).identityId)
+      const material = masterMaterialFromFile(text)
+      // Refused as it is picked, not on submit (QW2-031): a file for another network.
+      controller.checkFileNetwork(material.networkKey)
+      setFileIdentity(material.identityId)
     } catch (e) {
       fileRef.current = null
       setFileChosen(false)
@@ -647,6 +702,7 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
       {problem && (fileChosen || mnemonic !== '') ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{problem}</p> : null}
       {unlockFirst ? (
         <UnlockMore
+          forgot={false}
           title="Unlock this tab to renew its key"
           testId="renew-unlock"
           then={() => {

@@ -41,7 +41,12 @@ import { responderProfile, type ResponderProfile } from '@/lib/auth/responder-pr
 import { isAbort } from '@/lib/sdk/facade'
 import { PHASE_TEXT, connectPlatform, withPlatformRead } from '@/lib/auth/connect'
 import { formatDate } from '@/lib/view/format'
-import { errorMessage } from '@/lib/utils'
+import { cn, errorMessage } from '@/lib/utils'
+
+/** The wallet link where a wallet can answer (the main action), and where none can (secondary). */
+const DEEP_LINK_PRIMARY = 'bg-forge-700 text-white hover:bg-forge-800'
+const DEEP_LINK_SECONDARY =
+  'border border-anvil-300 text-anvil-800 hover:bg-anvil-100 dark:border-anvil-700 dark:text-anvil-100 dark:hover:bg-anvil-800'
 
 type Step =
   | { readonly kind: 'request'; readonly uri: string; readonly expiresAt: number }
@@ -305,8 +310,15 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
   const uri = step?.kind === 'request' || step?.kind === 'register' ? step.uri : null
   const isRegister = step?.kind === 'register'
   const qrLabel = isRegister ? 'Wallet key registration request' : 'Wallet login request'
+  // Where no released wallet can answer (a devnet, mainnet), that comes first and the wallet
+  // link is secondary: a big primary button that cannot work is a dead end (QW2-029).
+  const supported = walletSignInSupported(ACTIVE_NETWORK.network)
+  const supportNote = mode === 'login' && step?.kind === 'request' ? <WalletSupportNote /> : null
+  // Said where the QR is on screen: a phone's QR sits in a collapsed disclosure.
+  const qrPrivate = step?.kind === 'request' ? <p className="text-dense">Keep this QR code private: anyone who scans it can answer it.</p> : null
   return (
     <div className="space-y-3" data-testid={isRegister ? 'wallet-register' : 'wallet-request'}>
+      {supported ? null : supportNote}
       {mode === 'grant' && !isRegister ? (
         <p className="text-dense">Approve issues, pull requests, reviews and stars for this identity in your wallet.</p>
       ) : null}
@@ -322,31 +334,38 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
             <a
               href={uri}
               data-testid="wallet-deep-link"
-              className="flex w-full items-center justify-center gap-2 rounded-md bg-forge-700 px-4 py-3 text-dense font-medium text-white hover:bg-forge-800"
+              data-primary={supported || undefined}
+              className={cn(
+                'flex w-full items-center justify-center gap-2 rounded-md px-4 py-3 text-dense font-medium',
+                supported ? DEEP_LINK_PRIMARY : DEEP_LINK_SECONDARY,
+              )}
             >
               <Smartphone className="h-4 w-4" aria-hidden /> {isRegister ? 'Add the key in DashPay (Dash Wallet)' : 'Open in DashPay (Dash Wallet)'}
             </a>
             <details className="text-[12px] text-anvil-500 dark:text-anvil-400">
               <summary className="cursor-pointer coarse:py-3">Wallet on another device? Show the QR code</summary>
-              <div className="pt-2">
+              <div className="space-y-2 pt-2">
                 <Qr value={uri} label={qrLabel} size={180} />
+                {qrPrivate}
               </div>
             </details>
           </>
         ) : (
-          <Qr value={uri} label={qrLabel} size={200} />
+          <>
+            <Qr value={uri} label={qrLabel} size={200} />
+            {qrPrivate}
+          </>
         )
       ) : error ? null : (
         <Waiting label={preparing} />
       )}
-      {step?.kind === 'request' ? <p className="text-dense">Keep this QR code private: anyone who scans it can answer it.</p> : null}
       {status === 'incomplete-read' && step?.kind === 'request' ? (
         <p className="text-[12px] text-caution-700 dark:text-caution-400" data-testid="incomplete-read">
           Couldn&apos;t read all answer sources — retrying. Forge won&apos;t accept an answer until it has read them all.
         </p>
       ) : null}
       {step?.kind === 'request' || step?.kind === 'register' ? <Countdown until={step.expiresAt} /> : null}
-      {mode === 'login' && step?.kind === 'request' ? <WalletSupportNote /> : null}
+      {supported ? supportNote : null}
       <ErrorBox error={error} />
       {error ? (
         <Button variant="outline" className="w-full" onClick={restart}>
@@ -371,7 +390,7 @@ export function WalletSupportNote(): JSX.Element {
         {network === 'devnet'
           ? `Dash Wallet support arrives when Forge is on testnet, where its sign-in feature (DashConnect) works; that feature is not in a released wallet yet. On ${key}, only an internal iOS build with this network's login contract entered by hand can answer.`
           : `No Dash Wallet build supports sign-in on ${key} yet: its sign-in feature (DashConnect) works on testnet only.`}{' '}
-        Here, use an identity file or create an identity in the browser.
+        Here, sign in with your identity file or recovery phrase, or create an identity in the browser.
       </p>
     )
   }

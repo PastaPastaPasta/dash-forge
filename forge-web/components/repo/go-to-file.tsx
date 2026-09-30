@@ -3,7 +3,9 @@
 /**
  * Go to file (QW-028): GitHub's file finder on the repo home and every directory. Fuzzy matching
  * ({@link fuzzyRank}: `netproc` finds `src/net_processing.cpp`), the arrow keys and Enter to open
- * a result, Escape to leave, and `t` anywhere on the page to start typing.
+ * a result, Escape to leave, and `t` anywhere on the page to start typing. The code pages with no
+ * finder of their own (a file, its blame, a commit, a comparison) open it in a dialog on `t`
+ * ({@link GoToFileHotkey}, QW2-043), as GitHub does on every code page.
  *
  * The list comes from the history index first: the index the file list's column already loaded
  * names every path at the tip, so the first results need no read at all. The tree walk the
@@ -11,11 +13,14 @@
  * once done, is the list: it is exact where an index a delta extends can still name a deleted file.
  */
 
-import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { Search } from 'lucide-react'
 import type { ObjectReader } from '@/lib/view/tree-nav'
+import { rootTreeOf, type PeeledTip } from '@/lib/view/tip'
+import { repoKey, type RepoRef } from '@/lib/repo'
+import { Dialog } from '@/components/ui/dialog'
 import { indexedFilePaths, repoFilesWalk } from '@/lib/view/repo-facts'
 import { fuzzyRank, type FuzzyHit } from '@/lib/view/fuzzy'
 import { plural } from '@/lib/view/format'
@@ -58,6 +63,8 @@ export function GoToFile({
   addr,
   refParam,
   className,
+  inDialog = false,
+  onOpen,
 }: {
   reader: ObjectReader & { readonly memoScope?: object }
   repoKey: string
@@ -67,8 +74,12 @@ export function GoToFile({
   addr: RepoAddress
   refParam: string
   className?: string
+  /** In {@link GoToFileHotkey}'s dialog: focused on open, with the results under the box. */
+  inDialog?: boolean
+  /** A result was opened (the dialog closes). */
+  onOpen?: () => void
 }): JSX.Element {
-  const [started, setStarted] = useState(false)
+  const [started, setStarted] = useState(inDialog)
   const [query, setQuery] = useState('')
   const [active, setActive] = useState(0)
   const input = useRef<HTMLInputElement>(null)
@@ -116,8 +127,11 @@ export function GoToFile({
       const hit = hits[active]
       if (hit === undefined) return
       e.preventDefault()
+      onOpen?.()
       router.push(hrefOf(hit.path))
     } else if (e.key === 'Escape') {
+      // In the dialog, Escape closes it (the dialog's own handler).
+      if (inDialog) return
       e.preventDefault()
       setQuery('')
       input.current?.blur()
@@ -127,38 +141,44 @@ export function GoToFile({
   const searching = paths === null && (walk.loading || indexed.loading || !started)
   const open = q !== ''
   return (
-    <div className={cn('relative w-full sm:w-56', className)}>
-      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-anvil-500 dark:text-anvil-400" aria-hidden />
-      <label htmlFor={`${listId}-input`} className="sr-only">
-        Go to file
-      </label>
-      <Input
-        ref={input}
-        id={`${listId}-input`}
-        value={query}
-        onFocus={() => setStarted(true)}
-        onChange={(e) => setQuery(e.target.value)}
-        onKeyDown={onKeyDown}
-        placeholder="Go to file"
-        className="h-8 py-1 pl-8 pr-7"
-        role="combobox"
-        aria-expanded={open}
-        aria-controls={listId}
-        aria-autocomplete="list"
-        aria-activedescendant={open && hits[active] !== undefined ? optionId(active) : undefined}
-        autoComplete="off"
-        spellCheck={false}
-        data-testid="go-to-file"
-      />
-      <kbd className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 rounded border border-anvil-300 px-1 font-mono text-[10px] text-anvil-500 sm:block dark:border-anvil-700 dark:text-anvil-400" aria-hidden>
-        t
-      </kbd>
+    <div className={cn('relative w-full', inDialog ? '' : 'sm:w-56', className)}>
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-anvil-500 dark:text-anvil-400" aria-hidden />
+        <label htmlFor={`${listId}-input`} className="sr-only">
+          Go to file
+        </label>
+        <Input
+          ref={input}
+          id={`${listId}-input`}
+          value={query}
+          onFocus={() => setStarted(true)}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder="Go to file"
+          autoFocus={inDialog}
+          className={cn('py-1 pl-8 pr-7', inDialog ? 'h-9' : 'h-8')}
+          role="combobox"
+          aria-expanded={open}
+          aria-controls={listId}
+          aria-autocomplete="list"
+          aria-activedescendant={open && hits[active] !== undefined ? optionId(active) : undefined}
+          autoComplete="off"
+          spellCheck={false}
+          data-testid="go-to-file"
+        />
+        <kbd className="pointer-events-none absolute right-2 top-1/2 hidden -translate-y-1/2 rounded border border-anvil-300 px-1 font-mono text-[10px] text-anvil-500 sm:block dark:border-anvil-700 dark:text-anvil-400" aria-hidden>
+          t
+        </kbd>
+      </div>
       {open ? (
         <ul
           id={listId}
           role="listbox"
           aria-label="Files"
-          className="absolute right-0 z-20 mt-1 max-h-80 w-full overflow-y-auto rounded-lg border border-anvil-200 bg-white py-1 shadow-lg dark:border-anvil-750 dark:bg-anvil-900 sm:w-96"
+          className={cn(
+            'z-20 mt-1 max-h-80 w-full overflow-y-auto rounded-lg border border-anvil-200 bg-white py-1 dark:border-anvil-750 dark:bg-anvil-900',
+            inDialog ? 'relative' : 'absolute right-0 shadow-lg sm:w-96',
+          )}
         >
           {searching ? <li className="px-3 py-1.5 text-anvil-500 dark:text-anvil-400">Listing files…</li> : null}
           {walk.error && paths === null ? <li className="px-3 py-1.5 text-danger-700 dark:text-danger-400">{walk.error}</li> : null}
@@ -169,6 +189,7 @@ export function GoToFile({
                 href={hrefOf(hit.path)}
                 // The input keeps focus (and the arrow keys) while the list is open.
                 tabIndex={-1}
+                onClick={onOpen}
                 className={cn(
                   'block truncate px-3 py-1.5 font-mono text-[12px] text-anvil-600 coarse:min-h-11 coarse:py-3 dark:text-anvil-300',
                   i === active && 'bg-anvil-100 dark:bg-anvil-800',
@@ -185,5 +206,46 @@ export function GoToFile({
         </ul>
       ) : null}
     </div>
+  )
+}
+
+/**
+ * `t` on a code page without a finder of its own (QW2-043): Go to file in a dialog, listing the
+ * files of the commit (or tree) the page shows, each opened at the page's ref. Renders nothing
+ * until `t` is pressed, and reads nothing until then either.
+ */
+export function GoToFileHotkey({
+  reader,
+  repo,
+  tip,
+  addr,
+  refParam,
+}: {
+  reader: ObjectReader & { readonly memoScope?: object }
+  repo: RepoRef
+  /** The page's commit (or tree); a tag of a blob has no files to list. */
+  tip: PeeledTip
+  addr: RepoAddress
+  /** The `?ref=` the results open at (a commit's own id on a commit page). */
+  refParam: string
+}): JSX.Element | null {
+  const [open, setOpen] = useState(false)
+  const listable = tip.type !== 'blob'
+  useEffect(() => {
+    if (!listable) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (!isPageShortcut(e, 't')) return
+      e.preventDefault()
+      setOpen(true)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [listable])
+  const rootTree = useCallback(() => rootTreeOf(reader, tip), [reader, tip])
+  if (!open) return null
+  return (
+    <Dialog open onClose={() => setOpen(false)} title="Go to file" className="max-w-lg">
+      <GoToFile reader={reader} repoKey={repoKey(repo)} tipOid={tip.oid} rootTree={rootTree} addr={addr} refParam={refParam} inDialog onOpen={() => setOpen(false)} />
+    </Dialog>
   )
 }

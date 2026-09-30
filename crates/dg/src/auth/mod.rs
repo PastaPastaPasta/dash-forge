@@ -8,7 +8,7 @@
 //! - `new` — recovery words → deposit QR → asset lock → identity with its canonical keys and a
 //!   limited key in one IdentityCreate ([`new`]).
 //! - `login` — import an identity file or the recovery words once, register a limited key,
-//!   store only that key.
+//!   store only that key (with the identity's encryption key beside it, QW2-004).
 //! - `status`, `balance`, `keys list|add|disable`, `name register`, `export`, `logout`.
 
 pub mod group;
@@ -118,6 +118,10 @@ pub struct StorageArgs {
     /// passphrase. Every later use warns.
     #[arg(long)]
     pub insecure_plaintext: bool,
+    /// Store the limited signing key only, not your identity's encryption key beside it
+    /// (private repositories then need DASH_FORGE_KEY=<identity file> for each command).
+    #[arg(long)]
+    pub signing_only: bool,
 }
 
 /// `dg auth login` arguments.
@@ -158,8 +162,10 @@ pub enum NameCommand {
 /// `dg auth export` arguments.
 #[derive(Debug, clap::Args)]
 pub struct ExportArgs {
-    /// Where to write (default: `dash-forge-<id>.key.json` in the current directory; `-` for
-    /// stdout with --format dfk1).
+    /// Where to write (a new file, 0600; default: under the config directory's `exports/`).
+    /// `-` prints the key on stdout, only with --format dfk1 --reveal-secrets, and never with
+    /// --json or in CI: pipe it straight into a secret store (`| gh secret set DASH_FORGE_KEY`),
+    /// never into a log.
     #[arg(long, short = 'o')]
     pub output: Option<PathBuf>,
     /// Write the secrets unencrypted: a bridge-format file (0600), or with `--format dfk1` the
@@ -427,6 +433,10 @@ pub async fn register_limited_key(
 /// outcome is unclear (the update errored, but it may have landed), the chain is asked: a key
 /// that landed is promoted; otherwise both copies stay and the error says where each is.
 /// Returns the new key's id and where it is stored.
+///
+/// `encryption` ([`encryption_to_store`]) is stored beside the new key, so private
+/// repositories work with it.
+#[allow(clippy::too_many_arguments)]
 pub async fn register_and_store(
     ctx: &Ctx,
     client: &PlatformClient,
@@ -435,6 +445,7 @@ pub async fn register_and_store(
     replace: Option<u32>,
     checked: &group::GroupCheck,
     insecure_plaintext: bool,
+    encryption: &[keystore::IdentityKey],
 ) -> Result<(u32, store::Stored)> {
     let network = ctx.network_label();
     let id_ = master.identity_id.clone();
@@ -443,13 +454,24 @@ pub async fn register_and_store(
         || "none".to_string(),
         |p| store::describe_source(&p.to_string_lossy()).0,
     );
+    // The slots take the new key's `dfk1:` text and store it with the encryption keys.
     let slots = KeySlots {
         stage: |t: &Secret| {
-            storer
-                .borrow_mut()
-                .store(&network, &id_, t, store::Slot::Pending)
+            storer.borrow_mut().store(
+                &network,
+                &id_,
+                &with_encryption_keys(t, encryption)?,
+                store::Slot::Pending,
+            )
         },
-        promote: |t: &Secret| store::promote(&mut storer.borrow_mut(), &network, &id_, t),
+        promote: |t: &Secret| {
+            store::promote(
+                &mut storer.borrow_mut(),
+                &network,
+                &id_,
+                &with_encryption_keys(t, encryption)?,
+            )
+        },
     };
     let mut staged = None;
     let result = register_limited_key(ctx, client, master, spec, replace, checked, &mut |t| {
@@ -474,6 +496,149 @@ pub async fn register_and_store(
         None
     };
     settle(&slots, result, staged, landed, &in_use)
+}
+
+/// The identity's `ENCRYPTION` keys to store beside a new limited key (QW2-004): those the
+/// `sources` hold (the master identity, which may derive them from its recovery words, and the
+/// key in use, so a replacement never drops one) that match the identity's keys on chain. A
+/// private repository then opens with the limited key, as with the web app's "Enable private
+/// repos", instead of needing the master key on disk. None with `--signing-only`, nor with
+/// `--insecure-plaintext` (it would be written in the clear), nor on a network with no
+/// forge-v2 contracts.
+pub fn encryption_to_store(
+    ctx: &Ctx,
+    storage: &StorageArgs,
+    identity: &LoadedIdentity,
+    sources: &[&BridgeIdentity],
+) -> Vec<keystore::IdentityKey> {
+    let Some(v2) = ctx.target.v2.as_ref() else {
+        return vec![];
+    };
+    if storage.signing_only || storage.insecure_plaintext {
+        return vec![];
+    }
+    let on_chain = identity.public_keys();
+    let mut keys = std::collections::BTreeMap::new();
+    for source in sources.iter().filter(|b| b.identity_id == identity.id()) {
+        let held =
+            forge_core::keyring::EncryptionKeys::held(source, &on_chain, &v2.core, ctx.network());
+        for k in held.to_identity_keys(ctx.network()) {
+            keys.entry(k.id).or_insert(k);
+        }
+    }
+    keys.into_values().collect()
+}
+
+/// What is stored for the limited key `dfk1`: the `dfk1:` text alone, or with `encryption`
+/// keys, a bridge-format identity holding exactly that key and those (no mnemonic, no master
+/// key, nothing else).
+pub fn with_encryption_keys(dfk1: &Secret, encryption: &[keystore::IdentityKey]) -> Result<Secret> {
+    if encryption.is_empty() {
+        return Ok(dfk1.clone());
+    }
+    let mut bridge = BridgeIdentity::from_dfk1(dfk1.expose())?;
+    bridge.identity_keys.extend(encryption.iter().cloned());
+    Ok(bridge.to_json_with_secrets())
+}
+
+/// The login / new / keys add line for the encryption keys stored beside a limited key.
+pub fn print_kept_encryption(ids: &[u32]) {
+    if ids.is_empty() {
+        println!("  signing key only: private repositories need DASH_FORGE_KEY=<identity file>");
+    } else {
+        println!(
+            "  with encryption key {}: private repositories you are a member of open with it",
+            key_id_list(ids)
+        );
+    }
+}
+
+/// `#4`, or `#4, #7`.
+pub fn key_id_list(ids: &[u32]) -> String {
+    ids.iter()
+        .map(|i| format!("#{i}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Whether private repositories open with a key source: the `ENCRYPTION` keys it holds that
+/// are enabled on the identity, and whether the identity has any enabled one at all.
+pub(crate) struct PrivateAccess {
+    held: Vec<u32>,
+    on_identity: bool,
+}
+
+/// [`PrivateAccess`] of `bridge`, from the identity on chain; from the file alone (taken at
+/// its word) when the chain was not read.
+pub(crate) fn private_access(
+    ctx: &Ctx,
+    bridge: &BridgeIdentity,
+    identity: Option<&LoadedIdentity>,
+) -> PrivateAccess {
+    match (identity, ctx.target.v2.as_ref()) {
+        (Some(identity), Some(v2)) => {
+            let on_chain = identity.public_keys();
+            PrivateAccess {
+                held: forge_core::keyring::EncryptionKeys::held(
+                    bridge,
+                    &on_chain,
+                    &v2.core,
+                    ctx.network(),
+                )
+                .enabled_ids(),
+                on_identity: on_chain
+                    .iter()
+                    .any(|k| k.purpose == "ENCRYPTION" && !k.disabled),
+            }
+        }
+        _ => PrivateAccess {
+            held: encryption_key_ids(bridge),
+            on_identity: true,
+        },
+    }
+}
+
+/// `dg auth status`'s `Private:` line (and doctor's): whether private repositories open with
+/// the key source, and the step that makes them when they do not. `None` when the key was not
+/// opened, or for a CI runner key, which never needs one. `key_id` is the key in use, which a
+/// new sign-in replaces rather than leaves live with nothing holding it.
+pub(crate) fn private_line(
+    access: Option<&PrivateAccess>,
+    runner_key: bool,
+    key_id: Option<u32>,
+) -> Option<String> {
+    let access = access?;
+    if !access.held.is_empty() {
+        return Some(format!(
+            "encryption key {} stored (opens private repositories you are a member of)",
+            key_id_list(&access.held)
+        ));
+    }
+    if runner_key {
+        return None;
+    }
+    if !access.on_identity {
+        return Some(
+            "your identity has no encryption key; `dg auth keys add --encryption` adds one \
+             (from the recovery words)"
+                .into(),
+        );
+    }
+    let replace = key_id.map_or(String::new(), |id| format!(" --replace {id}"));
+    Some(format!(
+        "no encryption key stored; `dg auth login <identity file>{replace}` stores it beside a \
+         new limited key"
+    ))
+}
+
+/// The `ENCRYPTION` key ids a key source holds.
+pub fn encryption_key_ids(bridge: &BridgeIdentity) -> Vec<u32> {
+    bridge
+        .identity_keys
+        .iter()
+        .filter(|k| k.purpose == "ENCRYPTION")
+        .map(|k| k.id)
+        .collect()
 }
 
 /// Where a new key is kept while it is being registered.
@@ -685,7 +850,7 @@ async fn login_source(
 }
 
 /// Import an identity once: register a limited key signed by its master key and store only
-/// that key (or, with `--full-key`, the whole identity).
+/// that key and the identity's encryption keys (or, with `--full-key`, the whole identity).
 #[allow(clippy::too_many_lines)]
 async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
     let client = ctx.connect().await?;
@@ -711,6 +876,14 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
             "--full-key keeps the master key: it goes to a passphrase-sealed file, never unencrypted (drop --insecure-plaintext)",
         ));
     }
+    // The encryption keys stored with the signing key: for a limited key, those the file holds
+    // or its words derive; a full identity keeps all of its own.
+    let kept_encryption = encryption_to_store(ctx, &args.storage, &on_chain, &[&master]);
+    let kept_ids: Vec<u32> = if full_key {
+        encryption_key_ids(&master)
+    } else {
+        kept_encryption.iter().map(|k| k.id).collect()
+    };
     let (stored, key_id, spec) = if full_key || master.master_key().is_none() {
         // --full-key, no forge-v2 here, or a file holding one limited key (an export of this
         // or another computer's key): store it as it is. A master key never goes into the
@@ -718,12 +891,14 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         let lone_key = master.master_key().is_none();
         let text = if lone_key {
             let k = master.doc_op_key()?;
-            keystore::dfk1(
+            let dfk1 = keystore::dfk1(
                 &master.network,
                 &master.identity_id,
                 k.id,
                 k.private_key_wif.expose(),
-            )
+            );
+            // an export of a limited key and its encryption key keeps both
+            with_encryption_keys(&dfk1, &kept_encryption)?
         } else {
             master.to_json_with_secrets()
         };
@@ -753,6 +928,7 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
             args.replace,
             &checked,
             insecure,
+            &kept_encryption,
         )
         .await?;
         (stored, Some(id), Some((spec, checked)))
@@ -767,6 +943,7 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
                 "network": network,
                 "keyId": key_id,
                 "fullKey": full_key,
+                "encryptionKeyIds": kept_ids,
                 "budgetCredits": spec.as_ref().map(|(s, _)| s.budget_credits),
                 "expiresAt": spec.as_ref().map(|(s, _)| s.expires_at_ms),
                 "storage": stored.kind(),
@@ -789,6 +966,9 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
                     "  full identity stored (master key included): keep this computer safe"
                 ),
                 _ => println!("  the key in the file is stored as it is (no new key registered)"),
+            }
+            if !full_key {
+                print_kept_encryption(&kept_ids);
             }
             println!("  stored in {}", stored.describe());
             println!("  balance {} DASH", dash_amount(credits_to_dash(balance)));
@@ -839,15 +1019,31 @@ pub fn explain_new_key(
 // ---------------------------------------------------------------------------------------
 
 /// Which key a source signs with, and what the chain says about it.
-struct KeyReport {
-    key_id: Option<u32>,
+pub(crate) struct KeyReport {
+    pub key_id: Option<u32>,
     limited: bool,
+    /// The one document type the key is bound to (a CI runner key: `checkRun`).
+    pub doc_type: Option<String>,
     total: Option<u64>,
     remaining: Option<u64>,
     expires_at: Option<u64>,
 }
 
-async fn key_report(
+impl KeyReport {
+    /// Why the key signs nothing any more, when it does not: its budget is spent, or it has
+    /// expired (at `now_ms`).
+    pub(crate) fn spent_or_expired(&self, now_ms: u64) -> Option<&'static str> {
+        if self.remaining == Some(0) {
+            Some("its budget is spent")
+        } else if self.expires_at.is_some_and(|at| at <= now_ms) {
+            Some("it has expired")
+        } else {
+            None
+        }
+    }
+}
+
+pub(crate) async fn key_report(
     client: &PlatformClient,
     identity: &LoadedIdentity,
     bridge: &BridgeIdentity,
@@ -866,6 +1062,9 @@ async fn key_report(
     KeyReport {
         key_id,
         limited: key_id.is_some_and(|id| identity.is_limited_key(id)),
+        doc_type: key_id
+            .and_then(|id| identity.key_doc_type(id))
+            .map(|(_, doc_type)| doc_type),
         total: limits.and_then(|l| l.total_budget),
         remaining,
         expires_at: limits.and_then(|l| l.expires_at),
@@ -903,26 +1102,19 @@ async fn status(ctx: &Ctx) -> Result<()> {
         Some(b) => b.identity_id.clone(),
         None => ctx.identity_id_hint().unwrap_or_default(),
     };
-    let chain = match ctx.connect().await {
-        Ok(client) => match client.fetch_identity(&identity_id).await {
-            Ok(identity) => {
-                let report = match &bridge {
-                    Some(b) => Some(key_report(&client, &identity, b, ctx).await),
-                    None => None,
-                };
-                let names = client.dpns_names_of(&identity_id).await.unwrap_or_default();
-                Some((identity.balance(), report, names))
-            }
-            Err(_) => None,
-        },
-        Err(_) => None,
-    };
+    let chain = status_from_chain(ctx, bridge.as_ref(), &identity_id).await;
     let reached = chain.is_some();
-    let (balance, report, names) = match chain {
-        Some((b, r, n)) => (Some(b), r, n),
-        None => (None, None, vec![]),
+    let (balance, report, names, access) = match chain {
+        Some((b, r, n, a)) => (Some(b), r, n, a),
+        None => (
+            None,
+            None,
+            vec![],
+            bridge.as_ref().map(|b| private_access(ctx, b, None)),
+        ),
     };
     let master = bridge.as_ref().map(|b| b.master_key().is_some());
+    let runner_key = report.as_ref().is_some_and(|r| r.doc_type.is_some());
     ctx.emit(
         json!({
             "network": network,
@@ -931,6 +1123,8 @@ async fn status(ctx: &Ctx) -> Result<()> {
             "names": names,
             "keyId": report.as_ref().and_then(|r| r.key_id),
             "limited": report.as_ref().map(|r| r.limited),
+            "boundDocumentType": report.as_ref().and_then(|r| r.doc_type.clone()),
+            "encryptionKeyIds": access.as_ref().map(|a| a.held.clone()),
             "budgetCredits": report.as_ref().and_then(|r| r.total),
             "budgetRemainingCredits": report.as_ref().and_then(|r| r.remaining),
             "expiresAt": report.as_ref().and_then(|r| r.expires_at),
@@ -952,12 +1146,16 @@ async fn status(ctx: &Ctx) -> Result<()> {
                 "Key:      {}",
                 key_line(report.as_ref(), unopened.as_deref(), reached)
             );
+            let key_id = report.as_ref().and_then(|r| r.key_id);
+            if let Some(line) = private_line(access.as_ref(), runner_key, key_id) {
+                println!("Private:  {line}");
+            }
             if let Some(b) = balance {
                 println!("Balance:  {} DASH", dash_amount(credits_to_dash(b)));
             }
             println!("Stored:   {where_}");
             if master == Some(true) {
-                println!("          (holds the master key: `dg auth login <file>` would store only a limited key)");
+                println!("          (holds the master key: `dg auth login <file>` would store only a limited key and the encryption key)");
                 if kind == "keychain" {
                     println!("          warning: an older dg put this master key in the keychain, where any program running as you can read it; `dg auth login --full-key <file>` moves it to a sealed file");
                 }
@@ -967,20 +1165,56 @@ async fn status(ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
+/// What `dg auth status` reads from Platform: the balance, the key's limits, the DPNS names
+/// and whether private repositories open. `None` when Platform or the identity was not reached.
+async fn status_from_chain(
+    ctx: &Ctx,
+    bridge: Option<&BridgeIdentity>,
+    identity_id: &str,
+) -> Option<(u64, Option<KeyReport>, Vec<String>, Option<PrivateAccess>)> {
+    let client = ctx.connect().await.ok()?;
+    let identity = client.fetch_identity(identity_id).await.ok()?;
+    let report = match bridge {
+        Some(b) => Some(key_report(&client, &identity, b, ctx).await),
+        None => None,
+    };
+    let names = client.dpns_names_of(identity_id).await.unwrap_or_default();
+    let access = bridge.map(|b| private_access(ctx, b, Some(&identity)));
+    Some((identity.balance(), report, names, access))
+}
+
 /// The status's `Key:` line: the key's limits, or why they were not checked (the key was not
 /// opened, or Platform was not `reached`).
-fn key_line(report: Option<&KeyReport>, unopened: Option<&str>, reached: bool) -> String {
+pub(crate) fn key_line(
+    report: Option<&KeyReport>,
+    unopened: Option<&str>,
+    reached: bool,
+) -> String {
     match (report, unopened) {
         (Some(r), _) => {
             let id = r.key_id.map_or("?".to_string(), |i| format!("#{i}"));
-            if r.limited {
+            let limits = || {
                 format!(
-                    "{id} limited — {} of {} DASH left, expires {}",
+                    "{} of {} DASH left, expires {}",
                     r.remaining
                         .map_or("?".into(), |c| dash_amount(credits_to_dash(c))),
                     r.total
                         .map_or("?".into(), |c| dash_amount(credits_to_dash(c))),
                     r.expires_at.map_or("never".into(), expiry_text)
+                )
+            };
+            if r.limited {
+                format!("{id} limited — {}", limits())
+            } else if let Some(doc_type) = &r.doc_type {
+                // QW2-005: a CI runner key signs one document type, and nothing else.
+                format!(
+                    "{id} bound to {doc_type} documents only{} — {}",
+                    if doc_type == "checkRun" {
+                        " (a CI runner key)"
+                    } else {
+                        ""
+                    },
+                    limits()
                 )
             } else {
                 format!("{id} unlimited (not a Forge limited key)")
@@ -1157,23 +1391,31 @@ async fn current_key_text(
     Ok((current.to_dfk1(key.id).context("no key")?, Some(id)))
 }
 
+/// Refuse export flag combinations before anything is loaded. A key reaches stdout only with
+/// `--format dfk1 --reveal-secrets -o -`, and never inside `--json` output.
+fn check_export_args(ctx: &Ctx, args: &ExportArgs, to_stdout: bool) -> Result<()> {
+    let refusal = if args.format == "dfk1" && !args.reveal_secrets {
+        "--format dfk1 writes the key in the clear; add --reveal-secrets"
+    } else if !to_stdout {
+        return Ok(());
+    } else if args.format != "dfk1" {
+        "`-o -` (stdout) is only for --format dfk1 --reveal-secrets"
+    } else if ctx.json {
+        "`-o -` prints the key itself, not a JSON document; drop --json, or write it to a file \
+         with -o <file>"
+    } else if crate::secret_out::in_ci() {
+        "`-o -` would print the key into this CI job's log; write it to a file with -o <file>"
+    } else if args.new_key {
+        "--new-key writes the key to a file (so it is kept before it is registered); pass -o <file>"
+    } else {
+        return Ok(());
+    };
+    Err(crate::errors::usage(refusal))
+}
+
 async fn export(ctx: &Ctx, args: &ExportArgs) -> Result<()> {
     let to_stdout = args.output.as_deref().is_some_and(|p| p.as_os_str() == "-");
-    if args.format == "dfk1" && !args.reveal_secrets {
-        return Err(crate::errors::usage(
-            "--format dfk1 writes the key in the clear; add --reveal-secrets",
-        ));
-    }
-    if to_stdout && args.format != "dfk1" {
-        return Err(crate::errors::usage(
-            "`-o -` (stdout) is only for --format dfk1 --reveal-secrets",
-        ));
-    }
-    if to_stdout && args.new_key {
-        return Err(crate::errors::usage(
-            "--new-key writes the key to a file (so it is kept before it is registered); pass -o <file>",
-        ));
-    }
+    check_export_args(ctx, args, to_stdout)?;
     let current = ctx.load_bridge()?;
     let path = export_path(args, &current.identity_id, to_stdout)?;
     // Ask for the passphrase before anything is registered.
@@ -1455,6 +1697,96 @@ mod tests {
         let (id, _) = settle(&slots, Ok(7), Some((new, at("pending"))), None, "x").unwrap();
         assert_eq!(id, 7);
         assert_eq!(main.borrow().as_deref(), Some("dfk1:new"));
+    }
+
+    /// QW2-004: a limited key is stored with the encryption keys as a bridge identity holding
+    /// exactly those (no master key, no words); without any, as the plain `dfk1:` key.
+    #[test]
+    fn a_limited_key_is_stored_with_its_encryption_keys() {
+        const ID: &str = "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB";
+        let dfk1 = keystore::dfk1("devnet-bonsia", ID, 5, "FAKE-wif");
+        assert_eq!(
+            with_encryption_keys(&dfk1, &[]).unwrap().expose(),
+            dfk1.expose()
+        );
+        let enc = keystore::IdentityKey {
+            id: 4,
+            name: "enc".into(),
+            key_type: "ECDSA_SECP256K1".into(),
+            purpose: "ENCRYPTION".into(),
+            security_level: "MEDIUM".into(),
+            private_key_wif: Secret::new("FAKE-enc-wif"),
+            private_key_hex: Secret::new("07".repeat(32)),
+            public_key_hex: "02ab".into(),
+            derivation_path: String::new(),
+        };
+        let text = with_encryption_keys(&dfk1, std::slice::from_ref(&enc)).unwrap();
+        let b = BridgeIdentity::from_source_text(text.expose()).unwrap();
+        assert_eq!(b.identity_id, ID);
+        assert_eq!(b.network, "devnet-bonsia");
+        assert!(b.master_key().is_none());
+        assert!(b.mnemonic.expose().is_empty());
+        assert_eq!(b.doc_op_key().unwrap().id, 5);
+        assert_eq!(encryption_key_ids(&b), [4]);
+        assert_eq!(b.identity_keys.len(), 2);
+    }
+
+    /// QW2-005: a key bound to one document type (a CI runner key) says so, not "unlimited".
+    #[test]
+    fn a_runner_key_is_described_as_bound_to_its_document_type() {
+        let report = |limited, doc_type: Option<&str>| KeyReport {
+            key_id: Some(6),
+            limited,
+            doc_type: doc_type.map(str::to_string),
+            total: Some(50_000_000_000),
+            remaining: Some(49_000_000_000),
+            expires_at: None,
+        };
+        let line = key_line(Some(&report(false, Some("checkRun"))), None, true);
+        assert!(
+            line.starts_with(
+                "#6 bound to checkRun documents only (a CI runner key) — 0.49 of 0.5 DASH left"
+            ),
+            "{line}"
+        );
+        assert!(!line.contains("unlimited"), "{line}");
+        assert!(key_line(Some(&report(true, None)), None, true).starts_with("#6 limited — "));
+        // doctor fails a key that signs nothing any more
+        let mut r = report(true, None);
+        assert_eq!(r.spent_or_expired(1_000), None);
+        r.expires_at = Some(1_000);
+        assert_eq!(r.spent_or_expired(1_000), Some("it has expired"));
+        r.remaining = Some(0);
+        assert_eq!(r.spent_or_expired(0), Some("its budget is spent"));
+        assert_eq!(
+            key_line(Some(&report(false, None)), None, true),
+            "#6 unlimited (not a Forge limited key)"
+        );
+    }
+
+    #[test]
+    fn the_private_line_says_whether_private_repositories_open() {
+        let access = |held: &[u32], on_identity| PrivateAccess {
+            held: held.to_vec(),
+            on_identity,
+        };
+        assert_eq!(private_line(None, false, Some(5)), None);
+        // a CI runner key never needs one
+        assert_eq!(private_line(Some(&access(&[], true)), true, Some(6)), None);
+        // the step names the key in use, which the new sign-in replaces
+        assert_eq!(
+            private_line(Some(&access(&[], true)), false, Some(15)).unwrap(),
+            "no encryption key stored; `dg auth login <identity file> --replace 15` stores it \
+             beside a new limited key"
+        );
+        // an identity with none: signing in again would not help
+        assert!(private_line(Some(&access(&[], false)), false, Some(15))
+            .unwrap()
+            .contains("dg auth keys add --encryption"));
+        assert_eq!(
+            private_line(Some(&access(&[4, 7], true)), false, Some(16)).unwrap(),
+            "encryption key #4, #7 stored (opens private repositories you are a member of)"
+        );
     }
 
     #[test]

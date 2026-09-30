@@ -18,6 +18,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { DEFAULT_NETWORK, type Network } from '@/lib/constants'
 import { evoSdkService, preloadContractIds, type SdkStatus } from '@/lib/sdk'
+import { currentClockSkew, subscribeClockSkew, type ClockSkew } from '@/lib/sdk/clock-skew'
 import { connectionTrust, type ConnectionTrust } from '@/lib/view/trust'
 
 interface SdkState {
@@ -59,13 +60,22 @@ export function useContractsMissing(): string | null {
 }
 
 /**
+ * The device clock's offset from the network's, while a read was refused for it and the clock
+ * still disagrees (QW2-018); null otherwise.
+ */
+export function useClockSkew(): ClockSkew | null {
+  return useSyncExternalStore(subscribeClockSkew, currentClockSkew, () => null)
+}
+
+/**
  * The connection's trust state, following the service without starting a connect: for app-wide
  * chrome (the trust-anchor banner) on pages that may never read Platform.
  */
 export function useConnectionTrust(): { readonly network: Network; readonly connection: ConnectionTrust } {
   const status = useSyncExternalStore(subscribe, getStatus, () => SERVER_STATUS)
   const generation = useSyncExternalStore(subscribe, getGeneration, () => 0)
-  return { network: DEFAULT_NETWORK, connection: connectionState(status, generation).connection }
+  const clockOff = useClockSkew() !== null
+  return { network: DEFAULT_NETWORK, connection: connectionState(status, generation, clockOff).connection }
 }
 
 /**
@@ -73,9 +83,13 @@ export function useConnectionTrust(): { readonly network: Network; readonly conn
  * unreachable after a connect, so views keep what they already read (under the unreachable
  * banner) instead of resetting.
  */
-function connectionState(status: SdkStatus, generation: number): { readonly ready: boolean; readonly connection: ConnectionTrust } {
+function connectionState(
+  status: SdkStatus,
+  generation: number,
+  clockOff: boolean,
+): { readonly ready: boolean; readonly connection: ConnectionTrust } {
   const ready = generation > 0 && evoSdkService.isReady
-  return { ready, connection: connectionTrust(ready, ready && evoSdkService.isTrusted, status.phase === 'error') }
+  return { ready, connection: connectionTrust(ready, ready && evoSdkService.isTrusted, status.phase === 'error', clockOff) }
 }
 
 /** Connect the SDK (idempotent). Pass extra contract ids (e.g. a repo contract) to preload. */
@@ -84,6 +98,7 @@ export function useSdk(extraContractIds: readonly string[] = []): SdkState {
   const status = useSyncExternalStore(subscribe, getStatus, () => SERVER_STATUS)
   const generation = useSyncExternalStore(subscribe, getGeneration, () => 0)
   const recoveries = useSyncExternalStore(subscribe, getRecoveries, () => 0)
+  const clockOff = useClockSkew() !== null
 
   // Stable dependency key so a changing array identity doesn't reconnect on every render.
   // The effect reconstructs the id list from `key` alone (never closes over the array prop),
@@ -97,7 +112,7 @@ export function useSdk(extraContractIds: readonly string[] = []): SdkState {
   }, [key, network])
 
   const retry = useCallback(() => evoSdkService.retryNow(), [])
-  const { ready, connection } = connectionState(status, generation)
+  const { ready, connection } = connectionState(status, generation, clockOff)
   return {
     sdk: ready ? evoSdkService.getSdk() : null,
     ready,

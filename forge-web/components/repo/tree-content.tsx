@@ -19,7 +19,7 @@ import { GoToFile } from '@/components/repo/go-to-file'
 import { CommitCell, SearchOlderHistory, useLastCommits } from '@/components/repo/commit-column'
 import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
 import { PathActions } from '@/components/repo/path-actions'
-import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
+import { RefDeletedState, RefSwitcher, unknownRefState } from '@/components/repo/ref-switcher'
 import { EmptyState, LoadingBlock } from '@/components/ui/states'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { pinnedHref, usePermalinkKey } from '@/components/repo/permalink'
@@ -43,9 +43,8 @@ export function TreeContent({
 }): JSX.Element {
   const selected = selectRef(home.branches, home.tags, home.defaultBranch, refParam)
   const tipOid = selectedTip(selected)
-  if (refParam && !selected.ref && !selected.pinned) {
-    return <RefNotFoundState addr={addr} refParam={refParam} defaultBranch={home.defaultBranch} />
-  }
+  const unknown = unknownRefState(home, addr, selected, refParam, path)
+  if (unknown !== null) return unknown
   // An enumerated ref with no tip was deleted; only a ref with no entry at all is "empty".
   if (!tipOid && selected.ref) {
     return <RefDeletedState addr={addr} name={selected.name} defaultBranch={home.defaultBranch} />

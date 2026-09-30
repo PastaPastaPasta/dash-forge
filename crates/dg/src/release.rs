@@ -651,10 +651,16 @@ fn asset_json(a: &ReleaseAsset) -> serde_json::Value {
     json!({ "name": a.name, "sha256": a.sha256, "sizeBytes": a.size_bytes, "uris": a.uris })
 }
 
+/// The assets of each current release whose list is sealed (§16.5), by release document id:
+/// the opened list, or why it could not be opened.
+type SealedLists =
+    std::collections::BTreeMap<String, std::result::Result<Vec<ReleaseAsset>, String>>;
+
 /// The releases of `repo` (newest per tag, newest first) and the superseded revisions. A
 /// private repository's are opened with the identity's keys and folded (§16.3); for a
-/// maintainer, also the live releases whose asset list was uploaded under an old key (§16.5).
-async fn read_releases(ctx: &Ctx, repo: &str) -> Result<(ReleaseList, Vec<String>)> {
+/// maintainer, also the live releases whose asset list was uploaded under an old key (§16.5);
+/// and the current releases' sealed asset lists, opened (QW2-086: `assets` was `[]` for them).
+async fn read_releases(ctx: &Ctx, repo: &str) -> Result<(ReleaseList, Vec<String>, SealedLists)> {
     // No key is opened to read them for a public repository (L-12).
     let s = Reader::open(ctx, repo).await?;
     let collab = s.collab();
@@ -673,7 +679,34 @@ async fn read_releases(ctx: &Ctx, repo: &str) -> Result<(ReleaseList, Vec<String
     } else {
         Vec::new()
     };
-    Ok((list, late))
+    // Each list is a Platform read and a storage fetch: opened side by side, so one slow copy
+    // does not hold up the others.
+    let opening = list.current.iter().filter_map(|r| {
+        let fields = r
+            .sealed
+            .as_ref()
+            .map(|s| &s.fields)
+            .filter(|f| f.asset_manifest.is_some())?;
+        let (collab, repo) = (&collab, &s.repo);
+        Some(async move {
+            let opened = collab
+                .release_manifest(repo, fields)
+                .await
+                .map(|m| {
+                    m.assets
+                        .into_iter()
+                        .map(|e| Wanted::from_manifest(e).asset)
+                        .collect()
+                })
+                .map_err(|e| e.to_string());
+            (r.document_id.clone(), opened)
+        })
+    });
+    let sealed: SealedLists = futures::future::join_all(opening)
+        .await
+        .into_iter()
+        .collect();
+    Ok((list, late, sealed))
 }
 
 /// The warning `dg release list` gives a maintainer for release `tag`, whose asset list was
@@ -729,25 +762,40 @@ fn incomplete_notes(list: &ReleaseList) -> Vec<String> {
     out
 }
 
-/// Whether `r` keeps its asset list in a sealed kind-4 manifest, which this `dg` does not open
-/// yet (§16.5).
+/// Whether `r` keeps its asset list in a sealed kind-4 manifest (§16.5).
 fn has_sealed_asset_list(r: &Release) -> bool {
     r.sealed
         .as_ref()
         .is_some_and(|s| s.fields.asset_manifest.is_some())
 }
 
+/// A release's assets as `dg release list` reports them: the recorded ones, or its sealed list
+/// once opened; `None` for a sealed list that is not (a superseded revision's is never read).
+fn listed_assets<'a>(r: &'a Release, sealed: &'a SealedLists) -> Option<&'a [ReleaseAsset]> {
+    if !has_sealed_asset_list(r) {
+        return Some(&r.assets);
+    }
+    sealed
+        .get(&r.document_id)
+        .and_then(|o| o.as_ref().ok())
+        .map(Vec::as_slice)
+}
+
 /// A release's asset count as `dg release list` shows it.
-fn asset_count(r: &Release) -> String {
-    if has_sealed_asset_list(r) {
-        "sealed asset list".to_string()
-    } else {
-        format!("{} asset(s)", r.assets.len())
+fn asset_count(r: &Release, sealed: &SealedLists) -> String {
+    match (has_sealed_asset_list(r), sealed.get(&r.document_id)) {
+        (false, _) => format!("{} asset(s)", r.assets.len()),
+        (true, Some(Ok(a))) => format!("{} asset(s), sealed list", a.len()),
+        (true, Some(Err(e))) => format!(
+            "sealed asset list (not opened: {})",
+            crate::fmt::safe(&e.chars().take(120).collect::<String>())
+        ),
+        (true, None) => "sealed asset list".to_string(),
     }
 }
 
 async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
-    let (list, late) = read_releases(ctx, repo).await?;
+    let (list, late, sealed) = read_releases(ctx, repo).await?;
     let row = |r: &Release| {
         json!({
             "tag": r.tag_name,
@@ -763,7 +811,10 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
             "assetListUploadedLate": late.contains(&r.document_id),
             "publishedBy": r.publisher,
             "createdAt": r.created_at,
-            "assets": r.assets.iter().map(asset_json).collect::<Vec<_>>(),
+            // `null`: a sealed list that was not opened (`assetListError` says why).
+            "assets": listed_assets(r, &sealed).map(|a| a.iter().map(asset_json).collect::<Vec<_>>()),
+            "assetList": if has_sealed_asset_list(r) { "sealed" } else { "plain" },
+            "assetListError": sealed.get(&r.document_id).and_then(|o| o.as_ref().err()),
         })
     };
     ctx.emit(
@@ -785,7 +836,7 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
                     r.tag_name,
                     labels(r),
                     r.name,
-                    asset_count(r),
+                    asset_count(r, &sealed),
                     r.publisher
                 );
                 if list.unknown_tags.contains(&r.tag_name) {
@@ -1418,6 +1469,41 @@ mod tests {
             delta: 1,
             sealed: None,
         }
+    }
+
+    /// QW2-086: a sealed release lists the assets of its opened list, never the empty `assets`
+    /// field it stores; one whose list did not open says why, and lists none (`null`).
+    #[test]
+    fn a_sealed_release_lists_its_opened_assets() {
+        let mut sealed_release = current();
+        sealed_release.assets = Vec::new();
+        sealed_release.sealed = Some(forge_core::collab::SealedRelease {
+            epoch: 1,
+            fields: forge_core::private::release::ReleaseFields {
+                asset_manifest: Some("ab".repeat(32)),
+                ..Default::default()
+            },
+        });
+        let mut lists = SealedLists::new();
+        lists.insert("d1".into(), Ok(vec![asset("app.txt", 'c')]));
+        assert_eq!(
+            asset_count(&sealed_release, &lists),
+            "1 asset(s), sealed list"
+        );
+        assert_eq!(
+            names(listed_assets(&sealed_release, &lists).unwrap()),
+            [("app.txt".to_string(), 'c')]
+        );
+        lists.insert("d1".into(), Err("no copy answered".into()));
+        assert_eq!(
+            asset_count(&sealed_release, &lists),
+            "sealed asset list (not opened: no copy answered)"
+        );
+        assert!(listed_assets(&sealed_release, &lists).is_none());
+        // a public release lists what it stores
+        let public = current();
+        assert_eq!(asset_count(&public, &lists), "2 asset(s)");
+        assert_eq!(listed_assets(&public, &lists).map(<[_]>::len), Some(2));
     }
 
     fn args(extra: &[&str]) -> ReleaseCreateArgs {

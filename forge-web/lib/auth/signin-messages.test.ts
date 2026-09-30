@@ -29,6 +29,15 @@ describe('mnemonicProblem', () => {
     expect(mnemonicProblem(twelve)).toMatch(/These 12 words aren't a valid recovery phrase: a word is misspelt/)
     expect(mnemonicProblem(twelve)).toMatch(/in order/)
   })
+
+  it('names the word that is not on the list when the SDK says which (QW2-031)', () => {
+    const words = `${'abandon '.repeat(11)}zzzzz`
+    expect(mnemonicProblem(words, 'Invalid mnemonic phrase: mnemonic contains an unknown word (word 11)')).toBe(
+      '"zzzzz" (word 12) is not a BIP-39 word: it is not on the standard English word list. Check its spelling against your backup.',
+    )
+    // A checksum failure names no word.
+    expect(mnemonicProblem(words, 'Invalid mnemonic phrase: invalid checksum')).toMatch(/a word is misspelt/)
+  })
 })
 
 describe('quizAnswerOk', () => {

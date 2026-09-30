@@ -337,7 +337,7 @@ test.describe('code browsing budgets on the dash mirror (QW-027, QW-028, QW-087)
     const counted = dapi.all().length - listed
     test.info().annotations.push({ type: 'dapi', description: `compare counted: ${Date.now() - counting} ms, ${counted} requests` })
     // git diff -M --shortstat v22.0.0...v23.0.0, and nothing left out.
-    await expect(page.getByTestId('diff-totals')).toContainText('+112310 −69084')
+    await expect(page.getByTestId('diff-totals')).toContainText('+112,310 −69,084')
     await expect(page.getByTestId('diff-totals-partial')).toHaveCount(0)
     expect(counted).toBeLessThanOrEqual(COMPARE_COUNT_REQUESTS)
     await shot(page, 'cb-03-compare-counted')

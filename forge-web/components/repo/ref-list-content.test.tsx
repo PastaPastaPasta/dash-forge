@@ -2,7 +2,8 @@
 /**
  * The tags list's commit chips (L-02): a chip shows the commit its tag names, and a tag that is
  * force-moved to another commit gets a fresh chip rather than the old commit it already showed.
- * The branches list starts no browse index (it has nothing to peel).
+ * Each row's date is its tip's (QW2-023), with the time the ref last moved only as a labelled
+ * fallback.
  */
 
 import { act } from 'react'
@@ -28,9 +29,16 @@ vi.mock('@/hooks/use-browse', () => ({
   },
 }))
 vi.mock('@/hooks/use-trust-view', () => ({ useTrustView: () => 'tags' }))
+/** tip → the date (ms) the fake tip read answers; missing: the read fails. */
+const dateOf = new Map<string, number>()
 vi.mock('@/lib/view/tip', () => ({
   peekDeclared: () => undefined,
   peelCached: async (_r: unknown, tip: string) => ({ oid: peelTo.get(tip) ?? tip, type: 'commit' }),
+  tipDateCached: async (_r: unknown, tip: string) => {
+    const ms = dateOf.get(tip)
+    if (ms === undefined) throw new Error('unreadable')
+    return ms
+  },
 }))
 const READER: Record<string, unknown> = {
   forView: () => READER,
@@ -65,6 +73,7 @@ beforeEach(() => {
   peelTo.clear()
   peelTo.set(TAG_A, COMMIT_A)
   peelTo.set(TAG_B, COMMIT_B)
+  dateOf.clear()
   el = document.createElement('div')
   document.body.append(el)
   root = createRoot(el)
@@ -102,10 +111,44 @@ describe('RefListContent tag chips', () => {
     }
   })
 
-  it('starts no browse index for the branches list', async () => {
+  it('the branches list has no tag chips', async () => {
     await act(async () => root.render(<RefListContent home={home(TAG_A)} addr={addr} kind="branches" />))
-    expect(browseCalls.every((r) => r === null)).toBe(true)
     expect(el.querySelector('[data-testid="tag-commit"]')).toBeNull()
+  })
+})
+
+// QW2-023: every ref of a mirror read "updated 11h ago", the time of the mirror's sync.
+describe('RefListContent dates', () => {
+  const updated = (): HTMLElement => el.querySelector('[data-testid="ref-updated"]') as HTMLElement
+  it('dates a branch by its tip commit, an old one by its day', async () => {
+    dateOf.set(COMMIT_A, new Date(2015, 0, 2, 12).getTime())
+    await act(async () => root.render(<RefListContent home={home(TAG_A)} addr={addr} kind="branches" />))
+    await settle()
+    expect(updated().dataset['source']).toBe('commit')
+    expect(updated().textContent).toMatch(/^updated on .*2015/)
+  })
+
+  it('dates a tag by its tag date, a recent one by its age', async () => {
+    dateOf.set(TAG_A, Date.now() - 3 * 86_400_000)
+    await act(async () => root.render(<RefListContent home={home(TAG_A)} addr={addr} kind="tags" />))
+    await settle()
+    expect(updated().textContent).toBe('updated 3d ago')
+  })
+
+  it('says "pushed" for the time the ref moved when the tip cannot be read, or no index will be ready', async () => {
+    await act(async () => root.render(<RefListContent home={home(TAG_A)} addr={addr} kind="branches" />))
+    await settle()
+    expect(updated().dataset['source']).toBe('push')
+    expect(updated().textContent).toMatch(/^pushed /)
+    indexed = false
+    try {
+      dateOf.set(COMMIT_A, 1)
+      await act(async () => root.render(<RefListContent home={home(TAG_B)} addr={addr} kind="tags" />))
+      await settle()
+      expect(updated().textContent).toMatch(/^pushed /)
+    } finally {
+      indexed = true
+    }
   })
 })
 
