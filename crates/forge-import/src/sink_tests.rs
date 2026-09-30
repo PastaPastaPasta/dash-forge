@@ -553,15 +553,19 @@ struct Run {
     refused: BTreeSet<(u8, u32)>,
 }
 
+fn sink(chain: &Recorded, dry_run: bool, budget: Budget, lanes: usize) -> Sink<'_, &Recorded> {
+    Sink::new(
+        chain,
+        Some(repo()),
+        Ledger::detached(Some(SIGNER.into()), dry_run, budget),
+    )
+    .with_lanes(lanes)
+}
+
 async fn import(chain: &Recorded, src: &SrcCollab, lanes: usize, cap: Option<u64>) -> Run {
     let mut budget = Budget::new(cap);
     budget.start(chain.st().balance);
-    let sink = Sink::new(
-        chain,
-        Some(repo()),
-        Ledger::detached(Some(SIGNER.into()), false, budget),
-    )
-    .with_lanes(lanes);
+    let sink = sink(chain, false, budget, lanes);
     let result = sink.sync(src).await;
     let ledger = sink.into_ledger();
     Run {
@@ -573,18 +577,9 @@ async fn import(chain: &Recorded, src: &SrcCollab, lanes: usize, cap: Option<u64
 }
 
 async fn dry(chain: &Recorded, src: &SrcCollab, lanes: usize) -> crate::summary::Counts {
-    let sink = Sink::new(
-        chain,
-        Some(repo()),
-        Ledger::detached(Some(SIGNER.into()), true, Budget::new(None)),
-    )
-    .with_lanes(lanes);
+    let sink = sink(chain, true, Budget::new(None), lanes);
     sink.sync(src).await.unwrap();
     sink.into_ledger().counts
-}
-
-fn docs(c: &crate::summary::Counts) -> u64 {
-    c.issues + c.prs + c.comments + c.reviews + c.events + c.transitions
 }
 
 fn assert_complete(chain: &Recorded, src: &SrcCollab) {
@@ -625,7 +620,10 @@ async fn a_pipelined_import_writes_what_a_sequential_one_does() {
     // The progress and summary counts are what landed, and the spend what was paid.
     assert_eq!(r8.counts, r1.counts);
     let landed: u64 = eight.logs().values().map(|(_, l)| l.len() as u64).sum();
-    assert_eq!(docs(&r8.counts), landed + src.targets.len() as u64);
+    assert_eq!(
+        r8.counts.item_documents(),
+        landed + src.targets.len() as u64
+    );
     // The spend reported: the estimates (the chain charged a little less), whatever the lanes.
     assert_eq!(r8.spent, r1.spent);
     assert!(r8.spent >= START_BALANCE - eight.st().balance);
@@ -659,11 +657,11 @@ async fn a_rerun_writes_nothing_and_dry_runs_agree() {
     for lanes in [1, 8] {
         let again = import(&chain, &src, lanes, None).await;
         again.result.unwrap();
-        assert_eq!(docs(&again.counts), 0);
+        assert_eq!(again.counts.item_documents(), 0);
         assert_eq!(again.spent, 0);
     }
     assert_eq!(chain.logs(), before);
-    assert_eq!(docs(&dry(&chain, &src, 8).await), 0);
+    assert_eq!(dry(&chain, &src, 8).await.item_documents(), 0);
 }
 
 /// The process dies mid-pipeline (a write lands but its caller never hears; nothing begun
@@ -727,7 +725,7 @@ async fn the_spend_cap_holds_with_lanes_in_flight() {
     assert!(capped.spent <= cap);
     let landed: u64 = chain.logs().values().map(|(_, l)| l.len() as u64).sum();
     assert_eq!(
-        docs(&capped.counts),
+        capped.counts.item_documents(),
         landed + chain.logs().len() as u64,
         "the counts are what landed"
     );

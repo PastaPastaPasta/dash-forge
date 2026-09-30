@@ -740,6 +740,7 @@ impl<'a, C: Chain> Sink<'a, C> {
         let local = pushed_tip(proof, base, &merged);
         let (dir, pushed) = (proof.dir.clone(), proof.pushed);
         let contains = |tips: &MergeBaseTips| chain_tip_containing(&dir, tips, &merged);
+        let proven = |tips: &MergeBaseTips| contains(tips).and_then(|tip| hex::decode(tip).ok());
         let mut tips = self.base_tips(target_id, base, Freshness::Synced).await?;
         let opened = self.caches().opened.get(target_id).cloned();
         // A PR opened against a base that did not exist then has no tips, and no merge into
@@ -766,7 +767,7 @@ impl<'a, C: Chain> Sink<'a, C> {
             contains(tips).is_some() || local.as_ref().is_none_or(|l| tips.contains(l))
         };
         if settled(&tips) {
-            return Ok(contains(&tips).and_then(|tip| hex::decode(tip).ok()));
+            return Ok(proven(&tips));
         }
         // One lane waits at a time. A lane that finds another waiting reads, once that one is
         // done, the copy it brought up to date (`Synced`), as the next PR of a sequential run
@@ -790,7 +791,7 @@ impl<'a, C: Chain> Sink<'a, C> {
             self.chain.refs_changed();
             tips = self.base_tips(target_id, base, Freshness::Now).await?;
         }
-        Ok(contains(&tips).and_then(|tip| hex::decode(tip).ok()))
+        Ok(proven(&tips))
     }
 
     /// Whether `author` may have mirrored an item: the signer, or a member of the
@@ -863,19 +864,18 @@ impl<'a, C: Chain> Sink<'a, C> {
             &self.stop,
             |(index, t)| async move {
                 let job = self.open_target(index, t).await;
-                if job.is_ok() {
+                if let Ok(job) = &job {
                     progress.placed(t.number);
-                }
-                if matches!(job, Ok(None)) {
-                    progress.completed(index, t.number);
+                    if job.is_none() {
+                        progress.completed(index, t.number);
+                    }
                 }
                 self.say(progress, false);
                 job
             },
             |job: Job<'_>| async move {
-                let (index, number) = (job.index, job.t.number);
-                self.finish_target(job).await?;
-                progress.completed(index, number);
+                self.finish_target(&job).await?;
+                progress.completed(job.index, job.t.number);
                 self.say(progress, false);
                 Ok(())
             },
@@ -893,9 +893,7 @@ impl<'a, C: Chain> Sink<'a, C> {
     fn say(&self, progress: &Progress, last: bool) {
         let (written, spent) = {
             let l = self.ledger();
-            let c = &l.counts;
-            let written = c.issues + c.prs + c.comments + c.reviews + c.events + c.transitions;
-            (written, l.budget.spent())
+            (l.counts.item_documents(), l.budget.spent())
         };
         let spent = (!self.dry_run).then(|| credits_to_dash(spent));
         if let Some(line) = progress.line(last, written, spent) {
@@ -1189,10 +1187,9 @@ impl<'a, C: Chain> Sink<'a, C> {
     /// The head's part of item `t` (number `index` in the run): find its copy, or create it at
     /// the dense next number. `None` when nothing more is written for it.
     async fn open_target<'s>(&self, index: usize, t: &'s SrcTarget) -> Result<Option<Job<'s>>> {
-        match self.open_target_inner(index, t).await {
-            Err(e) => self.item_skipped(t, e).map(|()| None),
-            ok => ok,
-        }
+        self.open_target_inner(index, t)
+            .await
+            .or_else(|e| self.item_skipped(t, e).map(|()| None))
     }
 
     async fn open_target_inner<'s>(
@@ -1233,12 +1230,10 @@ impl<'a, C: Chain> Sink<'a, C> {
     }
 
     /// A lane's part of an item: its thread, then its state.
-    async fn finish_target(&self, job: Job<'_>) -> Result<()> {
-        let t = job.t;
-        match self.finish_target_inner(&job).await {
-            Err(e) => self.item_skipped(t, e),
-            ok => ok,
-        }
+    async fn finish_target(&self, job: &Job<'_>) -> Result<()> {
+        self.finish_target_inner(job)
+            .await
+            .or_else(|e| self.item_skipped(job.t, e))
     }
 
     async fn finish_target_inner(&self, job: &Job<'_>) -> Result<()> {

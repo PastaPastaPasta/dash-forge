@@ -231,13 +231,11 @@ impl Progress {
 
     /// Item `index` has nothing more to write this run.
     pub fn completed(&self, index: usize, upstream: u32) {
-        let mut s = lock(&self.state);
+        let mut guard = lock(&self.state);
+        let s = &mut *guard;
         s.complete += 1;
         s.ahead.insert(index, upstream);
-        while let Some(n) = {
-            let low = s.low;
-            s.ahead.remove(&low)
-        } {
+        while let Some(n) = s.ahead.remove(&s.low) {
             s.low += 1;
             s.low_upstream = n;
         }

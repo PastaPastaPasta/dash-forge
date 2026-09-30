@@ -62,6 +62,12 @@ impl Counts {
         self.packs += push.packs;
         self.pack_bytes += push.pack_bytes;
     }
+
+    /// The issues and PRs, and the documents on them (comments, reviews, label events,
+    /// transitions): what the write phase's progress counts.
+    pub fn item_documents(&self) -> u64 {
+        self.issues + self.prs + self.comments + self.reviews + self.events + self.transitions
+    }
 }
 
 /// How the run ended.
