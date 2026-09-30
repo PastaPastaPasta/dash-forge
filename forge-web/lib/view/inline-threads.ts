@@ -68,6 +68,14 @@ function rootOf(c: CommentView, byId: ReadonlyMap<string, CommentView>): Comment
 }
 
 /**
+ * Whether anchor `a` names the PR head `headOid` (an anchor that names no commit cannot be shown
+ * to be on it). Off the head, a comment is outdated: in Files changed and in Conversation.
+ */
+export function anchorOnHead(a: Anchor, headOid: string): boolean {
+  return a.commitOid !== '' && a.commitOid === headOid.toLowerCase()
+}
+
+/**
  * Group `comments` into inline threads and place them. `lineExists(path, side, line)` says
  * whether the current diff shows that line, and `fileExists(path)` whether it shows that file
  * (pass `null` for either while the diff is still loading: then only the head check applies).
@@ -101,7 +109,7 @@ export function placeThreads(
   for (const t of threads.values()) {
     const a = t.root.anchor
     // An anchor that names no commit cannot be shown to be on this head: outdated.
-    const onHead = a.commitOid !== '' && a.commitOid === headOid.toLowerCase()
+    const onHead = anchorOnHead(a, headOid)
     if (onHead && (a.line === null || a.side === null)) {
       if (fileExists === null || fileExists(a.path)) {
         fileLevel.push(t)

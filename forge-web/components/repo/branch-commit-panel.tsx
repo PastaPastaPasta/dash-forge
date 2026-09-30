@@ -521,6 +521,7 @@ export function useSuggestions({
   isMember,
   isAuthor,
   signedIn,
+  branchAhead = false,
   onCommitted,
 }: {
   repo: RepoRef
@@ -536,6 +537,11 @@ export function useSuggestions({
   isMember: boolean
   isAuthor: boolean
   signedIn: boolean
+  /**
+   * The source branch is past the PR head (an interrupted commit moved the branch, not the
+   * head): a commit on the head would be refused at its ref update, so none starts (QW2-007).
+   */
+  branchAhead?: boolean
   onCommitted: (commit: string) => void
 }): {
   actions: SuggestionActions
@@ -591,8 +597,10 @@ export function useSuggestions({
           ? branchWrite.can
             ? 'Only the PR author or a maintainer or writer of this repo can move the PR head. Copy the suggestion instead.'
             : `Only the PR author (or writers of ${target?.name ?? 'the source repo'}) can apply this. Copy the suggestion instead.`
-          : null
-  const canApply = signedIn && !privateRepo && pull.state.open && write.can
+          : branchAhead
+            ? "The branch has moved past this PR's head: update the PR head (above) first."
+            : null
+  const canApply = signedIn && !privateRepo && pull.state.open && write.can && !branchAhead
   // Apply needs the name and email, the head's objects, and no other commit running.
   const ready = who !== null && headReader !== null && headOnly !== null && !runner.busy
   // Apply reads the latest reader, identity and suggestions through a ref: the actions object

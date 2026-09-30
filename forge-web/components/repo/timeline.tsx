@@ -11,7 +11,7 @@
 import { Byline } from '@/components/repo/byline'
 import { importedVerdictOf, trustedOrigin } from '@/lib/repo/provenance'
 import { Check, CheckCircle2, Eye, GitCommit, GitMerge, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, ShieldAlert, Tag, Trash2, UserPlus, X } from 'lucide-react'
-import type { TimelineItem } from '@/lib/view'
+import type { CommentView, TimelineItem } from '@/lib/view'
 import { branchName, plural, timeAgo } from '@/lib/view'
 import { anchorLabel } from '@/lib/view/inline-threads'
 import { VERDICT_LABEL, type VerdictName } from '@/lib/repo'
@@ -174,6 +174,7 @@ export function Timeline({
   links,
   renderComment,
   eventText,
+  anchorContext,
   trust = null,
 }: {
   items: readonly TimelineItem[]
@@ -183,6 +184,11 @@ export function Timeline({
   renderComment?: (item: Extract<TimelineItem, { kind: 'comment' }>) => CommentSlots
   /** A page's own wording for an event (the PR page counts the commits a head update pushed), or null. */
   eventText?: (e: Event) => string | null
+  /**
+   * A review's inline comment's heading: where it points, whether it is outdated or applied, and
+   * the code it was left on (the PR page, QW2-049). Omitted: the anchor's label alone.
+   */
+  anchorContext?: (c: CommentView) => ReactNode
   /** Who may mirror (`useMirrorTrust`): their imported comments and reviews show the original author and date. */
   trust?: ReadonlySet<string> | null
 }): JSX.Element {
@@ -252,7 +258,7 @@ export function Timeline({
                 <div className="space-y-2 border-t border-anvil-200 px-4 py-3 dark:border-anvil-800" data-testid="review-comments">
                   {item.comments.map((c) => (
                     <div key={c.id}>
-                      {c.anchor ? <p className="mb-1 font-mono text-[12px] text-anvil-600 dark:text-anvil-400">{anchorLabel(c.anchor)}</p> : null}
+                      {c.anchor ? (anchorContext?.(c) ?? <p className="mb-1 font-mono text-[12px] text-anvil-600 dark:text-anvil-400">{anchorLabel(c.anchor)}</p>) : null}
                       <MarkdownView source={c.body} links={links} imported={importedUrlOf(c.importedRaw)} />
                     </div>
                   ))}

@@ -29,7 +29,7 @@
  */
 
 import { isOidHex, isPlainBranchRef, matchesProtected, type Holdings } from '../rules'
-import type { Approvals, ChecksState, Policy, PolicyStatus } from '../rules/v2'
+import { linkedIssues, type Approvals, type ChecksState, type Policy, type PolicyStatus } from '../rules/v2'
 import type { PullView } from '../repo'
 import type { ProvedVerdicts } from '../repo/verdicts'
 import { branchName, plural } from './format'
@@ -128,6 +128,14 @@ export function requiredChecksLine(checks: ChecksState | null | 'unknown', named
   if (checks.required.length === 0) return { ok: false, text: 'Required checks not passing on the head: none reported' }
   const notPassing = checks.required.filter((c) => c.state !== 'passed').map((c) => (c.state === 'failing' ? c.name : `${c.name} (${c.state})`))
   return { ok: false, text: `Required checks not passing on the head${list(notPassing)}` }
+}
+
+/**
+ * The issues a PR's description links ("Fixes #12"), never the PR itself (QW2-054): issues and
+ * PRs share one numbering, so "Fixes #<own number>" names the PR, not an issue.
+ */
+export function prLinkedIssues(body: string, ownNumber: number): number[] {
+  return linkedIssues(body).filter((n) => n !== ownNumber)
 }
 
 /** forge-community `event.value`: at most 120 characters (and 480 bytes, which 120 never pass). */
