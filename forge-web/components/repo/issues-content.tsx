@@ -63,6 +63,8 @@ import {
   AuthorLoginNote,
   CommentCount,
   DroppedNote,
+  FilterBar,
+  filterCount,
   LabelChipFilter,
   LabelFilter,
   MilestoneFilter,
@@ -74,6 +76,7 @@ import {
   SearchedNote,
   SortSelect,
   StateTab,
+  StateTabs,
   tabCount,
   useListQuery,
   type ListGrammar,
@@ -183,7 +186,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
 
       <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 dark:border-anvil-800 dark:bg-anvil-900">
-          <div className="flex flex-wrap items-center gap-x-3" role="tablist" aria-label="Issue state">
+          <StateTabs label="Issue state">
             <StateTab active={query.state === 'open'} onClick={() => change({ state: 'open' })}>
               <CircleDot className="h-3.5 w-3.5" aria-hidden /> {tabCount(data?.openCount)}Open
             </StateTab>
@@ -193,8 +196,8 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
             <StateTab active={query.state === 'all'} onClick={() => change({ state: 'all' })}>
               All
             </StateTab>
-          </div>
-          <div className="ml-auto flex flex-wrap items-center gap-2">
+          </StateTabs>
+          <FilterBar active={filterCount(query) + (query.mentions ? 1 : 0)}>
             <LabelFilter labels={data?.labels ?? []} selected={query.labels} onChange={(labels) => change({ labels })} />
             <MilestoneFilter milestones={milestones.data} value={query.milestone} none={query.noMilestone} onChange={(c) => change(c)} />
             <PersonFilter
@@ -221,7 +224,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
               Mentions me
             </label>
             <SortSelect id="issue-sort" value={query.sort} onChange={(sort) => change({ sort })} />
-          </div>
+          </FilterBar>
         </div>
 
         {needsViewer && identity === null ? (
