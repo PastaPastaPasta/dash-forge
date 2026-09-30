@@ -202,7 +202,7 @@ impl Collab<'_> {
         super::check_text("milestone description", description, 1000, 2000)?;
         if repo.visibility == crate::rules::v2::Visibility::Private {
             return Err(Error::Config(
-                "milestones in a private repository are sealed; this build does not seal them yet (use the web app)".into(),
+                "milestones in a private repository are sealed; no Forge client seals them yet (web or dg)".into(),
             ));
         }
         let p = milestone_props(title, description, due_on, closed);

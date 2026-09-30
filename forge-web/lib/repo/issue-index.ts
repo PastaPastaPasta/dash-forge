@@ -43,6 +43,7 @@ import {
   resolveIds,
   rowsInAnyState,
   rowsOf,
+  rowsWithEvent,
   selectRows,
   transitionTargets,
   type ListIndex,
@@ -353,4 +354,15 @@ async function pinnedRows(sdk: EvoSDK, index: IssueIndex): Promise<IssueRow[]> {
   if (ids.length === 0) return []
   await resolveIds(sdk, index, ids)
   return rowsOf(index, ids)
+}
+
+/**
+ * Each issue a milestone event names, with its open state and milestone: the milestones page's
+ * progress (`foldMilestonesV2`'s items). Read from the feed the list shares (the targets with a
+ * `milestoneSet` event, resolved by id); null when the feed was too large to read, so the
+ * progress is unknown rather than wrong.
+ */
+export async function issueMilestoneItems(sdk: EvoSDK, repo: RepoRef, network: Network = DEFAULT_NETWORK): Promise<{ open: boolean; milestone: string | null }[] | null> {
+  const rows = await rowsWithEvent(sdk, await indexOf(sdk, repo, network), 'milestoneSet')
+  return rows?.map((r) => ({ open: r.state.open, milestone: r.milestone ?? null })) ?? null
 }

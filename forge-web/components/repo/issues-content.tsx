@@ -81,6 +81,7 @@ import {
 import { IssueTemplatePicker } from '@/components/repo/issue-templates'
 import { useRepoTotals } from '@/components/repo/use-repo-totals'
 import { useMilestones } from '@/components/repo/use-milestones'
+import { TriageNav } from '@/components/repo/triage-nav'
 import { BodyCounter, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { repoHref } from '@/hooks/use-query-param'
@@ -143,6 +144,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
     <div className="mx-auto max-w-4xl">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <SearchBox id="issue-search" label="Search issues" search={search} placeholder="is:open label:bug author:@me" />
+        <TriageNav addr={addr} />
         {canCompose ? (
           <Button variant="primary" size="sm" onClick={() => setComposing(true)} disabled={archived} title={archived ? ARCHIVED_REASON : undefined}>
             <MessageSquarePlus className="h-3.5 w-3.5" aria-hidden /> New issue

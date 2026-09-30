@@ -1269,6 +1269,7 @@ function PullPage({
                 canEdit={canMember}
                 onToggle={(label, remove) => setPending({ kind: 'label', label, remove })}
                 onDefine={(name, color, description) => setPending({ kind: 'define-label', name, color, description })}
+                manageHref={repoHref('/repo/labels', addr)}
               />
             </SidebarSection>
             <SidebarSection title="Linked issues" icon={Link2}>
