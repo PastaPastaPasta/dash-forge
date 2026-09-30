@@ -39,6 +39,10 @@ describe('withAnswer', () => {
     expect(withAnswer(DONE, { runnerKey: key })).toEqual({ ...DONE, runnerKey: key, ...DOWNSTREAM })
   })
 
+  it('keeps a baseline the patch states itself (a repository just created has no refs)', () => {
+    expect(withAnswer(DONE, { repo: { repoId: 'R2', name: 'p2' }, refsBefore: '' })).toEqual({ ...DONE, repo: { repoId: 'R2', name: 'p2' }, ...DOWNSTREAM, refsBefore: '' })
+  })
+
   it('does not clear anything for the later answers themselves', () => {
     const p = { ...DONE, workflowAdded: false, mirroredAt: null }
     expect(withAnswer(p, { workflowAdded: true })).toEqual({ ...p, workflowAdded: true })
@@ -61,6 +65,11 @@ describe('resumed', () => {
 
 describe('refsFingerprint', () => {
   const ref = (refName: string, oid: string): ResolvedRef => ({ refName, refNameHash: '', state: { state: 'resolved', oid, author: 'a', createdAt: 0 } }) as ResolvedRef
+  it('leaves out refs that are not resolved', () => {
+    const unborn = { refName: 'refs/heads/x', refNameHash: '', state: { state: 'unborn' } } as ResolvedRef
+    expect(refsFingerprint([unborn, ref('refs/heads/main', 'aa')])).toBe(refsFingerprint([ref('refs/heads/main', 'aa')]))
+  })
+
   it('is the same whatever the order, and changes with any tip', () => {
     const a = refsFingerprint([ref('refs/heads/main', 'aa'), ref('refs/tags/v1', 'bb')])
     expect(refsFingerprint([ref('refs/tags/v1', 'bb'), ref('refs/heads/main', 'aa')])).toBe(a)

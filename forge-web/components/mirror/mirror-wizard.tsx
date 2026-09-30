@@ -106,7 +106,14 @@ export function MirrorWizard(): JSX.Element {
 
   // Pick up where this identity stopped; a GitHub repo checked before signing in is kept.
   useEffect(() => {
-    if (identity === null) return
+    if (identity === null) {
+      // Signed out: nothing of the last identity's stays on the page. A GitHub repository
+      // checked from here on is the signed-out person's own, and resumes with them.
+      setLoaded(null)
+      openedAt.current = Date.now()
+      show(EMPTY_PROGRESS)
+      return
+    }
     let live = true
     loadMirrorProgress(ACTIVE_NETWORK.key, identity).then(
       (saved) => {
@@ -174,7 +181,7 @@ export function MirrorWizard(): JSX.Element {
     const gh = progress.github
     switch (s) {
       case 'repo':
-        return <RepoStep sdk={sdk} forge={forge} identity={identity} github={gh} firsts={firstsOrNone} onDone={(repo) => update({ repo })} />
+        return <RepoStep sdk={sdk} forge={forge} identity={identity} github={gh} firsts={firstsOrNone} onDone={(repo, created) => update(created ? { repo, refsBefore: '' } : { repo })} />
       case 'storage':
         return <StorageStep storage={storage} github={gh} initial={progress.storage} onDone={(name) => update({ storage: name })} />
       case 'key':
@@ -211,6 +218,7 @@ export function MirrorWizard(): JSX.Element {
             github={gh}
             repo={progress.repo}
             progress={progress}
+            onBaseline={(refsBefore) => update({ refsBefore }, true)}
             onMirrored={(at) => update({ mirroredAt: at })}
             onRestart={() => {
               setMade(null)

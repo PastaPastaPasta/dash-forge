@@ -67,7 +67,8 @@ export function withAnswer(p: MirrorProgress, patch: Partial<MirrorProgress>): M
     ('repo' in patch && next.repo?.repoId !== p.repo?.repoId) ||
     ('storage' in patch && next.storage !== p.storage) ||
     ('runnerKey' in patch && next.runnerKey?.keyId !== p.runnerKey?.keyId)
-  return changed ? { ...next, ...DOWNSTREAM } : next
+  // A patch that states the baseline itself (a repository just created has no refs) keeps it.
+  return changed ? { ...next, ...DOWNSTREAM, ...('refsBefore' in patch ? { refsBefore: next.refsBefore } : {}) } : next
 }
 
 /**
@@ -80,10 +81,13 @@ export function resumed(now: MirrorProgress, saved: MirrorProgress | null, opene
   return now.github !== null ? withAnswer(saved, { github: now.github }) : saved
 }
 
-/** A repository's branches and tags, as one comparable string. */
+/**
+ * A repository's resolved branches and tags, as one comparable string. Unborn or diverged refs
+ * are left out: a node that has not caught up could show one differently from the next read.
+ */
 export function refsFingerprint(refs: readonly ResolvedRef[]): string {
   return refs
-    .map((r) => `${r.refName} ${r.state.state === 'resolved' ? r.state.oid : r.state.state}`)
+    .flatMap((r) => (r.state.state === 'resolved' ? [`${r.refName} ${r.state.oid}`] : []))
     .sort()
     .join('\n')
 }

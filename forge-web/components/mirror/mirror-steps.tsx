@@ -165,7 +165,8 @@ export function RepoStep({
   github: GithubRepo
   /** Which of the creation's documents are this identity's first (priced higher). */
   firsts: RepoCreationFirsts
-  onDone: (repo: { repoId: string; name: string }) => void
+  /** `created`: the wizard made it just now (so it has no refs yet). */
+  onDone: (repo: { repoId: string; name: string }, created: boolean) => void
 }): JSX.Element {
   const { signer } = useAuth()
   const guard = useWriteGuard()
@@ -195,7 +196,7 @@ export function RepoStep({
     setProgress({})
     try {
       const r = await createRepo(sdk, signer, forge, input, (step, state) => setProgress((p) => ({ ...p, [step]: state === 'start' ? 'running' : 'done' })))
-      onDone({ repoId: r.repoId, name: r.name })
+      onDone({ repoId: r.repoId, name: r.name }, true)
     } catch (e) {
       setProgress(null)
       setError(guard.failed(e))
@@ -216,7 +217,7 @@ export function RepoStep({
             {existing.data.doc.createdAt ? `, created ${formatDate(existing.data.doc.createdAt)}` : ''}. The mirror writes into it: nothing to create, no cost.
           </p>
           {existing.data.doc.visibility === 'private' ? <Hint tone="caution">It is private: what the Action mirrors is encrypted to its members.</Hint> : null}
-          <Button variant="primary" onClick={() => onDone({ repoId: existing.data!.doc.repoId, name: existing.data!.doc.name })}>
+          <Button variant="primary" onClick={() => onDone({ repoId: existing.data!.doc.repoId, name: existing.data!.doc.name }, false)}>
             Mirror into {existing.data.doc.name}
           </Button>
         </div>
@@ -694,6 +695,7 @@ export function WaitStep({
   github,
   repo,
   progress,
+  onBaseline,
   onMirrored,
   onRestart,
 }: {
@@ -703,6 +705,8 @@ export function WaitStep({
   github: GithubRepo
   repo: { repoId: string; name: string }
   progress: MirrorProgress
+  /** No baseline was read before the workflow could run: the first check here is it. */
+  onBaseline: (refsBefore: string) => void
   onMirrored: (at: number) => void
   onRestart: () => void
 }): JSX.Element {
@@ -712,7 +716,7 @@ export function WaitStep({
   const [unchanged, setUnchanged] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const mirroredAt = progress.mirroredAt
-  const before = progress.refsBefore ?? ''
+  const before = progress.refsBefore
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000)
@@ -730,7 +734,13 @@ export function WaitStep({
         const all = await readRefs(sdk, resolved.repo)
         if (stop) return
         setError(null)
-        if (all.length > 0 && refsFingerprint(all) !== before) {
+        const now = refsFingerprint(all)
+        if (before === null) {
+          // Take what is there now as the starting point, and wait for a change from it.
+          onBaseline(now)
+          return
+        }
+        if (now !== '' && now !== before) {
           setRefs({ branches: branchesOf(all).length, tags: tagsOf(all).length })
           if (mirroredAt === null) onMirrored(Date.now())
           return
