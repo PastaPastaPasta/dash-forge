@@ -84,6 +84,16 @@ function keySummary(key: RunnerKeyRecord | null): string | null {
   return `Key ${key.keyId}: ${creditsAsDash(Number(key.budgetCredits))} DASH until ${formatDate(key.expiresAt)}`
 }
 
+/** Record a runner key in `identityId`'s saved progress, whatever the page shows now. */
+async function saveRunnerKeyFor(identityId: string, runnerKey: RunnerKeyRecord): Promise<void> {
+  try {
+    const saved = (await loadMirrorProgress(ACTIVE_NETWORK.key, identityId)) ?? { ...EMPTY_PROGRESS, startedAt: Date.now() }
+    await saveMirrorProgress(ACTIVE_NETWORK.key, identityId, withAnswer(saved, { runnerKey }))
+  } catch {
+    /* as update(): the key is on chain either way; only the resume point is lost */
+  }
+}
+
 export function MirrorWizard(): JSX.Element {
   const { identity } = useAuth()
   const { sdk } = useSdk()
@@ -95,11 +105,12 @@ export function MirrorWizard(): JSX.Element {
   const [loaded, setLoaded] = useState<string | null>(null)
   const [reopened, setReopened] = useState<StepId | null>(null)
   // The runner key's `dfk1:` value lives only here, in this tab, until it is pasted into GitHub,
-  // and only for the identity it was made on (a sign-out or switch drops it from view).
+  // and only for the identity it was made on.
   const [made, setMade] = useState<{ identity: string; value: string } | null>(null)
   const secret = made !== null && made.identity === identity ? made.value : null
   // A sign-out or switch drops the value itself, not only from view: switching back must not
-  // bring the last identity's key back. A key that finishes after a switch is not kept either.
+  // bring the last identity's key back. The value of a key that finishes after a switch is
+  // never kept (see onCreated).
   const identityRef = useRef(identity)
   identityRef.current = identity
   useEffect(() => setMade(null), [identity])
@@ -198,8 +209,15 @@ export function MirrorWizard(): JSX.Element {
             secret={secret}
             suggestedBudget={suggestedRunnerBudget(choice?.ok ? choice.kind : 's3', gh.sizeKib, PUSH_COST_DASH.perMib)}
             onCreated={(runnerKey, value) => {
-              if (identityRef.current === identity) setMade({ identity, value })
-              update({ runnerKey })
+              if (identityRef.current === identity) {
+                setMade({ identity, value })
+                update({ runnerKey })
+              } else {
+                // Finished after a switch or sign-out: the page is someone else's now, so leave it
+                // alone. The key is registered on this identity, so its record (never the value)
+                // goes into this identity's saved progress.
+                void saveRunnerKeyFor(identity, runnerKey)
+              }
             }}
             onDone={(runnerKey) => update({ runnerKey })}
           />
