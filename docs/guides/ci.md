@@ -97,7 +97,7 @@ These are what the protocol and the current forge-collab contract allow. They ar
 
 ## Self-host a runner
 
-[`forge-runner`](self-host-runner.md) watches a repository, runs `.forge/workflows/*.yml` (GitHub Actions syntax) with [nektos/act](https://github.com/nektos/act) in Docker on every push, and reports each job through `dg ci report` with its log.
+[`forge-runner`](self-host-runner.md) watches a repository, runs `.forge/workflows/*.yml` (GitHub Actions syntax) with [nektos/act](https://github.com/nektos/act) in Docker on every push, and reports each job through `dg ci report` with its log. It polls; [your own relay can wake it](self-host-runner.md#wake-it-from-your-relay) within seconds of a push.
 
 **The security boundary is the Docker daemon you give the runner.** Give it a daemon of its own: rootless, sysbox, or a Docker-in-Docker sidecar over TLS. Never the host's socket. On top of that, the runner:
 

@@ -1,11 +1,12 @@
 //! `forge-runner` — a self-hosted CI runner for Dash Forge, built on nektos/act.
 //!
-//! It watches repositories (`git ls-remote dash://…` every `interval_secs`, cursors in the state
-//! dir), and on a push it checks the commit out, runs `.forge/workflows/*.yml` (GitHub Actions
-//! syntax) with [act](https://github.com/nektos/act) in Docker, and reports each job as a Forge
-//! check run through `dg ci report`, uploading the job's log to a storage profile with its
-//! SHA-256. It signs with DASH_FORGE_KEY: a runner key from `dg ci runner new`, which can write
-//! check runs and nothing else.
+//! It watches repositories (`git ls-remote dash://…` every `interval_secs`, and at once when the
+//! owner's own relay wakes it, [`relay`]; cursors in the state dir), and on a push it checks the
+//! commit out, runs `.forge/workflows/*.yml` (GitHub Actions syntax) with
+//! [act](https://github.com/nektos/act) in Docker, and reports each job as a Forge check run
+//! through `dg ci report`, uploading the job's log to a storage profile with its SHA-256. It
+//! signs with DASH_FORGE_KEY: a runner key from `dg ci runner new`, which can write check runs
+//! and nothing else.
 //!
 //! What the runner enforces (docs/guides/self-host-runner.md §Security): job containers get no
 //! Docker socket and join the `bridge` network; a job that sets docker options or mounts
@@ -16,17 +17,19 @@
 //! runs pushes to the repository's own refs only, so a pull request from a fork never runs. It
 //! does NOT isolate jobs from the Docker daemon it drives: give it a daemon of its own.
 //!
-//! Module map: [`config`] (runner.toml), [`watch`] (refs, cursors), [`workflow`] (the YAML the
-//! runner reads before act), [`act`] (act's CLI and JSON log), [`run`] (one push end to end).
+//! Module map: [`config`] (runner.toml), [`watch`] (refs, cursors), [`relay`] (wake-ups),
+//! [`workflow`] (the YAML the runner reads before act), [`act`] (act's CLI and JSON log),
+//! [`run`] (one push end to end).
 
 mod act;
 mod config;
+mod relay;
 mod run;
 mod watch;
 mod workflow;
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand};
@@ -92,17 +95,7 @@ fn real_main(cli: &Cli) -> Result<()> {
         );
     }
     match &cli.command {
-        Cmd::Watch { once } => loop {
-            for repo in &cfg.repos {
-                if let Err(e) = poll(&cfg, repo) {
-                    eprintln!("forge-runner: {}: {e:#}", repo.repo);
-                }
-            }
-            if *once {
-                return Ok(());
-            }
-            std::thread::sleep(Duration::from_secs(cfg.interval_secs));
-        },
+        Cmd::Watch { once } => watch(&cfg, *once),
         Cmd::Run { repo, refname, sha } => {
             let r = cfg
                 .repos
@@ -120,6 +113,145 @@ fn real_main(cli: &Cli) -> Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+/// A repository is never polled for a wake within this long of its last poll.
+const WAKE_GAP: Duration = Duration::from_secs(10);
+
+/// A woken repository is polled once more this long after the wake: the runner's DAPI node may
+/// not have the block the relay saw yet.
+const FOLLOW_UP: Duration = Duration::from_secs(20);
+
+/// The polls wakes add, per repository: the wake's own poll and its follow-up, neither within
+/// [`WAKE_GAP`] of the repository's last poll. Two times per repository, however many wakes.
+#[derive(Debug)]
+struct Schedule(Vec<RepoTimes>);
+
+/// One repository's times in a [`Schedule`].
+#[derive(Debug, Clone, Default)]
+struct RepoTimes {
+    /// When its last poll ended.
+    last: Option<Instant>,
+    /// The earliest wake not yet served.
+    next: Option<Instant>,
+    /// The follow-up poll of the latest wake.
+    follow: Option<Instant>,
+}
+
+impl Schedule {
+    fn new(repos: usize) -> Self {
+        Self(vec![RepoTimes::default(); repos])
+    }
+
+    /// Repository `i` was woken at `now`.
+    fn wake(&mut self, i: usize, now: Instant) {
+        let r = &mut self.0[i];
+        r.next = Some(r.next.map_or(now, |t| t.min(now)));
+        r.follow = Some(now + FOLLOW_UP);
+    }
+
+    /// When repository `i` is due for a wake's poll, if it is.
+    fn due_at(&self, i: usize) -> Option<Instant> {
+        let r = &self.0[i];
+        let t = r.next.into_iter().chain(r.follow).min()?;
+        Some(r.last.map_or(t, |l| t.max(l + WAKE_GAP)))
+    }
+
+    /// Repository `i` was polled, ending at `now`: every wake up to then is served.
+    fn polled(&mut self, i: usize, now: Instant) {
+        let r = &mut self.0[i];
+        r.last = Some(now);
+        r.next = r.next.filter(|t| *t > now);
+        r.follow = r.follow.filter(|t| *t > now);
+    }
+}
+
+/// The watch loop: every repository every `interval_secs`, and, with a `[relay]`, a woken one
+/// as soon as the relay says ([`Schedule`]). Without a relay, or while it is unreachable, the
+/// interval alone drives the runner.
+fn watch(cfg: &Config, once: bool) -> Result<()> {
+    let mut wakes = match (&cfg.relay, once) {
+        (Some(r), false) => {
+            let secret = relay::read_secret(&r.secret_file)?;
+            let (tx, rx) = std::sync::mpsc::channel();
+            relay::spawn(r.url.clone(), secret, tx);
+            Some(rx)
+        }
+        _ => None,
+    };
+    let n = cfg.repos.len();
+    let interval = Duration::from_secs(cfg.interval_secs);
+    let mut sched = Schedule::new(n);
+    let mut next_all = Instant::now();
+    let mut told_unmatched = false;
+    let poll_one = |i: usize, sched: &mut Schedule| {
+        let repo = &cfg.repos[i];
+        if let Err(e) = poll(cfg, repo) {
+            eprintln!("forge-runner: {}: {e:#}", repo.repo);
+        }
+        sched.polled(i, Instant::now());
+    };
+    loop {
+        if Instant::now() >= next_all {
+            for i in 0..n {
+                poll_one(i, &mut sched);
+            }
+            if once {
+                return Ok(());
+            }
+            next_all = Instant::now() + interval;
+            continue;
+        }
+        let now = Instant::now();
+        if let Some(i) = (0..n).find(|i| sched.due_at(*i).is_some_and(|t| t <= now)) {
+            poll_one(i, &mut sched);
+            continue;
+        }
+        let until = (0..n)
+            .filter_map(|i| sched.due_at(i))
+            .fold(next_all, Instant::min);
+        let wait = until.saturating_duration_since(now);
+        let Some(rx) = &wakes else {
+            std::thread::sleep(wait);
+            continue;
+        };
+        let first = match rx.recv_timeout(wait) {
+            Ok(w) => w,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                wakes = None;
+                continue;
+            }
+        };
+        for w in std::iter::once(first).chain(rx.try_iter()) {
+            let hit = woken(cfg, &w);
+            if hit.is_empty() && !told_unmatched {
+                told_unmatched = true;
+                eprintln!(
+                    "forge-runner: the relay woke {w:?}, none of which is a configured `repo` \
+                     (spell it as the relay's [wake] repos entry or <owner id>/<name>); \
+                     said once"
+                );
+            }
+            for i in hit {
+                sched.wake(i, Instant::now());
+            }
+        }
+    }
+}
+
+/// The configured repositories (by index) a wake names.
+fn woken(cfg: &Config, w: &relay::Wake) -> Vec<usize> {
+    match w {
+        relay::Wake::All => (0..cfg.repos.len()).collect(),
+        relay::Wake::Repos(names) => cfg
+            .repos
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| names.iter().flatten().any(|n| *n == r.repo))
+            .map(|(i, _)| i)
+            .collect(),
     }
 }
 
@@ -205,4 +337,53 @@ fn poll(cfg: &Config, repo: &config::RepoConfig) -> Result<()> {
             .is_some_and(|(r, o)| now.get(r).is_some_and(|t| t == o))
     });
     state.save(&path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wake_names_repositories_by_either_spelling() {
+        let cfg = Config::parse(
+            "state_dir = \"/s\"\n[[repo]]\nrepo = \"alice/one\"\n[[repo]]\nrepo = \"OwnerId/two\"",
+        )
+        .unwrap();
+        let w = relay::Wake::Repos(vec![
+            vec!["OwnerId/one".into(), "alice/one".into()],
+            vec!["OwnerId/two".into(), "bob/two".into()],
+            vec!["OwnerId/three".into()],
+        ]);
+        assert_eq!(woken(&cfg, &w), [0, 1]);
+        assert_eq!(woken(&cfg, &relay::Wake::All), [0, 1]);
+        assert!(woken(&cfg, &relay::Wake::Repos(vec![vec!["x/y".into()]])).is_empty());
+    }
+
+    #[test]
+    fn wakes_poll_now_and_once_more_but_never_within_the_gap() {
+        let t0 = Instant::now();
+        let s = |secs: u64| t0 + Duration::from_secs(secs);
+        let mut sc = Schedule::new(2);
+        assert_eq!(sc.due_at(0), None, "no wake, no extra poll");
+        sc.wake(0, s(0));
+        assert_eq!(sc.due_at(0), Some(s(0)), "a wake is served at once");
+        assert_eq!(sc.due_at(1), None);
+        sc.polled(0, s(2));
+        assert_eq!(sc.due_at(0), Some(s(20)), "then the follow-up");
+        // A second wake right after the poll waits out the gap, and moves the follow-up.
+        sc.wake(0, s(3));
+        assert_eq!(
+            sc.due_at(0),
+            Some(s(12)),
+            "not within 10 s of the last poll"
+        );
+        sc.polled(0, s(12));
+        assert_eq!(sc.due_at(0), Some(s(23)));
+        // However many wakes arrive, a repo holds two times.
+        for k in 0..100 {
+            sc.wake(0, s(13 + k));
+        }
+        sc.polled(0, s(200));
+        assert_eq!(sc.due_at(0), None, "a long poll served them all");
+    }
 }
