@@ -256,17 +256,38 @@ export interface LanguageStats {
   readonly truncated: boolean
 }
 
-/** Shares from `(path, bytes)` pairs: grouped by language, largest first; languages under 0.1% fold into "Other". */
-export function languageShares(files: Iterable<readonly [path: string, bytes: number]>): LanguageShare[] {
+/**
+ * Shares from `(path, bytes, delta)` rows: grouped by language, largest first; languages under
+ * 0.1% fold into "Other".
+ *
+ * `delta`: the file is stored as a delta against another version, so its stored size is the
+ * delta's, a small fraction of the file's (QW-024: a mirror pushed a push at a time stores most of
+ * a busy C++ tree that way, and the bar read dashpay/dash as C before C++). Its size is taken as
+ * the mean stored size of its language's files stored whole; with none, its own.
+ */
+export function languageShares(files: Iterable<readonly [path: string, bytes: number, delta?: boolean]>): LanguageShare[] {
   const list = [...files]
   // Built only when a `.h` needs it.
   let header: ((path: string) => Language) | null = null
   const headerOf = (): ((path: string) => Language) => (header ??= headerLanguage(list.map(([p]) => p)))
+  const rows = list.flatMap(([path, bytes, delta]) => {
+    const lang = languageIn(path, headerOf)
+    return lang === null || bytes <= 0 ? [] : [{ lang, bytes, delta: delta === true }]
+  })
+  const whole = new Map<string, { bytes: number; files: number }>()
+  for (const r of rows) {
+    if (r.delta) continue
+    const w = whole.get(r.lang.name) ?? { bytes: 0, files: 0 }
+    w.bytes += r.bytes
+    w.files += 1
+    whole.set(r.lang.name, w)
+  }
   const totals = new Map<string, { lang: Language; bytes: number }>()
   let sum = 0
-  for (const [path, bytes] of list) {
-    const lang = languageIn(path, headerOf)
-    if (lang === null || bytes <= 0) continue
+  for (const row of rows) {
+    const { lang } = row
+    const w = row.delta ? whole.get(lang.name) : undefined
+    const bytes = w === undefined ? row.bytes : w.bytes / w.files
     const t = totals.get(lang.name) ?? { lang, bytes: 0 }
     t.bytes += bytes
     totals.set(lang.name, t)
@@ -285,7 +306,7 @@ export function languageShares(files: Iterable<readonly [path: string, bytes: nu
   return out
 }
 
-/** The language bar of a walk. */
-export function languageStats(walk: FileWalk): LanguageStats {
-  return { languages: languageShares(walk.files.map((f) => [f.path, f.size] as const)), files: walk.files.length, truncated: walk.truncated }
+/** The language bar of a walk; `isDelta` says which blobs are stored as deltas ({@link languageShares}). */
+export function languageStats(walk: FileWalk, isDelta: (oid: string) => boolean = () => false): LanguageStats {
+  return { languages: languageShares(walk.files.map((f) => [f.path, f.size, isDelta(f.oid)] as const)), files: walk.files.length, truncated: walk.truncated }
 }

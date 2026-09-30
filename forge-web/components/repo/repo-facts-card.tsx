@@ -29,7 +29,7 @@ export function LanguageBar({ stats }: { stats: LanguageStats }): JSX.Element | 
   const { languages, truncated, files } = stats
   const note = (
     <p className="mt-1.5 text-[11px] text-anvil-500 dark:text-anvil-400" data-testid="language-note">
-      ≈ by stored (compressed) size{truncated ? `, based on the first ${plural(files, 'file')}` : ''}
+      ≈ by stored (compressed) size; delta-stored files at their language&apos;s average{truncated ? `, based on the first ${plural(files, 'file')}` : ''}
     </p>
   )
   if (languages.length === 0) {

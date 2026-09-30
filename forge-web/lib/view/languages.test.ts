@@ -73,6 +73,25 @@ describe('a .h and a .ts by the files around them (QW-024)', () => {
   })
 })
 
+describe('a file stored as a delta (QW-024)', () => {
+  it('counts at its language\'s average whole-stored size, not the delta\'s', () => {
+    // Four busy C++ files stored as small deltas, one C file stored whole: C++ still leads.
+    const shares = languageShares([
+      ['src/a.cpp', 1_000, false],
+      ['src/b.cpp', 100, true],
+      ['src/c.cpp', 100, true],
+      ['src/d.cpp', 100, true],
+      ['lib/x.c', 2_000, false],
+    ])
+    expect(shares.map((s) => [s.name, s.percent])).toEqual([
+      ['C++', 66.7],
+      ['C', 33.3],
+    ])
+    // With no whole-stored file of its language, a delta counts at its own size.
+    expect(languageShares([['a.rs', 50, true], ['b.py', 50, false]]).map((s) => s.percent)).toEqual([50, 50])
+  })
+})
+
 describe('languageShares', () => {
   it('groups by language, largest first, with percentages summing to about 100', () => {
     const shares = languageShares([
