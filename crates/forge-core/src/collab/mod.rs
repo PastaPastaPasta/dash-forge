@@ -281,6 +281,9 @@ pub struct ReleaseWritten {
     pub sealed_assets: Vec<crate::private::release::ManifestAsset>,
     /// The revision names the previous asset list as it was, unopened.
     pub asset_list_kept: bool,
+    /// The revision names the asset list an earlier attempt stored before its release write
+    /// failed: nothing was sealed or stored again (§16.5).
+    pub asset_list_reused: bool,
     /// What the writer of a sealed revision should know (§16.3): it is not the tag's newest
     /// after the write (another maintainer's concurrent revision, or a clock behind theirs),
     /// or that could not be checked; it carried forward from a view missing a newer revision;

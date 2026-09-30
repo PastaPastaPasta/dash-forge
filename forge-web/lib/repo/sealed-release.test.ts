@@ -36,6 +36,7 @@ import {
   fitReleaseNotes,
   openRelease,
   openReleaseManifest,
+  sealPack,
   sealReleaseManifest,
   type OpenContext,
   type ReleaseFields,
@@ -50,13 +51,17 @@ import {
   assetListPlan,
   carriedFields,
   createSealedRelease,
+  headerFits,
+  listStates,
   notNewestWarning,
   retryMovedWarning,
   sealedWriteWarnings,
   sealedReleaseBudget,
   sealedReleasePreview,
   type SealedReleaseEnv,
+  type SealedReleaseInput,
 } from './sealed-release'
+import type { PackManifest } from './packs'
 
 const repoIdBytes = new Uint8Array(32).fill(0x11)
 const ownerBytes = new Uint8Array(32).fill(0x22)
@@ -105,6 +110,12 @@ async function listOf(...revisions: ReleaseFields[]): Promise<ReleaseList> {
   return sealedReleases(docs, ctx)
 }
 
+/** The first 36 bytes of the object in `objects` whose SHA-256 is `sealedSha256` (a storage read of its header). */
+async function headerOf(objects: readonly Uint8Array[], sealedSha256: string | undefined): Promise<Uint8Array> {
+  for (const o of objects) if ((await sha(o)) === sealedSha256) return o.slice(0, 36)
+  throw new Error('not stored')
+}
+
 /** A scripted environment: `keys` answered in turn by `writeKeys` (the last one repeats). */
 function envOf(before: ReleaseList, keys: EpochKeys[], manifest: ReleaseManifest | null = null) {
   const stored: Uint8Array[] = []
@@ -118,6 +129,8 @@ function envOf(before: ReleaseList, keys: EpochKeys[], manifest: ReleaseManifest
       if (manifest === null) throw new Error('no manifest')
       return manifest
     },
+    storedLists: async () => [],
+    storedHeader: async (entry) => headerOf(stored, entry.sealedSha256),
     store: async (sealed, sha256Hex) => {
       stored.push(sealed)
       const h = await sha(sealed)
@@ -337,6 +350,172 @@ describe('the asset list (§16.5)', () => {
     expect((await writtenFields()).fields).toEqual(r.resolved.fields)
     const moved = envOf(await listOf(full), [k1])
     await expect(createSealedRelease(sdk, auth, REPO, { tagName: 'v1.0.0', resolved: r.resolved }, moved.env)).rejects.toThrow(/moved/)
+  })
+})
+
+describe('a re-run after a failed release write (§16.5: the stored asset list is reused)', () => {
+  const H = 'ef'.repeat(32)
+  const prev: ReleaseManifest = {
+    v: 1,
+    tag: 'v1.0.0',
+    total: 1,
+    assets: [{ name: 'app.tar.gz', sha256: H, sizeBytes: 10, uris: ['https://a.example/app'], sealedSha256: H, sealedSizeBytes: 100 }],
+  }
+  const x = file('x.bin', 'x')
+
+  /** An attempt that stored its files and list under `keys`; its release write "failed" (the re-run's list does not show it). */
+  async function storedByAnAttempt(keys: EpochKeys, input: SealedReleaseInput = { tagName: 'v1.0.0', files: [x] }, carried: ReleaseFields = full) {
+    const first = envOf(await listOf(carried), [keys], prev)
+    const r = await createSealedRelease(sdk, auth, REPO, input, first.env)
+    const objects = first.stored
+    const list = first.stored[first.stored.length - 1] as Uint8Array
+    const hash = r.resolved.fields.assetManifest as string
+    creates.length = 0
+    const record: PackManifest = {
+      packHash: hash,
+      kind: 4,
+      sizeBytes: list.length,
+      objectCount: 0,
+      chunkCount: 0,
+      storage: 1,
+      uris: [`https://pub.example/packs/${hash}.pack`],
+      tips: [],
+      supersedes: [],
+      createdAt: 1000,
+      documentId: 'PM1',
+      uploader: OWNER,
+    }
+    return { list, hash, record, objects, assets: r.resolved.assets }
+  }
+
+  /**
+   * A re-run's environment: the lists it finds, each opened with the keyring the writer passes (the
+   * carried one is `prev`), and the earlier attempt's objects still in storage.
+   */
+  function rerunEnv(
+    before: ReleaseList,
+    keys: EpochKeys[],
+    stored: { list: Uint8Array; hash: string; record: PackManifest; objects: readonly Uint8Array[] },
+    lists = [stored.record],
+    objects = stored.objects,
+  ) {
+    const e = envOf(before, keys, prev)
+    const opened: string[] = []
+    e.env.storedLists = async () => lists
+    e.env.storedHeader = async (entry) => headerOf(objects, entry.sealedSha256)
+    e.env.openManifest = async (fields, ring) => {
+      if (fields.assetManifest === PREV_HASH) return prev
+      opened.push(fields.assetManifest as string)
+      if (fields.assetManifest !== stored.hash) throw new Error('not stored')
+      return openReleaseManifest(stored.list, stored.list.length, Buffer.from(stored.hash, 'hex'), fields.tag, fields.notesContinue === true, ring)
+    }
+    return { ...e, opened }
+  }
+
+  it('names the list the failed attempt stored: nothing sealed, uploaded or recorded again', async () => {
+    const s = await storedByAnAttempt(k0)
+    const rerun = rerunEnv(await listOf(full), [k0], s)
+    const events: string[] = []
+    const r = await createSealedRelease(sdk, auth, REPO, { tagName: 'v1.0.0', files: [x] }, rerun.env, (e) => events.push(e.step))
+    expect(rerun.stored).toHaveLength(0)
+    expect(creates.map((c) => c.documentType)).toEqual(['release'])
+    expect((await writtenFields()).fields).toEqual({ ...full, assetManifest: s.hash })
+    expect(events).toContain('reused')
+    expect(r.resolved.assets).toEqual(s.assets)
+  })
+
+  it('builds a new list when the stored one states other files, or none of the signer’s is unnamed and newer', async () => {
+    const s = await storedByAnAttempt(k0)
+    const other = rerunEnv(await listOf(full), [k0], s)
+    await createSealedRelease(sdk, auth, REPO, { tagName: 'v1.0.0', files: [file('x.bin', 'y')] }, other.env)
+    expect(other.opened).toEqual([s.hash])
+    expect(other.stored).toHaveLength(2) // the file, then the list
+    for (const record of [
+      { ...s.record, uploader: base58Encode(new Uint8Array(32).fill(0x33)) }, // another signer's
+      { ...s.record, createdAt: 50 }, // older than the carried revision
+    ]) {
+      creates.length = 0
+      const e = rerunEnv(await listOf(full), [k0], s, [record])
+      await createSealedRelease(sdk, auth, REPO, { tagName: 'v1.0.0', files: [x] }, e.env)
+      expect(e.opened).toEqual([])
+      expect(e.stored).toHaveLength(2)
+    }
+    // Named by a readable revision (of any tag): that revision's list, not a failed attempt's.
+    creates.length = 0
+    const named = rerunEnv(await listOf(full, { tag: 'v0.9', assetManifest: s.hash }), [k0], s)
+    await createSealedRelease(sdk, auth, REPO, { tagName: 'v1.0.0', files: [x] }, named.env)
+    expect(named.opened).toEqual([])
+    expect(named.stored).toHaveLength(2)
+  })
+
+  it('builds a new list under the new key when the epoch moved since the failed attempt', async () => {
+    const s = await storedByAnAttempt(k0)
+    const moved = rerunEnv(await listOf(full), [k1], s)
+    await createSealedRelease(sdk, auth, REPO, { tagName: 'v1.0.0', files: [x] }, moved.env)
+    // Opened under the write key only: the epoch-0 list does not open.
+    expect(moved.opened).toEqual([s.hash])
+    expect(moved.stored).toHaveLength(2)
+    const { fields, epoch } = await writtenFields()
+    expect(epoch).toBe(1)
+    expect(fields.assetManifest).not.toBe(s.hash)
+  })
+
+  it('builds a new list when a file the earlier attempt stored is no longer in storage', async () => {
+    const s = await storedByAnAttempt(k0)
+    const gone = rerunEnv(await listOf(full), [k0], s, [s.record], [s.list])
+    await createSealedRelease(sdk, auth, REPO, { tagName: 'v1.0.0', files: [x] }, gone.env)
+    expect(gone.opened).toEqual([s.hash])
+    expect(gone.stored).toHaveLength(2)
+    expect((await writtenFields()).fields.assetManifest).not.toBe(s.hash)
+  })
+
+  it('reuses a list that holds only continued notes', async () => {
+    const long = 'é'.repeat(2000)
+    const input = { tagName: 'v2', notes: long }
+    const s = await storedByAnAttempt(k0, input, { tag: 'v2' })
+    const rerun = rerunEnv(await listOf({ tag: 'v2' }), [k0], s)
+    await createSealedRelease(sdk, auth, REPO, input, rerun.env)
+    expect(rerun.stored).toHaveLength(0)
+    const { fields } = await writtenFields()
+    expect(fields).toMatchObject({ notesContinue: true, assetManifest: s.hash })
+  })
+
+  it('a reused list whose key then moves is reported as named by nothing, and a new one is sealed', async () => {
+    const s = await storedByAnAttempt(k0)
+    const rerun = rerunEnv(await listOf(full), [k0, k1, k1], s)
+    const events: string[] = []
+    const r = await createSealedRelease(sdk, auth, REPO, { tagName: 'v1.0.0', files: [x] }, rerun.env, (e) => events.push(e.step))
+    expect(events.filter((e) => e === 'reused' || e === 'resealing')).toEqual(['reused', 'resealing'])
+    // the earlier attempt's file, then its list: both under the old key, named by nothing
+    expect(r.orphaned).toEqual([s.assets.find((a) => a.name === 'x.bin')?.sealedSha256, s.hash])
+    expect(rerun.stored).toHaveLength(2)
+    expect((await writtenFields()).epoch).toBe(1)
+  })
+
+  it('listStates: the kept entries as they are, then each new file sealed, the notes and the source', () => {
+    const kept = [{ name: 'old', sha256: H, sizeBytes: 1, uris: ['https://a/old'], sealedSha256: H, sealedSizeBytes: 53 }]
+    const added = { name: 'new', sha256: 'aa'.repeat(32), sizeBytes: 5, uris: ['https://a/new'], sealedSha256: 'bb'.repeat(32), sealedSizeBytes: 57 }
+    const m: ReleaseManifest = { v: 1, tag: 't', total: 2, assets: [...kept, added] }
+    const want = { kept, files: [{ name: 'new', sha256: 'aa'.repeat(32), sizeBytes: 5 }], notes: undefined, source: undefined }
+    expect(listStates(m, want)).toBe(true)
+    const other = (change: Partial<typeof added>) => listStates({ ...m, assets: [...kept, { ...added, ...change }] }, want)
+    expect(other({ name: 'x' })).toBe(false)
+    expect(other({ sha256: 'cc'.repeat(32) })).toBe(false)
+    expect(other({ sizeBytes: 6 })).toBe(false)
+    expect(listStates({ ...m, assets: [...kept, { name: 'new', sha256: 'aa'.repeat(32), sizeBytes: 5, uris: ['https://src/new'] }] }, want)).toBe(false) // an external link
+    expect(listStates({ ...m, assets: [{ ...kept[0]!, uris: [] }, added] }, want)).toBe(false) // a kept entry changed
+    expect(listStates({ ...m, assets: kept }, want)).toBe(false) // a file missing
+    expect(listStates({ ...m, notes: 'n' }, want)).toBe(false)
+    expect(listStates({ ...m, source: 'https://s' }, want)).toBe(false)
+  })
+
+  it('headerFits: sealed under the write epoch at the recorded size', async () => {
+    const sealed = await sealPack(k1, new TextEncoder().encode('hello'))
+    const entry = { name: 'f', sha256: '', sizeBytes: 5, uris: [], sealedSha256: 'x', sealedSizeBytes: sealed.length }
+    expect(headerFits(sealed.slice(0, 36), entry, 1)).toBe(true)
+    expect(headerFits(sealed.slice(0, 36), entry, 0)).toBe(false)
+    expect(headerFits(sealed.slice(0, 36), { ...entry, sealedSizeBytes: sealed.length + 1 }, 1)).toBe(false)
+    expect(headerFits(sealed.slice(0, 20), entry, 1)).toBe(false)
   })
 })
 

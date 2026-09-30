@@ -224,6 +224,8 @@ export type PublishEvent =
   | { readonly step: 'release' }
   /** A private repo's key moved during the upload: every file is sealed and uploaded again. */
   | { readonly step: 'resealing' }
+  /** A private repo's re-run found the asset list (and files) an earlier attempt stored: nothing is uploaded (§16.5). */
+  | { readonly step: 'reused' }
 
 /** The release write failed after every asset was stored: say so, as the CLI does. */
 export class ReleaseWriteError extends Error {
@@ -332,6 +334,7 @@ async function publishSealedRelease(
   let uploaded = 0
   const onSealed = (e: SealedReleaseEvent): void => {
     if (e.step === 'role' || e.step === 'upload') onEvent?.(e)
+    else if (e.step === 'reused') onEvent?.({ step: 'reused' })
     else if (e.step === 'resealing') {
       uploaded = 0
       onEvent?.({ step: 'resealing' })

@@ -11,6 +11,7 @@ import { bytesToHex, concatBytes, hexToBytes } from '@noble/hashes/utils.js'
 
 import { PACK_KIND } from '../constants'
 import {
+  HEADER_LEN,
   ManifestMismatchError,
   PackError,
   RELEASE_MANIFEST_MAX_BYTES,
@@ -278,6 +279,48 @@ export class SealedAssetCorruptError extends Error {
     super(`${name} does not match its recorded SHA-256 after decryption`)
     this.name = 'SealedAssetCorruptError'
   }
+}
+
+/**
+ * The first {@link HEADER_LEN} bytes of the sealed object `asset` names (§3.2), from the first of
+ * its places that serves them (a ranged read; a host that ignores the range is read only that
+ * far). A sealed release writer checks with it that an earlier attempt's files are still stored
+ * before naming them again (`sealed-release.ts`). Rejects when no place answers.
+ */
+export async function readSealedAssetHeader(asset: ReleaseAsset, opts: DownloadOptions = {}): Promise<Uint8Array> {
+  const fetchImpl = opts.fetch ?? ((input, init) => fetch(input, init))
+  const reasons: string[] = []
+  for (const url of browserFetchUrls(asset, opts.gateways)) {
+    try {
+      const resp = await fetchImpl(url, { headers: { Range: `bytes=0-${HEADER_LEN - 1}` }, credentials: 'omit', cache: 'no-store', signal: opts.signal })
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      const head = await firstBytes(resp, HEADER_LEN)
+      if (head.length === HEADER_LEN) return head
+      reasons.push(`${urlHost(url)}: ${head.length} bytes`)
+    } catch (e) {
+      reasons.push(`${urlHost(url)}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+  throw new Error(`${asset.name} is not stored at any place this page can read: ${reasons.join('; ') || 'none recorded'}`)
+}
+
+/** Up to the first `n` bytes of `resp`'s body; the rest is not downloaded. */
+async function firstBytes(resp: Response, n: number): Promise<Uint8Array> {
+  if (resp.body === null) return new Uint8Array(await resp.arrayBuffer()).slice(0, n)
+  const reader = resp.body.getReader()
+  const parts: Uint8Array[] = []
+  let got = 0
+  try {
+    while (got < n) {
+      const { done, value } = await reader.read()
+      if (done) break
+      parts.push(value)
+      got += value.length
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined)
+  }
+  return concatBytes(...parts).slice(0, n)
 }
 
 /**
