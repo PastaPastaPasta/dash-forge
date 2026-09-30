@@ -19,6 +19,8 @@ let answer: (intent: string | undefined) => Promise<unknown>
 let visible: number[] = []
 /** PRs visible on Platform. */
 let visiblePatches = 0
+/** How many more issue counts a node a block behind answers (one short). */
+let lagReads = 0
 /** The document types and data the engine was asked to write, in order. */
 const types: (string | undefined)[] = []
 const datas: (Record<string, unknown> | undefined)[] = []
@@ -48,7 +50,14 @@ vi.mock('../sdk/query', async (orig) => {
   const rows = (): Record<string, unknown>[] => visible.map((n) => ({ $id: `id${n}`, $ownerId: 'someone', number: n }))
   return {
     ...real,
-    countDocuments: async (_sdk: unknown, q: { documentTypeName: string }) => (q.documentTypeName === 'patch' ? visiblePatches : visible.length),
+    countDocuments: async (_sdk: unknown, q: { documentTypeName: string }) => {
+      if (q.documentTypeName === 'patch') return visiblePatches
+      if (lagReads > 0) {
+        lagReads--
+        return visible.length - 1
+      }
+      return visible.length
+    },
     // No transitions yet: every target is open and ready.
     sumDocumentsGrouped: async () => new Map(),
     // The repo has no maintainer documents: the owner alone is trusted (and wrote nothing).
@@ -88,6 +97,7 @@ beforeEach(() => {
   datas.length = 0
   visible = [1, 2]
   visiblePatches = 0
+  lagReads = 0
   const store = new Map<string, string>()
   vi.stubGlobal('window', {
     localStorage: {
@@ -95,6 +105,32 @@ beforeEach(() => {
       setItem: (k: string, v: string) => void store.set(k, v),
       removeItem: (k: string) => void store.delete(k),
     },
+  })
+})
+
+describe('the header count after a create (QW-064)', () => {
+  it('raises the total floor before the lists are told, so their re-read waits out a lagging node', async () => {
+    const { readTargetCounts } = await import('./social')
+    const { subscribeRepoLists } = await import('./issues')
+    expect((await readTargetCounts(sdk, REPO.forge, REPO.repoId, { retryMs: 0 })).issues).toBe(2)
+    answer = async () => {
+      // #3 lands; the next count is answered by a node that has not applied it yet.
+      visible = [1, 2, 3]
+      lagReads = 1
+      return { documentId: 'X', confirmed: true, cost: { credits: 0, dash: 0 }, actualCredits: 0 }
+    }
+    // The header re-reads the moment the write drops the caches (it subscribes to the lists).
+    let reread: Promise<{ issues: number | null }> | null = null
+    const stop = subscribeRepoLists(() => {
+      reread ??= readTargetCounts(sdk, REPO.forge, REPO.repoId, { retryMs: 0 })
+    })
+    try {
+      expect((await createIssue(sdk, AUTH, REPO, { title: 'A', body: '', intent: 'qw064' })).number).toBe(3)
+      expect(reread).not.toBeNull()
+      expect((await reread!).issues).toBe(3)
+    } finally {
+      stop()
+    }
   })
 })
 

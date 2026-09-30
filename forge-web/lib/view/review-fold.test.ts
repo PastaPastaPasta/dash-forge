@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { countApprovals, RoleOracle, type Review } from '../rules/v2'
-import { reviewerRows, sinceYourReview } from './review-fold'
+import { importedReviewers, reviewerRows, sinceYourReview } from './review-fold'
 
 const H1 = '1'.repeat(40)
 const H2 = '2'.repeat(40)
@@ -90,5 +90,46 @@ describe('sinceYourReview', () => {
     expect(sinceYourReview(reviews, H2, updates, 'other')).toBeNull()
     expect(sinceYourReview(reviews, H1, updates, 'me')).toBeNull()
     expect(sinceYourReview(reviews, H2, updates, null)).toBeNull()
+  })
+})
+
+describe('importedReviewers (a mirrored PR, QW-017)', () => {
+  const MIRROR = 'mirror'
+  const trusted = new Set([MIRROR])
+  const imported = (login: string, verdict: string, at: number) => ({
+    reviewer: MIRROR,
+    body: `> Mirrored from github.com/dashpay/dips#161 by @${login} (review, ${verdict}, 2024-01-0${at})\n\nbody`,
+    createdAt: 1000 + at,
+    origin: { author: login, createdAt: at * 1000, url: 'https://github.com/dashpay/dips/pull/161', host: 'github.com' },
+  })
+
+  it("lists the source reviewers with their verdicts, and leaves out the mirror's own row", () => {
+    const { reviewers, mirrorOnly } = importedReviewers(
+      [imported('thephez', 'requested changes', 1), imported('VirgileBa', 'requested changes', 2), imported('thephez', 'commented', 3)],
+      trusted,
+    )
+    // A later plain comment does not undo a change request, as on GitHub.
+    expect(reviewers).toEqual([
+      { login: 'thephez', host: 'github.com', verdict: 'requested changes' },
+      { login: 'VirgileBa', host: 'github.com', verdict: 'requested changes' },
+    ])
+    expect([...mirrorOnly]).toEqual([MIRROR])
+  })
+
+  it('a newer standing verdict replaces an older one', () => {
+    const { reviewers } = importedReviewers([imported('a', 'requested changes', 1), imported('a', 'approved', 2)], trusted)
+    expect(reviewers).toEqual([{ login: 'a', host: 'github.com', verdict: 'approved' }])
+  })
+
+  it("trusts only the mirror set: an untrusted signer's imported record is its own review", () => {
+    const { reviewers, mirrorOnly } = importedReviewers([imported('thephez', 'approved', 1)], new Set())
+    expect(reviewers).toEqual([])
+    expect(mirrorOnly.size).toBe(0)
+    expect(importedReviewers([imported('thephez', 'approved', 1)], null).reviewers).toEqual([])
+  })
+
+  it('keeps the row of a signer who also reviewed natively', () => {
+    const own = { reviewer: MIRROR, body: 'LGTM', createdAt: 5, origin: null }
+    expect(importedReviewers([imported('x', 'approved', 1), own], trusted).mirrorOnly.size).toBe(0)
   })
 })

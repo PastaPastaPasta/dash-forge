@@ -955,10 +955,14 @@ export interface WriteResult {
 }
 
 /** The repo a write's data names (`repoId` bytes), for the ledger. */
-function repoOf(data: Readonly<Record<string, unknown>>, contractId: string): string | null {
+function repoOf(data: Readonly<Record<string, unknown>>, documentType?: string, documentId?: string): string | null {
+  // A `repo` document is the repo: its own id names it (it has no `repoId` field). Any other
+  // document without one (a follow, a profile) belongs to no repo. Falling back to the contract
+  // id made Settings → Spend list those writes under a contract's id, as if it were a repo (QW-054).
+  if (documentType === 'repo' && documentId !== undefined) return documentId
   const repoId = data['repoId']
   if (repoId instanceof Uint8Array && repoId.length === 32) return base58Encode(repoId)
-  return contractId
+  return null
 }
 
 /** Whether a stored document exists: `null` when the read failed (unknown is not "gone"). */
@@ -1231,7 +1235,7 @@ async function createDocumentUnlocked(
   const balanceBefore = balanceBeforeWrite(sdk, ownerId, identity.balance)
   const spend = (kind: string, documentId: string): Spend => ({
     kind: `${kind}:${documentType}`,
-    repo: repoOf(data, contractId),
+    repo: repoOf(data, documentType, documentId),
     documentId,
     estimateCredits: cost.credits,
     balanceBefore,

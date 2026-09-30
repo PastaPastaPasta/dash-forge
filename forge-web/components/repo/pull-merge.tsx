@@ -11,7 +11,7 @@ import type { PullView, RepoRef } from '@/lib/repo'
 import { tipOidOf, type RepoHome } from '@/lib/view'
 import { mergeBaseTip, mergeBoxShown, mergeBoxSlot } from '@/lib/view/pull-actions'
 import type { SquashAuthors } from '@/lib/merge/engine'
-import { MergePanel, type DeleteBranchOption } from '@/components/repo/merge-panel'
+import { MergePanel, type CloseIssuesOption, type DeleteBranchOption } from '@/components/repo/merge-panel'
 import { pullBase, useComparisonSides } from '@/components/repo/pull-diff'
 
 /**
@@ -65,6 +65,8 @@ export interface MergeExtras {
   readonly allowedMethods?: number
   readonly squashAuthors?: SquashAuthors
   readonly deleteBranch?: DeleteBranchOption | null
+  /** Close the open issues the description links ("Fixes #12") after merging. */
+  readonly closeIssues?: CloseIssuesOption | null
   readonly onRunning?: (running: boolean) => void
   /** False while the page keeps the box mounted but hidden (no merge check runs then). */
   readonly active?: boolean
@@ -114,6 +116,7 @@ function MergeReaders({
       {...(extras.allowedMethods !== undefined ? { allowedMethods: extras.allowedMethods } : {})}
       {...(extras.squashAuthors !== undefined ? { squashAuthors: extras.squashAuthors } : {})}
       {...(extras.deleteBranch !== undefined ? { deleteBranch: extras.deleteBranch } : {})}
+      {...(extras.closeIssues !== undefined ? { closeIssues: extras.closeIssues } : {})}
       {...(extras.onRunning !== undefined ? { onRunning: extras.onRunning } : {})}
       {...(extras.active !== undefined ? { active: extras.active } : {})}
       {...(extras.unmetRules !== undefined ? { unmetRules: extras.unmetRules } : {})}

@@ -53,6 +53,9 @@ pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
             };
             edit_comment(ctx, repo, comment_id, &body).await
         }
+        IssueCommand::DeleteComment { repo, comment_id } => {
+            delete_comment(ctx, repo, comment_id).await
+        }
         IssueCommand::Close { repo, number } => set_open(ctx, repo, *number, true).await,
         IssueCommand::Reopen { repo, number } => set_open(ctx, repo, *number, false).await,
         IssueCommand::Label {
@@ -553,6 +556,43 @@ async fn edit_comment(ctx: &Ctx, repo: &str, comment_id: &str, body: &str) -> Re
                 );
             } else {
                 println!("comment {comment_id} already reads that way; nothing was written");
+            }
+        },
+    );
+    Ok(())
+}
+
+/// Delete one of the signer's comments (QW-016): an owner-only document delete, refused before
+/// signing for someone else's comment.
+async fn delete_comment(ctx: &Ctx, repo: &str, comment_id: &str) -> Result<()> {
+    let s = Session::open_for_write(ctx, repo, "comment not deleted").await?;
+    // Someone else's comment (or another repo's) is refused before the prompt, not after it.
+    let there = s.collab().deletable_comment(&s.repo, comment_id).await?;
+    if there {
+        ctx.confirm_or_cancel(&format!(
+            "Delete comment {comment_id}? (a document delete; replies to it stay)"
+        ))?;
+    }
+    let before = s.balance().await;
+    let deleted = there && s.collab().delete_comment(&s.repo, comment_id).await?;
+    let spent = s.spent_since(before).await;
+    let price = dash_usd_price();
+    ctx.emit(
+        json!({
+            "status": if deleted { "deleted" } else { "absent" },
+            "comment": comment_id,
+            "cost": cost_json(spent, price),
+        }),
+        || {
+            if deleted {
+                println!(
+                    "✓ deleted comment {comment_id} · {}",
+                    cost_line(spent, price)
+                );
+            } else {
+                println!(
+                    "comment {comment_id} is not there (already deleted?); nothing was written"
+                );
             }
         },
     );
