@@ -73,24 +73,14 @@ export function threadStateOf(sum: number): ThreadState {
   return { code: ((sum % LOCK_DELTA) + LOCK_DELTA) % LOCK_DELTA, locked: sum >= LOCK_DELTA }
 }
 
-/**
- * The lock or unlock move on `target` (kinds 3/4 or 18/19, delta ±16, written by a member:
- * `asAuthor` 0, rule `g_memberLock`); null when the thread is already in that state.
- */
-export function lockTransition(target: TransitionTarget, locked: boolean, lock: boolean): TransitionMove | null {
-  if (locked === lock) return null
-  const kind = LOCK_KINDS[target][lock ? 0 : 1]
-  return { kind, delta: deltaOf(kind) as number, targetKind: target === 'issue' ? 0 : 1, asAuthor: 0, after: lock ? LOCK_DELTA : 0 }
-}
-
-/** Each target's lock and unlock kinds. */
-const LOCK_KINDS: Readonly<Record<TransitionTarget, readonly [number, number]>> = { issue: [ISSUE_LOCK, ISSUE_UNLOCK], patch: [PR_LOCK, PR_UNLOCK] }
-
 /** What a transition names: an `issue` (`targetKind` 0) or a `patch` (1). */
 export type TransitionTarget = 'issue' | 'patch'
 
 /** A state change a user asks for. */
 export type StateAction = 'close' | 'reopen' | 'merge' | 'draft' | 'ready'
+
+/** Any move a transition makes: a state change, or locking / unlocking the conversation (members only). */
+export type MoveAction = StateAction | 'lock' | 'unlock'
 
 /** Who asks: a current member, the target's author (not a member), or anyone else (never admitted). */
 export type Actor = 'member' | 'author' | 'other'
@@ -102,7 +92,7 @@ export interface TransitionMove {
   readonly targetKind: number
   /** 0 for a member; the target's number for its author (the contract's author operands). */
   readonly asAuthor: number
-  /** The state code after the move (for a lock move: the lock bit's part of the sum). */
+  /** The target's delta sum after the move (its state code while unlocked). */
   readonly after: number
 }
 
@@ -117,25 +107,35 @@ const MOVES: Readonly<Record<TransitionTarget, Readonly<Partial<Record<StateActi
   },
 }
 
+/** Each target's lock and unlock kinds. */
+const LOCK_KINDS: Readonly<Record<TransitionTarget, readonly [number, number]>> = { issue: [ISSUE_LOCK, ISSUE_UNLOCK], patch: [PR_LOCK, PR_UNLOCK] }
+
 /**
- * The move that carries out `action` on a target at state `code`, by `actor`; null when
- * consensus would refuse it (a writer no operand admits, an illegal move, or a merge by a
- * non-member). Parity: forge-core `next_transition`.
+ * The move that carries out `action` on a target whose transitions sum to `sum`, by `actor`;
+ * null when consensus would refuse it: a writer no operand admits, an illegal move from this
+ * state (`c1`…`c6`), a merge by a non-member (`f_authorNoMerge`), or a lock or unlock by one
+ * (`g_memberLock`). A state code below 16 is its own sum, so a caller that holds only the code
+ * may pass it. Parity: forge-core `next_transition`.
  */
 export function nextTransition(
   target: TransitionTarget,
-  code: number,
-  action: StateAction,
+  sum: number,
+  action: MoveAction,
   actor: Actor,
   targetNumber: number,
 ): TransitionMove | null {
   if (actor === 'other') return null
   const member = actor === 'member'
-  if (action === 'merge' && !member) return null
-  const kind = MOVES[target][action]?.[code]
+  const { code, locked } = threadStateOf(sum)
+  let kind: number | undefined
+  if (action === 'lock' || action === 'unlock') {
+    kind = member && locked === (action === 'unlock') ? LOCK_KINDS[target][action === 'lock' ? 0 : 1] : undefined
+  } else if (action !== 'merge' || member) {
+    kind = MOVES[target][action]?.[code]
+  }
   if (kind === undefined) return null
   const delta = deltaOf(kind) as number
-  return { kind, delta, targetKind: target === 'issue' ? 0 : 1, asAuthor: member ? 0 : targetNumber, after: code + delta }
+  return { kind, delta, targetKind: target === 'issue' ? 0 : 1, asAuthor: member ? 0 : targetNumber, after: sum + delta }
 }
 
 /** A target's state, read off its code. */

@@ -1,0 +1,71 @@
+{
+  "name": "source_empty_pins_nothing",
+  "description": "An empty source in a paired list pins nothing for its name.",
+  "case": "checks",
+  "rules": "v2",
+  "input": {
+    "runs": [
+      {
+        "id": "r1",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "build",
+        "status": "completed",
+        "reporter": "ci-other",
+        "createdAt": 100,
+        "conclusion": "success"
+      },
+      {
+        "id": "r2",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "lint",
+        "status": "completed",
+        "reporter": "ci-bot",
+        "createdAt": 100,
+        "conclusion": "success"
+      }
+    ],
+    "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "runners": [
+      "ci-bot",
+      "ci-other"
+    ],
+    "policy": {
+      "requiredChecks": [
+        "build",
+        "lint"
+      ],
+      "requiredCheckSources": [
+        "",
+        "ci-bot"
+      ]
+    }
+  },
+  "expected": {
+    "required": [
+      {
+        "name": "build",
+        "state": "passed",
+        "runId": "r1"
+      },
+      {
+        "name": "lint",
+        "state": "passed",
+        "runId": "r2"
+      }
+    ],
+    "met": true,
+    "untrusted": 0
+  }
+}
