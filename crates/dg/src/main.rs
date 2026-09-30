@@ -740,7 +740,8 @@ pub enum PrCommand {
         #[arg(long)]
         comments: bool,
     },
-    /// Check out a pull request as branch `pr/<n>`, fetching its head from the source repo.
+    /// Check out a pull request as branch `pr/<n>`, fetching its head from the source repo,
+    /// and switch to it (left for `git switch` when there are uncommitted changes).
     Checkout {
         /// The repository (`owner/name`).
         repo: String,

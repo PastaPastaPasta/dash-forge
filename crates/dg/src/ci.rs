@@ -474,7 +474,7 @@ async fn runner_add(ctx: &Ctx, repo: &str, runner: &str) -> Result<()> {
         .await?;
     let spent = s.spent_since(before).await;
     ctx.emit(
-        json!({ "status": "enrolled", "runner": runner, "documentId": m.document_id, "cost": cost_json(spent, dash_usd_price()) }),
+        json!({ "status": "enrolled", "runner": runner, "documentId": m.document_id, "id": m.document_id, "cost": cost_json(spent, dash_usd_price()) }),
         || println!("✓ {runner} is a runner of {} ({})", s.repo.display(), cost_line(spent, dash_usd_price())),
     );
     Ok(())
@@ -724,6 +724,7 @@ fn emit_report(
         json!({
             "status": done.action,
             "documentId": done.document_id,
+            "id": done.document_id,
             "name": r.name,
             "checkStatus": r.status,
             "conclusion": r.conclusion,

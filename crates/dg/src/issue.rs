@@ -15,7 +15,7 @@ use forge_core::rules::{Event, EventKind, IssueState};
 use crate::common::{number_arg, Reader, Session};
 use crate::context::Ctx;
 use crate::fmt::{
-    cost_json, cost_line, dash_usd_price, safe, transition_phrase, transition_route_text,
+    cost_json, cost_line, dash_usd_price, safe, transition_phrase, transition_route_text, with_name,
 };
 use crate::{IssueCommand, IssueListArgs};
 
@@ -332,6 +332,7 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
                 "title": title,
                 "author": author,
                 "open": st.open,
+                "state": state_word(st.open),
                 "labels": st.labels,
                 "assignees": st.assignees,
                 "pinned": pinned,
@@ -353,7 +354,7 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
                 println!("no issues");
             }
             for (n, title, _, st, pinned) in &rows {
-                let mark = if st.open { "open" } else { "closed" };
+                let mark = state_word(st.open);
                 let mark = if *pinned {
                     format!("{mark}, pinned")
                 } else {
@@ -409,6 +410,18 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let state = view.state;
     let i = view.issue;
     let (id, title, body, author) = (i.document_id, i.title, i.body, i.author);
+    // DPNS names for the human view only, read together; a failed read shows the bare id.
+    let names = if ctx.json {
+        std::collections::BTreeMap::default()
+    } else {
+        let actors = comments.iter().map(|c| c.author.as_str());
+        let actors = actors.chain(events.iter().map(|e| e.actor.as_str()));
+        let actors = actors.chain(transitions.iter().map(|t| t.actor.as_str()));
+        s.client
+            .dpns_first_names(std::iter::once(author.as_str()).chain(actors))
+            .await
+    };
+    let who = |id: &str| with_name(id, &names);
 
     ctx.emit(
         json!({
@@ -417,6 +430,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             "body": body,
             "author": author,
             "documentId": id,
+            "id": id,
             "state": { "open": state.open, "labels": state.labels, "assignees": state.assignees },
             "milestone": meta.milestone,
             "pinned": meta.pinned,
@@ -441,9 +455,9 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             "plaintextEventValues": plaintext_values,
         }),
         || {
-            let mark = if state.open { "open" } else { "closed" };
+            let mark = state_word(state.open);
             println!("#{number} [{mark}] {}", safe(&title));
-            println!("author: {author}");
+            println!("author: {}", who(&author));
             if !state.labels.is_empty() {
                 println!("labels: {}", safe(&labels_of(&state)));
             }
@@ -453,11 +467,12 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             for item in &timeline {
                 match item {
                     Item::Comment(c) => {
-                        println!("\n— {} ({}):\n{}", c.author, c.document_id, safe(&c.body));
+                        let author = who(&c.author);
+                        println!("\n— {author} ({}):\n{}", c.document_id, safe(&c.body));
                     }
-                    Item::Event(e) => println!("\n· {} {}", e.actor, safe(&event_phrase(e))),
+                    Item::Event(e) => println!("\n· {} {}", who(&e.actor), safe(&event_phrase(e))),
                     Item::Transition(t) => {
-                        println!("\n· {} {}", t.actor, transition_phrase(t.kind));
+                        println!("\n· {} {}", who(&t.actor), transition_phrase(t.kind));
                     }
                 }
             }
@@ -738,6 +753,16 @@ async fn refuse_if_locked(s: &Session, number: u64, target_id: &str) -> Result<(
     .into())
 }
 
+/// The `"state"` of an issue in JSON, `"open"` or `"closed"`, as `dg pr`'s: emitted beside
+/// the older `"open": bool`, which stays for the consumers that read it (QW-081).
+fn state_word(open: bool) -> &'static str {
+    if open {
+        "open"
+    } else {
+        "closed"
+    }
+}
+
 /// `(past tense, prompt verb)` of a close or a reopen ("reopend" was L-35).
 fn open_words(close: bool) -> (&'static str, &'static str) {
     if close {
@@ -758,9 +783,9 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()>
     // way `set_state` reads it.
     let open = status_of_code(collab.state_sum(&s.repo, &target.id).await?).open;
     if open != close {
-        let state = if open { "open" } else { "closed" };
+        let state = state_word(open);
         ctx.emit(
-            json!({ "status": "unchanged", "issue": number, "open": open, "written": false }),
+            json!({ "status": "unchanged", "issue": number, "open": open, "state": state, "written": false }),
             || println!("issue #{number} is already {state}; nothing written"),
         );
         return Ok(());
@@ -784,6 +809,7 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()>
             "transitionId": change.transition_id,
             "kind": change.kind,
             "open": open_now,
+            "state": open_now.map(state_word),
         }),
         || {
             println!(
@@ -991,7 +1017,16 @@ async fn assign(ctx: &Ctx, repo: &str, number: u64, who: &[String], add: bool) -
 
 #[cfg(test)]
 mod tests {
-    use super::{changes, event_phrase, label_args, open_words, timeline, title_matches, Item};
+    use super::{
+        changes, event_phrase, label_args, open_words, state_word, timeline, title_matches, Item,
+    };
+
+    /// QW-081: an issue's JSON `"state"` uses the words `dg pr`'s does.
+    #[test]
+    fn an_issue_state_is_the_word_a_pr_state_uses() {
+        assert_eq!(state_word(true), "open");
+        assert_eq!(state_word(false), "closed");
+    }
 
     /// QW-035: a label (or assignee) already on the issue is not written again, one already
     /// off is not removed again, and a name given twice is written once. An unreadable state

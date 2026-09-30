@@ -182,7 +182,8 @@ pub mod codes {
     /// A git operation dash:// does not support (shallow clone).
     pub const UNSUPPORTED: &str = "E205";
     /// `dg init` / `dg repo create --push` cannot use the local git repository: not inside
-    /// one, or the remote name is taken by another URL.
+    /// one, or the remote name is taken by another URL; or `dg pr checkout` would drop local
+    /// commits on `pr/<n>`.
     pub const GIT_REPO: &str = "E206";
     /// An operation a private repository does not support (a release, a fork, a webhook):
     /// refused before anything is written.
