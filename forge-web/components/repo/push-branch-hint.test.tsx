@@ -52,11 +52,18 @@ describe('pushHintOf', () => {
     expect(pushHintOf({ repo, identity: ME, role: known(null), forks: null }).kind).toBe('loading')
   })
 
-  it('names both routes when signed out or a read failed', () => {
+  it('names both routes when signed out or the role read failed', () => {
     const either = { kind: 'either', command: pushCommand(OWNER, 'qa-collab-settings'), canFork: true }
     expect(pushHintOf({ repo, identity: null, role: known(null), forks: null })).toEqual(either)
     expect(pushHintOf({ repo, identity: ME, role: { role: null, known: false, failed: true }, forks: [] })).toEqual(either)
-    expect(pushHintOf({ repo, identity: ME, role: known(null), forks: 'failed' })).toEqual(either)
+  })
+
+  it("still points at the viewer's fork when the role read failed", () => {
+    expect(pushHintOf({ repo, identity: ME, role: { role: null, known: false, failed: true }, forks: [fork] }).kind).toBe('fork')
+  })
+
+  it("never offers this repo's command to a known non-member whose forks could not be read", () => {
+    expect(pushHintOf({ repo, identity: ME, role: known(null), forks: 'failed' })).toEqual({ kind: 'either', command: null, canFork: true })
   })
 
   it('never offers a fork of a private repo', () => {
@@ -93,7 +100,7 @@ describe('PushBranchHint', () => {
     role = known(null)
     render([])
     expect(host.querySelector('[data-testid="push-hint"]')?.getAttribute('data-kind')).toBe('fork-first')
-    expect(host.textContent).toContain('Fork it, push your branch to the fork')
+    expect(host.textContent).toContain('Fork it and push your branch to the fork')
     expect(host.querySelector('code')).toBeNull()
     expect(host.querySelector('button')?.textContent).toBe('Fork')
   })

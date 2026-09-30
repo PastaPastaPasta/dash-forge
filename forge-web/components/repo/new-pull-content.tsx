@@ -82,7 +82,17 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   const forks = useAsync(
     async () => {
       const mine = await findForks(sdk!, repo.forge, repo.repoId, identity!)
-      return Promise.all(mine.map(async (f) => ({ fork: f, refs: (await readRefs(sdk!, f)).filter((r) => r.refName.startsWith('refs/heads/')) })))
+      // One fork whose refs will not read loses its branches, not the viewer's other forks (nor
+      // the push hint's knowledge that the fork exists).
+      return Promise.all(
+        mine.map(async (f) => ({
+          fork: f,
+          refs: await readRefs(sdk!, f).then(
+            (rs) => rs.filter((r) => r.refName.startsWith('refs/heads/')),
+            () => [],
+          ),
+        })),
+      )
     },
     [ready, repo.repoId, identity ?? ''],
     // A private repo has no forks (only public repos fork).
