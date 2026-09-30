@@ -41,7 +41,7 @@ import { retryWhileMissing } from '../view/retry'
 import { identityFileMatchesNetwork, masterMaterialFromFile } from './identity-file'
 import { deriveMasterKey, isValidMnemonic } from './hd'
 import { identityOfMasterKey } from './identity-lookup'
-import { PLATFORM_READ_MS } from './connect'
+import { PLATFORM_READ_MS, withPlatformRead } from './connect'
 import { withTimeout } from '../timeout'
 import { checkWalletKey, hasNoLimits, isForgeContract, keyScope, scopeCovers, type KeyScope, type WalletKey } from './key-registration'
 import { PRIVATE_REPOS_FLOW, encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
@@ -805,9 +805,8 @@ export class AuthController {
         // The words alone: the identity is the one holding their master key.
         if (identityId === '') {
           this.step('Finding the identity of these words')
-          identityId = await withTimeout(
+          identityId = await withPlatformRead(
             identityOfMasterKey(await this.getSdk(), master.publicKeyHex, this.network),
-            PLATFORM_READ_MS,
             'Finding the identity of these words',
           )
           foundByWords = true

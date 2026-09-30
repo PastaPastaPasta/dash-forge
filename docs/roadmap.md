@@ -129,7 +129,7 @@ Sizes: S ≈ days, M ≈ 1–2 weeks, L ≈ 3+ weeks of focused work. Phase 0 co
 ### Phase 4 — Adoptable (L) · *gate: public beta on testnet/moutai*
 - [ ] Release pipeline: `dg` + `git-remote-dash` binaries for Linux, macOS and Windows as GitHub Release assets (unsigned on macOS for now), plus a checksummed install script, `cargo binstall`, and a Docker image for the relay that users run themselves.
 - [ ] `dg auth`: OS keychain, 0600 fallback files; `dg auth new` guides the user through funding their own identity (QR asset lock; the faucet on test networks). DPNS username registration.
-- [ ] DPNS everywhere: `dash://alice/project`, web `/alice/project`, collaborator grants by name, profile names.
+- [x] DPNS everywhere: `dash://alice/project`, web `/alice/project`, collaborator grants by name, profile names.
 - [ ] Web onboarding: create an identity in the browser from the user's own funds (QR asset lock), an encrypted key vault (passphrase/passkey), and limited keys (Phase 2).
 - [ ] **Forge Mirror Action**: a GitHub Action that pushes every GitHub push into Forge using the repo's own bucket and a runner identity with a limited key. Issue/PR sync is incremental.
 - [ ] `dg import` → forge-import, plus a continuous mirror mode.
@@ -186,7 +186,7 @@ Launch checklist (`ux-dx-spec.md` §11 P0), where it stands: done 1, 2, 3, 4, 5,
 
 Next:
 - **In progress:** web PR create, inline review, Fork and browser merge · private-repo create/read paths (Phase 3; [docs/security/private-repos.md](security/private-repos.md) §13 lists contract changes required before mainnet registration) · the wallet-side changes D-L needs on mainnet (group-scoped, limited grants through App Connect; a signed responder), drafted for dashpay in `docs/upstream/` (not yet filed) · the D-L gate (a real Dash Wallet sign-in on a device, then a write) is not yet run.
-- **Not started:** DPNS in `dash://` and `dg` (the web app already resolves names) · the `/mirror` setup wizard · tag the first release so `install.sh`, `cargo binstall` and the Action's `install: 'true'` work · the published, reproducible IPFS build of the web app.
+- **Not started:** the `/mirror` setup wizard · tag the first release so `install.sh`, `cargo binstall` and the Action's `install: 'true'` work · the published, reproducible IPFS build of the web app.
 - **Networks:** register forge-v2 on testnet when PV14 reaches it, and move the nightly and a testnet web build there; mainnet after PV14 (Phase 6, D-D, D-J).
 
 Launch UX/DX is specified in [docs/design/ux-dx-spec.md](design/ux-dx-spec.md) §11. Its **P0 backlog is the launch checklist** and supersedes the per-phase bullet lists below where they overlap.

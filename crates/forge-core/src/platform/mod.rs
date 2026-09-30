@@ -360,6 +360,11 @@ pub struct PlatformClient {
     /// contract is fetched at most once per process (it was re-fetched by nearly every read,
     /// the dominant cost of `dg pr list`, D-500).
     contracts: Mutex<HashMap<String, LoadedContract>>,
+    /// DPNS name resolutions in this process, keyed by the homograph-safe label
+    /// (`resolve_dpns_name`'s label, without `.dash`): `Some(id)` when registered, `None`
+    /// when a proved read found no such name. A repository lookup that spells its owner as a
+    /// name (`dash://alice/project`) resolves it again on every reference otherwise.
+    dpns_cache: Mutex<HashMap<String, Option<String>>>,
     /// Set once the network refused a composite query: [`Self::query_batch`] then reads one
     /// by one for the rest of the process.
     no_composite: AtomicBool,
@@ -472,6 +477,7 @@ impl PlatformClient {
             sdk,
             target,
             contracts: Mutex::default(),
+            dpns_cache: Mutex::default(),
             no_composite: AtomicBool::new(std::env::var_os("DASH_FORGE_NO_COMPOSITE").is_some()),
             history: crate::history::HistoryStore::default(),
             context_provider,

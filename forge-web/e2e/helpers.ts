@@ -120,6 +120,13 @@ export async function showcaseRepo(
       if (!id) throw new Error(`${label} does not resolve on ${E2E_DEVNET}: the showcase mirrors are not there (set E2E_SHOWCASE_${key})`)
       return String(id)
     })
+    // A rejection (name unresolved, or the lookup itself failed, e.g. mid a quorum rotation)
+    // is not cached: the next call — this devnet's next spec file, or a caller that waited
+    // out the rotation — gets to try again instead of replaying the same failure forever.
+    owner.catch(() => {
+      showcaseOwnerCache.delete(key)
+      showcaseSdk = undefined
+    })
     showcaseOwnerCache.set(key, owner)
   }
   return { owner: await owner, name }

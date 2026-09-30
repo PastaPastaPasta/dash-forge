@@ -941,15 +941,26 @@ impl PlatformClient {
     /// read of the DPNS `domain` document (`normalizedParentDomainName == "dash"`,
     /// `normalizedLabel == <label>`) and its `records.identity`, as rs-sdk
     /// `Sdk::resolve_dpns_name` does it.
+    ///
+    /// Cached per process, keyed by the homograph-safe label: a name that resolves once
+    /// (registered or not) does not re-query for the rest of the run, matching the
+    /// [`Self::fetch_contract`] memoization above.
     pub async fn resolve_dpns_name(&self, name: &str) -> Result<Option<String>> {
+        let key = convert_to_homograph_safe_chars(name);
+        if let Some(cached) = crate::history::lock(&self.dpns_cache).get(&key) {
+            return Ok(cached.clone());
+        }
         // The trusted context provider verifies proofs only for contracts it was given:
         // fetching DPNS through `fetch_contract` registers it.
         self.fetch_contract(DPNS_CONTRACT_ID).await?;
-        self.sdk()
+        let resolved = self
+            .sdk()
             .resolve_dpns_name(name)
             .await
             .map(|id| id.map(|id| id.to_string(Encoding::Base58)))
-            .map_err(|e| sdk_err("resolving the DPNS name", e))
+            .map_err(|e| sdk_err("resolving the DPNS name", e))?;
+        crate::history::lock(&self.dpns_cache).insert(key, resolved.clone());
+        Ok(resolved)
     }
 
     /// Register DPNS name `label` for `identity_id`, signed by its CRITICAL (else HIGH)
@@ -1000,9 +1011,23 @@ impl PlatformClient {
             })
             .await
             .map_err(|e| sdk_err("registering the name", e))?;
-        // The SDK reports the homograph-safe form (`alice` → `a11ce.dash`); the name as
-        // registered and displayed is the label as given.
+        // The SDK reports the homograph-safe form (`bob-forge` → `b0b-f0rge.dash`); the name
+        // as registered and displayed is the label as given.
         let _ = result.full_domain_name;
+        // Fill the resolve cache with what we just wrote: a caller that resolves this name
+        // again in the same process (e.g. `dg collab add` right after `dg auth new --name`)
+        // must see it as registered, not re-query and risk a stale miss from a lagging read
+        // quorum. Skipped for a contested label: the masternode vote it opens can still be
+        // lost, so the name does not yet resolve to anyone, and caching it as ours here would
+        // be wrong. `dg` itself never reaches this with a contested label (`auth/new.rs`,
+        // `auth/mod.rs` both refuse one before calling), but a future caller of this function
+        // directly might not filter.
+        if !is_contested_username(label) {
+            crate::history::lock(&self.dpns_cache).insert(
+                convert_to_homograph_safe_chars(label),
+                Some(bridge.identity_id.clone()),
+            );
+        }
         Ok(format!("{label}.dash"))
     }
 }

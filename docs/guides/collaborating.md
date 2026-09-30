@@ -9,7 +9,7 @@ Everything a team does on Forge is a signed document on Dash Platform: who may p
 5. [From the web app](#from-the-web-app)
 6. [Webhooks and CI](#webhooks-and-ci)
 
-The commands below take a repository as `<owner>/<name>`, where `<owner>` is the owner's **identity id** (base58) or **DPNS username** (`alice` or `alice.dash`, resolved with a proof-verified DPNS read). A bare `<name>` means one of your own repositories. `dg repo list --owner` and member arguments (`dg collab add`) take an identity id only.
+The commands below take a repository as `<owner>/<name>`, where `<owner>` is the owner's **identity id** (base58) or **DPNS username** (`alice` or `alice.dash`, resolved with a proof-verified DPNS read). A bare `<name>` means one of your own repositories. Every argument naming an identity — `dg repo list --owner`, `dg collab add`/`remove`, `dg issue --author`/`--assignee`, `dg pr request-review`, `dg ci runner add`/`revoke` — accepts either form; a name is resolved once per process and cached.
 
 Reading a public repository needs no identity: `dg repo view`, `dg repo list --owner`, `dg issue list` / `view`, `dg pr list` / `view` / `diff` / `checkout` / `checks` / `commits`, `dg label list`, `dg collab list`, `dg release list` / `download`, `dg repo protect list` and `dg repo policy show` work signed out, and never open a key you have configured, so a passphrase-sealed key file is not unlocked just to read. A private repository's content is encrypted to its members, so reading one uses your identity, and without one it stops with [`E301`](../errors.md#e301).
 
@@ -33,8 +33,8 @@ Adding a collaborator is two steps: the owner adds them, and the collaborator ac
 ```sh
 dg collab accept <owner>/<repo>              # the collaborator, first: records their consent
 dg collab list   <owner>/<repo>
-dg collab add    <owner>/<repo> <identity id> --role writer
-dg collab remove <owner>/<repo> <identity id> --role writer
+dg collab add    <owner>/<repo> <identity id or DPNS name> --role writer
+dg collab remove <owner>/<repo> <identity id or DPNS name> --role writer
 ```
 
 If the owner runs `dg collab add` before the invitee has accepted, it is refused before anything is signed: *"`<identity>` has not accepted membership of `<repo>` yet"*, with the fix to ask them to run `dg collab accept`, then add them again. `dg collab add <owner>/<repo> <identity id> --wait 300` instead waits (printing that it is waiting) up to that many seconds for the acceptance to land, then adds them; with no `--wait` it checks once. `dg collab accept --withdraw` withdraws an earlier acceptance (a membership already granted stands until the owner removes it).

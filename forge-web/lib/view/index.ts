@@ -43,6 +43,7 @@ export {
   diffTotals,
   loadFilePatch,
   modeString,
+  uncountedReasons,
   type DiffTotals,
   type FilePatch,
   type PatchPlaceholder,

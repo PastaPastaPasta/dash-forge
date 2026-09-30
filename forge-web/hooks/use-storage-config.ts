@@ -4,9 +4,10 @@
  * useStorageConfig — the signed-in identity's storage configuration, read from and written to
  * the vault. Null while signed out or locked (the settings are sealed with the key; there is
  * nothing to show without it). A tab-only pasted key has no vault record, so it cannot store
- * settings; `storable` says so. After a reload picked up a signing-only session, stored settings
- * stay sealed until an interactive unlock in this tab: `needsUnlock` says so (and writes that
- * need them fall back to asking, never to "no storage set up").
+ * settings; `storable` says so. After a reload picked up a signing-only session, settings can
+ * be neither opened nor saved until an interactive unlock in this tab, whether any are stored
+ * or not: `needsUnlock` says so (and writes that need them fall back to asking, never to "no
+ * storage set up").
  */
 
 import { useCallback } from 'react'
@@ -14,7 +15,6 @@ import { useCallback } from 'react'
 import { useAuth } from '@/contexts/auth-context'
 import { useAsync } from '@/hooks/use-async'
 import { DEFAULT_NETWORK } from '@/lib/constants'
-import { hasStorageBlob } from '@/lib/auth/vault'
 import { EMPTY_STORAGE_CONFIG, discardStorageConfig, loadStorageConfig, saveStorageConfig, type StorageConfig } from '@/lib/storage'
 
 export interface StorageConfigState {
@@ -23,7 +23,7 @@ export interface StorageConfigState {
   readonly error: string | null
   /** Whether this session can store settings (a vault-stored key). */
   readonly storable: boolean
-  /** Settings are stored, but this tab resumed a signing-only session: unlock to use them. */
+  /** This tab resumed a signing-only session: unlock to open, set up or save settings. */
   readonly needsUnlock: boolean
   save: (next: StorageConfig) => Promise<void>
   reload: () => void
@@ -39,9 +39,10 @@ export function useStorageConfig(): StorageConfigState {
   const state = useAsync<StorageConfig | typeof NEEDS_UNLOCK>(
     async () => {
       if (!storable) return EMPTY_STORAGE_CONFIG
-      if (controller.unlockScope() === 'signing') {
-        return (await hasStorageBlob(DEFAULT_NETWORK, identity)) ? NEEDS_UNLOCK : EMPTY_STORAGE_CONFIG
-      }
+      // A signing-only tab can neither open stored settings nor seal new ones (the vault key
+      // opens only on an interactive unlock): a first setup after a reload asks too, rather
+      // than letting Save fail with nothing on the page to unlock.
+      if (controller.unlockScope() === 'signing') return NEEDS_UNLOCK
       return loadStorageConfig(DEFAULT_NETWORK, identity)
     },
     [identity ?? '', storage ?? '', unlockScope ?? ''],

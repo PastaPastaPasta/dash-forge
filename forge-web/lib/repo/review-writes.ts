@@ -283,6 +283,14 @@ export interface ReviewDraft {
    * only such a draft is reconciled ({@link reconcileReviewDraft}).
    */
   readonly attemptedAt?: number
+  /**
+   * The ids of this identity's reviews on the PR as the first submit attempt began, read and
+   * saved before anything of the draft is written: none of them is this draft's own review. The
+   * page stamps `attemptedAt` before the first attempt, so without this record a second review
+   * with the same verdict, head, summary and comment count would adopt the first and file its
+   * comments under it.
+   */
+  readonly priorReviews?: readonly string[]
 }
 
 /** The journal key of a draft: one per network, identity and PR. */
@@ -425,26 +433,34 @@ const CLOCK_SKEW_MS = 10 * 60 * 1000
  * (`attemptedAt`) is reconciled: before its first submit nothing of it can be on chain. The
  * review is this identity's review on the PR with the draft's verdict, head, summary and
  * `commentCount`, created no earlier than the attempt (less {@link CLOCK_SKEW_MS}: `attemptedAt`
- * is the client's clock, `$createdAt` the block's), the earliest such when the draft has no
- * `reviewId`; its landed comments are the review's group (`groupReviewComments`) matched to
- * the draft by anchor and body.
+ * is the client's clock, `$createdAt` the block's) and not one of the `priorReviews` read before
+ * the first write, the latest such when the draft has no `reviewId` (an earlier review a lagging
+ * node left out of `priorReviews` predates the attempt; the draft's own follows it); its landed
+ * comments are the review's group (`groupReviewComments`) matched to the draft by anchor and
+ * body. A draft without `priorReviews` never adopts a review: it is saved before the review is
+ * written, so without it nothing of the draft's review can be on chain. (A draft saved mid-submit
+ * by a build before `priorReviews` is not reconciled either: the signed-transition cache of its
+ * intent is then what keeps its review from landing twice.)
  */
 export async function reconcileReviewDraft(draft: ReviewDraft, reads: SubmitReads): Promise<ReviewDraft> {
   if (draft.attemptedAt === undefined) return draft
   const since = draft.attemptedAt - CLOCK_SKEW_MS
   let reviewId = draft.reviewId
   if (reviewId === undefined) {
+    if (draft.priorReviews === undefined) return draft
+    const prior = new Set(draft.priorReviews)
     const mine = (await reads.reviews())
       .filter(
         (r) =>
           r.reviewer === draft.identity &&
+          !prior.has(r.id) &&
           sameVerdict(r.verdict, draft.verdict) &&
           r.commitOid === draft.headOid &&
           r.body === draft.summary &&
           r.commentCount === draft.comments.length &&
           r.createdAt >= since,
       )
-      .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1))
+      .sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? -1 : 1))
     reviewId = mine[0]?.id
   }
   if (reviewId === undefined) return draft
@@ -508,6 +524,12 @@ async function submitWith(
   // under a newer epoch than the page's session knows still opens, and is not posted again.
   const chain = reads ?? chainReads(sdk, fresh ? { ...repo, session: fresh.session } : repo, draft.prId)
   let current: ReviewDraft = await reconcileReviewDraft(draft, chain)
+  // The first attempt records which reviews of this identity are already on the PR (an earlier
+  // review of the same person): a resume never adopts one of them as this draft's own.
+  if (current.reviewId === undefined && current.priorReviews === undefined) {
+    const prior = (await chain.reviews()).filter((r) => r.reviewer === draft.identity).map((r) => r.id)
+    current = { ...current, priorReviews: prior }
+  }
   if (current.attemptedAt === undefined) current = { ...current, attemptedAt: Date.now() }
   // Saved before the first write, so a crash after it leaves a draft that reconciles.
   if (current !== draft) await saveReviewDraft(current)

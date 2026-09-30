@@ -8,6 +8,7 @@
 
 import { decodeTextBlob } from './git-objects'
 import { isGitlink, type DiffSides, type FileChange } from './commit-log'
+import { ObjectTooLargeError } from '../browse'
 import { knownMinSize, type ObjectReader } from './tree-nav'
 import { diffStat, diffTextLines, type TextDiffLine } from './text-diff'
 import { formatBytes } from './format'
@@ -41,11 +42,18 @@ export type FilePatch =
       readonly deleted?: number
     }
 
+/**
+ * How a blob was found too large: `measured` (its bytes were read); `refused` by the reader
+ * before building it (its exact size is then not known here); or from the browse index's
+ * unverified length: a `hint` skip (downloading anyway is allowed), or the reader refusing to
+ * fetch an entry the index says is that long (`stored`: the reader would refuse it again).
+ */
+type TooLargeBy = 'measured' | 'refused' | 'hint' | 'stored'
+
 class TooLarge extends Error {
-  /** `indexed`: the size is the browse index's claim, not a measured (verified) blob. */
   constructor(
-    readonly size: number,
-    readonly indexed = false,
+    readonly size: number | null,
+    readonly by: TooLargeBy,
   ) {
     super('too large')
   }
@@ -67,51 +75,33 @@ export interface PatchOptions {
   readonly ignoreWhitespace?: boolean
 }
 
-/** A blob's text and byte size; `limit` is the largest it may be ({@link TooLarge} past it). */
-async function readText(reader: ObjectReader, oid: string | null, options: PatchOptions, limit = INLINE_BLOB_MAX_BYTES): Promise<{ text: string; size: number }> {
+/**
+ * A blob's text and byte size, read once up to {@link COUNT_BLOB_MAX_BYTES} ({@link TooLarge}
+ * past it). A {@link BrowseReader} refuses an object over the limit with its own
+ * `ObjectTooLargeError`, before building it; a reader that ignores the limit (a local
+ * `git cat-file`) is checked here after the read. Both are the same verdict: too large.
+ */
+async function readText(reader: ObjectReader, oid: string | null, options: PatchOptions): Promise<{ text: string; size: number }> {
   if (oid === null) return { text: '', size: 0 }
   const min = options.ignoreSizeHint ? null : knownMinSize(reader, oid)
-  if (min !== null && min > limit) throw new TooLarge(min, true)
-  const object = await reader.readObject(oid, { maxBytes: limit })
+  if (min !== null && min > COUNT_BLOB_MAX_BYTES) throw new TooLarge(min, 'hint')
+  let object
+  try {
+    object = await reader.readObject(oid, { maxBytes: COUNT_BLOB_MAX_BYTES })
+  } catch (e) {
+    if (!(e instanceof ObjectTooLargeError)) throw e
+    // Refused on the entry's length alone: the index's claim, which nothing has checked.
+    if (e.size === reader.locate?.(oid)?.length) throw new TooLarge(e.size, 'stored')
+    throw new TooLarge(null, 'refused')
+  }
   if (object.type !== 'blob') throw new Error(`${oid.slice(0, 9)} is a ${object.type}, not a blob`)
-  if (object.bytes.length > limit) throw new TooLarge(object.bytes.length)
+  if (object.bytes.length > COUNT_BLOB_MAX_BYTES) throw new TooLarge(object.bytes.length, 'measured')
   const text = decodeTextBlob(object.bytes)
   if (text === null) throw new Binary()
   return { text, size: object.bytes.length }
 }
 
-/** Both sides' texts, and the patch of them, or null when the diff is past its bounds. */
-async function readPair(sides: DiffSides, change: FileChange, options: PatchOptions, limit?: number): Promise<{ size: number; lines: TextDiffLine[] | null }> {
-  const [before, after] = await Promise.all([
-    readText(sides.base, change.baseOid, options, limit),
-    readText(sides.head, change.headOid, options, limit),
-  ])
-  return { size: Math.max(before.size, after.size), lines: diffTextLines(before.text, after.text, undefined, { ignoreWhitespace: options.ignoreWhitespace === true }) }
-}
-
 const textPatch = (change: FileChange, lines: TextDiffLine[]): FilePatch => ({ kind: 'text', change, full: lines, ...diffStat(lines) })
-
-/**
- * A file over the inline limit but under {@link COUNT_BLOB_MAX_BYTES}: read to count its lines, so
- * the change's totals are whole (L-25), and shown after all when both sides turn out small (the
- * index's size was wrong). Null when it cannot be counted.
- */
-async function countLarge(sides: DiffSides, change: FileChange, options: PatchOptions): Promise<FilePatch | null> {
-  try {
-    const { size, lines } = await readPair(sides, change, { ...options, ignoreSizeHint: true }, COUNT_BLOB_MAX_BYTES)
-    if (lines === null) return null
-    if (size <= INLINE_BLOB_MAX_BYTES) return textPatch(change, lines)
-    return {
-      kind: 'placeholder',
-      change,
-      reason: 'large',
-      note: `Large file (${formatBytes(size)}) not shown; the limit for an inline diff is ${formatBytes(INLINE_BLOB_MAX_BYTES)}.`,
-      ...diffStat(lines),
-    }
-  } catch {
-    return null
-  }
-}
 
 const placeholder = (change: FileChange, reason: PatchPlaceholder, note: string): FilePatch => ({
   kind: 'placeholder',
@@ -120,7 +110,50 @@ const placeholder = (change: FileChange, reason: PatchPlaceholder, note: string)
   note,
 })
 
-/** Load one change's patch. Never rejects: a failure becomes an `unreadable` placeholder. */
+/** Why a file between the inline and count limits is not shown (its lines are still counted). */
+const largeNote = (size: number): string =>
+  `Large file (${formatBytes(size)}) not shown; the limit for an inline diff is ${formatBytes(INLINE_BLOB_MAX_BYTES)}.`
+
+/** What the browser shows and counts, for a file past both limits. */
+const LIMITS = `Files up to ${formatBytes(INLINE_BLOB_MAX_BYTES)} are shown and files up to ${formatBytes(COUNT_BLOB_MAX_BYTES)} are counted; this one's lines are not in the totals.`
+
+type Side = { readonly text: string; readonly size: number }
+
+/**
+ * Both sides' texts. A binary side wins over any other failure (git counts a binary file as no
+ * lines, whatever its other side), so the verdict does not depend on which read failed first.
+ */
+async function readSides(sides: DiffSides, change: FileChange, options: PatchOptions): Promise<[Side, Side]> {
+  const [before, after] = await Promise.allSettled([readText(sides.base, change.baseOid, options), readText(sides.head, change.headOid, options)])
+  if (before.status === 'fulfilled' && after.status === 'fulfilled') return [before.value, after.value]
+  const failures = [before, after].flatMap((r): unknown[] => (r.status === 'rejected' ? [r.reason] : []))
+  throw failures.find((e) => e instanceof Binary) ?? failures[0]
+}
+
+/** The placeholder for a file too large to read here, saying why. */
+function tooLarge(change: FileChange, e: TooLarge): FilePatch {
+  const size = e.size === null ? `over ${formatBytes(COUNT_BLOB_MAX_BYTES)}` : formatBytes(e.size)
+  if (e.by === 'hint' || e.by === 'stored') {
+    // The size is the browse index's claim: a false one could hide a small file's change.
+    const what = e.by === 'hint' ? `this file at about ${size}` : `this file's stored size as ${size}`
+    return {
+      kind: 'placeholder',
+      change,
+      reason: 'large',
+      note: `Not downloaded: the browse index lists ${what}, more than the browser reads to diff a file (${formatBytes(COUNT_BLOB_MAX_BYTES)}). That size is the index's claim and has not been checked.`,
+      ...(e.by === 'hint' ? { unverifiedSize: true as const } : {}),
+    }
+  }
+  return placeholder(change, 'large', `File too large to diff in the browser (${size}). ${LIMITS}`)
+}
+
+/**
+ * Load one change's patch. Never rejects: a failure becomes an `unreadable` placeholder.
+ *
+ * Both sides are read once, up to {@link COUNT_BLOB_MAX_BYTES}: a file up to
+ * {@link INLINE_BLOB_MAX_BYTES} is shown, a larger one is counted but not shown (so the change's
+ * totals stay whole, L-25), and one past the count limit is neither, and says so.
+ */
 export async function loadFilePatch(
   sides: DiffSides,
   change: FileChange,
@@ -139,33 +172,18 @@ export async function loadFilePatch(
     return placeholder(change, 'mode-only', 'File mode changed; content is identical.')
   }
   try {
-    const { lines } = await readPair(sides, change, options)
+    const [before, after] = await readSides(sides, change, options)
+    const size = Math.max(before.size, after.size)
+    const lines = diffTextLines(before.text, after.text, undefined, { ignoreWhitespace: options.ignoreWhitespace === true })
     if (lines === null) {
-      return placeholder(change, 'too-complex', 'This change is too large to diff in the browser.')
+      const large = size > INLINE_BLOB_MAX_BYTES ? `${largeNote(size)} ` : ''
+      return placeholder(change, 'too-complex', `${large}This change is too large to diff in the browser, so its lines are not counted.`)
     }
-    return textPatch(change, lines)
+    if (size <= INLINE_BLOB_MAX_BYTES) return textPatch(change, lines)
+    return { kind: 'placeholder', change, reason: 'large', note: largeNote(size), ...diffStat(lines) }
   } catch (e) {
     if (e instanceof Binary) return placeholder(change, 'binary', 'Binary file not shown.')
-    if (e instanceof TooLarge && e.size <= COUNT_BLOB_MAX_BYTES) {
-      const counted = await countLarge(sides, change, options)
-      if (counted !== null) return counted
-    }
-    if (e instanceof TooLarge && e.indexed) {
-      return {
-        kind: 'placeholder',
-        change,
-        reason: 'large',
-        note: `Not downloaded: the browse index lists this file at about ${formatBytes(e.size)}, over the ${formatBytes(INLINE_BLOB_MAX_BYTES)} inline-diff limit. That size is the index's claim and has not been checked.`,
-        unverifiedSize: true,
-      }
-    }
-    if (e instanceof TooLarge) {
-      return placeholder(
-        change,
-        'large',
-        `Large file (${formatBytes(e.size)}) not shown; the limit for an inline diff is ${formatBytes(INLINE_BLOB_MAX_BYTES)}.`,
-      )
-    }
+    if (e instanceof TooLarge) return tooLarge(change, e)
     return placeholder(change, 'unreadable', e instanceof Error ? e.message : 'Could not read this file.')
   }
 }
@@ -207,7 +225,30 @@ export function diffTotals(changes: readonly FileChange[], patchOf: (change: Fil
     } else if (p.reason === 'submodule') {
       added += change.headOid !== null ? 1 : 0
       deleted += change.baseOid !== null ? 1 : 0
-    } else if (p.reason === 'large' || p.reason === 'too-complex' || p.reason === 'unreadable') uncounted += 1
+    } else if (uncountedWhy(p) !== null) uncounted += 1
   }
   return { added, deleted, pending, uncounted }
+}
+
+/** Why a loaded patch's lines are not in the totals, or null when they are (or it has none to count). */
+function uncountedWhy(p: FilePatch): string | null {
+  if (p.kind !== 'placeholder' || (p.added !== undefined && p.deleted !== undefined)) return null
+  if (p.reason === 'large') return 'too large to diff in the browser'
+  if (p.reason === 'too-complex') return 'too many changes to diff'
+  if (p.reason === 'unreadable') return 'could not be read'
+  return null
+}
+
+/**
+ * Why the files {@link diffTotals} leaves uncounted are left out, for the partial totals' label:
+ * `1 too large to diff in the browser, 1 could not be read`. Empty when every loaded file was counted.
+ */
+export function uncountedReasons(changes: readonly FileChange[], patchOf: (change: FileChange) => FilePatch | undefined): string {
+  const counts = new Map<string, number>()
+  for (const change of changes) {
+    const p = patchOf(change)
+    const why = p === undefined ? null : uncountedWhy(p)
+    if (why !== null) counts.set(why, (counts.get(why) ?? 0) + 1)
+  }
+  return [...counts].map(([why, n]) => `${n} ${why}`).join(', ')
 }

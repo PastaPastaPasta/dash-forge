@@ -39,8 +39,7 @@ import { REQUEST_TTL_MS, RequestExpired, awaitRegisteredKey, awaitWalletAnswer, 
 import { isUnlimited, keyRegistrationUri, scopeCovers, type WalletKey } from '@/lib/auth/key-registration'
 import { responderProfile, type ResponderProfile } from '@/lib/auth/responder-profile'
 import { isAbort } from '@/lib/sdk/facade'
-import { PHASE_TEXT, PLATFORM_READ_MS, connectPlatform } from '@/lib/auth/connect'
-import { withTimeout } from '@/lib/timeout'
+import { PHASE_TEXT, connectPlatform, withPlatformRead } from '@/lib/auth/connect'
 import { formatDate } from '@/lib/view/format'
 import { errorMessage } from '@/lib/utils'
 
@@ -144,7 +143,7 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
         const sdk = await connectPlatform(ACTIVE_NETWORK.network, (p) => !signal.aborted && setPreparing(PHASE_TEXT[p]))
         if (signal.aborted) return
         setPreparing('Finding the wallet login contract')
-        const sources = await withTimeout(responseSources(sdk, ACTIVE_NETWORK.key), PLATFORM_READ_MS, 'Finding the wallet login contract')
+        const sources = await withPlatformRead(responseSources(sdk, ACTIVE_NETWORK.key), 'Finding the wallet login contract')
         if (signal.aborted) return
         if (sources.length === 0) throw new Error(`No wallet login contract is available on ${ACTIVE_NETWORK.key}.`)
         const req = newLoginRequest(ACTIVE_NETWORK.network, target)
