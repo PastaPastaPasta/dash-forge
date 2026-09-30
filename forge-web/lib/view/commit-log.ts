@@ -27,6 +27,11 @@ export interface LogEntry {
   readonly subject: string
   /** Who wrote it and when (ms): all a log row shows, so the history index can supply it. */
   readonly author: LogAuthor
+  /**
+   * The committer time (ms), when the commit itself was read: what `git log` orders by, and what
+   * the list's day headers group by (QW2-044). The history index records author times only.
+   */
+  readonly committedAt?: number
 }
 
 /** A log row's author: a commit's `author` ident, or the history index's name and time. */
@@ -276,10 +281,12 @@ export async function loadCommitChanges(reader: PrefixReader, id: string): Promi
     peeled = await peelToCommit(reader, named)
     commit = await readCommit(reader, peeled.oid)
   } catch (e) {
-    // A well-formed full id the repo does not hold: say so, not "object not in locator". A
-    // partial clone's own error already names the packs it could not load; keep it.
-    if (e instanceof MissingObjectError) throw e
+    // A well-formed full id the repo does not hold: say so, not "object not in locator" (the
+    // reader's MissingObjectError, QW2-037). A partial clone's own error already names the
+    // packs it could not load; keep it.
+    if (e instanceof MissingObjectError && reader.incomplete) throw e
     if (reader.locate?.(named) === null) throw notFound(reader, id)
+    if (e instanceof MissingObjectError) throw e
     if (e instanceof ObjectTypeError) throw new CommitIdError('not-a-commit', id, [], e.actual, e.oid !== named)
     throw e
   }

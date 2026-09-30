@@ -13,7 +13,8 @@ import { historicalTipsPredicate } from '../repo'
 import type { Holdings } from '../rules'
 import { prStateV2 } from '../rules/v2'
 import {
-  bypassNote,
+  BYPASS_VALUE_MAX,
+  bypassValue,
   deleteBranchOffer,
   deleteBranchProblem,
   mergeBaseTip,
@@ -23,7 +24,9 @@ import {
   mergeGate,
   mergeRefProblem,
   policyOf,
+  prLinkedIssues,
   pullActions,
+  requiredChecksLine,
   unmetRules,
   verdictSummary,
   type PullActionInputs,
@@ -248,7 +251,7 @@ describe('mergeButton — a head the base already holds (QW-002)', () => {
   })
 })
 
-describe('unmetRules and bypassNote — the rules named, as dg names them', () => {
+describe('unmetRules and bypassValue — the rules named, as dg names them', () => {
   it('names approvals, checks and an unreadable policy', () => {
     expect(unmetRules(null)).toEqual([])
     expect(unmetRules({ met: true, have: 1, need: 1 })).toEqual([])
@@ -260,11 +263,44 @@ describe('unmetRules and bypassNote — the rules named, as dg names them', () =
     expect(unmetRules(null, { met: false, untrusted: 0, required: [{ name: 'ci', state: 'failing', runId: 'r' }] })).toEqual(['required check `ci`: failing'])
   })
 
-  it('records the bypass with the merge commit, the base and every rule', () => {
-    const note = bypassNote('ab'.repeat(20), 'refs/heads/main', ['required approvals: 0 of 1', 'required check `build`: missing'])
-    expect(note).toContain('**Merged by bypassing the branch rules** (a maintainer override): abababababab into `main`.')
-    expect(note).toContain('- required approvals: 0 of 1\n- required check `build`: missing\n')
-    expect(note).toContain('consensus does not enforce them')
+  it('records every rule in the bypass event, as dg does', () => {
+    // Word for word dg's `bypass_value` (pr/mod.rs tests).
+    expect(bypassValue(['required approvals: 0 of 1', 'required check `lint`: failing'])).toBe('required approvals: 0 of 1; required check `lint`: failing')
+    expect(bypassValue([])).toBe('the branch rules')
+  })
+
+  it('fits the event value: whole rules, the rest counted, one overlong rule cut', () => {
+    const rules = Array.from({ length: 10 }, (_, i) => `required check \`check-number-${i}\`: missing`)
+    const v = bypassValue(rules)
+    expect([...v].length).toBeLessThanOrEqual(BYPASS_VALUE_MAX)
+    expect(v.startsWith('required check `check-number-0`: missing; ')).toBe(true)
+    expect(v.endsWith(' (+8 more)')).toBe(true)
+    const cut = bypassValue(['x'.repeat(200)])
+    expect([...cut].length).toBe(BYPASS_VALUE_MAX)
+    expect(cut.endsWith('…')).toBe(true)
+  })
+})
+
+describe('requiredChecksLine — only the checks not passing are named (QW2-052)', () => {
+  it('names lint alone when build passes and lint fails', () => {
+    const checks = {
+      met: false,
+      untrusted: 0,
+      required: [
+        { name: 'build', state: 'passed' as const, runId: 'a' },
+        { name: 'lint', state: 'failing' as const, runId: 'b' },
+      ],
+    }
+    expect(requiredChecksLine(checks, ['build', 'lint'])).toEqual({ ok: false, text: 'Required checks not passing on the head: lint' })
+  })
+
+  it('says pending and missing, all passing, none reported and not read yet', () => {
+    const one = (state: 'pending' | 'missing' | 'passed') => ({ met: state === 'passed', untrusted: 0, required: [{ name: 'e2e', state, runId: null }] })
+    expect(requiredChecksLine(one('pending'), ['e2e']).text).toBe('Required checks not passing on the head: e2e (pending)')
+    expect(requiredChecksLine(one('missing'), ['e2e']).text).toBe('Required checks not passing on the head: e2e (missing)')
+    expect(requiredChecksLine(one('passed'), ['e2e'])).toEqual({ ok: true, text: 'Required checks pass: e2e' })
+    expect(requiredChecksLine({ met: false, untrusted: 0, required: [] }, [])).toEqual({ ok: false, text: 'Required checks not passing on the head: none reported' })
+    expect(requiredChecksLine('unknown', ['build'])).toEqual({ ok: false, text: 'Required checks not read yet: build' })
   })
 })
 
@@ -482,5 +518,13 @@ describe('the merge box review line (RC1 R-16): the fold gates, the proved count
     expect(line).toMatchObject({ tone: 'changes', headline: 'Changes requested', proved: false })
     expect(line?.onChain).toMatch(/^2 member approvals and 1 change request on chain\. The members couldn't be read/)
     expect(verdictSummary(null, null, HEAD)).toBeNull()
+  })
+})
+
+describe('prLinkedIssues — never the PR itself (QW2-054)', () => {
+  it('drops the PR\'s own number from "Fixes #n"', () => {
+    expect(prLinkedIssues('Adds a name. Fixes #1', 1)).toEqual([])
+    expect(prLinkedIssues('Fixes #1, closes #4', 3)).toEqual([1, 4])
+    expect(prLinkedIssues('Fixes #3 and resolves #2', 3)).toEqual([2])
   })
 })

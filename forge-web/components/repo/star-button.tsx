@@ -23,7 +23,7 @@ import { Button } from '@/components/ui/button'
 import { beatAllowed, starBeatFirsts, starFirsts, starRelation, type RepoRef } from '@/lib/repo'
 import { trendingPref } from '@/lib/repo/trending'
 import { firstWriteRead, previewCreate, previewDelete, sumPreviews } from '@/lib/sdk'
-import { creditsAsDash, priceLabel } from '@/lib/view/format'
+import { creditsAsDash, priceLabel, refundLabel } from '@/lib/view/format'
 
 export function StarButton({
   repo,
@@ -102,7 +102,7 @@ export function StarButton({
       {/* The price in view before the one-click write (D-098, style guide rule 2), as Follow shows it. */}
       {signedIn && star.on !== null ? (
         <span className="hidden font-mono text-[11px] text-anvil-500 dark:text-anvil-400 sm:inline" data-testid="star-cost" aria-hidden>
-          {starred ? `+${creditsAsDash(-refund.credits)}` : priceLabel(cost.credits, upperBound)} DASH
+          {starred ? refundLabel('unstar', refund.credits) : priceLabel(cost.credits, upperBound)} DASH
         </span>
       ) : null}
     </span>

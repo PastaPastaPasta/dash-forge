@@ -13,7 +13,8 @@ A maintainer adds a hook:
 ```sh
 dg webhook add <owner>/<repo> --url https://ci.example/hook \
    --relay <relay identity id> --events push,pull_request --name ci
-# no --secret-env: a random secret is generated and printed once
+# no --secret-env: a random secret is generated and shown once (in a terminal only;
+# scripted or in CI, add --secret-file <new file> and it goes only there)
 ```
 
 This writes a forge-community `webhook` document. **The URL and event list are public on

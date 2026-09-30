@@ -48,6 +48,19 @@ export function fundsState(balance: bigint, key: KeyLimits | null = null, now = 
   return { level: 'comfortable', reason: null, spendable }
 }
 
+/**
+ * The top-up sheet's coverage line: what an issue costs, and how many the funds a write can use
+ * cover now (`spendable`: the balance, capped by this browser's key budget). QW2-035: it said
+ * "0.05 DASH covers about 40", the key's budget, to an identity with 0.0054 DASH.
+ */
+export function issueCoverage(spendable: bigint | null, issueCredits: number, dash: (credits: number) => string): string {
+  const each = `About ${dash(issueCredits)} DASH covers an issue`
+  if (spendable === null) return `${each}.`
+  const n = Math.floor(Number(spendable) / issueCredits)
+  if (n === 0) return `${each}; what you can spend now does not cover one.`
+  return `${each}; what you can spend now covers about ${n === 1 ? 'one' : n}.`
+}
+
 /** The one fix a low or empty state needs (`ux-dx-spec.md` §4: top up / renew key). */
 export type FundsFix = 'top-up' | 'renew-key'
 

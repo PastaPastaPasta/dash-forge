@@ -12,7 +12,7 @@ import { Store } from './diff-fixtures'
 import { parseTag } from './git-objects'
 import { logPage } from './path-history'
 import { selectedTip, selectRef } from './refs'
-import { isPermanentReadError, peekDeclared, peekTip, peelCached, peeledCommitOf, resetTipCache, resolveTip, rootTreeOf } from './tip'
+import { isPermanentReadError, peekDeclared, peekTip, peelCached, peeledCommitOf, resetTipCache, resolveTip, rootTreeOf, tipDateCached } from './tip'
 import { ObjectTypeError, peel, peelToCommit, readBlob, readCommit, readTree, TAG_PEEL_MAX, type ObjectReader } from './tree-nav'
 import { listFiles } from './zip'
 
@@ -50,7 +50,7 @@ describe('parseTag', () => {
   it('reads the object, type and name of an annotated tag', () => {
     const { s, commit } = repo()
     const t = tag(s, commit, 'commit', 'v1.0')
-    expect(parseTag(s.objects.get(t)!.bytes)).toEqual({ object: commit, type: 'commit', tag: 'v1.0' })
+    expect(parseTag(s.objects.get(t)!.bytes)).toEqual({ object: commit, type: 'commit', tag: 'v1.0', tagger: { name: 'T', email: 't@example.com', when: 1000 } })
   })
 
   it('refuses a tag whose header does not start with object and type', () => {
@@ -299,5 +299,31 @@ describe('review follow-ups', () => {
 describe('isPermanentReadError (L-63)', () => {
   it('lets a network failure be retried', () => {
     expect(isPermanentReadError(new Error('fetch failed'))).toBe(false)
+  })
+})
+
+// QW2-023: the branches and tags lists date a ref by its tip, not by when its ref document moved.
+describe('tipDateCached', () => {
+  it('a commit by its committer date, an annotated tag by its tagger date, one without a tagger by its commit', async () => {
+    const s = new Store()
+    const root = s.tree([{ name: 'a', oid: s.blob('a') }])
+    const commit = s.commitAt(root, [], 1_420_200_000)
+    const tagged = tag(s, commit, 'commit', 'v1')
+    const bare = enc.encode(`object ${commit}\ntype commit\ntag old\n\nold\n`)
+    const old = gitOidHex('tag', bare)
+    s.objects.set(old, { type: 'tag', bytes: bare })
+    const reader = s.reader()
+    expect(await tipDateCached(reader, commit)).toBe(1_420_200_000_000)
+    expect(await tipDateCached(reader, tagged)).toBe(1000)
+    expect(await tipDateCached(reader, old)).toBe(1_420_200_000_000)
+    expect(await tipDateCached(reader, tag(s, root, 'tree', 'of-a-tree'))).toBe(1000)
+    expect(await tipDateCached(reader, root)).toBe(0)
+  })
+
+  it('rejects an unreadable tip, and reads it again next time', async () => {
+    const s = new Store()
+    const commit = s.commitAt(s.tree([{ name: 'a', oid: s.blob('a') }]), [], 7)
+    await expect(tipDateCached(s.reader(new Set()), commit)).rejects.toThrow()
+    expect(await tipDateCached(s.reader(), commit)).toBe(7000)
   })
 })

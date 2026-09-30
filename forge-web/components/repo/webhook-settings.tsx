@@ -5,7 +5,7 @@
  * maintainer, adding and removing them from the browser, as `dg webhook add | list | remove`
  * does (`lib/repo/webhooks.ts`). A hook asks a relay identity (forge-relay) to POST GitHub-shaped
  * events to a URL; its secret is encrypted from the writer's encryption key to the relay's, so
- * adding one needs the encryption key in this browser (Settings → Keys). Public repos only.
+ * adding one needs the encryption key in this browser (Settings → Private repos). Public repos only.
  */
 
 import Link from 'next/link'
@@ -39,7 +39,7 @@ import { Author } from '@/components/author'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { Button } from '@/components/ui/button'
-import { CopyRow } from '@/components/ui/copy-row'
+import { SecretValue } from '@/components/ui/secret-value'
 import { Field, Input } from '@/components/ui/input'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { Section } from '@/components/repo/repo-settings-sections'
@@ -176,7 +176,7 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
               Webhook to <span className="break-all font-mono">{shown.url}</span> added. Its secret, shown once: configure it at the receiver to verify
               the <span className="font-mono">X-Hub-Signature-256</span> header.
             </p>
-            <CopyRow text={shown.secret} label="Copy the webhook secret" />
+            <SecretValue label="the webhook secret" value={shown.secret} />
             <Button size="sm" variant="ghost" className="mt-1" onClick={() => setShown(null)}>
               Done
             </Button>

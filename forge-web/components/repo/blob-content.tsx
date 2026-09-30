@@ -38,9 +38,10 @@ import {
 } from '@/lib/view'
 import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
+import { GoToFileHotkey } from '@/components/repo/go-to-file'
 import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
 import { PathActions } from '@/components/repo/path-actions'
-import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
+import { RefDeletedState, RefSwitcher, unknownRefState } from '@/components/repo/ref-switcher'
 import { Oid } from '@/components/ui/oid'
 import { ScrollRegion } from '@/components/ui/scroll-region'
 import { Button } from '@/components/ui/button'
@@ -116,9 +117,8 @@ export function BlobContent({
   // Blame is offered until the file turns out binary or too large (QW-060); a new file starts over.
   const [canBlame, setCanBlame] = useState(true)
   useEffect(() => setCanBlame(true), [path, tipOid])
-  if (refParam && !selected.ref && !selected.pinned) {
-    return <RefNotFoundState addr={addr} refParam={refParam} defaultBranch={home.defaultBranch} />
-  }
+  const unknown = unknownRefState(home, addr, selected, refParam, path)
+  if (unknown !== null) return unknown
   // An enumerated ref with no tip was deleted; only a ref with no entry at all is "empty".
   if (!tipOid && selected.ref) {
     return <RefDeletedState addr={addr} name={selected.name} defaultBranch={home.defaultBranch} />
@@ -137,7 +137,11 @@ export function BlobContent({
         {(reader, retry) => (
           <ResolvedTip reader={reader} retry={retry} repo={home.repo} tip={tipOid} pinned={selected.pinned !== undefined} name={selected.name} addr={addr} refParam={refParam} accepts="any" label="Reconstructing blob">
             {(tip) => (
-              <BlobBody key={`${tip.oid}:${path}`} reader={reader} retry={retry} tip={tip} path={path} addr={addr} refParam={refParam} repo={home.repo} onBlameable={setCanBlame} />
+              <>
+                {/* `t`: another file at this ref (QW2-043). */}
+                <GoToFileHotkey reader={reader} repo={home.repo} tip={tip} addr={addr} refParam={refParam} />
+                <BlobBody key={`${tip.oid}:${path}`} reader={reader} retry={retry} tip={tip} path={path} addr={addr} refParam={refParam} repo={home.repo} onBlameable={setCanBlame} />
+              </>
             )}
           </ResolvedTip>
         )}

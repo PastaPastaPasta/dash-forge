@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ResolvedRef } from '../repo'
-import { isLive, matchesRefQuery, refParamFor, selectedTip, selectRef } from './refs'
+import { isLive, matchesRefQuery, refParamFor, selectedTip, selectRef, splitRefPath } from './refs'
 
 function ref(refName: string, oid = 'a'.repeat(40)): ResolvedRef {
   return { refName, refNameHash: 'x', state: { state: 'resolved', oid, author: 'id', createdAt: 1 } }
@@ -122,5 +122,23 @@ describe('pinned commits (permalinks, D-054)', () => {
     const unknown = selectRef(branches, tags, 'main', 'feature-x')
     expect(unknown.pinned).toBeUndefined()
     expect(selectedTip(unknown)).toBeNull()
+  })
+})
+
+// QW2-024: `/tree/feat/flatpak/doc` pasted from GitHub reaches the page as ref=feat, path=flatpak/doc.
+describe('splitRefPath', () => {
+  const slashed = [ref('refs/heads/main'), ref('refs/heads/feat/flatpak'), ref('refs/heads/fix/a/b')]
+  const slashTags = [ref('refs/tags/release/v2')]
+  it('takes the longest branch or tag the path’s leading segments complete', () => {
+    expect(splitRefPath(slashed, slashTags, 'feat', 'flatpak/doc')).toEqual({ ref: 'feat/flatpak', path: 'doc' })
+    expect(splitRefPath(slashed, slashTags, 'feat', 'flatpak')).toEqual({ ref: 'feat/flatpak', path: '' })
+    expect(splitRefPath(slashed, slashTags, 'fix', 'a/b/src/x.c')).toEqual({ ref: 'fix/a/b', path: 'src/x.c' })
+    expect(splitRefPath(slashed, slashTags, 'release', 'v2/README.md')).toEqual({ ref: 'release/v2', path: 'README.md' })
+  })
+  it('leaves a ref that exists, an unknown one, and a URL with no path alone', () => {
+    expect(splitRefPath(slashed, slashTags, 'main', 'flatpak/doc')).toBeNull()
+    expect(splitRefPath(slashed, slashTags, 'feat', 'other/doc')).toBeNull()
+    expect(splitRefPath(slashed, slashTags, 'feat', '')).toBeNull()
+    expect(splitRefPath(slashed, slashTags, '', 'feat/flatpak')).toBeNull()
   })
 })

@@ -13,9 +13,9 @@
 
 import Link from 'next/link'
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
-import { shortOid } from '@/lib/view'
+import { formatDate, shortOid, timeAgo } from '@/lib/view'
 import { historyWalker } from '@/lib/view/commit-log'
-import { peelCached, peekDeclared } from '@/lib/view/tip'
+import { peelCached, peekDeclared, tipDateCached } from '@/lib/view/tip'
 import type { ObjectReader } from '@/lib/view/tree-nav'
 import { useBrowse } from '@/hooks/use-browse'
 import { useTrustView } from '@/hooks/use-trust-view'
@@ -46,7 +46,7 @@ export function useTagPeeler(repo: RepoRef | null): TagPeeler {
 }
 
 /** Whether `el` has been in (or near) the viewport; stays true once it has. */
-function useSeen(el: RefObject<Element>): boolean {
+export function useSeen(el: RefObject<Element>): boolean {
   const [seen, setSeen] = useState(false)
   useEffect(() => {
     const node = el.current
@@ -97,5 +97,44 @@ export function TagCommit({ peeler, tip, addr }: { peeler: TagPeeler; tip: strin
     >
       {shown === null ? <span className="font-mono text-dense text-anvil-500 dark:text-anvil-400">…</span> : <Oid value={shown} copyable={false} />}
     </Link>
+  )
+}
+
+/**
+ * A branches or tags row's date (QW2-023): "updated <age>" of its tip commit, or its tag's date,
+ * as GitHub's lists show them, read once the row scrolls into view. Until then, and where no index
+ * will be ready or the tip cannot be read, the time the ref last moved here (`pushedAt`, its newest
+ * update document: a mirror's sync time), labelled "pushed", never as the commit's date.
+ */
+export function RefDate({ peeler, tip, pushedAt }: { peeler: TagPeeler; tip: string; pushedAt: number }): JSX.Element | null {
+  const ref = useRef<HTMLSpanElement>(null)
+  const seen = useSeen(ref)
+  // undefined: not read yet; null: could not be read (or no date).
+  const [date, setDate] = useState<number | null | undefined>(undefined)
+  const { reader } = peeler
+  useEffect(() => {
+    if (!seen || reader === null || date !== undefined) return
+    let live = true
+    tipDateCached(reader, tip).then(
+      (ms) => live && setDate(ms > 0 ? ms : null),
+      () => live && setDate(null),
+    )
+    return () => {
+      live = false
+    }
+  }, [seen, reader, tip, date])
+  const cls = 'hidden shrink-0 whitespace-nowrap text-[12px] text-anvil-500 dark:text-anvil-400 sm:inline'
+  if (typeof date === 'number') {
+    return (
+      <span ref={ref} className={cls} data-testid="ref-updated" data-source="commit" title={new Date(date).toLocaleString()}>
+        updated {date < Date.now() - 365 * 86_400_000 ? `on ${formatDate(date)}` : timeAgo(date)}
+      </span>
+    )
+  }
+  const fallback = date === null || peeler.settled
+  return (
+    <span ref={ref} className={cls} data-testid="ref-updated" data-source={fallback ? 'push' : 'pending'} title={pushedAt > 0 ? new Date(pushedAt).toLocaleString() : undefined}>
+      {fallback && pushedAt > 0 ? `pushed ${timeAgo(pushedAt)}` : '\u00a0'}
+    </span>
   )
 }

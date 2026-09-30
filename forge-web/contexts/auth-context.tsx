@@ -28,43 +28,14 @@ import { DEFAULT_NETWORK, type Network } from '../lib/constants'
 import { type SpendEvent, type WriteAuth } from '../lib/sdk'
 import { connectPlatform } from '../lib/auth/connect'
 import { recordSpend } from '../lib/spend'
+import { lockedIdentityOf, readLastIdentity } from '../lib/auth/last-identity'
 import { errorMessage } from '../lib/utils'
 import { fundsState, nextFundsChange, type FundsState, type KeyLimits } from '../lib/view/funds'
 import { toast } from '../hooks/use-toasts'
+import { spendToast } from '../lib/spend-toast'
 
 /** setTimeout's longest delay (about 24.8 days); a later change is re-armed from there. */
 const MAX_TIMER_MS = 2 ** 31 - 1
-
-/** A write kind (`create:issue`) → the toast title. */
-const SPEND_TITLES: Readonly<Record<string, string>> = {
-  'create:repo': 'Repository created',
-  'create:maintainer': 'Maintainer added',
-  'create:writer': 'Writer added',
-  'create:config': 'Repository config written',
-  'create:repoKey': 'Repo key handed out',
-  'create:issue': 'Issue created',
-  'create:comment': 'Comment posted',
-  'create:event': 'State event recorded',
-  'create:authorEvent': 'State event recorded',
-  'create:review': 'Review submitted',
-  // Every release revision (publish, edit, yank, unpublish) is this kind: the dialog says which (QW-077).
-  'create:release': 'Release saved',
-  'create:webhook': 'Webhook saved',
-  'delete:webhook': 'Webhook revision deleted',
-  'create:star': 'Starred',
-  'create:follow': 'Following',
-  'delete:star': 'Unstarred',
-  'delete:follow': 'Unfollowed',
-  'delete:maintainer': 'Maintainer removed',
-  'delete:writer': 'Writer removed',
-  'key:register': "This browser's key registered",
-  'key:renew': "This browser's key renewed",
-  'key:topup': 'Key budget topped up',
-  'key:revoke': 'Key disabled on chain',
-  'key:encryption': 'Encryption key registered',
-  'key:runner': 'Runner key registered',
-  'identity:create': 'Identity created',
-}
 
 const NONE: readonly number[] = []
 
@@ -112,6 +83,16 @@ interface AuthContextValue {
    * every visit"): every page offers Unlock, and write buttons open it.
    */
   readonly locked: boolean
+  /**
+   * The identity signed in last on this device (null when none was recorded): the Unlock sheet
+   * preselects it among several stored keys.
+   */
+  readonly lastIdentity: string | null
+  /**
+   * While {@link locked}: the identity the Unlock would open (the last used, else the first
+   * stored), so a page can say "Unlock to merge" to a member rather than look signed out.
+   */
+  readonly lockedIdentity: string | null
   /**
    * `signing`: this tab resumed a kept session and holds the spend-capped signing key only
    * (private repos, storage settings and wallet grants ask to unlock); `full`: an interactive
@@ -251,9 +232,9 @@ export function AuthProvider({
     (event: SpendEvent) => {
       const refused = event.kind.startsWith('refused:')
       toast({
-        title: refused ? 'Platform refused that write' : SPEND_TITLES[event.kind] ?? 'Write confirmed',
+        ...spendToast(event),
         credits: event.actualCredits ?? null,
-        ...(refused ? { tone: 'warn' as const, detail: 'A refused write still pays its processing fee.' } : {}),
+        ...(refused ? { title: 'Platform refused that write', tone: 'warn' as const, detail: 'A refused write still pays its processing fee.' } : {}),
       })
       // The row first, then the balance: a refresh that lands before the row would let Settings →
       // Spend reconcile a balance with this write in it against a ledger without it.
@@ -307,7 +288,14 @@ export function AuthProvider({
     () => (session ? fundsState(BigInt(session.balance), keyLimits, clock) : null),
     [session, keyLimits, clock],
   )
+  // Re-read when a session opens (the controller records it) or the stored keys change (a
+  // forget drops it). localStorage, so read in the browser only.
+  const [lastIdentity, setLastIdentity] = useState<string | null>(null)
+  useEffect(() => {
+    setLastIdentity(readLastIdentity(network))
+  }, [network, sessionIdentity, vaults])
 
+  const locked = session === null && !resuming && vaults.length > 0
   const value = useMemo<AuthContextValue>(
     () => ({
       identity: session?.identityId ?? null,
@@ -330,13 +318,15 @@ export function AuthProvider({
       vaultsError,
       vaultsLoaded,
       resuming,
-      locked: session === null && !resuming && vaults.length > 0,
+      locked,
+      lastIdentity,
+      lockedIdentity: locked ? lockedIdentityOf(vaults, lastIdentity) : null,
       unlockScope: session === null ? null : state.scope ?? null,
       reloadVaults,
       controller,
       ...actions,
     }),
-    [actions, controller, funds, keyLimits, reloadVaults, resuming, session, signer, state.error, state.isLoading, state.scope, state.step, vaults, vaultsError, vaultsLoaded],
+    [actions, controller, funds, keyLimits, lastIdentity, locked, reloadVaults, resuming, session, signer, state.error, state.isLoading, state.scope, state.step, vaults, vaultsError, vaultsLoaded],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

@@ -18,7 +18,7 @@ import { PackUnavailableError, unavailableOf } from '@/lib/view/browse-source'
 import { isPermanentReadError, peekTip, resolveTip, type PeeledTip } from '@/lib/view/tip'
 import { useAsync } from '@/hooks/use-async'
 import { StorageUnreachableCard } from '@/components/repo/storage-unreachable'
-import { Button } from '@/components/ui/button'
+import { Button, buttonClass } from '@/components/ui/button'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { errorMessage } from '@/lib/utils'
@@ -49,7 +49,18 @@ function CommitIdState({ cause, addr, retry }: { cause: CommitIdError; addr: Rep
             ))}
           </ul>
         ) : cause.kind === 'not-found' ? (
-          <Button onClick={retry}>Try again</Button>
+          // GitHub's 404 for a commit: the way back is the commit list (QW2-037). Try again stays
+          // second, for a push that may bring the commit.
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <Link
+              href={repoHref('/repo/commits', addr)}
+              data-testid="commit-not-found-commits"
+              className={buttonClass({ variant: 'primary' })}
+            >
+              View commits
+            </Link>
+            <Button onClick={retry}>Try again</Button>
+          </div>
         ) : undefined
       }
     />

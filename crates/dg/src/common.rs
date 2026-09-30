@@ -39,6 +39,9 @@ impl RepoRef {
         if name.contains('/') {
             return Err(invalid_ref(s, "expected `owner/name`, with one `/`"));
         }
+        // `@alice/project`: the `@` people type before a username (QW2-082), as the
+        // identity arguments already take it.
+        let owner = owner.strip_prefix('@').unwrap_or(owner);
         if !looks_like_identity_id(owner) && forge_core::resolve::dpns_label(owner).is_none() {
             return Err(invalid_ref(
                 s,
@@ -80,7 +83,7 @@ fn invalid_ref(input: &str, why: &str) -> anyhow::Error {
         format!("invalid repository reference {input:?}"),
     )
     .cause(why)
-    .fix("use `<owner>/<name>` with the owner's identity id or DPNS name, e.g. `alice/project` or `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB/project`, a bare `<name>` for your own repositories, or the repo's id")
+    .fix("use `<owner>/<name>` with the owner's identity id or DPNS name, e.g. `alice/project`, `@alice/project` or `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB/project`, a bare `<name>` for your own repositories, or the repo's id")
     .into()
 }
 
@@ -346,6 +349,7 @@ mod tests {
         for (input, owner) in [
             ("alice/project", "alice"),
             ("alice.dash/project", "alice.dash"),
+            ("@alice/project", "alice"),
         ] {
             let r = RepoRef::parse(input).unwrap();
             assert_eq!(r.owner.as_deref(), Some(owner));
@@ -355,6 +359,7 @@ mod tests {
             "al ice/project",
             "a_b/project",
             ".dash/project",
+            "@/project",
             "alice/b/c",
         ] {
             assert!(RepoRef::parse(bad).is_err(), "{bad:?} should be refused");

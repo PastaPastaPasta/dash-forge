@@ -1415,10 +1415,12 @@ name = "dg"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "bip39",
  "clap",
  "clap_complete",
  "forge-core",
  "forge-import",
+ "futures",
  "hex",
  "qrcode",
  "rand 0.8.8",

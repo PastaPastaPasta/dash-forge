@@ -70,7 +70,7 @@ A Dash Platform **identity** is your account on Forge. It holds your keys and yo
 dg auth new --network devnet --devnet-name bonsia
 ```
 
-1. `dg` shows **12 recovery words**. Write them down, in order, and keep them offline: they are the identity, and nobody can recover it without them. It asks you to type three of them back.
+1. `dg` shows **12 recovery words**. Write them down, in order, and keep them offline: they are the identity, and nobody can recover it without them. It asks you to type three of them back. The words are shown only in a terminal. Scripted, piped or in CI, `dg auth new` never prints them: pass `--backup-file <new file>` and they go only to that file (0600, sealed under a passphrase, `DASH_FORGE_PASSPHRASE` without a terminal or with `--json`). Without that flag it refuses before it creates anything.
 2. It shows a deposit address as a QR code and as text. Send 0.05 DASH to it from any Dash wallet; on devnet bonsia use the faucet at <https://faucet.bonsia.networks.dash.org>, which sends 10 test DASH, far more than you need. A repository costs about 0.0016 DASH.
 3. `dg` waits for the deposit, locks it, registers the identity, and stores a **limited key** for this computer in your OS keychain: it can spend at most 0.25 DASH, only on Forge, for 180 days. The master key is not stored anywhere.
 
@@ -107,7 +107,7 @@ dg auth login --network devnet --devnet-name bonsia ~/Downloads/dash-identity-<i
 Registering a limited key for this computer on 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB (devnet-bonsia):
   it can spend at most 0.25 DASH, only on Dash Forge, until it expires in 180 day(s)
   one identity update, ~0.0005 DASH ≈ $0.02; the master key signs once and is not stored
-Register the key? [Y/n] y
+Register the key? [y/N] y
 ✓ signed in as 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB on devnet-bonsia
   key #6: limited, 0.25 DASH budget, expires in 180 day(s)
   stored in macOS Keychain (dash-forge/devnet-bonsia/8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB)
@@ -117,7 +117,7 @@ Register the key? [Y/n] y
 
 The quote is an upper bound: on devnet bonsia the update was charged about 0.00027 DASH. Without a terminal (a script), `dg` stops with [E802](../errors.md#e802) and writes nothing; add `--yes` once you have checked the estimate.
 
-The identity file's master key signs one update that registers a limited key for this computer, and `dg` stores only that key. Afterwards put the identity file somewhere offline. `dg` records the identity and the network as defaults, and `git push` reads the same stored key, so neither needs flags or `DASH_FORGE_KEY`. Where there is no OS keychain (a container, Linux without Secret Service), the key goes to a passphrase-sealed file instead; over SSH, set `DASH_FORGE_NO_KEYCHAIN=1` to get the same.
+The identity file's master key signs one update that registers a limited key for this computer, and `dg` stores only that key, with your identity's encryption key beside it for private repositories (never the master key). Afterwards put the identity file somewhere offline. `dg` records the identity and the network as defaults, and `git push` reads the same stored key, so neither needs flags or `DASH_FORGE_KEY`. Where there is no OS keychain (a container, Linux without Secret Service), the key goes to a passphrase-sealed file instead; over SSH, set `DASH_FORGE_NO_KEYCHAIN=1` to get the same.
 
 With a sealed key file, each command that signs asks for the passphrase once:
 
@@ -125,7 +125,7 @@ With a sealed key file, each command that signs asks for the passphrase once:
 - A plain `git push` asks on the terminal, once per push.
 - Without a terminal (a GUI git client, a cron job) the push stops with [`E303`](../errors.md#e303) before anything is written. Its message names the ways out: run it in a terminal, keep the key in the OS keychain, or set `DASH_FORGE_PASSPHRASE` (or a [`dfk1:` key](identity-and-keys.md)) for scripts.
 
-`git push` and `git clone` use the same network: `git-remote-dash` reads the one `dg` recorded, so plain git commands need no flags or environment either. A repository's own git config (`dash.network`, which `dg init` and `dg repo clone` write) wins over it, and `DASH_FORGE_NETWORK` wins over both. Inside such a clone, `dg` uses the repository's network too, and commands that leave out the repository use the clone's (`dg issue list`, `dg pr view 3`, `dg release list`), as `gh` does.
+`git push` and `git clone` use the same network: `git-remote-dash` reads the one `dg` recorded, so plain git commands need no flags or environment either. A repository's own git config (`dash.network`, which `dg init` and `dg repo clone` write) wins over it, and `DASH_FORGE_NETWORK` wins over both. Inside such a clone, `dg` uses the repository's network too, and commands that leave out the repository use the clone's (`dg issue list`, `dg pr view 3`, `dg issue label 3 add bug`, `dg release download v1.0`), as `gh` does; `-R <owner>/<name>` names another one. In a clone of a fork, `dg pr create` opens the PR in the fork's parent.
 
 Then check everything:
 

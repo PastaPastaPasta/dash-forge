@@ -101,6 +101,23 @@ describe('resolveCommitOid edge cases', () => {
     expect((e as Error).message).toMatch(/could not be fetched/)
   })
 
+  it("calls a full id the repo does not hold not found, not the reader's locator error (QW2-037)", async () => {
+    const missing = 'deadbeef'.repeat(5)
+    const r: PrefixReader = {
+      ...base,
+      readObject: async (oid) => {
+        throw new MissingObjectError(`object not in locator: ${oid}`)
+      },
+    }
+    const e = await loadCommitChanges(r, missing).catch((x: unknown) => x)
+    expect(e).toBeInstanceOf(CommitIdError)
+    expect((e as CommitIdError).kind).toBe('not-found')
+    expect((e as Error).message).toBe(`No commit ${missing} in this repo`)
+    // A partial clone keeps its own error: the commit may be in a pack it could not load.
+    const partial = await loadCommitChanges({ ...r, incomplete: true }, missing).catch((x: unknown) => x)
+    expect(partial).toBeInstanceOf(MissingObjectError)
+  })
+
   it('says a single non-commit match is not a commit, and offers no links to it', async () => {
     const e = await resolveCommitOid(base, 'ab12345f').catch((x: unknown) => x)
     expect(e).toBeInstanceOf(CommitIdError)

@@ -28,6 +28,11 @@ export interface SignInIntent {
   /** Completes "Sign in to …": `star this repo`, `fork this repo`, `open an issue`. */
   readonly action: string
   readonly credits?: number
+  /**
+   * The sheet opened to read a private repo (QW2-016): Import keeps the identity's encryption
+   * key by default ("Enable private repos" ticked), so the member lands on readable content.
+   */
+  readonly privateRepo?: boolean
 }
 
 interface UiState {

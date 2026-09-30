@@ -8,10 +8,10 @@ export function CommitsClient(): JSX.Element {
   const addr = useRepoAddress()
   const refParam = useParam('ref')
   const path = useParam('path')
-  const firstParent = useParam(FIRST_PARENT_PARAM) === '1'
+  const firstParentParam = useParam(FIRST_PARENT_PARAM)
   return (
     <RepoScaffold addr={addr} browse refParam={refParam}>
-      {(home) => <CommitsContent home={home} addr={addr} refParam={refParam} path={path} firstParent={firstParent} />}
+      {(home) => <CommitsContent home={home} addr={addr} refParam={refParam} path={path} firstParentParam={firstParentParam} />}
     </RepoScaffold>
   )
 }

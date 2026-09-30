@@ -102,8 +102,9 @@ impl Source for GithubSource {
                         }
                     }
                 }
-                out.targets
-                    .extend(targets(&self.gh, &self.repo, &items, classes, None, true)?);
+                let revisited =
+                    targets(&self.gh, &self.repo, &items, classes, None, true, &mut out)?;
+                out.targets.extend(revisited);
                 out.targets.sort_by_key(|t| t.number);
             }
         }
@@ -139,6 +140,74 @@ impl Source for GithubSource {
 fn gone_at_github(e: &anyhow::Error) -> bool {
     let s = format!("{e:#}");
     s.contains("HTTP 404") || s.contains("HTTP 410")
+}
+
+/// Whether `e` is GitHub refusing one item's sub-listing (its reviews, conversation comments
+/// or review comments) with a client error: HTTP 404, 410, 422 or 451, as `gh api` reports
+/// them (`gh: Unprocessable Entity (HTTP 422)`). Not 401 or 403 (the token, not the item:
+/// they fail the run), and not a rate limit or a 5xx (retried in [`crate::github`], and
+/// failing the run once the retries run out).
+fn refused_for_item(e: &anyhow::Error) -> bool {
+    let s = format!("{e:#}");
+    ["404", "410", "422", "451"]
+        .iter()
+        .any(|code| s.contains(&format!("(HTTP {code})")))
+}
+
+/// How long to wait before asking once more for a sub-listing GitHub refused.
+const REFUSED_RETRY_WAIT: std::time::Duration = if cfg!(test) {
+    std::time::Duration::ZERO
+} else {
+    std::time::Duration::from_secs(10)
+};
+
+/// One item's sub-listing (`what`: its reviews, comments or review comments), or `None` when
+/// GitHub refuses it for that item ([`refused_for_item`]) twice, `REFUSED_RETRY_WAIT` apart:
+/// the item is then mirrored without it. A warning names the item and what was left out, and
+/// the run is incomplete, so it ends partial and `--state` does not advance: the next run reads
+/// the item again and adds what it gets (comments and reviews are only ever added, found on
+/// chain by URL). dashpay/dash#6498's reviews answered 422 once, 97 minutes into a full
+/// import, and the whole run failed before writing anything; they read fine minutes later.
+fn unless_refused<T>(
+    list: impl Fn() -> Result<Vec<T>>,
+    number: u64,
+    what: &str,
+    gaps: &mut SrcCollab,
+) -> Result<Option<Vec<T>>> {
+    let first = match list() {
+        Err(e) if refused_for_item(&e) => e,
+        listed => return listed.map(Some),
+    };
+    tracing::warn!(
+        number,
+        part = what,
+        error = %format!("{first:#}"),
+        "GitHub refused one item's sub-listing; asking once more"
+    );
+    std::thread::sleep(REFUSED_RETRY_WAIT);
+    match list() {
+        Err(e) if refused_for_item(&e) => {
+            let error = format!("{e:#}");
+            tracing::warn!(
+                number,
+                left_out = what,
+                %error,
+                "GitHub refused one item's sub-listing again; mirroring the item without it"
+            );
+            gaps.incomplete = true;
+            let w = format!(
+                "#{number} is mirrored without its {what}: GitHub refused to list them \
+                 ({error}). The run is partial, so the next run reads #{number} again"
+            );
+            // A PR's thread can be read in full twice in one run (conversation count, then
+            // review-comment count): one warning.
+            if !gaps.warnings.contains(&w) {
+                gaps.warnings.push(w);
+            }
+            Ok(None)
+        }
+        listed => listed.map(Some),
+    }
 }
 
 /// The repository's label definitions.
@@ -201,13 +270,14 @@ pub fn collect(
     };
     items.sort_by_key(|i| i.number);
     out.truncated = truncated;
-    out.targets = targets(gh, src, &items, classes, since, limit > 0)?;
+    out.targets = targets(gh, src, &items, classes, since, limit > 0, &mut out)?;
     Ok(out)
 }
 
 /// The model of `items` (sorted by number): each with its thread, and a PR with its detail and
 /// reviews. `per_item` reads each item's own thread and detail (a `--limit` run, or a few
-/// revisited items); otherwise the repository-wide listings are read once.
+/// revisited items); otherwise the repository-wide listings are read once. An item whose own
+/// sub-listing GitHub refuses is mirrored without it, noted in `gaps` ([`unless_refused`]).
 fn targets(
     gh: &GithubClient,
     src: &GithubRepoRef,
@@ -215,9 +285,10 @@ fn targets(
     classes: Classes,
     since: Option<&str>,
     per_item: bool,
+    gaps: &mut SrcCollab,
 ) -> Result<Vec<SrcTarget>> {
     let mut out = Vec::with_capacity(items.len());
-    let mut threads = threads(gh, items, classes, since, per_item)?;
+    let mut threads = threads(gh, items, classes, since, per_item, gaps)?;
 
     // PR details from the listing (one call per 100 PRs); a PR the listing missed (it
     // changed mid-read), or any PR of a `--limit` run, is read by its own call.
@@ -248,7 +319,7 @@ fn targets(
         if let Some(p) = &pull {
             let lines = thread.iter().filter(|c| c.path.is_some()).count() as u64;
             if since.is_some() && !per_item && p.review_comments > lines {
-                thread = full_thread(gh, i)?;
+                thread = full_thread(gh, i, std::mem::take(&mut thread), gaps)?;
             }
         }
         thread.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
@@ -290,8 +361,8 @@ fn targets(
                 source_ref_name: open_head.then(|| format!("refs/mirror/pull/{number}/head")),
                 head_oid: head,
             });
-            t.reviews = gh
-                .reviews(i.number)?
+            t.reviews = unless_refused(|| gh.reviews(i.number), i.number, "reviews", gaps)?
+                .unwrap_or_default()
                 .into_iter()
                 .filter_map(|r| review(src, number, &r))
                 .collect();
@@ -316,11 +387,12 @@ fn threads(
     classes: Classes,
     since: Option<&str>,
     per_item: bool,
+    gaps: &mut SrcCollab,
 ) -> Result<BTreeMap<u64, Vec<GhComment>>> {
     let mut out: BTreeMap<u64, Vec<GhComment>> = BTreeMap::new();
     if per_item {
         for i in items {
-            out.insert(i.number, full_thread(gh, i)?);
+            out.insert(i.number, full_thread(gh, i, Vec::new(), gaps)?);
         }
         return Ok(out);
     }
@@ -343,7 +415,8 @@ fn threads(
                 .get(&i.number)
                 .map_or(0, |t| t.iter().filter(|c| c.path.is_none()).count() as u64);
             if i.comments > got {
-                out.insert(i.number, full_thread(gh, i)?);
+                let windowed = out.remove(&i.number).unwrap_or_default();
+                out.insert(i.number, full_thread(gh, i, windowed, gaps)?);
             }
         }
     }
@@ -351,14 +424,38 @@ fn threads(
 }
 
 /// One item's whole thread: its conversation comments, and a PR's review (line) comments.
-fn full_thread(gh: &GithubClient, i: &GhIssue) -> Result<Vec<GhComment>> {
+/// `read` is what was already read of it (the `since` window's comments, from the
+/// repository-wide listings): a listing GitHub refuses for this item ([`unless_refused`])
+/// keeps what `read` has of that kind instead.
+fn full_thread(
+    gh: &GithubClient,
+    i: &GhIssue,
+    read: Vec<GhComment>,
+    gaps: &mut SrcCollab,
+) -> Result<Vec<GhComment>> {
+    let (read_lines, read_conversation): (Vec<_>, Vec<_>) =
+        read.into_iter().partition(|c| c.path.is_some());
     let mut thread = if i.comments > 0 {
-        gh.comments_on(i.number, None)?
+        unless_refused(
+            || gh.comments_on(i.number, None),
+            i.number,
+            "comments",
+            gaps,
+        )?
+        .unwrap_or(read_conversation)
     } else {
         Vec::new()
     };
     if i.is_pull_request() {
-        thread.extend(gh.review_comments_on(i.number, None)?);
+        thread.extend(
+            unless_refused(
+                || gh.review_comments_on(i.number, None),
+                i.number,
+                "review comments",
+                gaps,
+            )?
+            .unwrap_or(read_lines),
+        );
     }
     Ok(thread)
 }
@@ -624,6 +721,238 @@ mod tests {
         assert!(!gone_at_github(&anyhow::anyhow!(
             "gh: Server Error (HTTP 502)"
         )));
+    }
+
+    /// [`BigRepo`], where the listings whose path contains a key of `refuse` fail with its
+    /// error (what the retry wrapper reports once it gives up), `refusals` times in all, and
+    /// PR #6 has one review.
+    struct Refusing {
+        repo: BigRepo,
+        refuse: Vec<(&'static str, &'static str)>,
+        refusals: std::cell::Cell<usize>,
+    }
+
+    impl crate::github::GhApi for Refusing {
+        fn json(&self, path: &str) -> Result<Vec<u8>> {
+            self.repo.json(path)
+        }
+
+        fn list(&self, path: &str) -> Result<Vec<String>> {
+            if let Some((_, err)) = self.refuse.iter().find(|(p, _)| path.contains(p)) {
+                if self.refusals.get() > 0 {
+                    self.refusals.set(self.refusals.get() - 1);
+                    anyhow::bail!("`gh api {path}&page=1` failed: {err}");
+                }
+            }
+            if path.contains("pulls/6/reviews") {
+                let r = serde_json::json!({
+                    "id": 61, "state": "APPROVED", "user": {"login": "rev"},
+                    "commit_id": "ab".repeat(20), "body": "utACK",
+                    "html_url": "https://github.com/o/r/pull/6#pullrequestreview-61",
+                    "submitted_at": "2020-01-02T03:04:05Z",
+                });
+                return Ok(vec![r.to_string()]);
+            }
+            self.repo.list(path)
+        }
+    }
+
+    fn refusing(refuse: Vec<(&'static str, &'static str)>) -> GithubClient {
+        refusing_times(refuse, usize::MAX)
+    }
+
+    fn refusing_times(refuse: Vec<(&'static str, &'static str)>, times: usize) -> GithubClient {
+        let repo = BigRepo(std::rc::Rc::default());
+        let refusals = std::cell::Cell::new(times);
+        GithubClient::with_api(
+            src(),
+            Box::new(Refusing {
+                repo,
+                refuse,
+                refusals,
+            }),
+        )
+    }
+
+    const UNPROCESSABLE: &str = "gh: Unprocessable Entity (HTTP 422)";
+
+    /// dashpay/dash#6498: GitHub answered its reviews listing with a 422, 97 minutes into a full
+    /// import, and the whole run failed before writing anything. The PR is mirrored without its
+    /// reviews, the warning names it, and the run is incomplete (partial, `--state` held) so the
+    /// next run reads it again; every other item keeps all it has.
+    #[test]
+    fn a_refused_review_listing_leaves_out_only_that_prs_reviews() {
+        let gh = refusing(vec![("pulls/3/reviews", UNPROCESSABLE)]);
+        let all = Classes::parse("issues,prs").unwrap();
+        let out = collect(&gh, &src(), all, None, 0).unwrap();
+        assert_eq!(
+            out.targets.len(),
+            usize::try_from(BIG).unwrap(),
+            "every item is mirrored"
+        );
+        let pr = |n: u32| out.targets.iter().find(|t| t.number == n).unwrap();
+        assert_eq!(pr(3).kind, TargetKind::Patch);
+        assert!(pr(3).reviews.is_empty());
+        assert_eq!(pr(3).comments.len(), 1, "its thread is still mirrored");
+        assert_eq!(pr(6).reviews.len(), 1, "another PR keeps its reviews");
+        assert!(out.incomplete, "partial, so --state does not advance");
+        assert_eq!(out.warnings.len(), 1, "{:?}", out.warnings);
+        let w = &out.warnings[0];
+        assert!(w.starts_with("#3 is mirrored without its reviews"), "{w}");
+        assert!(w.contains("HTTP 422"), "{w}");
+    }
+
+    /// The same for a thread read item by item (a `--limit` run, a revisit, or an item whose
+    /// window missed comments): a refused conversation or review-comment listing leaves out
+    /// just that part of just that item.
+    #[test]
+    fn a_refused_thread_listing_leaves_out_only_that_part() {
+        let gh = refusing(vec![
+            ("issues/1/comments", "gh: Not Found (HTTP 404)"),
+            (
+                "pulls/3/comments",
+                "gh: Unavailable For Legal Reasons (HTTP 451)",
+            ),
+        ]);
+        let all = Classes::parse("issues,prs").unwrap();
+        let out = collect(&gh, &src(), all, None, 3).unwrap();
+        let comments: Vec<usize> = out.targets.iter().map(|t| t.comments.len()).collect();
+        assert_eq!(comments, [0, 1, 1], "#3 keeps its conversation comment");
+        assert!(out.incomplete);
+        assert_eq!(out.warnings.len(), 2, "{:?}", out.warnings);
+        assert!(out.warnings[0].starts_with("#1 is mirrored without its comments"));
+        assert!(out.warnings[1].starts_with("#3 is mirrored without its review comments"));
+    }
+
+    /// #6498's 422 did not repeat: a sub-listing refused once is asked for once more, and a
+    /// second answer mirrors the item whole.
+    #[test]
+    fn a_sub_listing_refused_once_is_read_on_the_second_ask() {
+        let gh = refusing_times(vec![("pulls/6/reviews", UNPROCESSABLE)], 1);
+        let all = Classes::parse("issues,prs").unwrap();
+        let out = collect(&gh, &src(), all, None, 0).unwrap();
+        let pr6 = out.targets.iter().find(|t| t.number == 6).unwrap();
+        assert_eq!(pr6.reviews.len(), 1);
+        assert!(!out.incomplete);
+        assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+    }
+
+    /// An incremental run: #1 (a PR) has 2 conversation comments and 2 review comments at the
+    /// source; the window returned one of each, so its thread is read in full, twice (for each
+    /// count). Its review-comment listing is refused: the one the window returned is kept, the
+    /// conversation is read whole, and the warning is given once.
+    struct LineWindow(std::rc::Rc<std::cell::RefCell<Vec<String>>>);
+
+    impl crate::github::GhApi for LineWindow {
+        fn json(&self, path: &str) -> Result<Vec<u8>> {
+            let v = match path.split_once('?').map_or(path, |(p, _)| p) {
+                // The pulls listing (updated since): none, so #1's detail is read on its own.
+                "repos/o/r/pulls" => serde_json::json!([]),
+                "repos/o/r/pulls/1" => {
+                    let mut p = pull_json(1);
+                    p["review_comments"] = 2.into();
+                    p
+                }
+                other => panic!("unexpected {other}"),
+            };
+            Ok(serde_json::to_vec(&v)?)
+        }
+
+        fn list(&self, path: &str) -> Result<Vec<String>> {
+            self.0.borrow_mut().push(path.to_string());
+            let route = path.split_once('?').map_or(path, |(p, _)| p);
+            let c = |id: u64, line: bool| {
+                let mut v = serde_json::json!({
+                    "id": id, "body": format!("c{id}"), "user": {"login": "bob"},
+                    "html_url": format!("https://github.com/o/r/pull/1#c{id}"),
+                    "created_at": format!("2020-01-02T03:04:{id:02}Z"),
+                });
+                if line {
+                    v["path"] = "a.rs".into();
+                    v["pull_request_url"] = "https://api.github.com/repos/o/r/pulls/1".into();
+                } else {
+                    v["issue_url"] = "https://api.github.com/repos/o/r/issues/1".into();
+                }
+                v.to_string()
+            };
+            Ok(match route {
+                "repos/o/r/issues" => vec![serde_json::json!({
+                    "number": 1, "title": "t", "state": "open", "user": {"login": "bob"},
+                    "comments": 2, "pull_request": {},
+                    "html_url": "https://github.com/o/r/pull/1",
+                    "created_at": "2020-01-02T03:04:05Z"})
+                .to_string()],
+                "repos/o/r/issues/comments" => vec![c(12, false)],
+                "repos/o/r/pulls/comments" => vec![c(22, true)],
+                "repos/o/r/issues/1/comments" => vec![c(11, false), c(12, false)],
+                "repos/o/r/pulls/1/comments" => {
+                    anyhow::bail!("`gh api {path}&page=1` failed: {UNPROCESSABLE}")
+                }
+                "repos/o/r/pulls/1/reviews" => Vec::new(),
+                other => panic!("unexpected {other}"),
+            })
+        }
+    }
+
+    #[test]
+    fn a_refused_full_thread_keeps_what_the_window_read() {
+        let log = std::rc::Rc::default();
+        let gh = GithubClient::with_api(src(), Box::new(LineWindow(std::rc::Rc::clone(&log))));
+        let all = Classes::parse("issues,prs").unwrap();
+        let out = collect(&gh, &src(), all, Some("2026-09-08T00:00:00Z"), 0).unwrap();
+        let bodies: Vec<&str> = out.targets[0]
+            .comments
+            .iter()
+            .map(|c| c.body.rsplit("\n\n").next().unwrap())
+            .collect();
+        assert_eq!(bodies, ["c11", "c12", "c22"], "{bodies:?}");
+        assert!(out.incomplete);
+        assert_eq!(out.warnings.len(), 1, "{:?}", out.warnings);
+        assert!(out.warnings[0].starts_with("#1 is mirrored without its review comments"));
+        let asked = log
+            .borrow()
+            .iter()
+            .filter(|p| p.contains("pulls/1/comments"))
+            .count();
+        assert_eq!(asked, 4, "two full reads, each asking twice");
+    }
+
+    /// What is not about one item still fails the run: the token (401, or a 403 that is not a
+    /// rate limit), a rate limit or a server error the retries did not outlast, and a refused
+    /// repository-wide listing.
+    #[test]
+    fn auth_rate_limit_and_server_failures_still_fail_the_run() {
+        let all = Classes::parse("issues,prs").unwrap();
+        for err in [
+            "gh: Bad credentials (HTTP 401)",
+            "gh: Resource not accessible by integration (HTTP 403)",
+            "the GitHub API rate limit was reached; re-run after it resets",
+            "gh: Server Error (HTTP 502)",
+            "stream error: stream ID 23; CANCEL; received from peer",
+        ] {
+            let gh = refusing(vec![("pulls/3/reviews", err)]);
+            let e = collect(&gh, &src(), all, None, 0).unwrap_err();
+            assert!(format!("{e:#}").contains(err), "{err}: {e:#}");
+        }
+        let gh = refusing(vec![("issues/comments?", UNPROCESSABLE)]);
+        assert!(collect(&gh, &src(), all, None, 0).is_err());
+    }
+
+    #[test]
+    fn only_a_client_error_about_the_item_is_refused_for_it() {
+        for code in [404, 410, 422, 451] {
+            let e =
+                anyhow::anyhow!("`gh api repos/o/r/pulls/9/reviews` failed: gh: X (HTTP {code})");
+            assert!(refused_for_item(&e), "{code}");
+        }
+        for code in [400, 401, 403, 409, 429, 500, 502] {
+            let e =
+                anyhow::anyhow!("`gh api repos/o/r/pulls/9/reviews` failed: gh: X (HTTP {code})");
+            assert!(!refused_for_item(&e), "{code}");
+        }
+        // A PR numbered like a status code is not a status.
+        let e = anyhow::anyhow!("`gh api repos/o/r/pulls/422/reviews` failed: gh: X (HTTP 502)");
+        assert!(!refused_for_item(&e));
     }
 
     /// F-10: `--limit 2` on a large repository read every comment of the repository (tens

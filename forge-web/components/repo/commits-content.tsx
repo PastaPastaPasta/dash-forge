@@ -5,9 +5,10 @@
  * where the last page stopped): every commit reachable from the tip in `git log`'s order
  * ({@link dateOrderedPage}, QW-006), or with `?first-parent=1` the first-parent log alone (the
  * commits made on the branch itself, merges standing for what they brought in), labelled so. With
- * `path`, a file's or a directory's History: the first-parent commits that changed it
+ * `path`, a file's or a directory's History: by default the first-parent commits that changed it
  * ({@link pathVersions}: from the push-time history index when one covers the tip, with no walk),
- * labelled first-parent too. Pages walk one shared read-ahead walker
+ * labelled first-parent too; with `?first-parent=0` every commit that changed it, as
+ * `git log -- <path>` lists them ({@link pathDateOrderedPage}, QW2-041: always a walk). Pages walk one shared read-ahead walker
  * and the session memo of `lib/view/path-history.ts`, so an older page reads only what it adds.
  *
  * How many pages are shown is in the URL (`?pages=3`, L-31), and the scroll position is kept for
@@ -26,7 +27,7 @@ import type { RepoRef } from '@/lib/repo'
 import type { RepoHome } from '@/lib/view'
 import { selectedTip, selectRef, type LogEntry } from '@/lib/view'
 import { historyWalker } from '@/lib/view/commit-log'
-import { dateOrderedPage, type DateWalk } from '@/lib/view/date-log'
+import { dateOrderedPage, pathDateOrderedPage, type DateWalk } from '@/lib/view/date-log'
 import { LOG_PAGE, PATH_WALK_CAP, pathVersions } from '@/lib/view/path-history'
 import { historyOf } from '@/lib/view/history-source'
 import { useAsync } from '@/hooks/use-async'
@@ -36,7 +37,7 @@ import { dayRuns } from '@/lib/view/commit-days'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { ResolvedTip } from '@/components/repo/resolved-tip'
 import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
-import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
+import { RefDeletedState, RefSwitcher, unknownRefState } from '@/components/repo/ref-switcher'
 import { Oid } from '@/components/ui/oid'
 import { CheckDot, useCheckOutcomes } from '@/components/repo/check-dot'
 import { Button } from '@/components/ui/button'
@@ -49,21 +50,20 @@ export function CommitsContent({
   addr,
   refParam = '',
   path = '',
-  firstParent: firstParentOnly = false,
+  firstParentParam = '',
 }: {
   home: RepoHome
   addr: RepoAddress
   refParam?: string
   /** A file or directory: its History ('' = the whole log). */
   path?: string
-  /** `?first-parent=1`: the first-parent log, not every commit (a path's History is first-parent anyway). */
-  firstParent?: boolean
+  /** The `?first-parent=` value ({@link isFirstParent}). */
+  firstParentParam?: string
 }): JSX.Element {
-  const firstParent = firstParentOnly || path !== ''
+  const firstParent = isFirstParent(path, firstParentParam)
   const selected = selectRef(home.branches, home.tags, home.defaultBranch, refParam)
-  if (refParam && !selected.ref && !selected.pinned) {
-    return <RefNotFoundState addr={addr} refParam={refParam} defaultBranch={home.defaultBranch} />
-  }
+  const unknown = unknownRefState(home, addr, selected, refParam, path)
+  if (unknown !== null) return unknown
   const tipOid = selectedTip(selected)
   // An enumerated ref with no tip was deleted; only a ref with no entry at all is "empty".
   if (!tipOid && selected.ref) {
@@ -137,8 +137,16 @@ export function pagesParam(raw: string | null): number {
   return Number.isInteger(n) && n >= 1 ? Math.min(n, MAX_URL_PAGES) : 1
 }
 
-/** `?first-parent=1`: the first-parent log instead of every commit (a path's History is always first-parent). */
+/**
+ * `?first-parent=`: `1` lists the first-parent log instead of every commit; a path's History is
+ * first-parent unless it is `0` (the history index answers that one without a walk).
+ */
 export const FIRST_PARENT_PARAM = 'first-parent'
+
+/** Whether a log lists first-parent commits only: the whole log with `?first-parent=1`, a path's History unless `?first-parent=0`. */
+export function isFirstParent(path: string, param: string): boolean {
+  return path === '' ? param === '1' : param !== '0'
+}
 
 /**
  * The footer's count (L-35): what is shown, and of how many when that is known; for a path's
@@ -147,7 +155,10 @@ export const FIRST_PARENT_PARAM = 'first-parent'
 export function logStatus(state: Pick<LogState, 'entries' | 'next'>, total: number | null, path = '', firstParent = path !== ''): string {
   const n = state.entries.length
   const fp = firstParent ? 'first-parent ' : ''
-  if (path) return state.next === null ? `The first-parent history of ${path}: ${plural(n, 'commit')}` : `Showing ${n.toLocaleString('en-US')} first-parent ${n === 1 ? 'commit' : 'commits'} that changed ${path}`
+  if (path) {
+    if (state.next === null) return `The ${fp}history of ${path}: ${plural(n, 'commit')}`
+    return `Showing ${n.toLocaleString('en-US')} ${fp}${n === 1 ? 'commit' : 'commits'} that changed ${path}`
+  }
   if (state.next === null) return firstParent ? `Every first-parent commit: ${n.toLocaleString('en-US')}` : `The whole history: ${plural(n, 'commit')}`
   if (total !== null && total >= n) return `Showing ${n.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} ${fp}${total === 1 ? 'commit' : 'commits'}`
   return `Showing the newest ${n.toLocaleString('en-US')} ${fp}${n === 1 ? 'commit' : 'commits'}`
@@ -169,15 +180,17 @@ export function withPage(state: LogState, page: LogPageOf): LogState {
 }
 
 /**
- * All commits (git log's order) or the first-parent log (QW-006): the same URL with or without
- * `?first-parent=1`, from its first page.
+ * All commits (git log's order) or the first-parent log (QW-006), for the whole log and a path's
+ * History alike (QW2-041): the same URL with the other `?first-parent=`, from its first page.
  */
-function OrderToggle({ firstParent, pathname, params }: { firstParent: boolean; pathname: string; params: { toString(): string } }): JSX.Element {
+function OrderToggle({ firstParent, path, pathname, params }: { firstParent: boolean; path: string; pathname: string; params: { toString(): string } }): JSX.Element {
   const hrefFor = (fp: boolean): string => {
     const q = new URLSearchParams(params.toString())
     q.delete('pages')
-    if (fp) q.set(FIRST_PARENT_PARAM, '1')
-    else q.delete(FIRST_PARENT_PARAM)
+    // Each log's default is its bare URL: every commit for the whole log, first-parent for a path.
+    const value = path === '' ? (fp ? '1' : null) : fp ? null : '0'
+    if (value === null) q.delete(FIRST_PARENT_PARAM)
+    else q.set(FIRST_PARENT_PARAM, value)
     return `${pathname}?${q.toString()}`
   }
   const option = (fp: boolean, label: string, title: string): JSX.Element => {
@@ -202,8 +215,17 @@ function OrderToggle({ firstParent, pathname, params }: { firstParent: boolean; 
   return (
     <div className="flex flex-wrap items-center gap-2 text-[12px]">
       <nav aria-label="Which commits" className="inline-flex rounded-lg bg-anvil-100 p-0.5 dark:bg-anvil-900">
-        {option(false, 'All commits', 'Every commit reachable from this ref, newest first, as git log lists them')}
-        {option(true, 'First-parent only', 'Only the commits made on this branch itself: a merge stands for the commits it brought in (git log --first-parent)')}
+        {path === '' ? (
+          <>
+            {option(false, 'All commits', 'Every commit reachable from this ref, newest first, as git log lists them')}
+            {option(true, 'First-parent only', 'Only the commits made on this branch itself: a merge stands for the commits it brought in (git log --first-parent)')}
+          </>
+        ) : (
+          <>
+            {option(false, 'All commits', `Every commit that changed ${path}, including those on merged branches, as git log -- ${path} lists them back to when the path was added (walked in your browser)`)}
+            {option(true, 'First-parent only', `Only the commits on this branch itself that changed ${path}: a merge stands for the changes it brought in`)}
+          </>
+        )}
       </nav>
       {firstParent ? (
         <span className="text-anvil-500 dark:text-anvil-400" data-testid="log-first-parent-note">
@@ -213,6 +235,14 @@ function OrderToggle({ firstParent, pathname, params }: { firstParent: boolean; 
     </div>
   )
 }
+
+/**
+ * What a log row's day header groups it by (QW2-044): its commit date, which `git log` orders the
+ * list by (so each day is one header, as on GitHub), else its author date (a row the history index
+ * listed carries the author time only). Per row, so a page appended later never regroups the
+ * rows already shown.
+ */
+export const dayOf = (e: LogEntry): number => e.committedAt ?? e.author.when
 
 /** Where the list was scrolled, per URL, for this tab. */
 const scrollKey = (): string => `forge:log-scroll:${window.location.pathname}${window.location.search}`
@@ -268,7 +298,9 @@ function LogBody({
       const page: Promise<LogPageOf> =
         firstParent && typeof from === 'string'
           ? pathVersions(reader, from, path, { walker, signal: stop.signal })
-          : dateOrderedPage(reader, from, { walker, signal: stop.signal }).then((p) => ({ ...p, capped: false, indexed: 0 }))
+          : path !== ''
+            ? pathDateOrderedPage(reader, from, path, { walker, signal: stop.signal }).then((p) => ({ ...p, indexed: 0 }))
+            : dateOrderedPage(reader, from, { walker, signal: stop.signal }).then((p) => ({ ...p, capped: false, indexed: 0 }))
       page.then(
         (page) => {
           if (stop.signal.aborted) return
@@ -323,17 +355,28 @@ function LogBody({
   if (state.entries.length === 0 && state.loading) return <LoadingBlock label={path ? `Walking the history of ${path}` : 'Walking history'} />
   if (state.entries.length === 0) {
     return (
-      <EmptyState
-        icon={GitCommit}
-        title="No commits found"
-        body={state.capped ? `No change to ${path} in the last ${plural(state.examined, 'commit')}.` : `Nothing in this history touches ${path || 'the repo'}.`}
-      />
+      <div className="space-y-3">
+        {/* The other order stays one click away (the first-parent History has the index). */}
+        <OrderToggle firstParent={firstParent} path={path} pathname={pathname} params={params} />
+        <EmptyState
+          icon={GitCommit}
+          title="No commits found"
+          body={state.capped ? `No change to ${path} in the last ${plural(state.examined, 'commit')}.` : `Nothing in this history touches ${path || 'the repo'}.`}
+          action={
+            state.next !== null ? (
+              <Button size="sm" loading={state.loading} onClick={older} data-testid="older-commits">
+                Search older commits
+              </Button>
+            ) : undefined
+          }
+        />
+      </div>
     )
   }
 
   return (
     <div className="space-y-3">
-      {path === '' ? <OrderToggle firstParent={firstParent} pathname={pathname} params={params} /> : null}
+      <OrderToggle firstParent={firstParent} path={path} pathname={pathname} params={params} />
       <div
         className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800"
         data-testid="commit-log"
@@ -341,7 +384,7 @@ function LogBody({
         data-source={state.indexed > 0 ? 'index' : 'walk'}
         onClickCapture={keepScroll}
       >
-        {dayRuns(state.entries, (e) => e.author.when).flatMap((run, r) => [
+        {dayRuns(state.entries, dayOf).flatMap((run, r) => [
           // QW-061c: "Commits on <day>", as GitHub groups its list.
           <h2 key={`day-${r}-${run.day}`} className="border-b border-anvil-100 bg-anvil-50 px-4 py-1.5 text-[12px] font-medium text-anvil-600 dark:border-anvil-850 dark:bg-anvil-900 dark:text-anvil-300" data-testid="commit-day">
             {run.day === '' ? 'Commits of unknown date' : `Commits on ${formatDate(run.at)}`}

@@ -7,6 +7,10 @@ import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { Author } from '@/components/author'
 import { SignInButton } from '@/components/sign-in-button'
+import { Button } from '@/components/ui/button'
+import { useUiStore } from '@/hooks/use-ui-store'
+import Link from 'next/link'
+import { PRIVATE_REPOS_SETTINGS } from '@/lib/settings-links'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { useAuth } from '@/contexts/auth-context'
 import type { RepoAddress } from '@/hooks/use-query-param'
@@ -47,9 +51,17 @@ export function PrivateRepoState({
         <UnlockMore title="Unlock to view this private repo" testId="private-unlock" />
       ) : (
         <p className="text-dense text-anvil-700 dark:text-anvil-200">
-          {access === 'no-key'
-            ? 'Private: contents are encrypted for members. Add your encryption key to this browser to read them.'
-            : "Private: contents are encrypted for members. You're not one."}
+          {access === 'no-key' ? (
+            <>
+              Private: contents are encrypted for members. Add your encryption key to this browser in{' '}
+              <Link href={PRIVATE_REPOS_SETTINGS} className="text-forge-700 underline dark:text-forge-400">
+                Settings → Private repos
+              </Link>{' '}
+              to read them.
+            </>
+          ) : (
+            "Private: contents are encrypted for members. You're not one."
+          )}
         </p>
       )}
       <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-dense">
@@ -73,7 +85,8 @@ export function PrivateRepoState({
  * owner included) unlocks or signs in to read.
  */
 function SignedOutNote(): JSX.Element {
-  const { locked } = useAuth()
+  const { locked, resuming, vaultsLoaded } = useAuth()
+  const openLogin = useUiStore((s) => s.openLogin)
   return (
     <div className="space-y-3" data-testid="private-signed-out">
       <p className="text-dense text-anvil-700 dark:text-anvil-200">
@@ -81,7 +94,14 @@ function SignedOutNote(): JSX.Element {
           ? 'Private: contents are encrypted for members. Your session is locked: unlock to read it if you are one.'
           : 'Private: contents are encrypted for members. Sign in to read it if you are one.'}
       </p>
-      <SignInButton size="sm" />
+      {locked || resuming || !vaultsLoaded ? (
+        <SignInButton size="sm" />
+      ) : (
+        // Says why the sheet opened, and has Import keep the encryption key (QW2-016).
+        <Button size="sm" variant="primary" data-testid="private-sign-in" onClick={() => openLogin(undefined, undefined, { action: 'read this private repo', privateRepo: true })}>
+          Sign in to read it
+        </Button>
+      )}
     </div>
   )
 }

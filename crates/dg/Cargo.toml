@@ -19,6 +19,8 @@ clap.workspace = true
 clap_complete = "4"
 tracing.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# `dg release list` opens the sealed asset lists concurrently.
+futures = "0.3"
 serde = { workspace = true }
 serde_json.workspace = true
 toml = "0.8"
@@ -34,6 +36,11 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 tempfile = "3"
 # Hidden prompts: a pasted storage secret, the recovery words, backup-check words.
 rpassword = "7"
+
+[dev-dependencies]
+# tests/no_secrets_on_pipes.rs greps dg's piped output for every BIP-39 English word (the
+# version dash-sdk already pulls in).
+bip39 = "2"
 
 # `cargo binstall` fetches the prebuilt release archive instead of compiling (release.yml
 # publishes dash-forge-<version>-<target>.{tar.gz,zip}; the binaries sit in a top-level

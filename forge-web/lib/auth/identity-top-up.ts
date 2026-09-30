@@ -29,6 +29,7 @@ import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import type { Network } from '../constants'
 import { idbDelete, idbGet, idbPut } from '../idb'
 import { authSdk, isAbort } from '../sdk/facade'
+import { balanceBeforeWrite } from '../sdk/write'
 import { evoSdkService } from '../sdk/service'
 import { errorMessage } from '../utils'
 import { broadcastTx, buildAssetLock, coreEndpoints, currentHeight, depositHeld, obtainLockProof, waitForDeposit, wifBytes, type CoreEndpoints } from './asset-lock'
@@ -122,15 +123,29 @@ export async function topUpIdentity(
     /** Renews the connection's quorum keys before the top-up (see create-identity's L-06). */
     readonly freshen?: () => Promise<unknown>
   },
-): Promise<{ balance: bigint | null }> {
+): Promise<TopUpResult> {
   const { network, identityId } = params
   return exclusive(network, identityId, () => runTopUp(sdk, params))
 }
 
+/**
+ * A finished top-up: the balance after it, and, when this run added the credits and read the
+ * balance on both sides, how many it added and from what balance (the spend ledger records it as
+ * a credit, QW2-019). A run that found its lock already used credits the lock's value; `credit`
+ * is null when neither is known.
+ */
+export interface TopUpResult {
+  readonly balance: bigint | null
+  readonly credit: { readonly lockTxid: string; readonly balanceBefore: bigint | null; readonly credits: bigint } | null
+}
+
+/** Platform credits per duff of an asset lock. */
+const CREDITS_PER_DUFF = 1000n
+
 async function runTopUp(
   sdk: EvoSDK,
   params: Parameters<typeof topUpIdentity>[1],
-): Promise<{ balance: bigint | null }> {
+): Promise<TopUpResult> {
   const { network, identityId } = params
   const mnemonic = normalizeMnemonic(params.mnemonic)
   const ep = params.endpoints ?? coreEndpoints(network)
@@ -172,7 +187,7 @@ async function runTopUp(
   params.onAddress?.(journal.depositAddress, journal.lockTxid !== null)
 
   const { AssetLockProof, OutPoint, PrivateKey } = await import('@dashevo/evo-sdk')
-  const finish = async (balance: bigint | null): Promise<{ balance: bigint | null }> => {
+  const finish = async (balance: bigint | null, credit: TopUpResult['credit'] = null): Promise<TopUpResult> => {
     // The next index only once this address is seen empty (else the next top-up sweeps what is
     // left there). Saved before the journal goes, so a crash in between never reuses a finished
     // index with a fresh start height.
@@ -180,8 +195,11 @@ async function runTopUp(
     const upcoming: NextTopUp = left === 0 ? { index: journal.index + 1 } : { index: journal.index, fromHeight: journal.startHeight ?? null, fromTime: journal.startedAt }
     await idbPut<NextTopUp>('journal', nextKey(network, identityId), upcoming)
     await idbDelete('journal', journalKey(network, identityId))
-    return { balance }
+    return { balance, credit }
   }
+  /** What this run's lock added, read from the balance on both sides of it. */
+  const creditOf = (before: bigint, after: bigint): TopUpResult['credit'] =>
+    after > before && journal.lockTxid !== null ? { lockTxid: journal.lockTxid, balanceBefore: before, credits: after - before } : null
   const balanceNow = (): Promise<bigint | null> => ids.balance(identityId).then((b) => b ?? null, () => null)
   const used = async (txid: string): Promise<boolean> => {
     const op = new OutPoint(txid, 0)
@@ -194,7 +212,12 @@ async function runTopUp(
 
   // 3. A resumed run whose lock Platform already used (the tab closed after it landed): done,
   // without sending or proving anything again.
-  if (journal.lockTxid !== null && (await used(journal.lockTxid))) return finish(await balanceNow())
+  // Its credit is the lock's value (less the small fee Platform keeps, not known here).
+  if (journal.lockTxid !== null && (await used(journal.lockTxid))) {
+    const locked = journal.lockedDuffs ?? null
+    const credit = locked === null ? null : { lockTxid: journal.lockTxid, balanceBefore: null, credits: BigInt(locked) * CREDITS_PER_DUFF }
+    return finish(await balanceNow(), credit)
+  }
 
   // 4. Deposit → lock (saved before it is broadcast) → proof.
   if (journal.lockTxid === null || journal.lockRaw === null) {
@@ -231,17 +254,23 @@ async function runTopUp(
   params.onStage?.('topping-up')
   const fresh = await ids.fetch(identityId)
   if (!fresh) throw new Error(`Identity ${identityId} was not found on Platform. "Try again" resumes with the same deposit.`)
+  // A node a block behind this tab's last write answers the balance before it: not the start.
+  const before = balanceBeforeWrite(sdk, identityId, fresh.balance)
   const assetLockPrivateKey = PrivateKey.fromWIF(lockKey.wif)
   try {
     await (params.freshen ?? (() => evoSdkService.ensureFresh()))()
     params.signal?.throwIfAborted()
-    return await finish(await ids.topUp({ identity: fresh, assetLockProof, assetLockPrivateKey }))
+    const after = await ids.topUp({ identity: fresh, assetLockProof, assetLockPrivateKey })
+    return await finish(after, creditOf(before, after))
   } catch (e) {
     if (isAbort(e)) throw e
     // The answer may not have been checkable (a quorum rotation, a timeout): ask Platform
     // whether the lock was used before calling it a failure.
     params.onStage?.('checking')
-    if (await used(lockTxid)) return finish(await balanceNow())
+    if (await used(lockTxid)) {
+      const after = await balanceNow()
+      return finish(after, after === null ? null : creditOf(before, after))
+    }
     throw new Error(`The top-up did not go through (${errorMessage(e)}). Your deposit is locked and recorded on this device: "Try again" sends it again, and it is never credited twice.`)
   } finally {
     assetLockPrivateKey.free()

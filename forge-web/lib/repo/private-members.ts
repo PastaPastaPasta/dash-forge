@@ -184,7 +184,7 @@ export function planRotation(
 /** This browser holds encryption key `held`, but the identity's newest usable key is `current`. */
 function staleHeldKey(held: number, current: number): PrivateMembersError {
   return new PrivateMembersError(
-    `this browser holds encryption key ${held}, but your identity's current key is ${current}: the new repo key would go to key ${current}, which you couldn't read here. Import key ${current} (Settings → Keys), or rotate from the CLI with it.`,
+    `this browser holds encryption key ${held}, but your identity's current key is ${current}: the new repo key would go to key ${current}, which you couldn't read here. Import key ${current} (Settings → Private repos), or rotate from the CLI with it.`,
     'E306',
   )
 }
@@ -800,7 +800,7 @@ export async function createEpochZero(c: PrivateWriteContext, defaultBranch: str
     const pending = pendingSelfWrap(session, c.auth.identityId, 0)
     if (pending !== null && pending.row.recipientKeyId !== c.ops.keyId) throw notHeldKey(0, pending.row.recipientKeyId)
     if (pending === null && selfKey.keyId !== c.ops.keyId) {
-      throw new PrivateMembersError(`your identity's current encryption key is key ${selfKey.keyId}, but this browser holds key ${c.ops.keyId}; add key ${selfKey.keyId} here (Settings → Keys)`, 'E306')
+      throw new PrivateMembersError(`your identity's current encryption key is key ${selfKey.keyId}, but this browser holds key ${c.ops.keyId}; add key ${selfKey.keyId} here (Settings → Private repos)`, 'E306')
     }
     const k0 = await ownEpochKey(c, session, { identity: c.auth.identityId, keyId: pending?.row.recipientKeyId ?? selfKey.keyId }, 0, intent)
     try {

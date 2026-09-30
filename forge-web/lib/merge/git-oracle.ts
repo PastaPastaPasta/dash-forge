@@ -109,16 +109,17 @@ export function gitBlameMany(objects: Iterable<GitObject>, targets: readonly (re
 }
 
 /**
- * `git log --format=%H <tip>` for each of `tips` over `objects` (written once into a scratch
- * repository): every commit reachable from the tip, in git's order. Null without git.
+ * `git log --format=%H <tip> [-- <path>]` for each of `tips` over `objects` (written once into a
+ * scratch repository): every commit reachable from the tip (that changed `path`), in git's order.
+ * Null without git.
  */
-export function gitLog(objects: Iterable<GitObject>, tips: readonly string[]): string[][] | null {
+export function gitLog(objects: Iterable<GitObject>, tips: readonly string[], path?: string): string[][] | null {
   if (!HAVE_GIT) return null
   const { dir, done } = scratchRepo()
   try {
     writeBatched(dir, objects)
     return tips.map((tip) => {
-      const r = spawnSync('git', ['log', '--format=%H', tip], { cwd: dir, maxBuffer: 1 << 26 })
+      const r = spawnSync('git', ['log', '--format=%H', tip, ...(path !== undefined ? ['--', path] : [])], { cwd: dir, maxBuffer: 1 << 26 })
       if (r.status !== 0) throw new Error(`git log failed: ${r.stderr.toString()}`)
       return r.stdout.toString().split('\n').filter((l) => l !== '')
     })

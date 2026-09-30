@@ -22,6 +22,7 @@ import { Time } from '@/components/repo/byline'
 import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
+import { GoToFileHotkey } from '@/components/repo/go-to-file'
 import { DiffView } from '@/components/repo/diff-view'
 import { ChecksTab } from '@/components/repo/pull-tabs'
 import { ReadErrorState } from '@/components/repo/resolved-tip'
@@ -56,6 +57,8 @@ function Body({ reader, retry, oid, addr, repo, description }: { reader: BrowseR
 
   return (
     <div className="space-y-4">
+      {/* `t`: the files at this commit (QW2-043). */}
+      <GoToFileHotkey reader={reader} repo={repo} tip={{ oid: full, type: 'commit' }} addr={addr} refParam={full} />
       <div className="rounded-lg border border-anvil-200 bg-white p-4 dark:border-anvil-750 dark:bg-anvil-900">
         <h1 className="text-prose font-semibold [overflow-wrap:anywhere]" data-testid="commit-subject">
           {commitSubject(commit.message) ? <LinkifiedText text={commitSubject(commit.message)} links={links} imported={sourceUrl(links)} /> : '(no message)'}

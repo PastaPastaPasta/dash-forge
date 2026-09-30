@@ -206,10 +206,15 @@ describe('where the bytes came from row', () => {
     expect(r.source.detail).toBe(`${gw}.`)
   })
 
-  it('reads Failed with the list of places when no storage answered', () => {
+  it("reads Couldn't verify, not Failed, with the list of places when no storage answered (QW2-006)", () => {
     const r = deriveTrust(inputs({ checks: checks({ unreachable: ['pub-9a1.r2.dev (timed out)', 'ipfs (not found on 3 gateways)'] }) }))
-    expect(r.source.state).toBe('failed')
-    expect(r.source.detail).toBe("No storage answered. Didn't answer: pub-9a1.r2.dev (timed out), ipfs (not found on 3 gateways).")
+    expect(r.source.state).toBe('unverified')
+    expect(r.source.detail).toBe(
+      "No storage answered, so no file could be fetched to check. Didn't answer: pub-9a1.r2.dev (timed out), ipfs (not found on 3 gateways).",
+    )
+    // An outage is not a failed check: no red headline, and nothing for the failure banner.
+    expect(r.overall).not.toBe('failed')
+    expect(failedRows(r)).toEqual([])
   })
 })
 
@@ -242,6 +247,36 @@ describe('worstOf', () => {
     expect(worstOf(['verified', 'unverified', 'partial'])).toBe('unverified')
     expect(worstOf(['pending', 'verified'])).toBe('verified')
     expect(worstOf([])).toBe('pending')
+  })
+})
+
+describe('a device clock off the network (QW2-018)', () => {
+  it('wins over every other connection state', () => {
+    expect(connectionTrust(true, true, false, true)).toBe('clock')
+    expect(connectionTrust(false, true, true, true)).toBe('clock')
+    // Except a connection that checks no proofs: that stays what it is.
+    expect(connectionTrust(true, false, false, true)).toBe('untrusted')
+  })
+
+  it('keeps a known quorum-key mismatch Failed', () => {
+    const quorum = { state: 'mismatch', primary: 'a', secondary: 'b', quorums: ['q'.repeat(64)] } as unknown as QuorumCrossCheck
+    expect(deriveTrust(inputs({ connection: 'clock', quorum })).chain.state).toBe('failed')
+  })
+
+  it('says a tip it never read could not be read, not that the ref has no commit', () => {
+    const r = deriveTrust(inputs({ connection: 'clock', tip: 'missing' }))
+    expect(r.tip.state).toBe('unverified')
+    expect(r.tip.detail).toBe("`main` could not be read while this device's clock is off.")
+  })
+
+  it("never reads Verified: the chain row and the landing badge say Couldn't verify, naming the clock", () => {
+    const r = deriveTrust(inputs({ connection: 'clock', quorum: AGREED }))
+    expect(r.chain.state).toBe('unverified')
+    expect(r.chain.detail).toMatch(/clock/)
+    expect(r.tip.state).toBe('unverified')
+    expect(r.overall).toBe('unverified')
+    expect(r.summary).toBe("Couldn't verify · Device clock is off")
+    expect(deriveConnectionTrust('testnet', 'clock', AGREED).state).toBe('unverified')
   })
 })
 
