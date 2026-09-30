@@ -866,7 +866,9 @@ fn the_shared_v2_decoder_fixture_matches() {
         assert_eq!((last.oid, &last.subject), (want.oid, &want.subject));
     }
     assert!(HistoryIndex::parse_kind(&ix.to_compressed().unwrap(), kind5).is_ok());
-    assert!(HistoryIndex::parse_kind(&ix.to_compressed().unwrap(), kind3).is_err());
+    // A whole index read as a column (one published before the split): accepted, a superset.
+    assert!(HistoryIndex::parse_kind(&ix.to_compressed().unwrap(), kind3).is_ok());
+    assert!(HistoryIndex::parse_kind(&column.to_compressed().unwrap(), kind5).is_err());
 }
 
 /// An index's body before gzip (gzip output is not byte-stable across implementations).

@@ -241,18 +241,25 @@ impl HistoryIndex {
     }
 
     /// [`Self::parse`] an artifact recorded as `packManifest.kind == kind`, refusing one whose
-    /// header is not that kind's format: a column index (kind 3) is version 1, a version-lists
-    /// index (kind 5) version 2. The header is the only place the format is recorded.
+    /// header is not a format of that kind: a column index (kind 3) is written as version 1 and
+    /// read as 1 or 2 (2 is a superset: a column reader ignores the lists; an index published
+    /// before the split is one); version lists (kind 5) must be version 2. The header is the
+    /// only place the format is recorded.
     pub fn parse_kind(compressed: &[u8], kind: u8) -> Result<Self> {
-        let want = match kind {
-            super::KIND_HISTORY_INDEX => VERSION_V1,
-            super::KIND_HISTORY_VERSIONS => VERSION_V2,
+        let formats: &[u8] = match kind {
+            super::KIND_HISTORY_INDEX => &[VERSION_V1, VERSION_V2],
+            super::KIND_HISTORY_VERSIONS => &[VERSION_V2],
             _ => return Err(bad("not a history index kind")),
         };
         let ix = Self::parse(compressed)?;
-        if ix.version() != want {
+        if !formats.contains(&ix.version()) {
             return Err(Error::Config(format!(
-                "history index: a kind-{kind} artifact must be format {want}, not {}",
+                "history index: a kind-{kind} artifact must be format {}, not {}",
+                formats
+                    .iter()
+                    .map(u8::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" or "),
                 ix.version()
             )));
         }

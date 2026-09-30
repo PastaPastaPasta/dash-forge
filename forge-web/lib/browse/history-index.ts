@@ -259,15 +259,18 @@ export function parseHistoryIndex(compressed: Uint8Array, maxInflated = MAX_INFL
 }
 
 /**
- * {@link parseHistoryIndex} for an artifact recorded as `packManifest.kind == kind`: a column
- * index (kind 3) must be format 1, version lists (kind 5) format 2 (forge-core
- * `HistoryIndex::parse_kind`).
+ * {@link parseHistoryIndex} for an artifact recorded as `packManifest.kind == kind` (forge-core
+ * `HistoryIndex::parse_kind`): a column index (kind 3) is format 1 or 2 (2 is a superset whose
+ * lists a column reader ignores: an index published before the split), version lists (kind 5)
+ * format 2.
  */
 export function parseHistoryIndexOfKind(compressed: Uint8Array, kind: number, maxInflated = MAX_INFLATED): HistoryIndex {
-  const want = kind === 3 ? VERSION_V1 : kind === 5 ? VERSION_V2 : null
-  if (want === null) throw new Error('history index: not a history index kind')
+  const formats = kind === 3 ? [VERSION_V1, VERSION_V2] : kind === 5 ? [VERSION_V2] : null
+  if (formats === null) throw new Error('history index: not a history index kind')
   const ix = parseHistoryIndex(compressed, maxInflated)
-  if (ix.format !== want) throw new Error(`history index: a kind-${kind} artifact must be format ${want}, not ${ix.format}`)
+  if (!formats.includes(ix.format)) {
+    throw new Error(`history index: a kind-${kind} artifact must be format ${formats.join(' or ')}, not ${ix.format}`)
+  }
   return ix
 }
 

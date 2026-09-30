@@ -366,18 +366,26 @@ fn print_history_plan(
     price: &str,
 ) {
     let ix = h.index();
-    let versions: usize = ix
-        .versions
-        .as_ref()
-        .map_or(0, |v| v.lists.values().map(|l| l.versions.len()).sum());
+    // The path versions are published only with the version lists (a missing column alone
+    // carries none).
+    let versions = if h.publishes_lists() {
+        let n: usize = ix
+            .versions
+            .as_ref()
+            .map_or(0, |v| v.lists.values().map(|l| l.versions.len()).sum());
+        format!(", {n} path version(s)")
+    } else {
+        ", the column index only".to_string()
+    };
+    let manifests = h.cost().manifests();
     println!(
-        "History index of {}: {} path(s), {} commit(s), {versions} path version(s), {} bytes \
-         ({}) to {label} + its manifest   {price}",
+        "History index of {}: {} path(s), {} commit(s){versions}, {} bytes ({}) to {label} + \
+         {manifests} manifest(s)   {price}",
         handle.display(),
         ix.paths.len(),
         ix.commit_count,
         h.plain_len(),
-        if ix.base.is_some() { "delta" } else { "full" },
+        if h.is_delta() { "delta" } else { "full" },
     );
 }
 

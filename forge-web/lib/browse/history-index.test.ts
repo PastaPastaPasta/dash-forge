@@ -73,14 +73,14 @@ describe('parseHistoryIndex', () => {
       b[4] = v
       expect(() => parseHistoryIndex(gzip(b))).toThrow(`history index format ${v} is not one this client reads`)
     }
-    // A column index (kind 3) is format 1 and version lists (kind 5) format 2 (forge-core
-    // `HistoryIndex::parse_kind`); each is refused as the other kind.
+    // A column index (kind 3) is format 1, or 2 (a superset: an index published before the
+    // split); version lists (kind 5) are format 2 (forge-core `HistoryIndex::parse_kind`).
     const v2 = Uint8Array.from(body)
     v2[4] = 2
     expect(parseHistoryIndexOfKind(gzip(body), 3).format).toBe(1)
+    expect(parseHistoryIndexOfKind(gzip(v2), 3).format).toBe(2)
     expect(parseHistoryIndexOfKind(gzip(v2), 5).format).toBe(2)
-    expect(() => parseHistoryIndexOfKind(gzip(v2), 3)).toThrow(/kind-3 artifact must be format 1/)
-    expect(() => parseHistoryIndexOfKind(gzip(body), 5)).toThrow(/kind-5 artifact must be format 2/)
+    expect(() => parseHistoryIndexOfKind(gzip(body), 5)).toThrow(/kind-5 artifact must be format 2, not 1/)
     expect(() => parseHistoryIndexOfKind(gzip(body), 1)).toThrow(/not a history index kind/)
   })
 

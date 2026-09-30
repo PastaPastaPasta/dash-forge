@@ -342,16 +342,12 @@ async fn check_history(rec: &Recorded, store: &Store<'_>, tip: &str) {
     );
     assert_eq!((lists.version(), lists.commit_count), (2, 3));
     assert_eq!(column, lists.column(), "the column is the lists' column");
-    // Each artifact is refused as the other kind.
+    // A column is no version lists (the whole index reads as a column: a superset).
     assert!(crate::pack::HistoryIndex::parse_kind(
         &column_bytes,
         crate::pack::KIND_HISTORY_VERSIONS
     )
     .is_err());
-    assert!(
-        crate::pack::HistoryIndex::parse_kind(&lists_bytes, crate::pack::KIND_HISTORY_INDEX)
-            .is_err()
-    );
     assert!(column_bytes.len() < lists_bytes.len());
 }
 
