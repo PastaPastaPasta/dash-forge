@@ -12,9 +12,11 @@ import { collectPageErrors, DAPI_METHOD, decodeDocumentsRequest, E2E_DEVNET, EMP
  *   history walk (its own agent is replacing it with a push-time index): its chunk reads are
  *   counted apart and budgeted on their own, so the rest of the home is held to S-1.
  *
- * The budget covers what the page shows on load. Below the fold the About card's LICENSE and
- * language bar, and the latest release, are read when scrolled into view (skeletons until then):
- * pb-1 checks that scrolling there reads them.
+ * The budget covers what the page shows on load, plus the About card's release count and repo
+ * size (read once their row scrolls into view, but on this fixture that happens within the fold
+ * pb-1 already scrolls for). Further below the fold, the LICENSE and language bar, and the
+ * latest release, are read only when scrolled to (skeletons until then): pb-1 checks that
+ * scrolling there reads them, separately from the cold count above.
  */
 
 /** S-1's cold page budget. */
@@ -27,10 +29,19 @@ const WARM_BUDGET = 8
  */
 const DEMO_COLD_HOME = 12
 /**
- * The read fixture's issues list, cold (measured 7; then +2: every page with the rail reads the
- * About card's release count and repo size once it is in view).
+ * The read fixture's issues list, cold. `issues/client.tsx` passes `rail={false}`: there is no
+ * About card here, so this does not carry the home's rail-sum reads at all.
+ *
+ * What it does carry is `target-index.ts`'s `loadListIndex`: the repo's member `event` feed
+ * (shared with the pull index) is read as a 100-row page inside the index's first composite, and
+ * a full first page pulls the rest of the feed in a follow-up composite (`readRepoFeedFrom`),
+ * once per repo. Bonsia is a live, shared devnet under continuous CI and QA use, not a static
+ * fixture: the repo's event volume only grows, so this count steps up by one every time it
+ * crosses another 100-row boundary. That is not a regression, so the pin below carries headroom
+ * for a couple of those steps rather than pinning the exact count last measured (13); a jump big
+ * enough to still clear it would still be one.
  */
-const DEMO_COLD_ISSUES = 12
+const DEMO_COLD_ISSUES = 16
 /**
  * The commit column's walk on a showcase repo: one chunk read per 256 KiB of pack history it
  * crosses (preact 12, dashpay/dash 20). Owned by the last-change index work; tracked, not S-1.
@@ -76,14 +87,23 @@ test.describe('page request budget (S-1)', () => {
     await expect(fileRows(page).first()).toBeVisible({ timeout: 60_000 })
     await expect(page.locator('section[aria-label=README]')).toBeVisible({ timeout: 60_000 })
     await expect(page.getByTestId('commit-count')).toContainText(/\d/, { timeout: 30_000 })
+    const about = page.getByRole('complementary', { name: 'About this repository' })
+    // The release count and repo size are proved sums read only once their row is scrolled into
+    // view (useInView, repo-rail.tsx). Scroll it in now, before the cold snapshot, so those +2
+    // reads land in the cold budget below rather than silently never firing.
+    await about.getByTestId('repo-releases').scrollIntoViewIfNeeded()
+    await expect(about.getByTestId('repo-releases')).toContainText(/\d/, { timeout: 30_000 })
+    // Latest release must still be an unread skeleton here, or its reads have already landed in
+    // the cold count above rather than the "below the fold, on scroll" one further down — a
+    // layout change (a shorter rail, a different fixture, font metrics) could otherwise pull it
+    // into view together with the releases row and silently zero out the `scrolled` check below.
+    await expect(about.getByTestId('latest-release-skeleton')).toBeVisible()
     await settle(page)
     const cold = dapi.all().length
     test.info().annotations.push({ type: 'dapi', description: `fixture cold home: ${cold} ${summary(dapi.all())}` })
     expect(cold, summary(dapi.all())).toBeLessThanOrEqual(DEMO_COLD_HOME)
     // Nothing the home shows went missing: counts, stars, members, the owner's name.
-    const about = page.getByRole('complementary', { name: 'About this repository' })
     await expect(about.getByRole('link', { name: /Stars/ })).toContainText(/\d/)
-    await expect(about.getByTestId('repo-releases')).toContainText(/\d/)
     await expect(about.getByTestId('rail-members')).toBeVisible()
     await shot(page, 'pb-01-fixture-home-cold')
 

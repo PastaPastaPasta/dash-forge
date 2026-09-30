@@ -7,7 +7,10 @@
  * conformance vectors in `forge-contracts/vectors/` hold the two byte-for-byte in parity
  * (`conformance.test.ts`). Deterministic seal variants for those vectors live in
  * `./testing`, which this module deliberately does not re-export (ESLint bans importing it
- * outside tests); `__unsafe*` symbols of `./doc` and `./pack` are likewise not re-exported.
+ * outside tests); `__unsafe*` symbols of `./doc`, `./pack` and `./release` are likewise not
+ * re-exported. `./release`'s `sealRelease` and `sealReleaseManifest` are not re-exported either
+ * until the web writes sealed releases (`private-repos.md` §16.8): until then only the vectors
+ * seal one.
  */
 
 export { bytesToHex, concat as concatBytes, constantTimeEqual, hexToBytes, isU32, randomBytes, type Bytes } from './bytes'
@@ -25,6 +28,8 @@ export {
   generateEpochKey,
   importEpochKeyAndWipe,
   refNameHash,
+  releaseTagHash,
+  releaseTagName,
   type EpochKeyring,
 } from './keys'
 export {
@@ -71,6 +76,28 @@ export {
   type RangeFetcher,
   type RangePlan,
 } from './pack'
+export {
+  ManifestMismatchError,
+  RELEASE_MANIFEST_MAX_BYTES,
+  RELEASE_MAX_PLAINTEXT,
+  buildReleaseTlv,
+  canonicalJson,
+  encodeReleaseManifest,
+  encodeReleaseTlv,
+  foldReleases,
+  openRelease,
+  openReleaseManifest,
+  parseReleaseTlv,
+  releaseAd,
+  type FoldRevision,
+  type ReleaseAsset,
+  type ReleaseFields,
+  type ReleaseFold,
+  type ReleaseManifest,
+  type ReleaseOpenResult,
+  type ReleaseStatus,
+  type StoredRelease,
+} from './release'
 export {
   WrapError,
   buildWrapPlaintext,

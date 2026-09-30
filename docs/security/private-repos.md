@@ -483,7 +483,7 @@ The `webhook.secret` `encryptedFor` field, and both contracts' `readonly` decisi
 
 ## 16. Sealed releases
 
-Status: specification, revision 2 after two independent security reviews (§16.9). Nothing implements it yet: `dg release create` and forge-core's `create_release` refuse a private repository (`require_public("releases")`), and forge-web refuses before signing (`PRIVATE_RELEASE_REFUSED`), until the CLI and the web implement this section against the §16.7 vectors. The section fits the forge-core `release` type as registered for RC1 on bonsia (§13), which mainnet registers unchanged. It needs **no schema change**, and the documents it produces are accepted by that schema (the "§16" cases of `forge-contracts/vectors/rc1/forge-core.json`, judged by `tools/contract-validate --vectors`).
+Status: specification, revision 2 after two independent security reviews (§16.9). The readers implement it (forge-core `releases()` and `dg release list`, forge-web `readReleases`). The writers do not yet: `dg release create` and forge-core's `create_release` refuse a private repository (`require_public("releases")`), and forge-web refuses before signing (`PRIVATE_RELEASE_REFUSED`), until they implement this section against the §16.7 vectors. The section fits the forge-core `release` type as registered for RC1 on bonsia (§13), which mainnet registers unchanged. It needs **no schema change**, and the documents it produces are accepted by that schema (the "§16" cases of `forge-contracts/vectors/rc1/forge-core.json`, judged by `tools/contract-validate --vectors`).
 
 ### 16.0 What the registered contract fixes
 
@@ -691,7 +691,7 @@ A **removed member** keeps every revision, manifest and asset sealed under an ep
 
 ### 16.7 Vectors
 
-**Where they come from.** The vectors are written by `tools/private-repos-vectors/gen.py`, the independent Python reference. `gen.py` also asserts §16.1's values and the `v1_0_0` TLV and `enc` against this document. forge-core's test-only reference (`crates/forge-core/src/private/release_ref.rs`, run by the conformance test) reproduces every file byte for byte from the existing primitives. The fixed inputs are §11's (`repoId = 0x11×32`, `$ownerId = 0x22×32`, `K_0`, `K_1`, nonce `000102…0b`). The web harness skips these files until the web implements §16; its implementation PR removes the skip.
+**Where they come from.** The vectors are written by `tools/private-repos-vectors/gen.py`, the independent Python reference. `gen.py` also asserts §16.1's values and the `v1_0_0` TLV and `enc` against this document. forge-core's `private::release` (`crates/forge-core/src/private/release.rs`) and forge-web's `lib/private/release.ts` reproduce every file byte for byte in their conformance tests. The fixed inputs are §11's (`repoId = 0x11×32`, `$ownerId = 0x22×32`, `K_0`, `K_1`, nonce `000102…0b`).
 
 **`private_release_seal__*`.** The input is the key, epoch, owner, nonce and release fields. The output is `tagHash`, `tagName`, the AD, the padded TLV, `enc` and the document's plaintext properties (`props`); or the writer's refusal (`malformed`, `tooLarge`).
 
@@ -756,7 +756,7 @@ A **removed member** keeps every revision, manifest and asset sealed under an ep
 - **Readers first.** Today's readers (forge-core `newest_per_tag`, forge-web `newestPerTag`) would list a sealed revision as a release named by a 43-character hash. The first step, before or with any writer, is readers that open and fold per §16.3, and that hide every release carrying `enc` until they do.
 - **forge-core.**
   - `private::keys` gains `K_tag,e` and `tag_name`.
-  - `private` gains a `release` codec that promotes `release_ref.rs` to production: the TLV and its padding (§16.2), the AD, the open of §16.4, the manifest reader of §16.5 and the fold of §16.3. Its seal draws a hedged nonce and takes no nonce parameter (§3.6).
+  - `private` gains a `release` codec (`private::release`, promoted from the vectors' test-only reference): the TLV and its padding (§16.2), the AD, the open of §16.4, the manifest reader of §16.5 and the fold of §16.3. Its seal draws a hedged nonce and takes no nonce parameter (§3.6).
   - `rules::v2` gains `ContentKind::Release`, and `keyring::header_of` handles `release`.
   - `collab::v2::create_release` seals when the repository is private. It resolves the write epoch and reads the tag's revisions (from the `created` listing) to carry fields forward. It uploads the sealed assets and manifest under the write epoch, re-seals if a final anchor re-read moved the epoch, writes the release with `delta = 0` and no `oneLive` retry, then re-reads and warns (§16.3).
   - `releases()` opens and folds per §16.3.

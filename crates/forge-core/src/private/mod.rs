@@ -13,6 +13,8 @@
 //! * [`pack`]: sealed artifacts: a 36-byte header and 16 KiB AES-GCM STREAM segments with a
 //!   hand-built nonce, whole, streaming and ranged (§3);
 //! * [`wrap`]: the 47-byte `repoKey` wrap plaintext (§5.1);
+//! * [`release`]: sealed releases: the keyed `tagName`, the TLV, the open, the kind-4 asset
+//!   manifest and the reader's fold over a tag's revisions (§16);
 //! * [`epoch`]: anchors, the current epoch, the chain walk, alerts and the repair check, as one
 //!   pure function over flattened rows (§5.3–§5.6).
 //!
@@ -29,13 +31,12 @@ pub mod doc;
 pub mod epoch;
 pub mod keys;
 pub mod pack;
+pub mod release;
 pub mod tlv;
 pub mod wrap;
 
 #[cfg(test)]
 mod conformance;
-#[cfg(test)]
-mod release_ref;
 
 use std::collections::BTreeMap;
 
