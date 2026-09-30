@@ -15,7 +15,7 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { Network } from '../constants'
-import { ensureSdk, evoSdkService } from '../sdk/service'
+import { QUORUM_BUDGET_MS, ensureSdk, evoSdkService } from '../sdk/service'
 import { StepTimeoutError, withTimeout } from '../timeout'
 import { errorMessage } from '../utils'
 
@@ -29,6 +29,32 @@ export const STEP_MS = 20_000
 export const PLATFORM_READ_MS = 30_000
 
 export type ConnectPhase = 'downloading' | 'connecting'
+
+/**
+ * A Platform read a sign-in step is waiting on, bounded by {@link PLATFORM_READ_MS} — except while
+ * the SDK service is itself waiting out a quorum rotation its quorum service does not list yet
+ * (`lib/sdk/service.ts` `waitForQuorum`, #212): any read failing there is already retrying by
+ * itself, and the global "Waiting for the network's new quorum…" pill
+ * (`components/platform-busy.tsx`) already shows it, so the step's own shorter deadline must not
+ * race it into a spurious failure. It gets the rotation's full remaining budget instead. A quorum
+ * service that never answers is no lag — `waitForQuorum` gives up as soon as the connection goes
+ * unreachable, so this still fails fast. `what` names the step, as {@link withTimeout} takes it.
+ */
+export function withPlatformRead<T>(promise: Promise<T>, what: string): Promise<T> {
+  const start = Date.now()
+  return withTimeout(promise, PLATFORM_READ_MS, what).catch((e: unknown) => {
+    const since = evoSdkService.quorumWaitSince
+    if (!(e instanceof StepTimeoutError) || since === null) throw e
+    const left = since + QUORUM_BUDGET_MS - Date.now()
+    if (left <= 0) throw e
+    // The extension's own timeout would otherwise report only its shorter remainder ("did not
+    // finish within 3 s") after what was really a much longer wait: report the real total instead.
+    return withTimeout(promise, left, what).catch((e2: unknown) => {
+      if (!(e2 instanceof StepTimeoutError)) throw e2
+      throw new StepTimeoutError(what, Date.now() - start)
+    })
+  })
+}
 
 /** What each phase is called in the sheet (and in its errors). */
 export const PHASE_TEXT: Readonly<Record<ConnectPhase, string>> = {
