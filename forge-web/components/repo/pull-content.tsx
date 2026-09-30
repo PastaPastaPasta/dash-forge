@@ -39,6 +39,8 @@ import {
   HardDrive,
   Link2,
   ListChecks,
+  Lock,
+  LockOpen,
   MessageSquare,
   Pencil,
   RefreshCw,
@@ -72,6 +74,7 @@ import {
   repoKey,
   setAssignee,
   setLabel,
+  setLock,
   setTargetState,
   updateComment,
   updateTarget,
@@ -119,6 +122,7 @@ import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { InlineCommentsProvider, type ThreadActions } from '@/components/repo/inline-comments'
+import { LockedBanner, lockViewerOf } from '@/components/repo/locked-banner'
 import { ReviewDrawer, useReviewDraft } from '@/components/repo/review-drawer'
 import { BranchCommitCost, IdentityNote, buildUpdateBranch, useSuggestions } from '@/components/repo/branch-commit-panel'
 import { PullMerge, useMergeSlot } from '@/components/repo/pull-merge'
@@ -168,6 +172,7 @@ type Pending =
   | { kind: 'edit-comment'; id: string; body: string }
   | { kind: 'delete-comment'; id: string }
   | { kind: 'resolve'; root: string; resolve: boolean }
+  | { kind: 'lock'; on: boolean }
 
 export function PullContent({
   home,
@@ -281,6 +286,8 @@ function PullPage({
   const postContext = { isMember, locked: thread.locked }
   const composeBlock = archived ? ARCHIVED_REASON : lockedOut(postContext) ? LOCKED_REASON : privateComposeBlock(home)
   const writeBlocked = composeBlock !== null
+  // Who the composer's lock banner speaks to (a member keeps the composer).
+  const lockViewer = lockViewerOf(identity, holdings)
   const open = pull.state.open
   const { slot: mergeSlot, onRunning: setMergeRunning } = useMergeSlot(tab, open && pull.state.draft)
   const merged = pull.state.merged
@@ -572,6 +579,11 @@ function PullPage({
         await post(p.resolve ? 'threadResolve' : 'threadUnresolve', intent, { refId: p.root })
         refresh((t) => t.review.resolvedThreads.includes(p.root) === p.resolve)
         return
+      case 'lock':
+        // A member transition (18/19): from then on consensus refuses non-members' comments and reviews.
+        await setLock(sdk, signer, repo, { target: stateTarget, lock: p.on, isMember, intent })
+        refresh((t) => t.locked === p.on)
+        return
       case 'edit-comment': {
         const c = thread.comments.find((x) => x.id === p.id)
         await updateComment(sdk, signer, repo, {
@@ -596,6 +608,7 @@ function PullPage({
       case 'state':
       case 'mark-merged':
       case 'draft':
+      case 'lock':
         return transitionCost
       case 'label':
         return previewCreate('event', { value: pending.label })
@@ -972,18 +985,21 @@ function PullPage({
               ) : null}
 
               {/* Composer */}
-              <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
-                <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
-                {composeBlock !== null ? (
-                  <PrivateComposeNote reason={composeBlock} />
-                ) : (
-                  <>
-                    <MarkdownEditor id="pr-comment" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} />
-                    <SealedLimit repo={repo} kind="comment" text={comment.trim()} />
-                    <BodyCounter repo={repo} text={comment.trim()} field="comment" />
-                  </>
-                )}
-                <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+              <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="pr-composer">
+                {/* Locked: a non-member's composer is replaced by the banner (consensus would refuse the post). */}
+                <LockedBanner locked={thread.locked && !archived} viewer={lockViewer}>
+                  <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
+                  {composeBlock !== null ? (
+                    <PrivateComposeNote reason={composeBlock} />
+                  ) : (
+                    <>
+                      <MarkdownEditor id="pr-comment" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} />
+                      <SealedLimit repo={repo} kind="comment" text={comment.trim()} />
+                      <BodyCounter repo={repo} text={comment.trim()} field="comment" />
+                    </>
+                  )}
+                </LockedBanner>
+                <div className={cn('mt-3 flex flex-wrap items-center justify-between gap-3', writeBlocked && !actions.canCloseReopen && !(actions.canMarkMerged && !pull.state.draft) && 'hidden')}>
                   {writeBlocked ? <span /> : <CostPreview cost={commentCost} />}
                   <div className="flex flex-wrap items-center gap-2">
                     {actions.canCloseReopen ? (
@@ -1208,6 +1224,20 @@ function PullPage({
               </p>
               <CopyRow text={checkout} className="mt-2" />
             </SidebarSection>
+            {/* Lock conversation (GitHub: the rail's last entry): a member transition, for maintainers and writers. */}
+            {isMember || thread.locked ? (
+              <SidebarSection title="Conversation" icon={thread.locked ? Lock : LockOpen}>
+                <p className="text-anvil-600 dark:text-anvil-300" data-testid="thread-lock-state">
+                  {thread.locked ? 'Locked to members' : 'Open to everyone'}
+                </p>
+                {canMember ? (
+                  <Button size="sm" variant="outline" className="mt-2" onClick={() => confirmEvent({ kind: 'lock', on: !thread.locked }, transitionCost)} data-testid="lock-toggle">
+                    {thread.locked ? <LockOpen className="h-3.5 w-3.5" aria-hidden /> : <Lock className="h-3.5 w-3.5" aria-hidden />}
+                    {thread.locked ? 'Unlock conversation' : 'Lock conversation'}
+                  </Button>
+                ) : null}
+              </SidebarSection>
+            ) : null}
             {holdings.settled && holdings.data === null && identity !== null ? (
               <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Couldn&apos;t read this repo&apos;s {ACL_NAME}, so your permissions are unknown.</p>
             ) : null}
@@ -1358,6 +1388,14 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
       return pending.resolve
         ? { title: 'Resolve conversation', description: `Appends ${via} naming the thread. It collapses for everyone; anyone who can resolve it can unresolve it.`, label: 'Sign & resolve' }
         : { title: 'Unresolve conversation', description: `Appends ${via} naming the thread.`, label: 'Sign & unresolve' }
+    case 'lock':
+      return pending.on
+        ? {
+            title: `Lock conversation on PR #${number}`,
+            description: 'Records a lock: from then on the network refuses comments and reviews from anyone who is not a maintainer or writer. Any maintainer or writer can unlock it.',
+            label: 'Sign & lock',
+          }
+        : { title: `Unlock conversation on PR #${number}`, description: 'Records an unlock: everyone can comment and review again.', label: 'Sign & unlock' }
     default:
       return { title: '', description: '', label: 'Confirm' }
   }

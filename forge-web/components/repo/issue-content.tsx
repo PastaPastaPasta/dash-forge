@@ -69,6 +69,8 @@ import { EditedMarker, MarkdownEditor } from '@/components/repo/issue-bits'
 import { AssigneePicker, LabelPicker, MilestonePicker, SidebarSection } from '@/components/repo/target-rail'
 import { readMilestones } from '@/lib/repo/milestones'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
+import { LockedBanner, lockViewerOf } from '@/components/repo/locked-banner'
+import { cn } from '@/lib/utils'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
 import { numberLabel, shownUpstreamNumber } from '@/lib/view/upstream'
@@ -151,6 +153,10 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const open = issue.state.open
   const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
   const postContext = { isMember, locked: meta.locked }
+  // Locked to members: who the composer's banner speaks to, and whether it replaces this
+  // viewer's composer (an archived repo's own note wins: nobody can comment there).
+  const lockViewer = lockViewerOf(identity, holdings)
+  const lockedOutNow = home.config?.archived !== true && lockedOut(postContext)
   const isAuthor = identity !== null && identity === issue.author
   const canToggle = identity !== null && (isAuthor || isMember)
   // A private repo is written sealed (issues, comments and edits: `private-writes.ts`); only a
@@ -383,13 +389,16 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         <EventValuesNote counts={eventValues} />
 
         {/* Composer */}
-        <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
-          <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
-          {composeBlock !== null ? <PrivateComposeNote reason={composeBlock} /> : null}
-          <MarkdownEditor id="comment-body" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} />
-          <SealedLimit repo={home.repo} kind="comment" text={comment.trim()} />
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-            <CostPreview cost={commentCost} />
+        <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="issue-composer">
+          {/* Locked: a non-member's composer is replaced by the banner (consensus would refuse the post). */}
+          <LockedBanner locked={meta.locked && !archived} viewer={lockViewer}>
+            <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
+            {composeBlock !== null ? <PrivateComposeNote reason={composeBlock} /> : null}
+            <MarkdownEditor id="comment-body" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} />
+            <SealedLimit repo={home.repo} kind="comment" text={comment.trim()} />
+          </LockedBanner>
+          <div className={cn('mt-3 flex flex-wrap items-center justify-between gap-3', lockedOutNow && !canToggle && 'hidden')}>
+            {lockedOutNow ? <span /> : <CostPreview cost={commentCost} />}
             <div className="flex items-center gap-2">
               {canToggle ? (
                 <Button
@@ -401,18 +410,20 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   {open ? 'Close issue' : 'Reopen issue'}
                 </Button>
               ) : null}
-              <Button
-                variant="primary"
-                onClick={postComment}
-                loading={posting}
-                disabled={composeBlock !== null || comment.trim() === '' || utf8Length(comment) > BODY_MAX || guard.disabledReason !== null}
-                title={guard.disabledReason ?? undefined}
-              >
-                {identity ? 'Comment' : locked ? 'Unlock to comment' : 'Sign in to comment'}
-              </Button>
+              {lockedOutNow ? null : (
+                <Button
+                  variant="primary"
+                  onClick={postComment}
+                  loading={posting}
+                  disabled={composeBlock !== null || comment.trim() === '' || utf8Length(comment) > BODY_MAX || guard.disabledReason !== null}
+                  title={guard.disabledReason ?? undefined}
+                >
+                  {identity ? 'Comment' : locked ? 'Unlock to comment' : 'Sign in to comment'}
+                </Button>
+              )}
             </div>
           </div>
-          <BodyCounter repo={home.repo} text={comment} field="comment" />
+          {lockedOutNow ? null : <BodyCounter repo={home.repo} text={comment} field="comment" />}
           {toggleHint !== null ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{toggleHint}</p> : null}
           {commentError ? (
             <div role="alert" className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words">{commentError}</div>
@@ -451,7 +462,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   {meta.pinned ? 'Unpin' : 'Pin'}
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => setPending({ kind: 'flag', flag: 'lock', on: !meta.locked })} data-testid="lock-toggle">
-                  {meta.locked ? 'Unlock' : 'Lock'}
+                  {meta.locked ? 'Unlock conversation' : 'Lock conversation'}
                 </Button>
               </div>
             ) : null}
