@@ -15,7 +15,7 @@
  * needs the current key in this browser.
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { KeyRound } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { plural, timeAgo } from '@/lib/view'
@@ -120,6 +120,21 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
     { enabled: ready && sdk !== null && trimmed !== '' && idError === null },
   )
   const noKey = keyCheck.data === false
+  // "Add as …" on an accepted invitation (QW-075): as on a public repo, it opens the confirm, once
+  // the form has checked the identity's encryption key (the add hands them the repo key). If they
+  // have none, the form says so and nothing opens.
+  const [pickedAdd, setPickedAdd] = useState<string | null>(null)
+  useEffect(() => {
+    if (pickedAdd === null) return
+    // The field no longer holds the picked id (edited, or another pick): the pick is dropped.
+    if (pickedAdd !== trimmed) {
+      setPickedAdd(null)
+      return
+    }
+    if (!keyCheck.settled) return
+    setPickedAdd(null)
+    if (keyCheck.data === true && guard.check(addMemberCost(role))) setAdding(true)
+  }, [pickedAdd, trimmed, keyCheck.settled, keyCheck.data, guard, role])
 
   const removalPlan = useMemo((): { plan: RotationPlan | null; error: string | null } => {
     if (removing === null || identity === null || write.context === null) return { plan: null, error: null }
@@ -235,6 +250,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
               // The add runs through the form: it checks their encryption key and hands them the key.
               setMemberId(id)
               setRole(r)
+              setPickedAdd(id.trim())
             }}
           />
         </div>

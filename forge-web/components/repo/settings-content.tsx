@@ -32,11 +32,23 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { RepoStoragePolicy } from '@/components/storage/repo-storage-policy'
 import { PrivateMembers } from '@/components/repo/private-members'
+import { PrivateRepoState } from '@/components/repo/private-repo-state'
+import { WebhookSettings } from '@/components/repo/webhook-settings'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { BranchSettings, DangerZone, GeneralSettings, Section, SettingsNav } from '@/components/repo/repo-settings-sections'
 
 export function SettingsContent({ home, reload }: { home: RepoHome; reload: () => void }): JSX.Element {
+  // QW-079: a private repo's settings are its members' (GitHub answers anyone else with a 404).
+  // Without the key nothing here is true: its branches are encrypted names, so the page would
+  // claim it has none. A signed-out visitor or an outsider sees what every other tab shows them;
+  // a member whose tab holds only the signing key (`locked`), or no encryption key yet
+  // (`no-key`), still gets the page and the way to open it.
+  // No access resolved yet reads as an outsider, as RepoScaffold does.
+  const access = home.private?.access ?? 'outsider'
+  if (home.repo.visibility === 'private' && (access === 'signed-out' || access === 'outsider')) {
+    return <PrivateRepoState repo={home.repo} addr={{ owner: home.repo.ownerId, name: home.repo.name }} access={access} />
+  }
   return <RepoSettings home={home} repo={home.repo} reload={reload} />
 }
 
@@ -241,6 +253,8 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
         </h3>
         <RepoStoragePolicy repoId={repo.repoId} unlockAbove={locked} />
       </Section>
+
+      <WebhookSettings home={home} maintainer={viewerRole === 'maintainer'} />
 
       <DangerZone home={home} maintainer={viewerRole === 'maintainer'} onSaved={reload} />
 

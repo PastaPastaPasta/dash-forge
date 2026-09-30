@@ -19,6 +19,7 @@ import {
   recentReposPage,
   recentlyUpdated,
   reposNamed,
+  reposWithTopic,
   searchPrefix,
   searchRepos,
   type DiscoveredRepo,
@@ -344,6 +345,37 @@ describe('pageWalk', () => {
   it('walks an `in` (a range to drive) and a page with no clause in the order direction', () => {
     expect(pageWalk([['$id', 'in', ['a', 'b']]], { field: '$id', direction: 'desc' })).toBe('desc')
     expect(pageWalk([], recent)).toBe('desc')
+  })
+})
+
+describe('reposWithTopic (QW-073: Explore by topic)', () => {
+  const tag = (target: string, name: string, at: number): Doc => ({ $id: id(`T${target}${name}`), $ownerId: OWNER_A, $createdAt: at, repoId: id(target), name, vis: 'public' })
+
+  it('lists the repos tagged with a topic, newest tag first, in two proved reads', async () => {
+    const s = store()
+    s[FORGE.core]!['topic'] = [tag('Rjq', 'cli', 100), tag('RripgrepB', 'cli', 300), tag('Rdemo-01', 'rust', 200), tag('Rdemo-02', 'cli', 200)]
+    const seen = fresh()
+    const r = await reposWithTopic(mockSdk(s, seen), 'cli', { network: NET })
+    expect(names(r.repos)).toEqual(['ripgrep', 'demo-02', 'jq'])
+    expect(r.more).toBe(false)
+    expect(r.missing).toBe(0)
+    expect(requests(seen)).toBe(2)
+    expect(seen.queries[0]).toMatchObject({ documentTypeName: 'topic', where: [['name', '==', 'cli']], orderBy: [['$createdAt', 'desc']] })
+  })
+
+  it('says when more repos carry the topic than a page shows', async () => {
+    const s = store()
+    s[FORGE.core]!['topic'] = Array.from({ length: 60 }, (_, i) => tag(`Rdemo-${String(i).padStart(2, '0')}`, 'demo', i))
+    const r = await reposWithTopic(mockSdk(s, fresh()), 'demo', { network: NET })
+    expect(r.repos).toHaveLength(48)
+    expect(r.repos[0]?.slug).toBe('demo-59')
+    expect(r.more).toBe(true)
+  })
+
+  it('reads nothing for a name no topic can have', async () => {
+    const seen = fresh()
+    expect((await reposWithTopic(mockSdk(store(), seen), 'Not A Topic', { network: NET })).repos).toEqual([])
+    expect(requests(seen)).toBe(0)
   })
 })
 
