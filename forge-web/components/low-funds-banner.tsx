@@ -71,7 +71,7 @@ export function LowFundsBanner(): JSX.Element | null {
           <Button
             size="sm"
             variant="primary"
-            onClick={() => (topUp ? openTopUp({ blocker: 'balance' }) : openLogin('import'))}
+            onClick={() => (topUp ? openTopUp({ blocker: 'balance', proactive: true }) : openLogin('import'))}
           >
             {topUp ? 'Top up' : 'Renew key'}
           </Button>
