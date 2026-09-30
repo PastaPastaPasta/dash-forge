@@ -42,7 +42,7 @@ import {
   type CreateStage,
   type CreationJournal,
 } from '@/lib/auth/create-identity'
-import { isValidMnemonic, newMnemonic, normalizeMnemonic, quizPositions } from '@/lib/auth/hd'
+import { isValidMnemonic, mnemonicProblem, newMnemonic, normalizeMnemonic, quizAnswerOk, quizPositions } from '@/lib/auth/hd'
 import { errorMessage } from '@/lib/utils'
 
 type Step = 'loading' | 'words' | 'quiz' | 'protect' | 'fund' | 'resume'
@@ -70,6 +70,9 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
   }
   const [positions, setPositions] = useState<number[]>([])
   const [answers, setAnswers] = useState<string[]>(['', '', ''])
+  // Which quiz answers to judge: one the user has left (blur) or tried to continue with. A word
+  // is not marked wrong while it is still being typed.
+  const [judged, setJudged] = useState<boolean[]>([false, false, false])
   const [journal, setJournal] = useState<CreationJournal | null>(null)
   const [address, setAddress] = useState<string | null>(null)
   const [stage, setStage] = useState<string | null>(null)
@@ -152,7 +155,9 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     [],
   )
 
-  const quizOk = positions.length === 3 && positions.every((p, i) => (answers[i] ?? '').trim().toLowerCase() === words[p])
+  const quizOk = positions.length === 3 && positions.every((p, i) => quizAnswerOk(answers[i] ?? '', words[p]))
+  const quizFilled = answers.every((a) => a.trim() !== '')
+  const quizWrong = (i: number): boolean => judged[i] === true && (answers[i] ?? '').trim() !== '' && !quizAnswerOk(answers[i] ?? '', words[positions[i]!])
 
   /** The deposit address of `m` once the words check out, or null with the error shown. */
   const checkWords = async (m: string): Promise<string | null> => {
@@ -160,7 +165,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     try {
       await loadSdkLibrary()
       if (!(await withTimeout(isValidMnemonic(m), STEP_MS, 'Checking the words'))) {
-        setError('Those words are not a valid recovery phrase.')
+        setError(mnemonicProblem(m))
         return null
       }
       const deposit = await withTimeout(depositAddressOf(m, network), STEP_MS, 'Deriving the deposit address')
@@ -267,6 +272,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
       setResumeWords('')
       // Fresh words come from the loading step (bounded, with "Try again").
       setAnswers(['', '', ''])
+      setJudged([false, false, false])
       setStep('loading')
       setAttempt((a) => a + 1)
     } catch (e) {
@@ -346,16 +352,35 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
               id={`quiz-${p}`}
               value={answers[i] ?? ''}
               autoComplete="off"
+              autoCapitalize="none"
               spellCheck={false}
+              aria-invalid={quizWrong(i) || undefined}
+              aria-describedby={quizWrong(i) ? `quiz-${p}-wrong` : undefined}
+              className={quizWrong(i) ? 'border-danger focus-visible:border-danger dark:border-danger' : undefined}
               onChange={(e) => setAnswers((a) => a.map((x, j) => (j === i ? e.target.value : x)))}
+              onBlur={() => setJudged((d) => d.map((x, j) => (j === i ? (answers[i] ?? '').trim() !== '' : x)))}
             />
+            {quizWrong(i) ? (
+              <p id={`quiz-${p}-wrong`} role="alert" className="text-[12px] text-danger-700 dark:text-danger-400" data-testid="quiz-wrong">
+                That isn&apos;t word {p + 1}. Check your written copy, or show the words again.
+              </p>
+            ) : null}
           </Field>
         ))}
         <div className="flex gap-2">
           <Button variant="ghost" onClick={() => setStep('words')}>
             Show words again
           </Button>
-          <Button variant="primary" className="flex-1" disabled={!quizOk} onClick={() => setStep('protect')}>
+          <Button
+            variant="primary"
+            className="flex-1"
+            disabled={!quizFilled}
+            onClick={() => {
+              if (quizOk) setStep('protect')
+              // Say which words are wrong rather than doing nothing.
+              else setJudged([true, true, true])
+            }}
+          >
             Continue
           </Button>
         </div>

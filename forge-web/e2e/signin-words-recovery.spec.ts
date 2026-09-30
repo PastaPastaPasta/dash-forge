@@ -76,7 +76,7 @@ test('w1. the 12 words alone sign in: the identity is found, a limited key lands
   // L-29: once locked, nothing is kept, a reload stays locked, and the sheet opens straight on
   // Unlock: the tile list is never rendered first, not even for a frame.
   await page.getByRole('button', { name: 'Account menu' }).click()
-  await page.getByRole('button', { name: /lock & sign out/i }).click()
+  await page.getByRole('button', { name: /^lock\b/i }).click()
   await expectLocked(page)
   await expect.poll(() => keptSavedAt(page)).toBeNull()
   await page.addInitScript(() => {

@@ -141,6 +141,7 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
     // command does not change is carried forward: `--yanked` alone must not drop the files.
     let current = collab.releases(&s.repo).await?.current;
     let existing = current.into_iter().find(|r| &r.tag_name == tag);
+    ensure_tag(&s, tag, Some(existing.is_some())).await?;
     let targets = if args.assets.is_empty() {
         None
     } else {
@@ -226,6 +227,75 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
     Ok(())
 }
 
+/// [`require_tag`] against the repository's refs (names opened for a member of a private
+/// repository). `has_release`: whether the tag has a release now, `None` to read it.
+async fn ensure_tag(s: &Session, tag: &str, has_release: Option<bool>) -> Result<()> {
+    let has_release = match has_release {
+        Some(h) => h,
+        None => s
+            .collab()
+            .releases(&s.repo)
+            .await?
+            .current
+            .iter()
+            .any(|r| r.tag_name == tag),
+    };
+    let refs = forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge)
+        .read_refs(&s.repo)
+        .await?;
+    require_tag(&refs, &s.repo.display(), tag, has_release)
+}
+
+/// Refuse a release for a tag the repository does not have (E102), before anything is
+/// uploaded or signed: a release cannot be deleted, only unpublished, so one for a mistyped
+/// tag stays (QW-037). A tag that already has a release may be gone since; a new revision of
+/// that release (yanking it, new notes) is still allowed.
+fn require_tag(
+    refs: &[(String, forge_core::rules::RefState)],
+    repo: &str,
+    tag: &str,
+    has_release: bool,
+) -> Result<()> {
+    const SHOWN: usize = 10;
+    let want = format!("refs/tags/{tag}");
+    let live = |st: &forge_core::rules::RefState| forge_core::rules::tip_of(st).is_some();
+    if has_release || refs.iter().any(|(n, st)| *n == want && live(st)) {
+        return Ok(());
+    }
+    let mut tags: Vec<&str> = refs
+        .iter()
+        .filter(|(_, st)| live(st))
+        .filter_map(|(n, _)| n.strip_prefix("refs/tags/"))
+        .collect();
+    tags.sort_unstable();
+    let known = match tags.len() {
+        0 => "it has no tags yet".to_string(),
+        n if n <= SHOWN => format!("its tags: {}", crate::fmt::safe(&tags.join(", "))),
+        n => format!(
+            "its tags include {} and {} more",
+            crate::fmt::safe(&tags[..SHOWN].join(", ")),
+            n - SHOWN
+        ),
+    };
+    Err(UserError::new(
+        codes::NOT_FOUND,
+        format!(
+            "release not created: {} is not a tag of {}",
+            crate::fmt::safe(tag),
+            repo
+        ),
+    )
+    .cause(format!(
+        "a release is published for a tag the repository has, and it cannot be deleted later, only unpublished ({known})"
+    ))
+    .fix(format!(
+        "push the tag first: `git tag {tag} <commit> && git push origin {tag}`, then run this again"
+    ))
+    .fix("pass --tag naming one of its tags")
+    .note("checked before anything was uploaded or signed; nothing was written or paid")
+    .into())
+}
+
 /// `dg release create` on a private repository (`private-repos.md` §16): every `--asset` is
 /// sealed before it leaves the machine and stored under its sealed hash, the asset list is a
 /// sealed kind-4 manifest, and the revision is sealed under the current key epoch. What the
@@ -236,6 +306,7 @@ async fn create_sealed(ctx: &Ctx, args: &ReleaseCreateArgs, s: &Session) -> Resu
     collab
         .require_role(&s.repo, Role::Maintainer, &format!("publish release {tag}"))
         .await?;
+    ensure_tag(s, tag, None).await?;
     let files = read_release_files(&args.assets)?;
     // New files need storage; so may new notes (the full notes move into the sealed asset list
     // when they do not fit), so the policy is resolved whenever there is one.
@@ -1073,6 +1144,51 @@ async fn download(
         }));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tag_tests {
+    use super::require_tag;
+    use forge_core::rules::RefState;
+
+    fn tip() -> RefState {
+        RefState::Resolved {
+            oid: "a".repeat(40),
+            author: "o".into(),
+            created_at: 1,
+        }
+    }
+
+    /// QW-037: a release for a tag the repository does not have is refused before anything is
+    /// uploaded or signed; an existing tag, or a tag that already has a release, is not.
+    #[test]
+    fn a_release_needs_a_tag_the_repository_has() {
+        let refs = || {
+            vec![
+                ("refs/heads/main".to_string(), tip()),
+                ("refs/tags/v0.1.0".to_string(), tip()),
+                ("refs/tags/v0.0.9".to_string(), RefState::Unborn),
+            ]
+        };
+        assert!(require_tag(&refs(), "o/r", "v0.1.0", false).is_ok());
+        let err = require_tag(&refs(), "o/r", "v9.9.9", false).unwrap_err();
+        let u = forge_core::user_error::classify(
+            err.chain(),
+            &forge_core::user_error::ErrorContext::default(),
+        );
+        assert_eq!(u.code, "E102");
+        assert!(
+            u.message.contains("v9.9.9 is not a tag of o/r"),
+            "{}",
+            u.message
+        );
+        assert!(u.cause.unwrap().contains("its tags: v0.1.0"));
+        assert!(u.fix[0].contains("git push origin v9.9.9"), "{:?}", u.fix);
+        // a deleted tag is not a tag…
+        assert!(require_tag(&refs(), "o/r", "v0.0.9", false).is_err());
+        // …but its existing release can still get a new revision (yank, notes)
+        assert!(require_tag(&refs(), "o/r", "v0.0.9", true).is_ok());
+    }
 }
 
 #[cfg(test)]
