@@ -617,7 +617,6 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
     let private = s.repo.visibility == Visibility::Private;
     let (kept, mut left_out) = r.for_visibility(s.repo.visibility);
     kept.validate().map_err(usage)?;
-    let uploads = a.log.is_some() || !a.artifacts.is_empty();
     if private {
         if a.log.is_some() {
             left_out.push("logUrl");
@@ -625,7 +624,7 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
         if !a.artifacts.is_empty() {
             left_out.push("artifacts");
         }
-    } else if uploads {
+    } else if a.log.is_some() || !a.artifacts.is_empty() {
         check_log_storage(a.storage.as_deref())?;
     }
     warn_private(a, &s, &left_out);
@@ -653,9 +652,8 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
     }
     let mut artifacts_left_out = Vec::new();
     if !private && !a.artifacts.is_empty() {
-        let (list, dropped) = upload_artifacts(&a.artifacts, a.storage.as_deref()).await?;
-        r.artifacts = list;
-        artifacts_left_out = dropped;
+        (r.artifacts, artifacts_left_out) =
+            upload_artifacts(&a.artifacts, a.storage.as_deref()).await?;
     }
     let before = s.balance().await;
     let done = runs.execute(&s.repo, &r, plan).await?;
@@ -679,6 +677,12 @@ fn emit_report(
     left_out: &[&str],
     artifacts_left_out: &[String],
 ) {
+    // The `artifacts` JSON this report recorded, read back for the output.
+    let artifacts: Vec<ReleaseAsset> = r
+        .artifacts
+        .as_deref()
+        .and_then(|j| serde_json::from_str(j).ok())
+        .unwrap_or_default();
     ctx.emit(
         json!({
             "status": done.action,
@@ -689,11 +693,7 @@ fn emit_report(
             "headOid": r.head_oid,
             "logUrl": r.log.as_ref().map(|(u, _)| u.clone()),
             "logSha256": r.log.as_ref().map(|(_, h)| hex::encode(h)),
-            "artifacts": r
-                .artifacts
-                .as_deref()
-                .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
-                .unwrap_or_else(|| json!([])),
+            "artifacts": artifacts,
             "artifactsLeftOut": artifacts_left_out,
             // What a private repository's run left out (forge-community `privateNoText`).
             "leftOut": left_out,
@@ -711,24 +711,16 @@ fn emit_report(
             if let Some((u, _)) = &r.log {
                 println!("  log: {u}");
             }
-            print_artifacts(r.artifacts.as_deref());
+            for x in &artifacts {
+                println!(
+                    "  artifact: {} ({} bytes)",
+                    crate::fmt::safe(&x.name),
+                    x.size_bytes
+                );
+            }
             println!("  {url}");
         },
     );
-}
-
-/// Print the artifacts a report recorded (`artifacts` JSON), one line each.
-fn print_artifacts(json: Option<&str>) {
-    let list: Vec<ReleaseAsset> = json
-        .and_then(|j| serde_json::from_str(j).ok())
-        .unwrap_or_default();
-    for x in list {
-        println!(
-            "  artifact: {} ({} bytes)",
-            crate::fmt::safe(&x.name),
-            x.size_bytes
-        );
-    }
 }
 
 /// The most artifacts one report takes: the run's `artifacts` field holds at most

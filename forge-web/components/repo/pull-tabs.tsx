@@ -10,8 +10,9 @@
  *   checks`, `dg ci status`). A run's log is read from the reporter's storage and shown only
  *   with whether it hashed to the SHA-256 the run records. A required check pinned to a source
  *   (RC1 R-08) names it ("from ci-bot"); a run by anyone else is "not from the required source",
- *   and a required check nothing reported yet is listed as "Expected". A run's artifacts are offered for download the way
- *   release assets are: streamed from the reporter's storage and saved only if they hash to the recorded SHA-256.
+ *   and a required check nothing reported yet is listed as "Expected". A run's artifacts are
+ *   offered for download the way release assets are: streamed from the reporter's storage and
+ *   saved only if they hash to the recorded SHA-256.
  */
 
 import Link from 'next/link'
@@ -156,7 +157,7 @@ function RunArtifacts({ run }: { run: CheckRun }): JSX.Element {
     <div className="basis-full" data-testid="check-artifacts">
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
         {plural(run.artifacts.length, 'artifact')}
-        {!runCounts(run) ? ' (from a run that does not count)' : ''}
+        {runCounts(run) ? '' : ' (from a run that does not count)'}
       </p>
       <ul aria-label={`Artifacts of ${run.name}`} className="mt-1 divide-y divide-anvil-100 overflow-hidden rounded border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800">
         {run.artifacts.map((a, i) => (

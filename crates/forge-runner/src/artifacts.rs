@@ -88,6 +88,17 @@ fn files_under(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
     Ok(out)
 }
 
+/// The directories directly under `dir` (not symlinks to one), sorted.
+fn subdirs(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut out: Vec<PathBuf> = std::fs::read_dir(dir)?
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .collect();
+    out.sort();
+    Ok(out)
+}
+
 /// Collect every artifact under act's server directory `dir` into `out`.
 pub fn collect(dir: &Path, out: &Path) -> Result<Collected> {
     let mut found = Collected::default();
@@ -95,21 +106,9 @@ pub fn collect(dir: &Path, out: &Path) -> Result<Collected> {
         return Ok(found);
     }
     std::fs::create_dir_all(out)?;
-    let mut runs: Vec<PathBuf> = std::fs::read_dir(dir)?
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-        .map(|e| e.path())
-        .collect();
-    runs.sort();
     let mut seen = 0usize;
-    for run in runs {
-        let mut named: Vec<PathBuf> = std::fs::read_dir(&run)?
-            .filter_map(Result::ok)
-            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-            .map(|e| e.path())
-            .collect();
-        named.sort();
-        for adir in named {
+    for run in subdirs(dir)? {
+        for adir in subdirs(&run)? {
             let name = adir
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())

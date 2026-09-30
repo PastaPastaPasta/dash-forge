@@ -867,6 +867,8 @@ fn job_artifacts(
     for s in &found.skipped {
         eprintln!("forge-runner: artifact left out: {s}");
     }
+    let left_out =
+        (!found.skipped.is_empty()).then(|| format!("left out: {}", found.skipped.join("; ")));
     artifacts::assign(&found.artifacts, &results.logs, jobs)
         .into_iter()
         .map(|(job, mine)| {
@@ -886,9 +888,7 @@ fn job_artifacts(
                     artifacts::MAX_PER_JOB
                 ));
             }
-            if !found.skipped.is_empty() {
-                parts.push(format!("left out: {}", found.skipped.join("; ")));
-            }
+            parts.extend(left_out.clone());
             let note = if parts.is_empty() {
                 String::new()
             } else {
