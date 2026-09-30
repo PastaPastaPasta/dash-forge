@@ -169,7 +169,8 @@ describe('writing a suggestion (QW-067)', () => {
   })
 
   it("shows a pending comment's suggestion with the lines it replaces", () => {
-    const draft: DraftComment = { localId: 'd1', anchor: { path: FILE, line: 2, side: 1, commitOid: HEAD }, body: suggestion.body }
+    // A draft's anchor on the draft's own head omits the head (`addDraftComment`).
+    const draft: DraftComment = { localId: 'd1', anchor: { path: FILE, line: 2, side: 1 }, body: suggestion.body }
     const pending: PendingReview = { comments: [draft], elsewhere: [], count: 1, frozen: false, onAdd: () => undefined, onEdit: () => undefined, onRemove: () => undefined }
     show({ suggestions: actions(), pending })
     const shown = host.querySelector('[data-testid="pending-comment"]')!

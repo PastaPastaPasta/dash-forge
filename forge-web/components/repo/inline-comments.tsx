@@ -227,7 +227,7 @@ export function InlineCommentsProvider({
               <Thread key={t.root.id} thread={t} {...threadProps} />
             ))}
             {drafts.map((d) => (
-              <PendingComment key={d.localId} draft={d} pending={pending} suggestions={suggestions} />
+              <PendingComment key={d.localId} draft={d} pending={pending} suggestions={suggestions} head={headOid} />
             ))}
             {open && selection !== null ? (
               <Composer
@@ -529,9 +529,21 @@ function SuggestedBody({ comment: c, suggestions }: { comment: CommentView; sugg
 }
 
 /** A comment of the viewer's pending review, shown in place (a suggestion as the diff it will be). */
-function PendingComment({ draft, pending, suggestions }: { draft: DraftComment; pending: PendingReview | undefined; suggestions?: SuggestionActions | undefined }): JSX.Element {
+function PendingComment({
+  draft,
+  pending,
+  suggestions,
+  head,
+}: {
+  draft: DraftComment
+  pending: PendingReview | undefined
+  suggestions?: SuggestionActions | undefined
+  /** The head it is shown on, for a comment on its lines: a draft's anchor omits its own head. */
+  head?: string
+}): JSX.Element {
   const [editing, setEditing] = useState<string | null>(null)
-  const ctx = useSuggestionContext(draft.body, draft.anchor, suggestions)
+  const anchor = useMemo(() => ({ ...draft.anchor, commitOid: draft.anchor.commitOid ?? head }), [draft.anchor, head])
+  const ctx = useSuggestionContext(draft.body, anchor, suggestions)
   return (
     <div className="rounded-md border border-dashed border-caution/60 bg-caution/5 px-3 py-2" data-testid="pending-comment" data-local={draft.localId}>
       <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
