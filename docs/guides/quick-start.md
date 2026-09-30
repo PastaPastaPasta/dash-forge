@@ -146,9 +146,9 @@ Forge hosts nothing, so you decide where the pack bytes (the git objects) live. 
 
 | Option | Cost | |
 |---|---|---|
-| Your S3-compatible bucket (Cloudflare R2, Backblaze B2, AWS S3, Storj, or a store on [your own NAS](home-nas-storage.md)) | about 0.004–0.005 DASH per push on Platform (measured on bonsia), plus your provider's bill | recommended; R2 has no egress fees |
+| Your S3-compatible bucket (Cloudflare R2, Backblaze B2, AWS S3, Storj, or a store on [your own NAS](home-nas-storage.md)) | about 0.004–0.0055 DASH per push on Platform (measured on bonsia), plus your provider's bill | recommended; R2 has no egress fees |
 | Your IPFS node (kubo) or a pinning service | the same on Platform | |
-| Dash Platform | about **0.004–0.010 DASH** for a small push (the top of the range when it moves the default branch), plus about **0.33 DASH per MiB** (the tools quote up to 0.39), permanently | no account needed; fine for tiny repositories |
+| Dash Platform | about **0.004–0.011 DASH** for a small push (the top of the range when it moves the default branch), plus about **0.33 DASH per MiB** (the tools quote up to 0.39), permanently | no account needed; fine for tiny repositories |
 
 **From the terminal**, `dg storage add` with no arguments asks for each value, stores a pasted secret in your OS keychain, and tests the storage as it goes, printing the fix for anything that fails (usually CORS):
 
@@ -186,9 +186,9 @@ dash: storage      → r2-main · Platform stores manifest + refs only, est 0.00
 dash: r2-main      ████████████████ 1.2 MiB  verified   0.4 s
 dash: platform     manifest 4 · refUpdate 1     est 0.0066 DASH
 dash: history index published (full, 42 paths, 1 commits)
-dash: done · Platform charged ≈0.0052 DASH · remaining 0.0430 DASH · https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
+dash: done · Platform charged ≈0.0052 DASH · remaining 0.0428 DASH · https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
 ✓ main → 8f3e2a1   this push ~0.0052 DASH ≈ $0.16
-  total ~0.0069 DASH ≈ $0.21 (create ~0.0016 DASH ≈ $0.05 + push ~0.0052 DASH ≈ $0.16) · balance 0.0430 DASH
+  total ~0.0069 DASH ≈ $0.21 (create ~0.0016 DASH ≈ $0.05 + push ~0.0052 DASH ≈ $0.16) · balance 0.0428 DASH
 Open it: https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
 ```
 

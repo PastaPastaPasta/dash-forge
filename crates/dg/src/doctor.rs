@@ -1290,8 +1290,11 @@ mod tests {
     /// Platform included (its quote is an upper bound), and still asks before a megabyte.
     #[test]
     fn the_default_cost_guard_admits_a_small_platform_push() {
-        use forge_core::cost::push_fees::{estimate_push, PushShape};
+        use forge_core::cost::push_fees::{estimate_push, history_index, PushShape};
         let threshold: f64 = DEFAULT_COST_WARN_THRESHOLD.parse().unwrap();
+        // The remote helper compares the guard with the push's quote plus the history index it
+        // publishes with it (a first one, stored on Platform, ~1–2 KB).
+        let history = history_index(2_000, false, 0, true, true);
         let small = PushShape {
             pack_bytes: 2_000,
             objects: 10,
@@ -1300,7 +1303,7 @@ mod tests {
             platform_bytes: true,
             ..PushShape::default()
         };
-        let quote = credits_to_dash(estimate_push(&small).total());
+        let quote = credits_to_dash(estimate_push(&small).total() + history);
         assert!(
             quote < threshold,
             "a small Platform push is quoted {quote} DASH, above the {threshold} DASH guard"
@@ -1311,7 +1314,7 @@ mod tests {
             index_objects: 200,
             ..small
         };
-        assert!(credits_to_dash(estimate_push(&mib).total()) > threshold);
+        assert!(credits_to_dash(estimate_push(&mib).total() + history) > threshold);
     }
 
     #[test]

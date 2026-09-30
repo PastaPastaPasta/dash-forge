@@ -22,7 +22,7 @@ export function AppFooter(): JSX.Element {
             Getting started
           </Link>
           <a href={DOCS.guides} target="_blank" rel="noreferrer noopener" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
-            Docs
+            User guides
           </a>
           <Link href="/explore/" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
             Explore

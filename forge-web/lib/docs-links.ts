@@ -1,10 +1,12 @@
+import { REPO_URL } from './build-info'
+
 /**
  * Where the user guides live (QA wave bonsia, QW-013): `docs/guides/` in the source repository,
  * rendered by GitHub. Forge hosts nothing itself, so the in-app "Getting started" page (`/start`)
  * explains the basics and links here for the rest.
  */
 
-const GUIDES = 'https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/guides'
+const GUIDES = `${REPO_URL}/blob/master/docs/guides`
 
 export const DOCS = {
   /** The guides' index. */

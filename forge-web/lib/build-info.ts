@@ -10,7 +10,7 @@
 /** The full commit id the build was made from ('' when built without git). next.config.js. */
 export const BUILD_COMMIT: string = process.env.FORGE_BUILD_COMMIT ?? ''
 
-const REPO_URL = 'https://github.com/PastaPastaPasta/dash-forge'
+export const REPO_URL = 'https://github.com/PastaPastaPasta/dash-forge'
 
 // A base32 CIDv1 (`bafy…`, `bafk…`) or a base58 CIDv0 (`Qm…`), as gateways put them in URLs.
 const CID = /^(?:b[a-z2-7]{58,}|Qm[1-9A-HJ-NP-Za-km-z]{44})$/
