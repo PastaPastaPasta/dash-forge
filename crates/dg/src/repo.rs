@@ -17,7 +17,7 @@ use serde_json::json;
 use forge_core::create::{default_journal_dir, CreateRepoOpts};
 use forge_core::members::MemberReader;
 use forge_core::repo::RepoService;
-use forge_core::resolve::{list_owned, repo_description, repo_slug};
+use forge_core::resolve::{list_owned, repo_description, repo_fork_defaults, repo_slug};
 use forge_core::user_error::{codes, UserError};
 
 use crate::common::{resolve, Reader, RepoRef, Session};
@@ -195,12 +195,16 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
             parent.display()
         )));
     }
+    // Refused before any read a private parent would need its keys for.
+    parent.require_public("forking")?;
     let price = ctx.usd_price();
     let svc = RepoService::new(&client, &identity, &bridge);
-    let parent_packs = svc
-        .read_pack_manifests(&parent)
-        .await
-        .context("reading the parent's packs")?;
+    let (parent_packs, default_branch, doc_defaults) = tokio::join!(
+        Box::pin(svc.read_pack_manifests(&parent)),
+        Box::pin(svc.read_default_branch(&parent)),
+        Box::pin(repo_fork_defaults(&client, &parent))
+    );
+    let parent_packs = parent_packs.context("reading the parent's packs")?;
     // The manifests the fork will write, with the URIs each records (each adds to its price).
     let manifest_uris: Vec<u64> =
         forge_core::fork::plan_manifests(&parent_packs, &BTreeMap::new(), &BTreeSet::new())
@@ -219,6 +223,12 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
         .context("reading the parent's refs")?
         .len();
     let estimate = fork_estimate(&manifest_uris, refs as u64);
+    // As on GitHub, the fork takes the parent's default branch (QW2-013) and description
+    // (QW2-062; it was "fork of <parent>", which `forkOf` already records).
+    let default_branch = default_branch.context("reading the parent's default branch")?;
+    let (description, doc_branch) = doc_defaults.context("reading the parent's repo document")?;
+    // The newest config's branch, else the one the repo document names (as the web reads it).
+    let default_branch = default_branch.filter(|b| !b.is_empty()).or(doc_branch);
     if !ctx.json {
         println!(
             "Forking {} as {}/{slug} on {}\n  repo + {packs} pack manifest(s), nothing re-uploaded, + {refs} ref(s)   {}",
@@ -229,10 +239,7 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
         );
     }
     ctx.confirm_or_cancel(&format!("Fork {}?", parent.display()))?;
-    let opts = CreateRepoOpts {
-        description: format!("fork of {}", parent.display()),
-        ..CreateRepoOpts::public(slug)
-    };
+    let opts = fork_opts(slug, default_branch, description);
     let result = forge_core::fork::fork_repo(
         &client,
         &identity,
@@ -244,6 +251,19 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
     .await
     .context("forking the repository")?;
     report_fork(ctx, &parent, &result, price)
+}
+
+/// A fork's create options: the parent's default branch (`main` when it has none) and its
+/// description.
+fn fork_opts(slug: String, default_branch: Option<String>, description: String) -> CreateRepoOpts {
+    let base = CreateRepoOpts::public(slug);
+    CreateRepoOpts {
+        default_branch: default_branch
+            .filter(|b| !b.is_empty())
+            .unwrap_or(base.default_branch.clone()),
+        description,
+        ..base
+    }
 }
 
 /// The pre-sign quote for a fork writing one manifest per entry of `manifest_uris` (each
@@ -692,6 +712,22 @@ async fn backend_set(ctx: &Ctx, repo: &str, mode: u8, label: &str) -> Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// QW2-013 / QW2-062: a fork takes the parent's default branch and description.
+    #[test]
+    fn a_fork_takes_the_parents_default_branch_and_description() {
+        let opts = fork_opts("proj".into(), Some("develop".into()), "A project".into());
+        assert_eq!(opts.default_branch, "develop");
+        assert_eq!(opts.description, "A project");
+        assert_eq!(opts.visibility, Visibility::Public);
+        let bare = fork_opts("proj".into(), None, String::new());
+        assert_eq!(bare.default_branch, "main");
+        assert_eq!(bare.description, "");
+        assert_eq!(
+            fork_opts("proj".into(), Some(String::new()), String::new()).default_branch,
+            "main"
+        );
+    }
 
     /// QW2-020: a fork of a parent with two packs and two refs was quoted 0.0032 DASH and
     /// charged 0.00494466 on bonsia.

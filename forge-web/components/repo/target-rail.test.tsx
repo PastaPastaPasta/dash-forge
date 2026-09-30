@@ -2,7 +2,9 @@
 /**
  * QW2-066: the issue and PR pickers (labels, assignees, reviewers, the list label filter) carry
  * no control inside a control (a checkbox in an option button), every button has a name, and
- * the assignee swatches are a named picture.
+ * the assignee swatches are a named picture. QW2-060: in a private repo (where no milestone can
+ * be defined yet) the milestone picker says so, rather than offering "Set milestone" that opens
+ * onto "No open milestones".
  */
 
 import { act } from 'react'
@@ -14,7 +16,7 @@ import type { LabelDef } from '@/lib/repo'
 vi.mock('next/link', () => ({ default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => <a href={href} {...rest}>{children}</a> }))
 vi.mock('@/components/author', () => ({ Author: ({ identityId }: { identityId: string }) => <span>{identityId}</span> }))
 
-const { AssigneePicker, LabelPicker } = await import('./target-rail')
+const { AssigneePicker, LabelPicker, MilestonePicker } = await import('./target-rail')
 const { AssigneeAvatars } = await import('./issue-bits')
 const { LabelFilter } = await import('./list-controls')
 const { ReviewersCard } = await import('./reviewers-card')
@@ -107,5 +109,27 @@ describe('issue sidebar pickers (QW2-066)', () => {
     const el = host.querySelector('[data-testid="assignees"]')
     expect(el?.getAttribute('role')).toBe('img')
     expect(el?.getAttribute('aria-label')).toBe(`Assigned to ${A.slice(0, 8)}, ${B.slice(0, 8)}`)
+  })
+})
+
+describe('MilestonePicker (QW2-060)', () => {
+  const setButton = (): HTMLButtonElement | undefined => button('Set milestone')
+  it('says milestones are unavailable where none can be defined and none exist', () => {
+    render(<MilestonePicker current={null} choices={[]} loading={false} canDefine={false} canEdit onChoose={() => undefined} />)
+    expect(setButton()).toBeUndefined()
+    expect(host.querySelector('[data-testid="milestone-unavailable"]')?.textContent).toMatch(/private repos/)
+  })
+
+  it('offers Set milestone where they can be defined, even with none yet', () => {
+    render(<MilestonePicker current={null} choices={[]} loading={false} canDefine canEdit onChoose={() => undefined} />)
+    expect(setButton()).toBeDefined()
+    expect(host.querySelector('[data-testid="milestone-unavailable"]')).toBeNull()
+  })
+
+  it('offers it while the milestones are read, and when some exist', () => {
+    render(<MilestonePicker current={null} choices={[]} loading canDefine={false} canEdit onChoose={() => undefined} />)
+    expect(setButton()).toBeDefined()
+    render(<MilestonePicker current={null} choices={[{ title: 'v1', closed: false }]} loading={false} canDefine={false} canEdit onChoose={() => undefined} />)
+    expect(setButton()).toBeDefined()
   })
 })

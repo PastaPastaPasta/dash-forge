@@ -15,7 +15,7 @@ import { shellWord } from '@/lib/view/repo-commands'
 import { useViewerRole, type ViewerRole } from '@/hooks/use-repo-chrome'
 import { useAuth } from '@/contexts/auth-context'
 import { CopyRow } from '@/components/ui/copy-row'
-import { ForkButton } from '@/components/repo/fork-button'
+import { ForkButton, type ForkDefaults } from '@/components/repo/fork-button'
 
 /** `git push dash://owner/name HEAD:my-fix`: push the checked-out commit as a new branch of `owner/name`. */
 export function pushCommand(owner: string, name: string): string {
@@ -90,9 +90,12 @@ function messageOf(hint: Exclude<PushHint, { kind: 'loading' }>, name: string): 
 
 export function PushBranchHint({
   repo,
+  forkDefaults,
   forks,
 }: {
   readonly repo: RepoRef
+  /** What a fork made here takes from `repo` ({@link ForkButton}). */
+  readonly forkDefaults: ForkDefaults
   /** The viewer's forks of `repo`: null while read, `failed` when they could not be. */
   readonly forks: readonly RepoRef[] | null | 'failed'
 }): JSX.Element | null {
@@ -114,7 +117,7 @@ export function PushBranchHint({
       ))}
       {fork ? (
         <div>
-          <ForkButton parent={repo} />
+          <ForkButton parent={repo} defaults={forkDefaults} />
         </div>
       ) : null}
     </div>

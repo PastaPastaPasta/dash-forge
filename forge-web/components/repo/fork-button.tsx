@@ -12,7 +12,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Check, GitFork, Loader2 } from 'lucide-react'
 
-import { checkForkName, forkRepoV2, normalizeRepoName, planFork, type ForkNameCheck, type ForkStep, type RepoRef } from '@/lib/repo'
+import { checkForkName, descriptionProblem, forkRepoV2, normalizeRepoName, planFork, type ForkNameCheck, type ForkStep, type RepoRef } from '@/lib/repo'
 import { previewCreate, sumPreviews } from '@/lib/sdk'
 import { errorMessage } from '@/lib/utils'
 import { plural } from '@/lib/view/format'
@@ -22,7 +22,7 @@ import { useAsync } from '@/hooks/use-async'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
-import { Field, Input } from '@/components/ui/input'
+import { Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 
 const STEPS: readonly { step: ForkStep; label: string }[] = [
@@ -35,7 +35,13 @@ const STEPS: readonly { step: ForkStep; label: string }[] = [
 
 type Progress = Partial<Record<ForkStep, { state: 'running' | 'done'; count?: string }>>
 
-export function ForkButton({ parent }: { parent: RepoRef }): JSX.Element {
+/** What a fork takes from its parent, as on GitHub: its default branch and (editable) description. */
+export interface ForkDefaults {
+  readonly defaultBranch: string
+  readonly description: string
+}
+
+export function ForkButton({ parent, defaults }: { parent: RepoRef; defaults: ForkDefaults }): JSX.Element {
   const { identity } = useAuth()
   const guard = useWriteGuard()
   const [open, setOpen] = useState(false)
@@ -53,17 +59,19 @@ export function ForkButton({ parent }: { parent: RepoRef }): JSX.Element {
       >
         <GitFork className="h-3.5 w-3.5" aria-hidden /> Fork
       </Button>
-      {open && identity !== null ? <ForkDialog parent={parent} owner={identity} onClose={() => setOpen(false)} /> : null}
+      {open && identity !== null ? <ForkDialog parent={parent} defaults={defaults} owner={identity} onClose={() => setOpen(false)} /> : null}
     </>
   )
 }
 
-function ForkDialog({ parent, owner, onClose }: { parent: RepoRef; owner: string; onClose: () => void }): JSX.Element {
+function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; defaults: ForkDefaults; owner: string; onClose: () => void }): JSX.Element {
   const { sdk, ready } = useSdk()
   const { signer } = useAuth()
   const guard = useWriteGuard()
   const router = useRouter()
   const [name, setName] = useState(parent.name)
+  const [description, setDescription] = useState(defaults.description)
+  const descriptionError = descriptionProblem(description)
   const [check, setCheck] = useState<ForkNameCheck | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -109,22 +117,22 @@ function ForkDialog({ parent, owner, onClose }: { parent: RepoRef; owner: string
     const p = plan.data
     const manifests = p?.manifests ?? []
     return sumPreviews([
-      previewCreate('repo', { name: normalized || parent.name, description: `fork of ${parent.ownerId}/${parent.name}`, visibility: 'public' }),
+      previewCreate('repo', { name: normalized || parent.name, description: description.trim(), defaultBranch: defaults.defaultBranch, visibility: 'public' }),
       previewCreate('maintainer'),
-      previewCreate('config', { defaultBranch: 'main' }),
+      previewCreate('config', { defaultBranch: defaults.defaultBranch }),
       ...manifests.map((m) => previewCreate('packManifest', { uris: m.uris })),
       ...(p?.refs ?? []).map((r) => previewCreate('refUpdate', { refName: r.refName })),
     ])
-  }, [plan.data, normalized, parent.name, parent.ownerId])
+  }, [plan.data, normalized, parent.name, description, defaults.defaultBranch])
 
   const run = async (): Promise<void> => {
-    if (!sdk || !signer || pending || nameError !== null || check?.kind === 'taken') return
+    if (!sdk || !signer || pending || nameError !== null || descriptionError !== null || check?.kind === 'taken') return
     if (!guard.check(cost)) return
     setPending(true)
     setError(null)
     setProgress({})
     try {
-      const result = await forkRepoV2(sdk, signer, parent, { name: normalized }, (p) =>
+      const result = await forkRepoV2(sdk, signer, parent, { name: normalized, description: description.trim(), defaultBranch: defaults.defaultBranch }, (p) =>
         setProgress((prev) => ({
           ...(prev ?? {}),
           [p.step]: { state: p.state === 'start' ? 'running' : 'done', ...(p.total ? { count: `${p.done ?? 0} of ${p.total}` } : {}) },
@@ -156,7 +164,7 @@ function ForkDialog({ parent, owner, onClose }: { parent: RepoRef; owner: string
           <Button variant="ghost" onClick={onClose} disabled={pending}>
             Cancel
           </Button>
-          <Button variant="primary" onClick={run} loading={pending} disabled={nameError !== null || check === null || check.kind === 'taken' || plan.data === null || guard.disabledReason !== null}>
+          <Button variant="primary" onClick={run} loading={pending} disabled={nameError !== null || descriptionError !== null || check === null || check.kind === 'taken' || plan.data === null || guard.disabledReason !== null}>
             {check?.kind === 'resume' ? 'Finish the fork' : 'Sign & fork'}
           </Button>
         </>
@@ -175,6 +183,18 @@ function ForkDialog({ parent, owner, onClose }: { parent: RepoRef; owner: string
         ) : null}
         {check?.kind === 'taken' ? <p className="-mt-1 text-[12px] text-danger-700 dark:text-danger-400">You already have a repository named {normalized} that is not a fork of this one.</p> : null}
         {check?.kind === 'resume' ? <p className="-mt-1 text-[12px] text-caution-700 dark:text-caution-400">An earlier fork under this name did not finish; this completes it without paying twice.</p> : null}
+        {/* A resumed fork keeps the repo and config its first run wrote: nothing here would apply. */}
+        {check?.kind === 'resume' ? null : (
+          <>
+            <Field label="Description (optional)" htmlFor="fork-description" hint="The parent's, to start with. You can change it later in Settings.">
+              <Textarea id="fork-description" value={description} onChange={(e) => setDescription(e.target.value)} className="min-h-[56px]" disabled={pending} maxLength={500} />
+            </Field>
+            {descriptionError ? <p className="-mt-1 text-[12px] text-danger-700 dark:text-danger-400">{descriptionError}</p> : null}
+            <p className="text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="fork-default-branch">
+              Default branch: <span className="font-mono">{defaults.defaultBranch}</span>, as in {parent.name}.
+            </p>
+          </>
+        )}
 
         {plan.error ? (
           <p className="text-dense text-danger-700 dark:text-danger-400">Couldn&apos;t read what to fork: {plan.error}</p>

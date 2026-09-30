@@ -76,7 +76,41 @@ describe('the Releases page', () => {
     const section = host.querySelector('[data-testid="releases-unpublished"]')
     expect(section).not.toBeNull()
     expect(section?.querySelector('[data-testid="restore-release"]')?.getAttribute('aria-label')).toBe('Restore release v1')
-    // The revision history is still there to open.
-    expect(host.textContent).toMatch(/Show 2 previous revisions/)
+    // The revision history is still there to open, without the unpublish already shown (QW2-059).
+    expect(host.textContent).toMatch(/Show 1 previous revision\b/)
+  })
+
+  // QW2-059: the unpublish read "PREVIOUS · Published by …" and was listed a second time below.
+  it('marks the unpublish as one, and lists every revision once', () => {
+    list.current = { current: [], previous: [rev('U1', 'v1', 20, true), rev('V1OLD', 'v1', 10)] }
+    act(() => root.render(<ReleasesContent home={home} addr={{ owner: 'O', name: 'r' }} />))
+    const card = host.querySelector('[data-testid="releases-unpublished"] [data-testid="release"]') as HTMLElement
+    expect(card.querySelector('[data-testid="release-unpublished"]')?.textContent).toMatch(/unpublished/i)
+    expect(card.textContent).toContain('Unpublished by M')
+    expect(card.textContent).not.toMatch(/previous/i)
+    act(() => ([...host.querySelectorAll('button')].find((b) => /previous revision/.test(b.textContent ?? '')) as HTMLButtonElement).click())
+    expect(host.querySelectorAll('[data-testid="release"]')).toHaveLength(2)
+    expect(host.textContent).toContain('Published by M')
+  })
+
+  it('says "Unpublished by" for a mirrored release too, not its source publication', () => {
+    const imported = { ...rev('U1', 'v1', 20, true), published: { at: 5, host: 'github.com', author: 'x' } } as unknown as ReleaseView
+    list.current = { current: [], previous: [imported, rev('V1OLD', 'v1', 10)] }
+    act(() => root.render(<ReleasesContent home={home} addr={{ owner: 'O', name: 'r' }} />))
+    const card = host.querySelector('[data-testid="releases-unpublished"] [data-testid="release"]') as HTMLElement
+    expect(card.textContent).toContain('Unpublished by M')
+    expect(card.textContent).not.toContain('github.com')
+  })
+
+  it('lists a public unpublish (delta −1) the same way, without a Restore it cannot do', () => {
+    const pub = (id: string, at: number, delta: number): ReleaseView => ({ ...rev(id, 'v1', at), sealed: undefined, delta }) as unknown as ReleaseView
+    list.current = { current: [], previous: [pub('U1', 20, -1), pub('V1', 10, 1)] }
+    const publicHome = { ...home, repo: { ...home.repo, visibility: 'public' } } as unknown as RepoHome
+    act(() => root.render(<ReleasesContent home={publicHome} addr={{ owner: 'O', name: 'r' }} />))
+    const section = host.querySelector('[data-testid="releases-unpublished"]')
+    expect(section?.textContent).toContain('Unpublished by M')
+    expect(section?.querySelector('[data-testid="restore-release"]')).toBeNull()
+    expect(section?.textContent).toContain('dg release create O/r --tag <tag>')
+    expect(host.textContent).toMatch(/Show 1 previous revision\b/)
   })
 })

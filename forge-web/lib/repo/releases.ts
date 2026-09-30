@@ -307,6 +307,14 @@ export function latestRelease(list: ReleaseList): ReleaseView | undefined {
   return candidates.find((r) => !isPrereleaseView(r)) ?? candidates[0]
 }
 
+/**
+ * Whether a revision unpublishes its tag (QW2-059): a public one by RC1 `delta` −1, a sealed one
+ * by its unpublished flag. Shown as such, never as another "Published by" revision.
+ */
+export function isUnpublish(r: Pick<ReleaseView, 'delta' | 'sealed'>): boolean {
+  return r.delta === -1 || r.sealed?.fields.unpublished === true
+}
+
 /** Split revisions into the newest per tag and the rest (forge-core `newest_per_tag`). */
 export function newestPerTag(all: readonly ReleaseView[]): ReleaseList {
   const byTag = new Map<string, ReleaseView[]>()
@@ -316,7 +324,7 @@ export function newestPerTag(all: readonly ReleaseView[]): ReleaseList {
   for (const revs of byTag.values()) {
     const [head, ...rest] = [...revs].sort(newestFirst)
     // An unpublish (RC1 `delta` −1) takes the tag's release down; its revisions stay history.
-    if (head !== undefined && head.delta !== -1) current.push(head)
+    if (head !== undefined && !isUnpublish(head)) current.push(head)
     else if (head !== undefined) previous.push(head)
     previous.push(...rest)
   }

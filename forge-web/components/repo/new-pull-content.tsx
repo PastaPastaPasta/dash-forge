@@ -252,7 +252,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
         {forks.loading && identity !== null ? <span className="pb-2 text-[12px] text-anvil-600 dark:text-anvil-400">Looking for your forks…</span> : null}
       </div>
 
-      <PushBranchHint repo={repo} forks={forks.error !== null ? 'failed' : forks.data === null ? null : forks.data.map((f) => f.fork)} />
+      <PushBranchHint repo={repo} forkDefaults={{ defaultBranch: home.defaultBranch, description: home.description }} forks={forks.error !== null ? 'failed' : forks.data === null ? null : forks.data.map((f) => f.fork)} />
 
       {noBase ? (
         <p role="alert" className="text-dense text-caution-700 dark:text-caution-400">

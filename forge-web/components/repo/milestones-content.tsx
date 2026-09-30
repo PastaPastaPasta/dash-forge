@@ -244,7 +244,8 @@ export function MilestonesContent({ home, addr }: { home: RepoHome; addr: RepoAd
       </div>
       {privateRepo && role !== null ? (
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="milestones-private-note">
-          Milestones in a private repository are sealed, which this build does not do yet, so they can&apos;t be created here or with dg.
+          Milestones aren&apos;t available in private repos yet: they would be sealed like the rest of the repo&apos;s content, which neither this
+          site nor dg does yet.
         </p>
       ) : null}
 
@@ -276,7 +277,16 @@ export function MilestonesContent({ home, addr }: { home: RepoHome; addr: RepoAd
           <EmptyState
             icon={MilestoneIcon}
             title={state === 'open' ? 'No open milestones' : 'No closed milestones'}
-            body={state === 'closed' ? 'A closed milestone shows here.' : canEdit ? 'Create one to track a release or a goal.' : 'A maintainer or writer creates milestones.'}
+            body={
+              // One story for a private repo (QW2-060): the note above says why there are none.
+              privateRepo
+                ? 'Private repos have no milestones yet.'
+                : state === 'closed'
+                  ? 'A closed milestone shows here.'
+                  : canEdit
+                    ? 'Create one to track a release or a goal.'
+                    : 'A maintainer or writer creates milestones.'
+            }
           />
         ) : (
           <ul aria-label="Milestones">
