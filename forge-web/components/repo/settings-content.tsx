@@ -237,7 +237,8 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
         <h3 className="mb-2 mt-5 flex items-center gap-2 text-dense font-medium">
           <HardDrive className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden /> Your browser pushes
         </h3>
-        <RepoStoragePolicy repoId={repo.repoId} />
+        {/* A locked private repo shows this tab's one unlock under Collaborators (D-9). */}
+        <RepoStoragePolicy repoId={repo.repoId} unlockAbove={home.private?.access === 'locked'} />
       </Section>
 
       <DangerZone home={home} maintainer={viewerRole === 'maintainer'} onSaved={reload} />

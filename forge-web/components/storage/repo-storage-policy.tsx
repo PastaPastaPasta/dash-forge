@@ -17,7 +17,18 @@ import { Button } from '@/components/ui/button'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { PUSH_COST_DASH } from '@/lib/sdk/cost'
 
-export function RepoStoragePolicy({ repoId }: { repoId: string }): JSX.Element {
+export function RepoStoragePolicy({
+  repoId,
+  unlockAbove = false,
+}: {
+  repoId: string
+  /**
+   * The page already offers this tab's unlock above (a locked private repo's Collaborators): one
+   * unlock opens the encryption key and the storage settings alike, so say so instead of a second
+   * prompt.
+   */
+  unlockAbove?: boolean
+}): JSX.Element {
   const { config, storable, save, error, needsUnlock } = useStorageConfig()
   const override = config?.repoPolicies[repoId] ?? null
   const effective = config ? policyForRepo(config, repoId) : null
@@ -26,6 +37,17 @@ export function RepoStoragePolicy({ repoId }: { repoId: string }): JSX.Element {
   const [msg, setMsg] = useState<string | null>(null)
 
   if (error) return <p className="text-dense text-danger-700 dark:text-danger-400">{error}</p>
+  if (needsUnlock && unlockAbove) {
+    return (
+      <p data-testid="storage-unlock-above" className="text-dense text-anvil-500 dark:text-anvil-400">
+        Your storage settings are locked in this tab: the unlock under{' '}
+        <a href="#collaborators" className="text-forge-700 underline dark:text-forge-400">
+          Collaborators
+        </a>{' '}
+        opens them too.
+      </p>
+    )
+  }
   if (needsUnlock) return <UnlockMore title="Unlock to use your storage settings" testId="storage-unlock" />
   if (!config) {
     return (
