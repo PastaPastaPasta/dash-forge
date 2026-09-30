@@ -1024,3 +1024,25 @@ fn an_index_over_the_readers_bounds_is_cut_until_it_fits() {
 }
 
 const MAX_INFLATED_TEST: u64 = 64 * 1024 * 1024;
+
+/// The format lives only in the header (RC1 has no manifest field for it): a version this client
+/// does not know is refused with a clear error, not read as something else.
+#[test]
+fn an_unknown_header_version_is_refused_clearly() {
+    let d = fixture_v2();
+    let ix = compute(d.path(), "HEAD", None).unwrap().unwrap();
+    assert_eq!(ix.version(), 2, "every writer writes version 2");
+    let mut body = body_of(&ix);
+    for v in [0u8, 3, 255] {
+        body[4] = v;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut gz, &body).unwrap();
+        let err = HistoryIndex::parse(&gz.finish().unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains(&format!("format {v} is not one this client reads")),
+            "{err}"
+        );
+    }
+}

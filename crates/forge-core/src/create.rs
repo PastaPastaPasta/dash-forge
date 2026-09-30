@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 use crate::keystore::BridgeIdentity;
+use crate::layout;
 use crate::members::{doc_type, MemberReader};
 use crate::network::ForgeIds;
 use crate::platform::{
@@ -249,9 +250,10 @@ fn repo_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
     p
 }
 
-/// The initial `config` document's properties (no protected patterns: an empty list is the
-/// same as none, and omitting it keeps the document small).
-fn config_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
+/// The initial `config` document's properties of a PUBLIC repository (no protected patterns:
+/// an empty list is the same as none, and omitting it keeps the document small). A private
+/// repository's first config is its sealed anchor (`private_epoch_zero`).
+pub(crate) fn config_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
     let mut p = BTreeMap::new();
     p.insert(
         "defaultBranch".into(),
@@ -259,6 +261,7 @@ fn config_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
     );
     p.insert("backend".into(), backend_props(opts));
     p.insert("archived".into(), FieldValue::boolean(false));
+    layout::stamp_public(&mut p);
     p
 }
 
@@ -395,7 +398,12 @@ pub async fn create_repo(
                 .await?
                 .map(|m| m.document_id))
         },
-        || scope.props([("memberId", FieldValue::identifier(owner_bytes))]),
+        || {
+            // The owner enrols itself: no `consentBy` (RC1 `member_consent`).
+            let mut p = scope.props([("memberId", FieldValue::identifier(owner_bytes))]);
+            layout::stamp_vis(&mut p, opts.visibility);
+            p
+        },
     )
     .await?;
     steps.push((Step::Maintainer.doc_type(), outcome));
@@ -484,11 +492,12 @@ async fn private_epoch_zero(
 
 /// `opts` with the name normalized to its slug, or why it cannot be created.
 fn validated(opts: &CreateRepoOpts) -> Result<CreateRepoOpts> {
-    if !crate::rules::is_legal_ref_name(&format!("refs/heads/{}", opts.default_branch)) {
-        return Err(Error::Config(format!(
-            "invalid default branch {:?}",
-            opts.default_branch
-        )));
+    crate::repo::check_default_branch(&opts.default_branch)?;
+    // RC1 `repo_shape`: a fork is public (`forkIsPublic`).
+    if opts.fork_of.is_some() && opts.visibility != Visibility::Public {
+        return Err(Error::Config(
+            "a fork is always public: a private repository cannot be a fork".into(),
+        ));
     }
     if !BACKEND_URIS_V2.fits(&opts.backend_uris) {
         return Err(Error::Config(format!(
@@ -498,6 +507,13 @@ fn validated(opts: &CreateRepoOpts) -> Result<CreateRepoOpts> {
     }
     let mut opts = opts.clone();
     opts.name = repo_slug(&opts.name)?;
+    // RC1 `nameNotDotGit`: `foo.git` would read as the bare-repository form of `foo`.
+    if opts.name.as_bytes().ends_with(b".git") {
+        return Err(Error::Config(format!(
+            "invalid repo name {:?}: a name may not end in .git",
+            opts.name
+        )));
+    }
     Ok(opts)
 }
 

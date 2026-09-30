@@ -158,12 +158,13 @@ async fn forge_v2_repo_lifecycle_on_moutai() {
         &repo,
         &PackManifestInput {
             pack_hash: meta.pack_hash_bytes().unwrap(),
-            kind: 3, // not a git pack: stays out of fetch and the locator space
+            // Not a git pack (it stays out of fetch and the locator space), and no tips: kind 3
+            // (a history index) must name one on RC1.
+            kind: u64::from(forge_core::pack::KIND_RELEASE_ASSETS),
             size_bytes: payload.len() as u64,
             object_count: 0,
             chunk_count: forge_core::pack::split(&payload).len() as u64,
             storage: 0,
-            offset_index_parts: 0,
             uris: uris.iter().map(|u| u.0.clone()).collect(),
             supersedes: Vec::new(),
             tips: Vec::new(),
@@ -238,7 +239,7 @@ async fn forge_v2_repo_lifecycle_on_moutai() {
         .unwrap();
     let mut backend = std::collections::BTreeMap::new();
     backend.insert("mode".into(), forge_core::platform::FieldValue::integer(0));
-    let props = repo.scope().unwrap().props([
+    let mut props = repo.scope().unwrap().props([
         (
             "defaultBranch",
             forge_core::platform::FieldValue::text("main"),
@@ -249,6 +250,7 @@ async fn forge_v2_repo_lifecycle_on_moutai() {
         ),
         ("backend", forge_core::platform::FieldValue::Object(backend)),
     ]);
+    forge_core::layout::stamp_public(&mut props);
     forge_core::platform::WriteEngine::new(&client, &owner, owner_b.doc_op_key().unwrap())
         .unwrap()
         .create_document(&core, "config", props)

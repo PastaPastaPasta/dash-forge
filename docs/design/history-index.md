@@ -21,8 +21,9 @@ A push that moves the default branch publishes a **history index** for the new t
 **The manifest's fields for kind 3:**
 - `tips` = `[tip]` for a full index, or `[tip, baseTip]` for a delta, so a reader chooses one before downloading anything;
 - `objectCount` = the number of path rows;
-- `offsetIndexParts` = the index's format version: 2 for an index with per-path version lists, 0 from a v1 writer. A kind-3 artifact locates itself, so the field is otherwise unused, and no reader validates it for kind 3. The writer reads it to tell a v1 index from a v2 one without downloading either, and the web prefers a v2 index at a tip. The contract rework at the next wipe (beta.7) drops `offsetIndexParts` and `manifestPart`, so the format moves to whatever field replaces them; one place reads it on each side (forge-core `HistoryEntry::format`, forge-web `PackManifest.historyFormat`);
 - `supersedes` = the history indexes it makes redundant.
+
+**The format is recorded only in the artifact header** (the `version` byte after `"DFHI"`). The RC1 contract removed `packManifest.offsetIndexParts`, which carried it before the wipe, and no manifest field replaces it: a manifest is only the artifact's address. A reader takes the format from the artifact it fetched, and refuses a version it does not know with an error that says to update the client, instead of guessing. Every writer on an RC1 network writes version 2, so a planner treats every kind-3 manifest as an index with version lists; there is no v1 to upgrade on a network that started empty.
 
 ### Format (v1)
 

@@ -1112,8 +1112,11 @@ fn list_lines(refs: &[(String, RefState)], default_branch: &str, for_push: bool)
     for (name, state) in refs {
         // Emission guard (defense-in-depth with rules::is_update_valid): never advertise
         // a ref name carrying control chars/whitespace — it could inject a spoofed
-        // advertisement line into git's parse of this output (S0.9 wire protocol).
-        if !forge_core::rules::is_legal_ref_name(name) {
+        // advertisement line into git's parse of this output (S0.9 wire protocol). The git
+        // grammar is used, not just the contract's: a name git cannot hold (a `.lock`
+        // component the contract lets through) would otherwise be pruned by every
+        // `--prune` / `--mirror` push.
+        if !forge_core::rules::is_git_ref_name(name) {
             tracing::warn!(ref_name = %name.escape_debug(), "skipping illegal ref name in list");
             continue;
         }
@@ -1917,7 +1920,6 @@ async fn record_pack(
                 object_count: job.object_count,
                 chunk_count: stored.chunk_count,
                 storage: stored.storage,
-                offset_index_parts: 0,
                 uris: stored.uris,
                 // An incremental push supersedes nothing and carries no flatIndex tips.
                 supersedes: Vec::new(),
@@ -3188,6 +3190,21 @@ mod tests {
         let push = list_lines(&refs, "main", true);
         assert_eq!(push.len(), 2);
         assert!(push.iter().all(|l| !l.ends_with(" HEAD")), "{push:?}");
+    }
+
+    /// RC1 accepts `refs/heads/x.lock/y` (the contract's regex cannot refuse a middle `.lock`
+    /// component), but git cannot hold it: it is not advertised, so a `--prune` / `--mirror`
+    /// push never asks to delete it.
+    #[test]
+    fn a_ref_git_cannot_hold_is_not_advertised() {
+        let refs = vec![
+            ("refs/heads/main".to_string(), resolved(&"a".repeat(40))),
+            ("refs/heads/x.lock/y".to_string(), resolved(&"b".repeat(40))),
+        ];
+        for for_push in [false, true] {
+            let lines = list_lines(&refs, "main", for_push);
+            assert!(lines.iter().all(|l| !l.contains("x.lock")), "{lines:?}");
+        }
     }
 
     /// A push that names `HEAD` anyway (an explicit `:HEAD` or `HEAD:HEAD`) is answered

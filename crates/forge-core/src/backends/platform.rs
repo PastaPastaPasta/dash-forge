@@ -44,7 +44,7 @@ pub fn pipeline_window() -> usize {
     }
 }
 
-/// The document field carrying a chunk's packHash (32-byte `byteArray`).
+/// The document field carrying a chunk's packHash (a 32-byte identifier on RC1).
 pub const FIELD_PACK_HASH: &str = "packHash";
 /// The document field carrying a chunk's zero-based sequence.
 pub const FIELD_SEQ: &str = "seq";
@@ -61,7 +61,10 @@ fn data_field_name(i: usize) -> String {
 /// [`decode_chunk_doc`].
 pub fn encode_chunk_doc(pack_hash: [u8; 32], chunk: &Chunk) -> BTreeMap<String, FieldValue> {
     let mut props = BTreeMap::new();
-    props.insert(FIELD_PACK_HASH.to_string(), FieldValue::bytes32(pack_hash));
+    props.insert(
+        FIELD_PACK_HASH.to_string(),
+        FieldValue::identifier(pack_hash),
+    );
     props.insert(
         FIELD_SEQ.to_string(),
         FieldValue::integer(u64::from(chunk.seq)),
@@ -415,7 +418,7 @@ mod tests {
         let full = encode_chunk_doc([1u8; 32], &chunks[0]);
         assert!(matches!(
             full.get(FIELD_PACK_HASH),
-            Some(FieldValue::Bytes32(_))
+            Some(FieldValue::Identifier(_))
         ));
         assert!(matches!(full.get(FIELD_SEQ), Some(FieldValue::Integer(0))));
         for i in 0..FIELDS_PER_DOC {

@@ -26,10 +26,12 @@
 //! (tag v | len v | bytes)*                                          extension sections
 //! ```
 //!
-//! **Extending it.** Everything up to the paths is fixed for every version. What a later
-//! version adds goes in a tagged section after them; a reader skips a tag it does not know, so
-//! v1 readers read a v2 index (the last-change column and the counts) and ignore what v2 added.
-//! `version` names the newest layout the writer used; a reader accepts any version from 1 on.
+//! **The format is the header's `version` byte**, the only place it is recorded: RC1 removed
+//! `packManifest.offsetIndexParts`, where #168 kept it, and no manifest field replaces it. A
+//! reader takes the format from the artifact it fetched and refuses a version it does not know
+//! with a clear error (update the client), rather than guessing. Every writer on an RC1 network
+//! writes version 2. Everything up to the paths is fixed for every version; what a version adds
+//! goes in a tagged section after them, and a reader skips a tag it does not know.
 //!
 //! **v2: the path versions section** (tag [`TAG_VERSIONS`]), one list per path row, in row order:
 //!
@@ -321,8 +323,15 @@ impl HistoryIndex {
             return Err(bad("inflates past its size limit"));
         }
         let mut r = Cursor { buf: &body, pos: 0 };
-        if r.take(4)? != MAGIC || r.take(1)?[0] < VERSION_V1 {
+        if r.take(4)? != MAGIC {
             return Err(bad("not a history index"));
+        }
+        let version = r.take(1)?[0];
+        if !(VERSION_V1..=VERSION_V2).contains(&version) {
+            return Err(Error::Config(format!(
+                "history index format {version} is not one this client reads (1-{VERSION_V2}); \
+                 update dg / git-remote-dash"
+            )));
         }
         let tip: [u8; OID_LEN] = r.take(OID_LEN)?.try_into().expect("20 bytes");
         let base: [u8; 32] = r.take(32)?.try_into().expect("32 bytes");

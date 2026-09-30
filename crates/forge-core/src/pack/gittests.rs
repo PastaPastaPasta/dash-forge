@@ -637,16 +637,12 @@ fn chunker_roundtrips_real_pack_bytes() {
 }
 
 #[test]
-fn manifest_for_pack_has_mandatory_offset_index() {
+fn manifest_for_pack_describes_the_pack() {
     let repo = make_repo();
     let pack = repack_all(repo.path()).unwrap();
     let chunk_count = split(&pack.bytes).len() as u64;
     let m = PackManifest::for_pack(&pack, chunk_count);
     assert_eq!(m.kind, KIND_GIT_PACK);
-    assert!(
-        m.offset_index_parts >= 1,
-        "kind-0 packs mandate an offset index"
-    );
     assert_eq!(m.object_count, pack.parsed.object_count() as u64);
     assert_eq!(m.size_bytes, pack.bytes.len() as u64);
     assert_eq!(m.pack_hash.len(), 64, "sha256 hex");

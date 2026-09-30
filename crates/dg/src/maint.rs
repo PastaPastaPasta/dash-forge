@@ -319,10 +319,6 @@ async fn plan_history(
         });
     };
     let hplan = plan.history_plan(tip);
-    // A v1 index of the tip answers the column and the count, not Blame's and History's version
-    // lists: the v2 index published here replaces it.
-    let upgrade = (!hplan.covered && hplan.live.iter().any(|e| e.tip == tip && !e.has_versions()))
-        .then(|| "replaces the tip's v1 index, which has no per-path version lists".to_string());
     if hplan.covered {
         return Ok(HistoryReindex {
             prepared: None,
@@ -351,7 +347,7 @@ async fn plan_history(
         Ok(Some(p)) => Ok(HistoryReindex {
             prepared: Some(p),
             status: "publish",
-            note: upgrade,
+            note: None,
         }),
         Ok(None) => Ok(HistoryReindex {
             prepared: None,
