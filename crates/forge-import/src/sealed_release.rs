@@ -57,18 +57,30 @@ impl ReleaseStorage {
     }
 
     /// Its targets, and how many must confirm each object.
-    pub(crate) fn targets(&self) -> Result<(Vec<ExternalTarget>, usize)> {
+    pub(crate) fn targets(&self) -> Result<ReleaseTargets> {
         let targets = crate::gitsync::external_targets(&self.resolved)?;
         let required = self.resolved.replicas.min(targets.len()).max(1);
-        Ok((targets, required))
+        Ok(ReleaseTargets { targets, required })
     }
 }
 
-/// `targets` as the sealed writer takes them.
-pub(crate) fn store(targets: &(Vec<ExternalTarget>, usize)) -> ReleaseStore<'_> {
-    ReleaseStore {
-        targets: targets.0.iter().map(|t| t as &dyn StorageTarget).collect(),
-        required: targets.1,
+/// [`ReleaseStorage`]'s targets, opened.
+pub(crate) struct ReleaseTargets {
+    targets: Vec<ExternalTarget>,
+    required: usize,
+}
+
+impl ReleaseTargets {
+    /// As the sealed writer takes them.
+    pub(crate) fn store(&self) -> ReleaseStore<'_> {
+        ReleaseStore {
+            targets: self
+                .targets
+                .iter()
+                .map(|t| t as &dyn StorageTarget)
+                .collect(),
+            required: self.required,
+        }
     }
 }
 
@@ -298,18 +310,17 @@ fn provenance(r: &SrcRelease) -> Option<Imported> {
 }
 
 /// `r`'s notes as a sealed revision states them: without the "Published on …" line that
-/// opens a public release's, when the provenance it repeats is sealed ([`provenance`]).
-fn sealed_notes(r: &SrcRelease) -> &str {
+/// opens a public release's, when the provenance it repeats is `sealed` ([`provenance`]).
+fn sealed_notes(r: &SrcRelease, sealed: bool) -> &str {
     let head = crate::model::published_line(r.published.as_ref());
-    match provenance(r) {
-        // a release with no notes of its own has only the line, trimmed
-        Some(_) if !head.is_empty() => r
-            .notes
-            .strip_prefix(head.as_str())
-            .or_else(|| (r.notes == head.trim_end()).then_some(""))
-            .unwrap_or(&r.notes),
-        _ => &r.notes,
+    if !sealed || head.is_empty() {
+        return &r.notes;
     }
+    r.notes
+        .strip_prefix(head.as_str())
+        // a release with no notes of its own has only the line, trimmed
+        .or_else(|| (r.notes == head.trim_end()).then_some(""))
+        .unwrap_or(&r.notes)
 }
 
 /// Whether `held` states what `r` would: its name, `notes` and its provenance. An empty
@@ -388,8 +399,6 @@ struct Gathered<'r> {
     files: Vec<ReleaseFile>,
     /// The links the destination does not list yet, and why each is not sealed.
     new_links: Vec<(&'r ReleaseAsset, String)>,
-    /// A dry run: files a real run would download (not the retry of a held link).
-    planned_files: bool,
     /// Every asset of the revision that is a link, held or new.
     linked: u64,
 }
@@ -399,16 +408,12 @@ async fn gather<'r>(assets: &[Plan<'r>], dry: bool, fetch: &impl Fetch) -> Gathe
     let mut out = Gathered {
         files: Vec::new(),
         new_links: Vec::new(),
-        planned_files: false,
         linked: 0,
     };
     for a in assets {
         let why = match &a.take {
             Take::Held => continue,
-            Take::Fetch { .. } if dry => {
-                out.planned_files |= !a.held_link;
-                continue;
-            }
+            Take::Fetch { .. } if dry => continue,
             Take::Fetch { url, limit } => match download(a.asset, url, *limit, fetch).await {
                 Ok(bytes) => {
                     out.files.push(ReleaseFile {
@@ -441,31 +446,31 @@ async fn write_one(
     let r = p.r;
     let tag = &r.tag_name;
     let imported = provenance(r);
-    let notes = sealed_notes(r);
+    let notes = sealed_notes(r, imported.is_some());
     let dry = ledger.dry_run();
     let stated = p
         .held
         .as_ref()
         .is_some_and(|h| same_statement(h, r, notes, imported.as_ref()));
-    // What may change: a download of an asset not listed as this link (a dry run does not
-    // count the retry of one that is: it most likely fails again), or a new link.
+    // What may change: a download (a dry run does not count the retry of an asset listed as
+    // this link: it most likely fails again), or a new link.
     let changes = p.assets.iter().any(|a| match a.take {
         Take::Held => false,
         Take::Fetch { .. } => !(dry && a.held_link),
         Take::Link(_) => !a.held_link,
     });
-    let retries = !dry
-        && p.assets
-            .iter()
-            .any(|a| a.held_link && matches!(a.take, Take::Fetch { .. }));
-    if stated && !changes && !retries {
+    if stated && !changes {
         return Ok(());
     }
     let what = format!("release {tag}");
     let targets = dest.targets();
-    let list = new_list(&p, notes, imported.as_ref(), changes);
-    let upper = sealed_release_credits(list, targets.unwrap_or(0));
-    if list && targets.is_none() {
+    let price = |changes| {
+        sealed_release_credits(
+            new_list(&p, notes, imported.as_ref(), changes),
+            targets.unwrap_or(0),
+        )
+    };
+    if targets.is_none() && new_list(&p, notes, imported.as_ref(), changes) {
         ledger.skip(format!(
             "release {tag} not mirrored: a private release's files and asset list (and notes \
              past its 1507 bytes) are stored on your own storage, and the storage policy names \
@@ -474,16 +479,18 @@ async fn write_one(
         return Ok(());
     }
     // The spend cap is checked before anything is downloaded (the charge below refuses).
+    let upper = price(changes);
     if !ledger.budget.fits(upper) {
         ledger.budget.charge(upper, what.clone())?;
     }
     let Gathered {
         files,
         new_links,
-        planned_files,
         linked,
     } = gather(&p.assets, dry, fetch).await;
-    let changes = !files.is_empty() || planned_files || !new_links.is_empty();
+    // only downloads (a real run) can take changes back: each one that fails for an asset
+    // listed as this link changes nothing
+    let changes = changes && (dry || !files.is_empty() || !new_links.is_empty());
     if stated && !changes {
         return Ok(());
     }
@@ -495,10 +502,7 @@ async fn write_one(
         ));
     }
     ledger.counts.assets_linked += linked;
-    let credits = sealed_release_credits(
-        new_list(&p, notes, imported.as_ref(), changes),
-        targets.unwrap_or(0),
-    );
+    let credits = price(changes);
     let input = ReleaseInput {
         tag_name: tag.clone(),
         name: r.name.clone(),
@@ -986,7 +990,7 @@ mod tests {
         r.source_url = format!("https://github.com/{}", "x".repeat(300));
         assert!(provenance(&r).is_none(), "past TLV 14's 300 bytes");
         assert!(
-            sealed_notes(&r).starts_with("> Published"),
+            sealed_notes(&r, false).starts_with("> Published"),
             "kept without provenance"
         );
         r.source_url = String::new();
@@ -994,6 +998,6 @@ mod tests {
         // no notes of its own: only the trimmed line, which provenance replaces
         let mut bare = release("");
         bare.notes = bare.notes.trim_end().to_string();
-        assert_eq!(sealed_notes(&bare), "");
+        assert_eq!(sealed_notes(&bare, true), "");
     }
 }

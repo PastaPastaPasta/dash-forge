@@ -41,7 +41,7 @@ use forge_core::scope::RepoRef;
 use crate::budget::{collab_doc_credits, Budget, CollabDoc};
 use crate::gitsync::{ProofRepo, Unfetched};
 use crate::model::{same_item, same_item_renamed, SrcCollab, SrcLabel, SrcRelease, SrcTarget};
-use crate::sealed_release::{CollabDest, ReleaseStorage};
+use crate::sealed_release::{CollabDest, ReleaseStorage, ReleaseTargets};
 use crate::summary::Counts;
 
 /// The run's accounting: budget, counts, warnings.
@@ -950,14 +950,16 @@ impl<'a> Sink<'a> {
         let Some(repo) = self.repo.as_ref() else {
             return Ok(());
         };
-        let targets = match &self.release_storage {
-            Some(s) => Some(s.targets().context("opening the release storage")?),
-            None => None,
-        };
+        let targets = self
+            .release_storage
+            .as_ref()
+            .map(ReleaseStorage::targets)
+            .transpose()
+            .context("opening the release storage")?;
         let dest = CollabDest {
             collab: &self.collab,
             repo,
-            store: targets.as_ref().map(crate::sealed_release::store),
+            store: targets.as_ref().map(ReleaseTargets::store),
         };
         let fetch = crate::assets::Https::default();
         crate::sealed_release::sync(&mut self.ledger, &dest, releases, &fetch).await
