@@ -10,7 +10,7 @@
  * Both lists are stacked rows rather than wide tables, so they read on a 320 px phone.
  */
 
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { AlertTriangle } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
@@ -31,6 +31,7 @@ import {
   summarize,
   type SpendRow,
 } from '@/lib/spend'
+import { measurementPending } from '@/lib/sdk/write'
 import { creditsAsDash, plural, timeAgo } from '@/lib/view/format'
 import { LoadingBlock } from '@/components/ui/states'
 import { cn } from '@/lib/utils'
@@ -61,28 +62,48 @@ function useRepoNames(ids: readonly string[]): ReadonlyMap<string, RepoDoc | nul
   return names.data ?? new Map()
 }
 
+type Ledger = { rows: SpendRow[]; baseline: { at: number; credits: bigint } | null }
+
+/** How many times the panel reads the balance again for one last row, and the first wait between. */
+const SETTLE_READS = 4
+const SETTLE_WAIT_MS = 2000
+
 export function SpendPanel(): JSX.Element {
   const { identity, balance, balanceReadAt, refreshBalance } = useAuth()
-  const ledger = useAsync<{ rows: SpendRow[]; baseline: { at: number; credits: bigint } | null }>(
-    async () => ({
-      rows: await readLedger(DEFAULT_NETWORK, identity!),
-      baseline: await readBaseline(DEFAULT_NETWORK, identity!),
-    }),
+  // Re-read with every balance read (a write's row lands just before its refresh), showing the
+  // last ledger meanwhile rather than blanking the panel.
+  const last = useRef<{ identity: string; data: Ledger } | null>(null)
+  const ledger = useAsync<Ledger>(
+    async () => {
+      const data = { rows: await readLedger(DEFAULT_NETWORK, identity!), baseline: await readBaseline(DEFAULT_NETWORK, identity!) }
+      last.current = { identity: identity!, data }
+      return data
+    },
     [identity ?? '', balance ?? '', balanceReadAt ?? ''],
-    { enabled: identity !== null },
+    { enabled: identity !== null, initial: () => (last.current !== null && last.current.identity === identity ? last.current.data : undefined) },
   )
   const rows = ledger.data?.rows ?? []
   const s = summarize(rows)
   const repoIds = s.byRepo.map((r) => r.repo).filter((r) => r !== NO_REPO)
   const repos = useRepoNames(repoIds)
-  // A balance that predates the ledger's last row (the kept session's, right after a reload, or
-  // one read before a write's row landed) is read again once; the gap line waits for it.
-  const settled = balanceSettled(balanceReadAt, rows)
+  // The gap line waits for a balance with every recorded write in it (not the kept session's
+  // right after a reload, nor one a node behind the last write answers): `balanceSettled`.
+  const settled = balanceSettled(
+    { credits: balance === null ? null : BigInt(balance), readAt: balanceReadAt, measuring: identity !== null && measurementPending(identity) },
+    rows,
+  )
+  // Until then the balance is read again, a few times at most per last row (a lagging node
+  // catches up within a block or two); a read that fails leaves the line waiting.
   const lastRowAt = rows.length === 0 ? null : rows[rows.length - 1]!.at
+  const asked = useRef<{ at: number; n: number }>({ at: -1, n: 0 })
   useEffect(() => {
     if (identity === null || settled || lastRowAt === null) return
-    void refreshBalance().catch(() => undefined)
-  }, [identity, settled, lastRowAt, refreshBalance])
+    if (asked.current.at !== lastRowAt) asked.current = { at: lastRowAt, n: 0 }
+    if (asked.current.n >= SETTLE_READS) return
+    const n = asked.current.n++
+    const timer = setTimeout(() => void refreshBalance().catch(() => undefined), n === 0 ? 0 : SETTLE_WAIT_MS * 2 ** (n - 1))
+    return () => clearTimeout(timer)
+  }, [identity, settled, lastRowAt, balance, balanceReadAt, refreshBalance])
 
   if (ledger.loading && !ledger.settled) return <LoadingBlock label="Reading the spend ledger" />
   if (ledger.error) {

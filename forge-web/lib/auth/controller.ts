@@ -523,8 +523,8 @@ export class AuthController {
     const generation = vaultLockGeneration()
     try {
       const sdk = await this.getSdk()
-      const identity = await authSdk(sdk).identities.fetch(secret.identityId)
       const balanceReadAt = Date.now()
+      const identity = await authSdk(sdk).identities.fetch(secret.identityId)
       if (!identity) throw new WriteAuthError(`identity ${secret.identityId} not found on ${this.network}`)
       const match = await findSigningKey(identity, secret.wif, this.network, SECURITY_LEVEL.HIGH)
       if (!match) throw keyFailure(identity, secret.keyId)
@@ -577,7 +577,9 @@ export class AuthController {
 
   /** What a later page load shows at once for a kept session (no key material). */
   private sessionHint(session: AuthSession): SessionHint {
-    return { session, scopes: { main: this.scopes.main, extra: [...this.scopes.extra] } }
+    // The read time means nothing to a later page load: its balance is shown as not yet read.
+    const { balanceReadAt: _readAt, ...kept } = session
+    return { session: kept, scopes: { main: this.scopes.main, extra: [...this.scopes.extra] } }
   }
 
   /**
@@ -1205,11 +1207,12 @@ export class AuthController {
     const session = this.state.session
     if (!session) return
     const sdk = await this.getSdk()
+    // Stamped before the read: a write recorded while it runs is not taken to be in it.
+    const balanceReadAt = Date.now()
     const [identity, keyLimits] = await Promise.all([
       authSdk(sdk).identities.fetch(session.identityId),
       session.keyId === undefined ? Promise.resolve(null) : readKeyLimits(sdk, session.identityId, session.keyId).catch(() => session.keyLimits ?? null),
     ])
-    const balanceReadAt = Date.now()
     const current = this.state.session
     if (current?.identityId !== session.identityId) return
     // The same read shows whether this browser's key is still live. Disabled (revoked from
@@ -1229,10 +1232,16 @@ export class AuthController {
         return
       }
     }
+    // Not shown by this node: the balance is unknown, and the one shown stays (M1). A refresh that
+    // started before one already applied does not replace it.
+    if (!identity || (current.balanceReadAt !== undefined && balanceReadAt < current.balanceReadAt)) {
+      this.setState({ session: { ...current, keyLimits } })
+      return
+    }
     // A node still behind a write this tab measured answers a balance that write replaced: the
     // measured one stands (write.ts `balanceBeforeWrite`, D-2).
-    const balance = identity ? balanceBeforeWrite(sdk, current.identityId, identity.balance) : 0n
-    this.setState({ session: { ...current, balance: balance.toString(), keyLimits, ...(identity ? { balanceReadAt } : {}) } })
+    const balance = balanceBeforeWrite(sdk, current.identityId, identity.balance)
+    this.setState({ session: { ...current, balance: balance.toString(), balanceReadAt, keyLimits } })
   }
 
   /** Lock (keep the stored key; unlock to continue). The session ends with it. */

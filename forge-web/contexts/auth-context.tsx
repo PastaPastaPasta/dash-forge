@@ -248,8 +248,12 @@ export function AuthProvider({
         credits: event.actualCredits ?? null,
         ...(refused ? { tone: 'warn' as const, detail: 'A refused write still pays its processing fee.' } : {}),
       })
-      void recordSpend(event).catch(() => undefined)
-      void controller.refreshBalance().catch(() => undefined)
+      // The row first, then the balance: a refresh that lands before the row would let Settings →
+      // Spend reconcile a balance with this write in it against a ledger without it.
+      void recordSpend(event)
+        .catch(() => undefined)
+        .then(() => controller.refreshBalance())
+        .catch(() => undefined)
     },
     [controller],
   )

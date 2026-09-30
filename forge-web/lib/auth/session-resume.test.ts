@@ -347,7 +347,8 @@ describe('every lock wipes it', () => {
 
 describe('the controller', () => {
   let keys: FakeKey[]
-  let reads: 'ok' | 'fail'
+  let reads: 'ok' | 'fail' | 'missing'
+  let chainBalance = 10n ** 11n
   const limitedKey = (keyId: number, wif: string): FakeKey => ({
     keyId,
     wif,
@@ -359,7 +360,8 @@ describe('the controller', () => {
     identities: {
       fetch: async () => {
         if (reads === 'fail') throw new Error('DAPI unreachable')
-        return { balance: 10n ** 11n, publicKeys: keys, getPublicKeyById: () => ({}) }
+        if (reads === 'missing') return undefined
+        return { balance: chainBalance, publicKeys: keys, getPublicKeyById: () => ({}) }
       },
       keysRemainingBudgets: async () => new Map(),
     },
@@ -374,6 +376,7 @@ describe('the controller', () => {
 
   beforeEach(() => {
     reads = 'ok'
+    chainBalance = 10n ** 11n
     keys = [limitedKey(5, WIF)]
   })
   afterEach(() => {
@@ -409,9 +412,22 @@ describe('the controller', () => {
     expect(next.getState().session?.balance).toBe((10n ** 11n).toString())
     expect(next.getState().session?.balanceReadAt).toBeUndefined()
     await vi.waitFor(() => expect(next.getState().session?.balanceReadAt).toBeTypeOf('number'))
-    const readAt = next.getState().session!.balanceReadAt!
-    await next.refreshBalance()
-    expect(next.getState().session!.balanceReadAt!).toBeGreaterThanOrEqual(readAt)
+    // A refresh stamps the time it started reading, and takes the balance it read.
+    chainBalance = 10n ** 11n - 5000n
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(next.getState().session!.balanceReadAt! + 60_000)
+      const startedAt = Date.now()
+      await next.refreshBalance()
+      expect(next.getState().session).toMatchObject({ balance: chainBalance.toString(), balanceReadAt: startedAt })
+      // A node that does not show the identity leaves the balance, and its read time, as they were.
+      reads = 'missing'
+      vi.setSystemTime(startedAt + 60_000)
+      await next.refreshBalance()
+      expect(next.getState().session).toMatchObject({ balance: chainBalance.toString(), balanceReadAt: startedAt })
+    } finally {
+      vi.useRealTimers()
+    }
   }, 30_000)
 
   it('a private repo asks to unlock once; after it this tab holds the key; a new tab asks again', async () => {
