@@ -38,6 +38,7 @@ import {
   discardRepoCreation,
   normalizeRepoName,
   pendingRepoCreations,
+  previewRepoCreate,
   type CreateRepoInput,
   type CreateRepoStep,
   type PrivateCreate,
@@ -49,7 +50,6 @@ import { encryptionOps } from '@/lib/auth/encryption-key'
 import { onEncryptionKeyChange } from '@/lib/auth/vault'
 import { useAsync } from '@/hooks/use-async'
 import type { Visibility } from '@/lib/rules/v2'
-import { previewCreate, sumPreviews } from '@/lib/sdk'
 import { errorMessage } from '@/lib/utils'
 
 const STEPS: readonly { step: CreateRepoStep; label: string; privateLabel?: string }[] = [
@@ -151,19 +151,7 @@ export default function NewRepoPage(): JSX.Element {
     ...(defaultBranch.trim() && defaultBranch.trim() !== 'main' ? { defaultBranch: defaultBranch.trim() } : {}),
     ...(isPrivate ? { visibility: 'private' as const } : {}),
   })
-  const costOf = (i: CreateRepoInput) =>
-    i.visibility === 'private'
-      ? sumPreviews([
-          previewCreate('repo', { name: i.name, visibility: 'private', ...(i.description ? { description: i.description } : {}) }, firsts.first),
-          previewCreate('maintainer', {}, firsts.rest),
-          previewCreate('repoKey'),
-          previewCreate('config', { enc: new Uint8Array(80), epoch: 0, backend: { mode: 0 } }, firsts.rest),
-        ])
-      : sumPreviews([
-          previewCreate('repo', { ...i, visibility: 'public' }, firsts.first),
-          previewCreate('maintainer', {}, firsts.rest),
-          previewCreate('config', { defaultBranch: i.defaultBranch ?? 'main' }, firsts.rest),
-        ])
+  const costOf = (i: CreateRepoInput) => previewRepoCreate(i, firsts)
   const cost = costOf(name.trim() && nameError === null ? input() : { name: 'x' })
 
   const create = async (i: CreateRepoInput): Promise<void> => {

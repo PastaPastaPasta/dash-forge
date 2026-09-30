@@ -33,9 +33,6 @@ import { isPageShortcut } from '@/lib/focus'
 import { bareRoute, pageTitle } from '@/lib/page-title'
 import { useDpnsName } from '@/hooks/use-dpns-name'
 
-/** The mirror guide (the `/mirror` wizard does not exist yet). */
-export const MIRROR_GUIDE_URL = 'https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/guides/mirror-a-github-repo.md'
-
 /** `/` focuses the jump box (the visible one: the header's, or the phone row's). */
 function useSlashToSearch(): void {
   useEffect(() => {
@@ -388,9 +385,7 @@ function NavDrawer({ signedIn }: { signedIn: boolean }): JSX.Element {
         >
           {item('/explore/', 'Explore', Compass)}
           {ACTIVE_NETWORK.v2 !== null ? item('/new/', 'New repository', Plus) : null}
-          <a href={MIRROR_GUIDE_URL} target="_blank" rel="noopener noreferrer" className={ITEM} onClick={close}>
-            <GitFork className="h-4 w-4 shrink-0 text-forge-500" aria-hidden /> Mirror a GitHub repo (guide)
-          </a>
+          {ACTIVE_NETWORK.v2 !== null ? item('/mirror/', 'Mirror a GitHub repo', GitFork) : null}
           {signedIn ? item('/notifications/', 'Notifications', Bell) : null}
           {signedIn ? item('/settings/', 'Settings & spend', Settings) : null}
         </nav>
@@ -522,13 +517,13 @@ function NewMenu(): JSX.Element | null {
               <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">Create a repo on {ACTIVE_NETWORK.key}</span>
             </span>
           </Link>
-          <a href={MIRROR_GUIDE_URL} target="_blank" rel="noopener noreferrer" className={MENU_ITEM} onClick={() => setOpen(false)}>
+          <Link href="/mirror/" className={MENU_ITEM} onClick={() => setOpen(false)}>
             <GitFork className="mt-0.5 h-4 w-4 shrink-0 text-forge-500" aria-hidden />
             <span>
               Mirror a GitHub repo
-              <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">Guide on GitHub (opens a new tab)</span>
+              <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">Set up in your browser, about 10 minutes</span>
             </span>
-          </a>
+          </Link>
         </nav>
       ) : null}
     </div>

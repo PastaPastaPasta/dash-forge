@@ -185,7 +185,7 @@ type Listener = (state: AuthState) => void
  * the spend ledger records it, so reconciliation does not count it as "unexplained"). Platform
  * meters these (storage + processing, no flat fee); the cost is measured from the balance.
  */
-export type KeySpendKind = 'key:register' | 'key:renew' | 'key:topup' | 'key:revoke' | 'key:encryption' | 'identity:create'
+export type KeySpendKind = 'key:register' | 'key:renew' | 'key:topup' | 'key:revoke' | 'key:encryption' | 'key:runner' | 'identity:create'
 
 /** The pre-sign estimate per kind (credits); 0 where none was ever measured. */
 export const KEY_SPEND_ESTIMATES: Readonly<Record<KeySpendKind, number>> = {
@@ -194,6 +194,7 @@ export const KEY_SPEND_ESTIMATES: Readonly<Record<KeySpendKind, number>> = {
   'key:topup': KEY_LIMITS_UPDATE_CREDITS,
   'key:revoke': 0,
   'key:encryption': 0,
+  'key:runner': KEY_REGISTER_CREDITS,
   'identity:create': 0,
 }
 
@@ -1294,6 +1295,26 @@ export class AuthController {
       const current = this.state.session
       if (current?.identityId === identityId && current.keyId === keyId) this.setState({ session: { ...current, keyLimits: limits } })
       return limits
+    })
+  }
+
+  /**
+   * Register a CI runner key on the signed-in identity (the Mirror Action's `DASH_FORGE_KEY`):
+   * another limited key, bound to the Forge contract group like this browser's, with its own
+   * budget and expiry. The master key (identity file or phrase) signs this one update and is not
+   * retained. The new key is NOT stored in this browser and replaces nothing: it is returned
+   * once, for the page to show. A key whose private key is lost (a closed tab) signs nothing,
+   * so a second try is only a second small fee.
+   */
+  async createRunnerKey(input: MasterInput, request: LimitedKeyRequest): Promise<LimitedKey> {
+    return this.run(async () => {
+      const identityId = this.state.session?.identityId
+      if (!identityId) throw new Error('sign in first')
+      const masterWif = await this.masterWifFor(identityId, input)
+      const sdk = await this.getSdk()
+      return this.charged(identityId, 'key:runner', (k) => k?.keyId ?? null, () =>
+        registerLimitedKey(sdk, { network: this.network, identityId, masterWif, group: this.group(), trust: this.groupTrust(), request }),
+      )
     })
   }
 

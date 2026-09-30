@@ -49,7 +49,7 @@ test('x2. the header: New menu, jump box, and the landing links Explore', async 
   await page.getByRole('button', { name: 'New', exact: true }).click()
   const menu = page.getByRole('navigation', { name: 'New' })
   await expect(menu.getByRole('link', { name: /Repository/ })).toHaveAttribute('href', /\/new/)
-  await expect(menu.getByRole('link', { name: /Mirror a GitHub repo/ })).toHaveAttribute('href', /mirror-a-github-repo\.md$/)
+  await expect(menu.getByRole('link', { name: /Mirror a GitHub repo/ })).toHaveAttribute('href', /\/mirror\/?$/)
   await page.waitForTimeout(300)
   await shot(page, 'd-header-new-menu')
   await expect(page.getByRole('button', { name: 'New', exact: true })).toHaveAttribute('aria-expanded', 'true')
