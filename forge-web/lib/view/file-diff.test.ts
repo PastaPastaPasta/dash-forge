@@ -193,13 +193,25 @@ describe('loadFilePatch over a pack (the live read path)', () => {
     if (patch.kind === 'placeholder') expect(patch.note).toMatch(/stored size as 20 MB.*has not been checked/)
   })
 
-  it('calls an over-256 KiB file with too many changes too complex, not too large', async () => {
+  it('calls an over-256 KiB file with too many changes too complex, not too large, and still counts it (QW-027)', async () => {
     const s = new Store()
     const r = s.reader()
     const patch = await loadFilePatch({ base: r, head: r }, change({ baseOid: s.blob(lines(12_000, 'p')), headOid: s.blob(lines(12_000, 'q')) }))
-    expect(patch).toMatchObject({ kind: 'placeholder', reason: 'too-complex' })
-    if (patch.kind === 'placeholder') expect(patch.note).toMatch(/^Large file \(\d+ KB\) not shown.*lines are not counted/)
-    expect(uncountedReasons([patch.change], () => patch)).toBe('1 too many changes to diff')
+    expect(patch).toMatchObject({ kind: 'placeholder', reason: 'too-complex', added: 12_000, deleted: 12_000 })
+    if (patch.kind === 'placeholder') expect(patch.note).toMatch(/^Large file \(\d+ KB\) not shown.*its lines are counted/)
+    // The change set's totals stay whole: nothing is left uncounted.
+    expect(diffTotals([patch.change], () => patch)).toMatchObject({ added: 12_000, deleted: 12_000, uncounted: 0 })
+    expect(uncountedReasons([patch.change], () => patch)).toBe('')
+  })
+
+  it('counts a change past the shown diff\'s edit bound (QW-027: dash v22…v23 left 16 files out)', async () => {
+    const s = new Store()
+    const r = s.reader()
+    // 3,000 changed lines in a small file: over the 2,000 a diff shows, well within what is counted.
+    const before = Array.from({ length: 3_000 }, (_, i) => `old ${i}\n`).join('')
+    const after = Array.from({ length: 3_000 }, (_, i) => (i % 2 === 0 ? `old ${i}\n` : `new ${i}\n`)).join('')
+    const patch = await loadFilePatch({ base: r, head: r }, change({ baseOid: s.blob(before), headOid: s.blob(after) }))
+    expect(patch).toMatchObject({ kind: 'placeholder', reason: 'too-complex', added: 1_500, deleted: 1_500 })
   })
 
   it('calls a file binary when one side is, whichever side fails first', async () => {

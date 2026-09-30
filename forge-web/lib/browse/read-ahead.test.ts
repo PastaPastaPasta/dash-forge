@@ -83,4 +83,21 @@ describe('readAheadSource', () => {
     await ra.fetchRange(0, 65, 66) // block 1 fetched again
     expect(inner.calls.map(([s]) => s)).toEqual([0, 64, 128, 64])
   })
+
+  it('reads the next blocks ahead once reads run through the pack in order (QW-027), and only then', async () => {
+    const inner = source(1000)
+    const ra = readAheadSource(inner, 64, 64, 2)
+    await ra.fetchRange(0, 0, 1) // block 0: nothing ahead yet
+    await ra.fetchRange(0, 200, 201) // block 3: a jump, not a run
+    expect(inner.calls.map(([s]) => s)).toEqual([0, 192])
+    await ra.fetchRange(0, 256, 257) // block 4 after block 3: blocks 5 and 6 are asked for too
+    expect(inner.calls.map(([s]) => s)).toEqual([0, 192, 320, 384, 256])
+    // The walk reaches them from memory, and keeps two blocks ahead of itself.
+    await ra.fetchRange(0, 330, 331) // block 5
+    expect(inner.calls.map(([s]) => s)).toEqual([0, 192, 320, 384, 256, 448])
+    // Never past the end of the pack (blocks 0..15).
+    await ra.fetchRange(0, 900, 901)
+    await ra.fetchRange(0, 960, 961)
+    expect(Math.max(...inner.calls.map(([s]) => s))).toBe(960)
+  })
 })

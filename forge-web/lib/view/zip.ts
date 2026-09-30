@@ -9,7 +9,7 @@
 import { MODE_GITLINK, MODE_TREE } from '../browse'
 import type { ObjectReader } from './tree-nav'
 import { ObjectTypeError, peel, readBlob, readTree } from './tree-nav'
-import { decodeTextBlob } from './git-objects'
+import { decodeTextBlob, type TreeEntry } from './git-objects'
 import { historyWalker } from './commit-log'
 import {
   autoAbbrevLength,
@@ -74,24 +74,31 @@ export function isSafeName(name: string): boolean {
 }
 
 /**
- * Every blob (and symlink) under a tree, gitlinks and unsafe names skipped, breadth first, sorted
- * by path, each with its stored size from the locator (tree reads only). Stops after `maxTrees`
- * trees or `maxFiles` files (`truncated`, also when one tree alone holds more than the bound), so
- * Go to file and the language bar can list a large repo without walking all of it.
+ * Tree reads a walk keeps in flight (QW-028): a level of dashpay/dash's tree is dozens of
+ * directories, and one read at a time made Go to file and the language bar wait ~14 s for ~100
+ * round trips. Reads of the same pack's neighbouring trees share their queries (the read-ahead
+ * walker's blocks, the chunk queries gathered per turn).
+ */
+export const WALK_POOL = 16
+
+/**
+ * Every blob (and symlink) under a tree, gitlinks and unsafe names skipped, breadth first with up
+ * to `pool` trees read at once, sorted by path, each with its stored size from the locator (tree
+ * reads only). Stops after `maxTrees` trees or `maxFiles` files (`truncated`, also when one tree
+ * alone holds more than the bound), so Go to file and the language bar can list a large repo
+ * without walking all of it.
  */
 export async function walkFiles(
   reader: ObjectReader,
   treeOid: string,
-  { maxTrees = Infinity, maxFiles = Infinity }: { readonly maxTrees?: number; readonly maxFiles?: number } = {},
+  { maxTrees = Infinity, maxFiles = Infinity, pool = WALK_POOL }: { readonly maxTrees?: number; readonly maxFiles?: number; readonly pool?: number } = {},
 ): Promise<FileWalk> {
   const files: ZipFile[] = []
   const queue: [string, string][] = [[treeOid, '']]
   let trees = 0
   let dropped = false
-  while (queue.length > 0 && trees < maxTrees && files.length < maxFiles) {
-    const [oid, prefix] = queue.shift() as [string, string]
-    trees += 1
-    for (const e of await readTree(reader, oid)) {
+  const take = (entries: readonly TreeEntry[], prefix: string): void => {
+    for (const e of entries) {
       // A tree is hash-checked, not sane: a hostile pusher can name an entry `..` (zip-slip).
       if (!isSafeName(e.name)) continue
       const path = prefix ? `${prefix}/${e.name}` : e.name
@@ -101,6 +108,40 @@ export async function walkFiles(
       else dropped = true
     }
   }
+  // Reads land in any order, but are taken in the order they were started: children are queued,
+  // and files counted against `maxFiles`, as a one-at-a-time walk would, so a truncated walk keeps
+  // the same set on every visit (the language bar must not vary with network timing).
+  const started: { readonly prefix: string; entries?: readonly TreeEntry[] }[] = []
+  await new Promise<void>((resolve, reject) => {
+    let active = 0
+    let failed = false
+    const pump = (): void => {
+      while (!failed && active < pool && queue.length > 0 && trees < maxTrees && files.length < maxFiles) {
+        const [oid, prefix] = queue.shift() as [string, string]
+        trees += 1
+        active += 1
+        const read: (typeof started)[number] = { prefix }
+        started.push(read)
+        readTree(reader, oid)
+          .then((entries) => {
+            active -= 1
+            if (failed) return
+            read.entries = entries
+            for (let head = started[0]; head?.entries !== undefined; head = started[0]) {
+              started.shift()
+              take(head.entries, head.prefix)
+            }
+            pump()
+          })
+          .catch((e: unknown) => {
+            failed = true
+            reject(e)
+          })
+      }
+      if (active === 0 && !failed) resolve()
+    }
+    pump()
+  })
   files.sort((a, b) => (a.path < b.path ? -1 : 1))
   return { files, truncated: dropped || queue.length > 0 }
 }

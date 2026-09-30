@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 
 import { MODE_GITLINK } from '../browse'
 import { Store } from './diff-fixtures'
-import { isSafeName, listFiles, readZipFiles, ZIP_MAX_BYTES, zipFileName, ZipTooLargeError } from './zip'
+import { isSafeName, listFiles, readZipFiles, walkFiles, ZIP_MAX_BYTES, zipFileName, ZipTooLargeError } from './zip'
 
 describe('zip of a ref', () => {
   it('lists every file under the commit and skips submodules', async () => {
@@ -39,6 +39,37 @@ describe('zip of a ref', () => {
     expect(entries['a']?.buffer).not.toBe(cached.get(same)?.bytes.buffer)
     // Two identical files are two distinct transferables.
     expect(new Set(Object.values(entries).map((b) => b.buffer)).size).toBe(2)
+  })
+
+  it('a truncated parallel walk keeps the same files whatever order its reads land in', async () => {
+    const s = new Store()
+    // 12 top-level directories, each with 3 files and a subdirectory of 2: 60 files in 25 trees.
+    const layout: Record<string, string> = {}
+    for (let d = 0; d < 12; d++) {
+      for (let f = 0; f < 3; f++) layout[`d${d}/f${f}.txt`] = `${d}.${f}`
+      for (let f = 0; f < 2; f++) layout[`d${d}/sub/g${f}.txt`] = `${d}.sub.${f}`
+    }
+    const root = s.files(layout)
+    const inner = s.reader()
+    /** A reader whose reads land after `delay(n)` ms, `n` counting reads as they are asked. */
+    const timed = (delay: (n: number) => number) => {
+      let n = 0
+      return {
+        readObject: async (oid: string) => {
+          const wait = delay(n++)
+          await new Promise((r) => setTimeout(r, wait))
+          return inner.readObject(oid)
+        },
+      }
+    }
+    const walk = async (delay: (n: number) => number, pool?: number) =>
+      (await walkFiles(timed(delay), root, { maxFiles: 25, ...(pool === undefined ? {} : { pool }) })).files.map((f) => f.path)
+    const serial = await walk(() => 0, 1)
+    expect(serial).toHaveLength(25)
+    // Later-asked reads landing first, first-asked landing first, and a scramble: one set.
+    expect(await walk((n) => 30 - n)).toEqual(serial)
+    expect(await walk((n) => n)).toEqual(serial)
+    expect(await walk((n) => (n * 7) % 11)).toEqual(serial)
   })
 
   it('skips tree entries that would escape the zip root', () => {

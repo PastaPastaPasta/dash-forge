@@ -213,10 +213,10 @@ describe('blame bounds', () => {
   })
 
   it('a change too large to check for a rename leaves the lines it added unresolved, not on it', async () => {
-    // 70 files deleted with the path's addition: scoring them all is over the rename read budget.
+    // 450 files deleted with the path's addition: scoring them all is over the rename read budget.
     const s = new Store()
     const gone: Record<string, string> = {}
-    for (let i = 0; i < 70; i++) gone[`d/f${i}`] = `file ${i}\n${'filler\n'.repeat(i % 5)}`
+    for (let i = 0; i < 450; i++) gone[`d/f${i}`] = `file ${i}\n${'filler\n'.repeat(i % 5)}`
     const c1 = s.commit(s.files(gone), [], 'one')
     const c2 = s.commit(s.files({ 'new.txt': 'a\nb\n' }), [c1], 'replace everything')
     const c3 = s.commit(s.files({ 'new.txt': 'a\nb\nc\n' }), [c2], 'three')

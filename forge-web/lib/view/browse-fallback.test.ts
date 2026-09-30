@@ -673,7 +673,14 @@ describe('startFallback with external-storage packs', () => {
     const external = manifestFor(ext.pack, 1, { storage: 1, uris: ['https://flaky.example/p'], createdAt: 1, documentId: 'b' })
     const repo = testRepo('fallback-expiry')
     vi.stubGlobal('fetch', () => Promise.resolve(new Response('nope', { status: 503 })))
-    await startFallback(mockSdk(new Map([[platform.packHash, plat.pack]])), repo, [platform, external])
+    // Platform chunk reads are gathered for one timer turn (`queueChunkSeqs`): let the fake clock
+    // run that turn, a millisecond at a time, until the clone is built.
+    let built = false
+    const cloning = startFallback(mockSdk(new Map([[platform.packHash, plat.pack]])), repo, [platform, external]).finally(() => {
+      built = true
+    })
+    while (!built) await vi.advanceTimersByTimeAsync(1)
+    await cloning
     expect(cachedFallback(repo.repoId, [platform, external])).not.toBeNull()
     await vi.advanceTimersByTimeAsync(61_000)
     expect(cachedFallback(repo.repoId, [platform, external])).toBeNull()

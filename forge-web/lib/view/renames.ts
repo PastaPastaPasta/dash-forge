@@ -15,8 +15,9 @@
  *
  * Two limits are this browser's, not git's, and the result says when either applied
  * ({@link RenameResult.limited}): reading blobs costs network requests here, so the inexact
- * phases read at most {@link RENAME_READ_BUDGET} blobs (a phase that needs more is skipped), and a
- * blob over {@link RENAME_MAX_BLOB_BYTES} is not scored. `.gitattributes` `diff` drivers are not
+ * phases read at most {@link RENAME_READ_BUDGET} blobs (a phase that needs more is skipped) and
+ * {@link RENAME_READ_BYTES} bytes of them (reading stops once spent), and a blob over
+ * {@link RENAME_MAX_BLOB_BYTES} is not scored. `.gitattributes` `diff` drivers are not
  * read: binary means a NUL in the first 8000 bytes, git's own default test.
  */
 
@@ -41,12 +42,18 @@ const FIRST_FEW_BYTES = 8000
 const HASHBASE = 107927
 
 /** Blobs the inexact phases may read (each a ranged read over the network). */
-const RENAME_READ_BUDGET = 64
+const RENAME_READ_BUDGET = 400
+/**
+ * Blob bytes the inexact phases may download in all. Blob sizes are not known before a read, so
+ * this is counted as reads land: once it is spent no further candidate is read. 400 typical source
+ * files (tens of KiB each) stay far below it; 400 blobs near {@link RENAME_MAX_BLOB_BYTES} do not.
+ */
+const RENAME_READ_BYTES = 64 * 1024 * 1024
 /** A blob larger than this is not scored for similarity. */
 const RENAME_MAX_BLOB_BYTES = 1024 * 1024
 const NOT_LOOKED = 'Renames with edits were not all looked for:'
 /** Blob reads in flight at once. */
-const READ_POOL = 6
+const READ_POOL = 16
 
 const S_IFMT = 0o170000
 const S_IFREG = 0o100000
@@ -55,6 +62,8 @@ const isRegular = (mode: number): boolean => (mode & S_IFMT) === S_IFREG
 export interface RenameOptions {
   /** Blobs the inexact phases may read (default {@link RENAME_READ_BUDGET}). */
   readonly readBudget?: number
+  /** Blob bytes the inexact phases may download (default {@link RENAME_READ_BYTES}). */
+  readonly readBytes?: number
 }
 
 export interface RenameResult {
@@ -181,7 +190,7 @@ function scoreCompare(a: Candidate | null, b: Candidate | null): number {
  * blob that cannot be read is not scored, and the result says renames may be missing.
  */
 export async function detectRenames(sides: DiffSides, changes: readonly FileChange[], options: RenameOptions = {}): Promise<RenameResult> {
-  const { readBudget = RENAME_READ_BUDGET } = options
+  const { readBudget = RENAME_READ_BUDGET, readBytes = RENAME_READ_BYTES } = options
   const sorted = [...changes].sort(byPath)
   const srcs: Spec[] = []
   const dsts: Spec[] = []
@@ -236,12 +245,27 @@ export async function detectRenames(sides: DiffSides, changes: readonly FileChan
     const seen = new Set<string>()
     return specs.filter((s) => isRegular(s.mode) && !blobs.has(s.oid) && !seen.has(s.oid) && (seen.add(s.oid), true))
   }
-  const readAll = async (base: readonly Spec[], head: readonly Spec[]): Promise<void> => {
-    const todo = [...unread(base).map((spec) => ({ spec, reader: sides.base })), ...unread(head).map((spec) => ({ spec, reader: sides.head }))]
+  let bytesRead = 0
+  /**
+   * Read the not yet read blobs of `base` and `head`, the two sides interleaved (so the basename
+   * phase's pairs, passed side by side, are read pair by pair and a spent budget still leaves whole
+   * pairs). False when the byte budget ran out first: the blobs left unread are not scored (and
+   * not in `blobs`). Which blobs made it then depends on when reads landed; the result says so.
+   */
+  const readAll = async (base: readonly Spec[], head: readonly Spec[]): Promise<boolean> => {
+    const b = unread(base).map((spec) => ({ spec, reader: sides.base }))
+    const h = unread(head).map((spec) => ({ spec, reader: sides.head }))
+    const todo = Array.from({ length: Math.max(b.length, h.length) }, (_, i) => [b[i], h[i]]).flat().filter((t) => t !== undefined)
+    let complete = true
     await mapPooled(todo, READ_POOL, async ({ spec, reader }) => {
       if (blobs.has(spec.oid)) return
+      if (bytesRead >= readBytes) {
+        complete = false
+        return
+      }
       try {
         const o = await reader.readObject(spec.oid, { maxBytes: RENAME_MAX_BLOB_BYTES })
+        bytesRead += o.bytes.length
         blobs.set(spec.oid, o.type === 'blob' ? { size: o.bytes.length, spans: spanHash(o.bytes) } : null)
       } catch (e) {
         if (e instanceof ObjectTooLargeError) tooLarge = true
@@ -249,7 +273,9 @@ export async function detectRenames(sides: DiffSides, changes: readonly FileChan
         blobs.set(spec.oid, null)
       }
     })
+    return complete
   }
+  const tooManyBytes = (what: string): string => `${NOT_LOOKED} ${what} would download more than ${formatBytes(readBytes)} in the browser.`
   const score = (s: Spec, d: Spec, minScore: number): number => {
     if (!isRegular(s.mode) || !isRegular(d.mode)) return 0
     const a = blobs.get(s.oid)
@@ -287,10 +313,12 @@ export async function detectRenames(sides: DiffSides, changes: readonly FileChan
     skipped = `${NOT_LOOKED} comparing the ${plural(byName.length, 'file')} that kept their names would read too many files in the browser, so ${n === 0 ? 'none' : `only ${n}`} of them ${n === 1 ? 'was' : 'were'} compared.`
   }
   if (reachable.length > 0) {
-    await readAll(
+    // Out of bytes part way: the pairs whose blobs were read still stand alone; the matrix is skipped.
+    const complete = await readAll(
       reachable.map(([x]) => x),
       reachable.map(([, y]) => y),
     )
+    if (!complete) skipped ??= tooManyBytes(`comparing the ${plural(byName.length, 'file')} that kept their names`)
     for (const [src, dst] of reachable) {
       if (dst.used) continue // git's "already used in a rename"; cannot happen with unique names.
       const sc = score(src, dst, MIN_BASENAME_SCORE)
@@ -307,8 +335,10 @@ export async function detectRenames(sides: DiffSides, changes: readonly FileChan
       skipped = `${NOT_LOOKED} ${left.length} deleted and ${rest.length} added files are over git's rename limit.`
     } else if (blobs.size + unread([...left, ...rest]).length > readBudget) {
       skipped = `${NOT_LOOKED} comparing ${plural(left.length, 'deleted file')} with ${plural(rest.length, 'added file')} would read too many files in the browser.`
+    } else if (!(await readAll(left, rest))) {
+      // A matrix over a part of the blobs could pair a file with a worse source than git does.
+      skipped = tooManyBytes(`comparing ${plural(left.length, 'deleted file')} with ${plural(rest.length, 'added file')}`)
     } else {
-      await readAll(left, rest)
       const matrix: (Candidate | null)[] = []
       for (const d of rest) {
         const m = new Array<Candidate | null>(CANDIDATES).fill(null)
