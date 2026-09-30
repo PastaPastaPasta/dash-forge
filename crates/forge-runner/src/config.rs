@@ -299,6 +299,13 @@ impl Config {
                 );
             }
         }
+        if c.artifacts && c.artifact_server_addr.is_none() {
+            bail!(
+                "artifacts = true needs artifact_server_addr: act's artifact server has no \
+                 authentication, so bind it where only the job network reaches (the Docker \
+                 bridge's gateway, or 127.0.0.1 with artifact_server_url under Docker Desktop)"
+            );
+        }
         if c.artifacts && c.log_storage.is_none() {
             bail!("artifacts = true needs log_storage: artifacts are uploaded where logs are");
         }

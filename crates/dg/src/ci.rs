@@ -843,7 +843,7 @@ async fn status(ctx: &Ctx, repo: &str, sha: &str) -> Result<()> {
                         "    artifact {} ({} bytes, sha256 {})",
                         crate::fmt::safe(&x.name),
                         x.size_bytes,
-                        &x.sha256[..12.min(x.sha256.len())]
+                        crate::fmt::safe(x.sha256.get(..12).unwrap_or_default())
                     );
                 }
             }

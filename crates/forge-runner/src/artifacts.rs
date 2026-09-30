@@ -101,6 +101,7 @@ pub fn collect(dir: &Path, out: &Path) -> Result<Collected> {
         .map(|e| e.path())
         .collect();
     runs.sort();
+    let mut seen = 0usize;
     for run in runs {
         let mut named: Vec<PathBuf> = std::fs::read_dir(&run)?
             .filter_map(Result::ok)
@@ -113,10 +114,19 @@ pub fn collect(dir: &Path, out: &Path) -> Result<Collected> {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let zip = out.join(format!("{}.zip", file_name(&name)));
+            // A directory of its own per artifact: two names that make the same file name
+            // (`a b`, `a_b`) never share, or clobber, one zip.
+            let own = out.join(seen.to_string());
+            seen += 1;
+            std::fs::create_dir_all(&own)?;
+            let zip = own.join(format!("{}.zip", file_name(&name)));
             match pack(&adir, &name, &zip) {
                 Ok(()) => found.artifacts.push(Artifact { name, zip }),
-                Err(e) => found.skipped.push(format!("{name}: {e:#}")),
+                Err(e) => {
+                    // The reason goes into a public summary: say why, never where on this host.
+                    eprintln!("forge-runner: artifact {name} left out: {e:#}");
+                    found.skipped.push(format!("{} ({})", name, e.root_cause()));
+                }
             }
         }
     }
@@ -128,8 +138,12 @@ fn pack(adir: &Path, name: &str, zip: &Path) -> Result<()> {
     let files = files_under(adir)?;
     if let [(rel, path)] = files.as_slice() {
         if *rel == format!("{name}.zip") {
-            if std::fs::metadata(path)?.len() > MAX_ARTIFACT_BYTES {
+            let len = std::fs::metadata(path)?.len();
+            if len > MAX_ARTIFACT_BYTES {
                 bail!("larger than {} MiB", MAX_ARTIFACT_BYTES >> 20);
+            }
+            if !zip_is_finished(path, len)? {
+                bail!("its upload did not finish");
             }
             std::fs::copy(path, zip)?;
             return Ok(());
@@ -138,7 +152,7 @@ fn pack(adir: &Path, name: &str, zip: &Path) -> Result<()> {
     if files.is_empty() {
         bail!("no files");
     }
-    let f = std::fs::File::create(zip).with_context(|| format!("creating {}", zip.display()))?;
+    let f = std::fs::File::create(zip).context("creating its zip")?;
     let mut w = zip::ZipWriter::new(f);
     let opts = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
@@ -171,6 +185,22 @@ fn pack(adir: &Path, name: &str, zip: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Whether a v4 upload's zip is whole: act creates it when the upload starts and appends to it,
+/// so a job that died midway leaves one without its end-of-central-directory record (the
+/// signature `PK\x05\x06` within the last 22 + 65535 bytes).
+fn zip_is_finished(path: &Path, len: u64) -> Result<bool> {
+    use std::io::{Seek as _, SeekFrom};
+    if len < 22 {
+        return Ok(false);
+    }
+    let tail = len.min(22 + 65_535);
+    let mut f = std::fs::File::open(path)?;
+    f.seek(SeekFrom::Start(len - tail))?;
+    let mut buf = Vec::with_capacity(usize::try_from(tail).unwrap_or(0));
+    f.take(tail).read_to_end(&mut buf)?;
+    Ok(buf.windows(4).any(|w| w == b"PK\x05\x06"))
+}
+
 /// The artifact names a job's log says it uploaded.
 pub fn uploaded_by(log: &str) -> Vec<String> {
     const HEAD: &str = "Artifact ";
@@ -188,8 +218,8 @@ pub fn uploaded_by(log: &str) -> Vec<String> {
     names
 }
 
-/// Which artifacts go on which job's report: those its log names, and those no job's log names
-/// on every job (`logs` is job id → log).
+/// Which artifacts go on which job's report: those its log names first, then those no job's log
+/// names, which go on every job (`logs` is job id → log).
 pub fn assign<'a>(
     artifacts: &'a [Artifact],
     logs: &BTreeMap<String, String>,
@@ -202,10 +232,8 @@ pub fn assign<'a>(
     let orphan = |a: &Artifact| !claimed.values().any(|names| names.contains(&a.name));
     jobs.iter()
         .map(|j| {
-            let mine = artifacts
-                .iter()
-                .filter(|a| claimed[j].contains(&a.name) || orphan(a))
-                .collect();
+            let own = artifacts.iter().filter(|a| claimed[j].contains(&a.name));
+            let mine = own.chain(artifacts.iter().filter(|a| orphan(a))).collect();
             ((*j).to_string(), mine)
         })
         .collect()
@@ -233,19 +261,22 @@ mod tests {
             .collect()
     }
 
+    /// The smallest whole zip: an empty one, its end-of-central-directory record alone.
+    const V4: &[u8] = b"PK\x05\x06\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+
     #[test]
     fn v4_zips_pass_through_and_v3_files_are_zipped_inflated() {
         let d = tempfile::tempdir().unwrap();
         let srv = d.path().join("srv");
         std::fs::create_dir_all(srv.join("1/dist4")).unwrap();
-        std::fs::write(srv.join("1/dist4/dist4.zip"), b"PK-v4").unwrap();
+        std::fs::write(srv.join("1/dist4/dist4.zip"), V4).unwrap();
         std::fs::create_dir_all(srv.join("1/dist3/sub")).unwrap();
         std::fs::write(srv.join("1/dist3/a.txt"), b"plain").unwrap();
         std::fs::write(srv.join("1/dist3/sub/b.txt.gz__"), gz(b"inflated")).unwrap();
         let got = collect(&srv, &d.path().join("out")).unwrap();
         let names: Vec<_> = got.artifacts.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(names, ["dist3", "dist4"]);
-        assert_eq!(std::fs::read(&got.artifacts[1].zip).unwrap(), b"PK-v4");
+        assert_eq!(std::fs::read(&got.artifacts[1].zip).unwrap(), V4);
         assert_eq!(
             unzip(&got.artifacts[0].zip),
             BTreeMap::from([
@@ -271,6 +302,28 @@ mod tests {
         let got = collect(&srv, &d.path().join("out")).unwrap();
         let entries = unzip(&got.artifacts[0].zip);
         assert_eq!(entries.keys().collect::<Vec<_>>(), ["ok.txt"]);
+    }
+
+    #[test]
+    fn names_that_look_alike_keep_their_own_zips_and_an_unfinished_upload_is_left_out() {
+        let d = tempfile::tempdir().unwrap();
+        let srv = d.path().join("srv");
+        for (name, body) in [("a b", "space"), ("a_b", "underscore")] {
+            std::fs::create_dir_all(srv.join("1").join(name)).unwrap();
+            std::fs::write(srv.join("1").join(name).join("f.txt"), body).unwrap();
+        }
+        std::fs::create_dir_all(srv.join("1/cut")).unwrap();
+        std::fs::write(srv.join("1/cut/cut.zip"), b"PK\x03\x04 half an upload").unwrap();
+        let got = collect(&srv, &d.path().join("out")).unwrap();
+        assert_eq!(got.artifacts.len(), 2);
+        assert_ne!(got.artifacts[0].zip, got.artifacts[1].zip, "no shared zip");
+        assert_eq!(unzip(&got.artifacts[0].zip)["f.txt"], "space");
+        assert_eq!(unzip(&got.artifacts[1].zip)["f.txt"], "underscore");
+        assert_eq!(got.skipped, ["cut (its upload did not finish)"]);
+        assert!(
+            !got.skipped[0].contains(d.path().to_str().unwrap()),
+            "no host path in a public summary"
+        );
     }
 
     #[test]

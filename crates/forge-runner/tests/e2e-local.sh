@@ -77,11 +77,11 @@ export FAKE_PRS="$W/prs.json"
 export DASH_FORGE_KEY="dfk1:devnet:fake:9:fake"
 printf 'E2E_SECRET=hunter2-%s\n' "$RANDOM" >"$W/secrets"
 
-# act's artifact server: jobs must reach it. On Docker Desktop or OrbStack, containers reach the
-# host by name only: FORGE_RUNNER_E2E_ARTIFACT_ADDR=127.0.0.1
+# act's artifact server: jobs must reach it (default: the Linux Docker bridge's gateway). On Docker
+# Desktop or OrbStack, containers reach the host by name only: FORGE_RUNNER_E2E_ARTIFACT_ADDR=127.0.0.1
 # FORGE_RUNNER_E2E_ARTIFACT_URL=http://host.docker.internal:34567/ .
 ARTIFACT_CFG=""
-[[ -n "${FORGE_RUNNER_E2E_ARTIFACT_ADDR:-}" ]] && ARTIFACT_CFG+="artifact_server_addr = \"$FORGE_RUNNER_E2E_ARTIFACT_ADDR\""$'\n'
+ARTIFACT_CFG+="artifact_server_addr = \"${FORGE_RUNNER_E2E_ARTIFACT_ADDR:-172.17.0.1}\""$'\n'
 [[ -n "${FORGE_RUNNER_E2E_ARTIFACT_URL:-}" ]] && ARTIFACT_CFG+="artifact_server_url = \"$FORGE_RUNNER_E2E_ARTIFACT_URL\""$'\n'
 cat >"$W/runner.toml" <<EOF
 state_dir = "$W/state"

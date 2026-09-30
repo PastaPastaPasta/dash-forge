@@ -83,6 +83,7 @@ state_dir = "/var/lib/forge-runner"
 interval_secs = 120                 # at least 30
 log_storage = "ci-logs"             # the profile from step 2: logs and artifacts
 # artifacts = true                  # act's artifact server for actions/upload-artifact (see Artifacts)
+# artifact_server_addr = "172.17.0.1"   # required with artifacts: where only jobs reach it
 sweep_after_timeout = true          # only on a daemon the runner owns (see Security)
 # job_timeout_secs = 3600           # for all workflows of one push
 # attempts = 3                      # retries of a push whose checkout failed
@@ -134,10 +135,10 @@ With `artifacts = true`, the runner starts act's artifact server for each workfl
 
 - **One zip per artifact.** A v4 upload is already one zip and is recorded as it was uploaded. A v3 upload's files are zipped (its gzipped parts inflated), as GitHub serves a v3 artifact.
 - **Which job it belongs to.** act's server does not say, so the runner reads each job's log for upload-artifact's `Artifact <name> has been successfully uploaded!`. An artifact no job's log names goes on every job of that workflow file, so none is lost.
-- **Limits.** At most 10 artifacts per job (the check run's list holds 4,096 bytes, about a dozen), each at most 256 MiB. What does not fit is left out and the job's summary says so.
+- **Limits.** At most 10 artifacts per job (the check run's list holds 4,096 bytes, about a dozen), the job's own first, each at most 256 MiB, and an upload that did not finish is left out; the job's summary says so. If the list still overflows 4,096 bytes (long names, a long storage URL), `dg` records what fits and the runner's log names the rest. If uploading them fails, the job's result is reported without them, and its summary says so.
 - **Private repositories record none.** forge-community refuses artifacts on a private repository's run, so `dg` uploads none there.
-- **Artifacts are public.** Anyone can download them from your bucket, like logs, including those of a stranger's pull request under `pull_requests = "all"`: that is your storage paying for them.
-- **Jobs must reach the server.** act listens on `artifact_server_addr` (default: this host's outbound address) at `artifact_server_port` (default 34567), and tells jobs to upload to `http://<addr>:<port>/`. Where job containers reach the host by another name, set `artifact_server_url`: under Docker Desktop or OrbStack, `artifact_server_addr = "127.0.0.1"` and `artifact_server_url = "http://host.docker.internal:34567/"`. The server has no authentication: anyone who can reach it during a run can add to that run's artifacts. Bind it where only the job network reaches, such as the Docker bridge's gateway, never a public address. Two runners on one machine need different ports.
+- **Artifacts are public, and not scrubbed.** Anyone can download them from your bucket, like logs, including those of a stranger's pull request under `pull_requests = "all"`: your storage pays for them. Unlike logs, the runner does not remove secret values from them: never put secrets in an artifact.
+- **Jobs must reach the server.** act listens on `artifact_server_addr`, which you must set (act's own default is this host's outbound address, public on many cloud machines), at `artifact_server_port` (default 34567), and tells jobs to upload to `http://<addr>:<port>/`. Where job containers reach the host by another name, set `artifact_server_url`: under Docker Desktop or OrbStack, `artifact_server_addr = "127.0.0.1"` and `artifact_server_url = "http://host.docker.internal:34567/"`. The server has no authentication: anyone who can reach it during a run can add to that run's artifacts. Bind it where only the job network reaches, such as the Docker bridge's gateway, never a public address. Two runners on one machine need different ports.
 
 ### With Docker
 

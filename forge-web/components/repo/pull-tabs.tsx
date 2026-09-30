@@ -158,9 +158,9 @@ function RunArtifacts({ run }: { run: CheckRun }): JSX.Element {
         {plural(run.artifacts.length, 'artifact')}
         {!runCounts(run) ? ' (from a run that does not count)' : ''}
       </p>
-      <ul className="mt-1 divide-y divide-anvil-100 overflow-hidden rounded border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800">
-        {run.artifacts.map((a) => (
-          <AssetRow key={`${a.name}:${a.sha256}`} asset={a} />
+      <ul aria-label={`Artifacts of ${run.name}`} className="mt-1 divide-y divide-anvil-100 overflow-hidden rounded border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800">
+        {run.artifacts.map((a, i) => (
+          <AssetRow key={`${i}:${a.name}:${a.sha256}`} asset={a} />
         ))}
       </ul>
     </div>

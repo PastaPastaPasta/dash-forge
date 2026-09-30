@@ -504,16 +504,26 @@ fn report(cfg: &Config, r: &Report<'_>) -> bool {
     cmd.args(report_args(cfg, r));
     match output(&mut cmd, "dg ci report") {
         Ok(out) => {
-            let status = serde_json::from_str::<serde_json::Value>(&out)
-                .ok()
-                .and_then(|v| v["status"].as_str().map(str::to_string))
-                .unwrap_or_default();
+            let v = serde_json::from_str::<serde_json::Value>(&out).unwrap_or_default();
             eprintln!(
-                "forge-runner: {} {} = {} ({status})",
+                "forge-runner: {} {} = {} ({})",
                 r.repo,
                 r.name,
-                r.conclusion.unwrap_or(r.status)
+                r.conclusion.unwrap_or(r.status),
+                v["status"].as_str().unwrap_or_default()
             );
+            // Uploaded, but past what the run's artifact list holds.
+            if let Some(left) = v["artifactsLeftOut"].as_array().filter(|a| !a.is_empty()) {
+                eprintln!(
+                    "forge-runner: {} {}: artifacts not recorded (the list is full): {}",
+                    r.repo,
+                    r.name,
+                    left.iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
             true
         }
         Err(e) => {
@@ -818,10 +828,28 @@ fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Resul
             artifacts: files,
             ..c.report_of(&wf.file, &j.id, &j.check_name, "completed")
         };
-        report(c.cfg, &r);
+        report_completed(c.cfg, &r);
         ran.checks.push((r.name, conclusion));
     }
     Ok(())
+}
+
+/// Report a job's result. A failed artifact upload must not leave the run in progress for good:
+/// if the report with artifacts fails, report the result again without them, and say so.
+fn report_completed(cfg: &Config, r: &Report<'_>) {
+    if !report(cfg, r) && !r.artifacts.is_empty() {
+        report(
+            cfg,
+            &Report {
+                artifacts: Vec::new(),
+                summary: r
+                    .summary
+                    .as_ref()
+                    .map(|s| format!("{s}; artifacts not recorded: their upload failed")),
+                ..r.clone()
+            },
+        );
+    }
 }
 
 /// Each job's artifacts from act's server directory `dir` (zipped into `out`): at most

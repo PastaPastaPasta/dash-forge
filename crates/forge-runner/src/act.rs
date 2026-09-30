@@ -377,11 +377,20 @@ level=warning msg= ⚠ Apple M-series ⚠
                 .all(|(k, _)| k != "ACTIONS_RUNTIME_URL"),
             "no runtime URL from the runner's own environment"
         );
+        let with = |extra: &str| {
+            Config::parse(&format!(
+                "state_dir = \"/s\"\nartifacts = true\n{extra}\n[[repo]]\nrepo = \"a/b\""
+            ))
+        };
         assert!(
-            Config::parse("state_dir = \"/s\"\nartifacts = true\n[[repo]]\nrepo = \"a/b\"")
-                .is_err(),
+            with("artifact_server_addr = \"127.0.0.1\"").is_err(),
             "needs log_storage"
         );
+        assert!(
+            with("log_storage = \"l\"").is_err(),
+            "needs an address chosen for it: act's default may be public"
+        );
+        assert!(with("log_storage = \"l\"\nartifact_server_addr = \"127.0.0.1\"").is_ok());
     }
 
     #[test]
