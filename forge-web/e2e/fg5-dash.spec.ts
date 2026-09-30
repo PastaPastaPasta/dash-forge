@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test'
 import { collectPageErrors, countDapi, E2E_DEVNET, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
 import { quorumGuard, quorumHeldMs } from './quorum-sync'
+import { isStaleConnectionError } from '../lib/sdk/unreachable'
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
 test.beforeEach(quorumGuard)
@@ -45,12 +46,20 @@ test.describe('FG-5 on the dash mirror (read-only)', () => {
   test.skip(E2E_DEVNET !== 'moutai' && E2E_DEVNET !== 'bonsia', 'the dash showcase mirror is imported on the live devnet')
   let DASH: { readonly owner: string; readonly name: string }
   test.beforeAll(async () => {
+    let skipReason = ''
     const dash = await showcaseRepo('DASHPAY', 'dash').catch((e: unknown) => {
-      // helpers.ts `showcaseRepo`: the name does not resolve = no mirror here. Anything else fails.
-      if (e instanceof Error && e.message.includes('does not resolve')) return null
+      // Nothing to test against yet, so skip with the reason rather than failing every test in
+      // the file: the name does not resolve (no mirror on this devnet), or this Node-side lookup,
+      // which has none of the app's quorum retry (lib/sdk/service.ts), hit a stale connection
+      // (`quorum not found`, `no available addresses`) mid a quorum rotation (#212). Anything else
+      // (a broken build, a bad deployment config) is a real regression and still throws.
+      if (e instanceof Error && (e.message.includes('does not resolve') || isStaleConnectionError(e))) {
+        skipReason = e.message
+        return null
+      }
       throw e
     })
-    test.skip(dash === null, `the dash mirror is not imported on ${E2E_DEVNET}`)
+    test.skip(dash === null, skipReason)
     DASH = dash as NonNullable<typeof dash>
   })
 
