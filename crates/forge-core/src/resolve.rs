@@ -212,6 +212,27 @@ pub async fn repo_description(client: &PlatformClient, repo: &RepoRef) -> Result
         .unwrap_or_default())
 }
 
+/// What a fork takes from its parent's `repo` document (QW2-013, QW2-062): the description
+/// (`""` when it has none) and the default branch it names, if any (a public repo's newest
+/// `config` names the current one; this is the fallback the web reads too).
+pub async fn repo_fork_defaults(
+    client: &PlatformClient,
+    repo: &RepoRef,
+) -> Result<(String, Option<String>)> {
+    let core = client.fetch_contract(&repo.forge.core).await?;
+    let doc = client
+        .fetch_document(&core, DOC_REPO, &repo.repo_id)
+        .await?;
+    Ok((
+        doc.as_ref()
+            .and_then(|d| d.field_str("description"))
+            .unwrap_or_default(),
+        doc.as_ref()
+            .and_then(|d| d.field_str("defaultBranch"))
+            .filter(|b| !b.is_empty()),
+    ))
+}
+
 /// Every repository `owner` has, by name.
 pub async fn list_owned(client: &PlatformClient, owner: &str) -> Result<Vec<RepoSummary>> {
     let owner_bytes = platform::decode_identifier(owner)?;

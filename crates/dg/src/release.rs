@@ -7,6 +7,7 @@
 //! hash to the recorded sha256. Assets are external-only: Platform stores packs, not
 //! arbitrary files, so a Platform-only policy is refused with the fix.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -692,6 +693,21 @@ fn labels(r: &Release) -> String {
     out
 }
 
+/// The tags taken down by an unpublish: each tag not listed live whose newest revision (the
+/// first in `previous`, which is newest first) unpublishes it.
+fn unpublished_tags(list: &ReleaseList) -> Vec<&Release> {
+    let mut seen = BTreeSet::new();
+    list.previous
+        .iter()
+        .filter(|r| {
+            !list.current.iter().any(|c| c.tag_name == r.tag_name)
+                && !list.unknown_tags.contains(&r.tag_name)
+        })
+        .filter(|r| seen.insert(r.tag_name.as_str()))
+        .filter(|r| r.is_unpublish())
+        .collect()
+}
+
 /// The lines a private repository's list ends with when it is incomplete (§16.3).
 fn incomplete_notes(list: &ReleaseList) -> Vec<String> {
     let mut out = Vec::new();
@@ -745,6 +761,9 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
             // the notes above are a prefix: the rest is in the sealed manifest (§16.2 flag 0x10)
             "notesContinue": r.sealed.as_ref().is_some_and(|s| s.fields.notes_continue),
             "yanked": r.yanked,
+            // QW2-059: an unpublish revision is not another copy of the publish it took down.
+            "unpublished": r.is_unpublish(),
+            "delta": r.delta,
             "draft": r.is_draft(),
             "prerelease": r.is_prerelease(),
             "sealed": r.sealed.is_some(),
@@ -765,8 +784,16 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
             "stale": list.stale,
         }),
         || {
+            let unpublished = unpublished_tags(&list);
             if list.current.is_empty() {
-                println!("no releases");
+                println!(
+                    "{}",
+                    if unpublished.is_empty() {
+                        "no releases"
+                    } else {
+                        "no published releases"
+                    }
+                );
             }
             for r in &list.current {
                 println!(
@@ -783,6 +810,18 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
                 if late.contains(&r.document_id) {
                     println!("  warning: {}", late_list_note(&r.tag_name));
                 }
+            }
+            for r in &unpublished {
+                // A stale list may have it back already (a newer revision under a key not held).
+                let restore = if list.stale {
+                    ""
+                } else {
+                    "  (publish it again to restore it)"
+                };
+                println!(
+                    "{}  unpublished by {}{restore}",
+                    r.tag_name, r.publisher
+                );
             }
             for note in incomplete_notes(&list) {
                 println!("note: {note}");
@@ -1407,6 +1446,39 @@ mod tests {
             delta: 1,
             sealed: None,
         }
+    }
+
+    /// QW2-059: an unpublish revision is told apart from the publish it took down, and its tag
+    /// is listed once as unpublished.
+    #[test]
+    fn an_unpublish_is_named_and_its_tag_listed_once() {
+        let rev = |id: &str, tag: &str, at: u64, delta: i64| Release {
+            document_id: id.into(),
+            tag_name: tag.into(),
+            created_at: at,
+            delta,
+            ..current()
+        };
+        let list = ReleaseList {
+            current: vec![rev("L2", "v2", 30, 1)],
+            // Newest first: v1's newest is its unpublish; v3's newest is a publish again.
+            previous: vec![
+                rev("U3", "v3", 25, -1),
+                rev("U1", "v1", 20, -1),
+                rev("V2OLD", "v2", 15, 1),
+                rev("V1", "v1", 10, 1),
+                rev("V3", "v3", 5, 1),
+            ],
+            unknown_tags: vec!["v3".into()],
+            ..ReleaseList::default()
+        };
+        assert!(rev("U1", "v1", 20, -1).is_unpublish());
+        assert!(!rev("V1", "v1", 10, 1).is_unpublish());
+        let ids: Vec<_> = unpublished_tags(&list)
+            .iter()
+            .map(|r| r.document_id.clone())
+            .collect();
+        assert_eq!(ids, ["U1"], "v2 is live and v3's state is unknown");
     }
 
     fn args(extra: &[&str]) -> ReleaseCreateArgs {

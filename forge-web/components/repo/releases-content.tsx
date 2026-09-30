@@ -29,7 +29,7 @@ import {
   type DownloadProgress,
 } from '@/lib/view/release-download'
 import { urlHost } from '@/lib/view/format'
-import { NOT_VERIFIED_YET, UNVERIFIABLE_ASSET, assetVerifiable, importedAssetUrl, isDraft, isPrereleaseView, latestRelease, type OmittedAssets, type ReleaseList } from '@/lib/repo/releases'
+import { NOT_VERIFIED_YET, UNVERIFIABLE_ASSET, assetVerifiable, importedAssetUrl, isDraft, isPrereleaseView, isUnpublish, latestRelease, type OmittedAssets, type ReleaseList } from '@/lib/repo/releases'
 import { useReleases } from '@/hooks/use-repo-chrome'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
@@ -77,6 +77,9 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
   // QW-078: a tag whose newest revision is an unpublish is off the list, but a maintainer
   // restores it by publishing it again: list each such tag (its newest revision) to do that from.
   const unpublished = data ? unpublishedTags(data) : []
+  // Each is shown once (QW2-059): an unpublish listed above is not listed again below.
+  const shownAbove = new Set(unpublished.map((r) => r.id))
+  const previous = data ? data.previous.filter((r) => !shownAbove.has(r.id)) : []
 
   return (
     <div className="mx-auto max-w-3xl space-y-4">
@@ -137,7 +140,16 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
           <h2 id="releases-unpublished" className="mb-2 text-dense font-semibold text-anvil-700 dark:text-anvil-200">
             Unpublished
           </h2>
-          <p className="mb-2 text-[12px] text-anvil-500 dark:text-anvil-400">Taken down by a maintainer, every field kept: publishing the tag again restores it.</p>
+          <p className="mb-2 text-[12px] text-anvil-500 dark:text-anvil-400">
+            Taken down by a maintainer, every field kept: publishing the tag again restores it
+            {home.repo.visibility === 'public' ? (
+              <>
+                {' '}
+                (<code className="font-mono">dg release create {home.repo.ownerId}/{home.repo.name} --tag &lt;tag&gt;</code>)
+              </>
+            ) : null}
+            .
+          </p>
           <ul className="space-y-3">
             {unpublished.map((r) => (
               <li key={r.id}>
@@ -147,8 +159,9 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
                   addr={addr}
                   links={links}
                   previous
-                  // A stale list (newer revisions under a key not held yet) may already have it back.
-                  actions={data.stale === true ? null : <EditReleaseButton home={home} tag={r.tagName} onEdit={editor.edit} restore />}
+                  // A stale list (newer revisions under a key not held yet) may already have it back. A
+                  // public release is published again with dg.
+                  actions={data.stale === true || !r.sealed ? null : <EditReleaseButton home={home} tag={r.tagName} onEdit={editor.edit} restore />}
                 />
               </li>
             ))}
@@ -157,7 +170,7 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
       ) : null}
       {data !== null && data.locked !== true ? (
         <>
-          {data.previous.length > 0 ? (
+          {previous.length > 0 ? (
             <section aria-label="Previous revisions">
               <button
                 type="button"
@@ -165,11 +178,11 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
                 aria-expanded={showPrevious}
                 className="text-dense text-anvil-600 underline dark:text-anvil-300"
               >
-                {showPrevious ? 'Hide' : 'Show'} {plural(data.previous.length, 'previous revision')}
+                {showPrevious ? 'Hide' : 'Show'} {plural(previous.length, 'previous revision')}
               </button>
               {showPrevious ? (
                 <ul className="mt-2 space-y-3">
-                  {data.previous.map((r) => (
+                  {previous.map((r) => (
                     <li key={r.id}>
                       <ReleaseCard release={r} repo={home.repo} addr={addr} links={links} previous />
                     </li>
@@ -186,10 +199,11 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
 }
 
 /**
- * The tags a sealed list keeps off it because their newest revision is an unpublish, as that
- * revision (newest first). A public repo's list has none: its releases have no unpublish.
+ * The tags a list keeps off it because their newest revision is an unpublish ({@link isUnpublish}:
+ * a public release's `delta` −1, a sealed one's flag), as that revision (newest first).
  */
 export function unpublishedTags(list: ReleaseList): ReleaseView[] {
+  // A public tag's unpublish (RC1 `delta` −1) is its newest revision the same way.
   // A tag whose newest revision does not open (§16.3) may have been published again since.
   const live = new Set([...list.current.map((r) => r.tagName), ...(list.unknownTags ?? [])])
   const seen = new Set<string>()
@@ -198,7 +212,7 @@ export function unpublishedTags(list: ReleaseList): ReleaseView[] {
   for (const r of list.previous) {
     if (live.has(r.tagName) || seen.has(r.tagName)) continue
     seen.add(r.tagName)
-    if (r.sealed?.fields.unpublished === true) out.push(r)
+    if (isUnpublish(r)) out.push(r)
   }
   return out
 }
@@ -341,6 +355,8 @@ function ReleaseCard({
 }): JSX.Element {
   const [assetsOpen, setAssetsOpen] = useState(false)
   const prerelease = isPrereleaseView(r)
+  // An unpublish is a revision too, but it took the tag down: it says so (QW2-059).
+  const unpublish = isUnpublish(r)
   const sealedFields = r.sealed?.fields
   const accesses = r.assets.map(assetAccess)
   // A sealed revision's assets, and notes that continue, are in its encrypted asset list (§16.5):
@@ -385,7 +401,11 @@ function ReleaseCard({
             Draft
           </span>
         ) : null}
-        {previous ? (
+        {unpublish ? (
+          <span className="rounded bg-caution/10 px-1.5 text-[11px] uppercase text-caution-700 dark:text-caution-400" data-testid="release-unpublished">
+            unpublished
+          </span>
+        ) : previous ? (
           <span className="rounded bg-anvil-100 px-1.5 text-[11px] uppercase text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300">previous</span>
         ) : null}
         {r.yanked ? (
@@ -401,7 +421,7 @@ function ReleaseCard({
         ) : null}
       </header>
       <p className="mt-1 flex flex-wrap items-center gap-1 text-[12px] text-anvil-600 dark:text-anvil-300">
-        {r.published !== null ? (
+        {r.published !== null && !unpublish ? (
           <>
             Published <Time ms={r.published.at} dateOnly /> on {r.published.host}
             {r.published.author ? <> by <span className="font-medium text-anvil-800 dark:text-anvil-100">@{r.published.author}</span></> : null} · mirrored by{' '}
@@ -409,7 +429,7 @@ function ReleaseCard({
           </>
         ) : (
           <>
-            Published by <Author identityId={r.publisher} /> · <Time ms={r.createdAt} />
+            {unpublish ? 'Unpublished' : 'Published'} by <Author identityId={r.publisher} /> · <Time ms={r.createdAt} />
           </>
         )}
         {/* Only for a live tag of that name: a release's tag may be missing or deleted. */}

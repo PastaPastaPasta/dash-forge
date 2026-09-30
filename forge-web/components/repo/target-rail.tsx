@@ -52,6 +52,9 @@ export function MilestonePicker({
 }): JSX.Element {
   const [open, setOpen] = useState(false)
   const anyOpen = choices.some((c) => !c.closed)
+  // QW2-060: where none can be defined (a private repo, for now) and none exist, there is nothing
+  // to set: say so rather than offer "Set milestone" that opens onto "No open milestones".
+  const unavailable = !canDefine && !loading && choices.length === 0 && current === null
   return (
     <div data-testid="milestone">
       {current === null ? (
@@ -59,7 +62,11 @@ export function MilestonePicker({
       ) : (
         <p className="font-medium text-anvil-800 dark:text-anvil-100">{current}</p>
       )}
-      {canEdit ? (
+      {canEdit && unavailable ? (
+        <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="milestone-unavailable">
+          Milestones aren&apos;t available in private repos yet.
+        </p>
+      ) : canEdit ? (
         <div className="mt-2">
           <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400 hover:text-forge-700 dark:hover:text-forge-400">
             <Settings2 className="h-3.5 w-3.5" aria-hidden /> Set milestone

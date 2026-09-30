@@ -64,7 +64,7 @@ const STEPS: readonly { step: CreateRepoStep; label: string; privateLabel?: stri
  */
 const PRIVATE_FACTS: readonly string[] = [
   'private: code, ref names, issues, PRs, comments, reviews and the labels on them are encrypted to members',
-  'visible to everyone: that it exists, its name, owner, members, sizes and timing, commit ids, and label definitions (not encrypted in this release); releases are sealed',
+  'visible to everyone: that it exists, its name, description and topics, owner, members, how many issues and pull requests it has, sizes and timing, commit ids, and label definitions (not encrypted in this release); releases are sealed',
   'members keep whatever they could already read, even after they are removed',
   'no recovery: if every member loses their encryption key, the contents are gone',
 ]

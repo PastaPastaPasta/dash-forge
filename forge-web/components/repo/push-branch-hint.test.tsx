@@ -93,7 +93,7 @@ describe('PushBranchHint', () => {
   })
 
   const render = (forks: readonly RepoRef[] | null | 'failed'): void => {
-    act(() => root.render(<PushBranchHint repo={repo} forks={forks} />))
+    act(() => root.render(<PushBranchHint repo={repo} forkDefaults={{ defaultBranch: 'main', description: '' }} forks={forks} />))
   }
 
   it('shows a Fork button, and no push command, to a non-member without a fork', () => {

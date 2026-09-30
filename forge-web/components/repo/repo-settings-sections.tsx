@@ -17,7 +17,7 @@
  */
 
 import { useState } from 'react'
-import { Archive, GitBranch, Info, Lock, Plus, Scale, Settings2, ShieldCheck, Trash2 } from 'lucide-react'
+import { Archive, Globe, GitBranch, Info, Lock, Plus, Scale, Settings2, ShieldCheck, Trash2 } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { isLive, plural } from '@/lib/view'
 import {
@@ -232,7 +232,8 @@ export function GeneralSettings({
   return (
     <Section id="general" title="General" icon={<Settings2 className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
       <div className="space-y-5 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
-        <div>
+        <VisibilityRow visibility={home.repo.visibility} />
+        <div className="border-t border-anvil-100 pt-4 dark:border-anvil-850">
           <Field label="Default branch" htmlFor="default-branch" hint="What a clone checks out and what the repo page opens on.">
             <div className="flex flex-wrap items-center gap-2">
               <select
@@ -277,6 +278,30 @@ export function GeneralSettings({
       </div>
       {cfg.dialog}
     </Section>
+  )
+}
+
+/**
+ * The repo's visibility, read-only (QW2-063): GitHub lists it in Settings, and here it is set once,
+ * when the repo is created (the `repo` document's `visibility` is immutable).
+ */
+export function VisibilityRow({ visibility }: { visibility: 'public' | 'private' }): JSX.Element {
+  const isPrivate = visibility === 'private'
+  const Icon = isPrivate ? Lock : Globe
+  return (
+    <div data-testid="settings-visibility" data-visibility={visibility}>
+      <p className="text-dense font-medium text-anvil-800 dark:text-anvil-100">Visibility</p>
+      <p className="mt-1 flex items-center gap-1.5 text-dense text-anvil-800 dark:text-anvil-100">
+        <Icon className="h-3.5 w-3.5 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
+        <span className="font-medium">{isPrivate ? 'Private' : 'Public'}</span>
+        <span className="text-anvil-500 dark:text-anvil-400">· set when the repo was created, and permanent</span>
+      </p>
+      <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">
+        {isPrivate
+          ? 'Code, ref names, issues, pull requests, comments and reviews are encrypted to members. That the repo exists, its name, owner, description, members and how many issues and pull requests it has are public.'
+          : 'Anyone can read its code, issues and pull requests. To keep code private, create a private repo and push it there.'}
+      </p>
+    </div>
   )
 }
 

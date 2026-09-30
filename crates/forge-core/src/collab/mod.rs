@@ -344,6 +344,13 @@ impl Release {
         self.sealed.as_ref().is_some_and(|s| s.fields.draft)
     }
 
+    /// Whether this revision unpublishes its tag: a public one by `delta` −1, a sealed one by
+    /// its unpublished flag (QW2-059: listed apart from the publish it took down).
+    #[must_use]
+    pub fn is_unpublish(&self) -> bool {
+        self.delta < 0 || self.sealed.as_ref().is_some_and(|s| s.fields.unpublished)
+    }
+
     /// A pre-release: its tag has a pre-release suffix, or a sealed revision sets the flag
     /// (§16.2: never less of a pre-release than the public rule makes it).
     #[must_use]

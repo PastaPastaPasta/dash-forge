@@ -219,13 +219,15 @@ export async function planFork(
 
 /**
  * Fork `parent` as `name` under the signer. Resumable: rerun with the same name to finish an
- * interrupted fork; nothing is paid for twice.
+ * interrupted fork; nothing is paid for twice. As on GitHub, the fork takes the parent's default
+ * branch (QW2-013: it was always `main`) and, unless given another, its description (QW2-062: it
+ * was "fork of <owner id>/<name>", which the page's "forked from" line already says).
  */
 export async function forkRepoV2(
   sdk: EvoSDK,
   auth: WriteAuth,
   parent: RepoRef,
-  input: { readonly name: string; readonly description?: string },
+  input: { readonly name: string; readonly description?: string; readonly defaultBranch?: string },
   onProgress?: (p: ForkProgress) => void,
 ): Promise<ForkResult> {
   // A fork is public: forking a private repo would publish its decrypted names and code.
@@ -242,7 +244,12 @@ export async function forkRepoV2(
     sdk,
     auth,
     parent.forge,
-    { name, description: input.description ?? `fork of ${parent.ownerId}/${parent.name}`, forkOf: parent.repoId },
+    {
+      name,
+      ...(input.description ? { description: input.description } : {}),
+      ...(input.defaultBranch ? { defaultBranch: input.defaultBranch } : {}),
+      forkOf: parent.repoId,
+    },
     (step, state) => onProgress?.({ step, state }),
   )
   const fork: RepoRef = { forge: parent.forge, repoId: created.repoId, ownerId: owner, name, visibility: 'public' }
