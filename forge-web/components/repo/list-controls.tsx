@@ -7,10 +7,10 @@
  * `lib/view/pull-query`) and passes it in.
  */
 
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
-import { ChevronLeft, ChevronRight, Loader2, MessageSquare, Search } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, Loader2, MessageSquare, Search, SlidersHorizontal } from 'lucide-react'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { Network } from '@/lib/constants'
 import type { LabelDef } from '@/lib/repo'
@@ -221,6 +221,65 @@ export function tabCount(n: number | null | undefined): string {
   return n == null ? '' : `${n} `
 }
 
+/**
+ * The state tabs' row. On a phone it stays one row (QW2-071: "All" wrapped onto a row of its
+ * own): the tabs drop their icons below `sm`, as GitHub's underline nav does when it is short of
+ * room, and the row scrolls sideways if counts still make it too wide (`p-1 -m-1`: room inside
+ * the scroller for a tab's focus ring).
+ */
+export function StateTabs({ label, children }: { label: string; children: ReactNode }): JSX.Element {
+  return (
+    <div
+      className="-m-1 flex items-center gap-x-3 overflow-x-auto p-1 [scrollbar-width:none] max-sm:w-[calc(100%+0.5rem)] max-sm:gap-x-2 max-sm:[&_svg]:hidden [&::-webkit-scrollbar]:hidden"
+      role="tablist"
+      aria-label={label}
+    >
+      {children}
+    </div>
+  )
+}
+
+/**
+ * The filters beside the state tabs. From `sm` up they sit in the row; on a phone they fold
+ * behind one "Filters" button (with how many are set), so the first result is on the first
+ * screen rather than under five rows of selects (QW2-071).
+ */
+/** How many of the {@link FilterBar}'s shared controls are set away from their defaults. */
+export function filterCount(q: {
+  readonly labels: readonly string[]
+  readonly milestone: string | null
+  readonly noMilestone: boolean
+  readonly author: string | null
+  readonly assignee: string | null
+  readonly sort: string
+}): number {
+  return q.labels.length + Number(q.milestone !== null || q.noMilestone) + Number(q.author !== null) + Number(q.assignee !== null) + Number(q.sort !== 'newest')
+}
+
+export function FilterBar({ active, children }: { active: number; children: ReactNode }): JSX.Element {
+  const [open, setOpen] = useState(false)
+  const id = useId()
+  return (
+    <>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen((o) => !o)}
+        className="inline-flex items-center gap-1.5 rounded-md border border-anvil-300 px-2 py-1 text-dense dark:border-anvil-700 coarse:min-h-11 coarse:px-3 sm:hidden"
+        data-testid="filters-toggle"
+      >
+        <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden />
+        Filters{active > 0 ? ` (${active})` : ''}
+        <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} aria-hidden />
+      </button>
+      <div id={id} className={cn('w-full flex-wrap items-center gap-2 sm:ml-auto sm:flex sm:w-auto', open ? 'flex' : 'hidden')}>
+        {children}
+      </div>
+    </>
+  )
+}
+
 export function StateTab({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }): JSX.Element {
   return (
     <button
@@ -228,7 +287,8 @@ export function StateTab({ active, onClick, children }: { active: boolean; onCli
       aria-selected={active}
       onClick={onClick}
       className={cn(
-        'inline-flex items-center gap-1.5 whitespace-nowrap text-dense font-medium transition-colors coarse:min-h-11 coarse:min-w-11',
+        // min-h-6 / min-w-6: 24 px with a mouse too (WCAG 2.5.8, QW2-071).
+        'inline-flex min-h-6 min-w-6 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap text-dense font-medium transition-colors coarse:min-h-11 coarse:min-w-11',
         active ? 'text-anvil-900 dark:text-anvil-50' : 'text-anvil-500 hover:text-anvil-800 dark:text-anvil-400 dark:hover:text-anvil-100',
       )}
     >
