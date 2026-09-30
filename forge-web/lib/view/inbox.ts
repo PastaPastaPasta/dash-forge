@@ -684,7 +684,8 @@ export function groupThreads(items: readonly InboxItem[]): InboxThread[] {
     .sort((a, b) => (b.items[0] as InboxItem).at - (a.items[0] as InboxItem).at)
 }
 
-const PARTICIPATION_TYPES: ReadonlySet<string> = new Set([DOC.repo, DOC.issue, DOC.patch, DOC.comment, DOC.review, DOC.watch, DOC.star, DOC.maintainer, DOC.writer])
+// What the subscriptions are read from: repos owned, stars, issues and PRs opened, comments, watches.
+const PARTICIPATION_TYPES: ReadonlySet<string> = new Set([DOC.repo, DOC.issue, DOC.patch, DOC.comment, DOC.watch, DOC.star])
 
 /**
  * Whether a write of this kind (`create:comment`, `delete:watch`, …) changes what the writer is

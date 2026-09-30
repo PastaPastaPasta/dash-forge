@@ -24,6 +24,7 @@ import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
 import { importedUrlOf } from '@/lib/view/ref-targets'
 import { EditedMarker } from '@/components/repo/issue-bits'
 import { Oid } from '@/components/ui/oid'
+import { WithAge } from '@/components/ui/with-age'
 
 function verdictIcon(verdict: VerdictName): JSX.Element {
   switch (verdict) {
@@ -112,25 +113,12 @@ export interface CommentSlots {
   readonly body?: ReactNode
 }
 
-/** What a comment's header says it did. */
-/** `text · age`, the age kept on the line of the text's last word (never a line of its own). */
-export function WithAge({ text, age }: { text: string; age: string }): JSX.Element {
-  const cut = text.lastIndexOf(' ')
-  return (
-    <>
-      {cut === -1 ? '' : `${text.slice(0, cut)} `}
-      <span className="whitespace-nowrap">
-        {text.slice(cut + 1)} · {age}
-      </span>
-    </>
-  )
-}
-
 /** A timeline event: its icon, then one sentence (actor, what, age) that wraps as text. */
 const EVENT_ROW = 'flex items-start gap-2 px-2 text-dense text-anvil-500 dark:text-anvil-400'
 const EVENT_ICON = 'flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-anvil-100 dark:bg-anvil-800'
 const EVENT_TEXT = 'min-w-0 flex-1 leading-6'
 
+/** What a comment's header says it did. */
 function commentVerb(item: Extract<TimelineItem, { kind: 'comment' }>): string {
   let verb = 'commented'
   if (item.orphaned === 'deleted') verb = 'replied to a deleted comment'

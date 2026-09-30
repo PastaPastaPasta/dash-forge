@@ -42,12 +42,12 @@ describe('groupThreads', () => {
 
 describe('refreshesSubscriptions', () => {
   it('is true for writes that join a thread or change what is watched', () => {
-    for (const k of ['create:comment', 'create:issue', 'create:patch', 'create:review', 'create:watch', 'delete:watch', 'create:star', 'create:repo', 'create:writer']) {
+    for (const k of ['create:comment', 'create:issue', 'create:patch', 'create:watch', 'delete:watch', 'create:star', 'create:repo']) {
       expect(refreshesSubscriptions(k), k).toBe(true)
     }
   })
   it('is false for the rest', () => {
-    for (const k of ['create:refUpdate', 'key:register', 'create:release', 'refused:comment', 'create']) {
+    for (const k of ['create:refUpdate', 'key:register', 'create:release', 'create:review', 'create:writer', 'refused:comment', 'create']) {
       expect(refreshesSubscriptions(k), k).toBe(false)
     }
   })

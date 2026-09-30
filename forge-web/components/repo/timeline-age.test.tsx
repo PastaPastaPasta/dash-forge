@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('next/link', () => ({ default: ({ href, children }: { href: string; children: React.ReactNode }) => <a href={href}>{children}</a> }))
 
-import { WithAge } from './timeline'
+import { WithAge } from '@/components/ui/with-age'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -32,6 +32,11 @@ describe('WithAge', () => {
     expect(host.textContent).toBe('added the enhancement label · 1m ago')
     const run = host.querySelector('span.whitespace-nowrap')
     expect(run?.textContent).toBe('label · 1m ago')
+  })
+
+  it('adds no separator when the age is unknown', () => {
+    act(() => root.render(<WithAge text="closed this" age="" />))
+    expect(host.textContent).toBe('closed this')
   })
 
   it('keeps a one-word phrase whole with its age', () => {

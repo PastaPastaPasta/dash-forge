@@ -36,12 +36,7 @@ function baselineKey(network: Network, identityId: string): string {
   return `baseline:${network}:${identityId}`
 }
 
-/**
- * Record a write. The first write of an identity's ledger seeds the reconciliation baseline
- * with the balance read right before that write (writes of one identity are serialized, so
- * no other write of this browser can sit between that read and this row).
- */
-/** Told of every write this tab records (after its row is stored). */
+/** Told of every write this tab records (whether or not its ledger row could be stored). */
 const recorded = new Set<(event: SpendEvent) => void>()
 
 /** Listen for this tab's writes (the inbox, to watch a thread the moment one joins it); returns the unsubscribe. */
@@ -52,7 +47,27 @@ export function onSpendRecorded(listener: (event: SpendEvent) => void): () => vo
   }
 }
 
+/**
+ * Record a write. The first write of an identity's ledger seeds the reconciliation baseline
+ * with the balance read right before that write (writes of one identity are serialized, so
+ * no other write of this browser can sit between that read and this row).
+ */
 export async function recordSpend(event: SpendEvent): Promise<void> {
+  try {
+    await storeSpend(event)
+  } finally {
+    // The write happened even if the ledger could not keep it (no IndexedDB, quota).
+    for (const listener of recorded) {
+      try {
+        listener(event)
+      } catch {
+        /* a listener's failure is its own */
+      }
+    }
+  }
+}
+
+async function storeSpend(event: SpendEvent): Promise<void> {
   const at = Date.now()
   const { balanceBefore, ...rest } = event
   const row: SpendRow = { ...rest, at, ...(balanceBefore !== null ? { balanceBefore: balanceBefore.toString() } : {}) }
@@ -63,13 +78,6 @@ export async function recordSpend(event: SpendEvent): Promise<void> {
   const bk = baselineKey(event.network, event.identityId)
   if (balanceBefore !== null && (await idbGet<Baseline>('spend', bk)) === undefined) {
     await idbPut<Baseline>('spend', bk, { at, balanceCredits: balanceBefore.toString() })
-  }
-  for (const listener of recorded) {
-    try {
-      listener(event)
-    } catch {
-      /* a listener's failure is its own */
-    }
   }
 }
 

@@ -12,7 +12,7 @@ import { Bell, CheckCheck, CircleDot, GitCommit, GitPullRequest, Info, MessageSq
 import { AppShell } from '@/components/app-shell'
 import { SignInButton } from '@/components/sign-in-button'
 import { Author } from '@/components/author'
-import { WithAge } from '@/components/repo/timeline'
+import { WithAge } from '@/components/ui/with-age'
 import { Button } from '@/components/ui/button'
 import { EmptyState, ErrorState, Spinner } from '@/components/ui/states'
 import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge'
@@ -120,7 +120,14 @@ export default function NotificationsPage(): JSX.Element {
         ) : (
           <ul className="divide-y divide-anvil-200 overflow-hidden rounded-lg border border-anvil-200 dark:divide-anvil-800 dark:border-anvil-800" data-testid="inbox-list">
             {shown.map((t) => (
-              <ThreadRow key={t.key} thread={t} onRead={() => void markRead(t.items.filter((i) => !i.read).map((i) => i.id))} />
+              <ThreadRow
+                key={t.key}
+                thread={t}
+                onRead={() => {
+                  const ids = t.items.filter((i) => !i.read).map((i) => i.id)
+                  if (ids.length > 0) void markRead(ids)
+                }}
+              />
             ))}
           </ul>
         )}

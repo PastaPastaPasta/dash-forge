@@ -106,13 +106,20 @@ export function useInboxPoller(): void {
     // Per effect (so a new identity never waits on the old one's poll).
     let inFlight = false
     let queued: { refreshSubs: boolean } | null = null
-    const run = async (refreshSubs: boolean): Promise<void> => {
+    // A subscription refresh asked for while the tab was hidden: the next visible round does it.
+    let refreshWhenVisible = false
+    const run = async (asked: boolean): Promise<void> => {
       if (cancelled) return
       if (inFlight) {
-        queued = { refreshSubs: refreshSubs || (queued?.refreshSubs ?? false) }
+        queued = { refreshSubs: asked || (queued?.refreshSubs ?? false) }
         return
       }
-      if (document.visibilityState !== 'visible') return
+      if (document.visibilityState !== 'visible') {
+        refreshWhenVisible ||= asked
+        return
+      }
+      const refreshSubs = asked || refreshWhenVisible
+      refreshWhenVisible = false
       inFlight = true
       set({ polling: true })
       try {

@@ -62,6 +62,11 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 /** "Delete the branch after merging": runnable, or shown disabled with why. */
 export type DeleteBranchOption = { readonly label: string; readonly run: () => Promise<void> } | { readonly label: string; readonly disabled: string }
 
+/** A fast-forward's pack estimate grown by the merge commit a --no-ff adds (a bound: under 1 KiB). */
+function withMergeCommit(e: PackEstimate | null): PackEstimate | null {
+  return e === null ? null : { bytes: e.bytes + 1024, objectCount: e.objectCount + 1 }
+}
+
 /** The merge methods: the plan's (fast-forward, or a merge commit), --no-ff, or a squash. */
 type Method = 'merge' | 'no-ff' | 'squash'
 
@@ -208,8 +213,8 @@ export function MergePanel({
         if (abort.signal.aborted) return
         setCheck(c.check)
         setConflictPaths(c.conflictPaths)
-        // Sized without --no-ff: a --no-ff method is sized again below.
-        setSized({ estimate: c.packEstimate, method: sizing === 'no-ff' ? 'merge' : sizing })
+        // Checked without --no-ff: its pack is the fast-forward's plus the one merge commit.
+        setSized({ estimate: sizing === 'no-ff' ? withMergeCommit(c.packEstimate) : c.packEstimate, method: sizing })
       },
       (e: unknown) => {
         if (!abort.signal.aborted) setCheck({ error: e instanceof Error ? e.message : String(e) })

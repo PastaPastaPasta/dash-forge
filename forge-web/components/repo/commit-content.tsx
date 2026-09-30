@@ -30,7 +30,6 @@ import { EmptyState, LoadingBlock } from '@/components/ui/states'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { LinkifiedText } from '@/components/markdown-view'
 import { sourceUrl, useRepoLinks } from '@/components/repo/target-href'
-import { useMinWidth } from '@/hooks/use-prefs'
 import { cn } from '@/lib/utils'
 
 export function CommitContent({ home, addr, oid }: { home: RepoHome; addr: RepoAddress; oid: string }): JSX.Element {
@@ -178,16 +177,17 @@ export function longCommitBody(body: string): boolean {
  * from `sm` up it is shown whole, as GitHub's commit page does.
  */
 function CommitBody({ body, links }: { body: string; links: ReturnType<typeof useRepoLinks> }): JSX.Element {
-  const wide = useMinWidth(640)
   const [open, setOpen] = useState(false)
-  const clamped = !wide && !open && longCommitBody(body)
+  const long = longCommitBody(body)
+  // CSS only (below `sm`), so a desktop never paints it clamped first.
+  const clamped = long && !open
   return (
     <div className="mt-2">
-      <pre className={cn('whitespace-pre-wrap font-sans text-dense text-anvil-600 [overflow-wrap:anywhere] dark:text-anvil-300', clamped && 'line-clamp-6')} data-testid="commit-body" data-clamped={clamped || undefined}>
+      <pre className={cn('whitespace-pre-wrap font-sans text-dense text-anvil-600 [overflow-wrap:anywhere] dark:text-anvil-300', clamped && 'max-sm:line-clamp-6')} data-testid="commit-body" data-clamped={clamped || undefined}>
         <LinkifiedText text={body} links={links} imported={sourceUrl(links)} />
       </pre>
-      {!wide && longCommitBody(body) ? (
-        <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="mt-1 text-[12px] font-medium text-forge-700 underline-offset-2 hover:underline coarse:min-h-11 dark:text-forge-400" data-testid="commit-body-toggle">
+      {long ? (
+        <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="mt-1 text-[12px] font-medium text-forge-700 underline-offset-2 hover:underline coarse:min-h-11 sm:hidden dark:text-forge-400" data-testid="commit-body-toggle">
           {open ? 'Show less' : 'Show more'}
         </button>
       ) : null}
