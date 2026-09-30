@@ -18,6 +18,7 @@ use forge_core::collab::v2::Collab;
 use forge_core::repo::credits_to_dash;
 
 use crate::budget::{Budget, CapExceeded};
+use crate::chain::CollabChain;
 use crate::gitsync::ProofRepo;
 use crate::model::SrcCollab;
 use crate::sealed_release::ReleaseStorage;
@@ -344,21 +345,23 @@ pub async fn dry_collab<'a>(
     src: &SrcCollab,
     mirror: Option<ProofRepo>,
     release_storage: Option<ReleaseStorage>,
+    lanes: usize,
 ) -> Result<Ledger<'a>> {
     // A private destination is read with the signer's keys (its documents are sealed).
     let collab = match signer {
         Some(s) => Collab::new(client, &s.identity, &s.bridge),
         None => Collab::reader(client),
     };
-    let mut dry = Sink::new(
-        collab,
+    let dry = Sink::new(
+        CollabChain::new(client, collab),
         existing,
         Ledger::new(client, signer.map(Signer::id), true, Budget::new(None)),
     )
     .with_mirror(mirror)
-    .with_release_storage(release_storage);
+    .with_release_storage(release_storage)
+    .with_lanes(lanes);
     dry.sync(src).await?;
-    Ok(dry.ledger)
+    Ok(dry.into_ledger())
 }
 
 /// What of `src` is written to a destination the mirror identity holds `role` in, and the
@@ -432,6 +435,8 @@ pub struct CollabSource<'s> {
     pub mirror: Option<ProofRepo>,
     /// Where a private destination's sealed release files and asset lists go.
     pub release_storage: Option<ReleaseStorage>,
+    /// Lanes for the items' dependent writes ([`crate::pipeline`]; 1: one write at a time).
+    pub lanes: usize,
 }
 
 /// Write the collaboration documents missing from `repo` with the run's ledger (taken from
@@ -450,6 +455,7 @@ pub async fn write_collab<'a>(
         src,
         mirror,
         release_storage,
+        lanes,
     } = source;
     let mut ledger = outcome.ledger.take().expect("the write phase has a ledger");
     let private = repo.visibility == Visibility::Private;
@@ -457,15 +463,19 @@ pub async fn write_collab<'a>(
     for w in warnings {
         ledger.warn(w);
     }
-    let mut sink = Sink::new(
-        Collab::new(client, &signer.identity, &signer.bridge),
+    let sink = Sink::new(
+        CollabChain::new(
+            client,
+            Collab::new(client, &signer.identity, &signer.bridge),
+        ),
         Some(repo),
         ledger,
     )
     .with_mirror(mirror)
-    .with_release_storage(release_storage);
+    .with_release_storage(release_storage)
+    .with_lanes(lanes);
     let result = sink.sync(&plan).await;
-    outcome.ledger = Some(sink.ledger);
+    outcome.ledger = Some(sink.into_ledger());
     result
 }
 

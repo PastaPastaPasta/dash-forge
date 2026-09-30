@@ -6,6 +6,16 @@
 //! the estimates of the writes made and the identity's measured balance drop, so an
 //! estimate that runs low cannot carry the run past the cap for long: every
 //! [`Budget::reconcile`] pulls the measured figure in.
+//!
+//! **Writes in flight together** (the pipelined write phase, [`crate::pipeline`]) reserve
+//! their estimate when admitted ([`Budget::reserve`]) and hold it until a balance read that
+//! began after they finished has been folded in ([`Budget::finish`], [`Budget::mark`],
+//! [`Budget::measured`]). Reads may come back in any order: each covers the writes finished
+//! before it began, and the furthest such point folded in is what counts.
+//! Admission is one synchronous step under the ledger's lock, so two writes can never both
+//! pass on the same headroom, and "spent so far" never forgets a write the measured drop may
+//! not show yet: it is the larger of the estimates and the measured drop plus every reserved
+//! write's estimate. With one write at a time this is exactly the check above.
 
 use anyhow::{bail, Result};
 
@@ -126,6 +136,13 @@ pub struct Budget {
     estimated: u64,
     measured: u64,
     balance_start: Option<u64>,
+    /// Reserved writes still running ([`Self::reserve`]), credits.
+    in_flight: u64,
+    /// Every reserved write that finished, a running total ([`Self::finish`]), credits.
+    finished: u64,
+    /// How much of `finished` the balance reads folded in so far cover: the furthest
+    /// [`Self::mark`] handed back to [`Self::measured`].
+    covered: u64,
 }
 
 impl Budget {
@@ -136,6 +153,9 @@ impl Budget {
             estimated: 0,
             measured: 0,
             balance_start: None,
+            in_flight: 0,
+            finished: 0,
+            covered: 0,
         }
     }
 
@@ -144,9 +164,13 @@ impl Budget {
         self.balance_start = Some(balance);
     }
 
-    /// What this run has spent, as far as it can tell (credits).
+    /// What this run has spent, as far as it can tell (credits): the estimates of every write
+    /// admitted, or the measured drop plus the reserved writes it may not show yet, whichever
+    /// is larger.
     pub fn spent(&self) -> u64 {
-        self.estimated.max(self.measured)
+        let unmeasured = self.finished.saturating_sub(self.covered);
+        let pending = self.in_flight.saturating_add(unmeasured);
+        self.estimated.max(self.measured.saturating_add(pending))
     }
 
     /// Whether a write of `credits` would fit under the cap now.
@@ -217,6 +241,37 @@ impl Budget {
         Ok(())
     }
 
+    /// [`Self::charge`] for a write that may run beside others: its estimate stays reserved
+    /// on top of the measured drop until [`Self::finish`] and a balance read begun after it
+    /// ([`Self::mark`], [`Self::measured`]).
+    pub fn reserve(&mut self, credits: u64, what: impl Into<String>) -> Result<()> {
+        self.charge(credits, what)?;
+        self.in_flight = self.in_flight.saturating_add(credits);
+        Ok(())
+    }
+
+    /// A reserved write of `credits` finished (landed or not): its estimate waits for the
+    /// next balance read.
+    pub fn finish(&mut self, credits: u64) {
+        let credits = credits.min(self.in_flight);
+        self.in_flight -= credits;
+        self.finished = self.finished.saturating_add(credits);
+    }
+
+    /// Where a balance read starting now stands: it covers every reserved write finished so
+    /// far. Hand it to [`Self::measured`] with the read's result.
+    pub fn mark(&self) -> u64 {
+        self.finished
+    }
+
+    /// Fold in a balance read that began at `mark`: the writes finished before it are in the
+    /// measured drop now, and no longer held on top of it. An older read folded in after a
+    /// newer one releases nothing more.
+    pub fn measured(&mut self, balance_now: u64, mark: u64) {
+        self.reconcile(balance_now);
+        self.covered = self.covered.max(mark);
+    }
+
     /// Take back an admitted charge whose write stored nothing (a taken number). The
     /// measured drop still counts whatever fee was really paid.
     pub fn refund(&mut self, credits: u64) {
@@ -269,6 +324,64 @@ mod tests {
         assert_eq!(b.spent(), 95);
         assert!(b.charge(10, "b").is_err());
         assert_eq!(b.spent(), 95);
+    }
+
+    /// Writes in flight together: each is admitted against the others' reservations, and a
+    /// reservation stays on top of the measured drop until a balance read that began after the
+    /// write finished has been folded in.
+    #[test]
+    fn writes_in_flight_together_hold_their_reservations() {
+        let mut b = Budget::new(Some(100));
+        b.start(1_000);
+        b.reserve(40, "a").unwrap();
+        b.reserve(40, "b").unwrap();
+        // A third would cross the cap on the reservations alone.
+        assert!(b.reserve(40, "c").is_err());
+        assert_eq!(b.spent(), 80);
+        // `a` finishes; a balance read starts (covering `a`), and meanwhile `b` finishes.
+        b.finish(40);
+        let mark = b.mark();
+        b.finish(40);
+        // The chain says 70 was spent: `a` really cost 70, and `b` may not show yet.
+        b.measured(930, mark);
+        assert_eq!(b.spent(), 110, "measured 70 plus b's reservation 40");
+        assert!(
+            b.reserve(1, "d").is_err(),
+            "over the cap: nothing more is admitted"
+        );
+        // The next read covers `b` too: only the measured drop is left.
+        let mark = b.mark();
+        b.measured(920, mark);
+        assert_eq!(b.spent(), 80);
+        assert!(b.reserve(20, "e").is_ok());
+        // One write at a time is the plain check.
+        let mut one = Budget::new(Some(100));
+        one.start(1_000);
+        one.reserve(10, "x").unwrap();
+        one.finish(10);
+        let mark = one.mark();
+        one.measured(905, mark);
+        assert_eq!(one.spent(), 95);
+    }
+
+    /// Two balance reads overlap and come back out of order: the older one must not release
+    /// a write that only the newer one's start came after, nor one that neither covers.
+    #[test]
+    fn balance_reads_folded_in_out_of_order_release_only_what_they_cover() {
+        let mut b = Budget::new(Some(1_000));
+        b.start(10_000);
+        for w in [10, 15, 5] {
+            b.reserve(w, "w").unwrap();
+        }
+        b.finish(10);
+        let r1 = b.mark(); // covers the 10
+        b.finish(15);
+        let r2 = b.mark(); // covers the 10 and the 15
+        b.finish(5); // neither read covers it
+        b.measured(9_975, r2);
+        b.measured(9_990, r1);
+        // Measured 25 (the larger drop), plus the 5 no read covers.
+        assert_eq!(b.spent(), 30);
     }
 
     #[test]

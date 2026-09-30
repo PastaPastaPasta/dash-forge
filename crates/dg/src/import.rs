@@ -47,6 +47,15 @@ pub struct ImportArgs {
     /// Import at most this many issues and PRs (0 = all).
     #[arg(long, default_value_t = 0)]
     pub limit: usize,
+    /// Parallel lanes for each issue's and PR's comments, reviews, labels and state (issues
+    /// and PRs are always created one at a time, in upstream order). 1: one write at a time.
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = forge_import::pipeline::DEFAULT_LANES,
+        value_parser = forge_import::pipeline::parse_lanes
+    )]
+    pub concurrency: usize,
 }
 
 fn max_spend(dash: Option<f64>) -> Result<Option<u64>> {
@@ -128,6 +137,7 @@ pub async fn import(ctx: &Ctx, a: &ImportArgs) -> Result<()> {
         limit: a.limit,
         network: ctx.target.clone(),
         key: ctx.identity_path.clone(),
+        concurrency: a.concurrency,
     };
     report(ctx, &importer::run(&cfg).await)
 }

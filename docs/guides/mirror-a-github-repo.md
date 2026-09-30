@@ -101,6 +101,7 @@ Useful flags (see `forge-import --help`):
 | `--include-label-definitions` | A private destination only: mirror the label definitions too. Their names, colours and descriptions are not encrypted, so they are left out by default; the labels set on issues and PRs are encrypted either way. |
 | `--limit <n>` | At most `n` issues and PRs (the oldest), for a cheap trial. Only those items and their comments are read, so a trial on a repository with thousands of issues takes a few requests. |
 | `--yes` | No confirmation prompt, for CI. |
+| `--concurrency <n>` | How many issues and PRs have their comments, reviews, labels and state written at once (default 8, at most 16). Issues and PRs themselves are always created one at a time, in GitHub's order, so their numbers match. `1` writes one document at a time. See [large repositories](#large-repositories). |
 | `--summary-json <file>` | Write the run summary (counts, spend, key budget) as JSON. `forge-import` only. |
 | `--work-dir <dir>` | Keep the bare git mirror between runs instead of a temporary directory. `forge-import` only. |
 | `--network`, `--devnet-name`, `--identity` | As for `dg`. `DASH_FORGE_KEY` may be a file path or an inline `dfk1:` key. |
@@ -148,6 +149,40 @@ A signature or per-file checksum (`<file>.asc`, `.sig`, `.minisig`, `.sha256`, `
 **Into a private repository**, releases are sealed ([private repositories §16](../security/private-repos.md#16-sealed-releases)) and have no 4,096-byte limit: every asset is listed in an encrypted asset list. Each asset the importer can download from its public URL, within the same 4 GiB per run and 1 GiB per release (a release's files are held in memory while they are encrypted), is checked against the size and digest the source records, encrypted and stored on your own storage (the policy set above). The others are listed as links to the source until a later run seals them (`assetsLinked`). The download sends no token, so a private source repository's assets stay links. The source link, publisher and publish date are encrypted too. A private import with releases therefore needs storage of your own: without it, a release with assets is skipped and the run ends `partial`. Storage still shows each asset's exact size, which can identify the public release it mirrors, and the run warns about it.
 
 **Not mirrored.** Edits to a title or body after the item was first mirrored, a PR's later retarget to another base, and a PR's later head moves (its `headOid` stays at the commit it was mirrored at; `refs/mirror/pull/<n>/head` follows the head while the PR is open). Reactions, milestones, assignees, projects and GitHub Discussions are not mirrored.
+
+### Large repositories
+
+How the importer writes:
+- **Issues and PRs** are created one at a time, in GitHub's order, each confirmed before the next, so their numbers follow GitHub's.
+- **Everything else on an item** (its comments, reviews, labels and state) is written behind its creation, while later items are being created. `--concurrency` items (default 8) are written at once, and each item's own documents stay in their order: comments, then reviews, then labels and state.
+
+**How long it takes.** Timed on devnet bonsia (2026-09-30), importing the issues and PRs of `dashpay/dash-network-deploy` into two new repositories: 749 issues and PRs with 3,911 documents in all (1,097 comments, 1,301 reviews, 764 labels and state changes).
+
+| | `--concurrency 1` | `--concurrency 8` (the default) |
+|---|---|---|
+| Writing | 122.6 min (0.53 documents/s) | 38.1 min (1.71 documents/s) |
+| Whole run, including about 10 minutes reading GitHub | 132 min | about 48 min |
+| Spent (measured balance drop) | 3.164 DASH | 3.138 DASH |
+
+- **Speed:** writing was 3.2 times as fast; the cost was the same.
+- **Interrupted run:** the pipelined run was killed partway through by accident and then run again. The two passes together wrote every document once, and a sample of 47 items (including every item that was mid-write at the kill) matched the other mirror exactly.
+- **What limits it:** issues and PRs are still created one at a time, so a repository with many issues and PRs and few comments gains least.
+- **dashpay/dash:** about 74,000 documents. It took 10 to 28 hours one document at a time. From these rates, a pipelined import of it should take about 7 to 9 hours. This is an estimate, not a measurement.
+
+**Progress.** Every 30 seconds the importer prints a progress line to stderr:
+
+```
+forge-import: progress: 412/749 issues and PRs placed (up to upstream #430), 405 complete (all of the first 398, through upstream #415); 2210 documents written, 1.874210 DASH spent; 9m30s
+```
+
+- **Complete:** an item whose documents are all written.
+- **"all of the first N":** every item up to that point is complete.
+
+**Interrupted runs.** A run that stops (a crash, a network error, the spend cap) can leave a few dozen items created but not yet complete. Running it again finishes them: it reads each item's comments, reviews and state on chain and writes only what is missing, and it writes nothing twice.
+
+**Spend cap.** `--max-spend` still holds. Each write reserves its estimate against the cap before it is signed, counting the writes still in flight. When the cap is reached, no further write starts; the writes already in flight finish and are counted in the summary.
+
+**`--concurrency 1`.** This writes one document at a time, as earlier versions did. Use it when something else signs with the same identity at the same time, or when you measure each write's cost (`RUST_LOG=forge_import::cost=debug` selects it for you).
 
 ---
 

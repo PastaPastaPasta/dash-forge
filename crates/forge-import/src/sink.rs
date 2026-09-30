@@ -17,36 +17,42 @@
 //! `upstreamNumber`. An earlier item cannot be placed after later ones, so an incremental run
 //! that finds one missing refuses to start ([`Sink::check_order`]).
 //!
+//! **Pipelined.** The creates stay one strict sequence; each item's other writes (its thread,
+//! labels and state) run in up to `lanes` parallel lanes once the item is confirmed
+//! ([`crate::pipeline`]). Every lane charges the same budget, and every write is admitted
+//! under the ledger's lock ([`Budget::reserve`]).
+//!
 //! A dry run walks the same path with every write replaced by a count and an estimate.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
-use forge_core::collab::v2::{
-    Collab, ImportedTarget, PatchInput, PrBase, Provenance, Target, TargetKind,
-};
-use forge_core::collab::{ReleaseInput, Verdict};
+use forge_core::collab::v2::{ImportedTarget, PatchInput, PrBase, Provenance, Target, TargetKind};
+use forge_core::collab::ReleaseInput;
 use forge_core::history::Freshness;
 use forge_core::platform::PlatformClient;
+use forge_core::repo::credits_to_dash;
 use forge_core::rules::v2::{
-    issue_state_v2, next_transition, pr_state_v2, Actor, StateAction, TransitionMove,
-    TransitionTarget, Visibility,
+    next_transition, Actor, StateAction, TransitionMove, TransitionTarget, Visibility,
 };
 use forge_core::rules::{EventKind, MergeBaseTips};
 use forge_core::scope::RepoRef;
 
 use crate::budget::{collab_doc_credits, Budget, CollabDoc};
+use crate::chain::{Chain, Current};
 use crate::gitsync::{ProofRepo, Unfetched};
 use crate::model::{same_item, same_item_renamed, SrcCollab, SrcLabel, SrcRelease, SrcTarget};
-use crate::sealed_release::{CollabDest, ReleaseStorage, ReleaseTargets};
+use crate::pipeline::{lock, Progress, Stop};
+use crate::sealed_release::ReleaseStorage;
 use crate::summary::Counts;
 
 /// The run's accounting: budget, counts, warnings.
 pub struct Ledger<'a> {
-    /// `None` only in the unit tests' offline ledger ([`Ledger::offline`]).
     client: Option<&'a PlatformClient>,
     signer: Option<String>,
     dry_run: bool,
@@ -69,8 +75,34 @@ impl<'a> Ledger<'a> {
         dry_run: bool,
         budget: Budget,
     ) -> Self {
+        Self::with_client(Some(client), signer, dry_run, budget)
+    }
+
+    /// A ledger that reads no balance itself: its sink measures through its [`Chain`].
+    pub fn detached(signer: Option<String>, dry_run: bool, budget: Budget) -> Self {
+        Self::with_client(None, signer, dry_run, budget)
+    }
+
+    /// A ledger with no Platform client and no signer, for the unit tests: nothing it does
+    /// reads the network.
+    #[cfg(test)]
+    pub(crate) fn offline(dry_run: bool) -> Self {
+        Self::detached(None, dry_run, Budget::new(None))
+    }
+
+    /// Whether this is a dry run (every write replaced by a count and an estimate).
+    pub(crate) fn dry_run(&self) -> bool {
+        self.dry_run
+    }
+
+    fn with_client(
+        client: Option<&'a PlatformClient>,
+        signer: Option<String>,
+        dry_run: bool,
+        budget: Budget,
+    ) -> Self {
         Self {
-            client: Some(client),
+            client,
             signer,
             dry_run,
             budget,
@@ -78,32 +110,6 @@ impl<'a> Ledger<'a> {
             warnings: Vec::new(),
             refused: BTreeSet::new(),
         }
-    }
-
-    /// A ledger with no Platform client, for the unit tests: nothing it does reads the
-    /// network (no signer, so no balance to reconcile).
-    #[cfg(test)]
-    pub(crate) fn offline(dry_run: bool) -> Self {
-        Self {
-            client: None,
-            signer: None,
-            dry_run,
-            budget: Budget::new(None),
-            counts: Counts::default(),
-            warnings: Vec::new(),
-            refused: BTreeSet::new(),
-        }
-    }
-
-    /// The Platform client the destination is read through.
-    fn client(&self) -> Result<&'a PlatformClient> {
-        self.client
-            .context("this ledger is offline: it has no Platform client to read with")
-    }
-
-    /// Whether this is a dry run (every write replaced by a count and an estimate).
-    pub(crate) fn dry_run(&self) -> bool {
-        self.dry_run
     }
 
     /// Record a warning (also logged). Redacted: warnings are published (the Action's job
@@ -144,9 +150,10 @@ impl<'a> Ledger<'a> {
         self.warn(msg);
     }
 
-    /// One write: charged to the budget first (refused past the cap, before anything is
-    /// signed), counted, executed unless this is a dry run, then reconciled with the
-    /// measured balance so an estimate that ran low stops the NEXT write.
+    /// One write outside the pipeline (a sealed release: one at a time, before any issue or
+    /// PR): charged to the budget first (refused past the cap, before anything is signed),
+    /// counted, executed unless this is a dry run, then reconciled with the measured balance so
+    /// an estimate that ran low stops the NEXT write.
     pub async fn write<T, F, Fut>(
         &mut self,
         what: String,
@@ -173,41 +180,23 @@ impl<'a> Ledger<'a> {
     /// The signer's balance, read only when the per-write cost trace is on
     /// (`RUST_LOG=forge_import::cost=debug`): it costs a query per write.
     pub async fn traced_balance(&self) -> Option<u64> {
-        if !tracing::enabled!(target: "forge_import::cost", tracing::Level::DEBUG) {
+        if !cost_traced() {
             return None;
         }
         self.balance(self.signer.as_deref()?).await
     }
 
-    /// Log one write's estimate against its measured balance drop (calibration). Nodes can
-    /// answer from a height before the write landed, so the balance is re-read (up to ~10 s)
-    /// until it moves; every write costs something.
+    /// Log one write's estimate against its measured balance drop (calibration).
     pub async fn trace_cost(&self, what: &str, estimated: u64, before: Option<u64>) {
-        let Some(before) = before else { return };
-        let mut after = self.traced_balance().await;
-        for _ in 0..10 {
-            if after.is_some_and(|a| a != before) {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            after = self.traced_balance().await;
-        }
-        if let Some(after) = after {
-            tracing::debug!(
-                target: "forge_import::cost",
-                what,
-                estimated,
-                measured = before.saturating_sub(after),
-                "write cost"
-            );
-        }
+        trace_cost(what, estimated, before, || self.traced_balance()).await;
     }
 
     /// Pull the measured balance drop into the budget; whether the balance could be read.
     pub async fn reconcile(&mut self) -> bool {
-        if let (Some(signer), Some(client)) = (&self.signer, self.client) {
+        let mark = self.budget.mark();
+        if let (Some(client), Some(signer)) = (self.client, &self.signer) {
             if let Ok(balance) = client.get_balance(signer).await {
-                self.budget.reconcile(balance);
+                self.budget.measured(balance, mark);
                 return true;
             }
         }
@@ -218,28 +207,60 @@ impl<'a> Ledger<'a> {
     pub async fn balance(&self, identity: &str) -> Option<u64> {
         self.client?.get_balance(identity).await.ok()
     }
+}
 
-    fn is_mine(&self, author: &str) -> bool {
-        self.signer.as_deref().is_none_or(|s| s == author)
+/// Whether the per-write cost trace is on (`RUST_LOG=forge_import::cost=debug`). It reads the
+/// balance around each write, which writes in flight together would blur: a traced run
+/// writes one at a time.
+pub fn cost_traced() -> bool {
+    tracing::enabled!(target: "forge_import::cost", tracing::Level::DEBUG)
+}
+
+/// Log one write's estimate against its measured balance drop (calibration). Nodes can answer
+/// from a height before the write landed, so the balance is re-read (up to ~10 s, `read`)
+/// until it moves; every write costs something.
+async fn trace_cost<F, Fut>(what: &str, estimated: u64, before: Option<u64>, read: F)
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Option<u64>>,
+{
+    let Some(before) = before else { return };
+    let mut after = read().await;
+    for _ in 0..10 {
+        if after.is_some_and(|a| a != before) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        after = read().await;
+    }
+    if let Some(after) = after {
+        tracing::debug!(
+            target: "forge_import::cost",
+            what,
+            estimated,
+            measured = before.saturating_sub(after),
+            "write cost"
+        );
     }
 }
 
-/// The destination and its accounting.
-pub struct Sink<'a> {
-    collab: Collab<'a>,
-    /// `None` only in a dry run whose destination does not exist yet.
-    repo: Option<RepoRef>,
-    /// Budget, counts, warnings.
-    pub ledger: Ledger<'a>,
+/// How often lanes in flight together read the balance for the spend guard: at most once in
+/// this long across all of them (each read is a DAPI request). Their reservations cover the
+/// writes that finished since ([`Budget::spent`]). One lane reads after every write.
+const MEASURE_EVERY: Duration = Duration::from_secs(2);
+
+/// How often the write phase logs its progress.
+const PROGRESS_EVERY: Duration = Duration::from_secs(30);
+
+/// What the sink caches while it runs (read once, or kept from what it wrote).
+#[derive(Default)]
+struct Caches {
     /// Every imported issue and PR in the destination, `(imported.url, target)`, whoever
     /// wrote it; loaded on the first miss of a point lookup.
     index: Option<Vec<(String, Target)>>,
     /// The destination's members (maintainers and writers), read once: an imported item by
     /// a member is an earlier mirror's copy; one by anyone else is a squatter.
     members: Option<BTreeSet<String>>,
-    /// The git data a merge commit's ancestry is checked in, when this run has any (see
-    /// [`Sink::merge_proof`]).
-    mirror: Option<ProofRepo>,
     /// Each destination PR's base as the readers fold it, by target `$id`. Filled wherever
     /// a patch is read.
     opened: BTreeMap<String, PrBase>,
@@ -249,9 +270,10 @@ pub struct Sink<'a> {
     /// PRs (destination `$id`) whose base was not a branch on chain when they were mirrored:
     /// no merge into it ever counts (D-501), so a later run cannot prove them either.
     never_provable: BTreeSet<String>,
-    /// Bases this write phase read from the network already. The process's synced copy of
-    /// the history may be the dry run's, from before this run's push: a base's first read
-    /// here asks the network (`Freshness::Now`), later ones reuse that copy.
+    /// Bases this write phase has read from the network. The process's synced copy of the
+    /// history may be the dry run's, from before this run's push: until a base's first read
+    /// here has come back, reads ask the network (`Freshness::Now`), later ones reuse that
+    /// copy.
     fresh_read: BTreeSet<String>,
     /// Each source item looked up this run, by `(tk, source number)`: its copy, or `None`
     /// when it has none (yet).
@@ -259,6 +281,39 @@ pub struct Sink<'a> {
     /// The first source item stored at a number other than its own ([`Sink::create`]):
     /// numbers diverge from there on, said once.
     diverged: bool,
+}
+
+/// An item placed on chain (created, or found) whose other writes are still to do: a lane's
+/// job ([`crate::pipeline`]).
+struct Job<'s> {
+    index: usize,
+    t: &'s SrcTarget,
+    target: Target,
+    fresh: bool,
+}
+
+/// The destination and its accounting. Its methods take `&self`: the pipelined write phase
+/// runs several at once, over state behind locks that are never held across an await.
+pub struct Sink<'a, C: Chain> {
+    chain: C,
+    /// `None` only in a dry run whose destination does not exist yet.
+    repo: Option<RepoRef>,
+    /// Budget, counts, warnings.
+    ledger: Mutex<Ledger<'a>>,
+    /// The signer (copied from the ledger: read on every item).
+    signer: Option<String>,
+    dry_run: bool,
+    /// The git data a merge commit's ancestry is checked in, when this run has any (see
+    /// [`Sink::merge_proof`]).
+    mirror: Option<ProofRepo>,
+    caches: Mutex<Caches>,
+    /// Lanes for the items' dependent writes (1: one write at a time).
+    lanes: usize,
+    stop: Stop,
+    /// When lanes last read the balance ([`MEASURE_EVERY`]).
+    measured_at: Mutex<Option<Instant>>,
+    /// Held by the lane waiting out a base's read-after-write lag ([`Sink::merge_proof`]).
+    lag_gate: futures::lock::Mutex<()>,
     /// Where a private destination's sealed release files and asset lists go (`None`: the
     /// storage policy names no storage of your own).
     release_storage: Option<ReleaseStorage>,
@@ -330,16 +385,9 @@ fn state_after(thread: &Result<()>) -> bool {
     thread.as_ref().err().is_none_or(item_error)
 }
 
-/// A target's state on chain: its state code (the sum of its transitions) and its labels.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct Current {
-    code: i64,
-    labels: BTreeSet<String>,
-}
-
 /// The state code `t` has at the source: an issue open (0) or closed (1); a PR open (0),
 /// closed (1), merged (2), and a draft adds 8 unless merged.
-fn wanted_code(t: &SrcTarget) -> i64 {
+pub(crate) fn wanted_code(t: &SrcTarget) -> i64 {
     let closed = i64::from(t.closed || t.merged_oid.is_some());
     match t.kind {
         TargetKind::Issue => closed,
@@ -352,7 +400,12 @@ fn wanted_code(t: &SrcTarget) -> i64 {
 /// `to` (breadth first over the legal moves, [`next_transition`]); empty when it already is
 /// there, or cannot get there (a merged PR is terminal). A merge is only a step when `to` is
 /// merged.
-fn state_path(target: TransitionTarget, from: i64, to: i64, number: u32) -> Vec<TransitionMove> {
+pub(crate) fn state_path(
+    target: TransitionTarget,
+    from: i64,
+    to: i64,
+    number: u32,
+) -> Vec<TransitionMove> {
     use std::collections::VecDeque;
     const ACTIONS: [StateAction; 5] = [
         StateAction::Close,
@@ -475,22 +528,22 @@ fn text_doc(text: &str) -> u64 {
     text.len() as u64 + 160
 }
 
-impl<'a> Sink<'a> {
-    /// A sink for `repo` (see [`Ledger`]).
-    pub fn new(collab: Collab<'a>, repo: Option<RepoRef>, ledger: Ledger<'a>) -> Self {
+impl<'a, C: Chain> Sink<'a, C> {
+    /// A sink for `repo` (see [`Ledger`]), writing one item at a time until
+    /// [`Self::with_lanes`].
+    pub fn new(chain: C, repo: Option<RepoRef>, ledger: Ledger<'a>) -> Self {
         Self {
-            collab,
+            chain,
             repo,
-            ledger,
-            index: None,
-            members: None,
+            signer: ledger.signer.clone(),
+            dry_run: ledger.dry_run,
+            ledger: Mutex::new(ledger),
             mirror: None,
-            opened: BTreeMap::new(),
-            lag_waited: BTreeSet::new(),
-            never_provable: BTreeSet::new(),
-            fresh_read: BTreeSet::new(),
-            known: BTreeMap::new(),
-            diverged: false,
+            caches: Mutex::new(Caches::default()),
+            lanes: 1,
+            stop: Stop::default(),
+            measured_at: Mutex::new(None),
+            lag_gate: futures::lock::Mutex::new(()),
             release_storage: None,
         }
     }
@@ -509,12 +562,112 @@ impl<'a> Sink<'a> {
         self
     }
 
+    /// Run the items' dependent writes in up to `lanes` lanes (1..=[`crate::pipeline::MAX_LANES`];
+    /// 1 when a per-write cost trace is on, this crate's or forge-core's
+    /// `DASH_FORGE_COST_TRACE=1`, which read the balance around each write).
+    #[must_use]
+    pub fn with_lanes(mut self, lanes: usize) -> Self {
+        self.lanes = if cost_traced() || forge_core::backends::platform::pipeline_window() == 1 {
+            1
+        } else {
+            lanes.clamp(1, crate::pipeline::MAX_LANES)
+        };
+        self
+    }
+
+    /// The ledger, once the sink is done.
+    pub fn into_ledger(self) -> Ledger<'a> {
+        self.ledger
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn ledger(&self) -> MutexGuard<'_, Ledger<'a>> {
+        lock(&self.ledger)
+    }
+
+    fn caches(&self) -> MutexGuard<'_, Caches> {
+        lock(&self.caches)
+    }
+
+    fn is_mine(&self, author: &str) -> bool {
+        self.signer.as_deref().is_none_or(|s| s == author)
+    }
+
+    fn warn(&self, msg: impl Into<String>) {
+        self.ledger().warn(msg);
+    }
+
+    /// One write: charged to the budget first (refused past the cap, before anything is
+    /// signed; reserved while other lanes write), counted, executed unless this is a dry run,
+    /// then reconciled with the measured balance so an estimate that ran low stops a later
+    /// write. Refused once the run is stopping ([`Stop`]).
+    async fn write<T, F, Fut>(
+        &self,
+        what: String,
+        credits: u64,
+        count: fn(&mut Counts),
+        f: F,
+    ) -> Result<Option<T>>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = forge_core::Result<T>>,
+    {
+        self.stop.check()?;
+        {
+            let mut ledger = self.ledger();
+            if self.dry_run {
+                ledger.budget.charge(credits, what.clone())?;
+            } else {
+                ledger.budget.reserve(credits, what.clone())?;
+            }
+            count(&mut ledger.counts);
+        }
+        if self.dry_run {
+            return Ok(None);
+        }
+        let before = self.traced_balance().await;
+        let out = f().await;
+        self.ledger().budget.finish(credits);
+        self.measure(false).await;
+        let out = out.with_context(|| format!("writing {what}"))?;
+        trace_cost(&what, credits, before, || self.traced_balance()).await;
+        Ok(Some(out))
+    }
+
+    /// The signer's balance, when the per-write cost trace is on (lanes are 1 then).
+    async fn traced_balance(&self) -> Option<u64> {
+        if !cost_traced() {
+            return None;
+        }
+        self.chain.balance(self.signer.as_deref()?).await
+    }
+
+    /// Pull the measured balance drop into the budget: after every write with one lane; with
+    /// more, at most every [`MEASURE_EVERY`] across them, unless `now`.
+    async fn measure(&self, now: bool) {
+        let Some(signer) = self.signer.as_deref() else {
+            return;
+        };
+        if self.lanes > 1 && !now {
+            let mut at = lock(&self.measured_at);
+            if at.is_some_and(|t| t.elapsed() < MEASURE_EVERY) {
+                return;
+            }
+            *at = Some(Instant::now());
+        }
+        let mark = self.ledger().budget.mark();
+        if let Some(balance) = self.chain.balance(signer).await {
+            self.ledger().budget.measured(balance, mark);
+        }
+    }
+
     /// The base tips a reader checks PR `target_id`'s merge against: the base it was opened
     /// against, at its `$createdAt` ([`pr_base_tips`], as `Collab::patch_view` folds it). A PR
     /// this run has not read was opened now (after this run's push). None without a
     /// destination (a dry run of a repo not created yet).
     async fn base_tips(
-        &mut self,
+        &self,
         target_id: &str,
         base_ref: &str,
         freshness: Freshness,
@@ -522,40 +675,36 @@ impl<'a> Sink<'a> {
         let PrBase {
             ref_name: base_ref,
             opened_at,
-        } = self.opened.get(target_id).cloned().unwrap_or(PrBase {
-            ref_name: base_ref.to_string(),
-            opened_at: u64::MAX,
-        });
+        } = self
+            .caches()
+            .opened
+            .get(target_id)
+            .cloned()
+            .unwrap_or(PrBase {
+                ref_name: base_ref.to_string(),
+                opened_at: u64::MAX,
+            });
         let Some(repo) = self.repo.as_ref() else {
             return Ok(MergeBaseTips::default());
         };
-        // A private repo's ref names are sealed: Collab reads (and caches) its updates.
-        if repo.visibility == Visibility::Private {
-            return Ok(self
-                .collab
-                .base_ref_tips(repo, &base_ref, opened_at)
-                .await?);
-        }
         // One read of the repo's git history per process (`Synced`), shared by every PR of
         // the run; `Now` when this run's own push may not show yet, and for a base's first
-        // read in a write phase (the synced copy may predate this run's push).
-        let first_write_read = !self.ledger.dry_run && self.fresh_read.insert(base_ref.clone());
+        // read in a write phase (the synced copy may predate this run's push). Lanes that ask
+        // before that first read has come back ask the network too.
+        let first_write_read = !self.dry_run && !self.caches().fresh_read.contains(&base_ref);
         let freshness = if first_write_read {
             Freshness::Now
         } else {
             freshness
         };
-        let client = self.ledger.client()?;
-        let core = client.fetch_contract(&repo.forge().core).await?;
-        Ok(forge_core::refs::read_merge_base(
-            client,
-            &core,
-            &repo.scope()?,
-            &base_ref,
-            opened_at,
-            freshness,
-        )
-        .await?)
+        let tips = self
+            .chain
+            .merge_base(repo, &base_ref, opened_at, freshness)
+            .await?;
+        if first_write_read {
+            self.caches().fresh_read.insert(base_ref);
+        }
+        Ok(tips)
     }
 
     /// The oid a merge event for `t` names so that every reader counts it (D-602), or `None`
@@ -576,7 +725,7 @@ impl<'a> Sink<'a> {
     ///
     /// A run without `code` pushes nothing: the git data is the base branches fetched for the
     /// proof ([`crate::gitsync::fetch_proof_bases`]), and only tips already on chain count.
-    async fn merge_proof(&mut self, t: &SrcTarget, target_id: &str) -> Result<Option<Vec<u8>>> {
+    async fn merge_proof(&self, t: &SrcTarget, target_id: &str) -> Result<Option<Vec<u8>>> {
         let (Some(merged), Some(patch), Some(proof)) =
             (&t.merged_oid, &t.patch, self.mirror.as_ref())
         else {
@@ -591,17 +740,19 @@ impl<'a> Sink<'a> {
         let local = pushed_tip(proof, base, &merged);
         let (dir, pushed) = (proof.dir.clone(), proof.pushed);
         let contains = |tips: &MergeBaseTips| chain_tip_containing(&dir, tips, &merged);
+        let proven = |tips: &MergeBaseTips| contains(tips).and_then(|tip| hex::decode(tip).ok());
         let mut tips = self.base_tips(target_id, base, Freshness::Synced).await?;
+        let opened = self.caches().opened.get(target_id).cloned();
         // A PR opened against a base that did not exist then has no tips, and no merge into
         // it ever counts (D-501); naming one would be re-posted, and paid for, every run.
-        let base_counts = tips.tip.is_some() || !self.opened.contains_key(target_id);
+        let base_counts = tips.tip.is_some() || opened.is_none();
         // Never provable: the PR was opened against a base with no tip on chain (read from
         // chain), or this run pushes nothing and the base never had a tip, so the PR it just
         // created is opened against a base that is no branch (D-501).
         if !base_counts || (!pushed && tips.historical.is_empty()) {
-            self.never_provable.insert(target_id.to_string());
+            self.caches().never_provable.insert(target_id.to_string());
         }
-        if self.ledger.dry_run {
+        if self.dry_run {
             return Ok(contains(&tips)
                 .or(local.filter(|_| base_counts))
                 .and_then(|tip| hex::decode(tip).ok()));
@@ -612,55 +763,65 @@ impl<'a> Sink<'a> {
         // Only where the wait can help: a base readers count for this PR, and the same ref
         // the destination PR folds against (a PR retargeted at the source keeps its original
         // base on chain); and once per base per run.
-        let folded = self
-            .opened
-            .get(target_id)
+        let settled = |tips: &MergeBaseTips| {
+            contains(tips).is_some() || local.as_ref().is_none_or(|l| tips.contains(l))
+        };
+        if settled(&tips) {
+            return Ok(proven(&tips));
+        }
+        // One lane waits at a time. A lane that finds another waiting reads, once that one is
+        // done, the copy it brought up to date (`Synced`), as the next PR of a sequential run
+        // would, instead of settling for what it read before the wait.
+        let _gate = self.lag_gate.lock().await;
+        tips = self.base_tips(target_id, base, Freshness::Synced).await?;
+        let folded = opened
+            .as_ref()
             .map_or(base.as_str(), |b| b.ref_name.as_str());
-        let may_lag = base_counts && folded == base && !self.lag_waited.contains(base);
+        let may_lag =
+            base_counts && folded == base && !self.caches().lag_waited.contains(base.as_str());
         let waits = if may_lag { BASE_LAG_WAITS } else { &[] };
         for wait in waits {
-            let seen = local.as_ref().is_none_or(|l| tips.contains(l));
-            if contains(&tips).is_some() || seen {
+            if settled(&tips) {
                 break;
             }
             // Marked only when a wait happens: a PR whose merge the mirror lacks (no `local`)
             // must not use up the one wait a later PR on the same base may need.
-            self.lag_waited.insert(base.clone());
-            tokio::time::sleep(std::time::Duration::from_millis(*wait)).await;
-            self.collab.refs_changed();
+            self.caches().lag_waited.insert(base.clone());
+            tokio::time::sleep(Duration::from_millis(*wait)).await;
+            self.chain.refs_changed();
             tips = self.base_tips(target_id, base, Freshness::Now).await?;
         }
-        Ok(contains(&tips).and_then(|tip| hex::decode(tip).ok()))
+        Ok(proven(&tips))
     }
 
     /// Whether `author` may have mirrored an item: the signer, or a member of the
     /// destination. Issues and PRs are ungated, so anyone else's `imported` is a claim, not a
     /// copy.
-    async fn trusted(&mut self, author: &str) -> Result<bool> {
-        if self.ledger.is_mine(author) {
+    async fn trusted(&self, author: &str) -> Result<bool> {
+        if self.is_mine(author) {
             return Ok(true);
         }
-        if self.members.is_none() {
-            let members = match &self.repo {
-                Some(repo) => forge_core::members::MemberReader::new(self.ledger.client()?)
-                    .list(repo)
-                    .await
-                    .context("reading the destination's members")?
-                    .into_iter()
-                    .map(|m| m.identity_id)
-                    .collect(),
-                None => BTreeSet::new(),
-            };
-            self.members = Some(members);
+        if let Some(members) = &self.caches().members {
+            return Ok(members.contains(author));
         }
-        Ok(self.members.as_ref().is_some_and(|m| m.contains(author)))
+        let members = match &self.repo {
+            Some(repo) => self
+                .chain
+                .members(repo)
+                .await
+                .context("reading the destination's members")?,
+            None => BTreeSet::new(),
+        };
+        let trusted = members.contains(author);
+        self.caches().members = Some(members);
+        Ok(trusted)
     }
 
     /// Whether the document `target` (key `url`) is the mirrored copy of `t`: the same
     /// source item, written by the signer (a renamed source repo still matches) or by a
     /// member of the destination (exact repository only).
-    async fn is_copy(&mut self, url: &str, target: &Target, t: &SrcTarget) -> Result<bool> {
-        let mine = self.ledger.is_mine(&target.author);
+    async fn is_copy(&self, url: &str, target: &Target, t: &SrcTarget) -> Result<bool> {
+        let mine = self.is_mine(&target.author);
         // Membership is read only when it can change the answer.
         let member = !mine
             && target.kind == t.kind
@@ -676,7 +837,7 @@ impl<'a> Sink<'a> {
     }
 
     /// Mirror everything in `src`: label definitions, releases, then issues and PRs.
-    pub async fn sync(&mut self, src: &SrcCollab) -> Result<()> {
+    pub async fn sync(&self, src: &SrcCollab) -> Result<()> {
         if let Some(labels) = &src.labels {
             self.sync_labels(labels).await?;
         }
@@ -689,16 +850,61 @@ impl<'a> Sink<'a> {
             }
         }
         self.check_order(src).await?;
-        for t in &src.targets {
-            self.sync_target(t).await?;
+        self.sync_targets(&src.targets).await
+    }
+
+    /// Every issue and PR: created (or found) strictly in order, the rest of each item's
+    /// writes pipelined behind ([`crate::pipeline::run`]).
+    async fn sync_targets(&self, targets: &[SrcTarget]) -> Result<()> {
+        let progress = Progress::new(targets.len(), PROGRESS_EVERY);
+        let progress = &progress;
+        let result = crate::pipeline::run(
+            targets.iter().enumerate(),
+            self.lanes,
+            &self.stop,
+            |(index, t)| async move {
+                let job = self.open_target(index, t).await;
+                if let Ok(job) = &job {
+                    progress.placed(t.number);
+                    if job.is_none() {
+                        progress.completed(index, t.number);
+                    }
+                }
+                self.say(progress, false);
+                job
+            },
+            |job: Job<'_>| async move {
+                self.finish_target(&job).await?;
+                progress.completed(job.index, job.t.number);
+                self.say(progress, false);
+                Ok(())
+            },
+        )
+        .await;
+        if self.lanes > 1 && !self.dry_run {
+            // What the lanes wrote since their last read.
+            self.measure(true).await;
         }
-        Ok(())
+        self.say(progress, true);
+        result
+    }
+
+    /// Log the write phase's progress when a line is due.
+    fn say(&self, progress: &Progress, last: bool) {
+        let (written, spent) = {
+            let l = self.ledger();
+            (l.counts.item_documents(), l.budget.spent())
+        };
+        let spent = (!self.dry_run).then(|| credits_to_dash(spent));
+        if let Some(line) = progress.line(last, written, spent) {
+            eprintln!("{line}");
+        }
     }
 
     /// The highest source number of `kind` the destination holds from a trusted writer (the
     /// signer or a member), or 0. A stranger can set any `upstreamNumber`, so theirs are
     /// skipped; one page usually settles it, else every one is read.
-    async fn held_upstream(&mut self, kind: TargetKind) -> Result<u32> {
+    async fn held_upstream(&self, kind: TargetKind) -> Result<u32> {
         let Some(repo) = self.repo.clone() else {
             return Ok(0);
         };
@@ -706,7 +912,7 @@ impl<'a> Sink<'a> {
         // every one. Not "a full page": unreadable rows are dropped before this sees them.
         for all in [false, true] {
             let rows = self
-                .collab
+                .chain
                 .upstream_numbered(&repo, kind, all)
                 .await
                 .context("reading the destination's upstream numbers")?;
@@ -739,7 +945,7 @@ impl<'a> Sink<'a> {
     /// The check is per kind: GitHub numbers issues and PRs in one sequence, but a new issue
     /// below the highest mirrored PR (or the reverse) is not caught here; it takes the next
     /// number, and its upstream number stays with it.
-    async fn check_order(&mut self, src: &SrcCollab) -> Result<()> {
+    async fn check_order(&self, src: &SrcCollab) -> Result<()> {
         for kind in [TargetKind::Issue, TargetKind::Patch] {
             let held = self.held_upstream(kind).await?;
             let mut below = Vec::new();
@@ -768,7 +974,7 @@ impl<'a> Sink<'a> {
                     missing.len() - 1
                 );
             }
-            self.ledger.warn(format!(
+            self.warn(format!(
                 "{} upstream {noun}(s) from #{first} are mirrored after #{held}: Forge \
                  numbers densely, so they take the next numbers (each keeps its source number \
                  as its upstream number)",
@@ -780,10 +986,10 @@ impl<'a> Sink<'a> {
 
     // --- labels and releases -----------------------------------------------------------
 
-    async fn sync_labels(&mut self, labels: &[SrcLabel]) -> Result<()> {
+    async fn sync_labels(&self, labels: &[SrcLabel]) -> Result<()> {
         let existing: BTreeMap<String, (String, String, bool)> = match &self.repo {
             Some(repo) => self
-                .collab
+                .chain
                 .labels(repo)
                 .await
                 .context("reading the destination's labels")?
@@ -795,7 +1001,7 @@ impl<'a> Sink<'a> {
                 .collect(),
             None => BTreeMap::new(),
         };
-        let (collab, repo) = (&self.collab, self.repo.as_ref());
+        let (chain, repo) = (&self.chain, self.repo.as_ref());
         // Two source labels that clip to the same name would rewrite one definition on every
         // run; the first wins.
         let mut seen = BTreeSet::new();
@@ -807,18 +1013,17 @@ impl<'a> Sink<'a> {
                 CollabDoc::Label,
                 (l.name.len() + l.color.len() + l.description.len() + 60) as u64,
             );
-            self.ledger
-                .write(
-                    format!("label {}", l.name),
-                    credits,
-                    |c| c.labels += 1,
-                    || async move {
-                        collab
-                            .create_label(need(repo)?, &l.name, &l.color, &l.description, false)
-                            .await
-                    },
-                )
-                .await?;
+            self.write(
+                format!("label {}", l.name),
+                credits,
+                |c| c.labels += 1,
+                || async move {
+                    chain
+                        .create_label(need(repo)?, &l.name, &l.color, &l.description)
+                        .await
+                },
+            )
+            .await?;
         }
         Ok(())
     }
@@ -838,17 +1043,14 @@ impl<'a> Sink<'a> {
     /// signatures and common platform builds first ([`crate::model::fit_assets`]), and its
     /// notes end with a line saying how many are not mirrored, linking the source release
     /// ([`crate::model::notes_with_footer`]), which readers show.
-    ///
-    /// A private destination's releases are sealed instead ([`crate::sealed_release`]).
-    async fn sync_releases(&mut self, releases: &[SrcRelease]) -> Result<()> {
+    async fn sync_releases(&self, releases: &[SrcRelease]) -> Result<()> {
         let mut known = crate::assets::Known::default();
         let existing: BTreeMap<String, String> = match &self.repo {
             Some(repo) => self
-                .collab
+                .chain
                 .releases(repo)
                 .await
                 .context("reading the destination's releases")?
-                .current
                 .into_iter()
                 .map(|r| {
                     known.add(&r.tag_name, &r.assets);
@@ -860,14 +1062,14 @@ impl<'a> Sink<'a> {
         };
         let fetch = crate::assets::Https::default();
         let mut budget = crate::assets::RUN_BYTES;
-        let dry = self.ledger.dry_run;
+        let dry = self.dry_run;
         // Newest first (the source's order): the hashing budget goes to the newest releases.
         let mut prepared = Vec::with_capacity(releases.len());
         for r in releases {
             // A tag the destination would refuse (over 63 bytes, or outside the git ref
             // grammar the contract enforces, `@{` included) skips that release, not the run.
             if let Err(e) = forge_core::collab::v2::check_tag_name(&r.tag_name) {
-                self.ledger.skip(format!("release not mirrored: {e}"));
+                self.ledger().skip(format!("release not mirrored: {e}"));
                 continue;
             }
             let mut assets_in = r.assets.clone();
@@ -881,7 +1083,7 @@ impl<'a> Sink<'a> {
             )
             .await
             {
-                self.ledger.warn(w);
+                self.warn(w);
             }
             if dry {
                 // Priced, not fetched: an asset a real run would hash changes the release.
@@ -903,10 +1105,13 @@ impl<'a> Sink<'a> {
             // Counted and warned for the releases this run writes (a re-run that finds them
             // unchanged says nothing again).
             let unhashed = assets_in.iter().filter(|a| a.sha256.is_empty()).count();
-            self.ledger.counts.assets_omitted += dropped as u64;
-            self.ledger.counts.assets_unhashed += unhashed as u64;
+            {
+                let mut ledger = self.ledger();
+                ledger.counts.assets_omitted += dropped as u64;
+                ledger.counts.assets_unhashed += unhashed as u64;
+            }
             if dropped > 0 {
-                self.ledger.warn(format!(
+                self.warn(format!(
                     "release {}: {dropped} of its {total} assets do not fit the 4096 bytes a \
                      release lists; left out (kept first: checksum files, signatures, the \
                      common platform builds; its notes link the source release)",
@@ -925,110 +1130,135 @@ impl<'a> Sink<'a> {
                 assets: assets_in,
                 ..ReleaseInput::default()
             };
-            let (collab, repo) = (&self.collab, self.repo.as_ref());
+            let (chain, repo) = (&self.chain, self.repo.as_ref());
             let input = &input;
             let written = self
-                .ledger
                 .write(
                     format!("release {}", r.tag_name),
                     credits,
                     |c| c.releases += 1,
-                    || async move { collab.create_release(need(repo)?, input).await },
+                    || async move { chain.create_release(need(repo)?, input).await },
                 )
                 .await;
             if let Err(e) = written {
                 let item = item_error(&e);
-                self.ledger.refused_release(&r.tag_name, e, item)?;
+                self.ledger().refused_release(&r.tag_name, e, item)?;
             }
         }
         Ok(())
     }
 
     /// A private destination's releases, sealed ([`crate::sealed_release`]), their files and
-    /// asset lists stored on the run's release storage.
-    async fn sync_sealed_releases(&mut self, releases: &[SrcRelease]) -> Result<()> {
+    /// asset lists stored on the run's release storage. They are written before any issue or
+    /// PR, one at a time, so the ledger is taken out of its lock for them and put back after.
+    async fn sync_sealed_releases(&self, releases: &[SrcRelease]) -> Result<()> {
         let Some(repo) = self.repo.as_ref() else {
             return Ok(());
         };
-        let targets = self
-            .release_storage
-            .as_ref()
-            .map(ReleaseStorage::targets)
-            .transpose()
-            .context("opening the release storage")?;
-        let dest = CollabDest {
-            collab: &self.collab,
-            repo,
-            store: targets.as_ref().map(ReleaseTargets::store),
-        };
-        let fetch = crate::assets::Https::default();
-        crate::sealed_release::sync(&mut self.ledger, &dest, releases, &fetch).await
+        let placeholder = Ledger::detached(self.signer.clone(), self.dry_run, Budget::new(None));
+        let mut ledger = std::mem::replace(&mut *self.ledger(), placeholder);
+        let result = self
+            .chain
+            .sync_sealed_releases(&mut ledger, repo, releases, self.release_storage.as_ref())
+            .await;
+        *self.ledger() = ledger;
+        result
     }
 
     // --- issues and pull requests --------------------------------------------------------
 
-    /// Mirror one issue or PR. An error that only concerns this item (the destination
-    /// refused its content) skips it with a warning instead of failing the run, so one bad
-    /// item cannot stop every future run; spend-cap and network errors still stop the run.
-    async fn sync_target(&mut self, t: &SrcTarget) -> Result<()> {
-        match self.sync_target_inner(t).await {
-            Err(e) if item_error(&e) => {
-                self.ledger
-                    .skip(format!("{} not mirrored this run: {e:#}", t.imported.url));
-                // Only a refusal of the item's own content is final for it; a state move a
-                // concurrent change beat (a `c*` rule) or a taken number is retried next run.
-                if content_error(&e) {
-                    self.ledger.refused.insert(key_of(t));
-                }
-                Ok(())
-            }
-            other => other,
+    /// An error that only concerns item `t` (the destination refused its content) skips it
+    /// with a warning instead of failing the run, so one bad item cannot stop every future
+    /// run; spend-cap and network errors still stop the run.
+    fn item_skipped(&self, t: &SrcTarget, e: anyhow::Error) -> Result<()> {
+        if !item_error(&e) {
+            return Err(e);
         }
+        let mut ledger = self.ledger();
+        ledger.skip(format!("{} not mirrored this run: {e:#}", t.imported.url));
+        // Only a refusal of the item's own content is final for it; a state move a
+        // concurrent change beat (a `c*` rule) or a taken number is retried next run.
+        if content_error(&e) {
+            ledger.refused.insert(key_of(t));
+        }
+        Ok(())
     }
 
-    async fn sync_target_inner(&mut self, t: &SrcTarget) -> Result<()> {
+    /// The head's part of item `t` (number `index` in the run): find its copy, or create it at
+    /// the dense next number. `None` when nothing more is written for it.
+    async fn open_target<'s>(&self, index: usize, t: &'s SrcTarget) -> Result<Option<Job<'s>>> {
+        self.open_target_inner(index, t)
+            .await
+            .or_else(|e| self.item_skipped(t, e).map(|()| None))
+    }
+
+    async fn open_target_inner<'s>(
+        &self,
+        index: usize,
+        t: &'s SrcTarget,
+    ) -> Result<Option<Job<'s>>> {
         let noun = t.kind.noun();
         let (target, fresh) = if let Some(target) = self.existing(t).await? {
             (target, false)
         } else {
             let target = self.create(t, noun).await?;
-            if let Some(idx) = &mut self.index {
+            let mut caches = self.caches();
+            if let Some(idx) = &mut caches.index {
                 idx.push((t.imported.url.clone(), target.clone()));
             }
-            self.known.insert(key_of(t), Some(target.clone()));
+            caches.known.insert(key_of(t), Some(target.clone()));
             (target, true)
         };
-        if !fresh && !self.ledger.is_mine(&target.author) {
+        if !fresh && !self.is_mine(&target.author) {
             // A member mirrored this item (an earlier mirror identity, or a second mirror):
             // writing to it, or recreating it at a new number, would duplicate it. (A
             // non-member's claim never gets here: it is a squatter, and the item is created
             // at another number.) Settled: the member's copy is permanent, so it does not hold
             // the sync state (a mirror identity rotated would otherwise hold it for good).
-            self.ledger.warn(format!(
+            self.warn(format!(
                 "{noun} #{} is already mirrored by {} (as #{}); not mirrored again",
                 t.number, target.author, target.number
             ));
-            return Ok(());
+            return Ok(None);
         }
-        let current = if fresh {
+        Ok(Some(Job {
+            index,
+            t,
+            target,
+            fresh,
+        }))
+    }
+
+    /// A lane's part of an item: its thread, then its state.
+    async fn finish_target(&self, job: &Job<'_>) -> Result<()> {
+        self.finish_target_inner(job)
+            .await
+            .or_else(|e| self.item_skipped(job.t, e))
+    }
+
+    async fn finish_target_inner(&self, job: &Job<'_>) -> Result<()> {
+        let Job {
+            t, target, fresh, ..
+        } = job;
+        let current = if *fresh {
             Current::default()
         } else {
-            self.current(&target).await?
+            self.current(target).await?
         };
         // The thread first, then the state: readers order a target's timeline by `$createdAt`,
         // and at the source a close (or merge) comes after the comments that led to it (L-46).
         // A comment or review the destination refuses (an item error, which skips this item)
         // still lets the state be written, as it was before this order: a skip must not also
         // leave the item open.
-        let thread = self.sync_thread(t, &target, fresh).await;
+        let thread = self.sync_thread(t, target, *fresh).await;
         if state_after(&thread) {
-            self.sync_state(t, &target, &current).await?;
+            self.sync_state(t, target, &current).await?;
         }
         thread
     }
 
     /// An item's comments, then (a PR's) reviews.
-    async fn sync_thread(&mut self, t: &SrcTarget, target: &Target, fresh: bool) -> Result<()> {
+    async fn sync_thread(&self, t: &SrcTarget, target: &Target, fresh: bool) -> Result<()> {
         self.sync_comments(t, target, fresh).await?;
         if t.kind == TargetKind::Patch {
             self.sync_reviews(t, target, fresh).await?;
@@ -1040,28 +1270,30 @@ impl<'a> Sink<'a> {
     /// each `issue` / `patch` of the repo that carries provenance, whoever wrote it. One
     /// complete read per kind, so an item is found wherever it landed; read only when its
     /// upstream number is held by a document that is not its copy.
-    async fn load_index(&mut self) -> Result<()> {
-        if self.index.is_some() {
+    async fn load_index(&self) -> Result<()> {
+        if self.caches().index.is_some() {
             return Ok(());
         }
         let mut index = Vec::new();
+        let mut opened = Vec::new();
         if let Some(repo) = &self.repo {
-            // through Collab: a private destination's provenance is sealed (§7)
             let targets = self
-                .collab
+                .chain
                 .imported_targets(repo)
                 .await
                 .context("reading the destination's issues and pull requests")?;
             for row in targets {
                 if let Some(b) = row.base {
-                    self.opened.insert(row.target.id.clone(), b);
+                    opened.push((row.target.id.clone(), b));
                 }
                 if let Some(i) = row.imported.filter(|i| !i.url.is_empty()) {
                     index.push((i.url, row.target));
                 }
             }
         }
-        self.index = Some(index);
+        let mut caches = self.caches();
+        caches.opened.extend(opened);
+        caches.index = Some(index);
         Ok(())
     }
 
@@ -1069,27 +1301,29 @@ impl<'a> Sink<'a> {
     /// looked up once per run. The `upstream (repoId, upstreamNumber)` index first (one read);
     /// the full `imported.url` index only when that number is held by something that is not
     /// its copy (a stranger can write any `upstreamNumber`).
-    async fn existing(&mut self, t: &SrcTarget) -> Result<Option<Target>> {
-        if let Some(k) = self.known.get(&key_of(t)) {
+    async fn existing(&self, t: &SrcTarget) -> Result<Option<Target>> {
+        if let Some(k) = self.caches().known.get(&key_of(t)) {
             return Ok(k.clone());
         }
         let found = self.lookup(t).await?;
-        self.known.insert(key_of(t), found.clone());
+        self.caches().known.insert(key_of(t), found.clone());
         Ok(found)
     }
 
-    async fn lookup(&mut self, t: &SrcTarget) -> Result<Option<Target>> {
-        if self.index.is_none() {
+    async fn lookup(&self, t: &SrcTarget) -> Result<Option<Target>> {
+        if self.caches().index.is_none() {
             let Some(repo) = self.repo.as_ref() else {
                 return Ok(None);
             };
-            let rows = self.collab.upstream_targets(repo, t.kind, t.number).await?;
+            let rows = self.chain.upstream_targets(repo, t.kind, t.number).await?;
             if rows.is_empty() {
                 return Ok(None);
             }
             for row in rows {
                 if let Some(b) = &row.base {
-                    self.opened.insert(row.target.id.clone(), b.clone());
+                    self.caches()
+                        .opened
+                        .insert(row.target.id.clone(), b.clone());
                 }
                 if let Some(i) = row.imported.filter(|i| !i.url.is_empty()) {
                     if self.is_copy(&i.url, &row.target, t).await? {
@@ -1103,8 +1337,9 @@ impl<'a> Sink<'a> {
     }
 
     /// `t` in the full index (when loaded): the first entry that is its copy.
-    async fn indexed(&mut self, t: &SrcTarget) -> Result<Option<Target>> {
+    async fn indexed(&self, t: &SrcTarget) -> Result<Option<Target>> {
         let candidates: Vec<(String, Target)> = self
+            .caches()
             .index
             .as_ref()
             .map(|idx| {
@@ -1128,18 +1363,18 @@ impl<'a> Sink<'a> {
     /// again when another create took the number first), with its provenance and its source
     /// number as `upstreamNumber`. In a dry run the returned target is a placeholder at the
     /// source number (nothing reads it).
-    async fn create(&mut self, t: &SrcTarget, noun: &str) -> Result<Target> {
+    async fn create(&self, t: &SrcTarget, noun: &str) -> Result<Target> {
         let placeholder = Target {
             kind: t.kind,
             id: String::new(),
             number: t.number,
-            author: self.ledger.signer.clone().unwrap_or_default(),
+            author: self.signer.clone().unwrap_or_default(),
         };
         let credits = collab_doc_credits(
             CollabDoc::Target,
             text_doc(&t.title) + t.body.len() as u64 + t.imported.url.len() as u64 + 100,
         );
-        let (collab, repo) = (&self.collab, self.repo.as_ref());
+        let (chain, repo) = (&self.chain, self.repo.as_ref());
         let what = format!("{noun} #{}", t.number);
         let from = Provenance {
             imported: Some(&t.imported),
@@ -1167,17 +1402,18 @@ impl<'a> Sink<'a> {
             TargetKind::Patch => |c| c.prs += 1,
         };
         let out = self
-            .ledger
             .write(what, credits, count, || async move {
-                collab.create_imported(need(repo)?, doc, from).await
+                chain.create_imported(need(repo)?, doc, from).await
             })
             .await?;
         let Some(created) = out else {
             return Ok(placeholder);
         };
-        if created.number != t.number && !self.diverged {
-            self.diverged = true;
-            self.ledger.warn(diverged_note(noun, t, created.number));
+        if created.number != t.number {
+            let first = !std::mem::replace(&mut self.caches().diverged, true);
+            if first {
+                self.warn(diverged_note(noun, t, created.number));
+            }
         }
         Ok(Target {
             id: created.document_id,
@@ -1188,29 +1424,23 @@ impl<'a> Sink<'a> {
 
     /// `target`'s state on chain: its state code (the sum of its transitions; "merged" is the
     /// chain fact, D-9) and its labels as every reader folds them.
-    async fn current(&mut self, target: &Target) -> Result<Current> {
+    async fn current(&self, target: &Target) -> Result<Current> {
         let repo = need(self.repo.as_ref())?;
-        let log = self.collab.target_log(repo, &target.id).await?;
-        let code = log.state_code();
-        let labels = match target.kind {
-            TargetKind::Issue => issue_state_v2(code, &log.events).labels,
-            TargetKind::Patch => pr_state_v2(code, None, &log.events, None, |_, _| false).labels,
-        };
-        Ok(Current { code, labels })
+        Ok(self.chain.current(repo, target).await?)
     }
 
     /// The commit a merge transition for `t` names: a pushed base tip containing the source's
     /// merge commit when there is one ([`Sink::merge_proof`]), so readers find it on the base;
     /// else the source's merge commit itself. A merge is recorded either way (D-9: "merged"
     /// is what a member recorded); readers label one whose commit is not on the base.
-    async fn merge_oid(&mut self, t: &SrcTarget, target: &Target) -> Result<Vec<u8>> {
+    async fn merge_oid(&self, t: &SrcTarget, target: &Target) -> Result<Vec<u8>> {
         let upstream = t.merged_oid.clone().unwrap_or_default();
         if let Some(tip) = self.merge_proof(t, &target.id).await? {
             return Ok(tip);
         }
         let base = t.patch.as_ref().map_or("?", |p| p.base_ref_name.as_str());
-        self.ledger.counts.unproved_merges += 1;
-        let reason = if self.never_provable.contains(&target.id) {
+        let never_provable = self.caches().never_provable.contains(&target.id);
+        let reason = if never_provable {
             format!(
                 "its base {base} was not a branch on chain when it was mirrored (forge-v2 §6, \
                  D-501: push the code before the issues and PRs)"
@@ -1218,7 +1448,9 @@ impl<'a> Sink<'a> {
         } else {
             no_proof_reason(self.mirror.as_ref(), base)
         };
-        self.ledger.warn(format!(
+        let mut ledger = self.ledger();
+        ledger.counts.unproved_merges += 1;
+        ledger.warn(format!(
             "{} was merged; recorded as merged with the source's merge commit {}, which readers \
              label as not found on the base: {reason}",
             t.imported.url,
@@ -1230,12 +1462,7 @@ impl<'a> Sink<'a> {
     /// Bring `target` to `t`'s state: label events for the labels that differ, then the
     /// transitions ([`state_path`]) from its state code to the source's ([`wanted_code`]).
     /// Idempotent: a target already in that state takes nothing, and a merged one is final.
-    async fn sync_state(
-        &mut self,
-        t: &SrcTarget,
-        target: &Target,
-        current: &Current,
-    ) -> Result<()> {
+    async fn sync_state(&self, t: &SrcTarget, target: &Target, current: &Current) -> Result<()> {
         let moves = state_path(
             t.kind.transition_target(),
             current.code,
@@ -1243,7 +1470,7 @@ impl<'a> Sink<'a> {
             target.number,
         );
         if let Some(note) = merged_without_sha_note(t, current.code) {
-            self.ledger.warn(note);
+            self.warn(note);
         }
         let merges = moves
             .iter()
@@ -1253,23 +1480,18 @@ impl<'a> Sink<'a> {
         } else {
             None
         };
-        let (collab, repo) = (&self.collab, self.repo.as_ref());
+        let (chain, repo) = (&self.chain, self.repo.as_ref());
         for (kind, value) in label_events(t, current) {
             let credits = collab_doc_credits(CollabDoc::Event, 120 + value.len() as u64);
             let what = format!("{kind:?} event on #{}", t.number);
             let value = value.as_str();
-            self.ledger
-                .write(
-                    what,
-                    credits,
-                    |c| c.events += 1,
-                    || async move {
-                        collab
-                            .post_event(need(repo)?, target, kind, Some(value), None)
-                            .await
-                    },
-                )
-                .await?;
+            self.write(
+                what,
+                credits,
+                |c| c.events += 1,
+                || async move { chain.post_event(need(repo)?, target, kind, value).await },
+            )
+            .await?;
         }
         for mv in moves {
             let oid = (mv.kind == forge_core::rules::transition::PR_MERGE)
@@ -1280,35 +1502,37 @@ impl<'a> Sink<'a> {
                 TRANSITION_BYTES + oid.map_or(0, <[u8]>::len) as u64,
             );
             let what = format!("kind-{} transition on #{}", mv.kind, t.number);
-            self.ledger
-                .write(
-                    what,
-                    credits,
-                    |c| c.transitions += 1,
-                    || async move { collab.write_transition(need(repo)?, target, &mv, oid).await },
-                )
-                .await?;
+            self.write(
+                what,
+                credits,
+                |c| c.transitions += 1,
+                || async move { chain.write_transition(need(repo)?, target, &mv, oid).await },
+            )
+            .await?;
         }
         Ok(())
     }
 
-    async fn sync_comments(&mut self, t: &SrcTarget, target: &Target, fresh: bool) -> Result<()> {
+    /// The source URLs of the documents already on a thread written by the signer.
+    fn done_by_me(&self, written: Vec<crate::chain::Written>) -> BTreeSet<String> {
+        written
+            .into_iter()
+            .filter(|w| self.is_mine(&w.author))
+            .filter_map(|w| w.url)
+            .collect()
+    }
+
+    async fn sync_comments(&self, t: &SrcTarget, target: &Target, fresh: bool) -> Result<()> {
         if t.comments.is_empty() {
             return Ok(());
         }
-        let done: BTreeSet<String> = if fresh {
+        let done = if fresh {
             BTreeSet::new()
         } else {
             let repo = need(self.repo.as_ref())?;
-            self.collab
-                .comments(repo, &target.id)
-                .await?
-                .into_iter()
-                .filter(|c| self.ledger.is_mine(&c.author))
-                .filter_map(|c| c.imported.map(|i| i.url))
-                .collect()
+            self.done_by_me(self.chain.comments(repo, &target.id).await?)
         };
-        let (collab, repo) = (&self.collab, self.repo.as_ref());
+        let (chain, repo) = (&self.chain, self.repo.as_ref());
         for c in t
             .comments
             .iter()
@@ -1318,45 +1542,38 @@ impl<'a> Sink<'a> {
                 CollabDoc::Comment,
                 text_doc(&c.body) + c.imported.url.len() as u64,
             );
-            self.ledger
-                .write(
-                    format!("comment on #{}", t.number),
-                    credits,
-                    |n| n.comments += 1,
-                    || async move {
-                        collab
-                            .comment(
-                                need(repo)?,
-                                &target.id,
-                                &c.body,
-                                c.anchor.as_ref(),
-                                Some(&c.imported),
-                            )
-                            .await
-                    },
-                )
-                .await?;
+            self.write(
+                format!("comment on #{}", t.number),
+                credits,
+                |n| n.comments += 1,
+                || async move {
+                    chain
+                        .comment(
+                            need(repo)?,
+                            &target.id,
+                            &c.body,
+                            c.anchor.as_ref(),
+                            &c.imported,
+                        )
+                        .await
+                },
+            )
+            .await?;
         }
         Ok(())
     }
 
-    async fn sync_reviews(&mut self, t: &SrcTarget, target: &Target, fresh: bool) -> Result<()> {
+    async fn sync_reviews(&self, t: &SrcTarget, target: &Target, fresh: bool) -> Result<()> {
         if t.reviews.is_empty() {
             return Ok(());
         }
-        let done: BTreeSet<String> = if fresh {
+        let done = if fresh {
             BTreeSet::new()
         } else {
             let repo = need(self.repo.as_ref())?;
-            self.collab
-                .reviews(repo, &target.id)
-                .await?
-                .into_iter()
-                .filter(|r| self.ledger.is_mine(&r.reviewer))
-                .filter_map(|r| r.imported.map(|i| i.url))
-                .collect()
+            self.done_by_me(self.chain.reviews(repo, &target.id).await?)
         };
-        let (collab, repo) = (&self.collab, self.repo.as_ref());
+        let (chain, repo) = (&self.chain, self.repo.as_ref());
         for r in t
             .reviews
             .iter()
@@ -1366,29 +1583,20 @@ impl<'a> Sink<'a> {
                 CollabDoc::Review,
                 text_doc(&r.body) + r.imported.url.len() as u64 + 40,
             );
-            self.ledger
-                .write(
-                    format!("review on #{}", t.number),
-                    credits,
-                    |n| n.reviews += 1,
-                    || async move {
-                        collab
-                            .review(
-                                need(repo)?,
-                                &target.id,
-                                // Always a comment: the mirror identity is a member, and a
-                                // member's approve / request-changes counts (§6); a source
-                                // reviewer's verdict must not become one. It is in the body.
-                                Verdict::Comment,
-                                &r.commit_oid,
-                                &r.body,
-                                None,
-                                Some(&r.imported),
-                            )
-                            .await
-                    },
-                )
-                .await?;
+            self.write(
+                format!("review on #{}", t.number),
+                credits,
+                |n| n.reviews += 1,
+                // Always a comment verdict ([`Chain::review`]): the mirror identity is a
+                // member, and a member's approve / request-changes counts (§6); a source
+                // reviewer's verdict must not become one. It is in the body.
+                || async move {
+                    chain
+                        .review(need(repo)?, &target.id, &r.commit_oid, &r.body, &r.imported)
+                        .await
+                },
+            )
+            .await?;
         }
         Ok(())
     }
