@@ -63,7 +63,8 @@ test('t1. Trending this week matches a recount of the seeded stars in the window
   const sdk = await nodeSdk()
   const dep = JSON.parse(readFileSync(join(__dirname, '..', '..', 'forge-contracts', 'deployments', `devnet-${E2E_DEVNET}.json`), 'utf8'))
   const ranked = await sdk.documents.ranked({
-    dataContractId: dep.v2.forgeCollab.contractId,
+    // starBeat is forge-community's since the RC1 split (a pre-split record has only forge-collab).
+    dataContractId: (dep.v2.forgeCommunity ?? dep.v2.forgeCollab).contractId,
     documentTypeName: 'starBeat',
     groupBy: 'repoId',
     aggregate: { type: 'count' },
