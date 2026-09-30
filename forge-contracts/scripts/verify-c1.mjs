@@ -23,7 +23,7 @@
 //      beat the first repo, MEMBER the second.
 // Writes only to repos it creates (`c1-verify-<run>`), about 0.02 DASH per identity.
 import {
-  VIS, checkOutcome, expectRefused, idBytes, loadIdentity, log, membership, openSession, parseArgs, refusalOf, runIfMain, until,
+  VIS, checkOutcome, expectRefused, idBytes, loadIdentity, log, membership, openSession, parseArgs, refusalOf, retryOp, runIfMain, until,
 } from './lib/seed-io.mjs';
 
 const MOVED = {
@@ -35,7 +35,12 @@ const MOVED = {
 export async function main(argv, injected) {
   const a = parseArgs(argv);
   if (!a.owner || !a.member || !a.third) throw new Error('usage: --owner <A> --member <B> --third <C>');
-  const { net, evo, sdk, write: create, read } = await openSession(a, injected);
+  // `session.sdk` (not destructured): a caller using the connection directly for an op `write`
+  // and `read` don't wrap must always see the current one, since a reconnect after a stale-quorum
+  // failure replaces it (`openSession`'s docstring); destructuring `sdk` here would snapshot it
+  // once and keep using a dead connection after any later reconnect.
+  const session = await openSession(a, injected);
+  const { net, evo, write: create, read } = session;
   const { ids } = net;
   const OWNER = loadIdentity(evo, a.owner, 'OWNER');
   const MEMBER = loadIdentity(evo, a.member, 'MEMBER');
@@ -51,7 +56,7 @@ export async function main(argv, injected) {
   // 1. the moved types are where the RC1 layout puts them
   const missing = [];
   for (const [contract, types] of Object.entries(MOVED)) {
-    const fetched = await sdk.contracts.fetch(ids[contract]);
+    const fetched = await retryOp(() => session.sdk.contracts.fetch(ids[contract]), session.reconnect);
     const known = fetched.getDocumentTypes ? Object.keys(fetched.getDocumentTypes()) : Object.keys(fetched.toJSON().documentSchemas);
     missing.push(...types.filter((t) => !known.includes(t)).map((t) => `${contract}.${t}`));
   }
@@ -73,7 +78,10 @@ export async function main(argv, injected) {
     create(MEMBER, 'checkRun', { repoId: R, headOid: head, name: 'build', status: 'in_progress', outcome: checkOutcome('in_progress'), startedAt: Date.now(), vis: VIS }),
   );
   check('a runner posts a checkRun', run1 === null, run1 ?? '');
-  await sdk.documents.delete({ document: { id: runnerDoc.id, ownerId: OWNER.id, dataContractId: ids.community, documentTypeName: 'runner' }, identityKey: OWNER.identityKey, signer: OWNER.signer });
+  await retryOp(
+    () => session.sdk.documents.delete({ document: { id: runnerDoc.id, ownerId: OWNER.id, dataContractId: ids.community, documentTypeName: 'runner' }, identityKey: OWNER.identityKey, signer: OWNER.signer }),
+    session.reconnect,
+  );
   const after = await expectRefused('40120', () => create(MEMBER, 'checkRun', { repoId: R, headOid: head, name: 'test', status: 'queued', outcome: checkOutcome('queued'), vis: VIS }));
   check('a revoked runner is refused at consensus (40120)', after !== null && /40120|ReferencedEntityNotFound|not found/i.test(after), (after ?? 'accepted').slice(0, 160));
 
@@ -90,11 +98,18 @@ export async function main(argv, injected) {
   );
   check('a policy with requiredChecks and their sources is accepted', pol === null, pol ?? '');
 
-  // 5. watch create + delete by values
+  // 5. watch create + delete by values. The doc to delete comes from the very read that confirms
+  // the watch is visible, not a second, separately-raced one: two reads a `until` apart can land
+  // on different nodes, and a lagging one could see nothing yet and hand `delete` an undefined
+  // document.
   await create(OWNER, 'watch', { repoId: R });
-  const watched = await until(() => read.owns(OWNER, 'watch', repoId));
-  const doc = [...(await read.ownRows(OWNER, 'watch', repoId)).values()][0];
-  await sdk.documents.delete({ document: doc, identityKey: OWNER.identityKey, signer: OWNER.signer });
+  let doc;
+  const watched = await until(async () => {
+    const rows = [...(await read.ownRows(OWNER, 'watch', repoId)).values()];
+    doc = rows[0];
+    return rows.length > 0;
+  });
+  await retryOp(() => session.sdk.documents.delete({ document: doc, identityKey: OWNER.identityKey, signer: OWNER.signer }), session.reconnect);
   const unwatched = await until(async () => !(await read.owns(OWNER, 'watch', repoId)));
   check('a watch is created and deleted by its values', watched && unwatched);
 
@@ -102,7 +117,7 @@ export async function main(argv, injected) {
   const topicName = `c1v${run}`.slice(0, 30);
   await create(OWNER, 'topic', { repoId: R, name: topicName, vis: VIS });
   const counted = await until(async () => {
-    const c = await sdk.documents.count({ dataContractId: ids.core, documentTypeName: 'topic', where: [['name', '==', topicName]] });
+    const c = await retryOp(() => session.sdk.documents.count({ dataContractId: ids.core, documentTypeName: 'topic', where: [['name', '==', topicName]] }), session.reconnect);
     return [...c.values()].reduce((x, y) => x + y, 0n) === 1n;
   });
   check('count on topic.byName counts the tagged repo', counted);
@@ -114,7 +129,10 @@ export async function main(argv, injected) {
   // The scratch repos' rows of the ranking, in ranked order: [repoId, count].
   let mine = [];
   await until(async () => {
-    const ranked = await sdk.documents.ranked({ dataContractId: ids.community, documentTypeName: 'starBeat', groupBy: 'repoId', aggregate: { type: 'count' }, limit: 100, timeRange: [{ field: '$createdAt', selector: 'oldest' }] });
+    const ranked = await retryOp(
+      () => session.sdk.documents.ranked({ dataContractId: ids.community, documentTypeName: 'starBeat', groupBy: 'repoId', aggregate: { type: 'count' }, limit: 100, timeRange: [{ field: '$createdAt', selector: 'oldest' }] }),
+      session.reconnect,
+    );
     mine = ranked.entries.filter((e) => e.groupValue === repoId || e.groupValue === repo2Id).map((e) => [e.groupValue, Number(e.value)]);
     return mine.length === 2;
   });

@@ -85,20 +85,45 @@ export function resolveNetwork(a, env = process.env) {
  * The network the arguments name (`resolveNetwork`) and a connected SDK for it, with a writer
  * and a reader bound to it. `injected` is the SDK module to use (the offline chain), else the
  * pinned evo-sdk (4.2.0-beta.7, protocol 14). The reader waits `pace` ms between pages.
+ *
+ * `sdk` is a live getter, not a snapshot: a quorum rotation the trusted connection's prefetched
+ * keys have gone stale against, or a node-banning storm that leaves the SDK with none left,
+ * cannot be recovered on the same connection (forge-web's `lib/sdk/service.ts` documents why --
+ * from JS the only fix is a new one). `write` and `read` rebuild it themselves on a matching
+ * failure (`reconnect`, below); a caller using `sdk` directly for an op they don't wrap (a
+ * delete, a bare `contracts.fetch`) always sees the current connection, and can call
+ * `reconnect()` itself after a failure it wants to retry.
  */
 export async function openSession(a, injected, { pace = 0 } = {}) {
   const net = resolveNetwork(a);
   const evo = injected ?? (await loadEvoSdk());
-  const sdk = new evo.EvoSDK({
-    network: net.network,
-    trusted: true,
-    version: 14,
-    ...(net.devnetName ? { devnetName: net.devnetName } : {}),
-    ...(net.dep.dapiAddresses ? { addresses: net.dep.dapiAddresses } : {}),
-    settings: { connectTimeoutMs: 10000, timeoutMs: 60000, retries: 3 },
-  });
-  await sdk.connect();
-  return { net, evo, sdk, write: documentWriter(sdk, evo, net), read: documentReader(sdk, net, pace) };
+  const connect = async () => {
+    const built = new evo.EvoSDK({
+      network: net.network,
+      trusted: true,
+      version: 14,
+      ...(net.devnetName ? { devnetName: net.devnetName } : {}),
+      ...(net.dep.dapiAddresses ? { addresses: net.dep.dapiAddresses } : {}),
+      settings: { connectTimeoutMs: 10000, timeoutMs: 60000, retries: 3 },
+    });
+    await built.connect();
+    return built;
+  };
+  const box = { sdk: await connect() };
+  const reconnect = async () => {
+    box.sdk = await connect();
+    return box.sdk;
+  };
+  return {
+    net,
+    evo,
+    get sdk() {
+      return box.sdk;
+    },
+    reconnect,
+    write: documentWriter(box, evo, net, reconnect),
+    read: documentReader(box, net, pace, reconnect),
+  };
 }
 
 /** An identity from a `mint-identity` file, with its HIGH authentication key as the signer. */
@@ -119,38 +144,112 @@ export function loadIdentity(evo, file, name = undefined) {
   return { name: name ?? rec.label ?? rec.identityId.slice(0, 6), id: rec.identityId, identityKey, signer };
 }
 
-const TRANSIENT = /timeout|timed out|unavailable|no available|ResourceExhausted|rate.?limit|too many requests/i;
+const TRANSIENT = /timeout|timed out|unavailable|ResourceExhausted|rate.?limit|too many requests/i;
+
+/**
+ * A connection this quorum rotation or node-banning storm has made unusable, not a blip an
+ * ordinary retry on the same connection would ride out: the quorum service has not caught up
+ * with a rotation ("Quorum not found" / "Failed to find quorum" / "invalid quorum" -- a trusted
+ * connection fetches its keys once, at connect, and never refreshes them for a read), or the
+ * SDK banned every node it knows and has none left ("no available addresses"). From JS the only
+ * fix is a new connection (`openSession`'s `reconnect`; forge-web's `lib/sdk/service.ts` is
+ * built around the same fact, and `lib/sdk/unreachable.ts`'s `isStaleConnectionError` names the
+ * same two phrases).
+ */
+const STALE_CONNECTION = /quorum not found|failed to find quorum|invalid quorum|no available address/i;
+
+/**
+ * A consensus refusal worth one retry once the state it read has caught up, rather than a real
+ * rejection: 10422 (`DocumentPropertyConstraintViolated`) for a rule that reads a total --
+ * `dense`, c1..c6, `oneLive`, `atMost20`, ... -- checked by a node that had not yet applied a
+ * write the sender's own node already had; 40101 for a delete or replace whose target a lagging
+ * node's CheckTx does not find yet, moments after it was created (forge-contracts/scripts/
+ * rc1-live.mjs's comment at its one replace, "a replace checked by a node a block behind finds
+ * no document"). A genuine rule violation carries the same code and keeps refusing every retry;
+ * this waits a flat `LAG_PAUSE_MS` rather than `documentWriter`'s growing network-blip pause, so
+ * a real error surfaces in a few seconds (one block or so; rc1-live.mjs's `A_BLOCK` is the same
+ * one-block wait, spent up front instead of after a refusal), not the ~90s a 3-attempt escalating
+ * pause would cost.
+ */
+const LAGGING_NODE = /\b(10422|40101)\b/;
+const LAG_PAUSE_MS = 4000;
 
 /**
  * `write(who, type, data)`: one document create signed by `who`, in the contract that holds
  * `type`. Resolves to the created document (its id is `.id.toBase58()`).
  *
  * The document is built once, and evo-sdk fixes its `$id` and `$entropy` at construction. A
- * transient failure (a timeout, an unavailable node, a rate limit) is retried with that same
- * document, `retries` times with a growing pause. When a retry fails, the document is looked up
- * by its own id: an earlier attempt may have landed, and a repeat of it is refused (as already
- * present, or first by a rule such as `dense` or c1..c6, which the chain judges before that).
+ * transient failure (a timeout, an unavailable node, a rate limit, a lagging node's stale total
+ * or missed create) is retried with that same document, `retries` times with a growing pause; a
+ * stale connection (`STALE_CONNECTION`) instead reconnects and retries at once, no pause (the
+ * new connection is the fix, not time). When a retry fails, the document is looked up by its own
+ * id: an earlier attempt may have landed, and a repeat of it is refused (as already present, or
+ * first by a rule such as `dense` or c1..c6, which the chain judges before that).
  */
-export function documentWriter(sdk, evo, net, { retries = 3, pauseMs = 15000 } = {}) {
-  const version = sdk.version();
+export function documentWriter(box, evo, net, reconnect, { retries = 3, pauseMs = 15000 } = {}) {
   return async (who, type, data) => {
+    const version = box.sdk.version();
     const base = new evo.Document({ properties: {}, documentTypeName: type, dataContractId: contractIdOf(net, type), ownerId: who.id });
     const document = evo.Document.fromObject({ ...base.toObject(), ...data }, version);
     for (let attempt = 0; ; attempt++) {
       try {
-        return await sdk.documents.create({ document, identityKey: who.identityKey, signer: who.signer });
+        return await box.sdk.documents.create({ document, identityKey: who.identityKey, signer: who.signer });
       } catch (e) {
         const msg = String(e?.message ?? e);
         if (attempt > 0 && document.id) {
-          const landed = await sdk.documents.query({ dataContractId: contractIdOf(net, type), documentTypeName: type, where: [['$id', '==', document.id.toBase58()]], limit: 1 });
-          if ([...landed.values()].some(Boolean)) return { id: document.id };
+          const landed = await box.sdk.documents
+            .query({ dataContractId: contractIdOf(net, type), documentTypeName: type, where: [['$id', '==', document.id.toBase58()]], limit: 1 })
+            .catch(() => null);
+          if (landed && [...landed.values()].some(Boolean)) return { id: document.id };
         }
-        if (attempt >= retries || !TRANSIENT.test(msg)) throw e;
-        log(`${type}: retry ${attempt + 1} after: ${msg.slice(0, 120)}`);
-        await sleep(pauseMs * (attempt + 1));
+        if (attempt >= retries) throw e;
+        if (STALE_CONNECTION.test(msg)) {
+          log(`${type}: reconnecting after: ${msg.slice(0, 120)}`);
+          await reconnect();
+        } else if (LAGGING_NODE.test(msg)) {
+          log(`${type}: retry ${attempt + 1} after: ${msg.slice(0, 120)}`);
+          await sleep(LAG_PAUSE_MS);
+        } else if (TRANSIENT.test(msg)) {
+          log(`${type}: retry ${attempt + 1} after: ${msg.slice(0, 120)}`);
+          await sleep(pauseMs * (attempt + 1));
+        } else {
+          throw e;
+        }
       }
     }
   };
+}
+
+/**
+ * Run `fn` (a delete or a replace, which `documentWriter` does not cover), retrying `retries`
+ * times on the same failures `documentWriter` does: a lagging node's stale total or missed
+ * create (`LAGGING_NODE`, paced) and a transient network blip (`TRANSIENT`, paced), or a stale
+ * connection (`STALE_CONNECTION`, reconnected via `reconnect` and retried at once). Unlike a
+ * create, `fn` is not itself replayed to check whether it landed -- a delete or replace is not
+ * built once and resent unchanged, so there is no fixed id to look it up by; callers whose op
+ * would double-apply unsafely should not pass it a retry-unsafe `fn`.
+ */
+export async function retryOp(fn, reconnect, { retries = 3, pauseMs = 4000 } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      const msg = String(e?.message ?? e);
+      if (attempt >= retries) throw e;
+      if (STALE_CONNECTION.test(msg)) {
+        log(`retrying after: ${msg.slice(0, 120)}`);
+        await reconnect();
+      } else if (LAGGING_NODE.test(msg)) {
+        log(`retry ${attempt + 1} after: ${msg.slice(0, 120)}`);
+        await sleep(LAG_PAUSE_MS);
+      } else if (TRANSIENT.test(msg)) {
+        log(`retry ${attempt + 1} after: ${msg.slice(0, 120)}`);
+        await sleep(pauseMs * (attempt + 1));
+      } else {
+        throw e;
+      }
+    }
+  }
 }
 
 /**
@@ -159,10 +258,36 @@ export function documentWriter(sdk, evo, net, { retries = 3, pauseMs = 15000 } =
  */
 const REPEAT_REFUSED = { transition: ['targetId'], release: ['repoId', 'tagName'] };
 
-/** Queries in the contract that holds each type; documents come back as JSON. */
-export function documentReader(sdk, net, pace = 0) {
-  const version = sdk.version();
-  const query = (type, q) => sdk.documents.query({ dataContractId: contractIdOf(net, type), documentTypeName: type, ...q });
+/**
+ * Queries in the contract that holds each type; documents come back as JSON. Every query retries
+ * like `documentWriter`'s create does -- a stale connection reconnects (`reconnect`) and retries
+ * at once, a transient blip or a lagging node's stale total waits and retries -- since a read
+ * this deep in a paging loop (`all`) failing outright would otherwise abort a whole seed run
+ * over one hiccup a retry would have ridden out.
+ */
+export function documentReader(box, net, pace = 0, reconnect) {
+  const query = async (type, q, retries = 3, pauseMs = 4000) => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await box.sdk.documents.query({ dataContractId: contractIdOf(net, type), documentTypeName: type, ...q });
+      } catch (e) {
+        const msg = String(e?.message ?? e);
+        if (attempt >= retries) throw e;
+        if (STALE_CONNECTION.test(msg)) {
+          log(`${type} query: reconnecting after: ${msg.slice(0, 120)}`);
+          await reconnect();
+        } else if (LAGGING_NODE.test(msg)) {
+          log(`${type} query: retry ${attempt + 1} after: ${msg.slice(0, 120)}`);
+          await sleep(LAG_PAUSE_MS);
+        } else if (TRANSIENT.test(msg)) {
+          log(`${type} query: retry ${attempt + 1} after: ${msg.slice(0, 120)}`);
+          await sleep(pauseMs * (attempt + 1));
+        } else {
+          throw e;
+        }
+      }
+    }
+  };
   const ownRows = (who, type, repoId) =>
     query(type, { where: [['$ownerId', '==', who.id], ['repoId', '==', repoId]], orderBy: [['$ownerId', 'asc']], limit: 1 });
   /** Every document of `type` that matches, in pages of 100 queried `pace` ms apart. */
@@ -171,7 +296,7 @@ export function documentReader(sdk, net, pace = 0) {
     let startAfter;
     for (;;) {
       const res = await query(type, { where, orderBy, limit: 100, ...(startAfter ? { startAfter } : {}) });
-      const page = [...res.values()].filter(Boolean).map((d) => d.toJSON(version));
+      const page = [...res.values()].filter(Boolean).map((d) => d.toJSON(box.sdk.version()));
       out.push(...page);
       if (page.length < 100) return out;
       startAfter = page[page.length - 1].$id;
@@ -205,7 +330,7 @@ export function documentReader(sdk, net, pace = 0) {
     /** The first document of `type` that matches, or undefined. */
     async first(type, where) {
       const rows = await query(type, { where, limit: 1 });
-      return [...rows.values()].find(Boolean)?.toJSON(version);
+      return [...rows.values()].find(Boolean)?.toJSON(box.sdk.version());
     },
     /**
      * The rows (at most one, as SDK documents) of `who`'s own index-only entry (`star`,
