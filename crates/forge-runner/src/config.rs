@@ -275,6 +275,11 @@ impl Config {
                     r.repo
                 );
             }
+            // act resolves a relative --secret-file against the checkout (-C), which the pushed
+            // repository controls; the runner would read another file from its own directory.
+            if r.secrets_file.as_ref().is_some_and(|p| !p.is_absolute()) {
+                bail!("{}: secrets_file must be an absolute path", r.repo);
+            }
         }
         for (label, image) in &c.platforms {
             // `-self-hosted` makes act run the job directly on the runner's host, outside
@@ -294,8 +299,8 @@ impl Config {
             });
             if !host_only {
                 bail!(
-                    "relay.url {:?} must be http(s)://host[:port], with no path",
-                    r.url
+                    "relay.url {:?} must be http(s)://host[:port], with no path or user:password@",
+                    shown_url(&r.url)
                 );
             }
         }
@@ -311,7 +316,7 @@ impl Config {
         }
         if let Some(u) = &c.artifact_server_url {
             if !(u.starts_with("http://") || u.starts_with("https://")) {
-                bail!("artifact_server_url {u:?} must be http(s)://…");
+                bail!("artifact_server_url {:?} must be http(s)://…", shown_url(u));
             }
         }
         if c.network.as_deref() == Some("devnet") && c.devnet_name.is_none() {
@@ -352,6 +357,22 @@ impl RepoConfig {
     pub fn trusted(&self, refname: &str) -> bool {
         self.secrets_file.is_some() && self.trusted_refs.iter().any(|g| glob_match(g, refname))
     }
+}
+
+/// `url` for an error message: `user:password@` and any query or fragment (tokens) replaced by
+/// `[redacted]`, the scheme, host and path kept so the mistake is still visible.
+fn shown_url(url: &str) -> String {
+    let (scheme, rest) = url.split_once("://").map_or(("", url), |(s, r)| (s, r));
+    let sep = if scheme.is_empty() { "" } else { "://" };
+    // Everything before the last `@` goes, even across a `/`, `?` or `#`: a password with one
+    // of those unescaped is exactly the malformed URL that gets here.
+    let (user, rest) = rest
+        .rfind('@')
+        .map_or(("", rest), |at| ("[redacted]@", &rest[at + 1..]));
+    let rest = rest.find(['?', '#']).map_or(rest.to_string(), |q| {
+        format!("{}{}[redacted]", &rest[..q], &rest[q..=q])
+    });
+    format!("{scheme}{sep}{user}{rest}")
 }
 
 /// A ref glob: `*` matches any run of characters within one path segment (never a `/`), and
@@ -447,6 +468,44 @@ repo = "alice/project"
         ] {
             assert!(Config::parse(bad).is_err(), "{bad}");
         }
+    }
+
+    /// A URL with credentials in it is refused without printing them.
+    #[test]
+    fn url_errors_never_print_credentials() {
+        for (key, url) in [
+            ("relay", "https://user:FAKEpass@relay.example"),
+            ("relay", "http://r:8080/v1?token=FAKEtoken"),
+            ("artifact", "FAKEuser:FAKEpass@host:1234"),
+        ] {
+            let cfg = if key == "relay" {
+                format!("state_dir = \"/x\"\n[relay]\nurl = \"{url}\"\nsecret_file = \"/s\"\n[[repo]]\nrepo = \"a/b\"")
+            } else {
+                format!(
+                    "state_dir = \"/x\"\nartifact_server_url = \"{url}\"\n[[repo]]\nrepo = \"a/b\""
+                )
+            };
+            let e = format!("{:#}", Config::parse(&cfg).unwrap_err());
+            assert!(!e.contains("FAKE"), "{e}");
+            assert!(e.contains("[redacted]"), "{e}");
+        }
+        assert_eq!(
+            shown_url("https://u:p@h:1/x?t=1#f"),
+            "https://[redacted]@h:1/x?[redacted]"
+        );
+        assert_eq!(shown_url("ftp://r"), "ftp://r");
+        assert_eq!(shown_url("https://u:pa/ss@h"), "https://[redacted]@h");
+        assert_eq!(shown_url("http://h/p#frag"), "http://h/p#[redacted]");
+    }
+
+    /// act would read a relative secrets file from the pushed checkout.
+    #[test]
+    fn a_relative_secrets_file_is_refused() {
+        let e = Config::parse(
+            "state_dir = \"/x\"\n[[repo]]\nrepo = \"a/b\"\ntrusted_refs = [\"refs/heads/main\"]\nsecrets_file = \"secrets\"",
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("absolute"), "{e}");
     }
 
     #[test]
