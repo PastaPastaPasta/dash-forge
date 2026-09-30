@@ -4514,13 +4514,7 @@ impl<'a> Collab<'a> {
             // what was stored under the superseded key stays where it is: say so
             orphaned.extend(list.stored);
             if attempts >= 2 {
-                return Err(Error::Config(format!(
-                    "release {tag} not written: the key epoch of {} moved twice while its \
-                     assets were uploaded; run the command again (copies stored under the old \
-                     keys stay in your storage: {})",
-                    repo.display(),
-                    orphaned.join(", ")
-                )));
+                return Err(epoch_moved_twice(repo, tag, &orphaned));
             }
         };
         let (tag_name, enc) = release::seal(&keys, &owner, &fields).map_err(|e| match e {
@@ -5429,6 +5423,18 @@ fn check_sealed_input(input: &ReleaseInput) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// The refusal when the write epoch moved on both attempts: nothing was signed, and the copies
+/// stored under the superseded keys are named.
+fn epoch_moved_twice(repo: &RepoRef, tag: &str, orphaned: &[String]) -> Error {
+    Error::Config(format!(
+        "release {tag} not written: the key epoch of {} moved twice while its assets were \
+         uploaded; run the command again (copies stored under the old keys stay in your \
+         storage: {})",
+        repo.display(),
+        orphaned.join(", ")
+    ))
 }
 
 /// [`ReleaseWritten::warnings`] for the revision `ours` of `tag` (§16.3): the view it carried
