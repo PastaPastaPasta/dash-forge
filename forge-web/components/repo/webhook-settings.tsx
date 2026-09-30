@@ -5,7 +5,7 @@
  * maintainer, adding and removing them from the browser, as `dg webhook add | list | remove`
  * does (`lib/repo/webhooks.ts`). A hook asks a relay identity (forge-relay) to POST GitHub-shaped
  * events to a URL; its secret is encrypted from the writer's encryption key to the relay's, so
- * adding one needs the encryption key in this browser (Settings → Keys). Public repos only.
+ * adding one needs the encryption key in this browser (Settings → Private repos). Public repos only.
  */
 
 import Link from 'next/link'

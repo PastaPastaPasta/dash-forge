@@ -24,7 +24,7 @@ import { z } from 'zod'
 
 import type { Network } from '../constants'
 import type { ForgeIds } from '../deployments'
-import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
+import { idbBatch, idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 import { DOC } from '../repo/contract'
 import { contractOf } from '../repo/source'
 import { queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from '../sdk'
@@ -495,6 +495,22 @@ function prefix(network: Network, me: string): string {
   return `${network}:${me}:`
 }
 
+/** How many times each identity's inbox was cleared this session (see {@link clearInbox}). */
+const clears = new Map<string, number>()
+
+/**
+ * Delete this browser's notifications inbox for `me` (items, cursors, subscriptions, prefs):
+ * "Sign out & forget key" leaves no record of the identity here (QW2-028).
+ */
+export async function clearInbox(network: Network, me: string): Promise<void> {
+  // A poll of this identity still running (started before the clear) sees this and writes no
+  // more: its cursors or items would bring the inbox back.
+  const p = prefix(network, me)
+  clears.set(p, (clears.get(p) ?? 0) + 1)
+  const rows = await idbEntries('inbox', p)
+  if (rows.length > 0) await idbBatch('inbox', rows.map(([k]) => [k, undefined] as const))
+}
+
 export async function loadItems(network: Network, me: string): Promise<InboxItem[]> {
   const rows = await idbEntries<InboxItem>('inbox', `${prefix(network, me)}item:`)
   return rows.map(([, v]) => v).sort((a, b) => b.at - a.at)
@@ -552,14 +568,19 @@ export async function pollOnce(
   network: Network,
   forge: ForgeIds,
   me: string,
-  opts: { now?: number; refreshSubs?: boolean } = {},
+  opts: { now?: number; refreshSubs?: boolean; stop?: () => boolean } = {},
 ): Promise<PollResult> {
   const now = opts.now ?? Date.now()
   const p = prefix(network, me)
+  // The poller stopped (the session locked or signed out, maybe to forget this identity): no
+  // write after that may recreate what a forget clears (QW2-028). Checked before each write.
+  const epoch = clears.get(p) ?? 0
+  const stopped = (): boolean => opts.stop?.() === true || (clears.get(p) ?? 0) !== epoch
   const prefs = await loadPrefs(network, me)
   let subs = await loadSubs(network, me)
   if (subs === undefined || opts.refreshSubs || now - subs.at > SUBS_TTL_MS) {
     subs = await computeSubscriptions(sdk, network, forge, me, prefs, now)
+    if (stopped()) return { added: 0, feedsRead: 0, feedsTotal: 0, failed: 0, subs }
     await idbPut('inbox', `${p}subs`, subs)
   }
   const feeds = planFeeds(subs, prefs)
@@ -568,6 +589,7 @@ export async function pollOnce(
   const seenBefore = (await idbGet<Record<string, number>>('inbox', `${p}seen`)) ?? {}
   const seen: Record<string, number> = {}
   for (const f of feeds) seen[feedKey(f)] = seenBefore[feedKey(f)] ?? now
+  if (stopped()) return { added: 0, feedsRead: 0, feedsTotal: feeds.length, failed: 0, subs }
   await idbPut('inbox', `${p}seen`, seen)
   const { round, next } = pickRound(feeds, roundOffsets.get(p) ?? 0)
   roundOffsets.set(p, next)
@@ -579,6 +601,7 @@ export async function pollOnce(
   let backfillsFailed = 0
   const store = async (items: readonly InboxItem[]): Promise<void> => {
     for (const it of items) {
+      if (stopped()) return
       if (existing.has(it.id)) continue
       existing.add(it.id)
       await idbPut('inbox', `${p}item:${it.id}`, it)
@@ -627,7 +650,7 @@ export async function pollOnce(
           changed = true
         }
       }
-      if (changed) await idbPut('inbox', coverKey, pruneCovered(covered, f.threads))
+      if (changed && !stopped()) await idbPut('inbox', coverKey, pruneCovered(covered, f.threads))
     }
     let docs: PlainDocument[]
     try {
@@ -636,11 +659,13 @@ export async function pollOnce(
       failed++
       continue
     }
+    if (stopped()) break
     await store(toItems(f, docs, me))
+    if (stopped()) break
     const page = parseDocs(baseDoc, docs).map((d) => ({ at: d.$createdAt, id: d.$id }))
     await idbPut('inbox', key, advanceCursor(cursor, page))
   }
-  if (added > 0) {
+  if (added > 0 && !stopped()) {
     for (const id of itemsToDrop(await loadItems(network, me))) await idbDelete('inbox', `${p}item:${id}`)
   }
   return { added, feedsRead: round.length - failed, feedsTotal: feeds.length, failed: failed + backfillsFailed, subs }

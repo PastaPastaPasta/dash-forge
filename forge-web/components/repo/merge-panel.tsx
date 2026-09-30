@@ -135,7 +135,9 @@ export function MergePanel({
   canBypass?: boolean
 }): JSX.Element | null {
   const { sdk } = useSdk()
-  const { signer } = useAuth()
+  const { signer, locked: sessionLocked } = useAuth()
+  // A locked member sees the merge box as it stands; the button unlocks first (QW2-033).
+  const unlockFirst = signer === null && sessionLocked
   const guard = useWriteGuard()
   const [prefs] = usePrefs()
   const wide = useMinWidth(1024)
@@ -396,6 +398,11 @@ export function MergePanel({
     }
   }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, pull.author, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete, closeIssues, closing])
   const onMergeClick = (): void => {
+    // Locked: the click opens Unlock (the guard); merging is the next click, once unlocked.
+    if (unlockFirst) {
+      guard.check(cost, 'core', 'merge this pull request')
+      return
+    }
     // A retry resumes the merge it started with (and its bypass, already confirmed).
     if (failure !== null) void start(bypassed)
     else if (gate.bypassing) setConfirmingBypass(true)
@@ -457,11 +464,11 @@ export function MergePanel({
                 variant={gate.bypassing && failure === null ? 'danger' : 'primary'}
                 onClick={onMergeClick}
                 loading={busy}
-                disabled={(!gate.enabled && failure === null) || !identityOk || !methodAllowed || busy || newTip !== null || guard.disabledReason !== null}
+                disabled={!unlockFirst && ((!gate.enabled && failure === null) || !identityOk || !methodAllowed || busy || newTip !== null || guard.disabledReason !== null)}
                 aria-describedby={gate.reason !== null ? 'merge-gate-reason' : undefined}
                 data-testid="merge-submit"
               >
-                {failure ? retryLabel(failure.step) : gate.bypassing ? (method === 'squash' ? 'Bypass rules and squash' : 'Bypass rules and merge') : method === 'squash' ? 'Squash and merge' : method === 'no-ff' ? 'Create merge commit and merge' : button.label}
+                {unlockFirst ? 'Unlock to merge' : failure ? retryLabel(failure.step) : gate.bypassing ? (method === 'squash' ? 'Bypass rules and squash' : 'Bypass rules and merge') : method === 'squash' ? 'Squash and merge' : method === 'no-ff' ? 'Create merge commit and merge' : button.label}
               </Button>
             </>
           ) : button.kind === 'unavailable' ? (

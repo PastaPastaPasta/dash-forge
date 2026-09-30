@@ -1,7 +1,7 @@
 'use client'
 
 /**
- * Settings → Keys → Enable private repos (`docs/security/private-repos.md` §5.2,
+ * Settings → Private repos (`docs/security/private-repos.md` §5.2,
  * `ux-dx-spec.md` §2.3): keep this identity's ENCRYPTION key in the browser vault, beside the
  * limited key and protected the same way (passkey PRF or passphrase), dropped on lock.
  *
@@ -28,6 +28,7 @@ import {
 } from '@/lib/auth/encryption-key'
 import { onEncryptionKeyChange, removeEncryptionKey, storedEncryptionKeyId } from '@/lib/auth/vault'
 import { errorMessage } from '@/lib/utils'
+import { PRIVATE_REPOS_ANCHOR } from '@/lib/settings-links'
 import { Button } from '@/components/ui/button'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { Field, Input, Textarea } from '@/components/ui/input'
@@ -68,6 +69,14 @@ export function EncryptionKeyPanel(): JSX.Element | null {
       off()
     }
   }, [identity, network])
+
+  // Opened from a "Settings → Private repos" link (`#private-repos`): the card renders once the
+  // session is known, after the browser's own jump to the fragment found nothing, so scroll here.
+  const sectionRef = useRef<HTMLElement>(null)
+  const shown = identity !== null && core !== null
+  useEffect(() => {
+    if (shown && window.location.hash === `#${PRIVATE_REPOS_ANCHOR}`) sectionRef.current?.scrollIntoView({ block: 'start' })
+  }, [shown])
 
   if (identity === null || core === null) return null
 
@@ -135,7 +144,13 @@ export function EncryptionKeyPanel(): JSX.Element | null {
   }
 
   return (
-    <section aria-labelledby="enc-key-title" className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="encryption-key-panel">
+    <section
+      ref={sectionRef}
+      id={PRIVATE_REPOS_ANCHOR}
+      aria-labelledby="enc-key-title"
+      className="scroll-mt-20 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800"
+      data-testid="encryption-key-panel"
+    >
       <h2 id="enc-key-title" className="mb-2 flex items-center gap-2 text-dense font-medium text-anvil-500 dark:text-anvil-400">
         <KeyRound className="h-3.5 w-3.5" aria-hidden /> Private repos
       </h2>

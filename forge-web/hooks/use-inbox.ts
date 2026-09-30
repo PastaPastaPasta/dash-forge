@@ -124,7 +124,7 @@ export function useInboxPoller(): void {
       set({ polling: true })
       try {
         const sdk = await ensureSdk(network)
-        const r = await pollOnce(sdk, network, forge, identity, { refreshSubs })
+        const r = await pollOnce(sdk, network, forge, identity, { refreshSubs, stop: () => cancelled })
         if (cancelled || useInboxStore.getState().owner !== owner) return
         set({ lastPoll: Date.now(), lastFeeds: { read: r.feedsRead, total: r.feedsTotal, failed: r.failed }, error: null })
         await reloadLocal(owner, network, identity)

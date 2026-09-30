@@ -263,7 +263,11 @@ function PullPage({
   reloadHome?: () => void
 }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
-  const { identity, signer } = useAuth()
+  const { identity, signer, locked, lockedIdentity } = useAuth()
+  // A locked session is still that member (QW2-033): permissions, the merge box and the review
+  // controls are read for the identity Unlock would open, and each write opens Unlock (the
+  // guard), as the header's "Session locked — Unlock" says. Signed out, there is none.
+  const viewer = identity ?? lockedIdentity
   const guard = useWriteGuard()
   const router = useRouter()
   const pathname = usePathname()
@@ -285,19 +289,19 @@ function PullPage({
   const origin = trustedOrigin(pull.origin, pull.author, trust)
   const pullOrigin = origin !== null ? pullOriginOf(pull.body) : null
   const holdings = useAsync<Holdings | null>(
-    () => readViewerPermissions(sdk!, repo, identity!, network),
-    [ready, repoKey(repo), identity ?? '', network],
-    { enabled: ready && sdk !== null && identity !== null },
+    () => readViewerPermissions(sdk!, repo, viewer!, network),
+    [ready, repoKey(repo), viewer ?? '', network],
+    { enabled: ready && sdk !== null && viewer !== null },
   )
   const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
-  const isAuthor = identity !== null && identity === pull.author
+  const isAuthor = viewer !== null && viewer === pull.author
   const archived = home.config?.archived === true
   // A locked PR takes comments and reviews from members only (RC1: consensus refuses the rest).
   const postContext = { isMember, locked: thread.locked }
   const composeBlock = archived ? ARCHIVED_REASON : lockedOut(postContext) ? LOCKED_REASON : privateComposeBlock(home)
   const writeBlocked = composeBlock !== null
   // Who the composer's lock banner speaks to (a member keeps the composer).
-  const lockViewer = lockViewerOf(identity, holdings)
+  const lockViewer = lockViewerOf(viewer, holdings)
   const open = pull.state.open
   const { slot: mergeSlot, onRunning: setMergeRunning } = useMergeSlot(tab, open && pull.state.draft)
   const merged = pull.state.merged
@@ -396,8 +400,8 @@ function PullPage({
         : checksState(checks.data.rows, pull.headOid, new RoleOracle(thread.members), checks.data.runners, policyNow)
   const actions = pullActions({
     pull,
-    viewer: identity,
-    holdings: identity !== null && !holdings.settled ? 'loading' : holdings.data,
+    viewer,
+    holdings: viewer !== null && !holdings.settled ? 'loading' : holdings.data,
     protectedPatterns: home.config?.protectedPatterns ?? [],
     policy: rules.status,
     maintainersOnly: policyNow?.approverRole === 1,
@@ -1105,12 +1109,12 @@ function PullPage({
                         disabled={comment.trim() === '' || commentTooLong || guard.disabledReason !== null}
                         title={guard.disabledReason ?? undefined}
                       >
-                        {identity ? 'Comment' : 'Sign in to comment'}
+                        {identity ? 'Comment' : locked ? 'Unlock to comment' : 'Sign in to comment'}
                       </Button>
                     )}
                   </div>
                 </div>
-                {open && identity !== null && pull.headOid && !writeBlocked ? (
+                {open && viewer !== null && pull.headOid && !writeBlocked ? (
                   <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-anvil-100 pt-3 dark:border-anvil-850">
                     <span className="text-dense text-anvil-500 dark:text-anvil-400">
                       Review head <span className="font-mono">{pull.headOid.slice(0, 9)}</span>:

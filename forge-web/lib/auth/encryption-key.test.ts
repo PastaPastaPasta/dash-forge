@@ -125,7 +125,7 @@ describe('which encryption key counts', () => {
 
   it('the add-member message is the spec\'s', () => {
     expect(noEncryptionKeyMessage('bob')).toBe(
-      'bob has no encryption key yet. Send them this: `dg auth keys add --encryption`, or Settings → Keys → Enable private repos (one master-key signature).',
+      'bob has no encryption key yet. Send them this: `dg auth keys add --encryption`, or Settings → Private repos (one master-key signature).',
     )
   })
 

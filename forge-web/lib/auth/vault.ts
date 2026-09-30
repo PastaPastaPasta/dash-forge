@@ -276,7 +276,7 @@ async function open(keyBytes: Uint8Array, iv: Uint8Array, ct: Uint8Array, ad: Ui
   try {
     return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf(iv), additionalData: buf(ad) }, k, buf(ct)))
   } catch {
-    throw new VaultLockedError('wrong passphrase or passkey')
+    throw new VaultLockedError('Wrong passphrase or passkey.')
   }
 }
 
@@ -1124,7 +1124,7 @@ async function unlockWith(network: Network, identityId: string, method: { passph
       return opened.secret
     }
   }
-  throw new VaultLockedError(method === 'passkey' ? 'the passkey did not open the key stored here' : 'wrong passphrase or passkey')
+  throw new VaultLockedError(method === 'passkey' ? 'That passkey did not open the key stored here.' : 'Wrong passphrase.')
 }
 
 /**

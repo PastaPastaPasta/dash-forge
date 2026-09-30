@@ -24,7 +24,11 @@ let members: Membership[] = []
 
 vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams('owner=o&name=demo&invite=1') }))
 vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: {}, ready: true, network: 'devnet' }) }))
-vi.mock('@/contexts/auth-context', () => ({ useAuth: () => ({ identity: ME, signer: { identityId: ME } }) }))
+/** The viewer's session: signed in as ME unless a test signs out or locks. */
+type Auth = { identity: string | null; signer: { identityId: string } | null; locked: boolean; resuming: boolean; vaultsLoaded?: boolean; vaultsError?: string | null; lockedIdentity?: string | null }
+let auth: Auth = { identity: ME, signer: { identityId: ME }, locked: false, resuming: false }
+const signedOut = (over: Partial<Auth> = {}): Auth => ({ identity: null, signer: null, locked: false, resuming: false, vaultsLoaded: true, vaultsError: null, lockedIdentity: null, ...over })
+vi.mock('@/contexts/auth-context', () => ({ useAuth: () => auth }))
 vi.mock('@/hooks/use-write-guard', () => ({ useWriteGuard: () => ({ disabledReason: null, check: () => true }) }))
 vi.mock('@/components/author', () => ({ Author: ({ identityId }: { identityId: string }) => <span>{identityId.slice(0, 6)}</span> }))
 // The dialog as a plain button that runs the write, as "Sign & accept" does.
@@ -60,6 +64,7 @@ let consentLists: (string[] | 'throw' | { after: number; ids: string[] })[] = []
 let consentListCalls = 0
 
 import { INVITES_POLL_MAX_MS, INVITES_POLL_MS, InviteBanner, Invitations } from './invite-banner'
+import { useUiStore } from '@/hooks/use-ui-store'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -82,6 +87,7 @@ async function accept(): Promise<void> {
 
 beforeEach(async () => {
   vi.useFakeTimers()
+  auth = { identity: ME, signer: { identityId: ME }, locked: false, resuming: false }
   consentCalls = 0
   members = []
   host = document.createElement('div')
@@ -98,6 +104,34 @@ async function render(): Promise<void> {
   act(() => root.render(<InviteBanner repo={repo} />))
   await flush()
 }
+
+describe('the invite link, signed out (QW2-012)', () => {
+  it('shows the invitation with Sign in to accept, which opens the sheet over this page', async () => {
+    auth = signedOut()
+    await render()
+    expect(q('invite-banner-signed-out')?.textContent).toMatch(/invited you to collaborate on this repo\. Sign in to accept/)
+    await act(async () => (q('invite-sign-in') as HTMLButtonElement).click())
+    expect(useUiStore.getState().loginOpen).toBe(true)
+    expect(useUiStore.getState().loginIntent?.action).toBe('accept this invitation')
+    act(() => useUiStore.getState().closeLogin())
+  })
+
+  it('says Unlock to accept for a locked session, and nothing while the session is picked up', async () => {
+    auth = signedOut({ locked: true, lockedIdentity: ME })
+    await render()
+    expect(q('invite-sign-in')?.textContent).toBe('Unlock to accept')
+    auth = signedOut({ resuming: true })
+    await render()
+    expect(q('invite-banner-signed-out')).toBeNull()
+    // Not before the key list is read (Sign in would flip to Unlock), nor to the owner's own locked session.
+    auth = signedOut({ vaultsLoaded: false })
+    await render()
+    expect(q('invite-banner-signed-out')).toBeNull()
+    auth = signedOut({ locked: true, lockedIdentity: OWNER })
+    await render()
+    expect(q('invite-banner-signed-out')).toBeNull()
+  })
+})
 
 describe('the invite banner after a confirmed accept', () => {
   it('stays accepted while every node still answers "no consent"', async () => {

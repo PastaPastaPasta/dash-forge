@@ -28,6 +28,7 @@ import { DEFAULT_NETWORK, type Network } from '../lib/constants'
 import { type SpendEvent, type WriteAuth } from '../lib/sdk'
 import { connectPlatform } from '../lib/auth/connect'
 import { recordSpend } from '../lib/spend'
+import { lockedIdentityOf, readLastIdentity } from '../lib/auth/last-identity'
 import { errorMessage } from '../lib/utils'
 import { fundsState, nextFundsChange, type FundsState, type KeyLimits } from '../lib/view/funds'
 import { toast } from '../hooks/use-toasts'
@@ -112,6 +113,16 @@ interface AuthContextValue {
    * every visit"): every page offers Unlock, and write buttons open it.
    */
   readonly locked: boolean
+  /**
+   * The identity signed in last on this device (null when none was recorded): the Unlock sheet
+   * preselects it among several stored keys.
+   */
+  readonly lastIdentity: string | null
+  /**
+   * While {@link locked}: the identity the Unlock would open (the last used, else the first
+   * stored), so a page can say "Unlock to merge" to a member rather than look signed out.
+   */
+  readonly lockedIdentity: string | null
   /**
    * `signing`: this tab resumed a kept session and holds the spend-capped signing key only
    * (private repos, storage settings and wallet grants ask to unlock); `full`: an interactive
@@ -307,7 +318,14 @@ export function AuthProvider({
     () => (session ? fundsState(BigInt(session.balance), keyLimits, clock) : null),
     [session, keyLimits, clock],
   )
+  // Re-read when a session opens (the controller records it) or the stored keys change (a
+  // forget drops it). localStorage, so read in the browser only.
+  const [lastIdentity, setLastIdentity] = useState<string | null>(null)
+  useEffect(() => {
+    setLastIdentity(readLastIdentity(network))
+  }, [network, sessionIdentity, vaults])
 
+  const locked = session === null && !resuming && vaults.length > 0
   const value = useMemo<AuthContextValue>(
     () => ({
       identity: session?.identityId ?? null,
@@ -330,13 +348,15 @@ export function AuthProvider({
       vaultsError,
       vaultsLoaded,
       resuming,
-      locked: session === null && !resuming && vaults.length > 0,
+      locked,
+      lastIdentity,
+      lockedIdentity: locked ? lockedIdentityOf(vaults, lastIdentity) : null,
       unlockScope: session === null ? null : state.scope ?? null,
       reloadVaults,
       controller,
       ...actions,
     }),
-    [actions, controller, funds, keyLimits, reloadVaults, resuming, session, signer, state.error, state.isLoading, state.scope, state.step, vaults, vaultsError, vaultsLoaded],
+    [actions, controller, funds, keyLimits, lastIdentity, locked, reloadVaults, resuming, session, signer, state.error, state.isLoading, state.scope, state.step, vaults, vaultsError, vaultsLoaded],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
