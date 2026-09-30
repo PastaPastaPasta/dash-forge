@@ -263,7 +263,7 @@ function forgeOf(network: Network): ForgeIds | null {
  * A page of the newest public repos, newest first (`$createdAt <=` the previous page's oldest).
  * RC1's `repo.recent` index is `(visibility, $createdAt)`: the page binds `visibility ==
  * "public"` and pages on `$createdAt` within it (a query ordered by `$createdAt` alone names
- * no index, and consensus refuses it). Private repos were never listed here.
+ * no index, and consensus refuses it), so private repos are no longer listed.
  */
 export async function recentReposPage(
   sdk: EvoSDK,
@@ -284,7 +284,7 @@ export async function recentReposPage(
 }
 
 /**
- * The landing feed: the newest repos, newest first. Empty on a network without a forge-v2
+ * The landing feed: the newest public repos, newest first. Empty on a network without a forge-v2
  * deployment (the caller shows "not deployed" before asking).
  */
 export async function listRecentRepos(sdk: EvoSDK, opts: { network?: Network; limit?: number } = {}): Promise<DiscoveredRepo[]> {
