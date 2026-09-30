@@ -666,11 +666,14 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
     // A fixed number of requests for the whole page (D-500: it was about 9 per PR).
     let page = collab.list_patch_views(handle, limit).await?;
     let (hidden, more) = (page.hidden, page.more);
+    let read = page.rows.len();
     let rows: Vec<_> = page
         .rows
         .into_iter()
         .filter(|(v, _)| state.matches(v.state.open))
         .collect();
+    // The PRs the state filter left out, for the empty list's hint.
+    let others = read - rows.len();
     let json_rows: Vec<_> = rows
         .iter()
         .map(|(v, a)| {
@@ -693,10 +696,27 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
         })
         .collect();
     ctx.emit(
-        json!({ "count": rows.len(), "prs": json_rows, "hidden": hidden, "truncated": more }),
+        json!({ "count": rows.len(), "prs": json_rows, "hidden": hidden, "truncated": more, "otherStates": others }),
         || {
             if rows.is_empty() {
-                println!("no pull requests");
+                // Only the newest `--limit` were read: say so rather than "none".
+                let among = if more {
+                    format!(" among the newest {read}")
+                } else {
+                    String::new()
+                };
+                println!("{}{among}", state.empty("pull requests"));
+                let other = match state {
+                    crate::StateArg::Open => "closed or merged",
+                    crate::StateArg::Closed => "open",
+                    crate::StateArg::All => "",
+                };
+                if others > 0 && !other.is_empty() {
+                    println!(
+                        "({others} {other}: `--state all` lists {})",
+                        if others == 1 { "it" } else { "them" }
+                    );
+                }
             }
             for (v, a) in &rows {
                 let count = |mark: &str, n: usize| {
@@ -1840,11 +1860,7 @@ async fn required_checks(
     if !checks_judged(policy) {
         return Ok(None);
     }
-    let rules = forge_core::rules::v2::ChecksPolicy {
-        require_checks: policy.require_checks,
-        required_checks: policy.required_checks.clone(),
-        required_check_sources: policy.required_check_sources.clone(),
-    };
+    let rules = policy.checks_policy();
     Ok(Some(
         collab
             .head_checks(handle, &view.head, oracle, &rules)

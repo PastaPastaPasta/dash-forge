@@ -68,7 +68,7 @@ dg ci report alice/project --sha "$SHA" --name build --status completed \
 - **`--summary`** (or `--summary-file`) takes up to 1,000 characters.
 - `dg` prints the commit's web page, where the run shows up.
 
-`dg ci status alice/project <sha>` lists one run per name on a commit: the newest run by a current member or runner, which is the one a merge counts. A newer run by anyone else is not shown in its place. `dg pr checks alice/project <n>` does the same for a pull request's head.
+`dg ci status alice/project <sha>` (or `--sha <sha>`, as `dg ci report` takes it) lists one run per name on a commit: the newest run by a current member or runner, which is the one a merge counts (unless the branch policy pins that check to another source: the run is then marked as not counted, and `dg ci report` warns before reporting it). A newer run by anyone else is not shown in its place. `dg pr checks alice/project <n>` does the same for a pull request's head.
 
 For each name, the newest run by `($createdAt, $id)` among runs by current members and runners decides. A branch policy with `requireChecks` needs every such run on the head to pass (`success`, `neutral` or `skipped`), and at least one to exist; a policy that names required checks needs each named one to pass, `requireChecks` or not. The web merge box and `dg pr merge` apply the same rule; a maintainer can bypass it ("bypass rules" in the web, `--override-policy` in `dg`), and the bypass is recorded on the PR as an event nobody can delete.
 
