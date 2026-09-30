@@ -1072,6 +1072,15 @@ pub enum ReleaseCommand {
         #[arg(long)]
         output: Option<PathBuf>,
     },
+    /// Unpublish a live release (maintainers only): writes a revision with `delta` −1, so the
+    /// tag no longer shows as a release. The tag itself, and its previous revisions, are kept
+    /// (a release is never deleted); publishing the tag again starts a fresh one.
+    Unpublish {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The release tag.
+        tag: String,
+    },
 }
 
 /// `dg release create` arguments.

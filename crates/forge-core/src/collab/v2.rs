@@ -4371,6 +4371,69 @@ impl<'a> Collab<'a> {
         }
     }
 
+    /// Unpublish a live release: writes a revision of `tag_name` with `delta` −1, which the
+    /// contract's `oneLive` rule accepts only while the tag's revisions currently sum to 1
+    /// ([`tag_is_live`]). Maintainer-only at consensus. Refused before signing for a private
+    /// repository ([`RepoRef::require_public`]) and for a tag that is not currently live:
+    /// never published, already unpublished, or unpublished by another client meanwhile (the
+    /// same refusal `oneLive` would give at consensus, in that race).
+    pub async fn unpublish_release(&self, repo: &RepoRef, tag_name: &str) -> Result<String> {
+        // releases are not sealed in this release (§7, §12.5), same as create_release
+        repo.require_public("releases")?;
+        check_tag_name(tag_name)?;
+        self.require_role(
+            repo,
+            Role::Maintainer,
+            &format!("unpublish release {tag_name}"),
+        )
+        .await?;
+        let core = self.core_contract(repo).await?;
+        let revisions = self
+            .client
+            .query_all_documents(
+                &core,
+                DOC_RELEASE,
+                &[
+                    Self::repo_filter(repo)?,
+                    QueryFilter::eq("tagName", FieldValue::text(tag_name)),
+                ],
+                &[QueryOrder::asc("$createdAt")],
+            )
+            .await?;
+        if !tag_is_live(revisions.iter().map(|d| release_from_doc(d).delta)) {
+            return Err(not_live_error(tag_name));
+        }
+        let newest = revisions
+            .iter()
+            .max_by_key(|d| d.created_at.unwrap_or(0))
+            .map(release_from_doc)
+            .expect("tag_is_live(revisions) implies revisions is non-empty");
+        let mut p = BTreeMap::new();
+        p.insert("tagName".to_string(), FieldValue::text(tag_name));
+        if !newest.name.is_empty() {
+            p.insert("name".to_string(), FieldValue::text(&newest.name));
+        }
+        if !newest.notes.is_empty() {
+            p.insert("notes".to_string(), FieldValue::text(&newest.notes));
+        }
+        p.insert("yanked".to_string(), FieldValue::boolean(newest.yanked));
+        if !newest.assets.is_empty() {
+            let json = serde_json::to_string(&newest.assets)?;
+            p.insert("assets".to_string(), FieldValue::text(json));
+        }
+        crate::layout::stamp_vis(&mut p, repo.visibility);
+        p.insert("delta".to_string(), FieldValue::signed(-1));
+        match self.write(repo, &core, DOC_RELEASE, p).await {
+            // Another client unpublished (or republished) the tag between our read and this
+            // write: the node we read from was behind. Nothing was written; the tag is no
+            // longer in the state we checked, so give the same refusal a fresh read would.
+            Err(Error::RuleRefused { rule, .. }) if rule == ONE_LIVE_RULE => {
+                Err(not_live_error(tag_name))
+            }
+            other => other,
+        }
+    }
+
     /// Every release of `repo`: the newest revision of each tag not unpublished (see
     /// [`newest_per_tag`]), in [`release_order`]; `previous` holds the other revisions, an
     /// unpublished tag's included, newest first.
@@ -4831,9 +4894,24 @@ fn tag_is_live(deltas: impl IntoIterator<Item = i64>) -> bool {
 
 /// The `delta` of a new public revision of a tag (RC1 `oneLive`: the tag's sum after the write
 /// must be `min(delta + 1, 1)`): `+1` publishes a tag that is not live, `0` edits or yanks a
-/// live one. Unpublishing (`-1`) has no writer in this client; a release cannot be deleted.
+/// live one. [`Collab::unpublish_release`] writes `-1` directly, since it only ever runs while
+/// the tag is live; a release document itself is never deleted.
 fn release_delta(live: bool) -> i64 {
     i64::from(!live)
+}
+
+/// The refusal `dg release unpublish` and [`Collab::unpublish_release`] give for a tag that is
+/// not currently live: never published, already unpublished, or unpublished by another client
+/// between the precheck's read and the write.
+fn not_live_error(tag_name: &str) -> Error {
+    UserError::new(
+        codes::REJECTED,
+        format!("release {tag_name:?} not unpublished: it is not currently live"),
+    )
+    .cause("a release can be unpublished only while it is live (oneLive): never published, or already unpublished")
+    .fix("`dg release list <owner>/<repo>` shows which tags are currently live")
+    .note("nothing was written")
+    .into()
 }
 
 /// Refuse a release tag the RC1 contract would refuse (`release.tagName`: 1-63 bytes of the
@@ -5815,6 +5893,33 @@ mod tests {
             assert_eq!(delta, want, "{history:?}");
             assert_eq!(history.into_iter().chain([delta]).sum::<i64>(), 1);
         }
+    }
+
+    /// `unpublish_release`'s precheck (`!tag_is_live`) refuses exactly the histories a fresh
+    /// publish or an edit would not: never published, and already unpublished. It accepts a
+    /// tag with any positive sum, including one edited or yanked (still 1) many times over.
+    #[test]
+    fn unpublish_refuses_a_tag_that_is_not_live() {
+        for (history, live) in [
+            (vec![], false),
+            (vec![1], true),
+            (vec![1, 0, 0], true),
+            (vec![1, -1], false),
+            (vec![1, -1, 1], true),
+            (vec![1, -1, 1, -1], false),
+        ] {
+            assert_eq!(tag_is_live(history.iter().copied()), live, "{history:?}");
+        }
+    }
+
+    #[test]
+    fn not_live_error_is_a_user_facing_rejection_naming_the_tag() {
+        let err = not_live_error("v1.0.0");
+        assert!(
+            matches!(&err, crate::error::Error::User(u) if u.code == codes::REJECTED),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("v1.0.0"), "{err}");
     }
 
     #[test]

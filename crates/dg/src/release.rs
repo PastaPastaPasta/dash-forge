@@ -40,6 +40,7 @@ pub async fn run(ctx: &Ctx, cmd: &ReleaseCommand) -> Result<()> {
             asset,
             output,
         } => download(ctx, repo, tag, asset.as_deref(), output.clone()).await,
+        ReleaseCommand::Unpublish { repo, tag } => unpublish(ctx, repo, tag).await,
     }
 }
 
@@ -219,6 +220,62 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// `dg release unpublish <tag>`: writes a release revision with `delta` −1 (maintainers only),
+/// which the contract accepts only while the tag is currently live. The tag and its history
+/// stay: a release is never deleted, and publishing the tag again starts a fresh one.
+async fn unpublish(ctx: &Ctx, repo: &str, tag: &str) -> Result<()> {
+    let s = Session::open_for_write(ctx, repo, "release not unpublished").await?;
+    // Releases are not sealed in this release: refuse before any network round trip, as
+    // `create` does.
+    s.repo.require_public("releases")?;
+    forge_core::collab::v2::check_tag_name(tag)?;
+    let collab = s.collab();
+    // Maintainer-only at consensus: find out, and whether the tag is live, before confirming.
+    collab
+        .require_role(&s.repo, Role::Maintainer, &format!("unpublish release {tag}"))
+        .await?;
+    let (current, _) = collab.releases(&s.repo).await?;
+    if !current.iter().any(|r| r.tag_name == *tag) {
+        return Err(release_not_live(repo, tag).into());
+    }
+    ctx.confirm_or_cancel(&format!(
+        "Unpublish release {tag} of {}? (one small document, ~0.0002 DASH)",
+        s.repo.display()
+    ))?;
+    let before = s.balance().await;
+    let doc_id = collab.unpublish_release(&s.repo, tag).await?;
+    let spent = s.spent_since(before).await;
+    let price = dash_usd_price();
+    ctx.emit(
+        json!({
+            "status": "unpublished",
+            "tag": tag,
+            "documentId": doc_id,
+            "cost": cost_json(spent, price),
+        }),
+        || {
+            println!(
+                "✓ unpublished release {tag} of {} · {}",
+                s.repo.display(),
+                cost_line(spent, price)
+            );
+        },
+    );
+    Ok(())
+}
+
+/// The refusal `dg release unpublish` gives for a tag that is not currently live: never
+/// published, or already unpublished.
+fn release_not_live(repo: &str, tag: &str) -> UserError {
+    UserError::new(
+        codes::REJECTED,
+        format!("release {tag:?} not unpublished: it is not currently live"),
+    )
+    .cause("a release can be unpublished only while it is live: never published, or already unpublished")
+    .fix(format!("`dg release list {repo}` shows which tags are currently live"))
+    .note("nothing was written")
 }
 
 /// The asset name an upload of `path` records.
@@ -851,6 +908,21 @@ mod tests {
     fn a_new_tag_has_only_what_was_given() {
         let input = superseding_input(None, &args(&["--yanked"]), Vec::new());
         assert!(input.assets.is_empty() && input.name.is_empty() && input.notes.is_empty());
+    }
+
+    /// `dg release unpublish` refuses a tag that is not live (never published, or already
+    /// unpublished) before any network round trip, naming the tag and pointing at `release
+    /// list` to check.
+    #[test]
+    fn release_not_live_names_the_tag_and_points_at_release_list() {
+        let e = release_not_live("o/r", "v9.9.9");
+        assert_eq!(e.code, codes::REJECTED);
+        assert!(e.message.contains("v9.9.9"), "{}", e.message);
+        assert!(
+            e.fix.iter().any(|f| f.contains("dg release list o/r")),
+            "{:?}",
+            e.fix
+        );
     }
 
     /// D-517: an asset with no recorded hash is refused with its own error, not E503.
