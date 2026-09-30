@@ -512,6 +512,11 @@ interface Failure {
   readonly reason: string
 }
 
+/** `url` failed because `why`, as a {@link Failure} (its reason prefixed with the URL's source name). */
+function failureAt(url: string, why: string): Failure {
+  return { url, reason: `${externalSourceName(url)}: ${why}` }
+}
+
 /** The distinct reasons of `failures`, in order. */
 function reasonsOf(failures: readonly Failure[]): string[] {
   return [...new Set(failures.map((f) => f.reason))]
@@ -525,7 +530,7 @@ async function mirrorUrls(
   const urls = externalFetchUrls(manifest.uris, gateways)
   const skipped = urls.flatMap((url) => {
     const why = deadUrls.get(url)
-    return why === undefined ? [] : [{ url, reason: `${externalSourceName(url)}: ${why}` }]
+    return why === undefined ? [] : [failureAt(url, why)]
   })
   const { live, down } = await skipDeadGateways(
     urls.filter((u) => !deadUrls.has(u)),
@@ -592,7 +597,7 @@ async function fetchExternalRange(
       return buf.length > end - start ? buf.subarray(start, end) : buf
     } catch (e) {
       if (e instanceof FetchFailure && e.answered) deadUrls.set(url, errorText(e))
-      failed.push({ url, reason: `${externalSourceName(url)}: ${errorText(e)}` })
+      failed.push(failureAt(url, errorText(e)))
       lastErr = e
     }
   }
@@ -651,7 +656,7 @@ async function fetchExternalWhole(
       return { url, bytes }
     } catch (e) {
       if (!winner.signal.aborted) {
-        failures.push({ url, reason: `${externalSourceName(url)}: ${errorText(e)}` })
+        failures.push(failureAt(url, errorText(e)))
         if (e instanceof FetchFailure && e.timedOut) timedOut.push(url)
         else if (e instanceof FetchFailure && e.answered) deadUrls.set(url, errorText(e))
       }

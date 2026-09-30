@@ -330,7 +330,8 @@ function deriveSource(input: TrustInputs, content: TrustLink): TrustLink {
   // A recorded copy that failed while another served: named, but nothing is missing, so the
   // row's state is the content check's.
   const fellBack = fellBackFrom.length > 0 ? ` Unavailable, another copy served instead: ${fellBackFrom.join(', ')}.` : ''
-  const also = `${fellBack}${notTried.length > 0 ? ` Also recorded: ${notTried.map((h) => `${h} (not tried)`).join(', ')}.` : ''}`
+  const alsoRecorded = notTried.length > 0 ? ` Also recorded: ${notTried.map((h) => `${h} (not tried)`).join(', ')}.` : ''
+  const also = fellBack + alsoRecorded
   const failedPlaces = unreachable.length > 0 ? `Didn't answer: ${unreachable.join(', ')}.` : undefined
   if (sources.length === 0) {
     if (failedPlaces !== undefined) {

@@ -83,14 +83,16 @@ impl Candidate {
     fn place(&self) -> String {
         match self {
             Candidate::Http(u) => {
-                let host = reqwest::Url::parse(u).ok().and_then(|p| {
-                    let host = p.host_str()?.to_string();
-                    Some(
-                        p.port()
-                            .map_or(host.clone(), |port| format!("{host}:{port}")),
-                    )
-                });
-                let host = host.unwrap_or_else(|| u.clone());
+                let host = reqwest::Url::parse(u)
+                    .ok()
+                    .and_then(|p| {
+                        let host = p.host_str()?;
+                        Some(match p.port() {
+                            Some(port) => format!("{host}:{port}"),
+                            None => host.to_string(),
+                        })
+                    })
+                    .unwrap_or_else(|| u.clone());
                 if gateway_cid(u).is_some() {
                     format!("IPFS gateway {host}")
                 } else {
@@ -260,9 +262,7 @@ impl Missed {
             places,
         }
     }
-}
 
-impl Missed {
     /// The error, and each failed copy's `place (why)`.
     pub(crate) fn into_parts(self) -> (Error, Vec<String>) {
         match self {

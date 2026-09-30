@@ -1615,8 +1615,7 @@ impl<'a> RepoService<'a> {
         reader: &PackReader,
     ) -> std::result::Result<crate::storage::read::Served, Unserved> {
         let own = Uri(repo
-            .scope()
-            .map_err(Unserved::from)?
+            .scope()?
             .locator(&manifest.owner_id, &hex::encode(manifest.pack_hash)));
         // A read: chunks are fetched with the connection alone, no signing key, so a clone of
         // a public repo works without an identity.
@@ -3307,18 +3306,10 @@ fn uri_strings(uris: Vec<Uri>) -> Vec<String> {
     uris.into_iter().map(|u| u.0).collect()
 }
 
-/// The reader rule for one manifest copy, SHA-256-verified against it: every recorded
-/// external copy first, raced with `reader`'s IPFS gateway list (cheap, and needs no Platform
-/// queries), then the Platform `chunk` copies as the last resort — those another repo's scope
-/// holds (a fork's manifest names its parent's this way), then this manifest's own (`own`,
-/// when `storage == 0`). `read_chunks` reads one chunk locator: [`RepoService`] passes the
-/// Platform read, the offline survivability drill its recorded documents.
-///
-/// A read that a copy served after a preferred one failed is recorded on `reader` as a
-/// [`Fallback`](crate::storage::read::Fallback) naming the failed ones.
-///
-/// What [`RepoService::fetch_artifact_from`] does ([`read_copy`], then the record), with the
-/// chunk read supplied: the offline survivability drill's entry point.
+/// What [`RepoService::fetch_artifact_from`] does ([`read_copy`], then recording on `reader` a
+/// [`Fallback`](crate::storage::read::Fallback) naming the failed copies when a copy served
+/// after a preferred one failed), with the chunk read supplied: the offline survivability
+/// drill's entry point.
 #[cfg(test)]
 pub(crate) async fn read_manifest_copy<F, Fut>(
     manifest: &PackManifestInfo,
@@ -3352,7 +3343,15 @@ impl From<Error> for Unserved {
     }
 }
 
-/// [`read_manifest_copy`] without recording: which copy served, or why none did.
+/// The reader rule for one manifest copy, SHA-256-verified against it: every recorded
+/// external copy first, raced with `reader`'s IPFS gateway list (cheap, and needs no Platform
+/// queries), then the Platform `chunk` copies as the last resort — those another repo's scope
+/// holds (a fork's manifest names its parent's this way), then this manifest's own (`own`,
+/// when `storage == 0`). `read_chunks` reads one chunk locator: [`RepoService`] passes the
+/// Platform read, the offline survivability drill its recorded documents.
+///
+/// Records nothing: which copy served (and the preferred ones that failed first), or why none
+/// did, so a caller with more copies records one `Fallback` for the whole read.
 async fn read_copy<F, Fut>(
     manifest: &PackManifestInfo,
     own: &Uri,
