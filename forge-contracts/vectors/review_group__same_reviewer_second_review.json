@@ -1,6 +1,6 @@
 {
   "name": "same_reviewer_second_review",
-  "description": "The same reviewer's second review on a PR (same verdict and count as the first) holds only the comments naming it: the first review's comments stay with the first.",
+  "description": "The same reviewer's second review on a PR (the same comment count as the first) holds only the comments naming it: the first review's comments stay with the first.",
   "case": "review_group",
   "rules": "v2",
   "input": {

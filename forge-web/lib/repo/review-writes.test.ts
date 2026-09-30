@@ -61,6 +61,7 @@ import {
   loadReviewDraft,
   postComment,
   postTargetEvent,
+  reconcileReviewDraft,
   reviewData,
   saveReviewDraft,
   setAssignee,
@@ -342,6 +343,8 @@ describe('pending review submit', () => {
     const reads: SubmitReads = {
       reviews: async () => [
         { ...landedReview, id: 'x0', createdAt: 4 },
+        // an earlier identical review a lagging node left out of priorReviews: older than ours
+        { ...landedReview, id: 'x7', createdAt: 3 },
         landedReview,
         // not ours: another reviewer, an older head, another count, before the draft started
         { ...landedReview, id: 'x1', reviewer: ALICE },
@@ -400,16 +403,23 @@ describe('pending review submit', () => {
     const other: ChainReview = { ...first, id: 'x1', reviewer: ALICE }
     let chain: ChainReview[] = [first, other]
     const reads: SubmitReads = { reviews: async () => chain, comments: async () => [] }
-    failAt = 0 // the review write fails: nothing of this draft landed
+    failAt = 0 // the review write throws (a timeout) although it landed, so its id is never saved
     await expect(submitReviewDraft(sdk, auth(BOB), REPO, { ...draft(), attemptedAt: now }, MEMBER, undefined, reads)).rejects.toThrow('network dropped')
     const saved = (await loadReviewDraft('devnet', BOB, PR)) as ReviewDraft
     expect(saved.priorReviews).toEqual([D(5)])
-    // The resume sees the first review and this draft's own (it landed; its save did not).
+    // The resume sees the first review and this draft's own, which landed without its save.
     const own: ChainReview = { ...first, id: D(4), createdAt: now + 1_000 }
     chain = [first, other, own]
     const out = await submitReviewDraft(sdk, auth(BOB), REPO, saved, MEMBER, undefined, reads)
     expect(out.reviewId).toBe(D(4))
     expect(writes.map((w) => w.documentType)).toEqual(['comment', 'comment', 'comment'])
+  })
+
+  it('adopts no review for a draft without its record of earlier reviews (nothing of it was written)', async () => {
+    const now = Date.now()
+    const earlier: ChainReview = { id: D(5), reviewer: BOB, verdict: 2, commitOid: HEAD, body: 'two things', commentCount: 3, createdAt: now }
+    const d: ReviewDraft = { ...draft(), attemptedAt: now }
+    expect(await reconcileReviewDraft(d, { reviews: async () => [earlier], comments: async () => [] })).toBe(d)
   })
 
   it('records the attempt before the first write, so a crash after it reconciles', async () => {

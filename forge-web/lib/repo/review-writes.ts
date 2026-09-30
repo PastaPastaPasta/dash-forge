@@ -434,10 +434,13 @@ const CLOCK_SKEW_MS = 10 * 60 * 1000
  * review is this identity's review on the PR with the draft's verdict, head, summary and
  * `commentCount`, created no earlier than the attempt (less {@link CLOCK_SKEW_MS}: `attemptedAt`
  * is the client's clock, `$createdAt` the block's) and not one of the `priorReviews` read before
- * the first write, the earliest such when the draft has no `reviewId`; its landed comments are
- * the review's group (`groupReviewComments`) matched to the draft by anchor and body. A draft
- * without `priorReviews` never adopts a review: it is saved before the review is written, so
- * without it nothing of the draft's review can be on chain.
+ * the first write, the latest such when the draft has no `reviewId` (an earlier review a lagging
+ * node left out of `priorReviews` predates the attempt; the draft's own follows it); its landed
+ * comments are the review's group (`groupReviewComments`) matched to the draft by anchor and
+ * body. A draft without `priorReviews` never adopts a review: it is saved before the review is
+ * written, so without it nothing of the draft's review can be on chain. (A draft saved mid-submit
+ * by a build before `priorReviews` is not reconciled either: the signed-transition cache of its
+ * intent is then what keeps its review from landing twice.)
  */
 export async function reconcileReviewDraft(draft: ReviewDraft, reads: SubmitReads): Promise<ReviewDraft> {
   if (draft.attemptedAt === undefined) return draft
@@ -457,7 +460,7 @@ export async function reconcileReviewDraft(draft: ReviewDraft, reads: SubmitRead
           r.commentCount === draft.comments.length &&
           r.createdAt >= since,
       )
-      .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1))
+      .sort((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? -1 : 1))
     reviewId = mine[0]?.id
   }
   if (reviewId === undefined) return draft
