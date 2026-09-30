@@ -263,6 +263,12 @@ function checkStoredLength(entry: LocatorEntry, maxBytes: number): void {
 /** Bytes that hold any pack entry header (type, size varint, OFS offset or REF oid). */
 const ENTRY_HEAD_BYTES = 32
 
+/**
+ * Delta-chain steps {@link BrowseReader.objectType} follows: git caps `pack.depth` at 4095, so
+ * a longer chain (or a cycle of REF deltas) is a hostile pack, not a real one.
+ */
+const DELTA_WALK_MAX = 4095
+
 /** A read's limits, fixed when it starts: the object's, and every delta base's at any depth. */
 interface Limits {
   readonly item: number
@@ -408,9 +414,13 @@ export class BrowseReader {
   }
 
   /**
-   * An object's type from its pack entry header alone (a few bytes), without reconstructing
-   * it; null for a delta entry, whose type is its base's. git does not delta-encode commits in
-   * practice, so a delta is "not a commit" for short-id resolution.
+   * An object's type from pack entry headers alone (a few bytes each), without reconstructing
+   * it; null only for an object this reader does not index. A delta's type is its base's, so a
+   * delta entry follows its chain header by header to the whole object at its root: git does
+   * delta-encode commits (small, similar ones especially), and a short id must still resolve
+   * to one without downloading any candidate's body.
+   *
+   * Headers are not hash-checked: callers that act on an object read it ({@link readObject}).
    */
   async objectType(oidHex: string): Promise<GitObject['type'] | null> {
     const entry = this.locate(oidHex)
@@ -421,9 +431,35 @@ export class BrowseReader {
     }
     if (entry === null) return null
     this.noteRead(entry.packRef)
-    const head = await this.fetchRange(entry.packRef, entry.offset, Math.min(entry.offset + 16, entry.offset + entry.length), this.copyOf.get(entry.packRef))
-    const { type } = parseObjHeader(head, 0)
-    return type === PACK_TYPE.OFS_DELTA || type === PACK_TYPE.REF_DELTA ? null : objTypeFromCode(type)
+    let e = entry
+    // A base seen before is a cycle (a hostile pack): fail at once, not after the whole budget.
+    const seen = new Set<string>()
+    for (let step = 0; step <= DELTA_WALK_MAX; step++) {
+      const at = offsetKey(e.packRef, e.offset)
+      if (seen.has(at)) throw new Error(`delta chain of ${oidHex} loops back to pack ${e.packRef} offset ${e.offset}`)
+      seen.add(at)
+      const head = await this.fetchRange(e.packRef, e.offset, e.offset + Math.min(ENTRY_HEAD_BYTES, e.length), this.copyOf.get(e.packRef))
+      const h = parseObjHeader(head, 0)
+      if (h.type === PACK_TYPE.OFS_DELTA) {
+        const [rel] = parseOfsBase(head, h.after)
+        if (this.offsetIndex === null) this.offsetIndex = this.locator.buildOffsetIndex()
+        const base = this.offsetIndex.get(offsetKey(e.packRef, e.offset - rel))
+        if (base === undefined) throw new Error(`base object at pack ${e.packRef} offset ${e.offset - rel} not in locator`)
+        e = base
+      } else if (h.type === PACK_TYPE.REF_DELTA) {
+        if (head.length < h.after + 20) throw new Error('truncated REF_DELTA base oid')
+        const baseOid = bytesToHex(head.subarray(h.after, h.after + 20))
+        const known = this.objectsByOid.get(baseOid)
+        if (known !== undefined) return known.type
+        const base = this.locate(baseOid)
+        if (base === null) throw this.missing(baseOid)
+        this.noteRead(base.packRef)
+        e = base
+      } else {
+        return objTypeFromCode(h.type)
+      }
+    }
+    throw new Error(`delta chain of ${oidHex} is over ${DELTA_WALK_MAX} deep`)
   }
 
   /** The error for an object this reader does not index ({@link ReadFailure} `other`). */
