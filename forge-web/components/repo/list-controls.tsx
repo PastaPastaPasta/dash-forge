@@ -19,7 +19,7 @@ import { dpnsAuthorCandidates, Q_MAX, resolveSearchNames, withQuery } from '@/li
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { LabelChip } from '@/components/repo/issue-bits'
+import { CheckMark, LabelChip } from '@/components/repo/issue-bits'
 import { cn } from '@/lib/utils'
 
 /** What a list tells {@link useListQuery} about its query grammar. */
@@ -282,7 +282,7 @@ export function LabelFilter({ labels, selected, onChange }: { labels: readonly L
                   onClick={() => onChange(on ? selected.filter((x) => x !== n) : [...selected, n])}
                   className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-dense hover:bg-anvil-100 dark:hover:bg-anvil-850 coarse:min-h-11"
                 >
-                  <input type="checkbox" readOnly checked={on} tabIndex={-1} aria-hidden className="accent-forge-600" />
+                  <CheckMark on={on} />
                   <LabelChip name={n} def={byName.get(n)} />
                 </button>
               )

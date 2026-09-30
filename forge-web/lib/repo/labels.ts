@@ -165,15 +165,39 @@ export const LABEL_COLORS: readonly string[] = [
   '#e99695', '#f9d0c4', '#fef2c0', '#c2e0c6', '#bfdadc', '#c5def5', '#bfd4f2', '#d4c5f9',
 ]
 
+/** WCAG 2 relative luminance of a `#rrggbb` colour. */
+function luminance(hex: string): number {
+  const [r = 0, g = 0, b = 0] = [1, 3, 5].map((i) => {
+    const v = Number.parseInt(hex.slice(i, i + 2), 16) / 255
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4
+  })
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/** WCAG 2 contrast ratio between two `#rrggbb` colours (1 to 21). */
+export function contrastRatio(a: string, b: string): number {
+  const la = luminance(a)
+  const lb = luminance(b)
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
+}
+
+/** The theme's ink, which the chip's dark text renders as. */
+const INK = '#1f2328'
+/** WCAG AA for the chip's 11 px text. */
+const AA = 4.5
+
 /**
- * A readable text colour on a label's fill (WCAG relative luminance): dark text on light
- * fills, white on dark. No colour → null (the chip uses the theme's neutral style).
+ * A readable text colour on a label's fill, at least 4.5:1 (WCAG AA) against the colour it
+ * actually renders: the theme's ink on light fills, white on dark ones. The ink (#1f2328) is
+ * not black, so a mid-tone fill such as #ee0701 or #159818 can fail with both it and white
+ * (QW2-067); pure black is used there, since black or white reaches 4.58:1 on any fill.
+ * No colour → null (the chip uses the theme's neutral style).
  */
 export function labelTextColor(color: string): string | null {
   if (!HEX_COLOR.test(color)) return null
-  const c = [1, 3, 5].map((i) => Number.parseInt(color.slice(i, i + 2), 16) / 255)
-  const lin = c.map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4))
-  const lum = 0.2126 * (lin[0] ?? 0) + 0.7152 * (lin[1] ?? 0) + 0.0722 * (lin[2] ?? 0)
-  // White on the fill wins when it contrasts more than black would.
-  return (1.05 / (lum + 0.05)) > ((lum + 0.05) / 0.05) ? '#ffffff' : '#1f2328'
+  const ink = contrastRatio(color, INK)
+  const white = contrastRatio(color, '#ffffff')
+  if (ink >= white && ink >= AA) return INK
+  if (white >= AA) return '#ffffff'
+  return contrastRatio(color, '#000000') >= white ? '#000000' : '#ffffff'
 }

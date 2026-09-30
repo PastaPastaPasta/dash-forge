@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { checkLabelInput, labelTextColor, newestLabels } from './labels'
+import { checkLabelInput, contrastRatio, LABEL_COLORS, labelTextColor, newestLabels } from './labels'
 
 describe('label definitions', () => {
   it('keeps the newest definition per name, sorted by name', () => {
@@ -36,5 +36,21 @@ describe('label definitions', () => {
     expect(labelTextColor('#fef2c0')).toBe('#1f2328')
     expect(labelTextColor('#0052cc')).toBe('#ffffff')
     expect(labelTextColor('nope')).toBeNull()
+  })
+
+  it('meets 4.5:1 against the colour it renders, mid-tone fills included (QW2-067)', () => {
+    // The fills axe flagged: the ink (#1f2328) on them was 3.51:1 and 4.16:1.
+    for (const fill of ['#ee0701', '#128a0c', '#159818']) {
+      expect(contrastRatio(fill, labelTextColor(fill) ?? ''), fill).toBeGreaterThanOrEqual(4.5)
+    }
+    // A sweep of the colour cube, and GitHub's palette.
+    const steps = ['00', '15', '33', '66', '80', '98', 'b0', 'cc', 'ee', 'ff']
+    for (const r of steps) for (const g of steps) for (const b of steps) {
+      const fill = `#${r}${g}${b}`
+      expect(contrastRatio(fill, labelTextColor(fill) ?? ''), fill).toBeGreaterThanOrEqual(4.5)
+    }
+    for (const fill of LABEL_COLORS) expect(contrastRatio(fill, labelTextColor(fill) ?? ''), fill).toBeGreaterThanOrEqual(4.5)
+    // Light fills keep the theme's ink rather than jumping to black.
+    expect(labelTextColor('#ffffff')).toBe('#1f2328')
   })
 })

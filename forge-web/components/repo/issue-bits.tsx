@@ -7,6 +7,7 @@
  */
 
 import { useState, type ReactNode, type Ref } from 'react'
+import { Check } from 'lucide-react'
 import { labelTextColor, type LabelDef } from '@/lib/repo'
 import { avatarFill, avatarHue } from '@/lib/design/avatar'
 import { timeAgo } from '@/lib/view'
@@ -49,8 +50,9 @@ export function AssigneeAvatars({ ids, names }: { ids: readonly string[]; names?
   if (ids.length === 0) return null
   const shown = ids.slice(0, 3)
   const label = `Assigned to ${ids.map((id) => names?.get(id) ?? id.slice(0, 8)).join(', ')}`
+  // role="img": a plain span may not carry aria-label (QW2-066), and the swatches are one picture.
   return (
-    <span className="inline-flex items-center" aria-label={label} title={label} data-testid="assignees">
+    <span className="inline-flex items-center" role="img" aria-label={label} title={label} data-testid="assignees">
       {shown.map((id, i) => (
         <span
           key={id}
@@ -62,6 +64,26 @@ export function AssigneeAvatars({ ids, names }: { ids: readonly string[]; names?
         </span>
       ))}
       {ids.length > shown.length ? <span className="ml-1 text-[11px] text-anvil-500 dark:text-anvil-400">+{ids.length - shown.length}</span> : null}
+    </span>
+  )
+}
+
+/**
+ * The tick box drawn in a picker option (a label, an assignee, a reviewer). Only a picture: the
+ * option button carries the state (`aria-pressed` / `aria-selected`), and a real checkbox inside
+ * a button is a control nested in a control (axe nested-interactive, QW2-066).
+ */
+export function CheckMark({ on }: { on: boolean }): JSX.Element {
+  return (
+    <span
+      aria-hidden
+      data-checked={on || undefined}
+      className={cn(
+        'flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm border',
+        on ? 'border-forge-600 bg-forge-600 text-white' : 'border-anvil-400 bg-white dark:border-anvil-500 dark:bg-anvil-900',
+      )}
+    >
+      {on ? <Check className="h-3 w-3" strokeWidth={3} /> : null}
     </span>
   )
 }

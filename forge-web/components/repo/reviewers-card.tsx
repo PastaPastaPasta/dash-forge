@@ -19,6 +19,7 @@ import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Oid } from '@/components/ui/oid'
+import { CheckMark } from '@/components/repo/issue-bits'
 import { cn } from '@/lib/utils'
 
 function StandingIcon({ state }: { state: Standing }): JSX.Element {
@@ -204,11 +205,11 @@ export function ReviewersCard({
                     type="button"
                     aria-pressed={on}
                     onClick={() => onRequest(m.identity, on)}
-                    className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-anvil-100 dark:hover:bg-anvil-850"
+                    className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-anvil-100 dark:hover:bg-anvil-850 coarse:min-h-11"
                     data-testid="reviewer-option"
                     data-identity={m.identity}
                   >
-                    <input type="checkbox" readOnly checked={on} tabIndex={-1} aria-hidden className="accent-forge-600" />
+                    <CheckMark on={on} />
                     <Author identityId={m.identity} link={false} />
                     <span className="text-[11px] text-anvil-500 dark:text-anvil-400">{m.role}</span>
                   </button>

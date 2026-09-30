@@ -125,7 +125,7 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
             <button
               type="button"
               onClick={() => setShown((n) => n + PAGE_SIZE)}
-              className="text-dense text-anvil-600 underline dark:text-anvil-300"
+              className="hit-area text-dense text-anvil-600 underline dark:text-anvil-300"
             >
               Show {Math.min(PAGE_SIZE, data.current.length - shown)} more (of {plural(data.current.length - shown, 'release')} left)
             </button>
@@ -163,7 +163,7 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
                 type="button"
                 onClick={() => setShowPrevious((s) => !s)}
                 aria-expanded={showPrevious}
-                className="text-dense text-anvil-600 underline dark:text-anvil-300"
+                className="hit-area text-dense text-anvil-600 underline dark:text-anvil-300"
               >
                 {showPrevious ? 'Hide' : 'Show'} {plural(data.previous.length, 'previous revision')}
               </button>
@@ -460,12 +460,13 @@ function ReleaseCard({
           <AssetList assets={r.assets} accesses={accesses} className="mt-3" />
         ) : (
           // L-49: 2,039 asset rows fully expanded is most of a 238,000 px page; collapsed by default in the list.
-          <div className="mt-3">
+          // Touch: 44 px below "Full release notes", so the two hit areas do not overlap (QW2-069).
+          <div className="mt-3 coarse:mt-6">
             <button
               type="button"
               onClick={() => setAssetsOpen((o) => !o)}
               aria-expanded={assetsOpen}
-              className="text-dense text-anvil-600 underline dark:text-anvil-300"
+              className="hit-area text-dense text-anvil-600 underline dark:text-anvil-300"
             >
               {assetsOpen ? 'Hide' : 'Show'} {plural(r.assets.length, 'asset')}
             </button>
@@ -480,13 +481,13 @@ function ReleaseCard({
       ) : null}
       {sealedList && full ? <SealedAssets repo={repo} state={manifest} className="mt-3" /> : null}
       {sealedList && !full && !noSealedAssets ? (
-        <div className="mt-3">
+        <div className="mt-3 coarse:mt-6">
           <button
             type="button"
             onClick={() => setAssetsOpen((o) => !o)}
             aria-expanded={assetsOpen}
             aria-controls={sealedAssetsId}
-            className="inline-flex items-center gap-1 text-dense text-anvil-600 underline dark:text-anvil-300"
+            className="hit-area inline-flex items-center gap-1 text-dense text-anvil-600 underline dark:text-anvil-300"
           >
             <Lock className="h-3 w-3 shrink-0" aria-hidden />
             {assetsOpen ? 'Hide' : 'Show'} {manifest.data ? plural(manifest.data.manifest.assets.length, 'asset') : 'assets'}
@@ -544,7 +545,7 @@ export function OmittedAssetsNote({ omitted }: { omitted: OmittedAssets }): JSX.
         {plural(omitted.count, 'more asset')} not mirrored ({omitted.total - omitted.count} of {omitted.total} listed here).
       </span>
       {omitted.sourceUrl ? (
-        <a href={omitted.sourceUrl} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" className="font-medium underline">
+        <a href={omitted.sourceUrl} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" className="hit-area font-medium underline">
           All assets at {urlHost(omitted.sourceUrl)}
         </a>
       ) : null}
@@ -752,7 +753,7 @@ function OriginLinks({ asset, primary = false }: { asset: ReleaseAssetView; prim
             <Download className="h-3.5 w-3.5" aria-hidden /> Download from {urlHost(u)}
           </a>
         ) : (
-          <a key={u} href={u} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" className="font-mono text-forge-700 underline dark:text-forge-400">
+          <a key={u} href={u} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" className="hit-area font-mono text-forge-700 underline dark:text-forge-400">
             {urlHost(u)}
           </a>
         ),

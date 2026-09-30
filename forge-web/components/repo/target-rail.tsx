@@ -14,7 +14,7 @@ import { isIdentityId } from '@/lib/utils'
 import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { LabelChip } from '@/components/repo/issue-bits'
+import { CheckMark, LabelChip } from '@/components/repo/issue-bits'
 import { cn } from '@/lib/utils'
 import type { Milestone } from '@/lib/rules/parity'
 
@@ -145,18 +145,18 @@ export function AssigneePicker({
                     type="button"
                     aria-pressed={on}
                     onClick={() => onToggle(m, on)}
-                    className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-anvil-100 dark:hover:bg-anvil-850"
+                    className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-anvil-100 dark:hover:bg-anvil-850 coarse:min-h-11"
                     data-testid="assignee-option"
                     data-identity={m}
                   >
-                    <input type="checkbox" readOnly checked={on} tabIndex={-1} aria-hidden className="accent-forge-600" />
+                    <CheckMark on={on} />
                     <Author identityId={m} link={false} />
                   </button>
                 )
               })}
               <div className="flex gap-1 pt-1">
                 <Input aria-label="Assign identity id" value={other} onChange={(e) => setOther(e.target.value)} placeholder="identity id" className="h-7 py-0 font-mono text-[12px]" />
-                <Button variant="outline" size="sm" disabled={!isIdentityId(other.trim())} onClick={() => onToggle(other.trim(), false)}>
+                <Button variant="outline" size="sm" aria-label="Assign this identity" title="Assign this identity" disabled={!isIdentityId(other.trim())} onClick={() => onToggle(other.trim(), false)}>
                   <Plus className="h-3.5 w-3.5" aria-hidden />
                 </Button>
               </div>
@@ -227,10 +227,10 @@ export function LabelPicker({
                       type="button"
                       aria-pressed={on}
                       onClick={() => onToggle(n, on)}
-                      className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-anvil-100 dark:hover:bg-anvil-850"
+                      className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-anvil-100 dark:hover:bg-anvil-850 coarse:min-h-11"
                       data-testid="label-option"
                     >
-                      <input type="checkbox" readOnly checked={on} tabIndex={-1} aria-hidden className="accent-forge-600" />
+                      <CheckMark on={on} />
                       <LabelChip name={n} def={def} />
                       {def?.description ? <span className="truncate text-[11px] text-anvil-500 dark:text-anvil-400">{def.description}</span> : null}
                     </button>
