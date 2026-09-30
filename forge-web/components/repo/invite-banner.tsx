@@ -11,7 +11,7 @@
  * this repo, and lets the owner add them again later.
  */
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { UserPlus } from 'lucide-react'
 import { acceptInvite, findConsent, readConsents, readMembershipsCached, repoContractIds, type RepoRef } from '@/lib/repo'
@@ -30,6 +30,11 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 
 /** The query parameter an invite link carries. */
 export const INVITE_PARAM = 'invite'
+
+/** How soon the owner's Settings re-reads the pending invitations while the page is visible. */
+export const INVITES_POLL_MS = 10_000
+/** The longest wait between those re-reads once nothing new has turned up for a while. */
+export const INVITES_POLL_MAX_MS = 60_000
 
 type Standing = 'member' | 'accepted' | 'invited'
 
@@ -137,16 +142,75 @@ export function Invitations({
   onPick,
 }: {
   repo: RepoRef
-  /** The current members' identity ids (their consents are not pending). */
-  members: readonly string[]
+  /**
+   * The current members' identity ids (their consents are not pending), or null until they are
+   * read: until then no consent is listed as pending (a member's would be).
+   */
+  members: readonly string[] | null
   /** The identity an add was refused for because they had not accepted, or null. */
   awaiting: string | null
   disabled: boolean
   onPick: (identity: string, role: Role) => void
 }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
-  const consents = useAsync<string[]>(() => readConsents(sdk!, repo), [ready, repo.repoId, network, members.length], { enabled: ready && sdk !== null })
-  const pending = (consents.data ?? []).filter((id) => id !== repo.ownerId && !members.includes(id))
+  // Every consent this page has read, per network and repo: a re-read that reaches a node without
+  // a fresh accept keeps it listed, and a re-read that fails keeps the list rather than blanking
+  // it. Merged after each read lands, so reads that overlap never drop one another's. (A consent
+  // withdrawn meanwhile stays listed until a reload; adding them then says they have not
+  // accepted, and nothing is signed.)
+  const seen = useRef(new Map<string, readonly string[]>())
+  const key = `${network}:${repo.repoId}`
+  const consents = useAsync<readonly string[]>(
+    async () => {
+      let ids: string[]
+      try {
+        ids = await readConsents(sdk!, repo)
+      } catch (e) {
+        const known = seen.current.get(key)
+        if (known !== undefined) return known
+        throw e
+      }
+      const known = seen.current.get(key) ?? []
+      const merged = [...known, ...ids.filter((id) => !known.includes(id))]
+      seen.current.set(key, merged)
+      return merged
+    },
+    [ready, repo.repoId, network],
+    { enabled: ready && sdk !== null, initial: () => seen.current.get(key) },
+  )
+  // The invitee accepts in their own browser, and the node a read reaches may not have indexed it
+  // yet: re-read while this page is open and visible, so a fresh accept shows without a reload.
+  // Every INVITES_POLL_MS, doubling up to INVITES_POLL_MAX_MS while nothing new turns up; a new
+  // consent, or the page becoming visible again (which reads at once), starts over.
+  const { reload } = consents
+  const polling = ready && sdk !== null
+  const known = consents.data?.length ?? 0
+  useEffect(() => {
+    if (!polling) return
+    let delay = INVITES_POLL_MS
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const schedule = (): void => {
+      timer = setTimeout(() => {
+        if (document.visibilityState === 'visible') reload()
+        delay = Math.min(delay * 2, INVITES_POLL_MAX_MS)
+        schedule()
+      }, delay)
+    }
+    const onVisibility = (): void => {
+      if (document.visibilityState !== 'visible') return
+      clearTimeout(timer)
+      delay = INVITES_POLL_MS
+      reload()
+      schedule()
+    }
+    schedule()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [polling, reload, known])
+  const pending = members === null ? [] : (consents.data ?? []).filter((id) => id !== repo.ownerId && !members.includes(id))
   const link = typeof window === 'undefined' ? '' : new URL(repoHref('/repo', { owner: repo.ownerId, name: repo.name }, { [INVITE_PARAM]: '1' }), window.location.origin).toString()
   return (
     <>

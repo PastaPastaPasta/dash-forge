@@ -36,7 +36,9 @@ vi.mock('@/components/repo/repo-settings-sections', () => ({
   DangerZone: () => null,
   Section: ({ children }: { children: React.ReactNode }) => <section>{children}</section>,
 }))
-vi.mock('@/components/storage/repo-storage-policy', () => ({ RepoStoragePolicy: () => null }))
+vi.mock('@/components/storage/repo-storage-policy', () => ({
+  RepoStoragePolicy: ({ unlockAbove }: { unlockAbove?: boolean }) => <div data-testid="storage-policy" data-unlock-above={String(unlockAbove === true)} />,
+}))
 vi.mock('@/components/repo/invite-banner', () => ({ Invitations: () => null }))
 vi.mock('@/components/repo/private-members', () => ({ PrivateMembers: () => <div data-testid="private-members" /> }))
 vi.mock('@/components/author', () => ({ Author: ({ identityId }: { identityId: string }) => <span>{identityId}</span> }))
@@ -118,5 +120,22 @@ describe('private repo Settings → Collaborators before this tab opened the enc
     await render(repoHome('public'))
     expect(host.querySelector('#member-id')).not.toBeNull()
     expect(host.querySelector('[data-testid="members-unlock"]')).toBeNull()
+  })
+})
+
+describe('one unlock per Settings page', () => {
+  const unlockAbove = (): string | null | undefined => host.querySelector('[data-testid="storage-policy"]')?.getAttribute('data-unlock-above')
+
+  it('a locked private repo: the Storage section defers to the unlock under Collaborators', async () => {
+    await render(privateHome('locked'))
+    expect(host.querySelectorAll('[data-testid="members-unlock"]')).toHaveLength(1)
+    expect(unlockAbove()).toBe('true')
+  })
+
+  it('anywhere else the Storage section offers its own unlock when it needs one', async () => {
+    for (const home of [repoHome('public'), privateHome('member'), privateHome('no-key')]) {
+      await render(home)
+      expect(unlockAbove()).toBe('false')
+    }
   })
 })
