@@ -37,6 +37,16 @@ pub fn safe(text: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// An identity id for display, with its DPNS name after it when `names` has one
+/// (`Fi8b… (alice.dash)`), as [`forge_core::platform::PlatformClient::dpns_first_names`]
+/// reads them.
+pub fn with_name(id: &str, names: &std::collections::BTreeMap<String, String>) -> String {
+    match names.get(id) {
+        Some(name) => format!("{id} ({})", safe(name)),
+        None => id.to_string(),
+    }
+}
+
 /// A commit id shortened for display (12 hex digits).
 pub fn short(oid: &str) -> &str {
     // By character: the value may be untrusted document text, not hex.
@@ -191,6 +201,14 @@ mod tests {
         assert_eq!(cost_json(100_000, 30.0)["usd"].as_f64(), Some(0.00003));
         assert_eq!(v["credits"].as_u64(), Some(95_093_000));
         assert_eq!(cost_json(0, 30.0)["usd"].as_f64(), Some(0.0));
+    }
+
+    /// QW-083: an id with a DPNS name shows it; one without (or whose read failed) is bare.
+    #[test]
+    fn an_identity_shows_its_dpns_name_when_it_has_one() {
+        let names = [("A1".to_string(), "alice.dash\u{1b}[2J".to_string())].into();
+        assert_eq!(with_name("A1", &names), "A1 (alice.dash[2J)");
+        assert_eq!(with_name("B2", &names), "B2");
     }
 
     /// The timeline's words for each transition kind (the web's), and how a state change was

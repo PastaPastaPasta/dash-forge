@@ -130,6 +130,7 @@ async fn accept(ctx: &Ctx, repo: &str, withdraw: bool) -> Result<()> {
             "repo": handle.display(),
             "identityId": me,
             "documentId": document_id,
+            "id": document_id,
         }),
         || {
             println!(
@@ -232,6 +233,7 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
             "member": member,
             "role": role_name(role),
             "documentId": granted.document_id,
+            "id": granted.document_id,
             "repo": handle.display(),
         }),
         || {
@@ -518,16 +520,29 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
                 "identityId": m.identity_id,
                 "role": role_name(m.role),
                 "documentId": m.document_id,
+                "id": m.document_id,
                 "since": m.created_at,
             })
         })
         .collect();
+    // DPNS names for the human list only, read together; a failed read shows the bare id.
+    let names = if ctx.json {
+        std::collections::BTreeMap::default()
+    } else {
+        client
+            .dpns_first_names(members.iter().map(|m| m.identity_id.as_str()))
+            .await
+    };
     ctx.emit(
         json!({ "count": rows.len(), "members": rows, "ownerId": handle.owner_id() }),
         || {
             println!("{} member(s) of {}:", members.len(), handle.display());
             for m in &members {
-                println!("  {}  {}", m.identity_id, role_name(m.role));
+                println!(
+                    "  {}  {}",
+                    crate::fmt::with_name(&m.identity_id, &names),
+                    role_name(m.role)
+                );
             }
         },
     );

@@ -17,7 +17,7 @@ use serde_json::json;
 use forge_core::create::{default_journal_dir, CreateRepoOpts};
 use forge_core::members::MemberReader;
 use forge_core::repo::RepoService;
-use forge_core::resolve::{list_owned, repo_slug};
+use forge_core::resolve::{list_owned, repo_description, repo_slug};
 use forge_core::user_error::{codes, UserError};
 
 use crate::common::{resolve, Reader, RepoRef, Session};
@@ -52,7 +52,7 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
         RepoCommand::Watch { repo } => watch(ctx, repo, true).await,
         RepoCommand::Unwatch { repo } => watch(ctx, repo, false).await,
         RepoCommand::Topic { repo, add, remove } => topic(ctx, repo, add, remove).await,
-        RepoCommand::View { repo } => view(ctx, repo).await,
+        RepoCommand::View { repo } => Box::pin(view(ctx, repo)).await,
         RepoCommand::List { owner } => list(ctx, owner.as_deref()).await,
         RepoCommand::Backend(RepoBackendCommand::Set { repo, mode }) => {
             backend_set(ctx, repo, mode.mode(), mode.label()).await
@@ -482,11 +482,16 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
     if handle.visibility == Visibility::Private {
         svc.keyring(handle).await?.require_key(handle)?;
     }
-    // `archived` is `null` when the config cannot be read, not a guessed `false` (QW-081).
-    let (default_branch, config) =
-        tokio::join!(svc.read_default_branch(handle), svc.current_config(handle));
+    // `archived` is `null` when the config cannot be read, not a guessed `false` (QW-081);
+    // likewise `description` (`""` when the repo has none, as `repo list` has it).
+    let (default_branch, config, description) = tokio::join!(
+        svc.read_default_branch(handle),
+        svc.current_config(handle),
+        repo_description(client, handle)
+    );
     let default_branch = default_branch.unwrap_or(None);
     let archived = config.ok().map(|c| c.archived);
+    let description = description.ok();
     let visibility = match handle.visibility {
         Visibility::Private => "private",
         Visibility::Public => "public",
@@ -511,6 +516,7 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
             "repoId": handle.id(),
             "ownerId": handle.owner_id(),
             "name": handle.name(),
+            "description": description,
             "visibility": visibility,
             "archived": archived,
             "defaultBranch": default_branch,
@@ -523,6 +529,9 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
         || {
             println!("{}", handle.display());
             println!("  id:             {}", handle.id());
+            if let Some(d) = description.as_deref().filter(|d| !d.is_empty()) {
+                println!("  description:    {}", crate::fmt::safe(d));
+            }
             println!(
                 "  visibility:     {visibility}{}",
                 if archived == Some(true) {

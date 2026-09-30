@@ -190,6 +190,17 @@ pub async fn fork_parent(client: &PlatformClient, repo: &RepoRef) -> Result<Opti
         .map(platform::encode_identifier))
 }
 
+/// The `description` of a repo's `repo` document, as [`list_owned`] reads it (`""` when it
+/// has none).
+pub async fn repo_description(client: &PlatformClient, repo: &RepoRef) -> Result<String> {
+    let core = client.fetch_contract(&repo.forge.core).await?;
+    Ok(client
+        .fetch_document(&core, DOC_REPO, &repo.repo_id)
+        .await?
+        .and_then(|d| d.field_str("description"))
+        .unwrap_or_default())
+}
+
 /// Every repository `owner` has, by name.
 pub async fn list_owned(client: &PlatformClient, owner: &str) -> Result<Vec<RepoSummary>> {
     let owner_bytes = platform::decode_identifier(owner)?;

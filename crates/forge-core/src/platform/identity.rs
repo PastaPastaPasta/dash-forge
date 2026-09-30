@@ -936,6 +936,25 @@ impl PlatformClient {
             .map_err(|e| sdk_err("reading DPNS names", e))
     }
 
+    /// The first DPNS name ([`Self::dpns_names_of`]) of each distinct id in `ids` that has
+    /// one, read concurrently (a few at a time). For display only: an id whose read fails is
+    /// left out, so a caller shows it bare.
+    pub async fn dpns_first_names<'a>(
+        &self,
+        ids: impl IntoIterator<Item = &'a str>,
+    ) -> BTreeMap<String, String> {
+        use futures::StreamExt as _;
+        let ids: std::collections::BTreeSet<&str> = ids.into_iter().collect();
+        futures::stream::iter(ids)
+            .map(|id| async move { (id, self.dpns_names_of(id).await) })
+            .buffer_unordered(8)
+            .filter_map(|(id, names)| async move {
+                Some((id.to_string(), names.ok()?.into_iter().next()?))
+            })
+            .collect()
+            .await
+    }
+
     /// The identity DPNS name `name` (`alice` or `alice.dash`, compared homograph-safe as
     /// DPNS does) resolves to, or `None` when no such name is registered. A proof-verified
     /// read of the DPNS `domain` document (`normalizedParentDomainName == "dash"`,
