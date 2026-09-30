@@ -323,6 +323,15 @@ describe('a re-resolve takes a read issued after the list it checks (D-11)', () 
     expect(calls).toEqual([])
   })
 
+  it('the read issued in the same millisecond the list was checked is the one it checks: read again', async () => {
+    const { sdk, calls } = fakeSdk(fixture(3))
+    await loadRepoHome(sdk, { network: 'devnet', owner: OWNER, name: 'demo' })
+    const checked = Date.now()
+    calls.length = 0
+    await readBrowseManifests(sdk, REF, { after: checked, network: 'devnet' })
+    expect(calls).toEqual(['composite:repo'])
+  })
+
   it('a read issued after the list but older than the store keeps a read fresh is not taken', async () => {
     const { sdk, calls } = fakeSdk(fixture(3))
     const checked = Date.now()

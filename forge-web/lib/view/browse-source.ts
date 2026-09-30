@@ -1557,11 +1557,11 @@ function startEntry(sdk: EvoSDK, repo: RepoRef, key: string): BrowseCacheEntry {
  * Resolve `repo` again behind a settled entry, joining a re-resolve already in flight. A state
  * that {@link supersedes} the cached one replaces it; any other keeps the entry and its warm
  * reader (the same pack list, or a lagging node's older one). Resolves with the state the cache
- * holds afterwards.
+ * holds afterwards. `after`: only a timelines read issued after it answers ({@link loadBrowseContext}).
  */
-function refreshEntry(sdk: EvoSDK, repo: RepoRef, key: string, hit: BrowseCacheEntry & { settled: BrowseState }): Promise<BrowseState> {
+function refreshEntry(sdk: EvoSDK, repo: RepoRef, key: string, hit: BrowseCacheEntry & { settled: BrowseState }, after: number): Promise<BrowseState> {
   if (hit.refresh !== undefined) return hit.refresh
-  const refresh = loadBrowseContext(sdk, repo, { after: hit.checkedAt ?? Date.now() })
+  const refresh = loadBrowseContext(sdk, repo, { after })
     .then((state) => {
       // An explicit reload may have dropped the entry meanwhile: leave its successor alone.
       if (browseCache.get(key) !== hit) return state
@@ -1601,8 +1601,9 @@ export function loadBrowseContextCached(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   if (hit === undefined || !browseEntryLive(hit)) return startEntry(sdk, repo, key).promise
   const settled = settledEntry(key)
   if (settled !== undefined && Date.now() - settled.at >= BROWSE_REVALIDATE_MS) {
-    // A failure keeps serving the last good state; the TTL forces a fresh resolve.
-    refreshEntry(sdk, repo, key, settled).catch(() => undefined)
+    // A failure keeps serving the last good state; the TTL forces a fresh resolve. Any read issued
+    // since the entry was last checked will do (the home's revalidation of a moment ago, D-11).
+    refreshEntry(sdk, repo, key, settled, settled.checkedAt ?? Date.now()).catch(() => undefined)
   }
   return hit.promise
 }
@@ -1634,7 +1635,9 @@ function readerAfterMiss(sdk: EvoSDK, repo: RepoRef, stale: BrowseReader, oidHex
   const before = peekBrowseState(key)
   const resolveAgain = (): Promise<BrowseState> => {
     const hit = settledEntry(key)
-    if (hit !== undefined) return refreshEntry(sdk, repo, key, hit)
+    // A read issued now (or one in flight): the object may come from a push newer than any read
+    // held, such as a PR head or a linked commit.
+    if (hit !== undefined) return refreshEntry(sdk, repo, key, hit, Date.now())
     const pending = browseCache.get(key)
     // The first resolve is still in flight: it started after `stale` was made.
     if (pending !== undefined && browseEntryLive(pending)) return pending.promise
