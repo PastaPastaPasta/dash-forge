@@ -508,22 +508,39 @@ async fn check_identity(ctx: &Ctx) -> Vec<Check> {
     if forge_core::keystore::is_file_source(&path) {
         out.push(file_mode_check(&path));
     }
-    out.push(if bridge.doc_op_key().is_ok() {
-        Check::ok("keys", "HIGH/CRITICAL auth key for writes")
-    } else {
-        Check::fail(
+    if bridge.doc_op_key().is_err() {
+        out.push(Check::fail(
             "keys",
             "no HIGH or CRITICAL AUTHENTICATION key: nothing can be signed",
             "export the identity again from the bridge (it includes the auth keys)",
-        )
-    });
-    out.push(match ctx.connect().await {
-        Err(_) => Check::warn(
+        ));
+    }
+    let client = ctx.connect().await;
+    let identity = match &client {
+        Ok(c) => Some(c.fetch_identity(&bridge.identity_id).await),
+        Err(_) => None,
+    };
+    if bridge.doc_op_key().is_ok() {
+        out.push(match (&client, &identity) {
+            (Ok(c), Some(Ok(identity))) => keys_check(
+                &crate::auth::key_report(c, identity, &bridge, ctx).await,
+                &bridge,
+            ),
+            // Not on chain, or not reachable: the balance row says which; what the key file
+            // holds is all that can be said.
+            _ => Check::ok(
+                "keys",
+                "HIGH/CRITICAL auth key for writes (its limits on chain not checked)",
+            ),
+        });
+    }
+    out.push(match (client, identity) {
+        (Err(_), _) | (_, None) => Check::warn(
             "balance",
             "not checked: Platform unreachable (see network)",
             "run `dg doctor` again when the network row passes",
         ),
-        Ok(client) => match client.get_balance(&bridge.identity_id).await {
+        (Ok(_), Some(fetched)) => match fetched.map(|i| i.balance()) {
             Ok(credits) => balance_check(credits),
             Err(forge_core::Error::NotFound) => Check::fail(
                 "balance",
@@ -542,6 +559,28 @@ async fn check_identity(ctx: &Ctx) -> Vec<Check> {
         },
     });
     out
+}
+
+/// The `keys` row: what the key in use can sign, as the chain says (QW2-005: a CI runner key
+/// bound to `checkRun` passed as "HIGH/CRITICAL auth key for writes"), and whether private
+/// repositories open with it (an `ENCRYPTION` key held beside it).
+fn keys_check(
+    report: &crate::auth::KeyReport,
+    bridge: &forge_core::keystore::BridgeIdentity,
+) -> Check {
+    if report.key_id.is_none() {
+        return Check::fail(
+            "keys",
+            "the key in use is not a live key of this identity (disabled, or never registered)",
+            "sign in again: `dg auth login <file>` or `dg auth login --mnemonic`",
+        );
+    }
+    let line = crate::auth::key_line(Some(report), None, true);
+    let ids = crate::auth::encryption_key_ids(bridge);
+    let also = crate::auth::private_line(Some(&ids), report.doc_type.is_some())
+        .map(|l| format!("; {l}"))
+        .unwrap_or_default();
+    Check::ok("keys", format!("{line}{also}"))
 }
 
 fn balance_check(credits: u64) -> Check {

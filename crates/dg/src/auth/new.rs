@@ -721,6 +721,28 @@ async fn fund_and_lock(
     Ok((lock, proof))
 }
 
+/// The new identity's `ENCRYPTION` key entries (key 4, registered in the same IdentityCreate)
+/// to store beside its limited key, unless `--signing-only`.
+fn encryption_to_keep(
+    args: &NewArgs,
+    keys: &NewIdentityKeys,
+    identity_id: &str,
+) -> Vec<forge_core::keystore::IdentityKey> {
+    if args.storage.signing_only {
+        return vec![];
+    }
+    keys.to_bridge(identity_id)
+        .identity_keys
+        .into_iter()
+        .filter(|k| k.purpose == "ENCRYPTION")
+        .map(|mut k| {
+            // what the stored key needs, not how to derive it again
+            k.derivation_path.clear();
+            k
+        })
+        .collect()
+}
+
 /// Store this computer's limited key, then register the identity with it (or, when an earlier
 /// run already created the identity, register a fresh limited key with the words' master key).
 #[allow(clippy::too_many_arguments)]
@@ -762,7 +784,8 @@ async fn register(
         let replace = identity
             .is_limited_key(FIRST_LIMITED_KEY_ID)
             .then_some(FIRST_LIMITED_KEY_ID);
-        return register_and_store(ctx, client, &master, spec, replace, checked, insecure).await;
+        return register_and_store(ctx, client, &master, spec, replace, checked, &args.storage)
+            .await;
     }
     let limited = FreshKey::generate(ctx.network());
     let dfk1 = forge_core::keystore::dfk1(
@@ -771,8 +794,12 @@ async fn register(
         FIRST_LIMITED_KEY_ID,
         limited.wif().expose(),
     );
+    // With the identity's encryption key (key 4, registered in the same IdentityCreate), so
+    // private repositories work with this computer's key (QW2-004), unless --signing-only.
+    let encryption = encryption_to_keep(args, keys, identity_id);
+    let text = super::with_encryption_keys(&dfk1, &encryption)?;
     // Stored before the identity exists: an interruption never leaves a key nobody holds.
-    let stored = store::store(&network, identity_id, &dfk1, insecure)?;
+    let stored = store::store(&network, identity_id, &text, insecure)?;
     say(ctx, "  registering the identity…");
     client
         .create_identity(keys, proof, &limited, spec)
@@ -879,6 +906,7 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
                 dash_amount(credits_to_dash(spec.budget_credits)),
                 expiry_text(spec.expires_at_ms)
             );
+            super::print_kept_encryption(&encryption_to_keep(args, &keys, &identity_id));
             println!("  stored in {}", stored.describe());
             println!("  balance {} DASH", dash_amount(credits_to_dash(balance)));
             println!("  next: cd my-project && dg init");

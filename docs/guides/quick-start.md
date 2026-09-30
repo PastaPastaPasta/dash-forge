@@ -117,7 +117,7 @@ Register the key? [y/N] y
 
 The quote is an upper bound: on devnet bonsia the update was charged about 0.00027 DASH. Without a terminal (a script), `dg` stops with [E802](../errors.md#e802) and writes nothing; add `--yes` once you have checked the estimate.
 
-The identity file's master key signs one update that registers a limited key for this computer, and `dg` stores only that key. Afterwards put the identity file somewhere offline. `dg` records the identity and the network as defaults, and `git push` reads the same stored key, so neither needs flags or `DASH_FORGE_KEY`. Where there is no OS keychain (a container, Linux without Secret Service), the key goes to a passphrase-sealed file instead; over SSH, set `DASH_FORGE_NO_KEYCHAIN=1` to get the same.
+The identity file's master key signs one update that registers a limited key for this computer, and `dg` stores only that key, with your identity's encryption key beside it for private repositories (never the master key). Afterwards put the identity file somewhere offline. `dg` records the identity and the network as defaults, and `git push` reads the same stored key, so neither needs flags or `DASH_FORGE_KEY`. Where there is no OS keychain (a container, Linux without Secret Service), the key goes to a passphrase-sealed file instead; over SSH, set `DASH_FORGE_NO_KEYCHAIN=1` to get the same.
 
 With a sealed key file, each command that signs asks for the passphrase once:
 

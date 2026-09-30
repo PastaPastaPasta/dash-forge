@@ -167,10 +167,9 @@ async fn list(ctx: &Ctx) -> Result<()> {
 /// id, so the words alone recover it. One identity update signed by the master key.
 ///
 /// Only a master identity that carries its words can do this: the private half must be
-/// recoverable, and `dg` keeps nothing but limited keys (an ENCRYPTION key is not one). Readers
-/// (`git clone`, `dg`) need the key's private half in the identity they sign with: sign in with
-/// the full identity for private repositories (`dg auth login --full-key`), or keep the words'
-/// file, which now derives it.
+/// recoverable. Readers (`git clone`, `dg`) need the key's private half in the key source they
+/// sign with: `dg auth login` again stores it beside a limited key (QW2-004), and the words'
+/// file now derives it.
 async fn add_encryption(
     ctx: &Ctx,
     client: &forge_core::platform::PlatformClient,
@@ -214,7 +213,10 @@ async fn add_encryption(
             "purpose": "ENCRYPTION",
             "derived": true,
         }),
-        || println!("✓ added ENCRYPTION key #{added}; the recovery words re-derive it"),
+        || {
+            println!("✓ added ENCRYPTION key #{added}; the recovery words re-derive it");
+            println!("  to use it from this computer: `dg auth login <identity file>` (or --mnemonic) stores it beside a limited key");
+        },
     );
     Ok(())
 }
@@ -276,7 +278,7 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
         &spec,
         replace,
         &checked,
-        args.storage.insecure_plaintext,
+        &args.storage,
     )
     .await?;
     super::store::set_default(ctx, &master.identity_id, &stored.source())?;
