@@ -7,15 +7,18 @@
  *   - ErrorState: what went wrong + how to fix it, in the app's plain voice. A read that failed
  *     because nothing answered (offline, Platform or storage unreachable) gets a plain offline
  *     state that retries by itself once the connection is back, with the raw error behind
- *     Details (L-56).
+ *     Details (L-56). An answer that failed its proof check is a verification failure, said in
+ *     plain words, never the raw verifier message (QW-057).
  */
 
-import { AlertTriangle, Loader2, WifiOff, type LucideIcon } from 'lucide-react'
+import { AlertTriangle, Loader2, ShieldX, WifiOff, type LucideIcon } from 'lucide-react'
 import { useEffect, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { isUnreachableError } from '@/lib/sdk/unreachable'
+import { DEFAULT_NETWORK } from '@/lib/constants'
+import { proofFailureCopy, unreachableReadCopy, type FailureCopy } from '@/lib/view/platform-failure'
 import { scheduleReconnect } from '@/lib/view/reconnect'
 import { isOffline, subscribeOnlineStatus } from '@/lib/online'
-import { cn } from '@/lib/utils'
+import { cn, errorMessage } from '@/lib/utils'
 
 /** Inline spinner with an accessible label. */
 export function Spinner({ label = 'Loading', className }: { label?: string; className?: string }): JSX.Element {
@@ -107,6 +110,10 @@ export function ErrorState({
   cause?: unknown
   onRetry?: () => void
 }): JSX.Element {
+  // A proof that failed is an answer, and the data was wrong: say so, and keep the raw hashes
+  // behind Details (QW-057). Never the retrying offline state.
+  const proof = proofFailureCopy(message) ?? (cause !== undefined ? proofFailureCopy(errorMessage(cause, '')) : null)
+  if (proof !== null) return <ProofFailedState copy={proof} message={message} onRetry={onRetry} />
   if (onRetry && (isUnreachableError(cause) || isUnreachableError(message))) {
     return <UnreachableState message={message} onRetry={onRetry} />
   }
@@ -130,12 +137,38 @@ export function ErrorState({
 }
 
 /**
+ * A read's answer failed its proof check: a verification failure, in the danger colour, with
+ * what it means and what to do, and the verifier's raw message (GroveDB hashes) behind Details.
+ */
+function ProofFailedState({ copy, message, onRetry }: { copy: FailureCopy; message: string; onRetry?: () => void }): JSX.Element {
+  return (
+    <div
+      data-testid="read-proof-failed"
+      className="flex flex-col items-center justify-center rounded-lg border border-danger/40 bg-danger/5 px-6 py-10 text-center"
+    >
+      <span className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-danger/10 text-danger-700 dark:text-danger-400">
+        <ShieldX className="h-5 w-5" aria-hidden />
+      </span>
+      <h3 role="alert" className="text-prose text-anvil-900 dark:text-anvil-50">
+        {copy.title}
+      </h3>
+      <p className="mt-1.5 max-w-md text-dense text-anvil-600 dark:text-anvil-300">{copy.body}</p>
+      {onRetry ? <RetryButton onClick={onRetry} /> : null}
+      <ErrorDetails message={message} />
+    </div>
+  )
+}
+
+/**
  * Nothing answered the read: offline, or Platform or the repo's storage did not respond. Says
  * so in plain words, retries by itself once the connection is back (backing off while it
  * stays down), and keeps the raw error behind Details.
  */
 export function UnreachableState({ message, onRetry }: { message: string; onRetry: () => void }): JSX.Element {
   const offline = useOffline()
+  // A proof signed by a quorum whose key the app lacks is the key service lagging (#212), not
+  // an outage: named as such (QW-056).
+  const copy = unreachableReadCopy(message, { network: DEFAULT_NETWORK, offline })
   // The latest callback, so a caller's inline arrow does not restart the wait on every render.
   const retry = useRef(onRetry)
   retry.current = onRetry
@@ -161,13 +194,9 @@ export function UnreachableState({ message, onRetry }: { message: string; onRetr
         <WifiOff className="h-5 w-5" aria-hidden />
       </span>
       <h3 role="status" className="text-prose text-anvil-900 dark:text-anvil-50">
-        {offline ? "You're offline" : "Couldn't reach Dash Platform"}
+        {copy.title}
       </h3>
-      <p className="mt-1.5 max-w-md text-dense text-anvil-600 dark:text-anvil-300">
-        {offline
-          ? 'This page will load as soon as your connection is back.'
-          : 'Nothing answered this read. It will try again by itself in a few seconds.'}
-      </p>
+      <p className="mt-1.5 max-w-md text-dense text-anvil-600 dark:text-anvil-300">{copy.body}</p>
       <RetryButton onClick={onRetry} />
       <ErrorDetails message={message} />
     </div>

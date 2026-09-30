@@ -2,7 +2,8 @@
 
 /**
  * AppShell — the chrome every page renders inside: header, the (globally mounted) login modal,
- * a max-width content column, and the footer. Pages pass their body as children.
+ * a max-width content column, and the footer. Pages pass their body as children, under the
+ * trust-anchor gate: a quorum-key mismatch withholds any page under a banner.
  */
 
 import type { ReactNode } from 'react'
@@ -17,6 +18,7 @@ import { PlatformBusy } from '@/components/platform-busy'
 import { StorageUpdated } from '@/components/storage-updated'
 import { TopUpSheet } from '@/components/top-up-sheet'
 import { Toaster } from '@/components/ui/toaster'
+import { TrustAnchorGate } from '@/components/ui/trust-alert'
 
 export function AppShell({
   children,
@@ -46,7 +48,8 @@ export function AppShell({
         tabIndex={-1}
         className={`mx-auto w-full flex-1 px-4 py-6 outline-none sm:px-6 ${wide ? 'max-w-[1280px]' : 'max-w-[1080px]'}`}
       >
-        {contractsMissing !== null ? <ContractsMissingState detail={contractsMissing} /> : children}
+        {/* A failed trust anchor heads every page and withholds it (QW-004). */}
+        {contractsMissing !== null ? <ContractsMissingState detail={contractsMissing} /> : <TrustAnchorGate>{children}</TrustAnchorGate>}
       </main>
       <AppFooter />
       <LoginModal />

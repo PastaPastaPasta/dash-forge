@@ -58,6 +58,17 @@ export function useContractsMissing(): string | null {
   return useSyncExternalStore(subscribe, getContractsMissing, () => null)
 }
 
+/**
+ * The connection's trust state, following the service without starting a connect: for app-wide
+ * chrome (the trust-anchor banner) on pages that may never read Platform.
+ */
+export function useConnectionTrust(): { readonly network: Network; readonly connection: ConnectionTrust } {
+  const status = useSyncExternalStore(subscribe, getStatus, () => SERVER_STATUS)
+  const generation = useSyncExternalStore(subscribe, getGeneration, () => 0)
+  const ready = generation > 0 && evoSdkService.isReady
+  return { network: DEFAULT_NETWORK, connection: connectionTrust(ready, ready && evoSdkService.isTrusted, status.phase === 'error') }
+}
+
 /** Connect the SDK (idempotent). Pass extra contract ids (e.g. a repo contract) to preload. */
 export function useSdk(extraContractIds: readonly string[] = []): SdkState {
   const network = DEFAULT_NETWORK

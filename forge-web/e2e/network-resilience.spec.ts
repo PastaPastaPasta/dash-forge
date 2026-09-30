@@ -102,10 +102,12 @@ test.describe('network resilience', () => {
     const quorum = await quorumSwitch(page)
     await page.goto(repoUrl(), { waitUntil: 'domcontentloaded' })
     await expect(BANNER(page)).toBeVisible({ timeout: 60_000 })
-    await expect(BANNER(page)).toContainText("Can't reach Dash Platform right now")
+    // It names the quorum key service, not Platform: DAPI is up (QW-056).
+    await expect(BANNER(page)).toContainText("Can't reach the quorum key service right now")
+    await expect(BANNER(page)).not.toContainText("Can't reach Dash Platform")
     await expect(BANNER(page)).toContainText(/Trying again in \d+ s/)
     // The alert announces the outage once; the per-second countdown sits outside it (M5).
-    await expect(BANNER(page).getByRole('alert')).toContainText("Can't reach Dash Platform right now")
+    await expect(BANNER(page).getByRole('alert')).toContainText("Can't reach the quorum key service right now")
     await expect(BANNER(page).getByRole('alert')).not.toContainText(/Trying again in/)
     // The raw error is behind a disclosure, not the page.
     await expect(page.getByText('Could not reach Platform', { exact: true })).toHaveCount(0)

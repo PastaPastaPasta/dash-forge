@@ -5,36 +5,28 @@
  * Members, Latest release. On narrow screens it drops under the content, Verification still
  * first.
  *
- * The Verification card's states come from what this session actually checked: the SDK
- * connection's proof mode, the quorum-key cross-check, the folded state of the attested ref,
- * and the browse plane's content-check ledger (which updates live as the page reads objects).
+ * The Verification card renders the report the repo frame derived ({@link useRepoTrust}): the
+ * states come from what this session actually checked.
  */
 
 import { Time } from '@/components/repo/byline'
-import { useEffect, useLayoutEffect, useSyncExternalStore } from 'react'
+import { useEffect, useSyncExternalStore } from 'react'
 import Link from 'next/link'
 import { ExternalLink, GitBranch, HardDrive, Rocket, Scale, Star, Tag, Users } from 'lucide-react'
 import {
-  beginView,
-  contentChecks,
-  deriveTrust,
   isLive,
-  readGatewaysFor,
-  NO_CONTENT_CHECKS,
   prefetchDpnsNames,
   refParamFor,
   selectedTip,
-  subscribeContentChecks,
   type RepoHome,
   type SelectedRef,
+  type TrustReport,
 } from '@/lib/view'
 import { mirrorSourceOfDescription } from '@/lib/view/mirror-source'
 import { readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
 import type { Membership } from '@/lib/rules/v2'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
-import { useQuorumCheck } from '@/hooks/use-quorum-check'
-import { useTrustView } from '@/hooks/use-trust-view'
 import { useLatestRelease, useViewerRole } from '@/hooks/use-repo-chrome'
 import { useInView } from '@/hooks/use-in-view'
 import { TrustPanel } from '@/components/ui/trust-panel'
@@ -50,40 +42,17 @@ export function RepoRail({
   home,
   addr,
   selected,
+  report,
 }: {
   home: RepoHome
   addr: RepoAddress
   /** The ref the page is showing: the Verification card attests its tip. */
   selected: SelectedRef
+  /** The Verification card's report ({@link useRepoTrust}, derived once by the repo frame). */
+  report: TrustReport
 }): JSX.Element {
-  const { connection, network } = useSdk(repoContractIds(home.repo))
-  // Not while Platform is unreachable: a comparison run then only reports that it could not run.
-  const quorum = useQuorumCheck(network, connection === 'trusted')
   const { role } = useViewerRole(home.repo)
   const isPrivate = home.repo.visibility === 'private'
-  const key = repoKey(home.repo)
-  // Each page (a route and its query: another file, ref or tab) is a new view: the summary names
-  // the places that served ITS objects (L-18). A layout effect, so it runs before the page's own
-  // effects start reading (its reads start the view themselves too, if they come first).
-  const view = useTrustView()
-  useLayoutEffect(() => beginView(key, view), [key, view])
-  const checks = useSyncExternalStore(
-    subscribeContentChecks,
-    () => contentChecks(key),
-    () => NO_CONTENT_CHECKS,
-  )
-
-  const report = deriveTrust({
-    network,
-    connection,
-    quorum,
-    refName: selected.name,
-    tip: selected.pinned ? { pinned: selected.pinned } : selected.ref?.state ?? 'missing',
-    checks,
-    configuredBackend: home.backend.label,
-    configuredUris: home.backend.uris,
-    gateways: readGatewaysFor(key),
-  })
 
   return (
     <aside className="min-w-0 space-y-4" aria-label="About this repository">
