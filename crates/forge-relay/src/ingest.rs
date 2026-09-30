@@ -493,18 +493,22 @@ pub fn translate_comment(
     ))
 }
 
-/// A `review` → `pull_request_review` submitted. Needs its PR in `targets`.
+/// A `review` → `pull_request_review` submitted. Needs its PR in `targets`. Its embedded PR's
+/// `open`/`merged` are the relay's last-seen fold (`closed`) and [`TargetInfo::merged`], same
+/// as [`translate_event`] -- a review carries no fold of its own either.
 pub fn translate_review(
     repo: &RepositoryMeta,
     d: &FetchedDocument,
     targets: &BTreeMap<String, TargetInfo>,
+    closed: &BTreeSet<String>,
 ) -> Option<WebhookEvent> {
     let patch_id = id_field(d, "patchId")?;
     let target = targets.get(&patch_id).filter(|t| t.is_pr)?;
+    let open = !closed.contains(&patch_id);
     Some(pull_request_review_event(
         repo,
         &d.id,
-        &target.pr_obj(&patch_id, true, false),
+        &target.pr_obj(&patch_id, open, target.merged),
         &d.owner_id,
         d.field_u64("verdict")?,
         &d.field_hex("commitOid").unwrap_or_default(),
@@ -545,16 +549,17 @@ pub fn translate_release(
 /// A release document's GitHub action from its RC1 `delta` (+1 publish, 0 edit / yank /
 /// sealed, −1 unpublish): `published`, `unpublished`, or for 0 `edited` -- unless this revision
 /// newly sets `yanked` (it was not set on the tag's previous revision), which is `unpublished`
-/// instead. A document without a delta (before RC1) is `published` unless it newly yanks.
+/// instead. `delta` is a required field of the contract's `release` schema, so the `None` arm
+/// (a document with none at all) is unreachable in practice; it is kept only as a defensive
+/// fallback, not a real pre-RC1 case.
 fn release_action(d: &FetchedDocument, yanked: bool, was_yanked: bool) -> &'static str {
     let newly_yanked = yanked && !was_yanked;
     match d.fields.get("delta").and_then(FieldValue::as_i64) {
         Some(1) => "published",
         Some(-1) => "unpublished",
-        Some(_) if newly_yanked => "unpublished",
-        Some(_) => "edited",
         _ if newly_yanked => "unpublished",
-        _ => "published",
+        Some(_) => "edited",
+        None => "published",
     }
 }
 
@@ -700,19 +705,29 @@ pub fn translate_transition(
 }
 
 /// An `event` or `authorEvent` → `issues` / `pull_request` with the matching action. Needs
-/// the target in `targets`. The `open` state is the action's own (an event about an issue
-/// carries no fold); a label or assignee event adds GitHub's `label` / `assignee` object.
+/// the target in `targets`. None of these kinds move the fold themselves ([`event_action`]'s
+/// own `open` is always `true`, so it is not used here), so `open` is the relay's last-seen
+/// fold (`closed`), and a PR's `merged` is [`TargetInfo::merged`] -- matching how
+/// [`translate_transition`]'s lock arm reads the same two facts. A label or assignee event
+/// adds GitHub's `label` / `assignee` object.
 pub fn translate_event(
     repo: &RepositoryMeta,
     d: &FetchedDocument,
     targets: &BTreeMap<String, TargetInfo>,
+    closed: &BTreeSet<String>,
 ) -> Option<WebhookEvent> {
     let target_id = id_field(d, "targetId")?;
     let target = targets.get(&target_id)?;
     let kind = d.field_u64("kind")?;
-    let (action, open) = event_action(kind, target.is_pr)?;
+    let (action, _) = event_action(kind, target.is_pr)?;
+    let open = !closed.contains(&target_id);
     let mut e = if target.is_pr {
-        pull_request_event(repo, &d.id, action, &target.pr_obj(&target_id, open, false))
+        pull_request_event(
+            repo,
+            &d.id,
+            action,
+            &target.pr_obj(&target_id, open, target.merged),
+        )
     } else {
         issues_event(repo, &d.id, action, &target.issue_obj(&target_id, open))
     };
@@ -893,15 +908,28 @@ mod tests {
                 ("body", FieldValue::text("needs work")),
             ],
         );
-        let e = translate_review(&meta(), &r, &targets([3; 32], target(true, 8))).unwrap();
+        let empty = BTreeSet::new();
+        let e = translate_review(&meta(), &r, &targets([3; 32], target(true, 8)), &empty).unwrap();
         assert_eq!(e.event, "pull_request_review");
         assert_eq!(e.payload["review"]["state"], "changes_requested");
         assert_eq!(e.payload["review"]["commit_id"], "ab".repeat(20));
         assert_eq!(e.payload["pull_request"]["number"], 8);
+        assert_eq!(e.payload["pull_request"]["state"], "open");
         assert_eq!(e.payload["sender"]["login"], "REVIEWER");
         // A review of an issue id, or of an unknown PR, is not delivered.
-        assert!(translate_review(&meta(), &r, &targets([3; 32], target(false, 8))).is_none());
-        assert!(translate_review(&meta(), &r, &BTreeMap::new()).is_none());
+        assert!(
+            translate_review(&meta(), &r, &targets([3; 32], target(false, 8)), &empty).is_none()
+        );
+        assert!(translate_review(&meta(), &r, &BTreeMap::new(), &empty).is_none());
+        // A review of a PR the relay has seen closed or merged carries that fold, same as
+        // translate_event and translate_transition's lock arm.
+        let mut merged_t = target(true, 8);
+        merged_t.merged = true;
+        let e = translate_review(&meta(), &r, &targets([3; 32], merged_t), &empty).unwrap();
+        assert_eq!(e.payload["pull_request"]["merged"], true);
+        let closed = BTreeSet::from([encode_identifier([3; 32])]);
+        let e = translate_review(&meta(), &r, &targets([3; 32], target(true, 8)), &closed).unwrap();
+        assert_eq!(e.payload["pull_request"]["state"], "closed");
     }
 
     #[test]
@@ -1004,7 +1032,7 @@ mod tests {
         assert_eq!(t.head_oid, newer);
         // The webhook: `synchronize` with the new head.
         let prs = targets([9; 32], t);
-        let e = translate_event(&meta(), &head("MEMBER", &newer), &prs).unwrap();
+        let e = translate_event(&meta(), &head("MEMBER", &newer), &prs, &BTreeSet::new()).unwrap();
         assert_eq!(e.payload["action"], "synchronize");
         assert_eq!(e.payload["pull_request"]["head"]["sha"], newer);
     }
@@ -1022,24 +1050,55 @@ mod tests {
             doc(id, "ACTOR", f)
         };
         let issues = targets([1; 32], target(false, 8));
-        let e = translate_event(&meta(), &ev("l", 4, Some("bug"), [1; 32]), &issues).unwrap();
+        let empty = BTreeSet::new();
+        let e =
+            translate_event(&meta(), &ev("l", 4, Some("bug"), [1; 32]), &issues, &empty).unwrap();
         assert_eq!(e.payload["action"], "labeled");
         assert_eq!(e.payload["label"]["name"], "bug");
         assert_eq!(e.payload["sender"]["login"], "ACTOR");
-        let e = translate_event(&meta(), &ev("a", 6, Some("BOB"), [1; 32]), &issues).unwrap();
+        assert_eq!(e.payload["issue"]["state"], "open");
+        let e =
+            translate_event(&meta(), &ev("a", 6, Some("BOB"), [1; 32]), &issues, &empty).unwrap();
         assert_eq!(e.payload["assignee"]["login"], "BOB");
+
+        // The relay's last-seen fold, not the event's own: a labeled event on an issue the
+        // relay has seen closed still reports the issue closed.
+        let closed = BTreeSet::from([encode_identifier([1; 32])]);
+        let e =
+            translate_event(&meta(), &ev("l", 4, Some("bug"), [1; 32]), &issues, &closed).unwrap();
+        assert_eq!(e.payload["issue"]["state"], "closed");
+        // Likewise a PR event carries TargetInfo::merged forward.
+        let mut merged_pr = target(true, 3);
+        merged_pr.merged = true;
+        let prs_merged = targets([9; 32], merged_pr);
+        let e = translate_event(
+            &meta(),
+            &ev("l", 4, Some("bug"), [9; 32]),
+            &prs_merged,
+            &empty,
+        )
+        .unwrap();
+        assert_eq!(e.payload["pull_request"]["merged"], true);
 
         // State kinds are transitions now: an event of one is never a webhook. Retarget means
         // nothing on an issue; unknown targets and kinds are skipped.
         let prs = targets([9; 32], target(true, 3));
         for kind in [1, 2, 3, 9, 10] {
-            assert!(translate_event(&meta(), &ev("x", kind, None, [9; 32]), &prs).is_none());
-            assert!(translate_event(&meta(), &ev("x", kind, None, [1; 32]), &issues).is_none());
+            assert!(
+                translate_event(&meta(), &ev("x", kind, None, [9; 32]), &prs, &empty).is_none()
+            );
+            assert!(
+                translate_event(&meta(), &ev("x", kind, None, [1; 32]), &issues, &empty).is_none()
+            );
         }
         for kind in [8, 11] {
-            assert!(translate_event(&meta(), &ev("x", kind, None, [1; 32]), &issues).is_none());
+            assert!(
+                translate_event(&meta(), &ev("x", kind, None, [1; 32]), &issues, &empty).is_none()
+            );
         }
-        assert!(translate_event(&meta(), &ev("x", 4, Some("b"), [5; 32]), &issues).is_none());
+        assert!(
+            translate_event(&meta(), &ev("x", 4, Some("b"), [5; 32]), &issues, &empty).is_none()
+        );
     }
 
     /// Each transition kind is the GitHub action a receiver expects, on the right target kind.

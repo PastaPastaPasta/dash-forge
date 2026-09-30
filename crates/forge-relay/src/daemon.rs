@@ -1194,13 +1194,7 @@ async fn poll_repo_rest(
         for d in &r.docs {
             let event = match doc_type {
                 DOC_RELEASE => {
-                    let tag = d.field_str("tagName").unwrap_or_default();
-                    let was_yanked = st.yanked_tags.contains(&tag);
-                    if d.field_bool("yanked") {
-                        st.yanked_tags.insert(tag);
-                    } else {
-                        st.yanked_tags.remove(&tag);
-                    }
+                    let was_yanked = note_release_yanked(st, d);
                     ingest::translate_release(&st.meta, d, was_yanked)
                 }
                 DOC_ISSUE | DOC_PATCH => {
@@ -1238,7 +1232,7 @@ async fn poll_repo_rest(
                     if d.field_u64("kind") == Some(16) && !moved {
                         None
                     } else {
-                        ingest::translate_event(&st.meta, d, &st.targets)
+                        ingest::translate_event(&st.meta, d, &st.targets, &st.closed)
                     }
                 }
             };
@@ -1331,7 +1325,7 @@ async fn poll_threads(
                     t.last_activity = t.last_activity.max(d.created_at.unwrap_or(0));
                 }
                 let event = if doc_type == DOC_REVIEW {
-                    ingest::translate_review(&st.meta, d, &st.targets)
+                    ingest::translate_review(&st.meta, d, &st.targets, &st.closed)
                 } else {
                     ingest::translate_comment(&st.meta, d, &st.targets)
                 };
@@ -1451,8 +1445,8 @@ async fn seed_states(
     apply_codes(&codes, targets)
 }
 
-/// Apply a grouped sum's state codes: set each PR's draft flag, and return the targets that are
-/// not open (closed, or merged).
+/// Apply a grouped sum's state codes: set each PR's draft and merged flags, and return the
+/// targets that are not open (closed, or merged).
 fn apply_codes(
     codes: &BTreeMap<Vec<u8>, i64>,
     targets: &mut BTreeMap<String, TargetInfo>,
@@ -1500,8 +1494,9 @@ fn note_transition(s: &mut RepoState, d: &FetchedDocument) {
     };
     if let Some(t) = s.targets.get_mut(&tid) {
         t.draft = t.is_pr && ingest::draft_after(kind);
-        // Merge is terminal (no further state move follows it, lock/unlock aside): once set,
-        // never cleared by a later transition of this kind.
+        // Consensus refuses every state move out of merged (it is terminal, lock/unlock
+        // aside), so `merged` should never legitimately go back to `false` here; `||` is
+        // defensive, not load-bearing.
         t.merged = t.merged || merged;
     }
     if open {
@@ -1509,6 +1504,21 @@ fn note_transition(s: &mut RepoState, d: &FetchedDocument) {
     } else {
         s.closed.insert(tid);
     }
+}
+
+/// Record a release revision's tag against [`RepoState::yanked_tags`], returning whether the
+/// tag's *previous* revision was already yanked (before this update) -- the `was_yanked` a
+/// delta-0 revision needs to tell a fresh yank from a further edit of one already yanked
+/// ([`ingest::translate_release`]).
+fn note_release_yanked(s: &mut RepoState, d: &FetchedDocument) -> bool {
+    let tag = d.field_str("tagName").unwrap_or_default();
+    let was_yanked = s.yanked_tags.contains(&tag);
+    if d.field_bool("yanked") {
+        s.yanked_tags.insert(tag);
+    } else {
+        s.yanked_tags.remove(&tag);
+    }
+    was_yanked
 }
 
 /// A live `headUpdate`: move the PR's head, and watch the new head for check runs from now.
@@ -1885,23 +1895,26 @@ mod tests {
             t.draft = b == 1;
             (id(b), t)
         };
-        let mut targets: BTreeMap<String, TargetInfo> = (1..=6).map(pr).collect();
+        let mut targets: BTreeMap<String, TargetInfo> = (1..=7).map(pr).collect();
         let codes = BTreeMap::from([
             (vec![1; 32], 0),
             (vec![2; 32], 1),
             (vec![3; 32], 2),
             (vec![4; 32], 8),
             (vec![5; 32], 9),
+            // Locked and merged (2 + 16): the realistic "lock on a merged PR, seen only after a
+            // restart" case -- merged must fold out of the sum the same as an unlocked 2 does.
+            (vec![7; 32], 18),
         ]);
         assert_eq!(
             apply_codes(&codes, &mut targets),
-            [id(2), id(3), id(5)].into_iter().collect()
+            [id(2), id(3), id(5), id(7)].into_iter().collect()
         );
-        let drafts: Vec<bool> = (1..=6).map(|b| targets[&id(b)].draft).collect();
-        assert_eq!(drafts, [false, false, false, true, true, false]);
-        // Code 2 (merged) seeds `merged`; nothing else does.
-        let merges: Vec<bool> = (1..=6).map(|b| targets[&id(b)].merged).collect();
-        assert_eq!(merges, [false, false, true, false, false, false]);
+        let drafts: Vec<bool> = (1..=7).map(|b| targets[&id(b)].draft).collect();
+        assert_eq!(drafts, [false, false, false, true, true, false, false]);
+        // Code 2 (merged) seeds `merged`; so does a locked 18; nothing else does.
+        let merges: Vec<bool> = (1..=7).map(|b| targets[&id(b)].merged).collect();
+        assert_eq!(merges, [false, false, true, false, false, false, true]);
         // A transition seen live moves the flag.
         let mut st = state_with_threads(0);
         st.targets = targets;
@@ -1928,5 +1941,44 @@ mod tests {
         assert!(st.targets[&id(6)].merged);
         note_transition(&mut st, &tr(6, 18));
         assert!(st.targets[&id(6)].merged, "a lock does not touch merged");
+    }
+
+    /// `note_release_yanked` returns the *previous* revision's yanked state (`was_yanked`),
+    /// updating `RepoState::yanked_tags` only after reading it -- the ordering
+    /// `ingest::translate_release` relies on to tell a fresh yank from an edit of one already
+    /// yanked. A full publish/yank/edit/edit/un-yank/yank sequence, combined with
+    /// `translate_release`'s own `release_action`, must read back `published, unpublished,
+    /// edited, edited, edited, unpublished`.
+    #[test]
+    fn note_release_yanked_tracks_the_previous_revision_before_updating() {
+        let mut st = state_with_threads(0);
+        let rel = |seq: u64, delta: i64, yanked: bool| FetchedDocument {
+            id: format!("rel{seq}"),
+            owner_id: "M".into(),
+            created_at: Some(seq),
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            revision: None,
+            fields: BTreeMap::from([
+                ("tagName".into(), FieldValue::text("v1")),
+                ("delta".into(), FieldValue::signed(delta)),
+                ("yanked".into(), FieldValue::boolean(yanked)),
+            ]),
+        };
+        let step = |st: &mut RepoState, d: &FetchedDocument| -> String {
+            let was_yanked = note_release_yanked(st, d);
+            ingest::translate_release(&st.meta, d, was_yanked)
+                .unwrap()
+                .payload["action"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        assert_eq!(step(&mut st, &rel(1, 1, false)), "published");
+        assert_eq!(step(&mut st, &rel(2, 0, true)), "unpublished");
+        assert_eq!(step(&mut st, &rel(3, 0, true)), "edited");
+        assert_eq!(step(&mut st, &rel(4, 0, true)), "edited");
+        assert_eq!(step(&mut st, &rel(5, 0, false)), "edited");
+        assert_eq!(step(&mut st, &rel(6, 0, true)), "unpublished");
     }
 }
