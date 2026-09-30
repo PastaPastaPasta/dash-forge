@@ -1,10 +1,16 @@
 /** D-057: short and odd-length commit ids in a commit URL resolve the way git resolves them. */
 
+import { spawnSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 
-import { MissingObjectError, ObjectLocator, type GitObject } from '../browse'
-import { serializeLocator } from '../browse/indexer'
-import { CommitIdError, resolveCommitOid, type PrefixReader } from './commit-log'
+import { BrowseReader, MissingObjectError, ObjectLocator, type GitObject, type PackSource } from '../browse'
+import { indexPacks, memoryPackSource, serializeLocator } from '../browse/indexer'
+import { HAVE_GIT, scratchRepo, writeLiterally } from '../merge/git-oracle'
+import { CommitIdError, loadCommitChanges, resolveCommitOid, type PrefixReader } from './commit-log'
+import { Store } from './diff-fixtures'
 
 const COMMIT_A = 'ce97e47a1111111111111111111111111111111a'
 const COMMIT_B = 'ab12345000000000000000000000000000000001'
@@ -129,4 +135,115 @@ describe('resolveCommitOid edge cases', () => {
     const broken: PrefixReader = { ...base, objectType: async () => Promise.reject(new Error('storage down')) }
     await expect(resolveCommitOid(broken, 'ab12345')).rejects.toThrow('storage down')
   })
+})
+
+/** One object of a real pack, as `git verify-pack -v` lists it. */
+interface PackedObject {
+  readonly oid: string
+  readonly type: GitObject['type']
+  /** Delta chain depth (0: stored whole). */
+  readonly depth: number
+}
+
+/**
+ * A real pack git wrote of `objects` (`git pack-objects`, deltas searched afresh), and git's own
+ * account of how it stored each one. `refDeltas` stores deltas as REF_DELTA rather than OFS_DELTA.
+ */
+function gitPack(objects: Iterable<GitObject>, oids: readonly string[], refDeltas: boolean): { pack: Uint8Array; stored: PackedObject[] } {
+  const { dir, done } = scratchRepo()
+  try {
+    writeLiterally(dir, objects)
+    const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
+    const flags = ['--window=10', '--depth=10', ...(refDeltas ? ['--no-delta-base-offset'] : [])]
+    const made = spawnSync('git', ['pack-objects', '-q', ...flags, 'p'], { cwd: dir, env, input: `${oids.join('\n')}\n` })
+    if (made.status !== 0) throw new Error(`git pack-objects failed: ${made.stderr.toString()}`)
+    const base = join(dir, `p-${made.stdout.toString().trim()}`)
+    const listed = spawnSync('git', ['verify-pack', '-v', `${base}.idx`], { cwd: dir, env })
+    const stored: PackedObject[] = []
+    for (const line of listed.stdout.toString().split('\n')) {
+      const m = /^([0-9a-f]{40}) (commit|tree|blob|tag) +\d+ \d+ \d+(?: (\d+) [0-9a-f]{40})?$/.exec(line)
+      if (m) stored.push({ oid: m[1] as string, type: m[2] as GitObject['type'], depth: Number(m[3] ?? 0) })
+    }
+    return { pack: new Uint8Array(readFileSync(`${base}.pack`)), stored }
+  } finally {
+    done()
+  }
+}
+
+/** A pack source that records the length of every range read. */
+function recording(inner: PackSource): PackSource & { readonly reads: number[] } {
+  const reads: number[] = []
+  return {
+    reads,
+    fetchRange: (packRef, start, end, copy) => {
+      reads.push(end - start)
+      return inner.fetchRange(packRef, start, end, copy)
+    },
+  }
+}
+
+/**
+ * D-1: git stores small, similar commits as deltas of each other (a new repo's first push is
+ * exactly that), and a delta entry's header does not say what type it is. A short id of one
+ * must still resolve to the commit, reading entry headers only.
+ */
+describe.skipIf(!HAVE_GIT)('short ids of objects git stored as deltas', () => {
+  const s = new Store()
+  const body = 'A commit body that every commit here shares, so that git stores them as deltas.\n'.repeat(4)
+  // Each version of the file rewrites one more line, with text no other line holds: its
+  // nearest delta base is the version before, so git chains them rather than basing all on one.
+  let x = 20260930
+  const noise = (): string => {
+    x = (Math.imul(x, 1103515245) + 12345) >>> 0
+    return x.toString(36).padStart(7, '0').repeat(6)
+  }
+  const lines = Array.from({ length: 40 }, (_, j) => `line ${j} of a file most of which never changes\n`)
+  let parents: string[] = []
+  for (let i = 0; i < 8; i++) {
+    lines[i] = `line ${i} rewritten: ${noise()}\n`
+    parents = [s.commit(s.files({ 'notes.txt': lines.join('') }), parents, `change ${i}\n\n${body}`)]
+  }
+
+  for (const refDeltas of [false, true]) {
+    describe(refDeltas ? 'REF_DELTA' : 'OFS_DELTA', () => {
+      const { pack, stored } = gitPack(s.objects.values(), [...s.objects.keys()], refDeltas)
+      const source = recording(memoryPackSource([pack]))
+      const reader = async (): Promise<BrowseReader> =>
+        new BrowseReader(ObjectLocator.parse(serializeLocator(await indexPacks([pack]))), source)
+      const deltaCommits = stored.filter((o) => o.type === 'commit' && o.depth > 0)
+      const deltaBlobs = stored.filter((o) => o.type === 'blob' && o.depth > 0)
+
+      it('has commits and blobs git stored as deltas, some more than one deep', () => {
+        expect(deltaCommits.length).toBeGreaterThan(0)
+        expect(deltaBlobs.length).toBeGreaterThan(0)
+        expect(Math.max(...stored.map((o) => o.depth))).toBeGreaterThan(1)
+      })
+
+      it("resolves a delta commit's 7-character id to it, and opens it", async () => {
+        const r = await reader()
+        for (const { oid } of deltaCommits) {
+          await expect(resolveCommitOid(r, oid.slice(0, 7))).resolves.toBe(oid)
+          await expect(loadCommitChanges(r, oid.slice(0, 7))).resolves.toMatchObject({ oid })
+        }
+      })
+
+      it("reports every object's type from entry headers alone, one per step of its chain", async () => {
+        const r = await reader()
+        source.reads.length = 0
+        for (const o of stored) await expect(r.objectType(o.oid)).resolves.toBe(o.type)
+        expect(Math.max(...source.reads)).toBeLessThanOrEqual(32)
+        const deepest = stored.reduce((a, b) => (b.depth > a.depth ? b : a))
+        source.reads.length = 0
+        await r.objectType(deepest.oid)
+        expect(source.reads).toHaveLength(deepest.depth + 1)
+      })
+
+      it("says a delta blob's short id names a file, not a commit", async () => {
+        const blob = deltaBlobs[0] as PackedObject
+        const e = await resolveCommitOid(await reader(), blob.oid.slice(0, 7)).catch((x: unknown) => x)
+        expect((e as CommitIdError).kind).toBe('not-a-commit')
+        expect((e as Error).message).toMatch(/names a file/)
+      })
+    })
+  }
 })

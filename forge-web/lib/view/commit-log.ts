@@ -213,7 +213,7 @@ const AMBIGUOUS_SHOWN = 5
 /** The slice of a reader short-id resolution needs (a `BrowseReader`). */
 export interface PrefixReader extends ObjectReader {
   findByPrefix?(prefix: string, limit?: number): string[]
-  /** An object's type from its entry header, or null for a delta entry. */
+  /** An object's type from entry headers alone (a delta's from its chain), or null when not indexed. */
   objectType?(oidHex: string): Promise<GitObject['type'] | null>
   /** Some of the repo's packs are missing (a partial clone): absent ids may still exist. */
   readonly incomplete?: boolean
@@ -235,8 +235,8 @@ export async function resolveCommitOid(reader: PrefixReader, input: string): Pro
   if (id.length === 40) return id
   const matches = reader.findByPrefix?.(id, PREFIX_SCAN) ?? []
   if (matches.length === 0) throw notFound(reader, input)
-  // Only the entry header is read per candidate: a short id matching a 40 MB blob must not
-  // download it just to learn it is not a commit.
+  // Only entry headers are read per candidate (a delta's chain of them): a short id matching a
+  // 40 MB blob must not download it just to learn it is not a commit.
   const typeOf = (oid: string): Promise<GitObject['type'] | null> =>
     reader.objectType ? reader.objectType(oid) : reader.readObject(oid).then((o) => o.type)
   const commits: string[] = []
