@@ -258,6 +258,11 @@ export async function readPackCopies(
   repo: RepoRef,
   hashHex: string,
   kind: number,
+  /**
+   * Drop copies of any other kind before ranking (a sealed release's asset list, which only
+   * TLV 21 names: a co-writer's other-kind copy of the same hash must not outrank and hide it).
+   */
+  onlyKind = false,
 ): Promise<PackManifest | null> {
   const [documents, oracle] = await Promise.all([
     queryAllDocuments(
@@ -268,7 +273,10 @@ export async function readPackCopies(
     ),
     readRoleOracle(sdk, repo),
   ])
-  const copies = documents.map(toManifest).map((m) => ({ ...m, ownerRole: oracle.currentRole(m.uploader) }))
+  const copies = documents
+    .map(toManifest)
+    .filter((m) => !onlyKind || m.kind === kind)
+    .map((m) => ({ ...m, ownerRole: oracle.currentRole(m.uploader) }))
   return packsOfKind(copies, kind)[0] ?? null
 }
 

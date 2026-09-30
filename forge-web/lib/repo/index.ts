@@ -203,7 +203,7 @@ export {
   nextNumber,
   normalizeRepoName,
   pendingRepoCreations,
-  PRIVATE_RELEASE_REFUSED,
+  type ReleaseInput,
   readConsents,
   revokeMember,
   setLock,

@@ -71,10 +71,11 @@ import { decodeIdentifier } from '../auth/base58'
 import { EpochKeys } from '../private/keys'
 import { sealWrap } from '../private/wrap'
 import { commentEditDrops, type CommentView } from '../view/issues-view'
+import type { ReleaseList } from './releases'
+import type { SealedReleaseEnv } from './sealed-release'
 import {
   CONSENT_LAG_RETRIES,
   ConsentMissingError,
-  PRIVATE_RELEASE_REFUSED,
   acceptInvite,
   createComment,
   createIssue,
@@ -312,13 +313,17 @@ describe('what the writers refuse or adjust before signing', () => {
     expect(types(await judged())).toEqual(['writer'])
   })
 
-  it('an edit, a yank or a re-publish of a live tag is delta 0; a private repo is refused', async () => {
+  it('an edit, a yank or a re-publish of a live tag is delta 0', async () => {
     liveTags.push('v1.0.0')
     await createRelease(sdk, auth(ALICE), REPO, { tagName: 'v1.0.0', yanked: true })
     const [rel] = await judged()
     expect(rel?.data).toMatchObject({ delta: 0, yanked: true })
-    await expect(createRelease(sdk, auth(ALICE), { ...REPO, visibility: 'private' }, { tagName: 'v2' })).rejects.toThrow(PRIVATE_RELEASE_REFUSED)
     await expect(createRelease(sdk, auth(ALICE), REPO, { tagName: 'v1@{0}' })).rejects.toThrow(/tag name/)
+    // The sealed-only flags, and plaintext assets on a private repo, are refused before signing.
+    await expect(createRelease(sdk, auth(ALICE), REPO, { tagName: 'v2', draft: true })).rejects.toThrow(/sealed release/)
+    await expect(
+      createRelease(sdk, auth(ALICE), { ...REPO, visibility: 'private' }, { tagName: 'v2', assets: [{ name: 'a', sha256: 'ab'.repeat(32), sizeBytes: 1, uris: ['https://x.example/a'] }] }),
+    ).rejects.toThrow(/sealed files/)
     expect(creates).toHaveLength(0)
   })
 
@@ -386,5 +391,71 @@ describe('private writers are RC1-valid', () => {
       })
       await expectRc1Valid('repoKey', repoKeyData(REPO.repoId, BOB, epoch, props), ALICE)
     }
+  })
+
+  /**
+   * A sealed release (§16): its sealed file and asset list stored on the publisher's storage (a
+   * scripted store here), the kind-4 `packManifest` that records the list, and the release itself,
+   * all judged by the RC1 contracts as the signer made them.
+   */
+  describe('a sealed release', () => {
+    const PRIVATE: RepoRef = { ...REPO, visibility: 'private' }
+    const stored: Uint8Array[] = []
+    let list: ReleaseList = { current: [], previous: [] }
+    const envFor = async (epoch = 0): Promise<SealedReleaseEnv> => {
+      const keys = await EpochKeys.import(decodeIdentifier(REPO.repoId), epoch, new Uint8Array(32).fill(0x5a))
+      return {
+        requireMaintainer: async () => undefined,
+        writeKeys: async () => keys,
+        releases: async () => ({ list, keys: new Map([[epoch, keys]]) }),
+        openManifest: async () => {
+          throw new Error('no asset list in this test')
+        },
+        store: async (sealed, sha256Hex) => {
+          stored.push(sealed)
+          const h = Buffer.from(await crypto.subtle.digest('SHA-256', sealed as BufferSource)).toString('hex')
+          expect(sha256Hex).toBe(h)
+          return { sha256: h, sizeBytes: sealed.length, uris: [`https://pub.example/rel/packs/${h}.pack`], confirmed: ['r2'], failures: [] }
+        },
+      }
+    }
+    const file = (name: string, text: string) => ({ name, size: text.length, arrayBuffer: async () => new TextEncoder().encode(text).buffer as ArrayBuffer })
+
+    beforeEach(() => {
+      stored.length = 0
+      list = { current: [], previous: [] }
+    })
+
+    it('a publish with a file: the kind-4 packManifest (objectCount 0, no tips, no supersedes), then the release with exactly its sealed props', async () => {
+      const r = await createRelease(sdk, auth(ALICE), PRIVATE, { tagName: 'v1.0.0', name: 'One', notes: 'first', draft: true }, { env: await envFor(), files: [file('app.tar.gz', 'bytes')] })
+      const made = await judged()
+      expect(types(made)).toEqual(['packManifest', 'release'])
+      const [manifest, release] = made
+      expect(manifest?.data).toMatchObject({ kind: 4, objectCount: 0, chunkCount: 0, storage: 1 })
+      expect(manifest?.data['tips']).toBeUndefined()
+      expect(manifest?.data['supersedes']).toBeUndefined()
+      // The sealed file and the list, each stored under its own (sealed) hash.
+      expect(stored).toHaveLength(2)
+      expect(Object.keys(release?.data ?? {}).sort()).toEqual(['delta', 'enc', 'epoch', 'repoId', 'tagName', 'vis'])
+      expect(release?.data).toMatchObject({ vis: 'private', delta: 0, epoch: 0 })
+      expect(release?.data['tagName']).toMatch(/^[A-Za-z0-9_-]{43}$/)
+      expect(r.sealed?.resolved.fields).toMatchObject({ tag: 'v1.0.0', name: 'One', notes: 'first', draft: true })
+      expect(r.sealed?.resolved.fields.assetManifest).toBe(Buffer.from(manifest?.data['packHash'] as Uint8Array).toString('hex'))
+    })
+
+    it('a yank of nothing else: one release document, nothing stored, and a revision under epoch 3 is as valid', async () => {
+      await createRelease(sdk, auth(ALICE), PRIVATE, { tagName: 'v1.0.0', yanked: true }, { env: await envFor(3) })
+      const made = await judged()
+      expect(types(made)).toEqual(['release'])
+      expect(made[0]?.data).toMatchObject({ vis: 'private', delta: 0, epoch: 3 })
+      expect(stored).toHaveLength(0)
+    })
+
+    it('notes over the budget continue in a list of no assets: a kind-4 manifest still, and the release', async () => {
+      const r = await createRelease(sdk, auth(ALICE), PRIVATE, { tagName: 'v2', notes: 'n'.repeat(3000) }, { env: await envFor() })
+      expect(types(await judged())).toEqual(['packManifest', 'release'])
+      expect(r.sealed?.resolved.fields).toMatchObject({ notesContinue: true })
+      expect(r.sealed?.resolved.assets).toEqual([])
+    })
   })
 })

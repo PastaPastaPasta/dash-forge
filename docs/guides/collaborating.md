@@ -105,9 +105,10 @@ dg repo keys status <you>/secret                # epochs, who holds a key, pendi
 | Branch and tag names | Members and their roles; when each joined; key epochs and who rotated them |
 | Default branch and protected-branch patterns | When pushes, issues, PRs, comments and reviews happen, and who wrote each |
 | Issue and PR titles and bodies, comment and review text, an inline comment's file path; the labels and milestones set on them, and a dismissal's reason | Commit ids (`newOid`, PR heads): anyone who already knows a commit id can confirm the repo contains it |
+| A release's tag, name, notes, draft, pre-release, yanked and unpublished flags, and its asset list; each asset file | That a release revision was written, when and by whom; revisions of one tag within a key epoch share a keyed tag name; each asset file's size |
 | | Sizes: pack sizes, object counts, the approximate length of every encrypted field |
 | | That a label was added, a milestone set or a review dismissed (the kind of each event), and when; who is assigned (the assignee identity is indexed for "assigned to me") |
-| | **Not encrypted in this release:** release names, notes and assets; label definitions (`dg label create`: name, colour, description); check runs; webhook URLs |
+| | **Not encrypted in this release:** label definitions (`dg label create`: name, colour, description); check runs; webhook URLs |
 
 Leave the description empty if the project's purpose is itself sensitive.
 
@@ -121,7 +122,9 @@ Leave the description empty if the project's purpose is itself sensitive.
 
 **No recovery.** If every member loses their encryption key (every copy of every identity file and mnemonic), the contents cannot be decrypted by anyone.
 
-Not supported for private repositories yet ([`E207`](../errors.md#e207)): forks (`dg repo fork`), releases (their notes and assets would be published unencrypted) and webhooks. Issues, PRs, comments and reviews are sealed; label definitions (`dg label create`) are allowed but stay public.
+Not supported for private repositories yet ([`E207`](../errors.md#e207)): forks (`dg repo fork`) and webhooks. Issues, PRs, comments and reviews are sealed; label definitions (`dg label create`) are allowed but stay public.
+
+**Releases** of a private repository are sealed ([private repositories §16](../security/private-repos.md#16-sealed-releases)). The web app publishes, edits, yanks and unpublishes them (a maintainer's **Edit** on each release), and members download their files verified in the browser; `dg release create`, `dg release unpublish` and `dg release download` do the same from the command line. Each file is encrypted in the tab before it goes to your own storage, named by the hash of the encrypted copy, and the asset list is an encrypted file too. A private release holds 1507 bytes of tag, name, notes preview and provenance: longer notes continue in the encrypted asset list, so they need storage of your own even without files. Draft and pre-release are labels every member sees, not access control. Every change is a new revision that carries the rest forward; two maintainers editing the same release at once both land, and the one written second is warned that it may have dropped the other's change.
 
 **Content a removed member wrote late.** A member removed from the repository who keeps writing under the old key, more than 240 blocks after the rotation, is hidden from every reader (the late-content rule). A clone that needs such a pack stops with [`E510`](../errors.md#e510) (`clone incomplete: N packs hidden by the late-content rule`).
 

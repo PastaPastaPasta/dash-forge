@@ -256,8 +256,10 @@ export const PACK_KIND = {
   HISTORY_INDEX: 3,
   /**
    * A release's asset manifest (D-4, `release-asset-manifest.md`; RC1 R-11 renumbered it from 3
-   * so history readers never load asset JSON as an index). No web writer yet — the browser records
-   * assets inline in `release.assets` — and no reader: every reader selects its own kind.
+   * so history readers never load asset JSON as an index). A public release made in the browser
+   * records its assets inline in `release.assets`; a private repo's sealed release names a sealed
+   * kind-4 list (`private-repos.md` §16.5, `lib/repo/sealed-release.ts`), which only that release's
+   * reader opens. Every other reader selects its own kind.
    */
   RELEASE_ASSETS: 4,
   /**

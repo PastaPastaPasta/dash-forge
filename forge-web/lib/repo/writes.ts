@@ -54,6 +54,7 @@ import { refNameHash, repoContentWritten } from './push'
 import type { PrivateDocType } from '../private'
 import { isSealedKind, privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter } from './private-writes'
 import { invalidateRepoFeed } from './issues'
+import { createSealedRelease, sealedReleaseEnv, type SealedReleaseOptions, type SealedReleaseWritten } from './sealed-release'
 import { noteTargetCreated } from './social'
 import { repoSource } from './source'
 import { writeLock, writeTransition, type StateTarget } from './transitions'
@@ -206,6 +207,8 @@ const CONTENT_FIELDS: Readonly<Record<string, readonly string[]>> = {
   protectedRefUpdate: ['refName'],
   config: ['defaultBranch', 'protectedPatterns'],
   event: ['value'],
+  // `noPlain`'s fields, and `yanked` / `imported`, which a sealed release never carries (§16.2)
+  release: ['name', 'notes', 'assets', 'assetManifest', 'yanked', 'imported'],
 }
 
 /**
@@ -263,10 +266,15 @@ export async function writeRepoDoc(
   intent?: string,
   /** A private repo's writer for this action (resolved here when not given; see `privateWriter`). */
   writer?: PrivateWriter,
+  /**
+   * What the action says, for a document the caller sealed itself (a sealed release): the retry
+   * cache compares this instead of `data`, which is encrypted afresh on every attempt.
+   */
+  sealedContentKey?: string,
 ): Promise<WriteResult> {
   // What the action says, before sealing: the retry cache compares this (sealed fields are
   // encrypted afresh on every attempt, so the sealed data never matches itself).
-  let contentKey: string | undefined
+  let contentKey: string | undefined = sealedContentKey
   const sealedType = repo.visibility === 'private' ? sealedTypeOf(documentType, data) : null
   if (sealedType !== null) {
     contentKey = contentHash(documentType, scoped(repo, data))
@@ -688,12 +696,6 @@ export interface ReleaseAsset {
 export const RELEASE_ASSETS_MAX_BYTES = 4096
 
 /**
- * Why this client cannot publish a release in a private repo: it does not seal releases, and
- * consensus refuses a private release's tag name, title, notes or assets in plaintext (RC1 R-02).
- */
-export const PRIVATE_RELEASE_REFUSED = "releases can't be published in a private repo from the web yet: the title, notes and assets would be written unencrypted"
-
-/**
  * The live-release total of `tagName` (`release.perTag`, summable `delta`): 1 when a release of the
  * tag is published, 0 when none is (never published, or unpublished).
  */
@@ -715,18 +717,46 @@ export function publishDelta(live: number): 1 | 0 {
   return live >= 1 ? 0 : 1
 }
 
+/** The fields of a release revision a writer states (the sealed-only ones on a private repo). */
+export interface ReleaseInput {
+  readonly tagName: string
+  readonly name?: string
+  readonly notes?: string
+  /** A public release states it (absent: false); a sealed revision carries it when absent. */
+  readonly yanked?: boolean
+  /** A public release's asset list; a private repo's assets are sealed files ({@link SealedReleaseOptions}). */
+  readonly assets?: readonly ReleaseAsset[]
+  readonly intent?: string
+  /** Sealed only (§16.2): absent carries the tag's newest revision's flag. */
+  readonly prerelease?: boolean
+  /** Sealed only (§16.2): absent carries the tag's newest revision's flag. */
+  readonly draft?: boolean
+  /** Sealed only (§16.3): this revision unpublishes the tag. */
+  readonly unpublished?: boolean
+}
+
 /**
  * Create a `release`: newest per tag wins. Maintainers only (consensus-gated). Refused before
- * signing in a private repo ({@link PRIVATE_RELEASE_REFUSED}) and for a tag name the contract
- * refuses. `delta` is read from the tag's live total ({@link publishDelta}).
+ * signing for a tag name the contract refuses. A public release's `delta` is read from the tag's
+ * live total ({@link publishDelta}); a private repo's is a sealed revision
+ * ({@link createSealedRelease}: `delta` 0, its files and asset list sealed and stored first).
  */
 export async function createRelease(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { tagName: string; name?: string; notes?: string; yanked?: boolean; assets?: readonly ReleaseAsset[]; intent?: string },
-): Promise<WriteResult> {
-  if (repo.visibility === 'private') throw new Error(PRIVATE_RELEASE_REFUSED)
+  input: ReleaseInput,
+  sealed: SealedReleaseOptions = {},
+): Promise<WriteResult & { readonly sealed?: SealedReleaseWritten }> {
+  if (repo.visibility === 'private') {
+    if (input.assets !== undefined && input.assets.length > 0) throw new Error("a private repo's assets are sealed files, never plaintext entries")
+    const env = sealed.env ?? sealedReleaseEnv(sdk, auth, repo, sealed.storage ?? null)
+    const written = await createSealedRelease(sdk, auth, repo, { ...input, files: sealed.files, resolved: sealed.resolved }, env, sealed.onEvent)
+    return { ...written.release, sealed: written }
+  }
+  if (input.prerelease !== undefined || input.draft !== undefined || input.unpublished === true || sealed.files !== undefined) {
+    throw new Error("draft, pre-release, unpublish and sealed files are for a private repo's sealed release")
+  }
   if (!isRc1TagName(input.tagName)) throw new Error(`${JSON.stringify(input.tagName)} is not a tag name git accepts`)
   const fields: Record<string, unknown> = { tagName: input.tagName, yanked: input.yanked ?? false }
   if (input.name && input.name.length > 0) fields['name'] = input.name

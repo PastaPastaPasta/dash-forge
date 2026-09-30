@@ -8,9 +8,9 @@
  * (`conformance.test.ts`). Deterministic seal variants for those vectors live in
  * `./testing`, which this module deliberately does not re-export (ESLint bans importing it
  * outside tests); `__unsafe*` symbols of `./doc`, `./pack` and `./release` are likewise not
- * re-exported. `./release`'s `sealRelease` and `sealReleaseManifest` are not re-exported either
- * until the web writes sealed releases (`private-repos.md` §16.8): until then only the vectors
- * seal one.
+ * re-exported. `./release`'s `sealRelease` and `sealReleaseManifest` are, since the web writes
+ * sealed releases (`private-repos.md` §16.8, `lib/repo/sealed-release.ts`): both draw hedged
+ * randomness, and only their fixed-nonce twins stay test-only.
  */
 
 export { bytesToHex, concat as concatBytes, constantTimeEqual, hexToBytes, isU32, randomBytes, type Bytes } from './bytes'
@@ -78,17 +78,22 @@ export {
 } from './pack'
 export {
   ManifestMismatchError,
+  PLACEHOLDER_ASSET_MANIFEST,
   RELEASE_MANIFEST_MAX_BYTES,
   RELEASE_MAX_PLAINTEXT,
   buildReleaseTlv,
   canonicalJson,
   encodeReleaseManifest,
   encodeReleaseTlv,
+  fitReleaseNotes,
   foldReleases,
   openRelease,
+  openReleaseAsset,
   openReleaseManifest,
   parseReleaseTlv,
   releaseAd,
+  sealRelease,
+  sealReleaseManifest,
   type FoldRevision,
   type ReleaseAsset,
   type ReleaseFields,

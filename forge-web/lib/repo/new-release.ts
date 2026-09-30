@@ -9,13 +9,18 @@
  * `release` schema, each asset's name and size, and the whole asset list against the
  * document's 4096 bytes, sized from the entries the uploads will produce (their URLs are
  * deterministic: a content-addressed key per SHA-256, a fixed-length CID).
+ *
+ * A private repo's release is a sealed revision (`private-repos.md` §16, `sealed-release.ts`):
+ * its files are sealed before they leave the browser and stored under their sealed hash, the
+ * asset list is a sealed kind-4 manifest, and the document holds only `enc`.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import type { Network } from '../constants'
 import type { WriteAuth, WriteResult } from '../sdk'
+import type { ReleaseAsset as SealedAsset } from '../private'
 import {
+  NO_EXTERNAL_STORAGE,
   artifactKey,
   externalTargets,
   policyForRepo,
@@ -30,9 +35,10 @@ import { gatewayUrl } from '../storage/ipfs'
 import { publicObjectUrl, s3Uri } from '../storage/s3'
 import { sha256Hex } from '../storage/sigv4'
 import type { RepoRef } from './contract'
-import { invalidateMembers, readViewerPermissions } from './members'
+import { requireMaintainer } from './members'
 import { readReleases, type ReleaseAssetView } from './releases'
-import { PRIVATE_RELEASE_REFUSED, createRelease, releaseAssetsJson, type ReleaseAsset } from './writes'
+import type { ResolvedSealedRelease, SealedReleaseEvent, SealedReleaseWarning } from './sealed-release'
+import { createRelease, releaseAssetsJson, type ReleaseAsset } from './writes'
 import { isRc1TagName } from '../rules'
 
 /** The `release` schema's limits (forge-core `release`: `maxLength` characters, `maxBytes`). */
@@ -216,6 +222,8 @@ export type PublishEvent =
   | { readonly step: 'upload'; readonly asset: string; readonly event: UploadEvent }
   | { readonly step: 'uploaded'; readonly asset: string; readonly stored: ReleaseAsset; readonly copies: number; readonly failures: readonly TargetFailure[] }
   | { readonly step: 'release' }
+  /** A private repo's key moved during the upload: every file is sealed and uploaded again. */
+  | { readonly step: 'resealing' }
 
 /** The release write failed after every asset was stored: say so, as the CLI does. */
 export class ReleaseWriteError extends Error {
@@ -245,17 +253,113 @@ export interface ResolvedRelease {
   readonly name: string
   readonly notes: string
   readonly assets: readonly ReleaseAsset[]
+  /** A private repo's revision: its sealed fields and write key, re-signed as they are. */
+  readonly sealed?: ResolvedSealedRelease
+}
+
+/** What a publish wrote. */
+export interface Published {
+  readonly release: WriteResult
+  readonly assets: readonly ReleaseAsset[]
+  /** What a private repo's sealed writer says once the revision is written (§16.3, §16.5). */
+  readonly warnings?: readonly SealedReleaseWarning[]
+  /** A private repo's objects stored under a key that moved before signing (named by nothing). */
+  readonly orphaned?: readonly string[]
+}
+
+/** The sealed-only flags of a private repo's revision (§16.2, §16.3); absent ones are carried. */
+export interface SealedFlags {
+  readonly prerelease?: boolean
+  readonly draft?: boolean
+  readonly unpublished?: boolean
+}
+
+/** What {@link publishRelease} publishes. */
+interface PublishInput {
+  readonly tagName: string
+  readonly name: string
+  readonly notes: string
+  readonly files: readonly { readonly name: string; readonly size: number; arrayBuffer(): Promise<ArrayBuffer> }[]
+  /** The dialog's draft token; bound to the content digest here. */
+  readonly draft: string
+  /**
+   * Assets already stored by an attempt whose release write went unconfirmed: the retry
+   * writes the release with exactly these (same content, same intent: the same signed write)
+   * and uploads nothing.
+   */
+  readonly stored?: ResolvedRelease
+  /**
+   * Publish it yanked (withdrawn): shown with a warning, its assets kept. A public release
+   * states it (absent: not yanked); a private repo's revision carries it when absent.
+   */
+  readonly yanked?: boolean
+  /** A private repo's sealed-only flags. */
+  readonly sealed?: SealedFlags
+}
+
+/** Where {@link publishRelease} stores the files: the repo's browser-push policy and the user's profiles. */
+interface PublishStorage {
+  readonly policy: StoragePolicy | null
+  readonly profiles: readonly StorageProfile[]
+}
+
+/** A sealed manifest entry as the dialog's progress shows it. */
+function entryAsset(e: SealedAsset): ReleaseAsset {
+  return { name: e.name, sha256: e.sha256, sizeBytes: e.sizeBytes, uris: e.uris }
 }
 
 /**
- * Re-read the signer's role, uncached (the CLI's `require_role` before uploading): a maintainer
- * revoked since the page loaded must not upload for a write consensus will refuse.
+ * {@link publishRelease} for a private repo: a sealed revision ({@link createRelease} seals it,
+ * `sealed-release.ts`). Checked before anything is read or uploaded: the tag, the text given, the
+ * files, and storage for them.
  */
-export async function requireMaintainer(sdk: EvoSDK, repo: RepoRef, identityId: string, network: Network): Promise<void> {
-  invalidateMembers(repo, network)
-  const holdings = await readViewerPermissions(sdk, repo, identityId, network)
-  if (holdings === null) throw new Error("couldn't read this repo's members to confirm you are a maintainer; try again")
-  if (!holdings.maintain) throw new Error('you are no longer a maintainer of this repo: only maintainers can publish releases')
+async function publishSealedRelease(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  input: PublishInput,
+  storage: PublishStorage,
+  onEvent?: (e: PublishEvent) => void,
+): Promise<Published> {
+  const retry = input.stored?.sealed
+  const files = retry ? [] : input.files
+  const problem =
+    tagProblem(input.tagName) ??
+    (retry ? null : (releaseTextProblem(input) ?? assetFilesProblem(files))) ??
+    (files.length > 0 && externalTargets(storage.policy, storage.profiles).length === 0 ? NO_EXTERNAL_STORAGE : null)
+  if (problem) throw new Error(problem)
+  let resolved: ResolvedSealedRelease | null = null
+  let uploaded = 0
+  const onSealed = (e: SealedReleaseEvent): void => {
+    if (e.step === 'role' || e.step === 'upload') onEvent?.(e)
+    else if (e.step === 'resealing') {
+      uploaded = 0
+      onEvent?.({ step: 'resealing' })
+    } else if (e.step === 'uploaded') {
+      uploaded += 1
+      onEvent?.({ step: 'uploaded', asset: e.asset, stored: entryAsset(e.entry), copies: e.copies, failures: e.failures })
+    } else if (e.step === 'release') {
+      resolved = e.resolved
+      onEvent?.({ step: 'release' })
+    }
+  }
+  try {
+    // A blank title or notes, and an absent flag, are carried from the tag's newest revision.
+    const release = await createRelease(
+      sdk,
+      auth,
+      repo,
+      { tagName: input.tagName, name: input.name, notes: input.notes, yanked: input.yanked, ...input.sealed, intent: input.draft },
+      { files, storage, onEvent: onSealed, resolved: retry },
+    )
+    const written = release.sealed
+    return { release, assets: (written?.resolved.assets ?? []).map(entryAsset), warnings: written?.warnings ?? [], orphaned: written?.orphaned ?? [] }
+  } catch (e) {
+    // Signed (or about to be): the retry re-signs exactly this revision, uploading nothing.
+    const r = resolved as ResolvedSealedRelease | null
+    if (r === null) throw e
+    throw new ReleaseWriteError(e, { name: r.fields.name ?? '', notes: r.fields.notes ?? '', assets: r.assets.map(entryAsset), sealed: r }, uploaded)
+  }
 }
 
 /**
@@ -268,28 +372,11 @@ export async function publishRelease(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: {
-    readonly tagName: string
-    readonly name: string
-    readonly notes: string
-    readonly files: readonly { readonly name: string; readonly size: number; arrayBuffer(): Promise<ArrayBuffer> }[]
-    /** The dialog's draft token; bound to the content digest here. */
-    readonly draft: string
-    /**
-     * Assets already stored by an attempt whose release write went unconfirmed: the retry
-     * writes the release with exactly these (same content, same intent: the same signed write)
-     * and uploads nothing.
-     */
-    readonly stored?: ResolvedRelease
-    /** Publish it yanked (withdrawn): shown with a warning, its assets kept. */
-    readonly yanked?: boolean
-  },
-  storage: { readonly policy: StoragePolicy | null; readonly profiles: readonly StorageProfile[] },
+  input: PublishInput,
+  storage: PublishStorage,
   onEvent?: (e: PublishEvent) => void,
-): Promise<{ readonly release: WriteResult; readonly assets: readonly ReleaseAsset[] }> {
-  // A private repo's release would be written in plaintext (this client does not seal releases),
-  // which consensus refuses (RC1 R-02): refused before any upload or signature.
-  if (repo.visibility === 'private') throw new Error(PRIVATE_RELEASE_REFUSED)
+): Promise<Published> {
+  if (repo.visibility === 'private') return publishSealedRelease(sdk, auth, repo, input, storage, onEvent)
   const early = tagProblem(input.tagName) ?? (input.stored ? null : assetFilesProblem(input.files))
   if (early) throw new Error(early)
   onEvent?.({ step: 'role' })
