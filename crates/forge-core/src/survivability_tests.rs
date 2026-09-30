@@ -645,9 +645,9 @@ async fn a_deleted_bucket_is_survived_by_the_ipfs_and_platform_copies() {
     // A deleted bucket answers an anonymous read 404 (AWS: NoSuchBucket) or 403 (RustFS, and
     // AWS when the caller may not list): either way the copy is gone, and the line says which.
     let gone = |line: &str, place: &str| {
-        ["not found)", "HTTP 403", "HTTP 404"]
+        ["not found", "HTTP 403", "HTTP 404"]
             .iter()
-            .any(|why| line.contains(&format!("{place} ({}", why.trim_end_matches(')'))))
+            .any(|why| line.contains(&format!("{place} ({why}")))
     };
     let s3 = Env::host(&env.s3);
     let gateway = format!("IPFS gateway {}", Env::host(&env.gateway));
@@ -725,11 +725,25 @@ async fn a_stopped_ipfs_gateway_is_survived_by_the_s3_and_platform_copies() {
 /// relay cannot take either down. Held by the dependency graph: nothing on the read path — the
 /// helper, `dg`, forge-core — links the relay, directly or through another crate (the resolved
 /// graph from `cargo metadata`, normal and build dependencies). The web app has no relay client.
+///
+/// The graph is this host's (`--filter-platform`): offline, cargo can only describe the
+/// packages a build here downloaded, and a fresh CI runner has no other platform's crates.
 #[test]
 fn no_read_path_crate_depends_on_the_relay() {
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
+    let version = std::process::Command::new(rustc)
+        .arg("-vV")
+        .output()
+        .expect("rustc -vV");
+    let version = String::from_utf8(version.stdout).unwrap();
+    let host = version
+        .lines()
+        .find_map(|l| l.strip_prefix("host: "))
+        .expect("rustc -vV names the host");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let out = std::process::Command::new(cargo)
         .args(["metadata", "--format-version", "1", "--locked", "--offline"])
+        .args(["--filter-platform", host])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
         .expect("cargo metadata");

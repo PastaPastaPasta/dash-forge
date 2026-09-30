@@ -139,12 +139,13 @@ async function push(pack: Uint8Array, stores: readonly Store[], bucket: string):
   const groups: string[][] = []
   const keys: string[] = []
   const chunks = new Map<string, Uint8Array>()
+  const s3 = s3Settings(bucket)
   for (const store of stores) {
     if (store === 's3') {
       const key = `packs/${hash}.pack`
-      await putObject(s3Settings(bucket), S3_SECRETS, key, pack)
+      await putObject(s3, S3_SECRETS, key, pack)
       keys.push(key)
-      groups.push([publicObjectUrl(s3Settings(bucket), key), s3Uri(s3Settings(bucket), key)])
+      groups.push([publicObjectUrl(s3, key), s3Uri(s3, key)])
     } else if (store === 'ipfs') {
       const cid = await addVerified({ kind: 'ipfs-kubo', provider: 'kubo', api: KUBO_API, gateway: GATEWAY, publicGateway: GATEWAY, pinningEndpoint: '' }, {}, pack)
       groups.push([gatewayUrl(GATEWAY, cid), `ipfs://${cid}`])
@@ -229,7 +230,8 @@ function expectOnlyStorage(seen: readonly string[]): void {
   for (const url of seen) expect([S3_HOST, GATEWAY_HOST], url).toContain(new URL(url).host)
 }
 
-describe.runIf(DRILL_ON)('survivability drill: browse', () => {
+// Stopping and restarting a container takes longer than vitest's 5 s default on a CI runner.
+describe.runIf(DRILL_ON)('survivability drill: browse', { timeout: 120_000 }, () => {
   beforeAll(requireFixture)
 
   afterEach(() => {
