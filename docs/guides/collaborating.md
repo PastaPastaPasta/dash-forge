@@ -237,7 +237,7 @@ dg pr view     <owner>/project 7 --comments   # + threads under their file and l
 dg pr diff     <owner>/project 7          # fetches head and base, then git diff base...head
 dg pr commits  <owner>/project 7          # the commits the PR adds
 dg pr checks   <owner>/project 7          # check runs reported on the head
-dg pr checkout <owner>/project 7          # creates local branch pr/7 at the PR head
+dg pr checkout <owner>/project 7          # branch pr/7 at the PR head, switched to if the tree is clean
 dg pr review   <owner>/project 7 --approve --body "LGTM"
 dg pr review   <owner>/project 7 --request-changes --body "Needs a test" \
   --file src/a.rs --line 12 --body "off by one?" \

@@ -2309,8 +2309,35 @@ async fn checkout(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         ));
     }
     let branch = format!("pr/{number}");
-    git::git(&cwd, &["branch", "-f", &branch, &head], &[])
-        .with_context(|| format!("creating branch {branch} (is it checked out?)"))?;
+    // Tracked changes only: git refuses a switch that would overwrite an untracked file.
+    let clean = git::git(
+        &cwd,
+        &["status", "--porcelain", "--untracked-files=no"],
+        &[],
+    )
+    .is_ok_and(|out| out.is_empty());
+    let step = checkout_step(git::current_branch(&cwd).as_deref(), &branch, clean);
+    match step {
+        CheckoutStep::FastForward => {
+            git::git(&cwd, &["merge", "--ff-only", "-q", &head], &[]).with_context(|| {
+                format!(
+                    "moving {branch} (checked out) to the PR head {}: switch to another branch \
+                     and run `dg pr checkout` again to reset it",
+                    short(&head)
+                )
+            })?;
+        }
+        CheckoutStep::CreateAndSwitch | CheckoutStep::CreateOnly => {
+            git::git(&cwd, &["branch", "-f", &branch, &head], &[])
+                .with_context(|| format!("creating branch {branch}"))?;
+        }
+    }
+    if step == CheckoutStep::CreateAndSwitch {
+        git::git(&cwd, &["switch", "-q", &branch], &[]).with_context(|| {
+            format!("switching to {branch} (it is created: git switch {branch})")
+        })?;
+    }
+    let switched = step != CheckoutStep::CreateOnly;
     ctx.emit(
         json!({
             "pr": number,
@@ -2318,16 +2345,48 @@ async fn checkout(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             "branch": branch,
             "sourceRepoId": source,
             "fetched": fetched,
-            "branchCreated": true,
+            "branchCreated": step != CheckoutStep::FastForward,
+            "switched": switched,
         }),
-        || {
-            println!(
-                "✓ branch {branch} at {} (git switch {branch})",
-                short(&head)
-            );
+        || match step {
+            CheckoutStep::CreateAndSwitch => {
+                println!("✓ switched to branch {branch} at {}", short(&head));
+            }
+            CheckoutStep::FastForward => {
+                println!("✓ branch {branch} (checked out) at {}", short(&head));
+            }
+            CheckoutStep::CreateOnly => {
+                println!(
+                    "✓ branch {branch} at {} (git switch {branch})",
+                    short(&head)
+                );
+                println!("  not switched: the working tree has uncommitted changes");
+            }
         },
     );
     Ok(())
+}
+
+/// What `dg pr checkout` does with branch `pr/<n>`, as `gh pr checkout` does, never losing
+/// uncommitted work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckoutStep {
+    /// Point the branch at the head and switch to it (the working tree is clean).
+    CreateAndSwitch,
+    /// Point the branch at the head, stay put: there are uncommitted changes.
+    CreateOnly,
+    /// The branch is checked out: fast-forward it (git refuses what would lose work).
+    FastForward,
+}
+
+fn checkout_step(current: Option<&str>, branch: &str, clean: bool) -> CheckoutStep {
+    if current == Some(branch) {
+        CheckoutStep::FastForward
+    } else if clean {
+        CheckoutStep::CreateAndSwitch
+    } else {
+        CheckoutStep::CreateOnly
+    }
 }
 
 async fn diff(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
@@ -2475,6 +2534,32 @@ mod tests {
         assert_eq!(state_label(&with(false, false, true)), "closed");
         assert_eq!(state_label(&with(false, false, false)), "closed");
         assert_eq!(state_label(&with(true, false, false)), "merged");
+    }
+
+    /// QW-083: `dg pr checkout` switches to `pr/<n>` as `gh pr checkout` does, but only from
+    /// a clean working tree; already on it, it fast-forwards instead of failing.
+    #[test]
+    fn checkout_switches_only_from_a_clean_tree() {
+        assert_eq!(
+            checkout_step(Some("main"), "pr/7", true),
+            CheckoutStep::CreateAndSwitch
+        );
+        assert_eq!(
+            checkout_step(None, "pr/7", true),
+            CheckoutStep::CreateAndSwitch
+        );
+        assert_eq!(
+            checkout_step(Some("main"), "pr/7", false),
+            CheckoutStep::CreateOnly
+        );
+        assert_eq!(
+            checkout_step(Some("pr/7"), "pr/7", false),
+            CheckoutStep::FastForward
+        );
+        assert_eq!(
+            checkout_step(Some("pr/71"), "pr/7", true),
+            CheckoutStep::CreateAndSwitch
+        );
     }
 
     /// JSON's `"state"` field stays a stable three-value enum (`open`/`closed`/`merged`) even
