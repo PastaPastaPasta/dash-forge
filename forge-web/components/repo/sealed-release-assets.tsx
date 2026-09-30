@@ -112,7 +112,7 @@ function SealedAssetRow({ repo, asset }: { repo: RepoRef; asset: ReleaseAsset })
   return (
     <li data-testid="release-asset" data-sealed="" data-state={readable ? state.kind : 'none'} className={cn('flex flex-wrap items-center gap-2 px-3 py-2 text-dense', bad && 'bg-danger/5')}>
       <FileArchive className={cn('h-4 w-4 shrink-0', bad ? 'text-danger-700 dark:text-danger-400' : 'text-anvil-500 dark:text-anvil-400')} aria-hidden />
-      <span className="min-w-0 flex-1 truncate font-mono" title={name}>
+      <span className="min-w-0 flex-1 basis-40 truncate font-mono" title={name}>
         {name}
       </span>
       <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{formatBytes(asset.sizeBytes)}</span>
@@ -165,7 +165,7 @@ function ExternalAssetRow({ asset }: { asset: ReleaseAsset }): JSX.Element {
   return (
     <li data-testid="release-asset" data-state="external" className="flex flex-wrap items-center gap-2 px-3 py-2 text-dense">
       <FileArchive className="h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
-      <span className="min-w-0 flex-1 truncate font-mono" title={name}>
+      <span className="min-w-0 flex-1 basis-40 truncate font-mono" title={name}>
         {name}
       </span>
       {asset.sizeBytes > 0 ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{formatBytes(asset.sizeBytes)}</span> : null}

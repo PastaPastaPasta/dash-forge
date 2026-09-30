@@ -600,7 +600,7 @@ export function AssetRow({
     >
       <FileArchive className={cn('h-4 w-4 shrink-0', bad ? 'text-danger-700 dark:text-danger-400' : 'text-anvil-500 dark:text-anvil-400')} aria-hidden />
       {/* L-07: 12 of 15 names clip at 1440 px, 16 of 16 clip on a phone, with no way to read the rest. */}
-      <span className="min-w-0 flex-1 truncate font-mono" title={asset.name}>
+      <span className="min-w-0 flex-1 basis-40 truncate font-mono" title={asset.name}>
         {asset.name}
       </span>
       {asset.size !== null ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{formatBytes(asset.size)}</span> : null}
