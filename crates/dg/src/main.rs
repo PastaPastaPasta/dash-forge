@@ -1219,6 +1219,11 @@ pub enum CostCommand {
         /// builds them), or a file whose size is priced.
         #[arg(long)]
         path: Option<PathBuf>,
+        /// Price a private repository: its pack and indexes are stored sealed (a little
+        /// larger). Visibility is set on chain when the repository is created, so a local
+        /// clone cannot tell.
+        #[arg(long)]
+        private: bool,
     },
     /// An identity's estimated Forge spend: total, per repository, per document type.
     Audit {

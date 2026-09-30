@@ -6,6 +6,7 @@ use serde_json::json;
 use forge_core::cost::{estimate, push_fees};
 use forge_core::cost_audit::{self, AuditReport};
 use forge_core::pack::DOC_PAYLOAD_MAX;
+use forge_core::private::pack::{sealed_upper_bound, HEADER_LEN};
 use forge_core::repo::{prepare_history_index, HistoryCost, HistoryPlan, RepoService};
 use forge_core::storage::human_bytes;
 use forge_import::budget::{collab_doc_credits, CollabDoc};
@@ -22,7 +23,8 @@ pub async fn run(ctx: &Ctx, cmd: &CostCommand) -> Result<()> {
             backend,
             bytes,
             path,
-        } => estimate_cmd(ctx, *backend, *bytes, path.as_deref()),
+            private,
+        } => estimate_cmd(ctx, *backend, *bytes, path.as_deref(), *private),
         CostCommand::Audit { owner, since, repo } => {
             audit(ctx, owner.as_deref(), since.as_deref(), repo.as_deref()).await
         }
@@ -104,6 +106,9 @@ struct PushInput {
     history: Option<HistoryCost>,
     /// The repository, when one was measured (its storage policy is the default backend).
     repo: Option<std::path::PathBuf>,
+    /// A private repository (`--private`): its pack and indexes are stored sealed. Visibility
+    /// is set when the repository is created on chain, so a local clone cannot tell.
+    sealed: bool,
 }
 
 impl PushInput {
@@ -116,6 +121,7 @@ impl PushInput {
             objects: bytes.div_ceil(BYTES_PER_OBJECT).max(1),
             history: None,
             repo: None,
+            sealed: false,
         }
     }
 
@@ -147,17 +153,12 @@ impl Target {
         }
     }
 
-    /// The storage `git push` in `dir` would use: its `dash.storage` / `dash.replicas` /
-    /// `dash.platformFallback` (repository or global git config), resolved against the storage
-    /// profiles; Platform when none is set.
+    /// The storage `git push` in `dir` would use: its forge remote's `remote.<name>.dash*`
+    /// settings over `dash.*` (`storage::push_policy_in`, the helper's rule), resolved against
+    /// the storage profiles; Platform when none is set.
     fn repository(dir: &std::path::Path) -> Result<Self> {
-        use forge_core::storage::{StoragePolicy, StorageProfiles};
-        let get = |key: &str| crate::git::config_get(dir, key);
-        let policy = StoragePolicy::from_git_values(
-            get("dash.storage").as_deref(),
-            get("dash.replicas").as_deref(),
-            get("dash.platformFallback").as_deref(),
-        )?;
+        use forge_core::storage::StorageProfiles;
+        let policy = crate::storage::push_policy_in(dir)?;
         if policy.is_platform_only() {
             return Ok(Self::backend(Backend::Platform));
         }
@@ -203,7 +204,7 @@ impl PushQuote {
 /// (`HistoryCost::credits`). External storage keeps the bytes off-chain: Platform bills only
 /// the manifests (with each target's URIs) and the ref update.
 fn quote(target: &Target, input: &PushInput) -> PushQuote {
-    let (platform, external) = (target.platform, target.external);
+    let (platform, external, sealed) = (target.platform, target.external, input.sealed);
     let push = push_fees::estimate_push(&push_fees::PushShape {
         pack_bytes: input.bytes,
         objects: input.objects,
@@ -211,26 +212,41 @@ fn quote(target: &Target, input: &PushInput) -> PushQuote {
         refs: 1,
         external_targets: external,
         platform_bytes: platform,
-        sealed: false,
+        sealed,
     });
-    // A first history index: each part pays the first-of-kind fee. Unknown, it is priced as
-    // the two manifests a first one writes, without chunks.
+    // A first history index: each part pays the first-of-kind fee. A repository it could not be
+    // computed in publishes none (the push skips it); from a size alone it is priced as the two
+    // manifests a first one writes, without chunks.
     let (history_manifests, history_meta, history_chunks, history_bytes) = match input.history {
         Some(h) => {
-            let meta = h.credits(false, external, false);
-            let all = h.credits(false, external, platform);
+            let meta = h.credits(sealed, external, false);
+            let all = h.credits(sealed, external, platform);
             (h.manifests(), meta, all - meta, h.plain_len())
         }
+        None if input.counted() => (0, 0, 0, 0),
         None => (
             2,
-            2 * push_fees::history_index(0, false, external, false, true),
+            2 * push_fees::history_index(0, sealed, external, false, true),
             0,
             0,
         ),
     };
     let deposit = if platform {
-        let stored = input.bytes + push_fees::locator_bytes(input.objects) + history_bytes;
-        est_deposit(stored)
+        // What each artifact takes stored: a private repository's are sealed (a header and a
+        // tag per segment, each history part its own sealed artifact).
+        let stored = |plain: u64, parts: u64| {
+            if sealed && plain > 0 {
+                let extra = parts.saturating_sub(1) * (HEADER_LEN as u64 + 16);
+                sealed_upper_bound(plain) + extra
+            } else {
+                plain
+            }
+        };
+        est_deposit(
+            stored(input.bytes, 1)
+                + stored(push_fees::locator_bytes(input.objects), 1)
+                + stored(history_bytes, u64::from(history_manifests)),
+        )
     } else {
         0
     };
@@ -239,7 +255,7 @@ fn quote(target: &Target, input: &PushInput) -> PushQuote {
         chunks: push.chunk_credits + history_chunks,
         deposit,
         manifests: 2 + history_manifests,
-        history_chunks_unpriced: platform && input.history.is_none(),
+        history_chunks_unpriced: platform && !input.counted() && input.history.is_none(),
     }
 }
 
@@ -267,9 +283,11 @@ fn estimate_input(bytes: Option<u64>, path: Option<&std::path::Path>) -> Result<
             dir.display()
         ))
     };
-    if !crate::git::git_ok(&dir, &["rev-parse", "--git-dir"]) {
-        return Err(no_size("is not a git repository"));
-    }
+    // A push sends the whole repository whatever directory it runs in: name its root.
+    let Ok(root) = crate::git::git(&dir, &["rev-parse", "--show-toplevel"], &[]) else {
+        return Err(no_size("is not a git repository (or has no working tree)"));
+    };
+    let dir = std::path::PathBuf::from(root);
     let Ok(tip_hex) = crate::git::git(
         &dir,
         &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
@@ -286,12 +304,13 @@ fn estimate_input(bytes: Option<u64>, path: Option<&std::path::Path>) -> Result<
         .ok_or_else(|| {
             no_size("could not be measured (`git pack-objects` and `git count-objects` failed)")
         })?;
-    // Local only, as `git push` computes it; a repository it cannot index (a shallow clone)
-    // leaves the history index priced by its manifests alone.
-    let history = prepare_history_index(&dir, tip, &HistoryPlan::fresh())
-        .ok()
-        .flatten()
-        .map(|p| p.cost());
+    // Local only, as `git push` computes it. Where it cannot be computed (a shallow clone) the
+    // push publishes none, so none is priced; the reason is shown.
+    let (history, history_skipped) =
+        match prepare_history_index(&dir, tip, &HistoryPlan::fresh()) {
+            Ok(p) => (p.map(|p| p.cost()), None),
+            Err(e) => (None, Some(e.to_string())),
+        };
     Ok(PushInput {
         what: format!(
             "the repository at {} (HEAD: {}, {} objects)",
@@ -303,6 +322,7 @@ fn estimate_input(bytes: Option<u64>, path: Option<&std::path::Path>) -> Result<
         objects: count.objects,
         history,
         repo: Some(dir),
+        sealed: false,
     })
 }
 
@@ -315,8 +335,12 @@ fn estimate_cmd(
     backend: Option<Backend>,
     bytes: Option<u64>,
     path: Option<&std::path::Path>,
+    private: bool,
 ) -> Result<()> {
-    let input = estimate_input(bytes, path)?;
+    let input = PushInput {
+        sealed: private,
+        ..estimate_input(bytes, path)?
+    };
     let target = match (backend, input.repo.as_deref()) {
         (Some(b), _) => Target::backend(b),
         (None, Some(dir)) => Target::repository(dir)?,
@@ -342,6 +366,7 @@ fn estimate_cmd(
             "bytes": input.bytes,
             "objects": input.objects,
             "objectsCounted": input.counted(),
+            "sealed": input.sealed,
             "backend": label,
             "platformStoresBytes": target.platform,
             "externalTargets": target.external,
@@ -359,7 +384,8 @@ fn estimate_cmd(
             "note": "every write is priced as the first of its kind, as `git push` quotes it; later pushes pay less",
         }),
         || {
-            println!("Estimate for a first push of {}{assumed} to {label}:", input.what);
+            let private = if input.sealed { " (private: stored sealed)" } else { "" };
+            println!("Estimate for a first push of {}{assumed} to {label}{private}:", input.what);
             let kind = if q.history_chunks_unpriced {
                 "not counting the history index's chunks"
             } else {
@@ -707,6 +733,32 @@ mod estimate_tests {
         assert_eq!(s3.chunks, 0);
         assert_eq!(s3.total(), own_storage_metadata());
         assert!(s3.total() >= BONSIA_FIRST_PUSH_OWN_STORAGE);
+    }
+
+    /// `--private` prices what a private repository's push stores: every artifact sealed, so
+    /// its chunks and their deposit are larger; external storage still pays only metadata.
+    #[test]
+    fn a_private_repository_is_priced_sealed() {
+        let repo = tiny_repo();
+        let public = estimate_input(None, Some(repo.path())).unwrap();
+        let private = PushInput {
+            sealed: true,
+            ..public.clone()
+        };
+        let platform = Target::backend(Backend::Platform);
+        let (open, sealed) = (quote(&platform, &public), quote(&platform, &private));
+        assert!(sealed.chunks > open.chunks, "{open:?} vs {sealed:?}");
+        assert!(sealed.deposit > open.deposit, "{open:?} vs {sealed:?}");
+        assert_eq!(sealed.metadata, open.metadata);
+        // Recorded on moutai (forge_core::cost's calibration): a private 20 KiB first push paid
+        // 1,123,943,560 credits; the sealed quote of 20 KiB of pack stays above it.
+        let twenty = PushInput {
+            sealed: true,
+            ..sized(21_011)
+        };
+        assert!(quote(&platform, &twenty).total() >= 1_123_943_560);
+        let s3 = Target::backend(Backend::S3);
+        assert_eq!(quote(&s3, &private), quote(&s3, &public));
     }
 
     /// With no `--backend`, a repository is priced on the storage its own `git push` would use:
