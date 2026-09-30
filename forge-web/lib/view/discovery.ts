@@ -149,10 +149,13 @@ export function searchPrefix(text: string): string | null {
  * The sub-queries a repo page carries, bound to the repos (`$id`) found at `source`: star and
  * issue counts, the owners' DPNS names and, with `pushesSince`, the pushes since then. A push
  * is a `packManifest` (one per push that uploads objects; `refUpdate` rows are one per ref, and
- * a mirror's tag push is hundreds). The lookup walks the page's direction, so a descending page
- * sees each repo's newest push first.
+ * a mirror's tag push is hundreds). The lookup's outer (`repoId`) ordering must match the
+ * direction the node walks the page in (else it refuses the composite): `desc` for a page read
+ * by `$id` descending, `asc` for one walked through an `==`-prefixed index such as `repo.recent
+ * (visibility, $createdAt)` whatever its `$createdAt` order (measured on bonsia). Each repo's
+ * pushes are newest first either way; the newest is what is kept.
  */
-function repoSubs(forge: ForgeIds, network: Network, source: 'page' | number, pushesSince: number | null): CompositeSub[] {
+function repoSubs(forge: ForgeIds, network: Network, source: 'page' | number, pushesSince: number | null, pushesOuter: 'asc' | 'desc' = 'desc'): CompositeSub[] {
   const bind = { source, sourceProperty: '$id', field: 'repoId' }
   return [
     { dataContractId: forge.community, documentType: DOC.star, kind: 'counts', bind },
@@ -171,7 +174,7 @@ function repoSubs(forge: ForgeIds, network: Network, source: 'page' | number, pu
             documentType: DOC.packManifest,
             bind,
             where: [['$createdAt', '>', pushesSince]] as WhereClause[],
-            orderBy: [['repoId', 'desc'], ['$createdAt', 'desc']] as const,
+            orderBy: [['repoId', pushesOuter], ['$createdAt', 'desc']] as const,
             limit: MAX_ROWS,
           },
         ]),
@@ -227,7 +230,7 @@ async function readRepoPage<T extends string | number>(
   try {
     res = await queryComposite(
       sdk,
-      { dataContractId: forge.core, documentType: DOC.repo, where: pageWhere, orderBy, limit: requested, subQueries: repoSubs(forge, network, 'page', pushesSince) },
+      { dataContractId: forge.core, documentType: DOC.repo, where: pageWhere, orderBy, limit: requested, subQueries: repoSubs(forge, network, 'page', pushesSince, 'asc') },
       { plainFallback: false },
     )
     rows = res.page
@@ -256,7 +259,12 @@ function forgeOf(network: Network): ForgeIds | null {
   return NETWORKS[network].v2
 }
 
-/** A page of the newest repos, newest first (`$createdAt <=` the previous page's oldest). */
+/**
+ * A page of the newest public repos, newest first (`$createdAt <=` the previous page's oldest).
+ * RC1's `repo.recent` index is `(visibility, $createdAt)`: the page binds `visibility ==
+ * "public"` and pages on `$createdAt` within it (a query ordered by `$createdAt` alone names
+ * no index, and consensus refuses it). Private repos were never listed here.
+ */
 export async function recentReposPage(
   sdk: EvoSDK,
   opts: { network?: Network; limit?: number; after?: Keyset<number> | null } = {},
@@ -269,7 +277,7 @@ export async function recentReposPage(
     forge,
     network,
     { field: '$createdAt', direction: 'desc' },
-    (after, strict) => (after === null ? [] : [['$createdAt', strict ? '<' : '<=', after.at]]),
+    (after, strict) => [['visibility', '==', 'public'], ...(after === null ? [] : [['$createdAt', strict ? '<' : '<=', after.at] as WhereClause])],
     opts.limit ?? REPO_PAGE,
     opts.after ?? null,
   )
