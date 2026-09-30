@@ -22,6 +22,8 @@
  *
  * A pack stored on Platform too is read from its chunks first in the browser (proof-verified,
  * so no mirror can hold a browse hostage), so losing its bucket or gateway is invisible there.
+ * The other way round, chunks that cannot be read (missing, or the node erroring) fall back to
+ * the pack's bucket or gateway copy, and the source row names the chunks.
  *
  * The fixture is on loopback http, which the reader never follows from a manifest (only public
  * https): `lib/net`'s check is widened to the fixture's two origins here and nowhere else.
@@ -201,8 +203,11 @@ interface Browsed {
  * Browse `blob` from pushed pack `p` twice — the in-browser clone (whole pack) and a ranged
  * read (the indexed path) — each on a fresh repo, checking the bytes; what each reported.
  */
-async function browse(p: Pushed, blob: { oid: string; body: Uint8Array }): Promise<{ clone: Browsed; range: Browsed }> {
-  const sdk = mockSdk(p.chunks)
+async function browse(
+  p: Pushed,
+  blob: { oid: string; body: Uint8Array },
+  sdk: EvoSDK = mockSdk(p.chunks),
+): Promise<{ clone: Browsed; range: Browsed }> {
   const seen = (repo: RepoRef): Browsed => {
     const checks = contentChecks(repo.repoId)
     const trust = deriveTrust({ network: 'devnet', connection: 'trusted', tip: 'missing', checks, configuredBackend: 'your storage' })
@@ -331,5 +336,48 @@ describe.runIf(DRILL_ON)('survivability drill: browse', { timeout: 120_000 }, ()
       await restart()
     }
     await deleteBucket(bucket, ipfsS3.keys)
+  })
+
+  it('unreadable Platform chunks: the bucket and the gateway serve the on-chain packs and the panel names the chunks', async () => {
+    overrideDefaultGateways([GATEWAY])
+    const bucket = await createBucket('chunks')
+    const a = blobPack('platform first, then s3\n')
+    const b = blobPack('platform first, then ipfs\n')
+    const chainS3 = await push(a.pack, ['platform', 's3'], bucket)
+    const chainIpfs = await push(b.pack, ['platform', 'ipfs'], bucket)
+    // Readable chunks serve both, and nothing is fetched from the bucket or the gateway.
+    const quiet = recordFetches()
+    for (const [p, blob] of [[chainS3, a], [chainIpfs, b]] as const) {
+      const before = await browse(p, blob)
+      for (const read of [before.clone, before.range]) {
+        expect(read.sources).toEqual(['platform'])
+        expect(read.fellBack, 'nothing is down yet').toEqual([])
+      }
+    }
+    expect(quiet).toEqual([])
+
+    // The chunk documents gone (the query answers none of them), and the Platform node erroring.
+    const missing = mockSdk(new Map())
+    const erroring = { documents: { query: () => Promise.reject(new Error('platform node unreachable')) } } as unknown as EvoSDK
+    const seen = recordFetches()
+    const cases = [
+      { p: chainS3, blob: a, sdk: missing, host: S3_HOST, chunks: 'chunks on Platform (missing)' },
+      { p: chainIpfs, blob: b, sdk: erroring, host: GATEWAY_HOST, chunks: "chunks on Platform (didn't answer)" },
+    ]
+    for (const { p, blob, sdk, host, chunks } of cases) {
+      clearChunkCache()
+      const after = await browse(p, blob, sdk)
+      for (const read of [after.clone, after.range]) {
+        expect(read.sources).toEqual([host])
+        expect(read.fellBack).toEqual([chunks])
+        expect(read.unreachable).toEqual([])
+        expect(read.source.detail).toContain(`${host}. Unavailable, another copy served instead: ${chunks}.`)
+      }
+      // Every object was read and hash-checked: the lost chunks lower no trust state.
+      expect(after.clone.content).toBe('verified')
+      expect(after.clone.source.state).toBe('verified')
+    }
+    expectOnlyStorage(seen)
+    await deleteBucket(bucket, chainS3.keys)
   })
 })
