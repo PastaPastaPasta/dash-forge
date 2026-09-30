@@ -2509,6 +2509,20 @@ impl<'a> RepoService<'a> {
         prepared: PreparedHistory,
         target: RepackTarget<'_>,
     ) -> Result<HistoryPublished> {
+        self.store_history_index_parts(repo, prepared, target)
+            .await
+            .map_err(HistoryStoreFailure::into_error)
+    }
+
+    /// [`Self::store_history_index`], keeping what a failure had already published: the version
+    /// lists are paid for and readable when only the column fails, and a caller that reports a
+    /// result (`dg repo reindex --json`) says so rather than dropping it.
+    pub async fn store_history_index_parts(
+        &self,
+        repo: &RepoRef,
+        prepared: PreparedHistory,
+        target: RepackTarget<'_>,
+    ) -> std::result::Result<HistoryPublished, HistoryStoreFailure> {
         // A delta when what is published extends a full index (the column alone, when the lists
         // were already there).
         let delta = prepared.is_delta();
@@ -2519,20 +2533,27 @@ impl<'a> RepoService<'a> {
             ..
         } = prepared;
         let versions_manifest_id = match artifact {
-            Some(a) => Some(self.store_artifact(repo, a, target).await?),
+            Some(a) => Some(
+                self.store_artifact(repo, a, target)
+                    .await
+                    .map_err(|error| HistoryStoreFailure {
+                        versions_manifest_id: None,
+                        column: false,
+                        error,
+                    })?,
+            ),
             None => None,
         };
         let manifest_id = match column {
-            Some(c) => Some(self.store_artifact(repo, c, target).await.map_err(|e| {
-                // Paid for, and readable by Blame and History: say so, so a retry is understood.
-                let lists = versions_manifest_id.as_deref().map_or(String::new(), |id| {
-                    format!(" (its version lists were published: {id})")
-                });
-                Error::Io(format!(
-                    "the history index's column was not published{lists}: {e}; `dg repo reindex` \
-                     publishes it"
-                ))
-            })?),
+            Some(c) => Some(
+                self.store_artifact(repo, c, target)
+                    .await
+                    .map_err(|error| HistoryStoreFailure {
+                        versions_manifest_id: versions_manifest_id.clone(),
+                        column: true,
+                        error,
+                    })?,
+            ),
             None => None,
         };
         Ok(HistoryPublished {
@@ -2615,6 +2636,40 @@ impl HistoryPlan {
             columns_first: true,
             ..Self::default()
         }
+    }
+}
+
+/// A history index store that stopped part way ([`RepoService::store_history_index_parts`]).
+#[derive(Debug)]
+pub struct HistoryStoreFailure {
+    /// The version lists' manifest document id, when they were published before the failure.
+    pub versions_manifest_id: Option<String>,
+    /// The column index failed (else the version lists did, and nothing was published).
+    pub column: bool,
+    /// Why.
+    pub error: Error,
+}
+
+impl HistoryStoreFailure {
+    /// The error [`RepoService::store_history_index`] returns: a column that failed names the
+    /// version lists already published (paid for, and readable by Blame and History), so a
+    /// retry is understood.
+    #[must_use]
+    pub fn into_error(self) -> Error {
+        if !self.column {
+            return self.error;
+        }
+        let lists = self
+            .versions_manifest_id
+            .as_deref()
+            .map_or(String::new(), |id| {
+                format!(" (its version lists were published: {id})")
+            });
+        Error::Io(format!(
+            "the history index's column was not published{lists}: {}; `dg repo reindex` \
+             publishes it",
+            self.error
+        ))
     }
 }
 
@@ -4028,6 +4083,36 @@ mod tests {
     use crate::error::Error;
     use crate::rules::v2::{CopyKey, Role};
     use crate::rules::ConfigDoc;
+
+    /// `store_history_index`'s error is what it was before `store_history_index_parts`: the
+    /// version lists' own failure as raised, a column failure naming the lists already published
+    /// (none when only the column was being published).
+    #[test]
+    fn a_history_store_failure_names_what_was_published() {
+        let failure = |versions_manifest_id: Option<&str>, column| super::HistoryStoreFailure {
+            versions_manifest_id: versions_manifest_id.map(str::to_string),
+            column,
+            error: Error::Io("bucket gone".into()),
+        };
+        let cause = Error::Io("bucket gone".into()).to_string();
+        assert_eq!(failure(None, false).into_error().to_string(), cause);
+        assert_eq!(
+            failure(Some("L1"), true).into_error().to_string(),
+            Error::Io(format!(
+                "the history index's column was not published (its version lists were \
+                 published: L1): {cause}; `dg repo reindex` publishes it"
+            ))
+            .to_string()
+        );
+        assert_eq!(
+            failure(None, true).into_error().to_string(),
+            Error::Io(format!(
+                "the history index's column was not published: {cause}; `dg repo reindex` \
+                 publishes it"
+            ))
+            .to_string()
+        );
+    }
 
     /// A manifest stub carrying only what the packRef space is derived from.
     fn manifest(id: &str, created_at: u64, kind: u8, hash: u8) -> PackManifestInfo {

@@ -197,17 +197,24 @@ pub async fn reindex(
             .await
             .context("publishing the browse index")?
     };
-    let published = match history.prepared {
-        Some(h) => Some(
-            svc.store_history_index(&s.repo, h, target())
-                .await
-                .context("publishing the history index")?,
-        ),
-        None => None,
+    // What the history index holds, known before it is stored: a failed store reports it too.
+    let shape = history.prepared.as_ref().map(|h| HistoryShape {
+        paths: h.index().paths.len() as u64,
+        delta: h.is_delta(),
+        commits: h.index().commit_count,
+    });
+    let (published, failed) = match history.prepared {
+        Some(h) => match svc.store_history_index_parts(&s.repo, h, target()).await {
+            Ok(p) => (Some(p), None),
+            Err(f) => (None, Some(f)),
+        },
+        None => (None, None),
     };
-    // A balance that cannot be read leaves the spend unknown: never the estimate, never 0.
-    let wrote = report.manifest_id.is_some() || published.is_some();
-    let spent = match (before, wrote) {
+    let lists_only = failed.as_ref().and_then(|f| f.versions_manifest_id.clone());
+    let wrote = report.manifest_id.is_some() || published.is_some() || lists_only.is_some();
+    // A balance that cannot be read leaves the spend unknown: never the estimate, never 0. A
+    // failed store may have paid for chunks without a manifest id to show for them: measured.
+    let spent = match (before, wrote || failed.is_some()) {
         (Some(b), true) => measured_spend(&s, b).await,
         (Some(_), false) => Some(0),
         (None, _) => None,
@@ -216,6 +223,22 @@ pub async fn reindex(
     body["history"] = history_json(published.as_ref(), history.status);
     if published.is_some() && body["status"] == "unchanged" {
         body["status"] = json!("reindexed");
+    }
+    if let Some(f) = failed {
+        mark_history_failed(&mut body, shape.as_ref(), lists_only.as_deref(), wrote);
+        let err = anyhow::Error::from(f.into_error()).context("publishing the history index");
+        let user = forge_core::user_error::classify(
+            err.chain(),
+            &forge_core::user_error::ErrorContext {
+                goal: Some("history index not published"),
+                repo: Some(repo),
+                ..forge_core::user_error::ErrorContext::default()
+            },
+        );
+        if !ctx.json && wrote {
+            print_reindex(&s.repo, &report, None, lists_only.as_deref(), spent, price);
+        }
+        return Err(crate::errors::reported(user, body));
     }
     if report.manifest_id.is_none() && !report.skipped.is_empty() {
         // One document: the body with the error, not a success-shaped body and then an error.
@@ -232,12 +255,12 @@ pub async fn reindex(
                 .join("; "),
         );
         if !ctx.json {
-            print_reindex(&s.repo, &report, published.as_ref(), spent, price);
+            print_reindex(&s.repo, &report, published.as_ref(), None, spent, price);
         }
         return Err(crate::errors::reported(err, body));
     }
     ctx.emit(body, || {
-        print_reindex(&s.repo, &report, published.as_ref(), spent, price);
+        print_reindex(&s.repo, &report, published.as_ref(), None, spent, price);
     });
     Ok(())
 }
@@ -534,11 +557,45 @@ fn reindex_body(
     })
 }
 
-/// Print a finished reindex for a person.
+/// What a history index about to be stored holds (the `paths`, `delta` and `commits` of its
+/// `--json` member).
+struct HistoryShape {
+    paths: u64,
+    delta: bool,
+    commits: u64,
+}
+
+/// The `--json` body of a reindex whose history index failed. What was published before it
+/// (the locator, the version lists: `lists`) is paid for, so the body keeps it next to the
+/// error rather than being dropped for the error alone (a script would lose the manifest ids).
+/// `wrote`: anything was published, so the run is `partial`. `shape` gives the failed index the
+/// fields a published one has.
+fn mark_history_failed(
+    body: &mut serde_json::Value,
+    shape: Option<&HistoryShape>,
+    lists: Option<&str>,
+    wrote: bool,
+) {
+    body["history"] = json!({
+        "status": "failed",
+        "manifestId": null,
+        "versionsManifestId": lists,
+        "paths": shape.map(|s| s.paths),
+        "delta": shape.map(|s| s.delta),
+        "commits": shape.map(|s| s.commits),
+    });
+    if wrote {
+        body["status"] = json!("partial");
+    }
+}
+
+/// Print a finished reindex for a person. `lists_only`: the history index failed after its
+/// version lists were published (their manifest id).
 fn print_reindex(
     handle: &forge_core::scope::RepoRef,
     report: &forge_core::repo::ReindexReport,
     history: Option<&forge_core::repo::HistoryPublished>,
+    lists_only: Option<&str>,
     spent: Option<u64>,
     price: f64,
 ) {
@@ -552,7 +609,7 @@ fn print_reindex(
             );
             println!("  index manifest:  {id}");
         }
-        None if history.is_none() => println!(
+        None if history.is_none() && lists_only.is_none() => println!(
             "Nothing published for {}: an index published meanwhile covers the packs, \
              or none could be indexed.",
             handle.display()
@@ -575,6 +632,13 @@ fn print_reindex(
                 println!("  {what}{id}");
             }
         }
+    }
+    if let Some(id) = lists_only {
+        println!(
+            "Published the version lists of {}'s history index, not its column index.",
+            handle.display()
+        );
+        println!("  version lists:   {id}");
     }
     for (h, why) in &report.skipped {
         println!("  not indexed:     {h}: {why}");
@@ -1072,5 +1136,40 @@ mod tests {
             .unwrap_or_default();
         assert!(err.contains("FORGE_S3_ENDPOINT"), "{err}");
         assert_eq!(legacy_backend_uri(Some(Backend::Ipfs)), None);
+    }
+
+    /// Orchestrator finding (reindex JSON): a column index that fails after its version lists
+    /// were stored returned the error alone, so `--json` lost the paid-for manifest ids. The
+    /// body keeps them, with the fields a published index has, and says the run is partial.
+    #[test]
+    fn a_failed_history_index_keeps_what_was_published() {
+        let mut body = json!({ "status": "reindexed", "locatorManifestId": "locator" });
+        let shape = HistoryShape {
+            paths: 7,
+            delta: false,
+            commits: 42,
+        };
+        mark_history_failed(&mut body, Some(&shape), Some("lists"), true);
+        assert_eq!(body["status"], "partial");
+        assert_eq!(body["locatorManifestId"], "locator");
+        assert_eq!(
+            body["history"],
+            json!({
+                "status": "failed",
+                "manifestId": null,
+                "versionsManifestId": "lists",
+                "paths": 7,
+                "delta": false,
+                "commits": 42,
+            })
+        );
+        // Nothing published at all: the status is left as it was.
+        let mut body = json!({ "status": "unchanged" });
+        mark_history_failed(&mut body, Some(&shape), None, false);
+        assert_eq!(body["status"], "unchanged");
+        assert_eq!(
+            body["history"]["versionsManifestId"],
+            serde_json::Value::Null
+        );
     }
 }
