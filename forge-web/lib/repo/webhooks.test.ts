@@ -134,6 +134,19 @@ describe('removeWebhook', () => {
     expect(created).toHaveLength(0)
   })
 
+  it('removes the signer’s own hook without an encryption key when no tombstone is needed', async () => {
+    stored = [raw('mine1', ME, 10)]
+    expect(await removeWebhook({} as never, auth, REPO, null, HOOK)).toEqual({ tombstone: false, deleted: 1 })
+    expect(deleted).toEqual(['mine1'])
+  })
+
+  it('refuses before any write when a tombstone is needed and there is no encryption key', async () => {
+    stored = [raw('theirs', OTHER, 10), raw('mine', ME, 20)]
+    await expect(removeWebhook({} as never, auth, REPO, null, HOOK)).rejects.toThrow(/encryption key/)
+    expect(created).toHaveLength(0)
+    expect(deleted).toEqual([])
+  })
+
   it('first writes a disabled revision addressed to the signer when another maintainer’s would be current', async () => {
     stored = [raw('theirs', OTHER, 10), raw('mine', ME, 20)]
     const r = await removeWebhook({} as never, auth, REPO, seal, HOOK)

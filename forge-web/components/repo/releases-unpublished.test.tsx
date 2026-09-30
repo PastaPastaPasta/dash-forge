@@ -70,7 +70,8 @@ describe('the Releases page', () => {
   it('shows an unpublished tag with Restore even when no live release is left, and names New release', () => {
     list.current = { current: [], previous: [rev('U1', 'v1', 20, true), rev('V1OLD', 'v1', 10)] }
     act(() => root.render(<ReleasesContent home={home} addr={{ owner: 'O', name: 'r' }} />))
-    expect(host.textContent).toContain('No releases yet')
+    expect(host.textContent).toContain('No published releases')
+    expect(host.textContent).not.toContain('No releases yet')
     expect(host.textContent).toMatch(/New release/)
     const section = host.querySelector('[data-testid="releases-unpublished"]')
     expect(section).not.toBeNull()

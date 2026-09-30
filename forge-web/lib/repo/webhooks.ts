@@ -220,13 +220,18 @@ export interface RemovedWebhook {
  * write a newer disabled one addressed to the signer's own identity, so no relay can read its
  * secret and the hook's relay stops: written first, the other document is never current again.
  */
-export async function removeWebhook(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, seal: SecretSealer, hookId: string): Promise<RemovedWebhook> {
+export async function removeWebhook(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, seal: SecretSealer | null, hookId: string): Promise<RemovedWebhook> {
   const me = auth.identityId
   const history = (await readWebhookDocs(sdk, repo)).filter((h) => h.hookId === hookId)
   const others = activeHooks(history.filter((h) => h.ownerId !== me))
   let tombstone = false
   const current = others[0]
   if (current !== undefined) {
+    // Only the tombstone needs the encryption key; plain deletes need the signing key alone.
+    if (seal === null) throw new Error('another maintainer also wrote this webhook, so removing it writes a disabled revision sealed from your encryption key first: unlock it in this browser')
+    // Deliberately no write intent: a retry after the tombstone landed would replay it, find it
+    // among the signer's revisions below and delete it, making the other maintainer's current
+    // again. Without one, a retry writes a second tombstone and deletes the first (one extra write).
     await writeWebhook(sdk, auth, repo, seal, { hookId, url: current.url, events: current.events, relayIdentityId: me, secret: generateWebhookSecret(), disabled: true })
     tombstone = true
   }

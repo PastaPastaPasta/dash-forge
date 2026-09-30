@@ -104,9 +104,10 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
     await reloadUntil((rows) => rows.some((h) => h.hookId === pending.hookId))
   }
   const remove = async (): Promise<void> => {
-    if (!sdk || !signer || removing === null || sealer.data?.kind !== 'ready') throw new Error('unlock to continue')
+    if (!sdk || !signer || removing === null) throw new Error('unlock to continue')
     const hookId = removing.hookId
-    await removeWebhook(sdk, signer, repo, sealer.data.seal, hookId)
+    // The encryption key is needed only when a disabled revision must be written first.
+    await removeWebhook(sdk, signer, repo, canSeal && sealer.data?.kind === 'ready' ? sealer.data.seal : null, hookId)
     await reloadUntil((rows) => !rows.some((h) => h.hookId === hookId))
   }
 
@@ -150,7 +151,7 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
                       <span>{timeAgo(h.createdAt)}</span>
                     </p>
                   </div>
-                  {maintainer && canSeal ? (
+                  {maintainer && (canSeal || (identity !== null && !removalNeedsTombstone(docs.data ?? [], h.hookId, identity))) ? (
                     <Button
                       size="sm"
                       variant="danger"
@@ -185,7 +186,8 @@ export function WebhookSettings({ home, maintainer }: { home: RepoHome; maintain
         {isPublic && maintainer ? (
           sealer.data?.kind === 'no-key' ? (
             <p className="text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="webhooks-no-key">
-              Adding or removing a webhook here needs your encryption key in this browser (the secret is encrypted from it):{' '}
+              Adding a webhook here (or removing one another maintainer also wrote) needs your encryption key in this browser (the secret is
+              encrypted from it):{' '}
               <Link href="/settings/#enc-key-title" className="hit-area text-forge-700 underline dark:text-forge-400">
                 Settings → Private repos
               </Link>

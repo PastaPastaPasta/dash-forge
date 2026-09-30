@@ -97,7 +97,7 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
         <>
           <EmptyState
             icon={Tag}
-            title="No releases yet"
+            title={unpublished.length > 0 ? 'No published releases' : 'No releases yet'}
             body="Maintainers publish one with New release (at the top of this page), or with dg release create --tag v1 --asset ./dist/app.tar.gz."
           />
           <SealedListNotes list={data} />
