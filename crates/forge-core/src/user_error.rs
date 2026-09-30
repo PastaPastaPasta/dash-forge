@@ -1503,41 +1503,83 @@ pub fn redact(s: &str) -> String {
 /// The shortest recovery phrase (12 words; 24 is the other common length).
 const PHRASE_WORDS: usize = 12;
 
+/// What an alphanumeric run is to [`redact_phrases`]: a BIP39 word, a number (which neither
+/// counts nor breaks a run), or anything else (which breaks it).
+#[derive(Clone, Copy, PartialEq)]
+enum PhraseToken {
+    Word,
+    Number,
+    Other,
+}
+
+fn kind_of(tok: &str) -> PhraseToken {
+    if tok.bytes().all(|b| b.is_ascii_digit()) {
+        PhraseToken::Number
+    } else if tok.len() >= 3
+        && tok.bytes().all(|b| b.is_ascii_alphabetic())
+        && bip39::Language::English
+            .find_word(&tok.to_ascii_lowercase())
+            .is_some()
+    {
+        PhraseToken::Word
+    } else {
+        PhraseToken::Other
+    }
+}
+
 /// A run of [`PHRASE_WORDS`] or more BIP39 English words becomes one `[redacted]`. Words are
 /// runs of ASCII letters and digits, so whatever sits between them (spaces, quotes, `=`,
-/// `Some("`) does not break a run. Prose never has twelve in a row: the list has no "the",
+/// `Some("`, a Debug-escaped `\n`) does not break a run, and neither do numbers (a numbered
+/// list, `1. abandon 2. ability …`). Prose never has twelve in a row: the list has no "the",
 /// "a", "to", "of" or "is".
 fn redact_phrases(s: &str) -> String {
-    // Each alphanumeric run as a byte span, and whether it is a list word.
-    let mut tokens: Vec<(usize, usize, bool)> = Vec::new();
+    // Each alphanumeric run as a byte span, and its kind.
+    let mut tokens: Vec<(usize, usize, PhraseToken)> = Vec::new();
     let mut start = None;
-    for (i, c) in s.char_indices().chain(std::iter::once((s.len(), ' '))) {
-        match (c.is_ascii_alphanumeric(), start) {
-            (true, None) => start = Some(i),
-            (false, Some(st)) => {
-                let tok = &s[st..i];
-                let is_word = tok.len() >= 3
-                    && tok.bytes().all(|b| b.is_ascii_alphabetic())
-                    && bip39::Language::English
-                        .find_word(&tok.to_ascii_lowercase())
-                        .is_some();
-                tokens.push((st, i, is_word));
-                start = None;
-            }
-            _ => {}
+    let mut chars = s.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        // `\n`, `\t`, `\r` as Debug output escapes them: a separator, like the whitespace.
+        let escape = c == '\\' && matches!(chars.peek(), Some((_, 'n' | 't' | 'r')));
+        if c.is_ascii_alphanumeric() {
+            start.get_or_insert(i);
+            continue;
         }
+        if let Some(st) = start.take() {
+            tokens.push((st, i, kind_of(&s[st..i])));
+        }
+        if escape {
+            chars.next();
+        }
+    }
+    if let Some(st) = start {
+        tokens.push((st, s.len(), kind_of(&s[st..])));
     }
     let mut out = String::with_capacity(s.len());
     let mut copied = 0;
     let mut i = 0;
     while i < tokens.len() {
-        let run = tokens[i..].iter().take_while(|t| t.2).count();
-        if run >= PHRASE_WORDS {
+        if tokens[i].2 != PhraseToken::Word {
+            i += 1;
+            continue;
+        }
+        // Words and numbers from here; the span ends at the last word.
+        let len = tokens[i..]
+            .iter()
+            .take_while(|t| t.2 != PhraseToken::Other)
+            .count();
+        let run = &tokens[i..i + len];
+        let words = run.iter().filter(|t| t.2 == PhraseToken::Word).count();
+        if words >= PHRASE_WORDS {
+            let last = run
+                .iter()
+                .rev()
+                .find(|t| t.2 == PhraseToken::Word)
+                .map_or(0, |t| t.1);
             out.push_str(&s[copied..tokens[i].0]);
             out.push_str(REDACTED);
-            copied = tokens[i + run - 1].1;
+            copied = last;
         }
-        i += run.max(1);
+        i += len;
     }
     out.push_str(&s[copied..]);
     out
@@ -2964,8 +3006,8 @@ mod tests {
         let twelve =
             "abandon ability able about above absent absorb abstract absurd abuse access accident";
         assert_eq!(
-            redact(&format!("source #1: \"{twelve}\": not found")),
-            "source #1: \"[redacted]\": not found"
+            redact(&format!("at x7: \"{twelve}\": not found")),
+            "at x7: \"[redacted]\": not found"
         );
         let upper = twelve.to_uppercase();
         assert_eq!(redact(&format!("x {upper}, y")), "x [redacted], y");
@@ -2984,6 +3026,16 @@ mod tests {
             }
         }
         assert_eq!(redact(&format!("é {twelve} é")), "é [redacted] é");
+        // Debug-escaped separators, and a numbered list.
+        let escaped = format!("{:?}", twelve.replace(' ', "\n"));
+        assert_eq!(redact(&escaped), "\"[redacted]\"");
+        let numbered: Vec<String> = twelve
+            .split(' ')
+            .enumerate()
+            .map(|(i, w)| format!("{}. {w}", i + 1))
+            .collect();
+        assert_eq!(redact(&numbered.join(" ")), "1. [redacted]");
+        assert_eq!(redact("a\\nb 12 cd"), "a\\nb 12 cd");
         // Eleven words, or twelve broken by a word off the list, are left alone.
         let eleven = twelve.rsplit_once(' ').unwrap().0;
         assert_eq!(redact(eleven), eleven);
