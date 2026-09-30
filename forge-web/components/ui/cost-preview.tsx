@@ -6,6 +6,7 @@
 
 import type { CostPreview as Cost } from '@/lib/sdk'
 import { dashToUsd, formatDash } from '@/lib/view'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 
 export function CostPreview({
@@ -20,6 +21,7 @@ export function CostPreview({
 }): JSX.Element {
   const isRefund = refund || cost.credits < 0
   const dash = Math.abs(cost.dash)
+  const usd = dashToUsd(dash, ACTIVE_NETWORK.network)
   return (
     <div
       data-testid="cost-preview"
@@ -35,7 +37,7 @@ export function CostPreview({
         {isRefund ? '+' : '~'}
         {formatDash(dash)} DASH
       </span>
-      <span className="font-mono text-anvil-500 dark:text-anvil-400">≈ {dashToUsd(dash)}</span>
+      {usd !== null ? <span className="font-mono text-anvil-500 dark:text-anvil-400">≈ {usd}</span> : null}
     </div>
   )
 }

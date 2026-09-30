@@ -105,7 +105,8 @@ export async function depositAddressOf(mnemonic: string, network: Network): Prom
   return (await deriveAt(mnemonic, assetLockKeyPath(network), network)).address
 }
 
-async function platformClh(sdk: EvoSDK): Promise<number | null> {
+/** Platform's core chain-locked height (a chain-lock proof must be at or below it). */
+export async function platformClh(sdk: EvoSDK): Promise<number | null> {
   const h = (await authSdk(sdk).system.status()).toJSON()?.chain?.coreChainLockedHeight
   return typeof h === 'number' ? h : null
 }
@@ -225,7 +226,7 @@ export function remainingLockCredits(value: Uint8Array): bigint | null {
  * `fetch_asset_lock_outpoint_info`). A proven read, like every other. Null when the answer is
  * not one of those shapes.
  */
-async function assetLockUse(sdk: EvoSDK, outPoint: Uint8Array): Promise<LockUse | null> {
+export async function assetLockUse(sdk: EvoSDK, outPoint: Uint8Array): Promise<LockUse | null> {
   const elements = await authSdk(sdk).system.pathElements([SPENT_ASSET_LOCKS], [outPoint])
   if (elements.length !== 1) return null
   const [element] = elements as [(typeof elements)[number]]

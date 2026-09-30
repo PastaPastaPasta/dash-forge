@@ -152,6 +152,14 @@ export const FIRST_WRITE_CREDITS: Readonly<Record<string, Surcharge>> = {
 /** An identity's first write to a contract also stores its identity-contract nonce. */
 export const CONTRACT_FIRST_CREDITS = 12_000_000
 
+/**
+ * Whether a write's first-write answers were read. An empty `FirstWrite` (nothing read yet, the
+ * default of `useFirstWrite`) counts every surcharge: its preview is the upper bound.
+ */
+export function firstWriteRead(first: FirstWrite): boolean {
+  return Object.keys(first).length > 0
+}
+
 /** Nothing is a first write: every subtree exists. */
 export const STEADY: FirstWrite = {
   contract: false,

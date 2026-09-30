@@ -58,7 +58,15 @@ export async function recordSpend(event: SpendEvent): Promise<void> {
 /** Every row of an identity's ledger, oldest first. */
 export async function readLedger(network: Network, identityId: string): Promise<SpendRow[]> {
   const rows = await idbEntries<SpendRow>('spend', prefix(network, identityId))
-  return rows.map(([, v]) => v).sort((a, b) => a.at - b.at)
+  return rows.map(([, v]) => repairRepo(v)).sort((a, b) => a.at - b.at)
+}
+
+/**
+ * A repo's creation recorded before QW-054 named forge-core's contract id as its repo (the `repo`
+ * document has no `repoId` field). Its own document id is the repo: read it as that.
+ */
+export function repairRepo(row: SpendRow): SpendRow {
+  return row.kind === 'create:repo' && row.repo !== row.documentId ? { ...row, repo: row.documentId } : row
 }
 
 /** The ledger's baseline balance (credits), or null before the first write. */
@@ -124,6 +132,7 @@ const KIND_LABELS: Readonly<Record<string, string>> = {
   'key:encryption': 'Register encryption key',
   'key:runner': 'Register a CI runner key',
   'identity:create': 'Create identity',
+  'create:repo': 'Create repo',
 }
 
 /**

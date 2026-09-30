@@ -955,7 +955,10 @@ export interface WriteResult {
 }
 
 /** The repo a write's data names (`repoId` bytes), for the ledger. */
-function repoOf(data: Readonly<Record<string, unknown>>, contractId: string): string | null {
+function repoOf(data: Readonly<Record<string, unknown>>, contractId: string, documentType?: string, documentId?: string): string | null {
+  // A `repo` document is the repo: its own id names it (it has no `repoId` field). Falling back
+  // to the contract id made Settings → Spend list a repo's creation under forge-core's id (QW-054).
+  if (documentType === 'repo' && documentId !== undefined) return documentId
   const repoId = data['repoId']
   if (repoId instanceof Uint8Array && repoId.length === 32) return base58Encode(repoId)
   return contractId
@@ -1231,7 +1234,7 @@ async function createDocumentUnlocked(
   const balanceBefore = balanceBeforeWrite(sdk, ownerId, identity.balance)
   const spend = (kind: string, documentId: string): Spend => ({
     kind: `${kind}:${documentType}`,
-    repo: repoOf(data, contractId),
+    repo: repoOf(data, contractId, documentType, documentId),
     documentId,
     estimateCredits: cost.credits,
     balanceBefore,

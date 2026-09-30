@@ -26,7 +26,8 @@ import { cn, errorMessage } from '@/lib/utils'
 import type { DiscoveredRepo } from '@/lib/view/discovery'
 import { numberTargets, parseJump, resolveWord, wordTarget, type WordMatches } from '@/lib/view/jump'
 import { Author } from '@/components/author'
-import { balanceToDash, dashToUsd } from '@/lib/view/format'
+import { balanceToDash, dashValueNote } from '@/lib/view/format'
+import { KeyFundsLine } from '@/components/funds-summary'
 import { FundsPill } from '@/components/funds-pill'
 import { consumePrehydrationIntent } from '@/lib/prehydration'
 import { isPageShortcut } from '@/lib/focus'
@@ -562,6 +563,8 @@ function AccountMenu({
   onLogout: (forget?: boolean) => void
 }): JSX.Element {
   const { open, setOpen, ref, trigger } = usePopover()
+  const { funds } = useAuth()
+  const openTopUp = useUiStore((s) => s.openTopUp)
   const credits = balance ? Number(balance) : 0
   const dash = balanceToDash(balance ?? '0')
 
@@ -585,8 +588,22 @@ function AccountMenu({
             </div>
             <div className="mt-0.5 font-mono text-prose text-dash-600 dark:text-dash-400">{dash} DASH</div>
             <div className="font-mono text-[12px] text-anvil-500 dark:text-anvil-400">
-              {credits.toLocaleString()} credits · ≈ {dashToUsd(creditsToDash(credits))}
+              {credits.toLocaleString()} credits · {dashValueNote(creditsToDash(credits), ACTIVE_NETWORK.network)}
             </div>
+            {/* The key's budget and expiry, which the pill only shows on hover (QW-048). */}
+            <KeyFundsLine className="mt-1.5" />
+          </div>
+          <div className="px-3 pb-2">
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false)
+                openTopUp({ blocker: funds?.reason ?? 'balance', proactive: true })
+              }}
+              className="hit-area text-[12px] text-forge-700 underline dark:text-forge-400"
+            >
+              Add credits
+            </button>
           </div>
           <Link href="/notifications/" className={MENU_ITEM} onClick={() => setOpen(false)}>
             Notifications
