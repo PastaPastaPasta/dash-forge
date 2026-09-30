@@ -58,6 +58,12 @@ d = {"args": a}
 for i, x in enumerate(a):
     if x.startswith("--") and i + 1 < len(a) and not a[i + 1].startswith("--"):
         d[x[2:]] = a[i + 1]
+d["artifact_zips"] = []
+for i, x in enumerate(a):
+    if x == "--artifact" and i + 1 < len(a):
+        import zipfile
+        with zipfile.ZipFile(a[i + 1]) as z:
+            d["artifact_zips"].append({n: z.read(n).decode(errors="replace") for n in z.namelist()})
 if "log" in d:
     d["log_text"] = open(d["log"]).read()
 d["env_key"] = os.environ.get("DASH_FORGE_KEY", "")
@@ -71,10 +77,18 @@ export FAKE_PRS="$W/prs.json"
 export DASH_FORGE_KEY="dfk1:devnet:fake:9:fake"
 printf 'E2E_SECRET=hunter2-%s\n' "$RANDOM" >"$W/secrets"
 
+# act's artifact server: jobs must reach it. On Docker Desktop or OrbStack, containers reach the
+# host by name only: FORGE_RUNNER_E2E_ARTIFACT_ADDR=127.0.0.1
+# FORGE_RUNNER_E2E_ARTIFACT_URL=http://host.docker.internal:34567/ .
+ARTIFACT_CFG=""
+[[ -n "${FORGE_RUNNER_E2E_ARTIFACT_ADDR:-}" ]] && ARTIFACT_CFG+="artifact_server_addr = \"$FORGE_RUNNER_E2E_ARTIFACT_ADDR\""$'\n'
+[[ -n "${FORGE_RUNNER_E2E_ARTIFACT_URL:-}" ]] && ARTIFACT_CFG+="artifact_server_url = \"$FORGE_RUNNER_E2E_ARTIFACT_URL\""$'\n'
 cat >"$W/runner.toml" <<EOF
 state_dir = "$W/state"
 interval_secs = 30
 log_storage = "e2e-logs"
+artifacts = true
+$ARTIFACT_CFG
 [platforms]
 ubuntu-latest = "$IMAGE"
 [bin]
@@ -241,6 +255,39 @@ check "nothing else ran (a closed PR does not)" test "$(q "len([r for r in rs if
 check "run --pr runs the stranger's head" test "$(q "[r['sha'] for r in rs if r['status']=='completed']")" = "['$HF']"
 check "…with no secrets" test "$(q "'secret=[] token=[]' in [r['log_text'] for r in rs if r['status']=='completed'][0]")" = True
 check "the secret value appears in no PR report" bash -c "! grep -q -- '$SECRET' '$FAKE_DG_LOG'"
+
+echo "== 7. artifacts: upload-artifact v4 and v3, attributed to the job that uploaded them"
+: >"$FAKE_DG_LOG"
+git -C "$R" switch -q -c art docs
+mkdir -p "$R/.forge/workflows"
+cat >"$R/.forge/workflows/art.yml" <<'EOF'
+name: art
+on: push
+jobs:
+  up4:
+    runs-on: ubuntu-latest
+    steps:
+      - run: mkdir -p out/sub && echo four >out/a.txt && echo deep >out/sub/b.txt
+      - uses: actions/upload-artifact@v4
+        with: { name: dist4, path: out }
+  up3:
+    runs-on: ubuntu-latest
+    steps:
+      - run: mkdir -p out && echo three >out/c.txt
+      - uses: actions/upload-artifact@v3
+        with: { name: dist3, path: out }
+  none:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo uploads nothing
+EOF
+git -C "$R" add -A; git -C "$R" commit -qm art
+poll
+art() { q "[r.get('artifact_zips') for r in rs if r['status']=='completed' and r['name']=='art / $1']"; }
+check "v4: the job's zip is recorded as it was uploaded" test "$(art up4)" = "[[{'a.txt': 'four\\n', 'sub/b.txt': 'deep\\n'}]]"
+check "v3: the job's files are zipped" test "$(art up3)" = "[[{'c.txt': 'three\\n'}]]"
+check "a job that uploads nothing carries none" test "$(art none)" = "[[]]"
+check "the summary counts them" test "$(q "[('1 artifact' in r['summary']) for r in rs if r['status']=='completed' and r['name']=='art / up4']")" = "[True]"
 
 check "no act container, volume or network left behind" bash -c "! docker ps -a --format '{{.Names}}' | grep -q '^act-e2e'"
 

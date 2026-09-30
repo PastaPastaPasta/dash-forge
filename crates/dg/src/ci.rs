@@ -23,8 +23,9 @@ use clap::Subcommand;
 use serde_json::json;
 
 use forge_core::ci::{
-    commit_web_url, is_log_url, CheckReport, CheckRuns, RunnerReader, RunnerService,
+    commit_web_url, is_log_url, CheckReport, CheckRuns, Reported, RunnerReader, RunnerService,
 };
+use forge_core::collab::ReleaseAsset;
 use forge_core::keystore::{self, BridgeIdentity};
 use forge_core::platform::identity::{DocTypeKeySpec, FreshKey, KeySpec};
 use forge_core::rules::v2::Visibility;
@@ -155,8 +156,15 @@ pub struct ReportArgs {
     /// private repository.
     #[arg(long, value_name = "FILE")]
     pub log: Option<PathBuf>,
-    /// The storage profile(s) for --log (default: the repository's dash.storage).
-    #[arg(long, requires = "log")]
+    /// Upload this file as an artifact of the run (repeatable, at most 10): content-addressed to
+    /// your storage like the log, and recorded with its SHA-256, size and URL in the run's
+    /// `artifacts` (the shape of a release's assets), which fits about a dozen. Not uploaded on
+    /// a private repository.
+    #[arg(long = "artifact", value_name = "FILE")]
+    pub artifacts: Vec<PathBuf>,
+    /// The storage profile(s) for --log and --artifact (default: the repository's
+    /// dash.storage).
+    #[arg(long)]
     pub storage: Option<String>,
     /// No longer has any effect: a private repository's check run cannot carry a log URL
     /// (forge-community refuses one), so `--log` is not uploaded there.
@@ -559,8 +567,8 @@ fn warn_private(a: &ReportArgs, s: &Session, fields: &[&str]) {
             s.repo.display(),
             fields.join(", "),
             if fields.len() == 1 { "is" } else { "are" },
-            if a.log.is_some() {
-                " (the log is not uploaded)"
+            if a.log.is_some() || !a.artifacts.is_empty() {
+                " (nothing is uploaded)"
             } else {
                 ""
             }
@@ -604,16 +612,21 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
         .0
         .validate()
         .map_err(usage)?;
+    check_artifact_paths(&a.artifacts)?;
     let s = Session::open_for_write(ctx, &a.repo, "check run not reported").await?;
     let private = s.repo.visibility == Visibility::Private;
     let (kept, mut left_out) = r.for_visibility(s.repo.visibility);
     kept.validate().map_err(usage)?;
-    if a.log.is_some() {
-        if private {
+    let uploads = a.log.is_some() || !a.artifacts.is_empty();
+    if private {
+        if a.log.is_some() {
             left_out.push("logUrl");
-        } else {
-            check_log_storage(a.storage.as_deref())?;
         }
+        if !a.artifacts.is_empty() {
+            left_out.push("artifacts");
+        }
+    } else if uploads {
+        check_log_storage(a.storage.as_deref())?;
     }
     warn_private(a, &s, &left_out);
     let runs = CheckRuns::new(&s.client, &s.identity, &s.bridge);
@@ -638,6 +651,12 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
     if let Some(p) = a.log.as_ref().filter(|_| !private) {
         r.log = Some(upload_log(p, a.storage.as_deref()).await?);
     }
+    let mut artifacts_left_out = Vec::new();
+    if !private && !a.artifacts.is_empty() {
+        let (list, dropped) = upload_artifacts(&a.artifacts, a.storage.as_deref()).await?;
+        r.artifacts = list;
+        artifacts_left_out = dropped;
+    }
     let before = s.balance().await;
     let done = runs.execute(&s.repo, &r, plan).await?;
     let spent = if done.action == "unchanged" {
@@ -646,6 +665,20 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
         s.spent_since(before).await
     };
     let url = commit_web_url(&s.repo, &r.head_oid);
+    emit_report(ctx, &r, &done, spent, &url, &left_out, &artifacts_left_out);
+    Ok(())
+}
+
+/// Print what `dg ci report` did: the write, and what the run carries.
+fn emit_report(
+    ctx: &Ctx,
+    r: &CheckReport,
+    done: &Reported,
+    spent: u64,
+    url: &str,
+    left_out: &[&str],
+    artifacts_left_out: &[String],
+) {
     ctx.emit(
         json!({
             "status": done.action,
@@ -656,6 +689,12 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
             "headOid": r.head_oid,
             "logUrl": r.log.as_ref().map(|(u, _)| u.clone()),
             "logSha256": r.log.as_ref().map(|(_, h)| hex::encode(h)),
+            "artifacts": r
+                .artifacts
+                .as_deref()
+                .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+                .unwrap_or_else(|| json!([])),
+            "artifactsLeftOut": artifacts_left_out,
             // What a private repository's run left out (forge-community `privateNoText`).
             "leftOut": left_out,
             "url": url,
@@ -672,10 +711,105 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
             if let Some((u, _)) = &r.log {
                 println!("  log: {u}");
             }
+            print_artifacts(r.artifacts.as_deref());
             println!("  {url}");
         },
     );
+}
+
+/// Print the artifacts a report recorded (`artifacts` JSON), one line each.
+fn print_artifacts(json: Option<&str>) {
+    let list: Vec<ReleaseAsset> = json
+        .and_then(|j| serde_json::from_str(j).ok())
+        .unwrap_or_default();
+    for x in list {
+        println!(
+            "  artifact: {} ({} bytes)",
+            crate::fmt::safe(&x.name),
+            x.size_bytes
+        );
+    }
+}
+
+/// The most artifacts one report takes: the run's `artifacts` field holds at most
+/// [`ARTIFACTS_MAX_BYTES`], about a dozen entries.
+const MAX_ARTIFACTS: usize = 10;
+
+/// forge-community `checkRun.artifacts`: `maxBytes` 4096.
+const ARTIFACTS_MAX_BYTES: usize = 4096;
+
+/// Refuse, before anything is signed or uploaded, too many artifacts, or one that is not a
+/// readable regular file.
+fn check_artifact_paths(paths: &[PathBuf]) -> Result<()> {
+    if paths.len() > MAX_ARTIFACTS {
+        return Err(crate::errors::usage(format!(
+            "{} artifacts; a report takes at most {MAX_ARTIFACTS} (the run's list holds \
+             {ARTIFACTS_MAX_BYTES} bytes): archive them into fewer files",
+            paths.len()
+        )));
+    }
+    for p in paths {
+        let meta = std::fs::metadata(p).with_context(|| format!("artifact {}", p.display()))?;
+        if !meta.is_file() {
+            return Err(crate::errors::usage(format!(
+                "artifact {} is not a regular file",
+                p.display()
+            )));
+        }
+    }
     Ok(())
+}
+
+/// Upload each artifact to `storage` and list what fits the run's `artifacts` (a release's
+/// assets shape: name, SHA-256, size, and the https, else `ipfs://`, URL a check run's log may
+/// have). Returns the JSON (none when nothing fits) and the names that did not fit.
+async fn upload_artifacts(
+    paths: &[PathBuf],
+    storage: Option<&str>,
+) -> Result<(Option<String>, Vec<String>)> {
+    let (targets, required) = crate::release::asset_targets(storage)?;
+    let mut uploaded = Vec::new();
+    for p in paths {
+        let (mut asset, _) = crate::release::upload_asset(p, &targets, required).await?;
+        let url = log_url(&asset.uris).cloned().with_context(|| {
+            format!(
+                "artifact {}: the storage recorded no https or ipfs:// URL a check run can name",
+                asset.name
+            )
+        })?;
+        asset.uris = vec![url];
+        uploaded.push(asset);
+    }
+    let (kept, dropped) = fit_artifacts(uploaded);
+    if !dropped.is_empty() {
+        eprintln!(
+            "warning: {} did not fit the run's artifact list ({ARTIFACTS_MAX_BYTES} bytes) and {} \
+             not recorded (uploaded, but no page links to {})",
+            dropped.join(", "),
+            if dropped.len() == 1 { "is" } else { "are" },
+            if dropped.len() == 1 { "it" } else { "them" },
+        );
+    }
+    let json = (!kept.is_empty())
+        .then(|| serde_json::to_string(&kept))
+        .transpose()?;
+    Ok((json, dropped))
+}
+
+/// The artifacts, in order, whose JSON list fits [`ARTIFACTS_MAX_BYTES`], and the names of the
+/// ones that did not (a later, smaller one may still fit).
+fn fit_artifacts(assets: Vec<ReleaseAsset>) -> (Vec<ReleaseAsset>, Vec<String>) {
+    let mut kept = Vec::new();
+    let mut dropped = Vec::new();
+    for a in assets {
+        kept.push(a);
+        if serde_json::to_string(&kept).map_or(true, |s| s.len() > ARTIFACTS_MAX_BYTES) {
+            if let Some(x) = kept.pop() {
+                dropped.push(x.name);
+            }
+        }
+    }
+    (kept, dropped)
 }
 
 async fn status(ctx: &Ctx, repo: &str, sha: &str) -> Result<()> {
@@ -704,6 +838,14 @@ async fn status(ctx: &Ctx, repo: &str, sha: &str) -> Result<()> {
                         "  (reporter is no longer a member or runner: not counted)"
                     }
                 );
+                for x in &c.artifacts {
+                    println!(
+                        "    artifact {} ({} bytes, sha256 {})",
+                        crate::fmt::safe(&x.name),
+                        x.size_bytes,
+                        &x.sha256[..12.min(x.sha256.len())]
+                    );
+                }
             }
             println!("  {url}");
         },
@@ -753,5 +895,51 @@ mod tests {
             json!({"kind": "ipfs-kubo", "api": "http://127.0.0.1:5001"})
         )));
         assert!(!gives_log_url(&profile(json!({"kind": "platform"}))));
+    }
+
+    fn asset(name: &str, url_len: usize) -> ReleaseAsset {
+        ReleaseAsset {
+            name: name.into(),
+            sha256: "a".repeat(64),
+            size_bytes: 10,
+            uris: vec![format!("https://b.example/{}", "x".repeat(url_len))],
+            uri: None,
+        }
+    }
+
+    #[test]
+    fn artifacts_are_recorded_while_the_list_fits_the_field() {
+        let (kept, dropped) = fit_artifacts(vec![
+            asset("a.zip", 100),
+            asset("huge.zip", 4000),
+            asset("b.zip", 100),
+        ]);
+        let names: Vec<_> = kept.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["a.zip", "b.zip"], "a later, smaller one still fits");
+        assert_eq!(dropped, ["huge.zip"]);
+        let json = serde_json::to_string(&kept).unwrap();
+        assert!(json.len() <= ARTIFACTS_MAX_BYTES);
+        assert!(
+            json.contains("\"sizeBytes\":10") && json.contains("\"uris\""),
+            "the release assets' shape, which the web app reads: {json}"
+        );
+        assert!(fit_artifacts(Vec::new()).0.is_empty());
+    }
+
+    #[test]
+    fn artifact_paths_are_checked_before_anything_is_signed() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("a.zip");
+        std::fs::write(&f, b"zip").unwrap();
+        assert!(check_artifact_paths(std::slice::from_ref(&f)).is_ok());
+        assert!(
+            check_artifact_paths(&[d.path().to_path_buf()]).is_err(),
+            "a directory"
+        );
+        assert!(check_artifact_paths(&[d.path().join("missing")]).is_err());
+        assert!(
+            check_artifact_paths(&vec![f; MAX_ARTIFACTS + 1]).is_err(),
+            "too many"
+        );
     }
 }

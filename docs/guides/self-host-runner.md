@@ -26,7 +26,7 @@ On every poll (every `interval_secs`, default 120 s, and within seconds of a pus
    - A job act never finished counts as `failure`.
    - The check is named `<workflow name> / <job name>`.
    - A job's reports share one run id, a hash of the repository, ref, commit, workflow file and job, so they update a single check run.
-5. **Uploads each job's log** (capped at 16 MiB) to your storage profile, with secret values redacted. The check run records the log's URL and SHA-256, and the web app shows the log only if the bytes match.
+5. **Uploads each job's log** (capped at 16 MiB) to your storage profile, with secret values redacted, and, with `artifacts = true`, [its artifacts](#artifacts). The check run records the log's URL and SHA-256, and the web app shows the log only if the bytes match.
 
 6. **Lists the pull requests** (`dg pr list`, the newest 100, and up to 10 older members' open PRs it keeps following) and runs each one that was opened, reopened or marked ready for review, or whose head moved, as [Pull requests](#pull-requests) says. The first poll only records them.
 
@@ -81,7 +81,8 @@ The runner needs a `dg` of the same release: it reads `repoId`, `sourceRefName` 
 network = "mainnet"                 # or testnet; "devnet" needs devnet_name
 state_dir = "/var/lib/forge-runner"
 interval_secs = 120                 # at least 30
-log_storage = "ci-logs"             # the profile from step 2
+log_storage = "ci-logs"             # the profile from step 2: logs and artifacts
+# artifacts = true                  # act's artifact server for actions/upload-artifact (see Artifacts)
 sweep_after_timeout = true          # only on a daemon the runner owns (see Security)
 # job_timeout_secs = 3600           # for all workflows of one push
 # attempts = 3                      # retries of a push whose checkout failed
@@ -126,6 +127,17 @@ secret-file = "/run/secrets/wake"
 - **Polling stays the default.** Without `[relay]`, the runner only polls. With it, it still polls every `interval_secs`; if the relay is down, the runner logs the error, retries with a backoff (5 s up to 2 min) and keeps polling. A relay that restarted tells the runner to poll everything.
 - **Authentication is the shared secret.** Every request is signed with it (HMAC-SHA256, a fresh nonce, the time) and every answer is signed over the request, so neither can be forged or replayed, and the secret never crosses the wire. The relay refuses a request more than 5 minutes off its clock: keep the runner's clock in sync (NTP), or every request gets `401`. The protocol is in the [relay README](../../crates/forge-relay/README.md#wake-a-runner).
 - **Names must match.** A repository's `repo` here must be spelled as the relay's `[wake] repos` entry, or as `<owner id>/<name>`. The runner logs the names once if a wake matches none of its repositories.
+
+### Artifacts
+
+With `artifacts = true`, the runner starts act's artifact server for each workflow file, so `actions/upload-artifact` works (v4, and v3 as far as act serves it). After the run, each job's artifacts go to your `log_storage` through `dg ci report --artifact` and are recorded on its check run: name, size, SHA-256 and URL. The web app lists them on the Checks tab and saves one only if its bytes hash to that SHA-256. Nothing goes to storage but yours.
+
+- **One zip per artifact.** A v4 upload is already one zip and is recorded as it was uploaded. A v3 upload's files are zipped (its gzipped parts inflated), as GitHub serves a v3 artifact.
+- **Which job it belongs to.** act's server does not say, so the runner reads each job's log for upload-artifact's `Artifact <name> has been successfully uploaded!`. An artifact no job's log names goes on every job of that workflow file, so none is lost.
+- **Limits.** At most 10 artifacts per job (the check run's list holds 4,096 bytes, about a dozen), each at most 256 MiB. What does not fit is left out and the job's summary says so.
+- **Private repositories record none.** forge-community refuses artifacts on a private repository's run, so `dg` uploads none there.
+- **Artifacts are public.** Anyone can download them from your bucket, like logs, including those of a stranger's pull request under `pull_requests = "all"`: that is your storage paying for them.
+- **Jobs must reach the server.** act listens on `artifact_server_addr` (default: this host's outbound address) at `artifact_server_port` (default 34567), and tells jobs to upload to `http://<addr>:<port>/`. Where job containers reach the host by another name, set `artifact_server_url`: under Docker Desktop or OrbStack, `artifact_server_addr = "127.0.0.1"` and `artifact_server_url = "http://host.docker.internal:34567/"`. The server has no authentication: anyone who can reach it during a run can add to that run's artifacts. Bind it where only the job network reaches, such as the Docker bridge's gateway, never a public address. Two runners on one machine need different ports.
 
 ### With Docker
 
@@ -200,12 +212,12 @@ The runner executes code from the repository: anyone who can push to a watched r
 - **One run at a time per repository.** Each run has its own directory under a per-repository lock, which is removed when the run ends.
 - **The runner key.** `DASH_FORGE_KEY` is a runner key: it can write check runs and nothing else, only on repositories that enrolled its identity, and only within its budget. It is passed to `dg` in the environment, never on a command line and never to act.
 - **Logs are public.** Anyone can read a check run's log URL, so keep private output out of logs. On a private repository a check run carries no log, summary or run id (forge-community refuses them), so `dg` uploads no log there and records only each job's name, status and conclusion. The old `public_log` setting has no effect.
+- **The artifact server has no authentication.** With `artifacts = true`, anyone who can reach `artifact_server_addr:artifact_server_port` while a workflow runs can add to its artifacts, which then go on its check run. Bind it where only the job network reaches ([Artifacts](#artifacts)); artifacts are public, like logs.
 
 ## What it does not do (yet)
 
 - **Only `push` and `pull_request` run.** There are no `pull_request_target`, `schedule` or `workflow_dispatch` events, and a pull request runs its head, not a merge preview.
 - **Pull requests are watched by window.** The newest 100, and members' open PRs already seen, 10 a poll in turn; see [Pull requests](#pull-requests).
-- **No artefacts.** `actions/upload-artifact` needs act's artifact server, which the runner does not start.
 - **One push at a time.** The workflow files of a push run one after another, within one `job_timeout_secs`.
 - **Only configured `runs-on` labels.** A job whose `runs-on` label is not in `[platforms]` is refused, rather than run on act's own default image.
 
@@ -223,4 +235,5 @@ The runner executes code from the repository: anyone who can push to a watched r
 - a planted `.actrc` and `.secrets` are ignored;
 - a member's pull request from a trusted branch here runs as `pull_request` with GitHub's context and the secrets, a member's from a fork runs without them, and a stranger's is skipped, then runs by hand without them;
 - a pull request's moved head runs as `synchronize`, and a closed one runs nothing;
+- with `artifacts = true`, an `upload-artifact@v4` zip is recorded as uploaded and a v3 upload is zipped, each on the job that uploaded it (on Docker Desktop or OrbStack, set `FORGE_RUNNER_E2E_ARTIFACT_ADDR=127.0.0.1` and `FORGE_RUNNER_E2E_ARTIFACT_URL=http://host.docker.internal:34567/`);
 - a commit without workflows runs nothing, and no `act-*` container is left behind.

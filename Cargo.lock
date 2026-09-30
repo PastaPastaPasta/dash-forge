@@ -1937,6 +1937,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "clap",
+ "flate2",
  "hex",
  "hmac 0.12.1",
  "serde",
@@ -1946,6 +1947,7 @@ dependencies = [
  "toml 0.8.23",
  "ureq",
  "yaml_serde",
+ "zip",
 ]
 
 [[package]]
