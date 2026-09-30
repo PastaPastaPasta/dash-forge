@@ -1832,7 +1832,7 @@ fn build_merge(
                 .patch
                 .source_ref_name
                 .as_deref()
-                .map_or(head, forge_core::repo::short_branch_name);
+                .map_or(head.as_str(), forge_core::repo::short_branch_name);
             let message = format!(
                 "Merge pull request #{} from {}\n\n{}",
                 view.patch.number, source, view.patch.title
