@@ -155,11 +155,20 @@ pub fn no_encryption_key(member: &str, action: &str) -> Error {
 /// web app create key 4) and the source is the limited signing key `dg auth login` and
 /// `dg auth new` store (QW-040: it said the identity had none, and offered file-only routes).
 pub fn no_encryption_key_held(action: &str) -> Error {
+    no_encryption_key_held_because(
+        action,
+        "private repositories encrypt their content to each member's identity ENCRYPTION key",
+    )
+}
+
+/// [`no_encryption_key_held`] for an operation that needs the key for `why` (a webhook's secret
+/// is encrypted from it, QW-071); the rest of the message and the fixes are the same.
+pub fn no_encryption_key_held_because(action: &str, why: &str) -> Error {
     UserError::new(
         codes::NO_ENCRYPTION_KEY,
         format!("{action}: the key stored on this computer holds no encryption key"),
     )
-    .cause("private repositories encrypt their content to each member's identity ENCRYPTION key; the key source in use holds none that matches an enabled one on your identity (a limited key from `dg auth login` or `dg auth new` is a signing key only)")
+    .cause(format!("{why}; the key source in use holds none that matches an enabled one on your identity (a limited key from `dg auth login` or `dg auth new` is a signing key only)"))
     .fix(format!(
         "if your identity has an ENCRYPTION key (`dg auth keys list`), store a source that holds it: {}",
         crate::user_error::FIX_FULL_KEY_LOGIN

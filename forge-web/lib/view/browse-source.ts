@@ -65,6 +65,33 @@ import { onPrivateSessionEnded } from '../repo/private-session'
 /** Chunk queries in flight at once when one range spans more than a single query. */
 const CHUNK_QUERY_POOL = 6
 
+/**
+ * Chunk queries in flight at once across every read of the session. Each range pools its own
+ * batches ({@link CHUNK_QUERY_POOL}), but a diff counting two dozen files over several packs, or
+ * rename detection reading candidates, runs many ranges side by side; without one global bound a
+ * turn could send ~50 proof-verified queries at once.
+ */
+export const CHUNK_QUERIES_IN_FLIGHT = 16
+const chunkQuerySlots = { active: 0, waiting: [] as (() => void)[] }
+
+/**
+ * Run `run` on the next macrotask. A `MessageChannel` post, not `setTimeout(0)`: browsers clamp
+ * timers in background tabs to ~1 s, which would stall every serial round of chunk reads while
+ * the tab is hidden. `setTimeout` only where there is no `MessageChannel`.
+ */
+function nextMacrotask(run: () => void): void {
+  if (typeof MessageChannel === 'undefined') {
+    setTimeout(run, 0)
+    return
+  }
+  const channel = new MessageChannel()
+  channel.port1.onmessage = () => {
+    channel.port1.close()
+    run()
+  }
+  channel.port2.postMessage(null)
+}
+
 /** Concatenate the `d0..d2` byteArray fields (base64) of one chunk row, in order. */
 function chunkPayload(doc: Record<string, unknown>): Uint8Array {
   const parts: Uint8Array[] = []
@@ -140,6 +167,8 @@ function evictChunks(): void {
 export function clearChunkCache(): void {
   chunkCache.clear()
   chunkCacheBytes = 0
+  chunkQueriesSent = 0
+  pendingChunkQueries.clear()
 }
 
 /** Query one batch of chunk docs (uncached) and return payloads keyed by seq. */
@@ -173,9 +202,8 @@ async function queryChunkBatch(
       const i = next++
       const batch = batches[i]
       if (batch === undefined) return
-      const { documents } = await queryDocumentsWithProof(
-        sdk,
-        source.chunkQuery(manifest.packHash, manifest.uploader, batch),
+      const { documents } = await withSlotOf(chunkQuerySlots, CHUNK_QUERIES_IN_FLIGHT, () =>
+        queryDocumentsWithProof(sdk, source.chunkQuery(manifest.packHash, manifest.uploader, batch)),
       )
       for (const doc of documents) {
         const raw = doc['seq']
@@ -187,6 +215,56 @@ async function queryChunkBatch(
   }
   await Promise.all(Array.from({ length: Math.min(CHUNK_QUERY_POOL, batches.length) }, worker))
   return bySeq
+}
+
+/**
+ * Chunk seqs asked for in the same turn of the event loop, per copy of an artifact, gathered into
+ * one query (QW-027/QW-028): reads that run side by side (a pool of blob reads counting a diff's
+ * lines, a tree walk's parallel reads, Blame's read-ahead) each need a chunk or two, and each used to
+ * cost a query of its own. Gathered, they share queries of up to {@link CHUNK_QUERY_MAX} seqs
+ * ({@link queryChunkBatch} splits and pools past that). A copy's seqs are unique per `packHash`,
+ * so a gathered answer serves each asker exactly its own seqs.
+ */
+interface PendingChunkQuery {
+  readonly seqs: Set<number>
+  readonly result: Promise<Map<number, Uint8Array>>
+}
+const pendingChunkQueries = new Map<string, PendingChunkQuery>()
+
+let chunkQueriesSent = 0
+
+/** Test hook: how many chunk queries {@link queueChunkSeqs} has sent since {@link clearChunkCache}. */
+export function chunkQueryCount(): number {
+  return chunkQueriesSent
+}
+
+/**
+ * `seqs` of the copy keyed `key`, fetched with the other seqs asked for this turn (one macrotask:
+ * the continuations of reads that just landed together get to ask first), in one query while they
+ * fit one ({@link CHUNK_QUERY_MAX}); past that, the next asker starts a new query rather than make
+ * everyone wait for a bigger one. `query` fetches a gathered set; the first asker's is used.
+ */
+export function queueChunkSeqs(
+  key: string,
+  seqs: readonly number[],
+  query: (seqs: readonly number[]) => Promise<Map<number, Uint8Array>>,
+): Promise<Map<number, Uint8Array>> {
+  let pending = pendingChunkQueries.get(key)
+  if (pending !== undefined && pending.seqs.size + seqs.filter((q) => !pending?.seqs.has(q)).length > CHUNK_QUERY_MAX) pending = undefined
+  if (pending === undefined) {
+    const gathered = new Set<number>()
+    const result = new Promise<Map<number, Uint8Array>>((resolve, reject) => {
+      nextMacrotask(() => {
+        if (pendingChunkQueries.get(key)?.seqs === gathered) pendingChunkQueries.delete(key)
+        chunkQueriesSent += Math.ceil(gathered.size / CHUNK_QUERY_MAX)
+        query([...gathered].sort((a, b) => a - b)).then(resolve, reject)
+      })
+    })
+    pending = { seqs: gathered, result }
+    pendingChunkQueries.set(key, pending)
+  }
+  for (const seq of seqs) pending.seqs.add(seq)
+  return pending.result
 }
 
 /**
@@ -231,7 +309,7 @@ async function fetchPlatformRange(
     else missing.push(seq)
   }
   if (missing.length > 0) {
-    const batch = queryChunkBatch(sdk, repo, manifest, missing)
+    const batch = queueChunkSeqs(cachePrefix, missing, (seqs) => queryChunkBatch(sdk, repo, manifest, seqs))
     for (const seq of missing) {
       const promise = batch.then((bySeq) => {
         const payload = bySeq.get(seq)
@@ -373,14 +451,22 @@ async function withSlot<T>(key: string, run: () => Promise<T>): Promise<T> {
     slot = { active: 0, waiting: [] }
     originSlots.set(key, slot)
   }
-  const s = slot
-  if (s.active >= PER_ORIGIN_CONCURRENCY) await new Promise<void>((resolve) => s.waiting.push(resolve))
-  s.active += 1
+  return withSlotOf(slot, PER_ORIGIN_CONCURRENCY, run)
+}
+
+/**
+ * At most `limit` `run`s of `slots` in flight. A finishing run hands its slot straight to the
+ * next waiter, so a newcomer arriving in between cannot take it too and overshoot the limit.
+ */
+async function withSlotOf<T>(slots: { active: number; readonly waiting: (() => void)[] }, limit: number, run: () => Promise<T>): Promise<T> {
+  if (slots.active >= limit) await new Promise<void>((resolve) => slots.waiting.push(resolve))
+  else slots.active += 1
   try {
     return await run()
   } finally {
-    s.active -= 1
-    s.waiting.shift()?.()
+    const next = slots.waiting.shift()
+    if (next !== undefined) next()
+    else slots.active -= 1
   }
 }
 

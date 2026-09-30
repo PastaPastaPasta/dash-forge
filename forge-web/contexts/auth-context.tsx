@@ -47,7 +47,10 @@ const SPEND_TITLES: Readonly<Record<string, string>> = {
   'create:event': 'State event recorded',
   'create:authorEvent': 'State event recorded',
   'create:review': 'Review submitted',
-  'create:release': 'Release published',
+  // Every release revision (publish, edit, yank, unpublish) is this kind: the dialog says which (QW-077).
+  'create:release': 'Release saved',
+  'create:webhook': 'Webhook saved',
+  'delete:webhook': 'Webhook revision deleted',
   'create:star': 'Starred',
   'create:follow': 'Following',
   'delete:star': 'Unstarred',

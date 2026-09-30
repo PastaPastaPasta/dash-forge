@@ -36,9 +36,13 @@ import { cursorPadded, queryAllDocuments, shareInFlight, type PlainDocument, typ
 import { DOC, type RepoRef } from './contract'
 import { membersGeneration, membershipsFromDocs, seedMemberships } from './members'
 import { noteForkOf } from './fork-parent'
+import { readRefRowsInRanges, refRowsMissParent } from './refs'
 import { repoRefOf, toRepoDoc, type RepoDoc } from './resolveRepo'
 import { seedTargetCounts } from './social'
 import { repoSource } from './source'
+
+/** The timelines keyed by `refNameHash` too, so a long one can be read as key ranges in parallel. */
+const REF_TYPES: ReadonlySet<string> = new Set([DOC.refUpdate, DOC.protectedRefUpdate])
 
 /** The append-only timelines the store keeps. */
 export const TIMELINE_TYPES = [DOC.config, DOC.refUpdate, DOC.protectedRefUpdate, DOC.packManifest] as const
@@ -173,16 +177,48 @@ async function completeTimelines(
   known: RepoTimelines | undefined,
   pages: readonly (readonly PlainDocument[])[],
 ): Promise<RepoTimelines> {
+  const pageOf = (type: TimelineType): readonly PlainDocument[] => pages[TIMELINE_TYPES.indexOf(type)] ?? []
+  // A short page is the whole delta; a full one is continued `$createdAt` page after page.
+  const serial = async (type: TimelineType): Promise<PlainDocument[]> => {
+    const page = pageOf(type)
+    if (page.length < PAGE) return [...page]
+    return queryAllDocuments(sdk, repoSource(repo).repoQuery(type, { ...sinceWhere(known, type), orderBy: [['$createdAt', 'asc']] }), { firstPage: page })
+  }
+  // A first read of a repo's ref updates past a page (dashpay/dash: ~700) reads the rest as key
+  // ranges side by side, not page after page (QW-087). Null: read serially instead — every delta
+  // read, and a node that does not honor the ranges or fails one outright.
+  const ranged = async (type: TimelineType): Promise<PlainDocument[] | null> => {
+    if (known !== undefined || !REF_TYPES.has(type) || pageOf(type).length < PAGE) return null
+    const rows = await readRefRowsInRanges(sdk, repo, type).catch(() => null)
+    return rows === null ? null : [...pageOf(type), ...rows]
+  }
   const read = await Promise.all(
-    TIMELINE_TYPES.map(async (type, i) => {
-      const page = pages[i] ?? []
-      const rest = (): Promise<PlainDocument[]> =>
-        queryAllDocuments(sdk, repoSource(repo).repoQuery(type, { ...sinceWhere(known, type), orderBy: [['$createdAt', 'asc']] }), { firstPage: page })
-      const rows = page.length < PAGE ? page : await rest()
-      return [type, mergeRows(known?.[type] ?? [], rows)] as const
+    TIMELINE_TYPES.map(async (type) => {
+      const fromRanges = await ranged(type)
+      return { type, fromRanges: fromRanges !== null, rows: fromRanges ?? (await serial(type)) }
     }),
   )
-  return Object.fromEntries(read) as unknown as RepoTimelines
+  const rows = Object.fromEntries(read.map((r) => [r.type, r.rows])) as Record<TimelineType, PlainDocument[]>
+  // Ranges that answered in order can still have lost rows, and the loss would stick: later reads
+  // ask only for newer rows. So the ref rows get the `prevOid` check the full ref read runs (across
+  // both types), and a failure re-reads the ranged types the `$createdAt` way (the rest already were).
+  if (read.some((r) => r.fromRanges) && lostParent(repo, rows)) {
+    await Promise.all(
+      read.filter((r) => r.fromRanges).map(async (r) => {
+        rows[r.type] = await serial(r.type)
+      }),
+    )
+  }
+  return Object.fromEntries(TIMELINE_TYPES.map((type) => [type, mergeRows(known?.[type] ?? [], rows[type])])) as unknown as RepoTimelines
+}
+
+/** {@link refRowsMissParent} over the ref timelines; a row it cannot attribute counts as a loss. */
+function lostParent(repo: RepoRef, rows: Readonly<Record<TimelineType, readonly PlainDocument[]>>): boolean {
+  try {
+    return refRowsMissParent(repo, rows)
+  } catch {
+    return true
+  }
 }
 
 /**

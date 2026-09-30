@@ -2,19 +2,20 @@
 
 /**
  * TreeContent — a directory listing at an arbitrary path (browse plane, ranged reads), with the
- * last-commit column the repo home has (from the history index, else a walk).
+ * last-commit column the repo home has (from the history index, else a walk), and Go to file.
  */
 
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
 import { readTree, selectedTip, selectRef, treeAtPath, type TreeEntry } from '@/lib/view'
 import { rootTreeOf, type PeeledTip } from '@/lib/view/tip'
-import type { RepoRef } from '@/lib/repo'
+import { repoKey, type RepoRef } from '@/lib/repo'
 import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { ReadErrorState, ResolvedTip } from '@/components/repo/resolved-tip'
 import { FileList } from '@/components/repo/file-list'
+import { GoToFile } from '@/components/repo/go-to-file'
 import { CommitCell, SearchOlderHistory, useLastCommits } from '@/components/repo/commit-column'
 import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
 import { PathActions } from '@/components/repo/path-actions'
@@ -93,6 +94,7 @@ function DirBody({
   // The commit column needs a commit's history: a tag of a tree has none, so it has no column.
   const names = useMemo(() => (data === null || tip.type !== 'commit' ? null : data.map((e) => e.name)), [data, tip.type])
   const lastCommits = useLastCommits(reader, tip.oid, path, names)
+  const rootTree = useCallback(() => rootTreeOf(reader, tip), [reader, tip])
   if (loading) return <LoadingBlock label="Reading tree" />
   // A missing path is deterministic (common right after a ref switch) — no point retrying.
   if (error?.includes('path not found')) {
@@ -102,6 +104,10 @@ function DirBody({
   if (!data) return <LoadingBlock />
   return (
     <div className="space-y-4">
+      {/* GitHub offers Go to file on every directory, not only the root (QW-028). */}
+      <div className="flex justify-end">
+        <GoToFile reader={reader} repoKey={repoKey(repo)} tipOid={tip.oid} rootTree={rootTree} addr={addr} refParam={refParam} />
+      </div>
       <FileList
         entries={data}
         addr={addr}

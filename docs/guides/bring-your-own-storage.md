@@ -430,7 +430,7 @@ The web app does not need `Content-Range` in `Access-Control-Expose-Headers` (it
 Every push prints its Platform estimate. You can also make it stop and ask:
 
 ```sh
-git config dash.costWarnThreshold 0.01   # DASH
+git config dash.costWarnThreshold 0.05   # DASH (dg doctor --fix sets this)
 git config dash.confirm auto             # auto (default): ask only above the threshold
                                          # always: ask before every paid push
                                          # never: print and go

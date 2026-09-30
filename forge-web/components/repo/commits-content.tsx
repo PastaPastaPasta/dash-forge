@@ -31,7 +31,8 @@ import { LOG_PAGE, PATH_WALK_CAP, pathVersions } from '@/lib/view/path-history'
 import { historyOf } from '@/lib/view/history-source'
 import { useAsync } from '@/hooks/use-async'
 import { Time } from '@/components/repo/byline'
-import { plural } from '@/lib/view/format'
+import { formatDate, plural } from '@/lib/view/format'
+import { dayRuns } from '@/lib/view/commit-days'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { ResolvedTip } from '@/components/repo/resolved-tip'
 import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
@@ -340,7 +341,12 @@ function LogBody({
         data-source={state.indexed > 0 ? 'index' : 'walk'}
         onClickCapture={keepScroll}
       >
-        {state.entries.map((entry) => (
+        {dayRuns(state.entries, (e) => e.author.when).flatMap((run, r) => [
+          // QW-061c: "Commits on <day>", as GitHub groups its list.
+          <h2 key={`day-${r}-${run.day}`} className="border-b border-anvil-100 bg-anvil-50 px-4 py-1.5 text-[12px] font-medium text-anvil-600 dark:border-anvil-850 dark:bg-anvil-900 dark:text-anvil-300" data-testid="commit-day">
+            {run.day === '' ? 'Commits of unknown date' : `Commits on ${formatDate(run.at)}`}
+          </h2>,
+          ...run.rows.map((entry) => (
           <div key={entry.oid} className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850" data-testid="commit-row">
             {/* Touch: the message link stretches over its whole text column (both lines and the
                 row's padding): a 44px+ target that leaves the copy button beside it alone. */}
@@ -360,7 +366,8 @@ function LogBody({
             </div>
             <Oid value={entry.oid} chars={7} />
           </div>
-        ))}
+          )),
+        ])}
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 text-[12px] text-anvil-500 dark:text-anvil-400">
         <span data-testid="log-status">

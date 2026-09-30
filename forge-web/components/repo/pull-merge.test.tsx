@@ -50,11 +50,11 @@ vi.mock('@/components/repo/merge-upload', async (importOriginal) => {
 // A check after the merge compares the head with a base that already holds it: seen live as a
 // conflict on '/'. The first check says "merge"; any later one says what that live one did.
 let checkCount = 0
-const checks = vi.fn(async () =>
+const checks = vi.fn(async (_input?: unknown) =>
   ++checkCount === 1 ? { check: 'merge', conflictPaths: [] as string[], packEstimate: { bytes: 4000, objectCount: 4 } } : { check: 'conflict', conflictPaths: ['/'], packEstimate: null },
 )
 vi.mock('@/lib/merge/client', () => ({
-  checkMergeInWorker: () => checks(),
+  checkMergeInWorker: (_reader: unknown, input: unknown) => checks(input),
   runMergeInWorker: vi.fn(),
 }))
 vi.mock('@/lib/merge/runner', async (importOriginal) => {
@@ -251,5 +251,54 @@ describe('the merge box through its own merge', () => {
     await pick('merge')
     // Back on merge: its own size still stands.
     expect(price()).toBe(before)
+  })
+})
+
+describe('--no-ff where a fast-forward is possible (QW-069)', () => {
+  const ff = async (): Promise<{ check: string; conflictPaths: string[]; packEstimate: { bytes: number; objectCount: number } }> => ({ check: 'fast-forward', conflictPaths: [], packEstimate: { bytes: 900, objectCount: 3 } })
+  const render = async (allowedMethods: number): Promise<void> => {
+    checks.mockReset()
+    checks.mockImplementation(ff)
+    await act(async () =>
+      root.render(
+        <PullMerge
+          repo={repo}
+          home={homeAt(BASE)}
+          pull={pullOf(false)}
+          canMerge
+          isMaintainer
+          checkout="dg pr checkout …"
+          onMerged={() => undefined}
+          extras={{ deleteBranch: null, allowedMethods }}
+        />,
+      ),
+    )
+    await act(async () => undefined)
+  }
+  const options = (): string[] => [...host.querySelectorAll<HTMLOptionElement>('#merge-method option')].map((o) => `${o.value}${o.disabled ? '(off)' : ''}`)
+  const mergeButton = (): HTMLButtonElement | undefined => [...host.querySelectorAll('button')].find((b) => /merge/i.test(b.textContent ?? '') && b.id !== 'merge-method')
+
+  it('offers "Create a merge commit" beside the fast-forward, and sizes it as a merge commit', async () => {
+    await render(0)
+    expect(options()).toEqual(['merge', 'no-ff', 'squash'])
+    const select = host.querySelector('#merge-method') as HTMLSelectElement
+    expect(select.value).toBe('merge')
+    await act(async () => {
+      select.value = 'no-ff'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await act(async () => undefined)
+    expect(mergeButton()?.textContent).toMatch(/Create merge commit and merge/)
+    // The verdict was checked as the history's; the size, with --no-ff.
+    expect(checks.mock.calls[0]?.[0]).not.toHaveProperty('noFastForward')
+    expect(checks.mock.calls.at(-1)?.[0]).toMatchObject({ noFastForward: true })
+  })
+
+  it('merges under a merge-commits-only policy instead of refusing the fast-forward', async () => {
+    await render(2)
+    expect(options()).toEqual(['merge(off)', 'no-ff', 'squash(off)'])
+    expect((host.querySelector('#merge-method') as HTMLSelectElement).value).toBe('no-ff')
+    expect(mergeButton()?.disabled).toBe(false)
+    expect(host.textContent).not.toMatch(/does not allow this merge method/)
   })
 })

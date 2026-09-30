@@ -10,7 +10,7 @@
  */
 
 import Link from 'next/link'
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { GitCommit, Tag } from 'lucide-react'
 import type { BrowseReader } from '@/lib/browse'
 import { readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
@@ -30,6 +30,7 @@ import { EmptyState, LoadingBlock } from '@/components/ui/states'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { LinkifiedText } from '@/components/markdown-view'
 import { sourceUrl, useRepoLinks } from '@/components/repo/target-href'
+import { cn } from '@/lib/utils'
 
 export function CommitContent({ home, addr, oid }: { home: RepoHome; addr: RepoAddress; oid: string }): JSX.Element {
   if (!oid) return <EmptyState icon={GitCommit} title="No commit addressed" body="Add &oid= to the URL." />
@@ -59,11 +60,7 @@ function Body({ reader, retry, oid, addr, repo, description }: { reader: BrowseR
         <h1 className="text-prose font-semibold [overflow-wrap:anywhere]" data-testid="commit-subject">
           {commitSubject(commit.message) ? <LinkifiedText text={commitSubject(commit.message)} links={links} imported={sourceUrl(links)} /> : '(no message)'}
         </h1>
-        {body ? (
-          <pre className="mt-2 whitespace-pre-wrap font-sans text-dense text-anvil-600 [overflow-wrap:anywhere] dark:text-anvil-300" data-testid="commit-body">
-            <LinkifiedText text={body} links={links} imported={sourceUrl(links)} />
-          </pre>
-        ) : null}
+        {body ? <CommitBody body={body} links={links} /> : null}
         <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] coarse:gap-y-3 text-anvil-500 dark:text-anvil-400">
           <CommitByline commit={commit} />
           <span className="flex items-center gap-1">commit <Oid value={full} chars={9} /></span>
@@ -162,5 +159,38 @@ function CommitByline({ commit }: { commit: CommitObject }): JSX.Element {
         </span>
       ) : null}
     </span>
+  )
+}
+
+/** A body longer than this many lines (or characters) starts collapsed on a phone. */
+const PHONE_BODY_LINES = 6
+const PHONE_BODY_CHARS = 480
+
+/** Whether a commit body is long enough to start collapsed on a phone (QW-061f). */
+export function longCommitBody(body: string): boolean {
+  return body.split('\n').length > PHONE_BODY_LINES || body.length > PHONE_BODY_CHARS
+}
+
+/**
+ * The commit message's body. On a phone a long one (a squash's list of commits, a release's
+ * changelog) starts clamped to a few lines with "Show more", so the diff is not screens away;
+ * from `sm` up it is shown whole, as GitHub's commit page does.
+ */
+function CommitBody({ body, links }: { body: string; links: ReturnType<typeof useRepoLinks> }): JSX.Element {
+  const [open, setOpen] = useState(false)
+  const long = longCommitBody(body)
+  // CSS only (below `sm`), so a desktop never paints it clamped first.
+  const clamped = long && !open
+  return (
+    <div className="mt-2">
+      <pre className={cn('whitespace-pre-wrap font-sans text-dense text-anvil-600 [overflow-wrap:anywhere] dark:text-anvil-300', clamped && 'max-sm:line-clamp-6')} data-testid="commit-body" data-clamped={clamped || undefined}>
+        <LinkifiedText text={body} links={links} imported={sourceUrl(links)} />
+      </pre>
+      {long ? (
+        <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="mt-1 text-[12px] font-medium text-forge-700 underline-offset-2 hover:underline coarse:min-h-11 sm:hidden dark:text-forge-400" data-testid="commit-body-toggle">
+          {open ? 'Show less' : 'Show more'}
+        </button>
+      ) : null}
+    </div>
   )
 }

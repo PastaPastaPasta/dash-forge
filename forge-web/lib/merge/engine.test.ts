@@ -129,6 +129,32 @@ describe('merge engine', () => {
     expect(out.newTip).toBe(head)
   })
 
+  it('--no-ff: a merge commit where a fast-forward was possible, the head\'s tree, parents base then head (QW-069)', async () => {
+    const s = new Store()
+    const base = s.commit(s.files({ 'a.txt': 'a\n' }))
+    const head = s.commit(s.files({ 'a.txt': 'b\n' }), [base])
+    const reader = s.reader()
+    // The verdict is still a fast-forward; --no-ff builds (and sizes) a merge commit.
+    expect(await checkMerge(reader, input(base, head))).toBe('fast-forward')
+    expect(await checkMerge(reader, input(base, head, { noFastForward: true }))).toBe('merge')
+    const out = await runMerge(reader, input(base, head, { noFastForward: true, headInBase: true }))
+    if (out.kind !== 'merge') throw new Error(`expected a merge commit, got ${out.kind}`)
+    expect(out.newTip).not.toBe(head)
+    const { reader: packed } = await readBack(out.pack)
+    const commit = parseCommit((await packed.readObject(out.newTip)).bytes)
+    expect(commit.parents).toEqual([base, head])
+    expect(commit.tree).toBe(parseCommit((await reader.readObject(head)).bytes).tree)
+    // A same-repo head is already in the base repo's packs: only the merge commit is new.
+    expect(out.objectCount).toBe(1)
+  })
+
+  it('--no-ff onto an empty base is the fast-forward (there is nothing to merge into)', async () => {
+    const s = new Store()
+    const head = s.commit(s.files({ 'a.txt': 'a\n' }))
+    const out = await runMerge(s.reader(), input('', head, { noFastForward: true }))
+    expect(out.kind).toBe('fast-forward')
+  })
+
   it('reports conflicting paths and builds nothing', async () => {
     const s = new Store()
     const root = s.commit(s.files({ 'a.txt': 'line\n', 'ok.txt': 'x\n' }))

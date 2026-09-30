@@ -40,22 +40,24 @@ vi.mock('@/components/storage/repo-storage-policy', () => ({
   RepoStoragePolicy: ({ unlockAbove }: { unlockAbove?: boolean }) => <div data-testid="storage-policy" data-unlock-above={String(unlockAbove === true)} />,
 }))
 vi.mock('@/components/repo/invite-banner', () => ({ Invitations: () => null }))
+vi.mock('@/components/repo/webhook-settings', () => ({ WebhookSettings: () => null }))
 vi.mock('@/components/repo/private-members', () => ({ PrivateMembers: () => <div data-testid="private-members" /> }))
 vi.mock('@/components/author', () => ({ Author: ({ identityId }: { identityId: string }) => <span>{identityId}</span> }))
 vi.mock('@/components/ui/backend-badge', () => ({ BackendBadge: () => null }))
+vi.mock('@/components/repo/private-repo-state', () => ({ PrivateRepoState: ({ access }: { access: string }) => <div data-testid="private-repo" data-access={access} /> }))
 
 import { SettingsContent } from './settings-content'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
-function repoHome(visibility: 'private' | 'public', access?: 'locked' | 'no-key' | 'member'): RepoHome {
+function repoHome(visibility: 'private' | 'public', access?: 'locked' | 'no-key' | 'member' | 'outsider' | 'signed-out'): RepoHome {
   return {
     repo: { repoId: 'R', name: 'secret', ownerId: 'owner', visibility, forge: { core: 'C', collab: 'L', community: 'M' } },
     backend: { kind: 'platform', uris: [] },
     private: access === undefined ? undefined : access === 'member' ? { access, session: {} } : { access },
   } as unknown as RepoHome
 }
-const privateHome = (access: 'locked' | 'no-key' | 'member'): RepoHome => repoHome('private', access)
+const privateHome = (access: 'locked' | 'no-key' | 'member' | 'outsider' | 'signed-out'): RepoHome => repoHome('private', access)
 
 let host: HTMLDivElement
 let root: Root
@@ -76,6 +78,17 @@ async function render(home: RepoHome): Promise<void> {
     root.render(<SettingsContent home={home} reload={() => undefined} />)
   })
 }
+
+describe('private repo Settings for a non-member (QW-079)', () => {
+  for (const access of ['outsider', 'signed-out'] as const) {
+    it(`shows a ${access} viewer the private-repo state, not settings that claim no branches`, async () => {
+      await render(privateHome(access))
+      expect(host.querySelector('[data-testid="private-repo"]')?.getAttribute('data-access')).toBe(access)
+      expect(host.querySelector('nav[aria-label="Settings sections"]')).toBeNull()
+      expect(host.textContent).not.toMatch(/Collaborators/)
+    })
+  }
+})
 
 describe('private repo Settings → Collaborators before this tab opened the encryption key', () => {
   it('offers the inline unlock when the key is in the vault but this tab is signing-only', async () => {

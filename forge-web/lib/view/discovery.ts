@@ -31,8 +31,9 @@ import type { ForgeIds } from '../deployments'
 import type { Role } from '../rules/v2'
 import { queryDocumentsWithProof, RANGE_OPERATORS, type PlainDocument, type WhereClause } from '../sdk'
 import { countsAt, docsAt, queryComposite, type CompositeSub, type CompositeResult } from '../sdk/composite'
-import { DOC, readMemberRepoIds, toRepoDoc, type RepoDoc } from '../repo'
+import { DOC, asIdentifierString, readMemberRepoIds, toRepoDoc, type RepoDoc } from '../repo'
 import { readMostForked, readMostStarred, readTrending, type TrendingWindow } from '../repo/trending'
+import { MAX_TOPIC_CHARS, TOPIC_PATTERN } from '../repo/settings'
 import { seedFromDomains } from './dpns'
 
 /** A repo row for the discovery feeds and profiles. */
@@ -59,7 +60,7 @@ export interface DiscoveredRepo {
   readonly role?: Role
 }
 
-function fromRepoDoc(doc: RepoDoc, extra: Partial<Pick<DiscoveredRepo, 'stars' | 'issues' | 'pushedAt'>> = {}): DiscoveredRepo {
+export function fromRepoDoc(doc: RepoDoc, extra: Partial<Pick<DiscoveredRepo, 'stars' | 'issues' | 'pushedAt'>> = {}): DiscoveredRepo {
   return {
     key: doc.repoId,
     ownerId: doc.ownerId,
@@ -381,6 +382,24 @@ export async function rankedRepos(
         : await readTrending(sdk, forge, kind, limit)
   const ids = page.entries.map((e) => e.group).filter((id) => id !== '')
   if (ids.length === 0) return { repos: [], missing: 0, pushesComplete: true }
+  const { byId, pushesComplete } = await reposById(sdk, forge, network, ids)
+  const repos = page.entries.flatMap((e) => {
+    const r = byId.get(e.group)
+    return r === undefined ? [] : [{ ...r, rankCount: e.count }]
+  })
+  return { repos, missing: ids.length - repos.length, pushesComplete }
+}
+
+/**
+ * Repos by id (at most {@link MAX_ROWS}) in one composite, with their star and issue counts,
+ * owners' names and pushes; the plain proved read if the composite is refused.
+ */
+async function reposById(
+  sdk: EvoSDK,
+  forge: ForgeIds,
+  network: Network,
+  ids: readonly string[],
+): Promise<{ byId: Map<string, DiscoveredRepo>; pushesComplete: boolean }> {
   let rows: DiscoveredRepo[]
   let pushesComplete = true
   try {
@@ -404,12 +423,48 @@ export async function rankedRepos(
     const plain = await queryDocumentsWithProof(sdk, { dataContractId: forge.core, documentTypeName: DOC.repo, where: [['$id', 'in', ids]], orderBy: [['$id', 'asc']], limit: ids.length })
     rows = plain.documents.map((d) => fromRepoDoc(toRepoDoc(d)))
   }
-  const byId = new Map(rows.map((r) => [r.key, r]))
-  const repos = page.entries.flatMap((e) => {
-    const r = byId.get(e.group)
-    return r === undefined ? [] : [{ ...r, rankCount: e.count }]
+  return { byId: new Map(rows.map((r) => [r.key, r])), pushesComplete }
+}
+
+/** How many tagged repos a topic page shows (the newest tags). */
+export const TOPIC_PAGE = 48
+
+/** A topic's repos: the newest {@link TOPIC_PAGE} tags, and whether older ones exist. */
+export interface TopicRepos {
+  /** Newest tag first. */
+  readonly repos: readonly DiscoveredRepo[]
+  /** More repos carry the topic than were read. */
+  readonly more: boolean
+  /** Tags whose `repo` document could not be read (should not happen: repos are permanent). */
+  readonly missing: number
+}
+
+/**
+ * The public repos tagged `topic` (QW-073): the `topic` documents on its `byName` index
+ * (name, $createdAt), newest first, then those repos by id. Two proved reads. A topic document
+ * exists only for a public repo (forge-core refuses one for a private repo), so a private repo
+ * is never listed. Empty for a name no topic can have.
+ */
+export async function reposWithTopic(sdk: EvoSDK, topic: string, opts: { network?: Network } = {}): Promise<TopicRepos> {
+  const network = opts.network ?? DEFAULT_NETWORK
+  const forge = forgeOf(network)
+  if (forge === null || !TOPIC_PATTERN.test(topic) || topic.length > MAX_TOPIC_CHARS) return { repos: [], more: false, missing: 0 }
+  const { documents } = await queryDocumentsWithProof(sdk, {
+    dataContractId: forge.core,
+    documentTypeName: DOC.topic,
+    where: [['name', '==', topic]],
+    orderBy: [['$createdAt', 'desc']],
+    limit: TOPIC_PAGE + 1,
   })
-  return { repos, missing: ids.length - repos.length, pushesComplete }
+  const more = documents.length > TOPIC_PAGE
+  const ids = [...new Set(documents.slice(0, TOPIC_PAGE).map((d) => asIdentifierString(d['repoId'])).filter((id) => id !== ''))]
+  if (ids.length === 0) return { repos: [], more, missing: 0 }
+  const { byId } = await reposById(sdk, forge, network, ids)
+  const repos = ids.flatMap((id) => {
+    const r = byId.get(id)
+    return r === undefined ? [] : [r]
+  })
+  return { repos, more, missing: ids.length - repos.length }
 }
 
 /**

@@ -314,6 +314,23 @@ export async function findMergeBases(
     queue.push({ oid, when, seq: seq++ })
   }
 
+  // The walk takes one commit at a time, so each read of a commit in a pack block not yet fetched
+  // was a round trip of its own: ~70 in a row on dashpay/dash v22.0.0...v23.0.0 (QW-027). The
+  // parents of everything waiting in the queue are what it reads next (the loop walks every
+  // queued commit until all are stale), so they are asked for ahead, side by side, through the
+  // reader's memo. They count toward the cap only once walked; what is read ahead in all is
+  // bounded by the cap too.
+  const prefetched = new Set<string>()
+  const prefetchFrontier = (): void => {
+    for (const q of queue) {
+      for (const p of commits.get(q.oid)?.parents ?? []) {
+        if (commits.has(p) || prefetched.has(p) || prefetched.size >= cap) continue
+        prefetched.add(p)
+        readCommit(reader, p).catch(() => undefined)
+      }
+    }
+  }
+
   const candidates: string[] = []
   try {
     await Promise.all([push(baseOid, BASE), push(headOid, HEAD)])
@@ -333,6 +350,7 @@ export async function findMergeBases(
         flags.set(oid, flagsOf(oid) | STALE)
       }
       const parents = (commits.get(oid) as { parents: readonly string[] }).parents
+      prefetchFrontier()
       // A commit's parents are independent reads — fetch them together.
       await Promise.all(parents.filter((p) => (flagsOf(p) & flag) !== flag).map((p) => push(p, flag)))
     }

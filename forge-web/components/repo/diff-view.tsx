@@ -67,11 +67,17 @@ export const InlineCommentsContext = createContext<InlineComments | null>(null)
 /** Files whose patches load per page. */
 const FILE_PAGE = 25
 /** A change set of at most this many files has its lines counted as it opens; a bigger one on request. */
-const AUTO_COUNT = 100
+const AUTO_COUNT = 300
 /** Rows a file renders before a "show more lines" button. */
 const LINE_PAGE = 400
-/** Patch reads in flight at once. */
-const PATCH_CONCURRENCY = 4
+/**
+ * Patch reads in flight at once: those of files on screen, and of a whole change set being counted
+ * (QW-027). Blob reads that run side by side share their chunk queries (`queueChunkSeqs`), so a
+ * wider pool costs fewer round trips, not more requests: dashpay/dash v22.0.0...v23.0.0's 1,530
+ * files were 1,287 requests over 176 s four at a time, and are ~80 over ~20 s.
+ */
+const PATCH_CONCURRENCY = 12
+const COUNT_CONCURRENCY = 24
 /** Finished patches are committed to state in batches at most this often (ms). */
 const PATCH_FLUSH_MS = 100
 
@@ -163,7 +169,7 @@ export function DiffView({
     const key = (path: string): string => `${ignoreWhitespace ? 'w' : 'x'}:${path}`
     const todo = (countAll ? changes : changes.slice(0, shown)).filter((c) => !requested.current.has(key(c.path)))
     for (const c of todo) requested.current.add(key(c.path))
-    void mapPooled(todo, PATCH_CONCURRENCY, async (change) => {
+    void mapPooled(todo, countAll ? COUNT_CONCURRENCY : PATCH_CONCURRENCY, async (change) => {
       // loadFilePatch turns read failures into placeholders; anything else must still settle
       // the file, or it would sit on "Reading file…" with its key already requested.
       const patch = await loadFilePatch(sides, change, { ignoreWhitespace }).catch(

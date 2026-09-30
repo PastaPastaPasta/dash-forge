@@ -45,6 +45,7 @@ import {
   pageOf,
   repoCountsOf,
   rowsInAnyState,
+  rowsWithEvent,
   selectRows,
   transitionTargets,
   type ListIndex,
@@ -299,4 +300,10 @@ export async function pullsLinking(
     maxChunks: Math.max(0, LINKING_CHUNKS + 1 - walked),
   })
   return { pulls: selected.rows.slice(0, 20), searched: selected.searched }
+}
+
+/** Each PR a milestone event names, with its open state and milestone (see `issueMilestoneItems`); null when the feed is partial. */
+export async function pullMilestoneItems(sdk: EvoSDK, repo: RepoRef, network: Network = DEFAULT_NETWORK): Promise<{ open: boolean; milestone: string | null }[] | null> {
+  const rows = await rowsWithEvent(sdk, await indexOf(sdk, repo, network), 'milestoneSet')
+  return rows?.map((r) => ({ open: r.state.open, milestone: r.review.milestone })) ?? null
 }

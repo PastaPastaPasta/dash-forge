@@ -274,6 +274,30 @@ export async function keysetScan(
 }
 
 /**
+ * Every row of one ref-update type, read as `splits` keyset ranges side by side from the start
+ * (QW-087): for a reader that already knows the type has more than a page (the repo chrome's
+ * `$createdAt` page came back full) and so need not read a first page to learn it. dashpay/dash's
+ * ~700 updates were six serial continuation pages (a 1.0–1.4 s waterfall on every cold page); as
+ * ranges they are one round trip, each range read on (by key) only past its own page. Null when a
+ * node did not honor a range (see {@link keysetScan}): the caller then reads the plain way.
+ */
+export async function readRefRowsInRanges(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  documentTypeName: string,
+  splits = CHROME_KEYSET_SPLITS,
+): Promise<PlainDocument[] | null> {
+  const ceilings = splitHashRange('0'.repeat(64), splits)
+  const starts: (HashKey | null)[] = [null, ...ceilings.map(hashKey)]
+  const parts = await Promise.all(starts.map((start, i) => keysetScan(sdk, repo, documentTypeName, start, ceilings[i] ?? null)))
+  if (parts.some((p) => p === null)) return null
+  return dedupeById(parts.flatMap((p) => p as PlainDocument[]))
+}
+
+/** Ranges {@link readRefRowsInRanges} reads by default: a page each covers ~800 updates in one round trip. */
+export const CHROME_KEYSET_SPLITS = 8
+
+/**
  * Whether some update's non-null `prevOid` is no update's `newOid` in the same ref — a parent
  * that should have been read and was not. Parity: forge-core `refs::has_missing_parent`.
  */
@@ -285,7 +309,7 @@ export function hasMissingParent(updates: readonly RefUpdate[]): boolean {
 interface TypeScan {
   readonly type: string
   readonly isProtected: boolean
-  readonly rows: PlainDocument[]
+  readonly rows: readonly PlainDocument[]
 }
 
 /** Group rows per ref: plain before protected, each in read order (the fold re-sorts). */
@@ -304,6 +328,18 @@ function groupByRef(repo: RepoRef, scans: readonly TypeScan[]): Map<string, RefU
     }
   }
   return byHash
+}
+
+/**
+ * Whether rows of both ref-update types, grouped per ref ACROSS the two types, lose a parent
+ * ({@link hasMissingParent}): the check {@link readAllRefUpdates} runs after its keyset scan, for a
+ * reader that read the rows as key ranges ({@link readRefRowsInRanges}) and must catch rows that
+ * never came back. Across both types, never per type: a protected update's `prevOid` may be a
+ * plain update's `newOid`. `rowsByType`: each type's rows, keyed by document type name.
+ */
+export function refRowsMissParent(repo: RepoRef, rowsByType: Readonly<Record<string, readonly PlainDocument[]>>): boolean {
+  const scans = REF_UPDATE_TYPES.map(([type, isProtected]): TypeScan => ({ type, isProtected, rows: rowsByType[type] ?? [] }))
+  return [...groupByRef(repo, scans).values()].some(hasMissingParent)
 }
 
 /** `sha256(refName)` hex: the key a private ref is grouped under once its name is decrypted. */

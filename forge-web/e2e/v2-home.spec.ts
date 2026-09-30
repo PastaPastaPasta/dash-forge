@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { PUSH_COST_DASH } from '../lib/sdk/cost'
+import { dashRange, PUSH_COST_DASH } from '../lib/sdk/cost'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { collectPageErrors, DEMO, E2E_DEVNET, EMPTY, readErrorBanner, runAxe, SCREENSHOT_DIR, shot, waitForRepoResolved } from './helpers'
@@ -200,9 +200,10 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     ])
     await expect(empty.getByTestId('empty-repo-network')).toContainText(`devnet-${E2E_DEVNET}`)
     await expect(empty.getByText(/Storage: packs go to/)).toBeVisible()
-    // L-11: the ~0.0003 DASH per push copy was 5-10x low; the calibrated beta.5 figures show instead.
+    // L-11: the ~0.0003 DASH per push copy was 5-10x low; the calibrated figures show instead,
+    // from the cost module (re-measured on bonsia, QW-080), never a literal.
     await expect(empty.getByText(/0\.0003 DASH/)).toHaveCount(0)
-    await expect(empty.getByText(/a small push ≈ 0\.003–0\.005 DASH/)).toBeVisible()
+    await expect(empty.getByText(`a small push ≈ ${dashRange(PUSH_COST_DASH.platform)} DASH`)).toBeVisible()
     // The rate comes from the cost module (the chunk fees `dg` and the docs quote), never a literal.
     await expect(empty.getByText(`~${PUSH_COST_DASH.perMib} DASH/MiB`)).toBeVisible()
     await expect(empty.getByRole('link', { name: 'Install →' })).toBeVisible()

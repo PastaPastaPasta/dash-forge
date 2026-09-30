@@ -34,6 +34,7 @@ export function FileList({
   basePath,
   refParam = '',
   commitColumn,
+  header,
 }: {
   entries: readonly TreeEntry[]
   addr: RepoAddress
@@ -46,6 +47,8 @@ export function FileList({
    * never waits for it. Hidden below the sm breakpoint.
    */
   commitColumn?: (name: string) => ReactNode
+  /** A first row inside the list's box (the latest-commit bar). */
+  header?: ReactNode
 }): JSX.Element {
   const sorted = [...entries].sort((a, b) => {
     const ak = a.mode === 0o40000 ? 0 : 1
@@ -56,6 +59,7 @@ export function FileList({
 
   return (
     <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
+      {header}
       {sorted.map((e, i) => {
         const kind = modeKind(e.mode)
         const childPath = basePath ? `${basePath}/${e.name}` : e.name

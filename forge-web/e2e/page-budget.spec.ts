@@ -218,6 +218,134 @@ test.describe('page request budget (S-1)', () => {
 })
 
 /**
+ * Code browsing on a large repo (QW-027, QW-028, QW-087), on the dash mirror: request and time
+ * budgets for what used to take tens of seconds. Measured on bonsia (2026-09-30), and the budgets
+ * are about twice that, so a slow devnet node passes and a return of the old serial reads fails:
+ *
+ * - the cold home's ref timeline (~700 updates): 8 key ranges in one round trip, where six
+ *   `$createdAt` pages went one after the other (1.0–1.4 s before anything else could start);
+ * - Go to file: first results from the history index with no read (measured 8 ms after typing,
+ *   was 14.5 s), the exact walk after it in ~1.9 s and 17 requests (was 100–120, one at a time);
+ * - the language bar: ~2.4 s and 19 requests once the About card is in view (was 12.8 s);
+ * - compare v22.0.0...v23.0.0: listed in ~16 s and 74 requests (was 19–21 s and 257), its 1,530
+ *   files (git's own count, renames paired) counted in ~14 s and 42 requests, complete (was 176 s,
+ *   1,287 requests and still partial).
+ *
+ * Run where the dash mirror is: `E2E_DEVNET=moutai`, or elsewhere with its owner in
+ * `E2E_SHOWCASE_DASHPAY` (on bonsia: 7A1MEuLjzcHZq8bLBzGYSUkpb2VM9dv7gtNuNYrPxKt3).
+ */
+/** `CHROME_KEYSET_SPLITS` (lib/repo/refs.ts): the key ranges the chrome reads a long ref timeline as. */
+const DASH_HOME_REF_READS_MAX = 8 + DAPI_RESEND_SLACK
+/** The ranges go out together: from the first to the last, well under one round trip's worth. */
+const DASH_HOME_REF_SPREAD_MS = 600
+const GOTO_FIRST_RESULTS_MS = 1_000
+const GOTO_WALK_MS = 10_000
+const GOTO_WALK_REQUESTS = 40
+const LANGUAGES_MS = 10_000
+const LANGUAGES_REQUESTS = 40
+const COMPARE_LISTED_MS = 40_000
+const COMPARE_LISTED_REQUESTS = 150
+const COMPARE_COUNT_MS = 40_000
+const COMPARE_COUNT_REQUESTS = 90
+
+test.describe('code browsing budgets on the dash mirror (QW-027, QW-028, QW-087)', () => {
+  test.skip(E2E_DEVNET !== 'moutai' && !process.env['E2E_SHOWCASE_DASHPAY'], 'the dash mirror is imported on moutai (elsewhere, set E2E_SHOWCASE_DASHPAY)')
+  test.describe.configure({ timeout: 240_000 })
+
+  test('cb-1. the cold home reads its ref timeline in one round trip; Go to file and the language bar answer in seconds', async ({ browser }) => {
+    const dash = await showcaseRepo('DASHPAY', 'dash')
+    const context = await browser.newContext()
+    const page = await context.newPage()
+    const refReads: number[] = []
+    page.on('request', (r) => {
+      if (DAPI_METHOD.exec(r.url())?.[1] !== 'getDocuments') return
+      if (decodeDocumentsRequest(r.postDataBuffer())?.documentType === 'refUpdate') refReads.push(Date.now())
+    })
+    const dapi = recordDapi(page)
+    await page.goto(repoUrl('', '', dash), { waitUntil: 'domcontentloaded' })
+    await waitForRepoResolved(page)
+    await expect(fileRows(page).first()).toBeVisible({ timeout: 60_000 })
+    const spread = refReads.length === 0 ? 0 : Math.max(...refReads) - Math.min(...refReads)
+    test.info().annotations.push({ type: 'dapi', description: `dash cold home: ${refReads.length} refUpdate reads over ${spread} ms` })
+    expect(refReads.length).toBeLessThanOrEqual(DASH_HOME_REF_READS_MAX)
+    expect(spread, 'the ref ranges go out side by side').toBeLessThanOrEqual(DASH_HOME_REF_SPREAD_MS)
+    await expect(page.getByTestId('commit-count')).toContainText(/\d/, { timeout: 60_000 })
+    await settle(page)
+
+    // Go to file: `t` focuses it; results from the history index at once, fuzzy and ranked.
+    await page.locator('main').click({ position: { x: 5, y: 5 } })
+    await page.keyboard.press('t')
+    const box = page.getByTestId('go-to-file')
+    await expect(box).toBeFocused()
+    const beforeGoto = dapi.all().length
+    const typed = Date.now()
+    await box.fill('validation.cpp')
+    await expect(page.getByTestId('go-to-file-result').first()).toHaveText('src/validation.cpp', { timeout: GOTO_FIRST_RESULTS_MS })
+    await box.fill('netproc')
+    await expect(page.getByTestId('go-to-file-result').first()).toContainText('net_processing')
+    await expect(page.getByText('Listing files')).toHaveCount(0, { timeout: GOTO_WALK_MS })
+    await settle(page)
+    const walk = dapi.all().length - beforeGoto
+    test.info().annotations.push({ type: 'dapi', description: `Go to file: walk done in ${Date.now() - typed} ms (settled), ${walk} requests` })
+    expect(walk).toBeLessThanOrEqual(GOTO_WALK_REQUESTS)
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('Enter')
+    await expect(page).toHaveURL(/\/repo\/blob\/.*net_processing/)
+    await shot(page, 'cb-01-goto-file-enter')
+    await context.close()
+
+    // The language bar, in a fresh context (its walk not shared with Go to file's).
+    const fresh = await browser.newContext()
+    const lang = await fresh.newPage()
+    const langDapi = recordDapi(lang)
+    await lang.goto(repoUrl('', '', dash), { waitUntil: 'domcontentloaded' })
+    await waitForRepoResolved(lang)
+    await expect(fileRows(lang).first()).toBeVisible({ timeout: 60_000 })
+    await expect(lang.getByTestId('commit-count')).toContainText(/\d/, { timeout: 60_000 })
+    await settle(lang)
+    const beforeLang = langDapi.all().length
+    const scrolled = Date.now()
+    const bar = lang.getByTestId('language-bar')
+    for (let y = 0; y < 4_000 && !(await bar.isVisible()); y += 400) {
+      await lang.evaluate((top) => window.scrollTo(0, top), y)
+      await lang.waitForTimeout(150)
+    }
+    await expect(bar.getByRole('img')).toBeVisible({ timeout: LANGUAGES_MS })
+    const langMs = Date.now() - scrolled
+    await settle(lang)
+    const langReads = langDapi.all().length - beforeLang
+    test.info().annotations.push({ type: 'dapi', description: `language bar: ${langMs} ms, ${langReads} requests` })
+    expect(langReads).toBeLessThanOrEqual(LANGUAGES_REQUESTS)
+    await shot(lang, 'cb-02-language-bar')
+    await fresh.close()
+  })
+
+  test('cb-2. compare v22.0.0...v23.0.0: listed, then every line counted, within budget', async ({ browser }) => {
+    const dash = await showcaseRepo('DASHPAY', 'dash')
+    const context = await browser.newContext()
+    const page = await context.newPage()
+    const dapi = recordDapi(page)
+    const opened = Date.now()
+    await page.goto(repoUrl('compare', '&base=v22.0.0&head=v23.0.0', dash), { waitUntil: 'domcontentloaded' })
+    await expect(page.getByTestId('compare-summary')).toContainText('1,530 files changed', { timeout: COMPARE_LISTED_MS })
+    const listed = dapi.all().length
+    test.info().annotations.push({ type: 'dapi', description: `compare listed: ${Date.now() - opened} ms, ${listed} requests` })
+    expect(listed).toBeLessThanOrEqual(COMPARE_LISTED_REQUESTS)
+    const counting = Date.now()
+    await page.getByTestId('count-lines').click()
+    await expect(page.getByTestId('diff-totals')).toBeVisible({ timeout: COMPARE_COUNT_MS })
+    const counted = dapi.all().length - listed
+    test.info().annotations.push({ type: 'dapi', description: `compare counted: ${Date.now() - counting} ms, ${counted} requests` })
+    // git diff -M --shortstat v22.0.0...v23.0.0, and nothing left out.
+    await expect(page.getByTestId('diff-totals')).toContainText('+112310 −69084')
+    await expect(page.getByTestId('diff-totals-partial')).toHaveCount(0)
+    expect(counted).toBeLessThanOrEqual(COMPARE_COUNT_REQUESTS)
+    await shot(page, 'cb-03-compare-counted')
+    await context.close()
+  })
+})
+
+/**
  * Whether a request is one read-ahead block of a history walk: a `chunk` read of 17-19 seqs
  * (256 KiB / 14,700 B per chunk). The locator is read 100 seqs at a time, an object alone 1-2.
  */

@@ -425,6 +425,18 @@ export async function repoCountsOf<Row extends RowExtras>(sdk: EvoSDK, index: Li
   })
 }
 
+/**
+ * The rows of every feed target with a member event of `kind` (resolved by id; the other type's
+ * targets are skipped), or null when the feed was too large to read, so a caller's answer is
+ * unknown rather than wrong.
+ */
+export async function rowsWithEvent<Row extends RowExtras>(sdk: EvoSDK, index: ListIndex<Row>, kind: TargetLog['events'][number]['kind']): Promise<Row[] | null> {
+  if (index.feed === null) return null
+  const ids = [...index.feed].filter(([id, log]) => id !== '' && log.events.some((e) => e.kind === kind)).map(([id]) => id)
+  await resolveIds(sdk, index, ids)
+  return rowsOf(index, ids)
+}
+
 /** The loaded rows of `ids`, in order (ids not loaded are skipped). */
 export function rowsOf<Row extends RowExtras>(index: ListIndex<Row>, ids: Iterable<string>): Row[] {
   return [...ids].map((id) => index.rows.get(id)).filter((r): r is Row => r !== undefined)

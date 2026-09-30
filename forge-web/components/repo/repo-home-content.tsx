@@ -4,23 +4,22 @@
  * RepoHomeContent — the Code tab landing (`ux-dx-spec.md` §5.3): the ref bar (branch switcher,
  * `n commits`, Go to file), the root file list with a lazily loaded commit column, and the
  * README. Reads are size-independent (locator ranged object reads); `flatIndex` is never
- * loaded here. A repo with no refs shows the empty state (§5.5); a private repo the viewer
+ * loaded here ({@link GoToFile} lists the files from the history index, then a walk). A repo with no refs shows the empty state (§5.5); a private repo the viewer
  * cannot decrypt never reaches here (the scaffold shows `PrivateRepoState`); unreadable storage degrades via
  * {@link BrowseBoundary}.
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 import Link from 'next/link'
-import { AlertTriangle, FileText, GitCommit, Rocket, Search } from 'lucide-react'
+import { AlertTriangle, FileText, GitCommit, Rocket } from 'lucide-react'
 import { CopyRow } from '@/components/ui/copy-row'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { dashRange, PUSH_COST_DASH } from '@/lib/sdk/cost'
 import { repoCommands, shellWord } from '@/lib/view/repo-commands'
 import type { BrowseReader } from '@/lib/browse'
-import { loadRepoFacts, repoFilesWalk } from '@/lib/view/repo-facts'
+import { loadRepoFacts } from '@/lib/view/repo-facts'
 import { repoKey } from '@/lib/repo'
 import type { RepoHome, SelectedRef } from '@/lib/view'
-import { plural } from '@/lib/view/format'
 import {
   commitRootTree,
   decodeTextBlob,
@@ -46,10 +45,11 @@ import { ResolvedTip } from '@/components/repo/resolved-tip'
 import { StorageUnreachableCard } from '@/components/repo/storage-unreachable'
 import { PackUnavailableError, unavailableOf } from '@/lib/view/browse-source'
 import { FileList } from '@/components/repo/file-list'
+import { LatestCommit } from '@/components/repo/latest-commit'
 import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
 import { MarkdownView, type MarkdownRepoContext } from '@/components/markdown-view'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
-import { Input } from '@/components/ui/input'
+import { GoToFile } from '@/components/repo/go-to-file'
 import { Oid } from '@/components/ui/oid'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { pinnedHref, usePermalinkKey } from '@/components/repo/permalink'
@@ -150,6 +150,7 @@ function RootBody({
     [tipOid],
     { enabled: data !== null },
   )
+  const rootTreeOf = useCallback(() => Promise.resolve(data?.tree ?? ''), [data?.tree])
   const readmeRepo = useMemo<MarkdownRepoContext>(() => ({ addr, refParam, dir: '', reader, tipOid }), [addr, refParam, reader, tipOid])
   // The About card's LICENSE and language bar (F-5): worked out only once everything the page
   // shows has settled (list, README, commit count and column), so they never delay it.
@@ -187,7 +188,7 @@ function RootBody({
           {commitCountLabel(commits.data)}
         </Link>
         <Oid value={tipOid} />
-        <GoToFile reader={reader} repoKey={key} tipOid={tipOid} rootTree={data.tree} addr={addr} refParam={refParam} />
+        <GoToFile reader={reader} repoKey={key} tipOid={tipOid} rootTree={rootTreeOf} addr={addr} refParam={refParam} className="ml-auto" />
       </div>
 
       <FileList
@@ -195,6 +196,7 @@ function RootBody({
         addr={addr}
         basePath=""
         refParam={refParam}
+        header={<LatestCommit reader={reader} tipOid={tipOid} addr={addr} />}
         commitColumn={(name) => <CommitCell commit={lastCommits.found.get(name)} column={lastCommits} addr={addr} />}
       />
       <SearchOlderHistory column={lastCommits} />
@@ -217,77 +219,6 @@ function RootBody({
         </section>
       ) : readme.loading ? (
         <LoadingBlock label="Reading README" />
-      ) : null}
-    </div>
-  )
-}
-
-/**
- * Go to file: a filename filter over the bounded walk of the shown tree (never `flatIndex`, which
- * home must not load), shared with the language bar. It starts on first focus if not already run.
- */
-function GoToFile({
-  reader,
-  repoKey: key,
-  tipOid,
-  rootTree,
-  addr,
-  refParam,
-}: {
-  reader: BrowseReader
-  repoKey: string
-  tipOid: string
-  rootTree: string
-  addr: RepoAddress
-  refParam: string
-}): JSX.Element {
-  const [started, setStarted] = useState(false)
-  const [query, setQuery] = useState('')
-  // The same walk as the language bar's (one per commit), started here on first focus if first.
-  const walk = useAsync(() => repoFilesWalk(key, tipOid, reader, rootTree), [key, tipOid], { enabled: started })
-  const q = query.trim().toLowerCase()
-  const hits = q === '' ? [] : (walk.data?.files ?? []).map((f) => f.path).filter((p) => p.toLowerCase().includes(q)).slice(0, 12)
-  return (
-    <div className="relative ml-auto w-full sm:w-56">
-      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-anvil-500 dark:text-anvil-400" aria-hidden />
-      <label htmlFor="go-to-file" className="sr-only">
-        Go to file
-      </label>
-      <Input
-        id="go-to-file"
-        value={query}
-        onFocus={() => setStarted(true)}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="Go to file"
-        className="h-8 py-1 pl-8"
-        role="combobox"
-        aria-expanded={q !== ''}
-        aria-controls="go-to-file-results"
-        autoComplete="off"
-      />
-      {q !== '' ? (
-        <ul
-          id="go-to-file-results"
-          role="listbox"
-          className="absolute right-0 z-20 mt-1 max-h-72 w-full overflow-y-auto rounded-lg border border-anvil-200 bg-white py-1 shadow-lg dark:border-anvil-750 dark:bg-anvil-900 sm:w-80"
-        >
-          {walk.loading ? <li className="px-3 py-1.5 text-anvil-500 dark:text-anvil-400">Listing files…</li> : null}
-          {walk.error ? <li className="px-3 py-1.5 text-danger-700 dark:text-danger-400">{walk.error}</li> : null}
-          {!walk.loading && hits.length === 0 ? <li className="px-3 py-1.5 text-anvil-500 dark:text-anvil-400">No matching file.</li> : null}
-          {hits.map((p) => (
-            <li key={p} role="option" aria-selected={false}>
-              <Link
-                href={repoHref('/repo/blob', addr, { path: p, ...(refParam ? { ref: refParam } : {}) })}
-                className="block truncate px-3 py-1.5 font-mono text-[12px] text-anvil-700 hover:bg-anvil-50 dark:text-anvil-200 dark:hover:bg-anvil-850"
-              >
-                {p}
-              </Link>
-            </li>
-          ))}
-          {walk.data?.truncated ? (
-            <li className="px-3 py-1.5 text-[11px] text-anvil-500 dark:text-anvil-400">Searched the first {plural(walk.data.files.length, 'file')}.</li>
-          ) : null}
-        </ul>
       ) : null}
     </div>
   )

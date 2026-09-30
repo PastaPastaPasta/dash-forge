@@ -154,11 +154,14 @@ export {
 } from './issues'
 export {
   checkLabelInput,
+  deleteLabel,
   defineLabel,
   labelTextColor,
   LABEL_COLORS,
   LABEL_LIMITS,
   newestLabels,
+  planLabelDelete,
+  readLabelDocs,
   readLabels,
   toLabelDef,
   type LabelDef,
@@ -167,6 +170,7 @@ export {
   compareRows,
   matchesText,
   mentions,
+  issueMilestoneItems,
   queryIssues,
   rowFiltersOf,
   rowMatches,
@@ -176,6 +180,7 @@ export {
   type RowFilters,
 } from './issue-index'
 export {
+  pullMilestoneItems,
   pullsLinking,
   queryPulls,
   type LinkingPulls,

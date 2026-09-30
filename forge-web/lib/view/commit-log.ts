@@ -75,7 +75,7 @@ export async function diffTreesWithRenames(sides: DiffSides, baseTreeOid: string
 
 const DIFF_NODE_CAP = 2000
 /** Tree reads in flight at once while walking changed subtrees. */
-const TREE_READ_POOL = 6
+const TREE_READ_POOL = 16
 
 async function readTreeMap(reader: ObjectReader, treeOid: string | null): Promise<Map<string, TreeEntry>> {
   // A tree that cannot be read is an error, not an empty directory: treating it as empty

@@ -222,6 +222,45 @@ describe('detectRenames', () => {
     expect(ours(got.changes).filter((l) => l.startsWith('R'))).toEqual(['R075 a/0.txt b/0.txt', 'R079 a/1.txt b/1.txt', 'R100 same.txt dir/same.txt'])
   })
 
+  describe('within its byte budget (counted as reads land)', () => {
+    const files = (prefix: string, n: number, edit = ''): Record<string, string> =>
+      Object.fromEntries(Array.from({ length: n }, (_, i) => [`${prefix}${i}.txt`, `file ${i}\n${'body\n'.repeat(i + 3)}${edit}`]))
+
+    it('same-named pairs: stops reading once spent, still pairs what it read, and skips the matrix', async () => {
+      const s = new Store()
+      // 20 same-named pairs (40 blobs); the pool starts 16 reads before any lands.
+      const a = s.files({ ...files('a/', 20), 'x/old.txt': 'moved\n'.repeat(20) })
+      const b = s.files({ ...files('b/', 20, 'edited\n'), 'y/new.txt': `${'moved\n'.repeat(20)}more\n` })
+      const r = s.reader()
+      const { changes } = await diffTrees({ base: r, head: r }, a, b)
+      const before = s.reads.length
+      const got = await detectRenames({ base: r, head: r }, changes, { readBytes: 1 })
+      expect(s.reads.length - before).toBe(16)
+      expect(got.limited).toMatch(/kept their names would download more than/)
+      // The 16 reads were the first 8 pairs, pair by pair: each scored, each a pair git makes too.
+      // x/old.txt → y/new.txt needs the matrix, which is skipped.
+      const renamed = got.changes.filter((c) => c.status === 'renamed').map((c) => `${c.oldPath} ${c.path}`)
+      expect(renamed).toHaveLength(8)
+      expect(renamed).not.toContain('x/old.txt y/new.txt')
+      for (const pair of renamed) expect(pair).toMatch(/^a\/(\d+)\.txt b\/\1\.txt$/)
+    })
+
+    it('the matrix: a part of its blobs is not enough, so it is skipped rather than pair worse', async () => {
+      const s = new Store()
+      const a = s.files(files('a/', 10))
+      const b = s.files(files('b/n', 10, 'edited\n'))
+      const r = s.reader()
+      const { changes } = await diffTrees({ base: r, head: r }, a, b)
+      const got = await detectRenames({ base: r, head: r }, changes, { readBytes: 1 })
+      expect(got.changes.some((c) => c.status === 'renamed')).toBe(false)
+      expect(got.limited).toMatch(/comparing 10 deleted files with 10 added files would download more than/)
+      // With the default budget the same change pairs.
+      const full = await detectRenames({ base: r, head: r }, changes)
+      expect(full.limited).toBeNull()
+      expect(full.changes.filter((c) => c.status === 'renamed')).toHaveLength(10)
+    })
+  })
+
   it('a blob that cannot be read is not scored, and the result says renames may be missing', async () => {
     const s = new Store()
     const text = 'shared\n'.repeat(40)

@@ -10,7 +10,7 @@
  *   /alice/project/releases[/<tag>]      /alice/project/commits[/<ref>]
  *   /alice/project/releases/tag/<tag>    /alice/project/commit/<oid>
  *   /alice/project/commits/<ref>/<path>  (a path's History)   /alice/project/blame/<ref>/<path>
- *   /alice/project/branches, /tags, /stargazers
+ *   /alice/project/branches, /tags, /stargazers, /labels, /milestones
  *   /alice/project/compare/<base>...<head>, /alice/project/compare/<head>  (GitHub's compare)
  *
  * `?q=` on `/issues` carries GitHub's search qualifiers through (the shim appends the query
@@ -42,6 +42,7 @@ export const RESERVED_SEGMENTS: readonly string[] = [
   'repo',
   'robots.txt',
   'settings',
+  'start',
   'u',
 ]
 
@@ -53,7 +54,7 @@ export type ShortTarget =
   | { readonly kind: 'issue'; readonly number: number }
   | { readonly kind: 'pull'; readonly number: number; readonly tab?: 'commits' | 'checks' | 'files' }
   | { readonly kind: 'release'; readonly tag: string }
-  | { readonly kind: 'branches' | 'tags' | 'stargazers' }
+  | { readonly kind: 'branches' | 'tags' | 'stargazers' | 'labels' | 'milestones' }
   | { readonly kind: 'commit'; readonly oid: string }
   | { readonly kind: 'compare'; readonly base?: string; readonly head: string }
 
@@ -89,6 +90,8 @@ export function shortRepoPath(repo: { readonly owner: string; readonly name: str
     case 'branches':
     case 'tags':
     case 'stargazers':
+    case 'labels':
+    case 'milestones':
       return `${base}/${target.kind}`
     case 'issue':
       return `${base}/issues/${target.number}`
@@ -170,6 +173,8 @@ function canonicalPath(repo: { readonly owner: string; readonly name: string; re
     case 'branches':
     case 'tags':
     case 'stargazers':
+    case 'labels':
+    case 'milestones':
       return route(`/${target.kind}`)
     case 'issue':
       return route('/issue', { number: String(target.number) })
@@ -244,7 +249,7 @@ export const SHORT_URL_EXPAND_SOURCE = `function (pathname, base, reserved) {
   if ((kind === 'pull' || kind === 'pulls') && number) return q('/repo/pull/', ['number', number]);
   if (kind === 'releases' && rest.length === 1) return q('/repo/releases/', []);
   if (kind === 'releases') return q('/repo/release/', ['tag', arg]);
-  if ((kind === 'branches' || kind === 'tags' || kind === 'stargazers' || kind === 'compare') && rest.length === 1) return q('/repo/' + kind + '/', []);
+  if ((kind === 'branches' || kind === 'tags' || kind === 'stargazers' || kind === 'compare' || kind === 'labels' || kind === 'milestones') && rest.length === 1) return q('/repo/' + kind + '/', []);
   if (kind === 'commit' && /^[0-9a-fA-F]{4,40}$/.test(arg)) return q('/repo/commit/', ['oid', arg.toLowerCase()]);
   return null;
 }`

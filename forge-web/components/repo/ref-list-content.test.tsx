@@ -39,7 +39,7 @@ const READER: Record<string, unknown> = {
 }
 
 import type { RepoHome } from '@/lib/view'
-import { RefListContent } from './ref-list-content'
+import { RefListContent, refUpdatedAt } from './ref-list-content'
 
 const TAG_A = 'a'.repeat(40)
 const TAG_B = 'b'.repeat(40)
@@ -106,5 +106,13 @@ describe('RefListContent tag chips', () => {
     await act(async () => root.render(<RefListContent home={home(TAG_A)} addr={addr} kind="branches" />))
     expect(browseCalls.every((r) => r === null)).toBe(true)
     expect(el.querySelector('[data-testid="tag-commit"]')).toBeNull()
+  })
+})
+
+describe('refUpdatedAt (QW-061d: when a branch last moved)', () => {
+  it('is the update time, a diverged ref\'s newest head, or unknown', () => {
+    expect(refUpdatedAt({ refName: 'refs/heads/a', state: { state: 'resolved', oid: 'x', author: 'a', createdAt: 42 } } as never)).toBe(42)
+    expect(refUpdatedAt({ refName: 'refs/heads/b', state: { state: 'diverged', heads: [{ createdAt: 5 }, { createdAt: 9 }] } } as never)).toBe(9)
+    expect(refUpdatedAt({ refName: 'refs/heads/c', state: { state: 'deleted' } } as never)).toBe(0)
   })
 })

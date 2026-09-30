@@ -74,6 +74,9 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
   const editor = useReleaseEditor(home, data, refreshAfterPublish)
   // L-48: the one release GitHub would mark "Latest" — the newest non-prerelease, non-yanked one.
   const latest = data ? latestRelease(data) : undefined
+  // QW-078: a tag whose newest revision is an unpublish is off the list, but a maintainer
+  // restores it by publishing it again: list each such tag (its newest revision) to do that from.
+  const unpublished = data ? unpublishedTags(data) : []
 
   return (
     <div className="mx-auto max-w-3xl space-y-4">
@@ -94,8 +97,8 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
         <>
           <EmptyState
             icon={Tag}
-            title="No releases yet"
-            body="A maintainer publishes one with dg release create --tag v1 --asset ./dist/app.tar.gz."
+            title={unpublished.length > 0 ? 'No published releases' : 'No releases yet'}
+            body="Maintainers publish one with New release (at the top of this page), or with dg release create --tag v1 --asset ./dist/app.tar.gz."
           />
           <SealedListNotes list={data} />
         </>
@@ -127,6 +130,33 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
               Show {Math.min(PAGE_SIZE, data.current.length - shown)} more (of {plural(data.current.length - shown, 'release')} left)
             </button>
           ) : null}
+        </>
+      )}
+      {data !== null && data.locked !== true && unpublished.length > 0 ? (
+        <section aria-labelledby="releases-unpublished" data-testid="releases-unpublished">
+          <h2 id="releases-unpublished" className="mb-2 text-dense font-semibold text-anvil-700 dark:text-anvil-200">
+            Unpublished
+          </h2>
+          <p className="mb-2 text-[12px] text-anvil-500 dark:text-anvil-400">Taken down by a maintainer, every field kept: publishing the tag again restores it.</p>
+          <ul className="space-y-3">
+            {unpublished.map((r) => (
+              <li key={r.id}>
+                <ReleaseCard
+                  release={r}
+                  repo={home.repo}
+                  addr={addr}
+                  links={links}
+                  previous
+                  // A stale list (newer revisions under a key not held yet) may already have it back.
+                  actions={data.stale === true ? null : <EditReleaseButton home={home} tag={r.tagName} onEdit={editor.edit} restore />}
+                />
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+      {data !== null && data.locked !== true ? (
+        <>
           {data.previous.length > 0 ? (
             <section aria-label="Previous revisions">
               <button
@@ -149,10 +179,28 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
             </section>
           ) : null}
         </>
-      )}
+      ) : null}
       {editor.dialog}
     </div>
   )
+}
+
+/**
+ * The tags a sealed list keeps off it because their newest revision is an unpublish, as that
+ * revision (newest first). A public repo's list has none: its releases have no unpublish.
+ */
+export function unpublishedTags(list: ReleaseList): ReleaseView[] {
+  // A tag whose newest revision does not open (§16.3) may have been published again since.
+  const live = new Set([...list.current.map((r) => r.tagName), ...(list.unknownTags ?? [])])
+  const seen = new Set<string>()
+  const out: ReleaseView[] = []
+  // `previous` is newest first: the first revision of a tag is its newest.
+  for (const r of list.previous) {
+    if (live.has(r.tagName) || seen.has(r.tagName)) continue
+    seen.add(r.tagName)
+    if (r.sealed?.fields.unpublished === true) out.push(r)
+  }
+  return out
 }
 
 /**

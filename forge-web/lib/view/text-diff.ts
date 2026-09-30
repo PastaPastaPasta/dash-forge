@@ -66,9 +66,11 @@ type Op = 0 | 1 | 2 // equal | delete | insert
 
 /**
  * git's edit script for `a` → `b` ({@link xdiffChanges}, then {@link compactChanges}): each hunk's
- * deletions before its additions, as git prints them. Null past `limits`.
+ * deletions before its additions, as git prints them. Null when the search runs past
+ * `limits.maxWork`; `{ added, deleted }` alone when the script has more than `limits.maxEdits`
+ * edits (too many to show, still counted: QW-027).
  */
-function gitOps(a: readonly string[], b: readonly string[], limits: DiffLimits): Op[] | null {
+function gitOps(a: readonly string[], b: readonly string[], limits: DiffLimits): Op[] | { readonly added: number; readonly deleted: number } | null {
   if (a.length === 0 || b.length === 0) return new Array<Op>(a.length + b.length).fill(a.length === 0 ? 2 : 1)
   const marks = xdiffChanges(a, b, limits)
   if (marks === null) return null
@@ -79,26 +81,28 @@ function gitOps(a: readonly string[], b: readonly string[], limits: DiffLimits):
     // Compaction asserts what xdiff asserts; the uncompacted alignment is still a valid diff.
     c = marks
   }
+  let deleted = 0
+  let added = 0
+  for (let k = 0; k < a.length; k++) deleted += c.oldChanged[k] as number
+  for (let k = 0; k < b.length; k++) added += c.newChanged[k] as number
+  if (added + deleted > limits.maxEdits) return { added, deleted }
   const ops: Op[] = []
-  let edits = 0
   let i = 0
   let j = 0
   while (i < a.length || j < b.length) {
     if (i < a.length && c.oldChanged[i] === 1) {
       ops.push(1)
       i++
-      edits++
     } else if (j < b.length && c.newChanged[j] === 1) {
       ops.push(2)
       j++
-      edits++
     } else {
       ops.push(0)
       i++
       j++
     }
   }
-  return edits > limits.maxEdits ? null : ops
+  return ops
 }
 
 /**
@@ -111,6 +115,21 @@ export function diffTextLines(
   limits: DiffLimits = DEFAULT_DIFF_LIMITS,
   options: { readonly ignoreWhitespace?: boolean } = {},
 ): TextDiffLine[] | null {
+  const got = diffTextLinesOrCount(before, after, limits, options)
+  return Array.isArray(got) ? got : null
+}
+
+/**
+ * {@link diffTextLines}, or for a change with more edits than `limits.maxEdits` (too many to
+ * show) the lines it adds and deletes, from the same diff (QW-027: a change set's totals stay
+ * whole). Null only when the search runs past `limits.maxWork`.
+ */
+export function diffTextLinesOrCount(
+  before: string,
+  after: string,
+  limits: DiffLimits = DEFAULT_DIFF_LIMITS,
+  options: { readonly ignoreWhitespace?: boolean } = {},
+): TextDiffLine[] | { readonly added: number; readonly deleted: number } | null {
   const oldLines = splitLines(before)
   const newLines = splitLines(after)
   // Ignoring whitespace (`git diff -w`) compares lines with all whitespace removed; the lines
@@ -122,7 +141,7 @@ export function diffTextLines(
   // xdiff sees the whole files: it trims their common ends itself, after counting every record
   // (which lines its cleanup drops depends on how often they occur in the whole file).
   const ops = gitOps(oldKeys, newKeys, limits)
-  if (ops === null) return null
+  if (ops === null || !Array.isArray(ops)) return ops
 
   const lines: TextDiffLine[] = []
   let o = 0
