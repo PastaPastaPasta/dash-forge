@@ -165,9 +165,11 @@ octokit) reads them:
   earlier than the earliest hook that wants it.
 - What is reported: a `push` only for a ref update that moves its ref by forge's rules (a
   plain `refUpdate` on a protected branch is inert and is not reported). A merge is
-  `merged: true` only when a valid update set the PR's base branch to its commit (and the PR's
-  `baseRefNameHash` matches its `baseRefName`); otherwise `merged: false` with
-  `dash_merge_unverified: true`. A yanked release is `release` / `unpublished`.
+  `merged: true` when a member's transition landed a merge, even one an unverified base-branch
+  update could not confirm (`merged` is the chain fact); an unverified merge instead adds
+  `dash_merge_unverified: true`. A lock or unlock on an already-merged PR keeps reporting
+  `merged: true`. A newly-yanked release is `release` / `unpublished`; a further edit of one
+  already yanked is `edited`, not a repeated `unpublished`.
 - Comments and reviews: per cycle and repo, up to 40 open or recently active threads, plus 10
   of the others in rotation, so a quiet closed thread is read every few cycles (with N such
   threads, every N/10 cycles).
