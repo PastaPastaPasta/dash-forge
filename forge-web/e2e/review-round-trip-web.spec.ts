@@ -244,7 +244,10 @@ test('r5. the maintainer re-reviews: resolves, approves; checks gate the merge u
   await expect(unavailable).toContainText(/can't write the contributor's fork; ask them to allow edits by maintainers/, { timeout: 180_000 })
   await expect(unavailable.getByRole('checkbox')).toBeDisabled()
   // The contributor allows edits by maintainers (OWNER becomes a writer of the fork): r6 deletes it.
-  dg('CONTRIB', 'collab', 'add', FORK_SLUG, ids.owner, '--role', 'writer')
+  // RC1 consent (R-06): the member accepts before the owner can add them (--wait rides out a
+  // node that has not seen the consent yet).
+  dg('OWNER', 'collab', 'accept', FORK_SLUG)
+  dg('CONTRIB', 'collab', 'add', FORK_SLUG, ids.owner, '--role', 'writer', '--wait', '60')
 })
 
 test('r6. squash and merge with an edited message; the branch is deleted', async ({ browser }) => {

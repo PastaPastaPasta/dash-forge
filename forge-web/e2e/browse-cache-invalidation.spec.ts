@@ -102,7 +102,10 @@ test.beforeAll(() => {
   g('commit', '-q', '-m', 'first')
   dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform', '--description', 'Dash Forge e2e: the browse cache after a push (G4)')
   push('OWNER', 'main')
-  dg('OWNER', 'collab', 'add', SLUG, idOrEmpty('COLLAB'), '--role', 'writer')
+  // RC1 consent (R-06): the member accepts before the owner can add them (--wait rides out a
+  // node that has not seen the consent yet).
+  dg('COLLAB', 'collab', 'accept', SLUG)
+  dg('OWNER', 'collab', 'add', SLUG, idOrEmpty('COLLAB'), '--role', 'writer', '--wait', '60')
 })
 
 test.afterAll(() => rmSync(SRC, { recursive: true, force: true }))

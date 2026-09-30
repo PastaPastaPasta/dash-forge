@@ -1248,8 +1248,11 @@ export type UnindexedReason =
 export async function loadBrowseContext(
   sdk: EvoSDK,
   repo: RepoRef,
-  /** A read started now: a re-resolve must not be answered by the read it is checking. */
-  { fresh = false }: { readonly fresh?: boolean } = {},
+  /**
+   * A re-resolve of a context whose pack list was read by `after`: only a read issued after it
+   * answers (the home's revalidation of a moment ago, else a new one), never the one it checks.
+   */
+  { after }: { readonly after?: number } = {},
 ): Promise<BrowseState> {
   // A private repo's artifacts are sealed: nothing is fetched without the reader's session.
   if (repo.visibility === 'private' && repo.session === undefined) throw new PrivateRepoLockedError()
@@ -1260,7 +1263,7 @@ export async function loadBrowseContext(
   // resolves to the wrong pack silently. That is the same misalignment the completeness fix
   // exists to prevent, reintroduced through the back door. A public repo's list comes from the
   // repo chrome store: the home's own read of a moment ago (zero requests), else its delta.
-  const manifests = await readBrowseManifests(sdk, repo, { fresh, network: ACTIVE_NETWORK.network })
+  const manifests = await readBrowseManifests(sdk, repo, { after, network: ACTIVE_NETWORK.network })
   // The gateways this repo's CURRENT members' pushes recorded reach its IPFS node: try them
   // first. A past writer's or a stranger's manifest cannot steer every read.
   noteRepoGateways(
@@ -1453,6 +1456,12 @@ interface BrowseCacheEntry {
   at: number
   promise: Promise<BrowseState>
   settled?: BrowseState
+  /**
+   * With `settled`: when its pack list was last checked (it settled, or a re-resolve behind it
+   * came back). Every read behind that was issued by then, so the next re-resolve takes only a
+   * later one ({@link loadBrowseContext} `after`).
+   */
+  checkedAt?: number
   /** A re-resolve in flight behind this settled entry (a background revalidation, or a miss). */
   refresh?: Promise<BrowseState>
 }
@@ -1536,6 +1545,7 @@ function startEntry(sdk: EvoSDK, repo: RepoRef, key: string): BrowseCacheEntry {
   entry.promise
     .then((state) => {
       entry.settled = state
+      entry.checkedAt = Date.now()
     })
     .catch(() => {
       if (browseCache.get(key) === entry) browseCache.delete(key)
@@ -1547,20 +1557,22 @@ function startEntry(sdk: EvoSDK, repo: RepoRef, key: string): BrowseCacheEntry {
  * Resolve `repo` again behind a settled entry, joining a re-resolve already in flight. A state
  * that {@link supersedes} the cached one replaces it; any other keeps the entry and its warm
  * reader (the same pack list, or a lagging node's older one). Resolves with the state the cache
- * holds afterwards.
+ * holds afterwards. `after`: only a timelines read issued after it answers ({@link loadBrowseContext}).
  */
-function refreshEntry(sdk: EvoSDK, repo: RepoRef, key: string, hit: BrowseCacheEntry & { settled: BrowseState }): Promise<BrowseState> {
+function refreshEntry(sdk: EvoSDK, repo: RepoRef, key: string, hit: BrowseCacheEntry & { settled: BrowseState }, after: number): Promise<BrowseState> {
   if (hit.refresh !== undefined) return hit.refresh
-  const refresh = loadBrowseContext(sdk, repo, { fresh: true })
+  const refresh = loadBrowseContext(sdk, repo, { after })
     .then((state) => {
       // An explicit reload may have dropped the entry meanwhile: leave its successor alone.
       if (browseCache.get(key) !== hit) return state
+      const now = Date.now()
       if (!supersedes(state, hit.settled)) {
+        hit.checkedAt = now
         // Only a read that saw this very pack list counts as fresh: a lagging node's does not.
-        if (manifestsOf(state).size === manifestsOf(hit.settled).size) hit.at = Date.now()
+        if (manifestsOf(state).size === manifestsOf(hit.settled).size) hit.at = now
         return hit.settled
       }
-      browseCache.set(key, { at: Date.now(), promise: Promise.resolve(state), settled: state })
+      browseCache.set(key, { at: now, promise: Promise.resolve(state), settled: state, checkedAt: now })
       return state
     })
     .finally(() => {
@@ -1589,8 +1601,9 @@ export function loadBrowseContextCached(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   if (hit === undefined || !browseEntryLive(hit)) return startEntry(sdk, repo, key).promise
   const settled = settledEntry(key)
   if (settled !== undefined && Date.now() - settled.at >= BROWSE_REVALIDATE_MS) {
-    // A failure keeps serving the last good state; the TTL forces a fresh resolve.
-    refreshEntry(sdk, repo, key, settled).catch(() => undefined)
+    // A failure keeps serving the last good state; the TTL forces a fresh resolve. Any read issued
+    // since the entry was last checked will do (the home's revalidation of a moment ago, D-11).
+    refreshEntry(sdk, repo, key, settled, settled.checkedAt ?? Date.now()).catch(() => undefined)
   }
   return hit.promise
 }
@@ -1622,7 +1635,9 @@ function readerAfterMiss(sdk: EvoSDK, repo: RepoRef, stale: BrowseReader, oidHex
   const before = peekBrowseState(key)
   const resolveAgain = (): Promise<BrowseState> => {
     const hit = settledEntry(key)
-    if (hit !== undefined) return refreshEntry(sdk, repo, key, hit)
+    // A read issued now (or one in flight): the object may come from a push newer than any read
+    // held, such as a PR head or a linked commit.
+    if (hit !== undefined) return refreshEntry(sdk, repo, key, hit, Date.now())
     const pending = browseCache.get(key)
     // The first resolve is still in flight: it started after `stale` was made.
     if (pending !== undefined && browseEntryLive(pending)) return pending.promise

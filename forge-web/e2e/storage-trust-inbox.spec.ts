@@ -149,7 +149,10 @@ test.beforeAll(() => {
   g('-c', 'user.name=G5G18', '-c', 'user.email=g5g18@invalid', 'commit', '-q', '-m', 'a file on S3')
   git('OWNER', 'push', REMOTE, 'main')
   // CONTRIB's PR, from a branch of this repo (CONTRIB is made a writer), merged by OWNER below.
-  dg('OWNER', 'collab', 'add', SLUG, idOf('CONTRIB'), '--role', 'writer')
+  // RC1 consent (R-06): the member accepts before the owner can add them (--wait rides out a
+  // node that has not seen the consent yet).
+  dg('CONTRIB', 'collab', 'accept', SLUG)
+  dg('OWNER', 'collab', 'add', SLUG, idOf('CONTRIB'), '--role', 'writer', '--wait', '60')
   g('checkout', '-q', '-b', 'feature/greet')
   writeFileSync(join(SRC, 'greet.txt'), 'hello\n')
   g('add', 'greet.txt')
