@@ -1,0 +1,12 @@
+{
+  "name": "verdict_non_member_request_changes",
+  "description": "Review verdict code 5 (RC1 R-16): a non-member's request for changes, recorded without a membership proof and never counted. Both clients label it so the history shows why it does not count.",
+  "case": "verdict_label",
+  "input": {
+    "code": 5
+  },
+  "expected": {
+    "label": "changes requested (not a member)",
+    "code": 5
+  }
+}

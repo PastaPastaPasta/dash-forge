@@ -238,12 +238,17 @@ function runCaseV2(v: Vector): void {
         readonly cases: readonly {
           readonly target: v2.TransitionTarget
           readonly code: number
-          readonly action: v2.StateAction
+          readonly action: v2.MoveAction
           readonly actor: v2.Actor
           readonly targetNumber: number
         }[]
       }
       expect(cases.map((c) => v2.nextTransition(c.target, c.code, c.action, c.actor, c.targetNumber))).toEqual(v.expected)
+      break
+    }
+    case 'transition_fold': {
+      onlyKeys(v, ['sums'])
+      expect((v.input as { readonly sums: readonly number[] }).sums.map(v2.threadStateOf)).toEqual(v.expected)
       break
     }
     case 'transition_status': {
@@ -388,7 +393,7 @@ function runCaseV2(v: Vector): void {
       onlyKeys(v, ['runs', 'headOid', 'memberships', 'runners', 'policy'], {
         runs: ['id', 'headOid', 'name', 'status', 'conclusion', 'reporter', 'createdAt'],
         memberships: MEMBERSHIP_KEYS,
-        policy: ['requireChecks', 'requiredChecks'],
+        policy: ['requireChecks', 'requiredChecks', 'requiredCheckSources'],
       })
       const inp = v.input as {
         readonly runs: readonly v2.CheckRunRow[]

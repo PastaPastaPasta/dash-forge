@@ -28,8 +28,10 @@ import { Oid } from '@/components/ui/oid'
 function verdictIcon(verdict: VerdictName): JSX.Element {
   switch (verdict) {
     case 'approve':
+    case 'approveNonMember':
       return <Check className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden />
     case 'requestChanges':
+    case 'requestChangesNonMember':
       return <X className="h-3.5 w-3.5 text-danger-700 dark:text-danger-400" aria-hidden />
     default:
       return <MessageSquare className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />

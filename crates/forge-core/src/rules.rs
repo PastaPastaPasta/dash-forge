@@ -1885,6 +1885,12 @@ mod tests {
 
     #[derive(Deserialize, Serialize)]
     #[serde(deny_unknown_fields)]
+    struct Sums {
+        sums: Vec<i64>,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
     struct Transitions {
         transitions: Vec<v2::Transition>,
     }
@@ -1935,6 +1941,18 @@ mod tests {
                 let got: Vec<v2::StateStatus> =
                     inp.codes.iter().map(|&c| v2::status_of_code(c)).collect();
                 assert_eq!(got, expected::<Vec<v2::StateStatus>>(v), "vector `{ctx}`");
+            }
+            "transition_fold" => {
+                let inp: Sums = input(v);
+                let got: Vec<serde_json::Value> = inp
+                    .sums
+                    .iter()
+                    .map(|&s| {
+                        let (code, locked) = v2::fold_sum(s);
+                        serde_json::json!({ "code": code, "locked": locked })
+                    })
+                    .collect();
+                assert_eq!(serde_json::Value::from(got), v.expected, "vector `{ctx}`");
             }
             "transition_sum" => {
                 let inp: Transitions = input(v);
@@ -2034,8 +2052,9 @@ mod tests {
         let ctx = &v.name;
         match v.case.as_str() {
             "fold_issue" | "fold_pr" => run_fold_case(v),
-            "transition_moves" | "transition_status" | "transition_sum" | "repo_counts"
-            | "dense_number" | "dense_refusal" | "upstream_number" | "check_run_write" => {
+            "transition_moves" | "transition_status" | "transition_sum" | "transition_fold"
+            | "repo_counts" | "dense_number" | "dense_refusal" | "upstream_number"
+            | "check_run_write" => {
                 run_transition_case(v);
             }
             "pack_copies" => run_pack_copies(v),
