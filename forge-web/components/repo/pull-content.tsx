@@ -53,9 +53,10 @@ import {
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
-import { bypassNote, deleteBranchOffer, deleteBranchProblem } from '@/lib/view/pull-actions'
+import { bypassValue, deleteBranchOffer, deleteBranchProblem, requiredChecksLine } from '@/lib/view/pull-actions'
 import {
   createComment,
+  recordPolicyBypass,
   commentFirsts,
   createReview,
   LOCKED_REASON,
@@ -85,7 +86,7 @@ import {
 import { checksPhrase, expectedChecks, readCheckRuns, requiredSources, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
 import { headSync, readBranchState, readBranchTip } from '@/lib/repo/source-branch'
 import type { Event, EventKind, Holdings, RefState } from '@/lib/rules'
-import { linkedIssues, RoleOracle, type Policy, type PolicyStatus } from '@/lib/rules/v2'
+import { linkedIssues, RoleOracle, type ChecksState, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { checksState } from '@/lib/rules/parity'
 import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, type CostPreview as Cost } from '@/lib/sdk'
 import { commentEditDrops, pullSinceYourReview } from '@/lib/view/issues-view'
@@ -393,7 +394,6 @@ function PullPage({
       : checks.data === null || !membersKnown
         ? ('unknown' as const)
         : checksState(checks.data.rows, pull.headOid, new RoleOracle(thread.members), checks.data.runners, policyNow)
-  const checksBlocking = requiredChecks !== null && (requiredChecks === 'unknown' || !requiredChecks.met)
   const actions = pullActions({
     pull,
     viewer: identity,
@@ -539,7 +539,7 @@ function PullPage({
         // as the merge box and `dg pr merge --event-only --override-policy` record theirs.
         if (p.bypass.length > 0) {
           try {
-            await createComment(sdk, signer, repo, { targetId: pull.id, body: bypassNote(pull.headOid, pull.state.baseRef ?? pull.baseRefName, p.bypass), intent: `${intent}:bypass`, post: postContext })
+            await recordPolicyBypass(sdk, signer, repo, { target, rules: p.bypass, mergeOid: pull.headOid, intent: `${intent}:bypass` })
           } catch (e) {
             // The merge is recorded (final); a retry of this same action re-uses it and writes only the record.
             throw new Error(`The merge is recorded, but recording the rules bypass failed: ${guard.failed(e)} Retry to record it.`)
@@ -640,7 +640,7 @@ function PullPage({
         return composeCost(repo, 'review', { body: pending.body }, reviewFirst)
       case 'mark-merged':
         return pending.bypass.length > 0
-          ? previewCredits(transitionCost.credits + composeCost(repo, 'comment', { body: bypassNote(pull.headOid, pull.state.baseRef ?? pull.baseRefName, pending.bypass) }, commentFirst).credits)
+          ? previewCredits(transitionCost.credits + previewCreate('event', { value: bypassValue(pending.bypass) }).credits)
           : transitionCost
       case 'state':
       case 'draft':
@@ -1029,7 +1029,6 @@ function PullPage({
                   active: mergeSlot === 'shown',
                   unmetRules: actions.unmetRules,
                   canBypass: actions.canBypass,
-                  locked: thread.locked,
                   allowedMethods: policyNow?.mergeMethods ?? 0,
                   squashAuthors: commits.error
                     ? { error: commits.error }
@@ -1062,7 +1061,7 @@ function PullPage({
           {tab === 'conversation' ? (
             <>
               {!(open && pull.state.draft) && open && (actions.baseProtected || rules.status !== null) ? (
-                <BranchRules base={pull.baseRefName} baseProtected={actions.baseProtected} policy={rules.policy} status={rules.status} checksBlocking={checksBlocking} />
+                <BranchRules base={pull.baseRefName} baseProtected={actions.baseProtected} policy={rules.policy} status={rules.status} checks={requiredChecks} />
               ) : null}
 
               {/* Composer */}
@@ -1435,7 +1434,7 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
       return pending.bypass.length > 0
         ? {
             title: `Bypass the branch rules and mark PR #${number} as merged`,
-            description: `Records the merge of ${head.slice(0, 9)}, already on ${base}, done elsewhere. It moves no code, and it is final. These branch rules are not met, so this is a bypass, recorded on the PR as a comment: ${pending.bypass.join('; ')}.`,
+            description: `Records the merge of ${head.slice(0, 9)}, already on ${base}, done elsewhere. It moves no code, and it is final. These branch rules are not met, so this is a bypass, recorded on the PR as an event nobody can delete: ${pending.bypass.join('; ')}.`,
             label: 'Sign & record (bypass rules)',
           }
         : {
@@ -1606,18 +1605,20 @@ function BranchRules({
   baseProtected,
   policy,
   status,
-  checksBlocking,
+  checks,
 }: {
   base: string
   baseProtected: boolean
   policy: Policy | null | 'unknown'
   status: PolicyStatus | null | 'unknown'
-  checksBlocking: boolean
+  /** The head's required checks (`checksState`); null: none required; 'unknown': not read yet. */
+  checks: ChecksState | null | 'unknown'
 }): JSX.Element {
   const short = shortBranch(base)
   // The checks the policy requires: by name, or (none named) every reported one. Null: no policy read.
   const known = policy !== null && policy !== 'unknown' ? policy : null
   const named = known?.requiredChecks ?? []
+  const line = requiredChecksLine(checks, named)
   return (
     <section aria-label="Branch rules" className="rounded-lg border border-anvil-200 px-4 py-3 text-dense dark:border-anvil-800">
       {baseProtected ? (
@@ -1645,11 +1646,8 @@ function BranchRules({
       ) : null}
       {known !== null && (named.length > 0 || known.requireChecks === true) ? (
         <p className="mt-1 flex items-center gap-2" data-testid="policy-checks">
-          {checksBlocking ? <X className="h-4 w-4 shrink-0 text-danger" aria-hidden /> : <Check className="h-4 w-4 shrink-0 text-verify" aria-hidden />}
-          <span className="min-w-0 [overflow-wrap:anywhere]">
-            {checksBlocking ? 'Required checks are not all passing on the head' : 'Required checks pass'}
-            {named.length > 0 ? `: ${named.join(', ')}` : ''}
-          </span>
+          {line.ok ? <Check className="h-4 w-4 shrink-0 text-verify" aria-hidden /> : <X className="h-4 w-4 shrink-0 text-danger" aria-hidden />}
+          <span className="min-w-0 [overflow-wrap:anywhere]">{line.text}</span>
         </p>
       ) : null}
       {policy !== null && policy !== 'unknown' && (policy.mergeMethods ?? 0) !== 0 ? (

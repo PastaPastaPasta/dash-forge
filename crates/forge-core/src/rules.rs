@@ -864,10 +864,11 @@ fn neutralize_wildmatch(pattern: &str) -> String {
 // Event fold (issue / PR state)
 // ===========================================================================
 
-/// A collaboration `event` kind (forge-v2.md §3, numeric kinds 1–22). Kinds 1–10 change the
+/// A collaboration `event` kind (forge-v2.md §3, numeric kinds 1–23). Kinds 1–10 change the
 /// issue/PR state ([`apply_issue_event`], [`apply_pr_event`]); 11–18 are the review state
 /// ([`v2::fold_pr_review_v2`]); 17–22 are a thread's milestone, pin and lock
-/// ([`parity::fold_thread_meta_v2`]). None of 11–22 changes [`PrState`] / [`IssueState`].
+/// ([`parity::fold_thread_meta_v2`]); 23 is an audit record no fold reads. None of 11–23
+/// changes [`PrState`] / [`IssueState`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum EventKind {
@@ -915,6 +916,10 @@ pub enum EventKind {
     Lock,
     /// 22 — unlocked. Members only.
     Unlock,
+    /// 23 — a maintainer merged by bypassing the branch rules (`value` = the rules not met,
+    /// `oid` = the merge commit). Members only. The record of the bypass: an `event` is
+    /// immutable and non-deletable, so the bypasser cannot erase it (a comment could be).
+    PolicyBypass,
 }
 
 /// A single `event` document (§2.3), flattened for the fold.

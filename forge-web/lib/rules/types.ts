@@ -116,6 +116,8 @@ export type EventKind =
   | 'unpin'
   | 'lock'
   | 'unlock'
+  /** 23: a maintainer merged by bypassing the branch rules (`value` the rules, `oid` the merge commit). No fold reads it. */
+  | 'policyBypass'
 
 /** A single `event` document (§2.3), flattened for the fold. */
 export interface Event {

@@ -2,7 +2,7 @@
  * The browser merge as a resumable chain of steps (`ux-dx-spec.md` §5.7):
  *
  *   fetch base + head → merge → build pack → upload → packManifest → browse index →
- *   ref update → merge event → (a maintainer's bypass of the branch rules) the bypass comment
+ *   ref update → merge event → (a maintainer's bypass of the branch rules) the bypass event
  *
  * Each step's result is kept in a {@link MergeRun} the caller holds, so a retry resumes at the
  * step that failed and pays for nothing twice, and a failure after the upload names exactly
@@ -38,7 +38,7 @@ export const MERGE_STEPS: readonly { readonly id: MergeStepId; readonly label: s
   { id: 'index', label: 'Publish the browse index' },
   { id: 'ref', label: 'Move the base branch (ref update)' },
   { id: 'event', label: 'Record the merge (merge transition)' },
-  { id: 'bypass', label: 'Record the rules bypass (comment)' },
+  { id: 'bypass', label: 'Record the rules bypass (event)' },
 ]
 
 /** The steps a merge shows: the bypass record only when the merge bypasses the branch rules. */
@@ -77,7 +77,7 @@ export interface MergeRun {
   readonly manifestId?: string
   readonly refDocumentId?: string
   readonly eventId?: string
-  readonly bypassCommentId?: string
+  readonly bypassEventId?: string
 }
 
 /** A fresh run for `input`. */
@@ -128,7 +128,7 @@ export interface MergeRunDeps {
   readonly intent: string
   /**
    * A maintainer's bypass of the branch rules: after the merge event, writes the comment that
-   * records it ({@link bypassNote}, given the new tip) and resolves with the comment's id.
+   * records it (a policy-bypass event naming the new tip) and resolves with the event's id.
    * Absent: the rules are met, nothing to record.
    */
   readonly recordBypass?: (newTip: string, intent: string) => Promise<string>
@@ -362,7 +362,7 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
   const recordBypass = deps.recordBypass
   if (recordBypass !== undefined && !run.done.includes('bypass')) {
     const id = await attempt('bypass', () => recordBypass(result.newTip, `${deps.intent}:bypass`))
-    mark('bypass', { bypassCommentId: id })
+    mark('bypass', { bypassEventId: id })
   }
   return run
 }

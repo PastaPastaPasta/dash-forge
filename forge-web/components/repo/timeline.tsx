@@ -10,7 +10,7 @@
 
 import { Byline } from '@/components/repo/byline'
 import { importedVerdictOf, trustedOrigin } from '@/lib/repo/provenance'
-import { Check, CheckCircle2, Eye, GitCommit, GitMerge, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, Tag, Trash2, UserPlus, X } from 'lucide-react'
+import { Check, CheckCircle2, Eye, GitCommit, GitMerge, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, ShieldAlert, Tag, Trash2, UserPlus, X } from 'lucide-react'
 import type { TimelineItem } from '@/lib/view'
 import { branchName, plural, timeAgo } from '@/lib/view'
 import { anchorLabel } from '@/lib/view/inline-threads'
@@ -93,6 +93,12 @@ function eventPhrase(e: Event): { text: string; icon: JSX.Element; who?: string;
       return { text: 'locked the conversation', icon: <Lock className={muted} aria-hidden /> }
     case 'unlock':
       return { text: 'unlocked the conversation', icon: <LockOpen className={muted} aria-hidden /> }
+    case 'policyBypass':
+      // The immutable record of a maintainer's bypass (QW2-003): what was not met at the merge.
+      return {
+        text: value ? `merged by bypassing the branch rules (${value})` : 'merged by bypassing the branch rules',
+        icon: <ShieldAlert className="h-3.5 w-3.5 text-caution-700 dark:text-caution-400" aria-hidden />,
+      }
     default:
       return { text: String(kind), icon: <Tag className={muted} aria-hidden /> }
   }

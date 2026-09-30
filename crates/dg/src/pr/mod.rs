@@ -782,6 +782,25 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
     let policy_status = policy
         .as_ref()
         .map(|p| forge_core::rules::v2::meets_policy(&approvals, &oracle, p));
+    // The policy's required checks on the head, as `dg pr merge` and the web merge box judge
+    // them (QW2-011: the approvals alone were shown as "met" while a required check failed).
+    // `Err`: they could not be read, which the merge treats as not met.
+    let checks = match &policy {
+        Some(p) => required_checks(&collab, handle, &v, &oracle, p)
+            .await
+            .map_err(|e| format!("{e:#}")),
+        None => Ok(None),
+    };
+    let unmet = if let (Some(p), Some(st)) = (&policy, &policy_status) {
+        let mut u = unmet_rules(p, st, checks.as_ref().ok().and_then(Option::as_ref));
+        if checks.is_err() {
+            u.push("required checks: could not be read".to_string());
+        }
+        u
+    } else {
+        Vec::new()
+    };
+    let bypasses = policy_bypasses(&v);
     let dismissed: std::collections::BTreeMap<String, String> = review_state
         .dismissed_reviews
         .iter()
@@ -797,8 +816,16 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
 
     let reviews_json = reviews_json(&reviews, &comments, &v.head, &dismissed);
     let unresolved = conv.threads.iter().filter(|t| !t.resolved).count();
-    ctx.emit(
-        json!({
+    let standing = json!({
+        "requiredChecks": checks.as_ref().ok().cloned().flatten(),
+        "requiredChecksError": checks.as_ref().err(),
+        "policyMet": policy.as_ref().map(|_| unmet.is_empty()),
+        "unmetRules": unmet,
+        "policyBypasses": bypasses.iter().map(|b| json!({
+            "id": b.id, "actor": b.actor, "rules": b.value, "mergeOid": b.oid, "createdAt": b.created_at,
+        })).collect::<Vec<_>>(),
+    });
+    let mut out = json!({
             "number": v.patch.number,
             "id": v.patch.document_id,
             "repoId": v.patch.repo_id,
@@ -839,7 +866,12 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
             "hiddenReviews": hidden_reviews,
             "hiddenEventValues": v.log.hidden_values,
             "plaintextEventValues": v.log.plaintext_values,
-        }),
+    });
+    if let (Some(o), serde_json::Value::Object(extra)) = (out.as_object_mut(), standing) {
+        o.extend(extra);
+    }
+    ctx.emit(
+        out,
         || {
             println!(
                 "#{} [{}] {}",
@@ -879,12 +911,28 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
             }
             if let (Some(p), Some(st)) = (&policy, &policy_status) {
                 println!(
-                    "policy: {} of {} required approval{}{} — {}",
+                    "policy: {} of {} required approval{}{}{} — {}",
                     st.have,
                     st.need,
                     if st.need == 1 { "" } else { "s" },
                     if p.approver_role == 1 { " (maintainers)" } else { "" },
-                    if st.met { "met" } else { "not met" }
+                    checks_words(&checks),
+                    if unmet.is_empty() {
+                        "met".to_string()
+                    } else {
+                        format!("not met: {}", unmet.join("; "))
+                    }
+                );
+            }
+            for b in &bypasses {
+                println!(
+                    "! merged by bypassing the branch rules ({}), by {}{}",
+                    safe(b.value.as_deref().unwrap_or("rules not readable here")),
+                    b.actor,
+                    b.oid
+                        .as_deref()
+                        .map(|o| format!(" at {}", short(o)))
+                        .unwrap_or_default()
                 );
             }
             if !rows.is_empty() {
@@ -946,6 +994,48 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
         },
     );
     Ok(())
+}
+
+/// The PR's policy-bypass events (kind 23): the record of each merge that bypassed the branch
+/// rules, oldest first.
+fn policy_bypasses(v: &PatchView) -> Vec<&forge_core::rules::Event> {
+    let mut out: Vec<_> = v
+        .log
+        .events
+        .iter()
+        .filter(|e| e.kind == forge_core::rules::EventKind::PolicyBypass)
+        .collect();
+    out.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+    out
+}
+
+/// `dg pr view`'s words for the policy's required checks, after its approvals: ", required
+/// checks: build passed, lint failing"; empty when the policy requires none.
+fn checks_words(
+    checks: &std::result::Result<Option<forge_core::rules::v2::ChecksState>, String>,
+) -> String {
+    use forge_core::rules::v2::CheckState;
+    match checks {
+        Err(_) => ", required checks: could not be read".to_string(),
+        Ok(None) => String::new(),
+        Ok(Some(c)) if c.required.is_empty() => ", required checks: none reported".to_string(),
+        Ok(Some(c)) => {
+            let each: Vec<String> = c
+                .required
+                .iter()
+                .map(|r| {
+                    let state = match r.state {
+                        CheckState::Passed => "passed",
+                        CheckState::Failing => "failing",
+                        CheckState::Pending => "pending",
+                        CheckState::Missing => "missing",
+                    };
+                    format!("{} {state}", safe(&r.name))
+                })
+                .collect();
+            format!(", required checks: {}", each.join(", "))
+        }
+    }
 }
 
 /// The threads under their file and line, then the general comments.
@@ -1120,7 +1210,21 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     } else {
         None
     };
+    // GitHub's "Some checks were not successful": checks on the head that are not passing, and
+    // that the branch policy did not already refuse (it requires none, or none of these), are a
+    // warning, never a refusal (QW-083: `dg pr merge` merged over a failing lint run silently).
+    let not_passing = if bypassed.is_empty() {
+        head_checks_not_passing(&collab, handle, &view, policy.as_ref()).await
+    } else {
+        Vec::new()
+    };
     let mut steps = Steps::new(ctx.json);
+    if !ctx.json && !not_passing.is_empty() {
+        eprintln!(
+            "warning: some checks on the head are not passing: {} (`dg pr checks {repo} {number}` shows the runs)",
+            not_passing.join(", ")
+        );
+    }
     if !ctx.json {
         eprintln!(
             "Merging PR #{number} of {} into {}{}",
@@ -1134,7 +1238,12 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         );
     }
     ctx.confirm_or_cancel(&format!(
-        "Merge PR #{number}? ({}{}; ~0.0003 DASH plus the pack if new objects are stored)",
+        "Merge PR #{number}{}? ({}{}; ~0.0003 DASH plus the pack if new objects are stored)",
+        if not_passing.is_empty() {
+            String::new()
+        } else {
+            format!(" although {} not passing", plural_checks(not_passing.len()))
+        },
         if event_only {
             "records the merge only"
         } else {
@@ -1147,6 +1256,8 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         }
     ))?;
 
+    // What the merge costs: the push (the helper pays from this identity) and the events.
+    let before = s.balance().await;
     let merge_oid = if let Some(oid) = merge_oid {
         steps.ok("plan", format!("record only, naming {}", short(&oid)));
         oid
@@ -1181,21 +1292,31 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         format!("merge transition {}", short(&transition_id)),
     );
 
-    // A maintainer's bypass is recorded on the PR, where every reader sees it (GitHub shows the
-    // bypass in the timeline). The merge stands if this fails; say so.
+    // A maintainer's bypass is recorded on the PR as a policy-bypass `event` (kind 23), where
+    // every reader sees it: GitHub's bypass is a timeline event the actor cannot delete, and an
+    // `event` is immutable and non-deletable (a comment was neither). The merge stands if this
+    // fails; say so.
     if !bypassed.is_empty() {
-        let note = bypass_note(&merge_oid, &view.patch.base_ref_name, &bypassed);
-        match collab
-            .comment(handle, &view.patch.document_id, &note, None, None)
-            .await
-        {
+        let value = bypass_value(&bypassed);
+        let posted = async {
+            let oid = hex::decode(&merge_oid).context("merge oid")?;
+            Ok::<_, anyhow::Error>(
+                collab
+                    .post_event(
+                        handle,
+                        &view.patch.target(),
+                        forge_core::rules::EventKind::PolicyBypass,
+                        Some(&value),
+                        Some(&oid),
+                    )
+                    .await?,
+            )
+        }
+        .await;
+        match posted {
             Ok(id) => steps.ok(
                 "bypass",
-                format!(
-                    "recorded ({}) in comment {}",
-                    bypassed.join("; "),
-                    short(&id)
-                ),
+                format!("recorded ({}) in event {}", bypassed.join("; "), short(&id)),
             ),
             Err(e) => {
                 if !ctx.json {
@@ -1237,6 +1358,8 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     };
     let merged = after.as_ref().is_some_and(|v| v.state.merged);
     let on_base = after.as_ref().and_then(|v| v.state.merge_on_base);
+    let spent = s.spent_since(before).await;
+    let price = dash_usd_price();
     ctx.emit(
         json!({
             "status": if merged { "merged" } else { "merge_recorded" },
@@ -1248,6 +1371,8 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
             "mergeOnBase": on_base,
             "branchDeleted": branch_deleted,
             "bypassedRules": bypassed,
+            "checksNotPassing": not_passing,
+            "cost": cost_json(spent, price),
             "steps": steps.done,
         }),
         || {
@@ -1268,9 +1393,71 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
             } else {
                 println!("✓ merged PR #{number} ({})", short(&merge_oid));
             }
+            println!("  cost: {}", cost_line(spent, price));
         },
     );
     Ok(())
+}
+
+/// "1 check is" / "2 checks are".
+fn plural_checks(n: usize) -> String {
+    if n == 1 {
+        "1 check is".to_string()
+    } else {
+        format!("{n} checks are")
+    }
+}
+
+/// The checks on the PR head whose newest trusted run is not passing ("lint failing"), that
+/// the branch policy did not already judge: the policy refuses (or a bypass records) a required
+/// check that is not passing, so those are left out. Best effort: empty when unreadable.
+async fn head_checks_not_passing(
+    collab: &Collab<'_>,
+    handle: &Repo,
+    view: &PatchView,
+    policy: Option<&forge_core::rules::review::Policy>,
+) -> Vec<String> {
+    let judged: std::collections::BTreeSet<&str> = match policy {
+        Some(p) if checks_judged(p) && p.required_checks.is_empty() => return Vec::new(),
+        Some(p) => p.required_checks.iter().map(String::as_str).collect(),
+        None => std::collections::BTreeSet::new(),
+    };
+    let Ok(oracle) = collab.member_oracle(handle).await else {
+        return Vec::new();
+    };
+    let every = forge_core::rules::v2::ChecksPolicy {
+        require_checks: true,
+        required_checks: Vec::new(),
+        required_check_sources: Vec::new(),
+    };
+    match collab
+        .head_checks(handle, &view.head, &oracle, &every)
+        .await
+    {
+        Ok(state) => not_passing_words(&state, &judged),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// `name state` for each check of `state` that is not passing and not in `judged`.
+fn not_passing_words(
+    state: &forge_core::rules::v2::ChecksState,
+    judged: &std::collections::BTreeSet<&str>,
+) -> Vec<String> {
+    use forge_core::rules::v2::CheckState;
+    state
+        .required
+        .iter()
+        .filter(|c| c.state != CheckState::Passed && !judged.contains(c.name.as_str()))
+        .map(|c| {
+            let word = match c.state {
+                CheckState::Failing => "failing",
+                CheckState::Pending | CheckState::Passed => "pending",
+                CheckState::Missing => "missing",
+            };
+            format!("{} {word}", safe(&c.name))
+        })
+        .collect()
 }
 
 /// What a merge builds.
@@ -1814,21 +2001,37 @@ fn unmet_rules(
     out
 }
 
-/// The comment a maintainer's bypass leaves on the PR, so the timeline shows the merge skipped
-/// the branch rules and which (the `transition` has no field for it). The web writes the same.
-fn bypass_note(merge_oid: &str, base_ref: &str, rules: &[String]) -> String {
-    let base = base_ref.strip_prefix("refs/heads/").unwrap_or(base_ref);
-    let list = rules
-        .iter()
-        .map(|r| format!("- {r}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!(
-        "**Merged by bypassing the branch rules** (a maintainer override): {} into `{base}`.\n\n\
-         Rules not met at the merge:\n{list}\n\n\
-         Branch rules are a client rule every Forge client applies; consensus does not enforce them.",
-        short(merge_oid)
-    )
+/// The `value` of the policy-bypass event a maintainer's bypass records: the rules not met,
+/// `; `-joined, within the event's 120 characters (whole rules only; those that do not fit are
+/// counted, "(+2 more)"). The web writes the same (`bypassValue`).
+fn bypass_value(rules: &[String]) -> String {
+    // forge-community `event.value`: `maxLength` 120 (and 480 bytes, which 120 chars never pass).
+    const MAX: usize = 120;
+    let mut out = String::new();
+    for (i, r) in rules.iter().enumerate() {
+        let rest = rules.len() - i - 1;
+        let sep = if out.is_empty() { "" } else { "; " };
+        let more = if rest == 0 {
+            String::new()
+        } else {
+            format!(" (+{rest} more)")
+        };
+        let fits = out.chars().count() + sep.len() + r.chars().count() + more.chars().count();
+        if fits > MAX {
+            if out.is_empty() {
+                // The first rule alone is too long: its start, cut, then what follows it.
+                let keep = MAX - more.chars().count() - 1;
+                return r.chars().take(keep).collect::<String>() + "…" + &more;
+            }
+            return format!("{out} (+{} more)", rest + 1);
+        }
+        out.push_str(sep);
+        out.push_str(r);
+    }
+    if out.is_empty() {
+        out.push_str("the branch rules");
+    }
+    out
 }
 
 /// The E-coded error for a failed merge step (conflicts are E105; the rest classify).
@@ -2986,17 +3189,92 @@ mod tests {
             unmet_rules(&policy(0, false, 0), &status(0, 0), Some(&no_runs)),
             ["required checks: none reported on the head"]
         );
-        let note = bypass_note(
-            &"ab".repeat(20),
-            "refs/heads/main",
-            &["required approvals: 0 of 1".to_string()],
+        // The bypass event's value: the rules, `; `-joined (the web's `bypassValue`).
+        assert_eq!(
+            bypass_value(&[
+                "required approvals: 0 of 1".to_string(),
+                "required check `lint`: failing".to_string()
+            ]),
+            "required approvals: 0 of 1; required check `lint`: failing"
         );
-        // Word for word the web's `bypassNote` (pull-actions.test.ts).
-        assert!(note.contains(
-            "**Merged by bypassing the branch rules** (a maintainer override): abababababab into `main`."
-        ));
-        assert!(note.contains("Rules not met at the merge:\n- required approvals: 0 of 1\n"));
-        assert!(note.contains("consensus does not enforce them"));
+    }
+
+    #[test]
+    fn merge_warns_of_checks_not_passing_that_the_policy_did_not_judge() {
+        use forge_core::rules::v2::{CheckState, ChecksState, RequiredCheck};
+        let check = |name: &str, state| RequiredCheck {
+            name: name.into(),
+            state,
+            run_id: Some("r".into()),
+        };
+        let state = ChecksState {
+            required: vec![
+                check("build", CheckState::Passed),
+                check("e2e", CheckState::Pending),
+                check("lint", CheckState::Failing),
+            ],
+            met: false,
+            untrusted: 0,
+        };
+        let none = std::collections::BTreeSet::new();
+        assert_eq!(
+            not_passing_words(&state, &none),
+            ["e2e pending", "lint failing"]
+        );
+        // a required check is the policy's to refuse (or a bypass's to record)
+        let judged = std::collections::BTreeSet::from(["lint"]);
+        assert_eq!(not_passing_words(&state, &judged), ["e2e pending"]);
+        assert_eq!(plural_checks(1), "1 check is");
+        assert_eq!(plural_checks(2), "2 checks are");
+    }
+
+    #[test]
+    fn view_names_each_required_check_after_the_approvals() {
+        use forge_core::rules::v2::{CheckState, ChecksState, RequiredCheck};
+        let state = ChecksState {
+            required: vec![
+                RequiredCheck {
+                    name: "build".into(),
+                    state: CheckState::Passed,
+                    run_id: None,
+                },
+                RequiredCheck {
+                    name: "lint".into(),
+                    state: CheckState::Failing,
+                    run_id: None,
+                },
+            ],
+            met: false,
+            untrusted: 0,
+        };
+        assert_eq!(
+            checks_words(&Ok(Some(state))),
+            ", required checks: build passed, lint failing"
+        );
+        assert_eq!(checks_words(&Ok(None)), "");
+        assert_eq!(
+            checks_words(&Err("x".into())),
+            ", required checks: could not be read"
+        );
+    }
+
+    #[test]
+    fn a_bypass_value_fits_the_event_and_counts_what_does_not() {
+        let rules: Vec<String> = (0..10)
+            .map(|i| format!("required check `check-number-{i}`: missing"))
+            .collect();
+        let v = bypass_value(&rules);
+        assert!(v.chars().count() <= 120, "{v}");
+        assert!(
+            v.starts_with("required check `check-number-0`: missing; "),
+            "{v}"
+        );
+        assert!(v.ends_with(" (+8 more)"), "{v}");
+        // one rule longer than the value: cut, and still counted
+        let long = vec!["x".repeat(200)];
+        let v = bypass_value(&long);
+        assert!(v.chars().count() == 120 && v.ends_with('…'), "{v}");
+        assert_eq!(bypass_value(&[]), "the branch rules");
     }
 
     #[test]

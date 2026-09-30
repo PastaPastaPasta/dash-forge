@@ -77,6 +77,7 @@ const EVENT_KIND_BY_INT: Readonly<Record<number, EventKind>> = {
   20: 'unpin',
   21: 'lock',
   22: 'unlock',
+  23: 'policyBypass',
 }
 
 /**
