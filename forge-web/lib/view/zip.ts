@@ -116,18 +116,18 @@ export async function walkFiles(
         const [oid, prefix] = queue.shift() as [string, string]
         trees += 1
         active += 1
-        readTree(reader, oid).then(
-          (entries) => {
+        const fail = (e: unknown): void => {
+          failed = true
+          reject(e)
+        }
+        readTree(reader, oid)
+          .then((entries) => {
             active -= 1
             if (failed) return
             take(entries, prefix)
             pump()
-          },
-          (e: unknown) => {
-            failed = true
-            reject(e)
-          },
-        )
+          })
+          .catch(fail)
       }
       if (active === 0 && !failed) resolve()
     }

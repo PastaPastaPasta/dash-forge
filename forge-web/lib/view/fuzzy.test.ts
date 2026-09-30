@@ -49,6 +49,11 @@ describe('fuzzyMatch', () => {
     expect(fuzzyMatch('np', 'src/net_processing.cpp')?.positions).toEqual([4, 8])
   })
 
+  it('keeps positions on the path when lowercasing would change its length', () => {
+    const m = fuzzyMatch('md', 'İstanbul/README.md')
+    expect(m?.positions.map((p) => 'İstanbul/README.md'[p])).toEqual(['m', 'd'])
+  })
+
   it('is null when a character is missing', () => {
     expect(fuzzyMatch('xyz', 'src/validation.cpp')).toBeNull()
   })

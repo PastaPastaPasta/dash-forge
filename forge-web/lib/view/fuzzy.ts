@@ -24,6 +24,21 @@ export interface FuzzyMatch {
   readonly positions: readonly number[]
 }
 
+/**
+ * `text` lowercased one UTF-16 unit at a time, so each position stays where it was: a character
+ * whose lowercase form is longer (`İ`) is kept as it is, and matched positions stay the path's.
+ */
+function foldCase(text: string): string {
+  const lower = text.toLowerCase()
+  if (lower.length === text.length) return lower
+  let out = ''
+  for (const ch of text) {
+    const l = ch.toLowerCase()
+    out += l.length === ch.length ? l : ch
+  }
+  return out
+}
+
 /** Whether every character of `needle` (lowercase) appears in `haystack` (lowercase), in order. */
 function hasMatch(needle: string, haystack: string): boolean {
   let at = 0
@@ -52,9 +67,9 @@ function bonusAt(path: string, i: number): number {
  * as GitHub's finder ignores them). An empty query matches nothing.
  */
 export function fuzzyMatch(query: string, path: string): FuzzyMatch | null {
-  const needle = query.replace(/\s+/g, '').toLowerCase()
+  const needle = foldCase(query.replace(/\s+/g, ''))
   if (needle === '') return null
-  const lower = path.toLowerCase()
+  const lower = foldCase(path)
   if (!hasMatch(needle, lower)) return null
   const n = needle.length
   const m = path.length
@@ -122,12 +137,12 @@ export interface FuzzyHit extends FuzzyMatch {
  * path order.
  */
 export function fuzzyRank(query: string, paths: readonly string[], limit: number): FuzzyHit[] {
-  const needle = query.replace(/\s+/g, '').toLowerCase()
+  const needle = foldCase(query.replace(/\s+/g, ''))
   if (needle === '') return []
   const hits: FuzzyHit[] = []
   for (const path of paths) {
     // The cheap in-order test first: most paths fail it, and scoring is the costly part.
-    if (!hasMatch(needle, path.toLowerCase())) continue
+    if (!hasMatch(needle, foldCase(path))) continue
     const match = fuzzyMatch(needle, path)
     if (match !== null) hits.push({ path, ...match })
   }

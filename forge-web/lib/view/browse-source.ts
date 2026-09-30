@@ -141,6 +141,7 @@ export function clearChunkCache(): void {
   chunkCache.clear()
   chunkCacheBytes = 0
   chunkQueriesSent = 0
+  pendingChunkQueries.clear()
 }
 
 /** Query one batch of chunk docs (uncached) and return payloads keyed by seq. */
