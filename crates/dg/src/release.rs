@@ -289,7 +289,8 @@ async fn create_sealed(ctx: &Ctx, args: &ReleaseCreateArgs, s: &Session) -> Resu
                 "nothing was written"
             } else {
                 "the release was not written; sealed copies and an asset list may have been \
-                 stored, and a re-run seals and stores them again"
+                 stored, and a re-run with the same files and notes reuses a stored list (unless \
+                 the key epoch moved meanwhile)"
             })
         })?;
     let spent = s.spent_since(before).await;
@@ -302,6 +303,7 @@ async fn create_sealed(ctx: &Ctx, args: &ReleaseCreateArgs, s: &Session) -> Resu
             "documentId": written.document_id,
             "assets": written.sealed_assets,
             "assetListKept": written.asset_list_kept,
+            "assetListReused": written.asset_list_reused,
             "warnings": written.warnings,
             "cost": cost_json(spent, price),
         }),
@@ -315,20 +317,28 @@ async fn create_sealed(ctx: &Ctx, args: &ReleaseCreateArgs, s: &Session) -> Resu
                     a.sealed_sha256.as_deref().map_or("external", short)
                 );
             }
-            let assets = if written.asset_list_kept {
-                "asset list unchanged".to_string()
-            } else {
-                format!("{} asset(s)", written.sealed_assets.len())
-            };
             println!(
-                "✓ published sealed release {tag} of {} ({assets}) · {}",
+                "✓ published sealed release {tag} of {} ({}) · {}",
                 s.repo.display(),
+                sealed_assets_line(&written),
                 cost_line(spent, price)
             );
             print_warnings(&written.warnings);
         },
     );
     Ok(())
+}
+
+/// What a sealed revision's asset list is, as `dg release create` prints it.
+fn sealed_assets_line(written: &forge_core::collab::ReleaseWritten) -> String {
+    let n = written.sealed_assets.len();
+    if written.asset_list_kept {
+        "asset list unchanged".to_string()
+    } else if written.asset_list_reused {
+        format!("{n} asset(s), the asset list an earlier attempt stored")
+    } else {
+        format!("{n} asset(s)")
+    }
 }
 
 fn print_warnings(warnings: &[String]) {

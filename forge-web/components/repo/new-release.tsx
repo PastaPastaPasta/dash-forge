@@ -66,7 +66,8 @@ import { Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { cn } from '@/lib/utils'
 
-type AssetState = { readonly state: 'waiting' | 'uploading' | 'failed' } | { readonly state: 'done'; readonly copies: number; readonly of: number }
+/** `reused`: a private repo's re-run names the file an earlier attempt sealed and stored (§16.5). */
+type AssetState = { readonly state: 'waiting' | 'uploading' | 'failed' | 'reused' } | { readonly state: 'done'; readonly copies: number; readonly of: number }
 
 function AssetStateIcon({ state }: { state: AssetState | undefined }): JSX.Element | null {
   switch (state?.state) {
@@ -78,6 +79,8 @@ function AssetStateIcon({ state }: { state: AssetState | undefined }): JSX.Eleme
       ) : (
         <CheckCircle2 className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden />
       )
+    case 'reused':
+      return <CheckCircle2 className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden />
     case 'failed':
       return <XCircle className="h-3.5 w-3.5 text-danger-700 dark:text-danger-400" aria-hidden />
     default:
@@ -94,6 +97,7 @@ function gapLinkLabel(gap: ReleaseStorageGap): string {
 function stateText(s: AssetState | undefined): string {
   if (s === undefined) return ''
   if (s.state === 'done') return s.copies < s.of ? `stored, verified (${s.copies} of ${s.of} copies)` : `stored, verified (${plural(s.copies, 'copy', 'copies')})`
+  if (s.state === 'reused') return 'stored by an earlier attempt'
   return s.state
 }
 
@@ -340,6 +344,10 @@ function NewReleaseDialog({
             stored = 0
             setProgress(Object.fromEntries(newFiles.map((f) => [f.name, { state: 'waiting' } as AssetState])))
             setStatus('This repo’s key changed during the upload: sealing and uploading again…')
+          }
+          if (e.step === 'reused') {
+            setProgress(Object.fromEntries(newFiles.map((f) => [f.name, { state: 'reused' } as AssetState])))
+            setStatus('An earlier attempt already stored these files and the asset list: nothing is uploaded again.')
           }
           if (e.step === 'release') setStatus(sealedRepo ? 'Sealing and writing the release…' : 'Writing the release…')
         },

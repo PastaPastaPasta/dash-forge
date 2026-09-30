@@ -57,6 +57,7 @@ import {
   sealedReleasePreview,
   type SealedReleaseEnv,
 } from './sealed-release'
+import type { PackManifest } from './packs'
 
 const repoIdBytes = new Uint8Array(32).fill(0x11)
 const ownerBytes = new Uint8Array(32).fill(0x22)
@@ -118,6 +119,7 @@ function envOf(before: ReleaseList, keys: EpochKeys[], manifest: ReleaseManifest
       if (manifest === null) throw new Error('no manifest')
       return manifest
     },
+    storedLists: async () => [],
     store: async (sealed, sha256Hex) => {
       stored.push(sealed)
       const h = await sha(sealed)
@@ -337,6 +339,103 @@ describe('the asset list (§16.5)', () => {
     expect((await writtenFields()).fields).toEqual(r.resolved.fields)
     const moved = envOf(await listOf(full), [k1])
     await expect(createSealedRelease(sdk, auth, REPO, { tagName: 'v1.0.0', resolved: r.resolved }, moved.env)).rejects.toThrow(/moved/)
+  })
+})
+
+describe('a re-run after a failed release write (§16.5: the stored asset list is reused)', () => {
+  const H = 'ef'.repeat(32)
+  const prev: ReleaseManifest = {
+    v: 1,
+    tag: 'v1.0.0',
+    total: 1,
+    assets: [{ name: 'app.tar.gz', sha256: H, sizeBytes: 10, uris: ['https://a.example/app'], sealedSha256: H, sealedSizeBytes: 100 }],
+  }
+  const x = file('x.bin', 'x')
+
+  /** An attempt that stored its files and list under `keys`; its release write "failed" (the re-run's list does not show it). */
+  async function storedByAnAttempt(keys: EpochKeys) {
+    const first = envOf(await listOf(full), [keys], prev)
+    const r = await createSealedRelease(sdk, auth, REPO, { tagName: 'v1.0.0', files: [x] }, first.env)
+    const list = first.stored[first.stored.length - 1] as Uint8Array
+    const hash = r.resolved.fields.assetManifest as string
+    creates.length = 0
+    const record: PackManifest = {
+      packHash: hash,
+      kind: 4,
+      sizeBytes: list.length,
+      objectCount: 0,
+      chunkCount: 0,
+      storage: 1,
+      uris: [`https://pub.example/packs/${hash}.pack`],
+      tips: [],
+      supersedes: [],
+      createdAt: 1000,
+      documentId: 'PM1',
+      uploader: OWNER,
+    }
+    return { list, hash, record, assets: r.resolved.assets }
+  }
+
+  /** A re-run's environment: the lists it finds, each opened with the keyring the writer passes (the carried one is `prev`). */
+  function rerunEnv(before: ReleaseList, keys: EpochKeys[], stored: { list: Uint8Array; hash: string; record: PackManifest }, lists = [stored.record]) {
+    const e = envOf(before, keys, prev)
+    const opened: string[] = []
+    e.env.storedLists = async () => lists
+    e.env.openManifest = async (fields, ring) => {
+      if (fields.assetManifest === PREV_HASH) return prev
+      opened.push(fields.assetManifest as string)
+      if (fields.assetManifest !== stored.hash) throw new Error('not stored')
+      return openReleaseManifest(stored.list, stored.list.length, Buffer.from(stored.hash, 'hex'), fields.tag, fields.notesContinue === true, ring)
+    }
+    return { ...e, opened }
+  }
+
+  it('names the list the failed attempt stored: nothing sealed, uploaded or recorded again', async () => {
+    const s = await storedByAnAttempt(k0)
+    const rerun = rerunEnv(await listOf(full), [k0], s)
+    const events: string[] = []
+    const r = await createSealedRelease(sdk, auth, REPO, { tagName: 'v1.0.0', files: [x] }, rerun.env, (e) => events.push(e.step))
+    expect(rerun.stored).toHaveLength(0)
+    expect(creates.map((c) => c.documentType)).toEqual(['release'])
+    expect((await writtenFields()).fields).toEqual({ ...full, assetManifest: s.hash })
+    expect(events).toContain('reused')
+    expect(r.resolved.assets).toEqual(s.assets)
+  })
+
+  it('builds a new list when the stored one states other files, or none of the signer’s is unnamed and newer', async () => {
+    const s = await storedByAnAttempt(k0)
+    const other = rerunEnv(await listOf(full), [k0], s)
+    await createSealedRelease(sdk, auth, REPO, { tagName: 'v1.0.0', files: [file('x.bin', 'y')] }, other.env)
+    expect(other.opened).toEqual([s.hash])
+    expect(other.stored).toHaveLength(2) // the file, then the list
+    for (const record of [
+      { ...s.record, uploader: base58Encode(new Uint8Array(32).fill(0x33)) }, // another signer's
+      { ...s.record, createdAt: 50 }, // older than the carried revision
+    ]) {
+      creates.length = 0
+      const e = rerunEnv(await listOf(full), [k0], s, [record])
+      await createSealedRelease(sdk, auth, REPO, { tagName: 'v1.0.0', files: [x] }, e.env)
+      expect(e.opened).toEqual([])
+      expect(e.stored).toHaveLength(2)
+    }
+    // Named by a readable revision (of any tag): that revision's list, not a failed attempt's.
+    creates.length = 0
+    const named = rerunEnv(await listOf(full, { tag: 'v0.9', assetManifest: s.hash }), [k0], s)
+    await createSealedRelease(sdk, auth, REPO, { tagName: 'v1.0.0', files: [x] }, named.env)
+    expect(named.opened).toEqual([])
+    expect(named.stored).toHaveLength(2)
+  })
+
+  it('builds a new list under the new key when the epoch moved since the failed attempt', async () => {
+    const s = await storedByAnAttempt(k0)
+    const moved = rerunEnv(await listOf(full), [k1], s)
+    await createSealedRelease(sdk, auth, REPO, { tagName: 'v1.0.0', files: [x] }, moved.env)
+    // Opened under the write key only: the epoch-0 list does not open.
+    expect(moved.opened).toEqual([s.hash])
+    expect(moved.stored).toHaveLength(2)
+    const { fields, epoch } = await writtenFields()
+    expect(epoch).toBe(1)
+    expect(fields.assetManifest).not.toBe(s.hash)
   })
 })
 
