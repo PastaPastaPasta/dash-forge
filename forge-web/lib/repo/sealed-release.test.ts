@@ -486,7 +486,8 @@ describe('a re-run after a failed release write (§16.5: the stored asset list i
     const events: string[] = []
     const r = await createSealedRelease(sdk, auth, REPO, { tagName: 'v1.0.0', files: [x] }, rerun.env, (e) => events.push(e.step))
     expect(events.filter((e) => e === 'reused' || e === 'resealing')).toEqual(['reused', 'resealing'])
-    expect(r.orphaned).toEqual([s.hash])
+    // the earlier attempt's file, then its list: both under the old key, named by nothing
+    expect(r.orphaned).toEqual([s.assets.find((a) => a.name === 'x.bin')?.sealedSha256, s.hash])
     expect(rerun.stored).toHaveLength(2)
     expect((await writtenFields()).epoch).toBe(1)
   })

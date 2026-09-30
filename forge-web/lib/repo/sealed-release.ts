@@ -180,6 +180,8 @@ const ASSET_MAX_URIS = 8
 const STORED_LIST_WINDOW = 100
 /** Of those, how many of the signer's unnamed ones are opened (each is a fetch; forge-core `STORED_LIST_CANDIDATES`). */
 const STORED_LIST_CANDIDATES = 4
+/** How long a reused list's file gets to answer its header read ({@link SealedReleaseEnv.storedHeader}). */
+const STORED_HEADER_TIMEOUT_MS = 15_000
 
 /** The default {@link SealedReleaseEnv}: fresh sessions of `auth`, and `storage` (none: nothing can be stored). */
 export function sealedReleaseEnv(
@@ -203,7 +205,8 @@ export function sealedReleaseEnv(
     // `push.ts` reaches this module through `writes.ts`, so a static import would load it mid-cycle.
     openManifest: async (fields, keys) => (await import('../view/release-download')).loadReleaseManifest(sdk, repo, fields, keys),
     storedLists: () => readNewestManifestsOfKind(sdk, repo, PACK_KIND.RELEASE_ASSETS, STORED_LIST_WINDOW),
-    storedHeader: async (entry) => (await import('../view/release-download')).readSealedAssetHeader(entry),
+    // Bounded: a stalled place must not hold the publish; the list is then sealed anew.
+    storedHeader: async (entry) => (await import('../view/release-download')).readSealedAssetHeader(entry, { signal: AbortSignal.timeout(STORED_HEADER_TIMEOUT_MS) }),
     store: (sealed, sha256Hex, onStep) => {
       // Nothing of a private repo reaches storage unsealed (as `storeArtifact` refuses).
       if (!isSealedPack(sealed)) throw new Error('refusing to upload an unencrypted release file for a private repo')
@@ -444,7 +447,8 @@ async function buildAssetList(
   const found = await storedAssetList(env, keys, { tag: from.base.tag, kept: assets, files: from.files, notes, source: from.prev?.source }, scope)
   if (found !== null) {
     onEvent({ step: 'reused', assets: found.assets })
-    return { fields: statement({ ...fit.fields, assetManifest: found.hash }), assets: [...found.assets], stored: [found.hash] }
+    const files = found.assets.slice(assets.length).flatMap((a) => (a.sealedSha256 === undefined ? [] : [a.sealedSha256]))
+    return { fields: statement({ ...fit.fields, assetManifest: found.hash }), assets: [...found.assets], stored: [...files, found.hash] }
   }
   // Refused before anything is stored: a list whose plaintext alone is over the 1 MiB cap (the
   // new entries sized with one short URI, so this never refuses a list that would fit).

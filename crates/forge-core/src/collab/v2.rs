@@ -4609,9 +4609,15 @@ impl<'a> Collab<'a> {
             .await
         {
             fields.asset_manifest = Some(hash.clone());
-            // named by nothing if the key moves before signing, as a list stored now would be
+            // named by nothing if the key moves before signing, as files and a list stored now
+            // would be
+            let mut stored: Vec<String> = entries[assets.len()..]
+                .iter()
+                .filter_map(|a| a.sealed_sha256.clone())
+                .collect();
+            stored.push(hash);
             return Ok(Rebuilt {
-                stored: vec![hash],
+                stored,
                 reused: true,
                 ..done(fields, entries)
             });
