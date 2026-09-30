@@ -398,15 +398,41 @@ describe('EvoSdkService: a quorum rotation the quorum service lags (#212)', () =
     const svc = new EvoSdkService(lagging(Infinity), clock)
     await svc.initialize(CONFIG)
     const started = clock.now()
-    const read = settled(svc.getSdk().documents.query({} as never))
+    let settledAt = 0
+    const read = settled(svc.getSdk().documents.query({} as never)).finally(() => (settledAt = clock.now()))
     // In steps: each reconnect settles before the next pause is set.
     for (let t = 0; t < QUORUM_BUDGET_MS + 60_000; t += 5_000) await clock.advance(5_000)
     expect(await read).toEqual({ ok: false, e: QUORUM_GONE })
     expect(svc.quorumWaitSince).toBeNull()
-    // Every pause fitted inside the budget.
-    const total = QUORUM_WAITS_MS.reduce((a, n) => a + n, 0)
-    expect(total).toBeGreaterThanOrEqual(QUORUM_BUDGET_MS)
-    expect(clock.now() - started).toBeGreaterThanOrEqual(QUORUM_BUDGET_MS)
+    // It waited, and not past the budget (give or take the 5 s the clock steps by).
+    expect(settledAt - started).toBeGreaterThan(QUORUM_WAITS_MS[0] as number)
+    expect(settledAt - started).toBeLessThanOrEqual(QUORUM_BUDGET_MS + 5_000)
+  })
+
+  it('a new connection going live (another read\'s reconnect, a refresh) ends the pause early', async () => {
+    const clock = manualClock()
+    const svc = new EvoSdkService(lagging(3), clock)
+    await svc.initialize(CONFIG)
+    const started = clock.now()
+    let settledAt = 0
+    const read = settled(svc.getSdk().documents.query({} as never)).finally(() => (settledAt = clock.now()))
+    await clock.advance(5_000)
+    await svc.refresh()
+    await flush()
+    expect(await read).toEqual({ ok: true, v: new Map([['x', 'from c3']]) })
+    expect(settledAt - started).toBeLessThan(QUORUM_WAITS_MS[0] as number)
+  })
+
+  it('a cleanup during the pause (a network switch) ends the wait with the miss', async () => {
+    const clock = manualClock()
+    const svc = new EvoSdkService(lagging(Infinity), clock)
+    await svc.initialize(CONFIG)
+    const read = settled(svc.getSdk().documents.query({} as never))
+    await flush()
+    svc.cleanup()
+    await clock.advance(QUORUM_WAITS_MS[0] as number)
+    expect(await read).toEqual({ ok: false, e: QUORUM_GONE })
+    expect(svc.quorumWaitSince).toBeNull()
   })
 
   it('a quorum service that does not answer fails the read at once', async () => {

@@ -251,8 +251,9 @@ export class EvoSdkService {
   private lastRecoverAt = -Infinity
   /** The quorum rotation reads are waiting out: its first miss (the budget's start) and its last. */
   private rotation: { readonly start: number; last: number } | null = null
-  /** Reads holding for a rotated quorum ({@link quorumWaitSince}). */
+  /** Reads holding for a rotated quorum ({@link quorumWaitSince}), and since when some have been. */
   private quorumWaiters = 0
+  private quorumWaitStart = 0
   private refreshTimer: unknown = null
   private refreshDue = false
   private retryTimer: unknown = null
@@ -347,7 +348,7 @@ export class EvoSdkService {
    * reads go out again by themselves ({@link waitForQuorum}).
    */
   get quorumWaitSince(): number | null {
-    return this.quorumWaiters > 0 && this.rotation !== null ? this.rotation.start : null
+    return this.quorumWaiters > 0 ? this.quorumWaitStart : null
   }
 
   /** The raw error of the read that found this build's contracts absent, or null (see {@link missing}). */
@@ -687,65 +688,74 @@ export class EvoSdkService {
       return await this.track(used, read)
     } catch (e) {
       if (!isStaleConnectionError(e)) throw e
-      this.noteQuorumMiss(e)
+      if (isQuorumMiss(e)) this.noteQuorumMiss()
+      let retried = used
       try {
         if (this.current === used && !(await this.recover(e, used))) throw e
         const now = this.current
         if (now === null || now === used) throw e
+        retried = now
         return await this.track(now, read)
       } catch (again) {
-        return this.waitForQuorum(read, again)
+        return this.waitForQuorum(read, again, retried)
       }
     }
   }
 
-  /**
-   * Whether `e` is a quorum miss, counting it towards the rotation it belongs to. "No available
-   * addresses" counts too while a rotation is being waited out: the SDK bans the nodes whose
-   * proofs it could not check, until none is left.
-   */
   /** Platform is unreachable (a failed connect or reconnect), not merely lagging. */
   private unreachable(): boolean {
     return this.status.phase === 'error'
   }
 
-  private noteQuorumMiss(e: unknown): boolean {
+  /**
+   * Count a quorum miss towards the rotation it belongs to (a new one after
+   * {@link QUORUM_QUIET_MS} without a miss) and return that rotation.
+   */
+  private noteQuorumMiss(): { readonly start: number; last: number } {
     const now = this.clock.now()
-    const ongoing = this.rotation !== null && now - this.rotation.last < QUORUM_QUIET_MS ? this.rotation : null
-    if (!isQuorumMiss(e) && !(ongoing !== null && isStaleConnectionError(e))) return false
-    if (ongoing === null) this.rotation = { start: now, last: now }
-    else ongoing.last = now
-    return true
+    if (this.rotation === null || now - this.rotation.last >= QUORUM_QUIET_MS) this.rotation = { start: now, last: now }
+    else this.rotation.last = now
+    return this.rotation
   }
 
   /**
    * A read failed on a quorum miss even on a new connection: the network rotated a quorum that
    * its quorum service, the connection's only source of keys, does not list yet (#212). Pause by
-   * {@link QUORUM_WAITS_MS}, reconnect (reading the service's list again) and run the read again,
-   * until it lands, fails otherwise, or {@link QUORUM_BUDGET_MS} from the rotation's first miss
-   * has gone. Meanwhile {@link quorumWaitSince} says so, and the read stays pending rather than
-   * failing. A quorum service or network that does not answer is no lag: the reconnect fails, the
-   * service moves to its unreachable state, and the read fails at once. Only reads get here
-   * (writes run once; the write engine's own nonce and landing checks are reads), so a write is
-   * never sent again by it.
+   * {@link QUORUM_WAITS_MS} (cut short by a new connection going live, and never past
+   * {@link QUORUM_BUDGET_MS} from the rotation's first miss), reconnect unless that already
+   * happened (a new connection reads the service's list again), and run the read again, until it
+   * lands, fails otherwise, or the budget is spent. Meanwhile {@link quorumWaitSince} says so,
+   * and the read stays pending rather than failing. A quorum service or network that does not
+   * answer is no lag: the reconnect fails, the service moves to its unreachable state, and the
+   * read fails at once. Only reads get here (writes run once; the write engine's own nonce and
+   * landing checks are reads), so a write is never sent again by it.
    */
-  private async waitForQuorum<T>(read: (sdk: EvoSDK) => Promise<T>, cause: unknown): Promise<T> {
+  private async waitForQuorum<T>(read: (sdk: EvoSDK) => Promise<T>, cause: unknown, missedOn: Connection): Promise<T> {
+    if (!isQuorumMiss(cause) || this.unreachable() || this.current === null) throw cause
+    const epoch = this.epoch
+    const deadline = this.noteQuorumMiss().start + QUORUM_BUDGET_MS
     let last = cause
-    this.quorumWaiters++
+    let failed = missedOn
+    if (this.quorumWaiters++ === 0) this.quorumWaitStart = this.clock.now()
     this.notify()
     try {
-      for (const pause of QUORUM_WAITS_MS) {
-        if (!this.noteQuorumMiss(last) || this.unreachable() || this.current === null) throw last
-        const rotation = this.rotation as { readonly start: number }
-        if (this.clock.now() + pause - rotation.start > QUORUM_BUDGET_MS) throw last
-        await new Promise((r) => this.clock.setTimeout(() => r(undefined), pause))
+      for (const step of QUORUM_WAITS_MS) {
+        const pause = Math.min(step, deadline - this.clock.now())
+        if (pause <= 0) break
+        await this.pauseUnlessSwapped(pause)
+        if (this.epoch !== epoch || this.current === null) break
+        if (this.current === failed && !(await this.recover(last, failed)) && this.unreachable()) break
         const used = this.live()
-        if (!(await this.recover(last, used)) && this.unreachable()) throw last
         try {
-          return await this.track(this.live(), read)
+          const value = await this.track(used, read)
+          // The service caught up: the next rotation starts a budget of its own.
+          this.rotation = null
+          return value
         } catch (e) {
-          if (!isStaleConnectionError(e)) throw e
+          if (!isQuorumMiss(e)) throw e
+          this.noteQuorumMiss()
           last = e
+          failed = used
         }
       }
       throw last
@@ -753,6 +763,23 @@ export class EvoSdkService {
       this.quorumWaiters--
       this.notify()
     }
+  }
+
+  /** Wait `ms`, or less if a new connection goes live meanwhile (another read's reconnect). */
+  private pauseUnlessSwapped(ms: number): Promise<void> {
+    const generation = this.generationNo
+    return new Promise((resolve) => {
+      let timer: unknown = null
+      const done = (): void => {
+        this.clock.clearTimeout(timer)
+        unsubscribe()
+        resolve()
+      }
+      const unsubscribe = this.subscribe(() => {
+        if (this.generationNo !== generation) done()
+      })
+      timer = this.clock.setTimeout(done, ms)
+    })
   }
 
   /** One recovery (the rate-limit wait and the reconnect) that every failing read shares. */
