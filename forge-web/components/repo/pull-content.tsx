@@ -122,7 +122,7 @@ import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { InlineCommentsProvider, type ThreadActions } from '@/components/repo/inline-comments'
-import { LockedBanner, lockViewerOf } from '@/components/repo/locked-banner'
+import { LockToggle, LockedBanner, lockConfirm, lockStateText, lockViewerOf } from '@/components/repo/locked-banner'
 import { ReviewDrawer, useReviewDraft } from '@/components/repo/review-drawer'
 import { BranchCommitCost, IdentityNote, buildUpdateBranch, useSuggestions } from '@/components/repo/branch-commit-panel'
 import { PullMerge, useMergeSlot } from '@/components/repo/pull-merge'
@@ -384,6 +384,8 @@ function PullPage({
     policy: rules.status,
     checksBlocking,
   })
+  // "Mark as merged" is offered on a ready PR only.
+  const showMarkMerged = actions.canMarkMerged && !pull.state.draft
   const base = shortBranch(pull.baseRefName) || 'the base branch'
   const canAuthorOrMember = authorOrMember && !archived
   const canMember = identity !== null && isMember && !archived && guard.disabledReason === null
@@ -987,7 +989,7 @@ function PullPage({
               {/* Composer */}
               <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="pr-composer">
                 {/* Locked: a non-member's composer is replaced by the banner (consensus would refuse the post). */}
-                <LockedBanner locked={thread.locked && !archived} viewer={lockViewer}>
+                <LockedBanner locked={thread.locked && !archived} viewer={lockViewer} target="pull">
                   <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
                   {composeBlock !== null ? (
                     <PrivateComposeNote reason={composeBlock} />
@@ -999,7 +1001,7 @@ function PullPage({
                     </>
                   )}
                 </LockedBanner>
-                <div className={cn('mt-3 flex flex-wrap items-center justify-between gap-3', writeBlocked && !actions.canCloseReopen && !(actions.canMarkMerged && !pull.state.draft) && 'hidden')}>
+                <div className={cn('mt-3 flex flex-wrap items-center justify-between gap-3', writeBlocked && !actions.canCloseReopen && !showMarkMerged && 'hidden')}>
                   {writeBlocked ? <span /> : <CostPreview cost={commentCost} />}
                   <div className="flex flex-wrap items-center gap-2">
                     {actions.canCloseReopen ? (
@@ -1007,7 +1009,7 @@ function PullPage({
                         {open ? 'Close pull request' : 'Reopen pull request'}
                       </Button>
                     ) : null}
-                    {actions.canMarkMerged && !pull.state.draft ? (
+                    {showMarkMerged ? (
                       <Button
                         variant={actions.policyOverride ? 'danger' : 'outline'}
                         onClick={() => setPending({ kind: 'mark-merged' })}
@@ -1052,7 +1054,7 @@ function PullPage({
                     {!isMember && holdings.settled ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">Only approvals from maintainers and writers count.</span> : null}
                   </div>
                 ) : null}
-                {actions.canMarkMerged && !pull.state.draft ? (
+                {showMarkMerged ? (
                   <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
                     {actions.markCountsNow
                       ? `The head commit is already on ${base}: marking it merged records that.`
@@ -1228,13 +1230,12 @@ function PullPage({
             {isMember || thread.locked ? (
               <SidebarSection title="Conversation" icon={thread.locked ? Lock : LockOpen}>
                 <p className="text-anvil-600 dark:text-anvil-300" data-testid="thread-lock-state">
-                  {thread.locked ? 'Locked to members' : 'Open to everyone'}
+                  {lockStateText(thread.locked)}
                 </p>
                 {canMember ? (
-                  <Button size="sm" variant="outline" className="mt-2" onClick={() => confirmEvent({ kind: 'lock', on: !thread.locked }, transitionCost)} data-testid="lock-toggle">
-                    {thread.locked ? <LockOpen className="h-3.5 w-3.5" aria-hidden /> : <Lock className="h-3.5 w-3.5" aria-hidden />}
-                    {thread.locked ? 'Unlock conversation' : 'Lock conversation'}
-                  </Button>
+                  <div className="mt-2">
+                    <LockToggle locked={thread.locked} onToggle={(on) => confirmEvent({ kind: 'lock', on }, transitionCost)} />
+                  </div>
                 ) : null}
               </SidebarSection>
             ) : null}
@@ -1389,13 +1390,7 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
         ? { title: 'Resolve conversation', description: `Appends ${via} naming the thread. It collapses for everyone; anyone who can resolve it can unresolve it.`, label: 'Sign & resolve' }
         : { title: 'Unresolve conversation', description: `Appends ${via} naming the thread.`, label: 'Sign & unresolve' }
     case 'lock':
-      return pending.on
-        ? {
-            title: `Lock conversation on PR #${number}`,
-            description: 'Records a lock: from then on the network refuses comments and reviews from anyone who is not a maintainer or writer. Any maintainer or writer can unlock it.',
-            label: 'Sign & lock',
-          }
-        : { title: `Unlock conversation on PR #${number}`, description: 'Records an unlock: everyone can comment and review again.', label: 'Sign & unlock' }
+      return lockConfirm(pending.on, `PR #${number}`, 'pull')
     default:
       return { title: '', description: '', label: 'Confirm' }
   }

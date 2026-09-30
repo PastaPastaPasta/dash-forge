@@ -25,7 +25,7 @@ import { mockSdk, newSeen, type Doc, type Seen, type Store } from '@/lib/repo/dr
 import { bytesToBase64, hexToBase64, setPlatformVersion } from '@/lib/sdk'
 import { clearDpnsCache } from '@/lib/view/dpns'
 import { loadIssueThread, loadPullThread } from '@/lib/view/issues-view'
-import { LockedBanner, lockViewerOf, type LockViewer } from './locked-banner'
+import { LockToggle, LockedBanner, lockConfirm, lockStateText, lockViewerOf, type LockViewer } from './locked-banner'
 
 const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', community: 'COMMUNITY', group: 'GROUP' }
 const REPO_ID = 'C8XSf6R4shR1kqFKUZQnuaEZ5DkW7uoe9qtQYZpS5SRd'
@@ -167,10 +167,10 @@ afterEach(() => {
 })
 
 /** The composer both pages pass as the banner's children. */
-const composer = <textarea aria-label="Comment" data-testid="composer" />
+const composerEl = <textarea aria-label="Comment" data-testid="composer" />
 
-function render(locked: boolean, viewer: LockViewer): { banner: HTMLElement | null; composer: HTMLElement | null } {
-  act(() => root.render(<LockedBanner locked={locked} viewer={viewer}>{composer}</LockedBanner>))
+function render(locked: boolean, viewer: LockViewer, target: 'issue' | 'pull' = 'pull'): { banner: HTMLElement | null; composer: HTMLElement | null } {
+  act(() => root.render(<LockedBanner locked={locked} viewer={viewer} target={target}>{composerEl}</LockedBanner>))
   return { banner: host.querySelector('[data-testid="locked-banner"]'), composer: host.querySelector('[data-testid="composer"]') }
 }
 
@@ -180,6 +180,8 @@ describe('LockedBanner', () => {
     expect(banner?.textContent).toMatch(/This conversation has been locked and limited to collaborators\./)
     expect(banner?.textContent).toMatch(/Only maintainers and writers can comment or review/)
     expect(composer).toBeNull()
+    // An issue takes no reviews: the note says so.
+    expect(render(true, 'outsider', 'issue').banner?.textContent).toMatch(/Only maintainers and writers can comment;/)
   })
 
   it('signed out, still checking, or a membership that could not be read: the banner, no composer', () => {
@@ -206,6 +208,32 @@ describe('LockedBanner', () => {
       expect(banner).toBeNull()
       expect(composer).not.toBeNull()
     }
+  })
+})
+
+describe('LockToggle (the rail button of both pages)', () => {
+  const clicked: boolean[] = []
+  const toggle = (locked: boolean): HTMLButtonElement => {
+    act(() => root.render(<LockToggle locked={locked} onToggle={(lock) => clicked.push(lock)} />))
+    return host.querySelector('[data-testid="lock-toggle"]') as HTMLButtonElement
+  }
+
+  it('offers the other state and asks for it on click', () => {
+    clicked.length = 0
+    const lock = toggle(false)
+    expect(lock.textContent).toBe('Lock conversation')
+    act(() => lock.click())
+    const unlock = toggle(true)
+    expect(unlock.textContent).toBe('Unlock conversation')
+    act(() => unlock.click())
+    expect(clicked).toEqual([true, false])
+  })
+
+  it('confirms with the target\'s own words', () => {
+    expect(lockConfirm(true, 'PR #5', 'pull')).toMatchObject({ title: 'Lock conversation on PR #5', label: 'Sign & lock' })
+    expect(lockConfirm(true, 'PR #5', 'pull').description).toMatch(/refuses comments and reviews from anyone/)
+    expect(lockConfirm(false, 'issue #3', 'issue')).toEqual({ title: 'Unlock conversation on issue #3', description: 'Records an unlock: everyone can comment again.', label: 'Sign & unlock' })
+    expect(lockStateText(true)).toBe('Locked to members')
   })
 })
 
