@@ -2897,7 +2897,7 @@ async fn load_signer(
         Ok(key_path)
     })?;
     let identity = client
-        .fetch_identity(&bridge.identity_id)
+        .fetch_signer(&bridge)
         .await
         .with_context(|| format!("fetching identity {}", bridge.identity_id))?;
     Ok(Signer { identity, bridge })

@@ -574,6 +574,39 @@ fn non_empty(v: Option<String>) -> Option<String> {
     v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
+/// `key` when it names one network by itself (`testnet`, `mainnet`, `devnet-<name>`), as a
+/// key source records it (`dfk1:<network>:…`, an identity file's `network`): a bare `devnet`
+/// (an older identity file) names none.
+/// The key comes back in [`Network::key`] form (`Testnet` → `testnet`).
+pub fn full_network_key(key: &str) -> Option<String> {
+    let (network, name) = split_devnet_key(non_empty(Some(key.to_string())), None);
+    match (network?.to_ascii_lowercase().as_str(), name) {
+        (kind @ ("testnet" | "mainnet"), _) => Some(kind.to_string()),
+        ("devnet", Some(name)) => Some(format!("devnet-{name}")),
+        _ => None,
+    }
+}
+
+/// A network value in the `devnet-<name>` form every tool prints ([`Network::key`]), split
+/// into `devnet` and the name, so `DASH_FORGE_NETWORK=devnet-bonsia` means what it says. A
+/// name that disagrees with the layer's own devnet name is left as given, and
+/// [`NetworkSettings::resolve`] refuses the pair.
+fn split_devnet_key(
+    network: Option<String>,
+    devnet_name: Option<String>,
+) -> (Option<String>, Option<String>) {
+    let named = network
+        .as_deref()
+        .and_then(|n| n.get(..7).zip(n.get(7..)))
+        .filter(|(kind, name)| kind.eq_ignore_ascii_case("devnet-") && !name.is_empty())
+        .map(|(_, name)| name.to_string());
+    match (named, devnet_name) {
+        (Some(name), None) => (Some("devnet".into()), Some(name)),
+        (Some(name), Some(given)) if name == given => (Some("devnet".into()), Some(given)),
+        (_, given) => (network, given),
+    }
+}
+
 impl NetworkSettings {
     /// The layer from command-line flags (`--network`, `--devnet-name`, `--dapi-addresses`).
     /// `--devnet-name` without `--network` means devnet, so the flag is never silently
@@ -583,8 +616,8 @@ impl NetworkSettings {
         devnet_name: Option<String>,
         dapi_addresses: Option<String>,
     ) -> Self {
-        let devnet_name = non_empty(devnet_name);
-        let network = non_empty(network).or_else(|| devnet_name.as_ref().map(|_| "devnet".into()));
+        let (network, devnet_name) = split_devnet_key(non_empty(network), non_empty(devnet_name));
+        let network = network.or_else(|| devnet_name.as_ref().map(|_| "devnet".into()));
         Self {
             network,
             devnet_name,
@@ -658,7 +691,7 @@ impl NetworkSettings {
 
     /// Whether this layer picks one network by itself: a devnet name, or `testnet` /
     /// `mainnet`. A bare `devnet` still needs a name from a lower layer.
-    fn names_a_network(&self) -> bool {
+    pub fn names_a_network(&self) -> bool {
         self.devnet_name.is_some()
             || self
                 .network
@@ -670,9 +703,11 @@ impl NetworkSettings {
     /// quorum URL in that order.
     fn from_lookup(get: impl Fn(&str) -> Option<String>, keys: [&str; 4]) -> Self {
         let [network, devnet_name, dapi_addresses, quorum_base_url] = keys;
+        let (network, devnet_name) =
+            split_devnet_key(non_empty(get(network)), non_empty(get(devnet_name)));
         Self {
-            network: non_empty(get(network)),
-            devnet_name: non_empty(get(devnet_name)),
+            network,
+            devnet_name,
             dapi_addresses: non_empty(get(dapi_addresses)),
             quorum_base_url: non_empty(get(quorum_base_url)),
         }
@@ -711,6 +746,23 @@ impl NetworkSettings {
     /// a devnet name was given. A devnet needs a name; its DAPI addresses and quorum URL
     /// fall back to `deployments/devnet-<name>.json`, as do the forge-v2 contract ids.
     pub fn resolve(self) -> Result<NetworkTarget> {
+        self.normalized().resolve_split()
+    }
+
+    /// This layer with a `devnet-<name>` network value split into `devnet` and the name, as
+    /// [`Self::from_flags`] and the lookups do. For a layer built field by field (`dg`'s
+    /// `config.toml`), so [`Self::overlay`] compares like with like.
+    #[must_use]
+    pub fn normalized(self) -> Self {
+        let (network, devnet_name) = split_devnet_key(self.network, self.devnet_name);
+        Self {
+            network,
+            devnet_name,
+            ..self
+        }
+    }
+
+    fn resolve_split(self) -> Result<NetworkTarget> {
         let kind = match (&self.network, &self.devnet_name) {
             (Some(kind), _) => kind.as_str(),
             (None, Some(_)) => "devnet",
@@ -746,9 +798,15 @@ impl NetworkSettings {
                 };
                 (network, recorded)
             }
+            other if other.len() > 7 && other.starts_with("devnet-") => {
+                return Err(Error::Config(format!(
+                    "network {kind:?} and devnet name {:?} disagree: set only one of them",
+                    self.devnet_name.unwrap_or_default()
+                )))
+            }
             other => {
                 return Err(Error::Config(format!(
-                    "unknown network {other:?}: expected testnet, mainnet or devnet"
+                    "unknown network {other:?}: expected testnet, mainnet, devnet or devnet-<name>"
                 )))
             }
         };
@@ -1376,5 +1434,34 @@ mod tests {
         );
         assert!(parse_dapi_addresses(",, ,").unwrap().is_empty());
         assert!(parse_dapi_addresses("https://host/path").is_err());
+    }
+
+    #[test]
+    fn the_devnet_key_form_every_tool_prints_selects_that_devnet() {
+        // QW-032: `DASH_FORGE_NETWORK=devnet-bonsia` (what dg prints) was E204.
+        let env = |k: &str| match k {
+            ENV_NETWORK => Some("devnet-bonsia".to_string()),
+            _ => None,
+        };
+        let layer = NetworkSettings::from_lookup(env, ENV_KEYS);
+        assert_eq!(layer.network.as_deref(), Some("devnet"));
+        assert_eq!(layer.devnet_name.as_deref(), Some("bonsia"));
+        assert_eq!(layer.resolve().unwrap().network.key(), "devnet-bonsia");
+        let flags = NetworkSettings::from_flags(Some("DEVNET-bonsia".into()), None, None);
+        assert_eq!(flags.resolve().unwrap().network.key(), "devnet-bonsia");
+        // the same name twice is fine; two names are refused, not silently picked
+        let same =
+            NetworkSettings::from_flags(Some("devnet-bonsia".into()), Some("bonsia".into()), None);
+        assert_eq!(same.resolve().unwrap().network.key(), "devnet-bonsia");
+        let clash =
+            NetworkSettings::from_flags(Some("devnet-bonsia".into()), Some("moutai".into()), None);
+        let err = clash.resolve().unwrap_err().to_string();
+        assert!(err.contains("disagree"), "{err}");
+        // a bare `devnet-` names nothing
+        assert!(layer_err("devnet-").contains("unknown network"));
+    }
+
+    fn layer_err(network: &str) -> String {
+        layer(network).resolve().unwrap_err().to_string()
     }
 }
