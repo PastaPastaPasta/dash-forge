@@ -802,12 +802,44 @@ export function setWriteClock(c: WriteClock | null): void {
   clock = c ?? REAL_CLOCK
 }
 
+/**
+ * Per connection and identity: the balance after the last write this tab measured, and the
+ * balances earlier writes replaced (their "before"s). A node a block behind still answers one of
+ * those; a read equal to one is stale, not the balance a write starts from or ends at.
+ */
+interface BalanceTrail {
+  readonly latest: bigint
+  readonly replaced: readonly bigint[]
+}
+const trails = new WeakMap<object, Map<string, BalanceTrail>>()
+
+function trailOf(sdk: EvoSDK, identityId: string): BalanceTrail | undefined {
+  return trails.get(sdk)?.get(identityId)
+}
+
+function noteMeasured(sdk: EvoSDK, identityId: string, before: bigint, after: bigint): void {
+  let byId = trails.get(sdk)
+  if (!byId) trails.set(sdk, (byId = new Map()))
+  const replaced = [before, ...(byId.get(identityId)?.replaced ?? [])].filter((b) => b !== after).slice(0, 8)
+  byId.set(identityId, { latest: after, replaced })
+}
+
+/**
+ * The balance a write starts from, given what a read just answered: a stale answer (a balance an
+ * earlier measured write already replaced) is the last measured one instead, so the write's
+ * charge does not fold in the one before it.
+ */
+export function balanceBeforeWrite(sdk: EvoSDK, identityId: string, read: bigint): bigint {
+  const trail = trailOf(sdk, identityId)
+  return trail !== undefined && trail.replaced.includes(read) ? trail.latest : read
+}
+
 /** Read a balance until it moves off `before` (a write's fee settles a block later). */
 async function balanceAfter(sdk: EvoSDK, identityId: string, before: bigint): Promise<bigint | null> {
   for (let i = 0; i < 8; i++) {
     try {
       const now = (await facades(sdk).identities.fetch(identityId))?.balance
-      if (now !== undefined && now !== before) return now
+      if (now !== undefined && now !== before && !(trailOf(sdk, identityId)?.replaced.includes(now) ?? false)) return now
     } catch {
       /* transient read failure: try again */
     }
@@ -816,11 +848,57 @@ async function balanceAfter(sdk: EvoSDK, identityId: string, before: bigint): Pr
   return null
 }
 
-/** The credits a write took (negative: refunded), from the balance on each side of it. */
-export async function measureActual(sdk: EvoSDK, identityId: string, before: bigint | null): Promise<number | null> {
-  if (before === null) return null
-  const after = await balanceAfter(sdk, identityId, before)
-  return after === null ? null : Number(before - after)
+/**
+ * Per identity, the balance measurements still running for writes that released the writer lock.
+ * The identity's next write waits for them before it reads its own "before" ({@link serialized}):
+ * a measurement still reading once the next write lands sees both fees, and the next write's own
+ * row counts the second again (D-2: a review's inline comment recorded at the pair's fee, the
+ * ledger then off by the review's fee, shown as "top-ups").
+ */
+const measuring = new Map<string, Promise<void>>()
+
+function trackMeasurement(identityId: string, measurement: Promise<unknown>): void {
+  const all = Promise.all([measuring.get(identityId), measurement]).then(
+    () => undefined,
+    () => undefined,
+  )
+  measuring.set(identityId, all)
+  void all.then(() => {
+    if (measuring.get(identityId) === all) measuring.delete(identityId)
+  })
+}
+
+/**
+ * How long a write waits for the last one's measurement. A healthy one reads its "after" within
+ * a block; one still reading past this (DAPI slow or down) no longer holds writes up: its row may
+ * then fold in the next write's fee, as before D-2.
+ */
+const MEASUREMENT_WAIT_MS = 12_000
+
+/** Wait (bounded, in wall time) for this identity's measurements still reading. Never rejects. */
+function lastMeasurement(identityId: string): Promise<void> {
+  const pending = measuring.get(identityId)
+  if (pending === undefined) return Promise.resolve()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const cap = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, MEASUREMENT_WAIT_MS)
+  })
+  return Promise.race([pending, cap]).finally(() => clearTimeout(timer))
+}
+
+/**
+ * The credits a write took (negative: refunded), from the balance on each side of it. The
+ * identity's next write waits until this has read its "after".
+ */
+export function measureActual(sdk: EvoSDK, identityId: string, before: bigint | null): Promise<number | null> {
+  if (before === null) return Promise.resolve(null)
+  const measurement = balanceAfter(sdk, identityId, before).then((after) => {
+    if (after === null) return null
+    noteMeasured(sdk, identityId, before, after)
+    return Number(before - after)
+  })
+  trackMeasurement(identityId, measurement)
+  return measurement
 }
 
 // ---------------------------------------------------------------------------
@@ -966,7 +1044,7 @@ export function serialized<T>(identityId: string, run: () => Promise<T>, waitMs 
     // Gave up while queued in this tab: pass the turn on without writing.
     if (waiting.signal.aborted) return Promise.reject(new WriterBusyError())
     clearTimeout(timer)
-    return writeHold(run)
+    return lastMeasurement(identityId).then(() => writeHold(run))
   }
   // The chain's tail never rejects (see `tail` below).
   const prev = writeLocks.get(identityId) ?? Promise.resolve()
@@ -1043,7 +1121,10 @@ function documentForCreate(
   )
 }
 
-/** Report a charged write (after the lock is released: measuring takes up to 8 s). */
+/**
+ * Report a charged write. Started while the write still holds the lock, so the identity's next
+ * write waits for its measurement; it does not hold the lock itself (measuring takes up to 8 s).
+ */
 function reportSpend(
   sdk: EvoSDK,
   auth: WriteAuth,
@@ -1053,6 +1134,18 @@ function reportSpend(
   void measureActual(sdk, auth.identityId, event.balanceBefore).then((actualCredits) =>
     auth.onSpend?.({ ...event, identityId: auth.identityId, network: auth.network, actualCredits }),
   )
+}
+
+/**
+ * Run a document write as the identity's only writer. Its charge is reported before the lock
+ * passes on, so the next write waits for that measurement (not for the report itself).
+ */
+function serializedWrite<T>(sdk: EvoSDK, auth: WriteAuth, write: () => Promise<{ result: T; spend: Spend | null }>): Promise<T> {
+  return serialized(auth.identityId, async () => {
+    const r = await wrote(sdk, write())
+    if (r.spend) reportSpend(sdk, auth, r.spend)
+    return r.result
+  })
 }
 
 /**
@@ -1085,10 +1178,7 @@ export function createDocumentIdempotent(sdk: EvoSDK, auth: WriteAuth, params: C
   if (problem !== null) return Promise.reject(new Error(`refusing this write: ${problem}`))
   // A write can be the page's first proved exchange: serialize with the version the SDK knows now.
   followSdkVersion(sdk)
-  return serialized(auth.identityId, () => wrote(sdk, createDocumentUnlocked(sdk, auth, params))).then((r) => {
-    reportSpend(sdk, auth, r.spend)
-    return r.result
-  })
+  return serializedWrite(sdk, auth, () => createDocumentUnlocked(sdk, auth, params))
 }
 
 export interface CreateParams {
@@ -1133,7 +1223,7 @@ async function createDocumentUnlocked(
   const cacheKey = pendingWriteKey(ownerId, contractId, documentType, params.intent ?? newIntent())
   const identity = await facades(sdk).identities.fetch(ownerId)
   if (!identity) throw new WriteAuthError(`identity ${ownerId} not found on ${auth.network}`)
-  const balanceBefore = identity.balance
+  const balanceBefore = balanceBeforeWrite(sdk, ownerId, identity.balance)
   const spend = (kind: string, documentId: string): Spend => ({
     kind: `${kind}:${documentType}`,
     repo: repoOf(data, contractId),
@@ -1477,10 +1567,7 @@ interface DocumentsDeleteFacadeLike {
 export function deleteDocumentIdempotent(sdk: EvoSDK, auth: WriteAuth, params: DeleteParams): Promise<DeleteResult> {
   // A write can be the page's first proved exchange: serialize with the version the SDK knows now.
   followSdkVersion(sdk)
-  return serialized(auth.identityId, () => wrote(sdk, deleteDocumentUnlocked(sdk, auth, params))).then((r) => {
-    if (r.spend) reportSpend(sdk, auth, r.spend)
-    return r.result
-  })
+  return serializedWrite(sdk, auth, () => deleteDocumentUnlocked(sdk, auth, params))
 }
 
 export interface DeleteParams {
@@ -1518,12 +1605,13 @@ async function deleteDocumentUnlocked(
   if (!identity) throw new WriteAuthError(`identity ${ownerId} not found on ${auth.network}`)
   const signing = await findSigningKey(identity, wif, auth.network, requiredLevel)
   if (!signing) throw unusableKeyError(identity, wif, auth.network)
+  const balanceBefore = balanceBeforeWrite(sdk, ownerId, identity.balance)
   const spend = (kind: string): Spend => ({
     kind: `${kind}:${documentType}`,
     repo: params.repo ?? null,
     documentId,
     estimateCredits: previewDelete(documentType).credits,
-    balanceBefore: identity.balance,
+    balanceBefore,
   })
 
   const { IdentitySigner } = await import('@dashevo/evo-sdk')
@@ -1650,10 +1738,7 @@ export function checkOwnRepo(storedRepoId: unknown, expected: string | undefined
 export function replaceDocumentIdempotent(sdk: EvoSDK, auth: WriteAuth, params: ReplaceParams): Promise<ReplaceResult> {
   // A write can be the page's first proved exchange: serialize with the version the SDK knows now.
   followSdkVersion(sdk)
-  return serialized(auth.identityId, () => wrote(sdk, replaceDocumentUnlocked(sdk, auth, params))).then((r) => {
-    if (r.spend) reportSpend(sdk, auth, r.spend)
-    return r.result
-  })
+  return serializedWrite(sdk, auth, () => replaceDocumentUnlocked(sdk, auth, params))
 }
 
 /**
@@ -1717,12 +1802,13 @@ async function replaceDocumentUnlocked(
   const signing = await findSigningKey(identity, wif, auth.network, requiredLevel)
   if (!signing) throw unusableKeyError(identity, wif, auth.network)
   const next = revision + 1n
+  const balanceBefore = balanceBeforeWrite(sdk, auth.identityId, identity.balance)
   const spend = (kind: string): Spend => ({
     kind: `${kind}:${documentType}`,
     repo: params.repo ?? null,
     documentId,
     estimateCredits: cost.credits,
-    balanceBefore: identity.balance,
+    balanceBefore,
   })
 
   const { Document, IdentitySigner } = await import('@dashevo/evo-sdk')

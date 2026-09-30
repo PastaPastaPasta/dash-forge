@@ -31,7 +31,7 @@ import { errorMessage } from '../utils'
 import { stepClock, timed } from '../step-timing'
 import { DEPLOYMENTS, FORGE_CONTRACT_KINDS, contractKind, groupTrust, type ForgeIds, type GroupTrust } from '../deployments'
 import { assertGroupHolds, type GroupCheck } from './group-trust'
-import { SECURITY_LEVEL, WriteAuthError, findSigningKey, measureActual, readIdentityBalance, serialized, type SpendEvent, type WriteAuth } from '../sdk/write'
+import { SECURITY_LEVEL, WriteAuthError, balanceBeforeWrite, findSigningKey, measureActual, readIdentityBalance, serialized, type SpendEvent, type WriteAuth } from '../sdk/write'
 import { KEY_LIMITS_UPDATE_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS } from '../sdk/cost'
 import { authSdk, type WasmIdentity } from '../sdk/facade'
 import type { HeldBrowserKey } from './create-identity'
@@ -354,8 +354,13 @@ export class AuthController {
    */
   private async charged<T>(identityId: string, kind: KeySpendKind, keyIdOf: (result: T | null) => number | null, update: () => Promise<T>): Promise<T> {
     const sdk = await this.getSdk()
+    // A read from a node still behind an earlier measured write counts as the last measured balance.
+    const readBalance = (): Promise<bigint | null> =>
+      readIdentityBalance(sdk, identityId)
+        .then((read) => balanceBeforeWrite(sdk, identityId, read))
+        .catch(() => null)
     return serialized(identityId, async () => {
-      const before = await readIdentityBalance(sdk, identityId).catch(() => null)
+      const before = await readBalance()
       const listening = before !== null && this.spendListener !== null
       let result: T
       try {
@@ -364,7 +369,7 @@ export class AuthController {
         // One read, no polling: most failures happen before anything is sent, and the error
         // should not wait on a balance that will not move.
         if (listening) {
-          const now = await readIdentityBalance(sdk, identityId).catch(() => null)
+          const now = await readBalance()
           if (now !== null && now !== before) this.emitSpend(identityId, { kind, keyId: keyIdOf(null), balanceBefore: before }, Number(before! - now))
         }
         throw e

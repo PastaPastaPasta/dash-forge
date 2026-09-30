@@ -180,7 +180,12 @@ beforeEach(() => {
     },
   })
 })
-afterEach(() => setWriteClock(null))
+afterEach(async () => {
+  // A spend report still reading runs out on the virtual clock first: the next test's first write
+  // waits for it (the identity's next write waits for the last one's measurement).
+  await new Promise((r) => setTimeout(r, 0))
+  setWriteClock(null)
+})
 
 /**
  * Let the spend report finish (it runs after the write resolves). Its balance reads and sleeps
@@ -1190,5 +1195,126 @@ describe('isNonceSpent (Drive validate_identity_nonce_update)', () => {
   it('is spent more than 24 behind the tip', () => {
     expect(isNonceSpent(100n | skipped(24n), 76n)).toBe(false)
     expect(isNonceSpent(100n, 75n)).toBe(true)
+  })
+})
+
+/**
+ * The ledger's per-write charge (D-2): a review with inline comments is several writes in a row,
+ * and a node's balance lags a block behind the proof. Each row must be that write's own fee,
+ * and the rows must add up to the balance change.
+ */
+describe('spend measurement across back-to-back writes (D-2)', () => {
+  const START = 1_000_000_000n
+  /** How long a fee takes to show in a balance read (the proof comes back before that). */
+  const LAG = 1500
+
+  /**
+   * A chain whose balance reads lag the proof by {@link LAG} on the virtual clock. `stale(n)`:
+   * the next n reads come from a node far behind (they see none of the fees yet).
+   */
+  function laggingChain(fees: bigint[], verdicts: ReadonlyArray<unknown> = []) {
+    let now = 0
+    setWriteClock({
+      now: () => now,
+      sleep: async (ms) => {
+        now += ms
+      },
+    })
+    const charged: Array<{ fee: bigint; at: number }> = []
+    let staleReads = 0
+    const visible = (lag: number) => charged.filter((c) => c.at + lag <= now).reduce((b, c) => b - c.fee, START)
+    let nonce = 1n
+    const sdk = {
+      identities: {
+        fetch: async () => {
+          const lag = staleReads > 0 ? Number.MAX_SAFE_INTEGER : LAG
+          if (staleReads > 0) staleReads -= 1
+          return {
+            balance: visible(lag),
+            publicKeys: [{ keyId: 1, purposeNumber: 0, securityLevelNumber: 2, validatePrivateKey: () => true }],
+            getPublicKeyById: () => ({}),
+          }
+        },
+        contractNonce: async () => nonce,
+      },
+      documents: { get: async () => ({}) },
+      stateTransitions: {
+        broadcastStateTransition: async () => {
+          nonce += 1n
+          charged.push({ fee: fees[charged.length] ?? 0n, at: now })
+        },
+        // The i-th write's verdict: a block's refusal (its fee paid) when `verdicts[i]` is set.
+        waitForResponse: async () => {
+          const verdict = verdicts[charged.length - 1]
+          if (verdict !== undefined) throw verdict
+          return {}
+        },
+      },
+      epoch: { current: async () => undefined },
+      version: () => 14,
+    } as unknown as EvoSDK
+    return {
+      sdk,
+      stale: (n: number) => {
+        staleReads = n
+      },
+      /** The balance once every fee has settled. */
+      settled: () => charged.reduce((b, c) => b - c.fee, START),
+    }
+  }
+
+  const doc = (documentType: string, contractId: string) => ({ contractId, documentType, data: { body: documentType }, confirmTimeoutMs: 0 })
+
+  it('a review with an inline comment records each document at its own fee, and the ledger adds up', async () => {
+    const chain = laggingChain([700n, 800n])
+    const spends: SpendEvent[] = []
+    await createDocumentIdempotent(chain.sdk, auth(spends), doc('comment', 'D2a'))
+    await createDocumentIdempotent(chain.sdk, auth(spends), doc('review', 'D2a'))
+    await reported()
+    await reported()
+    expect(spends.map((s) => [s.kind, s.actualCredits])).toEqual([
+      ['create:comment', 700],
+      ['create:review', 800],
+    ])
+    const ledger = spends.reduce((sum, s) => sum + (s.actualCredits ?? 0), 0)
+    expect(BigInt(ledger)).toBe(spends[0]!.balanceBefore! - chain.settled())
+  })
+
+  it('three writes in a row (a repo create, a merge) sum to the balance change', async () => {
+    const chain = laggingChain([500n, 600n, 900n])
+    const spends: SpendEvent[] = []
+    for (const t of ['repo', 'refUpdate', 'packManifest']) await createDocumentIdempotent(chain.sdk, auth(spends), doc(t, 'D2b'))
+    for (let i = 0; i < 3; i++) await reported()
+    expect(spends.map((s) => s.actualCredits)).toEqual([500, 600, 900])
+    expect(spends.map((s) => s.balanceBefore)).toEqual([START, START - 500n, START - 1100n])
+  })
+
+  it('a balance read from a node still behind an earlier write is not taken for the next write’s', async () => {
+    const chain = laggingChain([700n, 800n])
+    const spends: SpendEvent[] = []
+    await createDocumentIdempotent(chain.sdk, auth(spends), doc('comment', 'D2c'))
+    await reported()
+    expect(spends[0]?.actualCredits).toBe(700)
+    // The review's "before" read and its first "after" read both hit a node that has not seen
+    // the comment's fee yet.
+    chain.stale(2)
+    await createDocumentIdempotent(chain.sdk, auth(spends), doc('review', 'D2c'))
+    await reported()
+    expect(spends.map((s) => s.actualCredits)).toEqual([700, 800])
+    expect(spends[1]?.balanceBefore).toBe(START - 700n)
+  })
+
+  it('a write refused in a block (its fee paid) and the write after it are each recorded at their own fee', async () => {
+    const duplicate = sdkVerdict('Document X has duplicate unique properties ["repoId", "number"] with other documents', 40105)
+    const chain = laggingChain([300n, 800n], [duplicate])
+    const spends: SpendEvent[] = []
+    await expect(createDocumentIdempotent(chain.sdk, auth(spends), doc('issue', 'D2d'))).rejects.toBeInstanceOf(ConsensusRefusal)
+    await createDocumentIdempotent(chain.sdk, auth(spends), doc('issue', 'D2d'))
+    await reported()
+    await reported()
+    expect(spends.map((s) => [s.kind, s.actualCredits])).toEqual([
+      ['refused:issue', 300],
+      ['create:issue', 800],
+    ])
   })
 })
