@@ -239,23 +239,31 @@ export function StateTabs({ label, children }: { label: string; children: ReactN
   )
 }
 
-/**
- * The filters beside the state tabs. From `sm` up they sit in the row; on a phone they fold
- * behind one "Filters" button (with how many are set), so the first result is on the first
- * screen rather than under five rows of selects (QW2-071).
- */
 /** How many of the {@link FilterBar}'s shared controls are set away from their defaults. */
 export function filterCount(q: {
   readonly labels: readonly string[]
   readonly milestone: string | null
   readonly noMilestone: boolean
   readonly author: string | null
+  /** A mirrored `author:login`, which the Author select does not show. */
+  readonly authorLogin: string | null
   readonly assignee: string | null
   readonly sort: string
 }): number {
-  return q.labels.length + Number(q.milestone !== null || q.noMilestone) + Number(q.author !== null) + Number(q.assignee !== null) + Number(q.sort !== 'newest')
+  return (
+    q.labels.length +
+    Number(q.milestone !== null || q.noMilestone) +
+    Number(q.author !== null || q.authorLogin !== null) +
+    Number(q.assignee !== null) +
+    Number(q.sort !== 'newest')
+  )
 }
 
+/**
+ * The filters beside the state tabs. From `sm` up they sit in the row; on a phone they fold
+ * behind one "Filters" button (with how many are set), so the first result is on the first
+ * screen rather than under five rows of selects (QW2-071).
+ */
 export function FilterBar({ active, children }: { active: number; children: ReactNode }): JSX.Element {
   const [open, setOpen] = useState(false)
   const id = useId()

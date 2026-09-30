@@ -7,7 +7,7 @@
  * never mistaken for the last one (L-58).
  */
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 
 /** A tab's box along the strip, from the strip's content start. */
@@ -52,52 +52,43 @@ export function TabStrip({
   children: ReactNode
 }): JSX.Element {
   const ref = useRef<HTMLElement>(null)
+  // Room after the last tab, so the strip can scroll far enough (see `stripScroll`); sized in
+  // `reveal`, in the same layout pass as the scroll.
+  const padRef = useRef<HTMLSpanElement>(null)
   const [more, setMore] = useState<{ left: boolean; right: boolean }>({ left: false, right: false })
-  // Room after the last tab, so the strip can scroll far enough (see `stripScroll`).
-  const [pad, setPad] = useState(0)
-  const pendingScroll = useRef<number | null>(null)
   const measure = useCallback(() => {
     const el = ref.current
     if (!el) return
     const left = el.scrollLeft > 1
-    const right = el.scrollLeft + el.clientWidth < el.scrollWidth - pad - 1
+    const right = el.scrollLeft + el.clientWidth < el.scrollWidth - (padRef.current?.offsetWidth ?? 0) - 1
     setMore((m) => (m.left === left && m.right === right ? m : { left, right }))
-  }, [pad])
+  }, [])
   useEffect(() => {
     const el = ref.current
     if (!el) return
     // Keep the active tab inside the strip by scrolling the strip only (scrollIntoView would
-    // also scroll the page, e.g. jump to the tabs when Back restores a scrolled position).
-    const reveal = (): void => {
-      const tabs = ([...el.children] as HTMLElement[]).filter((t) => !t.hasAttribute('data-strip-pad'))
+    // also scroll the page, e.g. jump to the tabs when Back restores a scrolled position). On a
+    // new active tab it is placed by `stripScroll`; on a resize (a count that loads later
+    // widens its tab) only if it went out of view, so a strip the user swiped stays put.
+    const reveal = (place: boolean): void => {
+      const tabs = ([...el.children] as HTMLElement[]).filter((t) => t !== padRef.current)
       const at = tabs.findIndex((t) => t.matches('[aria-current="page"], [aria-selected="true"]'))
-      if (at >= 0) {
-        const next = stripScroll(
-          tabs.map((t) => ({ left: t.offsetLeft - el.offsetLeft, width: t.offsetWidth })),
-          at,
-          el.clientWidth,
-        )
-        pendingScroll.current = next.left
-        setPad(next.pad)
+      const origin = tabs[0]?.offsetLeft ?? 0
+      const boxes = tabs.map((t) => ({ left: t.offsetLeft - origin, width: t.offsetWidth }))
+      const on = boxes[at]
+      if (on !== undefined && (place || on.left < el.scrollLeft - 1 || on.left + on.width > el.scrollLeft + el.clientWidth + 1)) {
+        const next = stripScroll(boxes, at, el.clientWidth)
+        if (padRef.current) padRef.current.style.width = `${next.pad}px`
         el.scrollLeft = next.left
       }
       measure()
     }
-    reveal()
-    // Again whenever the strip or a tab resizes (a count that loads later widens its tab).
-    const ro = new ResizeObserver(reveal)
+    reveal(true)
+    const ro = new ResizeObserver(() => reveal(false))
     ro.observe(el)
     for (const tab of el.children) ro.observe(tab)
     return () => ro.disconnect()
   }, [activeKey, measure])
-  // The pad renders after `reveal` asked for it: scroll there once it is in the layout.
-  useLayoutEffect(() => {
-    const el = ref.current
-    if (!el || pendingScroll.current === null) return
-    el.scrollLeft = pendingScroll.current
-    pendingScroll.current = null
-    measure()
-  }, [pad, measure])
   const fade = 'pointer-events-none absolute inset-y-0 w-8 from-anvil-50 to-transparent dark:from-anvil-950'
   const Tag = role === 'tablist' ? 'div' : 'nav'
   return (
@@ -110,7 +101,8 @@ export function TabStrip({
         className="flex gap-1 overflow-x-auto overscroll-x-contain border-b border-anvil-200 [scrollbar-width:none] dark:border-anvil-800 [&::-webkit-scrollbar]:hidden"
       >
         {children}
-        {pad > 0 ? <span aria-hidden data-strip-pad className="shrink-0" style={{ width: pad }} /> : null}
+        {/* -ml-1 cancels the gap before it: at width 0 it adds nothing. */}
+        <span ref={padRef} aria-hidden className="-ml-1 w-0 shrink-0" />
       </Tag>
       {more.left ? <span aria-hidden className={cn(fade, 'left-0 bg-gradient-to-r')} /> : null}
       {more.right ? <span aria-hidden className={cn(fade, 'right-0 bg-gradient-to-l')} /> : null}

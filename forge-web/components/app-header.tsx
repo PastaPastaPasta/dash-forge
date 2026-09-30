@@ -37,19 +37,25 @@ import { isPageShortcut } from '@/lib/focus'
 import { bareRoute, pageTitle } from '@/lib/page-title'
 import { useDpnsName } from '@/hooks/use-dpns-name'
 
+const shown = (el: Element | null): boolean => el !== null && el.getClientRects().length > 0
+
 /**
  * `/` focuses the jump box (the visible one: the header's, or the row's); with neither on
- * screen (signed in, below `xl`) it opens the row, which focuses its box.
+ * screen but the search button showing (signed in, below `xl`), it opens the row, which
+ * focuses its box. Otherwise `/` is left to the browser.
  */
 function useSlashToSearch(openRow: () => void): void {
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (!isPageShortcut(e, '/')) return
-      const box = [...document.querySelectorAll<HTMLInputElement>('input[data-jump-box]')].find(
-        (el) => el.getClientRects().length > 0,
-      )
+      const box = [...document.querySelectorAll<HTMLInputElement>('input[data-jump-box]')].find(shown)
+      if (box === undefined) {
+        if (!shown(document.querySelector('[data-testid="jump-toggle"]'))) return
+        e.preventDefault()
+        openRow()
+        return
+      }
       e.preventDefault()
-      if (box === undefined) return openRow()
       box.focus()
       box.select()
     }
@@ -68,14 +74,17 @@ export function AppHeader(): JSX.Element {
   const [searchOpen, setSearchOpen] = useState(false)
   const openSearch = useCallback(() => setSearchOpen(true), [])
   const toggleRef = useRef<HTMLButtonElement>(null)
-  // Escape in the opened row: back to the button that opened it.
-  const closeSearch = (): void => {
+  // Escape in the opened row: back to the button that opened it (if it still shows at this width).
+  const dismissSearch = (): void => {
     if (!searchOpen) return
     setSearchOpen(false)
-    toggleRef.current?.focus()
+    if (shown(toggleRef.current)) toggleRef.current?.focus()
   }
+  const closeSearch = useCallback(() => setSearchOpen(false), [])
+  // A jump (routes differ only by query string, so this is told, not read off the pathname), a
+  // new page, or signing out closes it.
   const pathname = usePathname()
-  useEffect(() => setSearchOpen(false), [pathname])
+  useEffect(() => setSearchOpen(false), [pathname, signedIn])
   useEffect(() => {
     if (searchOpen) document.getElementById('jump-compact')?.focus()
   }, [searchOpen])
@@ -164,9 +173,10 @@ export function AppHeader(): JSX.Element {
         id="jump-row"
         className={cn('border-t border-anvil-200 px-3 py-1.5 dark:border-anvil-800 sm:px-6', signedIn && searchOpen ? 'xl:hidden' : 'sm:hidden')}
       >
-        <div className="mx-auto max-w-[1280px]">
+        {/* A link picked in the box's note or choices is a jump too. */}
+        <div className="mx-auto max-w-[1280px]" onClickCapture={(e) => (e.target as Element).closest('a[href]') && closeSearch()}>
           <Suspense fallback={null}>
-            <JumpBox compact onDismiss={closeSearch} />
+            <JumpBox compact onDismiss={dismissSearch} onJump={closeSearch} />
           </Suspense>
         </div>
       </div>
@@ -200,7 +210,7 @@ function DocumentTitle(): null {
  * bare word is looked up as a repo name and as a DPNS name: one match goes straight there,
  * several offer each (repos by owner, then the profile), none says so and offers a search.
  */
-function JumpBox({ compact = false, onDismiss }: { compact?: boolean; onDismiss?: () => void }): JSX.Element {
+function JumpBox({ compact = false, onDismiss, onJump }: { compact?: boolean; onDismiss?: () => void; onJump?: () => void }): JSX.Element {
   const router = useRouter()
   const pathname = usePathname()
   const params = useSearchParams()
@@ -248,6 +258,7 @@ function JumpBox({ compact = false, onDismiss }: { compact?: boolean; onDismiss?
         )
       } else if (found.issue || found.pull) {
         setQuery('')
+        onJump?.()
         router.push(found.issue ? issue : pull)
       } else {
         setNote(`No issue or PR #${n} in ${addr.name}.`)
@@ -262,6 +273,7 @@ function JumpBox({ compact = false, onDismiss }: { compact?: boolean; onDismiss?
   const go = (href: string): void => {
     setQuery('')
     clear()
+    onJump?.()
     router.push(href)
   }
 
