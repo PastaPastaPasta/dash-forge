@@ -188,7 +188,8 @@ function OrderToggle({ firstParent, pathname, params }: { firstParent: boolean; 
         aria-current={on ? 'true' : undefined}
         title={title}
         className={cn(
-          'rounded-md px-2.5 py-1 font-medium',
+          // 44 px tall to a finger (e2e/mobile.spec.ts), as the other controls.
+          'rounded-md px-2.5 py-1 font-medium coarse:inline-flex coarse:min-h-11 coarse:items-center',
           on ? 'bg-white text-anvil-900 shadow-sm dark:bg-anvil-800 dark:text-anvil-50' : 'text-anvil-500 hover:text-anvil-800 dark:text-anvil-400 dark:hover:text-anvil-100',
         )}
         data-testid={fp ? 'log-first-parent' : 'log-all-commits'}
