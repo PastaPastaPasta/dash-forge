@@ -20,7 +20,8 @@ import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
 import { useCallback, useRef, useState } from 'react'
-import { CheckCircle2, CircleDot, Milestone, Pencil, Pin, Tag, UserPlus } from 'lucide-react'
+import { CheckCircle2, CircleDot, GitPullRequest, Milestone, Pencil, Pin, Tag, UserPlus } from 'lucide-react'
+import { LinkedPulls } from '@/components/repo/linked-pulls'
 import type { RepoHome, IssueThread, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, issueWriteShows, loadIssueThread } from '@/lib/view'
 import { commentEditDrops } from '@/lib/view/issues-view'
@@ -30,6 +31,7 @@ import {
   commentFirsts,
   createComment,
   defineLabel,
+  deleteComment,
   eventFirsts,
   readViewerPermissions,
   repoContractIds,
@@ -46,7 +48,7 @@ import {
   updateTarget,
 } from '@/lib/repo'
 import type { Holdings } from '@/lib/rules'
-import { SupersededWriteError, UnconfirmedWriteError, previewCreate, previewReplace, sumPreviews, type CostPreview as Cost } from '@/lib/sdk'
+import { SupersededWriteError, UnconfirmedWriteError, previewCreate, previewDelete, previewReplace, sumPreviews, type CostPreview as Cost } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useIntent } from '@/hooks/use-intent'
@@ -58,7 +60,8 @@ import { CopyLinkButton } from '@/components/ui/copy-link'
 import { readUntil, retryWhileMissing } from '@/lib/view/retry'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
-import { Timeline, type CommentSlots } from '@/components/repo/timeline'
+import { TargetNotFound } from '@/components/repo/number-content'
+import { CommentOwnActions, Timeline, type CommentSlots } from '@/components/repo/timeline'
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
@@ -84,6 +87,7 @@ type Pending =
   | { kind: 'defineLabel'; name: string; color: string; description: string; apply: boolean }
   | { kind: 'editIssue'; title: string; body: string }
   | { kind: 'editComment'; id: string; body: string }
+  | { kind: 'deleteComment'; id: string }
   | null
 
 /** Bytes a body may hold (the `body` schema: 5,120). */
@@ -172,7 +176,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   if (!Number.isFinite(number)) return <EmptyState icon={CircleDot} title="No issue addressed" body="Add &number= to the URL." />
   if (loading && !data) return <LoadingBlock label="Folding issue" />
   if (error) return <ErrorState message={error} onRetry={reload} />
-  if (!data) return <EmptyState icon={CircleDot} title={`Issue #${number} not found`} body="No issue with that number in this repo." />
+  if (!data) return <TargetNotFound home={home} addr={addr} number={number} kind="issue" icon={CircleDot} title={`Issue #${number} not found`} body="No issue or pull request with that number in this repo." />
 
   const { issue, timeline, labels, members, hidden, eventValues, meta } = data
   const origin = trustedOrigin(issue.origin, issue.author, trust)
@@ -278,6 +282,10 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         })
         setEditingComment(null)
         break
+      case 'deleteComment':
+        await deleteComment(sdk, signer, home.repo, pending.id)
+        if (editingComment?.id === pending.id) setEditingComment(null)
+        break
     }
     refresh((t) => issueWriteShows(t, write.kind === 'state' ? { kind: 'state', open: !open } : write))
   }
@@ -302,6 +310,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         return previewReplace('issue', { title: pending.title, body: pending.body })
       case 'editComment':
         return previewReplace('comment', { body: pending.body })
+      case 'deleteComment':
+        return previewDelete('comment')
       default:
         return stateCost
     }
@@ -395,6 +405,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 disabled: composeBlock !== null || guard.disabledReason !== null,
                 onEdit: setEditingComment,
                 onSave: (id, body) => setPending({ kind: 'editComment', id, body }),
+                onDelete: (id) => setPending({ kind: 'deleteComment', id }),
                 links,
               })
               if (!whileLocked.has(item.comment.id)) return slots
@@ -507,6 +518,9 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           />
           {isPrivate ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">The labels on this issue are encrypted; the label definitions (names, colours, descriptions) are not.</p> : null}
         </SidebarSection>
+        <SidebarSection title="Development" icon={GitPullRequest}>
+          <LinkedPulls home={home} addr={addr} number={issue.number} />
+        </SidebarSection>
       </aside>
 
       <ConfirmDialog
@@ -552,6 +566,12 @@ function confirmText(pending: Pending, number: number, open: boolean, isMember: 
       return { title: `Edit issue #${number}`, description: 'Replaces your issue document; you pay only for the changed bytes. Earlier versions stay readable on Platform.', label: 'Sign & save' }
     case 'editComment':
       return { title: 'Edit comment', description: 'Replaces your comment document; you pay only for the changed bytes.', label: 'Sign & save' }
+    case 'deleteComment':
+      return {
+        title: 'Delete comment',
+        description: 'Deletes your comment document (its storage fee is partly refunded). Replies to it stay. The write that posted it stays in the chain history, so rotate any secret it held.',
+        label: 'Sign & delete',
+      }
     default:
       return {
         title: open ? `Close issue #${number}` : `Reopen issue #${number}`,
@@ -561,7 +581,7 @@ function confirmText(pending: Pending, number: number, open: boolean, isMember: 
   }
 }
 
-/** A comment's edit affordance (its author only) in the header, and its inline editor as the body. */
+/** A comment's Edit and Delete (its author only) in the header, and its inline editor as the body. */
 function commentSlots({
   item,
   viewer,
@@ -569,6 +589,7 @@ function commentSlots({
   disabled,
   onEdit,
   onSave,
+  onDelete,
   links,
 }: {
   item: Extract<TimelineItem, { kind: 'comment' }>
@@ -577,6 +598,7 @@ function commentSlots({
   disabled: boolean
   onEdit: (e: { id: string; body: string } | null) => void
   onSave: (id: string, body: string) => void
+  onDelete: (id: string) => void
   links?: MarkdownLinks
 }): CommentSlots {
   const c = item.comment
@@ -594,17 +616,7 @@ function commentSlots({
     ) }
   }
   if (viewer === null || viewer !== c.author) return {}
-  return { header: (
-    <button
-      type="button"
-      onClick={() => onEdit({ id: c.id, body: c.body })}
-      disabled={disabled}
-      className="ml-auto inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400 hover:text-forge-700 dark:hover:text-forge-400 disabled:opacity-50"
-      aria-label="Edit comment"
-    >
-      <Pencil className="h-3 w-3" aria-hidden /> Edit
-    </button>
-  ) }
+  return { header: <CommentOwnActions onEdit={() => onEdit({ id: c.id, body: c.body })} onDelete={() => onDelete(c.id)} disabled={disabled} /> }
 }
 
 /**

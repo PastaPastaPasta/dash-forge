@@ -96,7 +96,7 @@ import { appliedSuggestions, prCommits, prHaveSet } from '@/lib/view/pr-commits'
 import { WALK_COMMIT_CAP } from '@/lib/merge/objects'
 import { commentsShown, draftIsEmpty, draftWhereabouts, reviewShows, SUBMIT_WAIT } from '@/lib/view/pending-review'
 import { tipOidOf } from '@/lib/view/refs'
-import type { ReviewerCardRow } from '@/lib/view/review-fold'
+import { importedReviewers, type ReviewerCardRow } from '@/lib/view/review-fold'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
 import { readUntil, retryWhileMissing } from '@/lib/view/retry'
 import { useSdk } from '@/hooks/use-sdk'
@@ -108,7 +108,8 @@ import { useRepoLinks } from '@/components/repo/target-href'
 import { importedUrlOf } from '@/lib/view/ref-targets'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
-import { Timeline, type CommentSlots } from '@/components/repo/timeline'
+import { TargetNotFound } from '@/components/repo/number-content'
+import { CommentOwnActions, Timeline, type CommentSlots } from '@/components/repo/timeline'
 import { ComparisonView, pullBase, pullSpec, usePullComparison } from '@/components/repo/pull-diff'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
 import { numberLabel, shownUpstreamNumber } from '@/lib/view/upstream'
@@ -127,6 +128,8 @@ import { LockToggle, LockedBanner, lockConfirm, lockStateText, lockViewerOf } fr
 import { ReviewDrawer, useReviewDraft } from '@/components/repo/review-drawer'
 import { BranchCommitCost, BranchRunContext, CommitIdentityPrompt, buildUpdateBranch, useSuggestions } from '@/components/repo/branch-commit-panel'
 import { PullMerge, useMergeSlot } from '@/components/repo/pull-merge'
+import type { CloseIssuesOption } from '@/components/repo/merge-panel'
+import { linkedIssueTargets } from '@/lib/view/jump'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
 import { EditedMarker, MarkdownEditor } from '@/components/repo/issue-bits'
 import { AssigneePicker, LabelPicker, SidebarSection } from '@/components/repo/target-rail'
@@ -239,7 +242,7 @@ export function PullContent({
   if (!Number.isFinite(number)) return <EmptyState icon={GitPullRequest} title="No PR addressed" body="Add &number= to the URL." />
   if (loading && !data) return <LoadingBlock label="Folding PR" />
   if (error && !data) return <ErrorState message={error} onRetry={reload} />
-  if (!data) return <EmptyState icon={GitPullRequest} title={`PR #${number} not found`} body="No patch with that number in this repo." />
+  if (!data) return <TargetNotFound home={home} addr={addr} number={number} kind="pull" icon={GitPullRequest} title={`PR #${number} not found`} body="No pull request or issue with that number in this repo." />
   return <PullPage home={home} addr={addr} thread={data} refresh={refresh} refreshing={loading} reloadHome={reloadHome} />
 }
 
@@ -276,6 +279,8 @@ function PullPage({
   const repo = home.repo
   // Who may mirror: an imported PR of theirs shows its original author, date, base and head (FG-6).
   const trust = useMirrorTrust(repo)
+  // A mirrored PR's reviewers as they reviewed on the source forge (QW-017), not the mirror identity.
+  const sourceReviewers = useMemo(() => importedReviewers(thread.reviews, trust), [thread.reviews, trust])
   const origin = trustedOrigin(pull.origin, pull.author, trust)
   const pullOrigin = origin !== null ? pullOriginOf(pull.body) : null
   const holdings = useAsync<Holdings | null>(
@@ -688,6 +693,31 @@ function PullPage({
         ? { label: 'Draft', icon: <GitPullRequestDraft className="h-4 w-4" aria-hidden />, bg: 'bg-anvil-600' }
         : { label: 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, bg: 'bg-verify-700' }
   const linked = linkedIssues(pull.body)
+  // The open issues "Fixes #n" names, for the merge box's "Close #n after merging" (QW-015): read
+  // only for a viewer who can merge an open PR.
+  const linkedKey = linked.join(',')
+  const linkedOpen = useAsync(
+    () => linkedIssueTargets(sdk!, repo, linked),
+    [ready, repoKey(repo), linkedKey],
+    { enabled: ready && sdk !== null && linked.length > 0 && open && actions.canMerge && !archived },
+  )
+  const closeLinked: CloseIssuesOption | null = useMemo(() => {
+    const issues = (linkedOpen.data ?? []).filter((i) => i.open)
+    if (issues.length === 0 || !sdk || !signer) return null
+    return {
+      issues: issues.map((i) => ({ number: i.number, title: i.title })),
+      close: async (n: number) => {
+        const i = issues.find((x) => x.number === n)
+        if (i === undefined) throw new Error(`#${n} is not an open issue here`)
+        await setTargetState(sdk, signer, repo, {
+          target: { id: i.id, number: i.number, type: 'issue', author: i.author },
+          action: 'close',
+          isMember: true,
+          intent: `close-linked:${repo.repoId}:${pull.number}:${i.number}`,
+        })
+      },
+    }
+  }, [linkedOpen.data, sdk, signer, repo, pull.number])
   // D-104: a merged PR's header says what happened ("2 commits merged into main"), not "wants to".
   // Who recorded the merge is in the timeline. A count only from a real comparison (not the
   // first-parent fallback).
@@ -889,6 +919,7 @@ function PullPage({
                       disabled: writeBlocked || guard.disabledReason !== null,
                       onEdit: setEditingComment,
                       onSave: (id, body) => setPending({ kind: 'edit-comment', id, body }),
+                      onDelete: (id) => setPending({ kind: 'delete-comment', id }),
                       links,
                       replies: repliesOf.get(item.comment.id) ?? [],
                       trust,
@@ -997,6 +1028,7 @@ function PullPage({
                     : commits.data === null
                       ? null
                       : { authors: commitAuthors(commits.data.commits), complete: !commits.data.truncated },
+                  closeIssues: closeLinked,
                   deleteBranch: (() => {
                     const src = sourceRef ?? (crossRepo ? null : repo)
                     const name = pull.sourceRefName
@@ -1197,6 +1229,8 @@ function PullPage({
             <SidebarSection title="Reviewers" icon={Eye}>
               <ReviewersCard
                 rows={thread.reviewers}
+                imported={sourceReviewers.reviewers}
+                mirrorOnly={sourceReviewers.mirrorOnly}
                 members={thread.members}
                 author={pull.author}
                 headOid={pull.headOid}
@@ -1456,7 +1490,7 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
   }
 }
 
-/** A comment's slots on the PR page: the author's Edit, the inline editor, an inline thread's anchor and replies. */
+/** A comment's slots on the PR page: the author's Edit and Delete, the inline editor, an inline thread's anchor and replies. */
 function commentSlots({
   item,
   viewer,
@@ -1464,6 +1498,7 @@ function commentSlots({
   disabled,
   onEdit,
   onSave,
+  onDelete,
   links,
   replies,
   trust,
@@ -1477,6 +1512,7 @@ function commentSlots({
   disabled: boolean
   onEdit: (e: { id: string; body: string } | null) => void
   onSave: (id: string, body: string) => void
+  onDelete: (id: string) => void
   links: MarkdownLinks
   replies: readonly CommentView[]
   /** Who may mirror: an imported reply of theirs shows its original author and date (FG-6). */
@@ -1495,15 +1531,7 @@ function commentSlots({
     ) : null
   const edit =
     viewer !== null && viewer === c.author && editing?.id !== c.id ? (
-      <button
-        type="button"
-        onClick={() => onEdit({ id: c.id, body: c.body })}
-        disabled={disabled}
-        className="ml-auto inline-flex items-center gap-1 text-[12px] text-anvil-500 hover:text-forge-700 disabled:opacity-50 dark:text-anvil-400 dark:hover:text-forge-400"
-        aria-label="Edit comment"
-      >
-        <Pencil className="h-3 w-3" aria-hidden /> Edit
-      </button>
+      <CommentOwnActions onEdit={() => onEdit({ id: c.id, body: c.body })} onDelete={() => onDelete(c.id)} disabled={disabled} />
     ) : null
   const header = (
     <>

@@ -10,7 +10,7 @@
 
 import { Byline } from '@/components/repo/byline'
 import { importedVerdictOf, trustedOrigin } from '@/lib/repo/provenance'
-import { Check, CheckCircle2, Eye, GitCommit, GitMerge, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pin, Tag, UserPlus, X } from 'lucide-react'
+import { Check, CheckCircle2, Eye, GitCommit, GitMerge, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, Tag, Trash2, UserPlus, X } from 'lucide-react'
 import type { TimelineItem } from '@/lib/view'
 import { branchName, plural, timeAgo } from '@/lib/view'
 import { anchorLabel } from '@/lib/view/inline-threads'
@@ -110,6 +110,24 @@ function transitionIcon(t: TransitionView): JSX.Element {
 export interface CommentSlots {
   readonly header?: ReactNode
   readonly body?: ReactNode
+}
+
+/**
+ * A comment author's own actions in its header: Edit, and Delete (QW-016). Only the author sees
+ * them: consensus admits a comment's replace or delete from its author alone.
+ */
+export function CommentOwnActions({ onEdit, onDelete, disabled }: { onEdit: () => void; onDelete: () => void; disabled: boolean }): JSX.Element {
+  const button = 'inline-flex items-center gap-1 text-[12px] text-anvil-500 disabled:opacity-50 dark:text-anvil-400 coarse:min-h-11 coarse:px-1'
+  return (
+    <span className="ml-auto flex items-center gap-3">
+      <button type="button" onClick={onEdit} disabled={disabled} className={`${button} hover:text-forge-700 dark:hover:text-forge-400`} aria-label="Edit comment">
+        <Pencil className="h-3 w-3" aria-hidden /> Edit
+      </button>
+      <button type="button" onClick={onDelete} disabled={disabled} className={`${button} hover:text-danger-700 dark:hover:text-danger-400`} aria-label="Delete comment">
+        <Trash2 className="h-3 w-3" aria-hidden /> Delete
+      </button>
+    </span>
+  )
 }
 
 /** What a comment's header says it did. */

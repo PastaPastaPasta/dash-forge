@@ -34,6 +34,7 @@ import type { RepoRef } from './contract'
 import { compareRows, rowMatches, selectionFiltered, type RowFilters } from './issue-index'
 import { baseRefReaders, incompletePullView, readPull, type BaseRefReaders, type PullView } from './issues'
 import { PR_CLOSE, PR_DRAFT_CLOSE, PR_MERGE } from '../rules/transition'
+import { linkedIssues } from '../rules/review'
 import type { LabelDef } from './labels'
 import type { HiddenCounts } from './private-content'
 import {
@@ -249,4 +250,37 @@ export async function queryPulls(
     hidden: index.hidden.total,
     hiddenBy: index.hidden.value,
   }
+}
+
+/** The PRs whose description links an issue ({@link pullsLinking}). */
+export interface LinkingPulls {
+  /** Newest first. */
+  readonly pulls: readonly PullRow[]
+  /** How many PRs were looked at when not all of them were, else null. */
+  readonly searched: number | null
+}
+
+/** How many chunks of PRs (100 each, newest first) a backlink read looks through at most. */
+const LINKING_CHUNKS = 3
+
+/**
+ * The PRs whose description says they close issue `number` ("Fixes #12", `linkedIssues`): the
+ * issue page's backlinks (review-parity P8, QW-015). Read from the pull index the PR list shares
+ * (cached for the session), through the newest {@link LINKING_CHUNKS} chunks at most, so an
+ * issue page on a repo with thousands of PRs stays cheap; `searched` says when the answer
+ * covers only those.
+ */
+export async function pullsLinking(sdk: EvoSDK, repo: RepoRef, number: number, network: Network = DEFAULT_NETWORK): Promise<LinkingPulls> {
+  const index = await indexOf(sdk, repo, network)
+  const selected = await selectRows(sdk, index, {
+    candidates: null,
+    matches: (r) => linkedIssues(r.body).includes(number),
+    cmp: compareRows('newest'),
+    direction: 'desc',
+    want: 20,
+    walkAll: true,
+    partial: true,
+    maxChunks: LINKING_CHUNKS,
+  })
+  return { pulls: selected.rows.slice(0, 20), searched: selected.searched }
 }

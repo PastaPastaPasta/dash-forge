@@ -459,6 +459,7 @@ export async function selectRows<Row extends RowExtras>(
     want,
     walkAll,
     partial,
+    maxChunks = MAX_CHUNKS,
   }: {
     candidates: Set<string> | null
     matches: (r: Row) => boolean
@@ -467,6 +468,8 @@ export async function selectRows<Row extends RowExtras>(
     want: number
     walkAll: boolean
     partial: boolean
+    /** At most this many chunks more (default {@link MAX_CHUNKS}): a side read bounds its cost. */
+    maxChunks?: number
   },
 ): Promise<Selected<Row>> {
   if (candidates !== null) {
@@ -478,7 +481,7 @@ export async function selectRows<Row extends RowExtras>(
   const loaded = (): string[] => (index.all ? [...index.rows.keys()] : walk.ids)
   const matching = (): Row[] => rowsOf(index, loaded()).filter(matches)
   let chunks = 0
-  for (; !walk.done && !index.all && chunks < MAX_CHUNKS && (walkAll || matching().length <= want); chunks++) {
+  for (; !walk.done && !index.all && chunks < maxChunks && (walkAll || matching().length <= want); chunks++) {
     await serial(index, async () => {
       if (walk.done || index.all) return
       const bound: [string, '<=' | '>=', number][] = walk.bound === null ? [] : [['$createdAt', direction === 'desc' ? '<=' : '>=', walk.bound]]
@@ -486,7 +489,7 @@ export async function selectRows<Row extends RowExtras>(
     })
   }
   const complete = index.all || (walk.done && walk.complete)
-  const short = !complete && (walk.done || chunks >= MAX_CHUNKS)
+  const short = !complete && (walk.done || chunks >= maxChunks)
   return { rows: matching().sort(cmp), complete, short, searched: !complete && partial ? loaded().length : null }
 }
 

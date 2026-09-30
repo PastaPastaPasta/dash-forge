@@ -559,6 +559,14 @@ pub enum IssueCommand {
         #[arg(long, value_name = "FILE")]
         body_file: Option<PathBuf>,
     },
+    /// Delete one of your comments (on an issue or a PR). Only its author can; replies to it
+    /// stay, and read as replies to a deleted comment.
+    DeleteComment {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The comment's document id (`id` in `dg issue view --json` / `dg pr view --comments --json`).
+        comment_id: String,
+    },
     /// Close an issue.
     Close {
         /// The repository (`owner/name`).
@@ -1623,6 +1631,23 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn parses_issue_delete_comment() {
+        let cli = Cli::parse_from([
+            "dg",
+            "-y",
+            "issue",
+            "delete-comment",
+            "alice/proj",
+            "CommentId1",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Command::Issue(IssueCommand::DeleteComment { ref repo, ref comment_id })
+                if repo == "alice/proj" && comment_id == "CommentId1"
+        ));
+    }
 
     #[test]
     fn parses_auth_balance_with_global_flags() {

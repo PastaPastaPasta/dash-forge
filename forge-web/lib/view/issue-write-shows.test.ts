@@ -62,6 +62,11 @@ describe('issueWriteShows', () => {
     expect(issueWriteShows(thread({ comments: [{ id: 'c1', body: 'new' }] }), { kind: 'editComment', id: 'c1', body: 'new' })).toBe(true)
   })
 
+  it('a deleted comment shows once it is gone from the read (QW-016)', () => {
+    expect(issueWriteShows(thread({ comments: [{ id: 'c1', body: 'x' }] }), { kind: 'deleteComment', id: 'c1' })).toBe(false)
+    expect(issueWriteShows(thread({ comments: [{ id: 'c2', body: 'x' }] }), { kind: 'deleteComment', id: 'c1' })).toBe(true)
+  })
+
   it('a lagging node that first answers without the comment is read again until it shows (D-12)', async () => {
     const reads = [thread({}), thread({}), thread({ comments: [{ id: 'c1', body: 'x' }] })]
     let n = 0

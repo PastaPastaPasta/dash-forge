@@ -283,8 +283,9 @@ export async function writeRepoDoc(
     intent = sealedIntent(intent, w.keys)
   }
   assertNoPlaintext(repo, documentType, data)
+  let result: WriteResult | undefined
   try {
-    return await createDocumentIdempotent(sdk, auth, {
+    result = await createDocumentIdempotent(sdk, auth, {
       contractId: contractFor(repo, documentType),
       documentType,
       // The stamp goes on after sealing: it is plaintext on chain, never part of `enc`.
@@ -292,7 +293,12 @@ export async function writeRepoDoc(
       ...(intent ? { intent } : {}),
       ...(contentKey ? { contentKey } : {}),
     })
+    return result
   } finally {
+    // A new issue or PR raises its total's floor BEFORE the caches drop: dropping them tells the
+    // repo header to re-read its counts at once, and that read must wait out a node a block
+    // behind rather than cache the old total for the new write generation (QW-064).
+    if (result?.confirmed && (documentType === DOC.issue || documentType === DOC.patch)) noteTargetCreated(repo, documentType === DOC.issue ? 'issue' : 'patch')
     afterWrite(repo, auth.network, documentType)
   }
 }
@@ -485,7 +491,6 @@ async function createNumbered(
       writeTriedNumber(triedKey, number)
       const result = await writeRepoDoc(sdk, auth, repo, DOC[type], { number, tk: type === 'issue' ? 0 : 1, ...fields }, intent, writer)
       writeTriedNumber(triedKey, null)
-      if (result.confirmed) noteTargetCreated(repo, type)
       return { ...result, number }
     } catch (e) {
       // Refused for good (not a numbering race, which is renumbered below): nothing under this

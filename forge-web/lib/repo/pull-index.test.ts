@@ -14,7 +14,7 @@ import type { ForgeIds } from '../deployments'
 import { bytesToBase64, hexToBase64, setPlatformVersion, type DocumentQuery } from '../sdk'
 import { invalidateRepoFeed } from './issues'
 import { queryIssues } from './issue-index'
-import { queryPulls, type PullSelection } from './pull-index'
+import { pullsLinking, queryPulls, type PullSelection } from './pull-index'
 import type { RepoRef } from './contract'
 import { mockSdk, newSeen, type Doc, type Seen, type Store } from './drive-mock'
 import { OUTCOME_REQUESTS, clearOutcomeCache, readOutcomeCounts } from './check-outcomes'
@@ -303,5 +303,31 @@ describe('pull index', () => {
   it('assigns COLLAB nothing: the assignee filter is exact', async () => {
     const { sdk, repo } = fresh(30)
     expect((await queryPulls(sdk, repo, { ...base, state: 'all', assignee: COLLAB }, 30, 'devnet')).rows).toEqual([])
+  })
+})
+
+describe('pullsLinking (an issue\'s backlinks, QW-015)', () => {
+  it('finds the PRs whose description closes the issue, newest first, with their state', async () => {
+    const { sdk, repo, store } = fresh(250, { churn: false })
+    const patches = store['COLLAB']!['patch']!
+    patches[4]!['body'] = 'Closes #1001, and more.'
+    patches[39]!['body'] = 'Fixes: #1001'
+    patches[199]!['body'] = 'See #1001 (a mention, not a close)'
+    patches[209]!['body'] = 'fixes #10011'
+    const got = await pullsLinking(sdk, repo, 1001, 'devnet')
+    expect(got.pulls.map((p) => p.number)).toEqual([40, 5])
+    // #40 was merged (every 10th): the backlink says so.
+    expect(got.pulls[0]?.state.merged).toBe(true)
+    expect(got.searched).toBeNull()
+  })
+
+  it('looks through a bounded number of chunks on a large repo, and says how many it searched', async () => {
+    const { sdk, repo, store } = fresh(650, { churn: false })
+    store['COLLAB']!['patch']![1]!['body'] = 'Fixes #1001'
+    const got = await pullsLinking(sdk, repo, 1001, 'devnet')
+    // #2 is among the oldest: past the chunks a backlink read looks through.
+    expect(got.pulls).toEqual([])
+    expect(got.searched).toBeGreaterThanOrEqual(300)
+    expect(got.searched).toBeLessThan(650)
   })
 })

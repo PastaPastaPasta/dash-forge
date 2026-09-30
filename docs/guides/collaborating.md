@@ -143,6 +143,7 @@ dg issue create <owner>/<repo> --title "Crash on empty input" --body "Steps: …
 dg issue edit   <owner>/<repo> 12 --title "Crash on empty config" [--body … | --body-file notes.md]
 dg issue comment <owner>/<repo> 12 --body "Fixed in 8f3e2a1"
 dg issue edit-comment <owner>/<repo> <comment id> --body "Fixed in 8f3e2a1 (and 91c0d4e)"
+dg issue delete-comment <owner>/<repo> <comment id>
 dg issue close  <owner>/<repo> 12
 dg issue reopen <owner>/<repo> 12
 dg issue label  <owner>/<repo> 12 add bug docs     # or: remove bug (the older --add/--remove still work)
@@ -161,7 +162,7 @@ dg issue assign <owner>/<repo> 12 me alice         # or: unassign; ids or DPNS n
 
 A mirrored item's own number still follows this repo's dense sequence; mirroring never skips ahead to match the source. What a mirror (`forge-import`) can carry instead is the source's number in a separate `upstreamNumber` field, trusted only when it was written by the repo's owner or a current maintainer or writer. The web app shows it beside the local number, "#12 · upstream #7761", and a bare `#7761` in an imported body resolves to whichever local item recorded that upstream number ([Mirror a GitHub repo](mirror-a-github-repo.md) has the details). `dg` does not read `upstreamNumber` back today; the display is web-only.
 
-**No deletes.** Issues, PRs and their state events cannot be deleted, so nobody can rewrite a thread's history. Comments can be deleted by their author.
+**No deletes.** Issues, PRs and their state events cannot be deleted, so nobody can rewrite a thread's history. Comments can be deleted by their author: the comment's **Delete** on the web, or `dg issue delete-comment` (for PR comments too). Consensus lets nobody else delete it, maintainers included, so a comment posted by mistake is for its author to remove. Replies to it stay, and read as replies to a deleted comment. A delete removes the comment from Platform state, but the write that posted it stays in the chain's block history: treat a secret posted in a comment as leaked and rotate it.
 
 **Locking.** A writer or maintainer locks a conversation to stop non-members from posting to it:
 
