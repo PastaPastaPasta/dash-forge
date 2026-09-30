@@ -848,9 +848,12 @@ async fn label(ctx: &Ctx, repo: &str, number: u64, add: bool, names: &[String]) 
         names.to_vec()
     };
     // A label already on (or already off) the issue is not written again: it would be paid
-    // for and show twice in the timeline (QW-035).
+    // for and show twice in the timeline (QW-035). One the issue carries in another case is
+    // the same label, as the web's picker treats it.
     let (target, current) = target_and_state(&s, repo, number).await?;
-    let (names, unchanged) = changes(&names, current.as_ref().map(|c| &c.labels), add);
+    let labels = current.as_ref().map(|c| &c.labels);
+    let names = spelt_as_on_issue(&names, labels);
+    let (names, unchanged) = changes(&names, labels, add);
     if names.is_empty() {
         let already = if add { "already has" } else { "does not have" };
         ctx.emit(
@@ -984,7 +987,7 @@ fn defined_labels(
     } else {
         format!("its labels: {}", safe(&live.join(", ")))
     };
-    let first = missing.first().map_or("", String::as_str);
+    let first = crate::storage_wizard::shell_word(missing.first().map_or("", String::as_str));
     Err(UserError::new(
         codes::NOT_FOUND,
         format!(
@@ -996,10 +999,27 @@ fn defined_labels(
     .cause(have)
     .fix(format!(
         "define it first: `dg label create {repo} {}`",
-        safe(first)
+        safe(&first)
     ))
     .note("checked before anything was signed; nothing was written or paid")
     .into())
+}
+
+/// `names` spelt as the issue's `current` labels spell them, where one matches without
+/// regard to case (`None`: unknown, left as they are).
+fn spelt_as_on_issue(
+    names: &[String],
+    current: Option<&std::collections::BTreeSet<String>>,
+) -> Vec<String> {
+    names
+        .iter()
+        .map(|n| {
+            current
+                .and_then(|c| c.iter().find(|l| l.eq_ignore_ascii_case(n)))
+                .unwrap_or(n)
+                .clone()
+        })
+        .collect()
 }
 
 /// `bug` or `bug, docs` for a message, terminal-safe.
@@ -1142,11 +1162,24 @@ mod tests {
             assert!(!u.message.contains("bug,"), "{}", u.message);
             assert_eq!(u.cause.as_deref(), Some("its labels: bug, Docs"));
         }
-        let err = defined_labels(&w(&["x"]), &[], "a/p").unwrap_err();
+        let err = defined_labels(&w(&["good first issue"]), &[], "a/p").unwrap_err();
         let u = err
             .downcast_ref::<forge_core::user_error::UserError>()
             .unwrap();
         assert_eq!(u.cause.as_deref(), Some("it defines no labels"));
+        // the fix is a command that can be pasted
+        assert!(
+            u.fix[0].contains("`dg label create a/p 'good first issue'`"),
+            "{:?}",
+            u.fix
+        );
+        // an issue already carrying the label in another case has it
+        let on: std::collections::BTreeSet<String> = ["docs".to_string()].into();
+        assert_eq!(
+            super::spelt_as_on_issue(&w(&["Docs", "bug"]), Some(&on)),
+            w(&["docs", "bug"])
+        );
+        assert_eq!(super::spelt_as_on_issue(&w(&["Docs"]), None), w(&["Docs"]));
     }
     use crate::fmt::transition_phrase;
     use forge_core::collab::v2::Comment;

@@ -34,9 +34,44 @@ pub fn repo_from_clone() -> bool {
     FROM_CLONE.load(Ordering::Relaxed)
 }
 
-/// Record that [`with_repo`]'s line is the one this run uses.
+/// Record that the repository this run acts on came from the clone ([`parse`]'s flag).
 pub fn mark_repo_from_clone() {
     FROM_CLONE.store(true, Ordering::Relaxed);
+}
+
+/// Parse `dg`'s command line: `-R <REPO>` moved into its slot first ([`explicit_repo`]);
+/// then, inside a clone (`clone()` names its repository), a line that does not parse is tried
+/// again with the clone's repository in the slot ([`with_repo`]). Returns the parsed line and
+/// whether its repository came from the clone; the error is clap's for the line as typed.
+pub fn parse(
+    args: Vec<OsString>,
+    clone: impl FnOnce() -> Option<String>,
+) -> Result<(crate::Cli, bool), clap::Error> {
+    use clap::Parser as _;
+    let (args, explicit) = match explicit_repo(&args) {
+        Some(a) => (a, true),
+        None => (args, false),
+    };
+    match crate::Cli::try_parse_from(&args) {
+        Ok(cli) => Ok((cli, false)),
+        Err(e) if explicit || is_help_or_version(&e) => Err(e),
+        Err(e) => with_repo(&args, clone)
+            .and_then(|a| crate::Cli::try_parse_from(a).ok())
+            .map(|cli| (cli, true))
+            .ok_or(e),
+    }
+}
+
+/// Whether clap's "error" is a `--help` / `--version` page (or the help a bare `dg issue`
+/// prints), not a usage error.
+pub fn is_help_or_version(e: &clap::Error) -> bool {
+    use clap::error::ErrorKind;
+    matches!(
+        e.kind(),
+        ErrorKind::DisplayHelp
+            | ErrorKind::DisplayVersion
+            | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+    )
 }
 
 /// `args` with `repo()` (the clone's repository) put in the repository slot of the subcommand
@@ -62,33 +97,46 @@ pub fn with_repo(
 /// repository slot of the subcommand they name, or `None` when there is none, or that
 /// subcommand's first positional is not a repository (`dg import --repo` is its own option).
 pub fn explicit_repo(args: &[OsString]) -> Option<Vec<OsString>> {
+    let root = built();
+    let mut cmd = &root;
     let mut rest = Vec::with_capacity(args.len());
+    rest.extend(args.first().cloned());
     let mut value: Option<OsString> = None;
-    let mut i = 0;
+    let mut i = 1;
     while i < args.len() {
-        let token = args[i].to_str();
+        let Some(token) = args[i].to_str() else {
+            rest.push(args[i].clone());
+            i += 1;
+            continue;
+        };
         match token {
-            Some("--") => {
+            "--" => {
                 rest.extend_from_slice(&args[i..]);
                 break;
             }
-            Some("-R" | "--repo") if i > 0 => {
+            "-R" | "--repo" => {
                 value = Some(args.get(i + 1)?.clone());
                 i += 2;
                 continue;
             }
-            Some(t) if i > 0 && t.starts_with("--repo=") => {
-                value = Some(t["--repo=".len()..].into());
+            t if t.starts_with("--repo=") => value = Some(t["--repo=".len()..].into()),
+            t if t.len() > 2 && t.starts_with("-R") => value = Some(t[2..].into()),
+            // another option's value is never taken for `-R` (`--body -R`)
+            t if t.starts_with('-') && takes_separate_value(cmd, t) => {
+                rest.extend(args[i..].iter().take(2).cloned());
+                i += 2;
+                continue;
             }
-            Some(t) if i > 0 && t.len() > 2 && t.starts_with("-R") => {
-                value = Some(t[2..].into());
+            t => {
+                if let Some(sub) = cmd.find_subcommand(t) {
+                    cmd = sub;
+                }
+                rest.push(args[i].clone());
             }
-            _ => rest.push(args[i].clone()),
         }
         i += 1;
     }
     let value = value.filter(|v| !v.is_empty())?;
-    let root = built();
     let (at, _) = repo_slot(&root, &rest)?;
     rest.insert(at, value);
     Some(rest)
@@ -106,16 +154,19 @@ fn is_number(arg: &str) -> bool {
 }
 
 /// Whether `given`, typed where the repository goes, names one, so it must not be shifted
-/// into the next argument: the clone's own repository `here` (as `owner/name`, its bare name,
-/// or its id), or an `owner/name` whose owner is an identity id, `@name` or `name.dash`. A
-/// number never is (`dg issue view 3`); `docs`, `feat/x` or `release/*` are what the next
-/// argument holds (a label, a branch, a pattern).
+/// into the next argument: the clone's own repository `here` (its id, its bare name, or any
+/// `<owner>/<name>` with its name, the owner spelt as an id or a DPNS name), or an
+/// `owner/name` whose owner is an identity id, `@name` or `name.dash`. A number never is
+/// (`dg issue view 3`); `docs`, `feat/x` or `release/*` are what the next argument holds (a
+/// label, a branch, a pattern).
 fn names_a_repo(given: &str, here: &str) -> bool {
     if is_number(given) {
         return false;
     }
-    let here_name = here.split_once('/').map(|(_, n)| n);
-    if given == here || here_name.is_some_and(|n| given.eq_ignore_ascii_case(n)) {
+    let name_of = |r: &str| r.split_once('/').map(|(_, n)| n.to_ascii_lowercase());
+    let here_name = name_of(here);
+    let given_name = name_of(given).unwrap_or_else(|| given.to_ascii_lowercase());
+    if given == here || here_name.is_some_and(|n| n == given_name) {
         return true;
     }
     match given.split_once('/') {
@@ -231,16 +282,26 @@ mod tests {
         <crate::Cli as clap::Parser>::try_parse_from(args).is_ok()
     }
 
-    /// What `main` does: the line as typed when it parses, else the clone's repository put in
-    /// its slot when that parses; `None` when neither does.
+    /// The line `main` runs for `line` typed inside a clone of `here`: as typed when it parses,
+    /// else with the clone's repository in its slot when that parses; `None` when neither
+    /// does. Checked against [`parse`], which `main` calls: it must accept exactly these
+    /// lines, and flag those whose repository came from the clone.
     fn run_in(line: &str, here: &str) -> Option<String> {
         let args = split(line);
-        if parses(&args) {
-            return Some(join(&args));
-        }
-        with_repo(&args, || Some(here.into()))
-            .filter(|a| parses(a))
-            .map(|a| join(&a))
+        let shown = if parses(&args) {
+            Some(join(&args))
+        } else {
+            with_repo(&args, || Some(here.into()))
+                .filter(|a| parses(a))
+                .map(|a| join(&a))
+        };
+        let parsed = parse(args, || Some(here.into()));
+        assert_eq!(
+            parsed.as_ref().ok().map(|(_, from_clone)| *from_clone),
+            shown.as_ref().map(|s| s != line),
+            "{line}"
+        );
+        shown
     }
 
     fn run(line: &str) -> Option<String> {
@@ -325,6 +386,8 @@ mod tests {
         assert_eq!(run("dg label create project"), None);
         assert_eq!(run(&format!("dg label create {HERE}")), None);
         assert_eq!(run("dg release download PROJECT"), None);
+        assert_eq!(run("dg label create alice/project"), None);
+        assert_eq!(run("dg collab add bob/Project"), None);
         // nor an owner/name that can only be a repository
         assert_eq!(run(&format!("dg label create {ID}/other")), None);
         assert_eq!(run("dg collab add @alice/other"), None);
@@ -378,10 +441,42 @@ mod tests {
             None
         );
         assert_eq!(explicit_repo(&split("dg auth status -R x")), None);
-        // after `--` it is an argument, not an option
+        // after `--`, or as another option's value, it is not the option
         assert_eq!(
             explicit_repo(&split("dg issue comment x 3 --body -- -R")),
             None
         );
+        assert_eq!(
+            explicit_repo(&split("dg issue comment x 3 --body -R")),
+            None
+        );
+        assert_eq!(
+            explicit_repo(&split("dg issue comment 3 --body -R -R x/y"))
+                .map(|a| join(&a))
+                .as_deref(),
+            Some("dg issue comment x/y 3 --body -R")
+        );
+    }
+
+    /// `parse`, as `main` calls it: an explicit `-R` is never second-guessed by the clone,
+    /// help is help, and the flag says where the repository came from.
+    #[test]
+    fn parse_reports_where_the_repository_came_from() {
+        let here = || Some(HERE.to_string());
+        let (cli, from_clone) = parse(split("dg issue label 3 add bug"), here).unwrap();
+        assert!(from_clone);
+        let crate::Command::Issue(crate::IssueCommand::Label { repo, number, .. }) = cli.command
+        else {
+            panic!("not issue label")
+        };
+        assert_eq!((repo.as_str(), number), (HERE, 3));
+        let (_, from_clone) = parse(split("dg issue label -R a/b 3 add bug"), here).unwrap();
+        assert!(!from_clone);
+        // with -R, a line that still does not parse is not retried with the clone's repository
+        assert!(parse(split("dg label create -R a/b"), here).is_err());
+        let e = parse(split("dg issue label --help"), here).unwrap_err();
+        assert!(is_help_or_version(&e));
+        let e = parse(split("dg label create project"), here).unwrap_err();
+        assert_eq!(e.kind(), clap::error::ErrorKind::MissingRequiredArgument);
     }
 }

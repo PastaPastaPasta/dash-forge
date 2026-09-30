@@ -271,7 +271,7 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
     // the fork as its source, as `gh pr create` does (QW2-014). Naming the fork opens it
     // there.
     let fork = if crate::infer::repo_from_clone() {
-        into_fork_parent(ctx, &mut s).await?
+        into_fork_parent(&mut s).await?
     } else {
         None
     };
@@ -395,7 +395,7 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
 
 /// When the session's repository is a fork, point the session at the fork's parent and
 /// return the fork; `None` (the session unchanged) when it is not one, or its parent is gone.
-async fn into_fork_parent(ctx: &Ctx, s: &mut Session) -> Result<Option<Repo>> {
+async fn into_fork_parent(s: &mut Session) -> Result<Option<Repo>> {
     let Some(parent_id) = forge_core::resolve::fork_parent(&s.client, &s.repo)
         .await
         .context("reading whether this clone's repository is a fork")?
@@ -414,14 +414,13 @@ async fn into_fork_parent(ctx: &Ctx, s: &mut Session) -> Result<Option<Repo>> {
         Err(e) => return Err(e).context("resolving the fork's parent"),
     };
     let fork = std::mem::replace(&mut s.repo, parent);
-    if !ctx.json {
-        eprintln!(
-            "{} is a fork of {}: the PR goes there (`dg pr create {} …` opens it in the fork)",
-            fork.display(),
-            s.repo.display(),
-            fork.display()
-        );
-    }
+    // stderr, with --json too: where the PR goes is worth saying either way
+    eprintln!(
+        "{} is a fork of {}: the PR goes there (`dg pr create {} …` opens it in the fork)",
+        fork.display(),
+        s.repo.display(),
+        fork.display()
+    );
     Ok(Some(fork))
 }
 
