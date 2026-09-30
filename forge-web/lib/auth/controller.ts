@@ -108,6 +108,11 @@ export interface AuthSession {
   readonly identityId: string
   /** Credit balance (bigint-safe as a decimal string; parsed by the UI). */
   readonly balance: string
+  /**
+   * When this tab read `balance` from Platform (client ms). Absent while a reload shows a kept
+   * session's hint: its balance is from when the session was kept, possibly many writes ago.
+   */
+  readonly balanceReadAt?: number
   readonly network: Network
   /** The signing key's budget and expiry, when it is a PV14 limited key. */
   readonly keyLimits?: KeyLimits | null
@@ -518,6 +523,7 @@ export class AuthController {
     const generation = vaultLockGeneration()
     try {
       const sdk = await this.getSdk()
+      const balanceReadAt = Date.now()
       const identity = await authSdk(sdk).identities.fetch(secret.identityId)
       if (!identity) throw new WriteAuthError(`identity ${secret.identityId} not found on ${this.network}`)
       const match = await findSigningKey(identity, secret.wif, this.network, SECURITY_LEVEL.HIGH)
@@ -535,7 +541,8 @@ export class AuthController {
         .map((e) => e.keyId)
       const session: AuthSession = {
         identityId: secret.identityId,
-        balance: identity.balance.toString(),
+        balance: balanceBeforeWrite(sdk, secret.identityId, identity.balance).toString(),
+        balanceReadAt,
         network: this.network,
         keyLimits,
         keyId: match.keyId,
@@ -570,7 +577,9 @@ export class AuthController {
 
   /** What a later page load shows at once for a kept session (no key material). */
   private sessionHint(session: AuthSession): SessionHint {
-    return { session, scopes: { main: this.scopes.main, extra: [...this.scopes.extra] } }
+    // The read time means nothing to a later page load: its balance is shown as not yet read.
+    const { balanceReadAt: _readAt, ...kept } = session
+    return { session: kept, scopes: { main: this.scopes.main, extra: [...this.scopes.extra] } }
   }
 
   /**
@@ -606,7 +615,9 @@ export class AuthController {
     // One update: the header never shows "Sign in" between the two. The background check
     // replaces the hint's facts (balance, scopes) with what the chain says.
     this.scopes = hint.scopes
-    this.setState({ session: hint.session, resuming: false, scope: 'signing' })
+    // The hint's balance is from when the session was kept: shown, but not as a fresh read.
+    const { balanceReadAt: _keptAt, ...shown } = hint.session
+    this.setState({ session: shown, resuming: false, scope: 'signing' })
     void this.open(secret, 'vault', undefined, false).catch(async (e: unknown) => {
       if (!(e instanceof KeyNotUsableError)) return
       // Replaced by another tab's renewal meanwhile: pick up the new key.
@@ -1195,6 +1206,8 @@ export class AuthController {
     const session = this.state.session
     if (!session) return
     const sdk = await this.getSdk()
+    // Stamped before the read: a write recorded while it runs is not taken to be in it.
+    const balanceReadAt = Date.now()
     const [identity, keyLimits] = await Promise.all([
       authSdk(sdk).identities.fetch(session.identityId),
       session.keyId === undefined ? Promise.resolve(null) : readKeyLimits(sdk, session.identityId, session.keyId).catch(() => session.keyLimits ?? null),
@@ -1218,7 +1231,16 @@ export class AuthController {
         return
       }
     }
-    this.setState({ session: { ...current, balance: (identity?.balance ?? 0n).toString(), keyLimits } })
+    // Not shown by this node: the balance is unknown, and the one shown stays (M1). A refresh that
+    // started before one already applied does not replace it.
+    if (!identity || (current.balanceReadAt !== undefined && balanceReadAt < current.balanceReadAt)) {
+      this.setState({ session: { ...current, keyLimits } })
+      return
+    }
+    // A node still behind a write this tab measured answers a balance that write replaced: the
+    // measured one stands (write.ts `balanceBeforeWrite`, D-2).
+    const balance = balanceBeforeWrite(sdk, current.identityId, identity.balance)
+    this.setState({ session: { ...current, balance: balance.toString(), balanceReadAt, keyLimits } })
   }
 
   /** Lock (keep the stored key; unlock to continue). The session ends with it. */

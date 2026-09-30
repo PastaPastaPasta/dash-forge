@@ -857,6 +857,11 @@ async function balanceAfter(sdk: EvoSDK, identityId: string, before: bigint): Pr
  */
 const measuring = new Map<string, Promise<void>>()
 
+/** Whether a write of this identity is still measuring its charge (its ledger row not yet out). */
+export function measurementPending(identityId: string): boolean {
+  return measuring.has(identityId)
+}
+
 function trackMeasurement(identityId: string, measurement: Promise<unknown>): void {
   const all = Promise.all([measuring.get(identityId), measurement]).then(
     () => undefined,

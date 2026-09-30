@@ -11,9 +11,15 @@ import type { Network } from './constants'
 import { idbEntries, idbGet, idbPut } from './idb'
 import type { SpendEvent } from './sdk/write'
 
-/** A ledger row (the balance before the write is not stored: only the baseline keeps one). */
+/** A ledger row. */
 export interface SpendRow extends Omit<SpendEvent, 'balanceBefore'> {
   readonly at: number
+  /**
+   * The balance the write started from (credits, decimal), when it was read: a balance still
+   * equal to it after the write was charged is a node that has not seen the write yet. Absent on
+   * rows recorded before it was kept.
+   */
+  readonly balanceBefore?: string
 }
 
 /** A ledger's starting point: the balance before its first recorded write. */
@@ -38,7 +44,7 @@ function baselineKey(network: Network, identityId: string): string {
 export async function recordSpend(event: SpendEvent): Promise<void> {
   const at = Date.now()
   const { balanceBefore, ...rest } = event
-  const row: SpendRow = { ...rest, at }
+  const row: SpendRow = { ...rest, at, ...(balanceBefore !== null ? { balanceBefore: balanceBefore.toString() } : {}) }
   // The kind is part of the key: two spends on one document in the same millisecond (a key's
   // registration, then its top-up) are two rows, never one overwriting the other.
   const key = `${prefix(event.network, event.identityId)}${String(at).padStart(15, '0')}:${event.documentId}:${event.kind}`
@@ -131,6 +137,33 @@ export function spendKindLabel(kind: string): string {
   const what = type.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()
   return verb === 'create' ? what : `${verb} ${what}`
 }
+
+/**
+ * Whether the balance can be reconciled with the ledger yet, i.e. it has every recorded write in
+ * it. Until then the gap would be the writes the balance misses, read as "top-ups":
+ *  - it was read from Platform in this tab (`readAt`; null while a reload shows the kept
+ *    session's balance, which dates from when the session was kept), no earlier than the
+ *    ledger's last row;
+ *  - no write of this identity is still measuring its charge (`measuring`: its row is not out);
+ *  - it is not the balance a charged write started from (a node that has not seen that write
+ *    answers it, in this tab or after a reload alike).
+ */
+export function balanceSettled(
+  balance: { readonly credits: bigint | null; readonly readAt: number | null; readonly measuring?: boolean },
+  rows: readonly Pick<SpendRow, 'at' | 'balanceBefore' | 'actualCredits'>[],
+): boolean {
+  if (balance.readAt === null || balance.credits === null || balance.measuring === true) return false
+  const last = rows.reduce((m, r) => Math.max(m, r.at), -Infinity)
+  if (balance.readAt < last) return false
+  // The latest few charged writes only (as the write engine's own trail): an old row's starting
+  // balance a top-up happened to restore says nothing about lag.
+  const now = balance.credits.toString()
+  const recent = [...rows].sort((a, b) => a.at - b.at).slice(-RECENT_ROWS)
+  return !recent.some((r) => r.balanceBefore === now && r.actualCredits !== null && r.actualCredits !== 0)
+}
+
+/** How many of the latest rows `balanceSettled` checks a balance against. */
+const RECENT_ROWS = 8
 
 /**
  * The reconciliation line: what the ledger explains vs what the balance actually moved since
