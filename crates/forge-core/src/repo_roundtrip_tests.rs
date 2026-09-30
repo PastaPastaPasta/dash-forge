@@ -25,17 +25,17 @@ use crate::refs::GitState;
 use crate::rules;
 use crate::scope::DocScope;
 
-const OWNER: [u8; 32] = crate::test_support::rc1::OWNER;
+pub(super) const OWNER: [u8; 32] = crate::test_support::rc1::OWNER;
 
-/// The documents a push wrote, as Platform holds them.
+/// The documents a push wrote, as Platform holds them. Shared with the survivability drill.
 #[derive(Default)]
-struct Recorded {
+pub(super) struct Recorded {
     docs: Vec<(&'static str, FetchedDocument)>,
 }
 
 impl Recorded {
     /// Record one create by [`OWNER`], `$createdAt` in write order.
-    fn create(&mut self, doc_type: &'static str, fields: BTreeMap<String, FieldValue>) {
+    pub(super) fn create(&mut self, doc_type: &'static str, fields: BTreeMap<String, FieldValue>) {
         // Every document the push writes must be one the RC1 contract accepts.
         if let Err(e) = crate::test_support::rc1::validate_props(doc_type, &fields, OWNER) {
             panic!("RC1 refuses this {doc_type}: {e}\n  properties: {fields:?}");
@@ -56,7 +56,7 @@ impl Recorded {
     }
 
     /// Every recorded document of `doc_type`, in write order.
-    fn of(&self, doc_type: &str) -> Vec<FetchedDocument> {
+    pub(super) fn of(&self, doc_type: &str) -> Vec<FetchedDocument> {
         self.docs
             .iter()
             .filter(|(t, _)| *t == doc_type)
@@ -66,7 +66,7 @@ impl Recorded {
 
     /// A query's `==` filters, with Platform's strictness on types: an identifier field
     /// matches only an identifier operand.
-    fn query(&self, doc_type: &str, filters: &[QueryFilter]) -> Vec<FetchedDocument> {
+    pub(super) fn query(&self, doc_type: &str, filters: &[QueryFilter]) -> Vec<FetchedDocument> {
         self.of(doc_type)
             .into_iter()
             .filter(|d| {
@@ -85,7 +85,7 @@ impl Recorded {
 }
 
 /// Run `git` in `dir` with a fixed identity and no user config; its trimmed stdout.
-fn git(dir: &Path, args: &[&str]) -> String {
+pub(super) fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -107,7 +107,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
 }
 
 /// Write `file` and commit it; the new commit's oid.
-fn commit(dir: &Path, file: &str, body: &str, msg: &str) -> String {
+pub(super) fn commit(dir: &Path, file: &str, body: &str, msg: &str) -> String {
     std::fs::write(dir.join(file), body).unwrap();
     git(dir, &["add", "-A"]);
     git(dir, &["commit", "-q", "-m", msg]);
@@ -207,50 +207,80 @@ async fn read_pack(rec: &Recorded, m: &super::PackManifestInfo, store: &Store<'_
             .unwrap();
     }
     let loc = PlatformLocator::parse(&Uri(m.uris[0].clone())).unwrap();
-    let filters = loc
-        .scope()
-        .unwrap()
-        .chunk_filters(&loc.owner, loc.pack_hash)
-        .unwrap();
-    let mut chunks: Vec<_> = rec
-        .query("chunk", &filters)
-        .iter()
-        .map(|d| decode_chunk_doc(&d.fields).unwrap())
-        .collect();
-    chunks.sort_by_key(|c| c.seq);
+    let (bytes, chunks) = recorded_chunks(rec, &loc).unwrap();
     assert_eq!(
-        chunks.len() as u64,
-        m.chunk_count,
+        chunks, m.chunk_count,
         "every chunk is found by its identifier packHash"
     );
-    let bytes = crate::pack::join(&chunks);
     assert_eq!(hex::encode(crate::backends::sha256(&bytes)), hash_hex);
     bytes
+}
+
+/// The pack a `platform://` locator names, joined from the `chunk` documents `rec` holds —
+/// queried as a reader does, by the locator's `chunk_filters` — and how many chunks it took.
+/// [`crate::error::Error::NotFound`] when there are none.
+pub(super) fn recorded_chunks(
+    rec: &Recorded,
+    loc: &PlatformLocator,
+) -> crate::error::Result<(Vec<u8>, u64)> {
+    let filters = loc.scope()?.chunk_filters(&loc.owner, loc.pack_hash)?;
+    let mut chunks = rec
+        .query("chunk", &filters)
+        .iter()
+        .map(|d| decode_chunk_doc(&d.fields))
+        .collect::<crate::error::Result<Vec<_>>>()?;
+    if chunks.is_empty() {
+        return Err(crate::error::Error::NotFound);
+    }
+    chunks.sort_by_key(|c| c.seq);
+    Ok((crate::pack::join(&chunks), chunks.len() as u64))
 }
 
 /// Clone what `rec` holds into a new bare repository: every git pack indexed, every ref the
 /// public fold resolves, `HEAD` at the config's default branch.
 async fn clone(rec: &Recorded, dst: &Path, store: &Store<'_>) {
+    init_bare(dst);
+    for m in git_manifests(rec) {
+        let bytes = read_pack(rec, &m, store).await;
+        index_pack(dst, &bytes);
+    }
+    apply_refs(rec, dst);
+}
+
+/// An empty bare repository at `dst`.
+pub(super) fn init_bare(dst: &Path) {
     git(dst, &["init", "-q", "--bare"]);
+}
+
+/// The git packs' manifests `rec` holds, in upload order.
+pub(super) fn git_manifests(rec: &Recorded) -> Vec<super::PackManifestInfo> {
     let mut manifests: Vec<_> = rec
         .of("packManifest")
         .iter()
         .map(|d| manifest_info(d).unwrap())
         .collect();
     manifests.sort_by_key(|m| m.created_at);
-    for m in manifests.iter().filter(|m| m.kind == 0) {
-        let bytes = read_pack(rec, m, store).await;
-        let mut child = Command::new("git")
-            .arg("-C")
-            .arg(dst)
-            .args(["index-pack", "--stdin", "--strict"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .spawn()
-            .unwrap();
-        child.stdin.take().unwrap().write_all(&bytes).unwrap();
-        assert!(child.wait().unwrap().success(), "index-pack");
-    }
+    manifests.retain(|m| m.kind == 0);
+    manifests
+}
+
+/// Index one pack's `bytes` into the repository at `dst`, strictly.
+pub(super) fn index_pack(dst: &Path, bytes: &[u8]) {
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(dst)
+        .args(["index-pack", "--stdin", "--strict"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(bytes).unwrap();
+    assert!(child.wait().unwrap().success(), "index-pack");
+}
+
+/// Every ref the public fold of `rec` resolves, written into `dst`, and `HEAD` at the
+/// config's default branch.
+pub(super) fn apply_refs(rec: &Recorded, dst: &Path) {
     let state = GitState::from_rows([
         rec.of("refUpdate"),
         rec.of("protectedRefUpdate"),

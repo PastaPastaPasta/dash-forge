@@ -1,0 +1,21 @@
+{
+  "name": "notes_continue_without_manifest",
+  "description": "flag 0x10 needs TLV 21: notes cannot continue in a manifest that is not named.",
+  "case": "private_release_seal",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+    "nonce": "000102030405060708090a0b",
+    "fields": {
+      "tag": "v1",
+      "notes": "preview",
+      "notesContinue": true
+    }
+  },
+  "expected": {
+    "error": "malformed"
+  }
+}

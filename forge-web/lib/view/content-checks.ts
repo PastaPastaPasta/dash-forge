@@ -56,6 +56,12 @@ export interface ContentChecks {
    * (`pub-9a1.r2.dev (timed out)`, `ipfs gateway ipfs.io (down: HTTP 429)`).
    */
   readonly unreachable: readonly string[]
+  /**
+   * Recorded copies that failed while another copy served the pack (a deleted bucket, a stopped
+   * gateway), in the same form. Nothing is missing, so this lowers no trust state: the source
+   * row names them so a lost copy is noticed while the others still hold the repo.
+   */
+  readonly fellBackFrom: readonly string[]
 }
 
 export const NO_CONTENT_CHECKS: ContentChecks = {
@@ -70,9 +76,13 @@ export const NO_CONTENT_CHECKS: ContentChecks = {
   unavailablePacks: [],
   corruptMirrorPacks: [],
   unreachable: [],
+  fellBackFrom: [],
 }
 
-type Counter = Exclude<keyof ContentChecks, 'sources' | 'packSources' | 'viewPacks' | 'unavailablePacks' | 'corruptMirrorPacks' | 'unreachable'>
+type Counter = Exclude<
+  keyof ContentChecks,
+  'sources' | 'packSources' | 'viewPacks' | 'unavailablePacks' | 'corruptMirrorPacks' | 'unreachable' | 'fellBackFrom'
+>
 
 /**
  * A change to one repo's ledger: counter increments, a byte source seen (and the pack it served),
@@ -89,6 +99,8 @@ export type ContentCheckDelta = Partial<Record<Counter, number>> & {
   readonly corruptMirror?: boolean
   /** Places that did not answer (see {@link ContentChecks.unreachable}). */
   readonly unreachable?: readonly string[]
+  /** Recorded copies that failed while another served (see {@link ContentChecks.fellBackFrom}). */
+  readonly fellBackFrom?: readonly string[]
 }
 
 const ledger = new Map<string, ContentChecks>()
@@ -127,7 +139,19 @@ export function noteContentCheck(key: string, delta: ContentCheckDelta): void {
   const newCorrupt =
     missing !== undefined && delta.corruptMirror === true && !prev.corruptMirrorPacks.includes(missing)
   const newPlaces = (delta.unreachable ?? []).filter((p) => !prev.unreachable.includes(p))
-  if (!newSource && !newPackSource && !newCopySource && !bumped && !newMissing && !newCorrupt && newPlaces.length === 0) return
+  const newFellBack = [...new Set(delta.fellBackFrom ?? [])].filter((p) => !prev.fellBackFrom.includes(p))
+  if (
+    !newSource &&
+    !newPackSource &&
+    !newCopySource &&
+    !bumped &&
+    !newMissing &&
+    !newCorrupt &&
+    newPlaces.length === 0 &&
+    newFellBack.length === 0
+  ) {
+    return
+  }
 
   const next: { -readonly [K in keyof ContentChecks]: ContentChecks[K] } = { ...prev }
   for (const k of counters) next[k] = prev[k] + Math.max(0, delta[k] ?? 0)
@@ -137,6 +161,7 @@ export function noteContentCheck(key: string, delta: ContentCheckDelta): void {
   if (newMissing) next.unavailablePacks = [...prev.unavailablePacks, missing]
   if (newCorrupt) next.corruptMirrorPacks = [...prev.corruptMirrorPacks, missing]
   if (newPlaces.length > 0) next.unreachable = [...prev.unreachable, ...newPlaces]
+  if (newFellBack.length > 0) next.fellBackFrom = [...prev.fellBackFrom, ...newFellBack]
   ledger.set(key, next)
   for (const l of listeners) l()
 }
@@ -147,8 +172,8 @@ export function noteContentCheck(key: string, delta: ContentCheckDelta): void {
  */
 export function clearUnreachable(key: string): void {
   const prev = ledger.get(key)
-  if (prev === undefined || (prev.unreachable.length === 0 && prev.unavailablePacks.length === 0)) return
-  ledger.set(key, { ...prev, unreachable: [], unavailablePacks: [], corruptMirrorPacks: [] })
+  if (prev === undefined || (prev.unreachable.length === 0 && prev.unavailablePacks.length === 0 && prev.fellBackFrom.length === 0)) return
+  ledger.set(key, { ...prev, unreachable: [], unavailablePacks: [], corruptMirrorPacks: [], fellBackFrom: [] })
   for (const l of listeners) l()
 }
 

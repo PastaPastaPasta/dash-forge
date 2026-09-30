@@ -382,6 +382,18 @@ impl Helper {
         .buffered(PACK_DOWNLOAD_WINDOW)
         .try_collect()
         .await?;
+        // Packs a fallback copy served: say which recorded copy is down, and why, while the
+        // others still hold the history (the survivability drill asserts these lines). A
+        // warning, so `-q` does not hide it (git keeps warnings under -q too).
+        let progress = Progress {
+            enabled: true,
+            ..Progress::new(options.verbosity)
+        };
+        for line in
+            forge_core::storage::read::fallback_lines(&reader.take_fallbacks(), &repo.display())
+        {
+            progress.note(&line);
+        }
         let want_oids: Vec<String> = wants.iter().map(|w| w.oid.clone()).collect();
         let indexed: Vec<[u8; 32]> = fetched
             .iter()

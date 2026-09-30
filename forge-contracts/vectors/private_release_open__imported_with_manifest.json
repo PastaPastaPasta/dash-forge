@@ -1,0 +1,43 @@
+{
+  "name": "imported_with_manifest",
+  "description": "every field of the imported release comes back.",
+  "case": "private_release_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "tagName": "Q9IZr-pJvT1y-ocQB6lLAwG7BT3al6zK9KG2EyGPz34",
+      "vis": "private",
+      "delta": 0,
+      "enc": "01000102030405060708090a0b1c7000baaa558415361b7cc7b30bd57ad1785fa0109e63a737f9f639eabda483744059e5f2354b722e2c3b84680ca460b295df2d2fd3df77e2a44d69d5a1eb5e8d6d70dae2fa6b33c806c2696a874a85e73a3aa3403412f4ac15b621091a2a58e087553ba05a4c80a076acd0ca6d925b588c22314b6af0f76a723f630ea40ddd4f74b636ac8d1fedbddd9a71fb3a7173b6c42945d189aca8de277bf71972ab0fec2a8815e971173dadd137489a23489b096e745ace9d03dd615c895754558a323d6a02121e3c2eb784c37a00c0f05506ac7866b27b61fe53b781ff47dc1c2548d0fe0a61403ae9d35dbee2900e0fdeed974add01ac729b54d9403c49efe25d32a81c340a467eb8f890d53781550b343e"
+    }
+  },
+  "expected": {
+    "status": "readable",
+    "fields": {
+      "tag": "v23.1.8",
+      "name": "Secret 23.1.8",
+      "notes": "Highlights (the full notes are in the manifest)",
+      "targetOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "notesContinue": true,
+      "importedAuthor": "UdjinM6",
+      "importedUrl": "https://github.com/acme/secret/releases/tag/v23.1.8",
+      "importedCreatedAt": 1754179200000,
+      "assetManifest": "4a3f5093cd8d639b3f998ec93e3ebb5628c53b819f12895a4a54c62f6e8746fa"
+    }
+  }
+}
