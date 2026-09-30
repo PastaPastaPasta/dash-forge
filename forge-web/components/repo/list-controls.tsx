@@ -406,19 +406,105 @@ export function Pager({
 }): JSX.Element | null {
   if (page === 1 && !hasNext) return null
   const pages = matching === null ? null : Math.max(1, Math.ceil(matching / pageSize))
+  // Past the last page (a stale or hand-edited `?page=`), Previous goes to the last one rather
+  // than one back, and no "Page 9 of 6" is claimed (QW-068).
+  const past = pages !== null && page > pages
   return (
     <nav aria-label={label} className="mt-4 flex items-center justify-center gap-3 text-dense">
-      <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => onPage(page - 1)}>
+      <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => onPage(past ? pages : page - 1)}>
         <ChevronLeft className="h-3.5 w-3.5" aria-hidden /> Previous
       </Button>
       <span className="text-anvil-500 dark:text-anvil-400" data-testid="page-indicator">
         Page {page}
-        {pages !== null ? ` of ${pages}` : ''}
+        {pages !== null && !past ? ` of ${pages}` : ''}
       </span>
       <Button variant="outline" size="sm" disabled={!hasNext} onClick={() => onPage(page + 1)}>
         Next <ChevronRight className="h-3.5 w-3.5" aria-hidden />
       </Button>
     </nav>
+  )
+}
+
+/**
+ * The list body when `?page=` lies past the last page (QW-068): says so and offers the last page,
+ * rather than the empty list's "nothing has been merged yet".
+ */
+export function PastLastPage({ page, last, onPage }: { page: number; last: number; onPage: (p: number) => void }): JSX.Element {
+  return (
+    <div className="px-4 py-8 text-center text-dense text-anvil-600 dark:text-anvil-300" data-testid="page-past-end">
+      <p className="font-medium text-anvil-900 dark:text-anvil-50">There is no page {page}</p>
+      <p className="mt-1 text-anvil-500 dark:text-anvil-400">This list has {plural(last, 'page')}.</p>
+      <Button variant="outline" size="sm" className="mt-3" onClick={() => onPage(last)}>
+        Go to page {last}
+      </Button>
+    </div>
+  )
+}
+
+/** What a milestone filter offers: the repo's milestones (open first), or null while they are read. */
+export interface MilestoneChoice {
+  readonly title: string
+  readonly closed: boolean
+}
+
+/** The milestone filter (QW-018): any, none, or one of the repo's milestones (open ones first). */
+export function MilestoneFilter({
+  milestones,
+  value,
+  none,
+  onChange,
+}: {
+  milestones: readonly MilestoneChoice[] | null
+  value: string | null
+  none: boolean
+  onChange: (c: { milestone: string | null; noMilestone: boolean }) => void
+}): JSX.Element {
+  const known = milestones ?? []
+  const open = known.filter((m) => !m.closed)
+  const closed = known.filter((m) => m.closed)
+  // A milestone named in the URL that the repo does not define (yet) stays selectable.
+  const extra = value !== null && !known.some((m) => m.title === value) ? [value] : []
+  return (
+    <span className="inline-flex items-center gap-1">
+      <label htmlFor="filter-milestone" className="text-dense text-anvil-600 dark:text-anvil-300">Milestone</label>
+      <select
+        id="filter-milestone"
+        // A milestone's option is `m:<title>`, so no title can read as "any" or "none".
+        value={none ? 'none' : value !== null ? `m:${value}` : ''}
+        onChange={(e) => {
+          const v = e.target.value
+          onChange(v === 'none' ? { milestone: null, noMilestone: true } : { milestone: v.startsWith('m:') ? v.slice(2) : null, noMilestone: false })
+        }}
+        className="max-w-[10rem] rounded-md border border-anvil-300 bg-white px-2 py-1 text-dense dark:border-anvil-700 dark:bg-anvil-950 coarse:h-11"
+      >
+        <option value="">any</option>
+        <option value="none">none</option>
+        {[...extra, ...open.map((m) => m.title)].map((t) => (
+          <option key={t} value={`m:${t}`}>{t}</option>
+        ))}
+        {closed.length > 0 ? (
+          <optgroup label="Closed">
+            {closed.map((m) => (
+              <option key={m.title} value={`m:${m.title}`}>{m.title}</option>
+            ))}
+          </optgroup>
+        ) : null}
+      </select>
+    </span>
+  )
+}
+
+/**
+ * What `author:login` matched (QW-062): a name with no identity behind it is the login an
+ * import recorded, so the list shows the items a trusted mirror imported from that author.
+ */
+export function AuthorLoginNote({ login, notFound }: { login: string | null; notFound: readonly string[] }): JSX.Element | null {
+  if (login === null) return null
+  const noName = notFound.some((n) => n.toLowerCase() === login.toLowerCase())
+  return (
+    <p role="note" className="mb-3 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="author-login-note">
+      author:{login} matches items mirrored from @{login} on the source forge{noName ? ` (no DPNS name ${login}.dash exists)` : ''}.
+    </p>
   )
 }
 

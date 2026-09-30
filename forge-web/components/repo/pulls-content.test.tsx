@@ -232,10 +232,10 @@ describe('PullsContent (L-44)', () => {
 
   it('says which qualifiers it could not apply, and why', async () => {
     await render()
-    await submit('author:bobby mentions:@me fix')
+    await submit('author:bobby.dash mentions:@me fix')
     const note = el.querySelector('[data-testid="pull-search-dropped"]')?.textContent ?? ''
-    expect(note).toContain('author:bobby')
-    expect(note).toContain('bobby')
+    expect(note).toContain('author:bobby.dash')
+    expect(note).toContain('No DPNS name `bobby.dash` was found.')
     expect(note).toContain('mentions: is an Issues filter.')
     expect(replaced.at(-1)).toBe('/repo/pulls/?owner=o&name=n&q=fix')
     // Clear filters drops the note with the filters.
@@ -243,6 +243,53 @@ describe('PullsContent (L-44)', () => {
     await render()
     act(() => button('Clear filters').click())
     expect(el.querySelector('[data-testid="pull-search-dropped"]')).toBeNull()
+  })
+
+  it('matches a name DPNS does not know as a mirrored author login, and says so (QW-062)', async () => {
+    await render()
+    await submit('author:thephez fix')
+    expect(replaced.at(-1)).toBe('/repo/pulls/?owner=o&name=n&q=author%3Athephez+fix')
+    expect(el.querySelector('[data-testid="pull-search-dropped"]')).toBeNull()
+    search = 'owner=o&name=n&q=author%3Athephez+fix'
+    await render()
+    expect(asked.at(-1)).toMatchObject({ author: null, authorLogin: 'thephez', text: 'fix' })
+    expect(el.querySelector('[data-testid="author-login-note"]')?.textContent).toContain('mirrored from @thephez')
+  })
+
+  it('reports review: and a bad draft: value instead of searching for them as text (QW-020)', async () => {
+    await render()
+    await submit('review:approved draft:maybe in:comments fix')
+    const note = el.querySelector('[data-testid="pull-search-dropped"]')?.textContent ?? ''
+    expect(note).toContain('review:approved')
+    expect(note).toContain('draft: takes true or false.')
+    expect(note).toContain('in: takes title or body')
+    expect(replaced.at(-1)).toBe('/repo/pulls/?owner=o&name=n&q=fix')
+  })
+
+  it('applies draft:, review-requested:@me, -label:, milestone: and comments: from the URL', async () => {
+    search = `owner=o&name=n&q=draft%3Afalse+review-requested%3A${ALICE}+-label%3Awontfix+milestone%3A%22v1+0%22+comments%3A%3E2`
+    await render()
+    expect(asked.at(-1)).toMatchObject({ draft: false, reviewRequested: ALICE, notLabels: ['wontfix'], milestone: 'v1 0', comments: { min: 3, max: Infinity } })
+    expect((el.querySelector('#pull-search') as HTMLInputElement).value).toBe(`is:open -label:wontfix milestone:"v1 0" comments:>2 draft:false review-requested:${ALICE}`)
+    // `review-requested:@me` needs a viewer: signed out, nothing is read.
+    asked.length = 0
+    search = 'owner=o&name=n&q=review-requested%3A%40me'
+    await render()
+    expect(asked).toEqual([])
+    expect(el.textContent).toContain('Sign in to filter by your own pull requests')
+  })
+
+  it('says a page past the last one does not exist and offers the last page (QW-068)', async () => {
+    answer = { ...answer, rows: [], matching: 150, hasNext: false }
+    search = 'owner=o&name=n&state=merged&page=9'
+    await render()
+    const past = el.querySelector('[data-testid="page-past-end"]')
+    expect(past?.textContent).toContain('There is no page 9')
+    expect(past?.textContent).toContain('6 pages')
+    expect(el.textContent).not.toContain('Nothing has been merged yet')
+    expect(el.querySelector('[data-testid="page-indicator"]')?.textContent).toBe('Page 9')
+    act(() => button('Go to page 6').click())
+    expect(replaced.at(-1)).toBe('/repo/pulls/?owner=o&name=n&state=merged&page=6')
   })
 
   it('a tab change overtaking a slow name lookup stops the spinner, and the lookup is dropped', async () => {

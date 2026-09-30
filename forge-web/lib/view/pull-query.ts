@@ -5,10 +5,13 @@
  *
  * URL parameters (all optional; a default is never written):
  *   state=open|merged|closed|all (default open; closed = closed without merging)
- *   label, author, assignee, sort, q, page — as on the Issues list
+ *   label, author, assignee, sort, q, page — as on the Issues list; `q` also carries the PR-only
+ *   `draft:` and `review-requested:` qualifiers
  *
- * The search box takes the same qualifiers as the Issues list, plus `is:merged` (and `is:pr`,
- * which every PR matches). `mentions:` is not a PR filter here, and is reported as not applied.
+ * The search box takes the same qualifiers as the Issues list, plus `is:merged`, `is:draft`,
+ * `draft:true|false` and `review-requested:<id|name|@me>` (and `is:pr`, which every PR matches).
+ * `mentions:` is not a PR filter here, and is reported as not applied, as is `review:` (a PR's
+ * reviews are read on its page, not by the list).
  */
 
 import type { PullStateFilter } from '../repo'
@@ -19,14 +22,22 @@ import {
   issueQueryParams,
   parseIssueQuery,
   parseSearchText,
+  personValue,
   searchText,
   unresolvedQualifiers,
   type IssueListQuery,
 } from './issue-query'
+import { displayDpnsName } from './dpns'
 import { plural } from './format'
 
 /** The structured PR list query. */
-export type PullListQuery = Omit<IssueListQuery, 'state' | 'mentions'> & { readonly state: PullStateFilter }
+export type PullListQuery = Omit<IssueListQuery, 'state' | 'mentions'> & {
+  readonly state: PullStateFilter
+  /** `draft:true` / `is:draft` (only drafts), `draft:false` (none), or null. */
+  readonly draft: boolean | null
+  /** `review-requested:`: an identity id or `me`, or null. */
+  readonly reviewRequested: string | null
+}
 
 export const DEFAULT_PULL_QUERY: PullListQuery = toPull(DEFAULT_ISSUE_QUERY, 'open')
 
@@ -40,69 +51,112 @@ export function pullSubmitBase(q: PullListQuery): PullListQuery {
 
 const STATES: readonly PullStateFilter[] = ['open', 'merged', 'closed', 'all']
 
-function toPull(q: IssueListQuery, state: PullStateFilter): PullListQuery {
+function toPull(q: IssueListQuery, state: PullStateFilter, pr: Pick<PullListQuery, 'draft' | 'reviewRequested'> = { draft: null, reviewRequested: null }): PullListQuery {
   const { mentions: _mentions, state: _state, ...rest } = q
-  return { ...rest, state }
+  return { ...rest, state, ...pr }
 }
 
 function toIssue(q: PullListQuery): IssueListQuery {
-  return { ...q, state: 'open', mentions: false }
+  const { draft: _draft, reviewRequested: _rr, ...rest } = q
+  return { ...rest, state: 'open', mentions: false }
 }
 
-/** `is:merged` / `is:pr` (or `state:`), which the Issues grammar does not have: the key in any case, the value exact. */
-const PR_STATE_TOKEN = /(^|\s)(?:[iI][sS]|[sS][tT][aA][tT][eE]):(merged|pr)(?=\s|$)/g
+/** The PR-only filters as qualifiers (what `q` carries for them in the URL). */
+function pullQualifiers(q: Pick<PullListQuery, 'draft' | 'reviewRequested'>): string[] {
+  const parts: string[] = []
+  if (q.draft !== null) parts.push(`draft:${q.draft}`)
+  if (q.reviewRequested !== null) parts.push(`review-requested:${q.reviewRequested === 'me' ? '@me' : q.reviewRequested}`)
+  return parts
+}
+
+/** `is:merged` / `is:pr` / `is:draft` (or `state:`), which the Issues grammar does not have: the key in any case, the value exact. */
+const PR_STATE_TOKEN = /(^|\s)(?:[iI][sS]|[sS][tT][aA][tT][eE]):(merged|pr|draft)(?=\s|$)/g
 /** Whether `text` sets a state the Issues grammar knows (its key in any case, its value exactly, as it parses them). */
 function setsIssueState(text: string): boolean {
   return [...text.matchAll(/(?:^|\s)(?:is|state):(\S+)/gi)].some((m) => m[1] === 'open' || m[1] === 'closed' || m[1] === 'all')
 }
 /** `mentions:` — an Issues filter, not a PR one. */
 const MENTIONS_TOKEN = /(^|\s)(mentions:\S*)/gi
+/** `draft:` and `review-requested:`, the PR-only qualifiers with a value. */
+const PR_VALUE_TOKEN = /(^|\s)((draft|review-requested):(\S*))/gi
+
+interface PullOnly {
+  readonly rest: string
+  readonly merged: boolean
+  readonly draft: boolean | null
+  readonly reviewRequested: string | null
+  /** PR-only tokens whose value could not be used, and `mentions:` (an Issues filter). */
+  readonly unresolved: readonly string[]
+}
 
 /** Lift the PR-only qualifiers out of `text`; what is left is Issues grammar. */
-function liftPullOnly(text: string): { rest: string; merged: boolean; mentions: string[] } {
+function liftPullOnly(text: string): PullOnly {
   let merged = false
-  const mentions: string[] = []
+  let draft: boolean | null = null
+  let reviewRequested: string | null = null
+  const unresolved: string[] = []
   const rest = text
     .replace(PR_STATE_TOKEN, (_m, lead: string, value: string) => {
       if (value === 'merged') merged = true
+      if (value === 'draft') draft = true
       return lead
     })
     .replace(MENTIONS_TOKEN, (_m, lead: string, token: string) => {
-      mentions.push(token)
+      unresolved.push(token)
+      return lead
+    })
+    .replace(PR_VALUE_TOKEN, (_m, lead: string, token: string, key: string, raw: string) => {
+      const value = raw.replace(/"/g, '')
+      if (key.toLowerCase() === 'draft') {
+        if (value === 'true' || value === 'false') draft = value === 'true'
+        else unresolved.push(token)
+      } else {
+        const who = personValue(value)
+        if (who !== null) reviewRequested = who
+        else unresolved.push(token)
+      }
       return lead
     })
     .replace(/\s+/g, ' ')
     .trim()
-  return { rest, merged, mentions }
+  return { rest, merged, draft, reviewRequested, unresolved }
 }
 
 /** Lift the search box's qualifiers into `base` (the inverse of {@link pullSearchText}). */
 export function parsePullSearch(text: string, base: PullListQuery = DEFAULT_PULL_QUERY): PullListQuery {
-  const { rest, merged } = liftPullOnly(text)
-  const parsed = parseSearchText(rest, toIssue(base))
+  const only = liftPullOnly(text)
+  const parsed = parseSearchText(only.rest, toIssue(base))
   let state: PullStateFilter = base.state
-  if (merged) state = 'merged'
-  else if (setsIssueState(rest)) state = parsed.state
-  return toPull(parsed, state)
+  if (only.merged) state = 'merged'
+  else if (setsIssueState(only.rest)) state = parsed.state
+  return toPull(parsed, state, { draft: only.draft ?? base.draft, reviewRequested: only.reviewRequested ?? base.reviewRequested })
 }
 
 /** The qualifiers in `text` that could not be used (for a note under the box). */
 export function unresolvedPullQualifiers(text: string): string[] {
-  const { rest, mentions } = liftPullOnly(text)
-  return [...unresolvedQualifiers(rest), ...mentions]
+  const only = liftPullOnly(text)
+  return [...unresolvedQualifiers(only.rest), ...only.unresolved]
 }
 
 /**
  * Why each qualifier in `dropped` was not applied, for the note under the box: the Issues list's
- * reasons, with the PR states for `is:` / `state:`, and `mentions:` named as an Issues filter.
+ * reasons, with the PR states for `is:` / `state:`, `mentions:` named as an Issues filter, and
+ * the PR-only qualifiers' own values.
  */
 export function pullDroppedReason(dropped: readonly string[], notFound: readonly string[] = []): string {
   const isState = (t: string): boolean => /^(is|state):/i.test(t)
   const isMentions = (t: string): boolean => /^mentions:/i.test(t)
+  const isDraft = (t: string): boolean => /^draft:/i.test(t)
+  const isRequested = (t: string): boolean => /^review-requested:/i.test(t)
+  const lost = new Set(notFound.map((n) => n.toLowerCase()))
+  const requested = dropped.filter(isRequested).map((t) => t.slice(t.indexOf(':') + 1).replace(/"/g, '').replace(/^@/, ''))
   return [
-    droppedQualifiersReason(dropped.filter((t) => !isState(t) && !isMentions(t)), notFound),
-    dropped.some(isState) ? 'is: and state: take open, closed, merged or all.' : '',
+    droppedQualifiersReason(dropped.filter((t) => !isState(t) && !isMentions(t) && !isDraft(t) && !isRequested(t)), notFound),
+    dropped.some(isState) ? 'is: and state: take open, closed, merged, draft or all.' : '',
     dropped.some(isMentions) ? 'mentions: is an Issues filter.' : '',
+    dropped.some(isDraft) ? 'draft: takes true or false.' : '',
+    ...requested.filter((v) => lost.has(v.toLowerCase())).map((v) => `No DPNS name \`${displayDpnsName(v)}\` was found.`),
+    requested.some((v) => !lost.has(v.toLowerCase())) ? 'review-requested: takes an identity id, a DPNS name, or @me.' : '',
   ]
     .filter((r) => r !== '')
     .join(' ')
@@ -121,18 +175,19 @@ export function parsePullQuery(params: { get(name: string): string | null; getAl
 
 /** The URL params of a query, defaults omitted, in a stable order. */
 export function pullQueryParams(q: PullListQuery): [string, string][] {
-  const rest = issueQueryParams(toIssue(q))
+  const rest = issueQueryParams(toIssue({ ...q, q: [...pullQualifiers(q), q.q.trim()].filter((t) => t !== '').join(' ') }))
   return q.state === 'open' ? rest : [['state', q.state], ...rest]
 }
 
 /** The query as search-box text, qualifiers first. */
 export function pullSearchText(q: PullListQuery): string {
-  return searchText(toIssue(q)).replace(/^is:open/, `is:${q.state}`)
+  const text = searchText(toIssue({ ...q, q: '' })).replace(/^is:open/, `is:${q.state}`)
+  return [text, ...pullQualifiers(q), q.q.trim()].filter((t) => t !== '').join(' ')
 }
 
 /** Whether any filter narrows the list beyond the state tab. */
 export function hasPullFilters(q: PullListQuery): boolean {
-  return hasFilters(toIssue(q))
+  return hasFilters(toIssue(q)) || q.draft !== null || q.reviewRequested !== null
 }
 
 /** The empty PR list's line: never "open the first one" while some are merged or closed. */
