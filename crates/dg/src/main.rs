@@ -1207,9 +1207,9 @@ pub enum CostCommand {
     /// bound, as `git push` quotes it). With neither --bytes nor --path, prices the repository
     /// in the current directory.
     Estimate {
-        /// Where the pack bytes go (default: the repository's dash.storage, else platform). s3,
-        /// ipfs and https keep them off-chain: Platform bills only the manifests and the ref
-        /// update.
+        /// Where the pack bytes go (default: for a repository, the storage its `git push` uses;
+        /// for --bytes or a file, platform). s3, ipfs and https keep them off-chain: Platform
+        /// bills only the manifests and the ref update.
         #[arg(long)]
         backend: Option<Backend>,
         /// Pack size in bytes.

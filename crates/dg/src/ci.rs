@@ -45,16 +45,18 @@ const RUNNER_KEY_DAYS: u64 = 365;
 /// (`ADD_KEY_ESTIMATE_CREDITS`, 43.0 M, paid by the runner), a `runner` document (47.3 M, paid
 /// by the owner), a `checkRun` create (81.5–95.1 M; a repository's first, 121.9 M) and a
 /// replace (4.7–5.5 M). A check run's text is priced on top ([`report_estimate`]): the contract
-/// admits up to ~6 KB of it (a 1,000-character summary, 4,096 bytes of artifacts), which no
-/// flat figure covers (QW-038: the flat 85 M and 5 M were exceeded).
+/// admits up to 6,716 bytes of it (a 1,000-character summary is up to 2,000 bytes; 4,096 bytes
+/// of artifacts) plus 332 for a log, which no flat figure covers (QW-038: the flat 85 M and 5 M
+/// were exceeded).
 const ENROL_ESTIMATE_CREDITS: u64 = 55_000_000;
 const CREATE_BASE_CREDITS: u64 = 130_000_000;
 /// A replace re-serializes the whole stored run, whose text it may not carry (a status-only
-/// update of a run created with a full summary): the ~6 KB the contract admits, reprocessed at
-/// ~412 credits/B (drive's replaced-bytes rate), is ~2.5 M on top of the 4.7 M measured.
+/// update of a run created with a full summary): the ~7 KB the contract admits, reprocessed at
+/// ~412 credits/B (drive's replaced-bytes rate), is ~2.9 M on top of the 4.7 M measured.
 const REPLACE_BASE_CREDITS: u64 = 8_000_000;
-/// What each byte of a check run's text adds (the storage, its processing, the replaced bytes).
-const REPORT_PER_BYTE_CREDITS: u64 = 27_500;
+/// What each byte of a check run's text adds (the storage, its processing, the replaced bytes),
+/// at the per-byte rate forge-core measured for chunk documents (27,450-27,650, priced 27,700).
+const REPORT_PER_BYTE_CREDITS: u64 = forge_core::cost::push_fees::CHUNK_PER_BYTE;
 /// A log's URL (at most 300 bytes) and its SHA-256, priced before the log is uploaded.
 const LOG_FIELDS_BYTES: u64 = 300 + 32;
 
@@ -782,7 +784,7 @@ mod tests {
         const { assert!(ENROL_ESTIMATE_CREDITS >= 47_298_000) };
     }
 
-    /// The contract admits ~6 KB of text on a run: the quote grows with it, and a log adds its
+    /// The contract admits ~7 KB of text on a run: the quote grows with it, and a log adds its
     /// URL and hash.
     #[test]
     fn a_reports_text_and_log_are_priced() {

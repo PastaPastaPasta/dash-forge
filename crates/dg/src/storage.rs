@@ -19,7 +19,9 @@ use serde_json::json;
 use forge_core::backends::{Health, IpfsBackend, PackBackend, PackMeta, S3Backend, Uri};
 use forge_core::storage::copies::{count_copies, policy_copies, CopyCount};
 use forge_core::storage::cors::{cors_fix, kubo_cors_fix, probe_cors, provider_of};
-use forge_core::storage::policy::{git_config_scoped, parse_git_bool, pick_scoped};
+use forge_core::storage::policy::{
+    git_config_scoped, git_config_scoped_with, parse_git_bool, pick_scoped, GitConfigRun,
+};
 use forge_core::storage::profiles::{
     valid_profile_name, KeyId, KuboProfile, PinningProfile, PlatformProfile, S3Profile,
 };
@@ -1006,7 +1008,13 @@ impl ExistingCopies {
 /// This git repository's forge remote, as `(name, dash:// URL)`: `origin` when it is one,
 /// else the first `dash://` remote.
 fn dash_remote_url() -> Option<(String, String)> {
+    dash_remote_url_in(std::path::Path::new("."))
+}
+
+/// [`dash_remote_url`] of the repository at `dir`.
+fn dash_remote_url_in(dir: &std::path::Path) -> Option<(String, String)> {
     let out = Process::new("git")
+        .current_dir(dir)
         .args(["config", "--get-regexp", r"^remote\..*\.url$"])
         .stderr(std::process::Stdio::null())
         .output()
@@ -1053,21 +1061,43 @@ pub(crate) fn dash_remote_name() -> Option<String> {
 /// The storage policy a push through this repository's forge remote uses: its
 /// `remote.<name>.dash*` settings over `dash.*`, by the helper's scope rule.
 pub(crate) fn push_policy() -> Result<ResolvedPolicy> {
-    let remote = dash_remote_url().map(|(name, _)| name);
+    Ok(push_policy_in(std::path::Path::new("."))?.resolve(&StorageProfiles::load()?)?)
+}
+
+/// The unresolved storage policy a push through the forge remote of the repository at `dir`
+/// uses ([`push_policy`]'s rule: `remote.<name>.dash*` over `dash.*`).
+pub(crate) fn push_policy_in(dir: &std::path::Path) -> Result<StoragePolicy> {
+    let scoped = |key: &str| {
+        git_config_scoped_with(key, |args| {
+            match Process::new("git")
+                .current_dir(dir)
+                .args(args)
+                .stdin(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .output()
+            {
+                Ok(out) if out.status.success() => {
+                    GitConfigRun::Found(String::from_utf8_lossy(&out.stdout).into_owned())
+                }
+                Ok(out) if out.status.code() == Some(1) => GitConfigRun::Unset,
+                _ => GitConfigRun::Failed,
+            }
+        })
+    };
+    let remote = dash_remote_url_in(dir).map(|(name, _)| name);
     let value = |remote_key: &str, key: &str| {
         pick_scoped(
             remote
                 .as_deref()
-                .and_then(|r| git_config_scoped(&format!("remote.{r}.{remote_key}"))),
-            git_config_scoped(&format!("dash.{key}")),
+                .and_then(|r| scoped(&format!("remote.{r}.{remote_key}"))),
+            scoped(&format!("dash.{key}")),
         )
     };
     Ok(StoragePolicy::from_git_values(
         value("dashStorage", "storage").as_deref(),
         value("dashReplicas", "replicas").as_deref(),
         value("dashPlatformFallback", "platformFallback").as_deref(),
-    )?
-    .resolve(&StorageProfiles::load()?)?)
+    )?)
 }
 
 /// The command that repacks `repo` onto every target of `policy`, Platform included, each

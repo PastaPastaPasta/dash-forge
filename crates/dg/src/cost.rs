@@ -109,6 +109,8 @@ struct PushInput {
     /// A private repository (`--private`): its pack and indexes are stored sealed. Visibility
     /// is set when the repository is created on chain, so a local clone cannot tell.
     sealed: bool,
+    /// Why the repository's history index could not be computed (its push publishes none).
+    history_skipped: Option<String>,
 }
 
 impl PushInput {
@@ -122,6 +124,7 @@ impl PushInput {
             history: None,
             repo: None,
             sealed: false,
+            history_skipped: None,
         }
     }
 
@@ -306,11 +309,10 @@ fn estimate_input(bytes: Option<u64>, path: Option<&std::path::Path>) -> Result<
         })?;
     // Local only, as `git push` computes it. Where it cannot be computed (a shallow clone) the
     // push publishes none, so none is priced; the reason is shown.
-    let (history, history_skipped) =
-        match prepare_history_index(&dir, tip, &HistoryPlan::fresh()) {
-            Ok(p) => (p.map(|p| p.cost()), None),
-            Err(e) => (None, Some(e.to_string())),
-        };
+    let (history, history_skipped) = match prepare_history_index(&dir, tip, &HistoryPlan::fresh()) {
+        Ok(p) => (p.map(|p| p.cost()), None),
+        Err(e) => (None, Some(e.to_string())),
+    };
     Ok(PushInput {
         what: format!(
             "the repository at {} (HEAD: {}, {} objects)",
@@ -323,6 +325,7 @@ fn estimate_input(bytes: Option<u64>, path: Option<&std::path::Path>) -> Result<
         history,
         repo: Some(dir),
         sealed: false,
+        history_skipped,
     })
 }
 
@@ -355,11 +358,7 @@ fn estimate_cmd(
     } else {
         format!(" (~{} objects assumed)", input.objects)
     };
-    let unpriced = if input.counted() {
-        "the history index's chunks: it could not be computed in this repository (a shallow clone?)"
-    } else {
-        "the history index's chunks: their size depends on the repository; `dg cost estimate --path <repository>` prices them"
-    };
+    let unpriced = "the history index's chunks: their size depends on the repository; `dg cost estimate --path <repository>` prices them";
     ctx.emit(
         json!({
             "mode": "first_push",
@@ -373,6 +372,7 @@ fn estimate_cmd(
             "manifests": q.manifests,
             "refUpdates": 1,
             "historyIndexBytes": input.history.map(|h| h.plain_len()),
+            "historyIndexSkipped": input.history_skipped,
             "metadataCredits": q.metadata,
             "chunkCredits": q.chunks,
             "depositCredits": q.deposit,
@@ -411,6 +411,9 @@ fn estimate_cmd(
             }
             if q.history_chunks_unpriced {
                 println!("  not priced:  {unpriced}");
+            }
+            if let Some(why) = &input.history_skipped {
+                println!("  no history index: `git push` would publish none here ({why}); `dg repo reindex` adds one later");
             }
         },
     );
@@ -602,9 +605,10 @@ mod estimate_tests {
 
     /// Charged on devnet bonsia (Platform 4.2.0-beta.7, 2026-09-30, cli-dx QA stream): a first
     /// push of a tiny repository with packs on your own storage (07-init.txt), and with packs
-    /// on Platform (09-init-platform-json.txt), history index included in both.
+    /// on Platform (the highest seen: fixes/cli-cost/live-first-push-vs-quote.txt), history index
+    /// included in both.
     const BONSIA_FIRST_PUSH_OWN_STORAGE: u64 = 521_149_000;
-    const BONSIA_FIRST_PUSH_PLATFORM: u64 = 1_007_966_760;
+    const BONSIA_FIRST_PUSH_PLATFORM: u64 = 1_037_810_440;
 
     fn sized(bytes: u64) -> PushInput {
         PushInput::sized(format!("{bytes} bytes"), bytes)
@@ -774,6 +778,70 @@ mod estimate_tests {
         git(repo.path(), &["config", "dash.replicas", "many"]);
         let err = Target::repository(repo.path()).unwrap_err();
         assert!(err.to_string().contains("dash.replicas"), "{err}");
+    }
+
+    /// The forge remote's own `remote.<name>.dashStorage` wins over `dash.storage`, as it does
+    /// for `git push` (a profile that does not exist would otherwise fail to resolve).
+    #[test]
+    fn the_forge_remotes_storage_overrides_the_repository_wide_one() {
+        let repo = tiny_repo();
+        git(
+            repo.path(),
+            &["config", "dash.storage", "no-such-profile-qw008"],
+        );
+        assert!(Target::repository(repo.path()).is_err());
+        git(
+            repo.path(),
+            &["remote", "add", "origin", "dash://owner/name"],
+        );
+        git(
+            repo.path(),
+            &["config", "remote.origin.dashStorage", "platform"],
+        );
+        assert_eq!(
+            Target::repository(repo.path()).unwrap(),
+            Target::backend(Backend::Platform)
+        );
+    }
+
+    /// A subdirectory prices the whole repository (a push sends all of it), named by its root.
+    #[test]
+    fn a_subdirectory_prices_its_repository() {
+        let repo = tiny_repo();
+        let sub = repo.path().join("src");
+        std::fs::create_dir(&sub).unwrap();
+        let input = estimate_input(None, Some(&sub)).unwrap();
+        let root = std::fs::canonicalize(repo.path()).unwrap();
+        assert_eq!(input.repo.as_deref(), Some(root.as_path()));
+        assert_eq!(input.objects, 5);
+    }
+
+    /// A shallow clone's push publishes no history index, so none is priced, and the quote
+    /// stays an upper bound (it said "not priced" and added two manifests before).
+    #[test]
+    fn a_repository_without_a_history_index_prices_none() {
+        let origin = tiny_repo();
+        std::fs::write(origin.path().join("c.txt"), "c\n").unwrap();
+        git(origin.path(), &["add", "c.txt"]);
+        git(origin.path(), &["commit", "-q", "-m", "second"]);
+        let parent = tempfile::tempdir().unwrap();
+        let url = format!("file://{}", origin.path().display());
+        git(
+            parent.path(),
+            &["clone", "-q", "--depth", "1", &url, "shallow"],
+        );
+        let input = estimate_input(None, Some(&parent.path().join("shallow"))).unwrap();
+        assert!(input.history.is_none(), "{input:?}");
+        assert!(input.history_skipped.is_some(), "{input:?}");
+
+        let s3 = quote(&Target::backend(Backend::S3), &input);
+        assert_eq!(s3.manifests, 2);
+        assert_eq!(
+            s3.total(),
+            2 * (MANIFEST_FIRST + URIS_PER_TARGET) + REF_FIRST
+        );
+        let platform = quote(&Target::backend(Backend::Platform), &input);
+        assert!(!platform.history_chunks_unpriced);
     }
 
     /// The pack a first push sends is what git packs for HEAD: a second branch's objects stay
