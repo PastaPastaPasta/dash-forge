@@ -25,7 +25,9 @@ let members: Membership[] = []
 vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams('owner=o&name=demo&invite=1') }))
 vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: {}, ready: true, network: 'devnet' }) }))
 /** The viewer's session: signed in as ME unless a test signs out or locks. */
-let auth: { identity: string | null; signer: { identityId: string } | null; locked: boolean; resuming: boolean } = { identity: ME, signer: { identityId: ME }, locked: false, resuming: false }
+type Auth = { identity: string | null; signer: { identityId: string } | null; locked: boolean; resuming: boolean; vaultsLoaded?: boolean; vaultsError?: string | null; lockedIdentity?: string | null }
+let auth: Auth = { identity: ME, signer: { identityId: ME }, locked: false, resuming: false }
+const signedOut = (over: Partial<Auth> = {}): Auth => ({ identity: null, signer: null, locked: false, resuming: false, vaultsLoaded: true, vaultsError: null, lockedIdentity: null, ...over })
 vi.mock('@/contexts/auth-context', () => ({ useAuth: () => auth }))
 vi.mock('@/hooks/use-write-guard', () => ({ useWriteGuard: () => ({ disabledReason: null, check: () => true }) }))
 vi.mock('@/components/author', () => ({ Author: ({ identityId }: { identityId: string }) => <span>{identityId.slice(0, 6)}</span> }))
@@ -105,7 +107,7 @@ async function render(): Promise<void> {
 
 describe('the invite link, signed out (QW2-012)', () => {
   it('shows the invitation with Sign in to accept, which opens the sheet over this page', async () => {
-    auth = { identity: null, signer: null, locked: false, resuming: false }
+    auth = signedOut()
     await render()
     expect(q('invite-banner-signed-out')?.textContent).toMatch(/invited you to collaborate on this repo\. Sign in to accept/)
     await act(async () => (q('invite-sign-in') as HTMLButtonElement).click())
@@ -115,10 +117,17 @@ describe('the invite link, signed out (QW2-012)', () => {
   })
 
   it('says Unlock to accept for a locked session, and nothing while the session is picked up', async () => {
-    auth = { identity: null, signer: null, locked: true, resuming: false }
+    auth = signedOut({ locked: true, lockedIdentity: ME })
     await render()
     expect(q('invite-sign-in')?.textContent).toBe('Unlock to accept')
-    auth = { identity: null, signer: null, locked: false, resuming: true }
+    auth = signedOut({ resuming: true })
+    await render()
+    expect(q('invite-banner-signed-out')).toBeNull()
+    // Not before the key list is read (Sign in would flip to Unlock), nor to the owner's own locked session.
+    auth = signedOut({ vaultsLoaded: false })
+    await render()
+    expect(q('invite-banner-signed-out')).toBeNull()
+    auth = signedOut({ locked: true, lockedIdentity: OWNER })
     await render()
     expect(q('invite-banner-signed-out')).toBeNull()
   })

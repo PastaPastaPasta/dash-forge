@@ -25,6 +25,7 @@ import {
   markRead,
   pickRound,
   planFeeds,
+  clearInbox,
   pollOnce,
   stateWhat,
   toItems,
@@ -312,6 +313,15 @@ describe('a thread watched after its state events landed (L-17)', () => {
     await pollOnce(sdk, 'devnet', FORGE, ME, { now: 3000 })
     expect(stateReads(queries)).toHaveLength(2)
     expect((await loadItems('devnet', ME)).map((i) => i.id)).toEqual(['EV-MERGE'])
+  })
+
+  it('a poll running when the inbox is cleared writes nothing after the clear (QW2-028)', async () => {
+    const { sdk } = chainSdk([{ ...MERGED, type: 'transition' }])
+    await watch([PR], 1000)
+    const poll = pollOnce(sdk, 'devnet', FORGE, ME, { now: 1000 })
+    await clearInbox('devnet', ME)
+    await poll
+    expect(await idbEntries('inbox', `devnet:${ME}:`)).toEqual([])
   })
 
   it('writes nothing once the poller has stopped (a forget must not be undone, QW2-028)', async () => {

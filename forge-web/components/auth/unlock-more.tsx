@@ -16,7 +16,18 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { errorMessage } from '@/lib/utils'
 
-export function UnlockMore({ title, testId = 'unlock-more', then }: { title: string; testId?: string; then?: () => void }): JSX.Element {
+export function UnlockMore({
+  title,
+  testId = 'unlock-more',
+  then,
+  forgot = true,
+}: {
+  title: string
+  testId?: string
+  then?: () => void
+  /** Offer the recovery route; off where it is already on screen (the sign-in sheet, a dialog). */
+  forgot?: boolean
+}): JSX.Element {
   const { identity, vaults, controller, isLoading } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
   const [passphrase, setPassphrase] = useState('')
@@ -76,12 +87,14 @@ export function UnlockMore({ title, testId = 'unlock-more', then }: { title: str
         </p>
       ) : null}
       {/* The recovery route, as on the Unlock sheet (QW2-031). */}
-      <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid={`${testId}-forgot`}>
-        {methods.includes('passphrase') ? 'Forgot the passphrase' : 'Lost the passkey'}?{' '}
-        <button type="button" onClick={() => openLogin('import')} className="hit-area text-forge-700 underline dark:text-forge-400">
-          Replace this key with your recovery phrase or identity file
-        </button>
-      </p>
+      {forgot ? (
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid={`${testId}-forgot`}>
+          {methods.includes('passphrase') ? 'Forgot the passphrase' : 'Lost the passkey'}?{' '}
+          <button type="button" onClick={() => openLogin('import')} className="hit-area text-forge-700 underline dark:text-forge-400">
+            Replace this key with your recovery phrase or identity file
+          </button>
+        </p>
+      ) : null}
     </div>
   )
 }

@@ -15,6 +15,7 @@
 import type { Network } from '../constants'
 import { loadSdkLibrary } from './connect'
 import { errorMessage } from '../utils'
+import { withTimeout } from '../timeout'
 
 export type KeyPurpose = 'AUTHENTICATION' | 'TRANSFER' | 'ENCRYPTION'
 export type KeyLevel = 'MASTER' | 'CRITICAL' | 'HIGH' | 'MEDIUM'
@@ -132,10 +133,19 @@ export function mnemonicProblem(m: string, sdkReason?: string): string {
  * {@link mnemonicProblem} with the SDK's own reason, so a word that is not on the list is named
  * (the SDK's validator answers only yes or no; deriving a key from the phrase says why).
  */
+/** How long the reason for an invalid phrase is waited for before the generic sentence is shown. */
+const REASON_MS = 20_000
+
 export async function invalidMnemonicMessage(m: string): Promise<string> {
   let reason: string | undefined
   try {
-    await (await wallet()).deriveKeyFromSeedWithPath({ mnemonic: normalizeMnemonic(m), path: identityKeyPath('testnet', 0), network: 'testnet' })
+    const info = await withTimeout(
+      (async () => (await wallet()).deriveKeyFromSeedWithPath({ mnemonic: normalizeMnemonic(m), path: identityKeyPath('testnet', 0), network: 'testnet' }))(),
+      REASON_MS,
+      'Checking the words',
+    )
+    // The SDK accepted it after all (its validator is stricter): drop the key it derived.
+    info.free()
   } catch (e) {
     reason = errorMessage(e, '')
   }

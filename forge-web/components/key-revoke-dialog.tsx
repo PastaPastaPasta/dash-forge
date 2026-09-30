@@ -66,6 +66,7 @@ export function KeyRevokeDialog({ unlimited, onClose }: { unlimited: boolean; on
         <ErrorBox error={error} />
         {retry !== null ? (
           <UnlockMore
+            forgot={false}
             title="Unlock this tab to revoke on chain"
             testId="revoke-unlock"
             then={() => {

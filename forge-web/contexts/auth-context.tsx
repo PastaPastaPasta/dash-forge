@@ -325,6 +325,7 @@ export function AuthProvider({
     setLastIdentity(readLastIdentity(network))
   }, [network, sessionIdentity, vaults])
 
+  const locked = session === null && !resuming && vaults.length > 0
   const value = useMemo<AuthContextValue>(
     () => ({
       identity: session?.identityId ?? null,
@@ -347,15 +348,15 @@ export function AuthProvider({
       vaultsError,
       vaultsLoaded,
       resuming,
-      locked: session === null && !resuming && vaults.length > 0,
+      locked,
       lastIdentity,
-      lockedIdentity: session === null && !resuming && vaults.length > 0 ? lockedIdentityOf(vaults, lastIdentity) : null,
+      lockedIdentity: locked ? lockedIdentityOf(vaults, lastIdentity) : null,
       unlockScope: session === null ? null : state.scope ?? null,
       reloadVaults,
       controller,
       ...actions,
     }),
-    [actions, controller, funds, keyLimits, lastIdentity, reloadVaults, resuming, session, signer, state.error, state.isLoading, state.scope, state.step, vaults, vaultsError, vaultsLoaded],
+    [actions, controller, funds, keyLimits, lastIdentity, locked, reloadVaults, resuming, session, signer, state.error, state.isLoading, state.scope, state.step, vaults, vaultsError, vaultsLoaded],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

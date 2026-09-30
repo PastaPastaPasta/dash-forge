@@ -39,7 +39,8 @@ export function forgetLastIdentity(network: Network, identityId: string): void {
 
 /**
  * The stored identity a locked session belongs to: the last one used here when it is still
- * stored, else the first. Staged (unfinished) records are skipped.
+ * stored, else the first finished one (a staged, unfinished record only when nothing else is).
+ * The Unlock sheet preselects the same, so a page's "Unlock to merge" opens that identity.
  */
 export function lockedIdentityOf(
   vaults: readonly { readonly identityId: string; readonly staged?: true }[],

@@ -45,7 +45,7 @@ export function InviteBanner({ repo }: { repo: RepoRef }): JSX.Element | null {
   const params = useSearchParams()
   const invited = params.get(INVITE_PARAM) !== null
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
-  const { identity, signer, locked, resuming } = useAuth()
+  const { identity, signer, locked, resuming, vaultsLoaded, vaultsError, lockedIdentity } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
   const guard = useWriteGuard()
   const [confirming, setConfirming] = useState(false)
@@ -69,7 +69,9 @@ export function InviteBanner({ repo }: { repo: RepoRef }): JSX.Element | null {
     [ready, repo.repoId, identity ?? '', network],
     { enabled: applies && ready && sdk !== null },
   )
-  if (invited && identity === null && !resuming) {
+  // Once it is known whether this browser holds a key (Sign in vs Unlock), and never to the
+  // owner's own locked session.
+  if (invited && identity === null && !resuming && (vaultsLoaded || vaultsError !== null) && lockedIdentity !== repo.ownerId) {
     return (
       <div role="note" data-testid="invite-banner-signed-out" className="mb-3 flex items-start gap-2 rounded-md border border-forge-500/40 bg-forge-500/5 px-3 py-2 text-dense text-anvil-700 dark:text-anvil-200">
         <UserPlus className="mt-0.5 h-4 w-4 shrink-0 text-forge-700 dark:text-forge-400" aria-hidden />

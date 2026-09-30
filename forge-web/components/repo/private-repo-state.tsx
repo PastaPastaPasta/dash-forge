@@ -85,7 +85,7 @@ export function PrivateRepoState({
  * owner included) unlocks or signs in to read.
  */
 function SignedOutNote(): JSX.Element {
-  const { locked, resuming } = useAuth()
+  const { locked, resuming, vaultsLoaded } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
   return (
     <div className="space-y-3" data-testid="private-signed-out">
@@ -94,7 +94,7 @@ function SignedOutNote(): JSX.Element {
           ? 'Private: contents are encrypted for members. Your session is locked: unlock to read it if you are one.'
           : 'Private: contents are encrypted for members. Sign in to read it if you are one.'}
       </p>
-      {locked || resuming ? (
+      {locked || resuming || !vaultsLoaded ? (
         <SignInButton size="sm" />
       ) : (
         // Says why the sheet opened, and has Import keep the encryption key (QW2-016).

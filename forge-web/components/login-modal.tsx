@@ -40,7 +40,7 @@ import { UnlockMore } from '@/components/auth/unlock-more'
 import { Spinner } from '@/components/ui/states'
 import { walletLoginAvailable, walletSignInSupported } from '@/lib/auth/app-connect'
 import { ENCRYPTION_KEY_BLAST_RADIUS } from '@/lib/auth/encryption-key'
-import { readLastIdentity } from '@/lib/auth/last-identity'
+import { lockedIdentityOf } from '@/lib/auth/last-identity'
 import { readCreationJournal } from '@/lib/auth/create-identity'
 import { PLATFORM_READ_MS, connectPlatform } from '@/lib/auth/connect'
 import { withTimeout } from '@/lib/timeout'
@@ -235,7 +235,11 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
           testId="tile-create-resume"
           icon={RotateCw}
           title="Finish creating your identity"
-          body={`Started in this browser: fund deposit address ${creating.slice(0, 10)}… and type your 12 words to continue.`}
+          body={
+            creating.funded
+              ? 'Started in this browser, and its deposit has arrived: type your 12 words to finish registering it. Do not send another deposit.'
+              : `Started in this browser: fund deposit address ${creating.address.slice(0, 10)}… and type your 12 words to continue.`
+          }
           onClick={() => onPick('create')}
           highlight
         />
@@ -275,19 +279,20 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
  * The deposit address of an identity creation this browser started and did not finish (its
  * journal), or null: the chooser offers to finish it first (QW2-030).
  */
-function useCreationInProgress(): string | null {
-  const [address, setAddress] = useState<string | null>(null)
+function useCreationInProgress(): { readonly address: string; readonly funded: boolean } | null {
+  const [state, setState] = useState<{ readonly address: string; readonly funded: boolean } | null>(null)
   useEffect(() => {
     let cancelled = false
     readCreationJournal(ACTIVE_NETWORK.network).then(
-      (j) => !cancelled && setAddress(j?.depositAddress ?? null),
+      // Funded once the deposit was locked (or the identity exists): only the words are missing.
+      (j) => !cancelled && setState(j ? { address: j.depositAddress, funded: j.lockTxid != null || j.lockRaw != null || j.identityId != null } : null),
       () => undefined,
     )
     return () => {
       cancelled = true
     }
   }, [])
-  return address
+  return state
 }
 
 /**
@@ -348,7 +353,7 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
   const { vaults, unlock, forget, isLoading, step, lastIdentity } = useAuth()
   const [confirm, confirmDialog] = useConfirmAction()
   // The identity asked for, else the one signed in last (QW2-025), as an account switcher does.
-  const [pick, setPick] = useState(() => Math.max(0, vaults.findIndex((v) => v.identityId === (initial ?? lastIdentity ?? readLastIdentity(ACTIVE_NETWORK.network)))))
+  const [pick, setPick] = useState(() => Math.max(0, vaults.findIndex((v) => v.identityId === (initial ?? lockedIdentityOf(vaults, lastIdentity)))))
   const [passphrase, setPassphrase] = useState('')
   const passphraseRef = useRef<HTMLInputElement>(null)
   const [error, setError] = useState<string | null>(null)
@@ -697,6 +702,7 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
       {problem && (fileChosen || mnemonic !== '') ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{problem}</p> : null}
       {unlockFirst ? (
         <UnlockMore
+          forgot={false}
           title="Unlock this tab to renew its key"
           testId="renew-unlock"
           then={() => {

@@ -495,12 +495,19 @@ function prefix(network: Network, me: string): string {
   return `${network}:${me}:`
 }
 
+/** How many times each identity's inbox was cleared this session (see {@link clearInbox}). */
+const clears = new Map<string, number>()
+
 /**
  * Delete this browser's notifications inbox for `me` (items, cursors, subscriptions, prefs):
  * "Sign out & forget key" leaves no record of the identity here (QW2-028).
  */
 export async function clearInbox(network: Network, me: string): Promise<void> {
-  const rows = await idbEntries('inbox', prefix(network, me))
+  // A poll of this identity still running (started before the clear) sees this and writes no
+  // more: its cursors or items would bring the inbox back.
+  const p = prefix(network, me)
+  clears.set(p, (clears.get(p) ?? 0) + 1)
+  const rows = await idbEntries('inbox', p)
   if (rows.length > 0) await idbBatch('inbox', rows.map(([k]) => [k, undefined] as const))
 }
 
@@ -567,7 +574,8 @@ export async function pollOnce(
   const p = prefix(network, me)
   // The poller stopped (the session locked or signed out, maybe to forget this identity): no
   // write after that may recreate what a forget clears (QW2-028). Checked before each write.
-  const stopped = opts.stop ?? ((): boolean => false)
+  const epoch = clears.get(p) ?? 0
+  const stopped = (): boolean => opts.stop?.() === true || (clears.get(p) ?? 0) !== epoch
   const prefs = await loadPrefs(network, me)
   let subs = await loadSubs(network, me)
   if (subs === undefined || opts.refreshSubs || now - subs.at > SUBS_TTL_MS) {
@@ -653,6 +661,7 @@ export async function pollOnce(
     }
     if (stopped()) break
     await store(toItems(f, docs, me))
+    if (stopped()) break
     const page = parseDocs(baseDoc, docs).map((d) => ({ at: d.$createdAt, id: d.$id }))
     await idbPut('inbox', key, advanceCursor(cursor, page))
   }

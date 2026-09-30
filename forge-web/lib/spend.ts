@@ -41,9 +41,13 @@ function baselineKey(network: Network, identityId: string): string {
  * forget key" leaves no record of what the identity spent here (QW2-028).
  */
 export async function clearLedger(network: Network, identityId: string): Promise<void> {
+  await Promise.allSettled([...storingNow])
   const rows = await idbEntries('spend', prefix(network, identityId))
   await idbBatch('spend', [...rows.map(([k]) => [k, undefined] as const), [baselineKey(network, identityId), undefined] as const])
 }
+
+/** Rows being stored now: a clear waits for them, so none lands after it (QW2-028). */
+const storingNow = new Set<Promise<void>>()
 
 /** Told of every write this tab records (whether or not its ledger row could be stored). */
 const recorded = new Set<(event: SpendEvent) => void>()
@@ -62,9 +66,12 @@ export function onSpendRecorded(listener: (event: SpendEvent) => void): () => vo
  * no other write of this browser can sit between that read and this row).
  */
 export async function recordSpend(event: SpendEvent): Promise<void> {
+  const storing = storeSpend(event)
+  storingNow.add(storing)
   try {
-    await storeSpend(event)
+    await storing
   } finally {
+    storingNow.delete(storing)
     // The write happened even if the ledger could not keep it (no IndexedDB, quota).
     for (const listener of recorded) {
       try {
