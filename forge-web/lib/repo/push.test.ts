@@ -124,6 +124,13 @@ describe('a manifest refused by a node a block behind its chunks', () => {
     await expect(writePackManifest(sdk, auth, REPO, manifest)).rejects.toThrow(/storageShape/)
     expect(write).toHaveBeenCalledTimes(1)
   })
+
+  it('does not retry a platformChunks refusal paid in a block (the chunks really are missing)', async () => {
+    write.mockRejectedValue(new ConsensusRefusal(10422, 'breaks its propertyConstraints rule "platformChunks": NotMet', {}, true))
+    await expect(writePackManifest(sdk, auth, REPO, manifest)).rejects.toThrow(/platformChunks/)
+    expect(write).toHaveBeenCalledTimes(1)
+    expect(slept).toEqual([])
+  })
 })
 
 describe('ref updates (R-01, R-02, R-10)', () => {

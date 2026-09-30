@@ -47,13 +47,13 @@ import {
 } from '../sdk'
 import { DOC, withVis, type RepoRef } from './contract'
 import { packHashOperand } from './pack-hash'
-import { retryAfterLag } from './lag-retry'
-
-/** The manifest rule that counts its chunks (RC1 R-09). */
-const PLATFORM_CHUNKS_RULE: ReadonlySet<string> = new Set(['platformChunks'])
+import { refusedAtBroadcast, retryAfterLag } from './lag-retry'
 import { privateWriter, sealForRepo, sealedIntent } from './private-writes'
 import { repoSource } from './source'
 import { assertNoPlaintext } from './writes'
+
+/** The manifest rule that counts its chunks (RC1 R-09). */
+const PLATFORM_CHUNKS_RULE: ReadonlySet<string> = new Set(['platformChunks'])
 
 /** The fields of a `packManifest` (forge-core `PackManifestInput`). */
 export interface PackManifestInput {
@@ -213,10 +213,13 @@ export async function writePackManifest(
   if (input.supersedes && input.supersedes.length > 0) data['supersedes'] = concatHex(input.supersedes, 32)
   try {
     // `platformChunks` counts the chunks just written: a node a block behind refuses the manifest
-    // until it has applied them, so that refusal is retried after about a block.
+    // at the broadcast check until it has applied them, so that (free) refusal is retried after
+    // about a block. One inside a block is judged on current state: the chunks really are missing.
     return await retryAfterLag(
       () => createDocumentIdempotent(sdk, auth, { contractId: repo.forge.core, documentType: DOC.packManifest, data, ...(intent ? { intent } : {}) }),
       PLATFORM_CHUNKS_RULE,
+      undefined,
+      refusedAtBroadcast,
     )
   } catch (e) {
     if (!isDuplicate(e)) throw e

@@ -498,6 +498,8 @@ async function createNumbered(
         // refused one that was right, so it is not skipped).
         await sleep(LAG_RETRY_MS[0] as number)
         number = await next()
+        // A read from a node further behind still never goes below the refused number.
+        if (number !== null && number < taken) number = taken
       } else {
         // The number is held (the unique index): the next one, even if a read still lags.
         number = await next()

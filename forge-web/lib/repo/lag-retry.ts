@@ -22,17 +22,32 @@ export function isRuleRefusal(e: unknown, rules: ReadonlySet<string>): boolean {
 }
 
 /**
+ * Whether a refusal was judged at the broadcast check (free, `feeCharged === false`): a node
+ * whose state lags the writes it depends on. A refusal inside a block (paid) is judged on current
+ * state: a real conflict, which the same write cannot pass later.
+ */
+export function refusedAtBroadcast(e: unknown): boolean {
+  return e instanceof ConsensusRefusal && e.feeCharged === false
+}
+
+/**
  * Run `write`; while it is refused by one of `rules` (a node a block behind the writes it
  * reads), wait out the next of `delays` and run it again. `write` is called afresh each time, so
  * it can re-read what it depends on first.
  */
-export async function retryAfterLag<T>(write: () => Promise<T>, rules: ReadonlySet<string>, delays: readonly number[] = LAG_RETRY_MS): Promise<T> {
+export async function retryAfterLag<T>(
+  write: () => Promise<T>,
+  rules: ReadonlySet<string>,
+  delays: readonly number[] = LAG_RETRY_MS,
+  /** Which refusals of `rules` are worth another try (default: all; see {@link refusedAtBroadcast}). */
+  retryable: (e: unknown) => boolean = () => true,
+): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await write()
     } catch (e) {
       const wait = delays[attempt]
-      if (wait === undefined || !isRuleRefusal(e, rules)) throw e
+      if (wait === undefined || !isRuleRefusal(e, rules) || !retryable(e)) throw e
       await sleep(wait)
     }
   }
