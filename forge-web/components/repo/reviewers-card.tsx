@@ -33,6 +33,7 @@ function StandingIcon({ state }: { state: Standing }): JSX.Element {
     case 'dismissed':
       return <XCircle className={muted} aria-hidden />
     case 'notMember':
+    case 'author':
       return <MinusCircle className={muted} aria-hidden />
     default:
       return <MessageSquare className={muted} aria-hidden />

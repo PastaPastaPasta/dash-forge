@@ -21,6 +21,7 @@ describe('reviewerRows', () => {
       { identity: 'w', role: 'writer', createdAt: 0 },
       { identity: 'd', role: 'writer', createdAt: 0 },
       { identity: 's', role: 'writer', createdAt: 0 },
+      { identity: 'auth', role: 'maintainer', createdAt: 0 },
     ])
     const reviews = [
       review('r-m', 'm', 1, H2, 10),
@@ -30,14 +31,16 @@ describe('reviewerRows', () => {
       review('r-x', 'stranger', 1, H2, 12),
       review('r-c', 'chatty', 3, H2, 13),
       review('r-q', 'q', 1, H1, 1),
+      review('r-a', 'auth', 1, H2, 14),
     ]
     const dismissed = [{ reviewId: 'r-d', reason: 'stale' }]
     const requested = [
       { identity: 'q', requestedAt: 7 },
       { identity: 'new', requestedAt: 8 },
     ]
-    const approvals = countApprovals(reviews, oracle, H2, new Set(['r-d']))
-    const rows = reviewerRows(reviews, requested, dismissed, approvals, oracle, H2)
+    const approvals = countApprovals(reviews, oracle, H2, new Set(['r-d']), 'auth')
+    expect(approvals.approvers).toEqual(['m'])
+    const rows = reviewerRows(reviews, requested, dismissed, approvals, oracle, H2, 'auth')
     const state = Object.fromEntries(rows.map((r) => [r.identity, [r.state, r.reRequested]]))
     expect(state['m']).toEqual(['approved', false])
     expect(state['w']).toEqual(['changesRequested', false])
@@ -47,6 +50,9 @@ describe('reviewerRows', () => {
     expect(state['chatty']).toEqual(['commented', false])
     expect(state['q']).toEqual(['awaiting', true])
     expect(state['new']).toEqual(['awaiting', false])
+    // The PR author's own approval (a maintainer's, on the head) never counts (QW-003).
+    expect(state['auth']).toEqual(['author', false])
+    expect(rows.find((r) => r.identity === 'auth')?.dismissId).toBeNull()
     expect(rows[0]?.requested && rows[1]?.requested).toBe(true)
     expect(rows.find((r) => r.identity === 'd')?.dismissReason).toBe('stale')
   })
@@ -55,7 +61,7 @@ describe('reviewerRows', () => {
 describe('reviewerRows: what "Dismiss review" dismisses', () => {
   const oracle = new RoleOracle([{ identity: 'm', role: 'maintainer', createdAt: 0 }])
   const rows = (reviews: Review[], dismissed: { reviewId: string; reason: string }[] = []) =>
-    reviewerRows(reviews, [], dismissed, countApprovals(reviews, oracle, H2, new Set(dismissed.map((d) => d.reviewId))), oracle, H2)
+    reviewerRows(reviews, [], dismissed, countApprovals(reviews, oracle, H2, new Set(dismissed.map((d) => d.reviewId)), 'author'), oracle, H2, 'author')
 
   it('an approval then a comment-only review: the approval, not the comment', () => {
     const r = rows([review('appr', 'm', 1, H2, 10), review('chat', 'm', 3, H2, 11)])[0]

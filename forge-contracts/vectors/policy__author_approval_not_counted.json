@@ -1,0 +1,37 @@
+{
+  "name": "author_approval_not_counted",
+  "description": "Policy: 1 approval, any member. Only the PR author (a maintainer) approves: 0 of 1, not met. One person alone never meets the policy.",
+  "case": "policy",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "maint",
+        "verdict": 1,
+        "commitOid": "H",
+        "createdAt": 100
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      }
+    ],
+    "headOid": "H",
+    "prAuthor": "maint",
+    "policy": {
+      "requiredApprovals": 1,
+      "approverRole": 0,
+      "requireChecks": false,
+      "mergeMethods": 0
+    }
+  },
+  "expected": {
+    "met": false,
+    "have": 0,
+    "need": 1
+  }
+}

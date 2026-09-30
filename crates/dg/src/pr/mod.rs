@@ -655,7 +655,14 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
     let (comments, hidden_comments) = collab.comments_counted(handle, doc_id).await?;
     let review_state = v.review_with_threads(&comments);
     let conv = threads::threads(&comments, &v.head, &review_state.resolved_threads);
-    let rows = threads::reviewer_rows(&reviews, &review_state, &approvals, &oracle, &v.head);
+    let rows = threads::reviewer_rows(
+        &reviews,
+        &review_state,
+        &approvals,
+        &oracle,
+        &v.head,
+        &v.patch.author,
+    );
     let since = s
         .viewer()
         .and_then(|me| threads::since_your_review(&reviews, &review_state, me));
@@ -984,7 +991,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         .transpose()?;
     // A squash's method is known now; a merge's (fast-forward or merge commit) once planned.
     let squash_bit = (method == Method::Squash).then_some(METHOD_SQUASH);
-    let policy = require_merge_rights(
+    let MergeRights { policy, bypassed } = require_merge_rights(
         &s,
         handle,
         &view,
@@ -1061,6 +1068,33 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         format!("merge transition {}", short(&transition_id)),
     );
 
+    // A maintainer's bypass is recorded on the PR, where every reader sees it (GitHub shows the
+    // bypass in the timeline). The merge stands if this fails; say so.
+    if !bypassed.is_empty() {
+        let note = bypass_note(&merge_oid, &view.patch.base_ref_name, &bypassed);
+        match collab
+            .comment(handle, &view.patch.document_id, &note, None, None)
+            .await
+        {
+            Ok(id) => steps.ok(
+                "bypass",
+                format!(
+                    "recorded ({}) in comment {}",
+                    bypassed.join("; "),
+                    short(&id)
+                ),
+            ),
+            Err(e) => {
+                if !ctx.json {
+                    eprintln!("  ✗ bypass    the merge stands; recording the bypass failed: {e:#}");
+                }
+                steps
+                    .done
+                    .push(json!({ "step": "bypass", "ok": false, "detail": format!("{e:#}") }));
+            }
+        }
+    }
+
     let mut branch_deleted = false;
     if let Some(d) = &delete {
         match branch::delete_source_branch(ctx, d) {
@@ -1100,6 +1134,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
             "merged": merged,
             "mergeOnBase": on_base,
             "branchDeleted": branch_deleted,
+            "bypassedRules": bypassed,
             "steps": steps.done,
         }),
         || {
@@ -1132,8 +1167,8 @@ struct MergeHow<'a> {
     message: Option<&'a str>,
     /// The signing identity (the commit author when git has no `user.name`).
     signer: &'a str,
-    /// The branch policy in force (unless overridden): its merge methods are checked once the
-    /// merge is planned.
+    /// The branch policy in force (also under `--override-policy`): its merge methods are
+    /// checked once the merge is planned.
     policy: Option<&'a forge_core::rules::review::Policy>,
 }
 
@@ -1292,13 +1327,22 @@ fn event_only_oid(view: &PatchView, given: Option<&str>, number: u64) -> Result<
     Ok(oid)
 }
 
+/// What [`require_merge_rights`] found: the policy in force (its merge methods are checked once
+/// the merge is planned) and, under a maintainer's `--override-policy`, the rules the merge
+/// bypasses (empty: none, the policy is met or there is none).
+struct MergeRights {
+    policy: Option<forge_core::rules::review::Policy>,
+    bypassed: Vec<String>,
+}
+
 /// The checks before any git work, all E601/E804 with nothing paid. Only members can merge
-/// (the merge event is member-gated at consensus). Unless a maintainer passes
-/// `override_policy`, the branch policy (a client rule every Forge client applies; consensus does
-/// not enforce it) must be met: its approvals, and `method` (a merge-method bit) when known; an
-/// unreadable policy fails closed for a writer. When the merge `pushes` to the base, a writer
-/// cannot move a protected one (only a maintainer's `protectedRefUpdate` can). Returns the policy
-/// in force (unless overridden), so the caller can check the method once the merge is planned.
+/// (the merge event is member-gated at consensus). The branch policy (a client rule every Forge
+/// client applies; consensus does not enforce it) must be met: its approvals (the PR author's own
+/// never count) and required checks, and `method` (a merge-method bit) when known; an unreadable
+/// policy fails closed. A maintainer's `override_policy` is the explicit bypass (GitHub's "bypass
+/// rules"): the unmet rules are returned, to be recorded on the PR, and the allowed merge methods
+/// still apply. When the merge `pushes` to the base, a writer cannot move a protected one (only a
+/// maintainer's `protectedRefUpdate` can).
 async fn require_merge_rights(
     s: &Session,
     handle: &Repo,
@@ -1306,7 +1350,7 @@ async fn require_merge_rights(
     pushes: bool,
     method: Option<u8>,
     override_policy: bool,
-) -> Result<Option<forge_core::rules::review::Policy>> {
+) -> Result<MergeRights> {
     let number = u64::from(view.patch.number);
     let collab = s.collab();
     collab
@@ -1332,66 +1376,40 @@ async fn require_merge_rights(
         .note("checked before fetching or paying for anything; no merge event was posted")
         .into());
     }
-    // The branch policy (a client rule): its approvals now; its method once the merge is planned.
-    // Unreadable policy or approvals fail closed for a writer.
-    let policy = if override_policy {
-        None
-    } else {
-        let read = async {
-            let Some(policy) = collab.policy(handle).await? else {
-                return Ok::<_, anyhow::Error>(None);
-            };
-            let oracle = collab.member_oracle(handle).await?;
-            let (approvals, _) = collab.approvals_with(handle, view, &oracle).await?;
-            let checks = required_checks(&collab, handle, view, &oracle, &policy).await?;
-            Ok(Some((
-                policy.clone(),
-                forge_core::rules::review::meets_policy(&approvals, &oracle, &policy),
-                checks,
-            )))
-        };
-        match read.await {
-            Ok(Some((policy, status, checks))) => {
-                if let Some(u) = policy_refusal(&policy, &status, method, &handle.display(), number)
-                {
-                    return Err(u.into());
-                }
-                if let Some(u) = checks
-                    .as_ref()
-                    .and_then(|c| checks_refusal(c, &handle.display(), number))
-                {
-                    return Err(u.into());
-                }
-                Some(policy)
+    // The branch policy (a client rule): its approvals and checks now; its method once the merge
+    // is planned. Read under an override too: the bypass names what it bypasses.
+    // The policy document first, then where the PR stands against it: an override keeps the
+    // policy's merge methods even when its approvals or checks cannot be read.
+    let read = match collab.policy(handle).await {
+        Ok(Some(policy)) => {
+            let standing = async {
+                let oracle = collab.member_oracle(handle).await?;
+                let (approvals, _) = collab.approvals_with(handle, view, &oracle).await?;
+                let checks = required_checks(&collab, handle, view, &oracle, &policy).await?;
+                Ok::<_, anyhow::Error>((
+                    forge_core::rules::review::meets_policy(&approvals, &oracle, &policy),
+                    checks,
+                ))
             }
-            Err(e) if !maintainer => {
-                return Err(UserError::new(
-                    codes::POLICY_NOT_MET,
-                    format!(
-                        "merge refused: couldn't read the branch policy of {}",
-                        handle.display()
-                    ),
-                )
-                .cause(format!("{e:#}"))
-                .fix("retry; a maintainer can merge with `--override-policy`")
-                .into());
-            }
-            // No policy, or a maintainer (who may merge whatever it says) could not read it.
-            Ok(None) | Err(_) => None,
+            .await;
+            Ok(Some((policy, standing)))
         }
+        Ok(None) => Ok(None),
+        Err(e) => Err(anyhow::Error::from(e)),
     };
+    let rights = judge_policy(read, override_policy, method, &handle.display(), number)?;
     // DASH_FORGE_SKIP_WRITE_PRECHECK skips only the consensus-backed protected-branch check (so
     // consensus can be seen refusing it); the policy is a client rule nothing else enforces.
     if maintainer || !pushes || !forge_core::collab::v2::precheck_enabled() {
-        return Ok(policy);
+        return Ok(rights);
     }
     let base = view.patch.base_ref_name.as_str();
     let svc = forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge);
     let Ok(patterns) = svc.protected_patterns(handle).await else {
-        return Ok(policy);
+        return Ok(rights);
     };
     if !forge_core::rules::matches_protected(base, &patterns) {
-        return Ok(policy);
+        return Ok(rights);
     }
     Err(UserError::new(
         codes::NOT_A_WRITER,
@@ -1449,13 +1467,14 @@ async fn required_checks(
     oracle: &forge_core::rules::v2::RoleOracle,
     policy: &forge_core::rules::review::Policy,
 ) -> Result<Option<forge_core::rules::v2::ChecksState>> {
-    // Checks are judged only when `requireChecks` is set (the web merge box's gate); then the
+    // Checks are judged when `requireChecks` is set or the policy names required checks (the
+    // web merge box's gate, and `checks_state`'s own rule: named checks must each pass); then the
     // named checks and their pinned sources, when the policy has them, decide.
-    if !policy.require_checks {
+    if !checks_judged(policy) {
         return Ok(None);
     }
     let rules = forge_core::rules::v2::ChecksPolicy {
-        require_checks: true,
+        require_checks: policy.require_checks,
         required_checks: policy.required_checks.clone(),
         required_check_sources: policy.required_check_sources.clone(),
     };
@@ -1464,6 +1483,12 @@ async fn required_checks(
             .head_checks(handle, &view.head, oracle, &rules)
             .await?,
     ))
+}
+
+/// Whether `policy` requires checks at all: `requireChecks`, or named `requiredChecks` (which
+/// `checks_state` requires by themselves). The web merge box's `checksRequired`.
+fn checks_judged(policy: &forge_core::rules::review::Policy) -> bool {
+    policy.require_checks || !policy.required_checks.is_empty()
 }
 
 /// E804 when the branch policy requires checks and the head's newest trusted runs do not all
@@ -1537,21 +1562,159 @@ fn policy_refusal(
             }
         )
     };
+    let u = UserError::new(
+        codes::POLICY_NOT_MET,
+        format!("merge refused: PR #{number} does not meet the branch policy of {repo}"),
+    )
+    .cause(cause);
+    // `--override-policy` lifts the approvals, never the allowed merge methods.
+    let u = if status.met {
+        u.fix(format!(
+            "choose an allowed merge method (`dg repo policy show {repo}` lists them); `--override-policy` does not lift it"
+        ))
+    } else {
+        u.fix(format!("get the missing approvals (`dg pr review {repo} {number} --approve` by a member other than the PR author)"))
+            .fix("a maintainer can merge anyway with `--override-policy` (recorded on the PR)")
+    };
     Some(
+        u.note("the policy is a client rule every Forge client applies; consensus does not enforce it. Nothing was pushed and no merge event was posted"),
+    )
+}
+
+/// The PR's standing against a read policy: its approvals status and its required checks.
+type PolicyStanding = (
+    forge_core::rules::review::PolicyStatus,
+    Option<forge_core::rules::v2::ChecksState>,
+);
+
+/// What the read branch policy allows (`read`: the policy and the PR's standing against it,
+/// `None` without a policy). Without `override_policy`, unmet approvals or checks, a disallowed
+/// `method`, or a policy or standing that cannot be read refuse the merge (E804). A maintainer's
+/// `override_policy` bypasses the approvals and checks (returned, to be recorded) but never the
+/// allowed merge methods of a policy it could read.
+fn judge_policy(
+    read: Result<Option<(forge_core::rules::review::Policy, Result<PolicyStanding>)>>,
+    override_policy: bool,
+    method: Option<u8>,
+    repo: &str,
+    number: u64,
+) -> Result<MergeRights> {
+    let unread = |e: &anyhow::Error, what: &str| -> anyhow::Error {
         UserError::new(
             codes::POLICY_NOT_MET,
-            format!("merge refused: PR #{number} does not meet the branch policy of {repo}"),
+            format!("merge refused: couldn't read the branch policy{what} of {repo}"),
         )
-        .cause(cause)
-        .fix(if status.met {
-            format!(
-                "choose an allowed merge method (`dg repo policy show {repo}` lists them)"
-            )
-        } else {
-            format!("get the missing approvals (`dg pr review {repo} {number} --approve` by a member)")
-        })
-        .fix("a maintainer can merge anyway with `--override-policy`")
-        .note("the policy is a client rule every Forge client applies; consensus does not enforce it. Nothing was pushed and no merge event was posted"),
+        .cause(format!("{e:#}"))
+        .fix("retry; a maintainer can merge with `--override-policy` (recorded on the PR)")
+        .into()
+    };
+    match read {
+        Ok(Some((policy, standing))) if override_policy => {
+            // The bypass lifts approvals and checks; the allowed merge methods still apply (as
+            // GitHub's repository merge settings do).
+            let met = forge_core::rules::review::PolicyStatus {
+                met: true,
+                have: 0,
+                need: 0,
+            };
+            if let Some(u) = policy_refusal(&policy, &met, method, repo, number) {
+                return Err(u.into());
+            }
+            let bypassed = match standing {
+                Ok((status, checks)) => unmet_rules(&policy, &status, checks.as_ref()),
+                Err(_) => vec![STANDING_UNREAD.to_string()],
+            };
+            Ok(MergeRights {
+                policy: Some(policy),
+                bypassed,
+            })
+        }
+        Ok(Some((_, Err(e)))) => Err(unread(&e, "'s approvals or checks")),
+        Ok(Some((policy, Ok((status, checks))))) => {
+            if let Some(u) = policy_refusal(&policy, &status, method, repo, number) {
+                return Err(u.into());
+            }
+            if let Some(u) = checks
+                .as_ref()
+                .and_then(|c| checks_refusal(c, repo, number))
+            {
+                return Err(u.into());
+            }
+            Ok(MergeRights {
+                policy: Some(policy),
+                bypassed: Vec::new(),
+            })
+        }
+        Ok(None) => Ok(MergeRights {
+            policy: None,
+            bypassed: Vec::new(),
+        }),
+        Err(_) if override_policy => Ok(MergeRights {
+            policy: None,
+            bypassed: vec![POLICY_UNREAD.to_string()],
+        }),
+        Err(e) => Err(unread(&e, "")),
+    }
+}
+
+/// The bypass record's line for a policy read whose approvals or checks could not be.
+const STANDING_UNREAD: &str = "required approvals and checks: could not be read";
+
+/// The bypass record's line for a policy that could not be read.
+const POLICY_UNREAD: &str = "the branch policy could not be read";
+
+/// The branch rules `status` and `checks` leave unmet, one line each ("required approvals: 0 of
+/// 1 (maintainers only)", "required check `build`: missing"); empty when all are met. The web
+/// merge box names the same rules (`unmetRules`).
+fn unmet_rules(
+    policy: &forge_core::rules::review::Policy,
+    status: &forge_core::rules::review::PolicyStatus,
+    checks: Option<&forge_core::rules::v2::ChecksState>,
+) -> Vec<String> {
+    use forge_core::rules::v2::CheckState;
+    let mut out = Vec::new();
+    if !status.met {
+        out.push(format!(
+            "required approvals: {} of {}{}",
+            status.have,
+            status.need,
+            if policy.approver_role == 1 {
+                " (maintainers only)"
+            } else {
+                ""
+            }
+        ));
+    }
+    if let Some(c) = checks.filter(|c| !c.met) {
+        if c.required.is_empty() {
+            out.push("required checks: none reported on the head".to_string());
+        }
+        for r in c.required.iter().filter(|r| r.state != CheckState::Passed) {
+            let state = match r.state {
+                CheckState::Failing => "failing",
+                CheckState::Missing => "missing",
+                CheckState::Pending | CheckState::Passed => "pending",
+            };
+            out.push(format!("required check `{}`: {state}", r.name));
+        }
+    }
+    out
+}
+
+/// The comment a maintainer's bypass leaves on the PR, so the timeline shows the merge skipped
+/// the branch rules and which (the `transition` has no field for it). The web writes the same.
+fn bypass_note(merge_oid: &str, base_ref: &str, rules: &[String]) -> String {
+    let base = base_ref.strip_prefix("refs/heads/").unwrap_or(base_ref);
+    let list = rules
+        .iter()
+        .map(|r| format!("- {r}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "**Merged by bypassing the branch rules** (a maintainer override): {} into `{base}`.\n\n\
+         Rules not met at the merge:\n{list}\n\n\
+         Branch rules are a client rule every Forge client applies; consensus does not enforce them.",
+        short(merge_oid)
     )
 }
 
@@ -2243,6 +2406,120 @@ mod tests {
             have,
             need,
         }
+    }
+
+    #[test]
+    fn unmet_rules_refuse_everyone_and_a_bypass_names_them_but_keeps_the_methods() {
+        let unmet = || {
+            Ok(Some((
+                policy(1, true, METHOD_SQUASH),
+                Ok((status(0, 1), None)),
+            )))
+        };
+        // No override: refused (a maintainer too; QW-001).
+        let e = judge_policy(unmet(), false, None, "o/r", 7).err().unwrap();
+        assert!(format!("{e:#}").contains("0 of 1 required approval(s) from maintainers"));
+        // The override bypasses the approvals, and names them for the record.
+        let r = judge_policy(unmet(), true, None, "o/r", 7).unwrap();
+        assert_eq!(
+            r.bypassed,
+            ["required approvals: 0 of 1 (maintainers only)"]
+        );
+        assert!(r.policy.is_some());
+        // …but not the allowed merge methods, and does not claim it would.
+        let e = judge_policy(unmet(), true, Some(METHOD_FF), "o/r", 7)
+            .err()
+            .unwrap();
+        let u = e.downcast_ref::<UserError>().unwrap().to_json().to_string();
+        assert!(u.contains("does not allow this merge method"), "{u}");
+        assert!(u.contains("does not lift it"), "{u}");
+        assert!(!u.contains("can merge anyway"), "{u}");
+        // A met policy is no bypass, override or not.
+        let met = || Ok(Some((policy(1, false, 0), Ok((status(1, 1), None)))));
+        assert!(judge_policy(met(), true, None, "o/r", 7)
+            .unwrap()
+            .bypassed
+            .is_empty());
+        // The policy read but not its approvals or checks: refused without the override; with
+        // it, the method rule still holds and the record says what could not be read.
+        let blind = || {
+            Ok(Some((
+                policy(1, false, METHOD_SQUASH),
+                Err(anyhow::anyhow!("down")),
+            )))
+        };
+        assert!(judge_policy(blind(), false, None, "o/r", 7).is_err());
+        assert!(judge_policy(blind(), true, Some(METHOD_MERGE), "o/r", 7).is_err());
+        let r = judge_policy(blind(), true, Some(METHOD_SQUASH), "o/r", 7).unwrap();
+        assert_eq!(r.bypassed, [STANDING_UNREAD]);
+        // An unreadable policy refuses without the override (a maintainer too), and is named with it.
+        assert!(judge_policy(Err(anyhow::anyhow!("down")), false, None, "o/r", 7).is_err());
+        let r = judge_policy(Err(anyhow::anyhow!("down")), true, None, "o/r", 7).unwrap();
+        assert_eq!(r.bypassed, [POLICY_UNREAD]);
+    }
+
+    #[test]
+    fn named_required_checks_are_judged_without_require_checks() {
+        // Parity with the web merge box and `checks_state`: a named required check must pass
+        // even when `requireChecks` is off.
+        let mut p = policy(0, false, 0);
+        assert!(!checks_judged(&p));
+        p.required_checks = vec!["build".into()];
+        assert!(checks_judged(&p));
+        let p = forge_core::rules::review::Policy {
+            require_checks: true,
+            ..policy(0, false, 0)
+        };
+        assert!(checks_judged(&p));
+    }
+
+    #[test]
+    fn a_bypass_names_every_unmet_rule_as_the_web_does() {
+        use forge_core::rules::v2::{CheckState, ChecksState, RequiredCheck};
+        let checks = ChecksState {
+            required: vec![
+                RequiredCheck {
+                    name: "build".into(),
+                    state: CheckState::Missing,
+                    run_id: None,
+                },
+                RequiredCheck {
+                    name: "lint".into(),
+                    state: CheckState::Passed,
+                    run_id: Some("x".into()),
+                },
+            ],
+            met: false,
+            untrusted: 0,
+        };
+        assert_eq!(
+            unmet_rules(&policy(1, true, 0), &status(0, 1), Some(&checks)),
+            [
+                "required approvals: 0 of 1 (maintainers only)",
+                "required check `build`: missing"
+            ]
+        );
+        assert!(unmet_rules(&policy(1, false, 0), &status(1, 1), None).is_empty());
+        let no_runs = ChecksState {
+            required: vec![],
+            met: false,
+            untrusted: 0,
+        };
+        assert_eq!(
+            unmet_rules(&policy(0, false, 0), &status(0, 0), Some(&no_runs)),
+            ["required checks: none reported on the head"]
+        );
+        let note = bypass_note(
+            &"ab".repeat(20),
+            "refs/heads/main",
+            &["required approvals: 0 of 1".to_string()],
+        );
+        // Word for word the web's `bypassNote` (pull-actions.test.ts).
+        assert!(note.contains(
+            "**Merged by bypassing the branch rules** (a maintainer override): abababababab into `main`."
+        ));
+        assert!(note.contains("Rules not met at the merge:\n- required approvals: 0 of 1\n"));
+        assert!(note.contains("consensus does not enforce them"));
     }
 
     #[test]

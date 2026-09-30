@@ -22,7 +22,7 @@ import { answerStorageQuestion, expectPlatformPreAllowed, idFile, idOf, runAxe, 
  *       counts 2, "Applied in").
  *   r5. OWNER sees "New commits since your review", replies to and resolves the range thread,
  *       approves; the merge box says required checks are not passing (a writer could not
- *       merge; OWNER is offered the override) — then a relay-style `checkRun` is written for the
+ *       merge; OWNER is offered the "bypass rules" step) — then a relay-style `checkRun` is written for the
  *       head (seed_check_run) and the checks row reads "1 passed".
  *   r6. OWNER squash-merges with an edited message and deletes the branch: the PR reads Merged;
  *       main's new tip is ONE commit on the old main with the edited message and

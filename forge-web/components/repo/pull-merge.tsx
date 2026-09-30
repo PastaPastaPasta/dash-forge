@@ -68,6 +68,12 @@ export interface MergeExtras {
   readonly onRunning?: (running: boolean) => void
   /** False while the page keeps the box mounted but hidden (no merge check runs then). */
   readonly active?: boolean
+  /** The branch rules the PR does not meet; the merge stays disabled unless bypassed. */
+  readonly unmetRules?: readonly string[]
+  /** The merger may bypass them (a maintainer). */
+  readonly canBypass?: boolean
+  /** The PR's conversation is locked. */
+  readonly locked?: boolean
 }
 
 function MergeReaders({
@@ -110,6 +116,9 @@ function MergeReaders({
       {...(extras.deleteBranch !== undefined ? { deleteBranch: extras.deleteBranch } : {})}
       {...(extras.onRunning !== undefined ? { onRunning: extras.onRunning } : {})}
       {...(extras.active !== undefined ? { active: extras.active } : {})}
+      {...(extras.unmetRules !== undefined ? { unmetRules: extras.unmetRules } : {})}
+      {...(extras.canBypass !== undefined ? { canBypass: extras.canBypass } : {})}
+      {...(extras.locked !== undefined ? { locked: extras.locked } : {})}
     />
   )
 }

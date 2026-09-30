@@ -139,7 +139,7 @@ fn doc_kind(kind: ContentKind) -> DocKind {
 }
 
 /// The PR's approvals on its current head (§6) over `reviews` already read: member reviews
-/// only, dismissed reviews skipped.
+/// only, dismissed reviews and the PR author's own reviews skipped.
 #[must_use]
 pub fn approvals_over(reviews: &[Review], view: &PatchView, oracle: &RoleOracle) -> Approvals {
     let rule: Vec<RuleReview> = reviews
@@ -152,7 +152,13 @@ pub fn approvals_over(reviews: &[Review], view: &PatchView, oracle: &RoleOracle)
             created_at: r.created_at,
         })
         .collect();
-    count_approvals(&rule, oracle, &view.head, &view.dismissed())
+    count_approvals(
+        &rule,
+        oracle,
+        &view.head,
+        &view.dismissed(),
+        &view.patch.author,
+    )
 }
 
 /// A well-formed document as the public codecs read it: itself when `keys` is `None` (a public

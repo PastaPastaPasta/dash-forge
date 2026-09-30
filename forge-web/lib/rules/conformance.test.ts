@@ -329,15 +329,16 @@ function runCaseV2(v: Vector): void {
       break
     }
     case 'approvals': {
-      onlyKeys(v, ['reviews', 'memberships', 'headOid', 'dismissed'])
+      onlyKeys(v, ['reviews', 'memberships', 'headOid', 'dismissed', 'prAuthor'])
       const inp = v.input as {
         readonly reviews: readonly v2.Review[]
         readonly memberships: readonly v2.Membership[]
         readonly headOid: string
         readonly dismissed?: readonly string[]
+        readonly prAuthor?: string
       }
       const oracle = new v2.RoleOracle(inp.memberships)
-      expect(v2.countApprovals(inp.reviews, oracle, inp.headOid, new Set(inp.dismissed ?? []))).toEqual(v.expected)
+      expect(v2.countApprovals(inp.reviews, oracle, inp.headOid, new Set(inp.dismissed ?? []), inp.prAuthor ?? '')).toEqual(v.expected)
       break
     }
     case 'fold_review': {
@@ -348,16 +349,17 @@ function runCaseV2(v: Vector): void {
       break
     }
     case 'policy': {
-      onlyKeys(v, ['reviews', 'memberships', 'headOid', 'dismissed', 'policy'])
+      onlyKeys(v, ['reviews', 'memberships', 'headOid', 'dismissed', 'prAuthor', 'policy'])
       const inp = v.input as {
         readonly reviews: readonly v2.Review[]
         readonly memberships: readonly v2.Membership[]
         readonly headOid: string
         readonly dismissed?: readonly string[]
+        readonly prAuthor?: string
         readonly policy: v2.Policy
       }
       const oracle = new v2.RoleOracle(inp.memberships)
-      const approvals = v2.countApprovals(inp.reviews, oracle, inp.headOid, new Set(inp.dismissed ?? []))
+      const approvals = v2.countApprovals(inp.reviews, oracle, inp.headOid, new Set(inp.dismissed ?? []), inp.prAuthor ?? '')
       expect(v2.meetsPolicy(approvals, oracle, inp.policy)).toEqual(v.expected)
       break
     }

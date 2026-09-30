@@ -549,7 +549,7 @@ async function readApprovals(
   const input = asReviews(reviews)
   const headOid = review.head
   const dismissed = new Set(review.dismissedReviews.map((d) => d.reviewId))
-  const counted = countApprovals(input, oracle, headOid, dismissed)
+  const counted = countApprovals(input, oracle, headOid, dismissed, author)
   const counters = [...counted.approvers, ...counted.changesRequested]
   return {
     approvals: {
@@ -559,7 +559,7 @@ async function readApprovals(
       policy,
       policyStatus: policy === null || policy === 'unknown' ? policy : meetsPolicy(counted, oracle, policy),
     },
-    reviewers: reviewerRows(input, review.requestedReviewers, review.dismissedReviews, counted, oracle, headOid),
+    reviewers: reviewerRows(input, review.requestedReviewers, review.dismissedReviews, counted, oracle, headOid, author),
   }
 }
 

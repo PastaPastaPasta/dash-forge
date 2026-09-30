@@ -1,6 +1,6 @@
 {
-  "name": "author_self_approval_counts",
-  "description": "Known design choice: a member's approval counts even on their own PR (reviews carry no PR author); clients may show self-approval distinctly.",
+  "name": "author_review_not_counted",
+  "description": "The PR author's own approval never counts (GitHub: authors can't approve their own PR). A review carries no PR author, so consensus admits it; the clients skip it and show it as 'author, not counted'.",
   "case": "approvals",
   "rules": "v2",
   "input": {
@@ -20,12 +20,11 @@
         "createdAt": 50
       }
     ],
-    "headOid": "head0000"
+    "headOid": "head0000",
+    "prAuthor": "alice"
   },
   "expected": {
-    "approvers": [
-      "alice"
-    ],
+    "approvers": [],
     "changesRequested": []
   }
 }

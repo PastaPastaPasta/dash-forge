@@ -172,8 +172,8 @@ export interface PolicyStatus {
 }
 
 /**
- * Whether `approvals` (from `countApprovals` on the current head, dismissed reviews excluded)
- * meet `policy`: approvers whose current role satisfies `approverRole` (1: maintainers only).
+ * Whether `approvals` (from `countApprovals` on the current head, dismissed reviews and the PR
+ * author's own reviews excluded) meet `policy`: approvers whose current role satisfies `approverRole` (1: maintainers only).
  */
 export function meetsPolicy(approvals: Approvals, oracle: RoleOracle, policy: Policy): PolicyStatus {
   const counts = (role: Role | null): boolean => role === 'maintainer' || (role === 'writer' && (policy.approverRole ?? 0) === 0)

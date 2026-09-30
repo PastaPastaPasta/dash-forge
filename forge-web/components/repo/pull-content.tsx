@@ -53,7 +53,7 @@ import {
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
-import { deleteBranchOffer, deleteBranchProblem } from '@/lib/view/pull-actions'
+import { bypassNote, deleteBranchOffer, deleteBranchProblem } from '@/lib/view/pull-actions'
 import {
   createComment,
   commentFirsts,
@@ -159,7 +159,7 @@ const VERDICT_RECORDS: Readonly<Record<VerdictInput, string>> = {
 /** The write the confirm dialog is about to sign. */
 type Pending =
   | { kind: 'state'; to: 'close' | 'reopen' }
-  | { kind: 'mark-merged' }
+  | { kind: 'mark-merged'; bypass: readonly string[] }
   | { kind: 'review'; verdict: VerdictInput; body: string }
   | { kind: 'draft'; to: 'draft' | 'ready' }
   | { kind: 'head'; oid: string }
@@ -376,18 +376,25 @@ function PullPage({
   // reported; named `requiredChecks` (set by `dg`) must each pass, from their pinned source when
   // the policy names one (`checksState`, forge-core `checks_state`: `dg pr merge` applies the same rule).
   const checksRequired = policyNow !== null && (policyNow.requireChecks === true || (policyNow.requiredChecks?.length ?? 0) > 0)
-  const checksBlocking =
-    checksRequired &&
-    (checks.data === null || !membersKnown || !checksState(checks.data.rows, pull.headOid, new RoleOracle(thread.members), checks.data.runners, policyNow).met)
+  // The required checks as they stand ('unknown' until the runs and the members are read: the
+  // merge stays disabled meanwhile, fail closed).
+  const requiredChecks =
+    !checksRequired || policyNow === null
+      ? null
+      : checks.data === null || !membersKnown
+        ? ('unknown' as const)
+        : checksState(checks.data.rows, pull.headOid, new RoleOracle(thread.members), checks.data.runners, policyNow)
+  const checksBlocking = requiredChecks !== null && (requiredChecks === 'unknown' || !requiredChecks.met)
   const actions = pullActions({
     pull,
     viewer: identity,
     holdings: identity !== null && !holdings.settled ? 'loading' : holdings.data,
     protectedPatterns: home.config?.protectedPatterns ?? [],
     policy: rules.status,
-    checksBlocking,
+    maintainersOnly: policyNow?.approverRole === 1,
+    checks: requiredChecks,
   })
-  // "Mark as merged" is offered on a ready PR only.
+  // "Mark as merged (done elsewhere)" is offered on a ready PR whose head is on the base already.
   const showMarkMerged = actions.canMarkMerged && !pull.state.draft
   const base = shortBranch(pull.baseRefName) || 'the base branch'
   const canAuthorOrMember = authorOrMember && !archived
@@ -517,6 +524,16 @@ function PullPage({
         return
       case 'mark-merged':
         await setTargetState(sdk, signer, repo, { target: stateTarget, action: 'merge', isMember, oidHex: pull.headOid, intent })
+        // A maintainer recording it past unmet branch rules: the bypass is recorded on the PR,
+        // as the merge box and `dg pr merge --event-only --override-policy` record theirs.
+        if (p.bypass.length > 0) {
+          try {
+            await createComment(sdk, signer, repo, { targetId: pull.id, body: bypassNote(pull.headOid, pull.state.baseRef ?? pull.baseRefName, p.bypass), intent: `${intent}:bypass`, post: postContext })
+          } catch (e) {
+            // The merge is recorded (final); a retry of this same action re-uses it and writes only the record.
+            throw new Error(`The merge is recorded, but recording the rules bypass failed: ${guard.failed(e)} Retry to record it.`)
+          }
+        }
         refresh((t) => t.pull.state.merged)
         return
       case 'review': {
@@ -610,8 +627,11 @@ function PullPage({
     switch (pending.kind) {
       case 'review':
         return composeCost(repo, 'review', { body: pending.body }, reviewFirst)
-      case 'state':
       case 'mark-merged':
+        return pending.bypass.length > 0
+          ? previewCredits(transitionCost.credits + composeCost(repo, 'comment', { body: bypassNote(pull.headOid, pull.state.baseRef ?? pull.baseRefName, pending.bypass) }, commentFirst).credits)
+          : transitionCost
+      case 'state':
       case 'draft':
       case 'lock':
         return transitionCost
@@ -635,7 +655,7 @@ function PullPage({
         return eventCost
     }
   })()
-  const confirm = confirmText(pending, pull.number, isMember, pull.headOid)
+  const confirm = confirmText(pending, pull.number, isMember, pull.headOid, base)
 
   // ---- conversation ------------------------------------------------------------------------------
   // Replies to an inline thread show under its root, not on their own.
@@ -950,7 +970,7 @@ function PullPage({
                 repo={repo}
                 home={home}
                 pull={pull}
-                canMerge={actions.canMarkMerged && !archived}
+                canMerge={actions.canMerge && !archived}
                 isMaintainer={holdings.data?.maintain === true}
                 checkout={checkout}
                 onMerged={() => {
@@ -962,6 +982,9 @@ function PullPage({
                 extras={{
                   onRunning: setMergeRunning,
                   active: mergeSlot === 'shown',
+                  unmetRules: actions.unmetRules,
+                  canBypass: actions.canBypass,
+                  locked: thread.locked,
                   allowedMethods: policyNow?.mergeMethods ?? 0,
                   squashAuthors: commits.error
                     ? { error: commits.error }
@@ -1021,12 +1044,12 @@ function PullPage({
                     ) : null}
                     {showMarkMerged ? (
                       <Button
-                        variant={actions.policyOverride ? 'danger' : 'outline'}
-                        onClick={() => setPending({ kind: 'mark-merged' })}
+                        variant="outline"
+                        onClick={() => setPending({ kind: 'mark-merged', bypass: actions.unmetRules })}
                         disabled={!signer || guard.disabledReason !== null || archived}
-                        title={archived ? ARCHIVED_REASON : undefined}
+                        title={archived ? ARCHIVED_REASON : 'Records a merge done elsewhere; it moves no code'}
                       >
-                        <GitMerge className="h-3.5 w-3.5" aria-hidden /> {actions.policyOverride ? 'Merge anyway (policy override)' : 'Mark as merged'}
+                        <GitMerge className="h-3.5 w-3.5" aria-hidden /> Mark as merged (done elsewhere)
                       </Button>
                     ) : null}
                     {writeBlocked ? null : (
@@ -1047,7 +1070,7 @@ function PullPage({
                     <span className="text-dense text-anvil-500 dark:text-anvil-400">
                       Review head <span className="font-mono">{pull.headOid.slice(0, 9)}</span>:
                     </span>
-                    {(Object.keys(VERDICT_TEXT) as VerdictInput[]).map((v) => (
+                    {(Object.keys(VERDICT_TEXT) as VerdictInput[]).filter((v) => !isAuthor || v === 'comment').map((v) => (
                       <Button
                         key={v}
                         size="sm"
@@ -1061,14 +1084,19 @@ function PullPage({
                         {VERDICT_TEXT[v]}
                       </Button>
                     ))}
-                    {!isMember && holdings.settled ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">Only approvals from maintainers and writers count.</span> : null}
+                    {isAuthor ? (
+                      <span className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="author-review-note">
+                        You opened this PR: your own approval would never count, so only a comment-only review is offered.
+                      </span>
+                    ) : !isMember && holdings.settled ? (
+                      <span className="text-[12px] text-anvil-500 dark:text-anvil-400">Only approvals from maintainers and writers count.</span>
+                    ) : null}
                   </div>
                 ) : null}
                 {showMarkMerged ? (
                   <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-                    {actions.markCountsNow
-                      ? `The head commit is already on ${base}: marking it merged records that.`
-                      : `"Mark as merged" records a merge done elsewhere, and it is final. The head commit is not on ${base}, so the PR will say "merge commit not found on the base" until it gets there. Merge it above to move the branch.`}
+                    {`The head commit is already on ${base}: "Mark as merged (done elsewhere)" records that merge. It moves no code, and it is final.`}
+                    {actions.unmetRules.length > 0 ? ' The branch rules are not met, so recording it is a bypass, recorded on the PR.' : ''}
                   </p>
                 ) : actions.mergeHint !== null ? (
                   <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{actions.mergeHint}</p>
@@ -1122,6 +1150,7 @@ function PullPage({
                     update={reviewDraft.update}
                     ensure={reviewDraft.ensure}
                     isMember={isMember}
+                    isAuthor={isAuthor}
                     locked={thread.locked}
                     lineExists={(path, side, line) => knownLines.current.get(path)?.has(lineKey(path, side, line)) ?? false}
                     onSubmitted={(s) => {
@@ -1340,7 +1369,7 @@ function ChecksRow({ summary, headOid, onOpen }: { summary: ChecksSummary | null
 }
 
 /** The confirm dialog's words for each pending write. */
-function confirmText(pending: Pending | null, number: number, isMember: boolean, head: string): { title: string; description: string; label: string } {
+function confirmText(pending: Pending | null, number: number, isMember: boolean, head: string, base: string): { title: string; description: string; label: string } {
   const via = isMember ? 'a member event' : 'an author event (you opened this PR)'
   const move = isMember ? 'a state change as a member' : 'a state change as the PR author'
   switch (pending?.kind) {
@@ -1351,11 +1380,17 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
         label: pending.to === 'close' ? 'Close PR' : 'Reopen PR',
       }
     case 'mark-merged':
-      return {
-        title: `Mark PR #${number} as merged`,
-        description: `Records the PR as merged at ${head.slice(0, 9)}. This does not merge any code: it records a merge done elsewhere, and it is final. If that commit never reaches the base branch, the PR shows "merge commit not found on the base".`,
-        label: 'Sign & mark merged',
-      }
+      return pending.bypass.length > 0
+        ? {
+            title: `Bypass the branch rules and mark PR #${number} as merged`,
+            description: `Records the merge of ${head.slice(0, 9)}, already on ${base}, done elsewhere. It moves no code, and it is final. These branch rules are not met, so this is a bypass, recorded on the PR as a comment: ${pending.bypass.join('; ')}.`,
+            label: 'Sign & record (bypass rules)',
+          }
+        : {
+            title: `Mark PR #${number} as merged (done elsewhere)`,
+            description: `Records the merge of ${head.slice(0, 9)}, already on ${base}, done elsewhere. It moves no code, and it is final.`,
+            label: 'Sign & mark merged',
+          }
     case 'review':
       return {
         title: `${VERDICT_TEXT[pending.verdict]} PR #${number}`,
@@ -1548,7 +1583,7 @@ function BranchRules({
       {policy === 'unknown' || status === 'unknown' ? (
         <p className="mt-1 flex items-center gap-2" data-testid="policy-status">
           <X className="h-4 w-4 text-caution" aria-hidden />
-          <span>Couldn&apos;t read the branch policy; only a maintainer can merge until it loads.</span>
+          <span>Couldn&apos;t read the branch policy; merging is blocked until it loads (a maintainer can bypass it).</span>
         </p>
       ) : policy !== null && status !== null ? (
         <p className="mt-1 flex items-center gap-2" data-testid="policy-status">
@@ -1573,7 +1608,12 @@ function BranchRules({
           Allowed merge methods: {MERGE_METHODS.filter((m) => ((policy.mergeMethods ?? 0) & m.bit) !== 0).map((m) => m.label).join(', ')}
         </p>
       ) : null}
-      {policy !== null ? <p className="mt-2 text-[12px] text-anvil-600 dark:text-anvil-400">Policy is a client rule; a maintainer can override it. Nothing at consensus requires approvals.</p> : null}
+      {policy !== null ? (
+        <p className="mt-2 text-[12px] text-anvil-600 dark:text-anvil-400">
+          Policy is a client rule; a maintainer can bypass it, and the bypass is recorded on the PR. The PR author&apos;s own approval never counts. Nothing at consensus requires
+          approvals.
+        </p>
+      ) : null}
     </section>
   )
 }

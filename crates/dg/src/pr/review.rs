@@ -189,6 +189,31 @@ fn draft_anchor(spec: &InlineSpec, head: &[u8], review_id: Option<&str>) -> Comm
     }
 }
 
+/// The PR author's own approve or request changes never counts (`count_approvals`; GitHub:
+/// authors can't approve their own PR), so it is refused before anything is paid for; a
+/// comment-only review is fine. The web offers the author only that one.
+fn refuse_own_verdict(
+    v: VerdictArg,
+    author: &str,
+    signer: &str,
+    repo: &str,
+    number: u64,
+) -> Result<()> {
+    if matches!(v, VerdictArg::Comment) || author != signer {
+        return Ok(());
+    }
+    Err(UserError::new(
+        codes::USAGE,
+        format!("you opened PR #{number}: your own approval or request for changes never counts"),
+    )
+    .cause("Forge clients never count the PR author's own verdict (as on GitHub, authors can't approve their own PR)")
+    .fix(format!(
+        "leave a comment-only review (`dg pr review {repo} {number} --comment`), or ask another member to review"
+    ))
+    .note("checked before anything was signed; nothing was written or paid")
+    .into())
+}
+
 /// The verdict of `dg pr review`'s flags, or `None` when none was given.
 fn verdict_of(a: &PrReviewArgs) -> Result<Option<VerdictArg>> {
     let given: Vec<VerdictArg> = [
@@ -446,6 +471,7 @@ async fn submit(
                     a.number
                 ))
             })?;
+            refuse_own_verdict(v, &view.patch.author, &s.identity.id(), &a.repo, a.number)?;
             let mut d = pending.unwrap_or_else(|| ReviewDraft::new(view));
             d.verdict = Some(v.code());
             d.add_args(a)?;
@@ -798,6 +824,18 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
 mod tests {
     use super::*;
     use crate::pr::inline::SideArg;
+
+    #[test]
+    fn the_author_cannot_approve_or_request_changes_on_their_own_pr() {
+        for v in [VerdictArg::Approve, VerdictArg::RequestChanges] {
+            let e = refuse_own_verdict(v, "alice", "alice", "o/r", 3).unwrap_err();
+            let text = format!("{e:#}");
+            assert!(text.contains("your own approval"), "{text}");
+            assert!(refuse_own_verdict(v, "alice", "bob", "o/r", 3).is_ok());
+        }
+        // A comment-only review by the author is fine.
+        assert!(refuse_own_verdict(VerdictArg::Comment, "alice", "alice", "o/r", 3).is_ok());
+    }
 
     fn spec(path: &str, line: u64) -> InlineSpec {
         InlineSpec {

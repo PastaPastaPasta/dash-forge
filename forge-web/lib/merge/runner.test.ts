@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { RepoRef } from '../repo'
 import type { WriteAuth } from '../sdk'
-import { failureMessage, MergeStepError, MergeStopped, newRun, runFor, runMergeSteps, type MergeRunDeps, type StepEvent } from './runner'
+import { failureMessage, MergeStepError, mergeSteps, MergeStopped, newRun, runFor, runMergeSteps, type MergeRunDeps, type StepEvent } from './runner'
 
 const calls: string[] = []
 const fail = new Set<string>()
@@ -103,6 +103,39 @@ describe('merge step runner', () => {
     ])
     expect(run.done).toEqual(['fetch', 'merge', 'pack', 'upload', 'manifest', 'index', 'ref', 'event'])
     expect(events.filter((e) => e.state === 'done').map((e) => e.step)).toEqual(run.done)
+  })
+
+  it('a bypass of the branch rules really merges, then records the bypass after the merge event (QW-001/002)', async () => {
+    const recordBypass = vi.fn(async (tip: string, intent: string) => {
+      calls.push(`bypass:${tip}:${intent}`)
+      if (fail.has('bypass')) throw new Error('comment refused')
+      return 'C1'
+    })
+    fail.add('bypass')
+    let err: unknown
+    try {
+      await runMergeSteps(deps({ recordBypass }), newRun({ baseTip: BASE, headOid: HEAD }), () => undefined)
+    } catch (e) {
+      err = e
+    }
+    // The code moved and the merge is recorded before the bypass record is attempted.
+    expect(calls).toContain(`ref:refs/heads/main:${BASE}->${TIP}:fresh`)
+    expect(calls.indexOf(`event:merge:${TIP}`)).toBeLessThan(calls.indexOf(`bypass:${TIP}:merge:P:bb:bypass`))
+    const e = err as MergeStepError
+    expect(e.step).toBe('bypass')
+    expect(e.message).toBe('Pack stored, manifest written, base branch moved and merge recorded; recording the rules bypass failed: comment refused. Retry the bypass record.')
+    // The retry writes only the record.
+    fail.clear()
+    calls.length = 0
+    const run = await runMergeSteps(deps({ recordBypass }), e.run, () => undefined)
+    expect(calls).toEqual([`bypass:${TIP}:merge:P:bb:bypass`])
+    expect(run.bypassCommentId).toBe('C1')
+    expect(run.done.at(-1)).toBe('bypass')
+  })
+
+  it('shows the bypass step only for a bypass', () => {
+    expect(mergeSteps(false).map((s) => s.id)).not.toContain('bypass')
+    expect(mergeSteps(true).map((s) => s.id).at(-1)).toBe('bypass')
   })
 
   it('names what exists when a later step fails, and a retry resumes there without repeating writes', async () => {

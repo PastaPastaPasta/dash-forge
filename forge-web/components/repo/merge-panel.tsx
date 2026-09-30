@@ -17,6 +17,12 @@
  * an editable message, as `dg pr merge --squash` writes it), limited to what the branch policy's
  * `mergeMethods` allows; the conflicting paths when the check finds overlaps; and "Delete the
  * branch after merging" when the merger can write to the PR's source repo.
+ *
+ * Branch rules (QW-001): while the policy's approvals or required checks are unmet, the button
+ * stays disabled and says why. A maintainer gets GitHub's explicit bypass: tick "Merge without
+ * waiting for the rules to be met (bypass rules)", confirm a dialog naming each rule bypassed,
+ * and the merge really runs, then records the bypass on the PR as a comment (`bypassNote`; the
+ * merge transition has no field for it). The same rule as `dg pr merge --override-policy`.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -29,8 +35,9 @@ import { bytesToBase64, previewCreate, sumPreviews } from '@/lib/sdk'
 import { mergeReaders, missingFromClosure } from '@/lib/merge/verify'
 import { mergeSourceLabel, squashDraft, type MergeCheck, type MergeInput, type SquashAuthors } from '@/lib/merge/engine'
 import { checkMergeInWorker, runMergeInWorker } from '@/lib/merge/client'
-import { MERGE_STEPS, MergeStepError, retryLabel, runFor, runMergeSteps, type MergeRun, type MergeStepId } from '@/lib/merge/runner'
-import { mergeButton, mergeRefProblem } from '@/lib/view/pull-actions'
+import { MergeStepError, mergeSteps, retryLabel, runFor, runMergeSteps, type MergeRun, type MergeStepId } from '@/lib/merge/runner'
+import { bypassNote, mergeButton, mergeGate, mergeRefProblem } from '@/lib/view/pull-actions'
+import { createComment } from '@/lib/repo'
 import { publishMergeIndex } from '@/lib/merge/locator'
 import { StorageRow, useMergeUpload } from '@/components/repo/merge-upload'
 import { StepRow, type StepState } from '@/components/repo/step-list'
@@ -43,6 +50,7 @@ import { useMinWidth, usePrefs } from '@/hooks/use-prefs'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Button } from '@/components/ui/button'
+import { Dialog } from '@/components/ui/dialog'
 import { CopyRow } from '@/components/ui/copy-row'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { Oid } from '@/components/ui/oid'
@@ -71,6 +79,9 @@ export function MergePanel({
   deleteBranch = null,
   onRunning,
   active = true,
+  unmetRules = [],
+  canBypass = false,
+  locked = false,
 }: {
   repo: RepoRef
   pull: PullView
@@ -97,6 +108,12 @@ export function MergePanel({
   onRunning?: (running: boolean) => void
   /** False while the page keeps the panel mounted but hidden: no merge check runs meanwhile. */
   active?: boolean
+  /** The branch rules the PR does not meet (`unmetRules`); empty: met, or no policy. */
+  unmetRules?: readonly string[]
+  /** The merger is a maintainer and may bypass {@link unmetRules} (explicit, confirmed, recorded). */
+  canBypass?: boolean
+  /** The PR's conversation is locked (the bypass comment then carries `asMember`). */
+  locked?: boolean
 }): JSX.Element | null {
   const { sdk } = useSdk()
   const { signer } = useAuth()
@@ -202,6 +219,7 @@ export function MergePanel({
     isMaintainer,
     baseProtected,
     narrow: !wide,
+    headOnBase: pull.headOnBase,
     check,
     checkout,
   })
@@ -222,6 +240,12 @@ export function MergePanel({
     }
   }, [busy, onRunning])
   const [newTip, setNewTip] = useState<string | null>(null)
+  // "Bypass rules": ticked by a maintainer, confirmed in a dialog; the rules the merge started
+  // with are kept for its retries (the record names what was bypassed at the merge).
+  const [bypassTicked, setBypassTicked] = useState(false)
+  const [confirmingBypass, setConfirmingBypass] = useState(false)
+  const [bypassed, setBypassed] = useState<readonly string[] | null>(null)
+  const gate = mergeGate({ unmet: unmetRules, canBypass, bypassTicked, storageLocked: storageNeedsUnlock })
   // The branch deletion's outcome, with the label it was run for: the page stops offering the
   // option once the PR reads merged, which is exactly when this is shown.
   const [deleted, setDeleted] = useState<{ label: string; error: string | null } | null>(null)
@@ -235,6 +259,7 @@ export function MergePanel({
     previewCreate(baseProtected ? 'protectedRefUpdate' : 'refUpdate'),
     previewCreate('event'),
     ...(deleting ? [previewCreate('refUpdate')] : []),
+    ...(gate.bypassing || bypassed !== null ? [previewCreate('comment', { body: bypassNote('0'.repeat(40), baseRefName, bypassed ?? unmetRules) })] : []),
   ])
   // Only a merge commit is authored; a fast-forward writes no commit.
   const identityOk = (button.kind !== 'merge-commit' && method !== 'squash') || mergeIdentityValid(prefs)
@@ -244,11 +269,15 @@ export function MergePanel({
   // Once this panel's merge has landed there is nothing left to merge: no method, button or cost.
   const mergeable = !mergedHere && (button.kind === 'fast-forward' || button.kind === 'merge-commit')
 
-  const start = useCallback(async () => {
-    if (!sdk || !signer || reader === null || baseOnly === null || busy || refProblem !== null) return
-    // Stored storage settings are sealed in this tab (a resumed session): the prompt above asks.
+  const start = useCallback(async (bypass: readonly string[] | null) => {
+    if (reader === null || baseOnly === null || busy || refProblem !== null) return
+    // Stored storage settings are sealed in this tab (a resumed session): the button is disabled
+    // and the prompt above asks.
     if (storageNeedsUnlock) return
-    if (!guard.check(cost)) return
+    // Signed out or a locked session: the guard opens sign-in / unlock (never a silent no-op).
+    if (!guard.check(cost, 'core', 'merge this pull request') || !sdk || !signer) return
+    // The run starts: its bypass (if any) is what its retries record.
+    setBypassed(bypass)
     setBusy(true)
     setFailure(null)
     setStopped(null)
@@ -275,6 +304,12 @@ export function MergePanel({
             return tipOidOf(ref ?? undefined) ?? ''
           },
           intent,
+          ...(bypass !== null && bypass.length > 0
+            ? {
+                recordBypass: async (tip: string, commentIntent: string) =>
+                  (await createComment(sdk, signer, repo, { targetId: pull.id, body: bypassNote(tip, baseRefName, bypass), intent: commentIntent, post: { isMember: true, locked } })).documentId,
+              }
+            : {}),
         },
         run,
         (e) => {
@@ -305,7 +340,13 @@ export function MergePanel({
     } finally {
       setBusy(false)
     }
-  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, pull.author, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete])
+  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, pull.author, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete, locked])
+  const onMergeClick = (): void => {
+    // A retry resumes the merge it started with (and its bypass, already confirmed).
+    if (failure !== null) void start(bypassed)
+    else if (gate.bypassing) setConfirmingBypass(true)
+    else void start(null)
+  }
 
   // A run in this panel keeps it on screen to the end (the PR reads Merged meanwhile).
   const started = Object.keys(steps).length > 0
@@ -353,8 +394,15 @@ export function MergePanel({
                   Squash and merge
                 </option>
               </select>
-              <Button variant="primary" onClick={start} loading={busy} disabled={!identityOk || !methodAllowed || busy || newTip !== null || guard.disabledReason !== null}>
-                {failure ? retryLabel(failure.step) : method === 'squash' ? 'Squash and merge' : button.label}
+              <Button
+                variant={gate.bypassing && failure === null ? 'danger' : 'primary'}
+                onClick={onMergeClick}
+                loading={busy}
+                disabled={(!gate.enabled && failure === null) || !identityOk || !methodAllowed || busy || newTip !== null || guard.disabledReason !== null}
+                aria-describedby={gate.reason !== null ? 'merge-gate-reason' : undefined}
+                data-testid="merge-submit"
+              >
+                {failure ? retryLabel(failure.step) : gate.bypassing ? (method === 'squash' ? 'Bypass rules and squash' : 'Bypass rules and merge') : method === 'squash' ? 'Squash and merge' : button.label}
               </Button>
             </>
           ) : button.kind === 'unavailable' ? (
@@ -365,6 +413,37 @@ export function MergePanel({
         </div>
       </div>
 
+      {mergeable && newTip === null && unmetRules.length > 0 ? (
+        <div className="mt-3 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense" data-testid="merge-rules-unmet">
+          <p className="font-medium text-anvil-900 dark:text-anvil-50">Merging is blocked: the branch rules are not met</p>
+          <ul className="mt-1 list-disc pl-5 text-[12px] text-anvil-700 dark:text-anvil-200">
+            {unmetRules.map((r) => (
+              <li key={r}>{r}</li>
+            ))}
+          </ul>
+          {canBypass ? (
+            <label className="mt-2 flex items-start gap-2 text-dense text-anvil-800 dark:text-anvil-100">
+              <input
+                type="checkbox"
+                className="mt-0.5 h-4 w-4 accent-danger-700"
+                checked={bypassTicked}
+                onChange={(e) => setBypassTicked(e.target.checked)}
+                disabled={busy}
+                data-testid="merge-bypass"
+              />
+              <span>
+                Merge without waiting for the rules to be met (bypass rules)
+                <span className="block text-[12px] text-anvil-600 dark:text-anvil-400">Maintainers only. The bypass is recorded on this PR as a comment naming the rules.</span>
+              </span>
+            </label>
+          ) : null}
+        </div>
+      ) : null}
+      {mergeable && newTip === null && gate.reason !== null && failure === null ? (
+        <p id="merge-gate-reason" className="mt-2 text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="merge-gate-reason">
+          {gate.reason}
+        </p>
+      ) : null}
       {button.kind === 'conflicts' && !mergedHere ? (
         <div className="mt-3">
           <p className="mb-1.5 text-[12px] text-anvil-600 dark:text-anvil-400">Both sides changed the same files or folders. Check the PR out, merge it with the CLI, and push:</p>
@@ -443,7 +522,7 @@ export function MergePanel({
 
       {started ? (
         <ol aria-label="Merge steps" className="mt-3 space-y-1 rounded-md border border-anvil-200 p-3 dark:border-anvil-800">
-          {MERGE_STEPS.map(({ id, label }) => (
+          {mergeSteps(bypassed !== null).map(({ id, label }) => (
             <StepRow key={id} id={id} label={label} state={steps[id] ?? 'todo'} detail={details[id]} question={id === questionStep ? storageQuestion : null} />
           ))}
         </ol>
@@ -463,6 +542,39 @@ export function MergePanel({
           Base branch moved to <Oid value={newTip} chars={9} />. The PR shows as merged once the fold sees the merge event.
         </p>
       ) : null}
+      <Dialog
+        open={confirmingBypass}
+        onClose={() => setConfirmingBypass(false)}
+        title={`Bypass the branch rules and merge PR #${pull.number}?`}
+        description={`This merges the code into ${branchName(baseRefName)} although these rules are not met:`}
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setConfirmingBypass(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              data-testid="merge-bypass-confirm"
+              onClick={() => {
+                setConfirmingBypass(false)
+                void start([...unmetRules])
+              }}
+            >
+              Bypass rules and merge
+            </Button>
+          </>
+        }
+      >
+        <ul className="list-disc pl-5 text-dense text-anvil-800 dark:text-anvil-100" data-testid="merge-bypass-rules">
+          {unmetRules.map((r) => (
+            <li key={r}>{r}</li>
+          ))}
+        </ul>
+        <p className="mt-3 text-[12px] text-anvil-600 dark:text-anvil-400">
+          After the merge, a comment on this PR records that you bypassed these rules, where every reader sees it. Branch rules are a client rule every Forge client applies;
+          consensus does not enforce them.
+        </p>
+      </Dialog>
       {deleted !== null && deleted.error === null ? (
         <p className="mt-1 text-dense text-anvil-700 dark:text-anvil-200" data-testid="branch-deleted">
           Deleted {deleted.label}.

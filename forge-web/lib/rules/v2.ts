@@ -344,12 +344,18 @@ export interface Approvals {
  * reviewer who was a member at the review's `createdAt`; a reviewer's newest approve /
  * request-changes review by `(createdAt, id)` stands; comment and unknown verdicts, and
  * reviews in `dismissed` (the ids a `reviewDismiss` names), are ignored.
+ *
+ * The PR's own author (`prAuthor`, the patch's owner) never counts: as on GitHub, an author
+ * cannot approve (or request changes on) their own PR, so one person alone never meets a branch
+ * policy. Consensus admits the review (it carries no PR author); this is the clients' rule, and
+ * they show such a review as "author, not counted".
  */
 export function countApprovals(
   reviews: readonly Review[],
   oracle: RoleOracle,
   headOid: string,
-  dismissed: ReadonlySet<string> = new Set(),
+  dismissed: ReadonlySet<string>,
+  prAuthor: string,
 ): Approvals {
   const approvers = new Set<string>()
   const changesRequested = new Set<string>()
@@ -357,6 +363,7 @@ export function countApprovals(
     .filter(
       (r) =>
         (r.verdict === 1 || r.verdict === 2) &&
+        r.reviewer !== prAuthor &&
         !dismissed.has(r.id) &&
         r.commitOid === headOid &&
         oracle.memberAt(r.reviewer, r.createdAt),

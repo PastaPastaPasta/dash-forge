@@ -1578,6 +1578,9 @@ mod tests {
         /// Review ids a `reviewDismiss` names (absent: none).
         #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
         dismissed: std::collections::BTreeSet<String>,
+        /// The PR's author, whose own reviews never count (absent: nobody's).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        pr_author: String,
     }
 
     #[derive(Debug, Deserialize, Serialize)]
@@ -1601,6 +1604,9 @@ mod tests {
         head_oid: String,
         #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
         dismissed: std::collections::BTreeSet<String>,
+        /// The PR's author, whose own reviews never count (absent: nobody's).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        pr_author: String,
         policy: v2::Policy,
     }
 
@@ -1790,8 +1796,13 @@ mod tests {
             "policy" => {
                 let inp: PolicyInput = input(v);
                 let oracle = v2::RoleOracle::new(inp.memberships);
-                let approvals =
-                    v2::count_approvals(&inp.reviews, &oracle, &inp.head_oid, &inp.dismissed);
+                let approvals = v2::count_approvals(
+                    &inp.reviews,
+                    &oracle,
+                    &inp.head_oid,
+                    &inp.dismissed,
+                    &inp.pr_author,
+                );
                 let got = v2::meets_policy(&approvals, &oracle, &inp.policy);
                 assert_eq!(got, expected::<v2::PolicyStatus>(v), "vector `{ctx}`");
             }
@@ -2066,7 +2077,13 @@ mod tests {
             "approvals" => {
                 let inp: ApprovalsInput = input(v);
                 let oracle = v2::RoleOracle::new(inp.memberships);
-                let got = v2::count_approvals(&inp.reviews, &oracle, &inp.head_oid, &inp.dismissed);
+                let got = v2::count_approvals(
+                    &inp.reviews,
+                    &oracle,
+                    &inp.head_oid,
+                    &inp.dismissed,
+                    &inp.pr_author,
+                );
                 assert_eq!(got, expected::<v2::Approvals>(v), "vector `{ctx}`");
             }
             "well_formed" => {

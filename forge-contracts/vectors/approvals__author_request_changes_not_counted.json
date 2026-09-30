@@ -1,0 +1,44 @@
+{
+  "name": "author_request_changes_not_counted",
+  "description": "The PR author's own request for changes never counts either, and never clears another member's verdict: the other maintainer's approval stands.",
+  "case": "approvals",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "maint",
+        "verdict": 1,
+        "commitOid": "H",
+        "createdAt": 100
+      },
+      {
+        "id": "r2",
+        "reviewer": "alice",
+        "verdict": 2,
+        "commitOid": "H",
+        "createdAt": 110
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "alice",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      }
+    ],
+    "headOid": "H",
+    "prAuthor": "alice"
+  },
+  "expected": {
+    "approvers": [
+      "maint"
+    ],
+    "changesRequested": []
+  }
+}

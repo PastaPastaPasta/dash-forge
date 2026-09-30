@@ -388,7 +388,7 @@ Rows, top to bottom, each with an icon and a sentence:
 4. **Branch state** — "PR head abc1234 is behind `feature/x` (def5678)" for authors; "Protected branch — maintainers only" for writers.
 5. **Button** — label = the action (C2 rules) with a method menu: Merge (fast-forward) · Create merge commit · Squash and merge (P1) · greyed Rebase (P2). Below: "Delete `feature/x` after merging" (when the merger has write on the source repo), "Also close #12" checklist (P8), and the cost line.
 
-Policy comes from the newest `policy` document (a maintainer sets it in Settings → Branches: "Required approvals [0–10] · Only maintainers' approvals count [ ] · Require passing checks [ ] · Allowed merge methods [x][x][ ][ ]"). Unmet policy disables the button for writers and shows a maintainer "Merge anyway (policy override)" with a confirm — the override is recorded nowhere but the merge event's author, and the card says "Policy is a client rule; a maintainer can override it. Nothing at consensus requires approvals."
+Policy comes from the newest `policy` document (a maintainer sets it in Settings → Branches: "Required approvals [0–10] · Only maintainers' approvals count [ ] · Require passing checks [ ] · Allowed merge methods [x][x][ ][ ]"). Unmet policy disables the merge button (QW-001). A maintainer gets GitHub's explicit bypass: a "Merge without waiting for the rules to be met (bypass rules)" checkbox, then a confirm naming each rule bypassed; the merge really runs and a comment on the PR records the bypassed rules (the `transition` has no field for it; `dg pr merge --override-policy` writes the same comment). The PR author's own approval never counts (QW-003). "Mark as merged (done elsewhere)" only records a merge whose head is already on the base (QW-002). The card says "Policy is a client rule; a maintainer can bypass it, and the bypass is recorded on the PR."
 
 ---
 
@@ -417,7 +417,7 @@ Ordering and author filtering as `mergedLog`. A `headUpdate` without `oid`, a re
 
 ### 5.3 `count_approvals` — extended
 
-`count_approvals(reviews, oracle, head_oid, dismissed: Set<review_id>)`: a dismissed review is skipped exactly like verdict 3. Vectors `approvals__dismissed_review_does_not_count`, `approvals__dismissed_review_does_not_clear_earlier_verdict`, `approvals__dismissal_of_unknown_review_is_noop`. `meets_policy(approvals, oracle, policy) -> { met: bool, have: u32, need: u32 }`: counts approvers whose current role satisfies `approverRole`. Vectors `policy__maintainers_only_excludes_writer`, `policy__zero_required_always_met`.
+`count_approvals(reviews, oracle, head_oid, dismissed: Set<review_id>)`: a dismissed review is skipped exactly like verdict 3. Vectors `approvals__dismissed_review_does_not_count`, `approvals__dismissed_review_does_not_clear_earlier_verdict`, `approvals__dismissal_of_unknown_review_is_noop`. `meets_policy(approvals, oracle, policy) -> { met: bool, have: u32, need: u32 }`: counts approvers whose current role satisfies `approverRole`. Vectors `policy__maintainers_only_excludes_writer`, `policy__zero_required_always_met`. The PR author's own reviews never count (`count_approvals(..., pr_author)`): vectors `approvals__author_review_not_counted`, `approvals__author_request_changes_not_counted`, `policy__author_approval_not_counted`, `policy__author_plus_other_member`.
 
 ### 5.4 `anchor_of(comment_fields) -> Anchor | None` — new (replaces `readAnchor`)
 
@@ -492,7 +492,7 @@ Order: contract → rules + vectors → web (five PRs) → CLI. Each PR lists ac
 ### PR 6 — `web: merge box, policy, checks, squash, linked issues`
 
 - Merge box card (M3), `policy` settings and enforcement (M4), checks row from `checkRun` (P3), squash (M1) and message editor (M2), auto-close linked issues (P8), PR list filters (P9), PR template (P10), file tree/filter/viewed/expand context/highlighting (F2–F5), inbox feeds for review requests and replies (P12).
-- Playwright: OWNER sets policy "2 approvals, maintainers only, checks required" → merge box "0 of 2", button disabled for a writer, "Merge anyway (policy override)" for the owner → a relay-written `checkRun` (seeded by `forge-relay` test fixture or a direct document write) shows "1 failing" → after a passing run and two maintainer approvals the button enables → squash merge on the merge-seed PR → PR "Merged", `main` has one new commit whose message carries `Co-authored-by` → linked issue "#1" closed → inbox shows "review requested" for COLLAB.
+- Playwright: OWNER sets policy "2 approvals, maintainers only, checks required" → merge box "0 of 2", button disabled for a writer, "bypass rules" for the owner → a relay-written `checkRun` (seeded by `forge-relay` test fixture or a direct document write) shows "1 failing" → after a passing run and two maintainer approvals the button enables → squash merge on the merge-seed PR → PR "Merged", `main` has one new commit whose message carries `Co-authored-by` → linked issue "#1" closed → inbox shows "review requested" for COLLAB.
 
 ### PR 7 — `dg: review parity`
 
