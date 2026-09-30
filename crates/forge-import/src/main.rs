@@ -82,6 +82,17 @@ struct RunArgs {
     #[arg(long, default_value_t = 0)]
     limit: usize,
 
+    /// Parallel lanes for each issue's and PR's comments, reviews, labels and state, written
+    /// behind its create (issues and PRs themselves are always created one at a time, in
+    /// upstream order). 1 writes one document at a time.
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = forge_import::pipeline::DEFAULT_LANES,
+        value_parser = forge_import::pipeline::parse_lanes
+    )]
+    concurrency: usize,
+
     /// Write the run summary as JSON here (the Mirror Action reads it).
     #[arg(long)]
     summary_json: Option<PathBuf>,
@@ -213,6 +224,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
                 limit: r.limit,
                 network: target(&r.net)?,
                 key: key(&r.net),
+                concurrency: r.concurrency,
             };
             Ok(finish(&importer::run(&cfg).await, r.summary_json.as_ref()))
         }
@@ -254,6 +266,17 @@ mod tests {
         assert_eq!(cli.source.as_deref(), Some("o/r"));
         assert_eq!(cli.run.max_spend, Some(0.05));
         assert!(cli.command.is_none());
+        assert_eq!(cli.run.concurrency, forge_import::pipeline::DEFAULT_LANES);
+    }
+
+    #[test]
+    fn concurrency_is_bounded() {
+        let parse = |n: &str| Cli::try_parse_from(["forge-import", "o/r", "--concurrency", n]);
+        assert_eq!(parse("1").unwrap().run.concurrency, 1);
+        assert_eq!(parse("16").unwrap().run.concurrency, 16);
+        assert!(parse("0").is_err());
+        assert!(parse("17").is_err());
+        assert!(parse("x").is_err());
     }
 
     #[test]

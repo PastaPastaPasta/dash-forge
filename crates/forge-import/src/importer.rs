@@ -53,6 +53,9 @@ pub struct ImportConfig {
     pub network: NetworkTarget,
     /// The signing identity source; optional for a dry run.
     pub key: Option<PathBuf>,
+    /// Lanes for each issue's and PR's dependent writes (comments, reviews, labels, state),
+    /// behind its create ([`crate::pipeline`]); 1 writes one document at a time.
+    pub concurrency: usize,
 }
 
 /// Run an import. Always returns a summary (a failure is its status and error; what was
@@ -255,6 +258,7 @@ async fn run_inner<'a>(
         &priced,
         mirror.clone(),
         release_storage.clone(),
+        cfg.concurrency,
     )
     .await?;
     let collab_estimate = dry.budget.spent();
@@ -362,6 +366,7 @@ async fn run_inner<'a>(
         src: &collab_src,
         mirror,
         release_storage,
+        lanes: cfg.concurrency,
     };
     dest::write_collab(client, signer, role, repo, source, definitions, outcome).await?;
 
