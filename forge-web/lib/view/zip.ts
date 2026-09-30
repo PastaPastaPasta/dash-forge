@@ -108,6 +108,10 @@ export async function walkFiles(
       else dropped = true
     }
   }
+  // Reads land in any order, but are taken in the order they were started: children are queued,
+  // and files counted against `maxFiles`, as a one-at-a-time walk would, so a truncated walk keeps
+  // the same set on every visit (the language bar must not vary with network timing).
+  const started: { readonly prefix: string; entries?: readonly TreeEntry[] }[] = []
   await new Promise<void>((resolve, reject) => {
     let active = 0
     let failed = false
@@ -116,18 +120,23 @@ export async function walkFiles(
         const [oid, prefix] = queue.shift() as [string, string]
         trees += 1
         active += 1
-        const fail = (e: unknown): void => {
-          failed = true
-          reject(e)
-        }
+        const read: (typeof started)[number] = { prefix }
+        started.push(read)
         readTree(reader, oid)
           .then((entries) => {
             active -= 1
             if (failed) return
-            take(entries, prefix)
+            read.entries = entries
+            for (let head = started[0]; head?.entries !== undefined; head = started[0]) {
+              started.shift()
+              take(head.entries, head.prefix)
+            }
             pump()
           })
-          .catch(fail)
+          .catch((e: unknown) => {
+            failed = true
+            reject(e)
+          })
       }
       if (active === 0 && !failed) resolve()
     }
