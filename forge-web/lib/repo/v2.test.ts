@@ -17,6 +17,7 @@ import { base58Decode, base58Encode } from '../auth/base58'
 import type { ForgeIds } from '../deployments'
 import { bytesToBase64, hexToBase64, type DocumentQuery } from '../sdk'
 import { loadIssueThread, loadPullThread } from '../view/issues-view'
+import { asIdentifierString } from './contract'
 import {
   holdingsOfRole,
   invalidateMembers,
@@ -67,13 +68,16 @@ const DEMO: RepoRef = {
 type Doc = Record<string, unknown>
 type Store = Record<string, Record<string, Doc[]>>
 
+/** An identifier compares by its bytes, as Drive does: a base64 serialization equals its base58 operand. */
+const idOf = (v: unknown): unknown => (typeof v === 'string' ? asIdentifierString(v) : v)
+
 function matches(doc: Doc, [field, op, value]: readonly [string, string, unknown]): boolean {
   const v = doc[field]
   switch (op) {
     case '==':
-      return v === value
+      return idOf(v) === idOf(value)
     case 'in':
-      return Array.isArray(value) && value.includes(v)
+      return Array.isArray(value) && value.map(idOf).includes(idOf(v))
     case '<=':
       return (v as number) <= (value as number)
     case '>':
@@ -321,7 +325,7 @@ const issuesOf = async (sdk: EvoSDK, repo: RepoRef = DEMO) => (await queryIssues
 const pullsOf = async (sdk: EvoSDK, repo: RepoRef = DEMO) => (await queryPulls(sdk, repo, { state: 'all', labels: [], author: null, assignee: null, sort: 'newest', text: '', page: 1, pageSize: 100 } as const, null, 'devnet')).rows
 
 describe('forge-v2 issue and PR folds', () => {
-  it('reads a whole list page’s state in one sum query and its labels from one feed read', async () => {
+  it('reads a whole list page’s state in one sum query and its labels from one event lookup', async () => {
     const seen: DocumentQuery[] = []
     const sdk = mockSdk(fixture(), seen)
     const issues = await issuesOf(sdk)
@@ -336,10 +340,14 @@ describe('forge-v2 issue and PR folds', () => {
     // The chunk's hidden #4 too: an open hidden issue comes off the Open count.
     expect(sums[0]?.where).toEqual([['targetId', 'in', [ID('issue1'), ID('issue2'), ID('issue3'), ID('issue4')].sort()]])
     expect((sums[0] as { groupBy?: string[] }).groupBy).toEqual(['targetId'])
-    // Labels and assignees: the repo's member-event feed, read once, never per row.
+    // Labels and assignees: the chunk's own member events, one lookup naming every row (the
+    // composite's, here as its plain fallback), never a read per row; and, for page 1's pinned
+    // issues, the repo feed's one page (the composite's sibling).
     const eventReads = seen.filter((q) => q.documentTypeName === 'event' || q.documentTypeName === 'authorEvent')
-    expect(eventReads.every((q) => q.where?.[0]?.[0] === 'repoId')).toBe(true)
-    expect(eventReads.map((q) => q.documentTypeName)).toEqual(['event'])
+    expect(eventReads.map((q) => [q.documentTypeName, ...(q.where?.[0]?.slice(0, 2) ?? [])])).toEqual([
+      ['event', 'targetId', 'in'],
+      ['event', 'repoId', '=='],
+    ])
     // …and nothing outside the two forge contracts and DPNS (the authors' names).
     expect(seen.some((q) => q.dataContractId !== 'CORE' && q.dataContractId !== 'COLLAB' && q.documentTypeName !== 'domain')).toBe(false)
   })

@@ -330,6 +330,8 @@ const countsCache: Cache<Awaited<ReturnType<typeof readRepoCounts>>> = new Map()
 const epochs = new Map<string, number>()
 /** Per repo: bumped when a write that can change an open count drops its caches. */
 const writes = new Map<string, number>()
+/** Per repo: when this browser last made such a write. */
+const countWrites = new Map<string, number>()
 const listeners = new Set<() => void>()
 
 const feedKey = (repo: RepoRef): string => `${repo.forge.collab}:${repo.repoId}`
@@ -388,7 +390,18 @@ export function invalidateRepoFeed(repo: RepoRef, { counts = true }: { counts?: 
   for (const drop of invalidationHooks) drop(repo)
   if (!counts) return
   for (const k of [...countsCache.keys()]) if (k.startsWith(`${prefix}@`)) countsCache.delete(k)
+  countWrites.set(feedKey(repo), Date.now())
   changed(repo, [writes])
+}
+
+/**
+ * Whether the repo's proved counts can be taken to include this browser's own latest write: not
+ * within {@link FEED_TTL_MS} of a write that changes a count, when a node a block behind may still
+ * answer without it (L-37). A list stops walking at a tab's proved count only then; a count that
+ * lags a reopen would otherwise leave that row out.
+ */
+export function countsSettled(repo: RepoRef): boolean {
+  return Date.now() - (countWrites.get(feedKey(repo)) ?? -Infinity) >= FEED_TTL_MS
 }
 
 /** Other per-repo caches a write drops along with the feed (the issue index, `./issue-index`). */
@@ -470,7 +483,7 @@ export function feedQuery(repo: RepoRef): DocumentQuery {
  * labels and assignees from (state is the rows' transition sums; `event` is member-gated at
  * consensus, so the feed is bounded by real activity). Read once per repo through a short
  * cache: a read another reader has in flight or settled is joined, else this one starts,
- * continued past `first` (an index's composite sibling page), and is shared the moment
+ * continued past `first` when given (an index's composite sibling page), and is shared the moment
  * it starts, so the two indexes page the feed once between them (L-77). `epoch` is the
  * {@link repoEpoch} `first` was read at: a first page from before a write is not shared. Null
  * when the feed is too large to fold ({@link FEED_MAX_PAGES}).
@@ -478,7 +491,7 @@ export function feedQuery(repo: RepoRef): DocumentQuery {
 export function readRepoFeedFrom(
   sdk: EvoSDK,
   repo: RepoRef,
-  first: readonly PlainDocument[],
+  first: readonly PlainDocument[] | undefined,
   epoch: number,
 ): Promise<Map<string, TargetLog> | null> {
   if (epoch !== repoEpoch(repo)) return readRepoFeed(sdk, repo, first)
@@ -491,7 +504,7 @@ export function sharedRepoFeed(repo: RepoRef): Promise<Map<string, TargetLog> | 
   return live(hit) ? hit!.promise : undefined
 }
 
-async function readRepoFeed(sdk: EvoSDK, repo: RepoRef, first: readonly PlainDocument[]): Promise<Map<string, TargetLog> | null> {
+async function readRepoFeed(sdk: EvoSDK, repo: RepoRef, first: readonly PlainDocument[] | undefined): Promise<Map<string, TargetLog> | null> {
   try {
     const docs = await queryAllDocuments(sdk, feedQuery(repo), { maxPages: FEED_MAX_PAGES, firstPage: first })
     // A private repo's member events are read through `readableEvents` (values opened).

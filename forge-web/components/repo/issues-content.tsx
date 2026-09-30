@@ -74,8 +74,11 @@ import {
   SearchedNote,
   SortSelect,
   StateTab,
+  budgetEmptyTitle,
+  readingLabel,
   tabCount,
   useListQuery,
+  useReadProgress,
   type ListGrammar,
 } from '@/components/repo/list-controls'
 import { IssueTemplatePicker } from '@/components/repo/issue-templates'
@@ -113,8 +116,10 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   // `author:<login>` matches only what a trusted mirror signed: until the trust set is read, every
   // row would fail it (an empty list, after walking every chunk), so the read waits for it.
   const awaitingTrust = query.authorLogin !== null && trust === null
+  // How many issues a walk (a search, or "look through older") has read so far, while it reads.
+  const { progress, track } = useReadProgress()
   const { data, loading, error, reload } = useAsync<IssueListPage>(
-    async () => {
+    async (signal) => {
       const me = identity ?? ''
       const who = (v: string | null): string | null => (v === 'me' ? me : v)
       const selection: IssueSelection = {
@@ -129,7 +134,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         pageSize: ISSUE_PAGE_SIZE,
         ...rowFiltersOf(query, trust),
       }
-      return queryIssues(sdk!, home.repo, selection, totals, network)
+      return track(signal, (options) => queryIssues(sdk!, home.repo, selection, totals, network, options))
     },
     [ready, repoKey(home.repo), generation, JSON.stringify(query), identity ?? '', totals ?? -1, query.authorLogin !== null && trust !== null ? [...trust].sort().join(',') : null],
     { enabled: ready && sdk !== null && (!needsViewer || identity !== null) && !awaitingTrust },
@@ -227,11 +232,14 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         {needsViewer && identity === null ? (
           <p className="px-4 py-6 text-dense text-anvil-500 dark:text-anvil-400">Sign in to filter by your own issues, assignments and mentions.</p>
         ) : (loading || awaitingTrust) && !data ? (
-          <LoadingBlock label="Reading issues" />
+          <LoadingBlock label={readingLabel('issues', progress, totals)} />
         ) : error ? (
           <div className="p-4"><ErrorState message={error} onRetry={reload} /></div>
         ) : lastPage !== null ? (
           <PastLastPage page={query.page} last={lastPage} onPage={(page) => change({ page })} />
+        ) : empty && data?.searchedOf?.more ? (
+          // The page stopped at its read budget before reaching any: there are older ones to read.
+          <EmptyState icon={CircleDot} title={budgetEmptyTitle(query.page, data.searchedOf.searched, 'issues')} body="Older ones are not read yet." />
         ) : empty ? (
           <EmptyState
             icon={CircleDot}
@@ -259,7 +267,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
                     <span className="font-mono">#{issue.number}</span>
                     <Byline author={issue.author} createdAt={issue.createdAt} origin={trustedOrigin(issue.origin, issue.author, trust)} verb="opened" link={false} />
                     {!issue.stateComplete ? (
-                      <span className="rounded-full bg-danger/10 px-2 py-0.5 text-[11px] text-danger-700 dark:text-danger-400" title="This repository's event history could not be read completely, so the labels and assignees are unverified. Open or closed is proved.">
+                      <span className="rounded-full bg-danger/10 px-2 py-0.5 text-[11px] text-danger-700 dark:text-danger-400" title="This issue's events could not be read completely, so its labels and assignees are unverified. Open or closed is proved.">
                         labels unverified
                       </span>
                     ) : null}
@@ -275,7 +283,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         )}
       </div>
 
-      <SearchedNote searchedOf={data?.searchedOf} noun="issues" />
+      <SearchedNote searchedOf={data?.searchedOf} noun="issues" onMore={reload} reading={loading ? progress ?? data?.searchedOf?.searched ?? 0 : null} />
 
       <Pager label="Issue pages" page={query.page} hasNext={data?.hasNext ?? false} matching={data?.matching ?? null} pageSize={ISSUE_PAGE_SIZE} onPage={(page) => change({ page })} />
 

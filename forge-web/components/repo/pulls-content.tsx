@@ -62,8 +62,11 @@ import {
   SearchedNote,
   SortSelect,
   StateTab,
+  budgetEmptyTitle,
+  readingLabel,
   tabCount,
   useListQuery,
+  useReadProgress,
   type ListGrammar,
 } from '@/components/repo/list-controls'
 import { AssigneeAvatars } from '@/components/repo/issue-bits'
@@ -106,8 +109,10 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
   const needsViewer = query.author === 'me' || query.assignee === 'me' || query.reviewRequested === 'me'
   // `author:<login>` matches only what a trusted mirror signed: the read waits for the trust set.
   const awaitingTrust = query.authorLogin !== null && trust === null
+  // How many PRs a walk (a search, or "look through older") has read so far, while it reads.
+  const { progress, track } = useReadProgress()
   const { data, loading, error, reload } = useAsync<PullListPage>(
-    () => {
+    (signal) => {
       const who = (v: string | null): string | null => (v === 'me' ? identity ?? '' : v)
       const selection: PullSelection = {
         state: query.state,
@@ -122,7 +127,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
         reviewRequested: who(query.reviewRequested),
         ...rowFiltersOf(query, trust),
       }
-      return queryPulls(sdk!, home.repo, selection, total, network)
+      return track(signal, (options) => queryPulls(sdk!, home.repo, selection, total, network, options))
     },
     [ready, repoKey(home.repo), generation, JSON.stringify(query), identity ?? '', total ?? -1, query.authorLogin !== null && trust !== null ? [...trust].sort().join(',') : null],
     { enabled: ready && sdk !== null && (!needsViewer || identity !== null) && !awaitingTrust },
@@ -193,11 +198,14 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
         {needsViewer && identity === null ? (
           <p className="px-4 py-6 text-dense text-anvil-500 dark:text-anvil-400">Sign in to filter by your own pull requests, assignments and review requests.</p>
         ) : (loading || awaitingTrust) && !data ? (
-          <LoadingBlock label="Reading pull requests" />
+          <LoadingBlock label={readingLabel('pull requests', progress, total)} />
         ) : error ? (
           <div className="p-4"><ErrorState message={error} onRetry={reload} /></div>
         ) : lastPage !== null ? (
           <PastLastPage page={query.page} last={lastPage} onPage={(page) => change({ page })} />
+        ) : data !== null && data.rows.length === 0 && data.searchedOf?.more ? (
+          // The page stopped at its read budget before reaching any: there are older ones to read.
+          <EmptyState icon={GitPullRequest} title={budgetEmptyTitle(query.page, data.searchedOf.searched, 'pull requests')} body="Older ones are not read yet." />
         ) : data !== null && data.rows.length === 0 ? (
           <EmptyState
             icon={GitPullRequest}
@@ -236,10 +244,10 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
         )}
       </div>
 
-      <SearchedNote searchedOf={data?.searchedOf} noun="pull requests" />
+      <SearchedNote searchedOf={data?.searchedOf} noun="pull requests" onMore={reload} reading={loading ? progress ?? data?.searchedOf?.searched ?? 0 : null} />
       {data !== null && !data.stateComplete ? (
         <p className="mt-2 text-[12px] text-danger-700 dark:text-danger-400">
-          This repository&apos;s event history is too large to read completely, so labels and assignees are unverified.
+          Some of these pull requests have too many events to read completely, so their labels and assignees are unverified.
         </p>
       ) : null}
 
