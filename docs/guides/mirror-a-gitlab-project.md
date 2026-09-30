@@ -59,7 +59,7 @@ Start with a dry run. It reads everything, compares it with what the destination
 forge-import gitlab.com/acme/widget --max-spend 0.5 --state ./widget.sync.json
 ```
 
-The flags are the same as for GitHub: `--repo`, `--sync`, `--max-spend`, `--state`, `--dry-run`, `--limit`, `--yes`, `--summary-json`, and the network flags. See the [GitHub guide's table](mirror-a-github-repo.md#1-first-import). In `--sync`, `prs` means merge requests (`mrs` works too). `dg import gitlab.com/acme/widget` is the same engine.
+The flags are the same as for GitHub: `--repo`, `--sync`, `--max-spend`, `--state`, `--dry-run`, `--limit`, `--concurrency`, `--yes`, `--summary-json`, and the network flags. See the [GitHub guide's table](mirror-a-github-repo.md#1-first-import). In `--sync`, `prs` means merge requests (`mrs` works too). `dg import gitlab.com/acme/widget` is the same engine.
 
 **Re-running is safe and cheap.** What is already mirrored is decided on chain, by the GitLab URL each document records (`https://gitlab.com/acme/widget/-/issues/12`, `…/-/merge_requests/3`, and `…#note_<id>` for a comment). A re-run writes only what is new and costs nothing when nothing changed. It is the same scheme as the GitHub importer.
 
