@@ -23,7 +23,7 @@ import { contractId, loadEvoSdk } from './deploy-v2.mjs';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, t, i, a) => (t.startsWith('--') ? [...acc, [t.slice(2), a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true]] : acc), []));
 const devnetName = args['devnet-name'] || 'bonsia';
-const N = Number(args.n ?? 3);
+const N = Number(args.n ?? 4);
 const statePath = String(args.state ?? join(homedir(), '.cache', 'dash-forge', `rc1-fee-probe-${devnetName}.json`));
 const log = (m) => console.error(`${new Date().toISOString().slice(11, 19)} ${m}`);
 const dep = JSON.parse(readFileSync(join(ROOT, 'deployments', `devnet-${devnetName}.json`), 'utf8'));
@@ -47,7 +47,6 @@ function probe(withFeatures) {
   const chunk = bare(core.documentSchemas.chunk);
   const star = bare(comm.documentSchemas.star);
   const checkRun = bare(comm.documentSchemas.checkRun);
-  checkRun.properties.repoId = { $ref: '#/$defs/id', position: 0 };
   if (!withFeatures) {
     delete chunk.documentsCountable;
     delete star.indices.find((i) => i.name === 'byOwner').countable;
@@ -94,6 +93,7 @@ async function priced(fn) {
   return Number(before - (await settled(before)));
 }
 
+mkdirSync(dirname(statePath), { recursive: true });
 const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : {};
 for (const [key, withFeatures] of [['A', true], ['B', false]]) {
   if (state[key] && (await sdk.contracts.fetch(state[key]))) continue;
@@ -123,11 +123,21 @@ for (const type of Object.keys(docs)) {
   const costs = { A: [], B: [] };
   for (let i = 0; i < N; i++) {
     const d = docs[type]();
-    for (const key of ['A', 'B']) costs[key].push(await write(state[key], type, d));
+    // ABBA: alternate which contract is written first, so a drift over the run cancels out
+    for (const key of i % 2 === 0 ? ['A', 'B'] : ['B', 'A']) costs[key].push(await write(state[key], type, d));
   }
   const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
-  out[type] = { with: Math.round(mean(costs.A)), without: Math.round(mean(costs.B)), addedPercent: Number((100 * (mean(costs.A) / mean(costs.B) - 1)).toFixed(2)), samples: costs };
-  log(`${type}: with ${out[type].with}, without ${out[type].without} credits (+${out[type].addedPercent} %)`);
+  const paired = costs.A.map((a, i) => a - costs.B[i]).sort((x, y) => x - y);
+  const median = paired[Math.floor(paired.length / 2)];
+  out[type] = {
+    with: Math.round(mean(costs.A)),
+    without: Math.round(mean(costs.B)),
+    addedPercent: Number((100 * (mean(costs.A) / mean(costs.B) - 1)).toFixed(2)),
+    pairedMedianCredits: median,
+    pairedMedianPercent: Number((100 * median / mean(costs.B)).toFixed(2)),
+    samples: costs,
+  };
+  log(`${type}: with ${out[type].with}, without ${out[type].without} credits (+${out[type].addedPercent} %; paired median +${median}, ${out[type].pairedMedianPercent} %)`);
 }
 const gates = {
   'D-3 chunk documentsCountable <= +5 %': out.chunk.addedPercent <= 5,

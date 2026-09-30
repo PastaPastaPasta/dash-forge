@@ -95,8 +95,8 @@
     "costDash": 0.140795056
   },
   "rc1": {
-    "frozen": "contracts-rc1-frozen",
-    "note": "RC1 registration (WIPE-DECISIONS D-10..D-13): these ids stay until the owner's demo repos exist; a JSON change before then re-registers with deploy-v2 --force-new and moves this tag",
-    "liveVectors": "forge-contracts/scripts/rc1-live.mjs: 131 of 131 verdicts pass (2026-09-29)"
+    "frozen": "contracts-rc1-frozen (the tag on the commit that merges these ids into wipe/beta7)",
+    "note": "RC1 registration (WIPE-DECISIONS D-10..D-13, D-17): the RC1 JSON is final for the bonsia soak; a JSON change before the demo repos exist re-registers with deploy-v2 --force-new and moves the tag",
+    "liveVectors": "forge-contracts/scripts/rc1-live.mjs, each group run on its own (2026-09-30): 209 of 209 verdicts pass; 1 case without a verdict (a quorum-cache miss on PR unlock, which landed: the cases after it pass)"
   }
 }

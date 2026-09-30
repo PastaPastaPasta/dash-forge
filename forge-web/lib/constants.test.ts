@@ -88,7 +88,12 @@ describe('resolveNetworks', () => {
     expect(networks.devnet.dapiAddresses).toContain('https://68.67.122.224:1443')
     expect(quorumEndpoint(networks.devnet)).toBe('https://quorums.bonsia.networks.dash.org')
     // The RC1 registration (with forge-core network.rs)
-    expect(networks.devnet.v2).toMatchObject({ core: '6SbihK14KP8RhUpSH4Tc6WNvWKziWEoAbkNZmi7RadwJ', collab: 'H1H5VfTt2KWy1NhwEHoHuwYZGJm8eoetUCUt5xGNuZUp' })
+    expect(networks.devnet.v2).toMatchObject({
+      core: '6SbihK14KP8RhUpSH4Tc6WNvWKziWEoAbkNZmi7RadwJ',
+      collab: 'H1H5VfTt2KWy1NhwEHoHuwYZGJm8eoetUCUt5xGNuZUp',
+      // its own forge-community (a pre-split record would fall back to collab's id)
+      community: '6ktYsH3cpxC7FbazwtVWGiNuVb4TNE5YrHD1hNY8XqNx',
+    })
   })
 
   it('treats a devnet name alone as devnet', () => {

@@ -1016,6 +1016,8 @@ mod tests {
         let v2 = t.v2.expect("bonsia records forge-v2");
         assert_eq!(v2.core, "6SbihK14KP8RhUpSH4Tc6WNvWKziWEoAbkNZmi7RadwJ");
         assert_eq!(v2.collab, "H1H5VfTt2KWy1NhwEHoHuwYZGJm8eoetUCUt5xGNuZUp");
+        // its own forge-community (a pre-split record would fall back to collab's id)
+        assert_eq!(v2.community, "6ktYsH3cpxC7FbazwtVWGiNuVb4TNE5YrHD1hNY8XqNx");
     }
 
     #[test]
