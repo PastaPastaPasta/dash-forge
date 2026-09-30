@@ -941,15 +941,26 @@ impl PlatformClient {
     /// read of the DPNS `domain` document (`normalizedParentDomainName == "dash"`,
     /// `normalizedLabel == <label>`) and its `records.identity`, as rs-sdk
     /// `Sdk::resolve_dpns_name` does it.
+    ///
+    /// Cached per process, keyed by the homograph-safe label: a name that resolves once
+    /// (registered or not) does not re-query for the rest of the run, matching the
+    /// [`Self::fetch_contract`] memoization above.
     pub async fn resolve_dpns_name(&self, name: &str) -> Result<Option<String>> {
+        let key = convert_to_homograph_safe_chars(name);
+        if let Some(cached) = crate::history::lock(&self.dpns_cache).get(&key) {
+            return Ok(cached.clone());
+        }
         // The trusted context provider verifies proofs only for contracts it was given:
         // fetching DPNS through `fetch_contract` registers it.
         self.fetch_contract(DPNS_CONTRACT_ID).await?;
-        self.sdk()
+        let resolved = self
+            .sdk()
             .resolve_dpns_name(name)
             .await
             .map(|id| id.map(|id| id.to_string(Encoding::Base58)))
-            .map_err(|e| sdk_err("resolving the DPNS name", e))
+            .map_err(|e| sdk_err("resolving the DPNS name", e))?;
+        crate::history::lock(&self.dpns_cache).insert(key, resolved.clone());
+        Ok(resolved)
     }
 
     /// Register DPNS name `label` for `identity_id`, signed by its CRITICAL (else HIGH)

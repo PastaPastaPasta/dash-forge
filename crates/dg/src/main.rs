@@ -336,7 +336,7 @@ pub enum RepoCommand {
     },
     /// List an owner's repositories.
     List {
-        /// The owner identity id (base58); defaults to the signing identity.
+        /// The owner (identity id or DPNS name); defaults to the signing identity.
         #[arg(long)]
         owner: Option<String>,
     },
@@ -1146,7 +1146,7 @@ pub enum CollabCommand {
     Add {
         /// The repository (`owner/name`).
         repo: String,
-        /// The collaborator identity id (base58).
+        /// The collaborator (identity id or DPNS name, e.g. `alice` or `alice.dash`).
         member: String,
         /// The role to grant.
         #[arg(long, value_enum, default_value = "writer")]
@@ -1169,7 +1169,7 @@ pub enum CollabCommand {
     Remove {
         /// The repository (`owner/name`).
         repo: String,
-        /// The collaborator identity id (base58).
+        /// The collaborator (identity id or DPNS name, e.g. `alice` or `alice.dash`).
         member: String,
         /// The role to revoke.
         #[arg(long, value_enum, default_value = "writer")]
