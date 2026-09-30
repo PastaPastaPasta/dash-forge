@@ -195,22 +195,27 @@ function verdictCounts(approvals: number, changes: number): string {
   return parts.join(' and ')
 }
 
+/** The headline for a count alone: "Changes requested", "N approvals" or "No approvals yet". */
+function countHeadline(approvals: number, changes: boolean): Pick<VerdictSummary, 'tone' | 'headline'> {
+  if (changes) return { tone: 'changes', headline: 'Changes requested' }
+  if (approvals > 0) return { tone: 'approved', headline: plural(approvals, 'approval') }
+  return { tone: 'none', headline: 'No approvals yet' }
+}
+
 /**
  * The review line for a PR head: `approvals` is the fold (null: the members could not be read),
  * `proved` the proved verdict count (null: not read). Null when neither is known.
  */
 export function verdictSummary(
-  approvals: (Approvals & { readonly policy: Policy | null | 'unknown'; readonly policyStatus: PolicyStatus | null | 'unknown' }) | null,
+  approvals: (Approvals & { readonly policyStatus: PolicyStatus | null | 'unknown' }) | null,
   proved: ProvedVerdicts | null,
   headOid: string,
 ): VerdictSummary | null {
   const chain = proved !== null && proved.headOid === headOid.toLowerCase() ? proved : null
   if (approvals === null) {
     if (chain === null) return null
-    const changes = chain.changesRequested > 0
     return {
-      tone: changes ? 'changes' : chain.approvals > 0 ? 'approved' : 'none',
-      headline: changes ? 'Changes requested' : chain.approvals > 0 ? plural(chain.approvals, 'approval') : 'No approvals yet',
+      ...countHeadline(chain.approvals, chain.changesRequested > 0),
       detail: null,
       onChain: `${verdictCounts(chain.approvals, chain.changesRequested)} on chain. The members couldn't be read, so this is an upper bound: re-reviews, dismissed reviews and members removed since all count.`,
       proved: false,
@@ -218,13 +223,14 @@ export function verdictSummary(
   }
   const a = approvals.approvers.length
   const c = approvals.changesRequested.length
-  const policy = approvals.policy !== 'unknown' && approvals.policy !== null ? approvals.policy : null
-  const status = approvals.policyStatus !== 'unknown' && approvals.policyStatus !== null ? approvals.policyStatus : null
-  const need = policy?.requiredApprovals ?? 0
-  const required = need > 0 && status !== null ? `${status.have} of ${plural(need, 'required approval')}` : null
+  const status = approvals.policyStatus === 'unknown' ? null : approvals.policyStatus
+  const required = status !== null && status.need > 0 ? `${status.have} of ${plural(status.need, 'required approval')}` : null
   const agrees = chain !== null && chain.approvals === a && chain.changesRequested === c
+  // A count below the fold's is a node not caught up yet (L-37, or this page's own new review): no
+  // upper bound, so it is not shown.
+  const covers = chain !== null && chain.approvals >= a && chain.changesRequested >= c
   const base = {
-    onChain: chain !== null && !agrees ? `${verdictCounts(chain.approvals, chain.changesRequested)} on chain (an upper bound: re-reviews, dismissed reviews and members removed since count there, not here)` : null,
+    onChain: chain !== null && !agrees && covers ?`${verdictCounts(chain.approvals, chain.changesRequested)} on chain (an upper bound: re-reviews, dismissed reviews and members removed since count there, not here)` : null,
     proved: agrees,
   }
   if (c > 0) {
@@ -234,7 +240,7 @@ export function verdictSummary(
   if (required !== null && status !== null) {
     return { ...base, tone: status.met ? 'approved' : 'required', headline: required, detail: a !== status.have ? `${plural(a, 'approval')} in all` : null }
   }
-  return { ...base, tone: a > 0 ? 'approved' : 'none', headline: a > 0 ? plural(a, 'approval') : 'No approvals yet', detail: null }
+  return { ...base, ...countHeadline(a, false), detail: null }
 }
 
 /** Decide the PR controls for a viewer. Pure — the unit-tested core of the PR page gate. */

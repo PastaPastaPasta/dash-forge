@@ -145,6 +145,9 @@ function RunLog({ run }: { run: CheckRun }): JSX.Element | null {
   )
 }
 
+/** One row of the Checks tab list: a run, or an expected check. */
+const CHECK_ROW = 'flex flex-wrap items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850'
+
 export function ChecksTab({
   runs,
   summary,
@@ -186,9 +189,9 @@ export function ChecksTab({
           const state = r.status === 'completed' ? r.conclusion || 'completed' : r.status
           const duration = runDuration(r)
           return (
-            <li key={r.id} className="flex flex-wrap items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850" data-testid="check-run" data-name={r.name} data-outcome={checkOutcome(r)}>
+            <li key={r.id} className={CHECK_ROW} data-testid="check-run" data-name={r.name} data-outcome={checkOutcome(r)}>
               <CheckIcon run={r} />
-              <span className="font-medium">{r.name}</span>
+              <span className="min-w-0 font-medium [overflow-wrap:anywhere]">{r.name}</span>
               {r.requiredSource !== null ? <RequiredSource source={r.requiredSource} /> : null}
               <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{state}</span>
               {duration ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{duration}</span> : null}
@@ -213,9 +216,9 @@ export function ChecksTab({
           )
         })}
         {expected.map((c) => (
-          <li key={`expected:${c.name}`} className="flex flex-wrap items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850" data-testid="check-expected" data-name={c.name}>
+          <li key={`expected:${c.name}`} className={CHECK_ROW} data-testid="check-expected" data-name={c.name}>
             <CircleDashed className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />
-            <span className="font-medium">{c.name}</span>
+            <span className="min-w-0 font-medium [overflow-wrap:anywhere]">{c.name}</span>
             {c.source !== null ? <RequiredSource source={c.source} /> : null}
             <span className="text-[12px] text-anvil-500 dark:text-anvil-400">Expected — required, waiting for it to be reported</span>
           </li>

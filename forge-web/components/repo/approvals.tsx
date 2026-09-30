@@ -13,15 +13,15 @@
  * the two differ. The fold is what gates a merge; the proved count never does.
  */
 
-import { Check, CircleDot, Clock, MinusCircle, ShieldCheck, X } from 'lucide-react'
-import { verdictSummary, type PullApprovals } from '@/lib/view'
+import { Check, CircleDot, Clock, MinusCircle, ShieldCheck, X, type LucideIcon } from 'lucide-react'
+import { verdictSummary, type PullApprovals, type VerdictSummary } from '@/lib/view'
 import type { ProvedVerdicts } from '@/lib/repo/verdicts'
 import { approverPhrase, type ReviewerRow } from '@/lib/view/review-fold'
 import { Author } from '@/components/author'
 import { Oid } from '@/components/ui/oid'
 import { cn } from '@/lib/utils'
 
-export function Approvals({ approvals, headOid, proved = null }: { approvals: PullApprovals; headOid: string; proved?: ProvedVerdicts | null }): JSX.Element {
+export function Approvals({ approvals, headOid, proved }: { approvals: PullApprovals; headOid: string; proved: ProvedVerdicts | null }): JSX.Element {
   const { summary } = approvals
   const approved = approverPhrase(summary.approvedBy)
   return (
@@ -73,26 +73,21 @@ export function Approvals({ approvals, headOid, proved = null }: { approvals: Pu
  * from the fold, with the proved count where it differs or stands in for an unread fold
  * (`verdictSummary`). Renders nothing when neither is known.
  */
+const TONE: Record<VerdictSummary['tone'], { readonly icon: LucideIcon; readonly className: string }> = {
+  approved: { icon: Check, className: 'text-verify-700 dark:text-verify-400' },
+  changes: { icon: X, className: 'text-danger-700 dark:text-danger-400' },
+  required: { icon: CircleDot, className: 'text-caution-700 dark:text-caution-400' },
+  none: { icon: CircleDot, className: 'text-anvil-500 dark:text-anvil-400' },
+}
+
 export function VerdictLine({ approvals, proved, headOid }: { approvals: PullApprovals | null; proved: ProvedVerdicts | null; headOid: string }): JSX.Element | null {
   const line = verdictSummary(approvals, proved, headOid)
   if (line === null) return null
-  const Icon = line.tone === 'approved' ? Check : line.tone === 'changes' ? X : CircleDot
+  const { icon: Icon, className } = TONE[line.tone]
   return (
     <div data-testid="merge-verdicts" data-tone={line.tone} data-proved-approvals={proved?.approvals} data-proved-changes={proved?.changesRequested}>
       <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <Icon
-          className={cn(
-            'h-4 w-4 shrink-0',
-            line.tone === 'approved'
-              ? 'text-verify-700 dark:text-verify-400'
-              : line.tone === 'changes'
-                ? 'text-danger-700 dark:text-danger-400'
-                : line.tone === 'required'
-                  ? 'text-caution-700 dark:text-caution-400'
-                  : 'text-anvil-500 dark:text-anvil-400',
-          )}
-          aria-hidden
-        />
+        <Icon className={cn('h-4 w-4 shrink-0', className)} aria-hidden />
         <span className="font-semibold text-anvil-900 dark:text-anvil-50" data-testid="merge-verdicts-headline">
           {line.headline}
         </span>

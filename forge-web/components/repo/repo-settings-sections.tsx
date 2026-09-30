@@ -57,9 +57,10 @@ import {
   draftOfPolicy,
   policyWithChecks,
   requiredChecksProblems,
-  sameRequiredChecks,
+  samePolicy,
   sourceOptions,
   sourceRole,
+  newCheckRow,
   type CheckRow,
   type ChecksProblems,
   type RequiredChecksDraft,
@@ -69,7 +70,7 @@ import type { Policy } from '@/lib/rules/v2'
 import { previewCreate, type CostPreview as Cost } from '@/lib/sdk'
 import { retryWhileMissing } from '@/lib/view/retry'
 import { useSdk } from '@/hooks/use-sdk'
-import { useAsync } from '@/hooks/use-async'
+import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { useDpnsName } from '@/hooks/use-dpns-name'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
@@ -517,24 +518,19 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
   )
   const valid = sources.data === null ? null : new Set(sources.data.map((o) => o.id))
   const problems = requiredChecksProblems(shownChecks, valid)
-  const changed =
-    (draft !== null || checksDraft !== null) &&
-    (current.data === null ||
-      wanted.requiredApprovals !== base.requiredApprovals ||
-      (wanted.approverRole ?? 0) !== (base.approverRole ?? 0) ||
-      (wanted.requireChecks ?? false) !== (base.requireChecks ?? false) ||
-      (wanted.mergeMethods ?? 0) !== (base.mergeMethods ?? 0) ||
-      !sameRequiredChecks(wanted, base))
+  // Against the defaults when the repo has no policy yet: an edit back to them writes nothing.
+  const changed = (draft !== null || checksDraft !== null) && !samePolicy(wanted, base)
   const cost = previewCreate('policy')
   const methods = shown.mergeMethods ?? 0
   const checkCount = wanted.requiredChecks?.length ?? 0
+  const checksClause = checkCount > 0 ? `, ${plural(checkCount, 'required check')}${(wanted.requiredCheckSources?.length ?? 0) > 0 ? ', each from its pinned source' : ''}` : ''
   const run = async (intent: string): Promise<void> => {
     if (!sdk || !signer || !changed) throw new Error('sign in to continue')
-    const saving = wanted
-    await setPolicy(sdk, signer, home.repo, saving, intent)
+    await setPolicy(sdk, signer, home.repo, wanted, intent)
+    // Until the new policy reads back in full (a change to one field alone must show too).
     await retryWhileMissing(async () => {
       const read = await readPolicy(sdk, home.repo)
-      return read !== null && read.requiredApprovals === saving.requiredApprovals && (read.mergeMethods ?? 0) === (saving.mergeMethods ?? 0) && sameRequiredChecks(read, saving) ? true : null
+      return read !== null && samePolicy(read, wanted) ? true : null
     }, 8)
     setDraft(null)
     setChecksDraft(null)
@@ -622,9 +618,7 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
         open={confirming}
         onClose={() => setConfirming(false)}
         title="Save the branch policy"
-        description={`Writes a policy: ${plural(wanted.requiredApprovals, 'required approval')}${(wanted.approverRole ?? 0) === 1 ? ' (maintainers)' : ''}${
-          checkCount > 0 ? `, ${plural(checkCount, 'required check')}${(wanted.requiredCheckSources?.length ?? 0) > 0 ? ', each from its pinned source' : ''}` : ''
-        }. The newest policy wins. A client rule: a maintainer can override it.`}
+        description={`Writes a policy: ${plural(wanted.requiredApprovals, 'required approval')}${(wanted.approverRole ?? 0) === 1 ? ' (maintainers)' : ''}${checksClause}. The newest policy wins. A client rule: a maintainer can override it.`}
         cost={cost}
         confirmLabel="Sign & save"
         onConfirm={run}
@@ -650,7 +644,7 @@ function RequiredChecksEditor({
   onChange: (d: RequiredChecksDraft) => void
   problems: ChecksProblems
   /** The pickable sources while pinning (null: not pinning, or not a maintainer). */
-  sources: { readonly data: SourceOption[] | null; readonly error: string | null; readonly reload: () => void } | null
+  sources: Pick<AsyncState<SourceOption[]>, 'data' | 'error' | 'reload'> | null
   maintainer: boolean
 }): JSX.Element {
   const rows = draft.rows
@@ -675,9 +669,9 @@ function RequiredChecksEditor({
         <ul className="mt-2 space-y-2" aria-labelledby="required-checks-label">
           {rows.map((row, i) => {
             const problem = problems.rows[i] ?? null
-            const errorId = `required-check-${i}-error`
+            const errorId = problem !== null ? `required-check-${row.key}-error` : undefined
             return (
-              <li key={i} className="rounded-md border border-anvil-200 p-2 dark:border-anvil-800" data-testid="required-check-row">
+              <li key={row.key} className="rounded-md border border-anvil-200 p-2 dark:border-anvil-800" data-testid="required-check-row">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                   <Input
                     aria-label={`Required check ${i + 1} name`}
@@ -685,12 +679,19 @@ function RequiredChecksEditor({
                     value={row.name}
                     maxLength={CHECK_NAME_MAX_CHARS}
                     onChange={(e) => setRow(i, { name: e.target.value })}
-                    aria-invalid={problem !== null}
-                    aria-describedby={problem !== null ? errorId : undefined}
+                    aria-invalid={errorId !== undefined}
+                    aria-describedby={errorId}
                     className="min-w-0 flex-1 font-mono"
                   />
                   {draft.pinned ? (
-                    <SourcePicker value={row.source} options={sources?.data ?? null} index={i} onPick={(source) => setRow(i, { source })} invalid={problem !== null} describedBy={problem !== null ? errorId : undefined} />
+                    <SourcePicker
+                      value={row.source}
+                      options={sources?.data ?? null}
+                      failed={sources?.error != null}
+                      label={`Required check ${i + 1} source`}
+                      onPick={(source) => setRow(i, { source })}
+                      errorId={errorId}
+                    />
                   ) : null}
                   {maintainer ? (
                     <Button variant="outline" size="sm" onClick={() => onChange({ ...draft, rows: rows.filter((_, j) => j !== i) })} aria-label={`Remove required check ${row.name.trim() || i + 1}`}>
@@ -721,7 +722,7 @@ function RequiredChecksEditor({
       ) : null}
       {problems.form !== null ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">{problems.form}</p> : null}
       {maintainer ? (
-        <Button variant="outline" size="sm" className="mt-2" disabled={full} onClick={() => onChange({ ...draft, rows: [...rows, { name: '', source: '' }] })} data-testid="add-required-check">
+        <Button variant="outline" size="sm" className="mt-2" disabled={full} onClick={() => onChange({ ...draft, rows: [...rows, newCheckRow()] })} data-testid="add-required-check">
           <Plus className="h-3.5 w-3.5" aria-hidden /> {full ? `${MAX_REQUIRED_CHECKS} checks is the most a policy holds` : 'Add a required check'}
         </Button>
       ) : null}
@@ -733,31 +734,33 @@ function RequiredChecksEditor({
 function SourcePicker({
   value,
   options,
-  index,
+  failed,
+  label,
   onPick,
-  invalid,
-  describedBy,
+  errorId,
 }: {
   value: string
+  /** Null while they are read, or after the read failed (`failed`). */
   options: SourceOption[] | null
-  index: number
+  failed: boolean
+  label: string
   onPick: (id: string) => void
-  invalid: boolean
-  describedBy: string | undefined
+  /** The row's error message, when it has one. */
+  errorId: string | undefined
 }): JSX.Element {
   const stale = value !== '' && options !== null && !options.some((o) => o.id === value)
   return (
     <select
-      aria-label={`Required check ${index + 1} source`}
+      aria-label={label}
       value={value}
       onChange={(e) => onPick(e.target.value)}
-      aria-invalid={invalid}
-      aria-describedby={describedBy}
-      className="h-9 min-w-0 rounded-md border border-anvil-300 bg-white px-2 text-dense text-anvil-900 coarse:h-11 sm:w-64 dark:border-anvil-700 dark:bg-anvil-950 dark:text-anvil-100"
+      aria-invalid={errorId !== undefined}
+      aria-describedby={errorId}
+      className="h-9 min-w-0 rounded-md border border-anvil-300 bg-white px-2 text-dense text-anvil-900 coarse:h-11 coarse:text-base sm:w-64 dark:border-anvil-700 dark:bg-anvil-950 dark:text-anvil-100"
       data-testid="required-check-source"
     >
       <option value="" disabled>
-        {options === null ? 'Reading runners and maintainers…' : options.length === 0 ? 'No runners or maintainers' : 'Pick a source…'}
+        {failed ? "Couldn't read the sources" : options === null ? 'Reading runners and maintainers…' : options.length === 0 ? 'No runners or maintainers' : 'Pick a source…'}
       </option>
       {value !== '' && (options === null || stale) ? <SourceChoice id={value} role={stale ? 'no longer a runner or maintainer' : null} /> : null}
       {(options ?? []).map((o) => (

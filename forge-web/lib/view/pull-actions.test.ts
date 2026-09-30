@@ -366,6 +366,10 @@ describe('the merge box review line (RC1 R-16): the fold gates, the proved count
     })
   })
 
+  it('shows no "on chain" note for a proved count below the fold (a node behind)', () => {
+    expect(verdictSummary(fold([MAINTAINER, WRITER]), proved(1), HEAD)).toMatchObject({ headline: '2 approvals', onChain: null, proved: false })
+  })
+
   it('ignores a proved count for another head', () => {
     expect(verdictSummary(fold([MAINTAINER]), proved(5, 0, 'ef'.repeat(20)), HEAD)).toMatchObject({ headline: '1 approval', onChain: null, proved: false })
   })

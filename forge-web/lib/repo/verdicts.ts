@@ -24,11 +24,7 @@ import { isRc1OidHex } from '../rules'
 import { countDocumentsGrouped, hexToBase64, uintOfGroupKey, type GroupedQuery } from '../sdk'
 import { DOC, type RepoRef } from './contract'
 import { repoSource } from './source'
-
-/** A member's approve verdict (`asMember` required). */
-export const MEMBER_APPROVE = 1
-/** A member's request-changes verdict (`asMember` required). */
-export const MEMBER_CHANGES = 2
+import { VERDICT_INT } from './writes'
 
 /** The member verdicts on one PR head, as consensus proves them (an upper bound; see the module doc). */
 export interface ProvedVerdicts {
@@ -48,7 +44,7 @@ export function verdictsQuery(repo: RepoRef, patchId: string, headOid: string): 
         ['patchId', '==', patchId],
         // A byteArray operand is base64 (`lib/sdk/query.ts`).
         ['commitOid', '==', hexToBase64(headOid)],
-        ['verdict', 'in', [MEMBER_APPROVE, MEMBER_CHANGES]],
+        ['verdict', 'in', [VERDICT_INT.approve, VERDICT_INT.requestChanges]],
       ],
       orderBy: [['verdict', 'asc']],
     }),
@@ -69,8 +65,8 @@ export async function readProvedVerdicts(sdk: EvoSDK, repo: RepoRef, patchId: st
   // Decoded at any width, like `readKindCounts`: the key's width follows the integer's sizing.
   for (const [key, n] of counts) {
     const verdict = uintOfGroupKey(key)
-    if (verdict === MEMBER_APPROVE) approvals += n
-    else if (verdict === MEMBER_CHANGES) changesRequested += n
+    if (verdict === VERDICT_INT.approve) approvals += n
+    else if (verdict === VERDICT_INT.requestChanges) changesRequested += n
   }
   return { headOid: head, approvals, changesRequested }
 }

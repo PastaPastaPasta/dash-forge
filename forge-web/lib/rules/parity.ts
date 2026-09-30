@@ -70,7 +70,7 @@ export interface ChecksState {
  * pairs up with `requiredChecks` one for one; an empty name or source pins nothing. Parity:
  * forge-core `pinned_sources`.
  */
-function pinnedSources(policy: ChecksPolicy): Map<string, Set<string>> {
+export function pinnedSources(policy: ChecksPolicy): Map<string, Set<string>> {
   const names = policy.requiredChecks ?? []
   const sources = policy.requiredCheckSources ?? []
   const pins = new Map<string, Set<string>>()

@@ -22,8 +22,21 @@ export const CHECK_NAME_MAX_BYTES = 200
 
 /** One required check as edited: its name and (when pinning) its source's id, `''` for none yet. */
 export interface CheckRow {
+  /**
+   * The row's own key, for the list (never saved): a removed row takes its focus with it, not the
+   * next row's. Stable for a policy's rows, which the editor re-derives on every render.
+   */
+  readonly key: string
   readonly name: string
   readonly source: string
+}
+
+let added = 0
+
+/** A new, empty row. */
+export function newCheckRow(): CheckRow {
+  added += 1
+  return { key: `new-${added}`, name: '', source: '' }
 }
 
 /** The editor's required checks. */
@@ -39,7 +52,7 @@ export function draftOfPolicy(policy: Pick<Policy, 'requiredChecks' | 'requiredC
   const sources = policy.requiredCheckSources ?? []
   // `toPolicy` keeps sources only when they pair one for one with the names.
   const pinned = sources.length > 0 && sources.length === names.length
-  return { rows: names.map((name, i) => ({ name, source: pinned ? sources[i] ?? '' : '' })), pinned }
+  return { rows: names.map((name, i) => ({ key: `policy-${i}`, name, source: pinned ? sources[i] ?? '' : '' })), pinned }
 }
 
 /** A reporter a check can be pinned to, and what makes it one. */
@@ -61,7 +74,8 @@ export function sourceOptions(members: readonly Membership[], runners: readonly 
 
 /** "runner", "maintainer" or "runner and maintainer". */
 export function sourceRole(o: Pick<SourceOption, 'runner' | 'maintainer'>): string {
-  return o.runner && o.maintainer ? 'runner and maintainer' : o.runner ? 'runner' : 'maintainer'
+  if (o.runner && o.maintainer) return 'runner and maintainer'
+  return o.runner ? 'runner' : 'maintainer'
 }
 
 /** What is wrong with a draft: per row (null: fine) and for the whole list (null: fine). */
@@ -108,9 +122,7 @@ export function requiredChecksProblems(draft: RequiredChecksDraft, valid: Readon
 
 /** `policy` with the draft's required checks: names trimmed, sources only when pinned (all or none). */
 export function policyWithChecks(policy: Policy, draft: RequiredChecksDraft): Policy {
-  const rest: Policy = { ...policy }
-  delete (rest as { requiredChecks?: unknown }).requiredChecks
-  delete (rest as { requiredCheckSources?: unknown }).requiredCheckSources
+  const { requiredChecks: _names, requiredCheckSources: _sources, ...rest } = policy
   const names = draft.rows.map((r) => r.name.trim())
   if (names.length === 0) return rest
   return {
@@ -118,6 +130,17 @@ export function policyWithChecks(policy: Policy, draft: RequiredChecksDraft): Po
     requiredChecks: names,
     ...(draft.pinned ? { requiredCheckSources: draft.rows.map((r) => r.source) } : {}),
   }
+}
+
+/** The two policies say the same thing, field by field (an absent field reads as its default). */
+export function samePolicy(a: Policy, b: Policy): boolean {
+  return (
+    a.requiredApprovals === b.requiredApprovals &&
+    (a.approverRole ?? 0) === (b.approverRole ?? 0) &&
+    (a.requireChecks ?? false) === (b.requireChecks ?? false) &&
+    (a.mergeMethods ?? 0) === (b.mergeMethods ?? 0) &&
+    sameRequiredChecks(a, b)
+  )
 }
 
 /** The two policies require the same checks from the same sources, in the same order. */

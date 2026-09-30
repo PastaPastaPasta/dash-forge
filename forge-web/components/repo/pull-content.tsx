@@ -323,10 +323,11 @@ function PullPage({
   // Trust is by the current member set: keyed on the set itself (a swap of members re-reads).
   const membersKnown = thread.approvals !== null
   const memberKey = thread.members.map((m) => m.identity).sort().join(',')
+  const rules = policyOf(thread.approvals)
+  const policyNow = rules.policy === 'unknown' ? null : rules.policy
   // The policy's pinned check sources (RC1 R-08): a pinned check lists and counts its source's run.
-  const checksPolicy = thread.approvals === null || thread.approvals.policy === 'unknown' ? null : thread.approvals.policy
-  const pins = requiredSources(checksPolicy)
-  const pinKey = [...pins].map(([name, source]) => `${name}\u0000${source}`).join('\u0001')
+  const pins = requiredSources(policyNow)
+  const pinKey = JSON.stringify([...pins])
   const checks = useAsync(
     async () => {
       const members = new Set(memberKey === '' ? [] : memberKey.split(','))
@@ -364,8 +365,6 @@ function PullPage({
   const stillArriving = arriving !== null && !arrivedAll && !refreshing ? { shown: commentsShown(thread, arriving.commentIds), total: arriving.commentIds.length } : null
 
   // ---- controls ---------------------------------------------------------------------------------
-  const rules = policyOf(thread.approvals)
-  const policyNow = rules.policy === 'unknown' ? null : rules.policy
   // `requireChecks`: the newest trusted run per name on the head passed, and at least one was
   // reported; named `requiredChecks` (set by `dg`) must each pass, from their pinned source when
   // the policy names one (`checksState`, forge-core `checks_state`: `dg pr merge` applies the same rule).
@@ -1086,7 +1085,7 @@ function PullPage({
               headOid={pull.headOid}
               error={checks.error}
               onRetry={checks.reload}
-              expected={checks.data === null ? [] : expectedChecks(checks.data.runs, checksPolicy)}
+              expected={expectedChecks(checks.data?.runs ?? [], policyNow)}
             />
           ) : (
             <>
@@ -1499,6 +1498,9 @@ function BranchRules({
   checksBlocking: boolean
 }): JSX.Element {
   const short = shortBranch(base)
+  // The checks the policy requires: by name, or (none named) every reported one. Null: no policy read.
+  const known = policy !== null && policy !== 'unknown' ? policy : null
+  const named = known?.requiredChecks ?? []
   return (
     <section aria-label="Branch rules" className="rounded-lg border border-anvil-200 px-4 py-3 text-dense dark:border-anvil-800">
       {baseProtected ? (
@@ -1524,12 +1526,12 @@ function BranchRules({
           </span>
         </p>
       ) : null}
-      {policy !== null && policy !== 'unknown' && (policy.requireChecks === true || (policy.requiredChecks?.length ?? 0) > 0) ? (
+      {known !== null && (named.length > 0 || known.requireChecks === true) ? (
         <p className="mt-1 flex items-center gap-2" data-testid="policy-checks">
-          {checksBlocking ? <X className="h-4 w-4 text-danger" aria-hidden /> : <Check className="h-4 w-4 text-verify" aria-hidden />}
-          <span>
+          {checksBlocking ? <X className="h-4 w-4 shrink-0 text-danger" aria-hidden /> : <Check className="h-4 w-4 shrink-0 text-verify" aria-hidden />}
+          <span className="min-w-0 [overflow-wrap:anywhere]">
             {checksBlocking ? 'Required checks are not all passing on the head' : 'Required checks pass'}
-            {(policy.requiredChecks?.length ?? 0) > 0 ? `: ${(policy.requiredChecks ?? []).join(', ')}` : ''}
+            {named.length > 0 ? `: ${named.join(', ')}` : ''}
           </span>
         </p>
       ) : null}

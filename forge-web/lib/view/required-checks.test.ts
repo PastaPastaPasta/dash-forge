@@ -7,8 +7,10 @@ import {
   draftOfPolicy,
   policyWithChecks,
   requiredChecksProblems,
+  samePolicy,
   sameRequiredChecks,
   sourceOptions,
+  newCheckRow,
   sourceRole,
   type RequiredChecksDraft,
 } from './required-checks'
@@ -18,13 +20,21 @@ const MAINT = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'
 const WRITER = 'CJao2MVHL4x3f2Ko2xTUibnZ8G1t9exTPtvJnCbHAgDH'
 const VALID = new Set([RUNNER, MAINT])
 
-const draft = (rows: [string, string][], pinned: boolean): RequiredChecksDraft => ({ rows: rows.map(([name, source]) => ({ name, source })), pinned })
+const draft = (rows: [string, string][], pinned: boolean): RequiredChecksDraft => ({ rows: rows.map(([name, source], i) => ({ key: `policy-${i}`, name, source })), pinned })
 
 describe('required checks editor (RC1 R-08)', () => {
   it('starts from the policy: pinned only when every name has its source', () => {
     expect(draftOfPolicy({ requiredChecks: ['build', 'test'], requiredCheckSources: [RUNNER, MAINT] })).toEqual(draft([['build', RUNNER], ['test', MAINT]], true))
     expect(draftOfPolicy({ requiredChecks: ['build'] })).toEqual(draft([['build', '']], false))
     expect(draftOfPolicy({})).toEqual(draft([], false))
+  })
+
+  it('keys each row: a policy row by position, an added row uniquely', () => {
+    const a = newCheckRow()
+    const b = newCheckRow()
+    expect(a).toMatchObject({ name: '', source: '' })
+    expect(a.key).not.toBe(b.key)
+    expect(draftOfPolicy({ requiredChecks: ['x'] }).rows[0]?.key).toBe(draftOfPolicy({ requiredChecks: ['x'] }).rows[0]?.key)
   })
 
   it('offers runners and maintainers, never writers', () => {
@@ -88,6 +98,15 @@ describe('required checks editor (RC1 R-08)', () => {
     expect(() => policyData(unpinned)).not.toThrow()
     // No rows: no names and no sources.
     expect(policyWithChecks(base, draft([], true))).toEqual({ requiredApprovals: 1, requireChecks: true })
+  })
+
+  it('tells a policy changed in any one field from the same one', () => {
+    const p = { requiredApprovals: 1, approverRole: 0, requireChecks: false, mergeMethods: 0, requiredChecks: ['a'] }
+    expect(samePolicy(p, { requiredApprovals: 1, requiredChecks: ['a'] })).toBe(true)
+    expect(samePolicy(p, { ...p, approverRole: 1 })).toBe(false)
+    expect(samePolicy(p, { ...p, requireChecks: true })).toBe(false)
+    expect(samePolicy(p, { ...p, mergeMethods: 4 })).toBe(false)
+    expect(samePolicy(p, { ...p, requiredChecks: ['b'] })).toBe(false)
   })
 
   it('tells a changed check list from the same one', () => {

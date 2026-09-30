@@ -19,7 +19,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
 import { compareKey } from '../rules'
-import type { CheckRunRow, ChecksPolicy } from '../rules/parity'
+import { pinnedSources, type CheckRunRow, type ChecksPolicy } from '../rules/parity'
 import { hexToBase64, queryAllDocuments, type PlainDocument } from '../sdk'
 import { DOC, asIdentifierString, byteFieldToHex, num, str, type RepoRef } from './contract'
 import { repoSource } from './source'
@@ -51,21 +51,12 @@ export interface CheckRun {
 }
 
 /**
- * Each required check's pinned source, by name: `requiredCheckSources` paired by position with
- * `requiredChecks`, only when the two pair one for one (else nothing is pinned); an empty name
- * or source pins nothing. The pairing `checksState` applies (`pinnedSources`, forge-core
- * `pinned_sources`); `requiredChecks` is unique, so each name has one source.
+ * Each required check's pinned source, by name: the pairing `checksState` applies
+ * (`pinnedSources`, forge-core `pinned_sources`). `requiredChecks` is unique, so each name has one
+ * source (the first, should a reader's input repeat a name).
  */
 export function requiredSources(policy: ChecksPolicy | null): Map<string, string> {
-  const names = policy?.requiredChecks ?? []
-  const sources = policy?.requiredCheckSources ?? []
-  const out = new Map<string, string>()
-  if (sources.length !== names.length) return out
-  names.forEach((name, i) => {
-    const source = sources[i] ?? ''
-    if (name !== '' && source !== '' && !out.has(name)) out.set(name, source)
-  })
-  return out
+  return new Map([...pinnedSources(policy ?? {})].map(([name, sources]) => [name, [...sources][0] as string]))
 }
 
 /** A run counts toward the checks: its reporter is trusted and, for a pinned check, is the source. */
@@ -165,7 +156,8 @@ export function summarizeChecks(runs: readonly CheckRun[], membersKnown: boolean
   const counted = runs.filter(runCounts)
   const n = (o: CheckOutcome) => counted.filter((r) => checkOutcome(r) === o).length
   const untrusted = runs.filter((r) => !r.trusted).length
-  return { passed: n('passed'), failing: n('failing'), pending: n('pending'), total: counted.length, untrusted, offSource: runs.length - counted.length - untrusted, membersKnown }
+  const offSource = runs.filter((r) => r.trusted && !r.fromRequiredSource).length
+  return { passed: n('passed'), failing: n('failing'), pending: n('pending'), total: counted.length, untrusted, offSource, membersKnown }
 }
 
 /** "3 passed, 1 failing", "No checks reported", or why nothing is known. */
