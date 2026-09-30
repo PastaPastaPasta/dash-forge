@@ -446,7 +446,7 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
   // button can sit at the bottom edge of a phone (or a 800 px laptop) screen.
   const errorRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    if (error !== null) errorRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    if (error !== null) errorRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
   }, [error])
   const { fields, protection, problem } = useProtection()
   // Opt-in (`ux-dx-spec.md` §2.3): also keep the identity's encryption key, for private repos.
