@@ -59,6 +59,7 @@ interface Series {
   load(tip: string): Promise<HistoryIndex>
 }
 
+/** The {@link Series} of `kind` among `manifests`, loading artifacts through `fetch`. */
 function series(
   manifests: readonly PackManifest[],
   kind: number,

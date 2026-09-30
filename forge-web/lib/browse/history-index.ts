@@ -265,8 +265,17 @@ export function parseHistoryIndex(compressed: Uint8Array, maxInflated = MAX_INFL
  * format 2.
  */
 export function parseHistoryIndexOfKind(compressed: Uint8Array, kind: number, maxInflated = MAX_INFLATED): HistoryIndex {
-  const formats = kind === 3 ? [VERSION_V1, VERSION_V2] : kind === 5 ? [VERSION_V2] : null
-  if (formats === null) throw new Error('history index: not a history index kind')
+  let formats: readonly number[]
+  switch (kind) {
+    case 3:
+      formats = [VERSION_V1, VERSION_V2]
+      break
+    case 5:
+      formats = [VERSION_V2]
+      break
+    default:
+      throw new Error('history index: not a history index kind')
+  }
   const ix = parseHistoryIndex(compressed, maxInflated)
   if (!formats.includes(ix.format)) {
     throw new Error(`history index: a kind-${kind} artifact must be format ${formats.join(' or ')}, not ${ix.format}`)

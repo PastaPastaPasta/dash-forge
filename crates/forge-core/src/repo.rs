@@ -2493,18 +2493,15 @@ impl<'a> RepoService<'a> {
         prepared: PreparedHistory,
         target: RepackTarget<'_>,
     ) -> Result<HistoryPublished> {
+        // A delta when what is published extends a full index (the column alone, when the lists
+        // were already there).
+        let delta = prepared.is_delta();
         let PreparedHistory {
             index,
             artifact,
             column,
             ..
         } = prepared;
-        // A delta when what is published extends a full index (the column alone, when the lists
-        // were already there).
-        let delta = [&artifact, &column]
-            .into_iter()
-            .flatten()
-            .any(|a| a.tips.len() > 1);
         let versions_manifest_id = match artifact {
             Some(a) => Some(self.store_artifact(repo, a, target).await?),
             None => None,
@@ -2782,16 +2779,11 @@ fn series(manifests: &[PackManifestInfo], roles: &RoleMap, kind: u8, tip: [u8; 2
             *sum = sum.saturating_add(m.size_bytes);
         }
     }
-    // A delta covers its tip only while a live full index of its base tip stands behind it:
-    // a reader could not overlay it otherwise (forge-web `historySource` applies the same rule).
-    let full = |e: &&HistoryEntry| e.base_tip.is_none();
-    let full_tips: BTreeSet<[u8; 20]> = live.iter().filter(full).map(|e| e.tip).collect();
-    let covers = |e: &HistoryEntry| e.base_tip.is_none_or(|b| full_tips.contains(&b));
     Series {
-        covered: live.iter().any(|e| e.tip == tip && covers(e)),
+        covered: covers_tip(&live, tip),
         bases: live
             .iter()
-            .filter(full)
+            .filter(|e| e.base_tip.is_none())
             .map(|e| HistoryEntry {
                 deltas_paid: paid.get(&e.tip).copied().unwrap_or(0),
                 ..e.clone()
@@ -2800,6 +2792,19 @@ fn series(manifests: &[PackManifestInfo], roles: &RoleMap, kind: u8, tip: [u8; 2
         first: !manifests.iter().any(|m| m.kind == kind),
         live,
     }
+}
+
+/// Whether one of `live` (one kind's live indexes) covers `tip`. A delta covers its tip only
+/// while a live full index of its base tip stands behind it: a reader could not overlay it
+/// otherwise (forge-web `historySource` applies the same rule).
+fn covers_tip(live: &[HistoryEntry], tip: [u8; 20]) -> bool {
+    let full_tips: BTreeSet<[u8; 20]> = live
+        .iter()
+        .filter(|e| e.base_tip.is_none())
+        .map(|e| e.tip)
+        .collect();
+    live.iter()
+        .any(|e| e.tip == tip && e.base_tip.is_none_or(|b| full_tips.contains(&b)))
 }
 
 /// Plan the history index publish for `tip` from the repository's manifests: the live version
@@ -2900,17 +2905,7 @@ fn column_of(
     plan: &HistoryPlan,
     tip: [u8; 20],
 ) -> Result<Option<Artifact>> {
-    let full_tips: BTreeSet<[u8; 20]> = plan
-        .columns
-        .iter()
-        .filter(|e| e.base_tip.is_none())
-        .map(|e| e.tip)
-        .collect();
-    let covered = plan
-        .columns
-        .iter()
-        .any(|e| e.tip == tip && e.base_tip.is_none_or(|b| full_tips.contains(&b)));
-    if covered {
+    if covers_tip(&plan.columns, tip) {
         return Ok(None);
     }
     let (column, tips, replaces): (_, _, Vec<&HistoryEntry>) = match base {
