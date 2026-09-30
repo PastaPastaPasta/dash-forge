@@ -29,7 +29,8 @@ use super::private::{self, EventValue};
 use super::{
     check_len, check_text, doc_engine, event_kind_to_u64, insert_imported, label_from_doc,
     release_from_doc, release_from_sealed, u64_to_event_kind, CommentAnchor, Imported, Label,
-    Release, ReleaseInput, ReleaseList, Verdict, DEFAULT_PAGE,
+    Release, ReleaseFile, ReleaseInput, ReleaseList, ReleaseStore, ReleaseWritten, Verdict,
+    DEFAULT_PAGE,
 };
 use crate::backends::sha256;
 use crate::create::replay_landed;
@@ -133,6 +134,7 @@ fn doc_kind(kind: ContentKind) -> DocKind {
         ContentKind::Review => DocKind::Review,
         ContentKind::RefUpdate => DocKind::RefUpdate,
         ContentKind::Config => DocKind::Config,
+        ContentKind::Release => DocKind::Release,
     }
 }
 
@@ -1012,6 +1014,15 @@ fn content_of(kind: ContentKind, d: &FetchedDocument) -> ContentDoc {
         protected_patterns: None,
         enc: d.field_hex("enc").filter(|h| !h.is_empty()),
         epoch: d.field_u64("epoch").and_then(|e| u32::try_from(e).ok()),
+        release_fields: if kind == ContentKind::Release {
+            crate::rules::v2::RELEASE_PLAINTEXT_FIELDS
+                .iter()
+                .filter(|k| d.fields.contains_key(**k))
+                .map(|k| (*k).to_string())
+                .collect()
+        } else {
+            Vec::new()
+        },
     }
 }
 
@@ -4306,9 +4317,52 @@ impl<'a> Collab<'a> {
     /// RC1 `release_ledger`: the revision carries `delta` +1 when it publishes a tag that is not
     /// live, and 0 when it edits (or yanks) a live one ([`release_delta`]); the contract's
     /// `oneLive` rule refuses anything else, so a concurrent publish of the same tag loses.
+    ///
+    /// A private repository's release is sealed ([`Self::create_release_stored`]); one with
+    /// new files needs a store, so this refuses it.
     pub async fn create_release(&self, repo: &RepoRef, input: &ReleaseInput) -> Result<String> {
-        // release notes and assets are not encrypted in this release (§7, §12.5)
-        repo.require_public("releases")?;
+        Ok(self
+            .create_release_stored(repo, input, None)
+            .await?
+            .document_id)
+    }
+
+    /// [`Self::create_release`], storing a private repository's new files in `store`.
+    ///
+    /// A private repository's revision is sealed (`private-repos.md` §16) under the write
+    /// epoch of keys read now. The tag's newest revision is carried forward (§16.3). New files
+    /// and a new asset list are sealed and stored first, as a kind-4 `packManifest`; if a final
+    /// re-read of the anchors finds the epoch moved meanwhile, they are sealed and stored again
+    /// under the new one (§16.5). The revision has `delta` 0, so consensus no longer keeps one
+    /// live release per tag: the tag is read again after the write, and
+    /// [`ReleaseWritten::warning`] says when this revision is not its newest.
+    pub async fn create_release_stored(
+        &self,
+        repo: &RepoRef,
+        input: &ReleaseInput,
+        store: Option<&ReleaseStore<'_>>,
+    ) -> Result<ReleaseWritten> {
+        if repo.visibility == Visibility::Private {
+            return self.create_sealed_release(repo, input, store).await;
+        }
+        Ok(ReleaseWritten {
+            document_id: self.create_public_release(repo, input).await?,
+            ..ReleaseWritten::default()
+        })
+    }
+
+    async fn create_public_release(&self, repo: &RepoRef, input: &ReleaseInput) -> Result<String> {
+        if !input.files.is_empty()
+            || input.prerelease.is_some()
+            || input.draft.is_some()
+            || input.unpublished
+        {
+            return Err(Error::Config(
+                "files to seal, and the draft, pre-release and unpublish flags, are for a \
+                 private repository's sealed release"
+                    .into(),
+            ));
+        }
         check_tag_name(&input.tag_name)?;
         check_text("release name", &input.name, 120, 480)?;
         check_text("release notes", &input.notes, 5120, 5120)?;
@@ -4371,6 +4425,303 @@ impl<'a> Collab<'a> {
         }
     }
 
+    /// A private repository's release revision (§16): see [`Self::create_release_stored`].
+    async fn create_sealed_release(
+        &self,
+        repo: &RepoRef,
+        input: &ReleaseInput,
+        store: Option<&ReleaseStore<'_>>,
+    ) -> Result<ReleaseWritten> {
+        use crate::private::release::{self, ReleaseFields};
+        let tag = &input.tag_name;
+        check_tag_name(tag)?;
+        check_text("release name", &input.name, 120, 480)?;
+        check_text("release notes", &input.notes, 5120, 5120)?;
+        if !input.assets.is_empty() {
+            return Err(Error::Config(
+                "a private repository's assets are sealed files, never plaintext entries".into(),
+            ));
+        }
+        self.require_role(repo, Role::Maintainer, &format!("publish release {tag}"))
+            .await?;
+        let owner = platform::decode_identifier(&self.signer_id()?)?;
+        // Every revision of the tag, read now from the `created` listing (§16.3): what this
+        // one does not change is carried forward from the newest readable one.
+        let before = self.releases(repo).await?;
+        let carried = newest_revision(&before, tag)
+            .and_then(|r| r.sealed.as_ref())
+            .map(|s| s.fields.clone())
+            .unwrap_or_default();
+        // New files or notes build a new asset list from the previous one; anything else
+        // keeps naming it, unopened.
+        let rebuild = !input.files.is_empty() || !input.notes.is_empty();
+        let prev_manifest = match &carried.asset_manifest {
+            Some(_) if rebuild => Some(self.release_manifest(repo, &carried).await?),
+            _ => None,
+        };
+        let mut fields = ReleaseFields {
+            tag: tag.clone(),
+            name: non_empty(&input.name).or(carried.name.clone()),
+            target_oid: carried.target_oid.clone(),
+            imported_author: carried.imported_author.clone(),
+            imported_url: carried.imported_url.clone(),
+            imported_created_at: carried.imported_created_at,
+            prerelease: input.prerelease.unwrap_or(carried.prerelease),
+            draft: input.draft.unwrap_or(carried.draft),
+            yanked: input.yanked,
+            unpublished: input.unpublished,
+            // an edit of nothing but the name or the flags keeps the notes and the list as
+            // they are: the same prefix, flag and manifest
+            notes: carried.notes.clone(),
+            notes_continue: carried.notes_continue,
+            asset_manifest: carried.asset_manifest.clone(),
+        };
+        // the full notes, as the new revision states them
+        let full_notes = match (non_empty(&input.notes), &prev_manifest) {
+            (Some(n), _) => n,
+            (None, Some(m)) if carried.notes_continue => m.notes.clone().unwrap_or_default(),
+            (None, _) => carried.notes.clone().unwrap_or_default(),
+        };
+        let mut sealed_assets = Vec::new();
+        let mut attempts = 0;
+        let (keys, epoch) = loop {
+            attempts += 1;
+            // the write epoch of keys read now (§5.3)
+            let w = self.fresh_keyring(repo).await?.writer(repo)?;
+            if !rebuild {
+                break (w.write_keys().clone(), w.write_epoch());
+            }
+            (fields, sealed_assets) = self
+                .rebuild_asset_list(
+                    repo,
+                    w.write_keys(),
+                    RebuildFrom {
+                        fields: fields.clone(),
+                        notes: &full_notes,
+                        files: &input.files,
+                        prev: prev_manifest.as_ref(),
+                    },
+                    store,
+                )
+                .await?;
+            // The final anchor re-read before signing (§5.3, §16.5): a rotation during the
+            // upload would leave the new artifacts readable to the member it removed.
+            let now = self.fresh_keyring(repo).await?.writer(repo)?;
+            if now.write_epoch() == w.write_epoch() {
+                break (now.write_keys().clone(), now.write_epoch());
+            }
+            if attempts >= 2 {
+                return Err(Error::Config(format!(
+                    "release {tag} not written: the key epoch of {} moved twice while its \
+                     assets were uploaded; run the command again",
+                    repo.display()
+                )));
+            }
+        };
+        let (tag_name, enc) = release::seal(&keys, &owner, &fields).map_err(|e| match e {
+            crate::private::PrivateError::TooLarge(..) => Error::Config(format!(
+                "release {tag} not written: a private release holds 1507 bytes of tag, name, \
+                 notes preview and provenance, and this one does not fit (a shorter name)"
+            )),
+            other => other.into(),
+        })?;
+        let core = self.core_contract(repo).await?;
+        // delta 0 always (`oneLive`): there is no ledger to retry against (§16.3)
+        let document_id = self
+            .write(
+                repo,
+                &core,
+                DOC_RELEASE,
+                sealed_release_props(&tag_name, epoch, enc),
+            )
+            .await?;
+        let after = self.releases(repo).await?;
+        Ok(ReleaseWritten {
+            warning: not_newest_warning(&after, tag, &document_id),
+            document_id,
+            sealed_assets,
+        })
+    }
+
+    /// A revision's new asset list under `keys` (§16.5): the previous list's assets but those a
+    /// new file replaces, then the new files sealed and stored, and the full notes when they
+    /// do not fit `enc`. Returns the fields with their notes fitted and TLV 21 set (none when
+    /// there is no asset and nothing continues), and the list's entries.
+    async fn rebuild_asset_list(
+        &self,
+        repo: &RepoRef,
+        keys: &crate::private::EpochKeys,
+        from: RebuildFrom<'_>,
+        store: Option<&ReleaseStore<'_>>,
+    ) -> Result<(
+        crate::private::release::ReleaseFields,
+        Vec<crate::private::release::ManifestAsset>,
+    )> {
+        use crate::private::release::{self, ReleaseFields, ReleaseManifest};
+        let mut assets = from.prev.map(|m| m.assets.clone()).unwrap_or_default();
+        assets.retain(|a| !from.files.iter().any(|f| f.name == a.name));
+        assets.extend(self.seal_release_files(keys, from.files, store).await?);
+        let (mut fields, notes_continue) = release::fit_notes(
+            ReleaseFields {
+                asset_manifest: None,
+                ..from.fields
+            },
+            from.notes,
+        );
+        fields.asset_manifest = if assets.is_empty() && !notes_continue {
+            None
+        } else {
+            let manifest = ReleaseManifest {
+                v: 1,
+                tag: fields.tag.clone(),
+                total: assets.len() as u64,
+                source: from.prev.and_then(|m| m.source.clone()),
+                notes: notes_continue.then(|| from.notes.to_string()),
+                assets: assets.clone(),
+            };
+            let hash = self
+                .store_release_manifest(repo, keys, &manifest, notes_continue, store)
+                .await?;
+            Some(hex::encode(hash))
+        };
+        Ok((fields, assets))
+    }
+
+    /// Seal each of `files` under `keys` and store it, as manifest entries (§16.5): the
+    /// plaintext's `sha256` and size, and the sealed object's, which also names it in storage
+    /// (never the plaintext hash).
+    async fn seal_release_files(
+        &self,
+        keys: &crate::private::EpochKeys,
+        files: &[ReleaseFile],
+        store: Option<&ReleaseStore<'_>>,
+    ) -> Result<Vec<crate::private::release::ManifestAsset>> {
+        let mut out = Vec::new();
+        for f in files {
+            let sealed = crate::private::pack::seal(keys, &f.bytes)?;
+            let uris = store_sealed(store, &sealed, &f.name).await?.uris();
+            out.push(crate::private::release::ManifestAsset {
+                name: f.name.clone(),
+                sha256: hex::encode(sha256(&f.bytes)),
+                size_bytes: f.bytes.len() as u64,
+                uris: asset_uris(uris),
+                sealed_sha256: Some(hex::encode(sha256(&sealed))),
+                sealed_size_bytes: Some(sealed.len() as u64),
+            });
+        }
+        Ok(out)
+    }
+
+    /// Seal `manifest` under `keys`, store it, and record it as a kind-4 `packManifest` that
+    /// publishes nothing about the list (`objectCount` 0, no `tips`, no `supersedes`, §16.5).
+    /// Returns its `packHash`.
+    async fn store_release_manifest(
+        &self,
+        repo: &RepoRef,
+        keys: &crate::private::EpochKeys,
+        manifest: &crate::private::release::ReleaseManifest,
+        notes_continue: bool,
+        store: Option<&ReleaseStore<'_>>,
+    ) -> Result<[u8; 32]> {
+        let sealed = crate::private::release::seal_manifest(keys, manifest, notes_continue)?;
+        let rep = store_sealed(store, &sealed, "the release's asset list").await?;
+        let stored = crate::repo::StoredArtifact::from_replication(&rep, &sealed)?;
+        let pack_hash = sha256(&sealed);
+        self.repo_service()?
+            .write_pack_manifest(repo, &release_manifest_input(pack_hash, &sealed, stored))
+            .await?;
+        Ok(pack_hash)
+    }
+
+    /// The kind-4 asset list a sealed revision names (§16.5): the size cap before anything is
+    /// fetched, then each copy by the reader rule, its hash against TLV 21, §3.5 under the key
+    /// of its header's epoch, and the canonical and per-key checks.
+    pub async fn release_manifest(
+        &self,
+        repo: &RepoRef,
+        fields: &crate::private::release::ReleaseFields,
+    ) -> Result<crate::private::release::ReleaseManifest> {
+        use crate::private::release::{open_manifest, ManifestError, MAX_MANIFEST_BYTES};
+        let hash = fields
+            .asset_manifest_hash()
+            .ok_or_else(|| Error::Config(format!("release {} has no asset list", fields.tag)))?;
+        let kr = self.keyring(repo).await?;
+        let svc = self.repo_service()?;
+        let copies: Vec<_> = svc
+            .read_pack_copies(repo, hash)
+            .await?
+            .into_iter()
+            .filter(|m| m.kind == u64::from(crate::pack::KIND_RELEASE_ASSETS))
+            .collect();
+        let unavailable = |why: String| {
+            UserError::new(
+                codes::SEALED_PACK_CORRUPT,
+                format!("the asset list of release {} is unavailable", fields.tag),
+            )
+            .cause(why)
+            .into()
+        };
+        let reader = crate::storage::PackReader::from_user_config();
+        let mut last = format!("no copy of asset list {} is recorded", hex::encode(hash));
+        for copy in copies {
+            if copy.size_bytes > MAX_MANIFEST_BYTES {
+                last = format!(
+                    "a copy claims {} bytes, over the 1 MiB cap",
+                    copy.size_bytes
+                );
+                continue;
+            }
+            let sealed = match svc.fetch_artifact(repo, &copy, &reader).await {
+                Ok(b) => b,
+                Err(e) => {
+                    last = e.to_string();
+                    continue;
+                }
+            };
+            match open_manifest(
+                &sealed,
+                copy.size_bytes,
+                &hash,
+                &fields.tag,
+                fields.notes_continue,
+                |e| kr.epoch_keys(e),
+            ) {
+                Ok(m) => return Ok(m),
+                Err(ManifestError::Mismatch) => {
+                    last = "the asset list does not match the release that names it".into();
+                }
+                Err(ManifestError::Pack(e)) => last = e.to_string(),
+            }
+        }
+        Err(unavailable(last))
+    }
+
+    /// A sealed asset's file from its stored `sealed` bytes (already checked against
+    /// `sealedSha256`): opened, truncated to its size and checked against its `sha256` (§16.5).
+    pub async fn open_release_asset(
+        &self,
+        repo: &RepoRef,
+        entry: &crate::private::release::ManifestAsset,
+        sealed: &[u8],
+    ) -> Result<Vec<u8>> {
+        let kr = self.keyring(repo).await?;
+        crate::private::release::open_asset(sealed, entry, |e| kr.epoch_keys(e))
+            .map_err(|e| crate::keyring::sealed_error(&e))
+    }
+
+    /// The pack-manifest service for this signer, sharing this `Collab`'s keyring.
+    fn repo_service(&self) -> Result<crate::repo::RepoService<'a>> {
+        let (identity, bridge) = self.signer.ok_or_else(|| {
+            Error::from(crate::user_error::private_needs_identity("the repository"))
+        })?;
+        Ok(crate::repo::RepoService::with_keyring(
+            self.client,
+            identity,
+            bridge,
+            Arc::clone(&self.keyring),
+        ))
+    }
+
     /// Every release of `repo`: the newest revision of each tag not unpublished (see
     /// [`newest_per_tag`]), in [`release_order`]; `previous` holds the other revisions, an
     /// unpublished tag's included, newest first.
@@ -4395,8 +4746,9 @@ impl<'a> Collab<'a> {
             return Ok(sealed_releases(&docs, |d| kr.open_release(d)));
         }
         // a public reader holds no key: a revision carrying `enc` is malformed (§16.2)
-        let (sealed, plain): (Vec<_>, Vec<_>) =
-            docs.iter().partition(|d| d.fields.contains_key("enc"));
+        let (plain, sealed): (Vec<_>, Vec<_>) = docs
+            .iter()
+            .partition(|d| well_formed(ContentKind::Release, d, repo.visibility));
         let (current, previous) = newest_per_tag(plain.into_iter().map(release_from_doc).collect());
         Ok(ReleaseList {
             current,
@@ -4891,6 +5243,108 @@ fn newest_per_tag(all: Vec<Release>) -> (Vec<Release>, Vec<Release>) {
     current.sort_by(release_order);
     previous.sort_by(newest_first);
     (current, previous)
+}
+
+/// What a sealed revision's new asset list is built from ([`Collab::rebuild_asset_list`]).
+struct RebuildFrom<'i> {
+    /// The revision's fields so far (every field but the notes and TLV 21).
+    fields: crate::private::release::ReleaseFields,
+    /// Its full notes.
+    notes: &'i str,
+    /// The new files.
+    files: &'i [ReleaseFile],
+    /// The previous revision's asset list.
+    prev: Option<&'i crate::private::release::ReleaseManifest>,
+}
+
+/// The newest readable revision of `tag`: its release when live, else the newest of its
+/// history (an unpublished tag's included).
+fn newest_revision<'l>(list: &'l ReleaseList, tag: &str) -> Option<&'l Release> {
+    list.current
+        .iter()
+        .find(|r| r.tag_name == tag)
+        .or_else(|| list.previous.iter().find(|r| r.tag_name == tag))
+}
+
+fn non_empty(s: &str) -> Option<String> {
+    (!s.is_empty()).then(|| s.to_string())
+}
+
+/// The URIs a sealed asset entry records: 1–8 (§16.5), private `s3://` copies dropped first.
+fn asset_uris(mut uris: Vec<String>) -> Vec<String> {
+    const MAX: usize = 8;
+    if uris.len() > MAX {
+        uris.retain(|u| !u.starts_with("s3://"));
+    }
+    uris.truncate(MAX);
+    uris
+}
+
+/// Store `sealed` (a sealed asset or asset list, `what` for messages) on `store`, named by its
+/// own hash.
+async fn store_sealed(
+    store: Option<&ReleaseStore<'_>>,
+    sealed: &[u8],
+    what: &str,
+) -> Result<crate::storage::Replication> {
+    let store = store.ok_or_else(|| {
+        Error::Config(format!(
+            "{what} must be stored, and no storage was given: release assets are stored on \
+             your own storage (`--storage <name>`)"
+        ))
+    })?;
+    let meta = crate::backends::PackMeta::for_bytes(sealed);
+    crate::storage::replicate(&store.targets, sealed, &meta, store.required)
+        .await
+        .map_err(|e| UserError::storage_policy_not_met(&e, &format!("store {what}"), false).into())
+}
+
+/// The kind-4 `packManifest` of a sealed asset list (§16.5): `objectCount` 0, no `tips`, no
+/// `supersedes`, so the document publishes nothing about the list.
+fn release_manifest_input(
+    pack_hash: [u8; 32],
+    sealed: &[u8],
+    stored: crate::repo::StoredArtifact,
+) -> crate::repo::PackManifestInput {
+    crate::repo::PackManifestInput {
+        pack_hash,
+        kind: u64::from(crate::pack::KIND_RELEASE_ASSETS),
+        size_bytes: sealed.len() as u64,
+        object_count: 0,
+        chunk_count: stored.chunk_count,
+        storage: stored.storage,
+        uris: stored.uris,
+        supersedes: Vec::new(),
+        tips: Vec::new(),
+    }
+}
+
+/// A sealed revision's properties besides `repoId` (§16.2): exactly `tagName`, `vis`,
+/// `delta` 0, `epoch` and `enc`. Never `name`, `notes`, `assets`, `assetManifest`, `yanked`
+/// or `imported`.
+fn sealed_release_props(tag_name: &str, epoch: u32, enc: Vec<u8>) -> BTreeMap<String, FieldValue> {
+    let mut p = BTreeMap::new();
+    p.insert("tagName".to_string(), FieldValue::text(tag_name));
+    p.insert("delta".to_string(), FieldValue::integer(0));
+    p.insert("epoch".to_string(), FieldValue::integer(u64::from(epoch)));
+    p.insert("enc".to_string(), FieldValue::bytes(enc));
+    crate::layout::stamp_vis(&mut p, Visibility::Private);
+    p
+}
+
+/// The warning a sealed writer gives when its revision `ours` is not the newest of `tag`
+/// after the write (§16.3): a concurrent revision (a lost update) or a clock behind another
+/// writer's, since `$createdAt` is client-set. `None` when it is, or is not visible yet.
+fn not_newest_warning(after: &ReleaseList, tag: &str, ours: &str) -> Option<String> {
+    let newest = newest_revision(after, tag)?;
+    let seen = newest.document_id == ours || after.previous.iter().any(|r| r.document_id == ours);
+    (seen && newest.document_id != ours).then(|| {
+        format!(
+            "your revision of release {tag} is older than {}'s ({}): another maintainer wrote \
+             one meanwhile, or your clock is behind theirs; check it with `dg release list`",
+            newest.publisher, newest.document_id
+        )
+    })
 }
 
 /// A private repository's releases (§16.3): every revision opened with `open`, then folded by
@@ -6020,6 +6474,117 @@ mod tests {
         assert_eq!(list.previous[0].document_id, docs[0].id);
         assert_eq!((list.replays, list.hidden), (1, 1));
         assert!(!list.stale && list.unknown_tags.is_empty());
+    }
+
+    /// Every document the sealed writer builds is one RC1 accepts (§16.2, §16.5): the revision
+    /// with exactly `tagName`, `vis`, `delta` 0, `epoch` and `enc`, and its kind-4 asset list
+    /// with `objectCount` 0 and no `tips`.
+    #[test]
+    fn the_sealed_writers_documents_are_rc1_valid() {
+        use crate::private::release::{self, ReleaseFields, ReleaseManifest};
+        use crate::private::{EpochKey, EpochKeys};
+        use crate::test_support::rc1;
+        let keys = EpochKeys::derive(&[0x11; 32], 3, &EpochKey::from_bytes([1; 32]));
+        let (fields, _) = release::fit_notes(
+            ReleaseFields {
+                tag: "v1.0.0-rc.1".into(),
+                name: Some("One".into()),
+                prerelease: true,
+                ..ReleaseFields::default()
+            },
+            &"notes ".repeat(600),
+        );
+        let (tag_name, enc) = release::seal(&keys, &rc1::OWNER, &fields).unwrap();
+        let scope = crate::scope::DocScope {
+            contract_id: "CORE".into(),
+            repo_id: [0x11; 32],
+        };
+        let props = scope.scoped(sealed_release_props(&tag_name, 3, enc));
+        let keys_of: Vec<&str> = props.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys_of,
+            ["delta", "enc", "epoch", "repoId", "tagName", "vis"]
+        );
+        // (`oneLive`, which refuses a sealed revision with delta 1, is a consensus total: the
+        // live suite judges it, `rc1-live.mjs` "a sealed release that publishes")
+        rc1::assert_valid("release", &props);
+
+        let manifest = ReleaseManifest {
+            v: 1,
+            tag: "v1.0.0-rc.1".into(),
+            total: 0,
+            source: None,
+            notes: Some("notes ".repeat(600)),
+            assets: Vec::new(),
+        };
+        let sealed = release::seal_manifest(&keys, &manifest, true).unwrap();
+        let stored = crate::repo::StoredArtifact {
+            storage: 1,
+            chunk_count: 0,
+            uris: vec!["https://bucket.example/o".into()],
+        };
+        let input = release_manifest_input(sha256(&sealed), &sealed, stored);
+        assert_eq!((input.object_count, input.tips.len()), (0, 0));
+        rc1::assert_valid("packManifest", &input.props(&scope).unwrap());
+    }
+
+    /// §16.3: a writer is warned when, read back, its revision is not the tag's newest; not
+    /// when it is, nor when it is not visible yet.
+    #[test]
+    fn a_sealed_writer_is_warned_when_its_revision_is_not_the_newest() {
+        let rel = |id: &str, at: u64| Release {
+            document_id: id.into(),
+            tag_name: "v1".into(),
+            name: String::new(),
+            notes: String::new(),
+            yanked: false,
+            assets: Vec::new(),
+            publisher: "bob".into(),
+            created_at: at,
+            delta: 0,
+            sealed: None,
+        };
+        let list = ReleaseList {
+            current: vec![rel("theirs", 2)],
+            previous: vec![rel("ours", 1)],
+            ..ReleaseList::default()
+        };
+        let w = not_newest_warning(&list, "v1", "ours").unwrap();
+        assert!(w.contains("bob") && w.contains("theirs"), "{w}");
+        assert_eq!(not_newest_warning(&list, "v1", "theirs"), None);
+        assert_eq!(not_newest_warning(&list, "v1", "unseen"), None);
+    }
+
+    /// `ContentKind::Release` (§16.2): a private release without `enc`, or with plaintext
+    /// content next to it, and a public one with `enc`, are malformed.
+    #[test]
+    fn release_well_formedness_follows_visibility() {
+        let doc = |fields: &[(&str, FieldValue)]| FetchedDocument {
+            id: "x".into(),
+            owner_id: "o".into(),
+            created_at: Some(1),
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            revision: None,
+            fields: fields
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), v.clone()))
+                .collect(),
+        };
+        let enc = ("enc", FieldValue::bytes(vec![1; 40]));
+        let epoch = ("epoch", FieldValue::integer(0));
+        let tag = ("tagName", FieldValue::text("v1"));
+        let sealed = doc(&[tag.clone(), enc.clone(), epoch.clone()]);
+        let plain = doc(&[tag.clone(), ("yanked", FieldValue::Bool(false))]);
+        let both = doc(&[tag, enc, epoch, ("yanked", FieldValue::Bool(false))]);
+        let (k, public, private) = (
+            ContentKind::Release,
+            Visibility::Public,
+            Visibility::Private,
+        );
+        assert!(well_formed(k, &sealed, private) && !well_formed(k, &sealed, public));
+        assert!(well_formed(k, &plain, public) && !well_formed(k, &plain, private));
+        assert!(!well_formed(k, &both, private));
     }
 
     /// L-14: the rail's "Latest release" was the OLDEST (an import writes newest-first, so

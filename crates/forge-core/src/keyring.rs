@@ -722,6 +722,12 @@ impl Keyring {
         }
     }
 
+    /// The subkeys of `epoch`, when this reader holds them: a sealed artifact names its own
+    /// epoch, which may be older than the document that points at it (§16.5).
+    pub fn epoch_keys(&self, epoch: u32) -> Option<&EpochKeys> {
+        self.ctx.keys.get(&epoch)
+    }
+
     /// The `$createdAt` of stated(e): the earliest config of `epoch` at the block height where
     /// its key was first stated on chain (§5.3).
     fn stated_at(&self, epoch: u32) -> Option<u64> {
@@ -903,6 +909,7 @@ pub fn header_of(kind: DocKind, d: &FetchedDocument) -> Option<DocHeader> {
             h.force = Some(d.field_bool("force"));
         }
         DocKind::Config => {}
+        DocKind::Release => h.tag_name = d.field_str("tagName"),
     }
     Some(h)
 }

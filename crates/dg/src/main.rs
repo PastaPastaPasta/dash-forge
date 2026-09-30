@@ -1097,6 +1097,15 @@ pub struct ReleaseCreateArgs {
     /// Storage profiles for the assets (default: this repository's `dash.storage`).
     #[arg(long)]
     pub storage: Option<String>,
+    /// Mark the release a draft (`--draft=false` clears it). Private repositories only: a
+    /// sealed label every member sees, not access control. Default: as the tag's last revision.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true", value_name = "BOOL")]
+    pub draft: Option<bool>,
+    /// Mark the release a pre-release (`--prerelease=false` clears it). Private repositories
+    /// only; a tag with a pre-release suffix (`-rc.1`) is one anyway. Default: as the tag's
+    /// last revision.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true", value_name = "BOOL")]
+    pub prerelease: Option<bool>,
 }
 
 #[derive(Debug, Subcommand)]

@@ -197,7 +197,7 @@ fn seal_props_inner(
             header.target_id = id32(&props, "targetId");
             fields.event_value = take_text(&mut props, "value");
         }
-        DocKind::RefUpdate | DocKind::ProtectedRefUpdate | DocKind::Config => {
+        DocKind::RefUpdate | DocKind::ProtectedRefUpdate | DocKind::Config | DocKind::Release => {
             return Err(Error::Config(format!(
                 "{} is not a collaboration document",
                 kind.type_name()

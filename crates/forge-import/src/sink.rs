@@ -860,6 +860,7 @@ impl<'a> Sink<'a> {
                 notes,
                 yanked: false,
                 assets: assets_in,
+                ..ReleaseInput::default()
             };
             let (collab, repo) = (&self.collab, self.repo.as_ref());
             let input = &input;
