@@ -9,6 +9,8 @@ import { EMPTY, E2E_DEVNET, PASSPHRASE, fixtureWriteBlocked, idFile, runAxe, sho
  *
  *   E2E_DEVNET=bonsia E2E_WRITE=1 pnpm exec playwright test mirror-wizard.spec.ts
  *
+ * m1 needs no identity and runs in the read-only CI job too; m2 and m3 need `E2E_WRITE=1`.
+ *
  * GitHub's API is answered by the spec (no network, no rate limit). The Forge repository is the
  * read fixture's `forge-v2-empty` (MAINTAINER's), which the wizard finds and reuses, so nothing
  * is created. The storage is an R2 profile saved in this browser only (its checks fail: the
@@ -28,10 +30,14 @@ import { EMPTY, E2E_DEVNET, PASSPHRASE, fixtureWriteBlocked, idFile, runAxe, sho
  * Signs in as MAINTAINER (first run: registers one limited key; later runs reuse the vault).
  */
 
-test.skip(process.env['E2E_WRITE'] !== '1', 'needs a signed-in vault: set E2E_WRITE=1')
-test.skip(!existsSync(idFile('MAINTAINER')), 'devnet test identities not found')
-test.skip(fixtureWriteBlocked('empty') !== null, fixtureWriteBlocked('empty') ?? '')
 test.describe.configure({ mode: 'serial', timeout: 300_000 })
+
+/** m2 signs in (a vault, and on its first run a new browser key): only with E2E_WRITE=1. */
+function skipUnlessSignedIn(): void {
+  test.skip(process.env['E2E_WRITE'] !== '1', 'needs a signed-in vault: set E2E_WRITE=1')
+  test.skip(!existsSync(idFile('MAINTAINER')), 'devnet test identities not found')
+  test.skip(fixtureWriteBlocked('empty') !== null, fixtureWriteBlocked('empty') ?? '')
+}
 
 const SHA = '0123456789abcdef0123456789abcdef01234567'
 const GH = { owner: 'mirror-e2e', name: 'Forge-V2-Empty' }
@@ -94,7 +100,7 @@ function savedStorageChoice(page: Page): Promise<string | null> {
         }
         req.onerror = () => resolve(null)
       }),
-    `mirror-wizard:devnet:${EMPTY.owner}`,
+    `mirror-wizard:devnet-${E2E_DEVNET}:${EMPTY.owner}`,
   )
 }
 
@@ -123,6 +129,7 @@ test('m1. signed out: GitHub is checked anonymously, and the next step asks to s
 })
 
 test('m2. signed in: repo, storage, runner key and workflow, with no write reaching Platform', async ({ browser }) => {
+  skipUnlessSignedIn()
   const page = await signedIn(browser, 'MAINTAINER', '/mirror/')
   await fakeGithub(page)
   await noBucket(page)
@@ -132,12 +139,8 @@ test('m2. signed in: repo, storage, runner key and workflow, with no write reach
     return r.abort('failed')
   })
   page.on('dialog', (d) => void d.accept())
-  // A rerun starts over: an earlier run's progress is kept per identity (the reused vault's).
-  const githubStep = step(page, 'github')
-  await expect(githubStep).toBeVisible()
-  if ((await githubStep.getAttribute('data-state')) !== 'active') {
-    await githubStep.getByRole('button', { name: /^Change/ }).click()
-  }
+  // The saved vault is captured right after sign-in, so every run starts with no progress.
+  await expect(step(page, 'github')).toHaveAttribute('data-state', 'active')
 
   // 1. GitHub.
   await checkGithub(page, `${GH.owner}/${GH.name}`)
@@ -221,7 +224,9 @@ test('m2. signed in: repo, storage, runner key and workflow, with no write reach
     await more.getByLabel('Passphrase').fill(PASSPHRASE)
     await more.getByRole('button', { name: 'Unlock' }).click()
   }
-  await expect(page.getByLabel('Dash Forge commit')).toHaveValue(SHA, { timeout: 60_000 })
+  // The build's own commit when it has one (a CI build), else the latest on master (faked here).
+  await expect(page.getByLabel('Dash Forge commit')).toHaveValue(/^[0-9a-f]{40}$/, { timeout: 60_000 })
+  const commit = await page.getByLabel('Dash Forge commit').inputValue()
   const secrets = page.getByTestId('mirror-secrets')
   for (const name of ['DASH_FORGE_KEY', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY']) await expect(secrets).toContainText(name)
   await expect(page.getByTestId('mirror-new-secret')).toHaveAttribute('href', `https://github.com/${GH.owner}/${GH.name}/settings/secrets/actions/new`)
@@ -235,7 +240,7 @@ test('m2. signed in: repo, storage, runner key and workflow, with no write reach
     `s3-bucket: '${R2.bucket}'`,
     `s3-public-url: '${R2.publicUrl}'`,
     "sync: 'code,releases,labels,issues,prs'",
-    `ref: ${SHA}`,
+    `ref: ${commit}`,
     'uses: ./.dash-forge/action',
     'S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}',
   ]) {

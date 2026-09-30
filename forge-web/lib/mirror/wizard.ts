@@ -57,6 +57,11 @@ export function parseGithubRepo(input: string): GithubName {
   return { owner, name }
 }
 
+/** The repository's page on github.com. */
+function githubUrl(repo: GithubName): string {
+  return `https://github.com/${repo.owner}/${repo.name}`
+}
+
 /** GitHub's REST API root. */
 export const GITHUB_API = 'https://api.github.com'
 
@@ -111,7 +116,7 @@ export async function checkGithubRepo(repo: GithubName, fetchImpl: typeof fetch 
     sizeKib: typeof body['size'] === 'number' ? body['size'] : 0,
     archived: body['archived'] === true,
     fork: body['fork'] === true,
-    htmlUrl: typeof body['html_url'] === 'string' ? body['html_url'] : `https://github.com/${owner}/${name}`,
+    htmlUrl: typeof body['html_url'] === 'string' ? body['html_url'] : githubUrl({ owner, name }),
   }
 }
 
@@ -162,6 +167,11 @@ export function mirrorDescription(repo: Pick<GithubRepo, 'owner' | 'name' | 'des
   return `${head}${suffix}`
 }
 
+/** The `createRepo` input of a mirror named `name`: the mirror description and GitHub's default branch. */
+export function mirrorRepoInput(github: GithubRepo, name: string): { name: string; description: string; defaultBranch?: string } {
+  return { name, description: mirrorDescription(github), ...(github.defaultBranch !== 'main' ? { defaultBranch: github.defaultBranch } : {}) }
+}
+
 // ---------------------------------------------------------------------------
 // The runner key
 // ---------------------------------------------------------------------------
@@ -197,8 +207,11 @@ export type MirrorStorage =
   | { readonly ok: true; readonly kind: 'platform' | 's3'; readonly inputs: readonly Line[]; readonly secrets: readonly SecretSpec[] }
   | { readonly ok: false; readonly reason: string }
 
+/** A storage the Action can use. */
+export type UsableMirrorStorage = Extract<MirrorStorage, { ok: true }>
+
 /** The Platform choice: no profile, no extra secret. */
-export const PLATFORM_STORAGE: MirrorStorage = { ok: true, kind: 'platform', inputs: [['storage-kind', 'platform']], secrets: [] }
+export const PLATFORM_STORAGE: UsableMirrorStorage = { ok: true, kind: 'platform', inputs: [['storage-kind', 'platform']], secrets: [] }
 
 /** `action/validate.sh` patterns. */
 const HTTPS_URL = /^https:\/\/[A-Za-z0-9.-]+(:[0-9]{1,5})?(\/[A-Za-z0-9._~/-]*)?$/
@@ -265,7 +278,7 @@ export interface WorkflowOptions {
   readonly network: string
   /** The devnet's name, or null. */
   readonly devnetName: string | null
-  readonly storage: Extract<MirrorStorage, { ok: true }>
+  readonly storage: UsableMirrorStorage
   /** Also mirror issues and pull requests (and their comments and reviews). */
   readonly collab: boolean
   /** The per-run cap in DASH, as typed. */
@@ -348,6 +361,7 @@ export function workflowYaml(o: WorkflowOptions): string {
     '        run: |',
     '          curl -sSLo /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protoc-28.3-linux-x86_64.zip',
     "          sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'",
+    '          sudo chmod +x /usr/local/bin/protoc',
     `      - name: Check out Dash Forge ${o.commit.slice(0, 12)}`,
     '        uses: actions/checkout@v4',
     '        with:',
@@ -375,24 +389,24 @@ export function workflowYaml(o: WorkflowOptions): string {
 }
 
 /** The secrets the workflow reads, in the order to add them. `DASH_FORGE_KEY` first. */
-export function workflowSecrets(storage: Extract<MirrorStorage, { ok: true }>): readonly SecretSpec[] {
+export function workflowSecrets(storage: UsableMirrorStorage): readonly SecretSpec[] {
   return [{ name: 'DASH_FORGE_KEY', what: 'the runner key from step 4 (starts with dfk1:)' }, ...storage.secrets]
 }
 
 /** GitHub's "new file" page with the workflow filled in. */
 export function newWorkflowUrl(github: GithubName, branch: string, yaml: string): string {
   const q = new URLSearchParams({ filename: WORKFLOW_PATH, value: yaml })
-  return `https://github.com/${github.owner}/${github.name}/new/${encodeURIComponent(branch)}?${q.toString()}`
+  return `${githubUrl(github)}/new/${branch.split('/').map(encodeURIComponent).join('/')}?${q.toString()}`
 }
 
 /** GitHub's "New repository secret" page. */
 export function newSecretUrl(github: GithubName): string {
-  return `https://github.com/${github.owner}/${github.name}/settings/secrets/actions/new`
+  return `${githubUrl(github)}/settings/secrets/actions/new`
 }
 
 /** The workflow's runs on GitHub. */
 export function workflowRunsUrl(github: GithubName): string {
-  return `https://github.com/${github.owner}/${github.name}/actions/workflows/forge-mirror.yml`
+  return `${githubUrl(github)}/actions/workflows/forge-mirror.yml`
 }
 
 /**
@@ -405,4 +419,14 @@ export function defaultCostCap(kind: 'platform' | 's3', sizeKib: number, perMibD
   if (kind === 's3') return '0.1'
   const estimate = (sizeKib / 1024) * perMibDash * 1.35 + 0.05
   return String(Math.max(0.1, Math.ceil(estimate * 100) / 100))
+}
+
+/**
+ * The runner key budget to suggest: the default 0.5 DASH, or on Platform enough for the first
+ * run's cap twice over (the first run and the pushes after it), at most 10 DASH (the most one
+ * key update adds, `TOP_UP_MAX_DASH`).
+ */
+export function suggestedRunnerBudget(kind: 'platform' | 's3', sizeKib: number, perMibDash: number): string {
+  const twice = Number(defaultCostCap(kind, sizeKib, perMibDash)) * 2
+  return String(Math.min(10, Math.max(RUNNER_KEY_DEFAULTS.budgetDash, Math.ceil(twice * 10) / 10)))
 }

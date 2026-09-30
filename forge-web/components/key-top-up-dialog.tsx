@@ -66,7 +66,7 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
   const [expiry, setExpiry] = useState(isoDay(suggested))
   const master = useMasterKeyInput(identity, { id: 'topup', fileLabel: 'Identity file for the top-up' })
   const [submitError, setError] = useState<string | null>(null)
-  const error = submitError ?? master.error
+  const error = master.error ?? submitError
   const [done, setDone] = useState<{ before: KeyLimits | null; after: KeyLimits } | null>(null)
   // Sent, but not visible on chain yet: re-read, never re-send (kept across close / reopen).
   const pending = usePendingTopUps((s) => (identity === null ? null : s.byIdentity[identity] ?? null))
@@ -94,9 +94,8 @@ export function KeyTopUpDialog({ onClose }: { onClose: () => void }): JSX.Elemen
       expiryError = errorMessage(e)
     }
   }
-  const hasMaster = master.ready
   const changes = credits !== null || newExpiry !== null
-  const ready = hasMaster && changes && amountError === null && expiryError === null && !isLoading
+  const ready = master.ready && changes && amountError === null && expiryError === null && !isLoading
 
   const submit = async (): Promise<void> => {
     if (!ready) return

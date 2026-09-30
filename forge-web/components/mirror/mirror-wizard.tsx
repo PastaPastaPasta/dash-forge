@@ -29,12 +29,12 @@ import { useAuth } from '@/contexts/auth-context'
 import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { useStorageConfig } from '@/hooks/use-storage-config'
-import { ACTIVE_NETWORK, DEFAULT_NETWORK } from '@/lib/constants'
-import { previewRepoCreate, repoCreationFirsts } from '@/lib/repo'
-import { KEY_REGISTER_CREDITS, previewCredits, sumPreviews } from '@/lib/sdk'
+import { ACTIVE_NETWORK } from '@/lib/constants'
+import { previewRepoCreate, readRefs, repoCreationFirsts, resolveAnyRepoWith } from '@/lib/repo'
+import { KEY_REGISTER_CREDITS, PUSH_COST_DASH, previewCredits, sumPreviews } from '@/lib/sdk'
 import { PLATFORM_PROFILE } from '@/lib/storage'
-import { EMPTY_PROGRESS, clearMirrorProgress, loadMirrorProgress, saveMirrorProgress, type MirrorProgress } from '@/lib/mirror/progress'
-import { mirrorDescription, type GithubRepo } from '@/lib/mirror/wizard'
+import { EMPTY_PROGRESS, clearMirrorProgress, loadMirrorProgress, refsFingerprint, resumed, saveMirrorProgress, withAnswer, type MirrorProgress, type RunnerKeyRecord } from '@/lib/mirror/progress'
+import { mirrorRepoInput, suggestForgeName, suggestedRunnerBudget } from '@/lib/mirror/wizard'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 
 type StepId = 'github' | 'repo' | 'storage' | 'key' | 'workflow' | 'wait'
@@ -60,6 +60,30 @@ function doneSteps(p: MirrorProgress): Readonly<Record<StepId, boolean>> {
   }
 }
 
+/** The one-line summary of each answered step. */
+function summariesOf(p: MirrorProgress): Partial<Record<StepId, React.ReactNode>> {
+  return {
+    github: p.github ? <span className="font-mono">github.com/{p.github.owner}/{p.github.name}</span> : null,
+    repo: p.repo ? <span className="font-mono">{p.repo.name}</span> : null,
+    storage: storageSummary(p.storage),
+    key: keySummary(p.runnerKey),
+    workflow: p.workflowAdded ? '.github/workflows/forge-mirror.yml' : null,
+  }
+}
+
+function storageSummary(storage: string | null): React.ReactNode {
+  if (storage === PLATFORM_PROFILE) return 'Dash Platform'
+  if (storage) return <span className="font-mono">{storage}</span>
+  return null
+}
+
+function keySummary(key: RunnerKeyRecord | null): string | null {
+  if (key === null) return null
+  // A negative key id: the person added a runner key of their own.
+  if (key.keyId < 0) return 'Your own runner key'
+  return `Key ${key.keyId}: ${creditsAsDash(Number(key.budgetCredits))} DASH until ${formatDate(key.expiresAt)}`
+}
+
 export function MirrorWizard(): JSX.Element {
   const { identity } = useAuth()
   const { sdk } = useSdk()
@@ -67,19 +91,27 @@ export function MirrorWizard(): JSX.Element {
   const forge = ACTIVE_NETWORK.v2
   const openedAt = useRef(Date.now())
   const [progress, setProgress] = useState<MirrorProgress>(EMPTY_PROGRESS)
+  const progressRef = useRef(progress)
   const [loaded, setLoaded] = useState<string | null>(null)
   const [reopened, setReopened] = useState<StepId | null>(null)
-  // The runner key's `dfk1:` value lives only here, in this tab, until it is pasted into GitHub.
-  const [secret, setSecret] = useState<string | null>(null)
+  // The runner key's `dfk1:` value lives only here, in this tab, until it is pasted into GitHub,
+  // and only for the identity it was made on (a sign-out or switch drops it from view).
+  const [made, setMade] = useState<{ identity: string; value: string } | null>(null)
+  const secret = made !== null && made.identity === identity ? made.value : null
+
+  const show = useCallback((next: MirrorProgress): void => {
+    progressRef.current = next
+    setProgress(next)
+  }, [])
 
   // Pick up where this identity stopped; a GitHub repo checked before signing in is kept.
   useEffect(() => {
     if (identity === null) return
     let live = true
-    loadMirrorProgress(DEFAULT_NETWORK, identity).then(
+    loadMirrorProgress(ACTIVE_NETWORK.key, identity).then(
       (saved) => {
         if (!live) return
-        setProgress((now) => (saved === null ? { ...now, startedAt: now.startedAt || openedAt.current } : now.github !== null && saved.github === null ? { ...saved, github: now.github } : saved))
+        show(resumed(progressRef.current, saved, openedAt.current))
         setLoaded(identity)
       },
       () => live && setLoaded(identity),
@@ -87,59 +119,62 @@ export function MirrorWizard(): JSX.Element {
     return () => {
       live = false
     }
-  }, [identity])
+  }, [identity, show])
 
+  /** Record an answer (and save it); `keepOpen`: the step a person reopened stays open. */
   const update = useCallback(
-    (patch: Partial<MirrorProgress>): void => {
-      setReopened(null)
-      setProgress((p) => {
-        const next = { ...p, ...patch, startedAt: p.startedAt || openedAt.current }
-        if (identity !== null) void saveMirrorProgress(DEFAULT_NETWORK, identity, next).catch(() => undefined)
-        return next
-      })
+    (patch: Partial<MirrorProgress>, keepOpen = false): void => {
+      if (!keepOpen) setReopened(null)
+      const p = progressRef.current
+      const next = { ...withAnswer(p, patch), startedAt: p.startedAt || openedAt.current }
+      show(next)
+      if (identity !== null) void saveMirrorProgress(ACTIVE_NETWORK.key, identity, next).catch(() => undefined)
     },
-    [identity],
+    [identity, show],
   )
 
   const firsts = useAsync(() => repoCreationFirsts(sdk!, identity!, forge!.core), [identity ?? '', sdk !== null], { enabled: sdk !== null && identity !== null && forge !== null })
 
-  if (!isForgeDeployed() || forge === null) return <NotDeployedState />
-
   const done = doneSteps(progress)
   const current = reopened ?? ORDER.find((s) => !done[s]) ?? 'wait'
-  const stateOf = (s: StepId): StepState => (s === current ? 'active' : done[s] ? 'done' : 'todo')
   const signedIn = identity !== null && loaded === identity
+
+  // The repository's refs before the workflow can run: the wait step watches for a change.
+  const baselineFor = current === 'workflow' && signedIn && progress.refsBefore === null ? progress.repo : null
+  useEffect(() => {
+    if (baselineFor === null || sdk === null || forge === null || identity === null) return
+    let live = true
+    void (async () => {
+      const resolved = await resolveAnyRepoWith(sdk, forge, { owner: identity, name: baselineFor.name, repoId: baselineFor.repoId })
+      const fp = resolved ? refsFingerprint(await readRefs(sdk, resolved.repo)) : null
+      if (live && fp !== null && progressRef.current.repo?.repoId === baselineFor.repoId) update({ refsBefore: fp }, true)
+    })().catch(() => undefined)
+    return () => {
+      live = false
+    }
+  }, [baselineFor, sdk, forge, identity, update])
+
+  if (!isForgeDeployed() || forge === null) return <NotDeployedState />
+
+  const stateOf = (s: StepId): StepState => {
+    if (s === current) return 'active'
+    return done[s] ? 'done' : 'todo'
+  }
   const choice = storageChoice(progress.storage, storage.config?.profiles ?? [])
   const profile = storage.config?.profiles.find((p) => p.name === progress.storage) ?? null
 
-  const summaries: Partial<Record<StepId, React.ReactNode>> = {
-    github: progress.github ? <span className="font-mono">github.com/{progress.github.owner}/{progress.github.name}</span> : null,
-    repo: progress.repo ? <span className="font-mono">{progress.repo.name}</span> : null,
-    storage: progress.storage === PLATFORM_PROFILE ? 'Dash Platform' : progress.storage ? <span className="font-mono">{progress.storage}</span> : null,
-    key:
-      progress.runnerKey && progress.runnerKey.keyId >= 0
-        ? `Key ${progress.runnerKey.keyId}: ${creditsAsDash(Number(progress.runnerKey.budgetCredits))} DASH until ${formatDate(progress.runnerKey.expiresAt)}`
-        : progress.runnerKey
-          ? 'Your own runner key'
-          : null,
-    workflow: progress.workflowAdded ? '.github/workflows/forge-mirror.yml' : null,
-  }
-
-  const setGithub = (github: GithubRepo): void => {
-    const same = progress.github?.owner === github.owner && progress.github.name === github.name
-    // Another source: its Forge repository and workflow are chosen again.
-    update(same ? { github } : { github, repo: null, workflowAdded: false, mirroredAt: null })
-  }
+  const summaries = summariesOf(progress)
+  const firstsOrNone = firsts.data ?? { first: {}, rest: {} }
 
   const body = (s: StepId): React.ReactNode => {
-    if (s === 'github') return <GithubStep initial={progress.github} onDone={setGithub} />
+    if (s === 'github') return <GithubStep initial={progress.github} onDone={(github) => update({ github })} />
     if (!signedIn || progress.github === null) {
       return identity === null ? <SignInGate /> : <p className="text-dense text-anvil-500 dark:text-anvil-400">Opening your progress…</p>
     }
     const gh = progress.github
     switch (s) {
       case 'repo':
-        return <RepoStep sdk={sdk} forge={forge} identity={identity} github={gh} onDone={(repo) => update({ repo })} />
+        return <RepoStep sdk={sdk} forge={forge} identity={identity} github={gh} firsts={firstsOrNone} onDone={(repo) => update({ repo })} />
       case 'storage':
         return <StorageStep storage={storage} github={gh} initial={progress.storage} onDone={(name) => update({ storage: name })} />
       case 'key':
@@ -149,8 +184,9 @@ export function MirrorWizard(): JSX.Element {
             github={gh}
             record={progress.runnerKey}
             secret={secret}
+            suggestedBudget={suggestedRunnerBudget(choice?.ok ? choice.kind : 's3', gh.sizeKib, PUSH_COST_DASH.perMib)}
             onCreated={(runnerKey, value) => {
-              setSecret(value)
+              setMade({ identity, value })
               update({ runnerKey })
             }}
             onDone={(runnerKey) => update({ runnerKey })}
@@ -159,10 +195,12 @@ export function MirrorWizard(): JSX.Element {
       case 'workflow':
         if (progress.repo === null || choice === null) return null
         // A bucket's settings (and the keys to paste) are sealed in the vault: open it first.
-        if (progress.storage !== PLATFORM_PROFILE && storage.needsUnlock) return <UnlockMore title="Unlock this tab to use your storage settings" testId="mirror-workflow-unlock" />
-        if (progress.storage !== PLATFORM_PROFILE && storage.config === null) return <LoadingBlock label="Opening your storage settings" />
+        if (progress.storage !== PLATFORM_PROFILE) {
+          if (storage.needsUnlock) return <UnlockMore title="Unlock this tab to use your storage settings" testId="mirror-workflow-unlock" />
+          if (storage.config === null) return <LoadingBlock label="Opening your storage settings" />
+        }
         if (!choice.ok) return <p className="text-dense text-caution-700 dark:text-caution-400">{choice.reason}</p>
-        return <WorkflowStep identity={identity} github={gh} repoName={progress.repo.name} storage={choice} profile={profile} secret={secret} onDone={() => update({ workflowAdded: true })} />
+        return <WorkflowStep identity={identity} github={gh} repoName={progress.repo.name} storage={choice} profile={profile} secret={secret} runnerKey={progress.runnerKey} onDone={() => update({ workflowAdded: true })} />
       case 'wait':
         if (progress.repo === null) return null
         return (
@@ -175,10 +213,11 @@ export function MirrorWizard(): JSX.Element {
             progress={progress}
             onMirrored={(at) => update({ mirroredAt: at })}
             onRestart={() => {
-              setSecret(null)
-              void clearMirrorProgress(DEFAULT_NETWORK, identity)
+              setMade(null)
+              setReopened(null)
+              void clearMirrorProgress(ACTIVE_NETWORK.key, identity)
               openedAt.current = Date.now()
-              setProgress({ ...EMPTY_PROGRESS, startedAt: openedAt.current })
+              show({ ...EMPTY_PROGRESS, startedAt: openedAt.current })
             }}
           />
         )
@@ -187,7 +226,7 @@ export function MirrorWizard(): JSX.Element {
 
   const repoCost =
     progress.github && !done.repo
-      ? previewRepoCreate({ name: progress.github.name.toLowerCase(), description: mirrorDescription(progress.github), defaultBranch: progress.github.defaultBranch }, firsts.data ?? { first: {}, rest: {} })
+      ? previewRepoCreate(mirrorRepoInput(progress.github, suggestForgeName(progress.github.name) || 'x'), firstsOrNone)
       : null
   const keyCost = done.key ? null : previewCredits(KEY_REGISTER_CREDITS)
   const left = [repoCost, keyCost].filter((c) => c !== null)

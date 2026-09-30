@@ -17,7 +17,7 @@ import { CopyBlock } from '@/components/storage/copy-block'
 import { StorageWizardView } from '@/components/storage/storage-wizard'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { useMasterKeyInput } from '@/components/auth/master-key-input'
-import { Hint, LinkButton } from '@/components/mirror/step-card'
+import { Hint, LinkButton, linkButtonClass } from '@/components/mirror/step-card'
 import { useAuth } from '@/contexts/auth-context'
 import { useAsync } from '@/hooks/use-async'
 import { useWriteGuard } from '@/hooks/use-write-guard'
@@ -25,10 +25,10 @@ import type { StorageConfigState } from '@/hooks/use-storage-config'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import type { ForgeIds } from '@/lib/deployments'
 import { parseDashAmount } from '@/lib/auth'
-import { createRepo, normalizeRepoName, previewRepoCreate, readRefs, branchesOf, tagsOf, repoCreationFirsts, resolveAnyRepoWith, type CreateRepoStep } from '@/lib/repo'
-import { KEY_REGISTER_CREDITS, PUSH_COST_DASH, previewCredits } from '@/lib/sdk'
+import { createRepo, normalizeRepoName, previewRepoCreate, readRefs, branchesOf, tagsOf, resolveAnyRepoWith, type CreateRepoStep, type RepoCreationFirsts } from '@/lib/repo'
+import { CREDITS_PER_DASH, KEY_REGISTER_CREDITS, PUSH_COST_DASH, previewCredits } from '@/lib/sdk'
 import { corsFix, PLATFORM_PROFILE, type StorageProfile } from '@/lib/storage'
-import { creditsAsDash, formatDate } from '@/lib/view/format'
+import { creditsAsDash, formatDate, plural } from '@/lib/view/format'
 import {
   DASH_FORGE_REPO,
   PLATFORM_STORAGE,
@@ -38,7 +38,7 @@ import {
   defaultCostCap,
   dfk1,
   latestCommit,
-  mirrorDescription,
+  mirrorRepoInput,
   mirrorStorageOf,
   newSecretUrl,
   newWorkflowUrl,
@@ -49,8 +49,9 @@ import {
   workflowYaml,
   type GithubRepo,
   type MirrorStorage,
+  type UsableMirrorStorage,
 } from '@/lib/mirror/wizard'
-import type { MirrorProgress, RunnerKeyRecord } from '@/lib/mirror/progress'
+import { refsFingerprint, type MirrorProgress, type RunnerKeyRecord } from '@/lib/mirror/progress'
 import { cn, errorMessage } from '@/lib/utils'
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -144,17 +145,26 @@ const CREATE_STEPS: readonly [CreateRepoStep, string][] = [
   ['config', 'Config (default branch)'],
 ]
 
+function CreateStepIcon({ state }: { state: 'running' | 'done' | undefined }): JSX.Element {
+  if (state === 'done') return <CheckCircle2 className="h-4 w-4 text-verify-700 dark:text-verify-400" aria-hidden />
+  if (state === 'running') return <Loader2 className="h-4 w-4 animate-spin text-anvil-500" aria-hidden />
+  return <span className="h-4 w-4 rounded-full border border-anvil-300 dark:border-anvil-700" aria-hidden />
+}
+
 export function RepoStep({
   sdk,
   forge,
   identity,
   github,
+  firsts,
   onDone,
 }: {
   sdk: EvoSDK | null
   forge: ForgeIds
   identity: string
   github: GithubRepo
+  /** Which of the creation's documents are this identity's first (priced higher). */
+  firsts: RepoCreationFirsts
   onDone: (repo: { repoId: string; name: string }) => void
 }): JSX.Element {
   const { signer } = useAuth()
@@ -171,10 +181,9 @@ export function RepoStep({
   const existing = useAsync(() => resolveAnyRepoWith(sdk!, forge, { owner: identity, name: normalized! }), [identity, normalized ?? '', sdk !== null], {
     enabled: sdk !== null && normalized !== null,
   })
-  const firsts = useAsync(() => repoCreationFirsts(sdk!, identity, forge.core), [identity, sdk !== null], { enabled: sdk !== null })
-  const description = mirrorDescription(github)
-  const input = { name: normalized ?? 'x', description, ...(github.defaultBranch !== 'main' ? { defaultBranch: github.defaultBranch } : {}) }
-  const cost = previewRepoCreate(input, firsts.data ?? { first: {}, rest: {} })
+  const input = mirrorRepoInput(github, normalized ?? 'x')
+  const description = input.description
+  const cost = previewRepoCreate(input, firsts)
   const [progress, setProgress] = useState<Partial<Record<CreateRepoStep, 'running' | 'done'>> | null>(null)
   const [error, setError] = useState<string | null>(null)
   const settled = normalized !== null && debounced === name.trim() && existing.settled && existing.error === null
@@ -225,13 +234,7 @@ export function RepoStep({
             <ol aria-label="Creation steps" className="space-y-1 text-dense">
               {CREATE_STEPS.map(([step, label]) => (
                 <li key={step} className="flex items-center gap-2">
-                  {progress[step] === 'done' ? (
-                    <CheckCircle2 className="h-4 w-4 text-verify-700 dark:text-verify-400" aria-hidden />
-                  ) : progress[step] === 'running' ? (
-                    <Loader2 className="h-4 w-4 animate-spin text-anvil-500" aria-hidden />
-                  ) : (
-                    <span className="h-4 w-4 rounded-full border border-anvil-300 dark:border-anvil-700" aria-hidden />
-                  )}
+                  <CreateStepIcon state={progress[step]} />
                   {label}
                 </li>
               ))}
@@ -259,6 +262,16 @@ export function storageChoice(name: string | null, profiles: readonly StoragePro
   return p ? mirrorStorageOf(p) : { ok: false, reason: `The storage profile ${name} is no longer in this browser. Pick storage again.` }
 }
 
+function optionClass(selected: boolean): string {
+  return cn('flex items-start gap-2.5 rounded-md border p-3 text-dense', selected ? 'border-forge-500 bg-forge-500/5' : 'border-anvil-200 dark:border-anvil-750')
+}
+
+function storageButtonLabel(picked: string | null): string {
+  if (picked === PLATFORM_PROFILE) return 'Use Dash Platform'
+  if (picked) return `Use ${picked}`
+  return 'Pick where the mirror stores git data'
+}
+
 export function StorageStep({ storage, github, initial, onDone }: { storage: StorageConfigState; github: GithubRepo; initial: string | null; onDone: (name: string) => void }): JSX.Element {
   const { config, needsUnlock, storable } = storage
   const [adding, setAdding] = useState(false)
@@ -266,19 +279,21 @@ export function StorageStep({ storage, github, initial, onDone }: { storage: Sto
   const [picked, setPicked] = useState<string | null>(initial)
   // A profile saved in the embedded wizard is picked for the mirror at once (not one that merely
   // finished loading).
-  const count = profiles.length
-  const [seen, setSeen] = useState(count)
-  if (count !== seen) {
-    setSeen(count)
-    const added = profiles.at(-1)
-    if (adding && count > seen && added) {
-      setPicked(added.name)
+  const names = profiles.map((p) => p.name)
+  const [seen, setSeen] = useState(names)
+  if (names.join('\n') !== seen.join('\n')) {
+    setSeen(names)
+    // Profiles are kept sorted by name: the new one is the name not seen before.
+    const added = names.find((n) => !seen.includes(n))
+    if (adding && added !== undefined) {
+      setPicked(added)
       setAdding(false)
     }
   }
   const choice = storageChoice(picked, config?.profiles ?? [])
   const profile = profiles.find((p) => p.name === picked) ?? null
   const origin = typeof window === 'undefined' ? 'https://forge.dashhq.org' : window.location.origin
+  const cors = profile?.settings.kind === 's3' ? { bucket: profile.settings.bucket, ...corsFix(profile.settings.provider, profile.settings.bucket, origin) } : null
   const platformDash = (github.sizeKib / 1024) * PUSH_COST_DASH.perMib
 
   if (needsUnlock) return <UnlockMore title="Unlock this tab to use your storage settings" testId="mirror-storage-unlock" />
@@ -296,11 +311,7 @@ export function StorageStep({ storage, github, initial, onDone }: { storage: Sto
           return (
             <label
               key={p.name}
-              className={cn(
-                'flex items-start gap-2.5 rounded-md border p-3 text-dense',
-                picked === p.name ? 'border-forge-500 bg-forge-500/5' : 'border-anvil-200 dark:border-anvil-750',
-                !m.ok && 'opacity-70',
-              )}
+              className={cn(optionClass(picked === p.name), !m.ok && 'opacity-70')}
             >
               <input type="radio" name="mirror-storage" className="mt-0.5 h-4 w-4 accent-forge-700" checked={picked === p.name} disabled={!m.ok} onChange={() => setPicked(p.name)} />
               <span className="min-w-0">
@@ -314,7 +325,7 @@ export function StorageStep({ storage, github, initial, onDone }: { storage: Sto
             </label>
           )
         })}
-        <label className={cn('flex items-start gap-2.5 rounded-md border p-3 text-dense', picked === PLATFORM_PROFILE ? 'border-forge-500 bg-forge-500/5' : 'border-anvil-200 dark:border-anvil-750')}>
+        <label className={optionClass(picked === PLATFORM_PROFILE)}>
           <input type="radio" name="mirror-storage" className="mt-0.5 h-4 w-4 accent-forge-700" checked={picked === PLATFORM_PROFILE} onChange={() => setPicked(PLATFORM_PROFILE)} data-testid="mirror-storage-platform" />
           <span>
             <span className="font-medium">Dash Platform</span>{' '}
@@ -340,17 +351,17 @@ export function StorageStep({ storage, github, initial, onDone }: { storage: Sto
       )}
       {!storable ? <Hint tone="caution">This tab signs with a pasted key, which cannot keep storage settings: sign in with your identity to add a bucket, or use Platform.</Hint> : null}
 
-      {profile?.settings.kind === 's3' ? (
+      {cors ? (
         <details className="rounded-md border border-anvil-200 p-3 text-dense dark:border-anvil-750" data-testid="mirror-cors">
-          <summary className="cursor-pointer font-medium">CORS for {profile.settings.bucket}: needed for the web to read it</summary>
-          <p className="my-2 text-[12px] text-anvil-500 dark:text-anvil-400">{corsFix(profile.settings.provider, profile.settings.bucket, origin).where}</p>
-          <CopyBlock text={corsFix(profile.settings.provider, profile.settings.bucket, origin).text} label="Copy the CORS policy" />
+          <summary className="cursor-pointer font-medium">CORS for {cors.bucket}: needed for the web to read it</summary>
+          <p className="my-2 text-[12px] text-anvil-500 dark:text-anvil-400">{cors.where}</p>
+          <CopyBlock text={cors.text} label="Copy the CORS policy" />
           <Hint>The Action itself needs no CORS; readers of the mirror in a browser do. The storage test checks it.</Hint>
         </details>
       ) : null}
 
       <Button variant="primary" disabled={choice === null || !choice.ok} onClick={() => picked && onDone(picked)}>
-        {picked === PLATFORM_PROFILE ? 'Use Dash Platform' : picked ? `Use ${picked}` : 'Pick where the mirror stores git data'}
+        {storageButtonLabel(picked)}
       </Button>
     </>
   )
@@ -365,21 +376,25 @@ export function KeyStep({
   github,
   record,
   secret,
+  suggestedBudget,
   onCreated,
   onDone,
 }: {
   identity: string
   github: GithubRepo
   record: RunnerKeyRecord | null
+  /** The budget to start from (more than the default when the mirror stores packs on Platform). */
+  suggestedBudget: string
   /** The new key's `dfk1:` value, while this tab holds it (it is never stored). */
   secret: string | null
   onCreated: (record: RunnerKeyRecord, secret: string) => void
   onDone: (record: RunnerKeyRecord) => void
 }): JSX.Element {
-  const { createRunnerKey, isLoading } = useAuth()
-  const guard = useWriteGuard()
+  // The master key signs this update and the identity's balance pays for it: this browser's own
+  // key (its budget, expiry and grants) plays no part, so the write guard does not apply.
+  const { createRunnerKey, isLoading, balance } = useAuth()
   const master = useMasterKeyInput(identity, { id: 'runner', fileLabel: 'Identity file for the runner key' })
-  const [budget, setBudget] = useState(String(RUNNER_KEY_DEFAULTS.budgetDash))
+  const [budget, setBudget] = useState(suggestedBudget)
   const [days, setDays] = useState(String(RUNNER_KEY_DEFAULTS.days))
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
@@ -395,11 +410,11 @@ export function KeyStep({
   const dayCount = Number(days)
   const daysError = Number.isInteger(dayCount) && dayCount >= 1 && dayCount <= 365 ? null : 'from 1 to 365 days'
   const fee = previewCredits(KEY_REGISTER_CREDITS)
+  const tooPoor = balance !== null && BigInt(balance) < BigInt(KEY_REGISTER_CREDITS)
   const until = Date.now() + (daysError ? RUNNER_KEY_DEFAULTS.days : dayCount) * DAY_MS
 
   const create = async (): Promise<void> => {
-    if (credits === null || daysError !== null || !master.ready) return
-    if (!guard.check(fee, 'core', 'create the runner key')) return
+    if (credits === null || daysError !== null || !master.ready || tooPoor) return
     setError(null)
     try {
       const request = { budgetCredits: credits, expiresAt: Date.now() + dayCount * DAY_MS }
@@ -469,9 +484,10 @@ export function KeyStep({
       {master.element}
       <CostPreview cost={fee} />
       <Hint>The fee registers the key; its budget is a cap, not a charge. Your master key signs this one update and is not stored.</Hint>
+      {tooPoor ? <Hint tone="caution">Your identity&apos;s balance is below the fee. Top it up first.</Hint> : null}
       {master.error ? <Hint tone="danger">{master.error}</Hint> : null}
       {error ? <Hint tone="danger">{error}</Hint> : null}
-      <Button variant="primary" loading={isLoading} disabled={!master.ready || credits === null || daysError !== null || guard.disabledReason !== null} onClick={() => void create()}>
+      <Button variant="primary" loading={isLoading} disabled={!master.ready || credits === null || daysError !== null || tooPoor} onClick={() => void create()}>
         Sign once &amp; create the runner key
       </Button>
       <div className="border-t border-anvil-100 pt-3 dark:border-anvil-850">
@@ -500,7 +516,7 @@ function SecretValue({ label, value }: { label: string; value: string }): JSX.El
   const [shown, setShown] = useState(false)
   return (
     <div className="flex items-center gap-1">
-      <CopyRow text={shown ? value : '•'.repeat(Math.min(24, value.length))} label={`Copy ${label}`} className="mb-0 min-w-0 flex-1" />
+      <CopyRow text={value} display={shown ? value : '•'.repeat(Math.min(24, value.length))} label={`Copy ${label}`} className="mb-0 min-w-0 flex-1" />
       <Button variant="ghost" size="icon" aria-label={shown ? `Hide ${label}` : `Show ${label}`} onClick={() => setShown(!shown)}>
         {shown ? <EyeOff className="h-4 w-4" aria-hidden /> : <Eye className="h-4 w-4" aria-hidden />}
       </Button>
@@ -515,21 +531,24 @@ export function WorkflowStep({
   storage,
   profile,
   secret,
+  runnerKey,
   onDone,
 }: {
   identity: string
   github: GithubRepo
   repoName: string
-  storage: Extract<MirrorStorage, { ok: true }>
+  storage: UsableMirrorStorage
   profile: StorageProfile | null
   secret: string | null
+  runnerKey: RunnerKeyRecord | null
   onDone: () => void
 }): JSX.Element {
   const [collab, setCollab] = useState(true)
   const [costCap, setCostCap] = useState(() => defaultCostCap(storage.kind, github.sizeKib, PUSH_COST_DASH.perMib))
-  const [commit, setCommit] = useState(BUILD_COMMIT)
+  // Typed by the person, else the build's commit, else the latest on master.
+  const [typed, setCommit] = useState<string | null>(null)
   const master = useAsync(() => latestCommit(DASH_FORGE_REPO, 'master'), [], { enabled: BUILD_COMMIT === '' })
-  if (commit === '' && master.data) setCommit(master.data)
+  const commit = typed ?? (BUILD_COMMIT || master.data || '')
   const [committed, setCommitted] = useState(false)
 
   const yaml = useMemo(() => {
@@ -552,9 +571,20 @@ export function WorkflowStep({
     }
   }, [github, identity, repoName, storage, collab, costCap, commit])
   const capError = costCapProblem(costCap)
+  const overBudget = capError === null && runnerKey !== null && runnerKey.keyId >= 0 && Number(costCap) * CREDITS_PER_DASH > Number(runnerKey.budgetCredits)
   const secrets = workflowSecrets(storage)
-  const valueOf = (name: string): string | null =>
-    name === 'DASH_FORGE_KEY' ? secret : name === 'S3_ACCESS_KEY_ID' ? profile?.secrets.accessKeyId ?? null : name === 'S3_SECRET_ACCESS_KEY' ? profile?.secrets.secretAccessKey ?? null : null
+  const valueOf = (name: string): string | null => {
+    switch (name) {
+      case 'DASH_FORGE_KEY':
+        return secret
+      case 'S3_ACCESS_KEY_ID':
+        return profile?.secrets.accessKeyId ?? null
+      case 'S3_SECRET_ACCESS_KEY':
+        return profile?.secrets.secretAccessKey ?? null
+      default:
+        return null
+    }
+  }
 
   return (
     <>
@@ -595,6 +625,11 @@ export function WorkflowStep({
               <Input id="mirror-cost-cap" inputMode="decimal" value={costCap} onChange={(e) => setCostCap(e.target.value)} className="font-mono" autoComplete="off" aria-invalid={capError !== null} />
             </Field>
             {capError ? <Hint tone="danger">{capError}</Hint> : null}
+            {overBudget && runnerKey ? (
+              <Hint tone="caution">
+                More than the runner key&apos;s whole budget ({creditsAsDash(Number(runnerKey.budgetCredits))} DASH): a run that needs it stops when the key runs out. Make a key with a larger budget in step 4.
+              </Hint>
+            ) : null}
           </div>
           <div>
             <Field label="Dash Forge commit" htmlFor="mirror-commit" hint={BUILD_COMMIT ? 'The commit this site was built from.' : 'The latest on master; pin one you have reviewed.'}>
@@ -673,8 +708,11 @@ export function WaitStep({
 }): JSX.Element {
   const [now, setNow] = useState(Date.now())
   const [refs, setRefs] = useState<{ branches: number; tags: number } | null>(null)
+  // The repository already had refs, and none has changed yet.
+  const [unchanged, setUnchanged] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const mirroredAt = progress.mirroredAt
+  const before = progress.refsBefore ?? ''
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000)
@@ -692,11 +730,12 @@ export function WaitStep({
         const all = await readRefs(sdk, resolved.repo)
         if (stop) return
         setError(null)
-        if (all.length > 0) {
+        if (all.length > 0 && refsFingerprint(all) !== before) {
           setRefs({ branches: branchesOf(all).length, tags: tagsOf(all).length })
           if (mirroredAt === null) onMirrored(Date.now())
           return
         }
+        setUnchanged(all.length)
       } catch (e) {
         if (!stop) setError(errorMessage(e))
       }
@@ -709,7 +748,7 @@ export function WaitStep({
     }
     // Poll once per repo; `onMirrored` and `mirroredAt` only record the first sighting.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sdk, forge, identity, repo.name, repo.repoId])
+  }, [sdk, forge, identity, repo.name, repo.repoId, before])
 
   const href = `/repo/?owner=${encodeURIComponent(identity)}&name=${encodeURIComponent(repo.name)}`
   if (refs) {
@@ -719,12 +758,12 @@ export function WaitStep({
           <CheckCircle2 className="h-5 w-5" aria-hidden /> Your mirror is live
         </p>
         <p className="text-dense text-anvil-600 dark:text-anvil-300">
-          {refs.branches} {refs.branches === 1 ? 'branch' : 'branches'} and {refs.tags} {refs.tags === 1 ? 'tag' : 'tags'} of github.com/{github.owner}/{github.name} are on Dash Platform, signed by your identity.
+          {plural(refs.branches, 'branch', 'branches')} and {plural(refs.tags, 'tag')} of github.com/{github.owner}/{github.name} are on Dash Platform, signed by your identity.
           {mirroredAt !== null && progress.startedAt > 0 ? ` Set up in ${minutes(mirroredAt - progress.startedAt)}, from opening this page to the first mirrored push.` : ''}
         </p>
         <p className="text-dense text-anvil-600 dark:text-anvil-300">Push anything to GitHub: the mirror follows on every push, issue and release, and reconciles daily.</p>
         <div className="flex flex-wrap gap-2">
-          <Link href={href} className="inline-flex h-9 items-center gap-1.5 rounded-md bg-forge-700 px-3.5 text-dense font-medium text-white hover:bg-forge-800 coarse:min-h-11">
+          <Link href={href} className={linkButtonClass(true)}>
             Open {repo.name}
           </Link>
           <Button variant="outline" onClick={onRestart}>
@@ -742,6 +781,12 @@ export function WaitStep({
       <Hint>
         Checking Platform every {POLL_MS / 1000} s{progress.startedAt > 0 ? `; ${minutes(now - progress.startedAt)} since you opened this page` : ''}. The first run compiles Dash Forge&apos;s tools before it mirrors.
       </Hint>
+      {sdk === null ? <Hint>Connecting to Dash Platform…</Hint> : null}
+      {unchanged > 0 ? (
+        <Hint>
+          {repo.name} already had {plural(unchanged, 'ref')}, and none has changed yet. If it already matches GitHub, the run has nothing new to push: check it on GitHub.
+        </Hint>
+      ) : null}
       {error ? <Hint tone="caution">Last check failed: {error}. Trying again.</Hint> : null}
       <div className="flex flex-wrap gap-2">
         <LinkButton href={workflowRunsUrl(github)} testId="mirror-runs-link">

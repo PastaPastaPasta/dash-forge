@@ -15,6 +15,8 @@ import {
   checkGithubRepo,
   costCapProblem,
   defaultCostCap,
+  mirrorRepoInput,
+  suggestedRunnerBudget,
   dfk1,
   latestCommit,
   mirrorDescription,
@@ -25,7 +27,7 @@ import {
   suggestForgeName,
   workflowSecrets,
   workflowYaml,
-  type MirrorStorage,
+  type UsableMirrorStorage,
   type WorkflowOptions,
 } from './wizard'
 
@@ -223,7 +225,7 @@ const OPTIONS: WorkflowOptions = {
   forgeRepo: `dash://${ID}/project`,
   network: 'devnet',
   devnetName: 'bonsia',
-  storage: mirrorStorageOf(s3()) as Extract<MirrorStorage, { ok: true }>,
+  storage: mirrorStorageOf(s3()) as UsableMirrorStorage,
   collab: true,
   costCap: '0.1',
   commit: SHA,
@@ -250,7 +252,7 @@ describe('workflowYaml', () => {
   })
 
   it('drops the issue and PR triggers when only code is mirrored, and devnet-name off a devnet', () => {
-    const y = workflowYaml({ ...OPTIONS, collab: false, network: 'mainnet', devnetName: null, storage: PLATFORM_STORAGE as Extract<MirrorStorage, { ok: true }> })
+    const y = workflowYaml({ ...OPTIONS, collab: false, network: 'mainnet', devnetName: null, storage: PLATFORM_STORAGE })
     expect(y).toContain("sync: 'code,releases'")
     expect(y).not.toContain('pull_request_target')
     expect(y).not.toContain('issue_comment')
@@ -298,7 +300,26 @@ describe('GitHub links', () => {
 
   it('lists DASH_FORGE_KEY first, then the storage secrets', () => {
     expect(workflowSecrets(OPTIONS.storage).map((s) => s.name)).toEqual(['DASH_FORGE_KEY', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY'])
-    expect(workflowSecrets(PLATFORM_STORAGE as Extract<MirrorStorage, { ok: true }>).map((s) => s.name)).toEqual(['DASH_FORGE_KEY'])
+    expect(workflowSecrets(PLATFORM_STORAGE).map((s) => s.name)).toEqual(['DASH_FORGE_KEY'])
+  })
+})
+
+describe('suggestedRunnerBudget, mirrorRepoInput and branch links', () => {
+  it('suggests the default budget, more for Platform storage, at most 10 DASH', () => {
+    expect(suggestedRunnerBudget('s3', 500_000, 0.39)).toBe('0.5')
+    expect(suggestedRunnerBudget('platform', 20, 0.39)).toBe('0.5')
+    expect(suggestedRunnerBudget('platform', 10 * 1024, 0.39)).toBe('10')
+    expect(suggestedRunnerBudget('platform', 2 * 1024, 0.39)).toBe('2.3')
+  })
+
+  it("gives the mirror GitHub's default branch, and no branch when it is main", () => {
+    const repo = { owner: 'o', name: 'r', description: '', defaultBranch: 'master', sizeKib: 1, archived: false, fork: false, htmlUrl: '' }
+    expect(mirrorRepoInput(repo, 'r')).toEqual({ name: 'r', description: 'Mirror of github.com/o/r', defaultBranch: 'master' })
+    expect(mirrorRepoInput({ ...repo, defaultBranch: 'main' }, 'r')).toEqual({ name: 'r', description: 'Mirror of github.com/o/r' })
+  })
+
+  it('keeps the slashes of a branch name in the new-file link', () => {
+    expect(new URL(newWorkflowUrl({ owner: 'o', name: 'r' }, 'release/v1', 'x')).pathname).toBe('/o/r/new/release/v1')
   })
 })
 

@@ -74,7 +74,11 @@ export function useMasterKeyInput(identityId: string | null, { id, fileLabel }: 
             key={m}
             type="button"
             aria-pressed={mode === m}
-            onClick={() => setMode(m)}
+            onClick={() => {
+              // The textarea remounts empty: nothing typed stays counted.
+              setPhraseTyped(false)
+              setMode(m)
+            }}
             className={cn('rounded px-3 py-1 text-dense font-medium coarse:min-h-11', mode === m ? 'bg-forge-500/15 text-forge-800 dark:text-forge-300' : 'text-anvil-600 dark:text-anvil-300')}
           >
             {m === 'file' ? 'Identity file' : 'Recovery phrase'}

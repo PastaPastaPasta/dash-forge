@@ -42,7 +42,7 @@ export function StepCard({
           aria-hidden
           className={cn(
             'mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[12px] font-semibold',
-            state === 'done' && 'bg-verify-700 text-white dark:bg-verify-600',
+            state === 'done' && 'bg-verify-700 text-white',
             state === 'active' && 'bg-forge-700 text-white',
             state === 'todo' && 'border border-anvil-300 text-anvil-500 dark:border-anvil-700 dark:text-anvil-400',
           )}
@@ -67,21 +67,20 @@ export function StepCard({
   )
 }
 
+/** The classes of a link styled as a button. */
+export function linkButtonClass(primary: boolean): string {
+  return cn(
+    'inline-flex h-9 items-center justify-center gap-1.5 rounded-md px-3.5 text-dense font-medium transition-colors coarse:min-h-11',
+    primary
+      ? 'bg-forge-700 text-white hover:bg-forge-800'
+      : 'border border-anvil-300 text-anvil-800 hover:bg-anvil-100 dark:border-anvil-700 dark:text-anvil-100 dark:hover:bg-anvil-800',
+  )
+}
+
 /** A link styled as a button (GitHub pages open in a new tab). */
 export function LinkButton({ href, children, primary = false, testId }: { href: string; children: React.ReactNode; primary?: boolean; testId?: string }): JSX.Element {
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      data-testid={testId}
-      className={cn(
-        'inline-flex h-9 items-center justify-center gap-1.5 rounded-md px-3.5 text-dense font-medium transition-colors coarse:min-h-11',
-        primary
-          ? 'bg-forge-700 text-white hover:bg-forge-800'
-          : 'border border-anvil-300 text-anvil-800 hover:bg-anvil-100 dark:border-anvil-700 dark:text-anvil-100 dark:hover:bg-anvil-800',
-      )}
-    >
+    <a href={href} target="_blank" rel="noopener noreferrer" data-testid={testId} className={linkButtonClass(primary)}>
       {children}
     </a>
   )
