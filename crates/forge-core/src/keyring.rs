@@ -145,6 +145,15 @@ impl EncryptionKeys {
             .collect()
     }
 
+    /// The ids of the keys held that are enabled on chain.
+    pub fn enabled_ids(&self) -> Vec<u32> {
+        self.keys
+            .iter()
+            .filter(|(_, (_, enabled))| *enabled)
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
     /// The private key with `id`, enabled or not.
     fn get(&self, id: u32) -> Option<&PrivateKey> {
         self.keys.get(&id).map(|(k, _)| k)
@@ -2346,7 +2355,9 @@ mod tests {
             u.message
         );
         assert!(
-            u.fix.iter().any(|f| f.contains("dg auth login --mnemonic")),
+            u.fix
+                .iter()
+                .any(|f| f.contains("dg auth login --mnemonic --replace")),
             "{:?}",
             u.fix
         );

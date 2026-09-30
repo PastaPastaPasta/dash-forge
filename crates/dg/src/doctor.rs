@@ -522,10 +522,11 @@ async fn check_identity(ctx: &Ctx) -> Vec<Check> {
     };
     if bridge.doc_op_key().is_ok() {
         out.push(match (&client, &identity) {
-            (Ok(c), Some(Ok(identity))) => keys_check(
-                &crate::auth::key_report(c, identity, &bridge, ctx).await,
-                &bridge,
-            ),
+            (Ok(c), Some(Ok(identity))) => {
+                let report = crate::auth::key_report(c, identity, &bridge, ctx).await;
+                let access = crate::auth::private_access(ctx, &bridge, Some(identity));
+                keys_check(&report, &access, crate::auth::now_ms())
+            }
             // Not on chain, or not reachable: the balance row says which; what the key file
             // holds is all that can be said.
             _ => Check::ok(
@@ -562,22 +563,31 @@ async fn check_identity(ctx: &Ctx) -> Vec<Check> {
 }
 
 /// The `keys` row: what the key in use can sign, as the chain says (QW2-005: a CI runner key
-/// bound to `checkRun` passed as "HIGH/CRITICAL auth key for writes"), and whether private
-/// repositories open with it (an `ENCRYPTION` key held beside it).
+/// bound to `checkRun` passed as "HIGH/CRITICAL auth key for writes"), whether it still can
+/// (budget, expiry, `now_ms`), and whether private repositories open with it (an `ENCRYPTION`
+/// key held beside it).
 fn keys_check(
     report: &crate::auth::KeyReport,
-    bridge: &forge_core::keystore::BridgeIdentity,
+    access: &crate::auth::PrivateAccess,
+    now_ms: u64,
 ) -> Check {
-    if report.key_id.is_none() {
+    let Some(key_id) = report.key_id else {
         return Check::fail(
             "keys",
             "the key in use is not a live key of this identity (disabled, or never registered)",
             "sign in again: `dg auth login <file>` or `dg auth login --mnemonic`",
         );
-    }
+    };
     let line = crate::auth::key_line(Some(report), None, true);
-    let ids = crate::auth::encryption_key_ids(bridge);
-    let also = crate::auth::private_line(Some(&ids), report.doc_type.is_some())
+    if let Some(why) = report.spent_or_expired(now_ms) {
+        let fix = if report.doc_type.is_some() {
+            "`dg ci runner new` registers a fresh runner key".to_string()
+        } else {
+            format!("`dg auth keys add --replace {key_id}` registers a fresh limited key")
+        };
+        return Check::fail("keys", format!("{line}: {why}, so it signs nothing"), fix);
+    }
+    let also = crate::auth::private_line(Some(access), report.doc_type.is_some(), Some(key_id))
         .map(|l| format!("; {l}"))
         .unwrap_or_default();
     Check::ok("keys", format!("{line}{also}"))

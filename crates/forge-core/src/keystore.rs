@@ -652,12 +652,11 @@ pub fn create_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
 /// E303 for the sealed key file `shown` that did not open with the passphrase given (from the
 /// variable `via`, or typed), naming the file (QW2-022: it was an E204 that named neither of
 /// two sealed files). A malformed file keeps `err`'s own message.
-fn wrong_passphrase(shown: &str, via: Option<&str>, err: &Error) -> Error {
-    let Error::Config(msg) = err else {
-        return Error::Config(err.to_string());
-    };
-    if !msg.contains("wrong passphrase") {
-        return Error::Config(format!("{shown}: {msg}"));
+fn wrong_passphrase(shown: &str, via: Option<&str>, err: Error) -> Error {
+    match &err {
+        Error::Config(msg) if msg.contains("wrong passphrase") => {}
+        Error::Config(msg) => return Error::Config(format!("{shown}: {msg}")),
+        _ => return err,
     }
     let given = via.map_or_else(|| "the passphrase typed".to_string(), str::to_string);
     crate::user_error::UserError::new(
@@ -752,11 +751,9 @@ impl BridgeIdentity {
         );
         if crate::sealed::is_sealed(&raw) {
             let pass = crate::sealed::passphrase_from(passphrase_envs, &shown, false)?;
-            let via = passphrase_envs
-                .iter()
-                .find(|e| std::env::var_os(e).is_some_and(|v| !v.is_empty()));
+            let via = crate::sealed::passphrase_env_in_use(passphrase_envs);
             let plain = crate::sealed::open(&raw, pass.expose())
-                .map_err(|e| wrong_passphrase(&shown, via.copied(), &e))?;
+                .map_err(|e| wrong_passphrase(&shown, via, e))?;
             let text = std::str::from_utf8(&plain)
                 .map_err(|_| Error::Io("the sealed identity file does not hold text".into()))?;
             return Ok(Secret::new(text));

@@ -131,7 +131,7 @@ Fix: none within the private repository in this release. The label definitions (
 
 Fix: `dg auth new` creates an identity and stores a limited key for this computer; `dg auth login <file>` (or `dg auth login --mnemonic`) signs in with an existing one. For a single command pass `--identity <file>`, or set `DASH_FORGE_KEY` to a file, a `keychain:dash-forge/<network>/<id>` entry, or a `dfk1:` key (this is also how `git-remote-dash` finds the key; without it the helper uses the default `dg auth` recorded, then `~/.config/dash-forge/identities/<owner>.identity.json`).
 
-A private repository needs more than a signing key: its content is encrypted to each member's `ENCRYPTION` key. `dg auth login <file>`, `dg auth login --mnemonic` and `dg auth new` store it beside the limited signing key (never the master key), unless `--signing-only`; a key stored by an older `dg` lacks it (that would be [E306](#e306) next): sign in again.
+A private repository needs more than a signing key: its content is encrypted to each member's `ENCRYPTION` key. `dg auth login <file>`, `dg auth login --mnemonic` and `dg auth new` store it beside the limited signing key (never the master key), unless `--signing-only`; a key stored by an older `dg` lacks it (that would be [E306](#e306) next): sign in again with `--replace <key id>`.
 
 ## E302
 
@@ -177,7 +177,7 @@ Fix: register a fresh one with your master key (used once): `dg auth login <iden
 - "the key stored on this computer holds no encryption key": your identity usually has one (`dg auth keys list`; identities from `dg auth new`, the bridge and the web app have key 4), but the key source in use does not hold its private half: a limited key stored by an older `dg`, or with `--signing-only`, is a signing key only.
 - "`<member>` has no encryption key" (`dg collab add` to a private repository): the member you named has no enabled `ENCRYPTION` key on their identity.
 
-Fix: for the first, sign in again: `dg auth login <identity file>`, or `dg auth login --mnemonic` with the 12 recovery words if you have no identity file (a `dg auth new` identity). It registers a new limited key and stores your encryption key beside it; the master key is used once and not stored. For one command, point `DASH_FORGE_KEY` at the identity file. If the identity has no ENCRYPTION key at all, `dg auth keys add --encryption` adds one, derived from the recovery words (one identity update signed by the master key). A member you are adding does this themselves, or uses Settings → Keys → Enable private repos in the web app. See [identity and keys](guides/identity-and-keys.md#encryption-key-private-repositories).
+Fix: for the first, sign in again, replacing the key in use (`dg auth status` shows its id, and its `Private:` line prints the command): `dg auth login <identity file> --replace <key id>`, or `dg auth login --mnemonic --replace <key id>` with the 12 recovery words if you have no identity file (a `dg auth new` identity). It registers a new limited key, stores your encryption key beside it and disables the old key; the master key is used once and not stored. For one command, point `DASH_FORGE_KEY` at the identity file. If the identity has no ENCRYPTION key at all, `dg auth keys add --encryption` adds one, derived from the recovery words (one identity update signed by the master key). A member you are adding does this themselves, or uses Settings → Keys → Enable private repos in the web app. See [identity and keys](guides/identity-and-keys.md#encryption-key-private-repositories).
 
 ## E307
 

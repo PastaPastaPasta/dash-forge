@@ -225,18 +225,25 @@ pub fn passphrase(what: &str, confirm: bool) -> Result<Secret> {
     passphrase_from(&[PASSPHRASE_ENV], what, confirm)
 }
 
+/// The first of `envs` that is set (not empty): where [`passphrase_from`] takes the
+/// passphrase from, `None` when it asks for it.
+pub fn passphrase_env_in_use<'a>(envs: &[&'a str]) -> Option<&'a str> {
+    envs.iter()
+        .copied()
+        .find(|e| std::env::var_os(e).is_some_and(|v| !v.is_empty()))
+}
+
 /// [`passphrase`], reading the first of `envs` that is set before prompting (a second sealed
 /// file in one command, with its own passphrase: `DASH_FORGE_RUNNER_PASSPHRASE`, then
 /// [`PASSPHRASE_ENV`]). Messages name the first.
 pub fn passphrase_from(envs: &[&str], what: &str, confirm: bool) -> Result<Secret> {
     let first = envs.first().copied().unwrap_or(PASSPHRASE_ENV);
-    for env in envs {
-        if let Some(p) = std::env::var_os(env).filter(|v| !v.is_empty()) {
-            let p = p
-                .into_string()
-                .map_err(|_| Error::Config(format!("{env} is not UTF-8")))?;
-            return Ok(Secret::new(p));
-        }
+    if let Some(env) = passphrase_env_in_use(envs) {
+        let p = std::env::var_os(env)
+            .unwrap_or_default()
+            .into_string()
+            .map_err(|_| Error::Config(format!("{env} is not UTF-8")))?;
+        return Ok(Secret::new(p));
     }
     if !prompts_allowed() {
         return Err(Error::Config(format!(

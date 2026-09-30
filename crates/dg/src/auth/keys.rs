@@ -261,16 +261,17 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
     ctx.confirm_or_cancel("Add the key?")?;
     // The key this computer signs with now is replaced by default: otherwise it would stay live
     // on chain with nothing holding it. `--replace` names another one; `--keep-current` keeps it.
+    let identity = client.fetch_signer(&master).await?;
     let replace = match args.replace {
         Some(id) => Some(id),
         None if args.keep_current => None,
-        None => {
-            let identity = client.fetch_signer(&master).await?;
-            identity
-                .signing_key_id(&current, ctx.network())
-                .filter(|id| identity.is_limited_key(*id))
-        }
+        None => identity
+            .signing_key_id(&current, ctx.network())
+            .filter(|id| identity.is_limited_key(*id)),
     };
+    // The encryption keys the key in use holds are kept too, whatever the master source holds.
+    let encryption =
+        super::encryption_to_store(ctx, &args.storage, &identity, &[&master, &current]);
     let (id, stored) = super::register_and_store(
         ctx,
         &client,
@@ -278,9 +279,11 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
         &spec,
         replace,
         &checked,
-        &args.storage,
+        args.storage.insecure_plaintext,
+        &encryption,
     )
     .await?;
+    let kept: Vec<u32> = encryption.iter().map(|k| k.id).collect();
     super::store::set_default(ctx, &master.identity_id, &stored.source())?;
     ctx.emit(
         super::group::with_group_fields(
@@ -290,12 +293,14 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
                 "budgetCredits": spec.budget_credits,
                 "expiresAt": spec.expires_at_ms,
                 "storedAt": stored.describe(),
+                "encryptionKeyIds": kept,
                 "replacedKeyId": replace,
             }),
             Some(&checked),
         ),
         || {
             println!("✓ limited key #{id} added; this computer now signs with it");
+            super::print_kept_encryption(&kept);
             println!("  stored in {}", stored.describe());
             if let Some(old) = replace {
                 println!("  key #{old} disabled");
