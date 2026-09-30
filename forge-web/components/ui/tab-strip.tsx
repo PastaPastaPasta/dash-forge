@@ -68,18 +68,22 @@ export function TabStrip({
     if (!el) return
     // Keep the active tab inside the strip by scrolling the strip only (scrollIntoView would
     // also scroll the page, e.g. jump to the tabs when Back restores a scrolled position). On a
-    // new active tab it is placed by `stripScroll`; on a resize (a count that loads later
-    // widens its tab) only if it went out of view, so a strip the user swiped stays put.
+    // new active tab it is placed by `stripScroll`, and placed again on a resize (a count that
+    // loads later widens its tab) unless the user has swiped the strip since, in which case
+    // only an active tab pushed out of view brings it back.
+    let placedAt: number | null = null
     const reveal = (place: boolean): void => {
       const tabs = ([...el.children] as HTMLElement[]).filter((t) => t !== padRef.current)
       const at = tabs.findIndex((t) => t.matches('[aria-current="page"], [aria-selected="true"]'))
       const origin = tabs[0]?.offsetLeft ?? 0
       const boxes = tabs.map((t) => ({ left: t.offsetLeft - origin, width: t.offsetWidth }))
       const on = boxes[at]
-      if (on !== undefined && (place || on.left < el.scrollLeft - 1 || on.left + on.width > el.scrollLeft + el.clientWidth + 1)) {
+      const untouched = placedAt !== null && Math.abs(el.scrollLeft - placedAt) <= 1
+      if (on !== undefined && (place || untouched || on.left < el.scrollLeft - 1 || on.left + on.width > el.scrollLeft + el.clientWidth + 1)) {
         const next = stripScroll(boxes, at, el.clientWidth)
         if (padRef.current) padRef.current.style.width = `${next.pad}px`
         el.scrollLeft = next.left
+        placedAt = el.scrollLeft
       }
       measure()
     }
