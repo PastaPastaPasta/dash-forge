@@ -15,7 +15,7 @@
 //! `trusted_refs`; act runs with a cleared environment and never reads the checkout's `.actrc`,
 //! `.env`, `.secrets`, `.vars` or `.input`; no cache server is shared between runs. Pull
 //! requests run as `pull_request` on their head, by default only members' (`pull_requests`), and
-//! with the secrets only from a trusted branch of the repository itself by a member
+//! with the secrets only from a trusted branch of the repository itself by the owner or a maintainer
 //! ([`run::pull_trusted`]): a fork's or a stranger's head never gets them. It does NOT isolate
 //! jobs from the Docker daemon it drives: give it a daemon of its own.
 //!
@@ -74,7 +74,7 @@ enum Cmd {
         #[arg(long, requires = "refname")]
         sha: Option<String>,
         /// A pull request: its current head runs as `pull_request` (`opened`), with the secrets
-        /// only if its head is a trusted branch here and its author a member.
+        /// only if its head is a trusted branch here and its author the owner or a maintainer.
         #[arg(long, required_unless_present = "refname")]
         pr: Option<u64>,
     },
@@ -121,15 +121,12 @@ fn real_main(cli: &Cli) -> Result<()> {
                     before: None,
                 }),
                 (_, _, Some(n)) => {
-                    let pr = run::list_pulls(&cfg, r, PULL_LIMIT)?
-                        .into_iter()
-                        .find(|p| p.number == *n)
-                        .with_context(|| {
-                            format!("no PR #{n} among {repo}'s newest {PULL_LIMIT}")
-                        })?;
+                    let mut pr = run::view_pull(&cfg, r, *n)?;
+                    anyhow::ensure!(pr.state == "open", "PR #{n} is {}, not open", pr.state);
+                    pr.head_oid = pr.head_oid.to_ascii_lowercase();
                     let members = run::list_members(&cfg, r)?;
                     run::Trigger::Pull {
-                        author_member: members.contains(&pr.author),
+                        author: run::author_of(&members, &pr.author),
                         event: Box::new(watch::PullEvent {
                             action: "opened",
                             before: None,
@@ -322,8 +319,12 @@ fn run_locked(cfg: &Config, repo: &config::RepoConfig, trig: &run::Trigger) -> R
     result
 }
 
-/// How many of a repository's newest pull requests a poll reads.
-const PULL_LIMIT: u32 = 50;
+/// How many of a repository's newest pull requests a poll reads (dg's page).
+const PULL_LIMIT: u32 = 100;
+
+/// How many open PRs that fell out of the newest [`PULL_LIMIT`] a poll still follows, one read
+/// each, the oldest first.
+const FOLLOW_BEYOND: usize = 10;
 
 /// One poll of one repository: list its refs, run the pushes to watched refs, then its pull
 /// requests' activity (unless `pull_requests = "off"`), and save what was handled. A run that
@@ -381,6 +382,10 @@ fn poll(cfg: &Config, repo: &config::RepoConfig) -> Result<()> {
 /// The pull-request half of a poll: list the newest [`PULL_LIMIT`] PRs, and run each one that
 /// was opened, reopened, marked ready or whose head moved since the last poll, as the
 /// repository's `pull_requests` policy allows. The first read only records them.
+///
+/// The list is the newest PRs by creation, open or closed, and anyone may open PRs: open ones
+/// already followed that fall out of it are read one by one, the oldest first, up to
+/// [`FOLLOW_BEYOND`], so a burst of newer PRs cannot push them out of CI.
 fn poll_pulls(
     cfg: &Config,
     repo: &config::RepoConfig,
@@ -388,11 +393,31 @@ fn poll_pulls(
     path: &std::path::Path,
 ) -> Result<()> {
     if repo.pull_requests == PullPolicy::Off {
+        // Forget them, so turning PRs back on starts afresh rather than replaying a backlog.
+        if state.pulls_primed || !state.pulls.is_empty() {
+            state.pulls.clear();
+            state.pulls_primed = false;
+            state.failed.retain(|k, _| !k.starts_with("pull/"));
+            state.save(path)?;
+        }
         return Ok(());
     }
-    let rows = run::list_pulls(cfg, repo, PULL_LIMIT)?;
-    let open = rows.iter().filter(|r| r.state == "open").count();
+    let mut rows = run::list_pulls(cfg, repo, PULL_LIMIT)?;
+    let beyond: Vec<u64> = state
+        .pulls
+        .iter()
+        .filter(|(n, s)| s.open && !rows.iter().any(|r| r.number == **n))
+        .map(|(n, _)| *n)
+        .take(FOLLOW_BEYOND)
+        .collect();
+    for n in beyond {
+        match run::view_pull(cfg, repo, n) {
+            Ok(r) => rows.push(r),
+            Err(e) => eprintln!("forge-runner: {} PR #{n}: {e:#}", repo.repo),
+        }
+    }
     if !state.pulls_primed {
+        let open = rows.iter().filter(|r| r.state == "open").count();
         eprintln!(
             "forge-runner: watching {}'s pull requests ({open} open)",
             repo.repo
@@ -404,7 +429,7 @@ fn poll_pulls(
         return state.save(path);
     }
     let pull_key = |n: u64, head: &str| format!("pull/{n} {}", head.to_ascii_lowercase());
-    let mut members: Option<Vec<String>> = None;
+    let mut members: Option<run::Members> = None;
     let mut pending = Vec::new();
     for ev in pull_events(&state.pulls, &rows) {
         let n = ev.pr.number;
@@ -413,13 +438,12 @@ fn poll_pulls(
             Some(m) => m,
             None => members.insert(run::list_members(cfg, repo)?),
         };
-        let author_member = members.contains(&ev.pr.author);
+        let author = run::author_of(members, &ev.pr.author);
         let mut done = true;
-        if repo.pull_requests == PullPolicy::Members && !author_member {
+        if let Some(why) = skip_reason(repo.pull_requests, &ev.pr, author) {
             eprintln!(
-                "forge-runner: {} PR #{n} is by {}, not a member: not run (pull_requests = \
-                 \"members\"; `forge-runner run {} --pr {n}` runs it, without secrets)",
-                repo.repo, ev.pr.author, repo.repo
+                "forge-runner: {} PR #{n} by {} not run: {why}",
+                repo.repo, ev.pr.author
             );
         } else {
             eprintln!(
@@ -430,7 +454,7 @@ fn poll_pulls(
             );
             let trig = run::Trigger::Pull {
                 event: Box::new(ev.clone()),
-                author_member,
+                author,
             };
             if let Err(e) = run_locked(cfg, repo, &trig) {
                 let tries = state.failed.entry(key.clone()).or_insert(0);
@@ -467,9 +491,65 @@ fn poll_pulls(
     state.save(path)
 }
 
+/// Why a poll does not run a PR's activity, if it does not:
+///
+/// * `pull_requests = "members"` runs members' PRs only;
+/// * a stranger's PR whose head is a branch of the repository itself never runs by itself:
+///   members pushed that code and its push run tested it, and running it again would only let
+///   a stranger pick the event (base, title) of a run on a member's commit.
+///
+/// `forge-runner run --pr` runs either by hand.
+fn skip_reason(policy: PullPolicy, pr: &watch::PullRow, author: run::Author) -> Option<String> {
+    let hint = format!("`forge-runner run <repo> --pr {}` runs it", pr.number);
+    if author != run::Author::Stranger {
+        None
+    } else if policy == PullPolicy::Members {
+        Some(format!(
+            "not a member (pull_requests = \"members\"); {hint}, without secrets"
+        ))
+    } else if !pr.is_fork() {
+        Some(format!(
+            "not a member, and its head is a branch of this repository, which its push runs \
+             test; {hint}"
+        ))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strangers_pull_requests_run_only_from_forks_and_only_when_all_are_allowed() {
+        use run::Author::{Maintainer, Stranger, Writer};
+        let row = |fork: bool| watch::PullRow {
+            number: 4,
+            title: String::new(),
+            author: "A".into(),
+            state: "open".into(),
+            base_ref: "refs/heads/main".into(),
+            base_tip: None,
+            head_oid: "ab".repeat(20),
+            repo_id: "R".into(),
+            source_repo_id: if fork { "F" } else { "R" }.into(),
+            source_ref_name: Some("refs/heads/x".into()),
+            draft: false,
+        };
+        for policy in [PullPolicy::Members, PullPolicy::All] {
+            for fork in [false, true] {
+                assert!(skip_reason(policy, &row(fork), Writer).is_none());
+                assert!(skip_reason(policy, &row(fork), Maintainer).is_none());
+            }
+        }
+        assert!(skip_reason(PullPolicy::Members, &row(true), Stranger).is_some());
+        assert!(skip_reason(PullPolicy::All, &row(true), Stranger).is_none());
+        assert!(
+            skip_reason(PullPolicy::All, &row(false), Stranger).is_some(),
+            "a stranger's PR from a branch here re-runs members' code under a stranger's event"
+        );
+    }
 
     #[test]
     fn a_wake_names_repositories_by_either_spelling() {

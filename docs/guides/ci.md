@@ -105,7 +105,7 @@ These are what the protocol and the current forge-collab contract allow. They ar
 - **Keeps the daemon's socket out of jobs,** and puts jobs on the `bridge` network, not the host's.
 - **Hands secrets and a `GITHUB_TOKEN` to trusted refs only.** Other runs get an empty token, and secret values are redacted from logs before upload.
 - **Clears act's environment,** so `DASH_FORGE_KEY` never reaches act or a job, and ignores act configuration planted in the checkout.
-- **Follows GitHub's fork-PR model:** a pull request runs with the secrets only when its head is a trusted branch of the repository itself and its author a member; a fork's or a non-member's PR runs with no secrets and an empty token, and by default a non-member's PR does not run at all ([Pull requests](self-host-runner.md#pull-requests)).
+- **Follows GitHub's fork-PR model:** a pull request runs with the secrets only when its head is a trusted branch of the repository itself and its author the owner or a maintainer; a fork's or a non-member's PR runs with no secrets and an empty token, and by default a non-member's PR does not run at all ([Pull requests](self-host-runner.md#pull-requests)).
 
 [Self-host a CI runner](self-host-runner.md#security) has the details.
 

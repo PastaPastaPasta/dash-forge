@@ -48,7 +48,8 @@ cat >"$W/bin/dg" <<'EOF'
 # Reads answer from fixture files (and are not recorded); reports are recorded.
 case " $* " in
   *" pr list "*) cat "$FAKE_PRS" 2>/dev/null || echo '{"prs":[]}'; exit 0 ;;
-  *" collab list "*) echo '{"members":[{"identityId":"MEMBER","role":"maintainer"}]}'; exit 0 ;;
+  *" pr view "*) python3 -c "import json,sys; print(json.dumps([p for p in json.load(open(sys.argv[1]))['prs'] if p['number']==int(sys.argv[2])][0]))" "$FAKE_PRS" "${@: -1}"; exit 0 ;;
+  *" collab list "*) echo '{"members":[{"identityId":"MEMBER","role":"maintainer"}],"ownerId":"OWNER"}'; exit 0 ;;
 esac
 python3 - "$@" >>"$FAKE_DG_LOG" <<'PY'
 import json, sys, os
@@ -197,6 +198,7 @@ H1=$(git -C "$R" rev-parse HEAD)
 git clone -q "$R" "$W/fork"
 git -C "$W/fork" switch -q -c evil release/1
 echo evil >"$W/fork/evil.txt"; git -C "$W/fork" add evil.txt; git -C "$W/fork" commit -qm evil
+git -C "$W/fork" tag v9.9.9   # a fork's tag must never reach the repository's cache
 HF=$(git -C "$W/fork" rev-parse HEAD)
 prs() { python3 - "$@" >"$FAKE_PRS" <<'PY'
 import json, sys
@@ -219,8 +221,11 @@ check "the job sees GitHub's pull_request context" test "$(q "'action=opened num
 check "a member's PR from a trusted branch here gets the secrets" test "$(q "'secret=[***]' in [r['log_text'] for r in rs if r['status']=='completed' and r['sha']=='$H1'][0]")" = True
 check "a member's PR from a fork gets no secrets and an empty token" test "$(q "'secret=[] token=[]' in [r['log_text'] for r in rs if r['status']=='completed' and r['sha']=='$HF'][0]")" = True
 check "the fork's run knows it is a fork" test "$(q "'fork=true' in [r['log_text'] for r in rs if r['status']=='completed' and r['sha']=='$HF'][0]")" = True
+CACHE="$W/state/work/e2e__app/cache.git"
+check "a fork's tags never reach the repository's cache" bash -c "! git --git-dir '$CACHE' tag -l | grep -q v9.9.9"
+check "nor do its objects (a fork runs from a cache of its own)" bash -c "! git --git-dir '$CACHE' cat-file -e '$HF' 2>/dev/null"
 check "PR runs are keyed apart from each other" test "$(q "len({r['external-id'] for r in rs})")" = 2
-check "the stranger's PR is logged as skipped" grep -q "PR #2 is by STRANGER, not a member: not run" "$W/runner.log"
+check "the stranger's PR is logged as skipped" grep -q "PR #2 by STRANGER not run: not a member" "$W/runner.log"
 check "a re-poll runs nothing again" bash -c ": >'$FAKE_DG_LOG'; '$RUNNER' -c '$W/runner.toml' watch --once >>'$W/runner.log' 2>&1; test ! -s '$FAKE_DG_LOG'"
 
 echo "== 6. a pull request's head moves (synchronize); a stranger's runs by hand, without secrets"

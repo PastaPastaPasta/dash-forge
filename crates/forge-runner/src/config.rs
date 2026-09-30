@@ -178,8 +178,8 @@ pub enum PullPolicy {
     /// --pr <n>` runs one by hand.
     #[default]
     Members,
-    /// Every pull request, anyone's: a stranger's code runs on your Docker daemon (without
-    /// secrets), as a fork's PR does on GitHub without the approval step.
+    /// Also strangers' PRs from forks: a stranger's code runs on your Docker daemon (without
+    /// secrets or container options), as a fork's PR does on GitHub without the approval step.
     All,
 }
 

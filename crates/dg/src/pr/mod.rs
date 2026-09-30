@@ -685,6 +685,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
         json!({
             "number": v.patch.number,
             "id": v.patch.document_id,
+            "repoId": v.patch.repo_id,
             "title": v.patch.title,
             "body": v.patch.body,
             "author": v.patch.author,

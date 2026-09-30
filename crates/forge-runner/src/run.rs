@@ -26,16 +26,26 @@ use crate::config::{Config, RepoConfig};
 use crate::watch::{PullEvent, PullRow, Push};
 use crate::workflow::{self, Facts, Job, PullFacts, PushFacts};
 
+/// Who a pull request's author is to the repository, as the poll read its members.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Author {
+    /// Not a member.
+    Stranger,
+    /// A writer: can push the repository's unprotected branches.
+    Writer,
+    /// The owner or a maintainer: can also push its protected branches.
+    Maintainer,
+}
+
 /// What starts a run.
 #[derive(Debug, Clone)]
 pub enum Trigger {
     /// A push to one of the repository's own refs.
     Push(Push),
-    /// A pull request's activity, and whether its author is a current member (owner,
-    /// maintainer or writer) as the poll read the members.
+    /// A pull request's activity, and who its author is.
     Pull {
         event: Box<PullEvent>,
-        author_member: bool,
+        author: Author,
     },
 }
 
@@ -62,18 +72,35 @@ impl Trigger {
         }
     }
 
-    /// A job's check name: `<workflow> / <job>`, and ` (pull_request)` after it for a PR run
-    /// (at most 100 characters, the suffix kept), so a PR's checks and the branch's push checks
-    /// on the same commit never replace each other.
+    /// A job's check name: `<workflow> / <job>`, then ` (pull_request)` for a member's PR run,
+    /// or ` (pull_request, non-member)` for anyone else's (at most 100 characters, the suffix
+    /// kept). So a PR's checks and the branch's push checks on one commit never replace each
+    /// other, and a stranger's PR that names a member's commit as its head cannot post the run
+    /// that decides the member's required check (readers keep the newest run per name).
     pub fn check_name(&self, base: &str) -> String {
-        const SUFFIX: &str = " (pull_request)";
-        match self {
-            Trigger::Push(_) => base.chars().take(100).collect(),
-            Trigger::Pull { .. } => {
-                let keep = 100 - SUFFIX.chars().count();
-                format!("{}{SUFFIX}", base.chars().take(keep).collect::<String>())
+        let suffix = match self {
+            Trigger::Push(_) => return base.chars().take(100).collect(),
+            Trigger::Pull {
+                author: Author::Stranger,
+                ..
+            } => " (pull_request, non-member)",
+            Trigger::Pull { .. } => " (pull_request)",
+        };
+        let keep = 100 - suffix.chars().count();
+        format!("{}{suffix}", base.chars().take(keep).collect::<String>())
+    }
+
+    /// Whether a job may set docker options or mounts (`allow_container_options`): only a
+    /// push, or a member's PR from a branch of the repository itself, whose code members
+    /// pushed. Never a fork's or a stranger's PR, which could otherwise take the daemon.
+    pub fn allows_container_options(&self, repo: &RepoConfig) -> bool {
+        repo.allow_container_options
+            && match self {
+                Trigger::Push(_) => true,
+                Trigger::Pull { event, author } => {
+                    !event.pr.is_fork() && *author != Author::Stranger
+                }
             }
-        }
     }
 
     /// How logs and summaries name what ran: the ref, or `PR #<n>`.
@@ -88,22 +115,20 @@ impl Trigger {
     pub fn trusted(&self, repo: &RepoConfig) -> bool {
         match self {
             Trigger::Push(p) => repo.trusted(&p.refname),
-            Trigger::Pull {
-                event,
-                author_member,
-            } => pull_trusted(repo, &event.pr, *author_member),
+            Trigger::Pull { event, author } => pull_trusted(repo, &event.pr, *author),
         }
     }
 }
 
 /// Whether a pull request's run gets the secrets: only when its head is a branch of this
 /// repository, never a fork's, that `trusted_refs` covers (so only those who could push there
-/// with secrets anyway wrote the code), and its author is a current member (so the PR's title
-/// and other event fields are a member's too). Anything else runs as GitHub runs a fork's PR:
-/// no secrets and an empty `GITHUB_TOKEN`.
-pub fn pull_trusted(repo: &RepoConfig, pr: &PullRow, author_member: bool) -> bool {
+/// with secrets anyway wrote the code), and its author is the owner or a maintainer (so the
+/// PR's title, base and other event fields, which pick what runs and may reach a shell, are
+/// set by someone who could push that branch too). Anything else runs as GitHub runs a fork's
+/// PR: no secrets and an empty `GITHUB_TOKEN`.
+pub fn pull_trusted(repo: &RepoConfig, pr: &PullRow, author: Author) -> bool {
     !pr.is_fork()
-        && author_member
+        && author == Author::Maintainer
         && pr
             .source_ref_name
             .as_deref()
@@ -310,16 +335,50 @@ pub fn list_pulls(cfg: &Config, repo: &RepoConfig, limit: u32) -> Result<Vec<Pul
     serde_json::from_value(v["prs"].clone()).context("dg pr list: unexpected rows")
 }
 
-/// The repository's current members (owner, maintainers, writers) by identity id.
-pub fn list_members(cfg: &Config, repo: &RepoConfig) -> Result<Vec<String>> {
-    let v = dg_read(cfg, &["collab", "list", &repo.repo])?;
-    let members = v["members"]
+/// One pull request, read by number (`dg pr view`), whatever its age.
+pub fn view_pull(cfg: &Config, repo: &RepoConfig, number: u64) -> Result<PullRow> {
+    let v = dg_read(cfg, &["pr", "view", &repo.repo, &number.to_string()])?;
+    serde_json::from_value(v).with_context(|| format!("dg pr view {number}: unexpected JSON"))
+}
+
+/// The repository's current members by identity id: its maintainers and the owner as
+/// [`Author::Maintainer`], its writers as [`Author::Writer`] (`dg collab list`).
+pub fn list_members(cfg: &Config, repo: &RepoConfig) -> Result<Members> {
+    members_of(&dg_read(cfg, &["collab", "list", &repo.repo])?)
+}
+
+/// Identity id → role.
+pub type Members = std::collections::BTreeMap<String, Author>;
+
+/// [`list_members`]' reading of `dg collab list --json`. The owner counts as a maintainer
+/// whether or not it holds a maintainer document.
+pub fn members_of(v: &serde_json::Value) -> Result<Members> {
+    let rows = v["members"]
         .as_array()
         .context("dg collab list: no members")?;
-    Ok(members
-        .iter()
-        .filter_map(|m| m["identityId"].as_str().map(str::to_string))
-        .collect())
+    let mut m = Members::new();
+    for r in rows {
+        let (Some(id), Some(role)) = (r["identityId"].as_str(), r["role"].as_str()) else {
+            continue;
+        };
+        let role = if role == "maintainer" {
+            Author::Maintainer
+        } else {
+            Author::Writer
+        };
+        let held = m.entry(id.to_string()).or_insert(role);
+        *held = (*held).max(role);
+    }
+    let owner = v["ownerId"]
+        .as_str()
+        .context("dg collab list: no ownerId (dg too old for this runner)")?;
+    m.insert(owner.to_string(), Author::Maintainer);
+    Ok(m)
+}
+
+/// Who `id` is among `members`.
+pub fn author_of(members: &Members, id: &str) -> Author {
+    members.get(id).copied().unwrap_or(Author::Stranger)
 }
 
 /// The per-repo directory under the state dir.
@@ -332,23 +391,40 @@ pub fn repo_dir(cfg: &Config, repo: &RepoConfig) -> PathBuf {
 /// Fetch `refname` of `url` into the repo's bare cache as `dest` (dash:// serves full and
 /// partial fetches, not shallow ones: E205), so each run fetches only what is new. Returns the
 /// fetched tip.
-fn fetch(cfg: &Config, url: &str, refname: &str, cache: &Path, dest: &str) -> Result<String> {
+fn fetch(cfg: &Config, src: &Source<'_>, refname: &str, dest: &str) -> Result<String> {
     let git = |args: &[&str]| {
         let mut c = with_network(Command::new(&cfg.bin.git), cfg);
-        c.arg("--git-dir").arg(cache).args(args);
+        c.arg("--git-dir").arg(src.cache).args(args);
         output(&mut c, &format!("git {}", args.first().unwrap_or(&"")))
     };
-    if !cache.join("HEAD").exists() {
-        std::fs::create_dir_all(cache)?;
+    if !src.cache.join("HEAD").exists() {
+        std::fs::create_dir_all(src.cache)?;
         git(&["init", "-q", "--bare"])?;
     }
-    git(&["fetch", "-q", url, &format!("+{refname}:{dest}")])?;
+    let spec = format!("+{refname}:{dest}");
+    // git follows the tags that point into what it fetched; a fork's tags must never reach a
+    // checkout, where they would shadow the repository's own.
+    let mut args = vec!["fetch", "-q"];
+    if !src.tags {
+        args.push("--no-tags");
+    }
+    args.extend([src.url, spec.as_str()]);
+    git(&args)?;
     Ok(git(&["rev-parse", dest])?.trim().to_string())
 }
 
-/// Fetch `refname` of `url` and check that it is at `oid`: what runs is what the ref holds.
-fn fetch_at(cfg: &Config, url: &str, refname: &str, oid: &str, cache: &Path) -> Result<()> {
-    let tip = fetch(cfg, url, refname, cache, "refs/forge-runner/fetched")?;
+/// Where a fetch reads from and into.
+struct Source<'a> {
+    url: &'a str,
+    /// The bare cache it fetches into.
+    cache: &'a Path,
+    /// Whether tags pointing into the fetched history come along (the repository's own only).
+    tags: bool,
+}
+
+/// Fetch `refname` and check that it is at `oid`: what runs is what the ref holds.
+fn fetch_at(cfg: &Config, src: &Source<'_>, refname: &str, oid: &str) -> Result<()> {
+    let tip = fetch(cfg, src, refname, "refs/forge-runner/fetched")?;
     if tip != oid {
         bail!(
             "{refname} is at {tip}, not {oid} (it moved, or the PR names another commit); the \
@@ -488,17 +564,41 @@ impl RunCtx<'_> {
     }
 }
 
-/// Run `trig` for `repo`: every job of every workflow file that runs on it, reported queued →
-/// in_progress → completed, one act run per file. Secrets go to act only when
-/// [`Trigger::trusted`]. `run_dir` is this run's own directory (checkout, event, logs, act's
-/// caches).
-pub fn run(cfg: &Config, repo: &RepoConfig, trig: &Trigger, run_dir: &Path) -> Result<Ran> {
-    let cache = repo_dir(cfg, repo).join("cache.git");
-    let key = trig.key();
-    let trusted = trig.trusted(repo);
-    let (changed, facts_base, event) = match trig {
+/// What a run fetched: the cache holding its commit, the paths it changes, the PR's base
+/// branch (short), and act's event.
+struct Fetched {
+    cache: PathBuf,
+    changed: Option<Vec<String>>,
+    base: Option<String>,
+    event: serde_json::Value,
+}
+
+/// Fetch what `trig` runs and build its event. The repository's own history is cached across
+/// runs; a fork's head goes into a cache of this run's own, deleted with it, and brings no
+/// tags, so a fork's objects and refs never reach the cache push runs (with their secrets) are
+/// checked out from.
+fn fetch_run(
+    cfg: &Config,
+    repo: &RepoConfig,
+    trig: &Trigger,
+    run_dir: &Path,
+    trusted: bool,
+) -> Result<Fetched> {
+    let fork = matches!(trig, Trigger::Pull { event, .. } if event.pr.is_fork());
+    let cache = if fork {
+        run_dir.join("fork.git")
+    } else {
+        repo_dir(cfg, repo).join("cache.git")
+    };
+    let repo_url = repo.url();
+    let own = Source {
+        url: &repo_url,
+        cache: &cache,
+        tags: !fork,
+    };
+    let (changed, base, event) = match trig {
         Trigger::Push(p) => {
-            fetch_at(cfg, &repo.url(), &p.refname, &p.oid, &cache)?;
+            fetch_at(cfg, &own, &p.refname, &p.oid)?;
             let changed = p
                 .before
                 .as_deref()
@@ -512,17 +612,16 @@ pub fn run(cfg: &Config, repo: &RepoConfig, trig: &Trigger, run_dir: &Path) -> R
                 .as_deref()
                 .context("the PR names no source branch")?;
             let url = repo.pull_source_url(pr);
-            fetch_at(cfg, &url, source, &pr.head_oid, &cache)?;
+            let head = Source {
+                url: &url,
+                cache: &cache,
+                tags: false,
+            };
+            fetch_at(cfg, &head, source, &pr.head_oid)?;
             // The base, for `base.sha` and the PR's changed paths (`base...head`).
-            let base = fetch(
-                cfg,
-                &repo.url(),
-                &pr.base_ref,
-                &cache,
-                "refs/forge-runner/base",
-            )
-            .map_err(|e| eprintln!("forge-runner: {}: base not fetched: {e:#}", repo.repo))
-            .ok();
+            let base = fetch(cfg, &own, &pr.base_ref, "refs/forge-runner/base")
+                .map_err(|e| eprintln!("forge-runner: {}: base not fetched: {e:#}", repo.repo))
+                .ok();
             let changed = base
                 .as_deref()
                 .and_then(|b| changed_paths(cfg, &cache, &format!("{b}...{}", pr.head_oid)));
@@ -530,8 +629,24 @@ pub fn run(cfg: &Config, repo: &RepoConfig, trig: &Trigger, run_dir: &Path) -> R
             (changed, Some(short_ref(&pr.base_ref).to_string()), event)
         }
     };
+    Ok(Fetched {
+        cache,
+        changed,
+        base,
+        event,
+    })
+}
+
+/// Run `trig` for `repo`: every job of every workflow file that runs on it, reported queued →
+/// in_progress → completed, one act run per file. Secrets go to act only when
+/// [`Trigger::trusted`]. `run_dir` is this run's own directory (checkout, event, logs, act's
+/// caches).
+pub fn run(cfg: &Config, repo: &RepoConfig, trig: &Trigger, run_dir: &Path) -> Result<Ran> {
+    let key = trig.key();
+    let trusted = trig.trusted(repo);
+    let f = fetch_run(cfg, repo, trig, run_dir, trusted)?;
     let co = run_dir.join("checkout");
-    checkout(cfg, &cache, &key.oid, &co)?;
+    checkout(cfg, &f.cache, &key.oid, &co)?;
     let mut ran = Ran::default();
     let Some(wf_dir) = workflow_dir(cfg, &co) else {
         eprintln!(
@@ -542,21 +657,23 @@ pub fn run(cfg: &Config, repo: &RepoConfig, trig: &Trigger, run_dir: &Path) -> R
         );
         return Ok(ran);
     };
-    let facts = match (trig, &facts_base) {
-        (Trigger::Pull { event: ev, .. }, Some(base)) => Facts::PullRequest(PullFacts {
+    let changed = f.changed.as_deref();
+    let facts = match (trig, &f.base) {
+        (Trigger::Pull { event, .. }, Some(base)) => Facts::PullRequest(PullFacts {
             base,
-            action: ev.action,
-            changed: changed.as_deref(),
+            action: event.action,
+            changed,
         }),
         _ => Facts::Push(PushFacts {
             refname: &key.refname,
-            changed: changed.as_deref(),
+            changed,
         }),
     };
     let labels: Vec<&str> = cfg.platforms.keys().map(String::as_str).collect();
-    let plan = workflow::plan(&co, &wf_dir, &facts, repo.allow_container_options, &labels);
+    let allow = trig.allows_container_options(repo);
+    let plan = workflow::plan(&co, &wf_dir, &facts, allow, &labels);
     let event_path = run_dir.join("event.json");
-    std::fs::write(&event_path, serde_json::to_vec(&event)?)?;
+    std::fs::write(&event_path, serde_json::to_vec(&f.event)?)?;
     let secrets = trusted.then(|| repo.secrets_file.clone()).flatten();
     let secret_values = secrets
         .as_deref()
@@ -916,30 +1033,40 @@ mod tests {
     }
 
     #[test]
-    fn a_pull_request_gets_secrets_only_from_a_trusted_branch_here_by_a_member() {
+    fn a_pull_request_gets_secrets_only_from_a_trusted_branch_here_by_a_maintainer() {
+        use Author::{Maintainer, Stranger, Writer};
         let r = trusting();
         let here = pull(false, "refs/heads/release/1");
         assert!(
-            pull_trusted(&r, &here.pr, true),
-            "trusted branch here, member author"
+            pull_trusted(&r, &here.pr, Maintainer),
+            "trusted branch here, maintainer"
         );
         assert!(
-            !pull_trusted(&r, &here.pr, false),
-            "a non-member's PR: no secrets"
+            !pull_trusted(&r, &here.pr, Writer),
+            "a writer who cannot push the trusted branch cannot pick a secrets run's event"
+        );
+        assert!(
+            !pull_trusted(&r, &here.pr, Stranger),
+            "a stranger's PR: no secrets"
         );
         let fork = pull(true, "refs/heads/release/1");
         assert!(
-            !pull_trusted(&r, &fork.pr, true),
-            "a fork's head never gets secrets, even a member's, even from a trusted name"
+            !pull_trusted(&r, &fork.pr, Maintainer),
+            "a fork's head never gets secrets, even a maintainer's, even from a trusted name"
         );
         let feature = pull(false, "refs/heads/feature");
         assert!(
-            !pull_trusted(&r, &feature.pr, true),
-            "an untrusted branch: no secrets"
+            !pull_trusted(&r, &feature.pr, Maintainer),
+            "an untrusted branch"
+        );
+        let short = pull(false, "release/1");
+        assert!(
+            !pull_trusted(&r, &short.pr, Maintainer),
+            "patterns match full ref names"
         );
         let t = Trigger::Pull {
             event: Box::new(fork),
-            author_member: true,
+            author: Maintainer,
         };
         assert!(!t.trusted(&r));
         let default = Config::parse("state_dir = \"/s\"\n[[repo]]\nrepo = \"a/b\"")
@@ -947,8 +1074,67 @@ mod tests {
             .repos
             .remove(0);
         assert!(
-            !pull_trusted(&default, &here.pr, true),
+            !pull_trusted(&default, &here.pr, Maintainer),
             "no trusted_refs: nothing gets secrets"
+        );
+    }
+
+    #[test]
+    fn container_options_never_reach_a_fork_or_a_strangers_pull_request() {
+        let r = Config::parse(
+            "state_dir = \"/s\"\n[[repo]]\nrepo = \"a/b\"\nallow_container_options = true",
+        )
+        .unwrap()
+        .repos
+        .remove(0);
+        let pr = |fork, author| Trigger::Pull {
+            event: Box::new(pull(fork, "refs/heads/x")),
+            author,
+        };
+        assert!(Trigger::Push(push()).allows_container_options(&r));
+        assert!(pr(false, Author::Writer).allows_container_options(&r));
+        assert!(
+            !pr(true, Author::Maintainer).allows_container_options(&r),
+            "a fork"
+        );
+        assert!(
+            !pr(false, Author::Stranger).allows_container_options(&r),
+            "a stranger"
+        );
+        assert!(
+            !pr(false, Author::Writer).allows_container_options(&trusting()),
+            "off"
+        );
+    }
+
+    #[test]
+    fn members_come_with_their_roles_and_the_owner() {
+        let v = serde_json::json!({
+            "members": [
+                {"identityId": "M", "role": "maintainer"},
+                {"identityId": "W", "role": "writer"},
+                {"identityId": "B", "role": "writer"},
+                {"identityId": "B", "role": "maintainer"},
+            ],
+            "ownerId": "O",
+        });
+        let m = members_of(&v).unwrap();
+        assert_eq!(author_of(&m, "M"), Author::Maintainer);
+        assert_eq!(author_of(&m, "W"), Author::Writer);
+        assert_eq!(
+            author_of(&m, "B"),
+            Author::Maintainer,
+            "the higher role wins"
+        );
+        assert_eq!(
+            author_of(&m, "O"),
+            Author::Maintainer,
+            "the owner, without a document"
+        );
+        assert_eq!(author_of(&m, "X"), Author::Stranger);
+        assert!(
+            members_of(&serde_json::json!({"members": []})).is_err(),
+            "a dg without ownerId is refused, not read as 'no owner'"
         );
     }
 
@@ -956,8 +1142,17 @@ mod tests {
     fn a_pull_requests_checks_are_named_and_keyed_apart_from_pushes() {
         let t = Trigger::Pull {
             event: Box::new(pull(false, "refs/heads/feature")),
-            author_member: true,
+            author: Author::Writer,
         };
+        let stranger = Trigger::Pull {
+            event: Box::new(pull(true, "refs/heads/feature")),
+            author: Author::Stranger,
+        };
+        assert_eq!(
+            stranger.check_name("ci / build"),
+            "ci / build (pull_request, non-member)",
+            "a stranger's run can never be the one a member's required check reads"
+        );
         assert_eq!(t.event_name(), "pull_request");
         assert_eq!(t.check_name("ci / build"), "ci / build (pull_request)");
         let long = t.check_name(&"x".repeat(200));
