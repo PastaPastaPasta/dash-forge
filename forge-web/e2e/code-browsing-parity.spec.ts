@@ -128,7 +128,7 @@ test.describe('commits, History and Blame (read fixture)', () => {
     await expect(rows).toHaveCount(2, { timeout: 60_000 })
     await expect(rows.nth(0)).toContainText('Document the fold rules')
     await expect(rows.nth(1)).toContainText('Initial import')
-    await expect(page.getByTestId('log-status')).toContainText('The whole history')
+    await expect(page.getByTestId('log-status')).toContainText('The first-parent history of src/main.rs')
     // docs/ was added by c2 only.
     await page.goto(`/${DEMO.owner}/${DEMO.name}/commits/main/docs`, { waitUntil: 'domcontentloaded' })
     await expect(page).toHaveURL(/\/repo\/commits\/\?.*path=docs/)

@@ -1,10 +1,13 @@
 'use client'
 
 /**
- * CommitsContent — the first-parent commit log (browse plane), newest first, a page at a time
- * ("Older" continues the walk where the last page stopped), and with `path` a file's or a
- * directory's History: only the commits that changed it ({@link pathVersions}: from the push-time
- * history index when one covers the tip, with no walk). Pages walk one shared read-ahead walker
+ * CommitsContent — the commit log (browse plane), a page at a time ("Older" continues the walk
+ * where the last page stopped): every commit reachable from the tip in `git log`'s order
+ * ({@link dateOrderedPage}, QW-006), or with `?first-parent=1` the first-parent log alone (the
+ * commits made on the branch itself, merges standing for what they brought in), labelled so. With
+ * `path`, a file's or a directory's History: the first-parent commits that changed it
+ * ({@link pathVersions}: from the push-time history index when one covers the tip, with no walk),
+ * labelled first-parent too. Pages walk one shared read-ahead walker
  * and the session memo of `lib/view/path-history.ts`, so an older page reads only what it adds.
  *
  * How many pages are shown is in the URL (`?pages=3`, L-31), and the scroll position is kept for
@@ -23,7 +26,8 @@ import type { RepoRef } from '@/lib/repo'
 import type { RepoHome } from '@/lib/view'
 import { selectedTip, selectRef, type LogEntry } from '@/lib/view'
 import { historyWalker } from '@/lib/view/commit-log'
-import { LOG_PAGE, PATH_WALK_CAP, pathVersions, type PathVersionsPage } from '@/lib/view/path-history'
+import { dateOrderedPage, type DateWalk } from '@/lib/view/date-log'
+import { LOG_PAGE, PATH_WALK_CAP, pathVersions } from '@/lib/view/path-history'
 import { historyOf } from '@/lib/view/history-source'
 import { useAsync } from '@/hooks/use-async'
 import { Time } from '@/components/repo/byline'
@@ -37,20 +41,24 @@ import { CheckDot, useCheckOutcomes } from '@/components/repo/check-dot'
 import { Button } from '@/components/ui/button'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
-import { errorMessage } from '@/lib/utils'
+import { cn, errorMessage } from '@/lib/utils'
 
 export function CommitsContent({
   home,
   addr,
   refParam = '',
   path = '',
+  firstParent: firstParentOnly = false,
 }: {
   home: RepoHome
   addr: RepoAddress
   refParam?: string
   /** A file or directory: its History ('' = the whole log). */
   path?: string
+  /** `?first-parent=1`: the first-parent log, not every commit (a path's History is first-parent anyway). */
+  firstParent?: boolean
 }): JSX.Element {
+  const firstParent = firstParentOnly || path !== ''
   const selected = selectRef(home.branches, home.tags, home.defaultBranch, refParam)
   if (refParam && !selected.ref && !selected.pinned) {
     return <RefNotFoundState addr={addr} refParam={refParam} defaultBranch={home.defaultBranch} />
@@ -77,7 +85,9 @@ export function CommitsContent({
       <BrowseBoundary repo={home.repo} addr={addr}>
         {(reader, retry) => (
           <ResolvedTip reader={reader} retry={retry} repo={home.repo} tip={tipOid} pinned={selected.pinned !== undefined} name={selected.name} addr={addr} refParam={refParam} accepts="commit" label="Walking history">
-            {(tip) => <LogBody key={`${tip.oid}\0${path}`} repo={home.repo} reader={reader} retry={retry} tipOid={tip.oid} addr={addr} path={path} />}
+            {(tip) => (
+              <LogBody key={`${tip.oid}\0${path}\0${firstParent}`} repo={home.repo} reader={reader} retry={retry} tipOid={tip.oid} addr={addr} path={path} firstParent={firstParent} />
+            )}
           </ResolvedTip>
         )}
       </BrowseBoundary>
@@ -85,10 +95,22 @@ export function CommitsContent({
   )
 }
 
+/** Where a log's next page starts: a commit (the first-parent walk), or the full log's walk. */
+export type LogCursor = string | DateWalk
+
+/** One page of a log, from either walk. */
+export interface LogPageOf {
+  readonly entries: readonly LogEntry[]
+  readonly next: LogCursor | null
+  readonly examined: number
+  readonly capped: boolean
+  readonly indexed: number
+}
+
 export interface LogState {
   readonly entries: readonly LogEntry[]
   /** Where the next page starts; null once the walk reached the root (or the path's first commit). */
-  readonly next: string | null
+  readonly next: LogCursor | null
   readonly loading: boolean
   readonly error: string | null
   /** Commits examined so far by a path walk (for the "no change in the last n" note). */
@@ -114,17 +136,24 @@ export function pagesParam(raw: string | null): number {
   return Number.isInteger(n) && n >= 1 ? Math.min(n, MAX_URL_PAGES) : 1
 }
 
-/** The footer's count (L-35): what is shown, and of how many when that is known; for a path's History, what changed it. */
-export function logStatus(state: Pick<LogState, 'entries' | 'next'>, total: number | null, path = ''): string {
+/** `?first-parent=1`: the first-parent log instead of every commit (a path's History is always first-parent). */
+export const FIRST_PARENT_PARAM = 'first-parent'
+
+/**
+ * The footer's count (L-35): what is shown, and of how many when that is known; for a path's
+ * History, what changed it. A first-parent list says so (QW-006): it is not the whole history.
+ */
+export function logStatus(state: Pick<LogState, 'entries' | 'next'>, total: number | null, path = '', firstParent = path !== ''): string {
   const n = state.entries.length
-  if (path) return state.next === null ? `The whole history of ${path}: ${plural(n, 'commit')}` : `Showing ${plural(n, 'commit')} that changed ${path}`
-  if (state.next === null) return `The whole history: ${plural(n, 'commit')}`
-  if (total !== null && total >= n) return `Showing ${n.toLocaleString('en-US')} of ${plural(total, 'commit')}`
-  return `Showing the newest ${plural(n, 'commit')}`
+  const fp = firstParent ? 'first-parent ' : ''
+  if (path) return state.next === null ? `The first-parent history of ${path}: ${plural(n, 'commit')}` : `Showing ${n.toLocaleString('en-US')} first-parent ${n === 1 ? 'commit' : 'commits'} that changed ${path}`
+  if (state.next === null) return firstParent ? `Every first-parent commit: ${n.toLocaleString('en-US')}` : `The whole history: ${plural(n, 'commit')}`
+  if (total !== null && total >= n) return `Showing ${n.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} ${fp}${total === 1 ? 'commit' : 'commits'}`
+  return `Showing the newest ${n.toLocaleString('en-US')} ${fp}${n === 1 ? 'commit' : 'commits'}`
 }
 
 /** `state` with one more page appended (a page that repeats what is shown adds nothing twice). */
-export function withPage(state: LogState, page: PathVersionsPage): LogState {
+export function withPage(state: LogState, page: LogPageOf): LogState {
   const shown = new Set(state.entries.map((e) => e.oid))
   return {
     entries: [...state.entries, ...page.entries.filter((e) => !shown.has(e.oid))],
@@ -138,6 +167,51 @@ export function withPage(state: LogState, page: PathVersionsPage): LogState {
   }
 }
 
+/**
+ * All commits (git log's order) or the first-parent log (QW-006): the same URL with or without
+ * `?first-parent=1`, from its first page.
+ */
+function OrderToggle({ firstParent, pathname, params }: { firstParent: boolean; pathname: string; params: { toString(): string } }): JSX.Element {
+  const hrefFor = (fp: boolean): string => {
+    const q = new URLSearchParams(params.toString())
+    q.delete('pages')
+    if (fp) q.set(FIRST_PARENT_PARAM, '1')
+    else q.delete(FIRST_PARENT_PARAM)
+    return `${pathname}?${q.toString()}`
+  }
+  const option = (fp: boolean, label: string, title: string): JSX.Element => {
+    const on = fp === firstParent
+    return (
+      <Link
+        href={hrefFor(fp)}
+        replace
+        aria-current={on ? 'true' : undefined}
+        title={title}
+        className={cn(
+          'rounded-md px-2.5 py-1 font-medium',
+          on ? 'bg-white text-anvil-900 shadow-sm dark:bg-anvil-800 dark:text-anvil-50' : 'text-anvil-500 hover:text-anvil-800 dark:text-anvil-400 dark:hover:text-anvil-100',
+        )}
+        data-testid={fp ? 'log-first-parent' : 'log-all-commits'}
+      >
+        {label}
+      </Link>
+    )
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-[12px]">
+      <nav aria-label="Which commits" className="inline-flex rounded-lg bg-anvil-100 p-0.5 dark:bg-anvil-900">
+        {option(false, 'All commits', 'Every commit reachable from this ref, newest first, as git log lists them')}
+        {option(true, 'First-parent only', 'Only the commits made on this branch itself: a merge stands for the commits it brought in (git log --first-parent)')}
+      </nav>
+      {firstParent ? (
+        <span className="text-anvil-500 dark:text-anvil-400" data-testid="log-first-parent-note">
+          Merged branches’ own commits are not listed.
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
 /** Where the list was scrolled, per URL, for this tab. */
 const scrollKey = (): string => `forge:log-scroll:${window.location.pathname}${window.location.search}`
 
@@ -148,6 +222,7 @@ function LogBody({
   tipOid,
   addr,
   path,
+  firstParent,
 }: {
   repo: RepoRef
   reader: BrowseReader
@@ -155,6 +230,7 @@ function LogBody({
   tipOid: string
   addr: RepoAddress
   path: string
+  firstParent: boolean
 }): JSX.Element {
   // One read-ahead walker for every page of this log, so an older page reuses its blocks.
   const walker = useMemo(() => historyWalker(reader), [reader])
@@ -164,11 +240,16 @@ function LogBody({
   const router = useRouter()
   const pathname = usePathname()
   const wanted = pagesParam(params.get('pages'))
-  // The first-parent count, when a history index covers this tip: the log's "of N".
+  // The count, when a history index covers this tip: the log's "of N" (every commit, or the first-parent ones).
   const history = historyOf(reader)
-  const total = useAsync(async () => (await history!.load(tipOid)).firstParentCount, [tipOid, history !== null], {
-    enabled: path === '' && history?.covers(tipOid) === true,
-  })
+  const total = useAsync(
+    async () => {
+      const ix = await history!.load(tipOid)
+      return firstParent ? ix.firstParentCount : ix.commitCount
+    },
+    [tipOid, history !== null, firstParent],
+    { enabled: path === '' && history?.covers(tipOid) === true },
+  )
   // The status dots: read once a page is shown, only for the commits it adds; a `?pages=` restore
   // waits for its last page, so its pages share batches of 100 rather than reading one by one.
   const restoring = state.pages < wanted && state.next !== null && state.error === null
@@ -177,12 +258,16 @@ function LogBody({
 
   /** Walk one more page from where the last one stopped (a capped path walk resumes there too). */
   const loadMore = useCallback(
-    (from: string | null) => {
+    (from: LogCursor | null) => {
       if (from === null || run.current !== null) return
       const stop = new AbortController()
       run.current = stop
       setState((s) => ({ ...s, loading: true, error: null }))
-      pathVersions(reader, from, path, { walker, signal: stop.signal }).then(
+      const page: Promise<LogPageOf> =
+        firstParent && typeof from === 'string'
+          ? pathVersions(reader, from, path, { walker, signal: stop.signal })
+          : dateOrderedPage(reader, from, { walker, signal: stop.signal }).then((p) => ({ ...p, capped: false, indexed: 0 }))
+      page.then(
         (page) => {
           if (stop.signal.aborted) return
           run.current = null
@@ -195,7 +280,7 @@ function LogBody({
         },
       )
     },
-    [reader, walker, path],
+    [reader, walker, path, firstParent],
   )
   // The first page on mount, and again from scratch for a new reader (the same tip reached by
   // another URL, a push that replaced the reader): a remount (StrictMode) aborts the first run and
@@ -246,9 +331,11 @@ function LogBody({
 
   return (
     <div className="space-y-3">
+      {path === '' ? <OrderToggle firstParent={firstParent} pathname={pathname} params={params} /> : null}
       <div
         className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800"
         data-testid="commit-log"
+        data-order={firstParent ? 'first-parent' : 'all'}
         data-source={state.indexed > 0 ? 'index' : 'walk'}
         onClickCapture={keepScroll}
       >
@@ -276,7 +363,7 @@ function LogBody({
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 text-[12px] text-anvil-500 dark:text-anvil-400">
         <span data-testid="log-status">
-          {logStatus(state, total.data, path)}
+          {logStatus(state, total.data, path, firstParent)}
           {path && state.capped ? ` · searched the last ${plural(state.examined, 'commit')} (up to ${PATH_WALK_CAP} a page)` : ''}
           {state.indexed > 0 ? (
             <span title="Listed by the history index the last push published: no history walk in your browser" data-testid="log-from-index">
