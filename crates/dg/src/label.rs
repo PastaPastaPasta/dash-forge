@@ -133,6 +133,7 @@ async fn define(
             "status": if retired { "retired" } else { "defined" },
             "name": name,
             "documentId": id,
+            "id": id,
         }),
         || println!("✓ {}d label {name}", verb.to_lowercase()),
     );

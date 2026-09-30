@@ -79,7 +79,7 @@ Fix: apply the suggestions that still fit, one by one or with `--all`, and edit 
 
 ## E201
 
-**Invalid arguments.** The flags or arguments do not make sense together, for example `dg issue label` without exactly one of `--add` or `--remove`, or a value is not of the form the flag takes (a `--color` that is not a hex color). A command line `dg` cannot parse at all (a missing argument, an unknown flag) is E201 too: the cause quotes what is wrong, and the command's usage line follows the error block. Inside a `dash://` clone, a command that leaves out the repository uses the clone's, so `dg issue list`, `dg issue label 3 add bug` or `dg release download v1.0` there is not an error. What you typed where the repository goes is kept when it names one: the clone's own repository (`dg label create project` in a clone of `alice/project` is a label name left out), or an `owner/name` whose owner is an identity id, `@name` or `name.dash`. `-R <repo>` (`--repo`) names the repository anywhere on the line, as with `gh`. In a clone of a fork, `dg pr create` with no repository opens the PR in the fork's parent.
+**Invalid arguments.** The flags or arguments do not make sense together, for example `dg issue label` without exactly one of `--add` or `--remove`, or a value is not of the form the flag takes: a `--color` that is not a hex color, an empty `--title`, a text over its length limit, or a comment, review or thread id that is not a document id (`dg issue delete-comment <repo> 2`; the ids are in `dg issue view --json` and `dg pr view --comments --json`). A command line `dg` cannot parse at all (a missing argument, an unknown flag) is E201 too: the cause quotes what is wrong, and the command's usage line follows the error block. Inside a `dash://` clone, a command that leaves out the repository uses the clone's, so `dg issue list`, `dg issue label 3 add bug` or `dg release download v1.0` there is not an error. What you typed where the repository goes is kept when it names one: the clone's own repository (`dg label create project` in a clone of `alice/project` is a label name left out), or an `owner/name` whose owner is an identity id, `@name` or `name.dash`. `-R <repo>` (`--repo`) names the repository anywhere on the line, as with `gh`. In a clone of a fork, `dg pr create` with no repository opens the PR in the fork's parent.
 
 Fix: see `dg <command> --help`.
 
@@ -141,7 +141,7 @@ Fix: pass the identity file with `--master <file>`, or type the recovery words w
 
 ## E303
 
-**Identity unreadable.** The identity file or stored key is missing, unreadable, not a bridge-format identity export or `dfk1:` key, or a sealed key file could not be opened (wrong passphrase).
+**Identity unreadable.** The identity file or stored key is missing, unreadable, not a bridge-format identity export or `dfk1:` key, or a sealed file could not be opened (wrong passphrase).
 
 Fix: `dg auth status` shows which key source is in use. Sign in again with `dg auth login <file>` or `dg auth login --mnemonic`. For a sealed file, set `DASH_FORGE_PASSPHRASE` or type the passphrase when asked. A wrong passphrase names the file and where the passphrase came from. Each sealed file keeps its own passphrase: `dg ci runner new --runner <file>` reads the runner file's from `DASH_FORGE_RUNNER_PASSPHRASE` (else `DASH_FORGE_PASSPHRASE`), so a script can open your key and the runner's when they differ.
 
@@ -219,6 +219,8 @@ Fix: register a fresh limited key (uses the master key once): `dg auth login <id
 
 **Storage not configured correctly.** `dash.storage` names a profile that `~/.config/dash-forge/storage.toml` does not define, `dash.replicas` is out of range, or `storage.toml` does not parse.
 
+`dg release create` with assets, and `dg ci report` with `--log` or `--artifact`, stop with it before anything is uploaded when there is no storage of your own to put the files on: `dash.storage` is Platform only (or unset) and no `--storage` names a profile. Release assets, check-run logs and artifacts never go to Platform. `dg ci report` also stops when the storage records no https or IPFS address, because a check run can name only such a URL.
+
 It is also what `git push`, `dg init`, `dg repo create`, `dg storage advertise`, `dg repack --profile`, `dg reseed --profile` and `dg release create` stop with, **before** anything is built, uploaded or paid for, when a target profile's public read address is not a public https URL: loopback, a LAN or other private address, `.local`, plain http, or a temporary tunnel name (`*.trycloudflare.com`, `*.ts.net`). That address would be recorded on chain forever, and nobody else could read it for long, or at all.
 
 Fix: `dg storage list` shows your profiles and `dg storage use <profiles>` sets `dash.storage`. For an address problem, re-add the profile with a public https `--public-url` / `--public-gateway` (a bucket domain, a CDN, a named tunnel or a reverse proxy on your own domain), or record it anyway with `git push -o allow-private-uri`, `git config dash.allowPrivateUri true`, `dg storage add … --allow-private-uri`, or `--allow-private-uri` on `dg init` / `dg repo create`. See [bring your own storage](guides/bring-your-own-storage.md#public-addresses).
@@ -239,6 +241,8 @@ Fix, in order:
 **Packs unreadable.** A clone or fetch needed a pack whose recorded copies all failed: storage down, object deleted, or a gateway that does not have the CID. The helper reads every other pack first and reports this only when the wanted history really is incomplete, so a dead copy of a pack nothing needs (a deleted branch, or one a repack superseded) does not fail the clone. The `cause:` line names each unreadable pack and why each of its copies failed. A host that refuses the connection gives up its place in the race at once, so it never waits on a slow gateway tried alongside it. Copies are tried two at a time. If neither sends a single byte within 20 seconds, both are dropped and the next two are tried, again with 20 seconds. A gateway that cannot find a CID holds the request open for about a minute before it answers 504, so this saves most of that wait. Every copy is still tried before the clone fails. Once any copy starts sending, the slow-but-healthy transfer keeps its full deadline.
 
 Fix: anyone whose clone still has the objects can restore the copies with `dg reseed <owner>/<repo> --from-local`, run inside that clone. If you know another IPFS gateway that has the pack, add it to `[read] ipfs_gateways` in `storage.toml` and try again.
+
+When every copy a pack's manifest records is one no reader follows (the pusher's storage had a plain-http, loopback or private-network public address, recorded with `allow-private-uri`, or an S3 bucket with no public address), the cause says so for each copy, and neither a gateway nor a retry helps. The pusher can copy the packs to storage with a public https address from their clone: `dg reseed <owner>/<repo> --from-local --profile <profile>`. If that host or bucket is your own, add a storage profile for it and retry.
 
 `dg release download` stops with E503 before downloading anything when none of the asset's recorded copies is one this computer reads from. A copy recorded on chain is followed only if it is a public https URL, an IPFS CID with a gateway to ask, or a bucket or host named in one of your own storage profiles. Plain http, loopback and private-network addresses are never followed just because a publisher recorded them. If the host is your own storage, add a profile whose `public_url` is it, and retry.
 
@@ -400,7 +404,7 @@ Fix: add your own storage (`dg storage add`, then `dg storage use`) so packs go 
 
 **Confirmation required.** A cost-bearing or destructive `dg` command needs confirmation, and it cannot prompt: `--json` mode, or stdin is not a terminal.
 
-Fix: pass `--yes` after checking the estimate (`dg cost estimate`).
+Fix: pass `--yes` once you have checked what the command will do. The `cause:` line quotes the prompt, with its DASH estimate when the command prints one; `dg cost estimate` and `dg cost prices` give the rest.
 
 ## E803
 

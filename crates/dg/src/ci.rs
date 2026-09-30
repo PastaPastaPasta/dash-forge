@@ -542,7 +542,7 @@ async fn runner_list(ctx: &Ctx, repo: &str) -> Result<()> {
     let r = Reader::open(ctx, repo).await?;
     let runners = RunnerReader::new(&r.client).list(&r.repo).await?;
     ctx.emit(
-        json!({ "count": runners.len(), "runners": runners }),
+        json!({ "count": runners.len(), "runners": crate::fmt::with_ids(&runners) }),
         || {
             if runners.is_empty() {
                 println!("no runners");
@@ -602,8 +602,9 @@ fn gives_log_url(profile: &Profile) -> bool {
     }
 }
 
-/// Refuse, before anything is uploaded, storage none of whose profiles records an https or
-/// IPFS address (a plain-http or private bucket): the check run could not name the log.
+/// Refuse, before anything is uploaded: no storage of your own at all (a Platform-only
+/// repository and no `--storage`), or storage none of whose profiles records an https or IPFS
+/// address (a plain-http or private bucket), where the check run could not name the log.
 fn check_log_storage(storage: Option<&str>) -> Result<()> {
     let (list, replicas) = match storage {
         Some(s) => (Some(s.to_string()), None),
@@ -614,8 +615,10 @@ fn check_log_storage(storage: Option<&str>) -> Result<()> {
     };
     let policy = StoragePolicy::from_git_values(list.as_deref(), replicas.as_deref(), None)?
         .resolve(&StorageProfiles::load()?)?;
-    if policy.external.is_empty() || policy.external.iter().any(|(_, p)| gives_log_url(p)) {
-        // No external storage at all: `asset_targets` explains that.
+    if policy.external.is_empty() {
+        return Err(no_log_storage(storage.is_some()));
+    }
+    if policy.external.iter().any(|(_, p)| gives_log_url(p)) {
         return Ok(());
     }
     Err(UserError::new(
@@ -637,9 +640,31 @@ fn check_log_storage(storage: Option<&str>) -> Result<()> {
     .into())
 }
 
+/// E501 for `--log` / `--artifact` with no storage of your own: they are uploaded there, never
+/// to Platform. Before, this was the release command's "release not created: no storage for
+/// the assets" (QW2-077).
+fn no_log_storage(storage_given: bool) -> anyhow::Error {
+    let why = if storage_given {
+        "the --storage given names no storage of your own (only Platform)"
+    } else {
+        "dash.storage names none (it is unset, or platform), and no --storage was given"
+    };
+    UserError::new(
+        codes::STORAGE_CONFIG,
+        "check run not reported: --log and --artifact need your own storage",
+    )
+    .cause(format!(
+        "a check run's log and artifacts are uploaded to your own storage (an S3 bucket with an https public_url, or IPFS) and the run records their URL; {why}"
+    ))
+    .fix("pass --storage <profile> (`dg storage list` shows yours; `dg storage add <name> …` adds one)")
+    .fix("or report the run without --log / --artifact")
+    .note("nothing was uploaded or written")
+    .into()
+}
+
 /// The log's https (else `ipfs://`) URL and its SHA-256, after uploading it to `storage`.
 async fn upload_log(path: &Path, storage: Option<&str>) -> Result<(String, [u8; 32])> {
-    let (targets, required) = crate::release::asset_targets(storage)?;
+    let (targets, required) = crate::release::asset_targets(storage, "check run not reported")?;
     let (asset, _) = crate::release::upload_asset(path, &targets, required).await?;
     let url = log_url(&asset.uris)
         .cloned()
@@ -703,7 +728,9 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
     // text once the repository's visibility says whether it is kept (a private repository's
     // run drops it with a warning instead).
     let usage = |e: forge_core::error::Error| match e {
-        forge_core::error::Error::Config(m) => crate::errors::usage(m),
+        forge_core::error::Error::Config(m) | forge_core::error::Error::InvalidInput(m) => {
+            crate::errors::usage(m)
+        }
         other => other.into(),
     };
     r.for_visibility(Visibility::Private)
@@ -909,7 +936,7 @@ async fn upload_artifacts(
     paths: &[PathBuf],
     storage: Option<&str>,
 ) -> Result<(Option<String>, Vec<String>)> {
-    let (targets, required) = crate::release::asset_targets(storage)?;
+    let (targets, required) = crate::release::asset_targets(storage, "check run not reported")?;
     let mut uploaded = Vec::new();
     for p in paths {
         let (mut asset, _) = crate::release::upload_asset(p, &targets, required).await?;
@@ -984,7 +1011,7 @@ async fn status(ctx: &Ctx, repo: &str, sha: &str) -> Result<()> {
         })
         .collect();
     ctx.emit(
-        json!({ "headOid": sha, "checks": rows, "url": url }),
+        json!({ "headOid": sha, "checks": crate::fmt::with_ids(&rows), "url": url }),
         || {
             if runs.is_empty() {
                 println!("no checks reported for {}", &sha[..7.min(sha.len())]);
@@ -1021,6 +1048,31 @@ async fn status(ctx: &Ctx, repo: &str, sha: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// QW2-077: `--log` on a Platform-only repository names the flag and the fix, not the
+    /// release command's "release not created".
+    #[test]
+    fn a_log_without_storage_says_it_needs_storage() {
+        let e = no_log_storage(false);
+        let u = e.downcast_ref::<UserError>().unwrap();
+        assert_eq!((u.code, u.exit_code()), ("E501", 5));
+        assert!(u.message.starts_with("check run not reported"), "{u:?}");
+        assert!(!u.message.contains("release"), "{u:?}");
+        assert!(
+            u.cause
+                .as_deref()
+                .unwrap()
+                .contains("no --storage was given"),
+            "{u:?}"
+        );
+        assert!(u.fix[0].contains("--storage <profile>"), "{u:?}");
+        let given = no_log_storage(true);
+        let u = given.downcast_ref::<UserError>().unwrap();
+        assert!(
+            u.cause.as_deref().unwrap().contains("the --storage given"),
+            "{u:?}"
+        );
+    }
 
     /// QW2-086: a report of a check the policy pins to another source says it will not count.
     #[test]

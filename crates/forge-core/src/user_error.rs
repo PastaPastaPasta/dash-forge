@@ -733,6 +733,12 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
         .fix("if you know another IPFS gateway with the pack, add it to `[read] ipfs_gateways` in storage.toml and retry"),
         CoreError::Io(msg) if mentions_identity(chain) => identity_unreadable(msg),
         CoreError::Config(msg) => from_config(msg, chain, ctx),
+        // A command's own input (QW2-076): E201, not the E204 "invalid configuration" whose
+        // fix is `dg doctor`.
+        CoreError::InvalidInput(msg) => UserError::new(codes::USAGE, ctx.headline("invalid arguments"))
+            .cause(msg)
+            .fix("correct that value and run the command again (`--help` lists the arguments)")
+            .note("checked before signing: nothing was written to Platform"),
         CoreError::Platform(msg) => return from_platform_text(msg, ctx),
         CoreError::User(u) => (**u).clone(),
         _ => return None,
@@ -2083,6 +2089,27 @@ mod tests {
     fn core_chain(e: CoreError, ctx: &ErrorContext<'_>) -> UserError {
         let e = Box::new(e);
         classify([e.as_ref() as &(dyn StdError + 'static)], ctx)
+    }
+
+    #[test]
+    fn a_bad_input_value_is_e201_not_invalid_configuration() {
+        // QW2-076: it was E204 "invalid configuration" with a `dg doctor` fix.
+        let issue = ErrorContext {
+            goal: Some("issue not created"),
+            repo: Some("alice/project"),
+            ..Default::default()
+        };
+        let u = core_chain(
+            CoreError::InvalidInput("the title is empty: a title is required".into()),
+            &issue,
+        );
+        assert_eq!((u.code, u.exit_code()), ("E201", 2));
+        assert_eq!(u.message, "issue not created: invalid arguments");
+        assert_eq!(
+            u.cause.as_deref(),
+            Some("the title is empty: a title is required")
+        );
+        assert!(!u.fix.iter().any(|f| f.contains("doctor")), "{u:?}");
     }
 
     const PUSH: ErrorContext<'static> = ErrorContext {

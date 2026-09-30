@@ -1199,7 +1199,7 @@ fn check_git_config(ctx: &Ctx) -> Vec<Check> {
     );
     out.push(match policy {
         Err(e) => Check::fail("dash.storage", e.to_string(), "`dg storage use <profiles>` rewrites it"),
-        Ok(p) if p.is_platform_only() => Check::ok("dash.storage", "unset: pushes store packs on Platform"),
+        Ok(p) if p.is_platform_only() => Check::ok("dash.storage", platform_only_detail(storage.as_deref())),
         Ok(p) => match StorageProfiles::load().and_then(|profiles| p.resolve(&profiles)) {
             Ok(r) => Check::ok(
                 "dash.storage",
@@ -1213,6 +1213,15 @@ fn check_git_config(ctx: &Ctx) -> Vec<Check> {
         },
     });
     out
+}
+
+/// The `dash.storage` row's detail for a Platform-only policy: the value as set (`platform`),
+/// or `unset` when there is none (QW2-081: a repo set to `platform` read "unset").
+fn platform_only_detail(value: Option<&str>) -> String {
+    match value.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(v) => format!("{v}: pushes store packs on Platform"),
+        None => "unset: pushes store packs on Platform".to_string(),
+    }
 }
 
 /// The `dash.network` row when git's network does not resolve: a `config.toml` that does
@@ -1354,6 +1363,23 @@ fn in_git_repo() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// QW2-081: a repository set to `platform` says so; only a missing value is "unset".
+    #[test]
+    fn a_platform_storage_value_is_named_not_called_unset() {
+        assert_eq!(
+            platform_only_detail(Some("platform")),
+            "platform: pushes store packs on Platform"
+        );
+        assert_eq!(
+            platform_only_detail(None),
+            "unset: pushes store packs on Platform"
+        );
+        assert_eq!(
+            platform_only_detail(Some("  ")),
+            "unset: pushes store packs on Platform"
+        );
+    }
 
     /// The guard `dg doctor --fix` sets lets a small push through without asking, packs on
     /// Platform included (its quote is an upper bound), and still asks before a megabyte.

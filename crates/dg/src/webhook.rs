@@ -182,6 +182,7 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
             "repo": handle.display(),
             "repoId": handle.id(),
             "documentId": document_id,
+            "id": document_id,
             "hookId": hex::encode(hook_id),
             "url": url,
             "events": events,
@@ -292,6 +293,7 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
             json!({
                 "hookId": h.hook_id_hex(),
                 "documentId": h.document_id,
+                "id": h.document_id,
                 "writer": h.owner_id,
                 "createdAt": h.created_at,
                 "url": h.url,

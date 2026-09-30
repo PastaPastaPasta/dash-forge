@@ -1273,8 +1273,12 @@ async fn balance(ctx: &Ctx) -> Result<()> {
 // name register
 // ---------------------------------------------------------------------------------------
 
-/// DPNS registration cost for a non-contested name (preorder + domain), credits; an estimate.
-const DPNS_ESTIMATE_CREDITS: u64 = 2_000_000_000;
+/// DPNS registration cost for a non-contested name (preorder + domain), credits: an upper
+/// bound. A 9-character name was charged 71,000,000 credits (0.00071 DASH) on devnet bonsia
+/// (QW2-080); the old 0.02 DASH quote was 28 times that. A 63-character label stores about
+/// 110 more bytes (the label and its normalized form, each indexed): a few million credits at
+/// Platform's ~27,700 credits per byte, well inside the margin.
+const DPNS_ESTIMATE_CREDITS: u64 = 100_000_000;
 
 async fn name_register(ctx: &Ctx, label: &str, master: Option<&std::path::Path>) -> Result<()> {
     let label = label.trim().trim_end_matches(".dash");

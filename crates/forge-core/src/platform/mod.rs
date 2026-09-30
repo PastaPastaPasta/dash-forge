@@ -2766,8 +2766,14 @@ fn parse_address_list(addresses: &[String]) -> Result<AddressList> {
 
 /// Parse a base58 Platform id, mapping failures to a config error.
 pub(crate) fn parse_id(s: &str, what: &str) -> Result<Identifier> {
-    Identifier::from_string(s, Encoding::Base58)
-        .map_err(|e| Error::Config(format!("invalid {what} (expected base58): {e}")))
+    // The SDK's own text ("byte length not 32 bytes error: Identifier must be 32 bytes long
+    // from bytes") says nothing a reader can act on (QW2-076).
+    Identifier::from_string(s, Encoding::Base58).map_err(|_| {
+        Error::Config(format!(
+            "invalid {what} {:?}: a Platform id is 32 bytes, written in base58 (about 44 characters)",
+            s.chars().take(64).collect::<String>()
+        ))
+    })
 }
 
 /// Decode a base58 Platform id (identity / contract) to its raw 32 bytes — the form an

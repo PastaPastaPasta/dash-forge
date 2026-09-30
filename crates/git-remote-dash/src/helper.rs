@@ -904,19 +904,63 @@ fn packs_unreadable(
     // The catalogue's wording (docs/design/ux-dx-spec.md §7.3 example 6): "clone
     // incomplete: 2 packs unreadable". The pack total goes in the cause.
     let n = unreadable.len();
-    UserError::new(
+    let err = UserError::new(
         codes::PACKS_UNREADABLE,
         format!(
             "{what} incomplete: {n} {} unreadable",
             if n == 1 { "pack" } else { "packs" }
         ),
-    )
-    .cause(format!("{n} of the repository's {total} packs: {}", cause.join("; ")))
+    );
+    // Every copy the pusher recorded is one no reader follows (plain http, this machine, a
+    // private network, a bucket without a profile here): no gateway or retry helps, the copy
+    // has to be put somewhere readable (QW2-078). The places are said once for all the packs.
+    if let Some(places) = unfollowed_places(unreadable) {
+        let recorded = if places.is_empty() {
+            "their manifests record no address".to_string()
+        } else {
+            format!("they are recorded only at {}", places.join("; "))
+        };
+        return err
+            .cause(format!(
+                "{n} of the repository's {total} packs: {}: {recorded}",
+                forge_core::storage::read::NO_FOLLOWED_COPY
+            ))
+            .fix(format!(
+                "the pusher recorded their packs only at an address other computers do not read from: from their clone they can copy them to storage with a public https address, `dg reseed {repo} --from-local --profile <profile>` (`dg storage add <name> … --public-url https://…` adds one)"
+            ))
+            .fix("if that host or bucket is your own storage, add a storage profile for it (`dg storage add`, with its public_url) and run it again");
+    }
+    err.cause(format!(
+        "{n} of the repository's {total} packs: {}",
+        cause.join("; ")
+    ))
     .fix(format!(
         "ask a member who has the objects to run `dg reseed {repo} --from-local` inside their clone"
     ))
     .fix("if you know another IPFS gateway with the pack, add it to `[read] ipfs_gateways` in storage.toml and retry")
     .fix(format!("`dg storage status {repo}` shows which recorded copies answer"))
+}
+
+/// When no pack had a copy this computer follows, the places their manifests record (each
+/// once, in order); `None` when any pack failed some other way.
+fn unfollowed_places(unreadable: &[Unreadable]) -> Option<Vec<String>> {
+    const ONLY: &str = "its manifest records only ";
+    let mut places: Vec<String> = Vec::new();
+    for u in unreadable {
+        if !u
+            .error
+            .contains(forge_core::storage::read::NO_FOLLOWED_COPY)
+        {
+            return None;
+        }
+        let listed = u.error.split_once(ONLY).map_or("", |(_, rest)| rest);
+        for place in listed.split("; ").filter(|p| !p.is_empty()) {
+            if !places.iter().any(|p| p == place) {
+                places.push(place.to_string());
+            }
+        }
+    }
+    (!unreadable.is_empty()).then_some(places)
 }
 
 /// The reader's "no external copy verified" text, short enough for one cause line: each
@@ -3079,6 +3123,46 @@ mod tests {
             ..Default::default()
         };
         assert!(incremental_fetch_complete(true, &filtered, &wants, || true));
+    }
+
+    #[test]
+    fn packs_recorded_only_where_no_reader_follows_get_the_move_them_fix() {
+        // QW2-078: reseed from the members, IPFS gateways and storage status cannot help a
+        // pack recorded only at a loopback address.
+        let private = |h: &str| Unreadable {
+            hash: h.repeat(64),
+            error: format!(
+                "io error: {}: its manifest records only 127.0.0.1:9000 (this machine or a \
+                 private network: never followed from a manifest); S3 bucket byo (read only \
+                 through a storage profile of yours for it)",
+                forge_core::storage::read::NO_FOLLOWED_COPY
+            ),
+        };
+        let u = packs_unreadable("OWNER/repo", true, &[private("a"), private("b")], 3);
+        assert_eq!(u.code, "E503");
+        assert_eq!(u.message, "clone incomplete: 2 packs unreadable");
+        let cause = u.cause.clone().unwrap();
+        // Each place once, for all the packs.
+        assert_eq!(
+            cause,
+            format!(
+                "2 of the repository's 3 packs: {}: they are recorded only at 127.0.0.1:9000 \
+                 (this machine or a private network: never followed from a manifest); S3 bucket \
+                 byo (read only through a storage profile of yours for it)",
+                forge_core::storage::read::NO_FOLLOWED_COPY
+            )
+        );
+        assert!(
+            u.fix[0].contains("dg reseed OWNER/repo --from-local --profile"),
+            "{:?}",
+            u.fix
+        );
+        assert!(u.fix[1].contains("your own storage"), "{:?}", u.fix);
+        assert!(
+            !u.fix.iter().any(|f| f.contains("ipfs_gateways")),
+            "{:?}",
+            u.fix
+        );
     }
 
     #[test]

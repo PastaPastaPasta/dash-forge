@@ -115,7 +115,7 @@ Register the key? [y/N] y
   the identity file is no longer needed here; keep it (or the words) offline
 ```
 
-The quote is an upper bound: on devnet bonsia the update was charged about 0.00027 DASH. Without a terminal (a script), `dg` stops with [E802](../errors.md#e802) and writes nothing; add `--yes` once you have checked the estimate.
+The prompt defaults to no, so pressing Enter alone declines: type `y`. The quote is an upper bound: on devnet bonsia the update was charged about 0.00027 DASH. Without a terminal (a script), `dg` stops with [E802](../errors.md#e802) and writes nothing; add `--yes` once you have checked the estimate.
 
 The identity file's master key signs one update that registers a limited key for this computer, and `dg` stores only that key, with your identity's encryption key beside it for private repositories (never the master key). Afterwards put the identity file somewhere offline. `dg` records the identity and the network as defaults, and `git push` reads the same stored key, so neither needs flags or `DASH_FORGE_KEY`. Where there is no OS keychain (a container, Linux without Secret Service), the key goes to a passphrase-sealed file instead; over SSH, set `DASH_FORGE_NO_KEYCHAIN=1` to get the same.
 
@@ -136,7 +136,7 @@ dg doctor --fix     # free, local fixes only: file modes, and a cost guard for g
 
 `dg doctor --fix` sets `git config --global dash.costWarnThreshold 0.05` if you have no threshold yet, so that a push asks before spending more than 0.05 DASH: a small push goes through (one with its packs on Platform is quoted about 0.012 DASH on bonsia), a megabyte of packs on Platform asks. It never spends anything.
 
-Your identity id is the long base58 string, such as `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB`. You will use it in repository addresses. A DPNS username is optional: `dg auth name register <label>`. Names work everywhere a repository address does: `forge.dashhq.org/alice/project`, `git clone dash://alice/project` and `dg … alice/project`.
+Your identity id is the long base58 string, such as `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB`. You will use it in repository addresses. A DPNS username is optional: `dg auth name register <label>`. It needs your identity's master key once, so pass the identity file with `--master <file>` or type the 12 recovery words when asked; the limited key `dg auth login` stored cannot sign it. A name with a digit other than 0 or 1 cost about 0.0007 DASH on bonsia (`dg` quotes an upper bound of 0.001). Names work everywhere a repository address does: `forge.dashhq.org/alice/project`, `git clone dash://alice/project` and `dg … alice/project`.
 
 ---
 

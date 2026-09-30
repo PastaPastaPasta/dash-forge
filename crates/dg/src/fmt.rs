@@ -118,9 +118,16 @@ pub fn dash_amount(dash: f64) -> String {
     }
 }
 
+/// Set once this process has shown a price ([`cost_line`]): a confirmation that cannot be
+/// asked then says to check that estimate, and otherwise to check what the command does
+/// (QW2-079: "check the estimate" where none was shown).
+pub static ESTIMATE_SHOWN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// A one-line cost display: DASH primary, USD secondary on mainnet, e.g.
 /// `~0.0003 DASH ≈ $0.01` (`~0.0003 DASH` where [`usd_price`] is `None`).
 pub fn cost_line(credits: u64, price_usd: Option<f64>) -> String {
+    ESTIMATE_SHOWN.store(true, std::sync::atomic::Ordering::Relaxed);
     let dash = credits_to_dash(credits);
     match price_usd {
         Some(price) => format!("~{} DASH ≈ ${:.2}", dash_amount(dash), dash * price),
@@ -153,6 +160,45 @@ pub fn cost_json(credits: u64, price_usd: Option<f64>) -> Value {
 /// reads `0.001664` while the smallest write still shows a cost (QW-081). `credits` is exact.
 fn usd_json(usd: f64) -> f64 {
     (usd * 1_000_000.0).round() / 1_000_000.0
+}
+
+/// The `labels:`, `assignees:` and `milestone:` lines of an issue or PR view, each only when
+/// set, as `gh issue view` shows them (QW2-085: assignees were missing). `assignees` are as
+/// they should print (an id, or an id with its DPNS name).
+pub fn triage_lines(labels: &[&str], assignees: &[String], milestone: Option<&str>) -> Vec<String> {
+    let mut out = Vec::new();
+    if !labels.is_empty() {
+        out.push(format!("labels: {}", safe(&labels.join(", "))));
+    }
+    // An assignee is an event's value: printed through `safe`, and a hidden (empty) one skipped.
+    let assignees: Vec<String> = assignees
+        .iter()
+        .filter(|a| !a.is_empty())
+        .map(|a| safe(a).into_owned())
+        .collect();
+    if !assignees.is_empty() {
+        out.push(format!("assignees: {}", assignees.join(", ")));
+    }
+    if let Some(m) = milestone {
+        out.push(format!("milestone: {}", safe(m)));
+    }
+    out
+}
+
+/// `rows` (records serialized as JSON objects) with `id` beside each `documentId`, as every
+/// other `--json` output has it (QW-081): scripts read `id` everywhere.
+pub fn with_ids<T: serde::Serialize>(rows: &[T]) -> Value {
+    let mut v = serde_json::to_value(rows).unwrap_or(Value::Null);
+    if let Value::Array(items) = &mut v {
+        for item in items {
+            if let Value::Object(o) = item {
+                if let Some(id) = o.get("documentId").cloned() {
+                    o.entry("id").or_insert(id);
+                }
+            }
+        }
+    }
+    v
 }
 
 /// The `--json` block for `auth balance`.
@@ -201,6 +247,58 @@ pub fn event_values_note(hidden: usize, plaintext: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// QW-081: every record gets `id` beside its `documentId`; one that has `id` keeps it.
+    #[test]
+    fn records_get_an_id_beside_their_document_id() {
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Row {
+            document_id: &'static str,
+            name: &'static str,
+        }
+        let v = with_ids(&[Row {
+            document_id: "D1",
+            name: "build",
+        }]);
+        assert_eq!(
+            v,
+            json!([{ "documentId": "D1", "id": "D1", "name": "build" }])
+        );
+        let kept = with_ids(&[
+            json!({ "documentId": "D1", "id": "X" }),
+            json!({ "name": "n" }),
+        ]);
+        assert_eq!(
+            kept,
+            json!([{ "documentId": "D1", "id": "X" }, { "name": "n" }])
+        );
+    }
+
+    /// QW2-085: labels, assignees and milestone, each only when set.
+    #[test]
+    fn triage_lines_show_what_is_set() {
+        let lines = triage_lines(
+            &["bug", "docs"],
+            &["A (alice.dash)".into(), "B".into()],
+            Some("v1.0"),
+        );
+        assert_eq!(
+            lines,
+            vec![
+                "labels: bug, docs",
+                "assignees: A (alice.dash), B",
+                "milestone: v1.0"
+            ]
+        );
+        assert!(triage_lines(&[], &[], None).is_empty());
+        // A hidden (empty) assignee is skipped; a control character never reaches the terminal.
+        assert_eq!(
+            triage_lines(&[], &[String::new(), "B".into()], None),
+            vec!["assignees: B"]
+        );
+        assert!(!triage_lines(&[], &["B\u{1b}[2J".into()], None)[0].contains('\u{1b}'));
+    }
 
     /// QW-081: the `usd` of a cost carries no float noise.
     #[test]

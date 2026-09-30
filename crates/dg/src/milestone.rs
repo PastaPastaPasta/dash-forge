@@ -120,7 +120,7 @@ async fn define(
         .define_milestone(&s.repo, title, description, due_on, closed)
         .await?;
     ctx.emit(
-        json!({ "status": "defined", "title": title, "closed": closed, "documentId": id }),
+        json!({ "status": "defined", "title": title, "closed": closed, "documentId": id, "id": id }),
         || {
             println!(
                 "✓ milestone {title} {}",
