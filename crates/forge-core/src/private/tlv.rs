@@ -189,6 +189,8 @@ fn allowed(kind: DocKind, tag: u8, anchor_with_prev: bool) -> bool {
         DocKind::Review => tag == BODY || imported,
         DocKind::RefUpdate | DocKind::ProtectedRefUpdate => tag == REF_NAME,
         DocKind::Event => tag == EVENT_VALUE,
+        // a release's TLV is `private::release`'s (§16.2): none of these tags
+        DocKind::Release => false,
         DocKind::Config => {
             matches!(tag, DEFAULT_BRANCH | PROTECTED_PATTERN)
                 || (anchor_with_prev
@@ -290,6 +292,7 @@ pub fn parse(pt: &[u8], kind: DocKind, anchor_with_prev: bool) -> Option<Fields>
         }
         DocKind::Review => true,
         DocKind::Event => f.event_value.is_some(),
+        DocKind::Release => false,
     };
     required.then_some(f)
 }

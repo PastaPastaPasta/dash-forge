@@ -1097,15 +1097,25 @@ pub struct ReleaseCreateArgs {
     /// Release notes.
     #[arg(long, default_value = "")]
     pub notes: String,
-    /// Mark the release yanked.
-    #[arg(long)]
-    pub yanked: bool,
+    /// Mark the release yanked (`--yanked=false` un-yanks it). A public release is yanked only
+    /// when a revision says so; a private one keeps its last revision's by default.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true", value_name = "BOOL")]
+    pub yanked: Option<bool>,
     /// A file to attach (repeatable): uploaded to your storage, sha256 recorded.
     #[arg(long = "asset", value_name = "FILE")]
     pub assets: Vec<PathBuf>,
     /// Storage profiles for the assets (default: this repository's `dash.storage`).
     #[arg(long)]
     pub storage: Option<String>,
+    /// Mark the release a draft (`--draft=false` clears it). Private repositories only: a
+    /// sealed label every member sees, not access control. Default: as the tag's last revision.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true", value_name = "BOOL")]
+    pub draft: Option<bool>,
+    /// Mark the release a pre-release (`--prerelease=false` clears it). Private repositories
+    /// only; a tag with a pre-release suffix (`-rc.1`) is one anyway. Default: as the tag's
+    /// last revision.
+    #[arg(long, num_args = 0..=1, default_missing_value = "true", value_name = "BOOL")]
+    pub prerelease: Option<bool>,
 }
 
 #[derive(Debug, Subcommand)]

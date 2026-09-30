@@ -74,6 +74,9 @@ pub enum DocKind {
     /// `event` (forge-collab): its `value` (a label or milestone name, a dismiss reason, an
     /// assignee, a retarget base) is sealed in a private repo.
     Event,
+    /// `release` (forge-core): its own TLV, keyed `tagName` and fold ([`release`], §16). The
+    /// generic [`doc::seal`] and [`doc::open_content`] refuse it.
+    Release,
 }
 
 impl DocKind {
@@ -89,6 +92,7 @@ impl DocKind {
             Self::ProtectedRefUpdate => "protectedRefUpdate",
             Self::Config => "config",
             Self::Event => "event",
+            Self::Release => "release",
         }
     }
 
@@ -97,7 +101,7 @@ impl DocKind {
     pub fn max_enc(self) -> usize {
         match self {
             Self::Issue | Self::Patch | Self::Comment | Self::Review | Self::Event => 5120,
-            Self::RefUpdate | Self::ProtectedRefUpdate | Self::Config => 1536,
+            Self::RefUpdate | Self::ProtectedRefUpdate | Self::Config | Self::Release => 1536,
         }
     }
 }

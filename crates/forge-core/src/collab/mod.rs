@@ -216,7 +216,11 @@ pub struct ReleaseAsset {
 }
 
 /// Input for [`v2::Collab::create_release`].
-#[derive(Debug, Clone)]
+///
+/// A private repository's release is sealed (`private-repos.md` §16) and every revision is a
+/// complete statement: an empty `name` or `notes`, and a `None` flag, carry the tag's newest
+/// revision forward, and so do its assets, except those a new file of the same name replaces.
+#[derive(Debug, Clone, Default)]
 pub struct ReleaseInput {
     /// Tag name (the logical key; newest doc per tag wins).
     pub tag_name: String,
@@ -224,10 +228,64 @@ pub struct ReleaseInput {
     pub name: String,
     /// Release notes.
     pub notes: String,
-    /// Whether this release is yanked.
-    pub yanked: bool,
-    /// Assets.
+    /// Whether this release is yanked. A public revision states it afresh (`None` is not
+    /// yanked); a private one carries the tag's last revision's when `None` (§16.3).
+    pub yanked: Option<bool>,
+    /// Assets already stored (a public repository; a private one's are [`Self::files`]).
     pub assets: Vec<ReleaseAsset>,
+    /// A private repository: the files to seal and store as new assets.
+    pub files: Vec<ReleaseFile>,
+    /// A private repository: the sealed pre-release flag (§16.2), `None` to carry it forward.
+    pub prerelease: Option<bool>,
+    /// A private repository: the sealed draft flag, `None` to carry it forward.
+    pub draft: Option<bool>,
+    /// A private repository: unpublish the tag (flag `0x08`, every field carried forward;
+    /// `delta` stays 0, §16.3).
+    pub unpublished: bool,
+}
+
+/// One file a sealed release stores as an asset (§16.5).
+#[derive(Clone)]
+pub struct ReleaseFile {
+    /// The asset's name.
+    pub name: String,
+    /// The plaintext bytes.
+    pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for ReleaseFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReleaseFile")
+            .field("name", &self.name)
+            .field("len", &self.bytes.len())
+            .finish()
+    }
+}
+
+/// Where a sealed release's files and asset list go: the repository's external storage
+/// (release assets are external only), and how many copies must confirm.
+pub struct ReleaseStore<'t> {
+    /// The targets.
+    pub targets: Vec<&'t dyn crate::storage::StorageTarget>,
+    /// Confirmations required.
+    pub required: usize,
+}
+
+/// What [`v2::Collab::create_release_stored`] wrote.
+#[derive(Debug, Clone, Default)]
+pub struct ReleaseWritten {
+    /// The new revision's `$id`.
+    pub document_id: String,
+    /// A sealed release's asset list, as this revision names it (empty when it was kept
+    /// unopened: [`Self::asset_list_kept`]).
+    pub sealed_assets: Vec<crate::private::release::ManifestAsset>,
+    /// The revision names the previous asset list as it was, unopened.
+    pub asset_list_kept: bool,
+    /// What the writer of a sealed revision should know (§16.3): it is not the tag's newest
+    /// after the write (another maintainer's concurrent revision, or a clock behind theirs),
+    /// or that could not be checked; it carried forward from a view missing a newer revision;
+    /// or a rotation during the upload left copies under the old key in storage.
+    pub warnings: Vec<String>,
 }
 
 /// A release document, flattened (newest per `tagName`).

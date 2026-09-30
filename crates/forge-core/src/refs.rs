@@ -76,6 +76,7 @@ fn content_of(kind: ContentKind, d: &FetchedDocument) -> ContentDoc {
             .filter(|p| !p.is_empty()),
         enc: d.field_hex("enc").filter(|h| !h.is_empty()),
         epoch: d.field_u64("epoch").and_then(|e| u32::try_from(e).ok()),
+        release_fields: Vec::new(),
     }
 }
 
