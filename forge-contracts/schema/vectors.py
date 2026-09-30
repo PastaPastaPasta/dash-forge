@@ -169,6 +169,32 @@ ok('R-02', 'sealed private config with plaintext backend', 'config', defaultBran
 no('R-02', 'private config with plaintext branch', 'config', 'noPlain', vis='private')
 ok('R-02', 'sealed private release', 'release', tagName='-Ab3_x9QkZ', name=DROP, notes=DROP, assets=DROP, vis='private', delta=0, **SEALED)
 no('R-02', 'private plaintext release', 'release', 'noPlain', vis='private')
+
+
+def sealed_release(name):
+    """The release document the private_release_seal vector `name` produces (private-repos.md
+    §16): its real tagName and enc, signed by the vectors' $ownerId (0x22 x 32)."""
+    with open(os.path.join(REPO, 'forge-contracts', 'vectors', f'private_release_seal__{name}.json')) as f:
+        p = json.load(f)['expected']['props']
+    return dict(signer=0x22, repoId=i(0x11), tagName=p['tagName'], vis=p['vis'], delta=p['delta'],
+                enc={"$hex": p['enc']}, epoch=p['epoch'], name=DROP, notes=DROP, assets=DROP)
+
+
+ok('R-02', 'sealed release v1.0.0 (§16 vector)', 'release', **sealed_release('v1_0_0'))
+ok('R-02', 'sealed release under epoch 1 (§16 vector)', 'release', **sealed_release('v1_0_0_epoch1'))
+ok('R-02', 'sealed imported release naming its manifest inside enc (§16 vector)', 'release',
+   **sealed_release('imported_with_manifest'))
+ok('R-02', 'sealed release at the 1536-byte enc cap (§16 vector)', 'release', **sealed_release('at_enc_cap'))
+no('R-02', 'sealed release with its manifest hash in plaintext', 'release', 'noPlain',
+   **dict(sealed_release('imported_with_manifest'), assetManifest=b(0x4a, 32)))
+with open(os.path.join(REPO, 'forge-contracts', 'vectors', 'private_release_seal__manifest_kind4.json')) as _f:
+    _m = json.load(_f)['expected']
+# §16.5: a sealed kind-4 manifest publishes no count, commit or link: objectCount 0, no tips, no supersedes
+ok('R-11', 'sealed release asset manifest (kind 4, §16.5)', 'packManifest', signer=0x22, repoId=i(0x11),
+   packHash={"$hex": _m['packHash']}, kind=4, sizeBytes=_m['sealedLen'], objectCount=0, chunkCount=0, storage=1,
+   uris=["https://bucket.example/o/" + _m['packHash']], tips=DROP)
+no('R-02', 'sealed release enc one byte over the 1536-byte cap', 'release', 'maxItems',
+   **dict(sealed_release('at_enc_cap'), enc={"$hex": sealed_release('at_enc_cap')['enc']['$hex'] + '00'}))
 ok('R-02', 'private member document', 'maintainer', vis='private')
 no('R-02', 'maintainer without vis', 'maintainer', 'required', vis=DROP)
 ok('R-02', 'label definitions stay plaintext (no stamp)', 'label')

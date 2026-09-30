@@ -61,7 +61,7 @@ This reuses what already exists:
 }
 ```
 
-Sealed releases carry the hash inside `enc`, and the manifest's bytes are sealed like a private pack (`private-repos.md` §4). Private releases do not carry assets today, so that part only lands when they do.
+Sealed releases carry the hash inside `enc` (TLV 21), and the manifest's bytes are sealed like a private pack (`docs/security/private-repos.md` §16.5, which also adds the sealed-only keys `notes`, `sealedSha256` and `sealedSizeBytes`). A sealed release always lists its assets in the manifest, never in `enc`.
 
 Cost: 32 bytes and one position. forge-core's per-write contract-load fee grows by ~0.7 kB × 20 credits/B, which is negligible (BETA6-ANALYSIS.md, "Fees and registration").
 

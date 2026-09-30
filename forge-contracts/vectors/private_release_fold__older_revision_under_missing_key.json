@@ -1,0 +1,40 @@
+{
+  "name": "older_revision_under_missing_key",
+  "description": "an older unreadable revision is hidden and counted, but the list is not stale.",
+  "case": "private_release_fold",
+  "rules": "v2",
+  "input": {
+    "revisions": [
+      {
+        "id": "c72666dc00b61e990341322ae496a7fc23136137541b975a3121763846e2e4a9",
+        "createdAt": 50,
+        "epoch": 1,
+        "tagName": "tn-None-e1",
+        "status": "noKey",
+        "enc": "e-b"
+      },
+      {
+        "id": "ef68fb8db87e0cc5dfa498227b092b005b4ae5f7e586b56b7d3531e234606cbd",
+        "createdAt": 100,
+        "epoch": 0,
+        "tagName": "tn-v1-e0",
+        "status": "readable",
+        "enc": "e-a",
+        "fields": {
+          "tag": "v1"
+        }
+      }
+    ]
+  },
+  "expected": {
+    "live": {
+      "v1": "ef68fb8db87e0cc5dfa498227b092b005b4ae5f7e586b56b7d3531e234606cbd"
+    },
+    "history": [],
+    "count": 1,
+    "replays": [],
+    "unknownTags": [],
+    "stale": false,
+    "hidden": 1
+  }
+}

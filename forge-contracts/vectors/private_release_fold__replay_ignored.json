@@ -1,0 +1,59 @@
+{
+  "name": "replay_ignored",
+  "description": "a revision whose enc repeats an earlier one's is a replay (a signing key without the content key can copy an old enc): ignored, so it cannot un-yank.",
+  "case": "private_release_fold",
+  "rules": "v2",
+  "input": {
+    "revisions": [
+      {
+        "id": "ef68fb8db87e0cc5dfa498227b092b005b4ae5f7e586b56b7d3531e234606cbd",
+        "createdAt": 100,
+        "epoch": 0,
+        "tagName": "tn-v1-e0",
+        "status": "readable",
+        "enc": "e-A",
+        "fields": {
+          "tag": "v1"
+        }
+      },
+      {
+        "id": "c72666dc00b61e990341322ae496a7fc23136137541b975a3121763846e2e4a9",
+        "createdAt": 200,
+        "epoch": 0,
+        "tagName": "tn-v1-e0",
+        "status": "readable",
+        "enc": "e-B",
+        "fields": {
+          "tag": "v1",
+          "yanked": true
+        }
+      },
+      {
+        "id": "628e7dbf694364f059987d6d865486bd43c620f7cedefa2e913b395b816e2d18",
+        "createdAt": 300,
+        "epoch": 0,
+        "tagName": "tn-v1-e0",
+        "status": "readable",
+        "enc": "e-A",
+        "fields": {
+          "tag": "v1"
+        }
+      }
+    ]
+  },
+  "expected": {
+    "live": {
+      "v1": "c72666dc00b61e990341322ae496a7fc23136137541b975a3121763846e2e4a9"
+    },
+    "history": [
+      "ef68fb8db87e0cc5dfa498227b092b005b4ae5f7e586b56b7d3531e234606cbd"
+    ],
+    "count": 1,
+    "replays": [
+      "628e7dbf694364f059987d6d865486bd43c620f7cedefa2e913b395b816e2d18"
+    ],
+    "unknownTags": [],
+    "stale": false,
+    "hidden": 0
+  }
+}
