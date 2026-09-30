@@ -16,7 +16,7 @@ import { PathActions } from '@/components/repo/path-actions'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
 import type { RepoRef } from '@/lib/repo'
-import { lineHash, selectedTip, selectLine, selectRef, timeAgo } from '@/lib/view'
+import { highlightBlob, lineHash, selectedTip, selectLine, selectRef, timeAgo } from '@/lib/view'
 import { ROW_PX, scrollToRow, useRowWindow } from '@/hooks/use-row-window'
 import { BLAME_MAX_COMMITS, BLAME_MAX_VERSIONS, BlameRefusedError, BlameStoppedError, blameFile, type BlameCursor, type BlameProgress, type BlameResult } from '@/lib/view/blame'
 import { BlobToolbar, useLineSelection } from '@/components/repo/blob-content'
@@ -146,7 +146,7 @@ export function BlameBody({
   }
   if (run.kind === 'cancelled' && run.partial !== null) {
     // Cancel keeps what was worked out (L-23): the table, marked stopped, and a way to run again.
-    return <BlameTable result={run.partial} addr={addr} permalink={permalink} onRestart={restart} onContinue={resume} />
+    return <BlameTable result={run.partial} name={path} addr={addr} permalink={permalink} onRestart={restart} onContinue={resume} />
   }
   if (run.kind === 'cancelled') {
     return (
@@ -183,7 +183,7 @@ export function BlameBody({
       </div>
     )
   }
-  return <BlameTable result={run.result} addr={addr} permalink={permalink} onContinue={resume} />
+  return <BlameTable result={run.result} name={path} addr={addr} permalink={permalink} onContinue={resume} />
 }
 
 /**
@@ -230,14 +230,35 @@ function stopReason(result: BlameResult): string {
   }
 }
 
+/** The code cell, as the file view's. */
+const CODE_CELL = 'whitespace-pre px-4 py-0 align-top text-anvil-800 dark:text-anvil-200'
+
+/** `lines` highlighted for a file named `name` (one HTML string per line), or null until ready or when it stays plain. */
+function useHighlightedLines(lines: readonly string[], name: string): readonly string[] | null {
+  const [highlighted, setHighlighted] = useState<{ readonly of: readonly string[]; readonly lines: readonly string[] } | null>(null)
+  useEffect(() => {
+    let active = true
+    void highlightBlob(lines.join('\n'), name).then((h) => {
+      if (active && h !== null && h.lines.length === lines.length) setHighlighted({ of: lines, lines: h.lines })
+    })
+    return () => {
+      active = false
+    }
+  }, [lines, name])
+  return highlighted !== null && highlighted.of === lines ? highlighted.lines : null
+}
+
 export function BlameTable({
   result,
+  name = '',
   addr,
   permalink,
   onRestart,
   onContinue,
 }: {
   result: BlameResult
+  /** The file's name, for its highlighting (none: highlight.js guesses, or leaves it plain). */
+  name?: string
   addr: RepoAddress
   permalink: string | null
   /** Run the blame again from the start (offered when it was cancelled). */
@@ -274,6 +295,9 @@ export function BlameTable({
     e.preventDefault()
     links[next]?.focus()
   }
+  // The code highlighted as the file view highlights it (QW-060), swapped in once highlight.js loads.
+  const plain = useMemo(() => lines.map((l) => l.replace(/\r?\n$/, '')), [lines])
+  const hlLines = useHighlightedLines(plain, name)
 
   const rows: JSX.Element[] = []
   for (let i = from; i < to; i++) {
@@ -310,6 +334,12 @@ export function BlameTable({
               >
                 {timeAgo(commit.author.when)}
               </Link>
+              {/* The author, as GitHub's blame names them beside the subject (QW-060). */}
+              {commit.author.name ? (
+                <span className="hidden max-w-[7rem] shrink-0 truncate font-medium text-anvil-700 sm:inline dark:text-anvil-200" data-testid="blame-author" title={commit.author.name}>
+                  {commit.author.name}
+                </span>
+              ) : null}
               {/* One per hunk, inside a 20 px code row (e2e/mobile.spec.ts exempts it, as the diff gutter). */}
               {/* One tab stop for the column (the window's top hunk), the arrow keys move between
                   hunks: a tab stop per hunk packed 20 px tab stops together (axe target-size,
@@ -343,7 +373,12 @@ export function BlameTable({
             {i + 1}
           </a>
         </td>
-        <td className="whitespace-pre px-4 py-0 align-top text-anvil-800 dark:text-anvil-200">{(lines[i] ?? '').replace(/\r?\n$/, '') || ' '}</td>
+        {hlLines ? (
+          // highlight.js escapes all text and emits only class-bearing spans.
+          <td className={CODE_CELL} dangerouslySetInnerHTML={{ __html: hlLines[i] || ' ' }} />
+        ) : (
+          <td className={CODE_CELL}>{plain[i] || ' '}</td>
+        )}
       </tr>,
     )
   }
@@ -388,7 +423,7 @@ export function BlameTable({
         {range ? <span>{range.start === range.end ? `Line ${range.start}` : `Lines ${range.start}–${range.end}`} selected</span> : null}
       </BlobToolbar>
       <ScrollRegion label="Blame" className="overflow-x-auto">
-        <table ref={tableRef} className="w-full border-collapse font-mono text-[13px] leading-5" data-lines={lines.length} data-testid="blame-table" onKeyDown={onCommitKey}>
+        <table ref={tableRef} className="hljs w-full border-collapse bg-transparent font-mono text-[13px] leading-5" data-lines={lines.length} data-testid="blame-table" onKeyDown={onCommitKey}>
           <tbody>
             {from > 0 ? <tr aria-hidden style={{ height: from * ROW_PX }} /> : null}
             {rows}
