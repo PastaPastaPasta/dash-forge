@@ -100,11 +100,11 @@ A write that is the first of its kind somewhere (a repository's first push or fi
 Where the numbers come from: the per-write balance changes recorded by the push calibration (P-6, PR #127, 2026-09-27/28; its figures are the constants in `forge_core::cost::push_fees`), the web app's measured model (`forge-web/lib/sdk/cost.ts`), the live measurements in the pull requests that built each feature and in [e2e/README.md](../../e2e/README.md), and the contract costs in [forge-v2.md §7](../contracts/forge-v2.md#7-measured-size-and-cost).
 
 ```sh
-dg cost audit
+dg cost prices
 ```
 
 ```
-Per-operation cost reference (no live spend tracking yet):
+Per-operation cost reference (upper bounds; see `dg cost audit` for what you've spent):
   repo create                ~0.002 DASH ≈ $0.06
   ref update                 ~0.00092 DASH ≈ $0.03
   pack manifest              ~0.00112 DASH ≈ $0.03
@@ -114,6 +114,33 @@ Per-operation cost reference (no live spend tracking yet):
 ```
 
 These are upper bounds, the prices `dg` and `git push` quote before they sign, not measurements: each is at or above the most the table above measured for that write.
+
+**What you've actually spent.** `dg cost audit` estimates one identity's total Forge spend — with no `--repo`, every document it has created across the network, totalled by type and by repository; add `--repo owner/name` for that repository's live pack-storage tally instead. forge-v2 keeps no on-chain spend ledger, so this is `(proved document count) × (that type's flat create cost)`, the same figure shape as the web app's **Settings → Spend** ledger, so the two agree. `--identity` takes an identity id or a DPNS name and defaults to the signing identity; `--since` takes a duration (`24h`, `7d`, `2w`, `1y`) or an absolute date (`2026-01-01`):
+
+```sh
+dg cost audit --since 30d
+```
+
+```
+Spend estimate for 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB:
+  since:  1756678800000 ms (epoch)
+  total:  ~0.0847 DASH ≈ $2.54 across 61 document(s)
+
+  by document type:
+    patch                  9  ~0.02021 DASH ≈ $0.61
+    chunk                  4  ~0.01555 DASH ≈ $0.47
+    comment                14  ~0.01636 DASH ≈ $0.49
+    issue                  11  ~0.01458 DASH ≈ $0.44
+    ...
+
+  by repository:
+    9cBMULwtQUMtxhBkgaTKb4tJtoczd8TEQ8gmiroDWf4F   38  ~0.0512 DASH ≈ $1.54
+    (no repo)                                       6  ~0.0074 DASH ≈ $0.22
+
+  note: excludes review (no proved query can attribute them to their author)
+```
+
+`review` documents are left out: their only index (`patch [patchId, $createdAt]`) carries neither `repoId` nor `$ownerId`, so no proved query can find "every review this identity wrote" without reading every patch on the network. A review you wrote is not lost from the total — it just is not separately attributed; if it triggered a `comment` or an `event`, that document is still counted.
 
 ### History index
 
@@ -186,7 +213,7 @@ The audit trail grows forever: each ref update costs about 0.0006–0.0009 DASH 
 
 ## Seeing costs before you pay
 
-- **`dg` asks first.** Every command that writes asks before it writes (`[y/N]`; `dg init` and `dg repo create` ask `Proceed? [Y/n]` after showing the price) unless you pass `--yes`. `dg repo create`, `dg repack` and `dg repo reindex` show their price before the question. For other commands, use `dg cost estimate` and `dg cost audit`. With `--json` or no terminal, `dg` refuses to write without `--yes` ([`E802`](../errors.md#e802)).
+- **`dg` asks first.** Every command that writes asks before it writes (`[y/N]`; `dg init` and `dg repo create` ask `Proceed? [Y/n]` after showing the price) unless you pass `--yes`. `dg repo create`, `dg repack` and `dg repo reindex` show their price before the question. For other commands, use `dg cost estimate` before you write and `dg cost prices` / `dg cost audit` to see the reference table or what you've already spent. With `--json` or no terminal, `dg` refuses to write without `--yes` ([`E802`](../errors.md#e802)).
 - **`git push` prints its estimate** before it writes to Platform, and what Platform actually charged when it is done. The estimate prices every write as the first of its kind, so it is an upper bound: 1.08–1.27x the charge on a first import of 1 MiB or more, up to about 1.4x on a tiny first push and 1.7x on a small later one. To make it ask:
   ```sh
   git config --global dash.costWarnThreshold 0.01   # ask above 0.01 DASH
@@ -198,5 +225,4 @@ The audit trail grows forever: each ref update costs about 0.0006–0.0009 DASH 
 - **The web app** shows the price on every button that signs (repository, issue, comment, state change, review, member, star, release, key top-up), with refunds for deletes. After each write a toast shows the actual balance change. **Settings → Spend** keeps a local ledger in this browser: month and all-time totals by repository, and estimates that missed by more than 25 %.
 - **Limited keys cap spending.** A browser key can spend at most its budget (0.05 DASH by default), and a CI runner key its own (0.5 DASH). Platform enforces the budget at consensus, whatever the software does. See [Identity and keys](identity-and-keys.md#limited-keys).
 - **The Mirror Action** has a per-run `cost-cap` (0.05 DASH by default) and reports what each run spent in the job summary.
-
-**Coming soon:** `dg cost audit` month and all-time totals from a local ledger on the CLI side.
+- **`dg cost audit`** totals what an identity has spent on Forge, from proved document counts (not a local ledger — see [above](#what-each-action-costs)); `--since` narrows the window, `--json` for scripting.

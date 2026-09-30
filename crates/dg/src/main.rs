@@ -1196,11 +1196,22 @@ pub enum CostCommand {
         #[arg(long)]
         path: Option<PathBuf>,
     },
-    /// Per-operation cost reference (running spend is not tracked yet).
+    /// An identity's estimated Forge spend: total, per repository, per document type.
     Audit {
-        /// The repository (`owner/name`), for a live storage tally.
+        /// The identity to audit (identity id or DPNS name); defaults to the signing
+        /// identity. Ignored together with `--since` when `--repo` is given.
+        #[arg(long)]
+        identity: Option<String>,
+        /// Only count documents created at or after this: a duration (`24h`, `7d`, `2w`,
+        /// `1y`) or an absolute date (`2026-01-01`).
+        #[arg(long)]
+        since: Option<String>,
+        /// A repository (`owner/name`), for its live pack-storage tally instead of the
+        /// identity-wide spend estimate.
         repo: Option<String>,
     },
+    /// The per-operation price reference: what each kind of write costs, as an upper bound.
+    Prices,
 }
 
 #[derive(Debug, Subcommand)]
