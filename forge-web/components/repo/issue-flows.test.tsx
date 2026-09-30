@@ -18,11 +18,10 @@ import { ISSUE_CLOSE, ISSUE_LOCK, ISSUE_REOPEN, ISSUE_UNLOCK, PR_CLOSE, PR_REOPE
 vi.mock('next/link', () => ({ default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => <a href={href} {...rest}>{children}</a> }))
 vi.mock('@/hooks/use-dpns-name', () => ({ useDpnsName: () => undefined }))
 
-const { AssigneePicker, LabelPicker, setChange, labelsConfirm } = await import('./target-rail')
+const { AssigneePicker, LabelPicker, setChange, labelsConfirm, stateToggleLabel } = await import('./target-rail')
 const { Timeline, transitionIcon } = await import('./timeline')
 const { ReviewersCard } = await import('./reviewers-card')
 const { MarkdownView } = await import('@/components/markdown-view')
-const { stateButtonLabel } = await import('./issue-content')
 
 const A = 'AaaaAaaaAaaaAaaaAaaaAaaaAaaaAaaaAaaaAaaaAaaa'
 const B = 'BbbbBbbbBbbbBbbbBbbbBbbbBbbbBbbbBbbbBbbbBbbb'
@@ -50,9 +49,11 @@ const click = (el: Element | undefined): void => {
 const key = (k: string): void => act(() => void document.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true })))
 
 describe('setChange', () => {
-  it('is what the draft adds and removes, or null for none', () => {
-    expect(setChange(['bug'], new Set(['bug']))).toBeNull()
-    expect(setChange(['bug', 'docs'], new Set(['docs', 'triage']))).toEqual({ add: ['triage'], remove: ['bug'] })
+  it('is what the ticks add and remove, or null for none', () => {
+    expect(setChange(['bug'], new Map([['bug', true]]))).toBeNull()
+    expect(setChange(['bug', 'docs'], new Map([['triage', true], ['bug', false]]))).toEqual({ add: ['triage'], remove: ['bug'] })
+    // A value that shows up (a re-read) without a tick is no change.
+    expect(setChange(['bug', 'new'], new Map([['triage', true]]))).toEqual({ add: ['triage'], remove: [] })
   })
 
   it('confirms several labels as one signing', () => {
@@ -94,6 +95,17 @@ describe('label picker (QW2-046)', () => {
     click(option('docs'))
     act(() => void document.body.dispatchEvent(new Event('pointerdown', { bubbles: true })))
     expect(onApply).toHaveBeenCalledWith({ add: ['docs'], remove: [] })
+  })
+
+  it('never removes a label that a re-read brought in while the picker was open', () => {
+    const onApply = vi.fn()
+    render(picker(onApply))
+    click(byText('Edit labels'))
+    click(option('triage'))
+    render(<LabelPicker applied={['bug', 'docs']} defs={defs} byName={new Map(defs.map((d) => [d.name, d]))} canEdit onApply={onApply} onDefine={() => undefined} />)
+    expect(option('docs')?.getAttribute('aria-pressed')).toBe('true')
+    key('Escape')
+    expect(onApply).toHaveBeenCalledWith({ add: ['triage'], remove: [] })
   })
 
   it('Cancel drops the draft', () => {
@@ -160,9 +172,10 @@ describe('timeline (QW2-045, QW2-048)', () => {
 
 describe('Close with comment (QW2-008)', () => {
   it('says so while the composer holds text', () => {
-    expect(stateButtonLabel(true, false)).toBe('Close issue')
-    expect(stateButtonLabel(true, true)).toBe('Close with comment')
-    expect(stateButtonLabel(false, true)).toBe('Reopen with comment')
+    expect(stateToggleLabel(true, false, 'issue')).toBe('Close issue')
+    expect(stateToggleLabel(true, true, 'issue')).toBe('Close with comment')
+    expect(stateToggleLabel(false, true, 'pull request')).toBe('Reopen with comment')
+    expect(stateToggleLabel(false, false, 'pull request')).toBe('Reopen pull request')
   })
 })
 

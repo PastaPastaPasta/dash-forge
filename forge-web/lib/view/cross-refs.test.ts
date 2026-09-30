@@ -23,6 +23,10 @@ describe('referencedNumbers', () => {
     expect(referencedNumbers(body)).toEqual([2, 13])
   })
 
+  it('skips link destinations: an in-page anchor is not a reference', () => {
+    expect(referencedNumbers('[Install](#2-install) and ![x](#3) but #4 [see #5](https://x.test/y)')).toEqual([4, 5])
+  })
+
   it('an unclosed fence runs to the end', () => {
     expect(referencedNumbers('#1\n```\n#2\n#3')).toEqual([1])
   })

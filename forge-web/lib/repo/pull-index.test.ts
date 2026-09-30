@@ -348,6 +348,16 @@ describe('pullsLinking (an issue\'s backlinks, QW-015)', () => {
     expect(got.searched).toBeNull()
   })
 
+  it('caps the closing PRs apart from the mentions: newer mentions never crowd a closer out', async () => {
+    const { sdk, repo, store } = fresh(250, { churn: false })
+    const patches = store['COLLAB']!['patch']!
+    patches[9]!['body'] = 'Fixes #1001'
+    for (let i = 100; i < 125; i++) patches[i]!['body'] = 'see #1001'
+    const got = await pullsLinking(sdk, repo, { number: 1001, upstream: null }, native, 'devnet')
+    expect(got.pulls.map((p) => p.number)).toEqual([10])
+    expect(got.mentioning).toHaveLength(20)
+  })
+
   it('lists "Refs #n" mentions apart from closing links, skipping code (QW2-048)', async () => {
     const { sdk, repo, store } = fresh(250, { churn: false })
     const patches = store['COLLAB']!['patch']!

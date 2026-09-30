@@ -19,11 +19,11 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useRef, useState, type SetStateAction } from 'react'
 import { CheckCircle2, CircleDot, GitPullRequest, Milestone, Pencil, Pin, Tag, UserPlus } from 'lucide-react'
 import { LinkedPulls, useIssueBacklinks, type IssueBacklinks } from '@/components/repo/linked-pulls'
 import { closedIn } from '@/lib/view/cross-refs'
-import type { TransitionView } from '@/lib/repo'
+import type { LinkingPulls, TransitionView } from '@/lib/repo'
 import type { RepoHome, IssueThread, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, issueWriteShows, loadIssueThread } from '@/lib/view'
 import { commentEditDrops } from '@/lib/view/issues-view'
@@ -72,7 +72,7 @@ import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { EditedMarker, MarkdownEditor } from '@/components/repo/issue-bits'
-import { AssigneePicker, LabelPicker, MilestonePicker, SidebarSection, assigneesConfirm, labelsConfirm, type SetChange } from '@/components/repo/target-rail'
+import { AssigneePicker, LabelPicker, MilestonePicker, SidebarSection, applySetChange, assigneesConfirm, labelsConfirm, setChangeShows, stateToggleLabel, type SetChange } from '@/components/repo/target-rail'
 import { readMilestones } from '@/lib/repo/milestones'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
 import { LockToggle, LockedBanner, lockConfirm, lockStateText, lockViewerOf } from '@/components/repo/locked-banner'
@@ -160,7 +160,13 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const draft = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
-  const [pending, setPending] = useState<Pending>(null)
+  const [pending, setPendingState] = useState<Pending>(null)
+  // One confirm at a time: a write asked for while one is open (a picker applying on the same
+  // click that opens another action) never silently replaces it.
+  const setPending = useCallback((p: SetStateAction<Pending>) => setPendingState((cur) => (typeof p === 'function' ? p(cur) : p === null ? null : cur ?? p)), [])
+  // "Close with comment": the comment a close already posted, by the confirm's intent, so a retry
+  // of a close that failed after it never posts the comment twice.
+  const closeComment = useRef<{ intent: string; id: string } | null>(null)
   const [editing, setEditing] = useState<{ title: string; body: string } | null>(null)
   const [editingComment, setEditingComment] = useState<{ id: string; body: string } | null>(null)
 
@@ -251,28 +257,32 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     const write = pending
     switch (pending.kind) {
       case 'state': {
-        // The comment first, as GitHub posts it: it is part of why the issue closes. Its draft
-        // intent makes a retry re-use it rather than post it twice.
-        if (pending.comment !== undefined) {
-          const posted = await createComment(sdk, signer, home.repo, { targetId: issue.id, body: pending.comment, intent: draft.intent, post: postContext }).catch((e: unknown) => {
+        // The comment first, as GitHub posts it: it is part of why the issue closes.
+        if (pending.comment !== undefined && closeComment.current?.intent !== intent) {
+          const posted = await createComment(sdk, signer, home.repo, { targetId: issue.id, body: pending.comment, intent: `${intent}:comment`, post: postContext }).catch((e: unknown) => {
             if (e instanceof SupersededWriteError) return { documentId: e.documentId }
             throw e
           })
+          closeComment.current = { intent, id: posted.documentId }
           setComment('')
           draft.renew()
           expectations.current.push((t) => issueWriteShows(t, { kind: 'comment', id: posted.documentId }))
         }
-        await setTargetState(sdk, signer, home.repo, { target: { ...target, type: 'issue', author: issue.author }, action: open ? 'close' : 'reopen', isMember, intent })
+        try {
+          await setTargetState(sdk, signer, home.repo, { target: { ...target, type: 'issue', author: issue.author }, action: open ? 'close' : 'reopen', isMember, intent })
+        } catch (e) {
+          // The comment is posted: show it while the close is retried.
+          if (closeComment.current?.intent === intent) refresh()
+          throw e
+        }
         break
       }
       case 'labels':
         // One event per label (the contract's shape), one confirm for all of them.
-        for (const label of pending.change.add) await setLabel(sdk, signer, home.repo, { target, label, add: true, intent: `${intent}:add:${label}` })
-        for (const label of pending.change.remove) await setLabel(sdk, signer, home.repo, { target, label, add: false, intent: `${intent}:remove:${label}` })
+        await applySetChange(pending.change, intent, (label, add, i) => setLabel(sdk, signer, home.repo, { target, label, add, intent: i }))
         break
       case 'assignees':
-        for (const who of pending.change.add) await setAssignee(sdk, signer, home.repo, { target, assignee: who, assign: true, intent: `${intent}:add:${who}` })
-        for (const who of pending.change.remove) await setAssignee(sdk, signer, home.repo, { target, assignee: who, assign: false, intent: `${intent}:remove:${who}` })
+        await applySetChange(pending.change, intent, (who, add, i) => setAssignee(sdk, signer, home.repo, { target, assignee: who, assign: add, intent: i }))
         break
       case 'flag':
         // A lock is a member transition since RC1 (consensus then refuses non-members' comments).
@@ -320,9 +330,9 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         case 'state':
           return issueWriteShows(t, { kind: 'state', open: !open })
         case 'labels':
-          return [...write.change.add.map((label) => ({ label, remove: false })), ...write.change.remove.map((label) => ({ label, remove: true }))].every((w) => issueWriteShows(t, { kind: 'label', ...w }))
+          return setChangeShows(t.issue.state.labels, write.change)
         case 'assignees':
-          return [...write.change.add.map((who) => ({ who, remove: false })), ...write.change.remove.map((who) => ({ who, remove: true }))].every((w) => issueWriteShows(t, { kind: 'assign', ...w }))
+          return setChangeShows(t.issue.state.assignees, write.change)
         default:
           return issueWriteShows(t, write)
       }
@@ -334,7 +344,6 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       case 'state':
         return pending.comment === undefined ? stateCost : sumPreviews([composeCost(home.repo, 'comment', { body: pending.comment }, commentFirst), stateCost])
       case 'labels':
-        return sumPreviews([...pending.change.add, ...pending.change.remove].map((value) => composeCost(home.repo, 'event', { value }, eventFirst)))
       case 'assignees':
         return sumPreviews([...pending.change.add, ...pending.change.remove].map((value) => composeCost(home.repo, 'event', { value }, eventFirst)))
       case 'flag':
@@ -433,13 +442,13 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         </div>
 
         {/* Timeline */}
-        {timeline.length > 0 || (backlinks.data?.mentioning.length ?? 0) > 0 ? (
+        {timeline.length > 0 || (backlinks.linking.data?.mentioning.length ?? 0) > 0 ? (
           <Timeline
             items={timeline}
             links={links}
             trust={trust}
-            closedIn={(t) => closedInRef(t, backlinks.data, addr)}
-            crossRefs={crossRefsOf(backlinks.data, addr)}
+            closedIn={(t) => closedInRef(t, backlinks, addr)}
+            crossRefs={crossRefsOf(backlinks.linking.data, addr)}
             renderComment={(item) => {
               const slots = commentSlots({
                 item,
@@ -493,7 +502,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   data-testid="issue-state-toggle"
                 >
                   {open ? <CheckCircle2 className="h-3.5 w-3.5 text-forge-700 dark:text-forge-400" aria-hidden /> : <CircleDot className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden />}
-                  {stateButtonLabel(open, withComment !== null)}
+                  {stateToggleLabel(open, withComment !== null, 'issue')}
                 </Button>
               ) : null}
               {lockedOutNow ? null : (
@@ -567,7 +576,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           {isPrivate ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">The labels on this issue are encrypted; the label definitions (names, colours, descriptions) are not.</p> : null}
         </SidebarSection>
         <SidebarSection title="Development" icon={GitPullRequest}>
-          <LinkedPulls addr={addr} number={issue.number} backlinks={backlinks} />
+          <LinkedPulls addr={addr} number={issue.number} backlinks={backlinks.linking} />
         </SidebarSection>
       </aside>
 
@@ -622,27 +631,21 @@ function confirmText(pending: Pending, number: number, open: boolean, isMember: 
       return {
         title: withComment ? `${open ? 'Close' : 'Reopen'} issue #${number} with your comment` : open ? `Close issue #${number}` : `Reopen issue #${number}`,
         description: withComment ? `Two writes: your comment, then ${state}.` : `Appends ${state}.`,
-        label: stateButtonLabel(open, withComment),
+        label: stateToggleLabel(open, withComment, 'issue'),
       }
     }
   }
 }
 
-/** The close / reopen button's words, as GitHub's: "Close with comment" while the composer holds text. */
-export function stateButtonLabel(open: boolean, withComment: boolean): string {
-  if (withComment) return open ? 'Close with comment' : 'Reopen with comment'
-  return open ? 'Close issue' : 'Reopen issue'
-}
-
 /** "closed this as completed in #3": the merged PR that closes this issue whose merge made `t` (QW2-048). */
-function closedInRef(t: TransitionView, backlinks: IssueBacklinks | null, addr: RepoAddress | undefined): TimelineRef | null {
-  if (backlinks === null || addr === undefined) return null
+function closedInRef(t: TransitionView, backlinks: IssueBacklinks, addr: RepoAddress | undefined): TimelineRef | null {
+  if (addr === undefined) return null
   const pull = closedIn(t, backlinks.merges)
   return pull === null ? null : { number: pull.number, title: pull.title, href: pullHref(addr, pull.number) }
 }
 
 /** "mentioned this issue in #4": the PRs whose description names this issue without closing it. */
-function crossRefsOf(backlinks: IssueBacklinks | null, addr: RepoAddress | undefined): CrossRefItem[] {
+function crossRefsOf(backlinks: LinkingPulls | null, addr: RepoAddress | undefined): CrossRefItem[] {
   if (backlinks === null || addr === undefined) return []
   return backlinks.mentioning.map((p) => ({
     id: p.id,

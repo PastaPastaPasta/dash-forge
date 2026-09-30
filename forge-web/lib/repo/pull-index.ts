@@ -307,9 +307,10 @@ export async function pullsLinking(
     partial: true,
     maxChunks: Math.max(0, LINKING_CHUNKS + 1 - walked),
   })
-  const rows = selected.rows.slice(0, 20)
+  // Every match in the window (`walkAll`), so the closers are capped apart from the mentions: many
+  // newer "see #12" never crowd out the PR that closes it.
   const closes = (r: PullRow): boolean => linkedIssues(r.body).includes((refsUpstream(r) ? issue.upstream : issue.number) ?? -1)
-  return { pulls: rows.filter(closes), mentioning: rows.filter((r) => !closes(r)), searched: selected.searched }
+  return { pulls: selected.rows.filter(closes).slice(0, 20), mentioning: selected.rows.filter((r) => !closes(r)).slice(0, 20), searched: selected.searched }
 }
 
 /** Each PR a milestone event names, with its open state and milestone (see `issueMilestoneItems`); null when the feed is partial. */

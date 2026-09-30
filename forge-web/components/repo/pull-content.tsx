@@ -23,7 +23,7 @@
 import { Byline, ItemAuthor, Time } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { pullOriginOf, trustedOrigin } from '@/lib/repo/provenance'
-import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useMemo, useRef, useState, type ReactNode, type SetStateAction } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import {
@@ -90,7 +90,7 @@ import { headSync, readBranchState, readBranchTip } from '@/lib/repo/source-bran
 import type { Event, EventKind, Holdings, RefState } from '@/lib/rules'
 import { linkedIssues, RoleOracle, type ChecksState, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { checksState } from '@/lib/rules/parity'
-import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, type CostPreview as Cost } from '@/lib/sdk'
+import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, sumPreviews, type CostPreview as Cost } from '@/lib/sdk'
 import { commentEditDrops, pullSinceYourReview } from '@/lib/view/issues-view'
 import { totalHidden } from '@/lib/repo/private-content'
 import { headUpdatePhrases } from '@/lib/view/head-updates'
@@ -138,7 +138,7 @@ import type { CloseIssuesOption } from '@/components/repo/merge-panel'
 import { LINKED_ISSUES_MAX, linkedIssueTargets } from '@/lib/view/jump'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
 import { EditedMarker, MarkdownEditor } from '@/components/repo/issue-bits'
-import { AssigneePicker, LabelPicker, MilestonePicker, SidebarSection, assigneesConfirm, labelsConfirm, type SetChange } from '@/components/repo/target-rail'
+import { AssigneePicker, LabelPicker, MilestonePicker, SidebarSection, applySetChange, assigneesConfirm, labelsConfirm, setChangeShows, stateToggleLabel, type SetChange } from '@/components/repo/target-rail'
 import { readMilestones } from '@/lib/repo/milestones'
 import { ReviewersCard } from '@/components/repo/reviewers-card'
 import { Approvals, VerdictLine } from '@/components/repo/approvals'
@@ -379,7 +379,8 @@ function PullPage({
   const sameRepoBranches = crossRepo ? '' : home.branches.map((b) => `${b.refName}:${tipOidOf(b) ?? ''}`).join(',')
   // A closed or merged PR offers to delete its source branch, as GitHub does (QW2-057): the
   // viewer's write access to it, read only once the PR is closed.
-  const closedSource = open ? null : sourceRef ?? (crossRepo ? null : repo)
+  // The source repo as the suggestions' own write check picks it (a same-repo PR's is this repo).
+  const closedSource = open ? null : sourceRef ?? (pull.sourceId === repo.repoId ? repo : null)
   const closedWrite = useSourceWrite(closedSource, pull.sourceRefName)
   const sourceState = useAsync<RefState | null>(
     () =>
@@ -433,7 +434,13 @@ function PullPage({
   const commentIntent = useIntent()
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
-  const [pending, setPending] = useState<Pending | null>(null)
+  const [pending, setPendingState] = useState<Pending | null>(null)
+  // One confirm at a time: a write asked for while one is open (a picker applying on the same
+  // click that opens another action) never silently replaces it.
+  const setPending = useCallback((p: SetStateAction<Pending | null>) => setPendingState((cur) => (typeof p === 'function' ? p(cur) : p === null ? null : cur ?? p)), [])
+  // "Close with comment": the comment a close already posted, by the confirm's intent, so a retry
+  // of a close that failed after it never posts the comment twice.
+  const closeComment = useRef<{ intent: string; id: string } | null>(null)
   const [editing, setEditing] = useState<{ title: string; body: string } | null>(null)
   const [editingComment, setEditingComment] = useState<{ id: string; body: string } | null>(null)
 
@@ -527,7 +534,7 @@ function PullPage({
       onEdit: (c, body) => setPending({ kind: 'edit-comment', id: c.id, body }),
       onDelete: (c) => setPending({ kind: 'delete-comment', id: c.id }),
     }),
-    [canResolve, resolvedKey, identity],
+    [canResolve, resolvedKey, identity, setPending],
   )
   const commentCost = composeCost(repo, 'comment', { body: comment.trim() }, commentFirst)
   const commentTooLong = composeTooLong(repo, 'comment', { body: comment.trim() })
@@ -575,19 +582,24 @@ function PullPage({
     const p = pending
     switch (p.kind) {
       case 'state': {
-        // The comment first, as GitHub posts it; the composer's intent makes a retry re-use it.
-        let posted: string | null = null
-        if (p.comment !== undefined) {
-          posted = (
-            await createComment(sdk, signer, repo, { targetId: pull.id, body: p.comment, intent: commentIntent.intent, post: postContext }).catch((e: unknown) => {
-              if (e instanceof SupersededWriteError) return { documentId: e.documentId }
-              throw e
-            })
-          ).documentId
+        // The comment first, as GitHub posts it.
+        if (p.comment !== undefined && closeComment.current?.intent !== intent) {
+          const r = await createComment(sdk, signer, repo, { targetId: pull.id, body: p.comment, intent: `${intent}:comment`, post: postContext }).catch((e: unknown) => {
+            if (e instanceof SupersededWriteError) return { documentId: e.documentId }
+            throw e
+          })
+          closeComment.current = { intent, id: r.documentId }
           setComment('')
           commentIntent.renew()
         }
-        await setTargetState(sdk, signer, repo, { target: stateTarget, action: p.to, isMember, intent })
+        const posted = closeComment.current?.intent === intent ? closeComment.current.id : null
+        try {
+          await setTargetState(sdk, signer, repo, { target: stateTarget, action: p.to, isMember, intent })
+        } catch (e) {
+          // The comment is posted: show it while the close is retried.
+          if (posted !== null) refresh((t) => t.comments.some((c) => c.id === posted))
+          throw e
+        }
         refresh((t) => t.pull.state.open === (p.to === 'reopen') && (posted === null || t.comments.some((c) => c.id === posted)))
         return
       }
@@ -631,14 +643,12 @@ function PullPage({
         return
       case 'labels':
         // One event per label (the contract's shape), one confirm for all of them.
-        for (const label of p.change.add) await setLabel(sdk, signer, repo, { target, label, add: true, intent: `${intent}:add:${label}` })
-        for (const label of p.change.remove) await setLabel(sdk, signer, repo, { target, label, add: false, intent: `${intent}:remove:${label}` })
-        refresh((t) => p.change.add.every((l) => t.pull.state.labels.includes(l)) && !p.change.remove.some((l) => t.pull.state.labels.includes(l)))
+        await applySetChange(p.change, intent, (label, add, i) => setLabel(sdk, signer, repo, { target, label, add, intent: i }))
+        refresh((t) => setChangeShows(t.pull.state.labels, p.change))
         return
       case 'assignees':
-        for (const who of p.change.add) await setAssignee(sdk, signer, repo, { target, assignee: who, assign: true, intent: `${intent}:add:${who}` })
-        for (const who of p.change.remove) await setAssignee(sdk, signer, repo, { target, assignee: who, assign: false, intent: `${intent}:remove:${who}` })
-        refresh((t) => p.change.add.every((w) => t.pull.state.assignees.includes(w)) && !p.change.remove.some((w) => t.pull.state.assignees.includes(w)))
+        await applySetChange(p.change, intent, (who, add, i) => setAssignee(sdk, signer, repo, { target, assignee: who, assign: add, intent: i }))
+        refresh((t) => setChangeShows(t.pull.state.assignees, p.change))
         return
       case 'milestone':
         await setMilestone(sdk, signer, repo, { target, title: p.title, intent })
@@ -720,7 +730,7 @@ function PullPage({
         return transitionCost
       case 'labels':
       case 'assignees':
-        return previewCredits([...pending.change.add, ...pending.change.remove].reduce((sum, value) => sum + previewCreate('event', { value }).credits, 0))
+        return sumPreviews([...pending.change.add, ...pending.change.remove].map((value) => previewCreate('event', { value })))
       case 'milestone':
         return previewCreate('event', pending.title === null ? {} : { value: pending.title })
       case 'delete-branch':
@@ -1211,7 +1221,7 @@ function PullPage({
                         data-testid="pull-state-toggle"
                       >
                         {open ? <GitPullRequestClosed className="h-3.5 w-3.5 text-danger-700 dark:text-danger-400" aria-hidden /> : <GitPullRequest className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden />}
-                        {pullStateLabel(open, withComment !== null)}
+                        {stateToggleLabel(open, withComment !== null, 'pull request')}
                       </Button>
                     ) : null}
                     {showMarkMerged ? (
@@ -1572,12 +1582,6 @@ function ChecksRow({ summary, headOid, onOpen }: { summary: ChecksSummary | null
 }
 
 /** The confirm dialog's words for each pending write. */
-/** The close / reopen button's words, as GitHub's: "Close with comment" while the composer holds text. */
-function pullStateLabel(open: boolean, withComment: boolean): string {
-  if (withComment) return open ? 'Close with comment' : 'Reopen with comment'
-  return open ? 'Close pull request' : 'Reopen pull request'
-}
-
 function confirmText(pending: Pending | null, number: number, isMember: boolean, head: string, base: string): { title: string; description: string; label: string } {
   const via = isMember ? 'a member event' : 'an author event (you opened this PR)'
   const move = isMember ? 'a state change as a member' : 'a state change as the PR author'
@@ -1588,7 +1592,7 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
         ? {
             title: `${pending.to === 'close' ? 'Close' : 'Reopen'} PR #${number} with your comment`,
             description: `Two writes: your comment, then ${move}. ${still}`,
-            label: pullStateLabel(pending.to === 'close', true),
+            label: stateToggleLabel(pending.to === 'close', true, 'pull request'),
           }
         : { title: `${pending.to === 'close' ? 'Close' : 'Reopen'} PR #${number}`, description: `Records ${move}. ${still}`, label: pending.to === 'close' ? 'Close PR' : 'Reopen PR' }
     }

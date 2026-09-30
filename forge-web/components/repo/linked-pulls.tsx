@@ -28,9 +28,13 @@ function stateOf(p: PullRow): { label: string; icon: JSX.Element } {
 }
 
 /** An issue's backlinks, and the merges of those that close it (for "closed this in #3"). */
-export interface IssueBacklinks extends LinkingPulls {
+export interface IssueBacklinks {
+  readonly linking: AsyncState<LinkingPulls>
+  /** Read after `linking`, so the Development box never waits for them; empty until then. */
   readonly merges: readonly ClosingMerge<PullRow>[]
 }
+
+const NO_MERGES: readonly ClosingMerge<PullRow>[] = []
 
 /** How many merged closing PRs' transitions are read, newest first (one small read each). */
 const MERGES_READ = 5
@@ -41,31 +45,38 @@ const MERGES_READ = 5
  * number of this issue a trusted mirror recorded, or null. An imported PR's "Fixes #N" is the
  * source's N (as its description renders), so it links this issue only through `upstream`.
  */
-export function useIssueBacklinks(home: RepoHome, number: number, upstream: number | null, enabled = true): AsyncState<IssueBacklinks> {
+export function useIssueBacklinks(home: RepoHome, number: number, upstream: number | null, enabled = true): IssueBacklinks {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   const generation = useRepoWriteGeneration(home.repo)
   const description = home.description
-  return useAsync(
-    async () => {
+  const linking = useAsync(
+    () => {
       const source = mirrorRepo(description)
-      const linking = await pullsLinking(sdk!, home.repo, { number, upstream }, (r) => importedHost(r.importedUrl, source) !== null, network)
-      const merged = linking.pulls.filter((p) => p.state.merged).slice(0, MERGES_READ)
+      return pullsLinking(sdk!, home.repo, { number, upstream }, (r) => importedHost(r.importedUrl, source) !== null, network)
+    },
+    [ready, repoKey(home.repo), number, upstream, description, network, generation],
+    { enabled: enabled && ready && sdk !== null },
+  )
+  const merged = (linking.data?.pulls ?? []).filter((p) => p.state.merged).slice(0, MERGES_READ)
+  const merges = useAsync(
+    async () => {
       // A failed read loses only the "in #3" (the close still shows).
-      const merges = await Promise.all(
+      const found = await Promise.all(
         merged.map(async (pull) => {
           const merge = (await readTransitions(sdk!, home.repo, pull.id).catch(() => [])).filter((t) => t.kind === PR_MERGE).pop()
           return merge === undefined ? [] : [{ pull, merge }]
         }),
       )
-      return { ...linking, merges: merges.flat() }
+      return found.flat()
     },
-    [ready, repoKey(home.repo), number, upstream, description, network, generation],
-    { enabled: enabled && ready && sdk !== null },
+    [ready, repoKey(home.repo), merged.map((p) => p.id).join(','), network, generation],
+    { enabled: enabled && ready && sdk !== null && merged.length > 0 },
   )
+  return { linking, merges: merges.data ?? NO_MERGES }
 }
 
 /** An issue's "Development" box: the PRs that close it (`backlinks`: {@link useIssueBacklinks}). */
-export function LinkedPulls({ addr, number, backlinks }: { addr: RepoAddress | undefined; number: number; backlinks: AsyncState<IssueBacklinks> }): JSX.Element {
+export function LinkedPulls({ addr, number, backlinks }: { addr: RepoAddress | undefined; number: number; backlinks: AsyncState<LinkingPulls> }): JSX.Element {
   const { data, error } = backlinks
   if (error !== null) return <p className="text-anvil-500 dark:text-anvil-400">Couldn&apos;t read the pull requests.</p>
   if (data === null) return <p className="text-anvil-500 dark:text-anvil-400">Reading pull requests…</p>

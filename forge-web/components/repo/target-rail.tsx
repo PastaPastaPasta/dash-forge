@@ -39,12 +39,34 @@ export interface SetChange {
   readonly remove: readonly string[]
 }
 
-/** The change from `applied` to `draft` (in `order`, then the rest), or null when there is none. */
-export function setChange(applied: readonly string[], draft: ReadonlySet<string>): SetChange | null {
+/**
+ * The change the viewer's ticks make to `applied`: each ticked value's wanted state (true: on)
+ * against what is applied now, or null when none differs. Only what was ticked counts, so a
+ * re-read that lands while the picker is open (the page's own write showing, another member's
+ * label) never turns into a change the viewer did not make.
+ */
+export function setChange(applied: readonly string[], ticks: ReadonlyMap<string, boolean>): SetChange | null {
   const now = new Set(applied)
-  const add = [...draft].filter((x) => !now.has(x))
-  const remove = applied.filter((x) => !draft.has(x))
+  const add = [...ticks].filter(([x, on]) => on && !now.has(x)).map(([x]) => x)
+  const remove = [...ticks].filter(([x, on]) => !on && now.has(x)).map(([x]) => x)
   return add.length === 0 && remove.length === 0 ? null : { add, remove }
+}
+
+/** Run `write` for every value `change` adds, then every one it removes, each under its own intent. */
+export async function applySetChange(change: SetChange, intent: string, write: (value: string, add: boolean, intent: string) => Promise<unknown>): Promise<void> {
+  for (const value of change.add) await write(value, true, `${intent}:add:${value}`)
+  for (const value of change.remove) await write(value, false, `${intent}:remove:${value}`)
+}
+
+/** Whether a thread's values show every change of `change`. */
+export function setChangeShows(values: readonly string[], change: SetChange): boolean {
+  return change.add.every((v) => values.includes(v)) && !change.remove.some((v) => values.includes(v))
+}
+
+/** The close / reopen button's words, as GitHub's: "Close with comment" while the composer holds text. */
+export function stateToggleLabel(open: boolean, withComment: boolean, noun: 'issue' | 'pull request'): string {
+  if (withComment) return open ? 'Close with comment' : 'Reopen with comment'
+  return open ? `Close ${noun}` : `Reopen ${noun}`
 }
 
 /** Close a popover on Escape and on a pointer press outside `ref` while it is open. */
@@ -86,31 +108,29 @@ function useDraftPicker(applied: readonly string[], onApply: (change: SetChange)
   readonly close: () => void
   readonly cancel: () => void
 } {
-  const [draft, setDraft] = useState<ReadonlySet<string> | null>(null)
+  // The values the viewer ticked while open, each with the state they want; null when closed.
+  const [ticks, setTicks] = useState<ReadonlyMap<string, boolean> | null>(null)
   const ref = useRef<HTMLDivElement>(null)
-  const open = draft !== null
-  const current = draft ?? new Set(applied)
-  const change = draft === null ? null : setChange(applied, draft)
+  const open = ticks !== null
+  const on = (x: string): boolean => ticks?.get(x) ?? applied.includes(x)
+  const current = new Set([...applied, ...(ticks?.keys() ?? [])].filter(on))
+  const change = ticks === null ? null : setChange(applied, ticks)
   const close = (): void => {
-    setDraft(null)
+    setTicks(null)
     if (change !== null) onApply(change)
   }
+  const tick = (x: string, want: boolean): void => setTicks(new Map([...(ticks ?? []), [x, want]]))
   useDismiss(open, ref, close)
   return {
     open,
     draft: current,
     change,
     ref,
-    toggleOpen: () => (open ? close() : setDraft(new Set(applied))),
-    toggle: (x) => {
-      const next = new Set(current)
-      if (next.has(x)) next.delete(x)
-      else next.add(x)
-      setDraft(next)
-    },
-    add: (x) => setDraft(new Set([...current, x])),
+    toggleOpen: () => (open ? close() : setTicks(new Map())),
+    toggle: (x) => tick(x, !on(x)),
+    add: (x) => tick(x, true),
     close,
-    cancel: () => setDraft(null),
+    cancel: () => setTicks(null),
   }
 }
 

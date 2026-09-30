@@ -19,6 +19,8 @@ export const CLOSED_IN_WINDOW_MS = 10 * 60_000
 
 /** Inline code spans. */
 const INLINE_CODE = /(`+)[^`]*?\1/g
+/** A Markdown link or image destination (`[text](#2-install)` is an anchor, not a reference). */
+const LINK_DEST = /\]\([^)\s]*(?:\s+"[^"]*")?\)/g
 /** `#n` not glued to a word, an `&` (an entity) or a path (`owner/repo#n` names another repo). */
 const REF = /(^|[^\w&/#])#(\d{1,10})(?!\w)/g
 
@@ -43,7 +45,7 @@ function withoutFences(text: string): string {
  * Closing references ("Fixes #1") are references too: the caller separates them.
  */
 export function referencedNumbers(text: string): number[] {
-  const prose = withoutFences(text).replace(INLINE_CODE, '')
+  const prose = withoutFences(text).replace(INLINE_CODE, '').replace(LINK_DEST, ']')
   const out = new Set<number>()
   for (const m of prose.matchAll(REF)) {
     const n = Number(m[2])
