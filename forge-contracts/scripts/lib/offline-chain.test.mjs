@@ -11,12 +11,20 @@ const person = (name) => ({ name, id: b58encode(createHash('sha256').update(name
 const OWNER = person('owner');
 const OTHER = person('other');
 
+/** No reconnect ever triggers offline: the chain never fails with a stale-connection message. */
+const noReconnect = async () => {
+  throw new Error('offline chain: reconnect should never be called');
+};
+
 /** A chain holding one public repo of OWNER, OWNER its maintainer. */
 async function repoChain() {
   const chain = new OfflineChain();
   const evo = chain.evo();
   const sdk = new evo.EvoSDK();
-  const write = documentWriter(sdk, evo, { ids: chain.ids });
+  // retries: 0 -- the offline chain is synchronous and deterministic, so a 10422/40101 here is
+  // always the real rule verdict, never a lagging node's stale read; retrying would only make
+  // every refusal test wait out documentWriter's retry pause for nothing.
+  const write = documentWriter({ sdk }, evo, { ids: chain.ids }, noReconnect, { retries: 0 });
   const repoId = (await write(OWNER, 'repo', { name: 'r', visibility: VIS })).id.toBase58();
   const R = idBytes(repoId);
   await write(OWNER, 'maintainer', membership(R, OWNER.id, OWNER.id));
@@ -73,7 +81,7 @@ test('transitions move only from the state their rules name', async () => {
 test('a rerun adopts what landed: by a unique index, or by the target of a transition', async () => {
   const { chain, write, R, repoId } = await repoChain();
   const evo = chain.evo();
-  const read = documentReader(new evo.EvoSDK(), { ids: chain.ids });
+  const read = documentReader({ sdk: new evo.EvoSDK() }, { ids: chain.ids }, 0, noReconnect);
   const i1 = issue(R, 1);
   const id = (await write(OWNER, 'issue', i1)).id.toBase58();
   assert.equal(await read.existing(OWNER, 'issue', i1), id);
@@ -125,7 +133,7 @@ test('a retry after a write that landed resolves to it, not to a second write', 
       },
     },
   };
-  const write = documentWriter(flaky, evo, { ids: chain.ids }, { pauseMs: 0 });
+  const write = documentWriter({ sdk: flaky }, evo, { ids: chain.ids }, noReconnect, { pauseMs: 0 });
   const id = (await write(OWNER, 'issue', issue(R, 1))).id.toBase58();
   assert.equal(calls, 2);
   assert.equal(chain.live('issue').length, 1);
@@ -136,6 +144,6 @@ test('a document goes to the contract that holds its type', async () => {
   const chain = new OfflineChain();
   const evo = chain.evo();
   const sdk = new evo.EvoSDK();
-  const wrong = documentWriter(sdk, evo, { ids: { ...chain.ids, community: chain.ids.collab } });
+  const wrong = documentWriter({ sdk }, evo, { ids: { ...chain.ids, community: chain.ids.collab } }, noReconnect);
   await assert.rejects(wrong(OWNER, 'star', { repoId: Buffer.alloc(32, 1) }), /star is in forge-community, not forge-collab/);
 });

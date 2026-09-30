@@ -19,10 +19,10 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
-import { useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { CheckCircle2, CircleDot, Milestone, Pencil, Pin, Tag, UserPlus } from 'lucide-react'
 import type { RepoHome, IssueThread, TimelineItem } from '@/lib/view'
-import { ACL_NAME, ARCHIVED_REASON, loadIssueThread } from '@/lib/view'
+import { ACL_NAME, ARCHIVED_REASON, issueWriteShows, loadIssueThread } from '@/lib/view'
 import { commentEditDrops } from '@/lib/view/issues-view'
 import { totalHidden } from '@/lib/repo/private-content'
 import { ISSUE_LOCK, ISSUE_UNLOCK } from '@/lib/rules/transition'
@@ -46,7 +46,7 @@ import {
   updateTarget,
 } from '@/lib/repo'
 import type { Holdings } from '@/lib/rules'
-import { SupersededWriteError, previewCreate, previewReplace, sumPreviews, type CostPreview as Cost } from '@/lib/sdk'
+import { SupersededWriteError, UnconfirmedWriteError, previewCreate, previewReplace, sumPreviews, type CostPreview as Cost } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useIntent } from '@/hooks/use-intent'
@@ -55,7 +55,7 @@ import { useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { useRepoLinks } from '@/components/repo/target-href'
 import { importedUrlOf } from '@/lib/view/ref-targets'
 import { CopyLinkButton } from '@/components/ui/copy-link'
-import { retryWhileMissing } from '@/lib/view/retry'
+import { readUntil, retryWhileMissing } from '@/lib/view/retry'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Timeline, type CommentSlots } from '@/components/repo/timeline'
@@ -96,10 +96,38 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   // Just created here: a node that has not applied the block yet answers "not found", so keep
   // asking for a few seconds rather than telling the author their issue does not exist.
   const justCreated = useParam('created') === '1'
+  // After a write the page re-reads until the write shows (`refresh(expect)`), as the PR page does
+  // (L-77): a node a block behind answers without it, and one plain re-read would drop it from
+  // view (a posted comment missing until a reload). Expectations accumulate until one read
+  // satisfies them all; a newer read aborts the older one's polling.
+  const expectations = useRef<((t: IssueThread) => boolean)[]>([])
+  const current = useRef<{ aborted: boolean }>({ aborted: false })
   const { data, loading, error, reload } = useAsync<IssueThread | null>(
-    () => retryWhileMissing(() => loadIssueThread(sdk!, home.repo, number, network), justCreated ? 8 : 0),
+    async (stop) => {
+      current.current.aborted = true
+      const own = { aborted: false }
+      current.current = own
+      // Stopped by a newer read, or by useAsync (deps changed, or the page unmounted).
+      const signal = { get aborted() { return own.aborted || stop.aborted } }
+      const want = [...expectations.current]
+      const load = (): Promise<IssueThread | null> => loadIssueThread(sdk!, home.repo, number, network)
+      const first = await retryWhileMissing(load, justCreated ? 8 : 0, undefined, signal)
+      if (first === null || want.length === 0) return first
+      // A re-read that fails keeps the thread just read rather than replacing the page with an error.
+      const reread = (): Promise<IssueThread | null> => load().catch(() => first)
+      const t = await readUntil(reread, want, { signal, first })
+      if (!signal.aborted && t !== null) expectations.current = expectations.current.filter((w) => !w(t))
+      return t
+    },
     [ready, repoKey(home.repo), number, network],
     { enabled: ready && sdk !== null && Number.isFinite(number) },
+  )
+  const refresh = useCallback(
+    (want?: (t: IssueThread) => boolean) => {
+      if (want) expectations.current.push(want)
+      reload()
+    },
+    [reload],
   )
 
   // Who may mirror: an imported item of theirs shows its original author and date (FG-6).
@@ -181,16 +209,19 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     setPosting(true)
     setCommentError(null)
     try {
-      await createComment(sdk, signer, home.repo, { targetId: issue.id, body: comment.trim(), intent: draft.intent, post: postContext })
+      const posted = await createComment(sdk, signer, home.repo, { targetId: issue.id, body: comment.trim(), intent: draft.intent, post: postContext })
       setComment('')
       draft.renew()
-      reload()
+      refresh((t) => issueWriteShows(t, { kind: 'comment', id: posted.documentId }))
     } catch (e) {
       if (e instanceof SupersededWriteError) {
         // The earlier version was posted: show it, and never post this draft a second time.
         setComment('')
         draft.renew()
-        reload()
+        refresh((t) => issueWriteShows(t, { kind: 'comment', id: e.documentId }))
+      } else if (e instanceof UnconfirmedWriteError) {
+        // Sent, not yet visible: keep reading until it shows (the draft stays, as the error says).
+        refresh((t) => issueWriteShows(t, { kind: 'comment', id: e.documentId }))
       }
       setCommentError(guard.failed(e))
     } finally {
@@ -200,6 +231,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
 
   const runPending = async (intent: string): Promise<void> => {
     if (!sdk || !signer || pending === null) throw new Error('sign in to continue')
+    const write = pending
     switch (pending.kind) {
       case 'state':
         await setTargetState(sdk, signer, home.repo, { target: { ...target, type: 'issue', author: issue.author }, action: open ? 'close' : 'reopen', isMember, intent })
@@ -247,7 +279,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         setEditingComment(null)
         break
     }
-    reload()
+    refresh((t) => issueWriteShows(t, write.kind === 'state' ? { kind: 'state', open: !open } : write))
   }
 
   const pendingCost = ((): Cost => {
