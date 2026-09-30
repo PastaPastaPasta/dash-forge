@@ -1669,7 +1669,16 @@ impl<'a> RepoService<'a> {
                         ));
                     }
                     failed.extend(places);
-                    last = error;
+                    // A copy with no address this computer follows says nothing about the
+                    // others: the error of a copy that was tried and failed is kept over it,
+                    // so the reader is not told no retry or gateway can help (QW2-078).
+                    let unfollowed = |e: &Error| {
+                        e.to_string()
+                            .contains(crate::storage::read::NO_FOLLOWED_COPY)
+                    };
+                    if matches!(last, Error::NotFound) || unfollowed(&last) || !unfollowed(&error) {
+                        last = error;
+                    }
                 }
             }
         }
@@ -3464,11 +3473,19 @@ where
             }
         }
     } else if platform.is_empty() {
-        return Err(Error::Io(format!(
-            "{}: its manifest records only {}",
-            crate::storage::read::NO_FOLLOWED_COPY,
-            reader.unfollowed(&manifest.uris).join("; ")
-        ))
+        let places = reader.unfollowed(&manifest.uris);
+        return Err(Error::Io(if places.is_empty() {
+            format!(
+                "{} (artifact {expected}): its manifest records no address",
+                crate::storage::read::NO_FOLLOWED_COPY
+            )
+        } else {
+            format!(
+                "{} (artifact {expected}): its manifest records only {}",
+                crate::storage::read::NO_FOLLOWED_COPY,
+                places.join("; ")
+            )
+        })
         .into());
     }
     let mut last = Error::NotFound;

@@ -748,7 +748,7 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
         CoreError::InvalidInput(msg) => UserError::new(codes::USAGE, ctx.headline("invalid arguments"))
             .cause(msg)
             .fix("correct that value and run the command again (`--help` lists the arguments)")
-            .note("checked before anything was signed; nothing was written"),
+            .note("checked before signing: nothing was written to Platform"),
         CoreError::Platform(msg) => return from_platform_text(msg, ctx),
         CoreError::User(u) => (**u).clone(),
         _ => return None,

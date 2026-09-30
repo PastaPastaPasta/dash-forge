@@ -47,8 +47,15 @@ pub async fn run(ctx: &Ctx, cmd: &ReleaseCommand) -> Result<()> {
     }
 }
 
-/// The external targets assets go to, and how many must confirm.
-pub(crate) fn asset_targets(storage: Option<&str>) -> Result<(Vec<ExternalTarget>, usize)> {
+/// What a refused `dg release create` says first.
+const NOT_CREATED: &str = "release not created";
+
+/// The external targets assets go to, and how many must confirm. `lead` heads a refusal
+/// ("release not created", "check run not reported").
+pub(crate) fn asset_targets(
+    storage: Option<&str>,
+    lead: &str,
+) -> Result<(Vec<ExternalTarget>, usize)> {
     let (list, replicas) = match storage {
         Some(s) => (Some(s.to_string()), None),
         None => (
@@ -61,9 +68,9 @@ pub(crate) fn asset_targets(storage: Option<&str>) -> Result<(Vec<ExternalTarget
     if policy.external.is_empty() {
         return Err(UserError::new(
             codes::STORAGE_CONFIG,
-            "release not created: no storage for the assets",
+            format!("{lead}: no storage for the assets"),
         )
-        .cause("release assets are stored on your own storage (S3, IPFS), and this repository's policy is Platform only")
+        .cause("release assets, check-run logs and artifacts are stored on your own storage (S3, IPFS), and this repository's policy is Platform only")
         .fix("`dg storage add <name> …` then pass `--storage <name>` (or `dg storage use <name>` in the repository)")
         .note("nothing was uploaded or written")
         .into());
@@ -72,7 +79,7 @@ pub(crate) fn asset_targets(storage: Option<&str>) -> Result<(Vec<ExternalTarget
         policy.external.iter().map(|(n, p)| (n.as_str(), p)),
         None,
         crate::storage::dash_remote_name().as_deref(),
-        "release not created",
+        lead,
     )?;
     let http = forge_core::storage::http_client();
     let targets = policy
@@ -145,7 +152,7 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
     let targets = if args.assets.is_empty() {
         None
     } else {
-        Some(asset_targets(args.storage.as_deref())?)
+        Some(asset_targets(args.storage.as_deref(), NOT_CREATED)?)
     };
     let total = args
         .assets
@@ -311,7 +318,7 @@ async fn create_sealed(ctx: &Ctx, args: &ReleaseCreateArgs, s: &Session) -> Resu
     let files = read_release_files(&args.assets)?;
     // New files need storage; so may new notes (the full notes move into the sealed asset list
     // when they do not fit), so the policy is resolved whenever there is one.
-    let targets = match asset_targets(args.storage.as_deref()) {
+    let targets = match asset_targets(args.storage.as_deref(), NOT_CREATED) {
         Ok(t) => Some(t),
         Err(e) if files.is_empty() => {
             tracing::debug!(error = %e, "no asset storage; a revision without new files may not need it");

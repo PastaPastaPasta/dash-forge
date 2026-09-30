@@ -550,11 +550,11 @@ fn event_phrase(e: &Event) -> String {
     }
 }
 
-/// Edit one of the signer's comments (issue or PR): its body, re-sealed in a private repo.
 /// Where a comment's id is listed, for a refused comment id.
 const COMMENT_IDS: &str =
     "`dg issue view <repo> <n> --json` (or `dg pr view <repo> <n> --comments --json`)";
 
+/// Edit one of the signer's comments (issue or PR): its body, re-sealed in a private repo.
 async fn edit_comment(ctx: &Ctx, repo: &str, comment_id: &str, body: &str) -> Result<()> {
     crate::common::document_id_arg(comment_id, "comment id", COMMENT_IDS)?;
     let s = Session::open_for_write(ctx, repo, "comment not edited").await?;

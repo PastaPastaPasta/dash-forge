@@ -76,11 +76,11 @@ fn prompt_blocker(yes: bool, json: bool, stdin_tty: bool) -> Option<&'static str
     }
 }
 
-/// The E802 fix for `prompt`: "check the estimate" only when the prompt quotes one (a DASH
-/// figure); a prompt that names the write without a price (`dg collab accept`, `dg issue
-/// close`) is reviewed instead (QW2-079).
-fn confirm_fix(prompt: &str) -> &'static str {
-    if prompt.contains(" DASH") {
+/// The E802 fix for `prompt`: "check the estimate" only when one was shown (in the prompt, or
+/// a price line printed before it, [`crate::fmt::ESTIMATE_SHOWN`]); a prompt that names the
+/// write without a price (`dg collab accept`, `dg issue close`) is reviewed instead (QW2-079).
+fn confirm_fix(prompt: &str, estimate_shown: bool) -> &'static str {
+    if estimate_shown || prompt.contains(" DASH") {
         "check the estimate, then run the same command with --yes"
     } else {
         "check what it will do, then run the same command with --yes"
@@ -492,7 +492,10 @@ impl Ctx {
         }
         if let Some(why) = prompt_blocker(self.yes, self.json, self.stdin_tty) {
             return Err(confirmation_required(format!("{prompt} — and {why}"))
-                .fix(confirm_fix(prompt))
+                .fix(confirm_fix(
+                    prompt,
+                    crate::fmt::ESTIMATE_SHOWN.load(std::sync::atomic::Ordering::Relaxed),
+                ))
                 .into());
         }
         eprint!("{prompt} {} ", if default_yes { "[Y/n]" } else { "[y/N]" });
@@ -571,12 +574,16 @@ mod tests {
     /// QW2-079: "check the estimate" only when the prompt quotes one.
     #[test]
     fn the_e802_fix_mentions_an_estimate_only_when_there_is_one() {
-        assert!(
-            confirm_fix("Report build = queued? (create a check run, ~0.0013 DASH)")
-                .contains("estimate")
-        );
+        assert!(confirm_fix(
+            "Report build = queued? (create a check run, ~0.0013 DASH)",
+            false
+        )
+        .contains("estimate"));
+        // The price on a line before a plain question (`dg auth login`, `dg auth name register`).
+        assert!(confirm_fix("Register the key?", true).contains("estimate"));
         let fix = confirm_fix(
             "Accept membership of a/b? Its owner can then add you (one small document)",
+            false,
         );
         assert!(!fix.contains("estimate"), "{fix}");
         assert!(fix.contains("--yes"), "{fix}");

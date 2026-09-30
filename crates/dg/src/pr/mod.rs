@@ -46,13 +46,12 @@ use forge_core::user_error::{codes, UserError};
 use crate::common::{number_arg, resolve, Reader, RepoRef, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, dash_usd_price, safe, short, transition_route_text};
-
-/// Where a PR comment's id is listed, for a refused comment id.
-const PR_COMMENT_IDS: &str = "`dg pr view <repo> <n> --comments --json`";
 use crate::git::{self, MergePlan};
 use crate::PrCommand;
 
-/// Dispatch a `pr` subcommand.
+/// Where a PR comment's id is listed, for a refused comment id.
+const PR_COMMENT_IDS: &str = "`dg pr view <repo> <n> --comments --json`";
+
 /// Refuse a comment or review id argument that cannot be a document id, before any read
 /// (QW2-076).
 fn check_id_args(cmd: &PrCommand) -> Result<()> {
@@ -73,6 +72,7 @@ fn check_id_args(cmd: &PrCommand) -> Result<()> {
     }
 }
 
+/// Dispatch a `pr` subcommand.
 pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
     use crate::PrSuggestionCommand as Sg;
     check_id_args(cmd)?;

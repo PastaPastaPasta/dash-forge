@@ -606,7 +606,7 @@ fn no_log_storage(storage_given: bool) -> anyhow::Error {
 
 /// The log's https (else `ipfs://`) URL and its SHA-256, after uploading it to `storage`.
 async fn upload_log(path: &Path, storage: Option<&str>) -> Result<(String, [u8; 32])> {
-    let (targets, required) = crate::release::asset_targets(storage)?;
+    let (targets, required) = crate::release::asset_targets(storage, "check run not reported")?;
     let (asset, _) = crate::release::upload_asset(path, &targets, required).await?;
     let url = log_url(&asset.uris)
         .cloned()
@@ -824,7 +824,7 @@ async fn upload_artifacts(
     paths: &[PathBuf],
     storage: Option<&str>,
 ) -> Result<(Option<String>, Vec<String>)> {
-    let (targets, required) = crate::release::asset_targets(storage)?;
+    let (targets, required) = crate::release::asset_targets(storage, "check run not reported")?;
     let mut uploaded = Vec::new();
     for p in paths {
         let (mut asset, _) = crate::release::upload_asset(p, &targets, required).await?;

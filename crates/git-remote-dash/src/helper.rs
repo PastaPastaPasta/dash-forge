@@ -915,11 +915,15 @@ fn packs_unreadable(
     // private network, a bucket without a profile here): no gateway or retry helps, the copy
     // has to be put somewhere readable (QW2-078). The places are said once for all the packs.
     if let Some(places) = unfollowed_places(unreadable) {
+        let recorded = if places.is_empty() {
+            "their manifests record no address".to_string()
+        } else {
+            format!("they are recorded only at {}", places.join("; "))
+        };
         return err
             .cause(format!(
-                "{n} of the repository's {total} packs: {}: they are recorded only at {}",
-                forge_core::storage::read::NO_FOLLOWED_COPY,
-                places.join("; ")
+                "{n} of the repository's {total} packs: {}: {recorded}",
+                forge_core::storage::read::NO_FOLLOWED_COPY
             ))
             .fix(format!(
                 "the pusher recorded their packs only at an address other computers do not read from: from their clone they can copy them to storage with a public https address, `dg reseed {repo} --from-local --profile <profile>` (`dg storage add <name> … --public-url https://…` adds one)"

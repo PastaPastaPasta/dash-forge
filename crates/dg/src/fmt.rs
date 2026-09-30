@@ -111,9 +111,16 @@ pub fn dash_amount(dash: f64) -> String {
     }
 }
 
+/// Set once this process has shown a price ([`cost_line`]): a confirmation that cannot be
+/// asked then says to check that estimate, and otherwise to check what the command does
+/// (QW2-079: "check the estimate" where none was shown).
+pub static ESTIMATE_SHOWN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// A one-line cost display: DASH primary, USD secondary, e.g.
 /// `~0.0003 DASH ≈ $0.01`.
 pub fn cost_line(credits: u64, price_usd: f64) -> String {
+    ESTIMATE_SHOWN.store(true, std::sync::atomic::Ordering::Relaxed);
     let dash = credits_to_dash(credits);
     let usd = dash * price_usd;
     format!("~{} DASH ≈ ${:.2}", dash_amount(dash), usd)
@@ -153,6 +160,12 @@ pub fn triage_lines(labels: &[&str], assignees: &[String], milestone: Option<&st
     if !labels.is_empty() {
         out.push(format!("labels: {}", safe(&labels.join(", "))));
     }
+    // An assignee is an event's value: printed through `safe`, and a hidden (empty) one skipped.
+    let assignees: Vec<String> = assignees
+        .iter()
+        .filter(|a| !a.is_empty())
+        .map(|a| safe(a).into_owned())
+        .collect();
     if !assignees.is_empty() {
         out.push(format!("assignees: {}", assignees.join(", ")));
     }
@@ -269,7 +282,12 @@ mod tests {
             ]
         );
         assert!(triage_lines(&[], &[], None).is_empty());
-        assert_eq!(triage_lines(&[], &["B".into()], None), vec!["assignees: B"]);
+        // A hidden (empty) assignee is skipped; a control character never reaches the terminal.
+        assert_eq!(
+            triage_lines(&[], &[String::new(), "B".into()], None),
+            vec!["assignees: B"]
+        );
+        assert!(!triage_lines(&[], &["B\u{1b}[2J".into()], None)[0].contains('\u{1b}'));
     }
 
     /// QW-081: the `usd` of a cost carries no float noise.

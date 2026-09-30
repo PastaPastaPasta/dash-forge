@@ -569,22 +569,22 @@ impl PackReader {
             .map(|raw| {
                 let uri = Uri(raw.clone());
                 match uri.scheme() {
-                    Some(scheme @ ("https" | "http")) => {
+                    Some("https" | "http") => {
+                        use super::publish::{publish_problem, PublishProblem as P};
                         let host = reqwest::Url::parse(raw).ok().and_then(|u| {
                             u.host_str().map(|h| match u.port() {
                                 Some(p) => format!("{h}:{p}"),
                                 None => h.to_string(),
                             })
                         });
-                        let host = host.unwrap_or_else(|| "an unparseable address".into());
-                        let private = reqwest::Url::parse(raw)
-                            .ok()
-                            .and_then(|u| u.host_str().map(super::publish::is_private_host))
-                            .unwrap_or(false);
-                        let why = match (scheme, private) {
-                            (_, true) => "this machine or a private network",
-                            ("http", false) => "plain http",
-                            _ => "an address with credentials in it",
+                        let Some(host) = host else {
+                            return "an address that does not parse".to_string();
+                        };
+                        let why = match publish_problem(raw) {
+                            Some(P::PrivateHost) => "this machine or a private network",
+                            Some(P::NotHttps) => "plain http",
+                            Some(P::Credentials) => "a user name or password in it",
+                            _ => "not a public https address",
                         };
                         format!("{host} ({why}: never followed from a manifest)")
                     }
