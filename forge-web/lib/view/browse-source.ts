@@ -587,7 +587,6 @@ async function fetchExternalRange(
   onServed?: OnServed,
 ): Promise<Uint8Array> {
   const { urls, live, down } = await mirrorUrls(manifest, gateways)
-  let lastErr: unknown = reasonsOf(down).join('; ') || 'no browser-fetchable mirror'
   const failed = [...down]
   for (const url of live) {
     try {
@@ -598,10 +597,11 @@ async function fetchExternalRange(
     } catch (e) {
       if (e instanceof FetchFailure && e.answered) deadUrls.set(url, errorText(e))
       failed.push(failureAt(url, errorText(e)))
-      lastErr = e
     }
   }
-  throw new PackUnavailableError(manifest.packHash, hostsOf(urls), false, errorText(lastErr))
+  // `host: why` per place, as the whole-body fetch reports it: a reason that also names the
+  // Platform chunks tried first must not have every mirror read as that chunk failure.
+  throw new PackUnavailableError(manifest.packHash, hostsOf(urls), false, reasonsOf(failed).join('; ') || 'no browser-fetchable mirror')
 }
 
 function errorText(e: unknown): string {
@@ -828,6 +828,32 @@ function servedBy(repo: RepoRef, packHash: string, copy?: string, before: readon
   }
 }
 
+/**
+ * Read a `storage 0` copy from its external copies once its own chunks could not be (`chunkError`):
+ * a push to Platform and a bucket or gateway records both, and on-chain is only the first place
+ * to look, not the only one. `read` is the ranged or whole external fetch, told to name the
+ * chunks as the copy that failed when another serves (`documentId`: a range's copy, as
+ * {@link noteSource}). No fetchable external copy: the chunk error, as before. None serving
+ * either: a {@link PackUnavailableError} naming Platform and every host tried.
+ */
+async function afterChunksFailed(
+  repo: RepoRef,
+  copy: PackManifest,
+  documentId: string | undefined,
+  chunkError: unknown,
+  read: (gateways: readonly string[], onServed: OnServed) => Promise<Uint8Array>,
+): Promise<Uint8Array> {
+  const gateways = readGatewaysFor(repoKey(repo))
+  if (externalFetchUrls(copy.uris, gateways).length === 0) throw chunkError
+  const chunks = `platform: ${errorText(chunkError)}`
+  try {
+    return await read(gateways, servedBy(repo, copy.packHash, documentId, [chunks]))
+  } catch (e) {
+    if (!(e instanceof PackUnavailableError)) throw e
+    throw new PackUnavailableError(copy.packHash, ['platform', ...e.hosts], e.corrupt, `${chunks}; ${e.reason}`)
+  }
+}
+
 /** A ranged reader over one artifact (platform chunks or external URIs), optionally one copy. */
 export function artifactRangeFetch(
   sdk: EvoSDK,
@@ -856,7 +882,15 @@ export function artifactRangeFetch(
       }
       return fetchExternalRange(copy, start, end, gateways, servedBy(repo, copy.packHash, copy.documentId, chunkFailures))
     }
-    const bytes = await fetchPlatformRange(sdk, repo, copy, start, end)
+    let bytes: Uint8Array
+    try {
+      bytes = await fetchPlatformRange(sdk, repo, copy, start, end)
+    } catch (e) {
+      // Chunks that cannot be read: the copy's external copies, if it recorded any.
+      return afterChunksFailed(repo, copy, copy.documentId, e, (gateways, served) =>
+        fetchExternalRange(copy, start, end, gateways, served),
+      )
+    }
     noteSource(repo, copy.packHash, undefined, copy.documentId)
     return bytes
   }
@@ -923,7 +957,8 @@ const DOWNLOAD_WINDOW = CHUNK_QUERY_MAX * CHUNK_PAYLOAD_MAX
  * packs, which can exceed the single-query chunk window. Platform storage downloads in
  * `DOWNLOAD_WINDOW` strides; external storage races its mirrors for the whole body, which
  * must match the manifest's size and sha256 (progress reported only at completion), and
- * throws {@link PackUnavailableError} when none does.
+ * throws {@link PackUnavailableError} when none does. A Platform copy whose chunks cannot be
+ * read falls back to the external copies it also recorded ({@link afterChunksFailed}).
  */
 export async function loadArtifactBytesProgress(
   sdk: EvoSDK,
@@ -985,7 +1020,18 @@ async function loadOneCopy(
     onProgress?.(total, total)
     return bytes
   }
-  const out = await loadPlatformWhole(sdk, repo, manifest, onProgress, cancel)
+  let out: Uint8Array
+  try {
+    out = await loadPlatformWhole(sdk, repo, manifest, onProgress, cancel)
+  } catch (e) {
+    // A cancelled clone stops here: no external copy is fetched for it.
+    if (cancel?.aborted) throw e
+    const bytes = await afterChunksFailed(repo, manifest, undefined, e, (gateways, served) =>
+      fetchExternalWhole(manifest, gateways, served, cancel),
+    )
+    onProgress?.(total, total)
+    return bytes
+  }
   noteSource(repo, manifest.packHash)
   return out
 }
