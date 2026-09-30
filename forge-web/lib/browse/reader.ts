@@ -432,7 +432,12 @@ export class BrowseReader {
     if (entry === null) return null
     this.noteRead(entry.packRef)
     let e = entry
+    // A base seen before is a cycle (a hostile pack): fail at once, not after the whole budget.
+    const seen = new Set<string>()
     for (let step = 0; step <= DELTA_WALK_MAX; step++) {
+      const at = offsetKey(e.packRef, e.offset)
+      if (seen.has(at)) throw new Error(`delta chain of ${oidHex} loops back to pack ${e.packRef} offset ${e.offset}`)
+      seen.add(at)
       const head = await this.fetchRange(e.packRef, e.offset, e.offset + Math.min(ENTRY_HEAD_BYTES, e.length), this.copyOf.get(e.packRef))
       const h = parseObjHeader(head, 0)
       if (h.type === PACK_TYPE.OFS_DELTA) {

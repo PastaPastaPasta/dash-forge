@@ -4,10 +4,11 @@ import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 
 import { BrowseReader, MissingObjectError, ObjectLocator, type GitObject, type PackSource } from '../browse'
 import { indexPacks, memoryPackSource, serializeLocator } from '../browse/indexer'
+import { T_REF_DELTA, concat, hexToBytes, objHeader, packFrame } from '../browse/pack-fixtures'
 import { HAVE_GIT, scratchRepo, writeLiterally } from '../merge/git-oracle'
 import { CommitIdError, loadCommitChanges, resolveCommitOid, type PrefixReader } from './commit-log'
 import { Store } from './diff-fixtures'
@@ -206,22 +207,26 @@ describe.skipIf(!HAVE_GIT)('short ids of objects git stored as deltas', () => {
 
   for (const refDeltas of [false, true]) {
     describe(refDeltas ? 'REF_DELTA' : 'OFS_DELTA', () => {
-      const { pack, stored } = gitPack(s.objects.values(), [...s.objects.keys()], refDeltas)
-      const source = recording(memoryPackSource([pack]))
+      // Built in beforeAll: a skipped suite's body still runs at collection, where git may be absent.
+      let pack: Uint8Array = new Uint8Array(0)
+      let stored: PackedObject[] = []
+      const source = recording({ fetchRange: (_ref, start, end) => memoryPackSource([pack]).fetchRange(0, start, end) })
+      beforeAll(() => {
+        ;({ pack, stored } = gitPack(s.objects.values(), [...s.objects.keys()], refDeltas))
+      })
       const reader = async (): Promise<BrowseReader> =>
         new BrowseReader(ObjectLocator.parse(serializeLocator(await indexPacks([pack]))), source)
-      const deltaCommits = stored.filter((o) => o.type === 'commit' && o.depth > 0)
-      const deltaBlobs = stored.filter((o) => o.type === 'blob' && o.depth > 0)
+      const deltas = (type: GitObject['type']): PackedObject[] => stored.filter((o) => o.type === type && o.depth > 0)
 
       it('has commits and blobs git stored as deltas, some more than one deep', () => {
-        expect(deltaCommits.length).toBeGreaterThan(0)
-        expect(deltaBlobs.length).toBeGreaterThan(0)
+        expect(deltas('commit').length).toBeGreaterThan(0)
+        expect(deltas('blob').length).toBeGreaterThan(0)
         expect(Math.max(...stored.map((o) => o.depth))).toBeGreaterThan(1)
       })
 
       it("resolves a delta commit's 7-character id to it, and opens it", async () => {
         const r = await reader()
-        for (const { oid } of deltaCommits) {
+        for (const { oid } of deltas('commit')) {
           await expect(resolveCommitOid(r, oid.slice(0, 7))).resolves.toBe(oid)
           await expect(loadCommitChanges(r, oid.slice(0, 7))).resolves.toMatchObject({ oid })
         }
@@ -239,11 +244,31 @@ describe.skipIf(!HAVE_GIT)('short ids of objects git stored as deltas', () => {
       })
 
       it("says a delta blob's short id names a file, not a commit", async () => {
-        const blob = deltaBlobs[0] as PackedObject
+        const blob = deltas('blob')[0] as PackedObject
         const e = await resolveCommitOid(await reader(), blob.oid.slice(0, 7)).catch((x: unknown) => x)
         expect((e as CommitIdError).kind).toBe('not-a-commit')
         expect((e as Error).message).toMatch(/names a file/)
       })
     })
   }
+})
+
+describe('BrowseReader.objectType on a hostile pack', () => {
+  it('fails at the first repeat of a REF_DELTA cycle, not after thousands of reads', async () => {
+    const A = 'aa'.repeat(20)
+    const B = 'bb'.repeat(20)
+    // Two REF deltas, each naming the other as its base.
+    const entryA = concat(objHeader(T_REF_DELTA, 4), hexToBytes(B), new Uint8Array(8))
+    const entryB = concat(objHeader(T_REF_DELTA, 4), hexToBytes(A), new Uint8Array(8))
+    const pack = packFrame(entryA, entryB)
+    const locator = ObjectLocator.parse(
+      serializeLocator([
+        { oidHex: A, packRef: 0, offset: 12, length: entryA.length, deltaDepth: 1 },
+        { oidHex: B, packRef: 0, offset: 12 + entryA.length, length: entryB.length, deltaDepth: 1 },
+      ]),
+    )
+    const source = recording(memoryPackSource([pack]))
+    await expect(new BrowseReader(locator, source).objectType(A)).rejects.toThrow(/loops back/)
+    expect(source.reads).toHaveLength(2)
+  })
 })
