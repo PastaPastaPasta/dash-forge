@@ -21,6 +21,8 @@ import {
   EvoSdkService,
   FRESH_WRITE_MS,
   PROGRESS_INTERVAL_MS,
+  QUORUM_BUDGET_MS,
+  QUORUM_WAITS_MS,
   REFRESH_MS,
   RECOVER_GAP_MS,
   RETRYABLE_READS,
@@ -31,7 +33,7 @@ import {
   type EvoSdkConfig,
 } from './service'
 import { serialized } from './write'
-import { isStaleConnectionError, isUnreachableError } from './unreachable'
+import { isQuorumMiss, isStaleConnectionError, isUnreachableError } from './unreachable'
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -214,20 +216,22 @@ describe('EvoSdkService: quorum refresh (D-024)', () => {
 
   it('rate-limits recovery reconnects', async () => {
     const clock = manualClock()
+    // Banned nodes with no quorum rotation behind them: nothing to wait out.
+    const BANNED = new Error('no available addresses to use')
     const failing = () =>
       fakeSdk('x', async () => {
-        throw QUORUM_GONE
+        throw BANNED
       }).sdk
     const connector = vi.fn().mockImplementation(async () => connection(failing()))
     const svc = new EvoSdkService(connector, clock)
     await svc.initialize(CONFIG)
-    await expect(svc.getSdk().documents.query({} as never)).rejects.toBe(QUORUM_GONE)
+    await expect(svc.getSdk().documents.query({} as never)).rejects.toBe(BANNED)
     expect(connector).toHaveBeenCalledTimes(2)
     // Within the gap: fail fast without another connect.
-    await expect(svc.getSdk().documents.query({} as never)).rejects.toBe(QUORUM_GONE)
+    await expect(svc.getSdk().documents.query({} as never)).rejects.toBe(BANNED)
     expect(connector).toHaveBeenCalledTimes(2)
     await clock.advance(RECOVER_GAP_MS)
-    await expect(svc.getSdk().documents.query({} as never)).rejects.toBe(QUORUM_GONE)
+    await expect(svc.getSdk().documents.query({} as never)).rejects.toBe(BANNED)
     expect(connector).toHaveBeenCalledTimes(3)
   })
 })
@@ -353,9 +357,93 @@ describe('EvoSdkService.ensureFresh: before a write that never refreshes its quo
   })
 })
 
+describe('EvoSdkService: a quorum rotation the quorum service lags (#212)', () => {
+  /** Connections whose reads fail on a quorum miss until `landsAt` (a count of connects), then answer. */
+  function lagging(landsAt: number) {
+    let connects = 0
+    return vi.fn().mockImplementation(async () => {
+      const n = ++connects
+      return connection(
+        fakeSdk(`c${n}`, async () => {
+          if (n < landsAt) throw QUORUM_GONE
+          return new Map([['x', `from c${n}`]])
+        }).sdk,
+      )
+    })
+  }
+  /** Settle `p` without an unhandled rejection while the clock runs. */
+  const settled = <T>(p: Promise<T>) => p.then((v) => ({ ok: true as const, v }), (e: unknown) => ({ ok: false as const, e }))
+
+  it('holds the read, reconnecting after each pause, until the service lists the quorum', async () => {
+    const clock = manualClock()
+    const connector = lagging(4)
+    const svc = new EvoSdkService(connector, clock)
+    await svc.initialize(CONFIG)
+    const read = settled(svc.getSdk().documents.query({} as never))
+    await flush()
+    // The first reconnect missed too: the read waits, and says so, instead of failing.
+    expect(connector).toHaveBeenCalledTimes(2)
+    expect(svc.quorumWaitSince).toBe(clock.now())
+    expect(svc.getStatus().phase).toBe('ready')
+    await clock.advance(QUORUM_WAITS_MS[0] as number)
+    expect(connector).toHaveBeenCalledTimes(3)
+    await clock.advance(QUORUM_WAITS_MS[1] as number)
+    expect(connector).toHaveBeenCalledTimes(4)
+    expect(await read).toEqual({ ok: true, v: new Map([['x', 'from c4']]) })
+    expect(svc.quorumWaitSince).toBeNull()
+  })
+
+  it('gives up QUORUM_BUDGET_MS after the rotation\'s first miss', async () => {
+    const clock = manualClock()
+    const svc = new EvoSdkService(lagging(Infinity), clock)
+    await svc.initialize(CONFIG)
+    const started = clock.now()
+    const read = settled(svc.getSdk().documents.query({} as never))
+    // In steps: each reconnect settles before the next pause is set.
+    for (let t = 0; t < QUORUM_BUDGET_MS + 60_000; t += 5_000) await clock.advance(5_000)
+    expect(await read).toEqual({ ok: false, e: QUORUM_GONE })
+    expect(svc.quorumWaitSince).toBeNull()
+    // Every pause fitted inside the budget.
+    const total = QUORUM_WAITS_MS.reduce((a, n) => a + n, 0)
+    expect(total).toBeGreaterThanOrEqual(QUORUM_BUDGET_MS)
+    expect(clock.now() - started).toBeGreaterThanOrEqual(QUORUM_BUDGET_MS)
+  })
+
+  it('a quorum service that does not answer fails the read at once', async () => {
+    const clock = manualClock()
+    const a = fakeSdk('a', async () => {
+      throw QUORUM_GONE
+    })
+    const connector = vi.fn().mockResolvedValueOnce(connection(a.sdk)).mockRejectedValue(new Error('quorums.example: failed to fetch'))
+    const svc = new EvoSdkService(connector, clock)
+    await svc.initialize(CONFIG)
+    await expect(svc.getSdk().documents.query({} as never)).rejects.toBe(QUORUM_GONE)
+    expect(svc.getStatus().phase).toBe('error')
+    expect(svc.quorumWaitSince).toBeNull()
+  })
+
+  it('never sends a write again (only reads wait)', async () => {
+    const clock = manualClock()
+    const a = fakeSdk('a', async () => {
+      throw QUORUM_GONE
+    })
+    a.create.mockImplementation(async () => {
+      throw QUORUM_GONE
+    })
+    const svc = new EvoSdkService(lagging(Infinity).mockResolvedValueOnce(connection(a.sdk)), clock)
+    await svc.initialize(CONFIG)
+    await expect(svc.getSdk().documents.create({} as never)).rejects.toBe(QUORUM_GONE)
+    expect(a.create).toHaveBeenCalledTimes(1)
+    expect(svc.quorumWaitSince).toBeNull()
+  })
+})
+
 describe('isStaleConnectionError', () => {
   it('matches the rotated-quorum and banned-nodes errors only', () => {
     expect(isStaleConnectionError(QUORUM_GONE)).toBe(true)
+    expect(isStaleConnectionError(new Error('Failed to find quorum: Quorum not found for type 107 and hash 1e85'))).toBe(true)
+    expect(isQuorumMiss(QUORUM_GONE)).toBe(true)
+    expect(isQuorumMiss(new Error('no available addresses to use'))).toBe(false)
     expect(isStaleConnectionError({ message: 'no available addresses to use' })).toBe(true)
     expect(isStaleConnectionError(new Error('document type not found'))).toBe(false)
     expect(isStaleConnectionError(new Error('Invalid proof'))).toBe(false)

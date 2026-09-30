@@ -8,13 +8,24 @@
 import { isContractMissingError } from './contract-missing'
 import { errorMessage } from '../utils'
 
-const STALE = /quorum not found in cache|no available addresses/i
+const STALE = /quorum not found|no available addresses/i
+/**
+ * A proof signed by a quorum whose key the connection does not have: "Quorum not found in cache"
+ * (the keys prefetched at connect), or "Quorum not found for type …" (a refetch that missed too).
+ * Right after a rotation that is the network's quorum service lagging it (#212).
+ */
+const QUORUM_MISS = /quorum not found/i
 const UNREACHABLE =
   /failed to fetch|fetch failed|networkerror|network error|load failed|timed out|timeout|deadline exceeded|\bunavailable\b|resourceexhausted|resource exhausted|transport error|connection (?:refused|reset)|HTTP 5\d\d|could not reach platform|can't reach platform|internet disconnected/i
 
 /** A read failed because its connection went stale, not because of what it asked. */
 export function isStaleConnectionError(e: unknown): boolean {
   return STALE.test(errorMessage(e, ''))
+}
+
+/** A read failed on a proof signed by a quorum the connection has no key for (see {@link QUORUM_MISS}). */
+export function isQuorumMiss(e: unknown): boolean {
+  return QUORUM_MISS.test(errorMessage(e, ''))
 }
 
 /** A read failed because Platform (or the storage it named) could not be reached. */
