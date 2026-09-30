@@ -937,23 +937,30 @@ impl PlatformClient {
     }
 
     /// The first DPNS name ([`Self::dpns_names_of`]) of each distinct id in `ids` that has
-    /// one, read concurrently (a few at a time). For display only: an id whose read fails is
-    /// left out, so a caller shows it bare.
+    /// one, read concurrently (a few at a time). For display only: an id whose read fails, or
+    /// that is past the first [`Self::DPNS_DISPLAY_MAX`] ids, or whose read has not finished
+    /// within [`Self::DPNS_DISPLAY_DEADLINE`], is left out, so a caller shows it bare.
     pub async fn dpns_first_names<'a>(
         &self,
         ids: impl IntoIterator<Item = &'a str>,
     ) -> BTreeMap<String, String> {
         use futures::StreamExt as _;
         let ids: std::collections::BTreeSet<&str> = ids.into_iter().collect();
-        futures::stream::iter(ids)
+        futures::stream::iter(ids.into_iter().take(Self::DPNS_DISPLAY_MAX))
             .map(|id| async move { (id, self.dpns_names_of(id).await) })
             .buffer_unordered(8)
+            .take_until(tokio::time::sleep(Self::DPNS_DISPLAY_DEADLINE))
             .filter_map(|(id, names)| async move {
                 Some((id.to_string(), names.ok()?.into_iter().next()?))
             })
             .collect()
             .await
     }
+
+    /// At most this many distinct ids get a DPNS lookup in [`Self::dpns_first_names`].
+    pub const DPNS_DISPLAY_MAX: usize = 50;
+    /// [`Self::dpns_first_names`] stops waiting after this long and keeps the names it has.
+    pub const DPNS_DISPLAY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 
     /// The identity DPNS name `name` (`alice` or `alice.dash`, compared homograph-safe as
     /// DPNS does) resolves to, or `None` when no such name is registered. A proof-verified

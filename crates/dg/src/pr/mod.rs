@@ -2388,14 +2388,23 @@ fn place_pr_branch(cwd: &Path, branch: &str, head: &str) -> Result<CheckoutStep>
         Some("the working tree has uncommitted changes")
     } else if current.is_none() && !a_ref_holds_head() {
         Some("HEAD is detached at a commit no branch or tag holds")
+    } else if ignored_overwritten_by(cwd, head) {
+        // git replaces an ignored file (a local `.env`, …) silently when a switch brings a
+        // tracked file to its path.
+        Some("the PR head tracks a path that is an ignored file here, which a switch would overwrite")
     } else {
         None
     };
     let step = checkout_step(current.as_deref(), branch, stay);
     if step == CheckoutStep::FastForward {
-        // Never a real merge: the check above made the branch an ancestor of the head.
-        git::git(cwd, &["merge", "--ff-only", "-q", head], &[])
-            .with_context(|| format!("moving {branch} (checked out) to the PR head"))?;
+        // Never a real merge: the check above made the branch an ancestor of the head. An
+        // ignored file in the way stops it instead of being overwritten.
+        git::git(
+            cwd,
+            &["merge", "--ff-only", "--no-overwrite-ignore", "-q", head],
+            &[],
+        )
+        .with_context(|| format!("moving {branch} (checked out) to the PR head"))?;
     } else {
         git::git(cwd, &["branch", "-f", branch, head], &[])
             .with_context(|| format!("creating branch {branch}"))?;
@@ -2406,6 +2415,52 @@ fn place_pr_branch(cwd: &Path, branch: &str, head: &str) -> Result<CheckoutStep>
         })?;
     }
     Ok(step)
+}
+
+/// Whether checking out `head` would overwrite an ignored, untracked file of the working tree
+/// at `cwd` (a path, or a directory holding one, that `head` tracks). `true` when either
+/// listing fails: the caller then stays put.
+fn ignored_overwritten_by(cwd: &Path, head: &str) -> bool {
+    let listing = |args: &[&str]| -> Option<Vec<String>> {
+        let out = git::git(cwd, args, &[]).ok()?;
+        Some(
+            out.split('\0')
+                .filter(|p| !p.is_empty())
+                .map(str::to_owned)
+                .collect(),
+        )
+    };
+    let (Some(ignored), Some(tracked)) = (
+        listing(&[
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+        ]),
+        listing(&["ls-tree", "-r", "-z", "--name-only", head]),
+    ) else {
+        return true;
+    };
+    overlaps(&ignored, &tracked)
+}
+
+/// Whether a path in `tracked` is, or lies under, an entry of `ignored` (a directory entry
+/// ends in `/`), or an ignored file sits where `tracked` has a directory.
+fn overlaps(ignored: &[String], tracked: &[String]) -> bool {
+    // Sorted, so the paths under `dir/` are one range: a build tree's thousands of ignored
+    // files cost a lookup each, not a scan of the tree.
+    let tracked: std::collections::BTreeSet<&str> = tracked.iter().map(String::as_str).collect();
+    ignored.iter().any(|i| {
+        let dir = i.trim_end_matches('/');
+        let under = format!("{dir}/");
+        tracked.contains(dir)
+            || tracked
+                .range(under.as_str()..)
+                .next()
+                .is_some_and(|t| t.starts_with(&under))
+    })
 }
 
 /// What `dg pr checkout` does with branch `pr/<n>`, as `gh pr checkout` does, never losing
@@ -2574,6 +2629,134 @@ mod tests {
         assert_eq!(state_label(&with(false, false, true)), "closed");
         assert_eq!(state_label(&with(false, false, false)), "closed");
         assert_eq!(state_label(&with(true, false, false)), "merged");
+    }
+
+    /// Run git in `dir` for a test fixture (no signing, fixed identity), returning stdout.
+    fn fixture_git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.org"])
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    }
+
+    /// A repository on `main` (one commit) with a PR head one commit ahead of it that adds
+    /// `pr.txt`; returns the repository and the head oid.
+    fn checkout_fixture() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        fixture_git(d, &["init", "-q"]);
+        std::fs::write(d.join("a.txt"), "a\n").unwrap();
+        fixture_git(d, &["add", "a.txt"]);
+        fixture_git(d, &["commit", "-q", "-m", "base"]);
+        fixture_git(d, &["switch", "-q", "-c", "work"]);
+        std::fs::write(d.join("pr.txt"), "from the PR\n").unwrap();
+        fixture_git(d, &["add", "pr.txt"]);
+        fixture_git(d, &["commit", "-q", "-m", "head"]);
+        let head = fixture_git(d, &["rev-parse", "HEAD"]);
+        fixture_git(d, &["switch", "-q", "main"]);
+        fixture_git(d, &["branch", "-q", "-D", "work"]);
+        (dir, head)
+    }
+
+    /// The real git work of `dg pr checkout`, against temp repositories: it switches from a
+    /// clean tree, and never loses uncommitted changes, ignored files, extra commits on
+    /// `pr/<n>` or an unheld detached HEAD.
+    #[test]
+    fn place_pr_branch_never_loses_work() {
+        let at = |d: &Path, r: &str| fixture_git(d, &["rev-parse", r]);
+        // Clean: created and switched to.
+        let (dir, head) = checkout_fixture();
+        let d = dir.path();
+        assert_eq!(
+            place_pr_branch(d, "pr/7", &head).unwrap(),
+            CheckoutStep::CreateAndSwitch
+        );
+        assert_eq!(git::current_branch(d).as_deref(), Some("pr/7"));
+        assert_eq!(at(d, "pr/7"), head);
+
+        // Already on pr/7, behind the head: fast-forwarded.
+        fixture_git(d, &["reset", "-q", "--hard", "HEAD~1"]);
+        assert_eq!(
+            place_pr_branch(d, "pr/7", &head).unwrap(),
+            CheckoutStep::FastForward
+        );
+        assert_eq!(at(d, "HEAD"), head);
+
+        // Uncommitted tracked change: the branch is placed, the tree and branch stay.
+        let (dir, head) = checkout_fixture();
+        let d = dir.path();
+        std::fs::write(d.join("a.txt"), "edited\n").unwrap();
+        assert!(matches!(
+            place_pr_branch(d, "pr/7", &head).unwrap(),
+            CheckoutStep::CreateOnly(_)
+        ));
+        assert_eq!(git::current_branch(d).as_deref(), Some("main"));
+        assert_eq!(
+            std::fs::read_to_string(d.join("a.txt")).unwrap(),
+            "edited\n"
+        );
+        assert_eq!(at(d, "pr/7"), head);
+
+        // An ignored file at a path the head tracks: not switched, the file is kept.
+        let (dir, head) = checkout_fixture();
+        let d = dir.path();
+        std::fs::write(d.join(".git/info/exclude"), "pr.txt\n").unwrap();
+        std::fs::write(d.join("pr.txt"), "my local secret\n").unwrap();
+        assert!(matches!(
+            place_pr_branch(d, "pr/7", &head).unwrap(),
+            CheckoutStep::CreateOnly(_)
+        ));
+        assert_eq!(git::current_branch(d).as_deref(), Some("main"));
+        assert_eq!(
+            std::fs::read_to_string(d.join("pr.txt")).unwrap(),
+            "my local secret\n"
+        );
+
+        // pr/7 holds a commit the head does not: refused, nothing moves.
+        let (dir, head) = checkout_fixture();
+        let d = dir.path();
+        fixture_git(d, &["switch", "-q", "-c", "pr/7"]);
+        std::fs::write(d.join("mine.txt"), "mine\n").unwrap();
+        fixture_git(d, &["add", "mine.txt"]);
+        fixture_git(d, &["commit", "-q", "-m", "mine"]);
+        let mine = at(d, "pr/7");
+        fixture_git(d, &["switch", "-q", "main"]);
+        assert!(place_pr_branch(d, "pr/7", &head).is_err());
+        assert_eq!(at(d, "pr/7"), mine);
+
+        // A detached HEAD at a commit no ref holds: not switched away from.
+        let (dir, head) = checkout_fixture();
+        let d = dir.path();
+        fixture_git(d, &["switch", "-q", "--detach"]);
+        std::fs::write(d.join("loose.txt"), "loose\n").unwrap();
+        fixture_git(d, &["add", "loose.txt"]);
+        fixture_git(d, &["commit", "-q", "-m", "loose"]);
+        let loose = at(d, "HEAD");
+        assert!(matches!(
+            place_pr_branch(d, "pr/7", &head).unwrap(),
+            CheckoutStep::CreateOnly(_)
+        ));
+        assert_eq!(at(d, "HEAD"), loose);
+    }
+
+    #[test]
+    fn an_ignored_path_overlaps_a_tracked_file_or_directory() {
+        let s = |v: &[&str]| v.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let tracked = s(&["src/main.rs", "config/app.toml", "README.md"]);
+        assert!(overlaps(&s(&["README.md"]), &tracked));
+        assert!(overlaps(&s(&["config/"]), &tracked));
+        assert!(overlaps(&s(&["src"]), &tracked)); // an ignored file where the head has a dir
+        assert!(!overlaps(&s(&["target/", "src.bak", "READ"]), &tracked));
     }
 
     /// QW-083: `dg pr checkout` switches to `pr/<n>` as `gh pr checkout` does, but only from
