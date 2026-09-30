@@ -745,6 +745,9 @@ fn not_permitted(ctx: &ErrorContext<'_>, action: &str, reason: &str, needs: &str
     .note("checked before anything was signed; nothing was written or paid");
     if needs == "author" {
         u.fix("ask the author or a member of the repository to do it")
+    } else if needs == "owner" && action.starts_with("delete ") {
+        // A delete: consensus admits it from the document's owner only, maintainers included.
+        u.fix("only the author can delete it; ask them to")
     } else if needs == "owner" {
         // An edit: consensus admits a document replace from its owner only, members included.
         u.fix("only the author can edit it; comment instead, or ask them to make the change")
@@ -2056,6 +2059,16 @@ mod tests {
         assert_eq!(u.code, "E601");
         assert!(u.fix[0].contains("only the author can edit it"), "{u:?}");
         assert!(!u.fix[0].contains("collab add"), "{u:?}");
+        // A comment delete (QW-016) says delete, not edit.
+        let u = core_chain(
+            CoreError::NotPermitted {
+                action: "delete this comment".into(),
+                reason: "you are not its author".into(),
+                needs: "owner".into(),
+            },
+            &ctx,
+        );
+        assert!(u.fix[0].contains("only the author can delete it"), "{u:?}");
     }
 
     #[test]
