@@ -90,6 +90,16 @@ describe('a file stored as a delta (QW-024)', () => {
     // With no whole-stored file of its language, a delta counts at its own size.
     expect(languageShares([['a.rs', 50, true], ['b.py', 50, false]]).map((s) => s.percent)).toEqual([50, 50])
   })
+
+  it('caps a data table at the 99th percentile of stored sizes, so it cannot outweigh the code', () => {
+    // 100 C++ files of 1,000 bytes; one C table of 500,000 (dash's precomputed_ecmult.c, compressed).
+    const rows: [string, number, boolean][] = Array.from({ length: 100 }, (_, i) => [`src/f${i}.cpp`, 1_000, false])
+    rows.push(['src/secp256k1/src/precomputed_ecmult.c', 500_000, false])
+    const shares = languageShares(rows)
+    expect(shares[0]?.name).toBe('C++')
+    // Capped at the 99th percentile (a 1,000-byte file here): 1 of 101 equal files.
+    expect(shares.find((s) => s.name === 'C')?.percent).toBe(1)
+  })
 })
 
 describe('languageShares', () => {

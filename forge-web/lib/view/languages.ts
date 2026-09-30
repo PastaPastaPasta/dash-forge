@@ -256,14 +256,23 @@ export interface LanguageStats {
   readonly truncated: boolean
 }
 
+/** Whole-stored files needed before the largest are capped ({@link languageShares}). */
+const CAP_MIN_FILES = 20
+
 /**
  * Shares from `(path, bytes, delta)` rows: grouped by language, largest first; languages under
- * 0.1% fold into "Other".
+ * 0.1% fold into "Other". The sizes are what the locator knows, stored (compressed) sizes, which
+ * the bar reads without a blob (QW-024 measured the estimate below against dashpay/dash's real
+ * sizes at the mirror's tip: C++ 54.6 %, C 29.6 %, Python 8.4 %, against 54.3 / 28.5 / 10.2
+ * uncompressed, where plain stored sizes said C 53.3 %, C++ 34.8 %):
  *
- * `delta`: the file is stored as a delta against another version, so its stored size is the
- * delta's, a small fraction of the file's (QW-024: a mirror pushed a push at a time stores most of
- * a busy C++ tree that way, and the bar read dashpay/dash as C before C++). Its size is taken as
- * the mean stored size of its language's files stored whole; with none, its own.
+ * - `delta`: the file is stored as a delta against another version, so its stored size is the
+ *   delta's, a small fraction of the file's (a mirror pushed a push at a time stores most of a busy
+ *   tree so). It counts at the mean stored size of its language's whole-stored files, or its own
+ *   when there are none.
+ * - No file counts for more than the 99th percentile of whole-stored sizes (once there are
+ *   {@link CAP_MIN_FILES} of them): the largest are data tables and generated code, which compress
+ *   far less than code does and would outweigh it.
  */
 export function languageShares(files: Iterable<readonly [path: string, bytes: number, delta?: boolean]>): LanguageShare[] {
   const list = [...files]
@@ -274,11 +283,13 @@ export function languageShares(files: Iterable<readonly [path: string, bytes: nu
     const lang = languageIn(path, headerOf)
     return lang === null || bytes <= 0 ? [] : [{ lang, bytes, delta: delta === true }]
   })
+  const wholeSizes = rows.filter((r) => !r.delta).map((r) => r.bytes).sort((a, b) => a - b)
+  const cap = wholeSizes.length < CAP_MIN_FILES ? Infinity : (wholeSizes[Math.floor(wholeSizes.length * 0.99)] as number)
   const whole = new Map<string, { bytes: number; files: number }>()
   for (const r of rows) {
     if (r.delta) continue
     const w = whole.get(r.lang.name) ?? { bytes: 0, files: 0 }
-    w.bytes += r.bytes
+    w.bytes += Math.min(r.bytes, cap)
     w.files += 1
     whole.set(r.lang.name, w)
   }
@@ -287,7 +298,7 @@ export function languageShares(files: Iterable<readonly [path: string, bytes: nu
   for (const row of rows) {
     const { lang } = row
     const w = row.delta ? whole.get(lang.name) : undefined
-    const bytes = w === undefined ? row.bytes : w.bytes / w.files
+    const bytes = Math.min(w === undefined ? row.bytes : w.bytes / w.files, cap)
     const t = totals.get(lang.name) ?? { lang, bytes: 0 }
     t.bytes += bytes
     totals.set(lang.name, t)
