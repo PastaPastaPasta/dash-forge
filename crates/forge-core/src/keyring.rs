@@ -26,7 +26,7 @@ use crate::envelope::{self, PrivateKey};
 use crate::error::{Error, Result};
 use crate::keystore::BridgeIdentity;
 use crate::members::{Member, MemberReader};
-use crate::platform::wrap::{open_wrap, seal_wrap, WrapParties, WrapSecret};
+use crate::platform::wrap::{open_wrap, seal_wrap, WrapParties, WrapProperties, WrapSecret};
 use crate::platform::{
     self, FetchedDocument, FieldValue, IdentityKeyInfo, LoadedContract, LoadedIdentity,
     PlatformClient, QueryFilter, QueryOrder, WriteEngine,
@@ -915,6 +915,28 @@ fn secret_of(k: &PrivateKey) -> Result<WrapSecret> {
     WrapSecret::from_bytes(&k.secret_bytes())
 }
 
+/// A `repoKey`'s fields besides `repoId`: `member`'s wrap of the key of `epoch`, sealed by
+/// [`seal_wrap`].
+pub(crate) fn repo_key_fields(
+    member: [u8; 32],
+    epoch: u32,
+    sealed: WrapProperties,
+) -> [(&'static str, FieldValue); 5] {
+    [
+        ("memberId", FieldValue::identifier(member)),
+        ("epoch", FieldValue::integer(u64::from(epoch))),
+        (
+            "recipientKeyId",
+            FieldValue::integer(u64::from(sealed.recipient_key_id)),
+        ),
+        (
+            "senderKeyId",
+            FieldValue::integer(u64::from(sealed.sender_key_id)),
+        ),
+        ("wrapped", FieldValue::bytes(sealed.wrapped)),
+    ]
+}
+
 /// A signer's view of a private repository: its client, identity, key file and the keys that
 /// file holds.
 pub struct PrivateSigner<'a> {
@@ -984,19 +1006,7 @@ impl<'a> PrivateSigner<'a> {
                 recipient_key_id: recipient.id,
             },
         )?;
-        let doc = scope.props([
-            ("memberId", FieldValue::identifier(member)),
-            ("epoch", FieldValue::integer(u64::from(epoch))),
-            (
-                "recipientKeyId",
-                FieldValue::integer(u64::from(props.recipient_key_id)),
-            ),
-            (
-                "senderKeyId",
-                FieldValue::integer(u64::from(props.sender_key_id)),
-            ),
-            ("wrapped", FieldValue::bytes(props.wrapped)),
-        ]);
+        let doc = scope.props(repo_key_fields(member, epoch, props));
         match self
             .engine()?
             .create_document(collab, DOC_REPO_KEY, doc)
