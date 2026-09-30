@@ -300,6 +300,14 @@ describe('pull index', () => {
     expect(page.counts).toEqual({ ...expected(30), closed: expected(30).closed + 1 })
   })
 
+  it('is:unmerged lists the open PRs and those closed without merging (QW2-055)', async () => {
+    const { sdk, repo } = fresh(30)
+    const page = await queryPulls(sdk, repo, { ...base, state: 'unmerged', pageSize: 100 }, 30, 'devnet')
+    expect(page.rows.every((r) => !r.state.merged)).toBe(true)
+    expect(page.rows.length).toBe(expected(30).open + expected(30).closed)
+    expect(page.matching).toBe(expected(30).open + expected(30).closed)
+  })
+
   it('assigns COLLAB nothing: the assignee filter is exact', async () => {
     const { sdk, repo } = fresh(30)
     expect((await queryPulls(sdk, repo, { ...base, state: 'all', assignee: COLLAB }, 30, 'devnet')).rows).toEqual([])
@@ -335,7 +343,31 @@ describe('pullsLinking (an issue\'s backlinks, QW-015)', () => {
     expect(got.pulls.map((p) => p.number)).toEqual([40, 5])
     // #40 was merged (every 10th): the backlink says so.
     expect(got.pulls[0]?.state.merged).toBe(true)
+    // QW2-048: a mention that does not close is a cross-reference, not a closing link.
+    expect(got.mentioning.map((p) => p.number)).toEqual([200])
     expect(got.searched).toBeNull()
+  })
+
+  it('caps the closing PRs apart from the mentions: newer mentions never crowd a closer out', async () => {
+    const { sdk, repo, store } = fresh(250, { churn: false })
+    const patches = store['COLLAB']!['patch']!
+    patches[9]!['body'] = 'Fixes #1001'
+    for (let i = 100; i < 125; i++) patches[i]!['body'] = 'see #1001'
+    const got = await pullsLinking(sdk, repo, { number: 1001, upstream: null }, native, 'devnet')
+    expect(got.pulls.map((p) => p.number)).toEqual([10])
+    expect(got.mentioning).toHaveLength(20)
+  })
+
+  it('lists "Refs #n" mentions apart from closing links, skipping code (QW2-048)', async () => {
+    const { sdk, repo, store } = fresh(250, { churn: false })
+    const patches = store['COLLAB']!['patch']!
+    patches[9]!['body'] = 'Refs #1001'
+    patches[19]!['body'] = 'Fixes #1001; also see #1001'
+    patches[29]!['body'] = 'Example:\n```\nFixes #1001\n```\nnot this one'
+    const got = await pullsLinking(sdk, repo, { number: 1001, upstream: null }, native, 'devnet')
+    expect(got.mentioning.map((p) => p.number)).toEqual([10])
+    // A closing keyword counts even where the mention scan skips it (a code block), as before.
+    expect(got.pulls.map((p) => p.number)).toEqual([30, 20])
   })
 
   it('looks through a bounded number of chunks on a large repo, and says how many it searched', async () => {

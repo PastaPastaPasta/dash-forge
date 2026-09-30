@@ -38,10 +38,20 @@ describe('PR list query (L-44)', () => {
     expect(parsePullSearch('is:Closed', { ...DEFAULT_PULL_QUERY, state: 'merged' }).state).toBe('merged')
     expect(parsePullSearch('parser', { ...DEFAULT_PULL_QUERY, state: 'merged' }).state).toBe('merged')
     expect(unresolvedPullQualifiers('is:merged is:pr label:bug')).toEqual([])
+    // QW2-055: is:unmerged is a PR state; is:issue is the Issues list's, not applied here.
+    expect(parsePullSearch('is:unmerged fix').state).toBe('unmerged')
+    expect(parsePullSearch('is:unmerged fix').q).toBe('fix')
+    expect(unresolvedPullQualifiers('is:unmerged')).toEqual([])
+    expect(unresolvedPullQualifiers('is:issue fix')).toEqual(['is:issue'])
+    expect(parsePullSearch('is:issue fix').q).toBe('fix')
+    expect(pullDroppedReason(['is:issue'])).toBe('is:issue is not a filter here — open the Issues tab to search issues.')
+    expect(pullSearchText({ ...DEFAULT_PULL_QUERY, state: 'unmerged' })).toBe('is:unmerged')
+    expect(emptyPullsBody(false, 'unmerged', 3)).toBe('Every pull request here has been merged.')
+    expect(emptyPullsBody(false, 'unmerged', 0)).toMatch(/^Push a branch/)
     // Values are exact: `is:MERGED` is not a state, and is said as not applied, with the PR states.
     expect(parsePullSearch('is:MERGED').state).toBe('open')
     expect(unresolvedPullQualifiers('is:MERGED')).toEqual(['is:MERGED'])
-    expect(pullDroppedReason(['is:MERGED'])).toBe('is: and state: take open, closed, merged, draft or all.')
+    expect(pullDroppedReason(['is:MERGED'])).toBe('is: and state: take open, closed, merged, unmerged, draft or all.')
   })
 
   it('reports what it cannot apply: a DPNS author, and mentions (an Issues filter)', () => {

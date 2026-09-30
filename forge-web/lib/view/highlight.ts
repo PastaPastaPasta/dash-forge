@@ -150,3 +150,26 @@ export async function highlightBlob(text: string, filename: string): Promise<Hig
     return null
   }
 }
+
+/** Code blocks in Markdown larger than this stay plain. */
+const MAX_FENCE_BYTES = 64 * 1024
+
+/**
+ * Highlight a Markdown fenced code block by its info string's language (```python), as GitHub
+ * does (QW2-058): the HTML of the block, or `null` to keep it plain (no language, one the common
+ * bundle does not know, an oversized block, or highlight.js unavailable). Never guesses a language
+ * the author did not name. The output is highlight.js's, which escapes all text and emits only
+ * `hljs-*`-classed spans, so it is safe to inject.
+ */
+export async function highlightFence(text: string, lang: string): Promise<string | null> {
+  const name = lang.trim().split(/[\s{,]/)[0]?.toLowerCase() ?? ''
+  if (name === '' || text.length > MAX_FENCE_BYTES) return null
+  try {
+    const hljs = (await import('highlight.js/lib/common')).default
+    const language = hljs.getLanguage(name) ? name : EXT_LANGUAGE[name]
+    if (language === undefined || !hljs.getLanguage(language)) return null
+    return hljs.highlight(text, { language, ignoreIllegals: true }).value
+  } catch {
+    return null
+  }
+}

@@ -58,17 +58,17 @@ function expectCleanButtons(): void {
 
 describe('issue sidebar pickers (QW2-066)', () => {
   it('the assignee picker: tick marks, not nested checkboxes, and a named add button', () => {
-    render(<AssigneePicker assignees={[A]} members={[A, B]} canEdit onToggle={() => undefined} />)
+    render(<AssigneePicker assignees={[A]} members={[A, B]} canEdit onApply={() => undefined} />)
     click(button('Edit assignees'))
     const options = [...host.querySelectorAll('[data-testid="assignee-option"]')]
     expect(options.map((o) => o.getAttribute('aria-pressed'))).toEqual(['true', 'false'])
     expect(options.map((o) => o.querySelector('[data-checked]') !== null)).toEqual([true, false])
     expectCleanButtons()
-    expect(host.querySelector('button[aria-label="Assign the identity id entered"]')).not.toBeNull()
+    expect(host.querySelector('button[aria-label="Add this identity"]')).not.toBeNull()
   })
 
   it('the label picker: tick marks, not nested checkboxes', () => {
-    render(<LabelPicker applied={['bug']} defs={labels} byName={new Map(labels.map((l) => [l.name, l]))} canEdit onToggle={() => undefined} onDefine={() => undefined} />)
+    render(<LabelPicker applied={['bug']} defs={labels} byName={new Map(labels.map((l) => [l.name, l]))} canEdit onApply={() => undefined} onDefine={() => undefined} />)
     click(button('Edit labels'))
     const options = [...host.querySelectorAll('[data-testid="label-option"]')]
     expect(options).toHaveLength(2)

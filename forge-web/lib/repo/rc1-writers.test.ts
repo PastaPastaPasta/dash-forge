@@ -58,6 +58,7 @@ vi.mock('../sdk', async (importOriginal) => {
 })
 
 import { resetMemoryStores } from '../idb'
+import { listParticipation } from '../view/participation'
 import type { WriteAuth } from '../sdk'
 import { expectRc1Valid, rc1Contracts } from '../sdk/rc1-validate'
 import type { RepoRef } from './contract'
@@ -220,6 +221,8 @@ describe('forge-collab writers are RC1-valid', () => {
     await createReview(sdk, auth(BOB), REPO, { patchId: PR, verdict: 'comment', commitOid: HEAD, body: 'hm', post: { isMember: true } })
     const made = await judged()
     expect(made.map((c) => [c.data['verdict'], c.data['asMember'] !== undefined])).toEqual([[1, true], [4, false], [5, false], [3, false]])
+    // QW2-009: the inbox follows a PR its reviewer reviewed (no index finds a review by author).
+    await vi.waitFor(async () => expect(await listParticipation('devnet', BOB)).toEqual([expect.objectContaining({ targetId: PR, reason: 'reviewed' })]))
   })
 
   it('a pending review: the review and its anchored comments', async () => {

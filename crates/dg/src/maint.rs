@@ -20,7 +20,7 @@ use forge_core::storage::{ExternalTarget, StorageProfiles, StorageTarget};
 
 use crate::common::{resolve, RepoRef};
 use crate::context::Ctx;
-use crate::fmt::{cost_line, dash_usd_price};
+use crate::fmt::cost_line;
 use crate::Backend;
 
 /// `dg repack <repo> [--backend]` — consolidate the live packs into one superseding pack.
@@ -47,7 +47,7 @@ pub async fn repack(
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
     let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = RepoService::new(&client, &identity, &bridge);
-    let price = dash_usd_price();
+    let price = ctx.usd_price();
 
     let manifests = svc.read_pack_manifests(&handle).await.unwrap_or_default();
     let roles = svc.copy_roles(&handle).await.unwrap_or_default();
@@ -169,7 +169,7 @@ pub async fn reindex(
         .collect::<Vec<_>>()
         .join(", ");
 
-    let price = dash_usd_price();
+    let price = ctx.usd_price();
     let estimate = quote_reindex(
         ctx,
         &s.repo,
@@ -276,7 +276,7 @@ fn quote_reindex(
     label: &str,
     external_targets: u64,
     platform: bool,
-    price: f64,
+    price: Option<f64>,
 ) -> u64 {
     let sealed = handle.visibility == forge_core::rules::v2::Visibility::Private;
     let locator = if plan.missing.is_empty() {
@@ -539,7 +539,7 @@ fn reindex_body(
     handle: &forge_core::scope::RepoRef,
     report: &forge_core::repo::ReindexReport,
     spent: Option<u64>,
-    price: f64,
+    price: Option<f64>,
 ) -> serde_json::Value {
     let skipped: Vec<_> = report
         .skipped
@@ -597,7 +597,7 @@ fn print_reindex(
     history: Option<&forge_core::repo::HistoryPublished>,
     lists_only: Option<&str>,
     spent: Option<u64>,
-    price: f64,
+    price: Option<f64>,
 ) {
     match &report.manifest_id {
         Some(id) => {
@@ -654,7 +654,7 @@ fn emit_repack_report(
     ctx: &Ctx,
     handle: &forge_core::scope::RepoRef,
     report: &forge_core::repo::RepackReport,
-    price: f64,
+    price: Option<f64>,
 ) {
     ctx.emit(
         json!({

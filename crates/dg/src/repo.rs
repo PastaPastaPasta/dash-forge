@@ -22,9 +22,7 @@ use forge_core::user_error::{codes, UserError};
 
 use crate::common::{resolve, Reader, RepoRef, Session};
 use crate::context::Ctx;
-use crate::fmt::{
-    cost_json, cost_line, dash_usd_price, FORK_PER_DOC_CREDITS, REPO_CREATE_ESTIMATE_CREDITS,
-};
+use crate::fmt::{cost_json, cost_line, REPO_CREATE_ESTIMATE_CREDITS};
 use crate::publish::Report;
 
 pub use crate::publish::init;
@@ -199,27 +197,41 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
     }
     // Refused before any read a private parent would need its keys for.
     parent.require_public("forking")?;
-    let price = dash_usd_price();
+    let price = ctx.usd_price();
     let svc = RepoService::new(&client, &identity, &bridge);
-    let (packs, default_branch, doc_defaults) = tokio::join!(
+    let (parent_packs, default_branch, doc_defaults) = tokio::join!(
         Box::pin(svc.read_pack_manifests(&parent)),
         Box::pin(svc.read_default_branch(&parent)),
         Box::pin(repo_fork_defaults(&client, &parent))
     );
-    let packs = packs.map_or(0, |m| {
-        forge_core::fork::plan_manifests(&m, &BTreeMap::new(), &BTreeSet::new()).len()
-    });
+    let parent_packs = parent_packs.context("reading the parent's packs")?;
+    // The manifests the fork will write, with the URIs each records (each adds to its price).
+    let manifest_uris: Vec<u64> =
+        forge_core::fork::plan_manifests(&parent_packs, &BTreeMap::new(), &BTreeSet::new())
+            .iter()
+            .filter_map(|copies| {
+                forge_core::fork::fork_manifest(&parent, copies)
+                    .ok()
+                    .flatten()
+            })
+            .map(|m| m.uris.len() as u64)
+            .collect();
+    let packs = manifest_uris.len();
+    let refs = svc
+        .read_refs(&parent)
+        .await
+        .context("reading the parent's refs")?
+        .len();
+    let estimate = fork_estimate(&manifest_uris, refs as u64);
     // As on GitHub, the fork takes the parent's default branch (QW2-013) and description
     // (QW2-062; it was "fork of <parent>", which `forkOf` already records).
     let default_branch = default_branch.context("reading the parent's default branch")?;
     let (description, doc_branch) = doc_defaults.context("reading the parent's repo document")?;
     // The newest config's branch, else the one the repo document names (as the web reads it).
     let default_branch = default_branch.filter(|b| !b.is_empty()).or(doc_branch);
-    // repo + maintainer + config, one manifest per pack, and a few ref updates.
-    let estimate = REPO_CREATE_ESTIMATE_CREDITS + FORK_PER_DOC_CREDITS * (packs as u64 + 4);
     if !ctx.json {
         println!(
-            "Forking {} as {}/{slug} on {}\n  repo + {packs} pack manifest(s), nothing re-uploaded, + refs   {}",
+            "Forking {} as {}/{slug} on {}\n  repo + {packs} pack manifest(s), nothing re-uploaded, + {refs} ref(s)   {}",
             parent.display(),
             identity.id(),
             ctx.network_label(),
@@ -254,12 +266,26 @@ fn fork_opts(slug: String, default_branch: Option<String>, description: String) 
     }
 }
 
+/// The pre-sign quote for a fork writing one manifest per entry of `manifest_uris` (each
+/// recording that many URIs) and copying `refs` refs (QW2-020: it priced each manifest and ref
+/// at 20M credits and was exceeded 1.5x): the repository's three documents, each manifest as a
+/// first of its kind with its URIs, and a first update per ref, as `git push` prices them. An
+/// upper bound.
+fn fork_estimate(manifest_uris: &[u64], refs: u64) -> u64 {
+    use forge_core::cost::push_fees;
+    let manifests: u64 = manifest_uris
+        .iter()
+        .map(|uris| push_fees::MANIFEST_FIRST + uris * push_fees::URIS_PER_TARGET)
+        .sum();
+    REPO_CREATE_ESTIMATE_CREDITS + manifests + push_fees::estimate_ref_updates(refs)
+}
+
 /// Print (or `--json`-emit) a finished fork; an incomplete one is E503.
 fn report_fork(
     ctx: &Ctx,
     parent: &forge_core::scope::RepoRef,
     result: &forge_core::fork::ForkResult,
-    price: f64,
+    price: Option<f64>,
 ) -> Result<()> {
     let fork = &result.created.repo;
     let nothing_new = result.created.already_existed()
@@ -701,6 +727,21 @@ mod tests {
             fork_opts("proj".into(), Some(String::new()), String::new()).default_branch,
             "main"
         );
+    }
+
+    /// QW2-020: a fork of a parent with two packs and two refs was quoted 0.0032 DASH and
+    /// charged 0.00494466 on bonsia.
+    #[test]
+    fn a_fork_quote_covers_its_charge() {
+        // Each of the two manifests names the parent's Platform locator (live: 0.0061 DASH
+        // charged for 2 packs and 3 refs, quoted 0.00736).
+        assert!(fork_estimate(&[1, 1], 2) >= 494_466_000);
+        assert!(fork_estimate(&[1, 1], 3) >= 608_980_000);
+        assert!(fork_estimate(&[1, 1], 2) < 2 * 494_466_000);
+        assert!(fork_estimate(&[1, 1, 1], 2) > fork_estimate(&[1, 1], 2));
+        assert!(fork_estimate(&[1, 1], 3) > fork_estimate(&[1, 1], 2));
+        // A pack replicated to more stores records more URIs, and costs more.
+        assert!(fork_estimate(&[4, 4], 2) > fork_estimate(&[1, 1], 2));
     }
 
     #[test]
