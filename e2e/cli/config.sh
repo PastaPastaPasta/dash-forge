@@ -3,26 +3,42 @@
 #
 # Sourced by lib.sh. Everything here is data: no side effects beyond exports.
 #
-# The CLI suite runs against devnet MOUTAI, where forge-v2 (protocol 14) is deployed. A v2
-# repo costs ~0.001 DASH, so the suite's repo is created on the first run (by
-# `harness_ensure_repo`, resumably) rather than hard-coded. Testnet runs resume once
-# testnet runs protocol 14 and forge-v2 is deployed there.
+# The CLI suite runs against devnet BONSIA, where the RC1 contracts are deployed (Platform
+# 4.2.0-beta.7; the forge-v2 contracts once on devnet moutai are gone, and this build cannot
+# read them anyway). DASH_FORGE_DEVNET_NAME picks another devnet. A v2 repo costs ~0.001 DASH,
+# so the suite's repo is created on the first run (by `harness_ensure_repo`, resumably)
+# rather than hard-coded. Testnet runs resume once testnet runs protocol 14 and forge-v2 is
+# deployed there.
 
 # --- network -----------------------------------------------------------------
 : "${DASH_FORGE_NETWORK:=devnet}"
-: "${DASH_FORGE_DEVNET_NAME:=moutai}"
+: "${DASH_FORGE_DEVNET_NAME:=bonsia}"
 export DASH_FORGE_NETWORK DASH_FORGE_DEVNET_NAME
 
+# --- minting run-only identities (scenarios 19, 24, 25, 26, 33, 36) -------------
+# The funding key tools/mint-identity spends from, and the lock that serialises mints across
+# every agent sharing that key's UTXOs (as `qa mint` does). Per devnet: the QA harness keeps
+# secrets/<devnet>-funding.wif, and moutai keeps its original lock path. MOUTAI_FUNDING (which
+# the QA harness's env.sh exports) is honoured on moutai only, so it never funds another devnet.
+if [[ "$DASH_FORGE_DEVNET_NAME" == moutai ]]; then
+  : "${E2E_MINT_FUNDING:=${MOUTAI_FUNDING:-/Users/pasta/workspace/dash-forge-qa/secrets/moutai-funding.wif}}"
+  : "${E2E_MINT_LOCK:=/tmp/qa-mint.lock}"
+else
+  : "${E2E_MINT_FUNDING:=/Users/pasta/workspace/dash-forge-qa/secrets/${DASH_FORGE_DEVNET_NAME}-funding.wif}"
+  : "${E2E_MINT_LOCK:=/tmp/qa-mint-${DASH_FORGE_DEVNET_NAME}.lock}"
+fi
+export E2E_MINT_FUNDING E2E_MINT_LOCK
+
 # --- fixture identity files --------------------------------------------------
-# Per-network directory (`make devnet-identities` provisions devnet-moutai). The testnet
-# pool lives directly under test-identities/.
+# Per-network directory (`make devnet-identities` provisions devnet-<name>, e.g.
+# devnet-bonsia). The testnet pool lives directly under test-identities/.
 if [[ "$DASH_FORGE_NETWORK" == devnet ]]; then
   : "${E2E_IDENTITY_DIR:=${HOME}/.config/dash-forge/test-identities/devnet-${DASH_FORGE_DEVNET_NAME}}"
 else
   : "${E2E_IDENTITY_DIR:=${HOME}/.config/dash-forge/test-identities}"
 fi
 export E2E_IDENTITY_DIR
-# The owner role: OWNER in the moutai pool, DEPLOYER in the testnet pool.
+# The owner role: OWNER in a devnet pool, DEPLOYER in the testnet pool.
 if [[ "$DASH_FORGE_NETWORK" == devnet ]]; then : "${E2E_OWNER_ROLE:=OWNER}"; else : "${E2E_OWNER_ROLE:=DEPLOYER}"; fi
 export E2E_OWNER_ROLE
 # OWNER owns the test repo; COLLAB is granted and revoked writer; CONTRIB is never a member.

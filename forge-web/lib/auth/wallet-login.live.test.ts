@@ -2,7 +2,7 @@
  * Mobile wallet sign-in, live on a devnet with a scripted wallet (e2e/wallet-responder.mjs does
  * what Dash Wallet does). SKIPPED by default (real spend):
  *
- *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=moutai \
+ *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia \
  *     pnpm exec vitest run lib/auth/wallet-login.live.test.ts
  *
  * The app side is Forge's own code: the dash-key request, the poll on the legacy key-exchange

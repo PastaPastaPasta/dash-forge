@@ -105,7 +105,7 @@ struct RunArgs {
     #[arg(long, value_enum)]
     network: Option<NetworkArg>,
 
-    /// Devnet name (e.g. `moutai`); implies `--network devnet`.
+    /// Devnet name (e.g. `bonsia`); implies `--network devnet`.
     #[arg(long = "devnet-name")]
     devnet_name: Option<String>,
 

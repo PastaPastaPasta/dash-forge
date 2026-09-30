@@ -2,16 +2,16 @@
  * Live forge-v2 read smoke — SKIPPED by default (needs network + WASM).
  *
  * Run with:
- *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=moutai \
+ *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia \
  *     pnpm exec vitest run lib/repo/v2.live.test.ts
  *
- * Reads the forge-v2 fixture `forge-contracts/scripts/seed-v2-fixture.mjs` seeds on moutai
+ * Reads the forge-v2 fixture `forge-contracts/scripts/seed-v2-fixture.mjs` seeds on bonsia
  * end to end through the same functions the pages use: resolution by `(owner, name)` and by
  * DPNS-less id, refs, config, membership, the issue/PR folds over `event` + `authorEvent`,
  * approvals, and the browse plane (locator + Platform chunks, hash-checked objects).
  *
  * The second test is the review-parity contract (`docs/design/review-parity-spec.md` §3), with
- * the moutai test identities in `~/.config/dash-forge/test-identities/devnet-moutai/` (a few
+ * the devnet's test identities in `~/.config/dash-forge/test-identities/devnet-<name>/` (a few
  * cents of spend):
  *
  * 1. The fixture's review-parity PR (`loadSeedPulls().reviewParity`; issues and PRs share one
@@ -56,7 +56,7 @@ const OWNER = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const MAINTAINER = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'
 const COLLAB = 'CJao2MVHL4x3f2Ko2xTUibnZ8G1t9exTPtvJnCbHAgDH'
 const MAIN_TIP = 'b35c50122cd51b2cc0345760721e6398fa0c31f5'
-const ID_DIR = join(homedir(), '.config/dash-forge/test-identities/devnet-moutai')
+const ID_DIR = join(homedir(), '.config/dash-forge/test-identities', NETWORKS[DEFAULT_NETWORK].key)
 const C2 = 'b35c50122cd51b2cc0345760721e6398fa0c31f5'
 const C3 = '3a1300eb2441ef94fd927dbfc7548d34fbb8edc5'
 
@@ -80,7 +80,7 @@ const hex = (v: unknown): string => {
   throw new TypeError('not bytes')
 }
 
-describe.skipIf(!LIVE)('live forge-v2 reads (moutai fixture)', () => {
+describe.skipIf(!LIVE)('live forge-v2 reads (bonsia fixture)', () => {
   it(
     'resolves, folds and browses the fixture repo',
     async () => {
@@ -138,7 +138,7 @@ describe.skipIf(!LIVE)('live forge-v2 reads (moutai fixture)', () => {
       expect(names).toEqual(['README.md', 'docs', 'lib', 'src'])
 
       // The feed's composite read (a page of repos + star and issue counts under one proof).
-      // Other suites create many repos on moutai, so the fixture is not on its first page;
+      // Other suites create many repos on the devnet, so the fixture is not on its first page;
       // its provable counts are read directly (the same countable indexes).
       const feed = await listRecentRepos(sdk, { network: 'devnet', limit: 100 })
       expect(feed.length).toBeGreaterThan(0)

@@ -41,7 +41,7 @@ A proof is only as good as the quorum public key it is checked against. Today, *
 |---|---|
 | testnet | `https://quorums.testnet.networks.dash.org` |
 | mainnet | `https://quorums.mainnet.networks.dash.org` |
-| devnet moutai | `https://quorums.moutai.networks.dash.org` |
+| devnet bonsia | `https://quorums.bonsia.networks.dash.org` |
 
 Whoever controls that endpoint could hand out a key of their own and vouch for false data. So Forge is **trust-minimized, not trustless**. On a devnet, `dg doctor` prints the endpoint on its `target` line. On testnet and mainnet the tools use the endpoint in the table above, which is built into the Platform SDK.
 
@@ -173,7 +173,7 @@ The CLI end-to-end suite has a scenario that automates steps 1–3 above (the co
 3. clones, then runs `git fsck --strict` and `git verify-pack`;
 4. checks that the clone's tip equals the raw on-chain tip, re-hashes the tip commit and its tree by hand, and checks that no reachable object is missing.
 
-It runs in the nightly against devnet moutai. It is written against the suite's own fixture repository and identities (`e2e/cli/config.sh`). To use it on another repository, copy the steps. Each is a plain `git`, `dg` or `git-remote-dash` command.
+It runs in the nightly against devnet bonsia. It is written against the suite's own fixture repository and identities (`e2e/cli/config.sh`). To use it on another repository, copy the steps. Each is a plain `git`, `dg` or `git-remote-dash` command.
 
 ---
 
@@ -190,7 +190,7 @@ pnpm build                         # writes the static site to forge-web/out/
 npx serve out                      # or any static file server
 ```
 
-Choose the network at build time: `NEXT_PUBLIC_NETWORK=testnet|mainnet|devnet`, plus `NEXT_PUBLIC_DEVNET_NAME=moutai` for a devnet. The hosted app is built with `NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=moutai`, the only network with a Forge deployment today; a build for a network without one shows "not deployed". Contract ids come from `forge-contracts/deployments/`.
+Choose the network at build time: `NEXT_PUBLIC_NETWORK=testnet|mainnet|devnet`, plus `NEXT_PUBLIC_DEVNET_NAME=bonsia` for a devnet. The hosted app is built with `NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia` (`.github/workflows/pages.yml`), the only network with a Forge deployment today; a build for a network without one shows "not deployed". Contract ids come from `forge-contracts/deployments/`.
 
 **Host it anywhere static:** another static host, your own server, or IPFS:
 

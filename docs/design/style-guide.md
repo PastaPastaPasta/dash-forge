@@ -105,7 +105,7 @@ spikes/              # Phase 0 throwaway prototypes
 ```
 
 ### Quality gates
-- CI: cargo test/clippy/fmt + TS typecheck/lint/vitest + builds on every PR; devnet (moutai) integration suite nightly + pre-release (see e2e plan).
+- CI: cargo test/clippy/fmt + TS typecheck/lint/vitest + builds on every PR; devnet (bonsia) integration suite nightly + pre-release (see e2e plan).
 - Conventional commits; PRs small and single-purpose.
 - Logging: `tracing` (Rust) / `debug` namespaces (TS); helper honors git's `GIT_TRACE` conventions.
 - Cost discipline: any code path that broadcasts a state transition must route through CostEngine so estimates/audits never drift from reality.

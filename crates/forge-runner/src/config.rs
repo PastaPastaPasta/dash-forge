@@ -2,7 +2,7 @@
 //!
 //! ```toml
 //! network = "devnet"            # passed to dg / git-remote-dash as DASH_FORGE_NETWORK
-//! devnet_name = "moutai"
+//! devnet_name = "bonsia"
 //! state_dir = "/var/lib/forge-runner"
 //! interval_secs = 120           # poll period (ls-remote per repo); at least 30
 //! log_storage = "r2-logs"       # a `dg storage add` profile for job logs (optional)

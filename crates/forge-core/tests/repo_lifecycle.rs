@@ -1,6 +1,6 @@
-//! Live forge-v2 repo lifecycle on devnet moutai (gated `#[ignore]`).
+//! Live forge-v2 repo lifecycle on devnet bonsia (gated `#[ignore]`).
 //!
-//! With the moutai OWNER / COLLAB / CONTRIB fixtures:
+//! With the bonsia OWNER / COLLAB / CONTRIB fixtures:
 //!
 //! 1. create a repo (the `repo` + owner `maintainer` + `config` session) and check the cost
 //!    is under 0.01 DASH; re-running the create costs nothing and writes nothing;
@@ -13,7 +13,7 @@
 //! ```text
 //! cargo test -p forge-core --test repo_lifecycle -- --ignored --nocapture
 //! ```
-//! Identities: `$E2E_IDENTITY_DIR` (default `~/.config/dash-forge/test-identities/devnet-moutai`).
+//! Identities: `$E2E_IDENTITY_DIR` (default `~/.config/dash-forge/test-identities/devnet-bonsia`).
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -35,7 +35,7 @@ fn fixture(role: &str) -> BridgeIdentity {
     let dir = std::env::var_os("E2E_IDENTITY_DIR").map_or_else(
         || {
             PathBuf::from(std::env::var_os("HOME").expect("HOME"))
-                .join(".config/dash-forge/test-identities/devnet-moutai")
+                .join(".config/dash-forge/test-identities/devnet-bonsia")
         },
         PathBuf::from,
     );
@@ -66,18 +66,18 @@ async fn ref_tip(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "live devnet moutai; spends ~0.01 DASH; run manually"]
+#[ignore = "live devnet bonsia; spends ~0.01 DASH; run manually"]
 #[allow(clippy::too_many_lines)]
-async fn forge_v2_repo_lifecycle_on_moutai() {
+async fn forge_v2_repo_lifecycle_on_bonsia() {
     let target = NetworkSettings {
-        devnet_name: Some("moutai".into()),
+        devnet_name: Some("bonsia".into()),
         ..Default::default()
     }
     .resolve()
     .unwrap();
     let client = PlatformClient::connect(target)
         .await
-        .expect("connect moutai");
+        .expect("connect bonsia");
     let owner_b = fixture("OWNER");
     let collab_b = fixture("COLLAB");
     let contrib_b = fixture("CONTRIB");
@@ -226,7 +226,7 @@ async fn forge_v2_repo_lifecycle_on_moutai() {
     let core = client
         .fetch_contract(
             &forge_core::network::NetworkSettings {
-                devnet_name: Some("moutai".into()),
+                devnet_name: Some("bonsia".into()),
                 ..Default::default()
             }
             .resolve()

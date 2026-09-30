@@ -1,9 +1,9 @@
 /**
- * Live private-repo READ smoke on devnet moutai — SKIPPED by default (network, WASM). Spends
+ * Live private-repo READ smoke on devnet bonsia — SKIPPED by default (network, WASM). Spends
  * nothing: it reads a private repo `lib/private/private.live.test.ts` created (a
  * `private-smoke-*` repo of OWNER) through the web read path the pages use.
  *
- *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=moutai \
+ *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia \
  *     pnpm exec vitest run lib/repo/private-session.live.test.ts
  *
  * OWNER's encryption key goes into a tab-only vault session (memory), then the session loader
@@ -28,7 +28,7 @@ import { queryIssues } from './issue-index'
 import { loadPrivateSession, sdkSessionSource, sessionUnwrapper } from './private-session'
 
 const LIVE = process.env['FORGE_LIVE'] === '1' && DEFAULT_NETWORK === 'devnet'
-const ID_DIR = join(homedir(), '.config/dash-forge/test-identities/devnet-moutai')
+const ID_DIR = join(homedir(), '.config/dash-forge/test-identities', NETWORKS[DEFAULT_NETWORK].key)
 
 interface KeyRecord {
   readonly id: number
@@ -37,7 +37,7 @@ interface KeyRecord {
 }
 const identity = (name: string): { identityId: string; identityKeys: KeyRecord[] } => JSON.parse(readFileSync(join(ID_DIR, `${name}.identity.json`), 'utf8'))
 
-describe.skipIf(!LIVE)('live private-repo reads (moutai)', () => {
+describe.skipIf(!LIVE)('live private-repo reads (bonsia)', () => {
   it(
     'a member decrypts config, refs and issues; an outsider reads nothing',
     async () => {
