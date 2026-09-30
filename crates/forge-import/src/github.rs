@@ -825,19 +825,42 @@ fn api_json(path: &str) -> Result<Vec<u8>> {
     Ok(gh_output_with_retry(path, &[], &format!("`gh api {path}`"))?.stdout)
 }
 
+/// A listing's elements, one JSON document per line. A `per_page=100` listing is read a page
+/// at a time, each page retried on its own: `gh --paginate` restarts from page 1 whenever any
+/// page fails, and dashpay/dash's 213-page review-comment listing then never finished (GitHub
+/// answered a 502 or reset the stream somewhere past page 100 on every attempt).
 fn api_list_lines(path: &str) -> Result<Vec<String>> {
-    let out = gh_output_with_retry(
-        path,
-        &["--paginate", "--jq", ".[]"],
-        &format!("`gh api {path}`"),
-    )?;
-    let text = String::from_utf8(out.stdout).context("gh api output was not UTF-8")?;
-    Ok(text
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(str::to_string)
-        .collect())
+    let lines = |out: std::process::Output| -> Result<Vec<String>> {
+        let text = String::from_utf8(out.stdout).context("gh api output was not UTF-8")?;
+        Ok(text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect())
+    };
+    if !path.contains("per_page=100") {
+        return lines(gh_output_with_retry(
+            path,
+            &["--paginate", "--jq", ".[]"],
+            &format!("`gh api {path}`"),
+        )?);
+    }
+    let mut all = Vec::new();
+    for page in 1.. {
+        let paged = format!("{path}&page={page}");
+        let batch = lines(gh_output_with_retry(
+            &paged,
+            &["--jq", ".[]"],
+            &format!("`gh api {paged}`"),
+        )?)?;
+        let last = batch.len() < 100;
+        all.extend(batch);
+        if last {
+            break;
+        }
+    }
+    Ok(all)
 }
 
 /// ISO 8601 UTC (`YYYY-MM-DDTHH:MM:SSZ`) to unix seconds; `0` when unparseable (provenance
