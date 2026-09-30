@@ -1105,6 +1105,18 @@ pub fn issue_props(
     Ok(p)
 }
 
+/// What makes two `create_patch` calls the same create, for its resume journal.
+fn patch_fingerprint(input: &PatchInput) -> String {
+    format!(
+        "{}\0{}\0{}\0{}\0{}",
+        input.title,
+        input.body,
+        input.base_ref_name,
+        input.source_repo_id,
+        hex::encode(&input.head_oid)
+    )
+}
+
 /// The creator-side properties of a new `patch`. A draft is not a property: it is a kind-14
 /// transition written after the create ([`Collab::create_patch`]).
 pub fn patch_props(
@@ -3409,14 +3421,7 @@ impl<'a> Collab<'a> {
         journal_dir: &Path,
     ) -> Result<Created> {
         patch_props(1, input, Provenance::default())?;
-        let fingerprint = format!(
-            "{}\0{}\0{}\0{}\0{}",
-            input.title,
-            input.body,
-            input.base_ref_name,
-            input.source_repo_id,
-            hex::encode(&input.head_oid)
-        );
+        let fingerprint = patch_fingerprint(input);
         let mut created = self
             .create_dense(
                 repo,
@@ -3429,6 +3434,27 @@ impl<'a> Collab<'a> {
             created.draft_transition = self.mark_new_draft(repo, &created).await?;
         }
         Ok(created)
+    }
+
+    /// Whether an earlier [`Self::create_patch`] of this same PR was interrupted before it was
+    /// known to land (its create journal is on disk): running it again resumes that create
+    /// rather than opening another PR.
+    pub fn patch_create_pending(
+        &self,
+        repo: &RepoRef,
+        input: &PatchInput,
+        journal_dir: &Path,
+    ) -> Result<bool> {
+        let me = self.signer_id()?;
+        let fingerprint = patch_fingerprint(input);
+        Ok(self
+            .journal_path(
+                repo,
+                TargetKind::Patch,
+                &me,
+                Some((journal_dir, &fingerprint)),
+            )?
+            .is_some_and(|p| p.exists()))
     }
 
     /// The draft transition of a PR this command opened: its id, or `None` when the PR already

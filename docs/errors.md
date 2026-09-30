@@ -47,6 +47,8 @@ Fix: run the command again with `RUST_LOG=debug` for more detail. If it keeps ha
 
 Fix: check the owner id and the name (`dg repo list --owner <identity id>`). Also check the network, because a repo created on testnet does not exist on mainnet: `dg doctor` shows which network and contracts are in use.
 
+`dg` also reports E102 before anything is written when a command names a ref the repository does not have: a pull request's base branch (`dg pr create --base`), or a release's tag (`dg release create --tag`; push the tag first). The message lists the branches or tags it does have.
+
 ## E103
 
 **Not implemented yet.** The command exists but is not wired yet. The output describes the manual workaround.
@@ -318,7 +320,9 @@ Fix: ask the owner to add you (`dg collab add <owner>/<repo> <your identity id> 
 
 **Already exists.** Platform refused a document that collides with a unique index, for example a repository name you already use.
 
-Fix: pick another name. Issue and PR numbers are retried automatically, so this only surfaces for names.
+Fix: pick another name. Issue and PR numbers are retried automatically, so Platform raises this only for names.
+
+`dg pr create` also reports E603, before anything is signed, when you already have an open pull request from the same head branch into the same base (as GitHub refuses a second one): a pull request cannot be deleted, so a duplicate would stay. The message names the open one. Push to the branch to update it, or pick another base. Pull requests other people opened from your branch do not count.
 
 ## E604
 
