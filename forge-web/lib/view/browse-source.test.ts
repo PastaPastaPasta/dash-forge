@@ -898,6 +898,21 @@ describe('fork pack via a platform:// locator', () => {
     expect(scopes).toEqual([])
   })
 
+  it('names a recorded private-network copy as unfollowed, never fetching it (QW2-006)', async () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    try {
+      const { sdk } = parentSdk(bytes)
+      const manifest = { ...forkManifest('http://127.0.0.1:9000/forge-byo/pack'), uris: ['http://127.0.0.1:9000/forge-byo/pack', 'https://10.0.0.5/pack'] }
+      const read = loadArtifactBytesProgress(sdk, FORK, manifest)
+      await expect(read).rejects.toBeInstanceOf(PackUnavailableError)
+      await expect(read).rejects.toMatchObject({ hosts: [], unfollowed: ['127.0.0.1:9000', '10.0.0.5'] })
+      expect(fetchSpy).not.toHaveBeenCalled()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it("shares cached chunks with the parent's own storage-0 copy", async () => {
     const { sdk, scopes } = parentSdk(bytes)
     const [start, end] = [CHUNK_PAYLOAD_MAX - 4, CHUNK_PAYLOAD_MAX + 4]

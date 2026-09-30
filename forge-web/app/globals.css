@@ -21,6 +21,12 @@
     -webkit-text-size-adjust: 100%;
   }
 
+  /* 404.html rewriting a short URL (lib/short-url.ts): it is leaving, so its chrome and
+     "Nothing here" are not painted on the way (the 404 page renders the app shell). */
+  html[data-short-url] body {
+    visibility: hidden;
+  }
+
   body {
     @apply bg-anvil-50 font-sans text-dense text-anvil-800 antialiased;
     @apply dark:bg-anvil-950 dark:text-anvil-200;

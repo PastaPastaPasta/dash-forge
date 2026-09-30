@@ -281,13 +281,24 @@ export function describePack(pack: UnavailablePack, gateways: readonly string[])
     }
   }
   places.push(...ipfs)
+  // A copy the pusher recorded at a private or plain-http address (`--allow-private-uri`): it
+  // exists, but only its owner's machine can reach it, so no browser is sent there.
+  for (const host of pack.unfollowed ?? []) places.push(`${host} (${UNFOLLOWED})`)
   if (places.length === 0) places.push('no place a browser can fetch from is recorded')
   return places
 }
 
+/** How {@link describePack} says why a recorded private or plain-http copy was not tried. */
+export const UNFOLLOWED = "recorded, but not a public https address, so browsers don't fetch it"
+
 /** Whether every failed place for `packs` is an IPFS gateway (so adding a gateway may help). */
 export function onlyGatewaysFailed(places: readonly string[]): boolean {
   return places.length > 0 && places.every((p) => p.startsWith(GATEWAY_PLACE))
+}
+
+/** Whether every failed place is a recorded copy no browser fetches (see {@link UNFOLLOWED}). */
+export function onlyUnfollowed(places: readonly string[]): boolean {
+  return places.length > 0 && places.every((p) => p.endsWith(`(${UNFOLLOWED})`))
 }
 
 /** Every distinct place, over a set of unreadable packs (`gateways`: the repo's, {@link readGatewaysFor}). */

@@ -38,6 +38,7 @@
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
+import { noteClockSkew } from './clock-skew'
 
 import { NETWORKS, type Network } from '../constants'
 import { dapiBudget, installDapiFetchGate } from './budget'
@@ -485,6 +486,7 @@ export class EvoSdkService {
   /** Platform is unreachable: report it and schedule the next attempt. */
   private fail(cause: unknown): void {
     this.failures++
+    noteClockSkew(cause)
     this.setStatus({ phase: 'error', message: messageOf(cause) || 'could not reach Platform', retryAt: null })
     this.scheduleRetry()
   }
@@ -927,7 +929,12 @@ export class EvoSdkService {
       throw e
     }
     if (result instanceof Promise) {
-      void result.then(done, done)
+      // A device clock off the network's fails every call the same way: noted once for the app
+      // shell and the Verification card (QW2-018), and still thrown to the caller.
+      void result.then(done, (e: unknown) => {
+        noteClockSkew(e)
+        done()
+      })
     } else done()
     return result
   }

@@ -13,6 +13,7 @@ import { enrollPasskey, MIN_PASSPHRASE, passkeysAvailable, type Protection } fro
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { cn, errorMessage } from '@/lib/utils'
+import { clockSkewErrorCopy, noteClockSkew } from '@/lib/sdk/clock-skew'
 
 /**
  * `preferPasskey`: the key has no budget or expiry (a shipped wallet's key), so a passkey is the
@@ -130,10 +131,22 @@ export function useProtection(opts: { readonly preferPasskey?: boolean } = {}): 
 
 /** An error line in the sign-in sheet (alert role, wraps long SDK messages). */
 export function ErrorBox({ error, className }: { error: string | null; className?: string }): JSX.Element | null {
+  // A device clock off the network's fails every sign-in step with the SDK's raw timestamps:
+  // say what to fix instead (QW2-018), and let the app shell's banner say it too.
+  const clock = error ? clockSkewErrorCopy(error) : null
+  useEffect(() => {
+    if (error) noteClockSkew(error)
+  }, [error])
   if (!error) return null
   return (
     <div role="alert" className={cn('mt-3 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words', className)}>
-      {error}
+      {clock ? (
+        <>
+          <span className="font-medium">{clock.title}.</span> {clock.body}
+        </>
+      ) : (
+        error
+      )}
     </div>
   )
 }

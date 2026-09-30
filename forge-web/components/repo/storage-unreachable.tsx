@@ -15,7 +15,14 @@ import { GatewaysField } from '@/components/gateways-field'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { repoKey, type RepoRef } from '@/lib/repo'
-import { describeUnavailable, forgetDeadMirrors, onlyGatewaysFailed, readGatewaysFor, type UnavailablePack } from '@/lib/view'
+import {
+  describeUnavailable,
+  forgetDeadMirrors,
+  onlyGatewaysFailed,
+  onlyUnfollowed,
+  readGatewaysFor,
+  type UnavailablePack,
+} from '@/lib/view'
 import { clearUnreachable } from '@/lib/view/content-checks'
 
 export function StorageUnreachableCard({
@@ -33,6 +40,9 @@ export function StorageUnreachableCard({
   // Every place that failed is an IPFS gateway: a working gateway is the fix, so the form is
   // open from the start instead of hidden behind a button.
   const gatewaysOnly = onlyGatewaysFailed(places)
+  // Every copy is at a private or plain-http address (a push with `--allow-private-uri`):
+  // nothing is down, the files are simply not published anywhere a browser may go (QW2-006).
+  const privateOnly = onlyUnfollowed(places)
   const [adding, setAdding] = useState(gatewaysOnly)
   const { role } = useViewerRole(repo)
   const slug = addr ? `${addr.owner}/${addr.name}` : repo.name
@@ -48,10 +58,12 @@ export function StorageUnreachableCard({
         <CloudOff className="mt-0.5 h-5 w-5 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
         <div className="min-w-0 flex-1">
           <h2 id="storage-unreachable-title" className="text-prose">
-            Code unavailable right now
+            {privateOnly ? "Code not reachable from a browser" : "Code unavailable right now"}
           </h2>
           <p className="mt-1 text-dense text-anvil-700 dark:text-anvil-200">
-            The places this repo stores its files didn&apos;t answer:
+            {privateOnly
+              ? "This repo stores its files only at addresses a browser can't reach:"
+              : "The places this repo stores its files didn't answer:"}
           </p>
           <ul className="mt-1.5 space-y-0.5 font-mono text-[12px] text-anvil-700 dark:text-anvil-200">
             {places.map((p) => (
@@ -61,6 +73,13 @@ export function StorageUnreachableCard({
               </li>
             ))}
           </ul>
+          {privateOnly ? (
+            <p data-testid="private-storage-advice" className="mt-2 text-dense text-anvil-700 dark:text-anvil-200">
+              A private-network or plain-http address works only on its owner&apos;s network, so this
+              site never fetches from it. The owner can publish the files by adding public https or
+              IPFS storage and pushing again.
+            </p>
+          ) : null}
           {gatewaysOnly ? (
             <p data-testid="gateway-advice" className="mt-2 text-dense text-anvil-700 dark:text-anvil-200">
               This repo is stored on IPFS, and none of the gateways this browser tried could serve it.
@@ -86,9 +105,11 @@ export function StorageUnreachableCard({
             >
               <RotateCw className="h-4 w-4" aria-hidden /> Try again
             </Button>
-            <Button onClick={() => setAdding((a) => !a)} aria-expanded={adding}>
-              Add a gateway
-            </Button>
+            {privateOnly ? null : (
+              <Button onClick={() => setAdding((a) => !a)} aria-expanded={adding}>
+                Add a gateway
+              </Button>
+            )}
           </div>
           {adding ? (
             <div className="mt-3 max-w-md">

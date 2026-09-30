@@ -88,9 +88,10 @@ export interface TrustReport {
 /**
  * Whether the Platform connection proof-checks its reads. `offline`: a trusted connection
  * exists but Platform is unreachable now, so what the page shows was checked earlier and is
- * not being re-checked.
+ * not being re-checked. `clock`: the device clock is too far off the network's, so the SDK
+ * refuses every answer as stale (QW2-018): nothing new is read or checked.
  */
-export type ConnectionTrust = 'connecting' | 'trusted' | 'untrusted' | 'offline'
+export type ConnectionTrust = 'connecting' | 'trusted' | 'untrusted' | 'offline' | 'clock'
 
 export interface TrustInputs {
   readonly network: Network
@@ -151,6 +152,13 @@ function deriveChain(
     return {
       state: 'unverified',
       detail: 'This connection does not check proofs, so Platform data is shown as the node returned it.',
+    }
+  }
+  if (connection === 'clock') {
+    return {
+      state: 'unverified',
+      detail: `This device's clock is too far off the Dash network's, so every answer from ${label} is refused as stale. Nothing new can be read or checked until the clock is right.`,
+      note: 'Each Platform answer carries the time its block was made; the SDK refuses one more than 31 minutes from this device\'s clock. Set the clock to update automatically, then try again.',
     }
   }
   // A known key mismatch stays a failure whatever the connection's state.
@@ -248,13 +256,16 @@ function deriveTipNow(input: TrustInputs): TipLink {
   }
   const signed = (h: RefHead): string =>
     `${shown} = \`${shortOid(h.oid)}\`, the latest signed update by ${shortOid(h.author, 8)}, ${timeAgo(h.createdAt)}.`
-  if (input.connection === 'untrusted') {
+  if (input.connection === 'untrusted' || input.connection === 'clock') {
     const h = newest(heads)
     return {
       ...base,
       state: 'unverified',
       detail: h ? signed(h) : `${shown} has no commit.`,
-      note: `Folded by ${RULES} from an update log that was read without proofs.`,
+      note:
+        input.connection === 'clock'
+          ? `Folded by ${RULES} from the update log as read earlier; not re-read while this device's clock is off.`
+          : `Folded by ${RULES} from an update log that was read without proofs.`,
     }
   }
   const note =
@@ -357,8 +368,14 @@ function deriveSource(input: TrustInputs, content: TrustLink): TrustLink {
   const failedPlaces = unreachable.length > 0 ? `Didn't answer: ${unreachable.join(', ')}.` : undefined
   if (sources.length === 0) {
     if (failedPlaces !== undefined) {
-      // Nothing was served at all: the places this repo stores its files are down.
-      return { state: 'failed', detail: `No storage answered. ${failedPlaces}` }
+      // Nothing was served at all: the places this repo stores its files are down. That is an
+      // availability problem, not a failed check: nothing arrived, so nothing was found wrong
+      // (bad bytes are the content row's `failed`). "Couldn't verify", never a red Failed.
+      return {
+        state: 'unverified',
+        detail: `No storage answered, so no file could be fetched to check. ${failedPlaces}`,
+        note: 'Storage provides availability, not authenticity: bytes are shown only if they pass the hash check above.',
+      }
     }
     return {
       state: 'pending',
@@ -413,7 +430,9 @@ export function deriveTrust(input: TrustInputs): TrustReport {
     summary:
       input.connection === 'offline'
         ? `${TRUST_LABEL[overall]} · Not re-checked · Platform unreachable`
-        : summaryOf(overall, chain, input.checks),
+        : input.connection === 'clock'
+          ? `${TRUST_LABEL[overall]} · Device clock is off`
+          : summaryOf(overall, chain, input.checks),
   }
 }
 
@@ -449,8 +468,11 @@ export function deriveConnectionTrust(
 /**
  * Map the SDK hook's flags to a {@link ConnectionTrust}. `unreachable`: the service's status
  * is `error` (Platform cannot be reached now), which degrades a trusted connection.
+ * `clockOff`: a read was refused for the device clock (`lib/sdk/clock-skew.ts`), whether or
+ * not a connection came up: that is the reason nothing reads, not the network.
  */
-export function connectionTrust(ready: boolean, trusted: boolean, unreachable = false): ConnectionTrust {
+export function connectionTrust(ready: boolean, trusted: boolean, unreachable = false, clockOff = false): ConnectionTrust {
+  if (clockOff) return 'clock'
   if (!ready) return 'connecting'
   if (!trusted) return 'untrusted'
   return unreachable ? 'offline' : 'trusted'

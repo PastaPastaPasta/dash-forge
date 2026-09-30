@@ -276,10 +276,12 @@ export async function loadCommitChanges(reader: PrefixReader, id: string): Promi
     peeled = await peelToCommit(reader, named)
     commit = await readCommit(reader, peeled.oid)
   } catch (e) {
-    // A well-formed full id the repo does not hold: say so, not "object not in locator". A
-    // partial clone's own error already names the packs it could not load; keep it.
-    if (e instanceof MissingObjectError) throw e
+    // A well-formed full id the repo does not hold: say so, not "object not in locator" (the
+    // reader's MissingObjectError, QW2-037). A partial clone's own error already names the
+    // packs it could not load; keep it.
+    if (e instanceof MissingObjectError && reader.incomplete) throw e
     if (reader.locate?.(named) === null) throw notFound(reader, id)
+    if (e instanceof MissingObjectError) throw e
     if (e instanceof ObjectTypeError) throw new CommitIdError('not-a-commit', id, [], e.actual, e.oid !== named)
     throw e
   }

@@ -11,9 +11,10 @@
  *     plain words, never the raw verifier message (QW-057).
  */
 
-import { AlertTriangle, Loader2, ShieldX, WifiOff, type LucideIcon } from 'lucide-react'
+import { AlertTriangle, Clock, Loader2, ShieldX, WifiOff, type LucideIcon } from 'lucide-react'
 import { useEffect, useRef, useSyncExternalStore, type ReactNode } from 'react'
 import { isUnreachableError } from '@/lib/sdk/unreachable'
+import { clockSkewErrorCopy, noteClockSkew } from '@/lib/sdk/clock-skew'
 import { DEFAULT_NETWORK } from '@/lib/constants'
 import { proofFailureCopy, unreachableReadCopy, type FailureCopy } from '@/lib/view/platform-failure'
 import { scheduleReconnect } from '@/lib/view/reconnect'
@@ -114,6 +115,9 @@ export function ErrorState({
   // behind Details (QW-057). Never the retrying offline state.
   const proof = proofFailureCopy(message) ?? proofFailureCopy(cause)
   if (proof !== null) return <ProofFailedState copy={proof} message={message} onRetry={onRetry} />
+  // The device clock, not the network: say that, not "did not land · try another server" (QW2-018).
+  const clock = clockSkewErrorCopy(message, { short: true }) ?? clockSkewErrorCopy(cause, { short: true })
+  if (clock !== null) return <ClockSkewState copy={clock} message={message} onRetry={onRetry} />
   if (onRetry && (isUnreachableError(cause) || isUnreachableError(message))) {
     return <UnreachableState message={message} onRetry={onRetry} />
   }
@@ -132,6 +136,32 @@ export function ErrorState({
           Try again
         </button>
       ) : null}
+    </div>
+  )
+}
+
+/**
+ * A read refused because this device's clock is too far off the network's: what to fix, with
+ * the SDK's raw timestamps behind Details. Try again stays: it works once the clock is set.
+ */
+function ClockSkewState({ copy, message, onRetry }: { copy: FailureCopy; message: string; onRetry?: () => void }): JSX.Element {
+  useEffect(() => {
+    noteClockSkew(message)
+  }, [message])
+  return (
+    <div
+      data-testid="read-clock-skew"
+      className="flex flex-col items-center justify-center rounded-lg border border-danger/30 bg-danger/5 px-6 py-10 text-center"
+    >
+      <span className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-danger/10 text-danger-700 dark:text-danger-400">
+        <Clock className="h-5 w-5" aria-hidden />
+      </span>
+      <h3 role="alert" className="text-prose text-anvil-900 dark:text-anvil-50">
+        {copy.title}
+      </h3>
+      <p className="mt-1.5 max-w-md text-dense text-anvil-600 dark:text-anvil-300">{copy.body}</p>
+      {onRetry ? <RetryButton onClick={onRetry} /> : null}
+      <ErrorDetails message={message} />
     </div>
   )
 }

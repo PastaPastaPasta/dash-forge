@@ -30,6 +30,8 @@ import { CopyLinkButton } from '@/components/ui/copy-link'
 import { Input } from '@/components/ui/input'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState, ErrorState, Spinner } from '@/components/ui/states'
+import { TrustPanel } from '@/components/ui/trust-panel'
+import { useRepoTrust } from '@/hooks/use-repo-trust'
 
 export function CompareContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const baseGiven = useParam('base')
@@ -53,6 +55,10 @@ export function CompareContent({ home, addr }: { home: RepoHome; addr: RepoAddre
         </p>
       </div>
       <ComparePicker key={`${baseParam}\0${headParam}`} home={home} addr={addr} base={baseParam} head={headParam} />
+      {/* The page has no rail (the diff takes the width), so its Verification card sits here,
+          collapsed to its one line, as on every other code page (QW2-042). It attests the
+          compare side: the ref whose changes are shown. */}
+      {head !== null && missing === undefined ? <CompareVerification home={home} selected={head} /> : null}
       {head === null ? null : missing !== undefined ? (
         <EmptyState icon={GitCompare} title="Nothing to compare" body={`No branch, tag or commit named ${missing.name} in ${home.repo.name}.`} />
       ) : (
@@ -62,6 +68,11 @@ export function CompareContent({ home, addr }: { home: RepoHome; addr: RepoAddre
       )}
     </div>
   )
+}
+
+/** The Verification card for the compared refs: a leaf, so a content check re-renders only it. */
+function CompareVerification({ home, selected }: { home: RepoHome; selected: SelectedRef }): JSX.Element {
+  return <TrustPanel report={useRepoTrust(home, selected)} />
 }
 
 /** Two ref fields (branches and tags offered; any commit id accepted), Swap and Compare. */

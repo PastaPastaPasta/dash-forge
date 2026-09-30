@@ -49,7 +49,18 @@ function CommitIdState({ cause, addr, retry }: { cause: CommitIdError; addr: Rep
             ))}
           </ul>
         ) : cause.kind === 'not-found' ? (
-          <Button onClick={retry}>Try again</Button>
+          // GitHub's 404 for a commit: the way back is the commit list (QW2-037). Try again stays
+          // second, for a push that may bring the commit.
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <Link
+              href={repoHref('/repo/commits', addr)}
+              data-testid="commit-not-found-commits"
+              className="inline-flex h-9 items-center rounded-md bg-forge-700 px-3.5 text-dense font-medium text-white hover:bg-forge-800 coarse:h-auto coarse:min-h-11"
+            >
+              View commits
+            </Link>
+            <Button onClick={retry}>Try again</Button>
+          </div>
         ) : undefined
       }
     />
