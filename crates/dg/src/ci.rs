@@ -75,7 +75,7 @@ pub enum RunnerCommand {
     Add {
         /// The repository (`owner/name`).
         repo: String,
-        /// The runner identity id (base58).
+        /// The runner: an identity id (base58) or a DPNS name (`alice`, `@alice`, `alice.dash`).
         runner: String,
     },
     /// List the repo's runners.
@@ -87,7 +87,7 @@ pub enum RunnerCommand {
     Revoke {
         /// The repository (`owner/name`).
         repo: String,
-        /// The runner identity id (base58).
+        /// The runner: an identity id (base58) or a DPNS name (`alice`, `@alice`, `alice.dash`).
         runner: String,
     },
 }
@@ -408,6 +408,13 @@ async fn register_runner_key(
 
 async fn runner_add(ctx: &Ctx, repo: &str, runner: &str) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
+    // `runner` is an identity id or a DPNS name (`alice`, `@alice`, `alice.dash`); resolve it
+    // once so the existence check and enrolment below both see a plain identity id.
+    let runner: String =
+        forge_core::resolve::resolve_owner(&s.client, runner.strip_prefix('@').unwrap_or(runner))
+            .await
+            .with_context(|| format!("resolving runner {runner}"))?;
+    let runner = runner.as_str();
     s.client
         .fetch_identity(runner)
         .await
@@ -448,6 +455,13 @@ async fn runner_list(ctx: &Ctx, repo: &str) -> Result<()> {
 
 async fn runner_revoke(ctx: &Ctx, repo: &str, runner: &str) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
+    // `runner` is an identity id or a DPNS name (`alice`, `@alice`, `alice.dash`); resolve it
+    // once so the revoke below sees a plain identity id.
+    let runner: String =
+        forge_core::resolve::resolve_owner(&s.client, runner.strip_prefix('@').unwrap_or(runner))
+            .await
+            .with_context(|| format!("resolving runner {runner}"))?;
+    let runner = runner.as_str();
     ctx.confirm_or_cancel(&format!(
         "Revoke runner {runner} of {}? (one document delete)",
         s.repo.display()

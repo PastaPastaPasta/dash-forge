@@ -1014,6 +1014,14 @@ impl PlatformClient {
         // The SDK reports the homograph-safe form (`alice` → `a11ce.dash`); the name as
         // registered and displayed is the label as given.
         let _ = result.full_domain_name;
+        // Fill the resolve cache with what we just wrote: a caller that resolves this name
+        // again in the same process (e.g. `dg collab add` right after `dg auth new --name`)
+        // must see it as registered, not re-query and risk a stale miss from a lagging read
+        // quorum.
+        crate::history::lock(&self.dpns_cache).insert(
+            convert_to_homograph_safe_chars(label),
+            Some(bridge.identity_id.clone()),
+        );
         Ok(format!("{label}.dash"))
     }
 }
