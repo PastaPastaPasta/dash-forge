@@ -39,7 +39,7 @@ function hrefOf(item: InboxItem): string {
 }
 
 export default function NotificationsPage(): JSX.Element {
-  const { identity } = useAuth()
+  const { identity, locked } = useAuth()
   const { items, subs, prefs, polling, lastPoll, lastFeeds, error } = useInboxStore()
   const { markRead, markAllRead, setPrefs, pollNow } = useInboxActions()
   const [filter, setFilter] = useState<'unread' | 'all'>('unread')
@@ -61,7 +61,7 @@ export default function NotificationsPage(): JSX.Element {
         <h1 className="mb-4 text-xl">Notifications</h1>
         <EmptyState
           icon={Bell}
-          title="Sign in to see your notifications"
+          title={locked ? 'Unlock to see your notifications' : 'Sign in to see your notifications'}
           body={`${INBOX_EMPTY} They follow the identity you sign in with.`}
           action={<SignInButton />}
         />

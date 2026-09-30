@@ -91,8 +91,10 @@ pub async fn writable_source(
                 safe(&ref_name)
             ))
             .fix("ask the PR's author to do it (the branch is usually in their fork)")
-            .fix(format!(
-                "or ask the owner of {repo_display} to run `dg collab add {repo_display} <your identity id> --role writer`"
+            .fix(forge_core::user_error::join_fix(
+                &repo_display,
+                "<your identity id>",
+                "writer",
             ))
             .note("checked before anything was built or paid; nothing was written")
             .into());

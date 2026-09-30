@@ -54,7 +54,7 @@ const TOP_N = 12
 
 export function ExploreClient(): JSX.Element {
   const { sdk, ready, network, status: sdkStatus, retry: retrySdk } = useSdk()
-  const { identity } = useAuth()
+  const { identity, locked } = useAuth()
   const forge = NETWORKS[network].v2
   const on = ready && sdk !== null && forge !== null
 
@@ -246,7 +246,7 @@ export function ExploreClient(): JSX.Element {
           </div>
         ) : on ? (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed border-anvil-300 px-4 py-3 text-dense dark:border-anvil-700">
-            <span>Sign in to see your repos, issues, pull requests and stars.</span>
+            <span>{locked ? 'Unlock' : 'Sign in'} to see your repos, issues, pull requests and stars.</span>
             <SignInButton size="sm" />
           </div>
         ) : null}

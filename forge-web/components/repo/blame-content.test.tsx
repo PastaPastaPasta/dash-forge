@@ -154,3 +154,33 @@ describe('BlameBody past the version cap', () => {
     expect(calls[0]!.resume).toBeUndefined()
   })
 })
+
+// QW-060: blame names each hunk's author and highlights the code as the file view does.
+describe('BlameBody rows', () => {
+  it('shows the author beside the subject and highlights the code', async () => {
+    const a = 'a'.repeat(40)
+    const done = {
+      lines: ['fn main() {\n', '    let x = 1;\n', '}\n'],
+      hunks: [{ start: 1, count: 3, oid: a }],
+      commits: new Map([[a, { oid: a, subject: 'add main', author: { name: 'Satoshi', when: Date.UTC(2025, 0, 1) } }]]),
+      partial: false,
+      boundary: null,
+      cursor: null,
+      approximate: false,
+      versions: 1,
+      renames: [],
+    }
+    await act(async () => {
+      root.render(<BlameBody reader={{} as never} tipOid={'f'.repeat(40)} path="src/main.rs" addr={{ owner: 'o', name: 'n' }} />)
+    })
+    await act(async () => {
+      calls[0]!.resolve(done)
+      await Promise.resolve()
+    })
+    expect(el.querySelector('[data-testid="blame-author"]')?.textContent).toBe('Satoshi')
+    // highlight.js loads in its own chunk; the rows swap to highlighted HTML once it has.
+    await vi.waitFor(() => expect(el.querySelector('[data-testid="blame-table"] .hljs-keyword')).not.toBeNull())
+    const code = [...el.querySelectorAll('[data-testid="blame-table"] tr[id] td:last-child')].map((td) => td.textContent)
+    expect(code).toEqual(['fn main() {', '    let x = 1;', '}'])
+  })
+})

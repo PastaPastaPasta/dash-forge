@@ -869,10 +869,10 @@ fn hidden_packs_needed(repo: &str, cloning: bool, hidden: &[UserError]) -> UserE
         err.fix(format!(
             "a maintainer can re-add the uploader (`dg collab add {repo} <identity id> --role writer`): a current member's uploads are readable again"
         ))
-        .fix("or a member whose clone has these commits can push the branch again")
+        .fix("a member whose clone has these commits can push the branch again")
     };
     err.fix(format!(
-        "or a maintainer can move the ref back to history every member can read; `dg repo keys status {repo}` shows the epochs"
+        "a maintainer can move the ref back to history every member can read; `dg repo keys status {repo}` shows the epochs"
     ))
     .note("the content is hidden from every reader, not deleted; no other copy would open it")
 }
@@ -2123,7 +2123,7 @@ async fn confirm_existing_manifest(
                 "re-upload it from this clone: `dg reseed {} --from-local` (run inside this repository; a private repo's sealed copy is only kept by the clone that pushed it), then push again",
                 ctx.repo_label
             ))
-            .fix("or restore that storage, then push again")
+            .fix("restore that storage, then push again")
             .note("nothing was stored and no ref was updated")
             .into())
         }
@@ -2652,7 +2652,7 @@ fn archived_refusal(repo: &str) -> Denied {
             "ask a maintainer to run `dg repo unarchive {repo}`"
         ))
         .fix(format!(
-            "or push anyway: `git push -o {ALLOW_ARCHIVED_PUSH_OPTION} …` (archiving is a client rule; consensus does not enforce it)"
+            "push anyway: `git push -o {ALLOW_ARCHIVED_PUSH_OPTION} …` (archiving is a client rule; consensus does not enforce it)"
         ))
         .note(NOTE_PRECHECK),
         wire: "repository archived",
@@ -2676,10 +2676,10 @@ async fn require_private_key(
     };
     let enc = signer.encryption_keys(repo);
     if enc.is_empty() {
-        return Err(forge_core::keyring::no_encryption_key(
-            &identity.id(),
-            &format!("private repo {}", repo.display()),
-        )
+        return Err(forge_core::keyring::no_encryption_key_held(&format!(
+            "private repo {}",
+            repo.display()
+        ))
         .into());
     }
     let kr = signer.keyring(repo).await?;
@@ -2709,7 +2709,7 @@ fn no_identity(why: impl Into<String>) -> anyhow::Error {
     UserError::new(codes::NO_IDENTITY, "no identity configured")
         .cause(why)
         .fix("`dg auth login <file>` (or `dg auth new`) records a default key that git uses too")
-        .fix("or export DASH_FORGE_KEY=<identity file | keychain:… | dfk1:…> in the shell you run git in")
+        .fix("export DASH_FORGE_KEY=<identity file | keychain:… | dfk1:…> in the shell you run git in")
         .into()
 }
 
@@ -2776,7 +2776,7 @@ fn protected_denied(repo: &str, me: &str, refs: &[&str]) -> Denied {
         .fix(format!(
             "ask the owner to run `dg collab add {repo} {me} --role maintainer`"
         ))
-        .fix("or push to a branch that is not protected")
+        .fix("push to a branch that is not protected")
         .note(NOTE_PRECHECK),
         wire: "protected ref: maintainers only",
         refs: refs.iter().map(|r| (*r).to_string()).collect(),
@@ -2794,9 +2794,7 @@ fn write_denied(repo: &str, me: &str) -> Denied {
             format!("push rejected: you are not a writer of {repo}"),
         )
         .cause("your identity has no writer or maintainer document for this repo")
-        .fix(format!(
-            "ask the owner to run `dg collab add {repo} {me} --role writer`"
-        ))
+        .fix(forge_core::user_error::join_fix(repo, me, "writer"))
         .fix("push to a repo of your own: `dg repo create <name>`, then `git push dash://<you>/<name> <branch>`")
         .note(NOTE_PRECHECK),
         wire: "not a writer of this repo",
@@ -2889,10 +2887,34 @@ async fn load_signer(
             && forge_core::keystore::is_file_source(&key_path)
             && !key_path.exists()
         {
-            return Err(no_identity(format!(
-                "{why}; DASH_FORGE_KEY is not set and {} does not exist",
-                key_path.display()
-            )));
+            // A recorded default whose file is gone is named. The per-owner file this falls
+            // back to without one is not: it is named after the repository's owner, and reads
+            // as if the owner's key were wanted (QW-040).
+            let recorded = forge_core::keystore::configured_default_source()
+                .ok()
+                .flatten()
+                .is_some_and(|d| std::path::Path::new(&d) == key_path);
+            let why = if recorded {
+                format!(
+                    "{why}; DASH_FORGE_KEY is not set and the default identity file dg recorded, {}, does not exist",
+                    key_path.display()
+                )
+            } else {
+                tracing::debug!(path = %key_path.display(), "no per-owner identity file");
+                format!("{why}; DASH_FORGE_KEY is not set and no default identity is recorded")
+            };
+            if repo.visibility == forge_core::rules::v2::Visibility::Private {
+                // A limited key (what `dg auth login <file>` stores) cannot open it: E306 next.
+                return Err(UserError::new(codes::NO_IDENTITY, "no identity configured")
+                    .cause(why)
+                    .fix(format!(
+                        "sign in with a key source that holds your ENCRYPTION key: {}",
+                        forge_core::user_error::FIX_FULL_KEY_LOGIN
+                    ))
+                    .fix("export DASH_FORGE_KEY=<identity file> in the shell you run git in")
+                    .into());
+            }
+            return Err(no_identity(why));
         }
         Ok(key_path)
     })?;

@@ -174,7 +174,8 @@ test('s3. Platform never answers: every sub-view reaches content or a named erro
 
   // Advanced: a pasted key is checked on Platform; the check fails in time, with a reason.
   await openSheet(page, 'advanced')
-  await page.getByLabel('Identity ID').fill('11111111111111111111111111111111111111111111')
+  // A well-formed ID (32 zero bytes; 44 ones would be 44 bytes, refused before any read).
+  await page.getByLabel('Identity ID').fill('11111111111111111111111111111111')
   await page.getByLabel('Private key (WIF or hex)').fill(encodeWif(new Uint8Array(32).fill(9), 'devnet'))
   await dialog.getByRole('button', { name: /sign in for this tab/i }).click()
   await expect(failed).toBeVisible({ timeout: WITHIN })

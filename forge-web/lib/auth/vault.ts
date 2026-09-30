@@ -159,6 +159,11 @@ export interface VaultInfo {
   readonly methods: readonly ('passkey' | 'passphrase')[]
   /** Only a key whose registration was not finished is stored (unlocking finishes it). */
   readonly staged?: true
+  /**
+   * An encryption key for private repos is sealed beside it. Replacing the key without unlocking
+   * it first drops that blob (it cannot be opened), so the import form says so beforehand.
+   */
+  readonly encryptionKey?: true
 }
 
 const enc = new TextEncoder()
@@ -315,12 +320,39 @@ export const PASSKEY_TIMEOUT_MS = 120_000
  * Run a WebAuthn ceremony with the backstop: past it the ceremony is aborted (its signal), so
  * the prompt closes and the next attempt is not refused as "a request is already pending".
  */
-function passkeyCeremony<T>(start: (signal: AbortSignal) => Promise<T>): Promise<T> {
+function passkeyCeremony<T>(start: (signal: AbortSignal) => Promise<T>, kind: 'create' | 'get' = 'get'): Promise<T> {
   const ceremony = new AbortController()
   return withTimeout(start(ceremony.signal), PASSKEY_TIMEOUT_MS + 5_000, 'The passkey prompt').catch((e: unknown) => {
     ceremony.abort()
-    throw e
+    throw passkeyFailure(e, kind)
   })
+}
+
+/**
+ * A WebAuthn failure in words a user can act on. Browsers reject with a `DOMException` whose
+ * message is written for developers (Chrome's NotAllowedError quotes a w3.org URL, D-111); the
+ * name says what happened. An abort (the flow was cancelled) and anything else pass through.
+ */
+export function passkeyFailure(e: unknown, kind: 'create' | 'get'): unknown {
+  const name = e instanceof Error || e instanceof DOMException ? e.name : ''
+  // Enrolment's caller adds "use a passphrase instead"; an unlock says where else to go.
+  const words: Record<string, string> = {
+    // Cancelled, timed out, or (for `get`) no passkey for this key on this device: the browser
+    // deliberately does not say which (privacy).
+    NotAllowedError:
+      kind === 'get'
+        ? "The passkey didn't open. The prompt was closed or timed out, or this device has no passkey for this key (a passkey stays on the device, or in the password manager, that made it). Try again, or use another way in below."
+        : 'No passkey was made: the prompt was closed or timed out',
+    InvalidStateError: 'This security key or device already holds a passkey for this key',
+    SecurityError: "Passkeys aren't available on this page: it has to be opened over https on the site's own address",
+    NotSupportedError: "This browser or security key can't make the kind of passkey Forge needs",
+    UnknownError: kind === 'get' ? 'The passkey prompt failed on this device. Try again, or use another way in below.' : 'The passkey prompt failed on this device',
+  }
+  const text = words[name]
+  if (text === undefined) return e
+  const out = new Error(kind === 'get' && !text.endsWith('.') ? `${text}.` : text)
+  out.name = `Passkey${name}`
+  return out
 }
 
 /** Whether this browser can do WebAuthn at all (PRF support is only known after a ceremony). */
@@ -353,14 +385,15 @@ export async function enrollPasskey(label: string): Promise<{ credentialId: Uint
       authenticatorSelection: { residentKey: 'preferred', userVerification: 'required' },
       extensions: { prf: { eval: { first: buf(prfSalt) } } } as AuthenticationExtensionsClientInputs,
     },
-  }))) as PublicKeyCredential | null
+  }), 'create')) as PublicKeyCredential | null
   if (!cred) return null
   const ext = cred.getClientExtensionResults() as PrfExtensionResults
   const credentialId = new Uint8Array(cred.rawId)
   let first = ext.prf?.results?.first
   if (!first) {
     if (ext.prf?.enabled !== true) return null
-    first = (await evaluatePasskey(credentialId, prfSalt)) ?? undefined
+    // Part of making the passkey: a failure reads as enrolment's, not an unlock's.
+    first = (await evaluatePasskey(credentialId, prfSalt, 'create')) ?? undefined
     if (!first) return null
   }
   return { credentialId, prfSalt, output: new Uint8Array(first) }
@@ -476,7 +509,7 @@ async function evaluateAnyPasskey(
   return (await evaluatePasskeyOnce(pick.credentialId, pick.prfSalt)) === null ? null : at[0]!
 }
 
-async function evaluatePasskey(credentialId: Uint8Array, prfSalt: Uint8Array): Promise<ArrayBuffer | null> {
+async function evaluatePasskey(credentialId: Uint8Array, prfSalt: Uint8Array, kind: 'create' | 'get' = 'get'): Promise<ArrayBuffer | null> {
   const assertion = (await passkeyCeremony((signal) => navigator.credentials.get({
     signal,
     publicKey: {
@@ -487,7 +520,7 @@ async function evaluatePasskey(credentialId: Uint8Array, prfSalt: Uint8Array): P
       userVerification: 'required',
       extensions: { prf: { eval: { first: buf(prfSalt) } } } as AuthenticationExtensionsClientInputs,
     },
-  }))) as PublicKeyCredential | null
+  }), kind)) as PublicKeyCredential | null
   const ext = assertion?.getClientExtensionResults() as PrfExtensionResults | undefined
   return ext?.prf?.results?.first ?? null
 }
@@ -1009,11 +1042,13 @@ function unlockedStorageKey(network: Network, identityId: string): CryptoKey | n
 /** The vaults stored for `network` (no secrets). */
 export async function listVaults(network: Network): Promise<VaultInfo[]> {
   const rows = await idbEntries<VaultRecord>('vault', `vault:${network}:`)
+  const withEnc = new Set((await idbEntries<EncryptionBlob>('vault', `vault-enc:${network}:`)).map(([k]) => k))
   const out: VaultInfo[] = rows.map(([, r]) => ({
     identityId: r.identityId,
     keyId: r.keyId,
     createdAt: r.createdAt,
     methods: r.slots.map((s) => s.kind),
+    ...(withEnc.has(encryptionBlobKey(network, r.identityId)) ? { encryptionKey: true as const } : {}),
   }))
   // An identity with only a staged key (a first import whose tab closed after registering,
   // D-016) must still be offered for unlock, or the key it paid for is unreachable.

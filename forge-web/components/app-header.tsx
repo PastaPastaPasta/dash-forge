@@ -12,7 +12,7 @@
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Bell, ChevronDown, Compass, GitFork, Hammer, LogOut, Menu, Plus, Search, Settings, Wallet, X } from 'lucide-react'
+import { Bell, ChevronDown, Compass, GitFork, Hammer, Lock, Menu, Plus, Search, Settings, Wallet, X } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { signInRequestOutcome, useUiStore } from '@/hooks/use-ui-store'
 import { useUnreadCount } from '@/hooks/use-inbox'
@@ -28,7 +28,8 @@ import { cn, errorMessage } from '@/lib/utils'
 import type { DiscoveredRepo } from '@/lib/view/discovery'
 import { numberTargets, parseJump, resolveWord, wordTarget, type WordMatches } from '@/lib/view/jump'
 import { Author } from '@/components/author'
-import { balanceToDash, dashToUsd } from '@/lib/view/format'
+import { balanceToDash, dashValueNote } from '@/lib/view/format'
+import { KeyFundsLine } from '@/components/funds-summary'
 import { FundsPill } from '@/components/funds-pill'
 import { consumePrehydrationIntent } from '@/lib/prehydration'
 import { isPageShortcut } from '@/lib/focus'
@@ -54,7 +55,7 @@ function useSlashToSearch(): void {
 }
 
 export function AppHeader(): JSX.Element {
-  const { identity, balance, logout, resuming, vaultsLoaded, vaultsError } = useAuth()
+  const { identity, balance, logout, resuming, vaultsLoaded, vaultsError, storage } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
   useSlashToSearch()
   // "Sign in" asked for before it was known whether this browser's kept session resumes: a tap
@@ -108,7 +109,7 @@ export function AppHeader(): JSX.Element {
           {identity ? (
             <>
               <FundsPill />
-              <AccountMenu identity={identity} balance={balance} onLogout={logout} />
+              <AccountMenu identity={identity} balance={balance} pasted={storage === 'session'} onLogout={logout} />
             </>
           ) : (
             <SignInButton size="sm" label="long" />
@@ -557,13 +558,18 @@ function NotificationsBell(): JSX.Element {
 function AccountMenu({
   identity,
   balance,
+  pasted,
   onLogout,
 }: {
   identity: string
   balance: string | null
+  /** Signed in with a pasted key (tab only): locking forgets it. */
+  pasted: boolean
   onLogout: (forget?: boolean) => void
 }): JSX.Element {
   const { open, setOpen, ref, trigger } = usePopover()
+  const { funds } = useAuth()
+  const openTopUp = useUiStore((s) => s.openTopUp)
   const credits = balance ? Number(balance) : 0
   const dash = balanceToDash(balance ?? '0')
 
@@ -587,8 +593,22 @@ function AccountMenu({
             </div>
             <div className="mt-0.5 font-mono text-prose text-dash-600 dark:text-dash-400">{dash} DASH</div>
             <div className="font-mono text-[12px] text-anvil-500 dark:text-anvil-400">
-              {credits.toLocaleString()} credits · ≈ {dashToUsd(creditsToDash(credits))}
+              {credits.toLocaleString()} credits · {dashValueNote(creditsToDash(credits), ACTIVE_NETWORK.network)}
             </div>
+            {/* The key's budget and expiry, which the pill only shows on hover (QW-048). */}
+            <KeyFundsLine className="mt-1.5" />
+          </div>
+          <div className="px-3 pb-2">
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false)
+                openTopUp({ blocker: funds?.reason ?? 'balance', proactive: true })
+              }}
+              className="hit-area text-[12px] text-forge-700 underline dark:text-forge-400"
+            >
+              Add credits
+            </button>
           </div>
           <Link href="/notifications/" className={MENU_ITEM} onClick={() => setOpen(false)}>
             Notifications
@@ -608,9 +628,16 @@ function AccountMenu({
               setOpen(false)
               onLogout(false)
             }}
-            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-dense text-danger-700 dark:text-danger-400 hover:bg-danger/5"
+            className="flex w-full items-start gap-2 rounded-md px-3 py-2 text-left text-dense text-danger-700 dark:text-danger-400 hover:bg-danger/5"
           >
-            <LogOut className="h-3.5 w-3.5" aria-hidden /> Lock &amp; sign out
+            <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+            {/* What Lock does (QW-044): the pages then say "Session locked", not "Not signed in". */}
+            <span>
+              Lock
+              <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">
+                {pasted ? 'Signs you out and forgets the pasted key.' : 'Signs you out; your key stays in this browser until you forget it in Settings.'}
+              </span>
+            </span>
           </button>
         </div>
       ) : null}

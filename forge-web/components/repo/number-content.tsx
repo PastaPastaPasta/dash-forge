@@ -13,7 +13,7 @@
 import { useEffect } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { ExternalLink, Hash } from 'lucide-react'
+import { ExternalLink, Hash, type LucideIcon } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { readMembershipsCached, repoContractIds, repoKey } from '@/lib/repo'
 import { numberTargets } from '@/lib/view/jump'
@@ -85,4 +85,41 @@ export function NumberContent({ home, addr, number, upstream }: { home: RepoHome
       }
     />
   )
+}
+
+/**
+ * An issue or PR page's "not found" (QW-063). Issues and PRs share one number sequence, so an
+ * issue URL for #N may name a PR (and the reverse), as a hand-edited link or a `#N` typed on the
+ * wrong page does: the other kind is looked up and, when it holds N, the URL is replaced with its
+ * page, as GitHub redirects `/issues/N` to `/pull/N`. Only when neither holds N does it say so.
+ */
+export function TargetNotFound({
+  home,
+  addr,
+  number,
+  kind,
+  title,
+  body,
+  icon,
+}: {
+  home: RepoHome
+  addr: RepoAddress | undefined
+  number: number
+  kind: 'issue' | 'pull'
+  title: string
+  body: string
+  icon: LucideIcon
+}): JSX.Element {
+  const { sdk, ready } = useSdk(repoContractIds(home.repo))
+  const router = useRouter()
+  const { data, error } = useAsync(() => numberTargets(sdk!, home.repo, number), [ready, repoKey(home.repo), number], {
+    enabled: ready && sdk !== null && addr !== undefined,
+  })
+  const other = data === null || addr === undefined ? null : kind === 'issue' ? (data.pull ? pullHref(addr, number) : null) : data.issue ? issueHref(addr, number) : null
+  useEffect(() => {
+    if (other !== null) router.replace(other)
+  }, [other, router])
+  if (other !== null) return <LoadingBlock label={kind === 'issue' ? `#${number} is a pull request; opening it` : `#${number} is an issue; opening it`} />
+  if (addr !== undefined && data === null && error === null) return <LoadingBlock label={`Looking for #${number}`} />
+  return <EmptyState icon={icon} title={title} body={body} />
 }

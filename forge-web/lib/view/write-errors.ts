@@ -33,6 +33,11 @@ import { creditsAsDash } from './format'
 export interface TopUpReason {
   readonly blocker: 'balance' | 'key-budget' | 'key-expiry' | 'key-disabled' | 'key-missing' | 'key-level'
   readonly shortfall?: bigint
+  /**
+   * Opened ahead of any write (the low-funds banner, the funds pill, Settings' "Top up"): the
+   * sheet then describes the funds as they stand, never "does not cover this write" (QW-047).
+   */
+  readonly proactive?: boolean
 }
 
 export interface WriteFailure {

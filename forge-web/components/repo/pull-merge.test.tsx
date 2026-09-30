@@ -107,7 +107,7 @@ afterEach(() => {
 })
 
 /** The PR page's part: the merge refreshes the PR to merged, and the page then stops offering the deletion. */
-function Page({ onDelete }: { onDelete: () => Promise<void> }): JSX.Element {
+function Page({ onDelete, closeIssues = null }: { onDelete: () => Promise<void>; closeIssues?: import('./merge-panel').CloseIssuesOption | null }): JSX.Element {
   const [merged, setMerged] = useState(false)
   return (
     <PullMerge
@@ -118,12 +118,45 @@ function Page({ onDelete }: { onDelete: () => Promise<void> }): JSX.Element {
       isMaintainer
       checkout="dg pr checkout …"
       onMerged={() => setMerged(true)}
-      extras={{ deleteBranch: merged ? null : { label: 'fork:feature', run: onDelete } }}
+      extras={{ deleteBranch: merged ? null : { label: 'fork:feature', run: onDelete }, closeIssues }}
     />
   )
 }
 
 describe('the merge box through its own merge', () => {
+  it('offers to close the issues "Fixes #n" names, and closes the ticked ones after the merge (QW-015)', async () => {
+    checkCount = 0
+    checks.mockClear()
+    const close = vi.fn(async (n: number) => {
+      if (n === 7) throw new Error('refused')
+    })
+    const issues = [
+      { number: 3, title: 'Greeting should shout' },
+      { number: 5, title: 'Keep open' },
+      { number: 7, title: 'Fails' },
+    ]
+    await act(async () => root.render(<Page onDelete={async () => undefined} closeIssues={{ issues, close }} />))
+    await act(async () => undefined)
+    const offer = host.querySelector('[data-testid="close-linked-issues"]')
+    expect(offer?.textContent).toContain('Close #3 Greeting should shout after merging')
+    const boxes = [...offer!.querySelectorAll('input[type="checkbox"]')] as HTMLInputElement[]
+    expect(boxes.map((b) => b.checked)).toEqual([true, true, true])
+    // The merger keeps #5 open.
+    await act(async () => boxes[1]!.click())
+    const button = [...host.querySelectorAll('button')].find((b) => /merge/i.test(b.textContent ?? '') && !b.disabled)
+    await act(async () => button!.click())
+    await act(async () => undefined)
+    expect(close.mock.calls.map((c) => c[0])).toEqual([3, 7])
+    const outcome = host.querySelector('[data-testid="linked-issues-closed"]')?.textContent ?? ''
+    expect(outcome).toContain('Closed #3.')
+    expect(outcome).toContain('The merge stands; closing #7 failed: refused')
+    // Merged: the offer is gone.
+    expect(host.querySelector('[data-testid="close-linked-issues"]')).toBeNull()
+    // The next test starts from a fresh first check.
+    checkCount = 0
+    checks.mockClear()
+  })
+
   it('stays on screen after the PR flips to merged, deletes the branch and says so', async () => {
     const onDelete = vi.fn(async () => undefined)
     await act(async () => root.render(<Page onDelete={onDelete} />))

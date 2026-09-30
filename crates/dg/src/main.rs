@@ -559,6 +559,14 @@ pub enum IssueCommand {
         #[arg(long, value_name = "FILE")]
         body_file: Option<PathBuf>,
     },
+    /// Delete one of your comments (on an issue or a PR). Only its author can; replies to it
+    /// stay, and read as replies to a deleted comment.
+    DeleteComment {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The comment's document id (`id` in `dg issue view --json` / `dg pr view --comments --json`).
+        comment_id: String,
+    },
     /// Close an issue.
     Close {
         /// The repository (`owner/name`).
@@ -1529,28 +1537,51 @@ fn print_completions(shell: clap_complete::Shell, out: &mut dyn std::io::Write) 
 /// error exits 2 (E201), as `{"error": …}` on stdout when `--json` was asked for.
 fn exit_on_parse_error(e: &clap::Error) -> ! {
     use clap::error::ErrorKind;
-    let wants_json = std::env::args().any(|a| a == "--json");
-    if !wants_json
-        || matches!(
-            e.kind(),
-            ErrorKind::DisplayHelp
-                | ErrorKind::DisplayVersion
-                | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
-        )
-    {
+    if matches!(
+        e.kind(),
+        ErrorKind::DisplayHelp
+            | ErrorKind::DisplayVersion
+            | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+    ) {
         e.exit();
     }
     let text = e.to_string();
-    let first = text
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("invalid arguments")
-        .trim_start_matches("error: ");
-    let u = UserError::new(codes::USAGE, "invalid arguments")
-        .cause(first)
-        .fix("see `dg --help` or `dg <command> --help`");
-    errors::print_json(&u.to_json());
+    let (u, usage) = usage_error(&text);
+    if std::env::args().any(|a| a == "--json") {
+        errors::print_json(&u.to_json());
+    } else {
+        // The block every dg error prints (with its code, QW-082), then clap's usage line.
+        u.eprint("");
+        if !usage.is_empty() {
+            eprintln!("\n{usage}");
+        }
+    }
     std::process::exit(u.exit_code());
+}
+
+/// E201 for clap's rendering of a usage error `text`: the whole message (not just its first
+/// line: "the following required arguments were not provided: <REPO>") as the cause, and the
+/// `Usage:` block, returned apart to print after it.
+fn usage_error(text: &str) -> (UserError, String) {
+    let (message, usage) = match text.find("\nUsage:") {
+        Some(at) => text.split_at(at),
+        None => (text, ""),
+    };
+    let cause = message
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let usage = usage
+        .lines()
+        .filter(|l| !l.starts_with("For more information"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let u = UserError::new(codes::USAGE, "invalid arguments")
+        .cause(cause.trim_start_matches("error: "))
+        .fix("see `dg --help` or `dg <command> --help`");
+    (u, usage.trim().to_string())
 }
 
 /// Build the tokio runtime and dispatch the parsed command.
@@ -1623,6 +1654,40 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    /// QW-082 / QW-081: a clap usage error is E201 with its whole message as the cause (the
+    /// missing argument's name included), and the usage block kept for after the error block.
+    #[test]
+    fn a_usage_error_is_e201_with_the_whole_message() {
+        let e = Cli::try_parse_from(["dg", "issue", "list"]).unwrap_err();
+        let (u, usage) = usage_error(&e.to_string());
+        assert_eq!((u.code, u.exit_code()), ("E201", 2));
+        let cause = u.cause.unwrap();
+        assert!(
+            cause.contains("not provided") && cause.contains("<REPO>"),
+            "{cause}"
+        );
+        assert!(!cause.starts_with("error:"), "{cause}");
+        assert!(usage.starts_with("Usage: dg issue list"), "{usage}");
+        assert!(!usage.contains("For more information"), "{usage}");
+    }
+
+    #[test]
+    fn parses_issue_delete_comment() {
+        let cli = Cli::parse_from([
+            "dg",
+            "-y",
+            "issue",
+            "delete-comment",
+            "alice/proj",
+            "CommentId1",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Command::Issue(IssueCommand::DeleteComment { ref repo, ref comment_id })
+                if repo == "alice/proj" && comment_id == "CommentId1"
+        ));
+    }
 
     #[test]
     fn parses_auth_balance_with_global_flags() {

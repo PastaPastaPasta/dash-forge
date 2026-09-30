@@ -235,6 +235,7 @@ export type IssueWrite =
   | { readonly kind: 'defineLabel'; readonly name: string; readonly apply: boolean }
   | { readonly kind: 'editIssue'; readonly title: string; readonly body: string }
   | { readonly kind: 'editComment'; readonly id: string; readonly body: string }
+  | { readonly kind: 'deleteComment'; readonly id: string }
 
 /**
  * Whether a read of the thread already shows `w`: the page re-reads after a write until it does,
@@ -265,6 +266,8 @@ export function issueWriteShows(t: IssueThread, w: IssueWrite): boolean {
       return t.issue.title === w.title && t.issue.body === w.body
     case 'editComment':
       return comment(w.id)?.body === w.body
+    case 'deleteComment':
+      return comment(w.id) === undefined
   }
 }
 

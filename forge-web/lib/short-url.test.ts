@@ -48,6 +48,10 @@ describe('shortRepoPath → shim → canonical route', () => {
       '/alice/project/commit/0123456789abcdef0123456789abcdef01234567',
       '/repo/commit/?owner=alice&name=project&oid=0123456789abcdef0123456789abcdef01234567',
     ],
+    // QW-058: GitHub's compare, three dots, and a head alone against the default branch.
+    [{ kind: 'compare', base: 'v22.0.0', head: 'v23.0.0' }, '/alice/project/compare/v22.0.0...v23.0.0', '/repo/compare/?owner=alice&name=project&base=v22.0.0&head=v23.0.0'],
+    [{ kind: 'compare', base: 'main', head: 'feature/x' }, '/alice/project/compare/main...feature%2Fx', '/repo/compare/?owner=alice&name=project&base=main&head=feature%2Fx'],
+    [{ kind: 'compare', head: 'develop' }, '/alice/project/compare/develop', '/repo/compare/?owner=alice&name=project&head=develop'],
   ]
   it.each(cases)('%j', (target, short, canonical) => {
     expect(shortRepoPath(REPO, target)).toBe(short)
@@ -65,6 +69,28 @@ describe('shortRepoPath → shim → canonical route', () => {
     // The base path alone is not a repo, and a path outside the base is not ours.
     expect(expand('/dash-forge/', '/dash-forge')).toBeNull()
     expect(expand('/alice/project', '/dash-forge')).toBeNull()
+  })
+})
+
+describe('GitHub compare URLs (QW-058)', () => {
+  it.each([
+    // Two dots, as GitHub also accepts; the compare view shows base...head either way.
+    ['/alice/project/compare/v1..v2', '/repo/compare/?owner=alice&name=project&base=v1&head=v2'],
+    // A ref with an unencoded slash, as GitHub writes it.
+    ['/alice/project/compare/main...feature/x', '/repo/compare/?owner=alice&name=project&base=main&head=feature%2Fx'],
+    ['/alice/project/compare/release/1.0...feature/y', '/repo/compare/?owner=alice&name=project&base=release%2F1.0&head=feature%2Fy'],
+    // A commit range.
+    ['/alice/project/compare/0a1b2c3...4d5e6f7', '/repo/compare/?owner=alice&name=project&base=0a1b2c3&head=4d5e6f7'],
+  ])('%s', (short, canonical) => {
+    expect(expand(short)).toBe(canonical)
+  })
+
+  it.each(['/alice/project/compare/...v2', '/alice/project/compare/v1...'])('refuses an empty side: %s', (short) => {
+    expect(expand(short)).toBeNull()
+  })
+
+  it('opens the compare form with no refs', () => {
+    expect(expand('/alice/project/compare')).toBe('/repo/compare/?owner=alice&name=project')
   })
 })
 

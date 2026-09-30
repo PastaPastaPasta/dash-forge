@@ -176,7 +176,9 @@ export {
   type RowFilters,
 } from './issue-index'
 export {
+  pullsLinking,
   queryPulls,
+  type LinkingPulls,
   type PullCounts,
   type PullListPage,
   type PullRow,
