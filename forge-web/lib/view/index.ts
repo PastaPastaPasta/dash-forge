@@ -122,7 +122,7 @@ export {
   setUserGateways,
   userGateways,
 } from './storage-status'
-export { ACL_NAME, ARCHIVED_REASON, policyOf, pullActions, type PullActionInputs, type PullActions } from './pull-actions'
+export { ACL_NAME, ARCHIVED_REASON, policyOf, pullActions, verdictSummary, type PullActionInputs, type PullActions, type VerdictSummary } from './pull-actions'
 export {
   backendInfo,
   loadPrivateHome,

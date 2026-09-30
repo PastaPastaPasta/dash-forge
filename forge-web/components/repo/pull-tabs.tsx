@@ -8,14 +8,29 @@
  * - Checks: the newest `checkRun` per name on the PR head (or a commit), by current members and
  *   runners; a run whose reporter is no longer one is listed but not counted (parity: `dg pr
  *   checks`, `dg ci status`). A run's log is read from the reporter's storage and shown only
- *   with whether it hashed to the SHA-256 the run records.
+ *   with whether it hashed to the SHA-256 the run records. A required check pinned to a source
+ *   (RC1 R-08) names it ("from ci-bot"); a run by anyone else is "not from the required source",
+ *   and a required check nothing reported yet is listed as "Expected".
  */
 
 import Link from 'next/link'
 import { useState } from 'react'
 import { CheckCircle2, CircleDashed, GitCommit, ListChecks, MinusCircle, XCircle } from 'lucide-react'
 
-import { checkOutcome, checksPhrase, fetchVerifiedLog, runDuration, safeDetailsUrl, safeLogUrl, untrustedWords, type CheckRun, type ChecksSummary, type VerifiedLog } from '@/lib/repo/checks'
+import {
+  checkOutcome,
+  checksPhrase,
+  fetchVerifiedLog,
+  runCounts,
+  runDuration,
+  safeDetailsUrl,
+  safeLogUrl,
+  untrustedWords,
+  type CheckRun,
+  type ChecksSummary,
+  type ExpectedCheck,
+  type VerifiedLog,
+} from '@/lib/repo/checks'
 import type { PrCommits } from '@/lib/view/pr-commits'
 import { plural, timeAgo } from '@/lib/view'
 import { Time } from '@/components/repo/byline'
@@ -85,7 +100,7 @@ export function CommitList({ commits, addr: at, allHint }: { commits: PrCommits;
 
 function CheckIcon({ run }: { run: CheckRun }): JSX.Element {
   const o = checkOutcome(run)
-  if (!run.trusted) return <MinusCircle className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
+  if (!runCounts(run)) return <MinusCircle className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
   if (o === 'passed') return <CheckCircle2 className="h-4 w-4 text-verify-700 dark:text-verify-400" aria-hidden />
   if (o === 'failing') return <XCircle className="h-4 w-4 text-danger-700 dark:text-danger-400" aria-hidden />
   return <CircleDashed className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />
@@ -137,6 +152,7 @@ export function ChecksTab({
   error,
   onRetry,
   subject = 'PR head',
+  expected = [],
 }: {
   runs: readonly CheckRun[] | null
   summary: ChecksSummary | null
@@ -145,10 +161,12 @@ export function ChecksTab({
   onRetry: () => void
   /** What `headOid` is, for the empty state: the PR head or a commit. */
   subject?: string
+  /** Checks the branch policy requires that no run reports yet (`expectedChecks`). */
+  expected?: readonly ExpectedCheck[]
 }): JSX.Element {
   if (error !== null) return <ErrorState message={error} onRetry={onRetry} />
   if (runs === null || summary === null) return <LoadingBlock label="Reading check runs" />
-  if (runs.length === 0) {
+  if (runs.length === 0 && expected.length === 0) {
     return (
       <EmptyState
         icon={ListChecks}
@@ -171,10 +189,17 @@ export function ChecksTab({
             <li key={r.id} className="flex flex-wrap items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850" data-testid="check-run" data-name={r.name} data-outcome={checkOutcome(r)}>
               <CheckIcon run={r} />
               <span className="font-medium">{r.name}</span>
+              {r.requiredSource !== null ? <RequiredSource source={r.requiredSource} /> : null}
               <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{state}</span>
               {duration ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{duration}</span> : null}
               {r.summary ? <span className="min-w-0 flex-1 truncate text-[12px] text-anvil-500 dark:text-anvil-400">{r.summary}</span> : <span className="flex-1" />}
-              {!r.trusted ? <span className="text-[11px] text-anvil-500 dark:text-anvil-400">{untrustedWords(summary)}</span> : null}
+              {!r.trusted ? (
+                <span className="text-[11px] text-anvil-500 dark:text-anvil-400">{untrustedWords(summary)}</span>
+              ) : !r.fromRequiredSource ? (
+                <span className="text-[11px] text-caution-700 dark:text-caution-400" data-testid="check-off-source">
+                  not from the required source: not counted
+                </span>
+              ) : null}
               <span className="flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400">
                 by <Author identityId={r.reporter} link={false} /> · {timeAgo(r.createdAt)}
               </span>
@@ -187,7 +212,24 @@ export function ChecksTab({
             </li>
           )
         })}
+        {expected.map((c) => (
+          <li key={`expected:${c.name}`} className="flex flex-wrap items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850" data-testid="check-expected" data-name={c.name}>
+            <CircleDashed className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />
+            <span className="font-medium">{c.name}</span>
+            {c.source !== null ? <RequiredSource source={c.source} /> : null}
+            <span className="text-[12px] text-anvil-500 dark:text-anvil-400">Expected — required, waiting for it to be reported</span>
+          </li>
+        ))}
       </ul>
     </div>
+  )
+}
+
+/** "· from ci-bot": the reporter the branch policy pins a required check to. */
+function RequiredSource({ source }: { source: string }): JSX.Element {
+  return (
+    <span className="flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="check-source">
+      · from <Author identityId={source} link={false} />
+    </span>
   )
 }

@@ -17,7 +17,7 @@
  */
 
 import { useState } from 'react'
-import { Archive, GitBranch, Info, Lock, Scale, Settings2, ShieldCheck, Trash2 } from 'lucide-react'
+import { Archive, GitBranch, Info, Lock, Plus, Scale, Settings2, ShieldCheck, Trash2 } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { isLive, plural } from '@/lib/view'
 import {
@@ -37,6 +37,7 @@ import {
   previewRepoEdit,
   readTopicDocNames,
   readConfig,
+  readMembershipsCached,
   readPolicy,
   readRepoById,
   repoContractIds,
@@ -48,11 +49,28 @@ import {
   type RepoDocEdit,
 } from '@/lib/repo'
 import { MAX_TOPICS } from '@/lib/repo/settings'
+import { readRunnersCached } from '@/lib/repo/checks'
+import {
+  CHECK_NAME_MAX_CHARS,
+  MAX_REQUIRED_CHECKS,
+  checksOk,
+  draftOfPolicy,
+  policyWithChecks,
+  requiredChecksProblems,
+  sameRequiredChecks,
+  sourceOptions,
+  sourceRole,
+  type CheckRow,
+  type ChecksProblems,
+  type RequiredChecksDraft,
+  type SourceOption,
+} from '@/lib/view/required-checks'
 import type { Policy } from '@/lib/rules/v2'
 import { previewCreate, type CostPreview as Cost } from '@/lib/sdk'
 import { retryWhileMissing } from '@/lib/view/retry'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
+import { useDpnsName } from '@/hooks/use-dpns-name'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Button } from '@/components/ui/button'
@@ -473,34 +491,53 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
 
 /** The branch policy (review-parity spec §3.6, §4.8): a client rule with maintainer override. */
 function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolean }): JSX.Element {
-  const { sdk, ready } = useSdk(repoContractIds(home.repo))
+  const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   const { signer } = useAuth()
   const guard = useWriteGuard()
   const current = useAsync<Policy | null>(() => readPolicy(sdk!, home.repo), [ready, repoKey(home.repo)], { enabled: ready && sdk !== null })
   const [draft, setDraft] = useState<Policy | null>(null)
+  const [checksDraft, setChecksDraft] = useState<RequiredChecksDraft | null>(null)
   const [confirming, setConfirming] = useState(false)
   const base: Policy = current.data ?? { requiredApprovals: 0, approverRole: 0, requireChecks: false, mergeMethods: 0 }
   const shown = draft ?? base
+  const shownChecks = checksDraft ?? draftOfPolicy(base)
+  // What a save writes: the other fields as edited, and the required checks as edited.
+  const wanted = policyWithChecks(shown, shownChecks)
   const set = (p: Partial<Policy>): void => setDraft({ ...shown, ...p })
+  // The pickable sources (the repo's runners and maintainers), through the cached reads the PR
+  // and commit pages share; read only once a maintainer pins checks.
+  const pinning = maintainer && shownChecks.pinned
+  const sources = useAsync(
+    async () => {
+      const [members, runners] = await Promise.all([readMembershipsCached(sdk!, home.repo, network), readRunnersCached(sdk!, home.repo)])
+      return sourceOptions(members, runners)
+    },
+    [ready, repoKey(home.repo), network],
+    { enabled: ready && sdk !== null && pinning },
+  )
+  const valid = sources.data === null ? null : new Set(sources.data.map((o) => o.id))
+  const problems = requiredChecksProblems(shownChecks, valid)
   const changed =
-    current.data === null
-      ? draft !== null
-      : draft !== null &&
-        (draft.requiredApprovals !== base.requiredApprovals ||
-          (draft.approverRole ?? 0) !== (base.approverRole ?? 0) ||
-          (draft.requireChecks ?? false) !== (base.requireChecks ?? false) ||
-          (draft.mergeMethods ?? 0) !== (base.mergeMethods ?? 0))
+    (draft !== null || checksDraft !== null) &&
+    (current.data === null ||
+      wanted.requiredApprovals !== base.requiredApprovals ||
+      (wanted.approverRole ?? 0) !== (base.approverRole ?? 0) ||
+      (wanted.requireChecks ?? false) !== (base.requireChecks ?? false) ||
+      (wanted.mergeMethods ?? 0) !== (base.mergeMethods ?? 0) ||
+      !sameRequiredChecks(wanted, base))
   const cost = previewCreate('policy')
   const methods = shown.mergeMethods ?? 0
+  const checkCount = wanted.requiredChecks?.length ?? 0
   const run = async (intent: string): Promise<void> => {
-    if (!sdk || !signer || draft === null) throw new Error('sign in to continue')
-    const wanted = draft
-    await setPolicy(sdk, signer, home.repo, wanted, intent)
+    if (!sdk || !signer || !changed) throw new Error('sign in to continue')
+    const saving = wanted
+    await setPolicy(sdk, signer, home.repo, saving, intent)
     await retryWhileMissing(async () => {
       const read = await readPolicy(sdk, home.repo)
-      return read !== null && read.requiredApprovals === wanted.requiredApprovals && (read.mergeMethods ?? 0) === (wanted.mergeMethods ?? 0) ? true : null
+      return read !== null && read.requiredApprovals === saving.requiredApprovals && (read.mergeMethods ?? 0) === (saving.mergeMethods ?? 0) && sameRequiredChecks(read, saving) ? true : null
     }, 8)
     setDraft(null)
+    setChecksDraft(null)
     current.reload()
   }
 
@@ -559,19 +596,15 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
           </div>
           <label className="flex items-center gap-2 text-dense coarse:min-h-11">
             <input type="checkbox" className="h-4 w-4 accent-forge-700" checked={shown.requireChecks === true} onChange={(e) => set({ requireChecks: e.target.checked })} />
-            Require passing checks
+            Require passing checks (every check reported on the head)
           </label>
-          <Note>
-            {(shown.requiredChecks?.length ?? 0) > 0
-              ? `Also required by name: ${(shown.requiredChecks ?? []).join(', ')}${(shown.requiredCheckSources?.length ?? 0) > 0 ? ', each from its pinned runner or maintainer' : ''}. Set with the CLI; saving here keeps them.`
-              : 'Checks can also be required by name, each from a pinned runner or maintainer, with the CLI; saving here keeps them.'}
-          </Note>
+          <RequiredChecksEditor draft={shownChecks} onChange={setChecksDraft} problems={problems} sources={pinning ? sources : null} maintainer={maintainer} />
           {maintainer ? (
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 variant="primary"
                 size="sm"
-                disabled={!changed || guard.disabledReason !== null}
+                disabled={!changed || !checksOk(problems) || guard.disabledReason !== null}
                 onClick={() => {
                   if (guard.check(cost, 'community')) setConfirming(true)
                 }}
@@ -589,13 +622,156 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
         open={confirming}
         onClose={() => setConfirming(false)}
         title="Save the branch policy"
-        description={`Writes a policy: ${plural(shown.requiredApprovals, 'required approval')}${(shown.approverRole ?? 0) === 1 ? ' (maintainers)' : ''}. The newest policy wins. A client rule: a maintainer can override it.`}
+        description={`Writes a policy: ${plural(wanted.requiredApprovals, 'required approval')}${(wanted.approverRole ?? 0) === 1 ? ' (maintainers)' : ''}${
+          checkCount > 0 ? `, ${plural(checkCount, 'required check')}${(wanted.requiredCheckSources?.length ?? 0) > 0 ? ', each from its pinned source' : ''}` : ''
+        }. The newest policy wins. A client rule: a maintainer can override it.`}
         cost={cost}
         confirmLabel="Sign & save"
         onConfirm={run}
       />
     </div>
   )
+}
+
+/**
+ * "Require status checks", the GitHub way: the checks that must pass by name, each optionally
+ * pinned to the runner or maintainer that must report it. The contract takes a source for every
+ * check or for none (`sourcesMatchNames`), so pinning is one switch for the whole list and, with
+ * it on, every row picks its source. Validation is `requiredChecksProblems`.
+ */
+function RequiredChecksEditor({
+  draft,
+  onChange,
+  problems,
+  sources,
+  maintainer,
+}: {
+  draft: RequiredChecksDraft
+  onChange: (d: RequiredChecksDraft) => void
+  problems: ChecksProblems
+  /** The pickable sources while pinning (null: not pinning, or not a maintainer). */
+  sources: { readonly data: SourceOption[] | null; readonly error: string | null; readonly reload: () => void } | null
+  maintainer: boolean
+}): JSX.Element {
+  const rows = draft.rows
+  const setRow = (i: number, row: Partial<CheckRow>): void => onChange({ ...draft, rows: rows.map((r, j) => (j === i ? { ...r, ...row } : r)) })
+  const full = rows.length >= MAX_REQUIRED_CHECKS
+  return (
+    <div className="text-dense" data-testid="required-checks">
+      <p className="text-anvil-700 dark:text-anvil-200" id="required-checks-label">
+        Required checks by name
+      </p>
+      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
+        Each must be reported on the PR head and pass. Once any are named, only these are required, ticked above or not. Up to {MAX_REQUIRED_CHECKS}.
+      </p>
+      <label className="mt-2 flex items-start gap-2 coarse:min-h-11">
+        <input type="checkbox" className="mt-0.5 h-4 w-4 accent-forge-700" checked={draft.pinned} onChange={(e) => onChange({ ...draft, pinned: e.target.checked })} data-testid="pin-sources" />
+        <span>
+          Pin each check to the runner or maintainer that must report it
+          <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">All or none: every check names its source, or any trusted reporter counts for all of them.</span>
+        </span>
+      </label>
+      {rows.length > 0 ? (
+        <ul className="mt-2 space-y-2" aria-labelledby="required-checks-label">
+          {rows.map((row, i) => {
+            const problem = problems.rows[i] ?? null
+            const errorId = `required-check-${i}-error`
+            return (
+              <li key={i} className="rounded-md border border-anvil-200 p-2 dark:border-anvil-800" data-testid="required-check-row">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <Input
+                    aria-label={`Required check ${i + 1} name`}
+                    placeholder="Check name, e.g. build"
+                    value={row.name}
+                    maxLength={CHECK_NAME_MAX_CHARS}
+                    onChange={(e) => setRow(i, { name: e.target.value })}
+                    aria-invalid={problem !== null}
+                    aria-describedby={problem !== null ? errorId : undefined}
+                    className="min-w-0 flex-1 font-mono"
+                  />
+                  {draft.pinned ? (
+                    <SourcePicker value={row.source} options={sources?.data ?? null} index={i} onPick={(source) => setRow(i, { source })} invalid={problem !== null} describedBy={problem !== null ? errorId : undefined} />
+                  ) : null}
+                  {maintainer ? (
+                    <Button variant="outline" size="sm" onClick={() => onChange({ ...draft, rows: rows.filter((_, j) => j !== i) })} aria-label={`Remove required check ${row.name.trim() || i + 1}`}>
+                      <Trash2 className="h-3.5 w-3.5" aria-hidden />
+                      <span className="sm:hidden">Remove</span>
+                    </Button>
+                  ) : null}
+                </div>
+                {problem !== null ? (
+                  <p id={errorId} className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">
+                    {problem}
+                  </p>
+                ) : null}
+              </li>
+            )
+          })}
+        </ul>
+      ) : (
+        <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">No checks are required by name.</p>
+      )}
+      {sources?.error ? (
+        <p className="mt-2 flex flex-wrap items-center gap-2 text-[12px] text-caution-700 dark:text-caution-400">
+          Couldn&apos;t read the runners and maintainers to pick from: {sources.error}
+          <Button variant="outline" size="sm" onClick={sources.reload}>
+            Retry
+          </Button>
+        </p>
+      ) : null}
+      {problems.form !== null ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">{problems.form}</p> : null}
+      {maintainer ? (
+        <Button variant="outline" size="sm" className="mt-2" disabled={full} onClick={() => onChange({ ...draft, rows: [...rows, { name: '', source: '' }] })} data-testid="add-required-check">
+          <Plus className="h-3.5 w-3.5" aria-hidden /> {full ? `${MAX_REQUIRED_CHECKS} checks is the most a policy holds` : 'Add a required check'}
+        </Button>
+      ) : null}
+    </div>
+  )
+}
+
+/** The source of one pinned check: the repo's runners and maintainers (a stale pick stays listed, flagged). */
+function SourcePicker({
+  value,
+  options,
+  index,
+  onPick,
+  invalid,
+  describedBy,
+}: {
+  value: string
+  options: SourceOption[] | null
+  index: number
+  onPick: (id: string) => void
+  invalid: boolean
+  describedBy: string | undefined
+}): JSX.Element {
+  const stale = value !== '' && options !== null && !options.some((o) => o.id === value)
+  return (
+    <select
+      aria-label={`Required check ${index + 1} source`}
+      value={value}
+      onChange={(e) => onPick(e.target.value)}
+      aria-invalid={invalid}
+      aria-describedby={describedBy}
+      className="h-9 min-w-0 rounded-md border border-anvil-300 bg-white px-2 text-dense text-anvil-900 coarse:h-11 sm:w-64 dark:border-anvil-700 dark:bg-anvil-950 dark:text-anvil-100"
+      data-testid="required-check-source"
+    >
+      <option value="" disabled>
+        {options === null ? 'Reading runners and maintainers…' : options.length === 0 ? 'No runners or maintainers' : 'Pick a source…'}
+      </option>
+      {value !== '' && (options === null || stale) ? <SourceChoice id={value} role={stale ? 'no longer a runner or maintainer' : null} /> : null}
+      {(options ?? []).map((o) => (
+        <SourceChoice key={o.id} id={o.id} role={sourceRole(o)} />
+      ))}
+    </select>
+  )
+}
+
+/** One source option, named by DPNS once resolved (an option holds text only). */
+function SourceChoice({ id, role }: { id: string; role: string | null }): JSX.Element {
+  const name = useDpnsName(id)
+  const who = name ?? `${id.slice(0, 6)}…${id.slice(-4)}`
+  return <option value={id}>{role === null ? who : `${who} · ${role}`}</option>
 }
 
 // ---------------------------------------------------------------------------------------------

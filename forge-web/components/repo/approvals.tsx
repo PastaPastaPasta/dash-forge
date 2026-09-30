@@ -7,21 +7,27 @@
  * standing, including the ones that do not count and why: a verdict on an older head is
  * "stale — new commits since", a reviewer who is not a maintainer or writer "doesn't count",
  * and a member approving their own PR is an "author approval (counted)".
+ *
+ * Its first line is the GitHub-style count ({@link VerdictLine}: "2 of 3 required approvals",
+ * "Changes requested"), the fold's, with the proved on-chain count (RC1 R-16) beside it where
+ * the two differ. The fold is what gates a merge; the proved count never does.
  */
 
-import { Check, Clock, MinusCircle, X } from 'lucide-react'
-import type { PullApprovals } from '@/lib/view'
+import { Check, CircleDot, Clock, MinusCircle, ShieldCheck, X } from 'lucide-react'
+import { verdictSummary, type PullApprovals } from '@/lib/view'
+import type { ProvedVerdicts } from '@/lib/repo/verdicts'
 import { approverPhrase, type ReviewerRow } from '@/lib/view/review-fold'
 import { Author } from '@/components/author'
 import { Oid } from '@/components/ui/oid'
 import { cn } from '@/lib/utils'
 
-export function Approvals({ approvals, headOid }: { approvals: PullApprovals; headOid: string }): JSX.Element {
+export function Approvals({ approvals, headOid, proved = null }: { approvals: PullApprovals; headOid: string; proved?: ProvedVerdicts | null }): JSX.Element {
   const { summary } = approvals
   const approved = approverPhrase(summary.approvedBy)
   return (
     <section aria-label="Approvals" data-testid="review-fold" className="rounded-lg border border-anvil-200 px-4 py-3 text-dense dark:border-anvil-800">
-      <div className="space-y-1">
+      <VerdictLine approvals={approvals} proved={proved} headOid={headOid} />
+      <div className="mt-2 space-y-1 border-t border-anvil-100 pt-2 dark:border-anvil-850">
         {approved !== '' ? (
           <p className="flex flex-wrap items-center gap-1.5 font-medium text-anvil-900 dark:text-anvil-50" data-testid="fold-approved">
             <Check className="h-4 w-4 text-verify-700 dark:text-verify-400" aria-hidden />
@@ -59,6 +65,50 @@ export function Approvals({ approvals, headOid }: { approvals: PullApprovals; he
         verdict per reviewer. Nothing at consensus requires them.
       </p>
     </section>
+  )
+}
+
+/**
+ * The merge box's review count ("2 approvals", "1 of 2 required approvals", "Changes requested"),
+ * from the fold, with the proved count where it differs or stands in for an unread fold
+ * (`verdictSummary`). Renders nothing when neither is known.
+ */
+export function VerdictLine({ approvals, proved, headOid }: { approvals: PullApprovals | null; proved: ProvedVerdicts | null; headOid: string }): JSX.Element | null {
+  const line = verdictSummary(approvals, proved, headOid)
+  if (line === null) return null
+  const Icon = line.tone === 'approved' ? Check : line.tone === 'changes' ? X : CircleDot
+  return (
+    <div data-testid="merge-verdicts" data-tone={line.tone} data-proved-approvals={proved?.approvals} data-proved-changes={proved?.changesRequested}>
+      <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <Icon
+          className={cn(
+            'h-4 w-4 shrink-0',
+            line.tone === 'approved'
+              ? 'text-verify-700 dark:text-verify-400'
+              : line.tone === 'changes'
+                ? 'text-danger-700 dark:text-danger-400'
+                : line.tone === 'required'
+                  ? 'text-caution-700 dark:text-caution-400'
+                  : 'text-anvil-500 dark:text-anvil-400',
+          )}
+          aria-hidden
+        />
+        <span className="font-semibold text-anvil-900 dark:text-anvil-50" data-testid="merge-verdicts-headline">
+          {line.headline}
+        </span>
+        {line.detail !== null ? <span className="text-anvil-600 dark:text-anvil-300">{line.detail}</span> : null}
+        {line.proved ? (
+          <span className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400" title="Consensus proves these reviewers were members when they reviewed" data-testid="merge-verdicts-proved">
+            <ShieldCheck className="h-3.5 w-3.5" aria-hidden /> proved on chain
+          </span>
+        ) : null}
+      </p>
+      {line.onChain !== null ? (
+        <p className="mt-0.5 pl-6 text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="merge-verdicts-on-chain">
+          {line.onChain}
+        </p>
+      ) : null}
+    </div>
   )
 }
 

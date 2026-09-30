@@ -23,8 +23,9 @@
  */
 
 import { isOidHex, isPlainBranchRef, matchesProtected, type Holdings } from '../rules'
-import type { Policy, PolicyStatus } from '../rules/v2'
+import type { Approvals, Policy, PolicyStatus } from '../rules/v2'
 import type { PullView } from '../repo'
+import type { ProvedVerdicts } from '../repo/verdicts'
 import { branchName, plural } from './format'
 
 /** What the viewer may do from the PR page, and why not when not. */
@@ -161,6 +162,79 @@ export function policyOf(
   approvals: { readonly policy: Policy | null | 'unknown'; readonly policyStatus: PolicyStatus | null | 'unknown' } | null,
 ): { policy: Policy | null | 'unknown'; status: PolicyStatus | null | 'unknown' } {
   return approvals === null ? { policy: 'unknown', status: 'unknown' } : { policy: approvals.policy, status: approvals.policyStatus }
+}
+
+/**
+ * The merge box's review line, the GitHub way: "Changes requested", "2 of 3 required approvals",
+ * "2 approvals", "No approvals yet".
+ *
+ * **Which number gates the merge: the fold.** Every count here is the approval fold's
+ * (`countApprovals` on the head, dismissed reviews out, members at review time; `meetsPolicy`
+ * for "N of M"), the same fold {@link pullActions} gates a writer's merge on (its `policy`
+ * input is `approvals.policyStatus`). The proved count (`readProvedVerdicts`, RC1 R-16) is
+ * display only: an upper bound that folds nothing (re-reviews, dismissals and removed members
+ * all count), so where it disagrees with the fold the fold's number stands and the proved one is
+ * named "on chain" beside it. Only when the members could not be read (no fold, and the merge is
+ * withheld from writers anyway) does the line fall back to the proved count, said to be one.
+ */
+export interface VerdictSummary {
+  readonly tone: 'approved' | 'changes' | 'required' | 'none'
+  readonly headline: string
+  /** The other counts, e.g. "1 approval" beside "Changes requested"; null when there are none. */
+  readonly detail: string | null
+  /** The proved count where it differs from (or stands in for) the fold; null otherwise. */
+  readonly onChain: string | null
+  /** The proved count was read for this head and agrees with the fold. */
+  readonly proved: boolean
+}
+
+/** "3 member approvals and 1 change request". */
+function verdictCounts(approvals: number, changes: number): string {
+  const parts = [plural(approvals, 'member approval')]
+  if (changes > 0) parts.push(plural(changes, 'change request'))
+  return parts.join(' and ')
+}
+
+/**
+ * The review line for a PR head: `approvals` is the fold (null: the members could not be read),
+ * `proved` the proved verdict count (null: not read). Null when neither is known.
+ */
+export function verdictSummary(
+  approvals: (Approvals & { readonly policy: Policy | null | 'unknown'; readonly policyStatus: PolicyStatus | null | 'unknown' }) | null,
+  proved: ProvedVerdicts | null,
+  headOid: string,
+): VerdictSummary | null {
+  const chain = proved !== null && proved.headOid === headOid.toLowerCase() ? proved : null
+  if (approvals === null) {
+    if (chain === null) return null
+    const changes = chain.changesRequested > 0
+    return {
+      tone: changes ? 'changes' : chain.approvals > 0 ? 'approved' : 'none',
+      headline: changes ? 'Changes requested' : chain.approvals > 0 ? plural(chain.approvals, 'approval') : 'No approvals yet',
+      detail: null,
+      onChain: `${verdictCounts(chain.approvals, chain.changesRequested)} on chain. The members couldn't be read, so this is an upper bound: re-reviews, dismissed reviews and members removed since all count.`,
+      proved: false,
+    }
+  }
+  const a = approvals.approvers.length
+  const c = approvals.changesRequested.length
+  const policy = approvals.policy !== 'unknown' && approvals.policy !== null ? approvals.policy : null
+  const status = approvals.policyStatus !== 'unknown' && approvals.policyStatus !== null ? approvals.policyStatus : null
+  const need = policy?.requiredApprovals ?? 0
+  const required = need > 0 && status !== null ? `${status.have} of ${plural(need, 'required approval')}` : null
+  const agrees = chain !== null && chain.approvals === a && chain.changesRequested === c
+  const base = {
+    onChain: chain !== null && !agrees ? `${verdictCounts(chain.approvals, chain.changesRequested)} on chain (an upper bound: re-reviews, dismissed reviews and members removed since count there, not here)` : null,
+    proved: agrees,
+  }
+  if (c > 0) {
+    const others = [a > 0 ? plural(a, 'approval') : '', required ?? ''].filter((x) => x !== '')
+    return { ...base, tone: 'changes', headline: 'Changes requested', detail: others.length > 0 ? others.join(' · ') : null }
+  }
+  if (required !== null && status !== null) {
+    return { ...base, tone: status.met ? 'approved' : 'required', headline: required, detail: a !== status.have ? `${plural(a, 'approval')} in all` : null }
+  }
+  return { ...base, tone: a > 0 ? 'approved' : 'none', headline: a > 0 ? plural(a, 'approval') : 'No approvals yet', detail: null }
 }
 
 /** Decide the PR controls for a viewer. Pure — the unit-tested core of the PR page gate. */

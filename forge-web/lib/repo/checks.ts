@@ -5,6 +5,10 @@
  * so a run counts only while its reporter is a current member or runner. The newest run per name
  * by `($createdAt, $id)` stands.
  *
+ * A branch policy may pin a required check to one reporter (`requiredCheckSources`, RC1 R-08):
+ * that check then counts only that runner's or maintainer's runs, so its row names the source
+ * ("build · from ci-bot") and a run by anyone else reads "not from the required source".
+ *
  * Parity: forge-core `collab::v2::newest_check_runs` / `Collab::check_runs`, and `dg pr checks`
  * (`crates/dg/src/pr/state.rs`) for passed / failing / pending.
  */
@@ -15,7 +19,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
 import { compareKey } from '../rules'
-import type { CheckRunRow } from '../rules/parity'
+import type { CheckRunRow, ChecksPolicy } from '../rules/parity'
 import { hexToBase64, queryAllDocuments, type PlainDocument } from '../sdk'
 import { DOC, asIdentifierString, byteFieldToHex, num, str, type RepoRef } from './contract'
 import { repoSource } from './source'
@@ -40,6 +44,47 @@ export interface CheckRun {
   /** Where the log is and its SHA-256 (hex); '' when none. The bytes are checked against it. */
   readonly logUrl: string
   readonly logSha256: string
+  /** The reporter the policy pins this check to (base58), or null: any trusted reporter counts. */
+  readonly requiredSource: string | null
+  /** No source is pinned, or this run is from it; false: the run cannot decide the check. */
+  readonly fromRequiredSource: boolean
+}
+
+/**
+ * Each required check's pinned source, by name: `requiredCheckSources` paired by position with
+ * `requiredChecks`, only when the two pair one for one (else nothing is pinned); an empty name
+ * or source pins nothing. The pairing `checksState` applies (`pinnedSources`, forge-core
+ * `pinned_sources`); `requiredChecks` is unique, so each name has one source.
+ */
+export function requiredSources(policy: ChecksPolicy | null): Map<string, string> {
+  const names = policy?.requiredChecks ?? []
+  const sources = policy?.requiredCheckSources ?? []
+  const out = new Map<string, string>()
+  if (sources.length !== names.length) return out
+  names.forEach((name, i) => {
+    const source = sources[i] ?? ''
+    if (name !== '' && source !== '' && !out.has(name)) out.set(name, source)
+  })
+  return out
+}
+
+/** A run counts toward the checks: its reporter is trusted and, for a pinned check, is the source. */
+export function runCounts(r: Pick<CheckRun, 'trusted' | 'fromRequiredSource'>): boolean {
+  return r.trusted && r.fromRequiredSource
+}
+
+/** A check the policy requires by name that no run on the head reports yet ("Expected"). */
+export interface ExpectedCheck {
+  readonly name: string
+  /** Its pinned source, or null. */
+  readonly source: string | null
+}
+
+/** The policy's required checks (in policy order) with no run listed in `runs`. */
+export function expectedChecks(runs: readonly Pick<CheckRun, 'name'>[], policy: ChecksPolicy | null): ExpectedCheck[] {
+  const reported = new Set(runs.map((r) => r.name))
+  const pins = requiredSources(policy)
+  return [...new Set(policy?.requiredChecks ?? [])].filter((n) => n !== '' && !reported.has(n)).map((name) => ({ name, source: pins.get(name) ?? null }))
 }
 
 /** How a run reads: passed, failing or still pending (the `dg pr checks` split). */
@@ -53,38 +98,52 @@ export function checkOutcome(r: Pick<CheckRun, 'status' | 'conclusion'>): CheckO
 }
 
 /**
- * One run per name (sorted by name): the newest run whose reporter `isMember`, which is what the
- * merge box counts (`checksState`, forge-core `checks_state`); an untrusted run never shadows it.
- * A name with no trusted run shows its newest run, marked not counted.
+ * One run per name (sorted by name): the newest run that counts (its reporter `isMember`, and for
+ * a check `pins` pins, the pinned source), which is what the merge box counts (`checksState`,
+ * forge-core `checks_state`); a run that does not count never shadows it. A name with no counting
+ * run shows its newest trusted run, else its newest run, marked not counted.
  */
-export function newestCheckRuns(docs: readonly PlainDocument[], isMember: (who: string) => boolean): CheckRun[] {
+export function newestCheckRuns(docs: readonly PlainDocument[], isMember: (who: string) => boolean, pins: ReadonlyMap<string, string> = new Map()): CheckRun[] {
   const newest = new Map<string, PlainDocument>()
   const key = (d: PlainDocument) => ({ createdAt: num(d, '$createdAt'), id: str(d, '$id') })
+  // 2 counts, 1 trusted but not from the pinned source, 0 untrusted.
+  const rank = (d: PlainDocument, name: string): number => {
+    const who = str(d, '$ownerId')
+    if (!isMember(who)) return 0
+    const pin = pins.get(name)
+    return pin === undefined || pin === who ? 2 : 1
+  }
   for (const d of docs) {
     const name = str(d, 'name')
     if (name === '') continue
     const held = newest.get(name)
-    const trusted = isMember(str(d, '$ownerId'))
-    const heldTrusted = held !== undefined && isMember(str(held, '$ownerId'))
-    if (held === undefined || (trusted && !heldTrusted) || (trusted === heldTrusted && compareKey(key(d), key(held)) > 0)) newest.set(name, d)
+    const r = rank(d, name)
+    const heldRank = held === undefined ? -1 : rank(held, name)
+    if (held === undefined || r > heldRank || (r === heldRank && compareKey(key(d), key(held)) > 0)) newest.set(name, d)
   }
   return [...newest.entries()]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([name, d]) => ({
-      id: str(d, '$id'),
-      name,
-      status: str(d, 'status'),
-      conclusion: str(d, 'conclusion'),
-      detailsUrl: str(d, 'detailsUrl'),
-      summary: str(d, 'summary'),
-      reporter: str(d, '$ownerId'),
-      trusted: isMember(str(d, '$ownerId')),
-      createdAt: num(d, '$createdAt'),
-      startedAt: num(d, 'startedAt'),
-      completedAt: num(d, 'completedAt'),
-      logUrl: str(d, 'logUrl'),
-      logSha256: byteFieldToHex(d, 'logSha256'),
-    }))
+    .map(([name, d]) => {
+      const reporter = str(d, '$ownerId')
+      const pin = pins.get(name) ?? null
+      return {
+        id: str(d, '$id'),
+        name,
+        status: str(d, 'status'),
+        conclusion: str(d, 'conclusion'),
+        detailsUrl: str(d, 'detailsUrl'),
+        summary: str(d, 'summary'),
+        reporter,
+        trusted: isMember(reporter),
+        createdAt: num(d, '$createdAt'),
+        startedAt: num(d, 'startedAt'),
+        completedAt: num(d, 'completedAt'),
+        logUrl: str(d, 'logUrl'),
+        logSha256: byteFieldToHex(d, 'logSha256'),
+        requiredSource: pin,
+        fromRequiredSource: pin === null || pin === reporter,
+      }
+    })
 }
 
 /** The trusted runs' tally: what the checks row and the policy's `requireChecks` read. */
@@ -92,24 +151,31 @@ export interface ChecksSummary {
   readonly passed: number
   readonly failing: number
   readonly pending: number
-  /** Trusted runs (the ones that count). */
+  /** Runs that count: a trusted reporter, and for a pinned check its source. */
   readonly total: number
   /** Runs listed but not counted (their reporter is no longer a member or runner). */
   readonly untrusted: number
+  /** Runs listed but not counted: a trusted reporter, but not the source the policy pins the check to. */
+  readonly offSource: number
   /** The membership was read: without it no run can be trusted, and nothing is known. */
   readonly membersKnown: boolean
 }
 
 export function summarizeChecks(runs: readonly CheckRun[], membersKnown: boolean): ChecksSummary {
-  const trusted = runs.filter((r) => r.trusted)
-  const n = (o: CheckOutcome) => trusted.filter((r) => checkOutcome(r) === o).length
-  return { passed: n('passed'), failing: n('failing'), pending: n('pending'), total: trusted.length, untrusted: runs.length - trusted.length, membersKnown }
+  const counted = runs.filter(runCounts)
+  const n = (o: CheckOutcome) => counted.filter((r) => checkOutcome(r) === o).length
+  const untrusted = runs.filter((r) => !r.trusted).length
+  return { passed: n('passed'), failing: n('failing'), pending: n('pending'), total: counted.length, untrusted, offSource: runs.length - counted.length - untrusted, membersKnown }
 }
 
 /** "3 passed, 1 failing", "No checks reported", or why nothing is known. */
 export function checksPhrase(s: ChecksSummary): string {
   if (!s.membersKnown) return "Couldn't read the members, so which checks count is unknown"
-  const extra = s.untrusted > 0 ? ` (${s.untrusted} not counted: reporter no longer a member or runner)` : ''
+  const notCounted = [
+    s.untrusted > 0 ? `${s.untrusted} not counted: reporter no longer a member or runner` : '',
+    s.offSource > 0 ? `${s.offSource} not from the required source` : '',
+  ].filter((p) => p !== '')
+  const extra = notCounted.length > 0 ? ` (${notCounted.join('; ')})` : ''
   if (s.total === 0) return `No checks reported${extra}`
   const parts = [s.passed > 0 ? `${s.passed} passed` : '', s.failing > 0 ? `${s.failing} failing` : '', s.pending > 0 ? `${s.pending} pending` : ''].filter((p) => p !== '')
   return `${parts.join(', ')}${extra}`
@@ -163,13 +229,16 @@ export interface HeadChecks {
   readonly runners: ReadonlySet<string>
 }
 
-/** The check runs on `headOid`, trusted when the reporter is in `members` or a current runner. */
-export async function readCheckRuns(sdk: EvoSDK, repo: RepoRef, headOid: string, members: ReadonlySet<string>): Promise<HeadChecks> {
+/**
+ * The check runs on `headOid`, trusted when the reporter is in `members` or a current runner; a
+ * check `pins` pins ({@link requiredSources}) counts its source's runs only.
+ */
+export async function readCheckRuns(sdk: EvoSDK, repo: RepoRef, headOid: string, members: ReadonlySet<string>, pins: ReadonlyMap<string, string> = new Map()): Promise<HeadChecks> {
   const docs = await readCheckRunDocs(sdk, repo, headOid)
   if (docs.length === 0) return { runs: [], rows: [], runners: new Set() }
   const runners = new Set(await readRunnersCached(sdk, repo))
   return {
-    runs: newestCheckRuns(docs, (who) => members.has(who) || runners.has(who)),
+    runs: newestCheckRuns(docs, (who) => members.has(who) || runners.has(who), pins),
     rows: docs.map((d) => ({
       id: str(d, '$id'),
       headOid: headOid.toLowerCase(),
