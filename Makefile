@@ -56,7 +56,7 @@ infra-up:
 infra-down:
 	docker compose -f $(COMPOSE_FILE) down -v
 
-## e2e: run the CLI end-to-end suite (LIVE devnet moutai, forge-v2) against the
+## e2e: run the CLI end-to-end suite (LIVE devnet bonsia, forge-v2) against the
 ## OWNER-owned e2e-cli repo (created on first run).
 ## Builds the binaries if needed, then drives real git push/clone through the
 ## dash:// helper. See e2e/cli/README-less run.sh header for env knobs
@@ -76,9 +76,9 @@ e2e-fixture:
 ## Devnet bonsia is not in dash-network-configs: run with DEVNET=bonsia and
 ## FORGE_DEVNET_FUNDING_WIF set (or use the QA harness outside this repo,
 ## dash-forge-qa's `QA_NETWORK=bonsia qa mint`).
-## Knobs: DEVNET (moutai), DEVNET_CONFIGS (~/workspace/dash-network-configs),
+## Knobs: DEVNET (bonsia), DEVNET_CONFIGS (~/workspace/dash-network-configs),
 ## DEVNET_IDENTITY_DIR, DEVNET_POOL_AMOUNT (DASH per role), DEVNET_ROLE_AMOUNTS.
-DEVNET ?= moutai
+DEVNET ?= bonsia
 DEVNET_CONFIGS ?= $(HOME)/workspace/dash-network-configs
 DEVNET_IDENTITY_DIR ?= $(HOME)/.config/dash-forge/test-identities/devnet-$(DEVNET)
 DEVNET_POOL_AMOUNT ?= 5
@@ -126,7 +126,7 @@ storage-it: infra-up
 	FORGE_IT_S3=1 FORGE_IT_IPFS=1 cargo test --locked -p forge-core --lib -- backends::live_tests storage::
 
 ## storage-e2e: a REAL `git push` / `git clone` through git-remote-dash with packs stored
-## on local RustFS (S3) + kubo and only the manifest + ref on devnet moutai, against the
+## on local RustFS (S3) + kubo and only the manifest + ref on devnet bonsia, against the
 ## dedicated storage-e2e-a / storage-e2e-b repos (e2e/README.md; ~0.001 DASH each, once).
 ## Builds the helper with the `test-hooks` fault-injection feature. Opt-in.
 storage-e2e: infra-up

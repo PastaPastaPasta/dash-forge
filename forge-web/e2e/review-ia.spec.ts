@@ -9,7 +9,7 @@ import { idFile, idOf, runAxe, shot, signedIn, unlock, waitForRepoResolved } fro
  * The PR page's information architecture, drafts and head sync (review-parity spec §7 PR 3),
  * live on a devnet with the spec's own identities (real spend, about 0.01 DASH):
  *
- *   E2E_DEVNET=moutai E2E_WRITE=1 E2E_IDENTITY_DIR=<dir with OWNER, CONTRIB, COLLAB> \
+ *   E2E_DEVNET=bonsia E2E_WRITE=1 E2E_IDENTITY_DIR=<dir with OWNER, CONTRIB, COLLAB> \
  *     E2E_BIN_DIR=<dir with dg + git-remote-dash> pnpm exec playwright test review-ia.spec.ts
  *
  * The CLI sets up what a browser cannot (a repo with a pushed `main`, a fork, a feature branch
@@ -48,7 +48,7 @@ function env(who: string): NodeJS.ProcessEnv {
     ...process.env,
     DASH_FORGE_KEY: idFile(who),
     DASH_FORGE_NETWORK: 'devnet',
-    DASH_FORGE_DEVNET_NAME: process.env['E2E_DEVNET'] || 'moutai',
+    DASH_FORGE_DEVNET_NAME: process.env['E2E_DEVNET'] || 'bonsia',
     RUST_LOG: 'error',
     NO_COLOR: '1',
     PATH: `${BIN}:${process.env['PATH'] ?? ''}`,

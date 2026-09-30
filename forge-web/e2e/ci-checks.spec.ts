@@ -7,7 +7,7 @@ import { collectPageErrors, repoUrl, shot } from './helpers'
  * read from the reporter's storage and verified against the SHA-256 on chain.
  *
  *   E2E_CI_OWNER=<id> E2E_CI_REPO=<name> E2E_CI_SHA=<commit> E2E_CI_RUNNER_CHECK=<name> \
- *   [E2E_CI_LOG_CHECK=<name>] [E2E_CI_REVOKED_CHECK=<name>] E2E_DEVNET=moutai \
+ *   [E2E_CI_LOG_CHECK=<name>] [E2E_CI_REVOKED_CHECK=<name>] E2E_DEVNET=bonsia \
  *   pnpm exec playwright test ci-checks.spec.ts
  *
  * Read-only. The runs are made by the CLI first (e2e/cli/scenarios/35-ci-runner-report.sh, or

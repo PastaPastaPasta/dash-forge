@@ -17,7 +17,7 @@ Amounts are in **DASH**. Dollar figures are examples at **$30/DASH**, the same f
 
 Platform fees are paid in **credits**, from your identity's balance. **1 DASH = 100,000,000,000 credits.**
 
-You get credits by locking Dash into your identity from any Dash wallet: when you create the identity, or later with a top-up (the bridge's **Top Up Existing Identity**). Forge does not sponsor identities, and mainnet has no faucet. Devnet moutai Dash is free, from the [moutai faucet](https://faucet.moutai.networks.dash.org).
+You get credits by locking Dash into your identity from any Dash wallet: when you create the identity, or later with a top-up (the bridge's **Top Up Existing Identity**). Forge does not sponsor identities, and mainnet has no faucet. Devnet bonsia Dash is free, from the [bonsia faucet](https://faucet.bonsia.networks.dash.org).
 
 ```sh
 dg auth balance

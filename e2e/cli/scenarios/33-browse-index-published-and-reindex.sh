@@ -17,8 +17,8 @@
 #      reports `indexSkipped`; the retry stores no pack again and publishes the missing index.
 #
 # Needs a test-hooks git-remote-dash (SKIPs otherwise; `cargo build -p git-remote-dash
-# --features test-hooks`), GitHub access, and an identity minted for the run (the moutai funding
-# key under `lockf /tmp/qa-mint.lock`, or `E2E_S33_IDENTITY`). Two new repos per run
+# --features test-hooks`), GitHub access, and an identity minted for the run (the devnet's funding
+# key E2E_MINT_FUNDING under `lockf $E2E_MINT_LOCK`, or `E2E_S33_IDENTITY`). Two new repos per run
 # (`e2e-idx-<run-id>`, `e2e-idx-lag-<run-id>`). Not in the default set (`run.sh 33`).
 SCENARIO_NAME="33 a push publishes its browse index, or says so; dg repo reindex repairs it (D-920)"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
@@ -31,7 +31,6 @@ grep -q DASH_FORGE_TEST_MANIFEST_LAG "${BIN_DIR}/git-remote-dash" 2>/dev/null \
 if ! command -v gh >/dev/null || { [[ -z "${GH_TOKEN:-}" ]] && ! gh auth token >/dev/null 2>&1; }; then
   skip_scenario "no GitHub access (log in with gh or set GH_TOKEN)"
 fi
-: "${MOUTAI_FUNDING:=/Users/pasta/workspace/dash-forge-qa/secrets/moutai-funding.wif}"
 : "${MINT_DIR:=${E2E_REPO_ROOT}/tools/mint-identity}"
 : "${E2E_S33_SOURCE:=sharkdp/hyperfine}"
 
@@ -43,12 +42,12 @@ step "this run's identity"
 if [[ -n "${E2E_S33_IDENTITY:-}" ]]; then
   cp "$E2E_S33_IDENTITY" "$IDS/S33.identity.json"
 else
-  [[ -r "$MOUTAI_FUNDING" ]] || skip_scenario "no moutai funding key ($MOUTAI_FUNDING); or set E2E_S33_IDENTITY"
+  [[ -r "$E2E_MINT_FUNDING" ]] || skip_scenario "no ${DASH_FORGE_DEVNET_NAME} funding key ($E2E_MINT_FUNDING); or set E2E_S33_IDENTITY"
   [[ -d "$MINT_DIR/node_modules/@dashevo/evo-sdk" ]] || skip_scenario "tools/mint-identity has no node_modules (npm ci there)"
-  lock=(); lf="${E2E_MINT_LOCK:-/tmp/qa-mint.lock}"
+  lock=(); lf="$E2E_MINT_LOCK"
   if command -v lockf >/dev/null; then lock=(lockf -t 1200 "$lf"); elif command -v flock >/dev/null; then lock=(flock -w 1200 "$lf"); fi
-  "${lock[@]}" node "$MINT_DIR/mint.mjs" --network devnet --devnet-name "${DASH_FORGE_DEVNET_NAME:-moutai}" \
-    --funding fund-from-key --funding-key-file "$MOUTAI_FUNDING" --out "$IDS" --label S33 --amount 3 \
+  "${lock[@]}" node "$MINT_DIR/mint.mjs" --network devnet --devnet-name "$DASH_FORGE_DEVNET_NAME" \
+    --funding fund-from-key --funding-key-file "$E2E_MINT_FUNDING" --out "$IDS" --label S33 --amount 3 \
     >"$LOG-mint.log" 2>&1 || { tail -5 "$LOG-mint.log" >&2; skip_scenario "minting failed (funding or network)"; }
 fi
 ID="$IDS/S33.identity.json"

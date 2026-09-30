@@ -7,7 +7,7 @@ import { expectLanded, idFile, idOrEmpty, loadSeedPulls, repoUrl, shot, signedIn
  * G17 (L-36, L-37, L-38): plurals, the follower / following lists, PR and issue copy, and the
  * inline cost hints, live on a devnet.
  *
- *   E2E_DEVNET=moutai E2E_SKIP_BUILD=1 E2E_PORT=<p> pnpm exec playwright test collab-copy.spec.ts
+ *   E2E_DEVNET=bonsia E2E_SKIP_BUILD=1 E2E_PORT=<p> pnpm exec playwright test collab-copy.spec.ts
  *
  * The read checks use the shared read fixture (`DEMO`) and write nothing. The follow checks need
  * two identities of the spec's own (E2E_IDENTITY_DIR holding FOLLOWER and FOLLOWED; never the
@@ -43,7 +43,7 @@ test('g17-1. a merged PR says what happened, with short branch names (L-37, D-10
   // The list names the base branch the same way.
   await page.goto(repoUrl('pulls'), { waitUntil: 'domcontentloaded' })
   await expectLanded(page, page.getByText(/Greet by name/).first())
-  await page.getByRole('button', { name: /^All$/i }).click()
+  await page.getByRole('tab', { name: 'All', exact: true }).click()
   await expect(page.getByText(/Document the fold rules/).first()).toBeVisible({ timeout: 60_000 })
   await expect(page.locator('main')).not.toContainText('into refs/heads/')
   await expect(page.locator('main')).toContainText('into main')

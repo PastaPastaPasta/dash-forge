@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test'
 import { PUSH_COST_DASH } from '../lib/sdk/cost'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { collectPageErrors, E2E_DEVNET, EMPTY, readErrorBanner, runAxe, SCREENSHOT_DIR, shot, waitForRepoResolved } from './helpers'
+import { collectPageErrors, DEMO, E2E_DEVNET, EMPTY, readErrorBanner, runAxe, SCREENSHOT_DIR, shot, waitForRepoResolved } from './helpers'
 
 /**
  * Repo home launch UX against the moutai forge-v2 fixture (read-only; nothing is signed):
@@ -10,11 +10,11 @@ import { collectPageErrors, E2E_DEVNET, EMPTY, readErrorBanner, runAxe, SCREENSH
  * clone box (zip + install sheet), the empty repo, short URLs through the 404 shim, the
  * Releases tab, axe, and a 390px phone.
  *
- *   E2E_DEVNET=moutai E2E_PORT=4322 pnpm exec playwright test v2-home.spec.ts
+ *   E2E_DEVNET=bonsia E2E_PORT=4322 pnpm exec playwright test v2-home.spec.ts
  */
 
 
-const OWNER = process.env['E2E_V2_OWNER'] ?? 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
+const OWNER = DEMO.owner
 const MAINTAINER = EMPTY.owner
 const NAME = process.env['E2E_V2_NAME'] ?? 'forge-v2-demo'
 
@@ -88,8 +88,8 @@ test.describe('repo home launch UX (moutai fixture)', () => {
       await expect(card.getByText(row, { exact: true })).toBeVisible()
     }
     await expect(card.getByText(`Refs, issues and members were proven against Dash devnet-${E2E_DEVNET}.`)).toBeVisible()
-    // moutai records a DAPI list, so a second key source is asked and must agree.
-    await expect(card.getByText(/quorums\.moutai\.networks\.dash\.org and .*\(a DAPI node\); both agreed on every one of the \d+ quorums used/)).toBeVisible()
+    // The devnet records a DAPI list, so a second key source is asked and must agree.
+    await expect(card.getByText(new RegExp(`quorums\\.${E2E_DEVNET}\\.networks\\.dash\\.org and .*\\(a DAPI node\\); both agreed on every one of the \\d+ quorums used`))).toBeVisible()
     await expect(card.getByText(/fetched the key list again to compare/)).toBeVisible()
     await expect(card.getByText(/^`?main`? =|main =/).first()).toBeVisible()
     await expect(card.getByText(/FORGE_RULES_V2/)).toBeVisible()

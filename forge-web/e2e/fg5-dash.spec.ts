@@ -4,7 +4,7 @@ import { collectPageErrors, countDapi, E2E_DEVNET, repoUrl, shot, showcaseRepo, 
 /**
  * FG-5 on the dashpay/dash showcase mirror, read-only, with request and time budgets:
  *
- *   E2E_DEVNET=moutai pnpm exec playwright test fg5-dash.spec.ts
+ *   E2E_DEVNET=bonsia pnpm exec playwright test fg5-dash.spec.ts
  *
  * - fg5-1: the 747-file merge f5979f7c5: whole-commit totals equal `git diff --shortstat`
  *   (+1331 −1906, L-25) once "Count lines" has read every file, and the Tree-SHA512 trailer wraps
@@ -41,7 +41,13 @@ test.describe('FG-5 on the dash mirror (read-only)', () => {
   test.skip(E2E_DEVNET !== 'moutai' && E2E_DEVNET !== 'bonsia', 'the dash showcase mirror is imported on the live devnet')
   let DASH: { readonly owner: string; readonly name: string }
   test.beforeAll(async () => {
-    DASH = await showcaseRepo('DASHPAY', 'dash')
+    const dash = await showcaseRepo('DASHPAY', 'dash').catch((e: unknown) => {
+      // helpers.ts `showcaseRepo`: the name does not resolve = no mirror here. Anything else fails.
+      if (e instanceof Error && e.message.includes('does not resolve')) return null
+      throw e
+    })
+    test.skip(dash === null, `the dash mirror is not imported on ${E2E_DEVNET}`)
+    DASH = dash as NonNullable<typeof dash>
   })
 
   test('fg5-1. the 747-file merge: whole-commit totals equal git, within a request budget', async ({ browser }) => {

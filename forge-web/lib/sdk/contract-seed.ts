@@ -25,13 +25,13 @@ export type ContractSnapshots = Readonly<Record<string, ContractSnapshot>>
 /**
  * Deployment key → snapshot loader. Add an entry when a deployment gets a snapshot.
  *
- * Empty until the beta.7 wipe registers the fresh contracts: the moutai snapshot held the
- * beta.6 registration, whose `lookup` / `propertyAgreement` bytes beta.7 refuses on every parse
- * (platform#5197). The wipe runbook (dash-forge-qa/WIPE-PLAN.md §3 step 5) re-runs `snapshot-contracts.mjs` and adds
- * `'devnet-moutai': () => import('../../../forge-contracts/deployments/contracts/devnet-moutai.json')`
- * back; until then every page fetches its contracts (one request each, cached).
+ * devnet moutai has none: its beta.6 registration's `lookup` / `propertyAgreement` bytes are
+ * refused by beta.7 on every parse (platform#5197), so a moutai build fetches its contracts
+ * (one request each, cached).
  */
-const SNAPSHOTS: Readonly<Record<string, () => Promise<{ default: ContractSnapshots }>>> = {}
+const SNAPSHOTS: Readonly<Record<string, () => Promise<{ default: ContractSnapshots }>>> = {
+  'devnet-bonsia': () => import('../../../forge-contracts/deployments/contracts/devnet-bonsia.json'),
+}
 
 /** The deployment keys that have a snapshot. */
 export const SNAPSHOT_KEYS: readonly string[] = Object.keys(SNAPSHOTS)

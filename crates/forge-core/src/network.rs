@@ -182,7 +182,7 @@ fn validate_devnet_name(name: &str) -> Result<()> {
     let ok_chars = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
     if !ok_chars || name.starts_with('-') || name.ends_with('-') {
         return Err(Error::Config(format!(
-            "invalid devnet name {name:?}: use letters, digits and inner hyphens (e.g. `moutai`)"
+            "invalid devnet name {name:?}: use letters, digits and inner hyphens (e.g. `bonsia`)"
         )));
     }
     // These alias a real network's quorum host (quorums.mainnet.networks.dash.org).

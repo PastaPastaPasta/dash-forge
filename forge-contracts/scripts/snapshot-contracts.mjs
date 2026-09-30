@@ -13,7 +13,7 @@
 // Re-run after deploy-v2.mjs registers new contracts. `lib/sdk/contract-seed.test.ts` in
 // forge-web fails while the snapshot and the deployment file disagree.
 //
-//   node scripts/snapshot-contracts.mjs [--network devnet --devnet-name moutai]
+//   node scripts/snapshot-contracts.mjs [--network devnet --devnet-name bonsia]
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -44,7 +44,7 @@ export function snapshotIds(dep) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const network = args.network || 'devnet';
-  const devnetName = network === 'devnet' ? args['devnet-name'] || 'moutai' : undefined;
+  const devnetName = network === 'devnet' ? args['devnet-name'] || 'bonsia' : undefined;
   const key = network === 'devnet' ? `devnet-${devnetName}` : network;
   const depFile = join(ROOT, 'deployments', `${key}.json`);
   if (!existsSync(depFile)) throw new Error(`no deployment file ${depFile}`);

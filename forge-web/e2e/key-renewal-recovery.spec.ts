@@ -2,12 +2,12 @@ import { test, expect, type Page } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { E2E_DEVNET, PASSPHRASE, shot } from './helpers'
+import { DEMO, E2E_DEVNET, PASSPHRASE, shot } from './helpers'
 
 /**
  * A key renewal interrupted after its identity update was broadcast, live on a devnet (D-016):
  *
- *   E2E_DEVNET=moutai E2E_WRITE=1 E2E_RENEW_IDENTITY=/path/to/fresh.identity.json \
+ *   E2E_DEVNET=bonsia E2E_WRITE=1 E2E_RENEW_IDENTITY=/path/to/fresh.identity.json \
  *     pnpm exec playwright test key-renewal-recovery.spec.ts
  *
  * Needs a freshly minted identity of its own (about 0.05 DASH: two key registrations and one
@@ -30,7 +30,7 @@ test.describe.configure({ mode: 'serial', timeout: 6 * 60_000 })
 
 const ROOT = resolve(__dirname, '../..')
 /** Someone to follow: the read fixture's seeder (following writes only to the follower). */
-const DEMO_OWNER = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
+const DEMO_OWNER = DEMO.owner
 const BROADCAST = '**/org.dash.platform.dapi.v0.Platform/broadcastStateTransition'
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- evo-sdk is imported by path in Node */

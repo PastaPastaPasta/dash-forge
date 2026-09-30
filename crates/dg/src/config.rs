@@ -6,7 +6,7 @@
 //!
 //! ```toml
 //! network = "devnet"            # testnet | mainnet | devnet
-//! devnet_name = "moutai"        # devnet only
+//! devnet_name = "bonsia"        # devnet only
 //! dapi_addresses = "68.67.122.254,68.67.122.207"   # devnet only; default: deployments file
 //! trending = false              # `dg repo star` does not count toward Trending (default: true)
 //! ```
@@ -22,7 +22,7 @@ pub struct Config {
     /// Default network (`testnet` / `mainnet` / `devnet`). Overridden by `--network`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
-    /// Devnet name (`moutai`) when `network = "devnet"`. Overridden by `--devnet-name`.
+    /// Devnet name (`bonsia`) when `network = "devnet"`. Overridden by `--devnet-name`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub devnet_name: Option<String>,
     /// Comma-separated devnet DAPI addresses. Overridden by `--dapi-addresses`.

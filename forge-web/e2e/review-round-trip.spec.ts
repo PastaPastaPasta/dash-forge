@@ -16,7 +16,7 @@ import { shot, waitForRepoResolved } from './helpers'
  *   - the three inline threads, every one outdated on the final head ("on an older version"),
  *     each resolved ("resolved a conversation" ×3).
  *
- *   E2E_S21_STATE=/path/s21-state.json E2E_DEVNET=moutai pnpm exec playwright test review-round-trip
+ *   E2E_S21_STATE=/path/s21-state.json E2E_DEVNET=bonsia pnpm exec playwright test review-round-trip
  *
  * Skipped without a state file.
  */

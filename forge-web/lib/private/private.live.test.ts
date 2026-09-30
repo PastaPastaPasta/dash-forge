@@ -1,13 +1,13 @@
 /**
- * Live private-repository write + read smoke on devnet moutai — SKIPPED by default (network,
+ * Live private-repository write + read smoke on devnet bonsia — SKIPPED by default (network,
  * WASM, a few cents of spend).
  *
  * Run with:
- *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=moutai \
+ *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia \
  *     pnpm exec vitest run lib/private/private.live.test.ts
  *
- * Creates a fresh private repo with the moutai test identities in
- * `~/.config/dash-forge/test-identities/devnet-moutai/` and one document of every type
+ * Creates a fresh private repo with the devnet's test identities in
+ * `~/.config/dash-forge/test-identities/devnet-<name>/` and one document of every type
  * `docs/security/private-repos.md` §13 changed (each now requires `$createdAtBlockHeight`, set
  * by the network): the owner's self-`repoKey` wrap (evo-sdk `encryptedFor`), the epoch-0 anchor
  * `config` (enc v0x02), a `refUpdate` and a `protectedRefUpdate` (HMAC ref-name hash, refName
@@ -34,7 +34,7 @@ import { packHash, sealPack } from './pack'
 import { sealWrap, unwrapKey } from './wrap'
 
 const LIVE = process.env['FORGE_LIVE'] === '1' && DEFAULT_NETWORK === 'devnet'
-const ID_DIR = join(homedir(), '.config/dash-forge/test-identities/devnet-moutai')
+const ID_DIR = join(homedir(), '.config/dash-forge/test-identities', NETWORKS[DEFAULT_NETWORK].key)
 
 interface KeyRecord {
   readonly id: number
@@ -52,7 +52,7 @@ interface IdentityRecord {
 
 type Evo = typeof import('@dashevo/evo-sdk')
 
-describe.skipIf(!LIVE)('live private repository (moutai)', () => {
+describe.skipIf(!LIVE)('live private repository (bonsia)', () => {
   it(
     'writes every §13 type with $createdAtBlockHeight required, and reads it back',
     async () => {

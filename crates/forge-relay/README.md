@@ -59,7 +59,7 @@ docker run --rm --read-only \
   -v "$PWD/relay-key.json:/id/relay.json:ro" \
   -v relay-state:/state \
   forge-relay --identity /id/relay.json --network testnet
-# a devnet: --network devnet --devnet-name moutai
+# a devnet: --network devnet --devnet-name bonsia
 ```
 
 Both images keep the retry queue in `/state` (`FORGE_RELAY_STATE_DIR=/state`, owned by the

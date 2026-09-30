@@ -2,13 +2,13 @@ import { test, expect, type Browser, type Page } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { E2E_DEVNET, shot } from './helpers'
+import { DEMO, E2E_DEVNET, shot } from './helpers'
 
 /**
  * Refused writes, retries and the write flow's guards, live on a devnet (D-007, D-008, D-012,
  * D-042, D-048, D-049):
  *
- *   E2E_DEVNET=moutai E2E_WRITE=1 E2E_REFUSAL_IDENTITY=/path/to/funded.identity.json \
+ *   E2E_DEVNET=bonsia E2E_WRITE=1 E2E_REFUSAL_IDENTITY=/path/to/funded.identity.json \
  *     pnpm exec playwright test write-refusals.spec.ts
  *
  * Needs an identity of its own with about 0.02 DASH to spend: the spec registers limited keys
@@ -37,7 +37,7 @@ test.skip(ID_FILE === '' || !existsSync(ID_FILE), 'set E2E_REFUSAL_IDENTITY to a
 test.describe.configure({ mode: 'serial', timeout: 6 * 60_000 })
 
 const ROOT = resolve(__dirname, '../..')
-const DEMO_OWNER = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
+const DEMO_OWNER = DEMO.owner
 /** The scratch repo: made by s0, or an earlier run's (`E2E_REFUSAL_REPO`) to rerun one test. */
 const SCRATCH = process.env['E2E_REFUSAL_REPO'] || `refusal-${Date.now().toString(36)}`
 const DAY = 86_400_000
