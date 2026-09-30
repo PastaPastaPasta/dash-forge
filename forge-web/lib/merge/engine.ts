@@ -61,6 +61,12 @@ export interface MergeInput {
    * `dg pr merge --squash`. Absent: fast-forward when possible, else a merge commit.
    */
   readonly squash?: { readonly message: string }
+  /**
+   * Always a merge commit (`git merge --no-ff`, GitHub's "Create a merge commit"; QW-069): when
+   * the head descends from the base tip, a commit with the head's tree and parents base tip then
+   * head, instead of a fast-forward. Ignored with {@link squash}, and on an empty base.
+   */
+  readonly noFastForward?: true
 }
 
 /** A merge the engine can make, before its pack is built. */
@@ -432,6 +438,8 @@ async function build(
   if (plan.kind === 'up-to-date' || plan.kind === 'unrelated' || plan.kind === 'conflict') return plan
   let tip: string
   let source = reader
+  // What the base gains: a fast-forward, unless --no-ff makes it a merge commit.
+  let kind: 'fast-forward' | 'merge' = plan.kind
   if (input.squash !== undefined) {
     // One commit on the base tip with the merged tree (the head's own when it descends).
     onProgress?.('merge')
@@ -450,8 +458,16 @@ async function build(
     tip = gitOidHex('commit', bytes)
     checkCommit(tip, bytes)
     source = withObjects(reader, [...extra, { type: 'commit', bytes }])
-  } else if (plan.kind === 'fast-forward') {
+  } else if (plan.kind === 'fast-forward' && (input.noFastForward !== true || input.baseTip === '')) {
     tip = plan.newTip
+  } else if (plan.kind === 'fast-forward') {
+    // --no-ff onto a base the head descends from: nothing to merge, the head's tree is the result.
+    onProgress?.('merge')
+    const bytes = mergeCommitBytes(parseCommit((await reader.readObject(input.headOid)).bytes).tree, input)
+    tip = gitOidHex('commit', bytes)
+    checkCommit(tip, bytes)
+    source = withObjects(reader, [{ type: 'commit', bytes }])
+    kind = 'merge'
   } else {
     onProgress?.('merge')
     const merged = await disjointMerge(reader, input, plan.mergeBase)
@@ -467,12 +483,12 @@ async function build(
   let objects = await objectsToPack(source, await newCommits(source, tip, baseHave))
   // The check sizes what it walked: at least what the merge packs (a same-repo head's history is
   // then left out of the pack), so an upper bound.
-  if (!pack) return { kind: 'checked', check: plan.kind, packEstimate: { bytes: packSizeBound(objects), objectCount: objects.length } }
+  if (!pack) return { kind: 'checked', check: kind, packEstimate: { bytes: packSizeBound(objects), objectCount: objects.length } }
   // A squash commit's only parent is the base tip: nothing of the head's history is pushed.
   // What the base repo's packs already hold is not packed again: for a same-repo PR the head's
   // history (a fast-forward to it packs nothing).
   if (input.headInBase && input.squash === undefined) objects = await objectsToPack(source, await newCommits(source, tip, [...baseHave, input.headOid]))
   const built = writePack(objects)
   onProgress?.('pack', plural(built.objectCount, 'object'))
-  return { kind: input.squash !== undefined ? 'squash' : plan.kind, newTip: tip, pack: built.bytes, packHash: built.packHash, objectCount: built.objectCount }
+  return { kind: input.squash !== undefined ? 'squash' : kind, newTip: tip, pack: built.bytes, packHash: built.packHash, objectCount: built.objectCount }
 }

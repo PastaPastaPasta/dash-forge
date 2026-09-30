@@ -58,9 +58,16 @@ import { Textarea } from '@/components/ui/input'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
-
 /** "Delete the branch after merging": runnable, or shown disabled with why. */
 export type DeleteBranchOption = { readonly label: string; readonly run: () => Promise<void> } | { readonly label: string; readonly disabled: string }
+
+/** A fast-forward's pack estimate grown by the merge commit a --no-ff adds (about 1 KiB; the estimate's slack covers a longer title). */
+function withMergeCommit(e: PackEstimate | null): PackEstimate | null {
+  return e === null ? null : { bytes: e.bytes + 1024, objectCount: e.objectCount + 1 }
+}
+
+/** The merge methods: the plan's (fast-forward, or a merge commit), --no-ff, or a squash. */
+type Method = 'merge' | 'no-ff' | 'squash'
 
 /**
  * "Close #12 after merging" (review-parity P8, QW-015): the open issues the PR's description
@@ -139,7 +146,7 @@ export function MergePanel({
   // The check sizes the pack (an upper bound): the Storage row prices it before the merge starts.
   // With the method it was sized for (a squash packs none of the head's history): an estimate for
   // another method is no price for this one, and is sized again.
-  const [sized, setSized] = useState<{ readonly estimate: PackEstimate | null; readonly method: 'merge' | 'squash' } | null>(null)
+  const [sized, setSized] = useState<{ readonly estimate: PackEstimate | null; readonly method: Method } | null>(null)
   // "Allow storing on Platform": until the merger touches it, its default follows the policy.
   const [allowTouched, setAllowTouched] = useState<boolean | null>(null)
   const baseRefName = pull.state.baseRef ?? pull.baseRefName
@@ -152,9 +159,23 @@ export function MergePanel({
   const sameRepo = pull.sourceId === '' || pull.sourceId === repo.repoId
 
   const policyAllows = (bit: number): boolean => allowedMethods === 0 || (allowedMethods & bit) !== 0
-  const [picked, setMethod] = useState<'merge' | 'squash' | null>(null)
+  const [check, setCheck] = useState<MergeCheck | { error: string } | null>(null)
+  // QW-069: where a fast-forward is possible, "Create a merge commit" (--no-ff) is offered too, as
+  // GitHub's default is; a policy allowing merge commits only then still merges.
+  const ffPossible = check === 'fast-forward'
+  const [picked, setMethod] = useState<Method | null>(null)
   // Until the merger picks, the method follows the policy (which may load after the panel).
-  const method: 'merge' | 'squash' = picked ?? (policyAllows(1) || policyAllows(2) ? 'merge' : 'squash')
+  const preferred: Method = ffPossible
+    ? policyAllows(1)
+      ? 'merge'
+      : policyAllows(2)
+        ? 'no-ff'
+        : 'squash'
+    : policyAllows(1) || policyAllows(2)
+      ? 'merge'
+      : 'squash'
+  // --no-ff where no fast-forward is possible is the plain merge commit.
+  const method: Method = picked === 'no-ff' && !ffPossible ? 'merge' : picked ?? preferred
   const committer = `${prefs.mergeName.trim()} <${prefs.mergeEmail.trim()}>`
   const [squashText, setSquashText] = useState<string | null>(null)
   const squash = squashDraft(pull, squashAuthors, committer, squashText)
@@ -174,6 +195,7 @@ export function MergePanel({
       author: { name: prefs.mergeName.trim(), email: prefs.mergeEmail.trim() },
       headInBase: sameRepo,
       ...(method === 'squash' ? { squash: { message: squashMsg } } : {}),
+      ...(method === 'no-ff' ? { noFastForward: true as const } : {}),
     }),
     [baseTipOid, pull.headOid, pull.number, pull.sourceRefName, pull.title, prefs.mergeName, prefs.mergeEmail, sameRepo, method, squashMsg],
   )
@@ -185,9 +207,8 @@ export function MergePanel({
   // The pre-answer the run starts with: credits allowed on Platform (null: none, it asks).
   const preAgreedCredits = allowPlatform ? (storage?.platformCredits ?? null) : null
 
-  // The worker's verdict. Each check owns its worker and aborts it when superseded or
-  // unmounted, so a stale check never keeps reading objects.
-  const [check, setCheck] = useState<MergeCheck | { error: string } | null>(null)
+  // The worker's verdict (declared above, with the method it defaults). Each check owns its
+  // worker and aborts it when superseded or unmounted, so a stale check never keeps reading objects.
   const [conflictPaths, setConflictPaths] = useState<readonly string[]>([])
   const [mergedHere, setMergedHere] = useState(false)
   // Nothing to check once the PR is merged (this panel's own merge included: the base then holds
@@ -201,14 +222,17 @@ export function MergePanel({
     const abort = new AbortController()
     setCheck(null)
     setSized(null)
-    const sizing = inputRef.current.squash !== undefined ? 'squash' : 'merge'
-    // The check needs a name for the trial merge commit; the real one is written on click.
-    checkMergeInWorker(reader, { ...inputRef.current, author: { name: 'check', email: 'check@forge' } }, abort.signal).then(
+    const sizing: Method = inputRef.current.squash !== undefined ? 'squash' : inputRef.current.noFastForward === true ? 'no-ff' : 'merge'
+    // The check needs a name for the trial merge commit; the real one is written on click. The
+    // verdict (fast-forward or merge commit) is the history's, whatever the method.
+    const { noFastForward: _noFf, ...verdictInput } = inputRef.current
+    checkMergeInWorker(reader, { ...verdictInput, author: { name: 'check', email: 'check@forge' } }, abort.signal).then(
       (c) => {
         if (abort.signal.aborted) return
         setCheck(c.check)
         setConflictPaths(c.conflictPaths)
-        setSized({ estimate: c.packEstimate, method: sizing })
+        // Checked without --no-ff: its pack is the fast-forward's plus the one merge commit.
+        setSized({ estimate: sizing === 'no-ff' ? withMergeCommit(c.packEstimate) : c.packEstimate, method: sizing })
       },
       (e: unknown) => {
         if (!abort.signal.aborted) setCheck({ error: e instanceof Error ? e.message : String(e) })
@@ -282,9 +306,9 @@ export function MergePanel({
     ...(gate.bypassing || bypassed !== null ? [previewCreate('comment', { body: bypassNote('0'.repeat(40), baseRefName, bypassed ?? unmetRules) })] : []),
   ])
   // Only a merge commit is authored; a fast-forward writes no commit.
-  const identityOk = (button.kind !== 'merge-commit' && method !== 'squash') || mergeIdentityValid(prefs)
+  const identityOk = (button.kind !== 'merge-commit' && method === 'merge') || mergeIdentityValid(prefs)
   // The plan's own method bit (ff 1, merge commit 2), or squash (4): what the policy is checked against.
-  const planBit = button.kind === 'fast-forward' ? 1 : button.kind === 'merge-commit' ? 2 : 0
+  const planBit = method === 'no-ff' ? 2 : button.kind === 'fast-forward' ? 1 : button.kind === 'merge-commit' ? 2 : 0
   const methodAllowed = method === 'squash' ? policyAllows(4) && squash.problem === null : planBit === 0 || policyAllows(planBit)
   // Once this panel's merge has landed there is nothing left to merge: no method, button or cost.
   const mergeable = !mergedHere && (button.kind === 'fast-forward' || button.kind === 'merge-commit')
@@ -302,7 +326,7 @@ export function MergePanel({
     setFailure(null)
     setStopped(null)
     begin(preAgreedCredits)
-    const intent = `merge:${repo.repoId}:${pull.number}:${pull.headOid}:${baseTipOid}${input.squash ? `:squash:${bytesToHex(sha256(new TextEncoder().encode(input.squash.message))).slice(0, 16)}` : ''}`
+    const intent = `merge:${repo.repoId}:${pull.number}:${pull.headOid}:${baseTipOid}${input.squash ? `:squash:${bytesToHex(sha256(new TextEncoder().encode(input.squash.message))).slice(0, 16)}` : input.noFastForward ? ':no-ff' : ''}`
     try {
       const done = await runMergeSteps(
         {
@@ -416,13 +440,18 @@ export function MergePanel({
               <select
                 id="merge-method"
                 value={method}
-                onChange={(e) => setMethod(e.target.value as 'merge' | 'squash')}
+                onChange={(e) => setMethod(e.target.value as Method)}
                 disabled={busy || newTip !== null}
                 className="h-9 rounded-md border border-anvil-300 bg-white px-2 text-dense text-anvil-900 coarse:h-11 dark:border-anvil-700 dark:bg-anvil-950 dark:text-anvil-100"
               >
-                <option value="merge" disabled={!policyAllows(planBit)}>
+                <option value="merge" disabled={!policyAllows(button.kind === 'fast-forward' ? 1 : 2)}>
                   {button.label}
                 </option>
+                {ffPossible ? (
+                  <option value="no-ff" disabled={!policyAllows(2)}>
+                    Create a merge commit
+                  </option>
+                ) : null}
                 <option value="squash" disabled={!policyAllows(4)}>
                   Squash and merge
                 </option>
@@ -435,7 +464,7 @@ export function MergePanel({
                 aria-describedby={gate.reason !== null ? 'merge-gate-reason' : undefined}
                 data-testid="merge-submit"
               >
-                {failure ? retryLabel(failure.step) : gate.bypassing ? (method === 'squash' ? 'Bypass rules and squash' : 'Bypass rules and merge') : method === 'squash' ? 'Squash and merge' : button.label}
+                {failure ? retryLabel(failure.step) : gate.bypassing ? (method === 'squash' ? 'Bypass rules and squash' : 'Bypass rules and merge') : method === 'squash' ? 'Squash and merge' : method === 'no-ff' ? 'Create merge commit and merge' : button.label}
               </Button>
             </>
           ) : button.kind === 'unavailable' ? (

@@ -24,6 +24,7 @@ import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
 import { importedUrlOf } from '@/lib/view/ref-targets'
 import { EditedMarker } from '@/components/repo/issue-bits'
 import { Oid } from '@/components/ui/oid'
+import { WithAge } from '@/components/ui/with-age'
 
 function verdictIcon(verdict: VerdictName): JSX.Element {
   switch (verdict) {
@@ -111,6 +112,11 @@ export interface CommentSlots {
   readonly header?: ReactNode
   readonly body?: ReactNode
 }
+
+/** A timeline event: its icon, then one sentence (actor, what, age) that wraps as text. */
+const EVENT_ROW = 'flex items-start gap-2 px-2 text-dense text-anvil-500 dark:text-anvil-400'
+const EVENT_ICON = 'flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-anvil-100 dark:bg-anvil-800'
+const EVENT_TEXT = 'min-w-0 flex-1 leading-6'
 
 /**
  * A comment author's own actions in its header: Edit, and Delete (QW-016). Only the author sees
@@ -248,12 +254,22 @@ export function Timeline({
         if (item.kind === 'transition') {
           const t = item.transition
           return (
-            <div key={`t-${t.id}-${i}`} className="flex flex-wrap items-center gap-2 px-2 text-dense text-anvil-500 dark:text-anvil-400" data-testid="timeline-event" data-kind={`transition-${t.kind}`}>
-              <span className="flex h-6 w-6 items-center justify-center rounded-full bg-anvil-100 dark:bg-anvil-800">{transitionIcon(t)}</span>
-              <Author identityId={t.actor} link={false} />
-              <span>{transitionPhrase(t.kind)}</span>
-              {t.kind === PR_MERGE && t.oid ? <span className="flex items-center gap-1">at <Oid value={t.oid} chars={9} /></span> : null}
-              <span className="text-anvil-500 dark:text-anvil-400">· {timeAgo(t.createdAt)}</span>
+            <div key={`t-${t.id}-${i}`} className={EVENT_ROW} data-testid="timeline-event" data-kind={`transition-${t.kind}`}>
+              <span className={EVENT_ICON}>{transitionIcon(t)}</span>
+              {/* One sentence that wraps as text (QW-070): the age never breaks onto a line of its own. */}
+              <p className={EVENT_TEXT}>
+                <Author identityId={t.actor} link={false} className="align-middle" />{' '}
+                {t.kind === PR_MERGE && t.oid ? (
+                  <>
+                    {transitionPhrase(t.kind)} at{' '}
+                    <span className="whitespace-nowrap">
+                      <Oid value={t.oid} chars={9} /> · {timeAgo(t.createdAt)}
+                    </span>
+                  </>
+                ) : (
+                  <WithAge text={transitionPhrase(t.kind)} age={timeAgo(t.createdAt)} />
+                )}
+              </p>
             </div>
           )
         }
@@ -261,14 +277,21 @@ export function Timeline({
         const base = eventPhrase(item.event)
         const phrase = own === null ? base : { ...base, text: own }
         return (
-          <div key={`e-${item.event.id}-${i}`} className="flex flex-wrap items-center gap-2 px-2 text-dense text-anvil-500 dark:text-anvil-400" data-testid="timeline-event" data-kind={item.event.kind}>
-            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-anvil-100 dark:bg-anvil-800">
-              {phrase.icon}
-            </span>
-            <Author identityId={item.event.actor} link={false} />
-            <span>{phrase.text}</span>
-            {phrase.who ? <Author identityId={phrase.who} link={false} /> : null}
-            <span className="text-anvil-500 dark:text-anvil-400">· {timeAgo(item.event.createdAt)}</span>
+          <div key={`e-${item.event.id}-${i}`} className={EVENT_ROW} data-testid="timeline-event" data-kind={item.event.kind}>
+            <span className={EVENT_ICON}>{phrase.icon}</span>
+            <p className={EVENT_TEXT}>
+              <Author identityId={item.event.actor} link={false} className="align-middle" />{' '}
+              {phrase.who ? (
+                <>
+                  {phrase.text}{' '}
+                  <span className="whitespace-nowrap">
+                    <Author identityId={phrase.who} link={false} className="align-middle" /> · {timeAgo(item.event.createdAt)}
+                  </span>
+                </>
+              ) : (
+                <WithAge text={phrase.text} age={timeAgo(item.event.createdAt)} />
+              )}
+            </p>
           </div>
         )
       })}

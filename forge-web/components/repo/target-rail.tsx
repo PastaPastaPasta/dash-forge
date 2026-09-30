@@ -13,7 +13,7 @@ import { isIdentityId } from '@/lib/utils'
 import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { AssigneeAvatars, LabelChip } from '@/components/repo/issue-bits'
+import { LabelChip } from '@/components/repo/issue-bits'
 import { cn } from '@/lib/utils'
 import type { Milestone } from '@/lib/rules/parity'
 
@@ -109,7 +109,6 @@ export function AssigneePicker({
       <ul className="space-y-1.5" aria-label="Assignees">
         {assignees.map((a) => (
           <li key={a} className="flex items-center gap-2">
-            <AssigneeAvatars ids={[a]} />
             <Author identityId={a} />
           </li>
         ))}

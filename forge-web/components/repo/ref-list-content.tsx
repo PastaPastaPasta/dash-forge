@@ -11,7 +11,7 @@ import { useCallback, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { GitBranch, Search, Tag } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { isDiverged, isLive, matchesRefQuery, plural, refParamFor, tipOidOf } from '@/lib/view'
+import { isDiverged, isLive, matchesRefQuery, plural, refParamFor, timeAgo, tipOidOf } from '@/lib/view'
 import { compareRefNames, compareTagNames, type ResolvedRef } from '@/lib/repo'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState } from '@/components/ui/states'
@@ -25,6 +25,14 @@ const KIND = {
 } as const
 
 type SortMode = 'name' | 'version'
+
+/** When a ref last moved: its update's time, or a diverged ref's newest head's (0: unknown). */
+export function refUpdatedAt(ref: ResolvedRef): number {
+  const st = ref.state
+  if (st.state === 'resolved') return st.createdAt
+  if (st.state === 'diverged') return Math.max(0, ...st.heads.map((h) => h.createdAt))
+  return 0
+}
 
 export function RefListContent({
   home,
@@ -140,6 +148,12 @@ export function RefListContent({
                 {isDiverged(ref) ? (
                   <span className="rounded-full border border-caution/40 bg-caution/5 px-2 py-0.5 text-[11px] text-caution-700 dark:text-caution-400">
                     diverged
+                  </span>
+                ) : null}
+                {/* QW-061d: when the ref last moved (its newest update document), as GitHub's "Updated". */}
+                {refUpdatedAt(ref) > 0 ? (
+                  <span className="hidden shrink-0 whitespace-nowrap text-[12px] text-anvil-500 dark:text-anvil-400 sm:inline" data-testid="ref-updated" title={new Date(refUpdatedAt(ref)).toLocaleString()}>
+                    updated {timeAgo(refUpdatedAt(ref))}
                   </span>
                 ) : null}
                 {tip && !isDefault ? (
