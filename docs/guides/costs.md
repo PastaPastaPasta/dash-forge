@@ -115,7 +115,7 @@ Per-operation cost reference (upper bounds; see `dg cost audit` for what you've 
 
 These are upper bounds, the prices `dg` and `git push` quote before they sign, not measurements: each is at or above the most the table above measured for that write.
 
-**What you've actually spent.** `dg cost audit` estimates one identity's total Forge spend — with no `--repo`, every document it has created across the network, totalled by type and by repository; add `--repo owner/name` for that repository's live pack-storage tally instead. forge-v2 keeps no on-chain spend ledger, so this is `(proved document count) × (that type's flat create cost)`, the same figure shape as the web app's **Settings → Spend** ledger, so the two agree. `--identity` takes an identity id or a DPNS name and defaults to the signing identity; `--since` takes a duration (`24h`, `7d`, `2w`, `1y`) or an absolute date (`2026-01-01`):
+**What you've actually spent.** `dg cost audit` estimates one identity's total Forge spend — with no `--repo`, every document it has created across the network, totalled by type and by repository; add `--repo owner/name` for that repository's live pack-storage tally instead. forge-v2 keeps no on-chain spend ledger, so this is `(proved document count) × (that type's flat create cost)`, the same figure shape as the web app's **Settings → Spend** ledger — but the two are not expected to agree: the web ledger is a per-browser history of actual balance changes (so it sees refunds, and misses writes made from any other browser or from `dg` itself), while this audit is a network-wide estimate at each type's flat rate (so it misses a first-of-its-kind write's or an unusually large write's true cost — see the table above). Treat both as estimates, and see [above](#what-each-action-costs) for where they can diverge. `--identity` takes an identity id or a DPNS name and defaults to the signing identity; `--since` takes a duration (`24h`, `7d`, `2w`, `1y`) or an absolute date (`2026-01-01`); neither combines with `--repo`:
 
 ```sh
 dg cost audit --since 30d
@@ -123,24 +123,22 @@ dg cost audit --since 30d
 
 ```
 Spend estimate for 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB:
-  since:  1756678800000 ms (epoch)
-  total:  ~0.0847 DASH ≈ $2.54 across 61 document(s)
+  since:  2026-08-30 14:22:07 UTC
+  total:  ~0.02585 DASH ≈ $0.78 across 38 document(s)
 
   by document type:
-    patch                  9  ~0.02021 DASH ≈ $0.61
-    chunk                  4  ~0.01555 DASH ≈ $0.47
-    comment                14  ~0.01636 DASH ≈ $0.49
-    issue                  11  ~0.01458 DASH ≈ $0.44
-    ...
+    comment                14  ~0.00728 DASH ≈ $0.22
+    issue                  11  ~0.00649 DASH ≈ $0.19
+    patch                   9  ~0.00648 DASH ≈ $0.19
+    chunk                   4  ~0.0056 DASH ≈ $0.17
 
   by repository:
-    9cBMULwtQUMtxhBkgaTKb4tJtoczd8TEQ8gmiroDWf4F   38  ~0.0512 DASH ≈ $1.54
-    (no repo)                                       6  ~0.0074 DASH ≈ $0.22
+    9cBMULwtQUMtxhBkgaTKb4tJtoczd8TEQ8gmiroDWf4F   38  ~0.02585 DASH ≈ $0.78
 
   note: excludes review (no proved query can attribute them to their author)
 ```
 
-`review` documents are left out: their only index (`patch [patchId, $createdAt]`) carries neither `repoId` nor `$ownerId`, so no proved query can find "every review this identity wrote" without reading every patch on the network. A review you wrote is not lost from the total — it just is not separately attributed; if it triggered a `comment` or an `event`, that document is still counted.
+`review` documents are left out: their only index (`patch [patchId, $createdAt]`) carries neither `repoId` nor `$ownerId`, so no proved query can find "every review this identity wrote" without reading every patch on the network. A review you wrote really is missing from the total (there is no other line item that recovers its cost) — the `note` above says so rather than let the total quietly undercount.
 
 ### History index
 

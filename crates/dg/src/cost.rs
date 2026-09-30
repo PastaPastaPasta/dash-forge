@@ -167,8 +167,11 @@ async fn audit(
     Ok(())
 }
 
-/// An identity-wide spend estimate: total, per document type, per repository. No key is
-/// opened — this only reads proved documents (mirrors `repo list`'s owner resolution, L-12).
+/// An identity-wide spend estimate: total, per document type, per repository. With neither
+/// `--identity` nor a cached identity-id hint, this falls back to the signing identity
+/// (`Ctx::signer_on`), which does open — and, if sealed, prompt to unseal — a key; the key is
+/// used only to learn its id, never to sign anything, since this is a read-only audit (mirrors
+/// `repo list`'s owner resolution, L-12).
 async fn identity_audit(
     ctx: &Ctx,
     identity: Option<&str>,
@@ -223,7 +226,7 @@ fn audit_json(report: &AuditReport, price: f64) -> serde_json::Value {
 fn print_audit(report: &AuditReport, price: f64) {
     println!("Spend estimate for {}:", report.identity_id);
     if let Some(since_ms) = report.since_ms {
-        println!("  since:  {since_ms} ms (epoch)");
+        println!("  since:  {} UTC", format_utc(since_ms));
     }
     println!(
         "  total:  {} across {} document(s)",
@@ -259,4 +262,59 @@ fn print_audit(report: &AuditReport, price: f64) {
 /// The refundable storage deposit for `bytes` (the deposit half of the estimate).
 fn est_deposit(bytes: u64) -> u64 {
     estimate(bytes).deposit
+}
+
+/// `ms` (epoch milliseconds) as `YYYY-MM-DD HH:MM:SS`, so `--since` prints back as a date a
+/// person gave it as, not the raw milliseconds `forge_core::cost_audit::parse_since` produced.
+/// No `chrono` / `time` dependency, matching `cost_audit`'s own `parse_since`: Howard Hinnant's
+/// `civil_from_days` (http://howardhinnant.github.io/date_algorithms.html#civil_from_days), the
+/// inverse of the `days_from_civil` that module already uses to parse an absolute date.
+fn format_utc(ms: u64) -> String {
+    let days = i64::try_from(ms / 86_400_000).unwrap_or(i64::MAX);
+    let time_ms = ms % 86_400_000;
+    let hour = time_ms / 3_600_000;
+    let minute = (time_ms / 60_000) % 60;
+    let second = (time_ms / 1000) % 60;
+
+    let shifted_days = days + 719_468;
+    let era = if shifted_days >= 0 {
+        shifted_days
+    } else {
+        shifted_days - 146_096
+    } / 146_097;
+    let day_of_era = shifted_days - era * 146_097; // [0, 146096]
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365; // [0, 399]
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100); // [0, 365]
+    let march_based_month = (5 * day_of_year + 2) / 153; // [0, 11]
+    let day = day_of_year - (153 * march_based_month + 2) / 5 + 1; // [1, 31]
+    let month = if march_based_month < 10 {
+        march_based_month + 3
+    } else {
+        march_based_month - 9
+    }; // [1, 12]
+    let year = if month <= 2 { year + 1 } else { year };
+
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
+}
+
+#[cfg(test)]
+mod format_utc_tests {
+    use super::format_utc;
+
+    #[test]
+    fn round_trips_known_dates() {
+        // Same reference point cost_audit's own tests use.
+        assert_eq!(format_utc(20_725 * 86_400_000), "2026-09-29 00:00:00");
+        assert_eq!(format_utc(0), "1970-01-01 00:00:00");
+    }
+
+    #[test]
+    fn keeps_the_time_of_day() {
+        assert_eq!(
+            format_utc(20_725 * 86_400_000 + 3_661_000),
+            "2026-09-29 01:01:01"
+        );
+    }
 }

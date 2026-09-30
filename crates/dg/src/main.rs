@@ -1199,12 +1199,13 @@ pub enum CostCommand {
     /// An identity's estimated Forge spend: total, per repository, per document type.
     Audit {
         /// The identity to audit (identity id or DPNS name); defaults to the signing
-        /// identity. Ignored together with `--since` when `--repo` is given.
-        #[arg(long)]
+        /// identity. Not combined with the positional REPO argument (that mode audits a
+        /// repository's storage, not an identity).
+        #[arg(long, conflicts_with = "repo")]
         identity: Option<String>,
         /// Only count documents created at or after this: a duration (`24h`, `7d`, `2w`,
-        /// `1y`) or an absolute date (`2026-01-01`).
-        #[arg(long)]
+        /// `1y`) or an absolute date (`2026-01-01`). Not combined with REPO.
+        #[arg(long, conflicts_with = "repo")]
         since: Option<String>,
         /// A repository (`owner/name`), for its live pack-storage tally instead of the
         /// identity-wide spend estimate.
