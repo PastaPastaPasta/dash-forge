@@ -28,7 +28,7 @@ On every poll (every `interval_secs`, default 120 s, and within seconds of a pus
    - A job's reports share one run id, a hash of the repository, ref, commit, workflow file and job, so they update a single check run.
 5. **Uploads each job's log** (capped at 16 MiB) to your storage profile, with secret values redacted. The check run records the log's URL and SHA-256, and the web app shows the log only if the bytes match.
 
-6. **Lists the pull requests** (`dg pr list`, the newest 100, and up to 10 older open ones it follows) and runs each one that was opened, reopened or marked ready for review, or whose head moved, as [Pull requests](#pull-requests) says. The first poll only records them.
+6. **Lists the pull requests** (`dg pr list`, the newest 100, and up to 10 older members' open PRs it keeps following) and runs each one that was opened, reopened or marked ready for review, or whose head moved, as [Pull requests](#pull-requests) says. The first poll only records them.
 
 If a run could not start because the fetch or checkout failed, the next polls try it again, up to `attempts` (default 3). A run whose jobs did run is not repeated; `forge-runner run` repeats one by hand.
 
@@ -40,7 +40,7 @@ A workflow whose `on:` includes `pull_request` runs when a pull request is opene
 - **The event is GitHub's `pull_request` payload.** It carries `action`, `number`, `pull_request.{number, title, draft, user.login, head.{ref, sha, repo.fork}, base.{ref, sha}}`, and `before`/`after` on a `synchronize`. act turns these into `github.ref` = `refs/pull/<n>/merge`, `github.head_ref` and `github.base_ref`. The PR's author writes the title and the branch name: never paste `${{ github.event.pull_request.title }}` or `${{ github.head_ref }}` into a `run:` script; pass them through `env:`, as on GitHub.
 - **Filters are GitHub's.** `types` (by default `opened`, `synchronize` and `reopened`), `branches` / `branches-ignore` on the base branch, and `paths` / `paths-ignore` on the PR's changes (`base...head`).
 - **Checks go on the head, named apart.** A member's PR posts `<workflow> / <job> (pull_request)` on its head commit; anyone else's posts `<workflow> / <job> (pull_request, non-member)`. Both are keyed by `refs/pull/<n>/head`, so a PR's run and the branch's own push run on the same commit never replace each other, and a stranger's PR that names a member's commit can never post the run a member's required check reads. Require `ci / build (pull_request)` in a branch policy to gate merges on it.
-- **Which PRs are watched.** Each poll reads the newest 100 PRs (open and closed, by creation) and follows up to 10 older open ones it already knew, the oldest first, one read each. Anyone can open PRs, so an identity that opens more than 100 between two polls can hide a newer PR from CI until its next head; `forge-runner run --pr <n>` reads any PR directly.
+- **Which PRs are watched.** Each poll reads the newest 100 PRs (open and closed, by creation). A member's open PR it has seen stays followed after newer PRs push it out of that window: each poll reads up to 10 such PRs, one read each, in turn, and a failed read drops nothing. Anyone can open PRs, so an identity that opens more than 100 between two polls can hide a PR opened in between from CI until its next head; `forge-runner run --pr <n>` reads any PR directly.
 - **Polling sees states, not every step.** A draft marked ready whose head also moved runs as `synchronize`; a close and reopen between two polls runs nothing. A PR the policy skipped is not revisited until its head moves or it is reopened.
 - **`pull_request_target`, `schedule` and `workflow_dispatch` never run.**
 
@@ -204,7 +204,7 @@ The runner executes code from the repository: anyone who can push to a watched r
 ## What it does not do (yet)
 
 - **Only `push` and `pull_request` run.** There are no `pull_request_target`, `schedule` or `workflow_dispatch` events, and a pull request runs its head, not a merge preview.
-- **Pull requests are watched by window.** The newest 100, plus up to 10 older open ones already known; see [Pull requests](#pull-requests).
+- **Pull requests are watched by window.** The newest 100, and members' open PRs already seen, 10 a poll in turn; see [Pull requests](#pull-requests).
 - **No artefacts.** `actions/upload-artifact` needs act's artifact server, which the runner does not start.
 - **One push at a time.** The workflow files of a push run one after another, within one `job_timeout_secs`.
 - **Only configured `runs-on` labels.** A job whose `runs-on` label is not in `[platforms]` is refused, rather than run on act's own default image.

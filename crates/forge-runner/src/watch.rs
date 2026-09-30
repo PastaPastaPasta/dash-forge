@@ -77,8 +77,11 @@ pub struct PullRow {
     pub author: String,
     /// `open`, `closed` or `merged`.
     pub state: String,
-    /// `refs/heads/main`.
+    /// `refs/heads/main`: the base the PR was opened against.
     pub base_ref: String,
+    /// The base a maintainer retargeted the PR to, if one did.
+    #[serde(default)]
+    pub retargeted_to: Option<String>,
     /// The base branch's tip, when `dg` could read it.
     #[serde(default)]
     pub base_tip: Option<String>,
@@ -100,6 +103,14 @@ impl PullRow {
     pub fn is_fork(&self) -> bool {
         self.source_repo_id != self.repo_id
     }
+
+    /// The base the PR merges into now: where it was retargeted, else where it was opened.
+    pub fn base(&self) -> &str {
+        self.retargeted_to
+            .as_deref()
+            .filter(|b| !b.is_empty())
+            .unwrap_or(&self.base_ref)
+    }
 }
 
 /// What the runner remembers of a pull request.
@@ -109,6 +120,10 @@ pub struct PullSeen {
     pub head: String,
     pub open: bool,
     pub draft: bool,
+    /// Its author was a member when its activity was last judged: an open PR of a member is
+    /// followed beyond the listing window and never forgotten while it is open.
+    #[serde(default)]
+    pub member: bool,
 }
 
 /// A pull request's activity that may run workflows: GitHub's `pull_request` action and the PR.
@@ -162,19 +177,48 @@ pub struct RepoState {
     /// Whether the pull requests were read once (that read is recorded, not run).
     #[serde(default)]
     pub pulls_primed: bool,
+    /// The last PR number followed beyond the listing window: the next poll follows the ones
+    /// after it, so every member's open PR is read in turn.
+    #[serde(default)]
+    pub followed_to: u64,
 }
 
 impl RepoState {
-    /// Record what `row` is now.
-    pub fn saw_pull(&mut self, row: &PullRow) {
+    /// Record what `row` is now; `member` says whether its author is a member, when the poll
+    /// knows (else what was known stays).
+    pub fn saw_pull(&mut self, row: &PullRow, member: Option<bool>) {
+        let known = self.pulls.get(&row.number).is_some_and(|s| s.member);
         self.pulls.insert(
             row.number,
             PullSeen {
                 head: row.head_oid.to_ascii_lowercase(),
                 open: row.state == "open",
                 draft: row.draft,
+                member: member.unwrap_or(known),
             },
         );
+    }
+
+    /// The members' open PRs the listing did not include, at most `max`, taken in turn after
+    /// [`Self::followed_to`] (which this advances).
+    pub fn next_to_follow(&mut self, listed: &[PullRow], max: usize) -> Vec<u64> {
+        let beyond: Vec<u64> = self
+            .pulls
+            .iter()
+            .filter(|(n, s)| s.open && s.member && !listed.iter().any(|r| r.number == **n))
+            .map(|(n, _)| *n)
+            .collect();
+        let start = beyond.partition_point(|n| *n <= self.followed_to);
+        let picked: Vec<u64> = beyond[start..]
+            .iter()
+            .chain(&beyond[..start])
+            .take(max)
+            .copied()
+            .collect();
+        if let Some(last) = picked.last() {
+            self.followed_to = *last;
+        }
+        picked
     }
 }
 
@@ -264,6 +308,7 @@ mod tests {
             author: "AUTHOR".into(),
             state: state.into(),
             base_ref: "refs/heads/main".into(),
+            retargeted_to: None,
             base_tip: None,
             head_oid: head.into(),
             repo_id: "REPO".into(),
@@ -282,6 +327,7 @@ mod tests {
                     head: A.into(),
                     open: true,
                     draft: false,
+                    member: false,
                 },
             ),
             (
@@ -290,6 +336,7 @@ mod tests {
                     head: A.into(),
                     open: false,
                     draft: false,
+                    member: false,
                 },
             ),
             (
@@ -298,6 +345,7 @@ mod tests {
                     head: A.into(),
                     open: true,
                     draft: true,
+                    member: false,
                 },
             ),
             (
@@ -306,6 +354,7 @@ mod tests {
                     head: A.into(),
                     open: true,
                     draft: false,
+                    member: false,
                 },
             ),
         ]);
@@ -343,6 +392,27 @@ mod tests {
         assert!(!fork.is_fork());
         fork.source_repo_id = "FORK".into();
         assert!(fork.is_fork());
+    }
+
+    #[test]
+    fn members_open_prs_beyond_the_window_are_followed_in_turn() {
+        let mut s = RepoState::default();
+        for n in 1..=5 {
+            s.saw_pull(&row(n, "open", A, false), Some(n != 3));
+        }
+        s.saw_pull(&row(6, "closed", A, false), Some(true));
+        // A later sighting that does not know the author keeps what was known.
+        s.saw_pull(&row(1, "open", B, false), None);
+        assert!(s.pulls[&1].member);
+        let listed = [row(5, "open", A, false)];
+        assert_eq!(
+            s.next_to_follow(&listed, 2),
+            [1, 2],
+            "members' open PRs not listed; not #3"
+        );
+        assert_eq!(s.next_to_follow(&listed, 2), [4, 1], "in turn, wrapping");
+        assert_eq!(s.next_to_follow(&listed, 9), [2, 4, 1]);
+        assert!(s.next_to_follow(&[], 0).is_empty());
     }
 
     #[test]

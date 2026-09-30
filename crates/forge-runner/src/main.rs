@@ -322,8 +322,8 @@ fn run_locked(cfg: &Config, repo: &config::RepoConfig, trig: &run::Trigger) -> R
 /// How many of a repository's newest pull requests a poll reads (dg's page).
 const PULL_LIMIT: u32 = 100;
 
-/// How many open PRs that fell out of the newest [`PULL_LIMIT`] a poll still follows, one read
-/// each, the oldest first.
+/// How many members' open PRs that fell out of the newest [`PULL_LIMIT`] a poll still reads, one
+/// read each, in turn ([`watch::RepoState::to_follow`]).
 const FOLLOW_BEYOND: usize = 10;
 
 /// One poll of one repository: list its refs, run the pushes to watched refs, then its pull
@@ -383,8 +383,8 @@ fn poll(cfg: &Config, repo: &config::RepoConfig) -> Result<()> {
 /// was opened, reopened, marked ready or whose head moved since the last poll, as the
 /// repository's `pull_requests` policy allows. The first read only records them.
 ///
-/// The list is the newest PRs by creation, open or closed, and anyone may open PRs: open ones
-/// already followed that fall out of it are read one by one, the oldest first, up to
+/// The list is the newest PRs by creation, open or closed, and anyone may open PRs: members'
+/// open ones that fall out of it are kept and read one by one, in turn, up to
 /// [`FOLLOW_BEYOND`], so a burst of newer PRs cannot push them out of CI.
 fn poll_pulls(
     cfg: &Config,
@@ -403,33 +403,28 @@ fn poll_pulls(
         return Ok(());
     }
     let mut rows = run::list_pulls(cfg, repo, PULL_LIMIT)?;
-    let beyond: Vec<u64> = state
-        .pulls
-        .iter()
-        .filter(|(n, s)| s.open && !rows.iter().any(|r| r.number == **n))
-        .map(|(n, _)| *n)
-        .take(FOLLOW_BEYOND)
-        .collect();
-    for n in beyond {
+    for n in state.next_to_follow(&rows, FOLLOW_BEYOND) {
         match run::view_pull(cfg, repo, n) {
             Ok(r) => rows.push(r),
             Err(e) => eprintln!("forge-runner: {} PR #{n}: {e:#}", repo.repo),
         }
     }
+    let mut members: Option<run::Members> = None;
     if !state.pulls_primed {
         let open = rows.iter().filter(|r| r.state == "open").count();
         eprintln!(
             "forge-runner: watching {}'s pull requests ({open} open)",
             repo.repo
         );
+        let m = members.insert(run::list_members(cfg, repo)?);
         for r in &rows {
-            state.saw_pull(r);
+            let member = run::author_of(m, &r.author) != run::Author::Stranger;
+            state.saw_pull(r, Some(member));
         }
         state.pulls_primed = true;
         return state.save(path);
     }
     let pull_key = |n: u64, head: &str| format!("pull/{n} {}", head.to_ascii_lowercase());
-    let mut members: Option<run::Members> = None;
     let mut pending = Vec::new();
     for ev in pull_events(&state.pulls, &rows) {
         let n = ev.pr.number;
@@ -468,20 +463,21 @@ fn poll_pulls(
         }
         if done {
             state.failed.remove(&key);
-            state.saw_pull(&ev.pr);
+            state.saw_pull(&ev.pr, Some(author != run::Author::Stranger));
         } else {
             pending.push(n);
         }
         state.save(path)?;
     }
-    // Everything else listed is as seen (closed, merged, unchanged); what is no longer listed
-    // is forgotten, and so are retries of heads that moved on.
+    // Everything else read is as seen (closed, merged, unchanged). A PR not read this time is
+    // forgotten, unless it is a member's open one: those are followed in turn, and a failed
+    // read does not drop them. Retries of heads that moved on go too.
     for r in rows.iter().filter(|r| !pending.contains(&r.number)) {
-        state.saw_pull(r);
+        state.saw_pull(r, None);
     }
     state
         .pulls
-        .retain(|n, _| rows.iter().any(|r| r.number == *n));
+        .retain(|n, s| (s.open && s.member) || rows.iter().any(|r| r.number == *n));
     state.failed.retain(|k, _| {
         !k.starts_with("pull/")
             || rows
@@ -530,6 +526,7 @@ mod tests {
             author: "A".into(),
             state: "open".into(),
             base_ref: "refs/heads/main".into(),
+            retargeted_to: None,
             base_tip: None,
             head_oid: "ab".repeat(20),
             repo_id: "R".into(),

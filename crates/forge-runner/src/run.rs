@@ -253,7 +253,7 @@ pub fn pull_event_json(
                 "repo": head_repo,
             },
             "base": {
-                "ref": short_ref(&pr.base_ref),
+                "ref": short_ref(pr.base()),
                 "sha": base_sha.unwrap_or(&zeros),
                 "repo": repository,
             },
@@ -361,10 +361,11 @@ pub fn members_of(v: &serde_json::Value) -> Result<Members> {
         let (Some(id), Some(role)) = (r["identityId"].as_str(), r["role"].as_str()) else {
             continue;
         };
-        let role = if role == "maintainer" {
-            Author::Maintainer
-        } else {
-            Author::Writer
+        let role = match role {
+            "maintainer" => Author::Maintainer,
+            "writer" => Author::Writer,
+            // A role this runner does not know is not a member's.
+            _ => continue,
         };
         let held = m.entry(id.to_string()).or_insert(role);
         *held = (*held).max(role);
@@ -619,14 +620,14 @@ fn fetch_run(
             };
             fetch_at(cfg, &head, source, &pr.head_oid)?;
             // The base, for `base.sha` and the PR's changed paths (`base...head`).
-            let base = fetch(cfg, &own, &pr.base_ref, "refs/forge-runner/base")
+            let base = fetch(cfg, &own, pr.base(), "refs/forge-runner/base")
                 .map_err(|e| eprintln!("forge-runner: {}: base not fetched: {e:#}", repo.repo))
                 .ok();
             let changed = base
                 .as_deref()
                 .and_then(|b| changed_paths(cfg, &cache, &format!("{b}...{}", pr.head_oid)));
             let event = pull_event_json(&repo.repo, ev, base.as_deref(), &url, trusted);
-            (changed, Some(short_ref(&pr.base_ref).to_string()), event)
+            (changed, Some(short_ref(pr.base()).to_string()), event)
         }
     };
     Ok(Fetched {
@@ -1013,6 +1014,7 @@ mod tests {
                 author: "MEMBER".into(),
                 state: "open".into(),
                 base_ref: "refs/heads/main".into(),
+                retargeted_to: None,
                 base_tip: None,
                 head_oid: "cd".repeat(20),
                 repo_id: "REPO".into(),

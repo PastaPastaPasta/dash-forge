@@ -529,6 +529,7 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
                 "state": state_field(v),
                 "baseRef": v.patch.base_ref_name,
                 "baseTip": v.base_tip,
+                "retargetedTo": v.state.base_ref,
                 "headOid": v.head,
                 "repoId": v.patch.repo_id,
                 "sourceRepoId": v.patch.source_repo_id,
