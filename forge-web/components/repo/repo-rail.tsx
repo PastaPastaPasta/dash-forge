@@ -5,8 +5,8 @@
  * Members, Latest release. On narrow screens it drops under the content, Verification still
  * first.
  *
- * The Verification card renders the report the repo frame derived ({@link useRepoTrust}): the
- * states come from what this session actually checked.
+ * The Verification card's states come from what this session actually checked
+ * ({@link useRepoTrust}).
  */
 
 import { Time } from '@/components/repo/byline'
@@ -20,7 +20,6 @@ import {
   selectedTip,
   type RepoHome,
   type SelectedRef,
-  type TrustReport,
 } from '@/lib/view'
 import { mirrorSourceOfDescription } from '@/lib/view/mirror-source'
 import { readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
@@ -29,6 +28,7 @@ import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useLatestRelease, useViewerRole } from '@/hooks/use-repo-chrome'
 import { useInView } from '@/hooks/use-in-view'
+import { useRepoTrust } from '@/hooks/use-repo-trust'
 import { TrustPanel } from '@/components/ui/trust-panel'
 import { BackendBadge } from '@/components/ui/backend-badge'
 import { CloneBox } from '@/components/repo/clone-box'
@@ -42,15 +42,14 @@ export function RepoRail({
   home,
   addr,
   selected,
-  report,
 }: {
   home: RepoHome
   addr: RepoAddress
   /** The ref the page is showing: the Verification card attests its tip. */
   selected: SelectedRef
-  /** The Verification card's report ({@link useRepoTrust}, derived once by the repo frame). */
-  report: TrustReport
 }): JSX.Element {
+  // Here, not in the page frame: each content check re-renders the rail, not the whole page.
+  const report = useRepoTrust(home, selected)
   const { role } = useViewerRole(home.repo)
   const isPrivate = home.repo.visibility === 'private'
 

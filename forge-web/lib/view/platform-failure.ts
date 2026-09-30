@@ -50,8 +50,8 @@ export function unreachableReadCopy(message: string, { network, offline }: { net
 }
 
 /** The copy for a read whose answer failed its proof check, or null for any other error. */
-export function proofFailureCopy(message: string): FailureCopy | null {
-  if (!isProofFailure(message)) return null
+export function proofFailureCopy(error: unknown): FailureCopy | null {
+  if (!isProofFailure(error)) return null
   return {
     title: "Verification failed: Platform's answer did not match its proof",
     body: 'A node returned data that its cryptographic proof does not back, so none of it is shown. A faulty or dishonest node can cause this. Try again; if it keeps failing, use the CLI against a node you run.',

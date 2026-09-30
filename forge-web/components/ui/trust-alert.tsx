@@ -14,12 +14,13 @@
  *     the bytes came from); what failed there is already kept off the page by its view.
  */
 
-import { useState, type ReactNode } from 'react'
+import { Suspense, useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { ShieldX } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { useConnectionTrust } from '@/hooks/use-sdk'
 import { useQuorumCheck } from '@/hooks/use-quorum-check'
+import { useTrustView } from '@/hooks/use-trust-view'
 import { deriveConnectionTrust, TRUST_ROW_TITLE, type TrustFailure } from '@/lib/view'
 
 /** The banner: what failed, in the card's words, and the page's own action (show / hide). */
@@ -73,14 +74,20 @@ export function TrustAnchorGate({ children }: { children: ReactNode }): JSX.Elem
   // Not while Platform is unreachable: a comparison run then only reports that it could not run.
   const quorum = useQuorumCheck(network, connection === 'trusted')
   const chain = deriveConnectionTrust(network, connection, quorum)
-  // Per page: a navigation mounts a new shell, so each page is withheld until asked again.
+  // Per view (a route and its query): a navigation that keeps this shell mounted, another file
+  // or repo on the same route, is withheld again until asked (the view watcher resets it).
   const [shown, setShown] = useState(false)
+  const hide = useCallback(() => setShown(false), [])
   const failed = chain.state === 'failed'
   // One tree shape whether or not the check failed: the page is never remounted when the
   // result arrives (a write in flight or a half-typed comment survives), and stays mounted
   // while hidden.
   return (
     <>
+      {/* useSearchParams needs a Suspense boundary in a static export; it renders nothing. */}
+      <Suspense fallback={null}>
+        <OnViewChange run={hide} />
+      </Suspense>
       {failed ? (
         <TrustFailureBanner
           testId="trust-anchor-failed"
@@ -112,4 +119,20 @@ export function TrustAnchorGate({ children }: { children: ReactNode }): JSX.Elem
       </div>
     </>
   )
+}
+
+/**
+ * Runs `run` when the view (route and query) changes, in a layout effect: before the browser
+ * paints the new view, so a page shown on request never carries over to the next one.
+ */
+function OnViewChange({ run }: { run: () => void }): null {
+  const view = useTrustView()
+  const first = useRef(view)
+  useLayoutEffect(() => {
+    if (view !== first.current) {
+      first.current = view
+      run()
+    }
+  }, [view, run])
+  return null
 }

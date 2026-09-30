@@ -164,57 +164,39 @@ export function RepoScaffold({
   }
 
   return (
-    <RepoFrame home={home} addr={addr} selected={selected} rail={rail} offline={offline}>
-      {children(home, reload)}
-    </RepoFrame>
-  )
-}
-
-/** The Verification card's rows a repo page owns (the app shell heads every page with chain data). */
-const REPO_ROWS = ['tip', 'content', 'source'] as const
-
-/**
- * A resolved repo page: header, content and rail, headed by any Failed row of the Verification
- * card (QW-004). The card sits in the rail, which a phone lays out under the content and some
- * pages do not show at all, so the failure leads the page on every width.
- */
-function RepoFrame({
-  home,
-  addr,
-  selected,
-  rail,
-  offline,
-  children,
-}: {
-  home: RepoHome
-  addr: RepoAddress
-  selected: SelectedRef
-  rail: boolean
-  offline: ReactNode
-  children: ReactNode
-}): JSX.Element {
-  const report = useRepoTrust(home, selected)
-  const failures = failedRows(report, REPO_ROWS)
-  return (
     <>
       {offline}
-      {failures.length > 0 ? (
-        <TrustFailureBanner
-          lead="Nothing that failed its check is shown on this page."
-          failures={failures}
-        />
-      ) : null}
+      <RepoTrustBanner home={home} selected={selected} />
       <RepoHeader home={home} addr={addr} />
       <InviteBanner repo={home.repo} />
       <PrivateBanner home={home} />
       {rail ? (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_296px]">
-          <div className="min-w-0">{children}</div>
-          <RepoRail home={home} addr={addr} selected={selected} report={report} />
+          <div className="min-w-0">{children(home, reload)}</div>
+          <RepoRail home={home} addr={addr} selected={selected} />
         </div>
       ) : (
-        <div className="min-w-0">{children}</div>
+        <div className="min-w-0">{children(home, reload)}</div>
       )}
     </>
   )
+}
+
+/**
+ * The Verification card's rows a repo page leads with. Not chain data: the app shell heads every
+ * page with it. Not "where the bytes came from": it is Failed only when the content check failed
+ * (listed already) or when no storage answered, which is an outage the page's own
+ * "Code unavailable" state reports, not a check that found the data wrong.
+ */
+const REPO_ROWS = ['tip', 'content'] as const
+
+/**
+ * Any Failed row of the Verification card, at the top of a repo page (QW-004): the card sits in
+ * the rail, which a phone lays out under the content and some pages do not show at all. A leaf,
+ * so a content check re-renders only this and the rail.
+ */
+function RepoTrustBanner({ home, selected }: { home: RepoHome; selected: SelectedRef }): JSX.Element | null {
+  const failures = failedRows(useRepoTrust(home, selected), REPO_ROWS)
+  if (failures.length === 0) return null
+  return <TrustFailureBanner lead="Nothing that failed its check is shown on this page." failures={failures} />
 }

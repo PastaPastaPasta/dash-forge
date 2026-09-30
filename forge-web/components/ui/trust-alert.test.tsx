@@ -16,6 +16,8 @@ let quorum: QuorumCrossCheck | undefined
 let connection: 'trusted' | 'offline' | 'connecting' = 'trusted'
 vi.mock('@/hooks/use-sdk', () => ({ useConnectionTrust: () => ({ network: 'testnet', connection }) }))
 vi.mock('@/hooks/use-quorum-check', () => ({ useQuorumCheck: () => quorum }))
+let view = '/repo/blob/?path=dip-0001.md'
+vi.mock('@/hooks/use-trust-view', () => ({ useTrustView: () => view }))
 
 const { TrustAnchorGate } = await import('./trust-alert')
 
@@ -36,6 +38,7 @@ beforeEach(() => {
   root = createRoot(el)
   quorum = AGREED
   connection = 'trusted'
+  view = '/repo/blob/?path=dip-0001.md'
 })
 afterEach(() => {
   act(() => root.unmount())
@@ -105,6 +108,18 @@ describe('TrustAnchorGate', () => {
     expect(button().textContent).toBe('Hide the page')
     act(() => button().click())
     expect(pageHidden()).toBe(true)
+  })
+
+  it('withholds the next view again: a page shown on request does not carry over', () => {
+    quorum = MISMATCH
+    render()
+    act(() => button().click())
+    expect(pageHidden()).toBe(false)
+    // Another file on the same route: the shell stays mounted, the query changes.
+    view = '/repo/blob/?path=dip-0002.md'
+    render()
+    expect(pageHidden()).toBe(true)
+    expect(button().textContent).toBe('Show it anyway, unverified')
   })
 
   it('stays failed while Platform is unreachable', () => {

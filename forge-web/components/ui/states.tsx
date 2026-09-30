@@ -18,7 +18,7 @@ import { DEFAULT_NETWORK } from '@/lib/constants'
 import { proofFailureCopy, unreachableReadCopy, type FailureCopy } from '@/lib/view/platform-failure'
 import { scheduleReconnect } from '@/lib/view/reconnect'
 import { isOffline, subscribeOnlineStatus } from '@/lib/online'
-import { cn, errorMessage } from '@/lib/utils'
+import { cn } from '@/lib/utils'
 
 /** Inline spinner with an accessible label. */
 export function Spinner({ label = 'Loading', className }: { label?: string; className?: string }): JSX.Element {
@@ -112,7 +112,7 @@ export function ErrorState({
 }): JSX.Element {
   // A proof that failed is an answer, and the data was wrong: say so, and keep the raw hashes
   // behind Details (QW-057). Never the retrying offline state.
-  const proof = proofFailureCopy(message) ?? (cause !== undefined ? proofFailureCopy(errorMessage(cause, '')) : null)
+  const proof = proofFailureCopy(message) ?? proofFailureCopy(cause)
   if (proof !== null) return <ProofFailedState copy={proof} message={message} onRetry={onRetry} />
   if (onRetry && (isUnreachableError(cause) || isUnreachableError(message))) {
     return <UnreachableState message={message} onRetry={onRetry} />

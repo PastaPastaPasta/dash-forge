@@ -73,6 +73,12 @@ describe('proofFailureCopy', () => {
 })
 
 describe('classifiers', () => {
+  it('a proof signed by a quorum the app has no key for is not a failed proof (#212), nor is a Drive storage error', () => {
+    expect(isProofFailure(`Proof verification error: ${QUORUM_GONE}`)).toBe(false)
+    expect(proofFailureCopy(`Proof verification error: ${QUORUM_GONE}`)).toBeNull()
+    expect(isProofFailure('Drive error: GroveDB error: path key not found')).toBe(false)
+  })
+
   it('a failed proof is an answer, not an outage', () => {
     expect(isProofFailure(GROVEDB)).toBe(true)
     expect(isProofFailure(new Error('Invalid proof: root hash'))).toBe(true)
