@@ -1,5 +1,9 @@
 import { test, expect, type Page, type Request } from '@playwright/test'
-import { collectPageErrors, DAPI_METHOD, decodeDocumentsRequest, E2E_DEVNET, EMPTY, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
+import { collectPageErrors, DAPI_METHOD, DAPI_RESEND_SLACK, decodeDocumentsRequest, E2E_DEVNET, EMPTY, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
+import { quorumGuardLong } from './quorum-sync'
+
+// Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
+test.beforeEach(quorumGuardLong)
 
 /**
  * S-1 (`platform-parity-spec.md`): every page ≤ 25 DAPI requests cold and ≤ 8 warm, counted
@@ -29,19 +33,24 @@ const WARM_BUDGET = 8
  */
 const DEMO_COLD_HOME = 12
 /**
- * The read fixture's issues list, cold. `issues/client.tsx` passes `rail={false}`: there is no
- * About card here, so this does not carry the home's rail-sum reads at all.
- *
- * What it does carry is `target-index.ts`'s `loadListIndex`: the repo's member `event` feed
- * (shared with the pull index) is read as a 100-row page inside the index's first composite, and
- * a full first page pulls the rest of the feed in a follow-up composite (`readRepoFeedFrom`),
- * once per repo. Bonsia is a live, shared devnet under continuous CI and QA use, not a static
- * fixture: the repo's event volume only grows, so this count steps up by one every time it
- * crosses another 100-row boundary. That is not a regression, so the pin below carries headroom
- * for a couple of those steps rather than pinning the exact count last measured (13); a jump big
- * enough to still clear it would still be one.
+ * The read fixture's issues list, cold (`issues/client.tsx` passes `rail={false}`: no About card,
+ * so none of the home's rail sums). Measured 8, request by request:
+ *   - the contract fetch, the owner's DPNS name, and the repo chrome composite (3);
+ *   - the transition counts by kind (1); the issue and PR totals are the chrome composite's own,
+ *     seeded for the next count read (`seedTargetCounts`), so they cost nothing here;
+ *   - the index's first composite: the issue page with its counts, names, the member `event`
+ *     feed and the labels (1). The fixture's feed is 7 events, far from the 100-row page that
+ *     would add a continuation, and nothing writes to the read fixture;
+ *   - the mirror-source probe, one `author`-index read per trusted author (the fixture's owner
+ *     and its one maintainer, 2);
+ *   - the page rows' state sums (1).
+ * The header's open-count tabs, the list's total and the index each used to read the three
+ * counts themselves (12-13 here); they now share one read (`sharedRepoCounts`). A return of that
+ * duplication fails pb-1 by mechanism, not by count: the totals are then read with count requests
+ * of their own, which pb-1 allows none of. The counts do not depend on how much the rest of the
+ * devnet grows.
  */
-const DEMO_COLD_ISSUES = 16
+const DEMO_COLD_ISSUES = 8 + DAPI_RESEND_SLACK
 /**
  * The commit column's walk on a showcase repo: one chunk read per 256 KiB of pack history it
  * crosses (preact 12, dashpay/dash 20). Owned by the last-change index work; tracked, not S-1.
@@ -142,6 +151,13 @@ test.describe('page request budget (S-1)', () => {
     await settle(issues)
     const list = issueDapi.all()
     test.info().annotations.push({ type: 'dapi', description: `fixture cold issues: ${list.length} ${summary(list)}` })
+    // The issue and PR totals come with the chrome composite (seeded for the one shared counts
+    // read): a count request of its own for either means a reader reads them again.
+    const totals = list.filter((r) => {
+      const q = r.method === 'getDocuments' ? decodeDocumentsRequest(r.body) : null
+      return q !== null && q.count && (q.documentType === 'issue' || q.documentType === 'patch')
+    })
+    expect(totals.length, 'the issue and PR totals are not read again').toBe(0)
     expect(list.length, summary(list)).toBeLessThanOrEqual(DEMO_COLD_ISSUES)
     await shot(issues, 'pb-03-fixture-issues-cold')
     await issuesContext.close()

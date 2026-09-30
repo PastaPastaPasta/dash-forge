@@ -1,5 +1,9 @@
 import { test, expect, type Page } from '@playwright/test'
 import { collectPageErrors, countDapi, countDocumentQueries, E2E_DEVNET, repoUrl, shot } from './helpers'
+import { quorumGuard } from './quorum-sync'
+
+// Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
+test.beforeEach(quorumGuard)
 
 /**
  * G16 (L-15, L-41): a large repo's home, cold, against a live showcase mirror on moutai:

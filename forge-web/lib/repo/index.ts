@@ -136,6 +136,7 @@ export {
   toLog,
   updatedAtOf,
   repoWriteGeneration,
+  sharedRepoCounts,
   subscribeRepoLists,
   type TargetTotals,
   readTargetLog,

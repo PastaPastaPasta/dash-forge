@@ -4,6 +4,10 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { countDocumentQueries, expectPlatformPreAllowed, idFile, idOrEmpty, shot, signedIn, waitForRepoResolved } from './helpers'
+import { quorumGuard } from './quorum-sync'
+
+// Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
+test.beforeEach(quorumGuard)
 
 /**
  * G4 — the browse cache after a push or merge it did not see (L-08, L-09, L-16), live on a

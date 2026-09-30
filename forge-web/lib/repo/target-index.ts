@@ -17,12 +17,12 @@ import { compositeOf, countsAt, docsAt, queryComposite, siblingOf, type Composit
 import { IncompleteReadError, queryAllDocuments, type DocumentQuery, type PlainDocument } from '../sdk'
 import { statusOfCode } from '../rules/transition'
 import { DOC, asIdentifierString, repoKey, str, type RepoRef } from './contract'
-import { EMPTY_LOG, feedQuery, onRepoInvalidated, readRepoFeedFrom, repoEpoch, sharedRepoFeed, type TargetLog } from './issues'
+import { EMPTY_LOG, feedQuery, onRepoInvalidated, readRepoFeedFrom, repoEpoch, sharedRepoCounts, sharedRepoFeed, type TargetLog } from './issues'
 import { newestLabels, type LabelDef } from './labels'
 import { HiddenTally, gateFor, type ContentGate } from './private-content'
 import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
-import { readRepoCounts, readStateCodes } from './transitions'
+import { readStateCodes, type readRepoCounts } from './transitions'
 
 type RepoCounts = Awaited<ReturnType<typeof readRepoCounts>>
 type Direction = 'desc' | 'asc'
@@ -411,11 +411,12 @@ export function intersect(sets: readonly (Set<string> | null)[]): Set<string> | 
 
 /**
  * The repo's proved issue and PR totals by state (`readRepoCounts`: the totals and one count of
- * transitions by kind), read once per index; null when they could not be read (tried again next
+ * transitions by kind), read once per index and shared with the header's tab counts and the
+ * list's total (`sharedRepoCounts`); null when they could not be read (tried again next
  * time).
  */
 export async function repoCountsOf<Row extends RowExtras>(sdk: EvoSDK, index: ListIndex<Row>): Promise<RepoCounts | null> {
-  index.counts ??= readRepoCounts(sdk, index.repo)
+  index.counts ??= sharedRepoCounts(sdk, index.repo)
   return index.counts.catch(() => {
     index.counts = undefined
     return null

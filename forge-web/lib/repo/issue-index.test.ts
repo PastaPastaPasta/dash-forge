@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest'
 import { base58Encode } from '../auth/base58'
 import type { ForgeIds } from '../deployments'
 import { mockSdk, newSeen, type Doc, type Seen } from './drive-mock'
-import { invalidateRepoFeed } from './issues'
+import { invalidateRepoFeed, sharedRepoCounts } from './issues'
 import { queryIssues, type IssueSelection } from './issue-index'
 import type { RepoRef } from './contract'
 
@@ -86,6 +86,21 @@ describe('issue index', () => {
     expect(seen.counts.map((q) => q.documentTypeName).sort()).toEqual(['issue', 'patch', 'transition'])
     expect(page.rows.find((r) => r.number === 110)?.state.labels).toEqual(['tens'])
     expect(page.rows.find((r) => r.number === 100)?.comments).toBe(1)
+  })
+
+  it('shares one counts read between the index, the header tabs and the list total, until a write', async () => {
+    const { sdk, seen, repo } = fresh(112)
+    // The Issues list asks three times on one load: the header's open-count tabs, the list's
+    // total, and the index's Open / Closed counts. One set of the three proved counts answers all.
+    const [page, tabs, total] = await Promise.all([queryIssues(sdk, repo, base, 112, 'devnet'), sharedRepoCounts(sdk, repo), sharedRepoCounts(sdk, repo)])
+    expect(await sharedRepoCounts(sdk, repo)).toBe(tabs)
+    expect(total).toBe(tabs)
+    expect(page.openCount).toBe(tabs.issuesOpen)
+    expect(seen.counts.map((q) => q.documentTypeName).sort()).toEqual(['issue', 'patch', 'transition'])
+    // A write that can change a count is a new generation: the next reader counts again.
+    invalidateRepoFeed(repo)
+    await sharedRepoCounts(sdk, repo)
+    expect(seen.counts).toHaveLength(6)
   })
 
   it('pages past 100 with a keyset composite (D-904)', async () => {

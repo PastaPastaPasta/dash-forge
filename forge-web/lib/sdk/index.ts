@@ -80,6 +80,7 @@ export {
   IncompleteReadError,
   queryDocuments,
   queryDocumentsWithProof,
+  RANGE_OPERATORS,
   rankedDocuments,
   shareInFlight,
   tieProbeAllowed,

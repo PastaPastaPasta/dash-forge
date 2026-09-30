@@ -3,6 +3,10 @@ import { PUSH_COST_DASH } from '../lib/sdk/cost'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { collectPageErrors, DEMO, E2E_DEVNET, EMPTY, readErrorBanner, runAxe, SCREENSHOT_DIR, shot, waitForRepoResolved } from './helpers'
+import { quorumGuard } from './quorum-sync'
+
+// Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
+test.beforeEach(quorumGuard)
 
 /**
  * Repo home launch UX against the moutai forge-v2 fixture (read-only; nothing is signed):
