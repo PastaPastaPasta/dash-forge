@@ -13,6 +13,7 @@ import type { CompositeQuery } from '../sdk/composite'
 import { cachedDpnsName, clearDpnsCache } from './dpns'
 import {
   keysetPage,
+  pageWalk,
   rankedRepos,
   prefixUpperBound,
   recentReposPage,
@@ -87,12 +88,18 @@ function mockSdk(store: Record<string, Record<string, Doc[]>>, seen: Seen, opts:
   const rows = (c: string, t: string): Doc[] => store[c]?.[t] ?? []
   const composite = async (q: CompositeQuery) => {
     seen.composites.push(q)
-    // Every sub-query walks in the page's direction; an ordering that disagrees is refused.
-    const dir = (o: readonly (readonly [string, string])[] | undefined): string | undefined => o?.[o.length - 1]?.[1]
-    const pageDir = dir(q.orderBy as never)
+    // Drive's `page_direction`: the page path query's outer `left_to_right`. A page with a range
+    // (or an `in`) walks in its order's direction; an all-`==` page walks ascending whatever its
+    // order asks. A bound documents sub-query (not a by-id join) whose outer ordering disagrees
+    // is refused, with drive's message (bonsia refused Explore's later recent pages this way).
+    const orderDir = (f: string): string | undefined => (q.orderBy as readonly (readonly [string, string])[] | undefined)?.find(([o]) => o === f)?.[1]
+    const walked = (q.where ?? []).find(([f, op]) => op !== '==' && orderDir(f as string) !== undefined)
+    const pageDir = walked === undefined ? 'asc' : orderDir(walked[0] as string)
     for (const s of q.subQueries) {
-      const d = dir(s.orderBy as never)
-      if (pageDir !== undefined && d !== undefined && d !== pageDir) throw new Error('invalid argument: a sub-query ordering disagrees with the page direction')
+      const outer = (s.orderBy as readonly (readonly [string, string])[] | undefined)?.[0]?.[1]
+      if (s.kind !== 'counts' && s.bind !== undefined && s.bind.field !== '$id' && outer !== undefined && outer !== pageDir) {
+        throw new Error("unsupported error: a documents sub-query's outer ordering must match the page's direction; changing it for the merged proof would change its result")
+      }
     }
     const page = run(rows(q.dataContractId, q.documentType), (q.where ?? []) as never, (q.orderBy ?? []) as never, q.limit)
     const subDocs: Doc[][] = []
@@ -311,6 +318,26 @@ describe('recentReposPage', () => {
     // RC1 `repo.recent (visibility, $createdAt)`: public repos, paged on `$createdAt` within them.
     expect(seen.composites[0]?.where).toEqual([['visibility', '==', 'public']])
     expect(seen.composites[1]?.where).toEqual([['visibility', '==', 'public'], ['$createdAt', '<=', expect.any(Number)]])
+    // The pushes lookup is ordered the way the node walks each page (drive's `page_direction`):
+    // ascending on the all-`==` first page, the page's own `desc` once `$createdAt <=` bounds it.
+    // Bonsia refused the later pages' composite when they were sent `asc` (a plain fallback,
+    // without counts or names).
+    const pushesOuter = (i: number) => seen.composites[i]?.subQueries.find((s) => s.documentType === 'packManifest')?.orderBy?.[0]
+    expect(pushesOuter(0)).toEqual(['repoId', 'asc'])
+    expect(pushesOuter(1)).toEqual(['repoId', 'desc'])
+    expect(pushesOuter(2)).toEqual(['repoId', 'desc'])
+  })
+})
+
+describe('pageWalk', () => {
+  const recent = { field: '$createdAt', direction: 'desc' } as const
+  it('walks ascending through an all-== prefix, whatever the order asks', () => {
+    expect(pageWalk([['visibility', '==', 'public']], recent)).toBe('asc')
+  })
+  it('walks in the page order once the ordered field has a range', () => {
+    expect(pageWalk([['visibility', '==', 'public'], ['$createdAt', '<=', 1]], recent)).toBe('desc')
+    expect(pageWalk([['visibility', '==', 'public'], ['$createdAt', '<', 1]], recent)).toBe('desc')
+    expect(pageWalk([['name', '>=', 'a'], ['name', '<', 'b']], { field: 'name', direction: 'asc' })).toBe('asc')
   })
 })
 

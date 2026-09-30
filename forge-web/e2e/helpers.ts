@@ -134,6 +134,14 @@ export function shot(page: Page, name: string) {
 
 export const DAPI_METHOD = /\/org\.dash\.platform\.dapi\.v0\.Platform\/(\w+)$/
 
+/**
+ * Room a request budget leaves for reads the SDK itself sends again to another node (a node
+ * lagging behind, or mid quorum rotation, answers with an error the SDK retries): each retry is
+ * one more request at the network. It is not room for any read the page's shape does not
+ * account for; a budget built on it names every read it expects.
+ */
+export const DAPI_RESEND_SLACK = 2
+
 /** Count the DAPI requests of `page` by gRPC method, from now on (P-1, #72). */
 export function countDapi(page: Page): Map<string, number> {
   const counts = new Map<string, number>()

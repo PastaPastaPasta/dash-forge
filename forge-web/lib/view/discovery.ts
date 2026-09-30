@@ -29,7 +29,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { DEFAULT_NETWORK, NETWORKS, type Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import type { Role } from '../rules/v2'
-import { queryDocumentsWithProof, type PlainDocument, type WhereClause } from '../sdk'
+import { queryDocumentsWithProof, type PlainDocument, type WhereClause, type WhereOperator } from '../sdk'
 import { countsAt, docsAt, queryComposite, type CompositeSub, type CompositeResult } from '../sdk/composite'
 import { DOC, readMemberRepoIds, toRepoDoc, type RepoDoc } from '../repo'
 import { readMostForked, readMostStarred, readTrending, type TrendingWindow } from '../repo/trending'
@@ -150,10 +150,8 @@ export function searchPrefix(text: string): string | null {
  * issue counts, the owners' DPNS names and, with `pushesSince`, the pushes since then. A push
  * is a `packManifest` (one per push that uploads objects; `refUpdate` rows are one per ref, and
  * a mirror's tag push is hundreds). The lookup's outer (`repoId`) ordering must match the
- * direction the node walks the page in (else it refuses the composite): `desc` for a page read
- * by `$id` descending, `asc` for one walked through an `==`-prefixed index such as `repo.recent
- * (visibility, $createdAt)` whatever its `$createdAt` order (measured on bonsia). Each repo's
- * pushes are newest first either way; the newest is what is kept.
+ * direction the node walks the page in (else it refuses the composite; see {@link pageWalk}).
+ * Each repo's pushes are newest first either way; the newest is what is kept.
  */
 function repoSubs(forge: ForgeIds, network: Network, source: 'page' | number, pushesSince: number | null, pushesOuter: 'asc' | 'desc' = 'desc'): CompositeSub[] {
   const bind = { source, sourceProperty: '$id', field: 'repoId' }
@@ -208,6 +206,21 @@ function reposOf(res: CompositeResult, repoDocs: readonly PlainDocument[], first
  * pushes in the same composite. If the composite surface is refused, the same page is read as
  * a plain query without counts (never one count request per repo).
  */
+const RANGE_OPS: ReadonlySet<WhereOperator> = new Set<WhereOperator>(['<', '<=', '>', '>=', 'startsWith'])
+
+/**
+ * The direction the node walks a page read through an `==`-prefixed index, which is the one a
+ * composite's bound documents sub-query must be ordered in (drive's `page_direction`, the page
+ * path query's `left_to_right`). A range on the ordered field walks in the page's own order; with
+ * no range (every clause `==`) the walk is ascending whatever the order asks (both measured on
+ * bonsia: `repo.recent (visibility, $createdAt)` pages `$createdAt desc`, and its first page
+ * needed `asc`, its later pages — which add `$createdAt <=` — `desc`). A later page sent with
+ * the first page's `asc` was refused, fell back to the plain query, and lost its counts and names.
+ */
+export function pageWalk(where: readonly WhereClause[], order: { field: string; direction: 'asc' | 'desc' }): 'asc' | 'desc' {
+  return where.some(([field, op]) => field === order.field && RANGE_OPS.has(op)) ? order.direction : 'asc'
+}
+
 async function readRepoPage<T extends string | number>(
   sdk: EvoSDK,
   forge: ForgeIds,
@@ -230,7 +243,7 @@ async function readRepoPage<T extends string | number>(
   try {
     res = await queryComposite(
       sdk,
-      { dataContractId: forge.core, documentType: DOC.repo, where: pageWhere, orderBy, limit: requested, subQueries: repoSubs(forge, network, 'page', pushesSince, 'asc') },
+      { dataContractId: forge.core, documentType: DOC.repo, where: pageWhere, orderBy, limit: requested, subQueries: repoSubs(forge, network, 'page', pushesSince, pageWalk(pageWhere, order)) },
       { plainFallback: false },
     )
     rows = res.page

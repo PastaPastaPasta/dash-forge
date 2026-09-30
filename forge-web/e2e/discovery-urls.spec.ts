@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { collectPageErrors, countDapi, countDocumentQueries, DEMO, deployment, loadSeedPulls, nodeSdk, repoUrl, runAxe, shot } from './helpers'
+import { collectPageErrors, countDapi, countDocumentQueries, DAPI_METHOD, DAPI_RESEND_SLACK, decodeDocumentsRequest, DEMO, deployment, loadSeedPulls, nodeSdk, repoUrl, runAxe, shot } from './helpers'
 
 /**
  * G14 (L-25, L-27, L-40): Explore search, the jump box, GitHub-style short URLs and the
@@ -67,6 +67,10 @@ test('g1. Explore search finds the fixture repo by a name prefix, in one request
 test('g2. Explore: most starred (labelled with its bound), recently updated, and recent repos page', async ({ page }) => {
   const { errors } = collectPageErrors(page)
   const dapi = countDapi(page)
+  let domainReads = 0
+  page.on('request', (req) => {
+    if (DAPI_METHOD.exec(req.url())?.[1] === 'getDocuments' && decodeDocumentsRequest(req.postDataBuffer())?.documentType === 'domain') domainReads++
+  })
   await page.goto('/explore/', { waitUntil: 'domcontentloaded' })
   const starred = page.getByTestId('explore-most-starred')
   await expect(starred.locator('a[href*="/repo"], [data-empty]').first()).toBeVisible({ timeout: 60_000 })
@@ -91,12 +95,19 @@ test('g2. Explore: most starred (labelled with its bound), recently updated, and
   await expect.poll(() => recent.locator('a[href*="/repo"]').count(), { timeout: 60_000 }).toBeGreaterThan(firstPage)
   await shot(page, 'g14-explore-sections')
 
-  // Request budget: the signed-out page (recent + most starred + releases of 24 repos + one
-  // more recent page) stays well under the old 52 (perf-scale), with no per-repo count reads.
+  // Request budget, derived from the page's shape rather than from the devnet's size: trending,
+  // most starred and most forked are a proved ranked read and one composite each (6); recent is
+  // one composite per page (2 here); "Recently released" reads the latest release of each repo
+  // on the first recent page (one read per card, `firstPage`). Stars, issue counts, pushes and
+  // the owners' DPNS names ride in those composites, so however many repos or distinct owners
+  // the shared devnet grows, nothing else is read. A later recent page whose composite the node
+  // refused fell back to the plain query and read each new owner's name on its own (it stepped
+  // this past 40 as bonsia grew): no top-level `domain` read at all is allowed.
   const docs = dapi.get('getDocuments') ?? 0
   test.info().annotations.push({ type: 'dapi', description: JSON.stringify(Object.fromEntries(dapi)) })
   expect(dapi.get('getDocumentsCount') ?? 0, 'counts ride in the composites').toBe(0)
-  expect(docs, 'getDocuments on Explore (3 composites + 24 release reads + names)').toBeLessThanOrEqual(40)
+  expect(domainReads, 'owner names ride in the composites (no per-owner DPNS read)').toBe(0)
+  expect(docs, `getDocuments on Explore (6 ranked + 2 recent pages + ${firstPage} release reads)`).toBeLessThanOrEqual(6 + 2 + firstPage + DAPI_RESEND_SLACK)
   expect(errors, errors.join('\n')).toEqual([])
 })
 
