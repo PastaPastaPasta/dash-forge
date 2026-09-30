@@ -25,6 +25,7 @@ import { onRepoContentWritten } from '../repo/push'
 import { readReleaseCount, readReleases, releaseCountOf } from '../repo/releases'
 import { invalidateSessionCache, sessionCached } from './session-cache'
 import { historyWalker } from './commit-log'
+import { historyOf } from './history-source'
 import { readBlob, type ObjectReader } from './tree-nav'
 import { decodeTextBlob, type TreeEntry } from './git-objects'
 import { formatBytes } from './format'
@@ -112,6 +113,31 @@ export function repoFilesWalk(
     trimOldest(walks, KEEP_WALKS)
   }
   return walk
+}
+
+/** Each history index's file paths, worked out once. */
+const indexedFiles = new WeakMap<object, readonly string[]>()
+
+/**
+ * The files at `tipOid` as the history index lists them (QW-028), with no tree read: the index the
+ * file list's column already loaded names every path of the tip (directories too, which are left
+ * out here). Null when no index covers the tip. A delta over a full index can still name a file
+ * deleted since that full index (the reader drops such paths when a tree lists names), so a caller
+ * takes these as a first answer until the tree walk ({@link repoFilesWalk}) has the exact one.
+ */
+export async function indexedFilePaths(reader: { readonly memoScope?: object }, tipOid: string): Promise<readonly string[] | null> {
+  const history = historyOf(reader)
+  if (history === null || !history.covers(tipOid)) return null
+  const index = await history.load(tipOid)
+  const hit = indexedFiles.get(index)
+  if (hit !== undefined) return hit
+  const dirs = new Set<string>()
+  for (const path of index.paths.keys()) {
+    for (let at = path.indexOf('/'); at !== -1; at = path.indexOf('/', at + 1)) dirs.add(path.slice(0, at))
+  }
+  const files = [...index.paths.keys()].filter((p) => !dirs.has(p)).sort()
+  indexedFiles.set(index, files)
+  return files
 }
 
 /**

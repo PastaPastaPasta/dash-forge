@@ -41,12 +41,12 @@ const FIRST_FEW_BYTES = 8000
 const HASHBASE = 107927
 
 /** Blobs the inexact phases may read (each a ranged read over the network). */
-const RENAME_READ_BUDGET = 64
+const RENAME_READ_BUDGET = 400
 /** A blob larger than this is not scored for similarity. */
 const RENAME_MAX_BLOB_BYTES = 1024 * 1024
 const NOT_LOOKED = 'Renames with edits were not all looked for:'
 /** Blob reads in flight at once. */
-const READ_POOL = 6
+const READ_POOL = 16
 
 const S_IFMT = 0o170000
 const S_IFREG = 0o100000

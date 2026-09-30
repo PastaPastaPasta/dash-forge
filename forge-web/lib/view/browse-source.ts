@@ -140,6 +140,7 @@ function evictChunks(): void {
 export function clearChunkCache(): void {
   chunkCache.clear()
   chunkCacheBytes = 0
+  chunkQueriesSent = 0
 }
 
 /** Query one batch of chunk docs (uncached) and return payloads keyed by seq. */
@@ -190,6 +191,56 @@ async function queryChunkBatch(
 }
 
 /**
+ * Chunk seqs asked for in the same turn of the event loop, per copy of an artifact, gathered into
+ * one query (QW-027/QW-028): reads that run side by side (a pool of blob reads counting a diff's
+ * lines, a tree walk's parallel reads, Blame's read-ahead) each need a chunk or two, and each used to
+ * cost a query of its own. Gathered, they share queries of up to {@link CHUNK_QUERY_MAX} seqs
+ * ({@link queryChunkBatch} splits and pools past that). A copy's seqs are unique per `packHash`,
+ * so a gathered answer serves each asker exactly its own seqs.
+ */
+interface PendingChunkQuery {
+  readonly seqs: Set<number>
+  readonly result: Promise<Map<number, Uint8Array>>
+}
+const pendingChunkQueries = new Map<string, PendingChunkQuery>()
+
+let chunkQueriesSent = 0
+
+/** Test hook: how many chunk queries {@link queueChunkSeqs} has sent since {@link clearChunkCache}. */
+export function chunkQueryCount(): number {
+  return chunkQueriesSent
+}
+
+/**
+ * `seqs` of the copy keyed `key`, fetched with the other seqs asked for this turn (one macrotask:
+ * the continuations of reads that just landed together get to ask first), in one query while they
+ * fit one ({@link CHUNK_QUERY_MAX}); past that, the next asker starts a new query rather than make
+ * everyone wait for a bigger one. `query` fetches a gathered set; the first asker's is used.
+ */
+export function queueChunkSeqs(
+  key: string,
+  seqs: readonly number[],
+  query: (seqs: readonly number[]) => Promise<Map<number, Uint8Array>>,
+): Promise<Map<number, Uint8Array>> {
+  let pending = pendingChunkQueries.get(key)
+  if (pending !== undefined && pending.seqs.size + seqs.filter((q) => !pending?.seqs.has(q)).length > CHUNK_QUERY_MAX) pending = undefined
+  if (pending === undefined) {
+    const gathered = new Set<number>()
+    const result = new Promise<Map<number, Uint8Array>>((resolve, reject) => {
+      setTimeout(() => {
+        if (pendingChunkQueries.get(key)?.seqs === gathered) pendingChunkQueries.delete(key)
+        chunkQueriesSent += Math.ceil(gathered.size / CHUNK_QUERY_MAX)
+        query([...gathered].sort((a, b) => a - b)).then(resolve, reject)
+      }, 0)
+    })
+    pending = { seqs: gathered, result }
+    pendingChunkQueries.set(key, pending)
+  }
+  for (const seq of seqs) pending.seqs.add(seq)
+  return pending.result
+}
+
+/**
  * Fetch a contiguous `[start, end)` range of a platform-stored artifact by `packHash` (hex).
  *
  * OFFSET→SEQ MAPPING (VERIFIED against forge-core `pack.rs::split`): the chunker fills every
@@ -231,7 +282,7 @@ async function fetchPlatformRange(
     else missing.push(seq)
   }
   if (missing.length > 0) {
-    const batch = queryChunkBatch(sdk, repo, manifest, missing)
+    const batch = queueChunkSeqs(cachePrefix, missing, (seqs) => queryChunkBatch(sdk, repo, manifest, seqs))
     for (const seq of missing) {
       const promise = batch.then((bySeq) => {
         const payload = bySeq.get(seq)

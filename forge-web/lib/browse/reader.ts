@@ -57,6 +57,13 @@ export interface PackSource {
 export const READ_AHEAD_BLOCK = 256 * 1024
 /** Blocks a {@link readAheadSource} keeps (so at most 16 MiB). */
 const READ_AHEAD_BLOCKS = 64
+/**
+ * Blocks a history walk's source fetches ahead once its reads run through a pack in order
+ * (QW-027): a merge-base search over dashpay/dash v22.0.0...v23.0.0 reads 18,000 commits one block
+ * after the next, ~60 round trips in a row. With the next blocks asked for as the walk enters
+ * one, they arrive side by side (and in one chunk query, gathered with the demanded block).
+ */
+export const READ_AHEAD_SEQUENTIAL = 3
 
 /**
  * A {@link PackSource} that fetches aligned {@link READ_AHEAD_BLOCK}-byte blocks and serves
@@ -69,13 +76,27 @@ const READ_AHEAD_BLOCKS = 64
  * fail to load go straight to `inner`, so nothing it could read before becomes unreadable.
  * Every object read through it is still hash-checked by the reader.
  */
-export function readAheadSource(inner: PackSource, block = READ_AHEAD_BLOCK, maxBlocks = READ_AHEAD_BLOCKS): PackSource {
+export function readAheadSource(inner: PackSource, block = READ_AHEAD_BLOCK, maxBlocks = READ_AHEAD_BLOCKS, ahead = 0): PackSource {
   const blocks = new Map<string, Promise<Uint8Array>>()
-  const blockOf = (packRef: number, index: number, size: number, copy: number | undefined): Promise<Uint8Array> => {
+  /** Per pack copy, the block the last read asked for (a read of the next one is a sequential run). */
+  const lastBlock = new Map<string, number>()
+  const blockOf = (packRef: number, index: number, size: number, copy: number | undefined, demand = true): Promise<Uint8Array> => {
     // A single-copy pack reads the same bytes whether or not a copy is named: one key, so the
     // reader pinning copy 0 after its first verified object does not refetch the block.
     const single = (inner.copyCount?.(packRef) ?? 1) === 1
-    const key = `${packRef}:${single ? 0 : copy ?? ''}:${index}`
+    const copyKey = `${packRef}:${single ? 0 : copy ?? ''}`
+    const key = `${copyKey}:${index}`
+    if (demand && ahead > 0) {
+      // Reads running through the pack in order: ask for the next blocks now, side by side.
+      const last = lastBlock.get(copyKey)
+      lastBlock.set(copyKey, index)
+      if (last === index - 1) {
+        const blocksInPack = Math.ceil(size / block)
+        for (let next = index + 1; next <= index + ahead && next < blocksInPack; next++) {
+          if (!blocks.has(`${copyKey}:${next}`)) blockOf(packRef, next, size, copy, false).catch(() => undefined)
+        }
+      }
+    }
     const hit = blocks.get(key)
     if (hit !== undefined) {
       blocks.delete(key)
@@ -394,7 +415,7 @@ export class BrowseReader {
     const verdicts = this.opts.onObject ? new BatchedVerdicts(this.opts.onObject) : null
     const walker = new BrowseReader(
       this.locator,
-      readAheadSource(this.packs),
+      readAheadSource(this.packs, READ_AHEAD_BLOCK, READ_AHEAD_BLOCKS, READ_AHEAD_SEQUENTIAL),
       { ...this.opts, ...(verdicts ? { onObject: (v: ObjectVerdict) => verdicts.note(v) } : {}) },
       this.view,
       // The same object memos: what the walk verified, the page does not read again.

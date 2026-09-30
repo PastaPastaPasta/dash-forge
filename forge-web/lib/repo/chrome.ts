@@ -36,9 +36,13 @@ import { cursorPadded, queryAllDocuments, shareInFlight, type PlainDocument, typ
 import { DOC, type RepoRef } from './contract'
 import { membersGeneration, membershipsFromDocs, seedMemberships } from './members'
 import { noteForkOf } from './fork-parent'
+import { readRefRowsInRanges } from './refs'
 import { repoRefOf, toRepoDoc, type RepoDoc } from './resolveRepo'
 import { seedTargetCounts } from './social'
 import { repoSource } from './source'
+
+/** The timelines keyed by `refNameHash` too, so a long one can be read as key ranges in parallel. */
+const REF_TYPES: ReadonlySet<string> = new Set([DOC.refUpdate, DOC.protectedRefUpdate])
 
 /** The append-only timelines the store keeps. */
 export const TIMELINE_TYPES = [DOC.config, DOC.refUpdate, DOC.protectedRefUpdate, DOC.packManifest] as const
@@ -176,8 +180,13 @@ async function completeTimelines(
   const read = await Promise.all(
     TIMELINE_TYPES.map(async (type, i) => {
       const page = pages[i] ?? []
-      const rest = (): Promise<PlainDocument[]> =>
+      const serial = (): Promise<PlainDocument[]> =>
         queryAllDocuments(sdk, repoSource(repo).repoQuery(type, { ...sinceWhere(known, type), orderBy: [['$createdAt', 'asc']] }), { firstPage: page })
+      // A first read of a repo's ref updates past a page (dashpay/dash: ~700) reads the rest as
+      // key ranges side by side, not page after page (QW-087); a node that does not honor them,
+      // and every delta read, continues the `$createdAt` page instead.
+      const rest = async (): Promise<PlainDocument[]> =>
+        (known === undefined && REF_TYPES.has(type) ? await readRefRowsInRanges(sdk, repo, type) : null) ?? serial()
       const rows = page.length < PAGE ? page : await rest()
       return [type, mergeRows(known?.[type] ?? [], rows)] as const
     }),

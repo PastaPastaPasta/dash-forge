@@ -10,7 +10,7 @@ import { decodeTextBlob } from './git-objects'
 import { isGitlink, type DiffSides, type FileChange } from './commit-log'
 import { ObjectTooLargeError } from '../browse'
 import { knownMinSize, type ObjectReader } from './tree-nav'
-import { diffStat, diffTextLines, type TextDiffLine } from './text-diff'
+import { countTextChanges, diffStat, diffTextLines, type TextDiffLine } from './text-diff'
 import { formatBytes } from './format'
 
 /** Blobs above this are not diffed inline. */
@@ -177,6 +177,9 @@ export async function loadFilePatch(
     const lines = diffTextLines(before.text, after.text, undefined, { ignoreWhitespace: options.ignoreWhitespace === true })
     if (lines === null) {
       const large = size > INLINE_BLOB_MAX_BYTES ? `${largeNote(size)} ` : ''
+      // Too large to show, but counted (QW-027): the change set's totals stay whole.
+      const counted = countTextChanges(before.text, after.text, { ignoreWhitespace: options.ignoreWhitespace === true })
+      if (counted !== null) return { ...placeholder(change, 'too-complex', `${large}This change is too large to show in the browser; its lines are counted.`), ...counted }
       return placeholder(change, 'too-complex', `${large}This change is too large to diff in the browser, so its lines are not counted.`)
     }
     if (size <= INLINE_BLOB_MAX_BYTES) return textPatch(change, lines)

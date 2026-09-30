@@ -102,6 +102,36 @@ function gitOps(a: readonly string[], b: readonly string[], limits: DiffLimits):
 }
 
 /**
+ * How far {@link countTextChanges} searches: a change too large to show is still counted (QW-027),
+ * so its search may run further than a shown diff's before it gives up.
+ */
+export const COUNT_DIFF_LIMITS: DiffLimits = { maxEdits: Infinity, maxWork: 100_000_000 }
+
+/**
+ * The lines a change adds and deletes, for one too large to show ({@link diffTextLines} said null):
+ * the same diff, with no bound on its edits, so a change set's totals stay whole. Null only when
+ * the search itself runs past {@link COUNT_DIFF_LIMITS}.
+ */
+export function countTextChanges(
+  before: string,
+  after: string,
+  options: { readonly ignoreWhitespace?: boolean } = {},
+): { readonly added: number; readonly deleted: number } | null {
+  const key = options.ignoreWhitespace ? (l: string): string => l.replace(/\s+/g, '') : null
+  const oldLines = splitLines(before)
+  const newLines = splitLines(after)
+  const ops = gitOps(key ? oldLines.map(key) : oldLines, key ? newLines.map(key) : newLines, COUNT_DIFF_LIMITS)
+  if (ops === null) return null
+  let added = 0
+  let deleted = 0
+  for (const op of ops) {
+    if (op === 1) deleted += 1
+    else if (op === 2) added += 1
+  }
+  return { added, deleted }
+}
+
+/**
  * Compute a line-level diff. `null` means the change is too large for an in-browser review;
  * callers should surface that honestly rather than freezing the page.
  */
