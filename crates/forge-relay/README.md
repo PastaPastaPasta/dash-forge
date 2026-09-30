@@ -108,10 +108,10 @@ retry queue, due at once, and flushes it to disk, within 5 s of the signal.
 ## Wake a runner
 
 A [forge-runner](../../docs/guides/self-host-runner.md) polls its repositories every
-`interval_secs` (two minutes by default). Your relay can wake it as soon as it sees a push or a
-pull request's activity, so a run starts within seconds. The runner connects to the relay (no
-port is opened on the runner's machine), so it works behind NAT. There is no central service:
-you run the relay, and your runner subscribes to it.
+`interval_secs` (two minutes by default). Your relay can wake it as soon as it sees a push, so a
+run starts within seconds. The runner connects to the relay (no port is opened on the runner's
+machine), so it works behind NAT. There is no central service: you run the relay, and your
+runner subscribes to it.
 
 ```toml
 # relay.toml (forge-relay run --config relay.toml --listen 0.0.0.0:8080)
@@ -131,22 +131,27 @@ secret_file = "/etc/forge-runner/relay.secret"   # the same secret
 `GET /v1/wake` on the same listener as the health check.
 
 - **A wake carries no trust.** It only tells the runner to poll a repository now. The runner
-  reads the refs from Platform proofs and the pull requests through `dg`, as on any poll, and
-  runs only what that read shows. A relay that is down, lies or is impersonated costs latency,
-  never a run. Polling stays on: every `interval_secs`, whatever the relay says.
+  reads the refs from Platform proofs, as on any poll, and runs only what that read shows. A
+  relay that is down, lies or is impersonated costs latency, never a run. Polling stays on:
+  every `interval_secs`, whatever the relay says.
 - **Authentication.** Each request is a long-poll signed with the shared secret: HMAC-SHA256
   over the path and query (with a fresh nonce) and the time, in `X-Forge-Wake-Time` and
-  `X-Forge-Wake-Signature`. The relay refuses a request more than 5 minutes off its clock, or
-  one whose signature it has seen. Each answer is signed over the request's signature and the
-  body, so the runner refuses a forged or replayed answer. The secret never crosses the wire,
-  so plain http is safe from eavesdropping; use https or a private network anyway to keep the
-  fact of activity private.
-- **What a runner learns.** Which configured repositories had a push or a pull-request
-  activity (`{"cursor", "resync", "repos": [{"id", "name", "label"}]}`), all public chain data.
-  The relay keeps the last 1,024 wakes. A runner whose cursor is older, or from before a relay
-  restart, is told `resync` and polls everything once.
-- **Limits.** 64 requests are held open at once; more get `503` and the runner retries. A
-  request head is capped at 8 KiB and 10 s.
+  `X-Forge-Wake-Signature` (`sha256=` and 64 lowercase hex digits). The relay refuses a request
+  more than 5 minutes off its clock, so keep both clocks in sync (NTP), or one whose signature
+  it has seen. Each answer is signed over the request's signature and the body, so the runner
+  refuses a forged or replayed answer. The secret never crosses the wire. Someone on the
+  network path can still hold wake-ups back, which only costs latency; use https or a private
+  network to keep that and the fact of activity private.
+- **What a runner learns.** Which configured repositories had a push (`{"cursor", "resync",
+  "repos": [{"id", "name", "label"}]}`), all public chain data. The relay keeps the last 1,024
+  wakes. A runner whose cursor is older, or from before a relay restart, is told `resync` and
+  polls everything at once (and again 20 s later, as after any wake).
+- **Names must match.** A runner matches a woken repository by its `repo` in runner.toml,
+  which must equal either the relay's `[wake] repos` entry or `<owner id>/<name>`. It logs the
+  names once when a wake matches none of its repositories.
+- **Limits.** 256 connections at once; 64 requests held open, more get `503` and the runner
+  retries. A request head is capped at 8 KiB and 10 s. Wakes arriving within 300 ms are
+  answered together.
 
 ## Payloads
 

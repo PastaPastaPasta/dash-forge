@@ -630,7 +630,7 @@ impl Discovery {
         if before != after || startup {
             tracing::info!(
                 repos = after.len(),
-                hooks = self.subs.len(),
+                hooks = self.subs.iter().filter(|s| !s.is_wake()).count(),
                 added = ?after.difference(&before).collect::<Vec<_>>(),
                 removed = ?before.difference(&after).collect::<Vec<_>>(),
                 "webhook subscriptions refreshed"

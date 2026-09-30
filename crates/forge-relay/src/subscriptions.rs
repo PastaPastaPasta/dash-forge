@@ -262,9 +262,9 @@ pub fn static_subscription(repo_id: &str, w: &StaticWebhook) -> WebhookSub {
 const WAKE_URL: &str = "forge-relay:wake";
 
 /// The events a runner is woken for.
-pub const WAKE_EVENTS: [&str; 2] = ["push", "pull_request"];
+pub const WAKE_EVENTS: [&str; 1] = ["push"];
 
-/// A subscription that only makes the relay poll `repo_id` for pushes and pull requests, so
+/// A subscription that only makes the relay poll `repo_id` for pushes, so
 /// runners can be woken ([`crate::wake`]). It is never delivered: the discovery keeps it out of
 /// the dispatcher ([`WebhookSub::is_wake`]).
 pub fn wake_subscription(repo_id: &str) -> WebhookSub {

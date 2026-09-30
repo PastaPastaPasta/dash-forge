@@ -1,10 +1,10 @@
 //! Runner wake-ups (`[wake]` in the config): a long-poll endpoint on the `--listen` address that
-//! tells a runner which of its repositories just had a push or pull-request activity, so it
-//! polls them now instead of at its next interval (platform-parity-spec §2.4).
+//! tells a runner which of its repositories just had a push, so it polls them now instead of at
+//! its next interval (platform-parity-spec §2.4).
 //!
 //! A wake carries no trust. The runner reads the repository from Platform itself (the refs
-//! from proofs, the pull requests through `dg`); a wake only says "look now". So a relay that
-//! lies, or is down, costs latency and nothing else: the runner keeps its own poll interval.
+//! from proofs); a wake only says "look now". So a relay that lies, or is down, costs latency
+//! and nothing else: the runner keeps its own poll interval.
 //!
 //! ## Protocol (`forge-wake-v1`)
 //!
@@ -26,7 +26,7 @@
 //! The answer's `X-Forge-Wake-Signature` is the HMAC of `forge-wake-v1-response\n<request
 //! signature>\n<body>`, which ties it to this request: a recorded answer cannot be replayed.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -49,6 +49,10 @@ const RING: usize = 1024;
 
 /// How many signatures seen inside the window are remembered (replay guard).
 const MAX_SEEN: usize = 10_000;
+
+/// A waiting request answers this long after the first wake, so the wakes of one push (one per
+/// ref) go out together.
+const COALESCE: Duration = Duration::from_millis(300);
 
 /// The string a request's signature covers.
 pub fn request_message(path_and_query: &str, time: u64) -> String {
@@ -80,7 +84,15 @@ pub struct WakeHub {
     repos: BTreeMap<String, WakeRepo>,
     ring: Mutex<Ring>,
     seq: watch::Sender<u64>,
-    seen: Mutex<HashMap<String, Instant>>,
+    seen: Mutex<Seen>,
+}
+
+/// Signatures accepted inside the window, oldest first (the replay guard). Only valid
+/// signatures get here, so filling it takes genuine requests; past [`MAX_SEEN`] the oldest go.
+#[derive(Default)]
+struct Seen {
+    set: HashSet<String>,
+    order: VecDeque<(Instant, String)>,
 }
 
 #[derive(Default)]
@@ -133,7 +145,7 @@ impl WakeHub {
             repos,
             ring: Mutex::new(Ring::default()),
             seq: watch::channel(0).0,
-            seen: Mutex::new(HashMap::new()),
+            seen: Mutex::new(Seen::default()),
         }
     }
 
@@ -221,12 +233,21 @@ impl WakeHub {
         if time.abs_diff(now) > MAX_SKEW_SECS {
             return Err(Refusal::Unauthorized);
         }
+        // One spelling only (`sha256=` and 64 lowercase hex digits): the replay guard keys on
+        // it, so an uppercase respelling of a seen signature must not pass as a new one.
         let signature = signature.trim();
-        if !verify_signature(
-            self.secret.expose(),
-            request_message(path_and_query, time).as_bytes(),
-            signature,
-        ) {
+        let canonical = signature.strip_prefix("sha256=").is_some_and(|h| {
+            h.len() == 64
+                && h.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        });
+        if !canonical
+            || !verify_signature(
+                self.secret.expose(),
+                request_message(path_and_query, time).as_bytes(),
+                signature,
+            )
+        {
             return Err(Refusal::Unauthorized);
         }
         let mut seen = self
@@ -234,11 +255,20 @@ impl WakeHub {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let window = Duration::from_secs(2 * MAX_SKEW_SECS + 1);
-        seen.retain(|_, at| at.elapsed() < window);
-        if seen.len() >= MAX_SEEN || seen.contains_key(signature) {
+        while seen
+            .order
+            .front()
+            .is_some_and(|(at, _)| at.elapsed() >= window || seen.order.len() >= MAX_SEEN)
+        {
+            if let Some((_, old)) = seen.order.pop_front() {
+                seen.set.remove(&old);
+            }
+        }
+        if !seen.set.insert(signature.to_string()) {
             return Err(Refusal::Unauthorized);
         }
-        seen.insert(signature.to_string(), Instant::now());
+        seen.order
+            .push_back((Instant::now(), signature.to_string()));
         Ok(())
     }
 
@@ -253,7 +283,8 @@ impl WakeHub {
                 break a;
             }
             match tokio::time::timeout_at(deadline, rx.changed()).await {
-                Ok(Ok(())) => {}
+                // A push of several refs is several wakes: answer them together.
+                Ok(Ok(())) => tokio::time::sleep(COALESCE).await,
                 _ => break a,
             }
         };
@@ -380,6 +411,16 @@ mod tests {
             signed(&h, pq, 1_700_000_000),
             Err(Refusal::Unauthorized),
             "a replay is refused"
+        );
+        let sig = sign_body(
+            SECRET.as_bytes(),
+            request_message(pq, 1_700_000_000).as_bytes(),
+        );
+        let upper = format!("sha256={}", sig["sha256=".len()..].to_ascii_uppercase());
+        assert_eq!(
+            h.authenticate(pq, Some("1700000000"), Some(&upper), 1_700_000_000),
+            Err(Refusal::Unauthorized),
+            "a respelled replay is refused too"
         );
         let sig = sign_body(
             SECRET.as_bytes(),

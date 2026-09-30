@@ -64,7 +64,7 @@ secrets_file = "/etc/forge-runner/project.secrets"   # KEY=value lines, as act r
 
 ### Wake it from your relay
 
-Polling finds a push within `interval_secs`. If you run a [relay](../../crates/forge-relay/README.md#wake-a-runner), it can wake the runner as soon as it sees a push or a pull request's activity:
+Polling finds a push within `interval_secs`. If you run a [relay](../../crates/forge-relay/README.md#wake-a-runner), it can wake the runner as soon as it sees a push:
 
 ```toml
 # runner.toml
@@ -81,9 +81,10 @@ secret-file = "/run/secrets/wake"
 ```
 
 - **The runner connects to the relay.** A thread long-polls `GET /v1/wake`, so nothing listens on the runner's machine and it works behind NAT. It logs `woken by the relay at …` once connected.
-- **A wake only moves the next poll earlier.** The runner polls a woken repository at once (at most every 10 s), and once more 20 s later in case its DAPI node is a block behind the relay's. It still reads the refs and pull requests itself; a wake decides nothing about what runs.
-- **Polling stays the default.** Without `[relay]`, the runner only polls. With it, it still polls every `interval_secs`; if the relay is down, the runner logs the error, retries with a backoff (5 s up to 2 min) and keeps polling. A relay that restarted tells the runner to poll everything once.
-- **Authentication is the shared secret.** Every request is signed with it (HMAC-SHA256, a fresh nonce, the time) and every answer is signed over the request, so neither can be forged or replayed, and the secret never crosses the wire. The protocol is in the [relay README](../../crates/forge-relay/README.md#wake-a-runner).
+- **A wake only moves the next poll earlier.** The runner polls a woken repository at once (never within 10 s of its last poll), and once more 20 s later in case its DAPI node is a block behind the relay's. It still reads the refs itself; a wake decides nothing about what runs.
+- **Polling stays the default.** Without `[relay]`, the runner only polls. With it, it still polls every `interval_secs`; if the relay is down, the runner logs the error, retries with a backoff (5 s up to 2 min) and keeps polling. A relay that restarted tells the runner to poll everything.
+- **Authentication is the shared secret.** Every request is signed with it (HMAC-SHA256, a fresh nonce, the time) and every answer is signed over the request, so neither can be forged or replayed, and the secret never crosses the wire. The relay refuses a request more than 5 minutes off its clock: keep the runner's clock in sync (NTP), or every request gets `401`. The protocol is in the [relay README](../../crates/forge-relay/README.md#wake-a-runner).
+- **Names must match.** A repository's `repo` here must be spelled as the relay's `[wake] repos` entry, or as `<owner id>/<name>`. The runner logs the names once if a wake matches none of its repositories.
 
 ### With Docker
 

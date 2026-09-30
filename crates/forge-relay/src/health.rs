@@ -30,6 +30,10 @@ const HEAD_TIMEOUT: Duration = Duration::from_secs(10);
 /// Wake requests held open at once; more are answered `503` at once.
 const MAX_WAITING: usize = 64;
 
+/// Connections served at once (each is held at most [`HEAD_TIMEOUT`] before it is
+/// authenticated); more are dropped.
+const MAX_CONNECTIONS: usize = 256;
+
 /// Serve on `addr` until the task is dropped.
 pub async fn serve(addr: &str, durable: bool, wake: Option<Arc<WakeHub>>) -> Result<()> {
     let listener = TcpListener::bind(addr)
@@ -37,17 +41,25 @@ pub async fn serve(addr: &str, durable: bool, wake: Option<Arc<WakeHub>>) -> Res
         .map_err(|e| RelayError::Io(format!("binding the listener on {addr}: {e}")))?;
     tracing::info!(%addr, wake = wake.is_some(), "listener up");
     let waiting = Arc::new(Semaphore::new(MAX_WAITING));
+    let connections = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     loop {
         let (stream, _peer) = match listener.accept().await {
             Ok(pair) => pair,
             Err(e) => {
+                // Out of file descriptors, most likely: do not spin.
                 tracing::warn!(error = %e, "accept failed");
+                tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
+        };
+        // Past the cap the connection is dropped unanswered.
+        let Ok(slot) = Arc::clone(&connections).try_acquire_owned() else {
+            continue;
         };
         let (wake, waiting) = (wake.clone(), Arc::clone(&waiting));
         tokio::spawn(async move {
             let _ = handle(stream, durable, wake.as_deref(), &waiting).await;
+            drop(slot);
         });
     }
 }

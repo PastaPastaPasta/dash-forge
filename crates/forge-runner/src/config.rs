@@ -88,7 +88,7 @@ pub struct Config {
     /// The `dg`, `git` and `act` binaries (default: from PATH).
     #[serde(default)]
     pub bin: Bins,
-    /// The owner's relay, to be woken by (`[relay]`): a push or pull request then runs within
+    /// The owner's relay, to be woken by (`[relay]`): a push then runs within
     /// seconds instead of at the next poll. Without it the runner only polls.
     #[serde(default)]
     pub relay: Option<Relay>,

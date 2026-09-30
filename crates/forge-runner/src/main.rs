@@ -115,16 +115,54 @@ fn real_main(cli: &Cli) -> Result<()> {
     }
 }
 
-/// A woken repository is polled at most this often.
+/// A repository is never polled for a wake within this long of its last poll.
 const WAKE_GAP: Duration = Duration::from_secs(10);
 
 /// A woken repository is polled once more this long after the wake: the runner's DAPI node may
 /// not have the block the relay saw yet.
 const FOLLOW_UP: Duration = Duration::from_secs(20);
 
+/// The polls wakes add, per repository: the wake's own poll and its follow-up, neither within
+/// [`WAKE_GAP`] of the repository's last poll. Two times per repository, however many wakes.
+#[derive(Debug)]
+struct Schedule {
+    last: Vec<Option<Instant>>,
+    next: Vec<Option<Instant>>,
+    follow: Vec<Option<Instant>>,
+}
+
+impl Schedule {
+    fn new(repos: usize) -> Self {
+        Self {
+            last: vec![None; repos],
+            next: vec![None; repos],
+            follow: vec![None; repos],
+        }
+    }
+
+    /// Repository `i` was woken at `now`.
+    fn wake(&mut self, i: usize, now: Instant) {
+        self.next[i] = Some(self.next[i].map_or(now, |t| t.min(now)));
+        self.follow[i] = Some(now + FOLLOW_UP);
+    }
+
+    /// When repository `i` is due for a wake's poll, if it is.
+    fn due_at(&self, i: usize) -> Option<Instant> {
+        let t = self.next[i].into_iter().chain(self.follow[i]).min()?;
+        Some(self.last[i].map_or(t, |l| t.max(l + WAKE_GAP)))
+    }
+
+    /// Repository `i` was polled, ending at `now`: every wake up to then is served.
+    fn polled(&mut self, i: usize, now: Instant) {
+        self.last[i] = Some(now);
+        self.next[i] = self.next[i].filter(|t| *t > now);
+        self.follow[i] = self.follow[i].filter(|t| *t > now);
+    }
+}
+
 /// The watch loop: every repository every `interval_secs`, and, with a `[relay]`, a woken one
-/// as soon as the relay says (no more often than [`WAKE_GAP`], and again [`FOLLOW_UP`] later).
-/// Without a relay, or while it is unreachable, the interval alone drives the runner.
+/// as soon as the relay says ([`Schedule`]). Without a relay, or while it is unreachable, the
+/// interval alone drives the runner.
 fn watch(cfg: &Config, once: bool) -> Result<()> {
     let mut wakes = match (&cfg.relay, once) {
         (Some(r), false) => {
@@ -135,22 +173,22 @@ fn watch(cfg: &Config, once: bool) -> Result<()> {
         }
         _ => None,
     };
+    let n = cfg.repos.len();
     let interval = Duration::from_secs(cfg.interval_secs);
-    let mut last: Vec<Option<Instant>> = vec![None; cfg.repos.len()];
-    // Extra polls: (when, repo index).
-    let mut due: Vec<(Instant, usize)> = Vec::new();
+    let mut sched = Schedule::new(n);
     let mut next_all = Instant::now();
-    let poll_one = |i: usize, last: &mut Vec<Option<Instant>>| {
+    let mut told_unmatched = false;
+    let poll_one = |i: usize, sched: &mut Schedule| {
         let repo = &cfg.repos[i];
         if let Err(e) = poll(cfg, repo) {
             eprintln!("forge-runner: {}: {e:#}", repo.repo);
         }
-        last[i] = Some(Instant::now());
+        sched.polled(i, Instant::now());
     };
     loop {
         if Instant::now() >= next_all {
-            for i in 0..cfg.repos.len() {
-                poll_one(i, &mut last);
+            for i in 0..n {
+                poll_one(i, &mut sched);
             }
             if once {
                 return Ok(());
@@ -159,21 +197,13 @@ fn watch(cfg: &Config, once: bool) -> Result<()> {
             continue;
         }
         let now = Instant::now();
-        let mut ready: Vec<usize> = due
-            .iter()
-            .filter(|(t, _)| *t <= now)
-            .map(|(_, i)| *i)
-            .collect();
-        if !ready.is_empty() {
-            due.retain(|(t, _)| *t > now);
-            ready.sort_unstable();
-            ready.dedup();
-            for i in ready {
-                poll_one(i, &mut last);
-            }
+        if let Some(i) = (0..n).find(|i| sched.due_at(*i).is_some_and(|t| t <= now)) {
+            poll_one(i, &mut sched);
             continue;
         }
-        let until = due.iter().map(|(t, _)| *t).fold(next_all, Instant::min);
+        let until = (0..n)
+            .filter_map(|i| sched.due_at(i))
+            .fold(next_all, Instant::min);
         let wait = until.saturating_duration_since(now);
         let Some(rx) = &wakes else {
             std::thread::sleep(wait);
@@ -188,14 +218,17 @@ fn watch(cfg: &Config, once: bool) -> Result<()> {
             }
         };
         for w in std::iter::once(first).chain(rx.try_iter()) {
-            for i in woken(cfg, &w) {
-                let now = Instant::now();
-                let at = last[i].map_or(now, |l| (l + WAKE_GAP).max(now));
-                for t in [at, at + FOLLOW_UP] {
-                    if !due.contains(&(t, i)) {
-                        due.push((t, i));
-                    }
-                }
+            let hit = woken(cfg, &w);
+            if hit.is_empty() && !told_unmatched {
+                told_unmatched = true;
+                eprintln!(
+                    "forge-runner: the relay woke {w:?}, none of which is a configured `repo` \
+                     (spell it as the relay's [wake] repos entry or <owner id>/<name>); \
+                     said once"
+                );
+            }
+            for i in hit {
+                sched.wake(i, Instant::now());
             }
         }
     }
@@ -317,5 +350,33 @@ mod tests {
         assert_eq!(woken(&cfg, &w), [0, 1]);
         assert_eq!(woken(&cfg, &relay::Wake::All), [0, 1]);
         assert!(woken(&cfg, &relay::Wake::Repos(vec![vec!["x/y".into()]])).is_empty());
+    }
+
+    #[test]
+    fn wakes_poll_now_and_once_more_but_never_within_the_gap() {
+        let t0 = Instant::now();
+        let s = |secs: u64| t0 + Duration::from_secs(secs);
+        let mut sc = Schedule::new(2);
+        assert_eq!(sc.due_at(0), None, "no wake, no extra poll");
+        sc.wake(0, s(0));
+        assert_eq!(sc.due_at(0), Some(s(0)), "a wake is served at once");
+        assert_eq!(sc.due_at(1), None);
+        sc.polled(0, s(2));
+        assert_eq!(sc.due_at(0), Some(s(20)), "then the follow-up");
+        // A second wake right after the poll waits out the gap, and moves the follow-up.
+        sc.wake(0, s(3));
+        assert_eq!(
+            sc.due_at(0),
+            Some(s(12)),
+            "not within 10 s of the last poll"
+        );
+        sc.polled(0, s(12));
+        assert_eq!(sc.due_at(0), Some(s(23)));
+        // However many wakes arrive, a repo holds two times.
+        for k in 0..100 {
+            sc.wake(0, s(13 + k));
+        }
+        sc.polled(0, s(200));
+        assert_eq!(sc.due_at(0), None, "a long poll served them all");
     }
 }
