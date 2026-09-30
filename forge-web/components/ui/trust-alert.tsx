@@ -54,7 +54,8 @@ export function TrustFailureBanner({
             ))}
           </ul>
         </div>
-        {action ? <div className="flex shrink-0 items-center gap-2">{action}</div> : null}
+        {/* Its own row under the text on a phone, so the sentences keep the full width. */}
+        {action ? <div className="flex basis-full items-center gap-2 pl-8 sm:basis-auto sm:pl-0">{action}</div> : null}
       </div>
     </div>
   )
