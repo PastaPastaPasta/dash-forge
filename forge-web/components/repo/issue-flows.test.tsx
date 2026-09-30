@@ -108,6 +108,20 @@ describe('label picker (QW2-046)', () => {
     expect(onApply).toHaveBeenCalledWith({ add: ['triage'], remove: [] })
   })
 
+  it('opens unfiltered each time', () => {
+    render(picker(() => undefined))
+    click(byText('Edit labels'))
+    const input = host.querySelector('input[aria-label="Filter or create a label"]') as HTMLInputElement
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, 'docs')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(option('bug')).toBeUndefined()
+    key('Escape')
+    click(byText('Edit labels'))
+    expect(option('bug')).toBeDefined()
+  })
+
   it('Cancel drops the draft', () => {
     const onApply = vi.fn()
     render(picker(onApply))

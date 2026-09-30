@@ -330,6 +330,10 @@ export function LabelPicker({
   const picker = useDraftPicker(applied, onApply)
   const { open, draft } = picker
   const [filter, setFilter] = useState('')
+  // Each opening starts unfiltered, as GitHub's does (a label just created is not the only one listed).
+  useEffect(() => {
+    if (!open) setFilter('')
+  }, [open])
   const [color, setColor] = useState(LABEL_COLORS[5] ?? '#1d76db')
   const [description, setDescription] = useState('')
   const names = [...new Set([...defs.filter((d) => !d.retired).map((d) => d.name), ...applied])]
