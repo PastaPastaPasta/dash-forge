@@ -7,8 +7,8 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const MODULE = fileURLToPath(new URL('../src/mnemonic-arg.mjs', import.meta.url));
-// Obviously fake: not a valid BIP39 phrase.
-const FAKE_PHRASE = 'fake one two three four five six seven eight nine ten eleven';
+// The published BIP39 test vector (valid checksum, holds no funds): phrases must now be valid.
+const FAKE_PHRASE = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 
 test('--mnemonic - reads a pipe whose writer is slow (no EAGAIN)', { skip: process.platform === 'win32' }, () => {
   const reader =

@@ -7,8 +7,8 @@ import { join } from 'node:path';
 import { writeIdentityFile, writeSecretFile } from '../src/backup.mjs';
 import { MNEMONIC_ARGV_WARNING, resolveMnemonicArg } from '../src/mnemonic-arg.mjs';
 
-// Obviously fake: not a valid BIP39 phrase.
-const FAKE_PHRASE = 'fake one two three four five six seven eight nine ten eleven';
+// The published BIP39 test vector (valid checksum, holds no funds): phrases must now be valid.
+const FAKE_PHRASE = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 
 function tempDir(t) {
   const dir = mkdtempSync(join(tmpdir(), 'mint-secret-'));
@@ -96,7 +96,7 @@ test('--mnemonic-file never echoes its value: a pasted phrase is refused', () =>
   const read = () => assert.fail('a phrase must not be opened as a path');
   assert.throws(
     () => resolveMnemonicArg({ 'mnemonic-file': FAKE_PHRASE }, { readFile: read }),
-    (err) => /takes a path/.test(err.message) && !err.message.includes('eleven') && !err.message.includes('fake one')
+    (err) => /takes a path/.test(err.message) && !err.message.includes('about') && !err.message.includes('abandon abandon')
   );
 });
 
@@ -128,7 +128,7 @@ test('--mnemonic <words> still works, with a warning that never echoes the phras
   assert.deepEqual(warnings, [MNEMONIC_ARGV_WARNING]);
   assert.match(warnings[0], /ps/);
   assert.match(warnings[0], /--mnemonic-file/);
-  assert.ok(!warnings[0].includes('eleven'));
+  assert.ok(!warnings[0].includes('abandon'));
 });
 
 test('no mnemonic flag: undefined (a fresh phrase is generated); bad combinations are errors', () => {

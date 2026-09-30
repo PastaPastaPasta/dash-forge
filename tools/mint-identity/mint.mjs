@@ -13,7 +13,7 @@
 // --funding-key-file <path> or FORGE_DEVNET_FUNDING_WIF) | manual (alias --skip-faucet).
 //
 // See README.md for the full flag reference, rate-limit strategy, and security notes.
-import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { resolveNetwork, networkFromName, dashToDuffs } from './src/config.mjs';
 import { ChainClient } from './src/chain.mjs';
@@ -31,7 +31,7 @@ import {
 } from './src/flow.mjs';
 import { loadFundingKey, fundFromKey } from './src/funding.mjs';
 import { waitForFundingTx } from './src/lock.mjs';
-import { buildIdentityBackup, writeIdentityFile, writeSecretFile } from './src/backup.mjs';
+import { buildIdentityBackup, ensurePrivateDir, withExclusiveLock, writeIdentityFile, writeSecretFile } from './src/backup.mjs';
 import { resolveMnemonicArg } from './src/mnemonic-arg.mjs';
 import { generateKeyPair, getPublicKey, publicKeyToAddress } from './src/keys.mjs';
 import { privateKeyToWif, wifToPrivateKey } from './src/bytes.mjs';
@@ -71,9 +71,7 @@ function str(v) {
 
 function ensureOutDir(out) {
   if (!out || out === true) throw new Error('--out <dir> is required');
-  const dir = resolve(String(out));
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  return dir;
+  return ensurePrivateDir(resolve(String(out)));
 }
 
 function fileForLabel(dir, label) {
@@ -215,6 +213,8 @@ function saveRole(file, role, network) {
 
 // --- mint one identity ---
 async function cmdMint(args) {
+  // First: an invalid phrase must fail before a directory is touched or any funds move.
+  const mnemonic = resolveMnemonicArg(args);
   const network = networkFromArgs(args);
   const dir = ensureOutDir(args.out);
   const label = String(args.label || 'OWNER');
@@ -222,7 +222,7 @@ async function cmdMint(args) {
   const funding = fundingMode(args, network);
   const outFile = fileForLabel(dir, label);
 
-  const role = loadOrCreateRole(outFile, label, network, resolveMnemonicArg(args));
+  const role = loadOrCreateRole(outFile, label, network, mnemonic);
   if (role.identityId) throw new Error(`${outFile} already holds identity ${role.identityId}; use topup to add credits`);
   const utxoFrom = str(args['utxo-from']);
   if (utxoFrom && utxoFrom !== role.depositAddress) {
@@ -376,46 +376,50 @@ async function cmdTopup(args) {
   // timeout or crash stay recoverable, and a rerun reuses the same deposit address (and,
   // once broadcast, the same asset-lock tx).
   const pendingPath = `${resolve(idFile)}.topup-pending.json`;
-  // A fresh 0600 file renamed into place (it holds a WIF); the existsSync check below only
-  // decides whether to reuse a key, it is not what keeps the file private.
-  const savePending = (p) => writeSecretFile(pendingPath, JSON.stringify(p, null, 2));
-  let pending;
-  let assetLockKeyPair;
-  if (existsSync(pendingPath)) {
-    pending = readJson(pendingPath);
-    const privateKey = wifToPrivateKey(pending.wif).privateKey;
-    assetLockKeyPair = { privateKey, publicKey: getPublicKey(privateKey) };
-    log(`[topup ${identityId}] reusing pending deposit key from ${pendingPath}`);
-  } else {
-    assetLockKeyPair = generateKeyPair();
-    pending = {
-      identityId,
-      network: network.name,
-      depositAddress: publicKeyToAddress(assetLockKeyPair.publicKey, network),
-      wif: privateKeyToWif(assetLockKeyPair.privateKey, network),
-      created: new Date().toISOString(),
-    };
-    savePending(pending);
-  }
-  const depositAddress = publicKeyToAddress(assetLockKeyPair.publicKey, network);
-  log(`[topup ${identityId}] one-time ${network.name} deposit address: ${depositAddress}`);
+  // Two top-ups of one identity at once would race on the pending file (one overwrites the
+  // other's key); the second fails fast instead. Held until the pending file is removed.
+  return withExclusiveLock(pendingPath, 'top-up', async () => {
+    // A fresh 0600 file renamed into place (it holds a WIF); the existsSync check below only
+    // decides whether to reuse a key, it is not what keeps the file private.
+    const savePending = (p) => writeSecretFile(pendingPath, JSON.stringify(p, null, 2));
+    let pending;
+    let assetLockKeyPair;
+    if (existsSync(pendingPath)) {
+      pending = readJson(pendingPath);
+      const privateKey = wifToPrivateKey(pending.wif).privateKey;
+      assetLockKeyPair = { privateKey, publicKey: getPublicKey(privateKey) };
+      log(`[topup ${identityId}] reusing pending deposit key from ${pendingPath}`);
+    } else {
+      assetLockKeyPair = generateKeyPair();
+      pending = {
+        identityId,
+        network: network.name,
+        depositAddress: publicKeyToAddress(assetLockKeyPair.publicKey, network),
+        wif: privateKeyToWif(assetLockKeyPair.privateKey, network),
+        created: new Date().toISOString(),
+      };
+      savePending(pending);
+    }
+    const depositAddress = publicKeyToAddress(assetLockKeyPair.publicKey, network);
+    log(`[topup ${identityId}] one-time ${network.name} deposit address: ${depositAddress}`);
 
-  let utxo = null; // null: finish the asset lock an earlier run already broadcast
-  if (!pending.assetLockTxid) {
-    const chain = new ChainClient(network, { log });
-    const minDuffs = minDepositDuffs(dashToDuffs(amountDash));
-    const { known } = await fundDeposit(args, network, funding, chain, { address: depositAddress, amountDash, minDuffs, tag: '[topup]' });
-    utxo = await waitForDeposit(chain, depositAddress, minDuffs, { known, timeoutMs: waitSeconds * 1000, log });
-  }
-  const { txid, balance } = await assetLockAndTopUp(
-    { identityId, assetLockKeyPair, resumeTxid: pending.assetLockTxid },
-    utxo,
-    network,
-    log,
-    (lockTxid) => savePending({ ...pending, assetLockTxid: lockTxid })
-  );
-  unlinkSync(pendingPath);
-  return { network: network.name, identityId, topUpTxid: txid, balance };
+    let utxo = null; // null: finish the asset lock an earlier run already broadcast
+    if (!pending.assetLockTxid) {
+      const chain = new ChainClient(network, { log });
+      const minDuffs = minDepositDuffs(dashToDuffs(amountDash));
+      const { known } = await fundDeposit(args, network, funding, chain, { address: depositAddress, amountDash, minDuffs, tag: '[topup]' });
+      utxo = await waitForDeposit(chain, depositAddress, minDuffs, { known, timeoutMs: waitSeconds * 1000, log });
+    }
+    const { txid, balance } = await assetLockAndTopUp(
+      { identityId, assetLockKeyPair, resumeTxid: pending.assetLockTxid },
+      utxo,
+      network,
+      log,
+      (lockTxid) => savePending({ ...pending, assetLockTxid: lockTxid })
+    );
+    unlinkSync(pendingPath);
+    return { network: network.name, identityId, topUpTxid: txid, balance };
+  });
 }
 
 // --- print identity credit balance ---

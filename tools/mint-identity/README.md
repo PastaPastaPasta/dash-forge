@@ -155,6 +155,11 @@ node mint.mjs --network devnet --devnet-name moutai --out <dir> --label OWNER --
   terminal is refused, since typing would echo the words).
   `--mnemonic "<12 words>"` still works but prints a warning: a phrase on the
   command line is visible to other users in `ps` and is saved in shell history.
+  The phrase is checked (word count, wordlist, checksum) before anything is
+  spent; an invalid one exits with an error that does not repeat it.
+- `--out` is created `0700`, and an existing `--out` directory is tightened to
+  `0700` if it is looser. `topup` takes an exclusive `<pending>.lock`; a second
+  top-up of the same identity fails at once (remove the lock if a run crashed).
 - Writes `<dir>/<label>.identity.json` with mode `0600`.
 - `--amount` is the deposit in DASH. The asset lock locks the whole deposit
   UTXO minus a 1000-duff fee (1 DASH ≈ 1e11 credits). The testnet faucet

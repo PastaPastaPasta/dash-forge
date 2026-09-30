@@ -3,7 +3,7 @@
 //   { network, created, mode, depositAddress, txid, mnemonic, identityId,
 //     identityKeys[...], assetLockKey }
 import { randomBytes } from 'node:crypto';
-import { closeSync, fsyncSync, openSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { bytesToHex, privateKeyToWif } from './bytes.mjs';
 import { getAssetLockDerivationPath } from './hd.mjs';
@@ -92,4 +92,43 @@ function syncDir(dir) {
 // Write a backup JSON with 0600 perms (contains private keys — never world-readable).
 export function writeIdentityFile(path, backupObject) {
   writeSecretFile(path, JSON.stringify(backupObject, null, 2) + '\n');
+}
+
+/**
+ * Create `dir` (and missing parents) 0700, and tighten it to 0700 when it already exists with
+ * group/other access: it holds files with private keys. Returns `dir`.
+ */
+export function ensurePrivateDir(dir) {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const st = statSync(dir);
+  if (!st.isDirectory()) throw new Error(`${dir} is not a directory`);
+  if (st.mode & 0o077) chmodSync(dir, 0o700);
+  return dir;
+}
+
+/**
+ * Run `fn` holding an exclusive lock file `<path>.lock` (created `wx`, so two runs cannot both
+ * hold it), removed afterwards even when `fn` throws. A second run fails straight away rather
+ * than waiting. A run that crashed leaves the lock behind; the message says to remove it.
+ */
+export async function withExclusiveLock(path, what, fn) {
+  const lockPath = `${path}.lock`;
+  let fd;
+  try {
+    fd = openSync(lockPath, 'wx', 0o600);
+  } catch (err) {
+    if (err?.code === 'EEXIST') {
+      throw new Error(`Another ${what} is in progress, or remove ${lockPath} if a previous run crashed`);
+    }
+    throw err;
+  }
+  try {
+    writeFileSync(fd, `${process.pid}\n`);
+    closeSync(fd);
+    fd = undefined;
+    return await fn();
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+    rmSync(lockPath, { force: true });
+  }
 }
