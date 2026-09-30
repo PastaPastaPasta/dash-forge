@@ -258,6 +258,34 @@ pub fn static_subscription(repo_id: &str, w: &StaticWebhook) -> WebhookSub {
     }
 }
 
+/// The URL that marks a runner wake-up subscription ([`wake_subscription`]).
+const WAKE_URL: &str = "forge-relay:wake";
+
+/// The events a runner is woken for.
+pub const WAKE_EVENTS: [&str; 2] = ["push", "pull_request"];
+
+/// A subscription that only makes the relay poll `repo_id` for pushes and pull requests, so
+/// runners can be woken ([`crate::wake`]). It is never delivered: the discovery keeps it out of
+/// the dispatcher ([`WebhookSub::is_wake`]).
+pub fn wake_subscription(repo_id: &str) -> WebhookSub {
+    WebhookSub {
+        repo_id: repo_id.to_string(),
+        hook_id: format!("wake:{repo_id}"),
+        url: WAKE_URL.to_string(),
+        events: WAKE_EVENTS.iter().map(ToString::to_string).collect(),
+        secret: SecretBytes::new(Vec::new()),
+        created_at: 0,
+        document_id: None,
+    }
+}
+
+impl WebhookSub {
+    /// A runner wake-up subscription ([`wake_subscription`]), not a webhook.
+    pub fn is_wake(&self) -> bool {
+        self.url == WAKE_URL && self.document_id.is_none()
+    }
+}
+
 /// The repo ids with at least one subscription, and the earliest `$createdAt` among each
 /// repo's hooks (0 when a static hook serves it).
 pub fn repos_of(subs: &[WebhookSub]) -> BTreeMap<String, u64> {

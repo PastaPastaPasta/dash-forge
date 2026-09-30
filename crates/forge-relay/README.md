@@ -99,11 +99,54 @@ retry queue, due at once, and flushes it to disk, within 5 s of the signal.
 | `--poll-interval <s>` | 15 | Seconds between polls. |
 | `--refresh-cycles <n>` | 4 | Re-read the webhook documents every n polls. |
 | `--lookback <n>` | 0 | At startup, deliver the last n documents of each stream. |
-| `--listen <addr>` | off | Health endpoint: `200` with `{"status":"ok","durable":true}` (`durable` is false when the retry queue fell back to memory). |
+| `--listen <addr>` | off | Health endpoint: `200` with `{"status":"ok","durable":true}` (`durable` is false when the retry queue fell back to memory). Also serves runner wake-ups (`GET /v1/wake`) when `[wake]` is configured: see [Wake a runner](#wake-a-runner). |
 | `--allow-private` | off | Deliver to private and loopback addresses. **Local testing only**: without it, any maintainer of any repo could make a public relay probe its network. |
 | `--state-dir <dir>` | `$FORGE_RELAY_STATE_DIR` (`/state` in the images), else `$XDG_STATE_HOME/dash-forge/relay`, else `~/.local/state/dash-forge/relay` | Where the retry queue lives (`<dir>/deliveries`: a real directory owned by the relay user, created or tightened to mode 0700). Setting it explicitly makes an unusable dir fatal instead of a fallback to memory. One relay per state dir: a second relay on the same dir refuses to start. |
 | `--web-base-url <url>` | `https://forge.dashhq.org` | The forge-web origin that the payloads' `html_url`, `compare` and profile links point at. Include the base path of a sub-path deploy (`https://<owner>.github.io/dash-forge`). File key: `web-base-url`. See [Payloads](#payloads). |
-| `--config <toml>` | none | The same settings as a file, plus static `[[webhook]]` blocks (`repo`, `url`, `events`, plaintext `secret`) for local testing, and `retry-schedule-secs = [60, 300, ...]`. |
+| `--config <toml>` | none | The same settings as a file, plus `[wake]` ([Wake a runner](#wake-a-runner)), static `[[webhook]]` blocks (`repo`, `url`, `events`, plaintext `secret`) for local testing, and `retry-schedule-secs = [60, 300, ...]`. |
+
+## Wake a runner
+
+A [forge-runner](../../docs/guides/self-host-runner.md) polls its repositories every
+`interval_secs` (two minutes by default). Your relay can wake it as soon as it sees a push or a
+pull request's activity, so a run starts within seconds. The runner connects to the relay (no
+port is opened on the runner's machine), so it works behind NAT. There is no central service:
+you run the relay, and your runner subscribes to it.
+
+```toml
+# relay.toml (forge-relay run --config relay.toml --listen 0.0.0.0:8080)
+[wake]
+repos = ["alice/project"]            # owner/name or repo ids; polled even without a webhook
+secret-file = "/run/secrets/wake"    # or secret = "…": 32–96 printable ASCII characters
+```
+
+```toml
+# runner.toml
+[relay]
+url = "http://relay:8080"            # the relay's --listen address (http or https, no path)
+secret_file = "/etc/forge-runner/relay.secret"   # the same secret
+```
+
+`openssl rand -hex 32` makes a good secret. `[wake]` needs `--listen`: the wake endpoint is
+`GET /v1/wake` on the same listener as the health check.
+
+- **A wake carries no trust.** It only tells the runner to poll a repository now. The runner
+  reads the refs from Platform proofs and the pull requests through `dg`, as on any poll, and
+  runs only what that read shows. A relay that is down, lies or is impersonated costs latency,
+  never a run. Polling stays on: every `interval_secs`, whatever the relay says.
+- **Authentication.** Each request is a long-poll signed with the shared secret: HMAC-SHA256
+  over the path and query (with a fresh nonce) and the time, in `X-Forge-Wake-Time` and
+  `X-Forge-Wake-Signature`. The relay refuses a request more than 5 minutes off its clock, or
+  one whose signature it has seen. Each answer is signed over the request's signature and the
+  body, so the runner refuses a forged or replayed answer. The secret never crosses the wire,
+  so plain http is safe from eavesdropping; use https or a private network anyway to keep the
+  fact of activity private.
+- **What a runner learns.** Which configured repositories had a push or a pull-request
+  activity (`{"cursor", "resync", "repos": [{"id", "name", "label"}]}`), all public chain data.
+  The relay keeps the last 1,024 wakes. A runner whose cursor is older, or from before a relay
+  restart, is told `resync` and polls everything once.
+- **Limits.** 64 requests are held open at once; more get `503` and the runner retries. A
+  request head is capped at 8 KiB and 10 s.
 
 ## Payloads
 

@@ -6,7 +6,7 @@
 
 ## What it does
 
-On every poll (every `interval_secs`, default 120 s), for each repository:
+On every poll (every `interval_secs`, default 120 s, and within seconds of a push when [your relay wakes it](#wake-it-from-your-relay)), for each repository:
 
 1. **Lists the refs.** It runs `git ls-remote dash://<owner>/<repo>`; `git-remote-dash` reads the refs from Platform proofs. The first poll only records where each ref is: the runner reports pushes made while it watches, not the repository's history.
 2. **Checks out each ref that moved and matches `refs`.** It fetches the commit into a per-repository cache, then clones that cache into a fresh directory for this run.
@@ -61,6 +61,29 @@ secrets_file = "/etc/forge-runner/project.secrets"   # KEY=value lines, as act r
    - `DASH_FORGE_KEY="$(cat runner.dfk1)" forge-runner -c runner.toml watch` runs the service. It needs `dg`, `git`, `git-remote-dash` and `act` on `PATH`, and `DOCKER_HOST` pointing at the runner's daemon.
    - `forge-runner … watch --once` polls once, for cron or a first try.
    - `forge-runner … run alice/project --ref refs/heads/main --sha <oid>` runs one commit again.
+
+### Wake it from your relay
+
+Polling finds a push within `interval_secs`. If you run a [relay](../../crates/forge-relay/README.md#wake-a-runner), it can wake the runner as soon as it sees a push or a pull request's activity:
+
+```toml
+# runner.toml
+[relay]
+url = "http://relay:8080"                       # the relay's --listen address, no path
+secret_file = "/etc/forge-runner/relay.secret"  # 32–96 printable ASCII, the same as the relay's [wake] secret
+```
+
+```toml
+# relay.toml
+[wake]
+repos = ["alice/project"]
+secret-file = "/run/secrets/wake"
+```
+
+- **The runner connects to the relay.** A thread long-polls `GET /v1/wake`, so nothing listens on the runner's machine and it works behind NAT. It logs `woken by the relay at …` once connected.
+- **A wake only moves the next poll earlier.** The runner polls a woken repository at once (at most every 10 s), and once more 20 s later in case its DAPI node is a block behind the relay's. It still reads the refs and pull requests itself; a wake decides nothing about what runs.
+- **Polling stays the default.** Without `[relay]`, the runner only polls. With it, it still polls every `interval_secs`; if the relay is down, the runner logs the error, retries with a backoff (5 s up to 2 min) and keeps polling. A relay that restarted tells the runner to poll everything once.
+- **Authentication is the shared secret.** Every request is signed with it (HMAC-SHA256, a fresh nonce, the time) and every answer is signed over the request, so neither can be forged or replayed, and the secret never crosses the wire. The protocol is in the [relay README](../../crates/forge-relay/README.md#wake-a-runner).
 
 ### With Docker
 
@@ -137,7 +160,6 @@ The runner executes code from the repository: anyone who can push to a watched r
 
 ## What it does not do (yet)
 
-- **No push wake-up.** The runner polls, so a push shows up within `interval_secs`. A relay webhook that wakes it is planned (platform-parity-spec §2.4).
 - **Only `push` runs.** There are no `pull_request`, `schedule` or `workflow_dispatch` events.
 - **No artefacts.** `actions/upload-artifact` needs act's artifact server, which the runner does not start.
 - **One push at a time.** The workflow files of a push run one after another, within one `job_timeout_secs`.

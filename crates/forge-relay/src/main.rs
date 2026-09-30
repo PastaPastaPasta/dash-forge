@@ -18,7 +18,8 @@
 //!  * [`deliver`] — HMAC-SHA256 signing, retry/backoff, per-host bounds, dead-letter.
 //!  * [`ssrf`] — delivery-target SSRF guard.
 //!  * [`daemon`] — the discover → poll → translate → deliver loop.
-//!  * [`health`] — optional liveness listener.
+//!  * [`health`] — the optional listener: liveness, and runner wake-ups.
+//!  * [`wake`] — runner wake-ups: a signed long-poll that tells a runner to poll now.
 
 mod checkruns;
 mod config;
@@ -31,6 +32,7 @@ mod payload;
 mod queue;
 mod ssrf;
 mod subscriptions;
+mod wake;
 
 use std::path::PathBuf;
 

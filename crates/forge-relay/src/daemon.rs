@@ -56,6 +56,7 @@ use crate::ingest::{
 use crate::payload::{CheckRunAction, RepositoryMeta, ALL_EVENTS};
 use crate::queue::RetryQueue;
 use crate::subscriptions::{self, RelayIdentity, WebhookSub};
+use crate::wake::{WakeHub, WakeRepo};
 
 /// Wall-clock budget for one repo's poll: past it, the poll stops at the next stream boundary.
 const REPO_BUDGET: Duration = Duration::from_secs(20);
@@ -118,6 +119,8 @@ struct Shared {
     started_ms: u64,
     /// Where the check runs seen are kept across restarts.
     check_runs: checkruns::Store,
+    /// Runner wake-ups (`[wake]`), when configured.
+    wake: Option<Arc<WakeHub>>,
 }
 
 /// A head oid whose `checkRun`s are read.
@@ -238,10 +241,14 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
         let repo = resolve_repo(&client, &w.repo).await?;
         statics.push(subscriptions::static_subscription(repo.id(), w));
     }
+    let wake = match &cfg.wake {
+        Some(w) => Some(wake_hub(&client, w, &mut statics).await?),
+        None => None,
+    };
     if identity.is_none() && statics.is_empty() {
         return Err(RelayError::Config(
-            "nothing to serve: pass --identity <relay key file> (webhooks come from Platform) \
-             or add [[webhook]] blocks to the config"
+            "nothing to serve: pass --identity <relay key file> (webhooks come from Platform), \
+             or add [[webhook]] blocks or [wake] repos to the config"
                 .into(),
         ));
     }
@@ -255,9 +262,10 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
     };
     if let Some(addr) = cfg.listen.clone() {
         let durable = queue.is_durable();
+        let wake = wake.clone();
         tokio::spawn(async move {
-            if let Err(e) = crate::health::serve(&addr, durable).await {
-                tracing::error!(error = %e, "health listener stopped");
+            if let Err(e) = crate::health::serve(&addr, durable, wake).await {
+                tracing::error!(error = %e, "listener stopped");
             }
         });
     }
@@ -274,6 +282,7 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
         ),
         started_ms: now_ms(),
         check_runs,
+        wake,
         cfg,
     });
     tracing::info!(
@@ -303,6 +312,29 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
     shared.dispatcher.shutdown(SHUTDOWN_GRACE).await;
     tracing::info!("stopped");
     Ok(())
+}
+
+/// Runner wake-ups (`[wake]`): resolve each repo and serve it like a static hook that is never
+/// delivered ([`subscriptions::wake_subscription`]), so it is polled for pushes and PRs.
+async fn wake_hub(
+    client: &PlatformClient,
+    w: &crate::config::WakeConfig,
+    statics: &mut Vec<WebhookSub>,
+) -> Result<Arc<WakeHub>> {
+    let mut repos = BTreeMap::new();
+    for label in &w.repos {
+        let repo = resolve_repo(client, label).await?;
+        statics.push(subscriptions::wake_subscription(repo.id()));
+        repos.insert(
+            repo.id().to_string(),
+            WakeRepo {
+                name: format!("{}/{}", repo.owner_id(), repo.name()),
+                label: label.clone(),
+            },
+        );
+    }
+    tracing::info!(repos = repos.len(), "runner wake-ups on the listener");
+    Ok(Arc::new(WakeHub::new(w.secret.clone(), repos)))
 }
 
 /// Run discovery in its own task, every `refresh_cycles` poll intervals.
@@ -585,7 +617,9 @@ impl Discovery {
             .filter(|r| self.repo_filter.is_empty() || self.repo_filter.contains(*r))
             .cloned()
             .collect();
-        shared.dispatcher.sync(&subs, &authoritative);
+        // Wake-up subscriptions only make a repo served; they are never delivered.
+        let hooks: Vec<WebhookSub> = subs.iter().filter(|s| !s.is_wake()).cloned().collect();
+        shared.dispatcher.sync(&hooks, &authoritative);
         for (repo_id, slot) in repos.iter().chain(ready.iter().map(|(k, v)| (k, v))) {
             *lock(&slot.wants) = wants_of(&subs, repo_id, shared.started_ms);
         }
@@ -1005,9 +1039,15 @@ impl RepoState {
         }
     }
 
-    /// Enqueue `event` for the repo's hooks.
+    /// Enqueue `event` for the repo's hooks, and wake the repo's runners on a push or a pull
+    /// request's activity.
     fn emit(&self, shared: &Shared, event: Option<crate::payload::WebhookEvent>) {
         if let Some(event) = event {
+            if let Some(hub) = &shared.wake {
+                if subscriptions::WAKE_EVENTS.contains(&event.event) {
+                    hub.notify(&self.meta.repo_id);
+                }
+            }
             shared.dispatcher.enqueue(&self.meta.repo_id, event);
         }
     }

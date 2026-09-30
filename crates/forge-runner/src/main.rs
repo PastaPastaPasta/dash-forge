@@ -1,7 +1,7 @@
 //! `forge-runner` — a self-hosted CI runner for Dash Forge, built on nektos/act.
 //!
-//! It watches repositories (`git ls-remote dash://…` every `interval_secs`, cursors in the state
-//! dir), and on a push it checks the commit out, runs `.forge/workflows/*.yml` (GitHub Actions
+//! It watches repositories (`git ls-remote dash://…` every `interval_secs`, and at once when the
+//! owner's own relay wakes it, [`relay`]; cursors in the state dir), and on a push it checks the commit out, runs `.forge/workflows/*.yml` (GitHub Actions
 //! syntax) with [act](https://github.com/nektos/act) in Docker, and reports each job as a Forge
 //! check run through `dg ci report`, uploading the job's log to a storage profile with its
 //! SHA-256. It signs with DASH_FORGE_KEY: a runner key from `dg ci runner new`, which can write
@@ -16,17 +16,19 @@
 //! runs pushes to the repository's own refs only, so a pull request from a fork never runs. It
 //! does NOT isolate jobs from the Docker daemon it drives: give it a daemon of its own.
 //!
-//! Module map: [`config`] (runner.toml), [`watch`] (refs, cursors), [`workflow`] (the YAML the
-//! runner reads before act), [`act`] (act's CLI and JSON log), [`run`] (one push end to end).
+//! Module map: [`config`] (runner.toml), [`watch`] (refs, cursors), [`relay`] (wake-ups),
+//! [`workflow`] (the YAML the runner reads before act), [`act`] (act's CLI and JSON log),
+//! [`run`] (one push end to end).
 
 mod act;
 mod config;
+mod relay;
 mod run;
 mod watch;
 mod workflow;
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand};
@@ -92,17 +94,7 @@ fn real_main(cli: &Cli) -> Result<()> {
         );
     }
     match &cli.command {
-        Cmd::Watch { once } => loop {
-            for repo in &cfg.repos {
-                if let Err(e) = poll(&cfg, repo) {
-                    eprintln!("forge-runner: {}: {e:#}", repo.repo);
-                }
-            }
-            if *once {
-                return Ok(());
-            }
-            std::thread::sleep(Duration::from_secs(cfg.interval_secs));
-        },
+        Cmd::Watch { once } => watch(&cfg, *once),
         Cmd::Run { repo, refname, sha } => {
             let r = cfg
                 .repos
@@ -120,6 +112,106 @@ fn real_main(cli: &Cli) -> Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+/// A woken repository is polled at most this often.
+const WAKE_GAP: Duration = Duration::from_secs(10);
+
+/// A woken repository is polled once more this long after the wake: the runner's DAPI node may
+/// not have the block the relay saw yet.
+const FOLLOW_UP: Duration = Duration::from_secs(20);
+
+/// The watch loop: every repository every `interval_secs`, and, with a `[relay]`, a woken one
+/// as soon as the relay says (no more often than [`WAKE_GAP`], and again [`FOLLOW_UP`] later).
+/// Without a relay, or while it is unreachable, the interval alone drives the runner.
+fn watch(cfg: &Config, once: bool) -> Result<()> {
+    let mut wakes = match (&cfg.relay, once) {
+        (Some(r), false) => {
+            let secret = relay::read_secret(&r.secret_file)?;
+            let (tx, rx) = std::sync::mpsc::channel();
+            relay::spawn(r.url.clone(), secret, tx);
+            Some(rx)
+        }
+        _ => None,
+    };
+    let interval = Duration::from_secs(cfg.interval_secs);
+    let mut last: Vec<Option<Instant>> = vec![None; cfg.repos.len()];
+    // Extra polls: (when, repo index).
+    let mut due: Vec<(Instant, usize)> = Vec::new();
+    let mut next_all = Instant::now();
+    let poll_one = |i: usize, last: &mut Vec<Option<Instant>>| {
+        let repo = &cfg.repos[i];
+        if let Err(e) = poll(cfg, repo) {
+            eprintln!("forge-runner: {}: {e:#}", repo.repo);
+        }
+        last[i] = Some(Instant::now());
+    };
+    loop {
+        if Instant::now() >= next_all {
+            for i in 0..cfg.repos.len() {
+                poll_one(i, &mut last);
+            }
+            if once {
+                return Ok(());
+            }
+            next_all = Instant::now() + interval;
+            continue;
+        }
+        let now = Instant::now();
+        let mut ready: Vec<usize> = due
+            .iter()
+            .filter(|(t, _)| *t <= now)
+            .map(|(_, i)| *i)
+            .collect();
+        if !ready.is_empty() {
+            due.retain(|(t, _)| *t > now);
+            ready.sort_unstable();
+            ready.dedup();
+            for i in ready {
+                poll_one(i, &mut last);
+            }
+            continue;
+        }
+        let until = due.iter().map(|(t, _)| *t).fold(next_all, Instant::min);
+        let wait = until.saturating_duration_since(now);
+        let Some(rx) = &wakes else {
+            std::thread::sleep(wait);
+            continue;
+        };
+        let first = match rx.recv_timeout(wait) {
+            Ok(w) => w,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                wakes = None;
+                continue;
+            }
+        };
+        for w in std::iter::once(first).chain(rx.try_iter()) {
+            for i in woken(cfg, &w) {
+                let now = Instant::now();
+                let at = last[i].map_or(now, |l| (l + WAKE_GAP).max(now));
+                for t in [at, at + FOLLOW_UP] {
+                    if !due.contains(&(t, i)) {
+                        due.push((t, i));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The configured repositories (by index) a wake names.
+fn woken(cfg: &Config, w: &relay::Wake) -> Vec<usize> {
+    match w {
+        relay::Wake::All => (0..cfg.repos.len()).collect(),
+        relay::Wake::Repos(names) => cfg
+            .repos
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| names.iter().flatten().any(|n| *n == r.repo))
+            .map(|(i, _)| i)
+            .collect(),
     }
 }
 
@@ -205,4 +297,25 @@ fn poll(cfg: &Config, repo: &config::RepoConfig) -> Result<()> {
             .is_some_and(|(r, o)| now.get(r).is_some_and(|t| t == o))
     });
     state.save(&path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wake_names_repositories_by_either_spelling() {
+        let cfg = Config::parse(
+            "state_dir = \"/s\"\n[[repo]]\nrepo = \"alice/one\"\n[[repo]]\nrepo = \"OwnerId/two\"",
+        )
+        .unwrap();
+        let w = relay::Wake::Repos(vec![
+            vec!["OwnerId/one".into(), "alice/one".into()],
+            vec!["OwnerId/two".into(), "bob/two".into()],
+            vec!["OwnerId/three".into()],
+        ]);
+        assert_eq!(woken(&cfg, &w), [0, 1]);
+        assert_eq!(woken(&cfg, &relay::Wake::All), [0, 1]);
+        assert!(woken(&cfg, &relay::Wake::Repos(vec![vec!["x/y".into()]])).is_empty());
+    }
 }

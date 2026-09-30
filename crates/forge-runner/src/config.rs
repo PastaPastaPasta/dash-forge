@@ -12,6 +12,10 @@
 //! refs = ["refs/heads/**"]      # which refs run (`*` stays within a path segment, `**` does not)
 //! trusted_refs = ["refs/heads/main"]   # only these get secrets
 //! secrets_file = "/etc/forge-runner/alice-project.secrets"   # KEY=value lines (act --secret-file)
+//!
+//! [relay]                       # optional: the owner's relay wakes the runner (crate::relay)
+//! url = "http://relay:8080"
+//! secret_file = "/etc/forge-runner/relay.secret"
 //! ```
 
 use std::collections::BTreeMap;
@@ -84,6 +88,10 @@ pub struct Config {
     /// The `dg`, `git` and `act` binaries (default: from PATH).
     #[serde(default)]
     pub bin: Bins,
+    /// The owner's relay, to be woken by (`[relay]`): a push or pull request then runs within
+    /// seconds instead of at the next poll. Without it the runner only polls.
+    #[serde(default)]
+    pub relay: Option<Relay>,
     /// The repositories to watch.
     #[serde(rename = "repo")]
     pub repos: Vec<RepoConfig>,
@@ -112,6 +120,17 @@ impl Default for Bins {
             act: default_act(),
         }
     }
+}
+
+/// `[relay]`: where the relay's listener is and the secret shared with it (its `[wake]`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Relay {
+    /// `http://host:port` or `https://host[:port]`: the relay's `--listen` address, with no
+    /// path.
+    pub url: String,
+    /// A file holding the shared secret (32 to 96 printable ASCII characters).
+    pub secret_file: PathBuf,
 }
 
 /// One watched repository.
@@ -216,6 +235,22 @@ impl Config {
                 bail!("platforms.{label} = {image:?}: jobs run in a container image, never on the host");
             }
         }
+        if let Some(r) = &c.relay {
+            let rest = r
+                .url
+                .strip_prefix("http://")
+                .or_else(|| r.url.strip_prefix("https://"));
+            let host_only = rest.is_some_and(|h| {
+                let h = h.trim_end_matches('/');
+                !h.is_empty() && !h.contains(['/', '?', '#', '@'])
+            });
+            if !host_only {
+                bail!(
+                    "relay.url {:?} must be http(s)://host[:port], with no path",
+                    r.url
+                );
+            }
+        }
         if c.network.as_deref() == Some("devnet") && c.devnet_name.is_none() {
             bail!("network = \"devnet\" needs devnet_name");
         }
@@ -313,6 +348,9 @@ repo = "alice/project"
             "state_dir = \"/x\"\nsocket = true\n[[repo]]\nrepo = \"a/b\"",
             "state_dir = \"/x\"\n[platforms]\nubuntu-latest = \"-self-hosted\"\n[[repo]]\nrepo = \"a/b\"",
             "state_dir = \"/x\"",
+            "state_dir = \"/x\"\n[relay]\nurl = \"http://r:8080/v1\"\nsecret_file = \"/s\"\n[[repo]]\nrepo = \"a/b\"",
+            "state_dir = \"/x\"\n[relay]\nurl = \"ftp://r\"\nsecret_file = \"/s\"\n[[repo]]\nrepo = \"a/b\"",
+            "state_dir = \"/x\"\n[relay]\nurl = \"http://r:8080\"\n[[repo]]\nrepo = \"a/b\"",
         ] {
             assert!(Config::parse(bad).is_err(), "{bad}");
         }
