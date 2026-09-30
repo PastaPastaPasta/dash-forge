@@ -60,11 +60,11 @@ Do this once:
 
 1. Write the 12 words on paper, in order. Keep two copies in separate places.
 2. Keep the words offline. Do not put them in a password manager that syncs, in a note-taking app, or in a screenshot.
-3. Treat the identity file (`dash-identity-<id>.json`) like the words. It contains them, plus every private key. Keep it offline once you have signed in: `dg auth login` stores only a limited key. If you keep it on disk, keep it `chmod 600`; `dg doctor` warns when an identity file it uses is readable by other users, and `dg doctor --fix` tightens it.
+3. Treat the identity file (`dash-identity-<id>.json`) like the words. It contains them, plus every private key. Keep it offline once you have signed in: `dg auth login` stores only a limited key and the encryption key. If you keep it on disk, keep it `chmod 600`; `dg doctor` warns when an identity file it uses is readable by other users, and `dg doctor --fix` tightens it.
 
 If you lose a laptop but still have the words or a backup of the file, nothing is lost. Your repositories, issues and history are on Platform, not on your laptop:
 
-1. On the new machine run `dg auth login --mnemonic` (type the 12 words) or `dg auth login <file>` with your backup. It registers a new limited key and stores only that.
+1. On the new machine run `dg auth login --mnemonic` (type the 12 words) or `dg auth login <file>` with your backup. It registers a new limited key and stores only that, with the encryption key beside it.
 2. Disable the lost machine's key: `dg auth keys list` shows it, `dg auth keys disable <id>` disables it (or pass `--replace <id>` to the login above to do both in one update). A limited key can only spend its remaining budget, and only on Forge, until then.
 3. In a browser, **Sign in → Import an identity file or recovery phrase** registers a fresh limited key for that browser; the words alone are enough.
 
@@ -90,7 +90,7 @@ A key *source* (`--identity`, `DASH_FORGE_KEY`, the recorded default) is any of:
 
 Things to know:
 
-- On macOS `dg` reads and writes the keychain through Apple's `/usr/bin/security`, so `dg`, `git-remote-dash` and upgraded copies of either read the entry without an access dialog. Any program running as you can ask `security` for it without a prompt: the keychain protects entries at rest and from other users. What `dg` keeps there is limited identity keys (a budget, an expiry, Forge contracts only) and the storage credentials `dg storage add` is given, so scope those to the one bucket. A full identity (`dg auth login --full-key`: master key and recovery words) never goes there; it is always a passphrase-sealed file. The GitHub CLI stores its token the same way.
+- On macOS `dg` reads and writes the keychain through Apple's `/usr/bin/security`, so `dg`, `git-remote-dash` and upgraded copies of either read the entry without an access dialog. Any program running as you can ask `security` for it without a prompt: the keychain protects entries at rest and from other users. What `dg` keeps there is limited identity keys (a budget, an expiry, Forge contracts only), with your identity's encryption key beside them (it reads your private repositories; `--signing-only` leaves it out), and the storage credentials `dg storage add` is given, so scope those to the one bucket. A full identity (`dg auth login --full-key`: master key and recovery words) never goes there; it is always a passphrase-sealed file. The GitHub CLI stores its token the same way.
 - Over SSH there is no keychain dialog to answer; use a sealed key file there (`DASH_FORGE_NO_KEYCHAIN=1 dg auth login …`).
 - `--insecure-plaintext` stores the key unencrypted (0600) where there is no keychain and no way to type a passphrase. Every later use warns.
 - In the web app, the key never leaves that browser, but any script running on the page can use it while it is unlocked ([details](#the-browser-vault-and-its-limits)). Lock or sign out on shared machines.
@@ -138,7 +138,7 @@ If the **MASTER** key or the 12 words leak, rotating does not help: whoever has 
 
 A private repository encrypts its content under a repository key, and each member gets that key wrapped (encrypted) to their identity's **ENCRYPTION** key. Without one, nobody can add you to a private repository and you cannot create one. Identities from `dg auth new`, the bridge and the web app carry key 4 for this.
 
-**Using it from the CLI.** Reading or writing a private repository needs the ENCRYPTION key's private half, and the limited key `dg auth login` stores is a signing key only. For private repositories, point `DASH_FORGE_KEY` at your identity file, or sign in with `dg auth login --full-key <identity file>` (kept in a passphrase-sealed file, never the keychain). Without it, private-repo commands stop with [`E306`](../errors.md#e306).
+**Using it from the CLI.** Reading or writing a private repository needs the ENCRYPTION key's private half. `dg auth login` (from the identity file or the recovery words) and `dg auth new` store it beside the limited signing key, where the limited key is kept (the keychain, or a passphrase-sealed file), as the web app's "Enable private repos" does: private repositories work with no master key on disk. `dg auth status` shows it (`Private:`). `--signing-only` (or `--insecure-plaintext`, which would write it in the clear) stores the signing key alone; a key stored by an older `dg` is one too, and signing in again with `--replace <key id>` adds it (`dg auth status` prints the command). `dg auth keys add` keeps the encryption keys the key it replaces holds. Without it, private-repo commands stop with [`E306`](../errors.md#e306); `DASH_FORGE_KEY=<identity file>` works for one command.
 
 **An identity without one** can add it:
 
@@ -185,7 +185,7 @@ From the terminal:
 
 ```sh
 dg auth new [--amount 0.05] [--name alice]      # 12 words → deposit QR → identity + a limited key in the keychain
-dg auth login <file> | --mnemonic               # import once; registers a limited key and stores only that
+dg auth login <file> | --mnemonic               # import once; registers a limited key and stores it with the encryption key
 dg auth status                                  # identity, name, key, budget left, expiry, balance, where it is stored
 dg auth export --new-key --format dfk1 --reveal-secrets -o runner.dfk1   # a key for CI
 dg auth name register <label>                   # a DPNS username

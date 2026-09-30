@@ -259,7 +259,12 @@ fn key_holder(ctx: &Ctx, args: &RunnerNewArgs, me: &str) -> Result<BridgeIdentit
     let Some(file) = &args.runner else {
         return crate::auth::master_identity(ctx, args.master.as_deref(), me);
     };
-    let b = BridgeIdentity::load_from_file(file).with_context(|| {
+    // Its own passphrase, when it is sealed with another than your key (QW2-022).
+    let envs = [
+        forge_core::sealed::RUNNER_PASSPHRASE_ENV,
+        forge_core::sealed::PASSPHRASE_ENV,
+    ];
+    let b = BridgeIdentity::load_from_file_with(file, &envs).with_context(|| {
         format!(
             "loading the runner identity from {}",
             keystore::describe_key_source(file)

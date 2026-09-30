@@ -36,6 +36,10 @@ The key is written to `runner.dfk1` (0600, unencrypted) *before* it is registere
 
 `dg auth export --format dfk1 --reveal-secrets -o -` prints this computer's limited key on stdout, for piping straight into a secret store (`| gh secret set DASH_FORGE_KEY`). That key can sign any Forge document within its budget; it is not a runner key, so use `dg ci runner new` for check runs. It is refused with `--json` and when a CI variable is set. Never run it where stdout is a log.
 
+In a terminal, a passphrase-sealed key and a sealed `runner.json` are each asked for. In a script, `DASH_FORGE_PASSPHRASE` opens your key and `DASH_FORGE_RUNNER_PASSPHRASE` opens `runner.json` (it falls back to `DASH_FORGE_PASSPHRASE`); a wrong one is [`E303`](../errors.md#e303) naming the file.
+
+`dg auth status` and `dg doctor` with the runner key describe it as bound to `checkRun` documents only (a CI runner key), with its budget and expiry.
+
 Other commands:
 
 | Command | Does |

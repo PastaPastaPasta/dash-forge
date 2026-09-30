@@ -20,7 +20,7 @@ use forge_core::webhooks::{
     WebhookService,
 };
 
-use crate::common::{resolve, RepoRef};
+use crate::common::{resolve, Reader, RepoRef};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, dash_usd_price};
 use crate::secret_out::{self, Stream, Surroundings};
@@ -275,12 +275,13 @@ fn refuse_unless_shown(here: Surroundings) -> Result<()> {
     .into())
 }
 
+/// A read: no key is opened for a public repository (QW-034: a sealed key with no terminal
+/// stopped it with E303, while every other list reads on).
 async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, _bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
+    let r = Reader::open(ctx, repo).await?;
+    let handle = &r.repo;
     let hooks = newest_per_hook(
-        WebhookReader::new(&client)
+        WebhookReader::new(&r.client)
             .for_repo(handle.id())
             .await
             .context("listing webhooks")?,

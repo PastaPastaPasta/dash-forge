@@ -2904,7 +2904,7 @@ async fn load_signer(
                 format!("{why}; DASH_FORGE_KEY is not set and no default identity is recorded")
             };
             if repo.visibility == forge_core::rules::v2::Visibility::Private {
-                // A limited key (what `dg auth login <file>` stores) cannot open it: E306 next.
+                // Only a key source with the encryption key opens it (`dg auth login`).
                 return Err(UserError::new(codes::NO_IDENTITY, "no identity configured")
                     .cause(why)
                     .fix(format!(

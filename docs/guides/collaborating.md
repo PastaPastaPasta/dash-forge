@@ -119,7 +119,7 @@ Leave the description empty if the project's purpose is itself sensitive.
 
 **Repairs.** A maintainer's `dg` and `git push` check the key on every visit: if a non-member still holds the current key (two maintainers removed members at the same time), or a member has no wrap to their current encryption key (they replaced it, or an add was interrupted), `dg repo keys repair` fixes it. The key is re-read before every write, so nothing is ever written under a key that was rotated away.
 
-**Cloning.** `git clone dash://<owner>/<repo>` works as for a public repository when your key source holds your encryption key: the identity file (`DASH_FORGE_KEY`) or `dg auth login --full-key`, not the limited key a plain `dg auth login` stores ([identity and keys](identity-and-keys.md#encryption-key-private-repositories)). A non-member gets [`E307`](../errors.md#e307); an identity without an encryption key gets [`E306`](../errors.md#e306).
+**Cloning.** `git clone dash://<owner>/<repo>` works as for a public repository when your key source holds your encryption key: what `dg auth login` and `dg auth new` store (the limited key with your encryption key beside it), or the identity file (`DASH_FORGE_KEY`); not a key stored with `--signing-only` or by an older `dg` ([identity and keys](identity-and-keys.md#encryption-key-private-repositories)). A non-member gets [`E307`](../errors.md#e307); an identity without an encryption key gets [`E306`](../errors.md#e306).
 
 **No recovery.** If every member loses their encryption key (every copy of every identity file and mnemonic), the contents cannot be decrypted by anyone.
 
