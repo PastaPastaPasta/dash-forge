@@ -1,0 +1,32 @@
+{
+  "name": "same_reviewer_second_review",
+  "description": "The same reviewer's second review on a PR (same verdict and count as the first) holds only the comments naming it: the first review's comments stay with the first.",
+  "case": "review_group",
+  "rules": "v2",
+  "input": {
+    "reviewId": "R2",
+    "reviewer": "maint",
+    "commentCount": 1,
+    "comments": [
+      {
+        "id": "a1",
+        "owner": "maint",
+        "createdAt": 100,
+        "reviewId": "R1"
+      },
+      {
+        "id": "b1",
+        "owner": "maint",
+        "createdAt": 200,
+        "reviewId": "R2"
+      }
+    ]
+  },
+  "expected": {
+    "comments": [
+      "b1"
+    ],
+    "landed": 1,
+    "expected": 1
+  }
+}
