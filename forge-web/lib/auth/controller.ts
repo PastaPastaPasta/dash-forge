@@ -32,7 +32,7 @@ import { stepClock, timed } from '../step-timing'
 import { DEPLOYMENTS, FORGE_CONTRACT_KINDS, contractKind, groupTrust, type ForgeIds, type GroupTrust } from '../deployments'
 import { assertGroupHolds, type GroupCheck } from './group-trust'
 import { SECURITY_LEVEL, WriteAuthError, balanceBeforeWrite, findSigningKey, measureActual, readIdentityBalance, serialized, type SpendEvent, type WriteAuth } from '../sdk/write'
-import { KEY_LIMITS_UPDATE_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS } from '../sdk/cost'
+import { KEY_ADD_FLOOR_CREDITS, KEY_LIMITS_UPDATE_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS } from '../sdk/cost'
 import { authSdk, type WasmIdentity } from '../sdk/facade'
 import type { HeldBrowserKey } from './create-identity'
 import type { KeyLimits } from '../view/funds'
@@ -200,6 +200,15 @@ export const KEY_SPEND_ESTIMATES: Readonly<Record<KeySpendKind, number>> = {
   'key:encryption': 0,
   'key:runner': KEY_REGISTER_CREDITS,
   'identity:create': 0,
+}
+
+/**
+ * The low end of a key registration's quoted range: adding a key when the identity already holds
+ * one (QW-043: bonsia charged 26.8M-27.8M for a sign-in's key, under the 48M first-key bound).
+ */
+export const KEY_SPEND_FLOORS: Readonly<Partial<Record<KeySpendKind, number>>> = {
+  'key:register': KEY_ADD_FLOOR_CREDITS,
+  'key:runner': KEY_ADD_FLOOR_CREDITS,
 }
 
 /**
@@ -400,6 +409,7 @@ export class AuthController {
       repo: null,
       documentId: keyId === null ? 'identity' : `key-${keyId}`,
       estimateCredits: KEY_SPEND_ESTIMATES[kind],
+      ...(KEY_SPEND_FLOORS[kind] !== undefined ? { estimateMinCredits: KEY_SPEND_FLOORS[kind] } : {}),
       actualCredits,
       balanceBefore,
     })

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { affordability, fundsNotice, fundsState, LOW_BALANCE_CREDITS, nextFundsChange } from './funds'
+import { affordability, fundsNotice, fundsState, issueCoverage, LOW_BALANCE_CREDITS, nextFundsChange } from './funds'
 import { previewCreate } from '../sdk/cost'
 import { balanceSettled, estimateMissed, reconcile, summarize, type SpendRow } from '../spend'
 
@@ -133,9 +133,32 @@ describe('spend ledger', () => {
       { repo: 'B', credits: 17, writes: 2 },
     ])
   })
-  it('reconciles against the balance change since the baseline', () => {
-    expect(reconcile(100, 1000n, 880n)).toEqual({ balanceChange: 120, unexplained: 20 })
+  it('reconciles against the balance change since the baseline, signed as the balance moved (QW2-019)', () => {
+    // 120 left the balance; the ledger explains 100: 20 went elsewhere.
+    expect(reconcile(100, 1000n, 880n)).toEqual({ balanceChange: -120, unexplained: -20 })
     expect(reconcile(100, null, 880n)).toBeNull()
+    // A 1000-credit top-up made here, and a 30-credit write: the balance grew by 970, all explained.
+    expect(reconcile(30 - 1000, 1000n, 1970n)).toEqual({ balanceChange: 970, unexplained: 0 })
+    // The same top-up made elsewhere: credited, not in the ledger.
+    expect(reconcile(30, 1000n, 1970n)).toEqual({ balanceChange: 970, unexplained: 1000 })
+  })
+  it('keeps top-ups out of the spend totals (QW2-019)', () => {
+    const topUp: SpendRow = { ...row(5, 0, -1000, 'X'), kind: 'identity:topup', repo: null }
+    const s = summarize([row(1, 50, 60, 'A'), topUp])
+    expect(s.allTime).toBe(60)
+    expect(s.writes).toBe(1)
+    expect(s.credited).toBe(1000)
+    expect(s.byRepo).toEqual([{ repo: 'A', credits: 60, writes: 1 }])
+  })
+  it('judges a write against its preview range, and a refund against its promise (QW-043)', () => {
+    const ranged = (min: number, max: number, actual: number): SpendRow => ({ ...row(1, max, actual), estimateMinCredits: min })
+    // A star previewed 19.4M-61.4M (first-write reads unanswered) and charged 19.4M: not a miss.
+    expect(estimateMissed(ranged(19_400_000, 61_400_000, 19_400_000))).toBe(false)
+    expect(estimateMissed(ranged(19_400_000, 61_400_000, 14_000_000))).toBe(true)
+    expect(estimateMissed(ranged(19_400_000, 61_400_000, 80_000_000))).toBe(true)
+    // A refund promised at least 20M: 81.8M back is not a miss, 10M is.
+    expect(estimateMissed(row(1, -20_000_000, -81_800_000))).toBe(false)
+    expect(estimateMissed(row(1, -20_000_000, -10_000_000))).toBe(true)
   })
   it('reconciles only a balance read from Platform after the last row (not a reload’s kept balance)', () => {
     // Unsorted on purpose: the last row is the latest, wherever it sits.
@@ -162,5 +185,19 @@ describe('spend ledger', () => {
     // A node one write behind answers 940 even when read after the last row (e.g. a new tab).
     expect(balanceSettled({ credits: 940n, readAt: 300 }, rows)).toBe(false)
     expect(balanceSettled({ credits: 1000n, readAt: 300 }, rows)).toBe(false)
+  })
+})
+
+describe('the top-up sheet\'s coverage line (QW2-035)', () => {
+  const dash = (c: number): string => String(c / 1e11)
+  it('counts what can be spent now, not the key budget', () => {
+    // LOW: 0.005395 DASH balance under a 0.05 DASH key budget, an issue at 0.001212.
+    const spendable = fundsState(539_500_000n, { remaining: 5_000_000_000n, total: 5_000_000_000n, expiresAt: null }).spendable
+    expect(issueCoverage(spendable, 121_200_000, dash)).toBe('About 0.001212 DASH covers an issue; what you can spend now covers about 4.')
+  })
+  it('says when it covers none, or one, and omits the count while the balance is unread', () => {
+    expect(issueCoverage(100_000_000n, 121_200_000, dash)).toMatch(/does not cover one\.$/)
+    expect(issueCoverage(130_000_000n, 121_200_000, dash)).toMatch(/covers about one\.$/)
+    expect(issueCoverage(null, 121_200_000, dash)).toBe('About 0.001212 DASH covers an issue.')
   })
 })
