@@ -35,13 +35,13 @@
  */
 
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { loadSeedPulls } from '../../e2e/seed-summary'
+import { loadSeedPulls, seedRepo } from '../../e2e/seed-summary'
 import { DEFAULT_NETWORK, NETWORKS } from '../constants'
 import { PR_DRAFT } from '../rules/v2'
 import { asConsensusRefusal, evoSdkService } from '../sdk'
@@ -52,11 +52,18 @@ import { readTargetCounts } from './social'
 
 const LIVE = process.env['FORGE_LIVE'] === '1' && DEFAULT_NETWORK === 'devnet'
 
-const OWNER = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
-const MAINTAINER = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'
-const COLLAB = 'CJao2MVHL4x3f2Ko2xTUibnZ8G1t9exTPtvJnCbHAgDH'
-const MAIN_TIP = 'b35c50122cd51b2cc0345760721e6398fa0c31f5'
 const ID_DIR = join(homedir(), '.config/dash-forge/test-identities', NETWORKS[DEFAULT_NETWORK].key)
+/** An identity id from the devnet's fixture pool, or '' when the file is not here (not LIVE). */
+const poolId = (role: string): string => {
+  const file = join(ID_DIR, `${role}.identity.json`)
+  return existsSync(file) ? String((JSON.parse(readFileSync(file, 'utf8')) as { identityId: string }).identityId) : ''
+}
+// The fixture's seeders, as the committed seed summary records them (OWNER seeds forge-v2-demo,
+// MAINTAINER forge-v2-empty); COLLAB is the pool's writer.
+const OWNER = seedRepo('demo')?.owner ?? ''
+const MAINTAINER = seedRepo('empty')?.owner ?? ''
+const COLLAB = poolId('COLLAB')
+const MAIN_TIP = 'b35c50122cd51b2cc0345760721e6398fa0c31f5'
 const C2 = 'b35c50122cd51b2cc0345760721e6398fa0c31f5'
 const C3 = '3a1300eb2441ef94fd927dbfc7548d34fbb8edc5'
 

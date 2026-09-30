@@ -64,7 +64,7 @@ Protocol 14 lets the owner update the contracts only within its update rules: ne
 
 ## 5. Deploy forge-web to production
 
-- The static export deploys to GitHub Pages (`.github/workflows/pages.yml`), currently built for devnet bonsia (`NEXT_PUBLIC_NETWORK=devnet`, `NEXT_PUBLIC_DEVNET_NAME=bonsia`). For mainnet, either switch the Pages build to `NEXT_PUBLIC_NETWORK=mainnet` or host a second mainnet instance.
+- The static export deploys to GitHub Pages (`.github/workflows/pages.yml`, from master), built for devnet bonsia from the cut-over (`NEXT_PUBLIC_NETWORK=devnet`, `NEXT_PUBLIC_DEVNET_NAME=bonsia`). For mainnet, either switch the Pages build to `NEXT_PUBLIC_NETWORK=mainnet` or host a second mainnet instance.
 - Optional: publish an IPFS snapshot of `out/` for a censorship-resistant mirror (`ipfs add -r out/` via a pinning service) — the app is fully static and self-verifying.
 
 ## 6. Production smoke suite (post-deploy + weekly)

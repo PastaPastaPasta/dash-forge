@@ -41,7 +41,11 @@ test.describe('FG-5 on the dash mirror (read-only)', () => {
   test.skip(E2E_DEVNET !== 'moutai' && E2E_DEVNET !== 'bonsia', 'the dash showcase mirror is imported on the live devnet')
   let DASH: { readonly owner: string; readonly name: string }
   test.beforeAll(async () => {
-    const dash = await showcaseRepo('DASHPAY', 'dash').catch(() => null)
+    const dash = await showcaseRepo('DASHPAY', 'dash').catch((e: unknown) => {
+      // helpers.ts `showcaseRepo`: the name does not resolve = no mirror here. Anything else fails.
+      if (e instanceof Error && e.message.includes('does not resolve')) return null
+      throw e
+    })
     test.skip(dash === null, `the dash mirror is not imported on ${E2E_DEVNET}`)
     DASH = dash as NonNullable<typeof dash>
   })

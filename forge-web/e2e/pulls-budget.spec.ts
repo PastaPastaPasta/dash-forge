@@ -1,5 +1,5 @@
 import { test, expect, type Browser, type Page, type Request } from '@playwright/test'
-import { collectPageErrors, DAPI_METHOD, decodeDocumentsRequest, E2E_DEVNET, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
+import { collectPageErrors, DAPI_METHOD, decodeDocumentsRequest, E2E_DEVNET, loadSeedPulls, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
 
 /**
  * L-44 / L-77: the PR list and PR detail, cold, within S-1's page budget (≤ 25 DAPI requests,
@@ -89,7 +89,9 @@ test.describe('PR request budget (L-77)', () => {
     await shot(list.page, 'prb-01-fixture-pulls-cold')
     await list.close()
 
-    const detail = await cold(browser, 'fixture PR #2', repoUrl('pull', '&number=2'), detailReady)
+    // The merged PR (#2 before numbering became dense; the seed summary names it now).
+    const merged = loadSeedPulls().merged
+    const detail = await cold(browser, `fixture PR #${merged}`, repoUrl('pull', `&number=${merged}`), detailReady)
     expect(detail.rows.length, summary(detail.rows)).toBeLessThanOrEqual(COLD_BUDGET)
     await shot(detail.page, 'prb-02-fixture-pull-cold')
     await detail.close()

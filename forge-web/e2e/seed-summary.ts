@@ -44,11 +44,19 @@ function summaryPaths(): string[] {
   return envPath ? [envPath, defaultPath] : [defaultPath]
 }
 
-/** The first summary file on disk, parsed, with its path; null when there is none. */
+/**
+ * The first summary file on disk, parsed, with its path; null when there is none. Throws, naming
+ * the file, when that file is not JSON.
+ */
 function readSummary(): { readonly path: string; readonly summary: Record<string, unknown> } | null {
   for (const path of summaryPaths()) {
     if (!existsSync(path)) continue
-    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(readFileSync(path, 'utf8'))
+    } catch (e) {
+      throw new Error(`${path} is not a readable seed summary: ${(e as Error).message}`)
+    }
     return { path, summary: typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {} }
   }
   return null
@@ -56,11 +64,17 @@ function readSummary(): { readonly path: string; readonly summary: Record<string
 
 /**
  * A seeded fixture repo (`demo` = forge-v2-demo, `empty` = forge-v2-empty) as the seed summary
- * records it, or null when there is no summary for this devnet. Never throws on a missing file,
- * so the module-level fixture constants in `e2e/helpers.ts` can use it.
+ * records it, or null when there is no readable summary for this devnet. Never throws, so the
+ * module-level fixture constants in `e2e/helpers.ts` can use it (a spec that needs the fixture
+ * then fails on its placeholder owner; `loadSeedPulls` names the unreadable file).
  */
 export function seedRepo(which: 'demo' | 'empty'): { readonly owner: string; readonly name: string } | null {
-  const repo = readSummary()?.summary[which]
+  let repo: unknown
+  try {
+    repo = readSummary()?.summary[which]
+  } catch {
+    return null
+  }
   if (typeof repo !== 'object' || repo === null) return null
   const { owner, name } = repo as Record<string, unknown>
   return typeof owner === 'string' && typeof name === 'string' ? { owner, name } : null
