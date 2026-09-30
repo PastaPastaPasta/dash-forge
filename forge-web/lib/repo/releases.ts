@@ -407,11 +407,11 @@ export async function sealedReleases(docs: readonly PlainDocument[], ctx: OpenCo
     docs.map(async (doc): Promise<SealedRow> => {
       const stored = storedRelease(doc)
       const opened: ReleaseOpenResult = stored === null ? { status: 'malformed' } : await openRelease(ctx, stored)
-      const createdAt = typeof doc['$createdAt'] === 'number' ? doc['$createdAt'] : 0
+      const createdAt = typeof doc['$createdAt'] === 'number' ? doc['$createdAt'] : undefined
       return {
         doc,
         id: idField(doc, '$id') ?? new Uint8Array(0),
-        createdAt,
+        createdAt: createdAt ?? 0,
         epoch: stored?.epoch ?? -1,
         tagName: str(doc, 'tagName'),
         status: releaseStatusOf(opened, stored?.epoch, createdAt, ctx),
@@ -422,11 +422,12 @@ export async function sealedReleases(docs: readonly PlainDocument[], ctx: OpenCo
   )
   const fold = foldReleases(rows)
   const view = (r: SealedRow): ReleaseView => sealedView(r.doc, r.epoch, r.fields as ReleaseFields)
+  const earlierUse = rows.filter((r) => r.status === 'earlierUse').length
   return {
     current: fold.live.map(view).sort(releaseOrder),
     previous: fold.history.map(view),
     hidden: fold.hidden,
-    earlierUse: rows.filter((r) => r.status === 'earlierUse').length,
+    ...(earlierUse > 0 ? { earlierUse } : {}),
     unknownTags: fold.unknownTags,
     stale: fold.stale,
   }

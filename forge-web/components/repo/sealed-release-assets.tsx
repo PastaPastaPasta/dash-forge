@@ -89,7 +89,15 @@ export function SealedAssets({ repo, state, className, id }: { repo: RepoRef; st
         <span>{LATE_ASSET_LIST}</span>
       </p>
     ) : null
-  if (manifest.assets.length === 0) return late ?? <></>
+  if (manifest.assets.length === 0) {
+    return late === null ? (
+      <></>
+    ) : (
+      <div id={id} className={className}>
+        {late}
+      </div>
+    )
+  }
   const external = manifest.assets.some((a) => !isSealedAsset(a))
   return (
     <div id={id} className={className}>

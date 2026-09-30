@@ -60,6 +60,7 @@ let root: Root
 beforeEach(() => {
   download.mockReset()
   save.mockReset()
+  viewer.role = 'writer'
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -120,7 +121,10 @@ describe('a sealed release asset list', () => {
     expect(rows()).toHaveLength(2)
     act(() => root.render(<SealedAssets repo={REPO} state={state({ data: opened(MANIFEST) })} />))
     expect(late()).toBeNull()
-    viewer.role = 'writer'
+    // A list of only continued notes has no rows, but the warning stays.
+    act(() => root.render(<SealedAssets repo={REPO} state={state({ data: opened({ ...MANIFEST, total: 0, assets: [], notes: 'n' }, true) })} />))
+    expect(late()?.textContent).toBe(LATE_ASSET_LIST)
+    expect(rows()).toHaveLength(0)
   })
 
   it('says the asset list is unavailable when it does not open', () => {

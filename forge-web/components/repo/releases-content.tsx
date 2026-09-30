@@ -446,6 +446,8 @@ function ReleaseCard({
           {assetsOpen ? <SealedAssets repo={repo} state={manifest} className="mt-2" id={sealedAssetsId} /> : null}
         </div>
       ) : null}
+      {/* A list of only continued notes, once opened: no assets, but a late upload is still said. */}
+      {sealedList && !full && noSealedAssets ? <SealedAssets repo={repo} state={manifest} className="mt-3" /> : null}
       {r.omitted ? <OmittedAssetsNote omitted={r.omitted} /> : null}
       {r.badAssets > 0 ? (
         <p className="mt-2 text-[12px] text-caution-700 dark:text-caution-400">

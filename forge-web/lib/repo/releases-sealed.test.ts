@@ -98,13 +98,20 @@ describe('sealedReleases', () => {
     expect(list.current.map((r) => r.tagName)).toEqual(['v1'])
     expect(list.hidden).toBe(1)
     expect(list.earlierUse).toBe(1)
-    expect(list.unknownTags).toEqual([])
     // The same revision dated after stated(e) does not open under the key of that time: tampering.
     const after = await sealedReleases([at(1, 1001, sealedOld), at(2, 1100, current)], stated)
     expect(after.hidden).toBe(1)
-    expect(after.earlierUse).toBe(0)
+    expect(after.earlierUse).toBeUndefined()
     // Without the time of stated(e) nothing is judged an earlier use.
-    expect((await sealedReleases([at(1, 900, sealedOld)], ctx)).earlierUse).toBe(0)
+    expect((await sealedReleases([at(1, 900, sealedOld)], ctx)).earlierUse).toBeUndefined()
+    // An earlier use newer than v1's revision under v1's (epoch, tagName) does not put v1 in doubt;
+    // the same bytes as badTag (after stated(e)) do.
+    const shadow = (createdAt: number) => doc(3, createdAt, { tagName: current.tagName, epoch: 0, enc: sealedOld.enc })
+    const early = await sealedReleases([at(2, 800, current), shadow(900)], stated)
+    expect(early.earlierUse).toBe(1)
+    expect(early.unknownTags).toEqual([])
+    const tampered = await sealedReleases([at(2, 1100, current), shadow(1200)], stated)
+    expect(tampered.unknownTags).toEqual(['v1'])
   })
 })
 

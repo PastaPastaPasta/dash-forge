@@ -229,7 +229,8 @@ export class ReleaseManifestUnavailableError extends Error {
  * cap before anything is fetched, then its sealed bytes checked against TLV 21, opened with the
  * key of its header's epoch from `keys`, and checked for canonical JSON, the tag, the total, the
  * entries and `notes` against flag 0x10. The first copy that passes wins. §8.2's "uploaded under
- * an old key" flag does not apply: the maintainer's `enc` commits to the exact bytes.
+ * an old key" flag never makes it unreadable: the maintainer's `enc` commits to the exact bytes.
+ * Maintainers are still warned of a late upload ({@link loadReleaseManifestStanding}).
  */
 export async function loadReleaseManifest(sdk: EvoSDK, repo: RepoRef, fields: ReleaseFields, keys: EpochKeyring): Promise<ReleaseManifest> {
   return (await loadReleaseManifestStanding(sdk, repo, fields, keys)).manifest

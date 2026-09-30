@@ -4766,13 +4766,14 @@ impl<'a> Collab<'a> {
         Ok(pack_hash)
     }
 
-    /// The live sealed releases (their tags) whose asset list was uploaded late (§16.5, §8.2):
-    /// the named kind-4 `packManifest`'s first copy was recorded after `H(next(e)) +
-    /// GRACE_BLOCKS` for its sealed header's epoch `e`, or under a burned epoch
+    /// The live sealed releases (their revisions' `$id`s) whose asset list was uploaded late
+    /// (§16.5, §8.2): the named kind-4 `packManifest`'s first copy was recorded after
+    /// `H(next(e)) + GRACE_BLOCKS` for its sealed header's epoch `e`, or under a burned epoch
     /// ([`crate::keyring::Keyring::uploaded_late`]). The list stays readable, since the
     /// revision's `enc` commits to it, but a member removed by the rotation may read it:
-    /// maintainers are warned ("uploaded under an old key"). A list no copy of which serves its
-    /// header is not judged.
+    /// maintainers are warned ("uploaded under an old key"). Nothing is fetched for a list no
+    /// epoch could judge late at its height (a repository that never rotated fetches nothing),
+    /// and a list no copy of which serves its header is not judged.
     pub async fn late_asset_lists(
         &self,
         repo: &RepoRef,
@@ -4803,8 +4804,18 @@ impl<'a> Collab<'a> {
             let Some(first) = copies.iter().map(|m| m.created_at_block_height).min() else {
                 continue;
             };
+            if !kr.may_be_late(first) {
+                continue;
+            }
             let mut epoch = None;
-            for copy in &copies {
+            // within the reader's cap (a copy claiming more is never fetched, §16.5), the first
+            // upload first: a later copy by someone else is only tried after it
+            let mut readable: Vec<_> = copies
+                .iter()
+                .filter(|m| m.size_bytes <= crate::private::release::MAX_MANIFEST_BYTES)
+                .collect();
+            readable.sort_by_key(|m| (m.created_at_block_height, m.created_at));
+            for copy in readable {
                 if let Ok(sealed) = svc.fetch_artifact(repo, copy, &reader).await {
                     epoch = crate::private::PackHeader::parse(&sealed, copy.size_bytes)
                         .ok()
@@ -4815,7 +4826,7 @@ impl<'a> Collab<'a> {
                 }
             }
             if epoch.is_some_and(|e| kr.uploaded_late(e, first)) {
-                late.push(r.tag_name.clone());
+                late.push(r.document_id.clone());
             }
         }
         Ok(late)

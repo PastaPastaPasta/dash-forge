@@ -685,10 +685,11 @@ export type ReleaseStatus = 'readable' | UnreadableReason | 'malformed' | 'earli
  * uses, reported as such and not as tampering (§16.3; forge-core `Keyring::open_release`). Judged
  * best-effort: `$createdAt` is client-set, and a release has no block height.
  */
-export function releaseStatusOf(opened: ReleaseOpenResult, epoch: number | undefined, createdAt: number, ctx: OpenContext): ReleaseStatus {
+export function releaseStatusOf(opened: ReleaseOpenResult, epoch: number | undefined, createdAt: number | undefined, ctx: OpenContext): ReleaseStatus {
   if (opened.status !== 'unreadable') return opened.status
   const statedAt = epoch === undefined ? undefined : ctx.anchors.get(epoch)?.statedAt
-  return opened.reason === 'badTag' && statedAt !== undefined && createdAt < statedAt ? 'earlierUse' : opened.reason
+  const earlier = opened.reason === 'badTag' && statedAt !== undefined && createdAt !== undefined && createdAt < statedAt
+  return earlier ? 'earlierUse' : opened.reason
 }
 
 /** One revision as the fold sees it, after {@link openRelease}. */

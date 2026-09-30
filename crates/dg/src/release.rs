@@ -678,7 +678,7 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
             "prerelease": r.is_prerelease(),
             "sealed": r.sealed.is_some(),
             "stateUnknown": list.unknown_tags.contains(&r.tag_name),
-            "assetListUploadedLate": late.contains(&r.tag_name),
+            "assetListUploadedLate": late.contains(&r.document_id),
             "publishedBy": r.publisher,
             "createdAt": r.created_at,
             "assets": r.assets.iter().map(asset_json).collect::<Vec<_>>(),
@@ -709,7 +709,7 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
                 if list.unknown_tags.contains(&r.tag_name) {
                     println!("  a newer revision of this release could not be read; its state is unknown");
                 }
-                if late.contains(&r.tag_name) {
+                if late.contains(&r.document_id) {
                     println!("  warning: {}", late_list_note(&r.tag_name));
                 }
             }

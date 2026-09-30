@@ -660,7 +660,7 @@ A sealed release never lists assets in `enc`: at about 255 bytes per entry, 1507
 
 Any failure is `manifestMismatch` or `SealedPackCorrupt`. The revision is then shown without assets ("asset list unavailable") and without the continued notes (tag 2's prefix, marked incomplete).
 
-A kind-4 manifest is only ever reached through tag 21 of a readable revision. One that no readable revision names is ignored, never listed. §8.2's "uploaded under an old key" flag does not apply to one that is named: the maintainer's `enc` commits to its exact bytes. A later revision may keep naming an unchanged older manifest: anyone who can open it could before.
+A kind-4 manifest is only ever reached through tag 21 of a readable revision. One that no readable revision names is ignored, never listed. §8.2's "uploaded under an old key" flag never makes one that is named unreadable: the maintainer's `enc` commits to its exact bytes. Maintainers are still warned of a late upload (below). A later revision may keep naming an unchanged older manifest: anyone who can open it could before.
 
 **Upload before sign, same epoch.** A writer uploads the sealed assets and the manifest first, then writes the release. Every artifact it newly writes for a revision must carry, in its sealed header, the revision's `epoch`. After the final anchor re-read before signing (§5.3), if the write epoch has changed, the writer re-seals and re-uploads under the new epoch (or aborts) before it signs. Otherwise a rotation that lands during a long upload would leave the new assets readable to the member it removed. Readers also warn maintainers when a named kind-4 `packManifest`, which carries a `$createdAtBlockHeight`, was written after `H(next(e)) + GRACE_BLOCKS` for its header epoch `e` (§8.2). How the warning is judged and shown:
 
@@ -675,7 +675,7 @@ A kind-4 manifest is only ever reached through tag 21 of a readable revision. On
 **Storage.**
 
 - **External storage only.** A writer stores a sealed release's asset objects and its kind-4 manifest on the external targets of the repository's storage policy (S3, R2, IPFS and the like). It never stores them as Platform `chunk` documents, even when the policy also names Platform. The kind-4 `packManifest` it records has `storage = 1` and `chunkCount = 0`.
-  - A revision that needs a new list (new files, or notes that continue in it) under a policy with no external target is refused before anything is sealed or stored: `dg release create` says "no storage for the assets", and the web says it needs storage of your own.
+  - Under a policy with no external target, a revision with new files is refused before anything is sealed or stored: `dg release create` says "no storage for the assets", and the web says it needs storage of your own. A revision that needs a new list only for notes that continue in it is refused when the list is to be stored, before anything is uploaded or written.
   - An edit that keeps the list as it is needs no storage.
   - Readers follow a kind-4 `packManifest` to wherever it says the list is, Platform chunks included, so a list another client stored on Platform still opens.
   - This matches forge-core (`dg release create`'s asset targets are the policy's external ones), forge-web (`NO_EXTERNAL_STORAGE`) and forge-import (the policy's non-Platform profiles).
