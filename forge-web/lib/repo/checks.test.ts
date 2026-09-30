@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
-import { LOG_MAX_BYTES, checksPhrase, fetchVerifiedLog, newestCheckRuns, runDuration, safeLogUrl, summarizeChecks, untrustedWords } from './checks'
+import { LOG_MAX_BYTES, checksPhrase, expectedChecks, fetchVerifiedLog, newestCheckRuns, requiredSources, runDuration, safeLogUrl, summarizeChecks, untrustedWords } from './checks'
 
 const doc = (id: string, name: string, owner: string, at: number, status: string, conclusion = '') => ({ $id: id, $ownerId: owner, $createdAt: at, name, status, conclusion })
 
@@ -18,7 +18,7 @@ describe('check runs on a head', () => {
       ['lint', 'failure', false],
     ])
     const s = summarizeChecks(runs, true)
-    expect(s).toEqual({ passed: 1, failing: 0, pending: 0, total: 1, untrusted: 1, membersKnown: true })
+    expect(s).toEqual({ passed: 1, failing: 0, pending: 0, total: 1, untrusted: 1, offSource: 0, membersKnown: true })
     expect(checksPhrase(s)).toBe('1 passed (1 not counted: reporter no longer a member or runner)')
   })
 
@@ -27,6 +27,50 @@ describe('check runs on a head', () => {
     const s = summarizeChecks(runs, false)
     expect(checksPhrase(s)).toBe("Couldn't read the members, so which checks count is unknown")
     expect(checksPhrase(summarizeChecks([], true))).toBe('No checks reported')
+  })
+})
+
+describe('required check sources (RC1 R-08)', () => {
+  const policy = { requiredChecks: ['build', 'lint'], requiredCheckSources: ['ci', 'm'] }
+
+  it('pairs each name with its source only when the lists pair one for one', () => {
+    expect([...requiredSources(policy)]).toEqual([
+      ['build', 'ci'],
+      ['lint', 'm'],
+    ])
+    expect(requiredSources({ requiredChecks: ['build', 'lint'], requiredCheckSources: ['ci'] }).size).toBe(0)
+    expect(requiredSources({ requiredChecks: ['build'] }).size).toBe(0)
+    expect(requiredSources(null).size).toBe(0)
+  })
+
+  it("lists a pinned check's source run over a newer run by another member, which is marked and not counted", () => {
+    const trusted = (who: string) => who === 'ci' || who === 'm' || who === 'w'
+    const runs = newestCheckRuns(
+      [
+        doc('1', 'build', 'ci', 1, 'completed', 'failure'),
+        doc('2', 'build', 'w', 2, 'completed', 'success'),
+        doc('3', 'lint', 'w', 3, 'completed', 'success'),
+        doc('4', 'test', 'w', 4, 'completed', 'success'),
+      ],
+      trusted,
+      requiredSources(policy),
+    )
+    expect(runs.map((r) => [r.name, r.reporter, r.requiredSource, r.fromRequiredSource])).toEqual([
+      // The source's own (failing) run decides build, as `checksState` counts it.
+      ['build', 'ci', 'ci', true],
+      // lint has no run from its source: the writer's is shown, not from the required source.
+      ['lint', 'w', 'm', false],
+      ['test', 'w', null, true],
+    ])
+    const s = summarizeChecks(runs, true)
+    expect(s).toMatchObject({ passed: 1, failing: 1, total: 2, untrusted: 0, offSource: 1 })
+    expect(checksPhrase(s)).toBe('1 passed, 1 failing (1 not from the required source)')
+  })
+
+  it('lists the required checks nothing reported yet, with their sources', () => {
+    expect(expectedChecks([{ name: 'build' }], { ...policy, requiredChecks: ['build', 'lint'] })).toEqual([{ name: 'lint', source: 'm' }])
+    expect(expectedChecks([], { requiredChecks: ['build'] })).toEqual([{ name: 'build', source: null }])
+    expect(expectedChecks([], null)).toEqual([])
   })
 })
 
