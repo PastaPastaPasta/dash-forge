@@ -29,6 +29,7 @@ import { CreateIdentityFlow } from '@/components/auth/create-identity-flow'
 import { WalletConnectFlow } from '@/components/auth/wallet-connect-flow'
 import { StepFailed } from '@/components/auth/step-status'
 import { FORGET_CONFIRM } from '@/components/keys-panel'
+import { useConfirmAction } from '@/components/ui/confirm-action'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { GRANT_COPY } from '@/lib/auth/key-registration'
 import { NotDeployedState } from '@/components/ui/network-badge'
@@ -292,6 +293,7 @@ function FilePicker({ label, detail, onFile, disabled }: { label: string; detail
 
 function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | null; onDone: () => void; onOther: () => void; onRenew: () => void }): JSX.Element {
   const { vaults, unlock, forget, isLoading, step } = useAuth()
+  const [confirm, confirmDialog] = useConfirmAction()
   const [pick, setPick] = useState(() => Math.max(0, vaults.findIndex((v) => v.identityId === initial)))
   const [passphrase, setPassphrase] = useState('')
   const passphraseRef = useRef<HTMLInputElement>(null)
@@ -380,16 +382,26 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
           Renew this browser&apos;s key
         </Button>
       ) : null}
+      {/* The recovery route (like "Forgot password?"): the identity file or recovery phrase
+          registers a new key for this browser and disables the one it cannot open. */}
+      <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="unlock-forgot">
+        {v.methods.includes('passphrase') ? 'Forgot the passphrase' : 'Lost the passkey'}?{' '}
+        <button type="button" onClick={onRenew} className="hit-area text-forge-700 underline dark:text-forge-400">
+          Replace this key with your recovery phrase or identity file
+        </button>
+      </p>
       <div className="flex justify-between pt-1 text-[12px]">
-        <button type="button" onClick={onOther} className="text-anvil-500 dark:text-anvil-400 underline">
+        <button type="button" onClick={onOther} className="hit-area text-anvil-500 dark:text-anvil-400 underline">
           Other sign-in options
         </button>
         <button
           type="button"
           onClick={() => {
-            if (window.confirm(FORGET_CONFIRM)) forget(v.identityId).then(() => setPick(0), (e: unknown) => setError(errorMessage(e)))
+            void confirm(FORGET_CONFIRM).then((ok) => {
+              if (ok) forget(v.identityId).then(() => setPick(0), (e: unknown) => setError(errorMessage(e)))
+            })
           }}
-          className="text-danger-700 dark:text-danger-400 underline"
+          className="hit-area text-danger-700 dark:text-danger-400 underline"
         >
           Forget this key
         </button>
@@ -397,12 +409,13 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
         Stored {formatDate(v.createdAt)} · key #{v.keyId}
       </p>
+      {confirmDialog}
     </div>
   )
 }
 
 function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (identityId: string) => void }): JSX.Element {
-  const { importIdentity, isLoading, step, vaults, identity, controller } = useAuth()
+  const { importIdentity, isLoading, step, vaults, identity, controller, unlockScope } = useAuth()
   const [mode, setMode] = useState<'file' | 'mnemonic'>('file')
   // The identity file holds every private key: a ref (not React state), dropped on unmount
   // and after use; state only records that one was chosen.
@@ -415,6 +428,8 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
     [],
   )
   const [fileName, setFileName] = useState('')
+  // A file that was not an identity file: named on the picker, so the error beside it is about it.
+  const [badFile, setBadFile] = useState('')
   const [fileIdentity, setFileIdentity] = useState('')
   const [mnemonic, setMnemonic] = useState('')
   // The words live in the textarea's value property only (never a DOM attribute or text): the
@@ -427,15 +442,30 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
   }, [])
   const [identityId, setIdentityId] = useState('')
   const [error, setError] = useState<string | null>(null)
+  // Errors show beside the button that caused them, scrolled into view: in a tall sheet the
+  // button can sit at the bottom edge of a phone (or a 800 px laptop) screen.
+  const errorRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (error !== null) errorRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [error])
   const { fields, protection, problem } = useProtection()
   // Opt-in (`ux-dx-spec.md` §2.3): also keep the identity's encryption key, for private repos.
   const [enablePrivate, setEnablePrivate] = useState(false)
+  // The words found an identity this browser already holds a key for (its ID is now filled in).
+  const [foundStored, setFoundStored] = useState(false)
   const who = mode === 'file' ? fileIdentity : identityId.trim()
+  const previous = who === '' ? undefined : vaults.find((v) => v.identityId === who)
   // Offer Unlock for a key this device already holds, unless this is a renewal of the
   // signed-in identity (then the old key is disabled in the same update).
-  const alreadyStored = who !== '' && who !== identity && vaults.some((v) => v.identityId === who)
+  const alreadyStored = previous !== undefined && who !== identity
   // A key this device holds for the identity is replaced (renew), which costs less than a new one.
-  const renewing = who !== '' && vaults.some((v) => v.identityId === who)
+  const renewing = previous !== undefined
+  // Replacing a key this tab has not unlocked drops what was sealed with it: its encryption key
+  // for private repos goes unless this import brings it again (QW-052). Ticked by default then.
+  const dropsEncryption = previous?.encryptionKey === true && !(who === identity && unlockScope === 'full')
+  useEffect(() => {
+    if (dropsEncryption) setEnablePrivate(true)
+  }, [dropsEncryption, who])
 
   const onFile = async (file: File): Promise<void> => {
     setError(null)
@@ -447,12 +477,15 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
       fileRef.current = null
       setFileChosen(false)
       setFileIdentity('')
+      setFileName('')
+      setBadFile(file.name)
       setError(errorMessage(e))
       return
     }
     fileRef.current = text
     setFileChosen(true)
     setFileName(file.name)
+    setBadFile('')
   }
 
   const ready = protection !== null && !isLoading && (mode === 'file' ? fileChosen : mnemonic.trim() !== '')
@@ -472,9 +505,12 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
       setMnemonic('')
       onDone()
     } catch (e) {
-      // Found from the words, and already held here: offer Unlock, as a typed ID would have.
+      // Found from the words, and already held here: fill in the identity, so the sheet offers
+      // what a typed ID offers — unlock the stored key, or replace it (the way back from a
+      // forgotten passphrase, QW-010). Nothing was signed.
       if (e instanceof AlreadyStoredError) {
-        onStored(e.identityId)
+        setIdentityId(e.identityId)
+        setFoundStored(true)
         return
       }
       // A reloaded tab holds the signing key only: a renewal must carry over (or disable) every
@@ -505,29 +541,53 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
         ))}
       </div>
       {mode === 'file' ? (
-        <FilePicker label={fileName || 'Choose an identity file (.json)'} detail={fileIdentity || undefined} onFile={(f) => void onFile(f)} />
+        <FilePicker
+          label={fileName || (badFile ? 'Choose another file' : 'Choose an identity file (.json)')}
+          detail={fileIdentity || (badFile ? `${badFile}: not usable (see below)` : undefined)}
+          onFile={(f) => void onFile(f)}
+        />
       ) : (
         <>
           <Field label="Recovery phrase (12 or 24 words)" htmlFor="import-mnemonic" hint="Used once to derive the master key; not stored.">
             {/* Uncontrolled: a controlled textarea's value is also its DOM text content. */}
-            <Textarea id="import-mnemonic" ref={bindMnemonic} onChange={(e) => setMnemonic(e.target.value)} className="min-h-[72px] font-mono" spellCheck={false} autoComplete="off" />
+            <Textarea
+              id="import-mnemonic"
+              ref={bindMnemonic}
+              onChange={(e) => {
+                setMnemonic(e.target.value)
+                setFoundStored(false)
+              }}
+              className="min-h-[72px] font-mono"
+              spellCheck={false}
+              autoComplete="off"
+            />
           </Field>
           <Field
             label="Identity ID (optional)"
             htmlFor="import-id"
             hint="Leave empty: Forge finds the identity these words created. Enter it to check the words against a known identity."
           >
-            <Input id="import-id" value={identityId} onChange={(e) => setIdentityId(e.target.value)} className="font-mono" spellCheck={false} autoComplete="off" />
+            <Input
+              id="import-id"
+              value={identityId}
+              onChange={(e) => {
+                setIdentityId(e.target.value)
+                setFoundStored(false)
+              }}
+              className="font-mono"
+              spellCheck={false}
+              autoComplete="off"
+            />
           </Field>
         </>
       )}
       {alreadyStored ? (
-        <div className="rounded-md border border-anvil-200 px-3 py-2 text-dense dark:border-anvil-800">
-          This device already holds a key for this identity.{' '}
+        <div role={foundStored ? 'status' : undefined} data-testid="import-already-stored" className="rounded-md border border-anvil-200 px-3 py-2 text-dense dark:border-anvil-800">
+          {foundStored ? 'These words belong to an identity this browser already holds a key for (its ID is filled in above). ' : 'This device already holds a key for this identity. '}
           <button type="button" className="text-forge-700 underline dark:text-forge-400" onClick={() => onStored(who)}>
             Unlock it instead
           </button>{' '}
-          or continue to replace it (the old key is disabled in the same update).
+          or replace it: forgot its passphrase? Replacing registers a new key for this browser, and the old one is disabled in the same update.
         </div>
       ) : null}
       {fields}
@@ -544,6 +604,13 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
           <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">
             Also keep this identity&apos;s encryption key here, protected the same way. {ENCRYPTION_KEY_BLAST_RADIUS}
           </span>
+          {dropsEncryption ? (
+            <span className={cn('mt-1 block text-[12px]', enablePrivate ? 'text-anvil-600 dark:text-anvil-300' : 'text-caution-700 dark:text-caution-400')} data-testid="import-keeps-encryption">
+              {enablePrivate
+                ? 'This browser already holds your encryption key, sealed with the key being replaced: this brings it over again.'
+                : 'Unticked, the encryption key this browser holds for private repos is removed with the old key. Add it again later in Settings.'}
+            </span>
+          ) : null}
         </span>
       </label>
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
@@ -553,8 +620,11 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
           : ` (~${creditsAsDash(KEY_REGISTER_CREDITS)} DASH, one master-key signature).`}
       </p>
       {controller.supportsLimitedKeys() ? <GroupNotice check={() => controller.checkGroup()} /> : null}
+      <div ref={errorRef} hidden={error === null}>
+        <ErrorBox error={error} className="mt-0" />
+      </div>
       <Button variant="primary" className="w-full" onClick={submit} loading={isLoading} disabled={!ready}>
-        {isLoading && step ? `${step}…` : <>Create this browser&apos;s key</>}
+        {isLoading && step ? `${step}…` : alreadyStored ? <>Replace this browser&apos;s key</> : <>Create this browser&apos;s key</>}
       </Button>
       {problem && (fileChosen || mnemonic !== '') ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{problem}</p> : null}
       {unlockFirst ? (
@@ -567,7 +637,6 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
           }}
         />
       ) : null}
-      <ErrorBox error={error} />
     </div>
   )
 }

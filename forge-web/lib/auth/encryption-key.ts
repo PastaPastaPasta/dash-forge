@@ -23,7 +23,7 @@ import type { Network } from '../constants'
 import { bytesToHex, unwrapKey, unwrapKeyRaw, sealWrap, type EpochKeys, type WrapFacade } from '../private'
 import { authSdk, sleep } from '../sdk/facade'
 import { timed } from '../step-timing'
-import { deriveAt, deriveMasterKey, identityKeyPath, isValidMnemonic, normalizeMnemonic, wasmNetwork } from './hd'
+import { deriveAt, deriveMasterKey, identityKeyPath, isValidMnemonic, mnemonicProblem, normalizeMnemonic, wasmNetwork } from './hd'
 import { parsePrivateKey } from './wif'
 import { VaultLockedError, storeEncryptionKey, storedEncryptionKeyId, unlockScope, unlockedSecret, withEncryptionKey } from './vault'
 
@@ -215,7 +215,7 @@ export async function importEncryptionKey(
   }
   const mnemonic = source.mnemonic
   if (mnemonic === null) return null
-  if (!(await isValidMnemonic(mnemonic))) throw new Error('those words are not a valid recovery phrase')
+  if (!(await isValidMnemonic(mnemonic))) throw new Error(mnemonicProblem(mnemonic))
   for (const k of candidates) {
     const secret = await timed(PRIVATE_REPOS_FLOW, `derive key ${k.keyId} from the phrase`, () => deriveSecret(normalizeMnemonic(mnemonic), network, k.keyId, source.identityIndex ?? 0))
     if ((await publicKeyHex(secret, network)) === k.data.toLowerCase()) return adoptEncryptionKey(sdk, network, identityId, coreId, secret)
@@ -250,7 +250,7 @@ export async function registerEncryptionKey(
   coreId: string,
   source: { readonly mnemonic: string; readonly identityIndex?: number },
 ): Promise<{ readonly keyId: number; readonly registered: boolean }> {
-  if (!(await isValidMnemonic(source.mnemonic))) throw new Error('those words are not a valid recovery phrase')
+  if (!(await isValidMnemonic(source.mnemonic))) throw new Error(mnemonicProblem(source.mnemonic))
   // The new key must land in the vault: never pay for a key this browser cannot keep.
   if (unlockedSecret(network, identityId) === null) throw new VaultLockedError('unlock this browser first')
   // A reloaded tab holds the signing key only: the new key could not be stored with the vault.

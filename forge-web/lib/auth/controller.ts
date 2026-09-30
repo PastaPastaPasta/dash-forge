@@ -37,9 +37,10 @@ import { authSdk, type WasmIdentity } from '../sdk/facade'
 import type { HeldBrowserKey } from './create-identity'
 import type { KeyLimits } from '../view/funds'
 import { controlsKey, normalizeToWif } from './wif'
+import { decodeIdentifier } from './base58'
 import { retryWhileMissing } from '../view/retry'
 import { identityFileMatchesNetwork, masterMaterialFromFile } from './identity-file'
-import { deriveMasterKey, isValidMnemonic } from './hd'
+import { deriveMasterKey, isValidMnemonic, mnemonicProblem } from './hd'
 import { identityOfMasterKey } from './identity-lookup'
 import { PLATFORM_READ_MS, withPlatformRead } from './connect'
 import { withTimeout } from '../timeout'
@@ -799,7 +800,7 @@ export class AuthController {
         masterWif = m.masterWif ?? (m.mnemonic ? (await deriveMasterKey(m.mnemonic, this.network)).wif : null)
       } else {
         this.step('Checking the recovery phrase')
-        if (!(await isValidMnemonic(input.mnemonic))) throw new Error('those words are not a valid recovery phrase')
+        if (!(await isValidMnemonic(input.mnemonic))) throw new Error(mnemonicProblem(input.mnemonic))
         const master = await deriveMasterKey(input.mnemonic, this.network)
         masterWif = master.wif
         identityId = input.identityId.trim()
@@ -905,7 +906,7 @@ export class AuthController {
   checkFileNetwork(networkKey: string | null): void {
     const buildKey = NETWORKS[this.network].key
     if (!identityFileMatchesNetwork(networkKey, buildKey)) {
-      throw new Error(`identity file is for ${networkKey}, but this app is on ${buildKey}`)
+      throw new Error(`This identity file is for ${networkKey}, but this site is on ${buildKey}. Choose the file made for ${buildKey}.`)
     }
   }
 
@@ -1182,21 +1183,28 @@ export class AuthController {
    */
   async loginWithRawKey(identityId: string, privateKey: string): Promise<AuthSession> {
     return this.run(async () => {
-      const wif = normalizeToWif(privateKey, this.network)
-      const secret: VaultSecret = { identityId: identityId.trim(), keyId: -1, wif }
+      const id = identityId.trim()
+      const idProblem = identityIdProblem(id)
+      if (idProblem !== null) throw new WriteAuthError(idProblem)
+      let wif: string
+      try {
+        wif = normalizeToWif(privateKey, this.network)
+      } catch {
+        // Never forward the parser's message: it may quote the input.
+        throw new WriteAuthError("That isn't a private key Forge can read: paste it as WIF (51 or 52 characters, starting with c, 9, X or 7) or as 64 hex characters.")
+      }
+      const secret: VaultSecret = { identityId: id, keyId: -1, wif }
       // HIGH or CRITICAL only (the sheet says so): findSigningKey with CRITICAL..HIGH.
       const sdk = await this.getSdk()
       const identity = await authSdk(sdk).identities.fetch(secret.identityId)
-      if (!identity || !(await findSigningKey(identity, wif, this.network, SECURITY_LEVEL.HIGH))) {
-        throw new WriteAuthError('that key does not control a usable (HIGH or CRITICAL) authentication key of this identity')
-      }
+      if (!identity) throw new WriteAuthError(`No identity with this ID exists on ${NETWORKS[this.network].key}. Check the ID (and that it is for this network).`)
+      const problem = (): string => rawKeyProblem(identity.publicKeys, (k) => controlsKey(k, wif, this.network))
+      if (!(await findSigningKey(identity, wif, this.network, SECURITY_LEVEL.HIGH))) throw new WriteAuthError(problem())
       holdForSession(this.network, secret)
       try {
         return await this.open(secret, 'session')
       } catch (e) {
-        if (e instanceof KeyNotUsableError) {
-          throw new WriteAuthError('that key does not control a usable (HIGH or CRITICAL) authentication key of this identity')
-        }
+        if (e instanceof KeyNotUsableError) throw new WriteAuthError(problem())
         throw e
       }
     })
@@ -1385,7 +1393,7 @@ export class AuthController {
       this.checkFileNetwork(m.networkKey)
       masterWif = m.masterWif ?? (m.mnemonic ? (await deriveMasterKey(m.mnemonic, this.network)).wif : null)
     } else {
-      if (!(await isValidMnemonic(input.mnemonic))) throw new Error('those words are not a valid recovery phrase')
+      if (!(await isValidMnemonic(input.mnemonic))) throw new Error(mnemonicProblem(input.mnemonic))
       masterWif = (await deriveMasterKey(input.mnemonic, this.network)).wif
     }
     if (!masterWif) throw new Error('no master key found')
@@ -1447,6 +1455,49 @@ export class PendingRenewalLockedError extends Error {
     )
     this.name = 'PendingRenewalLockedError'
   }
+}
+
+/** Why `id` cannot be an identity ID (a user-facing sentence), or null when it can be. */
+export function identityIdProblem(id: string): string | null {
+  if (id === '') return 'Enter the identity ID.'
+  const shape = "An identity ID is 43 or 44 letters and digits (base58), as shown on the identity's profile page."
+  if (!/^[1-9A-HJ-NP-Za-km-z]+$/.test(id)) return `That isn't an identity ID: it has characters an ID can't have. ${shape}`
+  try {
+    decodeIdentifier(id)
+  } catch {
+    return `That isn't an identity ID: it is too ${id.length < 43 ? 'short' : 'long'}. ${shape}`
+  }
+  return null
+}
+
+/** The fields of an identity key {@link rawKeyProblem} reads. */
+export interface RawKeyView {
+  readonly purposeNumber: number
+  readonly securityLevelNumber: number
+  readonly disabledAt?: unknown
+  readonly expiresAt?: bigint
+}
+
+const PURPOSE_NAMES: Readonly<Record<number, string>> = { 1: 'encryption', 2: 'decryption', 3: 'transfer', 4: 'system', 5: 'voting', 6: 'owner' }
+
+/**
+ * Why a pasted key cannot sign Forge writes for an identity (QW-049): which of its keys the
+ * private key controls, and what is wrong with that one (the master key, never used to sign
+ * here; a disabled or expired key; a key of another purpose; one below HIGH), or that it
+ * controls none of them.
+ */
+export function rawKeyProblem<K extends RawKeyView>(keys: readonly K[], controls: (k: K) => boolean, now = Date.now()): string {
+  const k = keys.find(controls)
+  if (k === undefined) return "That private key isn't one of this identity's keys. Check that the key and the identity ID belong together."
+  if (k.purposeNumber === 0 && k.securityLevelNumber === SECURITY_LEVEL.MASTER) {
+    return 'That is this identity\'s master key. Forge never signs with it: use "Import an identity file or recovery phrase" instead, which uses the master key once to give this browser a limited key. The pasted key was not kept.'
+  }
+  if (k.disabledAt !== undefined && k.disabledAt !== null) return 'That key is disabled on this identity, so it can no longer sign.'
+  if (k.expiresAt !== undefined && Number(k.expiresAt) <= now) return `That key expired on ${new Date(Number(k.expiresAt)).toLocaleDateString()}, so it can no longer sign.`
+  if (k.purposeNumber !== 0) {
+    return `That is this identity's ${PURPOSE_NAMES[k.purposeNumber] ?? 'non-signing'} key, not an authentication key: it can't sign Forge writes.`
+  }
+  return 'That key is below HIGH security: Forge writes need a HIGH or CRITICAL authentication key.'
 }
 
 /** Signing in from the words found an identity this browser already holds a key for. */

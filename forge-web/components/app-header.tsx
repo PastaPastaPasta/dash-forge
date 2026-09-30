@@ -10,7 +10,7 @@
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Bell, ChevronDown, Compass, GitFork, Hammer, LogOut, Menu, Plus, Search, Settings, Wallet, X } from 'lucide-react'
+import { Bell, ChevronDown, Compass, GitFork, Hammer, Lock, Menu, Plus, Search, Settings, Wallet, X } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { signInRequestOutcome, useUiStore } from '@/hooks/use-ui-store'
 import { useUnreadCount } from '@/hooks/use-inbox'
@@ -606,9 +606,14 @@ function AccountMenu({
               setOpen(false)
               onLogout(false)
             }}
-            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-dense text-danger-700 dark:text-danger-400 hover:bg-danger/5"
+            className="flex w-full items-start gap-2 rounded-md px-3 py-2 text-left text-dense text-danger-700 dark:text-danger-400 hover:bg-danger/5"
           >
-            <LogOut className="h-3.5 w-3.5" aria-hidden /> Lock &amp; sign out
+            <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+            {/* What Lock does (QW-044): the pages then say "Session locked", not "Not signed in". */}
+            <span>
+              Lock
+              <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">Signs you out; your key stays in this browser until you forget it in Settings.</span>
+            </span>
           </button>
         </div>
       ) : null}

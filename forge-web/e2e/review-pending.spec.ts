@@ -164,7 +164,7 @@ test('p2. the draft survives a reload and a sign-out and sign-in in the same bro
   await expect(page.getByTestId('pending-review-banner')).toContainText('Pending comments are saved in this browser only')
   // Sign out and in again: the draft is keyed by identity and PR, not by the session.
   await page.getByRole('button', { name: 'Account menu' }).click()
-  await page.getByRole('button', { name: /lock & sign out/i }).click()
+  await page.getByRole('button', { name: /^lock\b/i }).click()
   await expect(page.getByTestId('funds-pill')).toBeHidden({ timeout: 30_000 })
   await expect(page.getByTestId('pending-review-banner')).toBeHidden()
   await unlock(page)
