@@ -193,7 +193,7 @@ dg repo fork <owner>/project            # or --name <another name>
   cost:    ~0.03 DASH ≈ $0.90
 ```
 
-A fork is a new repository with `forkOf` set to the parent. It records the parent's packs **by reference**, so nothing is uploaded again. Packs on external storage keep their URLs, and packs on Platform are read from the parent's chunks, which are permanent. The fork's cost is its own documents: the repo, one small manifest per pack, and the refs. Re-running an interrupted fork finishes it without paying twice. It never moves a branch you have already pushed to the fork.
+A fork is a new repository with `forkOf` set to the parent. It records the parent's packs **by reference**, so nothing is uploaded again. Packs on external storage keep their URLs, and packs on Platform are read from the parent's chunks, which are permanent. The fork's cost is its own documents: the repo, one small manifest per pack, and the refs. Re-running an interrupted fork finishes it without paying twice. It never moves a branch you have already pushed to the fork. In the web, the fork browses through the parent's published browse and history index, so no visitor rebuilds it in the browser; your own pushes to the fork index just the packs they add.
 
 **2. Push your branch to it.**
 
