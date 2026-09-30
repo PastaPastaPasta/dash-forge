@@ -387,9 +387,10 @@ mod vectors {
 /// an issue, PR, comment or review by a member, `asMember` = the signer).
 ///
 /// A test `#[ignore]`d with `RC1: …` names what the builder still lacks. Builders that are not
-/// pure functions (webhook `prepare`, member enrol and consent, runner enrol, topic reconcile,
-/// milestone define: their properties are built inside an async service method) are covered by
-/// the vectors and the live suite instead.
+/// pure functions (member enrol and consent, runner enrol, topic reconcile: their properties
+/// are built inside an async service method) are covered, by type, by forge-web's writer tests
+/// (`lib/repo/rc1-writers.test.ts`) and the seeds' offline run
+/// (`forge-contracts/scripts/seed-offline.mjs`), and by the live suite.
 #[cfg(test)]
 mod builders {
     use super::*;
@@ -855,5 +856,108 @@ mod builders {
             });
         }
         assert_eq!(doc.get("outcome"), Some(&FieldValue::integer(2)));
+    }
+
+    // ---------------- webhook and repoKey: ciphertext to another identity's key ----------------
+
+    /// The signer's and the other party's ENCRYPTION private keys.
+    const SENDER_KEY: [u8; 32] = [0x21; 32];
+    const RECIPIENT_KEY: [u8; 32] = [0x42; 32];
+
+    #[test]
+    fn a_webhook_is_rc1_valid() {
+        use crate::envelope::{self, PrivateKey, SecretBytes};
+        use crate::webhooks::{hook_id_for_label, webhook_props, NewWebhook};
+        let sender = PrivateKey::from_slice(&SENDER_KEY).unwrap();
+        let relay = PrivateKey::from_slice(&RECIPIENT_KEY).unwrap();
+        // The secret is encrypted as `WebhookService::prepare` does (encryptedFor's shape, 10420).
+        let ciphertext = envelope::encrypt(&sender, &relay.public_key(), &[9; 32]).unwrap();
+        for (events, disabled) in [
+            (vec![], false),
+            (vec!["push".to_string(), "pull_request".to_string()], true),
+        ] {
+            let input = NewWebhook {
+                hook_id: hook_id_for_label("ci"),
+                url: "https://hooks.example.com/dash".into(),
+                events,
+                relay_identity_id: ID.into(),
+                secret: SecretBytes::new(vec![9; 32]),
+                disabled,
+                allow_credentials_in_url: false,
+            };
+            let p = webhook_props(
+                REPO,
+                [0x0d; 32],
+                &input,
+                (1, 2),
+                ciphertext.clone(),
+                Visibility::Public,
+            );
+            assert_valid("webhook", &p);
+        }
+        // `prepare` refuses a private repository first: the contract would too (publicOnly).
+        let input = NewWebhook {
+            hook_id: hook_id_for_label("ci"),
+            url: "https://hooks.example.com/dash".into(),
+            events: vec![],
+            relay_identity_id: ID.into(),
+            secret: SecretBytes::new(vec![9; 32]),
+            disabled: false,
+            allow_credentials_in_url: false,
+        };
+        let private = webhook_props(
+            REPO,
+            [0x0d; 32],
+            &input,
+            (1, 2),
+            ciphertext,
+            Visibility::Private,
+        );
+        assert_refused("webhook", &private, "publicOnly");
+    }
+
+    #[test]
+    fn a_repo_key_wrap_is_rc1_valid() {
+        use crate::envelope::PrivateKey;
+        use crate::keyring::repo_key_fields;
+        use crate::platform::wrap::{seal_wrap, test_contract, WrapParties, WrapSecret};
+        let sender = WrapSecret::from_bytes(&SENDER_KEY).unwrap();
+        let recipient = PrivateKey::from_slice(&RECIPIENT_KEY).unwrap().public_key();
+        for epoch in [0, 3] {
+            // Sealed as `post_wrap` seals it, through the SDK's encryptedFor helper.
+            let sealed = seal_wrap(
+                &test_contract(),
+                &REPO,
+                epoch,
+                &EpochKey::from_bytes([5; 32]),
+                &WrapParties {
+                    sender: &sender,
+                    sender_key_id: 2,
+                    recipient_public_key: &recipient,
+                    recipient_key_id: 1,
+                },
+            )
+            .unwrap();
+            let fields = repo_key_fields([0x33; 32], epoch, sealed);
+            let doc = scoped(
+                fields
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v))
+                    .collect(),
+            );
+            assert_valid("repoKey", &doc);
+        }
+    }
+
+    #[test]
+    fn milestones_are_rc1_valid() {
+        use crate::collab::parity::milestone_props;
+        for (description, due_on, closed) in [
+            ("", None, false),
+            ("The review-parity release.", Some(1_764_547_200_000), true),
+        ] {
+            let p = milestone_props("v0.2", description, due_on, closed);
+            public("milestone", p, By::Member);
+        }
     }
 }

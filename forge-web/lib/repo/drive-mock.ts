@@ -9,16 +9,23 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { base58Decode } from '../auth/base58'
-import type { DocumentQuery } from '../sdk'
+import { base64ToBytes, type DocumentQuery } from '../sdk'
 import type { CompositeQuery } from '../sdk/composite'
 
 export type Doc = Record<string, unknown>
 export type Store = Record<string, Record<string, Doc[]>>
 
-/** The wasm SDK's group key: an identifier's 32 bytes, an unsigned integer with the top bit flipped. */
-function groupKey(v: unknown): string {
+/** The byteArray properties a test groups by: their values are base64 (the `toJSON` shape), their keys the raw bytes. */
+const BYTE_ARRAY_FIELDS = new Set(['headOid'])
+
+/**
+ * The wasm SDK's group key: an identifier's 32 bytes, a byteArray's bytes, an unsigned integer with
+ * the top bit flipped; hex.
+ */
+function groupKey(v: unknown, field = ''): string {
   if (typeof v === 'number') return (v ^ 0x80).toString(16).padStart(2, '0')
-  return [...base58Decode(String(v))].map((b) => b.toString(16).padStart(2, '0')).join('')
+  const bytes = BYTE_ARRAY_FIELDS.has(field) ? base64ToBytes(String(v)) : base58Decode(String(v))
+  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
 
 function matches(doc: Doc, [field, op, value]: readonly [string, string, unknown]): boolean {
@@ -111,17 +118,28 @@ export function mockSdk(store: Store, seen: Seen): EvoSDK {
       count: async (q: DocumentQuery & { groupBy?: string[] }) => {
         seen.counts.push(q)
         const all = rows(q.dataContractId, q.documentTypeName).filter(where(q))
+        // The wasm binding sums a two-field (compound) result by its last field (`into_flat_map`):
+        // no reader may rely on the per-pair entries, so the mock refuses the shape.
+        if ((q.groupBy?.length ?? 0) > 1) throw new Error('mock: a two-field groupBy comes back merged by its last field')
         const by = q.groupBy?.[0]
+        // An ungrouped range count whose path holds no document fails proof verification on
+        // bonsia ("non-leaf proof did not contain the expected key"); grouped forms verify.
+        const ranged = (q.where ?? []).some(([, op]) => op === '<' || op === '<=' || op === '>' || op === '>=')
+        if (by === undefined && ranged && all.length === 0) throw new Error('mock: non-leaf proof did not contain the expected key (ungrouped range count over an absent path)')
         if (by === undefined) return new Map([['', BigInt(all.length)]])
         const out = new Map<string, bigint>()
-        for (const d of all) out.set(groupKey(d[by]), (out.get(groupKey(d[by])) ?? 0n) + 1n)
+        for (const d of all) {
+          const k = groupKey(d[by], by)
+          out.set(k, (out.get(k) ?? 0n) + 1n)
+        }
         return out
       },
       sum: async (q: DocumentQuery & { groupBy?: string[] }, property: string) => {
         seen.sums.push(q)
         const out = new Map<string, bigint>()
+        const by = q.groupBy?.[0] ?? ''
         for (const d of rows(q.dataContractId, q.documentTypeName).filter(where(q))) {
-          const k = groupKey(d[q.groupBy?.[0] ?? ''])
+          const k = groupKey(d[by], by)
           out.set(k, (out.get(k) ?? 0n) + BigInt(Number(d[property] ?? 0)))
         }
         return out

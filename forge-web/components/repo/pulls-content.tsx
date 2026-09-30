@@ -11,7 +11,8 @@
  * their comment counts and author names, the labels and the first feed page, and one proved sum
  * of their transitions for their states; the rest of the feed once per repo (shared with the
  * issue index); keyset composites of 100 for later pages (L-77). The tab counts are the proved
- * totals. The search box and filters are the Issues list's (`./list-controls`).
+ * totals. The search box and filters are the Issues list's (`./list-controls`). Once the page is
+ * shown, each row's head gets its CI status dot (`./check-dot`: three proved counts for the page).
  *
  * "New pull request" opens `/repo/pulls/new` to propose an already-pushed branch.
  */
@@ -60,6 +61,7 @@ import {
   type ListGrammar,
 } from '@/components/repo/list-controls'
 import { AssigneeAvatars } from '@/components/repo/issue-bits'
+import { CheckDot, useCheckOutcomes } from '@/components/repo/check-dot'
 import { HiddenNote } from '@/components/repo/hidden-note'
 import { MirrorNote } from '@/components/repo/mirror-note'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
@@ -115,6 +117,10 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
   )
 
   const labelDefs = useMemo(() => new Map((data?.labels ?? []).map((l) => [l.name, l])), [data])
+  // The page's heads, for the status dots, read once the rows are shown. A row's head is the one
+  // the list knows (the member feed's): a newer head the author pushed shows on the PR's page.
+  const heads = useMemo(() => (data?.rows ?? []).map((p) => p.headOid), [data])
+  const outcomes = useCheckOutcomes(home.repo, heads)
   const filtered = hasPullFilters(query)
   const counts = data?.counts
   const settled = counts?.merged != null && counts.closed != null ? counts.merged + counts.closed : null
@@ -190,6 +196,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <RowLink href={repoHref('/repo/pull', addr, { number: String(p.number) })} title={p.title} />
+                      <CheckDot counts={outcomes.get(p.headOid)} />
                       {p.state.labels.map((l) => (
                         <LabelChipFilter key={l} name={l} def={labelDefs.get(l)} selected={query.labels} onChange={(labels) => change({ labels })} />
                       ))}

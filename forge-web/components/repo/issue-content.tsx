@@ -69,6 +69,7 @@ import { EditedMarker, MarkdownEditor } from '@/components/repo/issue-bits'
 import { AssigneePicker, LabelPicker, MilestonePicker, SidebarSection } from '@/components/repo/target-rail'
 import { readMilestones } from '@/lib/repo/milestones'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
+import { LockToggle, LockedBanner, lockConfirm, lockStateText, lockViewerOf } from '@/components/repo/locked-banner'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
 import { numberLabel, shownUpstreamNumber } from '@/lib/view/upstream'
@@ -157,11 +158,12 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   // member holding the current key can, so everyone else sees why not instead of a composer.
   // An archived repo takes no writes (client-side gate: consensus cannot enforce it).
   const archived = home.config?.archived === true
-  const composeBlock = archived
-    ? ARCHIVED_REASON
-    : lockedOut(postContext)
-      ? LOCKED_REASON
-      : privateComposeBlock(home)
+  // Locked to members: the banner speaks to this viewer, and replaces a non-member's composer (an
+  // archived repo's own note wins: nobody can comment there).
+  const lockApplies = meta.locked && !archived
+  const lockedOutNow = lockApplies && lockedOut(postContext)
+  const lockViewer = lockViewerOf(identity, holdings)
+  const composeBlock = archived ? ARCHIVED_REASON : lockedOutNow ? LOCKED_REASON : privateComposeBlock(home)
   const isPrivate = home.repo.visibility === 'private'
   const toggleHint =
     !canToggle && identity !== null && holdings.settled && holdings.data === null
@@ -383,13 +385,17 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         <EventValuesNote counts={eventValues} />
 
         {/* Composer */}
-        <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
-          <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
-          {composeBlock !== null ? <PrivateComposeNote reason={composeBlock} /> : null}
-          <MarkdownEditor id="comment-body" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} />
-          <SealedLimit repo={home.repo} kind="comment" text={comment.trim()} />
+        <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800" data-testid="issue-composer">
+          {/* Locked: a non-member's composer is replaced by the banner (consensus would refuse the post). */}
+          <LockedBanner locked={lockApplies} viewer={lockViewer} target="issue">
+            <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
+            {composeBlock !== null ? <PrivateComposeNote reason={composeBlock} /> : null}
+            <MarkdownEditor id="comment-body" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} />
+            <SealedLimit repo={home.repo} kind="comment" text={comment.trim()} />
+          </LockedBanner>
+          {lockedOutNow && !canToggle ? null : (
           <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-            <CostPreview cost={commentCost} />
+            {lockedOutNow ? <span /> : <CostPreview cost={commentCost} />}
             <div className="flex items-center gap-2">
               {canToggle ? (
                 <Button
@@ -401,18 +407,21 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   {open ? 'Close issue' : 'Reopen issue'}
                 </Button>
               ) : null}
-              <Button
-                variant="primary"
-                onClick={postComment}
-                loading={posting}
-                disabled={composeBlock !== null || comment.trim() === '' || utf8Length(comment) > BODY_MAX || guard.disabledReason !== null}
-                title={guard.disabledReason ?? undefined}
-              >
-                {identity ? 'Comment' : locked ? 'Unlock to comment' : 'Sign in to comment'}
-              </Button>
+              {lockedOutNow ? null : (
+                <Button
+                  variant="primary"
+                  onClick={postComment}
+                  loading={posting}
+                  disabled={composeBlock !== null || comment.trim() === '' || utf8Length(comment) > BODY_MAX || guard.disabledReason !== null}
+                  title={guard.disabledReason ?? undefined}
+                >
+                  {identity ? 'Comment' : locked ? 'Unlock to comment' : 'Sign in to comment'}
+                </Button>
+              )}
             </div>
           </div>
-          <BodyCounter repo={home.repo} text={comment} field="comment" />
+          )}
+          {lockedOutNow ? null : <BodyCounter repo={home.repo} text={comment} field="comment" />}
           {toggleHint !== null ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{toggleHint}</p> : null}
           {commentError ? (
             <div role="alert" className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words">{commentError}</div>
@@ -443,16 +452,14 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         {isMember || meta.pinned || meta.locked ? (
           <SidebarSection title="Conversation" icon={Pin}>
             <p className="text-anvil-600 dark:text-anvil-300" data-testid="thread-flags">
-              {meta.pinned ? 'Pinned' : 'Not pinned'} · {meta.locked ? 'Locked to members' : 'Open to everyone'}
+              {meta.pinned ? 'Pinned' : 'Not pinned'} · {lockStateText(meta.locked)}
             </p>
             {isMember && !archived && guard.disabledReason === null ? (
               <div className="mt-2 flex flex-wrap gap-2">
                 <Button size="sm" variant="outline" onClick={() => setPending({ kind: 'flag', flag: 'pin', on: !meta.pinned })} data-testid="pin-toggle">
                   {meta.pinned ? 'Unpin' : 'Pin'}
                 </Button>
-                <Button size="sm" variant="outline" onClick={() => setPending({ kind: 'flag', flag: 'lock', on: !meta.locked })} data-testid="lock-toggle">
-                  {meta.locked ? 'Unlock' : 'Lock'}
-                </Button>
+                <LockToggle locked={meta.locked} onToggle={(on) => setPending({ kind: 'flag', flag: 'lock', on })} />
               </div>
             ) : null}
           </SidebarSection>
@@ -494,19 +501,11 @@ function confirmText(pending: Pending, number: number, open: boolean, isMember: 
         description: `${pending.remove ? 'Unassigns' : 'Assigns'} ${pending.who.slice(0, 10)}… with a member event, which also names them as its addressee so it shows up under "assigned to me".`,
         label: pending.remove ? 'Sign & unassign' : 'Sign & assign',
       }
-    case 'flag': {
-      const verb = pending.flag === 'pin' ? (pending.on ? 'Pin' : 'Unpin') : pending.on ? 'Lock' : 'Unlock'
-      return {
-        title: `${verb} issue #${number}`,
-        description:
-          pending.flag === 'pin'
-            ? pending.on ? 'Appends a pin event: the issue is listed first on the repo\'s issues page (and in dg issue list).' : 'Appends an unpin event.'
-            : pending.on
-              ? 'Records a lock: from then on the network refuses comments from anyone who is not a maintainer or writer. Any maintainer or writer can unlock it.'
-              : 'Records an unlock: everyone can comment again.',
-        label: `Sign & ${verb.toLowerCase()}`,
-      }
-    }
+    case 'flag':
+      if (pending.flag === 'lock') return lockConfirm(pending.on, `issue #${number}`, 'issue')
+      return pending.on
+        ? { title: `Pin issue #${number}`, description: 'Appends a pin event: the issue is listed first on the repo\'s issues page (and in dg issue list).', label: 'Sign & pin' }
+        : { title: `Unpin issue #${number}`, description: 'Appends an unpin event.', label: 'Sign & unpin' }
     case 'milestone':
       return pending.title === null
         ? { title: 'Clear the milestone', description: 'Appends a milestone-clear event.', label: 'Sign & clear' }

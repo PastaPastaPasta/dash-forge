@@ -43,7 +43,7 @@ Two RC1 conventions recur in the tables:
 | `refUpdate` | M or W, each operand with `where {"vis": "vis"}` | no | **no** | `(repoId, refNameHash, $createdAt)` ref state, `(repoId, $createdAt)` reflog, `(repoId, $ownerId, $createdAt)` pusher; `refName` follows git's ref-name grammar (R-01: `$defs.refName`, `refs/` prefix, `@{` refused) and `noLock` refuses a trailing `.lock`; `oidWidth` (R-10): `newOid` 20 or 32 bytes, `prevOid` absent, 20 or 32; `noPlain` with `vis` and `hasName`: a private ref update is sealed (§5) |
 | `protectedRefUpdate` | M, with `where {"vis": "vis"}` | no | **no** | same indexes and rules |
 | `config` | M, with `where {"vis": "vis"}` | no | **no** | append-only, newest wins; `defaultBranch` uses `$defs.branch`; `protectedPatterns` ≤ 8, `uniqueItems` (INV-11); `backend.uris` typed string array; `noPlain` with `vis` (§5); `encV2`: an `enc` is at least 61 bytes (the key-committing layout) |
-| `packManifest` | M or W | no | **no** | unique `(repoId, $ownerId, packHash)`; `(repoId, packHash)` lookup; `(repoId, $createdAt)` rangeCountable (pack count); `(repoId, kind, $createdAt)`; `bytes (repoId, storage, kind)` summable on `sizeBytes` (O-05). `packHash` is an identifier (`$defs.hid`, R-09). `kind`: 0 git pack, 1 `objectLocator`, 2 `flatIndex`, 3 history column index, **4 `releaseAssets`** (a release's full asset list, named by `release.assetManifest`; `docs/design/release-asset-manifest.md`), 5 history version lists (the companion of kind 3 with the same `tips`, which the contract checks on kind 3 only; `docs/design/history-index.md`). Rules: `platformChunks` (R-09: with `storage = 0`, the uploader's chunks for the pack number exactly `chunkCount` and their `seq` sum is `n(n−1)/2`, which with the unique `seq` index means `0..n−1` are all present, so a manifest is written after its chunks); `storageShape` (`storage = 0`: `sizeBytes ≤ chunkCount × 14,700`; `storage = 1`: `chunkCount = 0`); `kindShape` (R-11: `supersedes` a multiple of 32 bytes; a kind-3 manifest's `tips` are 20, 32, 40 or 64 bytes); `sizeNonNeg` (`sizeBytes` is a plain integer, as a summable property must be, bounded to 0..1 TiB by the rule) |
+| `packManifest` | M or W | no | **no** | unique `(repoId, $ownerId, packHash)`; `(repoId, packHash)` lookup; `(repoId, $createdAt)` rangeCountable (pack count); `(repoId, kind, $createdAt)`; `bytes (repoId, storage, kind)` summable on `sizeBytes` (O-05). `packHash` is an identifier (`$defs.hid`, R-09). `kind` (an open integer, 0..255; only kind 3's `tips` shape is a rule): 0 git pack, 1 `objectLocator`, 2 `flatIndex`, 3 history column index, **4 `releaseAssets`** (a release's full asset list, named by `release.assetManifest`; `docs/design/release-asset-manifest.md`), 5 history version lists (the companion of kind 3 with the same `tips`, which the contract checks on kind 3 only; the format is the artifact header's; `docs/design/history-index.md`). Rules: `platformChunks` (R-09: with `storage = 0`, the uploader's chunks for the pack number exactly `chunkCount` and their `seq` sum is `n(n−1)/2`, which with the unique `seq` index means `0..n−1` are all present, so a manifest is written after its chunks); `storageShape` (`storage = 0`: `sizeBytes ≤ chunkCount × 14,700`; `storage = 1`: `chunkCount = 0`); `kindShape` (R-11: `supersedes` a multiple of 32 bytes; a kind-3 manifest's `tips` are 20, 32, 40 or 64 bytes); `sizeNonNeg` (`sizeBytes` is a plain integer, as a summable property must be, bounded to 0..1 TiB by the rule) |
 | `chunk` | M or W | no | **no** | unique `(repoId, $ownerId, packHash, seq)`; `perPack (repoId, $ownerId, packHash)` averageable on `seq` (the count and sum `platformChunks` reads); `documentsCountable` (the chunk total, a ceiling for the fee estimator; D-3, kept only if its count-tree cost measures under ~5 % of a chunk write) |
 | `release` | **M**, with `where {"vis": "vis"}` | no | **no** (O-04) | newest per `(repoId, tagName)` wins; maintainer-only because a release names artifacts users install; `tagName` follows the ref grammar (R-01); optional `enc`/`epoch` for a private repo, with `tagName` the keyed hash of the tag; optional `assetManifest` (h32: the `packHash` of a kind-4 `packManifest` holding the full asset list when `assets` does not fit) and `imported {author, createdAt, url}` (a mirrored release). **Ledger (O-04):** required `delta` −1..1: +1 publish, 0 edit or yank (and every sealed document), −1 unpublish; `perTag (repoId, tagName)` summable and rangeSummable (a proved release count); `oneLive`: a sealed document has `delta = 0`, otherwise the tag's sum after the write is `min(delta + 1, 1)`, so a publish needs the tag not live and an edit, yank or unpublish needs it live |
 | `label` | M or W | no | yes | newest per `(repoId, name)` wins; `name` has no leading or trailing whitespace and no control characters (CL-8; no per-repo cap); optional `enc`/`epoch`, `name` then the keyed hash of the name and `noPlain` refusing `color`/`description`. No `vis`: label definitions are plaintext in private repos by design (§5) |
@@ -369,7 +369,36 @@ From `tools/contract-validate` (rs-dpp v4.2.0-beta.7, `PlatformVersion` 14) on t
 
 `estimated_contract_max_serialized_size` (16,384 B) is not a limit. It is the size Drive's fee *estimation* assumes when it prices reading a stored contract (`apply_contract_with_serialization` v0). forge-core is under it; forge-collab and forge-community are just over it, which is allowed.
 
-Total one-time registration fees are **≈ 1.67 DASH**, paid once by the deployer, plus storage. A new repository is three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate. `dg repo create` quotes an upper bound of 0.002 DASH before signing and reports the measured cost afterwards. Per-write costs measured on bonsia are recorded here after the RC1 registration, together with the step-8 fee gates (D-3 `chunk.documentsCountable`, COMM-9, the `outcome` index; `dash-forge-qa/WIPE-PLAN.md` §3 step 8).
+Total one-time registration fees are **≈ 1.67 DASH**, paid once by the deployer, plus storage. A new repository is three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate. `dg repo create` quotes an upper bound of 0.002 DASH before signing and reports the measured cost afterwards. The RC1 registration on devnet bonsia (2026-09-29) cost 0.647 + 0.436 + 0.607 = **1.690 DASH** (balance deltas, `deployments/devnet-bonsia.json`), plus 0.141 DASH for the key-exchange copy.
+
+**Per-write costs on bonsia** (credits; 10¹¹ credits = 1 DASH; `forge-contracts/scripts/rc1-live.mjs`, balance before and after each write once two reads agree; small documents):
+
+| write | credits | write | credits |
+|---|---|---|---|
+| repo | 59.7 M | issue | 97.1 M |
+| maintainer (self) | 39.8 M | patch | 129.7 M |
+| consent | 30.3 M | comment | 49.0 M |
+| writer (consented) | 40.4 M | review (member approve) | 65.0 M |
+| refUpdate | 87.8 M | transition: member close / reopen | 45.3 M / 51.7 M |
+| packManifest | 127.2 M | transition: member lock / merge | 51.9 M / 52.7 M |
+| chunk (100 B): the pack's first / a later one | 64.0 M / 34.4 M | transition: first on a PR (draft) | 61.4 M |
+| release | 72.0 M | transition: author close (first on the issue) | 72.5 M |
+| topic | 58.7 M | event (community → collab issue) | 58.0 M |
+| runner | 39.6 M | checkRun | 112.7 M |
+| policy | 36.9 M | star / watch | 37.2 M / 37.2 M |
+| starBeat | 17.7 M | repoKey | 56.1 M |
+
+**Step-8 fee gates** (`forge-contracts/scripts/rc1-fee-probe.mjs`: two probe contracts that differ in one index feature, the same documents written to both, three samples each):
+
+| feature | with | without | added | gate |
+|---|---|---|---|---|
+| `chunk.documentsCountable` (D-3), a full 14.7 KB chunk | 469.4 M | 466.8 M | +0.56 % | ≤ +5 %: kept |
+| `star.byOwner` countable (COMM-9) | 40.0 M | 39.2 M | +2.07 % | ≤ +5 %: kept |
+| `checkRun.outcome (repoId, headOid, outcome)` rangeCountable (O-07), the first run on a head | 111.9 M | 89.9 M | +24.5 % | reported (no kill switch): kept, D-17 |
+
+**Decision (WIPE-DECISIONS D-17):** no kill switch fires, so D-3 and COMM-9 stay on. The `outcome` index stays on too: it makes the merge box's check summary and the PR-list status dots one proved count each, for about 0.0002 DASH more per check-run create. The RC1 JSON is unchanged and frozen at `contracts-rc1-frozen`. Absolute differences matter more than percentages for small writes: the chunk count adds about 2.6 M whatever the chunk's size (+7.6 % on a 100-byte chunk, +0.56 % on a full one). Costs vary by a few percent between runs; a type's first write can cost up to ~30 % more (star 47.1 M, then 37 M).
+
+A member transition costs 45–53 M, within 1.15 × the beta.6 close event (59.6 M → 68.5 M). The first transition on a target costs more: it creates the target's sum-tree entry, and the author path also tries the member operands first. A member's first transition on a PR costs 61.4 M. An author's first close costs 72.5 M, 1.22 × the close event, which is over the step-8 gate; D-17 accepts it (the members-first operand order is right for the common case; revisit if author closes dominate the soak).
 
 ## 8. Deploying
 
