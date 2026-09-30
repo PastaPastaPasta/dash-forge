@@ -59,6 +59,7 @@ import { repoSource } from './source'
 import { writeLock, writeTransition, type StateTarget } from './transitions'
 import { LAG_RETRY_MS, retryAfterLag } from './lag-retry'
 import { sleep } from '../sdk/facade'
+import { retryWhileMissing } from '../view/retry'
 
 /** The release rule that reads the tag's live total (RC1 O-04). */
 const ONE_LIVE_RULE: ReadonlySet<string> = new Set(['oneLive'])
@@ -953,6 +954,12 @@ export async function findConsent(sdk: EvoSDK, repo: RepoRef, identityId: string
 }
 
 /**
+ * How many more times an add re-reads a consent it did not find (1.5 s apart) before refusing:
+ * the member may have accepted moments ago, on a node the owner's has not caught up with (D-10).
+ */
+export const CONSENT_LAG_RETRIES = 2
+
+/**
  * Every identity that consented to join `repo` (their `consent` documents), in id order: the
  * owner's pending invitations are the consents of identities that are not members yet.
  */
@@ -1024,7 +1031,9 @@ export async function grantMembershipDoc(
   if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can add members')
   const held = await findMembership(sdk, repo, role, memberId)
   if (held !== null) return alreadyThere(held)
-  if (memberId !== repo.ownerId && (await findConsent(sdk, repo, memberId)) === null) throw new ConsentMissingError(memberId)
+  if (memberId !== repo.ownerId && (await retryWhileMissing(() => findConsent(sdk, repo, memberId), CONSENT_LAG_RETRIES)) === null) {
+    throw new ConsentMissingError(memberId)
+  }
   const result = await createOrExisting(
     () =>
       createDocumentIdempotent(sdk, auth, {
