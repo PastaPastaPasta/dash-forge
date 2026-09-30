@@ -215,6 +215,13 @@ See [BUILDING.md](BUILDING.md). You need Rust (the version is pinned by
    for a non-pre-release, built from the checksummed musl archive). Approving only the first
    publishes the release without the image; the image job can be approved later from the
    same run.
+4. **Record the web app on Forge (owner, by hand).** The release also carries the web app's
+   reproducible IPFS build (`forge-web-<version>.car` and `.cid`, built on two runners that
+   must agree). Writing the matching Forge release on Forge's own mirror needs the owner's
+   Platform identity, which CI never holds: reproduce the CID locally and run
+   `dg release create` with the two files, as
+   [Verify the app you loaded](guides/verify-the-app.md#for-maintainers-publishing-the-forge-release)
+   shows.
 
 The dry run also runs on every PR that touches `crates/`, `Cargo.*` or the pipeline. It
 builds and packages every target and uploads the archives as workflow artifacts. It never
