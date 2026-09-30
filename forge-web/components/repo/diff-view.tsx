@@ -41,6 +41,7 @@ import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/states'
 import { ScrollRegion } from '@/components/ui/scroll-region'
 import { cn } from '@/lib/utils'
+import { gutterKey, gutterKeys, gutterTabStop, nextRovingIndex } from '@/lib/view/gutter-rove'
 
 /**
  * Inline comments on a diff (the PR view provides this; a commit diff has none): what to show
@@ -467,8 +468,11 @@ function LineText({ line }: { line: TextDiffLine }): JSX.Element {
   )
 }
 
+/** The file's gutter tab stop (a roving tabindex, lib/view/gutter-rove.ts) and how focus moves it. */
+type Rove = { readonly tabStop: string | null; readonly onFocus: (key: string) => void }
+
 /** A line number that, in a PR, opens an inline comment on that line. */
-function LineNumber({ path, side, line }: { path: string; side: 0 | 1; line: number | null }): JSX.Element {
+function LineNumber({ path, side, line, rove }: { path: string; side: 0 | 1; line: number | null; rove: Rove }): JSX.Element {
   const inline = useContext(InlineCommentsContext)
   if (line === null) return <td className={GUTTER} />
   const mark = inline?.mark?.(path, side, line) ?? null
@@ -477,12 +481,16 @@ function LineNumber({ path, side, line }: { path: string; side: 0 | 1; line: num
   return (
     <td className={cn(GUTTER, 'p-0', tint)} data-mark={mark ?? undefined}>
       {/* One per code line, so as tall as the line: 44px rows would halve what a phone shows of
-          the diff. The whole gutter cell is the target (e2e/mobile.spec.ts exempts it). */}
+          the diff. The whole gutter cell is the target (e2e/mobile.spec.ts exempts it). One tab
+          stop per file: the arrow keys move between the lines (PatchLines). */}
       <button
         type="button"
         onClick={(e) => inline.start(path, side, line, e.shiftKey)}
+        onFocus={() => rove.onFocus(gutterKey(side, line))}
+        tabIndex={rove.tabStop === gutterKey(side, line) ? 0 : -1}
         aria-label={`Comment on ${side === 1 ? 'new' : 'old'} line ${line} of ${path}`}
-        title="Click to comment; shift-click another line to comment on the range"
+        title="Click to comment; shift-click another line to comment on the range. Arrow keys move between lines."
+        data-gutter-side={side}
         data-tap-exempt="code-line"
         className="w-full px-2 text-right hover:bg-forge-500/15 hover:text-anvil-900 dark:hover:text-anvil-50"
       >
@@ -518,7 +526,7 @@ function GapRow({ gap, colSpan, total, onExpand }: { gap: DiffGap; colSpan: numb
       type="button"
       onClick={() => onExpand(expandGap(gap, how))}
       aria-label={label}
-      className="rounded px-1.5 font-sans font-medium text-forge-700 hover:bg-forge-500/10 coarse:min-h-11 dark:text-forge-400"
+      className="rounded px-1.5 font-sans font-medium text-forge-700 hover:bg-forge-500/10 coarse:min-h-11 coarse:min-w-11 dark:text-forge-400"
     >
       {text}
     </button>
@@ -548,13 +556,14 @@ function GapRow({ gap, colSpan, total, onExpand }: { gap: DiffGap; colSpan: numb
  * A text patch's rows. A renamed file's old side is its old path: inline comments on it anchor
  * there (as they did when the file showed as deleted), and its new side at its new path.
  */
-function PatchLines({ path, oldPath = path, full }: { path: string; oldPath?: string | undefined; full: readonly TextDiffLine[] }): JSX.Element {
+export function PatchLines({ path, oldPath = path, full }: { path: string; oldPath?: string | undefined; full: readonly TextDiffLine[] }): JSX.Element {
   const [limit, setLimit] = useState(LINE_PAGE)
   const [revealed, setRevealed] = useState<Revealed>([])
   const lines = useMemo(() => compactDiffLines(full, DIFF_CONTEXT, revealed), [full, revealed])
   const pathOf = (side: 0 | 1): string => (side === 0 ? oldPath : path)
   const expand = (range: readonly [number, number]): void => setRevealed((r) => [...r, range])
   const inline = useContext(InlineCommentsContext)
+  const visible = useMemo(() => lines.slice(0, limit), [lines, limit])
   // Report the rows on screen (not past the "show more" cut), and withdraw them on unmount
   // (a collapsed file), so threads under lines nobody can see are listed elsewhere.
   useEffect(() => {
@@ -563,7 +572,7 @@ function PatchLines({ path, oldPath = path, full }: { path: string; oldPath?: st
       [oldPath, new Set()],
       [path, new Set()],
     ])
-    for (const l of lines.slice(0, limit)) {
+    for (const l of visible) {
       if (l.kind === 'gap') continue
       if (l.kind !== 'added' && l.oldLine !== null) shown.get(oldPath)!.add(lineKey(oldPath, 0, l.oldLine))
       if (l.kind !== 'deleted' && l.newLine !== null) shown.get(path)!.add(lineKey(path, 1, l.newLine))
@@ -572,12 +581,37 @@ function PatchLines({ path, oldPath = path, full }: { path: string; oldPath?: st
     return () => {
       for (const p of shown.keys()) inline.report(p, null)
     }
-  }, [inline, path, oldPath, lines, limit])
+  }, [inline, path, oldPath, visible])
   const [prefs] = usePrefs()
   const wide = useMinWidth(1024)
   const split = wide && prefs.diffLayout === 'split'
   const palette = prefs.palette
-  const visible = lines.slice(0, limit)
+  // The gutter's one tab stop: the line last focused while shown, else the first.
+  const [lastGutter, setLastGutter] = useState<string | null>(null)
+  const shownGutter = useMemo(() => gutterKeys(visible), [visible])
+  const rove: Rove = { tabStop: gutterTabStop(shownGutter, lastGutter), onFocus: setLastGutter }
+  // Up/Down (Home/End) move along one side's line numbers; Right goes from the old side (the
+  // left column) to the new, Left back. Modified keys are the browser's.
+  const onGutterKey = (e: React.KeyboardEvent<HTMLTableElement>): void => {
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
+    const t = e.target
+    if (!(t instanceof HTMLButtonElement) || t.dataset['gutterSide'] === undefined) return
+    const side = t.dataset['gutterSide']
+    const buttons = (s: string): HTMLButtonElement[] => [...e.currentTarget.querySelectorAll<HTMLButtonElement>(`button[data-gutter-side="${s}"]`)]
+    let to: HTMLButtonElement | undefined
+    if ((e.key === 'ArrowRight' && side === '0') || (e.key === 'ArrowLeft' && side === '1')) {
+      const other = side === '0' ? '1' : '0'
+      // The other side's number on this row, else its next one below.
+      to = t.closest('tr')?.querySelector<HTMLButtonElement>(`button[data-gutter-side="${other}"]`) ?? buttons(other).find((b) => (t.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0)
+    } else {
+      const same = buttons(side)
+      const next = nextRovingIndex(same.length, same.indexOf(t), e.key)
+      to = next === null ? undefined : same[next]
+    }
+    if (to === undefined) return
+    e.preventDefault()
+    to.focus()
+  }
   const gap = (g: DiffGap, colSpan: number): JSX.Element => <GapRow key={`gap-${g.from}`} gap={g} colSpan={colSpan} total={full.length} onExpand={expand} />
   return (
     <>
@@ -586,6 +620,7 @@ function PatchLines({ path, oldPath = path, full }: { path: string; oldPath?: st
           className={cn('w-full border-collapse font-mono text-[12px] leading-5', split && 'table-fixed')}
           aria-label={`Changes to ${path}${split ? ' (side by side)' : ''}`}
           data-layout={split ? 'split' : 'unified'}
+          onKeyDown={onGutterKey}
         >
           {split ? (
             // A fixed layout takes its widths from the first row; a gap row there (one cell over
@@ -606,7 +641,7 @@ function PatchLines({ path, oldPath = path, full }: { path: string; oldPath?: st
                   return (
                     <Fragment key={`${left?.oldLine ?? 'n'}-${right?.newLine ?? 'n'}-${index}`}>
                       <tr>
-                        <LineNumber path={pathOf(0)} side={0} line={left?.oldLine ?? null} />
+                        <LineNumber path={pathOf(0)} side={0} line={left?.oldLine ?? null} rove={rove} />
                         <td className={cn('overflow-hidden whitespace-pre-wrap break-all px-2 text-anvil-800 dark:text-anvil-200', lineTint(same ? null : left?.kind ?? null, palette), left === null && 'bg-anvil-100 dark:bg-anvil-900')}>
                           {left ? (
                             <>
@@ -614,7 +649,7 @@ function PatchLines({ path, oldPath = path, full }: { path: string; oldPath?: st
                             </>
                           ) : null}
                         </td>
-                        <LineNumber path={path} side={1} line={right?.newLine ?? null} />
+                        <LineNumber path={path} side={1} line={right?.newLine ?? null} rove={rove} />
                         <td className={cn('overflow-hidden whitespace-pre-wrap break-all px-2 text-anvil-800 dark:text-anvil-200', lineTint(same ? null : right?.kind ?? null, palette), right === null && 'bg-anvil-100 dark:bg-anvil-900')}>
                           {right ? (
                             <>
@@ -632,8 +667,8 @@ function PatchLines({ path, oldPath = path, full }: { path: string; oldPath?: st
                   return (
                     <Fragment key={`${line.oldLine ?? 'n'}-${line.newLine ?? 'n'}`}>
                       <tr className={lineTint(line.kind, palette)}>
-                        <LineNumber path={pathOf(0)} side={0} line={line.kind === 'added' ? null : line.oldLine} />
-                        <LineNumber path={path} side={1} line={line.kind === 'deleted' ? null : line.newLine} />
+                        <LineNumber path={pathOf(0)} side={0} line={line.kind === 'added' ? null : line.oldLine} rove={rove} />
+                        <LineNumber path={path} side={1} line={line.kind === 'deleted' ? null : line.newLine} rove={rove} />
                         <td className="whitespace-pre px-3 text-anvil-800 dark:text-anvil-200">
                           <Marker kind={line.kind} palette={palette} />
                           <LineText line={line} />

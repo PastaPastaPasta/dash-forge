@@ -60,7 +60,7 @@ export function RepoStoragePolicy({
     return (
       <p className="text-dense text-anvil-600 dark:text-anvil-300">
         No storage set up in this browser: browser pushes here would store packs on Platform at ~{PUSH_COST_DASH.perMib} DASH/MiB, asking first.{' '}
-        <Link href="/settings/storage/" className="text-forge-700 underline dark:text-forge-400">Set up storage →</Link>
+        <Link href="/settings/storage/" className="hit-area text-forge-700 underline dark:text-forge-400">Set up storage →</Link>
       </p>
     )
   }

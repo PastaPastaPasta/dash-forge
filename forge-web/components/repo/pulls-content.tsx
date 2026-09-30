@@ -152,7 +152,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
 
       <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 dark:border-anvil-800 dark:bg-anvil-900">
-          <div className="flex items-center gap-3" role="tablist" aria-label="Pull request state">
+          <div className="flex flex-wrap items-center gap-x-3" role="tablist" aria-label="Pull request state">
             <StateTab active={query.state === 'open'} onClick={() => change({ state: 'open' })}>
               <GitPullRequest className="h-3.5 w-3.5" aria-hidden /> {tabCount(counts?.open)}Open
             </StateTab>

@@ -171,7 +171,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
                 aria-selected={mode === m}
                 type="button"
                 onClick={() => setMode(m)}
-                className={'rounded px-3 py-1.5 text-dense font-medium ' + (mode === m ? 'bg-forge-500/15 text-forge-800 dark:text-forge-400' : 'text-anvil-500 dark:text-anvil-400')}
+                className={'rounded px-3 py-1.5 text-dense font-medium coarse:min-h-11 ' + (mode === m ? 'bg-forge-500/15 text-forge-800 dark:text-forge-400' : 'text-anvil-500 dark:text-anvil-400')}
               >
                 {label}
               </button>
@@ -184,6 +184,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
                 type="file"
                 accept="application/json,.json,.txt"
                 disabled={busy}
+                className="max-w-full text-dense coarse:min-h-11"
                 onChange={(e) => {
                   const f = e.target.files?.[0]
                   if (f) fromFile(f)

@@ -31,6 +31,7 @@ import { ScrollRegion } from '@/components/ui/scroll-region'
 import { EmptyState } from '@/components/ui/states'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
+import { nextRovingIndex } from '@/lib/view/gutter-rove'
 
 export function BlameContent({
   home,
@@ -229,7 +230,7 @@ function stopReason(result: BlameResult): string {
   }
 }
 
-function BlameTable({
+export function BlameTable({
   result,
   addr,
   permalink,
@@ -262,6 +263,17 @@ function BlameTable({
     requestAnimationFrame(() => scrollToRow(tableRef.current, r.start))
   })
   const href = permalink === null || range === null ? permalink : `${permalink}#${lineHash(range)}`
+  // Up/Down (Home/End) move between the hunks' commit links.
+  const onCommitKey = (e: React.KeyboardEvent<HTMLTableElement>): void => {
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
+    const t = e.target
+    if (!(t instanceof HTMLAnchorElement) || t.dataset['testid'] !== 'blame-commit') return
+    const links = [...e.currentTarget.querySelectorAll<HTMLAnchorElement>('a[data-testid="blame-commit"]')]
+    const next = nextRovingIndex(links.length, links.indexOf(t), e.key)
+    if (next === null) return
+    e.preventDefault()
+    links[next]?.focus()
+  }
 
   const rows: JSX.Element[] = []
   for (let i = from; i < to; i++) {
@@ -299,7 +311,17 @@ function BlameTable({
                 {timeAgo(commit.author.when)}
               </Link>
               {/* One per hunk, inside a 20 px code row (e2e/mobile.spec.ts exempts it, as the diff gutter). */}
-              <Link href={repoHref('/repo/commit', addr, { oid: hunk.oid })} className="hidden min-w-0 truncate hover:text-forge-800 sm:inline dark:hover:text-forge-400" title={`${hunk.oid.slice(0, 7)} ${commit.author.name}`} data-tap-exempt="code-line" data-testid="blame-commit">
+              {/* One tab stop for the column (the window's top hunk), the arrow keys move between
+                  hunks: a tab stop per hunk packed 20 px tab stops together (axe target-size,
+                  WCAG 2.5.8) and put hundreds of stops between the toolbar and the page's end. */}
+              <Link
+                href={repoHref('/repo/commit', addr, { oid: hunk.oid })}
+                className="hidden min-w-0 truncate hover:text-forge-800 sm:inline dark:hover:text-forge-400"
+                title={`${hunk.oid.slice(0, 7)} ${commit.author.name}`}
+                tabIndex={i === from ? 0 : -1}
+                data-tap-exempt="code-line"
+                data-testid="blame-commit"
+              >
                 {commit.subject || '(no message)'}
               </Link>
             </span>
@@ -366,7 +388,7 @@ function BlameTable({
         {range ? <span>{range.start === range.end ? `Line ${range.start}` : `Lines ${range.start}–${range.end}`} selected</span> : null}
       </BlobToolbar>
       <ScrollRegion label="Blame" className="overflow-x-auto">
-        <table ref={tableRef} className="w-full border-collapse font-mono text-[13px] leading-5" data-lines={lines.length} data-testid="blame-table">
+        <table ref={tableRef} className="w-full border-collapse font-mono text-[13px] leading-5" data-lines={lines.length} data-testid="blame-table" onKeyDown={onCommitKey}>
           <tbody>
             {from > 0 ? <tr aria-hidden style={{ height: from * ROW_PX }} /> : null}
             {rows}

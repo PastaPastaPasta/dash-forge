@@ -436,7 +436,7 @@ function TrendWindowToggle({ value, onChange }: { value: TrendingWindow; onChang
           type="button"
           aria-pressed={value === w}
           onClick={() => onChange(w)}
-          className={`hit-area px-3 py-1 ${value === w ? 'bg-anvil-100 font-medium dark:bg-anvil-800' : 'text-anvil-600 dark:text-anvil-300'}`}
+          className={`px-3 py-1 coarse:min-h-11 ${value === w ? 'bg-anvil-100 font-medium dark:bg-anvil-800' : 'text-anvil-600 dark:text-anvil-300'}`}
           data-testid={`trending-${w}`}
         >
           {w === 'week' ? 'This week' : 'Today'}

@@ -27,15 +27,15 @@ export function DisplayPrefsPanel(): JSX.Element {
       {invalid ? <p className="text-[12px] text-danger-700 dark:text-danger-400">Enter a name and an email address (no &lt; or &gt;).</p> : null}
       <fieldset className="space-y-1.5 border-t border-anvil-100 pt-3 dark:border-anvil-850">
         <legend className="text-dense font-medium text-anvil-700 dark:text-anvil-200">Diffs</legend>
-        <label className="flex items-center gap-2 text-dense">
+        <label className="flex items-center gap-2 text-dense coarse:min-h-11">
           <input type="checkbox" checked={prefs.diffLayout === 'split'} onChange={(e) => update({ diffLayout: e.target.checked ? 'split' : 'unified' })} />
           Side by side on wide screens
         </label>
-        <label className="flex items-center gap-2 text-dense">
+        <label className="flex items-center gap-2 text-dense coarse:min-h-11">
           <input type="checkbox" checked={prefs.ignoreWhitespace} onChange={(e) => update({ ignoreWhitespace: e.target.checked })} />
           Hide whitespace changes
         </label>
-        <label className="flex items-center gap-2 text-dense">
+        <label className="flex items-center gap-2 text-dense coarse:min-h-11">
           <input type="checkbox" checked={prefs.palette === 'colorblind'} onChange={(e) => update({ palette: e.target.checked ? 'colorblind' : 'standard' })} />
           Blue/orange diff colors (color-blind friendly)
         </label>

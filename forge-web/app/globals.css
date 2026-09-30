@@ -26,6 +26,11 @@
     @apply dark:bg-anvil-950 dark:text-anvil-200;
   }
 
+  /* A select is as wide as its longest option: never wider than its container (a phone). */
+  select {
+    max-width: 100%;
+  }
+
   /* Monospace is a first-class citizen: OIDs, hashes, CIDs. */
   code,
   kbd,
