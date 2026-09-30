@@ -110,6 +110,34 @@ pub struct PushFacts<'a> {
     pub changed: Option<&'a [String]>,
 }
 
+/// The pull-request activity a workflow's `on.pull_request` filter is judged against.
+pub struct PullFacts<'a> {
+    /// The base branch, short (`main`): what `branches` / `branches-ignore` match.
+    pub base: &'a str,
+    /// `opened`, `synchronize`, `reopened` or `ready_for_review`: what `types` match.
+    pub action: &'a str,
+    /// Paths the PR changes (`base...head`); `None` when unknown, which runs path filters.
+    pub changed: Option<&'a [String]>,
+}
+
+/// What a workflow's `on:` is judged against.
+pub enum Facts<'a> {
+    /// A push to a ref of the repository.
+    Push(PushFacts<'a>),
+    /// A pull request was opened, its head moved, it was reopened or marked ready.
+    PullRequest(PullFacts<'a>),
+}
+
+impl Facts<'_> {
+    /// Whether a workflow whose `on` is `on` runs.
+    pub fn runs(&self, on: &Value) -> bool {
+        match self {
+            Facts::Push(p) => runs_on_push(on, p),
+            Facts::PullRequest(p) => runs_on_pull_request(on, p),
+        }
+    }
+}
+
 /// The largest workflow file read (a bigger one is refused, not parsed).
 const MAX_WORKFLOW_BYTES: u64 = 512 * 1024;
 
@@ -117,7 +145,7 @@ const MAX_WORKFLOW_BYTES: u64 = 512 * 1024;
 pub fn plan(
     checkout: &Path,
     dir: &Path,
-    push: &PushFacts<'_>,
+    facts: &Facts<'_>,
     allow_container: bool,
     labels: &[&str],
 ) -> Plan {
@@ -143,7 +171,7 @@ pub fn plan(
         };
         match text.and_then(|t| read_workflow(&rel, &t, allow_container, labels)) {
             Ok((wf, on)) => {
-                if runs_on_push(&on, push) {
+                if facts.runs(&on) {
                     plan.run.push(wf);
                 }
             }
@@ -385,16 +413,51 @@ pub fn runs_on_push(on: &Value, push: &PushFacts<'_>) -> bool {
         // `tags:` does not run on branch pushes).
         (None, None) => !has_any_ref_filter,
     };
-    if !ref_ok {
-        return false;
-    }
+    ref_ok && paths_ok(filters, push.changed)
+}
+
+/// `paths` / `paths-ignore` against the changed files (unknown changes run the workflow).
+fn paths_ok(filters: &Value, changed: Option<&[String]>) -> bool {
     let paths = strings(&filters["paths"]);
     let paths_ignore = strings(&filters["paths-ignore"]);
-    match (push.changed, paths, paths_ignore) {
+    match (changed, paths, paths_ignore) {
         (None, _, _) | (_, None, None) => true,
         (Some(ch), Some(p), _) => ch.iter().any(|f| list_matches(&p, f)),
         (Some(ch), None, Some(ig)) => ch.iter().any(|f| !list_matches(&ig, f)),
     }
+}
+
+/// The `pull_request` activity types a workflow runs on when it names none (GitHub's default).
+const DEFAULT_PULL_TYPES: [&str; 3] = ["opened", "synchronize", "reopened"];
+
+/// Whether a workflow whose `on` is `on` runs on this pull-request activity (GitHub's rules for
+/// `pull_request`: `types`, then `branches` / `branches-ignore` on the base branch, then
+/// `paths` / `paths-ignore` on the PR's changes). `pull_request_target` never runs here.
+pub fn runs_on_pull_request(on: &Value, pr: &PullFacts<'_>) -> bool {
+    let default_type = DEFAULT_PULL_TYPES.contains(&pr.action);
+    let filters: &Value = match on {
+        Value::String(s) => return s == "pull_request" && default_type,
+        Value::Array(a) => {
+            return default_type && a.iter().any(|e| e.as_str() == Some("pull_request"))
+        }
+        Value::Object(o) => match o.get("pull_request") {
+            None => return false,
+            Some(Value::Null) => return default_type,
+            Some(f) => f,
+        },
+        _ => return false,
+    };
+    let type_ok =
+        strings(&filters["types"]).map_or(default_type, |t| t.iter().any(|t| t == pr.action));
+    let branch_ok = match (
+        strings(&filters["branches"]),
+        strings(&filters["branches-ignore"]),
+    ) {
+        (Some(i), _) => list_matches(&i, pr.base),
+        (None, Some(e)) => !list_matches(&e, pr.base),
+        (None, None) => true,
+    };
+    type_ok && branch_ok && paths_ok(filters, pr.changed)
 }
 
 #[cfg(test)]
@@ -546,6 +609,52 @@ jobs:
     }
 
     #[test]
+    fn on_pull_request_filters() {
+        let on = |t: &str| {
+            wf(&format!("{t}\njobs:\n  a:\n    runs-on: x\n"))
+                .unwrap()
+                .1
+        };
+        let pr = |base, action, changed| PullFacts {
+            base,
+            action,
+            changed,
+        };
+        let opened = pr("main", "opened", None);
+        let sync = pr("main", "synchronize", None);
+        let ready = pr("main", "ready_for_review", None);
+        assert!(runs_on_pull_request(&on("on: pull_request"), &opened));
+        assert!(runs_on_pull_request(&on("on: [push, pull_request]"), &sync));
+        assert!(!runs_on_pull_request(&on("on: push"), &opened));
+        assert!(
+            !runs_on_pull_request(&on("on: pull_request_target"), &opened),
+            "pull_request_target never runs here"
+        );
+        assert!(
+            !runs_on_pull_request(&on("on: pull_request"), &ready),
+            "ready_for_review is not a default type"
+        );
+        let typed = on("on:\n  pull_request:\n    types: [ready_for_review]");
+        assert!(runs_on_pull_request(&typed, &ready) && !runs_on_pull_request(&typed, &opened));
+        let empty = on("on:\n  pull_request:");
+        assert!(runs_on_pull_request(&empty, &sync));
+        let b = on("on:\n  pull_request:\n    branches: [main]");
+        assert!(runs_on_pull_request(&b, &opened), "branches match the base");
+        assert!(!runs_on_pull_request(&b, &pr("dev", "opened", None)));
+        let ig = on("on:\n  pull_request:\n    branches-ignore: ['release/**']");
+        assert!(!runs_on_pull_request(&ig, &pr("release/1", "opened", None)));
+        let changed = ["docs/a.md".to_string()];
+        let p = on("on:\n  pull_request:\n    paths: ['src/**']");
+        assert!(!runs_on_pull_request(
+            &p,
+            &pr("main", "opened", Some(&changed))
+        ));
+        assert!(runs_on_pull_request(&p, &opened), "unknown changes run");
+        let facts = Facts::PullRequest(opened);
+        assert!(facts.runs(&on("on: pull_request")) && !facts.runs(&on("on: push")));
+    }
+
+    #[test]
     fn on_push_filters() {
         let on = |t: &str| {
             wf(&format!("{t}\njobs:\n  a:\n    runs-on: x\n"))
@@ -604,7 +713,13 @@ jobs:
         std::fs::write(w.join("notes.txt"), "x").unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink("/etc/hosts", w.join("d.yml")).unwrap();
-        let p = plan(d.path(), &w, &facts("refs/heads/main", None), false, &["x"]);
+        let p = plan(
+            d.path(),
+            &w,
+            &Facts::Push(facts("refs/heads/main", None)),
+            false,
+            &["x"],
+        );
         assert_eq!(p.run.len(), 1);
         assert_eq!(p.run[0].file, Path::new(".forge/workflows/a.yml"));
         let broken: Vec<_> = p

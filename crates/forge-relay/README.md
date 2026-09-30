@@ -108,7 +108,7 @@ retry queue, due at once, and flushes it to disk, within 5 s of the signal.
 ## Wake a runner
 
 A [forge-runner](../../docs/guides/self-host-runner.md) polls its repositories every
-`interval_secs` (two minutes by default). Your relay can wake it as soon as it sees a push, so a
+`interval_secs` (two minutes by default). Your relay can wake it as soon as it sees a push or a pull request's activity, so a
 run starts within seconds. The runner connects to the relay (no port is opened on the runner's
 machine), so it works behind NAT. There is no central service: you run the relay, and your
 runner subscribes to it.
@@ -131,7 +131,7 @@ secret_file = "/etc/forge-runner/relay.secret"   # the same secret
 `GET /v1/wake` on the same listener as the health check.
 
 - **A wake carries no trust.** It only tells the runner to poll a repository now. The runner
-  reads the refs from Platform proofs, as on any poll, and runs only what that read shows. A
+  reads the refs from Platform proofs and the pull requests through `dg`, as on any poll, and runs only what that read shows. A
   relay that is down, lies or is impersonated costs latency, never a run. Polling stays on:
   every `interval_secs`, whatever the relay says.
 - **Authentication.** Each request is a long-poll signed with the shared secret: HMAC-SHA256
@@ -142,7 +142,7 @@ secret_file = "/etc/forge-runner/relay.secret"   # the same secret
   refuses a forged or replayed answer. The secret never crosses the wire. Someone on the
   network path can still hold wake-ups back, which only costs latency; use https or a private
   network to keep that and the fact of activity private.
-- **What a runner learns.** Which configured repositories had a push (`{"cursor", "resync",
+- **What a runner learns.** Which configured repositories had a push or pull-request activity (`{"cursor", "resync",
   "repos": [{"id", "name", "label"}]}`), all public chain data. The relay keeps the last 1,024
   wakes. A runner whose cursor is older, or from before a relay restart, is told `resync` and
   polls everything at once (and again 20 s later, as after any wake).

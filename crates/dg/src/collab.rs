@@ -522,11 +522,14 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
             })
         })
         .collect();
-    ctx.emit(json!({ "count": rows.len(), "members": rows }), || {
-        println!("{} member(s) of {}:", members.len(), handle.display());
-        for m in &members {
-            println!("  {}  {}", m.identity_id, role_name(m.role));
-        }
-    });
+    ctx.emit(
+        json!({ "count": rows.len(), "members": rows, "ownerId": handle.owner_id() }),
+        || {
+            println!("{} member(s) of {}:", members.len(), handle.display());
+            for m in &members {
+                println!("  {}  {}", m.identity_id, role_name(m.role));
+            }
+        },
+    );
     Ok(())
 }
