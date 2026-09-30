@@ -100,8 +100,6 @@ struct PushInput {
     what: String,
     bytes: u64,
     objects: u64,
-    /// The objects were counted in a repository (else assumed from the size).
-    counted: bool,
     /// The history index of the repository's `HEAD`, when it was computed (`--path`).
     history: Option<HistoryCost>,
     /// The repository, when one was measured (its storage policy is the default backend).
@@ -116,10 +114,14 @@ impl PushInput {
             what,
             bytes,
             objects: bytes.div_ceil(BYTES_PER_OBJECT).max(1),
-            counted: false,
             history: None,
             repo: None,
         }
+    }
+
+    /// The objects were counted in a repository (else assumed from the size).
+    fn counted(&self) -> bool {
+        self.repo.is_some()
     }
 }
 
@@ -228,7 +230,7 @@ fn quote(target: &Target, input: &PushInput) -> PushQuote {
     };
     let deposit = if platform {
         let stored = input.bytes + push_fees::locator_bytes(input.objects) + history_bytes;
-        estimate(stored).deposit
+        est_deposit(stored)
     } else {
         0
     };
@@ -299,7 +301,6 @@ fn estimate_input(bytes: Option<u64>, path: Option<&std::path::Path>) -> Result<
         ),
         bytes: count.bytes,
         objects: count.objects,
-        counted: true,
         history,
         repo: Some(dir),
     })
@@ -325,12 +326,12 @@ fn estimate_cmd(
     let price = dash_usd_price();
     let label = target.label.as_str();
     // Objects only price the browse index's chunks, which only Platform storage pays for.
-    let assumed = if input.counted || q.chunks == 0 {
+    let assumed = if input.counted() || q.chunks == 0 {
         String::new()
     } else {
         format!(" (~{} objects assumed)", input.objects)
     };
-    let unpriced = if input.counted {
+    let unpriced = if input.counted() {
         "the history index's chunks: it could not be computed in this repository (a shallow clone?)"
     } else {
         "the history index's chunks: their size depends on the repository; `dg cost estimate --path <repository>` prices them"
@@ -340,7 +341,7 @@ fn estimate_cmd(
             "mode": "first_push",
             "bytes": input.bytes,
             "objects": input.objects,
-            "objectsCounted": input.counted,
+            "objectsCounted": input.counted(),
             "backend": label,
             "platformStoresBytes": target.platform,
             "externalTargets": target.external,
@@ -680,7 +681,7 @@ mod estimate_tests {
     fn a_repository_is_priced_as_its_first_push() {
         let repo = tiny_repo();
         let input = estimate_input(None, Some(repo.path())).unwrap();
-        assert!(input.counted);
+        assert!(input.counted());
         assert_eq!(input.objects, 5, "{input:?}");
         // HEAD's objects as stored, not `count-objects`' 4 KiB disk blocks per loose object.
         assert!(input.bytes < 4096, "{input:?}");
@@ -744,7 +745,7 @@ mod estimate_tests {
         let file = dir.path().join("pack.bin");
         std::fs::write(&file, vec![0u8; 5000]).unwrap();
         let input = estimate_input(None, Some(&file)).unwrap();
-        assert_eq!((input.bytes, input.counted), (5000, false));
+        assert_eq!((input.bytes, input.counted()), (5000, false));
         assert!(input.history.is_none());
 
         let err = estimate_input(None, Some(dir.path())).unwrap_err();
