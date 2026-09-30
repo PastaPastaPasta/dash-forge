@@ -24,7 +24,7 @@ use forge_core::user_error::{codes, UserError};
 
 use crate::fmt::{cost_line, dash_usd_price};
 
-use crate::common::{Reader, Session};
+use crate::common::{resolve_identity, Reader, Session};
 use crate::context::Ctx;
 use crate::{CollabCommand, RoleArg};
 
@@ -146,13 +146,9 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     let role = role.to_core();
     let s = Session::open(ctx, repo).await?;
     let (client, handle) = (&s.client, &s.repo);
-    // `member` is an identity id or a DPNS name (`alice`, `@alice`, `alice.dash`); resolve it
-    // once so every check and write below sees a plain identity id.
-    let member: String =
-        forge_core::resolve::resolve_owner(client, member.strip_prefix('@').unwrap_or(member))
-            .await
-            .with_context(|| format!("resolving member {member}"))?;
-    let member = member.as_str();
+    // `member` is an identity id or a DPNS name; resolve it once so every check and write
+    // below sees a plain identity id.
+    let member: &str = &resolve_identity(client, member, "member").await?;
     let signer = crate::keys::signer(&s);
     // The member's consent comes first (checked before any cost prompt or key work), unless
     // they already hold the role: re-running an add to finish its key wrap needs none.
@@ -254,13 +250,9 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     let role = role.to_core();
     let s = Session::open(ctx, repo).await?;
     let (client, handle) = (&s.client, &s.repo);
-    // `member` is an identity id or a DPNS name (`alice`, `@alice`, `alice.dash`); resolve it
-    // once so every check and write below sees a plain identity id.
-    let member: String =
-        forge_core::resolve::resolve_owner(client, member.strip_prefix('@').unwrap_or(member))
-            .await
-            .with_context(|| format!("resolving member {member}"))?;
-    let member = member.as_str();
+    // `member` is an identity id or a DPNS name; resolve it once so every check and write
+    // below sees a plain identity id.
+    let member: &str = &resolve_identity(client, member, "member").await?;
     let private = handle.visibility == Visibility::Private;
     if handle.owner_id() != s.identity.id() {
         return Err(forge_core::Error::NotPermitted {
