@@ -2,7 +2,8 @@
 // Reproduces mainnet-bridge/src/ui/components.ts createKeyBackup (create mode):
 //   { network, created, mode, depositAddress, txid, mnemonic, identityId,
 //     identityKeys[...], assetLockKey }
-import { writeFileSync, chmodSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { closeSync, fsyncSync, openSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { bytesToHex, privateKeyToWif } from './bytes.mjs';
 import { getAssetLockDerivationPath } from './hd.mjs';
 
@@ -40,8 +41,31 @@ export function buildIdentityBackup(role, networkConfig) {
   };
 }
 
+/**
+ * Write a file holding secrets (a mnemonic, a WIF) as a new 0600 inode: a unique temp sibling
+ * created exclusively (`wx`, so nothing already there is opened or followed), synced, then
+ * renamed over `path`. rename replaces a symlink at `path` rather than writing through it, and
+ * the result is 0600 whatever the permissions of a file it replaces. The temp file is removed
+ * on failure.
+ */
+export function writeSecretFile(path, data) {
+  const tmp = `${path}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
+  let fd;
+  try {
+    fd = openSync(tmp, 'wx', 0o600);
+    writeFileSync(fd, data);
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    renameSync(tmp, path);
+  } catch (err) {
+    if (fd !== undefined) closeSync(fd);
+    rmSync(tmp, { force: true });
+    throw err;
+  }
+}
+
 // Write a backup JSON with 0600 perms (contains private keys — never world-readable).
 export function writeIdentityFile(path, backupObject) {
-  writeFileSync(path, JSON.stringify(backupObject, null, 2) + '\n', { mode: 0o600 });
-  chmodSync(path, 0o600);
+  writeSecretFile(path, JSON.stringify(backupObject, null, 2) + '\n');
 }
