@@ -147,6 +147,40 @@ describe('the spend reconciliation after a reload', () => {
     expect(q('spend-reconcile')).not.toBeNull()
   })
 
+  it('a write while the panel is open never reconciles the new balance against the old rows', async () => {
+    auth.balance = '850'
+    auth.balanceReadAt = 250
+    await render()
+    const unexplained = (): string | null | undefined => q('spend-reconcile')?.getAttribute('data-unexplained')
+    expect(unexplained()).toBe('0')
+    // A 30-credit write: its row lands, then the balance is read (onSpend's order). The ledger
+    // read for the new balance is slow: until it lands, the line shown before stays (never +30
+    // "other apps or keys" from the new balance against the old rows).
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((r) => (release = r))
+    const rowsBefore = ledger.rows
+    const spend = await import('@/lib/spend')
+    const slow = vi.spyOn(spend, 'readLedger')
+    try {
+      ledger.rows = [...rowsBefore, row(300, 30, '850')]
+      slow.mockImplementationOnce(async () => {
+        await gate
+        return ledger.rows
+      })
+      auth.balance = '820'
+      auth.balanceReadAt = 310
+      await act(async () => rerender())
+      expect(unexplained()).toBe('0')
+      await act(async () => release())
+      await flush()
+      expect(unexplained()).toBe('0')
+      expect(q('spend-reconcile')?.textContent).toMatch(/Ledger/)
+    } finally {
+      ledger.rows = rowsBefore
+      slow.mockRestore()
+    }
+  })
+
   it('shows the line at once for a balance read after the last row', async () => {
     auth.balance = '850'
     auth.balanceReadAt = 250

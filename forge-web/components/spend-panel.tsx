@@ -74,9 +74,9 @@ export function SpendPanel(): JSX.Element {
   // last ledger meanwhile rather than blanking the panel.
   const last = useRef<{ identity: string; data: Ledger } | null>(null)
   const ledger = useAsync<Ledger>(
-    async () => {
+    async (signal) => {
       const data = { rows: await readLedger(DEFAULT_NETWORK, identity!), baseline: await readBaseline(DEFAULT_NETWORK, identity!) }
-      last.current = { identity: identity!, data }
+      if (!signal.aborted) last.current = { identity: identity!, data }
       return data
     },
     [identity ?? '', balance ?? '', balanceReadAt ?? ''],
@@ -87,23 +87,35 @@ export function SpendPanel(): JSX.Element {
   const repoIds = s.byRepo.map((r) => r.repo).filter((r) => r !== NO_REPO)
   const repos = useRepoNames(repoIds)
   // The gap line waits for a balance with every recorded write in it (not the kept session's
-  // right after a reload, nor one a node behind the last write answers): `balanceSettled`.
-  const settled = balanceSettled(
-    { credits: balance === null ? null : BigInt(balance), readAt: balanceReadAt, measuring: identity !== null && measurementPending(identity) },
-    rows,
-  )
+  // right after a reload, nor one a node behind the last write answers): `balanceSettled`. While
+  // the ledger is re-read for a new balance, the rows shown may predate it: the line shown
+  // before stays until the read lands.
+  const settled =
+    !ledger.loading &&
+    balanceSettled({ credits: balance === null ? null : BigInt(balance), readAt: balanceReadAt, measuring: identity !== null && measurementPending(identity) }, rows)
+  // Only rows since the baseline explain the balance change (earlier ones predate it).
+  const baseline = ledger.data?.baseline ?? null
+  const sinceBaseline = baseline === null ? 0 : summarize(rows.filter((r) => r.at >= baseline.at)).allTime
+  const fresh = settled ? reconcile(sinceBaseline, baseline?.credits ?? null, balance === null ? null : BigInt(balance)) : null
+  const rereading = ledger.loading
+  // The line last shown, kept from committed renders only (a render React discards must not set it).
+  const shownRec = useRef<ReturnType<typeof reconcile>>(null)
+  const rec = settled ? fresh : rereading ? shownRec.current : null
+  useEffect(() => {
+    shownRec.current = rec
+  })
   // Until then the balance is read again, a few times at most per last row (a lagging node
   // catches up within a block or two); a read that fails leaves the line waiting.
   const lastRowAt = rows.length === 0 ? null : rows[rows.length - 1]!.at
   const asked = useRef<{ at: number; n: number }>({ at: -1, n: 0 })
   useEffect(() => {
-    if (identity === null || settled || lastRowAt === null) return
+    if (identity === null || settled || rereading || lastRowAt === null) return
     if (asked.current.at !== lastRowAt) asked.current = { at: lastRowAt, n: 0 }
     if (asked.current.n >= SETTLE_READS) return
     const n = asked.current.n++
     const timer = setTimeout(() => void refreshBalance().catch(() => undefined), n === 0 ? 0 : SETTLE_WAIT_MS * 2 ** (n - 1))
     return () => clearTimeout(timer)
-  }, [identity, settled, lastRowAt, balance, balanceReadAt, refreshBalance])
+  }, [identity, settled, rereading, lastRowAt, balance, balanceReadAt, refreshBalance])
 
   if (ledger.loading && !ledger.settled) return <LoadingBlock label="Reading the spend ledger" />
   if (ledger.error) {
@@ -120,10 +132,6 @@ export function SpendPanel(): JSX.Element {
       </p>
     )
   }
-  // Only rows since the baseline explain the balance change (earlier ones predate it).
-  const baseline = ledger.data?.baseline ?? null
-  const sinceBaseline = baseline === null ? 0 : summarize(rows.filter((r) => r.at >= baseline.at)).allTime
-  const rec = settled ? reconcile(sinceBaseline, baseline?.credits ?? null, balance === null ? null : BigInt(balance)) : null
   const identityOnly = rows.every((r) => r.repo === null && isIdentityAction(r.kind))
   const latest = rows.slice(-50).reverse()
 
@@ -163,7 +171,7 @@ export function SpendPanel(): JSX.Element {
         </div>
       </div>
       {rec ? (
-        <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="spend-reconcile">
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="spend-reconcile" data-unexplained={rec.unexplained}>
           Ledger <Dash credits={s.allTime} /> · balance change <Dash credits={rec.balanceChange} /> ·{' '}
           <Dash credits={rec.unexplained} /> unexplained ({rec.unexplained >= 0 ? 'other apps or keys' : 'top-ups'})
         </p>

@@ -155,9 +155,15 @@ export function balanceSettled(
   if (balance.readAt === null || balance.credits === null || balance.measuring === true) return false
   const last = rows.reduce((m, r) => Math.max(m, r.at), -Infinity)
   if (balance.readAt < last) return false
+  // The latest few charged writes only (as the write engine's own trail): an old row's starting
+  // balance a top-up happened to restore says nothing about lag.
   const now = balance.credits.toString()
-  return !rows.some((r) => r.balanceBefore === now && r.actualCredits !== null && r.actualCredits !== 0)
+  const recent = [...rows].sort((a, b) => a.at - b.at).slice(-RECENT_ROWS)
+  return !recent.some((r) => r.balanceBefore === now && r.actualCredits !== null && r.actualCredits !== 0)
 }
+
+/** How many of the latest rows `balanceSettled` checks a balance against. */
+const RECENT_ROWS = 8
 
 /**
  * The reconciliation line: what the ledger explains vs what the balance actually moved since
