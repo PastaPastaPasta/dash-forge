@@ -104,8 +104,8 @@ export function useInboxPoller(): void {
 
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
-    // My DPNS name, for mentions (`@name`); read once per identity, and a failed read retried
-    // on the next round (an id is matched meanwhile).
+    // My DPNS name, for mentions (`@name`); read once per identity. Without one (none, or the
+    // lookup failed) a mention is matched by my identity id only.
     let name: string | null | undefined
     // Per effect (so a new identity never waits on the old one's poll).
     let inFlight = false
@@ -128,7 +128,7 @@ export function useInboxPoller(): void {
       set({ polling: true })
       try {
         const sdk = await ensureSdk(network)
-        if (name === undefined) name = await resolveDpnsName(sdk, identity, network).catch(() => undefined)
+        if (name === undefined) name = await resolveDpnsName(sdk, identity, network)
         const r = await pollOnce(sdk, network, forge, identity, { refreshSubs, stop: () => cancelled, name: name ?? null })
         if (cancelled || useInboxStore.getState().owner !== owner) return
         set({ lastPoll: Date.now(), lastFeeds: { read: r.feedsRead, total: r.feedsTotal, failed: r.failed }, error: null })

@@ -8,8 +8,8 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { idbGet, idbPut, resetMemoryStores } from '../idb'
 import type { DocumentQuery } from '../sdk'
-import { computeSubscriptions, DEFAULT_PREFS, groupThreads, matchesFilter, pollOnce, stateWhat, threadReasons, toItems, type Feed, type InboxItem, type Subscriptions, type ThreadSub } from './inbox'
-import { listParticipation, noteParticipation } from './participation'
+import { computeSubscriptions, DEFAULT_PREFS, groupThreads, matchesFilter, pollOnce, stateWhat, subsByThread, threadReasons, toItems, type Feed, type InboxItem, type Subscriptions, type ThreadSub } from './inbox'
+import { listParticipation, MAX_PARTICIPATION, noteParticipation } from './participation'
 
 const ME = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const OTHER = '7Ej2YTftCL23mVwvhviak8ZJMmpqcsVj7CU5KPxzyy4h'
@@ -70,6 +70,8 @@ describe('stateWhat and reasons', () => {
       { $id: 'c2', $ownerId: OTHER, $createdAt: 2001, body: 'no mention here' },
     ], ME, 'alice.dash')
     expect(said.map((i) => i.reason)).toEqual(['mention', undefined])
+    const reviews = toItems({ kind: 'reviews', thread: thread({ kind: 'pull', reason: 'author' }) }, [{ $id: 'v1', $ownerId: OTHER, $createdAt: 2000, verdict: 3, body: '@alice can you check?' }], ME, 'alice.dash')
+    expect(reviews[0]?.reason).toBe('mention')
     // A private repo's text is sealed: never read for a mention.
     const sealed = toItems({ kind: 'comments', thread: thread({ repo: { ...REPO, private: true } }) }, [{ $id: 'c3', $ownerId: OTHER, $createdAt: 2000, body: '@alice' }], ME, 'alice.dash')
     expect(sealed[0]?.reason).toBeUndefined()
@@ -97,14 +99,20 @@ describe('computeSubscriptions (QW2-009)', () => {
     expect(subs.incomplete ?? []).toEqual([])
   })
 
-  it('keeps the strongest reason: a thread I opened is mine, whoever else assigns me', async () => {
+  it('keeps the strongest reason, every reason, and the earliest start of any', async () => {
     const sdk = chainSdk([
       { type: 'repo', $id: REPO_ID, $ownerId: OTHER, $createdAt: 1, name: 'demo' },
       { type: 'issue', $id: ISSUE_ID, $ownerId: ME, $createdAt: 100, repoId: REPO_ID, number: 1, title: 'Mine' },
+      { type: 'patch', $id: PR_ID, $ownerId: OTHER, $createdAt: 200, repoId: REPO_ID, number: 2, title: 'Fix' },
       { type: 'event', $id: 'a1', $ownerId: OTHER, $createdAt: 5000, targetId: ISSUE_ID, kind: 6, value: ME, refId: ME },
+      // Asked to review #2 at 3000, commented on it at 4000: followed from the request.
+      { type: 'event', $id: 'r1', $ownerId: OTHER, $createdAt: 3000, targetId: PR_ID, kind: 13, refId: ME },
+      { type: 'comment', $id: 'c1', $ownerId: ME, $createdAt: 4000, repoId: REPO_ID, targetId: PR_ID },
     ])
     const subs = await computeSubscriptions(sdk, 'devnet', FORGE, ME, DEFAULT_PREFS, 10_000)
-    expect(subs.threads.filter((t) => t.id === ISSUE_ID).map((t) => t.reason)).toEqual(['author'])
+    const byId = new Map(subs.threads.map((t) => [t.id, t]))
+    expect(byId.get(ISSUE_ID)).toMatchObject({ reason: 'author', reasons: ['author', 'assigned'], since: 100 })
+    expect(byId.get(PR_ID)).toMatchObject({ reason: 'commented', reasons: ['commented', 'review-requested'], since: 2999 })
   })
 })
 
@@ -115,6 +123,13 @@ describe('participation record', () => {
     await noteParticipation('devnet', ME, PR_ID, 'mentioned', 100)
     expect(await listParticipation('devnet', ME)).toEqual([{ targetId: PR_ID, reason: 'reviewed', at: 100 }])
     expect(await listParticipation('devnet', OTHER)).toEqual([])
+  })
+
+  it('stays bounded: past the cap the oldest go', async () => {
+    for (let i = 0; i < MAX_PARTICIPATION + 3; i++) await noteParticipation('devnet', ME, `t${i}`, 'mentioned', 1000 + i)
+    const kept = await listParticipation('devnet', ME)
+    expect(kept).toHaveLength(MAX_PARTICIPATION)
+    expect(kept.at(-1)?.targetId).toBe('t3')
   })
 
   it('a new issue that mentions me is followed from then on (the next poll recomputes)', async () => {
@@ -133,7 +148,7 @@ describe('reason filters (QW2-056)', () => {
 
   it('files a thread under why I follow it and why each item reached me', () => {
     const [t] = groupThreads([item('a'), item('b', { reason: 'mention' })])
-    const reasons = threadReasons(t!, subs('assigned'))
+    const reasons = threadReasons(t!, subsByThread(subs('assigned')))
     expect([...reasons].sort()).toEqual(['assigned', 'mentioned'])
     expect(matchesFilter(reasons, 'assigned')).toBe(true)
     expect(matchesFilter(reasons, 'mentioned')).toBe(true)
@@ -141,9 +156,15 @@ describe('reason filters (QW2-056)', () => {
     expect(matchesFilter(reasons, 'participating')).toBe(true)
   })
 
+  it('files a thread I opened and was assigned under Assigned, even with no assignment item', () => {
+    const [t] = groupThreads([item('a')])
+    const sub: Subscriptions = { at: 0, repos: [], threads: [thread({ reason: 'author', reasons: ['author', 'assigned'] })], droppedRepos: 0, droppedThreads: 0 }
+    expect(matchesFilter(threadReasons(t!, subsByThread(sub)), 'assigned')).toBe(true)
+  })
+
   it('leaves a repo I only watch out of Participating', () => {
     const [t] = groupThreads([item('a', { kind: 'issue', what: 'opened an issue' })])
-    const reasons = threadReasons(t!, { at: 0, repos: [{ repo: REPO, reason: 'watched' }], threads: [], droppedRepos: 0, droppedThreads: 0 })
+    const reasons = threadReasons(t!, subsByThread({ at: 0, repos: [{ repo: REPO, reason: 'watched' }], threads: [], droppedRepos: 0, droppedThreads: 0 }))
     expect(reasons.size).toBe(0)
     expect(matchesFilter(reasons, 'participating')).toBe(false)
   })

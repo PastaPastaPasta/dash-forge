@@ -25,7 +25,7 @@ import { hexToBytes } from '@noble/hashes/utils.js'
 
 import type { Network } from '../constants'
 import type { ForgeIds } from '../deployments'
-import { decodeIdentifier } from '../auth/base58'
+import { base58Encode, decodeIdentifier } from '../auth/base58'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 import { isGitRefName, type EventKind } from '../rules'
 import { denseNumber, isAuthorKind, namesDenseRule, normalizeRepoName as normalizeV2RepoName, type Role, type StateAction, type Visibility } from '../rules/v2'
@@ -278,7 +278,8 @@ export async function writeRepoDoc(
   // encrypted afresh on every attempt, so the sealed data never matches itself).
   let contentKey: string | undefined = sealedContentKey
   // A review's PR, read before sealing: the inbox follows a PR its reviewer reviewed (QW2-009).
-  const reviewed = documentType === DOC.review ? asIdentifierString(data['patchId']) : ''
+  const patchId = data['patchId']
+  const reviewed = documentType !== DOC.review ? '' : patchId instanceof Uint8Array ? base58Encode(patchId) : asIdentifierString(patchId)
   const sealedType = repo.visibility === 'private' ? sealedTypeOf(documentType, data) : null
   if (sealedType !== null) {
     contentKey = contentHash(documentType, scoped(repo, data))

@@ -362,8 +362,22 @@ export interface AddressedTarget {
   readonly firstAt: number
 }
 
-/** How many addressed events the inbox reads (newest first). */
+/** How many addressed events are read (newest first). */
 export const ADDRESSED_MAX = 100
+
+/**
+ * The newest {@link ADDRESSED_MAX} member events naming `me` as their addressee (`refId`), in any
+ * repo: the sparse `event.addressee (refId, $createdAt)` index.
+ */
+function readAddressedEvents(sdk: EvoSDK, forge: ForgeIds, me: string): Promise<PlainDocument[]> {
+  return read(sdk, {
+    dataContractId: contractOf(forge, DOC.event),
+    documentTypeName: DOC.event,
+    where: [['refId', '==', me]],
+    orderBy: [['refId', 'desc'], ['$createdAt', 'desc']],
+    limit: ADDRESSED_MAX,
+  })
+}
 
 /**
  * The threads that assigned `me` or asked `me` for a review, in any repo (QW2-009), from the
@@ -373,16 +387,7 @@ export const ADDRESSED_MAX = 100
  * request as the reason.
  */
 export async function listAddressedTargets(sdk: EvoSDK, forge: ForgeIds, me: string): Promise<AddressedTarget[]> {
-  const docs = parseDocs(
-    eventDoc,
-    await read(sdk, {
-      dataContractId: contractOf(forge, DOC.event),
-      documentTypeName: DOC.event,
-      where: [['refId', '==', me]],
-      orderBy: [['refId', 'desc'], ['$createdAt', 'desc']],
-      limit: ADDRESSED_MAX,
-    }),
-  )
+  const docs = parseDocs(eventDoc, await readAddressedEvents(sdk, forge, me))
   const out = new Map<string, AddressedTarget>()
   for (const e of docs) {
     const reason = e.kind === ASSIGN || e.kind === UNASSIGN ? 'assigned' : e.kind === REVIEW_REQUEST || e.kind === REVIEW_REQUEST_REMOVE ? 'review-requested' : null
@@ -444,13 +449,7 @@ export async function scanAssignedAndMentions(
   // assign names the assignee in `refId` since F-1 (platform-parity-spec §1.2). Only member
   // events can be assign kinds, and only those carrying `refId` are indexed. Newest first, so
   // past 100 addressed events the newest 100 are the ones read.
-  const addressed = await read(sdk, {
-    dataContractId: contractOf(forge, DOC.event),
-    documentTypeName: DOC.event,
-    where: [['refId', '==', me]],
-    orderBy: [['refId', 'desc'], ['$createdAt', 'desc']],
-    limit: 100,
-  }).catch(() => [] as PlainDocument[])
+  const addressed = await readAddressedEvents(sdk, forge, me).catch(() => [] as PlainDocument[])
   const indexed = parseDocs(eventDoc, addressed).filter((e) => e.kind === ASSIGN || e.kind === UNASSIGN)
   const fromIndex = assignedTargets(indexed, me)
   // The per-repo scan also sees older assigns written without `refId`. A target the index

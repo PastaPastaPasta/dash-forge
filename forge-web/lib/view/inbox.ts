@@ -96,8 +96,11 @@ export interface ThreadSub {
   readonly number: number
   readonly title: string
   readonly repo: RepoLite
+  /** The strongest reason (author, commented, assigned, review requested, reviewed, mentioned). */
   readonly reason: ThreadReason
-  /** When I joined the thread: activity before it is not news to me. */
+  /** Every reason I follow it (an earlier build stored only `reason`). */
+  readonly reasons?: readonly ThreadReason[]
+  /** When I joined the thread (the earliest reason): activity before it is not news to me. */
   readonly since: number
 }
 
@@ -306,7 +309,7 @@ function asCursor(v: unknown): Cursor | undefined {
   return undefined
 }
 
-const reviewDoc = baseDoc.extend({ verdict: int })
+const reviewDoc = baseDoc.extend({ verdict: int, body: z.string().optional().catch(undefined) })
 /** A state event, with the identity it addresses (`refId`) when it names one. */
 const addressedEventDoc = eventDoc.extend({ refId: ident.optional().catch(undefined) })
 /** A comment, with its body (for a mention). */
@@ -426,7 +429,7 @@ export function toItems(f: Feed, docs: readonly PlainDocument[], me: string, nam
       }
       return parseDocs(reviewDoc, docs)
         .filter(notMine)
-        .map((d) => item(d, { kind: 'review', repo: t.repo, what: VERDICT_WHAT[d.verdict] ?? 'reviewed', target }))
+        .map((d) => item(d, { kind: 'review', repo: t.repo, what: VERDICT_WHAT[d.verdict] ?? 'reviewed', target, ...mentioned(t.repo, d.body) }))
     }
   }
 }
@@ -525,12 +528,18 @@ export async function computeSubscriptions(
   }
   const repoById = new Map([...repoSubs.map((s) => [s.repo.id, s.repo] as const), ...extra])
 
-  const threads: ThreadSub[] = []
-  const followed = new Set<string>()
+  // One sub per thread: the strongest reason (the first source that names it, in the order
+  // below), every reason, and the earliest time any of them began.
+  const byThread = new Map<string, ThreadSub>()
   const follow = (t: TargetRow | undefined, repo: RepoLite | null | undefined, reason: ThreadReason, since: number): void => {
-    if (!t || !repo || followed.has(t.id)) return
-    followed.add(t.id)
-    threads.push(threadOf(t, repo, reason, since))
+    if (!t || !repo) return
+    const prev = byThread.get(t.id)
+    if (prev === undefined) {
+      byThread.set(t.id, { ...threadOf(t, repo, reason, since), reasons: [reason] })
+      return
+    }
+    const reasons = prev.reasons ?? [prev.reason]
+    byThread.set(t.id, { ...prev, since: Math.min(prev.since, since), reasons: reasons.includes(reason) ? reasons : [...reasons, reason] })
   }
   for (const t of authored) follow(t, t.repo ?? repoById.get(t.repoId), 'author', t.createdAt)
   for (const c of commentedTargets) {
@@ -539,14 +548,16 @@ export async function computeSubscriptions(
   }
   // Assigned, asked to review (QW2-009): the assignment or request itself is news, so the thread
   // is followed from just before it.
+  const rowOf = (id: string): TargetRow | undefined => commentedRows.get(id) ?? authored.find((t) => t.id === id)
   for (const a of addressed) {
-    const t = commentedRows.get(a.targetId)
-    follow(t, t ? repoById.get(t.repoId) : undefined, a.reason, a.firstAt - 1)
+    const t = rowOf(a.targetId)
+    follow(t, t ? t.repo ?? repoById.get(t.repoId) : undefined, a.reason, a.firstAt - 1)
   }
   for (const p of participated) {
-    const t = commentedRows.get(p.targetId)
-    follow(t, t ? repoById.get(t.repoId) : undefined, p.reason, p.at - 1)
+    const t = rowOf(p.targetId)
+    follow(t, t ? t.repo ?? repoById.get(t.repoId) : undefined, p.reason, p.at - 1)
   }
+  const threads = [...byThread.values()]
   threads.sort((a, b) => b.since - a.since)
   return {
     at: now,
@@ -811,23 +822,24 @@ export function refreshesSubscriptions(kind: string): boolean {
 
 export type InboxFilter = 'assigned' | 'participating' | 'mentioned' | 'review-requested'
 
-export const INBOX_FILTERS: readonly { readonly id: InboxFilter; readonly label: string }[] = [
-  { id: 'assigned', label: 'Assigned' },
-  { id: 'participating', label: 'Participating' },
-  { id: 'mentioned', label: 'Mentioned' },
-  { id: 'review-requested', label: 'Review requested' },
+export const INBOX_FILTERS: readonly { readonly id: InboxFilter; readonly label: string; readonly none: string }[] = [
+  { id: 'assigned', label: 'Assigned', none: 'Nothing assigned to you' },
+  { id: 'participating', label: 'Participating', none: 'Nothing you take part in' },
+  { id: 'mentioned', label: 'Mentioned', none: 'No mentions' },
+  { id: 'review-requested', label: 'Review requested', none: 'No review requests' },
 ]
 
 const ITEM_REASON: Readonly<Record<ItemReason, ThreadReason>> = { assign: 'assigned', review_requested: 'review-requested', mention: 'mentioned' }
 
-/** Why I get a thread's notifications: the reason I follow it, and each item's own. */
-export function threadReasons(thread: InboxThread, subs: Subscriptions | null): Set<ThreadReason> {
-  const out = new Set<ThreadReason>()
-  const target = thread.target
-  if (target !== undefined) {
-    const sub = subs?.threads.find((t) => t.repo.id === thread.repo.id && t.kind === target.kind && t.number === target.number)
-    if (sub !== undefined) out.add(sub.reason)
-  }
+/** The subscribed threads by {@link threadKey}, for {@link threadReasons}. */
+export function subsByThread(subs: Subscriptions | null): Map<string, ThreadSub> {
+  return new Map((subs?.threads ?? []).map((t) => [`${t.repo.id}:${t.kind}:${t.number}`, t]))
+}
+
+/** Why I get a thread's notifications: every reason I follow it, and each item's own. */
+export function threadReasons(thread: InboxThread, subs: ReadonlyMap<string, ThreadSub>): Set<ThreadReason> {
+  const sub = subs.get(thread.key)
+  const out = new Set<ThreadReason>(sub === undefined ? [] : sub.reasons ?? [sub.reason])
   for (const i of thread.items) if (i.reason !== undefined) out.add(ITEM_REASON[i.reason])
   return out
 }

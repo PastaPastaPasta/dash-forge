@@ -7,7 +7,7 @@
  */
 
 import Link from 'next/link'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Bell, CheckCheck, CircleDot, GitCommit, GitPullRequest, Info, MessageSquare, RefreshCw, ShieldCheck, Tag } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
 import { SignInButton } from '@/components/sign-in-button'
@@ -27,6 +27,7 @@ import {
   POLL_MS,
   groupThreads,
   matchesFilter,
+  subsByThread,
   threadReasons,
   type InboxFilter,
   type InboxItem,
@@ -71,7 +72,10 @@ export default function NotificationsPage(): JSX.Element {
   // GitHub's reason filters (QW2-056): Assigned, Participating, Mentioned, Review requested.
   const [reason, setReason] = useState<InboxFilter | null>(null)
   // One row per thread (an issue, a PR, a repo's pushes), as GitHub lists them (QW-066).
-  const threads = groupThreads(items).map((t) => ({ thread: t, reasons: threadReasons(t, subs) }))
+  const threads = useMemo(() => {
+    const index = subsByThread(subs)
+    return groupThreads(items).map((t) => ({ thread: t, reasons: threadReasons(t, index) }))
+  }, [items, subs])
   const byReason = reason === null ? threads : threads.filter((t) => matchesFilter(t.reasons, reason))
   const shown = filter === 'unread' ? byReason.filter((t) => t.thread.unread > 0) : byReason
   const unread = byReason.filter((t) => t.thread.unread > 0).length
@@ -164,7 +168,15 @@ export default function NotificationsPage(): JSX.Element {
           <div data-testid="inbox-empty">
             <EmptyState
               icon={Bell}
-              title={reason !== null ? `Nothing ${INBOX_FILTERS.find((r) => r.id === reason)?.label.toLowerCase() ?? ''}${filter === 'unread' ? ' and unread' : ''}` : filter === 'unread' && items.length > 0 ? 'All caught up' : 'Nothing new'}
+              title={
+                filter === 'unread' && byReason.length > 0
+                  ? 'All caught up'
+                  : reason !== null
+                    ? INBOX_FILTERS.find((r) => r.id === reason)?.none ?? 'Nothing new'
+                    : filter === 'unread' && items.length > 0
+                      ? 'All caught up'
+                      : 'Nothing new'
+              }
               body={INBOX_EMPTY}
             />
           </div>

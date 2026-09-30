@@ -7,7 +7,7 @@
  */
 
 import type { Network } from '../constants'
-import { idbEntries, idbGet, idbPut } from '../idb'
+import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 
 /** Why a thread is followed without an index to say so. */
 export type ParticipationReason = 'reviewed' | 'mentioned'
@@ -41,6 +41,12 @@ export async function noteParticipation(network: Network, me: string, targetId: 
       reason: prev?.reason === 'reviewed' ? 'reviewed' : reason,
       at: Math.min(at, prev?.at ?? at),
     })
+    // Bounded: past the cap the oldest go (they are past the inbox's thread cap anyway).
+    if (prev === undefined) {
+      const rows = await idbEntries<Participation>('inbox', prefix(network, me))
+      const old = rows.sort((a, b) => b[1].at - a[1].at).slice(MAX_PARTICIPATION)
+      for (const [k] of old) await idbDelete('inbox', k)
+    }
   } catch {
     // Storage unavailable: the thread is not followed.
   }
