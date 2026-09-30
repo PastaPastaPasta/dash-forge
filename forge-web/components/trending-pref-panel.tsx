@@ -31,7 +31,8 @@ export function TrendingPrefPanel(): JSX.Element {
       </label>
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
         Each new star also writes one small document (about {creditsAsDash(beat.credits)} DASH) that Trending on Explore counts for a week. It
-        is not refunded, and unstarring does not remove it; starring the same repo again writes no second one.
+        is not refunded, and unstarring does not remove it; starring the same repo again writes no second one. A star on a repo of your own
+        never counts toward Trending, so it writes none.
       </p>
     </div>
   )

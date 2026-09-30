@@ -19,7 +19,7 @@
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { Suspense, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { CircleDot, Compass, Flame, Hash, Info, GitBranch, GitFork, GitPullRequest, History, Package, Search, Star, UserCheck, X } from 'lucide-react'
+import { Award, CircleDot, Compass, Flame, Hash, Info, GitBranch, GitFork, GitPullRequest, History, Package, Search, Star, UserCheck, X } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
 import { SignInButton } from '@/components/sign-in-button'
 import { RepoCard } from '@/components/repo-card'
@@ -32,7 +32,8 @@ import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { repoHref } from '@/hooks/use-query-param'
 import { useRepoPages, type RepoPages } from '@/hooks/use-repo-pages'
 import { useSdk } from '@/hooks/use-sdk'
-import { NETWORKS, type Network } from '@/lib/constants'
+import { ACTIVE_NETWORK, NETWORKS, type Network } from '@/lib/constants'
+import { listShowcaseRepos, showcaseFor } from '@/lib/view/showcase'
 import { listReposByOwner, plural, resolveDpnsName, timeAgo, type DiscoveredRepo } from '@/lib/view'
 import { rankedRepos, recentReposPage, recentlyUpdated, reposWithTopic, searchPrefix, searchRepos, PUSH_WINDOW_MS, TOPIC_PAGE, type RankedRepos } from '@/lib/view/discovery'
 import { MAX_TOPIC_CHARS, TOPIC_PATTERN } from '@/lib/repo/settings'
@@ -63,6 +64,9 @@ export function ExploreClient(): JSX.Element {
   const on = ready && sdk !== null && forge !== null
 
   const recent = useRepoPages<number>((after) => recentReposPage(sdk!, { network, after }), network, on)
+  // QW-045: the network's showcase repos lead Explore too, as on the landing page (one read).
+  const hasShowcase = showcaseFor(ACTIVE_NETWORK.key).length > 0
+  const featured = useAsync(() => listShowcaseRepos(sdk!, network, ACTIVE_NETWORK.key), [ready, network], { enabled: on && hasShowcase })
   const [trendWindow, setTrendWindow] = useState<TrendingWindow>('week')
   const trending = useAsync(() => rankedRepos(sdk!, trendWindow, { network, limit: TOP_N }), [ready, network, trendWindow], { enabled: on })
   const starred = useAsync(() => rankedRepos(sdk!, 'most-starred', { network, limit: TOP_N }), [ready, network], { enabled: on })
@@ -133,6 +137,20 @@ export function ExploreClient(): JSX.Element {
           <ExploreSearch on={on} network={network} />
         </Suspense>
 
+        {hasShowcase ? (
+          <Section
+            title="Featured"
+            testId="explore-featured"
+            icon={Award}
+            state={featured}
+            empty="None of the featured repos could be read on this network."
+            note="Picked by the Dash Forge maintainers for this network. Everything below is ranked by the network itself, test repos included."
+          >
+            {(d) => <RepoGrid repos={d} />}
+            {(d) => d.length === 0}
+          </Section>
+        ) : null}
+
         <Section
           title={trendWindow === 'week' ? 'Trending this week' : 'Trending today'}
           testId="explore-trending"
@@ -140,7 +158,7 @@ export function ExploreClient(): JSX.Element {
           state={trending}
           empty={trendWindow === 'week' ? 'Nobody starred a repo in the last week.' : 'Nobody has starred a repo today yet.'}
           emptyAction={<TrendWindowToggle value={trendWindow} onChange={setTrendWindow} />}
-          note="Ranked by new stargazers in the window, proved by the network (a star counts toward Trending unless the starrer turned that off). An unstar does not take a count back before its week ends."
+          note="Ranked by new stargazers in the window, proved by the network. A star counts toward Trending unless the starrer turned that off, and an owner's star on their own repo never counts (so Trending can show fewer than Most starred). An unstar does not take a count back before its week ends."
           partial={missingNote}
         >
           {(d) => (

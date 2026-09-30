@@ -391,6 +391,19 @@ export async function rankedRepos(
 }
 
 /**
+ * Repos of `ids` (at most {@link MAX_ROWS}) in one composite, with their star and issue counts,
+ * owners' names and pushes, by id; one missing is left out. The showcase reads its repos so
+ * (QW-045): one request, and the owner chips need no DPNS read of their own.
+ */
+export async function discoverReposById(sdk: EvoSDK, ids: readonly string[], opts: { network?: Network } = {}): Promise<Map<string, DiscoveredRepo>> {
+  const network = opts.network ?? DEFAULT_NETWORK
+  const forge = forgeOf(network)
+  if (forge === null || ids.length === 0) return new Map()
+  if (ids.length > MAX_ROWS) throw new Error(`discoverReposById reads at most ${MAX_ROWS} repos`)
+  return (await reposById(sdk, forge, network, [...new Set(ids)])).byId
+}
+
+/**
  * Repos by id (at most {@link MAX_ROWS}) in one composite, with their star and issue counts,
  * owners' names and pushes; the plain proved read if the composite is refused.
  */

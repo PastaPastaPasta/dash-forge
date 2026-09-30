@@ -99,7 +99,8 @@ test('g2. Explore: most starred (labelled with its bound), recently updated, and
   await expect.poll(() => recent.locator('a[href*="/repo"]').count(), { timeout: 60_000 }).toBeGreaterThan(firstPage)
   await shot(page, 'g14-explore-sections')
 
-  // Request budget, derived from the page's shape rather than from the devnet's size: trending,
+  // Request budget, derived from the page's shape rather than from the devnet's size: Featured is
+  // one composite of the showcase repos (1, QW-045); trending,
   // most starred and most forked are a proved ranked read and one composite each (6); recent is
   // one composite per page (2 here); "Recently released" reads the latest release of each repo
   // on the first recent page (one read per card, `firstPage`). Stars, issue counts, pushes and
@@ -111,7 +112,7 @@ test('g2. Explore: most starred (labelled with its bound), recently updated, and
   test.info().annotations.push({ type: 'dapi', description: JSON.stringify(Object.fromEntries(dapi)) })
   expect(dapi.get('getDocumentsCount') ?? 0, 'counts ride in the composites').toBe(0)
   expect(domainReads, 'owner names ride in the composites (no per-owner DPNS read)').toBe(0)
-  expect(docs, `getDocuments on Explore (6 ranked + 2 recent pages + ${firstPage} release reads)`).toBeLessThanOrEqual(6 + 2 + firstPage + DAPI_RESEND_SLACK)
+  expect(docs, `getDocuments on Explore (1 featured + 6 ranked + 2 recent pages + ${firstPage} release reads)`).toBeLessThanOrEqual(1 + 6 + 2 + firstPage + DAPI_RESEND_SLACK)
   expect(errors, errors.join('\n')).toEqual([])
 })
 
