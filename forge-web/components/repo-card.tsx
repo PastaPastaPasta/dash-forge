@@ -62,7 +62,8 @@ export function RepoCard({
         {typeof repo.stars === 'number' ? (
           <span className="inline-flex items-center gap-1" title="Stars (provable count)" data-testid="repo-stars" data-stars={repo.stars}>
             <Star className="h-3 w-3" aria-hidden /> {repo.stars}
-            <span className="sr-only">stars</span>
+            {/* QW2-065: "1 star", not "1 stars". */}
+            <span className="sr-only">{repo.stars === 1 ? 'star' : 'stars'}</span>
           </span>
         ) : null}
         {/* A total (the countable index), open and closed alike: so the Issues tab's neutral

@@ -126,6 +126,23 @@ async function readRepoDoc(
   return doc === undefined ? null : toRepoDoc(doc)
 }
 
+/**
+ * The forge-v2 `repo` documents of `ids` (at most 100, one proved read), in no particular order;
+ * an id with no document is left out.
+ */
+export async function readReposById(sdk: EvoSDK, forge: ForgeIds, ids: readonly string[]): Promise<RepoDoc[]> {
+  const unique = [...new Set(ids)]
+  if (unique.length === 0) return []
+  if (unique.length > 100) throw new Error('readReposById reads at most 100 repos')
+  const { documents } = await queryDocumentsWithProof(sdk, {
+    dataContractId: forge.core,
+    documentTypeName: DOC.repo,
+    where: [['$id', 'in', unique]],
+    limit: unique.length,
+  })
+  return documents.map(toRepoDoc)
+}
+
 /** The forge-v2 `repo` document `($ownerId, name)`, or null. */
 function readRepoByName(sdk: EvoSDK, forge: ForgeIds, ownerId: string, name: string): Promise<RepoDoc | null> {
   return readRepoDoc(sdk, forge, [

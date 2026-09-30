@@ -4,9 +4,14 @@
  * shortens ids the way the owner chip does, and keeps the full text in the title.
  */
 
-import { describe, expect, it } from 'vitest'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { describe, expect, it, vi } from 'vitest'
 
-import { shortenIds } from './repo-card'
+vi.mock('@/components/author', () => ({ Author: () => null }))
+vi.mock('next/link', () => ({ default: (props: React.AnchorHTMLAttributes<HTMLAnchorElement>) => <a {...props} /> }))
+
+import type { DiscoveredRepo } from '@/lib/view'
+import { RepoCard, shortenIds } from './repo-card'
 import { SHOWCASE, showcaseFor } from '@/lib/view/showcase'
 
 describe('shortenIds', () => {
@@ -22,5 +27,18 @@ describe('the showcase (QW-045)', () => {
     expect(showcaseFor('devnet-bonsia').map((e) => e.name)).toEqual(['dips', 'dash', 'forge-v2-demo'])
     expect(showcaseFor('testnet')).toEqual([])
     expect(Object.keys(SHOWCASE)).toEqual(['devnet-bonsia'])
+  })
+})
+
+// QW2-065: a card with one star read "1 stars".
+describe('RepoCard star count', () => {
+  const card = (stars: number): string => {
+    const repo = { key: 'k', ownerId: 'o', name: 'n', slug: 'n', description: '', createdAt: 0, visibility: 'public', stars, issues: null, pushedAt: null } as unknown as DiscoveredRepo
+    return renderToStaticMarkup(<RepoCard repo={repo} />).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
+  }
+  it('says "1 star" and "2 stars"', () => {
+    expect(card(1)).toContain('1 star ')
+    expect(card(1)).not.toContain('1 stars')
+    expect(card(2)).toContain('2 stars')
   })
 })

@@ -39,6 +39,7 @@ export {
 } from './chrome'
 export {
   readRepoById,
+  readReposById,
   resolveAnyRepo,
   resolveAnyRepoWith,
   resolveOwner,
