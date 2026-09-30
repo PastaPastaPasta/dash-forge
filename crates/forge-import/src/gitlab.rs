@@ -470,8 +470,9 @@ pub struct GlReleaseLinks {
     pub self_url: Option<String>,
 }
 
-/// `null` as the default (GitLab sends `"author": null` for some imported items).
-fn null_default<'de, D, T>(d: D) -> std::result::Result<T, D::Error>
+/// `null` as the default (GitLab sends `"author": null` for some imported items; GitHub sends
+/// `"label": null` for a PR head in a deleted fork).
+pub(crate) fn null_default<'de, D, T>(d: D) -> std::result::Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Default + Deserialize<'de>,
