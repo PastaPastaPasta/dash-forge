@@ -29,6 +29,9 @@ describe('an upper-bound price says so (QW-043)', () => {
     const read = previewCreate('star', {}, STEADY)
     expect(firstWriteRead({})).toBe(false)
     expect(firstWriteRead(STEADY)).toBe(true)
+    // A read that failed leaves its field out: still the upper bound.
+    const { repo: _unknown, ...partly } = STEADY
+    expect(firstWriteRead(partly)).toBe(false)
     expect(priceLabel(unread.credits, !firstWriteRead({}))).toMatch(/^≤0\.000/)
     expect(priceLabel(read.credits, !firstWriteRead(STEADY))).toMatch(/^~0\.000/)
     // The bound is never below the exact figure it later becomes.
@@ -54,9 +57,15 @@ describe("a repo's creation is listed under the repo (QW-054)", () => {
   it("an older row that named forge-core's id reads as the repo's own", () => {
     const old = row({ kind: 'create:repo', repo: CORE, documentId: REPO })
     expect(repairRepo(old).repo).toBe(REPO)
-    const s = summarize([old, row({})].map(repairRepo))
+    const s = summarize([old, row({})].map((r) => repairRepo(r)))
     expect(s.byRepo.map((r) => r.repo)).toEqual([REPO])
     expect(s.byRepo[0]!.writes).toBe(2)
+  })
+
+  it("a refused creation, and a repo-less write recorded under a contract's id, are repaired too", () => {
+    expect(repairRepo(row({ kind: 'refused:repo', repo: CORE, documentId: REPO })).repo).toBe(REPO)
+    const follow = row({ kind: 'create:follow', repo: '6ktYsH3cpxC7FbazwtVWGiNuVb4TNE5YrHD1hNY8XqNx' })
+    expect(repairRepo(follow, new Set(['6ktYsH3cpxC7FbazwtVWGiNuVb4TNE5YrHD1hNY8XqNx'])).repo).toBeNull()
   })
 
   it('leaves every other row alone', () => {

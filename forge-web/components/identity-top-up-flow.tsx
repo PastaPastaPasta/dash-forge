@@ -22,7 +22,8 @@ import { ErrorBox } from '@/components/auth/protection-fields'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { PHASE_TEXT, connectPlatform, type ConnectPhase } from '@/lib/auth/connect'
 import { isValidMnemonic } from '@/lib/auth/hd'
-import { MIN_TOP_UP_DUFFS, prepareTopUp, readTopUpJournal, topUpIdentity, type TopUpJournal, type TopUpStage } from '@/lib/auth/identity-top-up'
+import { MIN_TOP_UP_DUFFS, discardTopUp, readTopUpJournal, topUpIdentity, type TopUpJournal, type TopUpStage } from '@/lib/auth/identity-top-up'
+import { useConfirmAction } from '@/components/ui/confirm-action'
 import { isAbort } from '@/lib/sdk/facade'
 import { creditsAsDash } from '@/lib/view/format'
 import { errorMessage } from '@/lib/utils'
@@ -46,6 +47,9 @@ export function IdentityTopUpFlow({ faucet }: { faucet: string | null }): JSX.El
   const [hasWords, setHasWords] = useState(false)
   const [pending, setPending] = useState<TopUpJournal | null>(null)
   const [address, setAddress] = useState<string | null>(null)
+  // The deposit is locked: the address takes no more payments for this top-up (the QR goes).
+  const [locked, setLocked] = useState(false)
+  const [confirm, confirmDialog] = useConfirmAction()
   const [stage, setStage] = useState<string | null>(null)
   const [seen, setSeen] = useState(0)
   const [running, setRunning] = useState(false)
@@ -86,16 +90,22 @@ export function IdentityTopUpFlow({ faucet }: { faucet: string | null }): JSX.El
     try {
       const sdk = await connectPlatform(network, (p: ConnectPhase) => setStage(`${PHASE_TEXT[p]}…`))
       setStage('Checking the words against your identity…')
-      const prepared = await prepareTopUp(sdk, { network, identityId: identity, mnemonic: phrase })
-      setAddress(prepared.address)
-      if (words.current) words.current.value = ''
-      setHasWords(false)
       const { balance } = await topUpIdentity(sdk, {
         network,
         identityId: identity,
         mnemonic: phrase,
         signal: controller.signal,
-        onStage: (s, detail) => setStage(detail ?? STAGE_TEXT[s]),
+        // Recorded on this device before it is shown.
+        onAddress: (a, isLocked) => {
+          setAddress(a)
+          setLocked(isLocked)
+          if (words.current) words.current.value = ''
+          setHasWords(false)
+        },
+        onStage: (s, detail) => {
+          setStage(detail ?? STAGE_TEXT[s])
+          if (s !== 'waiting-deposit') setLocked(true)
+        },
         onDeposit: setSeen,
       })
       runWords.current = null
@@ -119,22 +129,47 @@ export function IdentityTopUpFlow({ faucet }: { faucet: string | null }): JSX.El
     )
   }
 
+  const discard = async (): Promise<void> => {
+    const ok = await confirm({
+      title: 'Give up this top-up?',
+      body: "Only when it can't finish (the network never confirmed the lock, or Platform keeps refusing it). If the deposit was locked, those credits can't be added any more; anything still unspent at the address goes into your next top-up, which uses the same address.",
+      confirmLabel: 'Give up',
+    })
+    if (!ok) return
+    await discardTopUp(network, identity).catch((e: unknown) => setError(errorMessage(e)))
+    runWords.current = null
+    setPending(null)
+    setAddress(null)
+    setLocked(false)
+    setError(null)
+  }
+
   if (address !== null) {
     return (
       <div className="space-y-3" data-testid="identity-top-up-fund">
-        <p className="text-dense">
-          Send at least <span className="font-mono">{(MIN_TOP_UP_DUFFS / 1e8).toFixed(2)} DASH</span> to this address from any Dash wallet. All of
-          it becomes credits on your identity, less a small network fee.
-        </p>
-        <div className="flex justify-center">
-          <Qr value={address} label={`Top-up address ${address}`} />
-        </div>
-        <CopyRow text={address} label="Copy the top-up address" />
-        {faucet ? (
-          <a href={faucet} target="_blank" rel="noreferrer noopener" className="block text-center text-dense text-forge-700 underline dark:text-forge-400">
-            Get test DASH from the {ACTIVE_NETWORK.key} faucet (paste the address above)
-          </a>
-        ) : null}
+        {locked ? (
+          // Locked: nothing more should be sent here for this top-up.
+          <p className="text-dense" data-testid="identity-top-up-locked">
+            Your deposit to <span className="break-all font-mono text-[12px]">{address}</span> is locked for Platform. Don&apos;t send more to
+            this address for this top-up.
+          </p>
+        ) : (
+          <>
+            <p className="text-dense">
+              Send at least <span className="font-mono">{(MIN_TOP_UP_DUFFS / 1e8).toFixed(2)} DASH</span> to this address from any Dash wallet. It
+              becomes credits on your identity, less a small network fee.
+            </p>
+            <div className="flex justify-center">
+              <Qr value={address} label={`Top-up address ${address}`} />
+            </div>
+            <CopyRow text={address} label="Copy the top-up address" />
+            {faucet ? (
+              <a href={faucet} target="_blank" rel="noreferrer noopener" className="block text-center text-dense text-forge-700 underline dark:text-forge-400">
+                Get test DASH from the {ACTIVE_NETWORK.key} faucet (paste the address above)
+              </a>
+            ) : null}
+          </>
+        )}
         <div className="flex flex-wrap items-center gap-2 text-dense text-anvil-600 dark:text-anvil-300" aria-live="polite">
           {running ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null}
           <span data-testid="identity-top-up-stage">{stage ?? STAGE_TEXT['waiting-deposit']}</span>
@@ -154,8 +189,12 @@ export function IdentityTopUpFlow({ faucet }: { faucet: string | null }): JSX.El
             <Button variant="outline" className="w-full" onClick={() => runWords.current && void start(runWords.current)} disabled={runWords.current === null}>
               Try again
             </Button>
+            <button type="button" onClick={() => void discard()} className="hit-area text-[12px] text-danger-700 underline dark:text-danger-400">
+              Give up this top-up
+            </button>
           </div>
         ) : null}
+        {confirmDialog}
       </div>
     )
   }

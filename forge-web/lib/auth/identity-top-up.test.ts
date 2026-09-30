@@ -1,8 +1,9 @@
 /**
  * Topping up an identity from the browser (QW-012): the words must be the identity's, the deposit
- * goes to DIP-13's identity-bound top-up path, a lock is built once and saved before it is sent,
- * a top-up whose answer could not be checked is judged by whether Platform used the lock, and a
- * finished top-up moves to the next index. The chain and Core are fakes.
+ * goes to DIP-13's identity-bound top-up path and the journal is saved before the address is
+ * shown, a lock is built once and saved before it is sent, a resumed or unverifiable top-up is
+ * judged by whether Platform used the lock, and the next top-up moves to a new address only once
+ * this one is seen empty. The chain and Core are fakes.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -10,7 +11,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { resetMemoryStores } from '../idb'
 import { encodeWif } from './wif'
-import { prepareTopUp, readTopUpJournal, topUpIdentity, topUpKeyPath } from './identity-top-up'
+import { discardTopUp, readTopUpJournal, topUpIdentity, topUpKeyPath } from './identity-top-up'
 
 const NET = 'devnet' as const
 const ID = '4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF'
@@ -22,28 +23,41 @@ const chain = vi.hoisted(() => ({
   wordsMatch: true,
   lock: 'unused' as 'unused' | 'fully',
   topUp: 'ok' as 'ok' | 'stale-landed' | 'refused',
+  /** What the deposit address still holds after a top-up (null: could not be read). */
+  left: 0 as number | null,
+  height: 100,
   locksBuilt: 0,
   topUps: 0,
-  watched: [] as string[],
+  broadcasts: 0,
+  watched: [] as { address: string; from: unknown }[],
 }))
 
 vi.mock('@dashevo/evo-sdk', () => ({
   OutPoint: class {
     free(): void {}
+    toBytes(): Uint8Array {
+      return new Uint8Array(36).fill(9)
+    }
   },
   PrivateKey: { fromWIF: () => ({ free() {} }) },
   AssetLockProof: {
-    createChainAssetLockProof: () => ({ outPoint: { toBytes: () => new Uint8Array(36).fill(9) } }),
-    createInstantAssetLockProof: () => ({ outPoint: { toBytes: () => new Uint8Array(36).fill(9) } }),
+    createChainAssetLockProof: () => ({}),
+    createInstantAssetLockProof: () => ({}),
   },
 }))
 vi.mock('./asset-lock', () => ({
   coreEndpoints: () => ({ insight: 'https://insight.invalid' }),
-  broadcastTx: async () => undefined,
+  broadcastTx: async () => {
+    chain.broadcasts++
+  },
   obtainLockProof: async () => ({ type: 'chain', txid: 'ab'.repeat(32), height: 100 }),
-  currentHeight: async () => 1,
-  waitForDeposit: async (_ep: unknown, address: string) => {
-    chain.watched.push(address)
+  currentHeight: async () => chain.height,
+  depositHeld: async () => {
+    if (chain.left === null) throw new Error('unreachable')
+    return chain.left
+  },
+  waitForDeposit: async (_ep: unknown, address: string, _min: number, o: { from: unknown }) => {
+    chain.watched.push({ address, from: o.from })
     return [{ txid: 'cd'.repeat(32), vout: 0, satoshis: 2_000_000, scriptPubKey: '' }]
   },
   buildAssetLock: () => {
@@ -67,11 +81,8 @@ function fakeSdk(): EvoSDK {
       topUp: async () => {
         chain.topUps++
         if (chain.topUp === 'refused') throw new Error('asset lock transaction not found')
-        if (chain.topUp === 'stale-landed') {
-          chain.lock = 'fully'
-          throw new Error('Proof verification error: Quorum not found in cache')
-        }
         chain.lock = 'fully'
+        if (chain.topUp === 'stale-landed') throw new Error('Proof verification error: Quorum not found in cache')
         return 500n
       },
     },
@@ -82,9 +93,12 @@ function fakeSdk(): EvoSDK {
   } as unknown as EvoSDK
 }
 
+const run = (extra: Partial<Parameters<typeof topUpIdentity>[1]> = {}): ReturnType<typeof topUpIdentity> =>
+  topUpIdentity(fakeSdk(), { network: NET, identityId: ID, mnemonic: WORDS, ...extra })
+
 beforeEach(() => {
   resetMemoryStores()
-  Object.assign(chain, { wordsMatch: true, lock: 'unused', topUp: 'ok', locksBuilt: 0, topUps: 0, watched: [] })
+  Object.assign(chain, { wordsMatch: true, lock: 'unused', topUp: 'ok', left: 0, height: 100, locksBuilt: 0, topUps: 0, broadcasts: 0, watched: [] })
 })
 
 describe('the top-up deposit key', () => {
@@ -93,55 +107,92 @@ describe('the top-up deposit key', () => {
     expect(topUpKeyPath('devnet', 3)).toBe("m/9'/1'/5'/2'/0'/3")
   })
 
-  it("refuses words that are not the identity's, before showing any address", async () => {
+  it("refuses words that are not the identity's, before any address is shown or recorded", async () => {
     chain.wordsMatch = false
-    await expect(prepareTopUp(fakeSdk(), { network: NET, identityId: ID, mnemonic: WORDS })).rejects.toThrow(/not this identity's recovery phrase/)
-    await expect(topUpIdentity(fakeSdk(), { network: NET, identityId: ID, mnemonic: WORDS })).rejects.toThrow(/not this identity's/)
+    const shown: string[] = []
+    await expect(run({ onAddress: (a) => shown.push(a) })).rejects.toThrow(/not this identity's recovery phrase/)
+    expect(shown).toEqual([])
     expect(await readTopUpJournal(NET, ID)).toBeUndefined()
-    expect(chain.watched).toEqual([])
+  })
+
+  it('the address is shown only once the journal (and the watch start) is recorded', async () => {
+    let recorded: unknown = 'not checked'
+    await run({ onAddress: () => void readTopUpJournal(NET, ID).then((j) => (recorded = j?.startHeight)) })
+    await Promise.resolve()
+    expect(recorded).toBe(100)
   })
 })
 
 describe('topUpIdentity', () => {
-  it('deposit → lock → top-up, then the next top-up uses the next index', async () => {
-    expect((await prepareTopUp(fakeSdk(), { network: NET, identityId: ID, mnemonic: WORDS })).address).toBe(`addr:${topUpKeyPath(NET, 0)}`)
+  it('deposit → lock → top-up; the next top-up uses the next index once this address is empty', async () => {
     const stages: string[] = []
-    const out = await topUpIdentity(fakeSdk(), { network: NET, identityId: ID, mnemonic: WORDS, onStage: (s) => stages.push(s) })
+    const shown: [string, boolean][] = []
+    const out = await run({ onStage: (s) => stages.push(s), onAddress: (a, l) => shown.push([a, l]) })
     expect(out.balance).toBe(500n)
-    expect(chain.watched).toEqual([`addr:${topUpKeyPath(NET, 0)}`])
+    expect(shown).toEqual([[`addr:${topUpKeyPath(NET, 0)}`, false]])
     expect(stages).toEqual(['waiting-deposit', 'locking', 'proving', 'topping-up'])
     expect(await readTopUpJournal(NET, ID)).toBeUndefined()
-    expect((await prepareTopUp(fakeSdk(), { network: NET, identityId: ID, mnemonic: WORDS })).address).toBe(`addr:${topUpKeyPath(NET, 1)}`)
+    chain.lock = 'unused'
+    chain.height = 150
+    await run()
+    expect(chain.watched[1]).toEqual({ address: `addr:${topUpKeyPath(NET, 1)}`, from: 150 })
+  })
+
+  it('money left at the address (a second payment): the next top-up reuses it and watches from the same height', async () => {
+    chain.left = 3_000_000
+    await run()
+    chain.lock = 'unused'
+    chain.height = 150
+    await run()
+    expect(chain.watched[1]).toEqual({ address: `addr:${topUpKeyPath(NET, 0)}`, from: 100 })
+  })
+
+  it('an address that could not be read is treated as not empty (never stranded)', async () => {
+    chain.left = null
+    await run()
+    chain.lock = 'unused'
+    await run()
+    expect(chain.watched[1]!.address).toBe(`addr:${topUpKeyPath(NET, 0)}`)
   })
 
   it('an answer that could not be checked, with the lock used: done, not a failure', async () => {
     chain.topUp = 'stale-landed'
-    const out = await topUpIdentity(fakeSdk(), { network: NET, identityId: ID, mnemonic: WORDS })
-    expect(out.balance).toBe(777n)
+    expect((await run()).balance).toBe(777n)
     expect(await readTopUpJournal(NET, ID)).toBeUndefined()
   })
 
-  it('a refused top-up keeps the lock; trying again sends the same lock, never a second one', async () => {
+  it('a refused top-up keeps the lock; trying again sends the same lock, never a second one, and shows it locked', async () => {
     chain.topUp = 'refused'
-    await expect(topUpIdentity(fakeSdk(), { network: NET, identityId: ID, mnemonic: WORDS })).rejects.toThrow(/"Try again" sends it again/)
-    const kept = await readTopUpJournal(NET, ID)
-    expect(kept?.lockTxid).toBe('ef'.repeat(32))
-    expect(kept?.index).toBe(0)
+    await expect(run()).rejects.toThrow(/"Try again" sends it again/)
+    expect((await readTopUpJournal(NET, ID))?.lockTxid).toBe('ef'.repeat(32))
     chain.topUp = 'ok'
-    await topUpIdentity(fakeSdk(), { network: NET, identityId: ID, mnemonic: WORDS })
+    const shown: boolean[] = []
+    await run({ onAddress: (_a, locked) => shown.push(locked) })
+    expect(shown).toEqual([true])
     expect(chain.locksBuilt).toBe(1)
     expect(chain.watched).toHaveLength(1)
     expect(chain.topUps).toBe(2)
   })
 
-  it('a resumed top-up whose lock Platform already used finishes without sending it again', async () => {
+  it('a resumed top-up whose lock Platform already used finishes before sending or proving anything', async () => {
     chain.topUp = 'refused'
-    await expect(topUpIdentity(fakeSdk(), { network: NET, identityId: ID, mnemonic: WORDS })).rejects.toThrow()
-    // It landed after all (the tab closed before the answer).
+    await expect(run()).rejects.toThrow()
+    const sent = chain.broadcasts
     chain.lock = 'fully'
-    const out = await topUpIdentity(fakeSdk(), { network: NET, identityId: ID, mnemonic: WORDS })
-    expect(out.balance).toBe(777n)
+    expect((await run()).balance).toBe(777n)
+    expect(chain.broadcasts).toBe(sent)
     expect(chain.topUps).toBe(1)
     expect(await readTopUpJournal(NET, ID)).toBeUndefined()
+  })
+
+  it('giving up keeps the address for the next top-up (whatever is unspent there is swept)', async () => {
+    chain.topUp = 'refused'
+    await expect(run()).rejects.toThrow()
+    await discardTopUp(NET, ID)
+    expect(await readTopUpJournal(NET, ID)).toBeUndefined()
+    chain.topUp = 'ok'
+    chain.height = 300
+    await run()
+    expect(chain.watched[1]).toEqual({ address: `addr:${topUpKeyPath(NET, 0)}`, from: 100 })
   })
 })
