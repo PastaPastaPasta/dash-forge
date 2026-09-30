@@ -3,6 +3,7 @@
 import Link from 'next/link'
 
 import { BuildInfo } from '@/components/build-info'
+import { DOCS } from '@/lib/docs-links'
 
 export function AppFooter(): JSX.Element {
   return (
@@ -17,9 +18,12 @@ export function AppFooter(): JSX.Element {
         </div>
         <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
           <span className="font-mono">trust-minimized</span>
-          <Link href="/" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
-            Discover
+          <Link href="/start/" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
+            Getting started
           </Link>
+          <a href={DOCS.guides} target="_blank" rel="noreferrer noopener" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
+            Docs
+          </a>
           <Link href="/explore/" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
             Explore
           </Link>

@@ -42,8 +42,10 @@ use crate::fmt::{credits_to_dash, dash_amount};
 /// repo-local `dash.*` one).
 const MIN_GIT: (u32, u32) = (2, 26);
 
-/// The spec's default push cost guard (UX spec §4 rule 4), in DASH.
-const DEFAULT_COST_WARN_THRESHOLD: &str = "0.01";
+/// The spec's default push cost guard (UX spec §4 rule 4), in DASH. 0.05: on bonsia a tiny
+/// push with its packs on Platform is quoted ~0.012 DASH (charged ~0.009), so the old 0.01
+/// stopped every such push without a terminal (QW-080). A megabyte of packs still asks.
+const DEFAULT_COST_WARN_THRESHOLD: &str = "0.05";
 
 /// Balance below which writes will soon fail (UX spec §4 "Low").
 const LOW_BALANCE_DASH: f64 = 0.01;
@@ -1283,6 +1285,34 @@ fn in_git_repo() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The guard `dg doctor --fix` sets lets a small push through without asking, packs on
+    /// Platform included (its quote is an upper bound), and still asks before a megabyte.
+    #[test]
+    fn the_default_cost_guard_admits_a_small_platform_push() {
+        use forge_core::cost::push_fees::{estimate_push, PushShape};
+        let threshold: f64 = DEFAULT_COST_WARN_THRESHOLD.parse().unwrap();
+        let small = PushShape {
+            pack_bytes: 2_000,
+            objects: 10,
+            index_objects: 10,
+            refs: 1,
+            platform_bytes: true,
+            ..PushShape::default()
+        };
+        let quote = credits_to_dash(estimate_push(&small).total());
+        assert!(
+            quote < threshold,
+            "a small Platform push is quoted {quote} DASH, above the {threshold} DASH guard"
+        );
+        let mib = PushShape {
+            pack_bytes: 1 << 20,
+            objects: 200,
+            index_objects: 200,
+            ..small
+        };
+        assert!(credits_to_dash(estimate_push(&mib).total()) > threshold);
+    }
 
     #[test]
     fn a_section_with_no_rows_has_no_heading() {

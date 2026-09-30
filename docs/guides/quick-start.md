@@ -71,7 +71,7 @@ dg auth new --network devnet --devnet-name bonsia
 ```
 
 1. `dg` shows **12 recovery words**. Write them down, in order, and keep them offline: they are the identity, and nobody can recover it without them. It asks you to type three of them back.
-2. It shows a deposit address as a QR code and as text. Send 0.05 DASH to it from any Dash wallet; on devnet bonsia use the faucet at <https://faucet.bonsia.networks.dash.org>. A repository costs about 0.0013 DASH.
+2. It shows a deposit address as a QR code and as text. Send 0.05 DASH to it from any Dash wallet; on devnet bonsia use the faucet at <https://faucet.bonsia.networks.dash.org>, which sends 10 test DASH, far more than you need. A repository costs about 0.0016 DASH.
 3. `dg` waits for the deposit, locks it, registers the identity, and stores a **limited key** for this computer in your OS keychain: it can spend at most 0.25 DASH, only on Forge, for 180 days. The master key is not stored anywhere.
 
 ```
@@ -104,10 +104,18 @@ dg auth login --network devnet --devnet-name bonsia ~/Downloads/dash-identity-<i
 ```
 
 ```
+Registering a limited key for this computer on 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB (devnet-bonsia):
+  it can spend at most 0.25 DASH, only on Dash Forge, until it expires in 180 day(s)
+  one identity update, ~0.0005 DASH ≈ $0.02; the master key signs once and is not stored
+Register the key? [Y/n] y
 ✓ signed in as 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB on devnet-bonsia
   key #6: limited, 0.25 DASH budget, expires in 180 day(s)
   stored in macOS Keychain (dash-forge/devnet-bonsia/8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB)
+  balance 0.0496 DASH
+  the identity file is no longer needed here; keep it (or the words) offline
 ```
+
+The quote is an upper bound: on devnet bonsia the update was charged about 0.00027 DASH. Without a terminal (a script), `dg` stops with [E802](../errors.md#e802) and writes nothing; add `--yes` once you have checked the estimate.
 
 The identity file's master key signs one update that registers a limited key for this computer, and `dg` stores only that key. Afterwards put the identity file somewhere offline. `dg` records the identity and the network as defaults, and `git push` reads the same stored key, so neither needs flags or `DASH_FORGE_KEY`. Where there is no OS keychain (a container, Linux without Secret Service), the key goes to a passphrase-sealed file instead; over SSH, set `DASH_FORGE_NO_KEYCHAIN=1` to get the same.
 
@@ -126,7 +134,7 @@ dg auth status      # identity, key, budget left, expiry, balance, where the key
 dg doctor --fix     # free, local fixes only: file modes, and a cost guard for git push
 ```
 
-`dg doctor --fix` sets `git config --global dash.costWarnThreshold 0.01` if you have no threshold yet, so that a push asks before spending more than 0.01 DASH. It never spends anything.
+`dg doctor --fix` sets `git config --global dash.costWarnThreshold 0.05` if you have no threshold yet, so that a push asks before spending more than 0.05 DASH: a small push goes through (one with its packs on Platform is quoted about 0.012 DASH on bonsia), a megabyte of packs on Platform asks. It never spends anything.
 
 Your identity id is the long base58 string, such as `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB`. You will use it in repository addresses. A DPNS username is optional: `dg auth name register <label>`. Names work everywhere a repository address does: `forge.dashhq.org/alice/project`, `git clone dash://alice/project` and `dg … alice/project`.
 
@@ -138,9 +146,9 @@ Forge hosts nothing, so you decide where the pack bytes (the git objects) live. 
 
 | Option | Cost | |
 |---|---|---|
-| Your S3-compatible bucket (Cloudflare R2, Backblaze B2, AWS S3, Storj, or a store on [your own NAS](home-nas-storage.md)) | about 0.002–0.003 DASH per push on Platform, plus your provider's bill | recommended; R2 has no egress fees |
+| Your S3-compatible bucket (Cloudflare R2, Backblaze B2, AWS S3, Storj, or a store on [your own NAS](home-nas-storage.md)) | about 0.004–0.005 DASH per push on Platform (measured on bonsia), plus your provider's bill | recommended; R2 has no egress fees |
 | Your IPFS node (kubo) or a pinning service | the same on Platform | |
-| Dash Platform | about **0.33 DASH per MiB**, permanently | no account needed; fine for tiny repositories |
+| Dash Platform | about **0.004–0.010 DASH** for a small push (the top of the range when it moves the default branch), plus about **0.33 DASH per MiB** (the tools quote up to 0.39), permanently | no account needed; fine for tiny repositories |
 
 **From the terminal**, `dg storage add` with no arguments asks for each value, stores a pasted secret in your OS keychain, and tests the storage as it goes, printing the fix for anything that fails (usually CORS):
 
@@ -174,18 +182,19 @@ Proceed? [Y/n] y
 ✓ remote 'origin' → dash://8hJm…/my-project
 ✓ git config dash.storage=r2-main
 dash: 8hJm…/my-project ← main (8f3e2a1, 312 objects, 1.2 MiB)
-dash: storage      → r2-main · Platform stores manifest + refs only, est 0.0032 DASH
+dash: storage      → r2-main · Platform stores manifest + refs only, est 0.0066 DASH
 dash: r2-main      ████████████████ 1.2 MiB  verified   0.4 s
-dash: platform     manifest 2 · refUpdate 1     est 0.0032 DASH
-dash: done · Platform charged ≈0.0028 DASH · remaining 0.4786 DASH · https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
-✓ main → 8f3e2a1   this push ~0.0028 DASH ≈ $0.08
-  total ~0.0041 DASH ≈ $0.12 (create ~0.0013 DASH ≈ $0.04 + push ~0.0028 DASH ≈ $0.08) · balance 0.4786 DASH
+dash: platform     manifest 4 · refUpdate 1     est 0.0066 DASH
+dash: history index published (full, 42 paths, 1 commits)
+dash: done · Platform charged ≈0.0052 DASH · remaining 0.0430 DASH · https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
+✓ main → 8f3e2a1   this push ~0.0052 DASH ≈ $0.16
+  total ~0.0069 DASH ≈ $0.21 (create ~0.0016 DASH ≈ $0.05 + push ~0.0052 DASH ≈ $0.16) · balance 0.0430 DASH
 Open it: https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
 ```
 
-(The numbers are illustrative; the push line is a first push to your own bucket as measured on devnet moutai before the move to bonsia. See [Costs](costs.md).)
+(The charges are the ones measured on devnet bonsia on 2026-09-30 for a first push to your own bucket; the size and paths are illustrative. See [Costs](costs.md).)
 
-A repository is three small documents in Forge's shared contracts: the `repo` itself, your `maintainer` membership, and the first `config`. The quote before you confirm is an upper bound; the measured cost, about **0.0013 DASH**, is printed afterwards. See [Costs](costs.md).
+A repository is three small documents in Forge's shared contracts: the `repo` itself, your `maintainer` membership, and the first `config`. The quote before you confirm is an upper bound; the measured cost, about **0.0016 DASH** on bonsia, is printed afterwards. See [Costs](costs.md).
 
 What it does, in order:
 
@@ -202,7 +211,7 @@ It is safe to run again: an existing repository is reused (nothing written), a m
 
 Names are 1–63 characters: lowercase letters, digits, `.`, `_` and `-`, starting with a letter or digit. A directory name is folded to that form (`My Project` → `my-project`).
 
-You can also create a repository in the web app (**New → Repository**, about 0.0013 DASH, with a cost preview). The empty repository page then shows the commands to push to it.
+You can also create a repository in the web app (**New → Repository**, about 0.0016 DASH, with a cost preview). The empty repository page then shows the commands to push to it.
 
 ---
 
@@ -247,18 +256,19 @@ The helper prints what it will store, and where, before it pays for anything. It
 
 ```
 dash: 8hJm…/my-project ← main (8f3e2a1, 3 objects, 245 B)
-dash: storage      → r2-main · Platform stores manifest + refs only, est 0.0032 DASH
+dash: storage      → r2-main · Platform stores manifest + refs only, est 0.0058 DASH
 dash: r2-main      ████████████████ 245 B  verified   0.2 s
-dash: platform     manifest 2 · refUpdate 1     est 0.0032 DASH
-dash: done · Platform charged ≈0.0021 DASH · remaining 0.4765 DASH · https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
+dash: platform     manifest 4 · refUpdate 1     est 0.0058 DASH
+dash: history index published (full, 3 paths, 2 commits)
+dash: done · Platform charged ≈0.0040 DASH · remaining 0.0390 DASH · https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
 ```
 
 (The numbers are illustrative. Yours depend on the size of the push; a later push costs a little less than the first, and the estimate is an upper bound. See [Costs](costs.md).)
 
-A repository without `dash.storage` stores its pack bytes on Dash Platform, which costs about **0.33 DASH per MiB** ([Costs](costs.md)). If you set a cost guard (`dg doctor --fix` does), a push asks before it spends more than 0.01 DASH. To choose another threshold:
+A repository without `dash.storage` stores its pack bytes on Dash Platform, which costs about **0.33 DASH per MiB** measured (`git push` quotes up to 0.39, an upper bound; [Costs](costs.md)). If you set a cost guard (`dg doctor --fix` does), a push asks before it spends more than 0.05 DASH. To choose another threshold:
 
 ```sh
-git config --global dash.costWarnThreshold 0.05
+git config --global dash.costWarnThreshold 0.1
 ```
 
 Everything else is plain git: branches, tags, force-push, `git fetch`, `git clone --filter=blob:none`. jj works too. Shallow clones (`--depth`) are not supported and fail with [E205](../errors.md#e205).

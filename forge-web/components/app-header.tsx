@@ -12,7 +12,7 @@
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Bell, ChevronDown, Compass, GitFork, Hammer, LogOut, Menu, Plus, Search, Settings, Wallet, X } from 'lucide-react'
+import { Bell, BookOpen, ChevronDown, Compass, GitFork, Hammer, LogOut, Menu, Plus, Search, Settings, Wallet, X } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { signInRequestOutcome, useUiStore } from '@/hooks/use-ui-store'
 import { useUnreadCount } from '@/hooks/use-inbox'
@@ -101,6 +101,13 @@ export function AppHeader(): JSX.Element {
             className="hidden h-8 items-center gap-1.5 rounded-md px-2 text-dense text-anvil-700 hover:bg-anvil-100 dark:text-anvil-200 dark:hover:bg-anvil-800 lg:inline-flex"
           >
             <Compass className="h-4 w-4" aria-hidden /> Explore
+          </Link>
+          {/* What Forge is and how identities and credits work (QW-013), as GitHub links Docs. */}
+          <Link
+            href="/start/"
+            className="hidden h-8 items-center gap-1.5 rounded-md px-2 text-dense text-anvil-700 hover:bg-anvil-100 dark:text-anvil-200 dark:hover:bg-anvil-800 lg:inline-flex"
+          >
+            <BookOpen className="h-4 w-4" aria-hidden /> Docs
           </Link>
           <NewMenu />
           {identity ? <NotificationsBell /> : null}
@@ -390,6 +397,8 @@ function NavDrawer({ signedIn }: { signedIn: boolean }): JSX.Element {
           {ACTIVE_NETWORK.v2 !== null ? item('/mirror/', 'Mirror a GitHub repo', GitFork) : null}
           {signedIn ? item('/notifications/', 'Notifications', Bell) : null}
           {signedIn ? item('/settings/', 'Settings & spend', Settings) : null}
+          {/* What Forge is, and the guides (QW-013). */}
+          {item('/start/', 'Getting started & docs', BookOpen)}
         </nav>
       ) : null}
     </div>

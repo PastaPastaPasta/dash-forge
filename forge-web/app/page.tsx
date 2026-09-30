@@ -1,14 +1,15 @@
 'use client'
 
 /**
- * Landing + discovery. The foundry hero states the thesis (no server to trust), the signature
- * verification chip sits under it — reporting whether this session's Platform connection
- * actually proof-checks reads — and the discovery feed lists recent repos from the active
- * network's forge-core when the SDK connects, a clear empty/error state otherwise.
+ * Landing + discovery. The hero says what Dash Forge is in plain words, the verification chip
+ * sits under it (whether this session's Platform connection actually proof-checks reads), "How
+ * it works" explains identities, credits and test DASH with links to the guides (QW-013), the
+ * network's showcase repos come first (QW-045), then the recent repos from the active network's
+ * forge-core when the SDK connects, a clear empty/error state otherwise.
  */
 
 import Link from 'next/link'
-import { Compass, GitBranch, Lock, Plus, Search } from 'lucide-react'
+import { BookOpen, Coins, Compass, ExternalLink, GitBranch, KeyRound, Lock, Plus, Search, Upload } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { AppShell } from '@/components/app-shell'
 import { RepoCard } from '@/components/repo-card'
@@ -21,6 +22,10 @@ import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useQuorumCheck } from '@/hooks/use-quorum-check'
 import { deriveConnectionTrust, listRecentRepos, type DiscoveredRepo } from '@/lib/view'
+import { listShowcaseRepos, showcaseFor } from '@/lib/view/showcase'
+import { ACTIVE_NETWORK } from '@/lib/constants'
+import { DOCS } from '@/lib/docs-links'
+import { faucetUrl } from '@/components/top-up-sheet'
 
 export default function LandingPage(): JSX.Element {
   const { sdk, ready, connection, network, status: sdkStatus, retry: retrySdk } = useSdk()
@@ -33,6 +38,16 @@ export default function LandingPage(): JSX.Element {
     [ready, network],
     { enabled: deployed && ready && sdk !== null },
   )
+  const featured = showcaseFor(ACTIVE_NETWORK.key).length > 0
+  const showcase = useAsync(
+    () => listShowcaseRepos(sdk!, network, ACTIVE_NETWORK.key),
+    [ready, network],
+    { enabled: deployed && featured && ready && sdk !== null },
+  )
+  // The recent feed without the featured repos (they are shown above it).
+  const shown = new Set((showcase.data ?? []).map((r) => r.key))
+  const recent = feed.data?.filter((r) => !shown.has(r.key)) ?? null
+  const faucet = faucetUrl()
 
   return (
     <AppShell wide>
@@ -42,9 +57,9 @@ export default function LandingPage(): JSX.Element {
           A git forge with <span className="text-forge-700 dark:text-forge-500">no server to trust.</span>
         </h1>
         <p className="mx-auto mt-4 max-w-xl text-prose text-anvil-600 dark:text-anvil-300">
-          Browse code, discuss issues and pull requests, and collaborate. Platform reads are
-          checked against quorum proofs and file contents against their git hashes, straight
-          from Dash Platform or the storage the repo owner chose. Foundry, not SaaS.
+          Host git repositories with issues, pull requests and reviews, like GitHub, but nobody runs
+          the server: everything is stored on the Dash network, and your browser checks what it reads
+          instead of trusting a company. No account to lose, no host to take it down.
         </p>
         <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
           <Link href="/new/">
@@ -55,6 +70,11 @@ export default function LandingPage(): JSX.Element {
           <Link href="/explore/">
             <Button variant="outline" size="lg">
               <Compass className="h-4 w-4" aria-hidden /> Explore
+            </Button>
+          </Link>
+          <Link href="/start/" data-testid="hero-getting-started">
+            <Button variant="ghost" size="lg">
+              <BookOpen className="h-4 w-4" aria-hidden /> Getting started
             </Button>
           </Link>
           <VerificationChip
@@ -75,6 +95,56 @@ export default function LandingPage(): JSX.Element {
         <Feature icon={<Lock className="h-4 w-4 text-forge-500" aria-hidden />} title="Proof-checked reads" body="Refs by Platform proof, file contents by git hash. Each repo's Verification card shows what this session actually checked." />
         <Feature icon={<GitBranch className="h-4 w-4 text-forge-500" aria-hidden />} title="Issues & threads in-browser" body="Open issues, comment, close and reopen, and grant collaborators — each write signed by your Platform identity." />
       </section>
+
+      {/* How it works (QW-013): what an identity and credits are, before anyone is asked to sign in. */}
+      <section aria-labelledby="how-it-works" className="mx-auto mt-10 max-w-4xl" data-testid="how-it-works">
+        <h2 id="how-it-works" className="mb-3 text-xl">How it works</h2>
+        <ol className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <Step
+            icon={<KeyRound className="h-4 w-4 text-forge-500" aria-hidden />}
+            title="1. Get a Dash identity"
+            body="Your account is an identity on the Dash network, made from 12 recovery words that only you hold. Reading and cloning need no identity at all."
+            link={{ href: DOCS.identity, label: 'Identities and keys' }}
+          />
+          <Step
+            icon={<Coins className="h-4 w-4 text-forge-500" aria-hidden />}
+            title="2. Fund it with a little DASH"
+            body={
+              ACTIVE_NETWORK.network === 'mainnet'
+                ? 'Writes (a repo, an issue, a push) cost a small fee in DASH, paid from your identity’s credits and shown before you sign. Reading is free.'
+                : `Writes (a repo, an issue, a push) cost a small fee in credits, shown before you sign. On ${ACTIVE_NETWORK.key} the DASH is free test money${faucet ? ', from the faucet' : ''}. Reading is free.`
+            }
+            link={faucet ? { href: faucet, label: `${ACTIVE_NETWORK.key} faucet` } : { href: DOCS.costs, label: 'What it costs' }}
+          />
+          <Step
+            icon={<Upload className="h-4 w-4 text-forge-500" aria-hidden />}
+            title="3. Push with git"
+            body="Create a repo here or with the dg command line, then git push to a dash:// remote. Your code goes to your own storage or to Dash Platform."
+            link={{ href: DOCS.quickStart, label: 'Quick start' }}
+          />
+        </ol>
+        <p className="mt-3 text-dense text-anvil-600 dark:text-anvil-400">
+          <Link href="/start/" className="hit-area text-forge-700 underline dark:text-forge-300">
+            Getting started
+          </Link>
+          {' · '}
+          <a href={DOCS.guides} target="_blank" rel="noreferrer noopener" className="hit-area text-forge-700 underline dark:text-forge-300">
+            All user guides
+          </a>
+          {' · '}
+          <a href={DOCS.movingFromGithub} target="_blank" rel="noreferrer noopener" className="hit-area text-forge-700 underline dark:text-forge-300">
+            Moving from GitHub
+          </a>
+        </p>
+      </section>
+
+      {/* Featured (QW-045): the network's showcase repos, before the newest ones. */}
+      {deployed && featured && (showcase.data?.length ?? 0) > 0 ? (
+        <section className="mt-14" aria-labelledby="featured-repos" data-testid="featured-repos">
+          <h2 id="featured-repos" className="mb-4 text-xl">Featured repos</h2>
+          <RepoGrid repos={showcase.data ?? []} />
+        </section>
+      ) : null}
 
       {/* Discovery */}
       <section className="mt-14">
@@ -108,8 +178,8 @@ export default function LandingPage(): JSX.Element {
               </Link>
             }
           />
-        ) : feed.data ? (
-          <RepoGrid repos={feed.data} />
+        ) : recent ? (
+          <RepoGrid repos={recent} />
         ) : sdkStatus.phase === 'error' ? null : sdkStatus.phase === 'downloading' ? (
           <DownloadProgressBar status={sdkStatus} />
         ) : (
@@ -132,6 +202,21 @@ function RepoGrid({ repos }: { repos: readonly DiscoveredRepo[] }): JSX.Element 
         <RepoCard key={r.key} repo={r} />
       ))}
     </div>
+  )
+}
+
+function Step({ icon, title, body, link }: { icon: ReactNode; title: string; body: string; link: { href: string; label: string } }): JSX.Element {
+  return (
+    <li className="flex flex-col rounded-lg border border-anvil-200 bg-white p-4 dark:border-anvil-800 dark:bg-anvil-900">
+      <div className="flex items-center gap-2">
+        {icon}
+        <h3 className="text-dense font-semibold">{title}</h3>
+      </div>
+      <p className="mt-2 flex-1 text-dense text-anvil-600 dark:text-anvil-400">{body}</p>
+      <a href={link.href} target="_blank" rel="noreferrer noopener" className="hit-area mt-2 inline-flex items-center gap-1 text-dense text-forge-700 underline dark:text-forge-300">
+        {link.label} <ExternalLink className="h-3 w-3" aria-hidden />
+      </a>
+    </li>
   )
 }
 

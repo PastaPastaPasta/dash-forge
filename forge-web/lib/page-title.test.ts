@@ -26,6 +26,7 @@ describe('pageTitle (L-59)', () => {
   it('titles site pages and profiles', () => {
     expect(pageTitle('/', q(''))).toBe('Dash Forge')
     expect(pageTitle('/explore/', q(''))).toBe('Explore · Dash Forge')
+    expect(pageTitle('/start/', q(''))).toBe('Getting started · Dash Forge')
     expect(pageTitle('/explore/', q('q=dash'))).toBe('Search “dash” · Dash Forge')
     expect(pageTitle('/u/', q(`name=${ID}`), 'alice')).toBe('alice · Dash Forge')
     expect(pageTitle('/u/followers/', q('name=alice'))).toBe('Followers · alice · Dash Forge')

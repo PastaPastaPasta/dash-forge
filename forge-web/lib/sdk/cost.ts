@@ -269,10 +269,15 @@ const DEFAULT_ADMISSION_FACTOR: Admission = { budget: 2, balance: 5 }
  * Measured on moutai beta.5, 2026-09-27, see PR #127 (P-6; per-write balance deltas): a small push
  * 0.0021–0.0028 DASH with own storage, 0.0040–0.0046 with Platform storage; 15 KB on Platform
  * 0.0047 DASH. The G7 quick-start walkthrough agrees (0.0021 own storage; 0.0033–0.0044 Platform).
+ *
+ * Re-measured on bonsia (drive 4.2.0-beta.7, 2026-09-30, QA wave cli-dx; QW-080), where a push to
+ * the default branch also writes its history index: own storage 0.0052 (first) and 0.0041;
+ * packs on Platform 0.0040 (a tag), 0.0052 (a branch), 0.0102 and 0.0088 (the default branch,
+ * whose index is a chunk too). These ranges follow bonsia.
  */
 export const PUSH_COST_DASH = {
-  byo: { min: 0.002, max: 0.003 },
-  platform: { min: 0.003, max: 0.005 },
+  byo: { min: 0.004, max: 0.0055 },
+  platform: { min: 0.004, max: 0.011 },
   /**
    * DASH per MiB of packs on Platform, to two decimals: derived from {@link estimateChunkCredits},
    * the same calibrated chunk fees `dg` (`fmt::platform_rate`) and `git push` quote, so the web,

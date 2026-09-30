@@ -8,9 +8,14 @@
 import Link from 'next/link'
 import { GitBranch, Lock, MessageSquare, Star } from 'lucide-react'
 import type { DiscoveredRepo } from '@/lib/view'
-import { plural, timeAgo } from '@/lib/view'
+import { plural, shortIdentity, timeAgo } from '@/lib/view'
 import { repoHref } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
+
+/** A description's identity and repo ids (a fork's "fork of <44-char id>/name") shortened, as the owner chip shows them (QW-045). */
+export function shortenIds(text: string): string {
+  return text.replace(/\b[1-9A-HJ-NP-Za-km-z]{43,44}\b/g, (id) => shortIdentity(id))
+}
 
 export function RepoCard({
   repo,
@@ -41,7 +46,9 @@ export function RepoCard({
         ) : null}
       </div>
       {repo.description ? (
-        <p className="mt-2 line-clamp-2 text-anvil-600 dark:text-anvil-400">{repo.description}</p>
+        <p className="mt-2 line-clamp-2 text-anvil-600 dark:text-anvil-400" title={repo.description}>
+          {shortenIds(repo.description)}
+        </p>
       ) : (
         <p className="mt-2 italic text-anvil-500 dark:text-anvil-400">No description</p>
       )}

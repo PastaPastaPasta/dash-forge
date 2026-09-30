@@ -41,6 +41,7 @@ export const RESERVED_SEGMENTS: readonly string[] = [
   'repo',
   'robots.txt',
   'settings',
+  'start',
   'u',
 ]
 

@@ -18,6 +18,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import Link from 'next/link'
 import { ArrowLeft, Fingerprint, KeyRound, Lock, Plus, Upload, Wallet } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore, type LoginView } from '@/hooks/use-ui-store'
@@ -188,6 +189,7 @@ function Tile({
 
 function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
   const { limitedKeys } = useAuth()
+  const closeLogin = useUiStore((s) => s.closeLogin)
   const walletAvailable = useWalletAvailability(limitedKeys)
   const [advanced, setAdvanced] = useState(false)
   // No forge-v2 here means no contract group to bind a key to: nothing to sign in to.
@@ -232,6 +234,13 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
           </div>
         ) : null}
       </div>
+      {/* New to Dash (QW-013): what an identity, credits and test DASH are, before choosing a tile. */}
+      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
+        New to Dash Forge?{' '}
+        <Link href="/start/" onClick={closeLogin} className="hit-area text-forge-700 underline dark:text-forge-400" data-testid="signin-docs">
+          How identities, keys and credits work
+        </Link>
+      </p>
     </div>
   )
 }

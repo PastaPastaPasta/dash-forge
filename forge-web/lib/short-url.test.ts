@@ -137,7 +137,7 @@ describe('the shim leaves everything else alone', () => {
   })
 
   it('reserves every real top-level route', () => {
-    for (const r of ['repo', 'settings', 'new', 'login', 'u', 'explore', 'notifications', 'mirror', '_next']) {
+    for (const r of ['repo', 'settings', 'new', 'login', 'u', 'explore', 'notifications', 'mirror', 'start', '_next']) {
       expect(RESERVED_SEGMENTS).toContain(r)
     }
   })
