@@ -17,7 +17,7 @@ import Link from 'next/link'
 import { AlertTriangle, CheckCircle2, Download, FileArchive, Loader2, Lock, Tag, XCircle } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { formatBytes, plural, tipOidOf } from '@/lib/view'
-import type { ReleaseAssetView, ReleaseView } from '@/lib/repo'
+import type { ReleaseAssetView, ReleaseView, RepoRef } from '@/lib/repo'
 import {
   AssetHashMismatchError,
   browserReadable,
@@ -38,7 +38,8 @@ import { sourceUrl, useRepoLinks } from '@/components/repo/target-href'
 import { Button } from '@/components/ui/button'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
-import { NewReleaseButton } from '@/components/repo/new-release'
+import { EditReleaseButton, NewReleaseButton } from '@/components/repo/new-release'
+import { SealedAssets, useSealedManifest } from '@/components/repo/sealed-release-assets'
 import { useSdk } from '@/hooks/use-sdk'
 import { invalidateSessionCache } from '@/lib/view/session-cache'
 import { repoKey } from '@/lib/repo'
@@ -100,11 +101,13 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
               <li key={r.id}>
                 <ReleaseCard
                   release={r}
+                  repo={home.repo}
                   addr={addr}
                   links={links}
                   tagTip={releaseTagTip(home, r.tagName)}
                   isLatest={r.id === latest?.id}
                   stateUnknown={data.unknownTags?.includes(r.tagName) === true}
+                  actions={r.sealed ? <EditReleaseButton home={home} releases={data} tag={r.tagName} onPublished={refreshAfterPublish} /> : null}
                 />
               </li>
             ))}
@@ -132,7 +135,7 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
                 <ul className="mt-2 space-y-3">
                   {data.previous.map((r) => (
                     <li key={r.id}>
-                      <ReleaseCard release={r} addr={addr} links={links} previous />
+                      <ReleaseCard release={r} repo={home.repo} addr={addr} links={links} previous />
                     </li>
                   ))}
                 </ul>
@@ -198,18 +201,20 @@ export function ReleaseContent({ home, addr, tag }: { home: RepoHome; addr: Repo
       <SealedListNotes list={data} />
       <ReleaseCard
         release={release}
+        repo={home.repo}
         addr={addr}
         links={links}
         full
         tagTip={releaseTagTip(home, tag)}
         isLatest={release.id === latestRelease(data)?.id}
         stateUnknown={data.unknownTags?.includes(tag) === true}
+        actions={release.sealed ? <EditReleaseButton home={home} releases={data} tag={tag} onPublished={reload} /> : null}
       />
       {previous.length > 0 ? (
         <section aria-label="Previous revisions" className="space-y-3">
           <h2 className="text-prose">Previous revisions of {tag}</h2>
           {previous.map((r) => (
-            <ReleaseCard key={r.id} release={r} addr={addr} links={links} previous />
+            <ReleaseCard key={r.id} release={r} repo={home.repo} addr={addr} links={links} previous />
           ))}
         </section>
       ) : null}
@@ -219,6 +224,7 @@ export function ReleaseContent({ home, addr, tag }: { home: RepoHome; addr: Repo
 
 function ReleaseCard({
   release: r,
+  repo,
   addr,
   links,
   previous = false,
@@ -226,8 +232,10 @@ function ReleaseCard({
   tagTip = null,
   isLatest = false,
   stateUnknown = false,
+  actions = null,
 }: {
   release: ReleaseView
+  repo: RepoRef
   addr: RepoAddress
   links: MarkdownLinks
   previous?: boolean
@@ -238,11 +246,19 @@ function ReleaseCard({
   isLatest?: boolean
   /** A newer revision of this sealed release could not be read (§16.3). */
   stateUnknown?: boolean
+  /** A maintainer's controls for this release (a sealed one's edit, yank and unpublish). */
+  actions?: ReactNode
 }): JSX.Element {
   const [assetsOpen, setAssetsOpen] = useState(false)
   const prerelease = isPrereleaseView(r)
   const sealedFields = r.sealed?.fields
   const accesses = r.assets.map(assetAccess)
+  // A sealed revision's assets, and notes that continue, are in its encrypted asset list (§16.5):
+  // opened on the release's page, or when its assets are shown.
+  const sealedList = sealedFields?.assetManifest !== undefined
+  const manifest = useSealedManifest(repo, sealedFields, sealedList && (full || assetsOpen))
+  const continued = sealedFields?.notesContinue === true
+  const notes = full && continued && manifest.data?.notes !== undefined ? manifest.data.notes : r.notesBody
   return (
     <article
       data-testid="release"
@@ -284,7 +300,12 @@ function ReleaseCard({
             <AlertTriangle className="h-3 w-3" aria-hidden /> yanked
           </span>
         ) : null}
-        {full ? <CopyLinkButton repo={addr} target={{ kind: 'release', tag: r.tagName }} className="ml-auto" /> : null}
+        {actions || full ? (
+          <span className="ml-auto flex items-center gap-1.5">
+            {actions}
+            {full ? <CopyLinkButton repo={addr} target={{ kind: 'release', tag: r.tagName }} /> : null}
+          </span>
+        ) : null}
       </header>
       <p className="mt-1 flex flex-wrap items-center gap-1 text-[12px] text-anvil-600 dark:text-anvil-300">
         {r.published !== null ? (
@@ -317,14 +338,23 @@ function ReleaseCard({
           </>
         )}
       </p>
-      {r.notesBody && (full || !previous) ? (
+      {notes && (full || !previous) ? (
         <div className={cn('mt-3 text-prose', !full && 'line-clamp-6')}>
           {/* A mirror's release notes are the source's (its import copied them): their mentions are that forge's. */}
-          <MarkdownView source={r.notesBody} images="auto" links={links} imported={sourceUrl(links)} />
+          <MarkdownView source={notes} images="auto" links={links} imported={sourceUrl(links)} />
         </div>
       ) : null}
+      {continued && (full || !previous) && notes === r.notesBody ? (
+        <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="release-notes-continue">
+          {full && manifest.error !== null
+            ? 'These are the first part of the notes: the rest is in the encrypted asset list, which could not be opened.'
+            : full
+              ? 'The notes continue in the encrypted asset list…'
+              : 'The notes continue on the release’s page.'}
+        </p>
+      ) : null}
       {/* L-79: line-clamp-6 silently cuts notes with no way back to the rest. */}
-      {r.notesBody && !full && !previous ? (
+      {notes && !full && !previous ? (
         <Link
           href={repoHref('/repo/release', addr, { tag: r.tagName })}
           className="mt-1 inline-block text-dense text-anvil-600 underline dark:text-anvil-300"
@@ -355,13 +385,20 @@ function ReleaseCard({
           <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden /> A newer revision of this release could not be read; its state is unknown.
         </p>
       ) : null}
-      {sealedFields?.notesContinue === true ? (
-        <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">The notes continue in the release&apos;s encrypted asset list, which this page can&apos;t open yet.</p>
-      ) : null}
-      {sealedFields?.assetManifest !== undefined ? (
-        <p className="mt-2 flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="release-sealed-assets">
-          <Lock className="h-3 w-3 shrink-0" aria-hidden /> The assets are in an encrypted list this page can&apos;t open yet: download them with dg release download.
-        </p>
+      {sealedList && full ? <SealedAssets repo={repo} state={manifest} className="mt-3" /> : null}
+      {sealedList && !full ? (
+        <div className="mt-3">
+          <button
+            type="button"
+            onClick={() => setAssetsOpen((o) => !o)}
+            aria-expanded={assetsOpen}
+            className="inline-flex items-center gap-1 text-dense text-anvil-600 underline dark:text-anvil-300"
+          >
+            <Lock className="h-3 w-3 shrink-0" aria-hidden />
+            {assetsOpen ? 'Hide' : 'Show'} {manifest.data ? plural(manifest.data.assets.length, 'asset') : 'assets'}
+          </button>
+          {assetsOpen ? <SealedAssets repo={repo} state={manifest} className="mt-2" /> : null}
+        </div>
       ) : null}
       {r.omitted ? <OmittedAssetsNote omitted={r.omitted} /> : null}
       {r.badAssets > 0 ? (
