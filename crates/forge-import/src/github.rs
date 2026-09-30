@@ -696,7 +696,7 @@ mod base64_lite {
 /// Run `gh api <path> <rest…>`, retrying transient network failures; 4xx and auth failures
 /// fail at once.
 fn gh_output_with_retry(path: &str, rest: &[&str], what: &str) -> Result<std::process::Output> {
-    const ATTEMPTS: u32 = 4;
+    const ATTEMPTS: u32 = 6;
     // Waits for a rate limit, each up to 15 minutes: enough to reach the hourly reset. Every
     // call has its own, so a run of many small reads larger than one hour's quota (dashpay/dash's
     // ~7,000 per-PR review reads) goes on after the reset instead of failing.
@@ -763,6 +763,7 @@ fn is_transient(stderr: &str) -> bool {
         "temporary failure",
         "EOF",
         "stream error",
+        "unexpected end of JSON input",
         "502",
         "503",
         "504",
@@ -1022,6 +1023,8 @@ mod tests {
             "stream error: stream ID 119; CANCEL; received from peer"
         ));
         assert!(is_transient("gh: Server Error (HTTP 502)"));
+        // A page cut short: gh's --jq meets truncated JSON (page 89 of the same listing).
+        assert!(is_transient("unexpected end of JSON input"));
         assert!(!is_transient("gh: Not Found (HTTP 404)"));
     }
 
