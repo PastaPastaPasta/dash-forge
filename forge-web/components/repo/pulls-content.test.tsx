@@ -57,6 +57,26 @@ vi.mock('@/lib/repo', async (importOriginal) => {
   }
 })
 
+/** The CI status dots' reads (O-07): each call's heads; `dotGate` holds the answer until it resolves. */
+const dotReads: string[][] = []
+let dotGate: Promise<void> | null = null
+const H1 = 'a'.repeat(40)
+const H2 = 'b'.repeat(40)
+vi.mock('@/lib/repo/check-outcomes', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@/lib/repo/check-outcomes')>()
+  return {
+    ...real,
+    readOutcomeCounts: async (_sdk: unknown, _repo: unknown, heads: readonly string[]) => {
+      dotReads.push([...heads])
+      if (dotGate) await dotGate
+      return new Map([
+        [H1, { pending: 0, passed: 2, failed: 1 }],
+        [H2, { pending: 0, passed: 0, failed: 0 }],
+      ])
+    },
+  }
+})
+
 import type { RepoHome } from '@/lib/view'
 import { PullsContent } from './pulls-content'
 
@@ -99,6 +119,8 @@ beforeEach(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   search = ''
   lookupGate = null
+  dotGate = null
+  dotReads.length = 0
   replaced.length = 0
   asked.length = 0
   answer = {
@@ -143,6 +165,36 @@ describe('PullsContent (L-44)', () => {
     expect(rows[1]?.textContent).toContain('Draft · into main')
     expect(el.querySelector('[data-testid="page-indicator"]')?.textContent).toBe('Page 1 of 6')
     expect(asked[0]).toMatchObject({ state: 'open', page: 1, pageSize: 25, sort: 'newest' })
+  })
+
+  it("shows each head's CI status dot after the rows, from one read for the page (O-07)", async () => {
+    let release = (): void => undefined
+    dotGate = new Promise((r) => (release = r))
+    answer = { ...answer, rows: [row(203, { headOid: H1 }), row(202, { headOid: H2 })] }
+    await render()
+    // The rows are there while the dots are still being read.
+    expect(el.querySelectorAll('[data-testid="pull-row"]')).toHaveLength(2)
+    expect(el.querySelector('[data-testid="check-dot"]')).toBeNull()
+    release()
+    await settle()
+    expect(dotReads).toEqual([[H1, H2]])
+    const rows = [...el.querySelectorAll('[data-testid="pull-row"]')]
+    const dot = rows[0]?.querySelector('[data-testid="check-dot"]')
+    expect(dot?.getAttribute('data-state')).toBe('failure')
+    expect(dot?.getAttribute('aria-label')).toBe('2 successful, 1 failing checks')
+    // No runs reported on #202's head: no dot.
+    expect(rows[1]?.querySelector('[data-testid="check-dot"]')).toBeNull()
+  })
+
+  it('reads only the heads a new page adds, keeping the dots it has (O-07)', async () => {
+    const H3 = 'c'.repeat(40)
+    answer = { ...answer, rows: [row(203, { headOid: H1 }), row(202, { headOid: H2 })] }
+    await render()
+    answer = { ...answer, rows: [row(203, { headOid: H1 }), row(201, { headOid: H3 })] }
+    act(() => button('Next').click())
+    search = 'owner=o&name=n&page=2'
+    await render()
+    expect(dotReads).toEqual([[H1, H2], [H3]])
   })
 
   it('reads the tab, filters, sort and page from the URL', async () => {

@@ -21,7 +21,9 @@ import { ensureSdk } from '../sdk/service'
 import { countDocuments, queryAllDocuments } from '../sdk'
 import { readRunners } from './checks'
 import type { RepoRef } from './contract'
+import { readGitPackBytes } from './packs'
 import { findOwnManifest } from './push'
+import { readReleaseCount } from './releases'
 import { readTopicDocNames } from './settings'
 import { repoSource } from './source'
 import { readKindCounts, readThreadStates } from './transitions'
@@ -63,6 +65,9 @@ describe.skipIf(!live)('RC1 on devnet bonsia (live, read-only)', () => {
     expect(await readThreadStates(sdk, REPO, [target])).toEqual(new Map([[target, { code: 0, locked: false }]]))
     expect((await readKindCounts(sdk, REPO)).size).toBe(0)
     expect(await readTagLive(sdk, REPO, 'v1.0.0')).toBe(0)
+    // The About card's totals: the carrier release sum proves an absent repo as 0 (the plain range sum fails there).
+    expect(await readReleaseCount(sdk, REPO)).toBe(0)
+    expect(await readGitPackBytes(sdk, REPO)).toEqual({ platform: 0, external: 0 })
     expect(await findOwnManifest(sdk, REPO, REPO.ownerId, 'ab'.repeat(32))).toBeNull()
     expect(await queryAllDocuments(sdk, source.chunkQuery('ab'.repeat(32), REPO.ownerId, [0, 1]))).toEqual([])
     expect(await readRunners(sdk, REPO)).toEqual([])

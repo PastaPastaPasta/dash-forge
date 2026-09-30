@@ -1,6 +1,6 @@
 /**
  * A Drive-shaped mock SDK for the list index tests (`issue-index.test.ts`, `pull-index.test.ts`):
- * it answers plain, composite, grouped count and grouped sum queries the way Drive does (every
+ * it answers plain, composite, grouped count and sum (grouped or total) queries the way Drive does (every
  * `where` applied, ordered, capped at 100, paged by `startAfter`; a composite's page, counts per
  * bound value, bound lookups and siblings), and records every request so a list page's budget is
  * asserted, not assumed. Test-only.
@@ -9,17 +9,26 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { base58Decode } from '../auth/base58'
-import type { DocumentQuery } from '../sdk'
+import { base64ToBytes, type DocumentQuery } from '../sdk'
 import type { CompositeQuery } from '../sdk/composite'
 
 export type Doc = Record<string, unknown>
 export type Store = Record<string, Record<string, Doc[]>>
 
-/** The wasm SDK's group key: an identifier's 32 bytes, an unsigned integer with the top bit flipped. */
-function groupKey(v: unknown): string {
+/** The byteArray properties a test groups by: their values are base64 (the `toJSON` shape), their keys the raw bytes. */
+const BYTE_ARRAY_FIELDS = new Set(['headOid'])
+
+/**
+ * The wasm SDK's group key: an identifier's 32 bytes, a byteArray's bytes, an unsigned integer with
+ * the top bit flipped; hex.
+ */
+function groupKey(v: unknown, field = ''): string {
   if (typeof v === 'number') return (v ^ 0x80).toString(16).padStart(2, '0')
-  return [...base58Decode(String(v))].map((b) => b.toString(16).padStart(2, '0')).join('')
+  const bytes = BYTE_ARRAY_FIELDS.has(field) ? base64ToBytes(String(v)) : base58Decode(String(v))
+  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
+
+const RANGE_OPS = new Set(['<', '<=', '>', '>='])
 
 function matches(doc: Doc, [field, op, value]: readonly [string, string, unknown]): boolean {
   const v = field.split('.').reduce<unknown>((o, k) => (o !== null && typeof o === 'object' ? (o as Doc)[k] : undefined), doc)
@@ -73,6 +82,18 @@ export const newSeen = (): Seen => ({ composites: [], queries: [], counts: [], s
 export function mockSdk(store: Store, seen: Seen): EvoSDK {
   const rows = (c: string, t: string): Doc[] => store[c]?.[t] ?? []
   const where = (q: DocumentQuery) => (d: Doc): boolean => ((q.where ?? []) as never[]).every((w) => matches(d, w))
+  /**
+   * An ungrouped range aggregate (count or sum) is proved as a plain `Aggregate*OnRange`, whose path
+   * keys (the `==` / `in` prefix) are proved by existence only: over a path holding no document it
+   * fails proof verification on bonsia ("non-leaf proof did not contain the expected key"). The
+   * grouped (carrier) forms prove an absent path as absent.
+   */
+  const absentRangePath = (q: DocumentQuery): boolean => {
+    const clauses = (q.where ?? []) as unknown as (readonly [string, string, unknown])[]
+    if (!clauses.some(([, op]) => RANGE_OPS.has(op))) return false
+    const prefix = clauses.filter(([, op]) => !RANGE_OPS.has(op))
+    return !rows(q.dataContractId, q.documentTypeName).some((d) => prefix.every((w) => matches(d, w)))
+  }
   const query = async (q: DocumentQuery) => {
     seen.queries.push(q)
     const out = run(rows(q.dataContractId, q.documentTypeName), (q.where ?? []) as never, (q.orderBy ?? []) as never, q.limit ?? 100, q.startAfter)
@@ -111,18 +132,33 @@ export function mockSdk(store: Store, seen: Seen): EvoSDK {
       count: async (q: DocumentQuery & { groupBy?: string[] }) => {
         seen.counts.push(q)
         const all = rows(q.dataContractId, q.documentTypeName).filter(where(q))
+        // The wasm binding sums a two-field (compound) result by its last field (`into_flat_map`):
+        // no reader may rely on the per-pair entries, so the mock refuses the shape.
+        if ((q.groupBy?.length ?? 0) > 1) throw new Error('mock: a two-field groupBy comes back merged by its last field')
         const by = q.groupBy?.[0]
+        if (by === undefined && absentRangePath(q)) throw new Error('mock: non-leaf proof did not contain the expected key (ungrouped range count over an absent path)')
         if (by === undefined) return new Map([['', BigInt(all.length)]])
         const out = new Map<string, bigint>()
-        for (const d of all) out.set(groupKey(d[by]), (out.get(groupKey(d[by])) ?? 0n) + 1n)
+        for (const d of all) {
+          const k = groupKey(d[by], by)
+          out.set(k, (out.get(k) ?? 0n) + 1n)
+        }
         return out
       },
       sum: async (q: DocumentQuery & { groupBy?: string[] }, property: string) => {
         seen.sums.push(q)
+        const all = rows(q.dataContractId, q.documentTypeName).filter(where(q))
+        const value = (d: Doc): bigint => BigInt(Number(d[property] ?? 0))
+        const by = q.groupBy?.[0]
+        if (by === undefined) {
+          if (absentRangePath(q)) throw new Error('mock: aggregate range sum over an absent path fails proof verification')
+          // Drive's `Aggregate` mode: one entry keyed '' (the total).
+          return new Map([['', all.reduce((t, d) => t + value(d), 0n)]])
+        }
         const out = new Map<string, bigint>()
-        for (const d of rows(q.dataContractId, q.documentTypeName).filter(where(q))) {
-          const k = groupKey(d[q.groupBy?.[0] ?? ''])
-          out.set(k, (out.get(k) ?? 0n) + BigInt(Number(d[property] ?? 0)))
+        for (const d of all) {
+          const k = groupKey(d[by], by)
+          out.set(k, (out.get(k) ?? 0n) + value(d))
         }
         return out
       },

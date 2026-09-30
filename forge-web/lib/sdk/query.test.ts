@@ -1,7 +1,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { countDocuments, noteSdkWrite, queryAllDocuments, queryDocuments, setPlatformVersion, setStaleContractHandler } from './query'
+import { countDocuments, countDocumentsGrouped, noteSdkWrite, queryAllDocuments, queryDocuments, setPlatformVersion, setStaleContractHandler, sumDocumentsGrouped, ungroupedRangeProblem, type DocumentQuery } from './query'
 
 const CONTRACT = 'C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS'
 
@@ -139,5 +139,22 @@ describe('the page-boundary tie read is for protocol 13 only', () => {
     const seen: unknown[] = []
     expect(await queryAllDocuments(pagedSdk(13, seen), q)).toHaveLength(201)
     expect(seen).toHaveLength(5)
+  })
+})
+
+describe('ungrouped range aggregates are refused before they are sent (they fail proof on an absent path)', () => {
+  const sdk = { documents: { count: async () => new Map(), sum: async () => new Map() } } as unknown as EvoSDK
+  const q = (where: DocumentQuery['where'], groupBy: string[] = []) => ({ dataContractId: 'C', documentTypeName: 'repo', where, groupBy })
+
+  it('a point count is sent; a range count without groupBy is refused', async () => {
+    await expect(countDocuments(sdk, q([['repoId', '==', 'R']]))).resolves.toBe(0)
+    await expect(countDocuments(sdk, q([['visibility', '==', 'public'], ['$createdAt', '>', 5]]))).rejects.toThrow(/carrier/)
+    expect(ungroupedRangeProblem(q([['name', 'startsWith', 'a']]))).not.toBeNull()
+  })
+
+  it('the carrier form (in [x] plus the range, grouped) is sent', async () => {
+    await expect(countDocumentsGrouped(sdk, q([['visibility', 'in', ['public']], ['$createdAt', '>', 5]], ['visibility']))).resolves.toEqual(new Map())
+    await expect(sumDocumentsGrouped(sdk, q([['repoId', 'in', ['R']], ['tagName', '>', '']], ['repoId']), 'delta')).resolves.toEqual(new Map())
+    await expect(sumDocumentsGrouped(sdk, q([['repoId', '==', 'R'], ['tagName', '>', '']], []), 'delta')).rejects.toThrow(/carrier/)
   })
 })

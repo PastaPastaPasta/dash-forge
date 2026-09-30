@@ -596,7 +596,7 @@ export async function setPolicy(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, pol
     const valid = new Set([...members.filter((m) => m.role === 'maintainer').map((m) => m.identity), ...runners])
     const gone = sources.filter((id) => !valid.has(id))
     if (gone.length > 0) {
-      throw new Error(`a required check's pinned source (${gone.join(', ')}) is no longer a runner or maintainer of this repo; update the check sources with the CLI before saving`)
+      throw new Error(`a required check's pinned source (${gone.join(', ')}) is no longer a runner or maintainer of this repo; pick another source for that check, or stop pinning sources, before saving`)
     }
   }
   return write(sdk, auth, repo, DOC.policy, data, intent)

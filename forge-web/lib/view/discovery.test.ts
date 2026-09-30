@@ -308,7 +308,9 @@ describe('recentReposPage', () => {
     expect(all).toHaveLength(63)
     expect(all.slice(-3).sort()).toEqual(['jq', 'jq', 'ripgrep'])
     expect(requests(seen)).toBe(3)
-    expect(seen.composites[1]?.where).toEqual([['$createdAt', '<=', expect.any(Number)]])
+    // RC1 `repo.recent (visibility, $createdAt)`: public repos, paged on `$createdAt` within them.
+    expect(seen.composites[0]?.where).toEqual([['visibility', '==', 'public']])
+    expect(seen.composites[1]?.where).toEqual([['visibility', '==', 'public'], ['$createdAt', '<=', expect.any(Number)]])
   })
 })
 

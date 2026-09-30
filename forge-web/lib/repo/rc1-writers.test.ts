@@ -25,6 +25,8 @@ const ALICE = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const BOB = 'CJao2MVHL4x3f2Ko2xTUibnZ8G1t9exTPtvJnCbHAgDH'
 const NEW_ID = '8rSFEyS7gidGdS4r8m22YtMEc519otpDNQ242Zw9c1Gb'
 
+// A lag retry waits about a block: no real time in tests.
+vi.mock('../sdk/facade', async (orig) => ({ ...(await orig<typeof import('../sdk/facade')>()), sleep: () => Promise.resolve() }))
 vi.mock('../sdk', async (importOriginal) => {
   const real = await importOriginal<typeof import('../sdk')>()
   return {

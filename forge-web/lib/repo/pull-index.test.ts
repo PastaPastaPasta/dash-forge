@@ -17,6 +17,7 @@ import { queryIssues } from './issue-index'
 import { queryPulls, type PullSelection } from './pull-index'
 import type { RepoRef } from './contract'
 import { mockSdk, newSeen, type Doc, type Seen, type Store } from './drive-mock'
+import { OUTCOME_REQUESTS, clearOutcomeCache, readOutcomeCounts } from './check-outcomes'
 
 const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', community: 'COMMUNITY', group: 'GROUP' }
 const REPO = 'C8XSf6R4shR1kqFKUZQnuaEZ5DkW7uoe9qtQYZpS5SRd'
@@ -140,6 +141,25 @@ describe('pull index', () => {
     expect(requests(seen)).toBeLessThanOrEqual(10)
     expect(page.rows.find((r) => r.number === 202)?.comments).toBe(1)
     expect(page.rows.find((r) => r.number === 6)).toBeUndefined() // not on page 1
+  })
+
+  it("adds exactly three proved counts for the page's CI status dots, after the list (O-07)", async () => {
+    const { sdk, seen, repo, store } = fresh(203)
+    clearOutcomeCache()
+    // #202's head: one passed and one failing run; #201's: one pending.
+    store.COMMUNITY!.checkRun = [
+      { $id: 'k1', $ownerId: MAINT, $createdAt: 1, repoId: REPO, headOid: hexToBase64(oid(202)), name: 'build', status: 'completed', conclusion: 'success', outcome: 1 },
+      { $id: 'k2', $ownerId: MAINT, $createdAt: 2, repoId: REPO, headOid: hexToBase64(oid(202)), name: 'lint', status: 'completed', conclusion: 'failure', outcome: 2 },
+      { $id: 'k3', $ownerId: MAINT, $createdAt: 3, repoId: REPO, headOid: hexToBase64(oid(201)), name: 'build', status: 'queued', outcome: 0 },
+    ]
+    const page = await queryPulls(sdk, repo, base, 203, 'devnet')
+    const before = requests(seen)
+    const dots = await readOutcomeCounts(sdk, repo, page.rows.map((r) => r.headOid))
+    expect(requests(seen) - before).toBe(OUTCOME_REQUESTS)
+    expect(seen.counts.filter((q) => q.documentTypeName === 'checkRun')).toHaveLength(OUTCOME_REQUESTS)
+    expect(dots.get(oid(202))).toEqual({ pending: 0, passed: 1, failed: 1 })
+    expect(dots.get(oid(201))).toEqual({ pending: 1, passed: 0, failed: 0 })
+    expect(dots.size).toBe(page.rows.length)
   })
 
   it('pages past 100 with keyset composites', async () => {
