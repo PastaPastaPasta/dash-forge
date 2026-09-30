@@ -5,6 +5,8 @@ name: Release
 # for six targets, packaged as dash-forge-<version>-<target>.{tar.gz,zip}, listed in
 # SHA256SUMS, and covered by GitHub build-provenance attestations (Sigstore, keyless; no
 # signing key to leak or rotate). install.sh and `cargo binstall` both consume these names.
+# With them: the web app's reproducible IPFS build (web-ipfs.yml), as forge-web-<version>.car
+# and forge-web-<version>.cid, in SHA256SUMS too, and its CID in the release notes.
 #
 # Triggers:
 #   * push of a tag `v<semver>`: build, attest, and publish a GitHub Release.
@@ -32,6 +34,7 @@ on:
     branches: [master]
     paths:
       - '.github/workflows/release.yml'
+      - '.github/workflows/web-ipfs.yml'
       - 'install.sh'
       - 'build-support/**'
       - 'crates/**'
@@ -49,6 +52,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/release.yml'
+      - '.github/workflows/web-ipfs.yml'
       - 'install.sh'
       - 'build-support/**'
       - 'crates/**'
@@ -399,11 +403,18 @@ jobs:
           "$prefix/bin/git-remote-dash" --version
           test -s "$prefix/share/zsh/site-functions/_dg"
 
+  # The web app's reproducible IPFS build (web-ipfs.yml): built from this commit on an x86_64
+  # and an arm64 runner in pinned images; the two CIDs must match. Its CAR and CID are released
+  # with the binaries. Nothing is pinned anywhere: users pin it themselves.
+  web-ipfs:
+    name: web app (IPFS)
+    uses: ./.github/workflows/web-ipfs.yml
+
   # Read-only: gathers the archives, writes SHA256SUMS and the size/digest summary. Runs on
   # dry runs too, so they exercise everything except the privileged job below.
   checksums:
     name: SHA256SUMS
-    needs: [plan, build, install-check]
+    needs: [plan, build, install-check, web-ipfs]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -414,6 +425,25 @@ jobs:
           pattern: dist-*
           merge-multiple: true
           path: dist
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: web-ipfs
+          path: web-ipfs
+      # The web app's CAR and CID, named for the release, go into SHA256SUMS (and so under the
+      # attestation) with the archives.
+      - name: Web app CAR and CID
+        run: |
+          set -euo pipefail
+          mkdir -p dist-web
+          cp web-ipfs/forge-web.car "dist-web/forge-web-${VERSION}.car"
+          cp web-ipfs/forge-web.cid "dist-web/forge-web-${VERSION}.cid"
+          cp dist-web/* dist/
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist-web-ipfs
+          path: dist-web/
+          if-no-files-found: error
+          retention-days: 7
       - name: SHA256SUMS
         run: |
           set -euo pipefail
@@ -421,7 +451,7 @@ jobs:
           expected=6
           count=$(find . -maxdepth 1 -name "dash-forge-${VERSION}-*" | wc -l)
           [ "$count" -eq "$expected" ] || { echo "::error::expected $expected archives, found $count"; ls -l; exit 1; }
-          sha256sum dash-forge-* > SHA256SUMS
+          sha256sum dash-forge-* "forge-web-${VERSION}.car" "forge-web-${VERSION}.cid" > SHA256SUMS
           cat SHA256SUMS
           {
             echo "### Artifacts (\`$VERSION\`)"
@@ -591,6 +621,8 @@ jobs:
           set -euo pipefail
           prerelease=false
           case "$VERSION" in *-*) prerelease=true ;; esac
+          # Verified against SHA256SUMS above, like every asset.
+          cid=$(cat "dist/forge-web-${VERSION}.cid")
           cat > "${RUNNER_TEMP}/notes.md" <<EOF
           ## Install
 
@@ -609,6 +641,22 @@ jobs:
 
           macOS binaries are not signed or notarized by Apple yet; see
           [docs/INSTALL.md](https://github.com/${GH_REPO}/blob/${TAG}/docs/INSTALL.md#macos-gatekeeper).
+
+          ## Web app on IPFS
+
+          The web app, built reproducibly from this tag. Its CID (CIDv1):
+
+          \`\`\`
+          ${cid}
+          \`\`\`
+
+          Nobody hosts this copy for you: pin it on your own node with
+          \`ipfs dag import forge-web-${VERSION}.car\` (the CAR below holds the whole site), then
+          open \`http://${cid}.ipfs.localhost:8080/\`. Any gateway also works, by subdomain
+          (\`https://${cid}.ipfs.<gateway>/\`) or by path (\`https://<gateway>/ipfs/${cid}/\`).
+          To check that the app you loaded is this one, and rebuild the CID yourself from the
+          tag, see
+          [docs/guides/verify-the-app.md](https://github.com/${GH_REPO}/blob/${TAG}/docs/guides/verify-the-app.md).
           EOF
           # Draft first, upload, then publish: the release never appears with missing assets.
           # Idempotent, so a failed run can simply be re-run: reuse an existing draft.
@@ -616,5 +664,5 @@ jobs:
             gh release create "$TAG" --verify-tag --draft --prerelease="$prerelease" \
               --title "Dash Forge ${TAG}" --notes-file "${RUNNER_TEMP}/notes.md" --generate-notes
           fi
-          gh release upload "$TAG" dist/dash-forge-* dist/SHA256SUMS --clobber
+          gh release upload "$TAG" dist/dash-forge-* dist/forge-web-* dist/SHA256SUMS --clobber
           gh release edit "$TAG" --draft=false

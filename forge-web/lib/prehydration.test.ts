@@ -76,4 +76,12 @@ describe('what stops the catcher early', () => {
     c.fire('https://forge.example/_next/static/chunks/main-app.js')
     expect(c.stopped()).toBe(true)
   })
+
+  it('so does one of its scripts under an IPFS path gateway prefix, but not a same-named one elsewhere', () => {
+    const c = withErrors()
+    c.fire('https://elsewhere.example/ipfs/bafy/_next/static/chunks/main-app.js')
+    expect(c.stopped()).toBe(false)
+    c.fire('https://forge.example/ipfs/bafy/_next/static/chunks/main-app.js')
+    expect(c.stopped()).toBe(true)
+  })
 })

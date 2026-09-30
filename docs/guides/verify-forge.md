@@ -192,19 +192,22 @@ npx serve out                      # or any static file server
 
 Choose the network at build time: `NEXT_PUBLIC_NETWORK=testnet|mainnet|devnet`, plus `NEXT_PUBLIC_DEVNET_NAME=bonsia` for a devnet. The hosted app is built from master by `.github/workflows/pages.yml`, which uses `NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia`, the only network with a Forge deployment today; a build for a network without one shows "not deployed". Contract ids come from `forge-contracts/deployments/`.
 
-**Host it anywhere static:** another static host, your own server, or IPFS:
+**Host it anywhere static:** another static host, your own server, or IPFS. For IPFS, build the IPFS variant, which finds its base path when it loads:
 
 ```sh
+pnpm build:ipfs                      # instead of pnpm build
 ipfs add -r --cid-version 1 out/     # the last line's CID is the site root
 ```
 
-Open it through a **subdomain** gateway, which serves the site at the root of its own origin: `http://<cid>.ipfs.localhost:8080/` on your own kubo node, or `https://<cid>.ipfs.<gateway>/` on a public gateway that supports subdomain resolution and can find your node. Path gateways (`https://<gateway>/ipfs/<cid>/`) do not work, because the build loads its assets from `/`. The same applies to any host that serves the app under a sub-path: build with `NEXT_PUBLIC_BASE_PATH=/<sub-path>`.
+Open it through a **subdomain** gateway (`http://<cid>.ipfs.localhost:8080/` on your own kubo node, `https://<cid>.ipfs.<gateway>/` on a public one) or a **path** gateway (`https://<gateway>/ipfs/<cid>/`). The plain `pnpm build` loads its assets from `/`, so it works on a subdomain gateway but not a path gateway. Any other host that serves the app under a sub-path: build with `NEXT_PUBLIC_BASE_PATH=/<sub-path>`.
+
+**Or use a release's IPFS build.** Every release publishes the web app as a CAR file and a CID, built reproducibly from the tag, and the maintainer records them on Forge too. Pin it with `ipfs dag import`, and check it against the tag: [Verify the app you loaded](verify-the-app.md).
 
 The app talks only to Platform nodes, the quorum key endpoint, IPFS gateways, and wherever each repository's packs are stored. Your copy works exactly like the hosted one.
 
 Two more things make a copy of your own practical:
 
-- **Short links** such as `/<owner>/<name>/issues/12` are rewritten to the app's canonical routes by a small script in the build's `404.html`, so any static host that serves `404.html` for unknown paths (GitHub Pages and IPFS gateways do) supports them.
+- **Short links** such as `/<owner>/<name>/issues/12` are rewritten to the app's canonical routes by a small script in the build's `404.html`, so any static host that serves `404.html` for unknown paths (GitHub Pages does) supports them. IPFS gateways do not, so the IPFS build copies canonical links instead.
 - **Your own IPFS gateways**: **Settings → Your IPFS gateways** (or **Add a gateway** on a repository whose storage did not answer) adds gateways that are tried before the built-in list. They are saved in this browser only.
 
-**Coming soon:** an official IPFS build published with each release, reproducible, with its hash recorded on-chain, so you can check that the app you loaded is the released one. Until then, building it yourself from a commit you have read is the way to be sure.
+The footer of every page says which commit the app was built from, and the CID when it was loaded from IPFS. [Verify the app you loaded](verify-the-app.md) shows how to rebuild that CID from the tag and compare it with the GitHub release and the Forge release on chain. No release is tagged yet, so until the first one, building it yourself from a commit you have read is the way to be sure.

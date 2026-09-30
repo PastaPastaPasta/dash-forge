@@ -16,6 +16,7 @@ Task-oriented guides for using Dash Forge. For how it is built, see the [documen
 | [Identity and keys](identity-and-keys.md) | understand your identity and limited keys, back it up, recover it, and keep keys safe |
 | [What things cost](costs.md) | know what each action costs (measured), what comes back, and how to see it before you pay |
 | [Check that Forge isn't lying to you](verify-forge.md) | read the Verification card, verify proofs and hashes yourself, and run your own copy of the web app |
+| [Verify the app you loaded](verify-the-app.md) | pin a release's IPFS build of the web app, rebuild its CID from the tag, and compare it with the GitHub release and the Forge release on chain |
 
 Also:
 
