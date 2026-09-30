@@ -143,10 +143,10 @@ describe('pull index', () => {
     expect(page.rows.find((r) => r.number === 6)).toBeUndefined() // not on page 1
   })
 
-  it("adds exactly three proved counts for the page's CI status dots, after the list (O-07)", async () => {
+  it("adds three proved counts for the page's CI status dots, plus one run read per mixed head (O-07)", async () => {
     const { sdk, seen, repo, store } = fresh(203)
     clearOutcomeCache()
-    // #202's head: one passed and one failing run; #201's: one pending.
+    // #202's head: one passed and one failing run (mixed, so its runs are read); #201's: one pending.
     store.COMMUNITY!.checkRun = [
       { $id: 'k1', $ownerId: MAINT, $createdAt: 1, repoId: REPO, headOid: hexToBase64(oid(202)), name: 'build', status: 'completed', conclusion: 'success', outcome: 1 },
       { $id: 'k2', $ownerId: MAINT, $createdAt: 2, repoId: REPO, headOid: hexToBase64(oid(202)), name: 'lint', status: 'completed', conclusion: 'failure', outcome: 2 },
@@ -155,8 +155,9 @@ describe('pull index', () => {
     const page = await queryPulls(sdk, repo, base, 203, 'devnet')
     const before = requests(seen)
     const dots = await readOutcomeCounts(sdk, repo, page.rows.map((r) => r.headOid))
-    expect(requests(seen) - before).toBe(OUTCOME_REQUESTS)
+    expect(requests(seen) - before).toBe(OUTCOME_REQUESTS + 1)
     expect(seen.counts.filter((q) => q.documentTypeName === 'checkRun')).toHaveLength(OUTCOME_REQUESTS)
+    expect(plainOf(seen, 'checkRun')).toHaveLength(1)
     expect(dots.get(oid(202))).toEqual({ pending: 0, passed: 1, failed: 1 })
     expect(dots.get(oid(201))).toEqual({ pending: 1, passed: 0, failed: 0 })
     expect(dots.size).toBe(page.rows.length)

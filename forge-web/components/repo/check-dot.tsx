@@ -5,13 +5,14 @@
  * run failed, else a yellow dot while any is pending, else a green check; nothing when no run was
  * reported. The label says how many ("2 successful, 1 failing checks").
  *
- * The counts are proved but are display only (`lib/repo/check-outcomes`): they cover every run a
- * maintainer, writer or runner reported at the time, re-runs and since-revoked reporters included,
- * where the merge box and the Checks tab count the newest run per name from a current member.
+ * The counts are proved but are display only (`lib/repo/check-outcomes`): they cover the runs a
+ * maintainer, writer or runner reported at the time; where re-runs disagree, the newest run of each
+ * check counts, as in the Checks tab (a mixed dot when too many heads on the page need that).
  *
  * {@link useCheckOutcomes} reads them after the list renders, never delaying it: three proved counts
  * (`OUTCOME_REQUESTS`, one per outcome) per 100 heads the list has not read yet (a grown list reads
- * only what it adds), nothing for heads read in the last minute, and the last known dots meanwhile.
+ * only what it adds), plus a run read per head whose re-runs disagree (`RESOLVE_MAX` at most),
+ * nothing for heads read in the last minute, and the last known dots meanwhile.
  */
 
 import { useMemo, useRef } from 'react'
@@ -30,8 +31,8 @@ import {
   type OutcomeCounts,
 } from '@/lib/repo/check-outcomes'
 
-/** What the count covers, for the tooltip: every reported run, where GitHub's dot reads the latest run of each check. */
-const SCOPE = 'Every run a maintainer, writer or runner reported on this commit, re-runs included. Open it for the checks that count.'
+/** What the count covers, for the tooltip: reported runs, the latest of each check where re-runs disagree. */
+const SCOPE = 'Runs a maintainer, writer or runner reported on this commit; where re-runs disagree, the latest run of each check counts. Open it for the checks that count.'
 
 /**
  * The run counts of `headOids` (hex) in `repo`, keyed by lowercase head. Shows the last known counts
@@ -67,6 +68,9 @@ function DotIcon({ state }: { state: CheckDotState }): JSX.Element {
       return <span className="h-2 w-2 rounded-full bg-caution dark:bg-caution-400" aria-hidden />
     case 'success':
       return <Check className="h-4 w-4 text-verify-700 dark:text-verify-400" strokeWidth={2.5} aria-hidden />
+    case 'mixed':
+      // Neither red nor green: open the commit for the latest run of each check.
+      return <span className="h-2 w-2 rounded-full border border-anvil-500 dark:border-anvil-400" aria-hidden />
   }
 }
 

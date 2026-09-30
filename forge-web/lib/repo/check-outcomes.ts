@@ -6,7 +6,7 @@
  *
  * The read: for each outcome, one proved count `repoId == repo AND headOid in [heads] AND
  * outcome == k`, grouped by `headOid`, so {@link OUTCOME_REQUESTS} requests per 100 heads (the `in`
- * clause's limit), whatever the page's length. Drive serves this shape as a point-lookup count proof,
+ * clause's limit), whatever the page's length, plus a run read for each mixed head (below). Drive serves this shape as a point-lookup count proof,
  * one CountTree element per head (rs-drive `verify_point_lookup_count_proof`: an `in` at any index
  * position with trailing `==` clauses), each keyed by the head's bytes, hex.
  *
@@ -23,23 +23,45 @@
  * (`ownerRefersTo`), so a count holds runs by members at the time they reported, including a
  * reporter revoked since, and every attempt of a re-run (a re-run is a new document). The merge
  * box's `checksState` and a commit's Checks tab count only the newest run per name from a current
- * member or runner (`./checks`), as GitHub's dot reads only the latest run of each check. So a run
- * that failed and then passed on a re-run still counts as failing here: counting only the newest run
- * per name needs a contract that replaces a re-run in place (deferred to the next registration).
+ * member or runner (`./checks`), as GitHub's dot reads only the latest run of each check.
+ *
+ * Re-runs: a check that failed and then passed on a re-run leaves both documents, so its counts are
+ * mixed. A head whose counts are mixed ({@link isMixed}: a failure beside a pass, or a pending run
+ * beside anything) is resolved the way the Checks tab reads it: its runs are read (one query per 100
+ * runs, for at most {@link RESOLVE_MAX} mixed heads per read, first in the list's order) and only the
+ * newest run of each name counts. A head that is not mixed needs no resolving: every run agrees. A
+ * mixed head past the cap, or whose runs could not be read, shows as mixed
+ * ({@link OutcomeCounts.unresolved}), never as a failure it may not be, and is read again next time.
+ *
+ * Where the resolved dot can still differ from the Checks tab: every reporter counts here (the tab
+ * ranks a since-revoked reporter's run below a current member's), and a PR's required-check source
+ * pins (`requiredSources`, from the base branch's policy) are not applied. Both need per-row reads
+ * a list page does not make; the PR's Checks tab and merge box are the authority.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { isRc1OidHex } from '../rules'
 import { countDocumentsGrouped, hexToBase64, shareInFlight } from '../sdk'
+import { checkOutcome, newestCheckRuns, readCheckRunDocs } from './checks'
 import { DOC, type RepoRef } from './contract'
 import { repoSource } from './source'
 
-/** A commit's run documents by outcome. */
+/** A commit's runs by outcome: every run document, or, once resolved, the newest run of each check. */
 export interface OutcomeCounts {
   readonly pending: number
   readonly passed: number
   readonly failed: number
+  /** Mixed counts past the read's resolve cap: re-runs may have changed the outcome (shown as mixed). */
+  readonly unresolved?: true
+}
+
+/** The most mixed heads one read resolves (one run query each); the rest show as mixed. */
+export const RESOLVE_MAX = 10
+
+/** Whether counts need resolving: a failure beside a pass, or a pending run beside any other. */
+export function isMixed(c: OutcomeCounts): boolean {
+  return (c.failed > 0 && c.passed > 0) || (c.pending > 0 && c.passed + c.failed > 0)
 }
 
 /** The `checkRun.outcome` values: pending, passed, failed (the {@link OutcomeCounts} order). */
@@ -94,8 +116,8 @@ export function cachedOutcomeCounts(repo: RepoRef, headOids: readonly string[], 
 /**
  * The run counts of each of `headOids` (hex) in `repo`, keyed by the lowercase head: every valid head
  * gets an entry (all zeros when nothing was reported). {@link OUTCOME_REQUESTS} proved requests per
- * 100 heads neither cached nor already being read; none when all are. A failed read rejects and
- * caches nothing.
+ * 100 heads neither cached nor already being read, plus a run read for each mixed head up to
+ * {@link RESOLVE_MAX}; none when all are cached. A failed count rejects and caches nothing.
  */
 export async function readOutcomeCounts(sdk: EvoSDK, repo: RepoRef, headOids: readonly string[]): Promise<Map<string, OutcomeCounts>> {
   const now = Date.now()
@@ -105,14 +127,16 @@ export async function readOutcomeCounts(sdk: EvoSDK, repo: RepoRef, headOids: re
   for (const h of headsOf(headOids)) {
     const counts = fresh(repo, h, now)
     const held = inFlight.get(cacheKey(repo, h))
-    if (counts !== undefined) out.set(h, counts)
+    // An unresolved head is shown from the cache meanwhile but read again: this read may resolve it.
+    if (counts !== undefined && counts.unresolved !== true) out.set(h, counts)
     else if (held !== undefined) reads.set(h, held)
     else missing.push(h)
   }
-  missing.sort()
+  // In the list's order, so the cap resolves the top rows first; shared by the read's batches.
+  const resolves = { left: RESOLVE_MAX }
   for (let i = 0; i < missing.length; i += IN_MAX) {
     const batch = missing.slice(i, i + IN_MAX)
-    const read = readBatch(sdk, repo, batch)
+    const read = readBatch(sdk, repo, batch, resolves)
     for (const h of batch) reads.set(h, shareInFlight(inFlight, cacheKey(repo, h), () => read.then((m) => m.get(h) ?? NONE)))
   }
   await Promise.all([...reads].map(async ([h, p]) => out.set(h, await p)))
@@ -120,11 +144,21 @@ export async function readOutcomeCounts(sdk: EvoSDK, repo: RepoRef, headOids: re
 }
 
 /**
+ * The newest run of each check on `head`, tallied (as the Checks tab reads them: `newestCheckRuns`).
+ * Every reporter counts: consensus admitted each as a runner or member when it reported.
+ */
+async function resolveHead(sdk: EvoSDK, repo: RepoRef, head: string): Promise<OutcomeCounts> {
+  const runs = newestCheckRuns(await readCheckRunDocs(sdk, repo, head), () => true)
+  const n = (o: ReturnType<typeof checkOutcome>): number => runs.filter((r) => checkOutcome(r) === o).length
+  return { pending: n('pending'), passed: n('passed'), failed: n('failing') }
+}
+
+/**
  * One batch of at most {@link IN_MAX} heads: a proved count per outcome, grouped by head (each keyed
  * by the head's bytes, hex); cached.
  */
-async function readBatch(sdk: EvoSDK, repo: RepoRef, batch: readonly string[]): Promise<Map<string, OutcomeCounts>> {
-  const operands = batch.map(hexToBase64)
+async function readBatch(sdk: EvoSDK, repo: RepoRef, batch: readonly string[], resolves: { left: number }): Promise<Map<string, OutcomeCounts>> {
+  const operands = [...batch].sort().map(hexToBase64)
   const source = repoSource(repo)
   const [pending, passed, failed] = await Promise.all(
     OUTCOMES.map((outcome) =>
@@ -140,10 +174,25 @@ async function readBatch(sdk: EvoSDK, repo: RepoRef, batch: readonly string[]): 
       }),
     ),
   )
+  const counted = new Map<string, OutcomeCounts>(
+    batch.map((h) => [h, { pending: pending!.get(h) ?? 0, passed: passed!.get(h) ?? 0, failed: failed!.get(h) ?? 0 }]),
+  )
+  // Mixed heads: resolved while the read's cap lasts (one run query each), the rest marked mixed.
+  const mixed = batch.filter((h) => isMixed(counted.get(h) as OutcomeCounts))
+  const take = mixed.slice(0, Math.max(0, resolves.left))
+  resolves.left -= take.length
+  const resolved = await Promise.all(
+    take.map(async (h) => {
+      const unresolved = { ...(counted.get(h) as OutcomeCounts), unresolved: true as const }
+      return [h, await resolveHead(sdk, repo, h).catch(() => unresolved)] as const
+    }),
+  )
+  for (const [h, c] of resolved) counted.set(h, c)
+  for (const h of mixed.slice(take.length)) counted.set(h, { ...(counted.get(h) as OutcomeCounts), unresolved: true })
   const at = Date.now()
   const out = new Map<string, OutcomeCounts>()
   for (const h of batch) {
-    const counts = { pending: pending!.get(h) ?? 0, passed: passed!.get(h) ?? 0, failed: failed!.get(h) ?? 0 }
+    const counts = counted.get(h) as OutcomeCounts
     const key = cacheKey(repo, h)
     cache.delete(key)
     cache.set(key, { at, counts })
@@ -156,10 +205,14 @@ async function readBatch(sdk: EvoSDK, repo: RepoRef, batch: readonly string[]): 
   return out
 }
 
-/** The dot GitHub shows: any failure is red, else anything pending is yellow, else green; none for no runs. */
-export type CheckDotState = 'failure' | 'pending' | 'success'
+/**
+ * The dot GitHub shows: any failure is red, else anything pending is yellow, else green; none for no
+ * runs. Mixed counts that were not resolved are `mixed`: a re-run may have fixed the failure.
+ */
+export type CheckDotState = 'failure' | 'pending' | 'success' | 'mixed'
 
 export function checkDotState(c: OutcomeCounts): CheckDotState | null {
+  if (c.unresolved === true) return 'mixed'
   if (c.failed > 0) return 'failure'
   if (c.pending > 0) return 'pending'
   return c.passed > 0 ? 'success' : null
@@ -172,7 +225,9 @@ export function outcomePhrase(c: OutcomeCounts): string {
   if (c.failed > 0) parts.push(`${c.failed} failing`)
   if (c.pending > 0) parts.push(`${c.pending} pending`)
   const total = c.pending + c.passed + c.failed
-  return total === 0 ? '' : `${parts.join(', ')} ${total === 1 ? 'check' : 'checks'}`
+  if (total === 0) return ''
+  if (c.unresolved === true) return `Mixed results across re-runs: ${parts.join(', ')} ${total === 1 ? 'run' : 'runs'}`
+  return `${parts.join(', ')} ${total === 1 ? 'check' : 'checks'}`
 }
 
 /** Test-only: forget every cached count. */
