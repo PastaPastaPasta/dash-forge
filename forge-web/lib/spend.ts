@@ -8,7 +8,7 @@
  */
 
 import { NETWORKS, type Network } from './constants'
-import { idbEntries, idbGet, idbPut } from './idb'
+import { idbBatch, idbEntries, idbGet, idbPut } from './idb'
 import type { SpendEvent } from './sdk/write'
 
 /** A ledger row. */
@@ -36,6 +36,19 @@ function baselineKey(network: Network, identityId: string): string {
   return `baseline:${network}:${identityId}`
 }
 
+/**
+ * Delete this browser's spend ledger for `identityId` (its rows and baseline): "Sign out &
+ * forget key" leaves no record of what the identity spent here (QW2-028).
+ */
+export async function clearLedger(network: Network, identityId: string): Promise<void> {
+  await Promise.allSettled([...storingNow])
+  const rows = await idbEntries('spend', prefix(network, identityId))
+  await idbBatch('spend', [...rows.map(([k]) => [k, undefined] as const), [baselineKey(network, identityId), undefined] as const])
+}
+
+/** Rows being stored now: a clear waits for them, so none lands after it (QW2-028). */
+const storingNow = new Set<Promise<void>>()
+
 /** Told of every write this tab records (whether or not its ledger row could be stored). */
 const recorded = new Set<(event: SpendEvent) => void>()
 
@@ -53,9 +66,12 @@ export function onSpendRecorded(listener: (event: SpendEvent) => void): () => vo
  * no other write of this browser can sit between that read and this row).
  */
 export async function recordSpend(event: SpendEvent): Promise<void> {
+  const storing = storeSpend(event)
+  storingNow.add(storing)
   try {
-    await storeSpend(event)
+    await storing
   } finally {
+    storingNow.delete(storing)
     // The write happened even if the ledger could not keep it (no IndexedDB, quota).
     for (const listener of recorded) {
       try {
@@ -106,18 +122,42 @@ export async function readBaseline(network: Network, identityId: string): Promis
   return b === undefined ? null : { at: b.at, credits: BigInt(b.balanceCredits) }
 }
 
-/** An estimate that missed its actual by more than a quarter (`ux-dx-spec.md` §4 rule 2). */
-export function estimateMissed(row: Pick<SpendRow, 'estimateCredits' | 'actualCredits'>): boolean {
-  if (row.actualCredits === null || row.estimateCredits === 0) return false
-  return Math.abs(row.actualCredits - row.estimateCredits) > Math.abs(row.estimateCredits) * 0.25
+/**
+ * An estimate its actual missed by more than a quarter (`ux-dx-spec.md` §4 rule 2). A write's
+ * preview is a range: the upper bound shown before signing (`estimateCredits`, every first-write
+ * surcharge counted until its reads answer) down to the same write with none of them
+ * (`estimateMinCredits`). The actual misses when it lands more than 25 % outside that range
+ * (QW-043: a range whose actual sat at its steady end was flagged against the bound). A refund
+ * (negative) is a promise of at least that much back: it misses only when a quarter less came
+ * back. A row without a range (older rows, fixed-price writes) is judged against its estimate.
+ */
+export function estimateMissed(row: Pick<SpendRow, 'estimateCredits' | 'estimateMinCredits' | 'actualCredits'>): boolean {
+  const { actualCredits: actual, estimateCredits: max } = row
+  if (actual === null || max === 0) return false
+  if (max < 0) return actual > max * 0.75
+  const min = Math.min(row.estimateMinCredits ?? max, max)
+  return actual > max * 1.25 || actual < min * 0.75
 }
 
-/** Totals by repo (credits; the credits a row took, refunds negative). */
+/** A ledger row that credited the identity (a top-up from this browser), not a spend. */
+export function isCredit(row: Pick<SpendRow, 'kind'>): boolean {
+  return row.kind === TOP_UP_KIND
+}
+
+/** The ledger kind of a top-up this browser made: its actual is the credits added, negative. */
+export const TOP_UP_KIND = 'identity:topup'
+
+
+/** Totals by repo (credits; the credits a row took, refunds negative). Top-ups are not spends. */
 export interface SpendSummary {
   readonly allTime: number
   readonly thisMonth: number
   readonly byRepo: ReadonlyArray<{ readonly repo: string; readonly credits: number; readonly writes: number }>
   readonly missed: number
+  /** Writes counted (every row but top-ups). */
+  readonly writes: number
+  /** Credits this browser's top-ups added (positive). */
+  readonly credited: number
 }
 
 /** The `byRepo` key of rows with no repo: identity actions (key register, top-up, …) and the like. */
@@ -131,7 +171,14 @@ export function summarize(rows: readonly SpendRow[], now = Date.now()): SpendSum
   let allTime = 0
   let thisMonth = 0
   let missed = 0
+  let writes = 0
+  let credited = 0
   for (const r of rows) {
+    if (isCredit(r)) {
+      credited -= r.actualCredits ?? 0
+      continue
+    }
+    writes += 1
     const credits = r.actualCredits ?? r.estimateCredits
     allTime += credits
     if (r.at >= monthStart) thisMonth += credits
@@ -144,6 +191,8 @@ export function summarize(rows: readonly SpendRow[], now = Date.now()): SpendSum
     allTime,
     thisMonth,
     missed,
+    writes,
+    credited,
     byRepo: [...byRepo.entries()]
       .map(([repo, v]) => ({ repo, ...v }))
       .sort((a, b) => b.credits - a.credits),
@@ -163,6 +212,7 @@ const KIND_LABELS: Readonly<Record<string, string>> = {
   'key:encryption': 'Register encryption key',
   'key:runner': 'Register a CI runner key',
   'identity:create': 'Create identity',
+  [TOP_UP_KIND]: 'Top up identity',
   'create:repo': 'Create repo',
 }
 
@@ -207,16 +257,18 @@ export function balanceSettled(
 const RECENT_ROWS = 8
 
 /**
- * The reconciliation line: what the ledger explains vs what the balance actually moved since
- * the ledger began. Positive `unexplained` = spent elsewhere (another app or key); negative =
- * credited (a top-up).
+ * The reconciliation line: how the balance moved since the ledger began (`balanceChange`, signed:
+ * positive when it grew, QW2-019: a top-up read as a loss), and how much of that the ledger does
+ * not explain (`unexplained`, signed the same way: positive = credited from elsewhere, a top-up
+ * this browser did not make; negative = spent elsewhere, another app or key). `ledgerNet` is what
+ * the ledger's rows took since the baseline: spends less refunds less this browser's top-ups.
  */
 export function reconcile(
-  ledgerCredits: number,
+  ledgerNet: number,
   baseline: bigint | null,
   currentBalance: bigint | null,
 ): { balanceChange: number; unexplained: number } | null {
   if (baseline === null || currentBalance === null) return null
-  const balanceChange = Number(baseline - currentBalance)
-  return { balanceChange, unexplained: balanceChange - ledgerCredits }
+  const balanceChange = Number(currentBalance - baseline)
+  return { balanceChange, unexplained: balanceChange + ledgerNet }
 }

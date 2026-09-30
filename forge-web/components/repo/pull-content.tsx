@@ -53,9 +53,10 @@ import {
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
-import { bypassNote, deleteBranchOffer, deleteBranchProblem } from '@/lib/view/pull-actions'
+import { bypassValue, deleteBranchOffer, deleteBranchProblem, prLinkedIssues, requiredChecksLine } from '@/lib/view/pull-actions'
 import {
   createComment,
+  recordPolicyBypass,
   commentFirsts,
   createReview,
   LOCKED_REASON,
@@ -85,7 +86,7 @@ import {
 import { checksPhrase, expectedChecks, readCheckRuns, requiredSources, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
 import { headSync, readBranchState, readBranchTip } from '@/lib/repo/source-branch'
 import type { Event, EventKind, Holdings, RefState } from '@/lib/rules'
-import { linkedIssues, RoleOracle, type Policy, type PolicyStatus } from '@/lib/rules/v2'
+import { linkedIssues, RoleOracle, type ChecksState, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { checksState } from '@/lib/rules/parity'
 import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, type CostPreview as Cost } from '@/lib/sdk'
 import { commentEditDrops, pullSinceYourReview } from '@/lib/view/issues-view'
@@ -93,6 +94,9 @@ import { totalHidden } from '@/lib/repo/private-content'
 import { headUpdatePhrases } from '@/lib/view/head-updates'
 import { inlineCommentIds, lineKey, repliesByRoot } from '@/lib/view/inline-threads'
 import { appliedSuggestions, prCommits, prHaveSet } from '@/lib/view/pr-commits'
+import { anchorOnHead } from '@/lib/view/inline-threads'
+import { snippetKey, snippetSource } from '@/lib/view/anchor-snippet'
+import { AnchorContext, useSnippetTexts } from '@/components/repo/anchor-snippet'
 import { WALK_COMMIT_CAP } from '@/lib/merge/objects'
 import { commentsShown, draftIsEmpty, draftWhereabouts, reviewShows, SUBMIT_WAIT } from '@/lib/view/pending-review'
 import { tipOidOf } from '@/lib/view/refs'
@@ -262,7 +266,11 @@ function PullPage({
   reloadHome?: () => void
 }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
-  const { identity, signer } = useAuth()
+  const { identity, signer, locked, lockedIdentity } = useAuth()
+  // A locked session is still that member (QW2-033): permissions, the merge box and the review
+  // controls are read for the identity Unlock would open, and each write opens Unlock (the
+  // guard), as the header's "Session locked — Unlock" says. Signed out, there is none.
+  const viewer = identity ?? lockedIdentity
   const guard = useWriteGuard()
   const router = useRouter()
   const pathname = usePathname()
@@ -284,19 +292,19 @@ function PullPage({
   const origin = trustedOrigin(pull.origin, pull.author, trust)
   const pullOrigin = origin !== null ? pullOriginOf(pull.body) : null
   const holdings = useAsync<Holdings | null>(
-    () => readViewerPermissions(sdk!, repo, identity!, network),
-    [ready, repoKey(repo), identity ?? '', network],
-    { enabled: ready && sdk !== null && identity !== null },
+    () => readViewerPermissions(sdk!, repo, viewer!, network),
+    [ready, repoKey(repo), viewer ?? '', network],
+    { enabled: ready && sdk !== null && viewer !== null },
   )
   const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
-  const isAuthor = identity !== null && identity === pull.author
+  const isAuthor = viewer !== null && viewer === pull.author
   const archived = home.config?.archived === true
   // A locked PR takes comments and reviews from members only (RC1: consensus refuses the rest).
   const postContext = { isMember, locked: thread.locked }
   const composeBlock = archived ? ARCHIVED_REASON : lockedOut(postContext) ? LOCKED_REASON : privateComposeBlock(home)
   const writeBlocked = composeBlock !== null
   // Who the composer's lock banner speaks to (a member keeps the composer).
-  const lockViewer = lockViewerOf(identity, holdings)
+  const lockViewer = lockViewerOf(viewer, holdings)
   const open = pull.state.open
   const { slot: mergeSlot, onRunning: setMergeRunning } = useMergeSlot(tab, open && pull.state.draft)
   const merged = pull.state.merged
@@ -367,7 +375,8 @@ function PullPage({
         ? readBranchState(sdk!, sourceRef!, pull.sourceRefName!)
         : Promise.resolve(repo.visibility === 'private' ? null : home.branches.find((b) => b.refName === pull.sourceRefName)?.state ?? null),
     [ready, crossRepo ? sourceRef?.repoId ?? '' : repoKey(repo), pull.sourceRefName ?? '', pull.headOid, sameRepoBranches],
-    { enabled: ready && sdk !== null && open && pull.sourceRefName !== null && (!crossRepo || sourceRef !== null) },
+    // Read for a merged or closed PR too: its sidebar says whether the branch still exists (QW2-053).
+    { enabled: ready && sdk !== null && pull.sourceRefName !== null && (!crossRepo || sourceRef !== null) },
   )
   const sync = sourceState.settled && !sourceState.error && pull.sourceRefName !== null ? headSync(pull.headOid, sourceState.data) : null
   // The PR's author or a maintainer/writer: who may move the head, mark draft/ready, resolve and request.
@@ -393,11 +402,10 @@ function PullPage({
       : checks.data === null || !membersKnown
         ? ('unknown' as const)
         : checksState(checks.data.rows, pull.headOid, new RoleOracle(thread.members), checks.data.runners, policyNow)
-  const checksBlocking = requiredChecks !== null && (requiredChecks === 'unknown' || !requiredChecks.met)
   const actions = pullActions({
     pull,
-    viewer: identity,
-    holdings: identity !== null && !holdings.settled ? 'loading' : holdings.data,
+    viewer,
+    holdings: viewer !== null && !holdings.settled ? 'loading' : holdings.data,
     protectedPatterns: home.config?.protectedPatterns ?? [],
     policy: rules.status,
     maintainersOnly: policyNow?.approverRole === 1,
@@ -450,6 +458,22 @@ function PullPage({
   }, [])
   // Suggestions and "Update branch": commits to the PR's source branch (the fork).
   const applied = useMemo(() => appliedSuggestions(commits.data?.commits ?? []), [commits.data])
+  // The code each inline comment was left on, for Conversation (QW2-049): read on that tab only.
+  const snippetSources = useMemo(() => thread.comments.flatMap((c) => (c.anchor === null ? [] : [snippetSource(c.anchor)].filter((s) => s !== null))), [thread.comments])
+  const snippetTexts = useSnippetTexts(tab === 'conversation' ? headReader : null, snippetSources)
+  const anchorContext = (c: CommentView, label = true): JSX.Element | null => {
+    if (c.anchor === null) return null
+    const source = snippetSource(c.anchor)
+    return (
+      <AnchorContext
+        anchor={c.anchor}
+        text={source === null ? null : snippetTexts.get(snippetKey(source))}
+        outdated={!anchorOnHead(c.anchor, pull.headOid)}
+        applied={applied.get(c.id) ?? null}
+        label={label}
+      />
+    )
+  }
   const suggest = useSuggestions({
     repo,
     source: sourceRef,
@@ -462,6 +486,7 @@ function PullPage({
     isMember,
     isAuthor,
     signedIn: identity !== null && guard.disabledReason === null && !archived,
+    branchAhead: sync?.kind === 'ahead',
     onCommitted: (c) => refresh((t) => t.pull.headOid === c),
   })
   const sourceWrite = suggest.branchWrite
@@ -539,7 +564,7 @@ function PullPage({
         // as the merge box and `dg pr merge --event-only --override-policy` record theirs.
         if (p.bypass.length > 0) {
           try {
-            await createComment(sdk, signer, repo, { targetId: pull.id, body: bypassNote(pull.headOid, pull.state.baseRef ?? pull.baseRefName, p.bypass), intent: `${intent}:bypass`, post: postContext })
+            await recordPolicyBypass(sdk, signer, repo, { target, rules: p.bypass, mergeOid: pull.headOid, intent: `${intent}:bypass` })
           } catch (e) {
             // The merge is recorded (final); a retry of this same action re-uses it and writes only the record.
             throw new Error(`The merge is recorded, but recording the rules bypass failed: ${guard.failed(e)} Retry to record it.`)
@@ -640,7 +665,7 @@ function PullPage({
         return composeCost(repo, 'review', { body: pending.body }, reviewFirst)
       case 'mark-merged':
         return pending.bypass.length > 0
-          ? previewCredits(transitionCost.credits + composeCost(repo, 'comment', { body: bypassNote(pull.headOid, pull.state.baseRef ?? pull.baseRefName, pending.bypass) }, commentFirst).credits)
+          ? previewCredits(transitionCost.credits + previewCreate('event', { value: bypassValue(pending.bypass) }).credits)
           : transitionCost
       case 'state':
       case 'draft':
@@ -692,12 +717,13 @@ function PullPage({
       : pull.state.draft
         ? { label: 'Draft', icon: <GitPullRequestDraft className="h-4 w-4" aria-hidden />, bg: 'bg-anvil-600' }
         : { label: 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, bg: 'bg-verify-700' }
-  const linked = linkedIssues(pull.body)
+  const linkedUpstream = importedHost(pull.importedUrl, mirrorRepo(home.description)) !== null
+  // A mirrored description's #n are the source forge's numbers, not this PR's (QW2-054 applies here only).
+  const linked = linkedUpstream ? linkedIssues(pull.body) : prLinkedIssues(pull.body, pull.number)
   // The open issues "Fixes #n" names, for the merge box's "Close #n after merging" (QW-015): read
   // only for a viewer who can merge an open PR. An imported description's #n is the source
   // forge's (as it renders): the native issue a trusted mirror recorded with that upstream number.
   const linkedKey = linked.join(',')
-  const linkedUpstream = importedHost(pull.importedUrl, mirrorRepo(home.description)) !== null
   const linkedOpen = useAsync(
     async () => {
       if (!linkedUpstream) return linkedIssueTargets(sdk!, repo, linked)
@@ -816,24 +842,33 @@ function PullPage({
       </div>
 
       {/* Banners */}
-      {canMoveHead && sync?.kind === 'ahead' ? (
+      {open && sync?.kind === 'ahead' ? (
+        // Every reader is told the PR shows an older head than its branch (QW2-007: an
+        // interrupted browser commit, or a push with auto-sync off); who can move it gets the button.
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-forge-500/40 bg-forge-500/5 px-4 py-3 text-dense" data-testid="head-sync-banner">
           <RefreshCw className="h-4 w-4 text-forge-700 dark:text-forge-400" aria-hidden />
           <span className="min-w-0 flex-1">
             {isAuthor ? 'Your branch' : 'The source branch'} <span className="font-mono">{shortBranch(pull.sourceRefName ?? '')}</span> is at{' '}
             <Oid value={sync.tip} chars={7} copyable={false} />, but this PR is at <Oid value={pull.headOid} chars={7} copyable={false} />.
+            {authorOrMember ? null : (
+              <span className="text-anvil-600 dark:text-anvil-400"> Its commits, files and checks are the PR head&apos;s until the author or a maintainer or writer updates it.</span>
+            )}
           </span>
-          <CostPreview cost={eventCost} />
-          <Button
-            variant="primary"
-            size="sm"
-            disabled={guard.disabledReason !== null}
-            onClick={() => {
-              confirmEvent({ kind: 'head', oid: sync.tip })
-            }}
-          >
-            Update PR head
-          </Button>
+          {canMoveHead ? (
+            <>
+              <CostPreview cost={eventCost} />
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={guard.disabledReason !== null}
+                onClick={() => {
+                  confirmEvent({ kind: 'head', oid: sync.tip })
+                }}
+              >
+                Update PR head
+              </Button>
+            </>
+          ) : null}
         </div>
       ) : null}
       {open && sync?.kind === 'deleted' && pull.sourceRefName ? (
@@ -918,6 +953,7 @@ function PullPage({
                   links={links}
                   trust={trust}
                   eventText={eventText}
+                  anchorContext={anchorContext}
                   renderComment={(item) =>
                     commentSlots({
                       item,
@@ -932,7 +968,8 @@ function PullPage({
                       replies: repliesOf.get(item.comment.id) ?? [],
                       trust,
                       resolved: resolved.has(item.comment.id),
-                      outdated: item.comment.anchor !== null && item.comment.anchor.commitOid !== pull.headOid,
+                      // The header already says where it points ("commented on …").
+                      context: anchorContext(item.comment, false),
                       onShowFiles: () => setTab('files'),
                     })
                   }
@@ -986,7 +1023,8 @@ function PullPage({
                             size="sm"
                             variant="outline"
                             loading={suggest.runner.busy}
-                            disabled={headReader === null || comparison.headOnly === null || guard.disabledReason !== null}
+                            // The branch is past the head: its ref update would be refused (QW2-007); the banner above moves the head first.
+                            disabled={headReader === null || comparison.headOnly === null || guard.disabledReason !== null || sync?.kind === 'ahead'}
                             onClick={() => {
                               const who = suggest.who
                               if (headReader !== null && who !== null) void suggest.runner.run(`update:${pull.headOid}:${baseTipOid}`, 'Update branch', () => buildUpdateBranch(headReader, pull, baseTipOid, who))
@@ -1029,7 +1067,6 @@ function PullPage({
                   active: mergeSlot === 'shown',
                   unmetRules: actions.unmetRules,
                   canBypass: actions.canBypass,
-                  locked: thread.locked,
                   allowedMethods: policyNow?.mergeMethods ?? 0,
                   squashAuthors: commits.error
                     ? { error: commits.error }
@@ -1062,7 +1099,7 @@ function PullPage({
           {tab === 'conversation' ? (
             <>
               {!(open && pull.state.draft) && open && (actions.baseProtected || rules.status !== null) ? (
-                <BranchRules base={pull.baseRefName} baseProtected={actions.baseProtected} policy={rules.policy} status={rules.status} checksBlocking={checksBlocking} />
+                <BranchRules base={pull.baseRefName} baseProtected={actions.baseProtected} policy={rules.policy} status={rules.status} checks={requiredChecks} />
               ) : null}
 
               {/* Composer */}
@@ -1106,12 +1143,12 @@ function PullPage({
                         disabled={comment.trim() === '' || commentTooLong || guard.disabledReason !== null}
                         title={guard.disabledReason ?? undefined}
                       >
-                        {identity ? 'Comment' : 'Sign in to comment'}
+                        {identity ? 'Comment' : locked ? 'Unlock to comment' : 'Sign in to comment'}
                       </Button>
                     )}
                   </div>
                 </div>
-                {open && identity !== null && pull.headOid && !writeBlocked ? (
+                {open && viewer !== null && pull.headOid && !writeBlocked ? (
                   <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-anvil-100 pt-3 dark:border-anvil-850">
                     <span className="text-dense text-anvil-500 dark:text-anvil-400">
                       Review head <span className="font-mono">{pull.headOid.slice(0, 9)}</span>:
@@ -1319,10 +1356,23 @@ function PullPage({
                   <>
                     {' '}
                     on <span className="font-mono">{shortBranch(pull.sourceRefName)}</span>
+                    {sync?.kind === 'deleted' ? <span data-testid="source-branch-deleted"> (deleted)</span> : null}
                   </>
                 ) : null}
               </p>
-              <CopyRow text={checkout} className="mt-2" />
+              {sync?.kind === 'deleted' ? (
+                // `dg pr checkout` fetches the source's branches, so with the branch gone it has
+                // nothing to fetch: a merged head is in the base's history, checked out by id.
+                <>
+                  <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="source-branch-deleted-note">
+                    The branch was deleted. The PR&apos;s head is <Oid value={pull.headOid} chars={7} copyable={false} />
+                    {merged ? `, in ${shortBranch(pull.state.baseRef ?? pull.baseRefName)}'s history:` : '.'}
+                  </p>
+                  {merged ? <CopyRow text={`git switch --detach ${pull.headOid}`} className="mt-2" /> : null}
+                </>
+              ) : (
+                <CopyRow text={checkout} className="mt-2" />
+              )}
             </SidebarSection>
             {/* Lock conversation (GitHub: the rail's last entry): a member transition, for maintainers and writers. */}
             {isMember || thread.locked ? (
@@ -1435,7 +1485,7 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
       return pending.bypass.length > 0
         ? {
             title: `Bypass the branch rules and mark PR #${number} as merged`,
-            description: `Records the merge of ${head.slice(0, 9)}, already on ${base}, done elsewhere. It moves no code, and it is final. These branch rules are not met, so this is a bypass, recorded on the PR as a comment: ${pending.bypass.join('; ')}.`,
+            description: `Records the merge of ${head.slice(0, 9)}, already on ${base}, done elsewhere. It moves no code, and it is final. These branch rules are not met, so this is a bypass, recorded on the PR as an event nobody can delete: ${pending.bypass.join('; ')}.`,
             label: 'Sign & record (bypass rules)',
           }
         : {
@@ -1514,7 +1564,7 @@ function commentSlots({
   replies,
   trust,
   resolved,
-  outdated,
+  context,
   onShowFiles,
 }: {
   item: Extract<TimelineItem, { kind: 'comment' }>
@@ -1531,14 +1581,14 @@ function commentSlots({
   /** Who may mirror: an imported reply of theirs shows its original author and date (FG-6). */
   trust?: ReadonlySet<string> | null
   resolved: boolean
-  outdated: boolean
+  /** An inline comment's heading: its place, markers and code (`AnchorContext`). */
+  context: ReactNode
   onShowFiles: () => void
 }): CommentSlots {
   const c = item.comment
   const tags =
     c.anchor !== null ? (
       <span className="flex items-center gap-1.5">
-        {outdated ? <span className="rounded-full bg-anvil-100 px-2 py-0.5 text-[11px] text-anvil-700 dark:bg-anvil-800 dark:text-anvil-300">Outdated</span> : null}
         {resolved ? <span className="rounded-full bg-verify/10 px-2 py-0.5 text-[11px] text-verify-700 dark:text-verify-400" data-testid="thread-resolved">Resolved</span> : null}
       </span>
     ) : null
@@ -1575,6 +1625,7 @@ function commentSlots({
     header,
     body: (
       <div className="space-y-2 px-4 py-3">
+        {context}
         <MarkdownView source={c.body} links={links} imported={importedUrlOf(c.importedRaw)} />
         {replies.map((r) => (
           <div key={r.id} className="border-l-2 border-anvil-200 pl-3 dark:border-anvil-750">
@@ -1606,18 +1657,20 @@ function BranchRules({
   baseProtected,
   policy,
   status,
-  checksBlocking,
+  checks,
 }: {
   base: string
   baseProtected: boolean
   policy: Policy | null | 'unknown'
   status: PolicyStatus | null | 'unknown'
-  checksBlocking: boolean
+  /** The head's required checks (`checksState`); null: none required; 'unknown': not read yet. */
+  checks: ChecksState | null | 'unknown'
 }): JSX.Element {
   const short = shortBranch(base)
   // The checks the policy requires: by name, or (none named) every reported one. Null: no policy read.
   const known = policy !== null && policy !== 'unknown' ? policy : null
   const named = known?.requiredChecks ?? []
+  const line = requiredChecksLine(checks, named)
   return (
     <section aria-label="Branch rules" className="rounded-lg border border-anvil-200 px-4 py-3 text-dense dark:border-anvil-800">
       {baseProtected ? (
@@ -1645,11 +1698,8 @@ function BranchRules({
       ) : null}
       {known !== null && (named.length > 0 || known.requireChecks === true) ? (
         <p className="mt-1 flex items-center gap-2" data-testid="policy-checks">
-          {checksBlocking ? <X className="h-4 w-4 shrink-0 text-danger" aria-hidden /> : <Check className="h-4 w-4 shrink-0 text-verify" aria-hidden />}
-          <span className="min-w-0 [overflow-wrap:anywhere]">
-            {checksBlocking ? 'Required checks are not all passing on the head' : 'Required checks pass'}
-            {named.length > 0 ? `: ${named.join(', ')}` : ''}
-          </span>
+          {line.ok ? <Check className="h-4 w-4 shrink-0 text-verify" aria-hidden /> : <X className="h-4 w-4 shrink-0 text-danger" aria-hidden />}
+          <span className="min-w-0 [overflow-wrap:anywhere]">{line.text}</span>
         </p>
       ) : null}
       {policy !== null && policy !== 'unknown' && (policy.mergeMethods ?? 0) !== 0 ? (

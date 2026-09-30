@@ -20,7 +20,8 @@ import type { DiscoveredRepo } from '@/lib/view'
 import { listReposByOwner, resolveDpnsName } from '@/lib/view'
 import { followFirsts, followRelation, readFollowCounts, resolveOwner } from '@/lib/repo'
 import { firstWriteRead, previewCreate, previewDelete } from '@/lib/sdk'
-import { creditsAsDash, priceLabel } from '@/lib/view/format'
+import { priceLabel, refundLabel } from '@/lib/view/format'
+import { cn } from '@/lib/utils'
 import { NETWORKS } from '@/lib/constants'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -161,8 +162,8 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
               <UserPlus className="h-3.5 w-3.5" aria-hidden />
               {following ? 'Following' : 'Follow'}
               {identity !== null && follow.on !== null ? (
-                <span className="ml-1 font-mono text-[11px]" data-testid="follow-cost">
-                  {following ? `+${creditsAsDash(-unfollowRefund.credits)}` : priceLabel(followCost.credits, !firstWriteRead(first))} DASH
+                <span className={cn('ml-1 font-mono text-[11px]', following && 'hidden sm:inline')} data-testid="follow-cost" aria-hidden>
+                  {following ? refundLabel('unfollow', unfollowRefund.credits) : priceLabel(followCost.credits, !firstWriteRead(first))} DASH
                 </span>
               ) : null}
             </Button>

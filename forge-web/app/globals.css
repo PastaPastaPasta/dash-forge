@@ -53,6 +53,20 @@
     @apply font-semibold text-anvil-900 dark:text-anvil-50;
   }
 
+  /*
+   * In-page anchor targets of rendered Markdown (headings, `<a name>`, footnotes: GitHub's
+   * `user-content-` ids) land below the site header, not under it (QW2-038). The header is
+   * sticky from `sm` up (3.5 rem tall, app-header.tsx); on a phone it scrolls away.
+   */
+  [id^='user-content-'] {
+    scroll-margin-top: 0.75rem;
+  }
+  @media (min-width: 640px) {
+    [id^='user-content-'] {
+      scroll-margin-top: 4.5rem;
+    }
+  }
+
   /* Visible focus ring on every interactive element (forge-400). */
   :focus-visible {
     @apply outline-none ring-2 ring-forge-400 ring-offset-2;

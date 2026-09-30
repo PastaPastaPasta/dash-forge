@@ -33,6 +33,10 @@ use crate::keystore::Secret;
 /// Environment variable a passphrase is read from before prompting.
 pub const PASSPHRASE_ENV: &str = "DASH_FORGE_PASSPHRASE";
 
+/// The passphrase of `dg ci runner new --runner <file>` when that file is sealed with another
+/// passphrase than your own key (QW2-022); [`PASSPHRASE_ENV`] when unset.
+pub const RUNNER_PASSPHRASE_ENV: &str = "DASH_FORGE_RUNNER_PASSPHRASE";
+
 /// Set by a program that must never read from the terminal (the importer, `dg --json`): a
 /// sealed file then needs [`PASSPHRASE_ENV`], and no prompt appears. `GIT_TERMINAL_PROMPT=0`
 /// has the same effect, so the helper does not ask when git was told not to.
@@ -218,22 +222,39 @@ pub fn open(raw: &str, passphrase: &str) -> Result<Zeroizing<Vec<u8>>> {
 /// The passphrase for `what`: [`PASSPHRASE_ENV`] when set, else a hidden prompt on the
 /// terminal. `confirm` asks twice (for a new file) and enforces [`MIN_PASSPHRASE_LEN`].
 pub fn passphrase(what: &str, confirm: bool) -> Result<Secret> {
-    if let Some(p) = std::env::var_os(PASSPHRASE_ENV).filter(|v| !v.is_empty()) {
-        let p = p
+    passphrase_from(&[PASSPHRASE_ENV], what, confirm)
+}
+
+/// The first of `envs` that is set (not empty): where [`passphrase_from`] takes the
+/// passphrase from, `None` when it asks for it.
+pub fn passphrase_env_in_use<'a>(envs: &[&'a str]) -> Option<&'a str> {
+    envs.iter()
+        .copied()
+        .find(|e| std::env::var_os(e).is_some_and(|v| !v.is_empty()))
+}
+
+/// [`passphrase`], reading the first of `envs` that is set before prompting (a second sealed
+/// file in one command, with its own passphrase: `DASH_FORGE_RUNNER_PASSPHRASE`, then
+/// [`PASSPHRASE_ENV`]). Messages name the first.
+pub fn passphrase_from(envs: &[&str], what: &str, confirm: bool) -> Result<Secret> {
+    let first = envs.first().copied().unwrap_or(PASSPHRASE_ENV);
+    if let Some(env) = passphrase_env_in_use(envs) {
+        let p = std::env::var_os(env)
+            .unwrap_or_default()
             .into_string()
-            .map_err(|_| Error::Config(format!("{PASSPHRASE_ENV} is not UTF-8")))?;
+            .map_err(|_| Error::Config(format!("{env} is not UTF-8")))?;
         return Ok(Secret::new(p));
     }
     if !prompts_allowed() {
         return Err(Error::Config(format!(
-            "{what} needs a passphrase and this command does not prompt; set {PASSPHRASE_ENV}"
+            "{what} needs a passphrase and this command does not prompt; set {first}"
         )));
     }
     let prompt = |label: &str| {
         rpassword::prompt_password(label).map_err(|e| {
             Error::Config(format!(
                 "{what} needs a passphrase and there is no terminal to ask on ({e}); set \
-                 {PASSPHRASE_ENV}"
+                 {first}"
             ))
         })
     };

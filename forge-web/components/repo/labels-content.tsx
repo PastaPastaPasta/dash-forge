@@ -315,18 +315,18 @@ export function LabelsContent({ home, addr }: { home: RepoHome; addr: RepoAddres
                     </div>
                     <p className="min-w-0 flex-1 break-words text-dense text-anvil-600 dark:text-anvil-300">{l.description || <span className="italic text-anvil-500 dark:text-anvil-400">No description</span>}</p>
                     <span className="flex items-center gap-3 text-[12px]">
-                      <Link href={repoHref('/repo/issues', addr, { label: l.name, state: 'all' })} className="text-anvil-500 hover:text-forge-700 hover:underline dark:text-anvil-400 dark:hover:text-forge-400 coarse:min-h-11 coarse:inline-flex coarse:items-center">
+                      <Link href={repoHref('/repo/issues', addr, { label: l.name, state: 'all' })} className="text-anvil-500 hover:text-forge-700 hover:underline dark:text-anvil-400 dark:hover:text-forge-400 coarse:min-h-11 coarse:min-w-11 coarse:inline-flex coarse:items-center coarse:justify-center">
                         Issues
                       </Link>
-                      <Link href={repoHref('/repo/pulls', addr, { label: l.name, state: 'all' })} className="text-anvil-500 hover:text-forge-700 hover:underline dark:text-anvil-400 dark:hover:text-forge-400 coarse:min-h-11 coarse:inline-flex coarse:items-center">
+                      <Link href={repoHref('/repo/pulls', addr, { label: l.name, state: 'all' })} className="text-anvil-500 hover:text-forge-700 hover:underline dark:text-anvil-400 dark:hover:text-forge-400 coarse:min-h-11 coarse:min-w-11 coarse:inline-flex coarse:items-center coarse:justify-center">
                         Pull requests
                       </Link>
                       {canEdit ? (
                         <>
-                          <button type="button" onClick={() => { setEditing(l.name); setCreating(false); setRestoring(null) }} className="inline-flex items-center gap-1 text-anvil-500 hover:text-forge-700 dark:text-anvil-400 dark:hover:text-forge-400 coarse:min-h-11" aria-label={`Edit label ${l.name}`}>
+                          <button type="button" onClick={() => { setEditing(l.name); setCreating(false); setRestoring(null) }} className="inline-flex items-center gap-1 text-anvil-500 hover:text-forge-700 dark:text-anvil-400 dark:hover:text-forge-400 coarse:min-h-11 coarse:min-w-11 coarse:justify-center" aria-label={`Edit label ${l.name}`}>
                             <Pencil className="h-3 w-3" aria-hidden /> Edit
                           </button>
-                          <button type="button" onClick={() => void askDelete(l.name)} disabled={disabledReason !== null || planning !== null} aria-busy={planning === l.name} className="inline-flex items-center gap-1 text-anvil-500 hover:text-danger-700 disabled:opacity-50 dark:text-anvil-400 dark:hover:text-danger-400 coarse:min-h-11" aria-label={`Delete label ${l.name}`}>
+                          <button type="button" onClick={() => void askDelete(l.name)} disabled={disabledReason !== null || planning !== null} aria-busy={planning === l.name} className="inline-flex items-center gap-1 text-anvil-500 hover:text-danger-700 disabled:opacity-50 dark:text-anvil-400 dark:hover:text-danger-400 coarse:min-h-11 coarse:min-w-11 coarse:justify-center" aria-label={`Delete label ${l.name}`}>
                             <Trash2 className="h-3 w-3" aria-hidden /> Delete
                           </button>
                         </>

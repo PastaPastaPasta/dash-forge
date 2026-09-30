@@ -115,7 +115,7 @@ export default function NewRepoPage(): JSX.Element {
   const noKey = isPrivate && ops.settled && ops.error === null && ops.data === null
   // A reloaded tab holds the signing key only: the encryption key needs an unlock here first.
   const needsUnlock = isPrivate && unlockScope === 'signing'
-  const privateBlocked = !isPrivate ? null : needsUnlock ? 'Unlock this tab to use your encryption key.' : ops.error !== null ? `Couldn't read your encryption key: ${ops.error}` : noKey ? 'Add your encryption key to this browser first (Settings → Keys).' : ops.data == null ? 'Checking your encryption key…' : null
+  const privateBlocked = !isPrivate ? null : needsUnlock ? 'Unlock this tab to use your encryption key.' : ops.error !== null ? `Couldn't read your encryption key: ${ops.error}` : noKey ? 'Add your encryption key to this browser first (Settings → Private repos).' : ops.data == null ? 'Checking your encryption key…' : null
   const [confirm, setConfirm] = useState<CreateRepoInput | null>(null)
   const [progress, setProgress] = useState<Record<CreateRepoStep, StepState> | null>(null)
   const [pending, setPending] = useState<RepoCreationJournal[]>([])
@@ -301,7 +301,7 @@ export default function NewRepoPage(): JSX.Element {
                 <p className="mt-2 text-caution-700 dark:text-caution-400" data-testid="private-no-key">
                   cannot create a private repository: your identity has no encryption key in this browser. Add it in{' '}
                   <Link href="/settings/" className="text-forge-700 underline dark:text-forge-400">
-                    Settings → Keys → Enable private repos
+                    Settings → Private repos
                   </Link>
                   .
                 </p>

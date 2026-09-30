@@ -29,6 +29,7 @@ mod publish;
 mod release;
 mod repo;
 mod repo_settings;
+mod secret_out;
 mod storage;
 mod storage_wizard;
 mod webhook;
@@ -1022,8 +1023,8 @@ pub struct PrMergeArgs {
     #[arg(long = "delete-branch", conflicts_with = "event_only")]
     pub delete_branch: bool,
     /// Merge although the branch policy's approvals or checks are not met (maintainers only;
-    /// "bypass rules"). The bypassed rules are recorded on the PR as a comment; the allowed
-    /// merge methods still apply. The policy is a client rule every Forge client applies;
+    /// "bypass rules"). The bypassed rules are recorded on the PR as a policy-bypass event,
+    /// which nobody can delete; the allowed merge methods still apply. The policy is a client rule every Forge client applies;
     /// consensus does not enforce it.
     #[arg(long = "override-policy")]
     pub override_policy: bool,
@@ -1443,6 +1444,16 @@ impl StateArg {
             StateArg::Closed => !open,
         }
     }
+
+    /// What an empty list says, as `gh` does ("no open pull requests"): the state filter is
+    /// named, so an empty default (open) list is not read as an empty repository (QW2-086).
+    pub fn empty(self, plural: &str) -> String {
+        match self {
+            StateArg::All => format!("no {plural}"),
+            StateArg::Open => format!("no open {plural}"),
+            StateArg::Closed => format!("no closed {plural}"),
+        }
+    }
 }
 
 /// PR review verdict.
@@ -1648,6 +1659,40 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    /// QW2-086: an empty list names its state filter ("no open pull requests"), as `gh` does.
+    #[test]
+    fn an_empty_list_names_its_state() {
+        assert_eq!(
+            StateArg::Open.empty("pull requests"),
+            "no open pull requests"
+        );
+        assert_eq!(StateArg::Closed.empty("issues"), "no closed issues");
+        assert_eq!(StateArg::All.empty("issues"), "no issues");
+    }
+
+    /// QW2-086: `dg ci status` takes the commit as `dg ci report` does (`--sha`), or as the
+    /// positional it always took; never both.
+    #[test]
+    fn ci_status_takes_the_sha_either_way() {
+        let sha = "ab".repeat(20);
+        for args in [
+            vec!["dg", "ci", "status", "o/r", sha.as_str()],
+            vec!["dg", "ci", "status", "o/r", "--sha", sha.as_str()],
+            vec!["dg", "ci", "status", "o/r", "--head", sha.as_str()],
+        ] {
+            let cli = Cli::try_parse_from(&args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
+            let Command::Ci(ci::CiCommand::Status {
+                sha: pos, sha_flag, ..
+            }) = cli.command
+            else {
+                panic!("{args:?}: not ci status");
+            };
+            assert_eq!(pos.or(sha_flag).as_deref(), Some(sha.as_str()), "{args:?}");
+        }
+        assert!(Cli::try_parse_from(["dg", "ci", "status", "o/r"]).is_err());
+        assert!(Cli::try_parse_from(["dg", "ci", "status", "o/r", &sha, "--sha", &sha]).is_err());
+    }
 
     /// QW-082 / QW-081: a clap usage error is E201 with its whole message as the cause (the
     /// missing argument's name included), and the usage block kept for after the error block.

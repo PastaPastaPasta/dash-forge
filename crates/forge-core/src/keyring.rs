@@ -127,6 +127,33 @@ impl EncryptionKeys {
             .map(|(id, (k, _))| (*id, k))
     }
 
+    /// The keys held, as identity-file entries (`ENCRYPTION` / `MEDIUM`, the private key as hex
+    /// and as a WIF for `network`, no derivation path): what `dg auth login` keeps beside a
+    /// limited signing key, so private repositories open with no master key on disk, as in the
+    /// web app (QW2-004). Disabled ones are kept too: they still open history.
+    pub fn to_identity_keys(
+        &self,
+        network: &platform::Network,
+    ) -> Vec<crate::keystore::IdentityKey> {
+        use platform::identity_keys::{encryption_key_entry, EncryptionSecret};
+        self.keys
+            .iter()
+            .filter_map(|(id, (k, _))| {
+                let secret = EncryptionSecret::new(*k.secret_bytes()).ok()?;
+                Some(encryption_key_entry(&secret, *id, network, ""))
+            })
+            .collect()
+    }
+
+    /// The ids of the keys held that are enabled on chain.
+    pub fn enabled_ids(&self) -> Vec<u32> {
+        self.keys
+            .iter()
+            .filter(|(_, (_, enabled))| *enabled)
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
     /// The private key with `id`, enabled or not.
     fn get(&self, id: u32) -> Option<&PrivateKey> {
         self.keys.get(&id).map(|(k, _)| k)
@@ -168,7 +195,7 @@ pub fn no_encryption_key_held_because(action: &str, why: &str) -> Error {
         codes::NO_ENCRYPTION_KEY,
         format!("{action}: the key stored on this computer holds no encryption key"),
     )
-    .cause(format!("{why}; the key source in use holds none that matches an enabled one on your identity (a limited key from `dg auth login` or `dg auth new` is a signing key only)"))
+    .cause(format!("{why}; the key source in use holds none that matches an enabled one on your identity (a limited key stored by an older dg, or with --signing-only, is a signing key only)"))
     .fix(format!(
         "if your identity has an ENCRYPTION key (`dg auth keys list`), store a source that holds it: {}",
         crate::user_error::FIX_FULL_KEY_LOGIN
@@ -2328,7 +2355,9 @@ mod tests {
             u.message
         );
         assert!(
-            u.fix.iter().any(|f| f.contains("--mnemonic --full-key")),
+            u.fix
+                .iter()
+                .any(|f| f.contains("dg auth login --mnemonic --replace")),
             "{:?}",
             u.fix
         );
@@ -3073,6 +3102,52 @@ mod tests {
         assert_eq!(short_branch("refs/heads/main"), "main");
         assert_eq!(short_branch("main"), "main");
         assert_eq!(short_branch("refs/tags/v1"), "refs/tags/v1");
+    }
+
+    /// QW2-004: the encryption keys a source holds, as the entries a limited-key login stores
+    /// beside its signing key: only those matching the identity's keys on chain, and they are
+    /// held again when read back.
+    #[test]
+    fn held_encryption_keys_become_identity_file_entries() {
+        use crate::platform::identity_keys::{encryption_key_entry, EncryptionSecret};
+        let net = platform::Network::from_key("testnet");
+        let entry = |seed: u8, id| {
+            encryption_key_entry(&EncryptionSecret::new([seed; 32]).unwrap(), id, &net, "m/x")
+        };
+        let mut bridge = BridgeIdentity::from_dfk1(
+            "dfk1:testnet:8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB:5:FAKE-wif",
+        )
+        .unwrap();
+        // key 4 is on chain; key 9 is not (a stale file): only 4 is kept
+        bridge.identity_keys.extend([entry(7, 4), entry(8, 9)]);
+        let on_chain = |e: &crate::keystore::IdentityKey| IdentityKeyInfo {
+            id: e.id,
+            purpose: "ENCRYPTION".into(),
+            security_level: "MEDIUM".into(),
+            key_type: "ECDSA_SECP256K1".into(),
+            public_key: hex::decode(&e.public_key_hex).unwrap(),
+            disabled: false,
+            bound_to: None,
+        };
+        let chain = [on_chain(&entry(7, 4))];
+        let kept = EncryptionKeys::held(&bridge, &chain, "CORE", &net).to_identity_keys(&net);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].id, 4);
+        assert_eq!(kept[0].purpose, "ENCRYPTION");
+        assert_eq!(kept[0].public_key_hex, entry(7, 4).public_key_hex);
+        assert_eq!(kept[0].derivation_path, "");
+        // stored beside the signing key, they open again
+        let mut stored = BridgeIdentity::from_dfk1(
+            "dfk1:testnet:8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB:5:FAKE-wif",
+        )
+        .unwrap();
+        stored.identity_keys.extend(kept);
+        let back =
+            BridgeIdentity::from_source_text(stored.to_json_with_secrets().expose()).unwrap();
+        let again = EncryptionKeys::held(&back, &chain, "CORE", &net);
+        assert_eq!(again.sender().map(|(id, _)| id), Some(4));
+        assert!(back.master_key().is_none());
+        assert_eq!(back.doc_op_key().unwrap().id, 5);
     }
 
     #[test]

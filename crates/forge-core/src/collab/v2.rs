@@ -1275,6 +1275,14 @@ pub fn event_payload_props(
         EventKind::MilestoneSet if value.is_none() => {
             return missing("a milestone name");
         }
+        EventKind::PolicyBypass
+            if value.is_none() || !oid.is_some_and(|o| matches!(o.len(), 20 | 32)) =>
+        {
+            return Err(Error::Config(
+                "a policy-bypass event needs the rules bypassed and the merge commit's oid"
+                    .to_string(),
+            ));
+        }
         // The assignee in `value` (the fold) and in `refId` (the `addressee` index), the same
         // identity (platform-parity-spec §1.2; forge-web `targetEventData`).
         EventKind::Assign | EventKind::Unassign
@@ -5464,6 +5472,7 @@ fn kind_verb(kind: EventKind) -> &'static str {
         EventKind::Unpin => "unpin",
         EventKind::Lock => "lock",
         EventKind::Unlock => "unlock",
+        EventKind::PolicyBypass => "record a rules bypass on",
     }
 }
 
@@ -6807,6 +6816,27 @@ mod tests {
         assert!(event_props(&target("a"), EventKind::LabelAdd, Some(" "), None).is_err());
         assert!(event_props(&target("a"), EventKind::LabelRemove, None, None).is_err());
         assert!(event_props(&target("a"), EventKind::LabelAdd, Some(" bug"), None).is_err());
+    }
+
+    #[test]
+    fn a_policy_bypass_names_the_rules_and_the_merge_commit() {
+        let rules = Some("required check `lint`: failing");
+        let p = event_props(&target("a"), EventKind::PolicyBypass, rules, Some(&[9; 20])).unwrap();
+        assert_eq!(p.get("kind"), Some(&FieldValue::integer(23)));
+        assert_eq!(
+            p.get("value"),
+            Some(&FieldValue::text("required check `lint`: failing"))
+        );
+        assert!(p.contains_key("oid"));
+        // Without the rules or the merge commit it records nothing a reader can show.
+        assert!(event_props(&target("a"), EventKind::PolicyBypass, None, Some(&[9; 20])).is_err());
+        assert!(event_props(&target("a"), EventKind::PolicyBypass, rules, None).is_err());
+        assert!(event_props(&target("a"), EventKind::PolicyBypass, rules, Some(&[9; 3])).is_err());
+        // A member kind: the author has no route for it.
+        assert_eq!(
+            kind_route(None, "alice", &target("alice"), EventKind::PolicyBypass),
+            None
+        );
     }
 
     #[test]

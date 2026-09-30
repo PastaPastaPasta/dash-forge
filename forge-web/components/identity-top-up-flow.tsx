@@ -21,11 +21,12 @@ import { Qr } from '@/components/ui/qr'
 import { ErrorBox } from '@/components/auth/protection-fields'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { PHASE_TEXT, connectPlatform, type ConnectPhase } from '@/lib/auth/connect'
-import { isValidMnemonic, mnemonicProblem } from '@/lib/auth/hd'
+import { invalidMnemonicMessage, isValidMnemonic } from '@/lib/auth/hd'
 import { MIN_TOP_UP_DUFFS, discardTopUp, readTopUpJournal, topUpIdentity, type TopUpJournal, type TopUpStage } from '@/lib/auth/identity-top-up'
 import { useConfirmAction } from '@/components/ui/confirm-action'
 import { isAbort } from '@/lib/sdk/facade'
 import { creditsAsDash } from '@/lib/view/format'
+import { recordSpend, TOP_UP_KIND } from '@/lib/spend'
 import { errorMessage } from '@/lib/utils'
 
 const STAGE_TEXT: Readonly<Record<TopUpStage, string>> = {
@@ -79,7 +80,7 @@ export function IdentityTopUpFlow({ faucet }: { faucet: string | null }): JSX.El
     if (running) return
     setError(null)
     if (!(await isValidMnemonic(phrase).catch(() => false))) {
-      setError(mnemonicProblem(phrase))
+      setError(await invalidMnemonicMessage(phrase))
       return
     }
     const controller = new AbortController()
@@ -90,7 +91,7 @@ export function IdentityTopUpFlow({ faucet }: { faucet: string | null }): JSX.El
     try {
       const sdk = await connectPlatform(network, (p: ConnectPhase) => setStage(`${PHASE_TEXT[p]}…`))
       setStage('Checking the words against your identity…')
-      const { balance } = await topUpIdentity(sdk, {
+      const { balance, credit } = await topUpIdentity(sdk, {
         network,
         identityId: identity,
         mnemonic: phrase,
@@ -111,7 +112,25 @@ export function IdentityTopUpFlow({ faucet }: { faucet: string | null }): JSX.El
       runWords.current = null
       setPending(null)
       setDone(balance)
-      void refreshBalance().catch(() => undefined)
+      // The ledger records the credit (QW2-019: Settings → Spend read a top-up as a loss), then
+      // the balance is read, so the reconciliation sees both at once.
+      const recorded =
+        credit === null
+          ? Promise.resolve()
+          : recordSpend({
+              identityId: identity,
+              network,
+              kind: TOP_UP_KIND,
+              repo: null,
+              documentId: `topup-${credit.lockTxid}`,
+              estimateCredits: 0,
+              actualCredits: -Number(credit.credits),
+              balanceBefore: credit.balanceBefore,
+            })
+      void recorded
+        .catch(() => undefined)
+        .then(() => refreshBalance())
+        .catch(() => undefined)
     } catch (e) {
       if (!isAbort(e)) setError(errorMessage(e))
     } finally {

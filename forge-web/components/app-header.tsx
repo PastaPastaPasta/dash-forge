@@ -6,12 +6,13 @@
  * notifications bell with the unread count · identity pill. Below `sm` the jump box moves to a
  * second row so the bar fits 360 px, and the header scrolls away with the page (as GitHub's
  * does) rather than pinning ~114 px of a phone's screen; from `sm` up it stays pinned. Below `lg`
- * the wordmark and the account name give way to their icons so a tablet's bar fits too.
+ * the wordmark and the account name give way to their icons so a tablet's bar fits too; signed
+ * in, below `xl`, the jump box is a search button that opens that second row (QW2-073).
  */
 
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
-import { Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Bell, BookOpen, ChevronDown, Compass, GitFork, Hammer, Lock, Menu, Plus, Search, Settings, Wallet, X } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { signInRequestOutcome, useUiStore } from '@/hooks/use-ui-store'
@@ -36,28 +37,58 @@ import { isPageShortcut } from '@/lib/focus'
 import { bareRoute, pageTitle } from '@/lib/page-title'
 import { useDpnsName } from '@/hooks/use-dpns-name'
 
-/** `/` focuses the jump box (the visible one: the header's, or the phone row's). */
-function useSlashToSearch(): void {
+const shown = (el: Element | null): boolean => el !== null && el.getClientRects().length > 0
+
+/**
+ * `/` focuses the jump box (the visible one: the header's, or the row's); with neither on
+ * screen but the search button showing (signed in, below `xl`), it opens the row, which
+ * focuses its box. Otherwise `/` is left to the browser.
+ */
+function useSlashToSearch(openRow: () => void): void {
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (!isPageShortcut(e, '/')) return
-      const box = [...document.querySelectorAll<HTMLInputElement>('input[data-jump-box]')].find(
-        (el) => el.getClientRects().length > 0,
-      )
-      if (box === undefined) return
+      const box = [...document.querySelectorAll<HTMLInputElement>('input[data-jump-box]')].find(shown)
+      if (box === undefined) {
+        if (!shown(document.querySelector('[data-testid="jump-toggle"]'))) return
+        e.preventDefault()
+        openRow()
+        return
+      }
       e.preventDefault()
       box.focus()
       box.select()
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [])
+  }, [openRow])
 }
 
 export function AppHeader(): JSX.Element {
   const { identity, balance, logout, resuming, vaultsLoaded, vaultsError, storage } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
-  useSlashToSearch()
+  const signedIn = identity !== null
+  // Signed in, the bar also holds the bell, the funds pill and the account, and below `xl` the
+  // jump box was squeezed to ~220 px with its placeholder cut (QW2-073). There it folds to a
+  // search button that opens the jump row under the bar, as the phone layout has it.
+  const [searchOpen, setSearchOpen] = useState(false)
+  const openSearch = useCallback(() => setSearchOpen(true), [])
+  const toggleRef = useRef<HTMLButtonElement>(null)
+  // Escape in the opened row: back to the button that opened it (if it still shows at this width).
+  const dismissSearch = (): void => {
+    if (!searchOpen) return
+    setSearchOpen(false)
+    if (shown(toggleRef.current)) toggleRef.current?.focus()
+  }
+  const closeSearch = useCallback(() => setSearchOpen(false), [])
+  // A jump (routes differ only by query string, so this is told, not read off the pathname), a
+  // new page, or signing out closes it.
+  const pathname = usePathname()
+  useEffect(() => setSearchOpen(false), [pathname, signedIn])
+  useEffect(() => {
+    if (searchOpen) document.getElementById('jump-compact')?.focus()
+  }, [searchOpen])
+  useSlashToSearch(openSearch)
   // "Sign in" asked for before it was known whether this browser's kept session resumes: a tap
   // before hydration (lib/prehydration.ts, taken on mount), or on the session-check placeholder.
   // The request is kept in the store (a second mount effect in StrictMode, or a remount, cannot
@@ -90,13 +121,28 @@ export function AppHeader(): JSX.Element {
         {/* A devnet (resettable, test funds only) is flagged at every width. */}
         <NetworkBadge compact className={ACTIVE_NETWORK.network === 'devnet' ? undefined : 'hidden sm:inline'} />
 
-        <div className="ml-1 hidden min-w-0 max-w-xs flex-1 sm:block">
+        <div className={cn('ml-1 hidden min-w-0 max-w-xs flex-1', signedIn ? 'xl:block' : 'sm:block')}>
           <Suspense fallback={null}>
             <JumpBox />
           </Suspense>
         </div>
 
         <div className="ml-auto flex shrink-0 items-center sm:gap-1">
+          {signedIn ? (
+            <button
+              type="button"
+              ref={toggleRef}
+              onClick={() => setSearchOpen((o) => !o)}
+              aria-expanded={searchOpen}
+              aria-controls="jump-row"
+              aria-label="Jump to a repo, a profile, or an issue or PR number"
+              title="Jump to… (/)"
+              data-testid="jump-toggle"
+              className="hidden h-8 w-8 items-center justify-center rounded-md text-anvil-700 hover:bg-anvil-100 dark:text-anvil-200 dark:hover:bg-anvil-800 coarse:h-11 coarse:w-11 sm:inline-flex xl:hidden"
+            >
+              <Search className="h-4 w-4" aria-hidden />
+            </button>
+          ) : null}
           <Link
             href="/explore/"
             className="hidden h-8 items-center gap-1.5 rounded-md px-2 text-dense text-anvil-700 hover:bg-anvil-100 dark:text-anvil-200 dark:hover:bg-anvil-800 lg:inline-flex"
@@ -123,10 +169,16 @@ export function AppHeader(): JSX.Element {
           )}
         </div>
       </div>
-      <div className="border-t border-anvil-200 px-3 py-1.5 dark:border-anvil-800 sm:hidden">
-        <Suspense fallback={null}>
-          <JumpBox compact />
-        </Suspense>
+      <div
+        id="jump-row"
+        className={cn('border-t border-anvil-200 px-3 py-1.5 dark:border-anvil-800 sm:px-6', signedIn && searchOpen ? 'xl:hidden' : 'sm:hidden')}
+      >
+        {/* A link picked in the box's note or choices is a jump too. */}
+        <div className="mx-auto max-w-[1280px]" onClickCapture={(e) => (e.target as Element).closest('a[href]') && closeSearch()}>
+          <Suspense fallback={null}>
+            <JumpBox compact onDismiss={dismissSearch} onJump={closeSearch} />
+          </Suspense>
+        </div>
       </div>
       <Suspense fallback={null}>
         <DocumentTitle />
@@ -158,7 +210,7 @@ function DocumentTitle(): null {
  * bare word is looked up as a repo name and as a DPNS name: one match goes straight there,
  * several offer each (repos by owner, then the profile), none says so and offers a search.
  */
-function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
+function JumpBox({ compact = false, onDismiss, onJump }: { compact?: boolean; onDismiss?: () => void; onJump?: () => void }): JSX.Element {
   const router = useRouter()
   const pathname = usePathname()
   const params = useSearchParams()
@@ -206,6 +258,7 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
         )
       } else if (found.issue || found.pull) {
         setQuery('')
+        onJump?.()
         router.push(found.issue ? issue : pull)
       } else {
         setNote(`No issue or PR #${n} in ${addr.name}.`)
@@ -220,6 +273,7 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
   const go = (href: string): void => {
     setQuery('')
     clear()
+    onJump?.()
     router.push(href)
   }
 
@@ -313,7 +367,10 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
         onKeyDown={(e) => {
           if (e.key !== 'Escape') return
           if (note !== null || choices !== null) clear()
-          else e.currentTarget.blur()
+          else {
+            e.currentTarget.blur()
+            onDismiss?.()
+          }
         }}
         className="peer h-8 w-full rounded-md border border-anvil-300 bg-white pl-8 pr-7 text-dense placeholder:text-anvil-500 focus-visible:border-forge-400 coarse:h-11 coarse:text-base dark:border-anvil-700 dark:bg-anvil-900 dark:placeholder:text-anvil-400"
       />

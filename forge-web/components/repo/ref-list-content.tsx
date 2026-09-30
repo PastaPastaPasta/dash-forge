@@ -11,11 +11,11 @@ import { useCallback, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { GitBranch, Search, Tag } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { isDiverged, isLive, matchesRefQuery, plural, refParamFor, timeAgo, tipOidOf } from '@/lib/view'
+import { isDiverged, isLive, matchesRefQuery, plural, refParamFor, tipOidOf } from '@/lib/view'
 import { compareRefNames, compareTagNames, type ResolvedRef } from '@/lib/repo'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState } from '@/components/ui/states'
-import { TagCommit, useTagPeeler } from '@/components/repo/tag-commit'
+import { RefDate, TagCommit, useTagPeeler } from '@/components/repo/tag-commit'
 import { Input } from '@/components/ui/input'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 
@@ -44,8 +44,9 @@ export function RefListContent({
   kind: keyof typeof KIND
 }): JSX.Element {
   const { prefix, icon: Icon, empty, noun, single } = KIND[kind]
-  // Only tags need peeling: the branches list starts no browse index.
-  const peeler = useTagPeeler(kind === 'tags' ? home.repo : null)
+  // Tags are peeled for their commit chips, and every row's tip is read for its date (QW2-023):
+  // both through the published browse index, a row at a time as it scrolls into view.
+  const peeler = useTagPeeler(home.repo)
   const tipChip = (tip: string): JSX.Element => {
     // A tag's tip may be a tag object: the chip shows the commit it names (L-02). Keyed by the
     // tip, so a force-moved tag's chip starts over instead of keeping the old commit.
@@ -150,12 +151,8 @@ export function RefListContent({
                     diverged
                   </span>
                 ) : null}
-                {/* QW-061d: when the ref last moved (its newest update document), as GitHub's "Updated". */}
-                {refUpdatedAt(ref) > 0 ? (
-                  <span className="hidden shrink-0 whitespace-nowrap text-[12px] text-anvil-500 dark:text-anvil-400 sm:inline" data-testid="ref-updated" title={new Date(refUpdatedAt(ref)).toLocaleString()}>
-                    updated {timeAgo(refUpdatedAt(ref))}
-                  </span>
-                ) : null}
+                {/* GitHub's "Updated": the tip commit's (or the tag's) date, QW2-023; not when this ref document last moved. */}
+                {tip ? <RefDate key={`date:${tip}`} peeler={peeler} tip={tip} pushedAt={refUpdatedAt(ref)} /> : null}
                 {tip && !isDefault ? (
                   // What this ref has that the default branch does not (L-30).
                   <Link

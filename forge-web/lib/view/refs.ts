@@ -90,6 +90,30 @@ export function selectRef(
 }
 
 /**
+ * A ref and path pasted from a GitHub URL with the host swapped (QW2-024): `/tree/feat/flatpak/doc`
+ * cannot say where the ref ends, so the 404 shim reads its first segment as the ref (`feat`) and
+ * the rest as the path (`flatpak/doc`). When `refParam` names no branch or tag, this is the
+ * longest `refParam/…` made of the path's leading segments that does, and the path left after it
+ * (`feat/flatpak`, `doc`), as GitHub resolves such a URL. Null when none does, or with no path.
+ */
+export function splitRefPath(
+  branches: readonly ResolvedRef[],
+  tags: readonly ResolvedRef[],
+  refParam: string,
+  path: string,
+): { readonly ref: string; readonly path: string } | null {
+  if (refParam === '') return null
+  // Only a ref that is no branch or tag is split: a real one stays what the URL says.
+  if (selectRef(branches, tags, '', refParam).ref !== undefined) return null
+  const segments = path.split('/').filter((s) => s !== '')
+  for (let n = segments.length; n >= 1; n--) {
+    const ref = [refParam, ...segments.slice(0, n)].join('/')
+    if (selectRef(branches, tags, '', ref).ref !== undefined) return { ref, path: segments.slice(n).join('/') }
+  }
+  return null
+}
+
+/**
  * The object a view of `selected` starts from: its pinned commit id, else its ref's tip (null:
  * none). Not always a full commit id: a short pinned id, or an annotated tag's id ({@link resolveTip}).
  */

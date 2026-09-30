@@ -131,7 +131,7 @@ Fix: none within the private repository in this release. The label definitions (
 
 Fix: `dg auth new` creates an identity and stores a limited key for this computer; `dg auth login <file>` (or `dg auth login --mnemonic`) signs in with an existing one. For a single command pass `--identity <file>`, or set `DASH_FORGE_KEY` to a file, a `keychain:dash-forge/<network>/<id>` entry, or a `dfk1:` key (this is also how `git-remote-dash` finds the key; without it the helper uses the default `dg auth` recorded, then `~/.config/dash-forge/identities/<owner>.identity.json`).
 
-A private repository needs more than a signing key: its content is encrypted to each member's `ENCRYPTION` key, which the limited key `dg auth login <file>` and `dg auth new` store does not hold (that would be [E306](#e306) next). For one, sign in with `dg auth login --full-key <identity file>`, or `dg auth login --mnemonic --full-key` with the 12 recovery words.
+A private repository needs more than a signing key: its content is encrypted to each member's `ENCRYPTION` key. `dg auth login <file>`, `dg auth login --mnemonic` and `dg auth new` store it beside the limited signing key (never the master key), unless `--signing-only`; a key stored by an older `dg` lacks it (that would be [E306](#e306) next): sign in again with `--replace <key id>`.
 
 ## E302
 
@@ -143,7 +143,7 @@ Fix: pass the identity file with `--master <file>`, or type the recovery words w
 
 **Identity unreadable.** The identity file or stored key is missing, unreadable, not a bridge-format identity export or `dfk1:` key, or a sealed key file could not be opened (wrong passphrase).
 
-Fix: `dg auth status` shows which key source is in use. Sign in again with `dg auth login <file>` or `dg auth login --mnemonic`. For a sealed file, set `DASH_FORGE_PASSPHRASE` or type the passphrase when asked.
+Fix: `dg auth status` shows which key source is in use. Sign in again with `dg auth login <file>` or `dg auth login --mnemonic`. For a sealed file, set `DASH_FORGE_PASSPHRASE` or type the passphrase when asked. A wrong passphrase names the file and where the passphrase came from. Each sealed file keeps its own passphrase: `dg ci runner new --runner <file>` reads the runner file's from `DASH_FORGE_RUNNER_PASSPHRASE` (else `DASH_FORGE_PASSPHRASE`), so a script can open your key and the runner's when they differ.
 
 Reads do not open the key: `dg auth status`, `dg auth balance`, and `dg storage status` / `dg cost audit` of a public repository work with a sealed key and no terminal (the status says the key itself was not checked).
 
@@ -174,10 +174,10 @@ Fix: register a fresh one with your master key (used once): `dg auth login <iden
 
 **No encryption key for private repositories.** Private repositories encrypt their content to each member's identity `ENCRYPTION` key. Two cases:
 
-- "the key stored on this computer holds no encryption key": your identity usually has one (`dg auth keys list`; identities from `dg auth new`, the bridge and the web app have key 4), but the key source in use does not hold its private half. The limited key `dg auth login` and `dg auth new` store is a signing key only.
+- "the key stored on this computer holds no encryption key": your identity usually has one (`dg auth keys list`; identities from `dg auth new`, the bridge and the web app have key 4), but the key source in use does not hold its private half: a limited key stored by an older `dg`, or with `--signing-only`, is a signing key only.
 - "`<member>` has no encryption key" (`dg collab add` to a private repository): the member you named has no enabled `ENCRYPTION` key on their identity.
 
-Fix: for the first, store a key source that holds it: `dg auth login --full-key <identity file>` (a passphrase-sealed file), or `dg auth login --mnemonic --full-key` with the 12 recovery words if you have no identity file (a `dg auth new` identity). For one command, point `DASH_FORGE_KEY` at the identity file. If the identity has no ENCRYPTION key at all, `dg auth keys add --encryption` adds one, derived from the recovery words (one identity update signed by the master key). A member you are adding does this themselves, or uses Settings → Keys → Enable private repos in the web app. See [identity and keys](guides/identity-and-keys.md#encryption-key-private-repositories).
+Fix: for the first, sign in again, replacing the key in use (`dg auth status` shows its id, and its `Private:` line prints the command): `dg auth login <identity file> --replace <key id>`, or `dg auth login --mnemonic --replace <key id>` with the 12 recovery words if you have no identity file (a `dg auth new` identity). It registers a new limited key, stores your encryption key beside it and disables the old key; the master key is used once and not stored. For one command, point `DASH_FORGE_KEY` at the identity file. If the identity has no ENCRYPTION key at all, `dg auth keys add --encryption` adds one, derived from the recovery words (one identity update signed by the master key). A member you are adding does this themselves, or uses Settings → Keys → Enable private repos in the web app. See [identity and keys](guides/identity-and-keys.md#encryption-key-private-repositories).
 
 ## E307
 
@@ -410,4 +410,4 @@ Fix: pass `--yes` after checking the estimate (`dg cost estimate`).
 
 **Branch policy not met.** `dg pr merge` checked the repository's branch `policy` (`dg repo policy show`) and it is not satisfied: fewer counted approvals than it requires (from maintainers only, when it says so), or a merge method it does not allow, or the policy could not be read. The policy is a client rule every Forge client applies, not a consensus rule. Nothing was pushed and no merge event was posted.
 
-Fix: get the missing approvals (`dg pr review --approve` by a member other than the PR author, whose own approval never counts), or use an allowed method. A maintainer can bypass the approvals and checks with `--override-policy`; the merge then records the bypassed rules on the PR as a comment. The allowed merge methods still apply.
+Fix: get the missing approvals (`dg pr review --approve` by a member other than the PR author, whose own approval never counts), or use an allowed method. A maintainer can bypass the approvals and checks with `--override-policy`; the merge then records the bypassed rules on the PR as a policy-bypass event, which nobody can delete. The allowed merge methods still apply.

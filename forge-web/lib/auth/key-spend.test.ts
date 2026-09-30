@@ -211,7 +211,7 @@ describe('key spends reach the ledger (D-044)', () => {
     expect(baseline?.credits).toBe(start)
     const s = summarize(rows)
     expect(s.byRepo).toEqual([{ repo: NO_REPO, credits: 47_111_680 + 2_267_600, writes: 2 }])
-    expect(reconcile(s.allTime, baseline!.credits, chain.balance)).toEqual({ balanceChange: 47_111_680 + 2_267_600, unexplained: 0 })
+    expect(reconcile(s.allTime, baseline!.credits, chain.balance)).toEqual({ balanceChange: -(47_111_680 + 2_267_600), unexplained: 0 })
   }, 30_000)
 })
 

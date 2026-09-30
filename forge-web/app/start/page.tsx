@@ -35,7 +35,7 @@ function Section({ icon, title, children }: { icon: ReactNode; title: string; ch
 
 function Guide({ href, children }: { href: string; children: ReactNode }): JSX.Element {
   return (
-    <a href={href} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-1 text-forge-700 underline dark:text-forge-400">
+    <a href={href} target="_blank" rel="noreferrer noopener" className="hit-area inline-flex items-center gap-1 text-forge-700 underline dark:text-forge-400">
       {children}
       <ExternalLink className="h-3 w-3" aria-hidden />
     </a>
@@ -106,7 +106,8 @@ export default function GettingStartedPage(): JSX.Element {
         </Section>
 
         <Section icon={<BookOpen className="h-4 w-4 text-forge-500" aria-hidden />} title="Guides">
-          <ul className="list-disc space-y-1 pl-5">
+          {/* Touch: rows 44 px apart, so each guide's 44 px hit area does not overlap the next (QW2-068). */}
+          <ul className="list-disc space-y-1 pl-5 coarse:space-y-6">
             <li>
               <Guide href={DOCS.quickStart}>Quick start</Guide>
             </li>
@@ -117,7 +118,11 @@ export default function GettingStartedPage(): JSX.Element {
               <Guide href={DOCS.costs}>What things cost</Guide>, measured
             </li>
             <li>
-              <Guide href={DOCS.movingFromGithub}>Moving from GitHub or GitLab</Guide>, or <Guide href={DOCS.mirror}>mirror a GitHub repository</Guide>
+              <Guide href={DOCS.movingFromGithub}>Moving from GitHub or GitLab</Guide>
+            </li>
+            {/* Its own row: two links on one wrapped line would overlap their hit areas. */}
+            <li>
+              <Guide href={DOCS.mirror}>Mirror a GitHub repository</Guide>
             </li>
             <li>
               <Guide href={DOCS.storage}>Bring your own storage</Guide>

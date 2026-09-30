@@ -26,6 +26,7 @@ import { usePrivateWrite } from '@/hooks/use-private-write'
 import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { PRIVATE_REPOS_SETTINGS } from '@/lib/settings-links'
 
 function Note({ tone, icon, children, testId }: { tone: 'caution' | 'danger' | 'info'; icon: React.ReactNode; children: React.ReactNode; testId?: string }): JSX.Element {
   const klass =
@@ -79,8 +80,8 @@ export function PrivateBanner({ home }: { home: RepoHome }): JSX.Element | null 
         <p className="font-medium">You&apos;re a member, but this browser has no encryption key to read this repo.</p>
         <p className="mt-1">
           Add your identity&apos;s encryption key in{' '}
-          <Link href="/settings/" className="text-forge-700 underline dark:text-forge-400">
-            Settings → Keys → Enable private repos
+          <Link href={PRIVATE_REPOS_SETTINGS} className="text-forge-700 underline dark:text-forge-400">
+            Settings → Private repos
           </Link>
           . If your identity has none yet, that page registers one (one master-key signature), or run{' '}
           <code className="font-mono">dg auth keys add --encryption</code>.

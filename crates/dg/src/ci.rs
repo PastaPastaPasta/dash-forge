@@ -96,8 +96,12 @@ pub enum CiCommand {
     Status {
         /// The repository (`owner/name`).
         repo: String,
-        /// The commit (40 or 64 hex digits).
-        sha: String,
+        /// The commit (40 or 64 hex digits); `--sha` works too, as in `dg ci report`.
+        #[arg(required_unless_present = "sha_flag", conflicts_with = "sha_flag")]
+        sha: Option<String>,
+        /// The commit, as `dg ci report` takes it.
+        #[arg(long = "sha", alias = "head", value_name = "SHA")]
+        sha_flag: Option<String>,
     },
 }
 
@@ -238,7 +242,15 @@ pub async fn run(ctx: &Ctx, cmd: &CiCommand) -> Result<()> {
             runner_revoke(ctx, repo, runner).await
         }
         CiCommand::Report(a) => report(ctx, a).await,
-        CiCommand::Status { repo, sha } => status(ctx, repo, sha).await,
+        CiCommand::Status {
+            repo,
+            sha,
+            sha_flag,
+        } => {
+            // clap requires exactly one of them
+            let sha = sha.as_deref().or(sha_flag.as_deref()).unwrap_or_default();
+            status(ctx, repo, sha).await
+        }
     }
 }
 
@@ -247,7 +259,12 @@ fn key_holder(ctx: &Ctx, args: &RunnerNewArgs, me: &str) -> Result<BridgeIdentit
     let Some(file) = &args.runner else {
         return crate::auth::master_identity(ctx, args.master.as_deref(), me);
     };
-    let b = BridgeIdentity::load_from_file(file).with_context(|| {
+    // Its own passphrase, when it is sealed with another than your key (QW2-022).
+    let envs = [
+        forge_core::sealed::RUNNER_PASSPHRASE_ENV,
+        forge_core::sealed::PASSPHRASE_ENV,
+    ];
+    let b = BridgeIdentity::load_from_file_with(file, &envs).with_context(|| {
         format!(
             "loading the runner identity from {}",
             keystore::describe_key_source(file)
@@ -668,6 +685,13 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
         check_log_storage(a.storage.as_deref())?;
     }
     warn_private(a, &s, &left_out);
+    // A check the branch policy pins to another source still records, but never counts toward
+    // the policy (QW2-086): say so before anything is paid.
+    let not_counted = pinned_elsewhere(&s, &r.name).await;
+    if let Some(note) = &not_counted {
+        // stderr, JSON mode too (as `warn_private`): before the prompt and the payment.
+        eprintln!("warning: {note}");
+    }
     let runs = CheckRuns::new(&s.client, &s.identity, &s.bridge);
     // Decided before the prompt, so it prices the write that happens. The plan gets the
     // report as given: an external id, even one a private repository drops, tells it the
@@ -700,20 +724,64 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
         s.spent_since(before).await
     };
     let url = commit_web_url(&s.repo, &r.head_oid);
-    emit_report(ctx, &r, &done, spent, &url, &left_out, &artifacts_left_out);
+    emit_report(
+        ctx,
+        &r,
+        &done,
+        &Outcome {
+            spent,
+            url: &url,
+            left_out: &left_out,
+            artifacts_left_out: &artifacts_left_out,
+            not_counted: not_counted.as_deref(),
+        },
+    );
     Ok(())
 }
 
-/// Print what `dg ci report` did: the write, and what the run carries.
-fn emit_report(
-    ctx: &Ctx,
-    r: &CheckReport,
-    done: &Reported,
+/// Why a run of check `name` reported by this signer will not count toward the branch policy:
+/// the policy pins `name` to other sources (`requiredCheckSources`). `None` when it counts, or
+/// the policy cannot be read (a warning is never a reason to fail the report).
+async fn pinned_elsewhere(s: &Session, name: &str) -> Option<String> {
+    let policy = s.collab().policy(&s.repo).await.ok()??;
+    let me = s.identity.id();
+    pinned_note(&policy, name, &me)
+}
+
+/// [`pinned_elsewhere`]'s rule on a read policy.
+fn pinned_note(policy: &forge_core::rules::review::Policy, name: &str, me: &str) -> Option<String> {
+    let rules = policy.checks_policy();
+    let pins = forge_core::rules::parity::pinned_sources(&rules);
+    let sources = pins.get(name)?;
+    if sources.contains(me) {
+        return None;
+    }
+    Some(format!(
+        "the branch policy requires `{}` from {}, so a run you report is shown but never counts toward it (the merge box and `dg pr merge` judge only that source's runs)",
+        crate::fmt::safe(name),
+        sources.iter().copied().collect::<Vec<_>>().join(" or ")
+    ))
+}
+
+/// What a report did beyond the write itself, for [`emit_report`].
+struct Outcome<'a> {
     spent: u64,
-    url: &str,
-    left_out: &[&str],
-    artifacts_left_out: &[String],
-) {
+    url: &'a str,
+    left_out: &'a [&'a str],
+    artifacts_left_out: &'a [String],
+    /// [`pinned_elsewhere`]: the run will not count toward the branch policy.
+    not_counted: Option<&'a str>,
+}
+
+/// Print what `dg ci report` did: the write, and what the run carries.
+fn emit_report(ctx: &Ctx, r: &CheckReport, done: &Reported, o: &Outcome<'_>) {
+    let Outcome {
+        spent,
+        url,
+        left_out,
+        artifacts_left_out,
+        not_counted,
+    } = *o;
     // The `artifacts` JSON this report recorded, read back for the output.
     let artifacts: Vec<ReleaseAsset> = r
         .artifacts
@@ -737,6 +805,9 @@ fn emit_report(
             "leftOut": left_out,
             "url": url,
             "cost": cost_json(spent, dash_usd_price()),
+            // Set when the policy pins this check to another source: the run never counts
+            // toward it. `null` says only that no pin excludes it.
+            "policyNote": not_counted,
         }),
         || {
             println!(
@@ -847,8 +918,32 @@ async fn status(ctx: &Ctx, repo: &str, sha: &str) -> Result<()> {
     let sha = sha.to_ascii_lowercase();
     let runs = r.collab().check_runs(&r.repo, &sha).await?;
     let url = commit_web_url(&r.repo, &sha);
+    // The newest run per name is listed; when the branch policy pins that check to another
+    // source, the run is shown but not counted (the merge judges only the pinned source's).
+    let policy = if runs.is_empty() {
+        None
+    } else {
+        r.collab().policy(&r.repo).await.ok().flatten()
+    };
+    let pinned_to = |c: &forge_core::collab::v2::CheckRun| -> Option<String> {
+        let rules = policy.as_ref()?.checks_policy();
+        let pins = forge_core::rules::parity::pinned_sources(&rules);
+        let sources = pins.get(c.name.as_str())?;
+        (!sources.contains(c.reporter.as_str()))
+            .then(|| sources.iter().copied().collect::<Vec<_>>().join(" or "))
+    };
+    let rows: Vec<serde_json::Value> = runs
+        .iter()
+        .map(|c| {
+            let mut v = serde_json::to_value(c).unwrap_or_default();
+            if let (Some(o), Some(to)) = (v.as_object_mut(), pinned_to(c)) {
+                o.insert("notCountedPinnedTo".into(), json!(to));
+            }
+            v
+        })
+        .collect();
     ctx.emit(
-        json!({ "headOid": sha, "checks": runs, "url": url }),
+        json!({ "headOid": sha, "checks": rows, "url": url }),
         || {
             if runs.is_empty() {
                 println!("no checks reported for {}", &sha[..7.min(sha.len())]);
@@ -859,15 +954,14 @@ async fn status(ctx: &Ctx, repo: &str, sha: &str) -> Result<()> {
                 } else {
                     c.status.as_str()
                 };
-                println!(
-                    "  {:<24} {state}{}",
-                    crate::fmt::safe(&c.name),
-                    if c.trusted {
-                        ""
-                    } else {
-                        "  (reporter is no longer a member or runner: not counted)"
-                    }
-                );
+                let note = if !c.trusted {
+                    "  (reporter is no longer a member or runner: not counted)".to_string()
+                } else if let Some(to) = pinned_to(c) {
+                    format!("  (not counted: the branch policy counts only runs by {to})")
+                } else {
+                    String::new()
+                };
+                println!("  {:<24} {state}{note}", crate::fmt::safe(&c.name));
                 for x in &c.artifacts {
                     println!(
                         "    artifact {} ({} bytes, sha256 {})",
@@ -886,6 +980,24 @@ async fn status(ctx: &Ctx, repo: &str, sha: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// QW2-086: a report of a check the policy pins to another source says it will not count.
+    #[test]
+    fn a_check_pinned_to_another_source_is_noted() {
+        let policy = forge_core::rules::review::Policy {
+            require_checks: true,
+            required_checks: vec!["build".into(), "lint".into()],
+            required_check_sources: vec!["OWNER".into(), String::new()],
+            ..Default::default()
+        };
+        let note = pinned_note(&policy, "build", "MEMBER").unwrap();
+        assert!(note.contains("`build` from OWNER"), "{note}");
+        assert!(note.contains("never counts"), "{note}");
+        // the pinned source itself, an unpinned check, and a check the policy does not name
+        assert_eq!(pinned_note(&policy, "build", "OWNER"), None);
+        assert_eq!(pinned_note(&policy, "lint", "MEMBER"), None);
+        assert_eq!(pinned_note(&policy, "e2e", "MEMBER"), None);
+    }
 
     /// QW-038: every check-run write and runner key measured on bonsia (Platform 4.2.0-beta.7,
     /// 2026-09-30) is at or under its quote. The flat quotes it replaces were exceeded: a

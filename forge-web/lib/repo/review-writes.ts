@@ -37,6 +37,7 @@ import { invalidateRepoFeed, readReviews } from './issues'
 import { readMemberships } from './members'
 import { readRunners } from './checks'
 import { sealEdit } from './private-writes'
+import { bypassValue } from '../view/pull-actions'
 import { repoSource } from './source'
 import { admitAll, gateFor } from './private-content'
 import { privateWriterWithSession, type PrivateWriter } from './private-writes'
@@ -90,6 +91,8 @@ export function targetEventData(target: WriteTarget, kind: EventKind, payload: E
   // The folds read only 40- or 64-hex heads (SHA-1 or SHA-256): anything else would be inert.
   if (kind === 'headUpdate' && oid?.length !== 20 && oid?.length !== 32) throw new Error('a head update needs a 20- or 32-byte commit oid')
   if (kind === 'milestoneSet' && !payload.value) throw new Error('a milestone needs a name')
+  // A bypass record names the rules and the merge commit, or it records nothing a reader can show.
+  if (kind === 'policyBypass' && (!payload.value || (oid?.length !== 20 && oid?.length !== 32))) throw new Error('a policy bypass names the rules and the merge commit')
   if ((kind === 'labelAdd' || kind === 'labelRemove') && !payload.value?.trim()) throw new Error('a label event needs a label name')
   // An assignee is `value` (what the fold reads, forge-v2.md §3) and `refId` (so the sparse
   // `addressee (refId)` index answers "assigned to me", platform-parity-spec §1.2): both the
@@ -649,6 +652,22 @@ export async function setThreadFlag(
   input: { target: WriteTarget; on: boolean; intent?: string },
 ): Promise<WriteResult> {
   return write(sdk, auth, repo, DOC.event, targetEventData(input.target, input.on ? 'pin' : 'unpin'), input.intent)
+}
+
+/**
+ * Record a maintainer's bypass of the branch rules on a PR (event kind 23, forge-v2.md §3): the
+ * rules not met ({@link bypassValue}) and the merge commit. An `event` is immutable and
+ * non-deletable, so, like GitHub's bypass timeline entry, nobody can erase it (the comment this
+ * replaced could be deleted by the bypasser, QW2-003). Members only at consensus. Parity: `dg pr
+ * merge --override-policy`.
+ */
+export async function recordPolicyBypass(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  input: { target: WriteTarget; rules: readonly string[]; mergeOid: string; intent?: string },
+): Promise<WriteResult> {
+  return write(sdk, auth, repo, DOC.event, targetEventData(input.target, 'policyBypass', { value: bypassValue(input.rules), oidHex: input.mergeOid }), input.intent)
 }
 
 /** Put an issue or PR in milestone `title` (null: take it out). Members only at consensus. */

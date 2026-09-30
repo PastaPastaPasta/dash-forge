@@ -136,7 +136,7 @@ describe('merge step runner', () => {
     calls.length = 0
     const run = await runMergeSteps(deps({ recordBypass }), e.run, () => undefined)
     expect(calls).toEqual([`bypass:${TIP}:merge:P:bb:bypass`])
-    expect(run.bypassCommentId).toBe('C1')
+    expect(run.bypassEventId).toBe('C1')
     expect(run.done.at(-1)).toBe('bypass')
   })
 

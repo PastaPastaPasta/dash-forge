@@ -20,7 +20,7 @@ import { CommitIdError, resolveCommitOid, type PrefixReader } from './commit-log
 import { MalformedObjectError, OID_HEX } from './git-objects'
 import { primeCommit } from './path-history'
 import { trimOldest } from './pool'
-import { commitRootTree, ObjectTypeError, peel, type ObjectReader, type Peeled } from './tree-nav'
+import { commitRootTree, ObjectTypeError, peel, readCommit, type ObjectReader, type Peeled } from './tree-nav'
 
 /** What a full id peels to: the object's id and type, nothing a tag says about itself. */
 export type PeeledTip = Pick<Peeled, 'oid' | 'type'>
@@ -170,10 +170,43 @@ export function isPermanentReadError(e: unknown): boolean {
   return e instanceof CommitIdError && e.kind !== 'not-found'
 }
 
+/** Tip dates read, by the tip's id (a fact about the id, as a peel is). */
+const dates = new Map<string, Promise<number>>()
+
+/**
+ * When a ref's tip was made, for the branches and tags lists (QW2-023, GitHub's "Updated"): an
+ * annotated tag's tagger date (the outermost tag that has one), else the commit's committer date
+ * (a branch, a lightweight tag, an old tag without a tagger line). 0 when it has none (a tag of a
+ * tree or a blob, with no tagger). The tip is peeled as the tags list peels it ({@link peel},
+ * trusting a tag's declared commit), then its commit read when no tag dates it; cached for the
+ * session. Rejects when the tip cannot be read.
+ */
+export function tipDateCached(reader: ObjectReader, tip: string): Promise<number> {
+  const key = tip.toLowerCase()
+  let p = dates.get(key)
+  if (p === undefined) {
+    p = tipDate(reader, key)
+    dates.set(key, p)
+    p.catch(() => {
+      if (dates.get(key) === p) dates.delete(key)
+    })
+    trimOldest(dates, KEEP)
+  }
+  return p
+}
+
+async function tipDate(reader: ObjectReader, tip: string): Promise<number> {
+  const peeled = await peel(reader, tip, { verify: false })
+  const tagged = peeled.tags.find((t) => (t.tagger?.when ?? 0) > 0)?.tagger?.when
+  if (tagged !== undefined) return tagged
+  return peeled.type === 'commit' ? (await readCommit(reader, peeled.oid)).committer.when : 0
+}
+
 /** Test hook. */
 export function resetTipCache(): void {
   verified.clear()
   declared.clear()
   inflight.clear()
   shortIdsByRepo.clear()
+  dates.clear()
 }

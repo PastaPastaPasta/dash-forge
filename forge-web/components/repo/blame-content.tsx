@@ -22,10 +22,12 @@ import { BLAME_MAX_COMMITS, BLAME_MAX_VERSIONS, BlameRefusedError, BlameStoppedE
 import { BlobToolbar, useLineSelection } from '@/components/repo/blob-content'
 import { permalinkPath, pinnedHref, usePermalinkKey } from '@/components/repo/permalink'
 import { formatDate, plural } from '@/lib/view/format'
+import { historyOf } from '@/lib/view/history-source'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
+import { GoToFileHotkey } from '@/components/repo/go-to-file'
 import { ReadErrorState, ResolvedTip } from '@/components/repo/resolved-tip'
 import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
-import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
+import { RefDeletedState, RefSwitcher, unknownRefState } from '@/components/repo/ref-switcher'
 import { Button } from '@/components/ui/button'
 import { ScrollRegion } from '@/components/ui/scroll-region'
 import { EmptyState } from '@/components/ui/states'
@@ -46,9 +48,8 @@ export function BlameContent({
 }): JSX.Element {
   const selected = selectRef(home.branches, home.tags, home.defaultBranch, refParam)
   const tipOid = selectedTip(selected)
-  if (refParam && !selected.ref && !selected.pinned) {
-    return <RefNotFoundState addr={addr} refParam={refParam} defaultBranch={home.defaultBranch} />
-  }
+  const unknown = unknownRefState(home, addr, selected, refParam, path)
+  if (unknown !== null) return unknown
   if (!tipOid && selected.ref) return <RefDeletedState addr={addr} name={selected.name} defaultBranch={home.defaultBranch} />
   if (!tipOid) return <EmptyState icon={FileText} title="Empty repo" body={`No commits on ${selected.name}, so nothing to blame.`} />
   if (!path) return <EmptyState icon={FileText} title="No file addressed" body="Add &path= to the URL." />
@@ -63,7 +64,11 @@ export function BlameContent({
         {(reader, retry) => (
           <ResolvedTip reader={reader} retry={retry} repo={home.repo} tip={tipOid} pinned={selected.pinned !== undefined} name={selected.name} addr={addr} refParam={refParam} accepts="commit" label="Reading the file’s history">
             {(tip) => (
-              <BlameBody key={`${tip.oid}\0${path}`} reader={reader} tipOid={tip.oid} path={path} addr={addr} privateRepo={home.repo.visibility === 'private'} repo={home.repo} />
+              <>
+                {/* `t`: another file at this ref (QW2-043). */}
+                <GoToFileHotkey reader={reader} repo={home.repo} tip={tip} addr={addr} refParam={refParam} />
+                <BlameBody key={`${tip.oid}\0${path}`} reader={reader} tipOid={tip.oid} path={path} addr={addr} privateRepo={home.repo.visibility === 'private'} repo={home.repo} />
+              </>
             )}
           </ResolvedTip>
         )}
@@ -167,13 +172,16 @@ export function BlameBody({
     const done = p === null || p.total === 0 ? 0 : Math.round(((p.total - p.pending) / p.total) * 100)
     return (
       <div className="flex flex-col items-center gap-3 rounded-lg border border-anvil-200 px-4 py-10 text-center text-dense text-anvil-600 dark:border-anvil-800 dark:text-anvil-300" role="status" data-testid="blame-progress">
-        <p>
-          {p === null
-            ? 'Reading the file’s history…'
-            : p.versions === 0
-              ? `Looking for the file’s versions · ${plural(p.examined, 'commit')} examined`
-              : `Compared ${plural(p.versions, 'version')} of up to ${p.versionLimit} · ${plural(p.total - p.pending, 'line')} of ${p.total} attributed · ${plural(p.examined, 'commit')} examined`}
-        </p>
+        <p>{blameProgressText(p)}</p>
+        {/* Not for a tip an index covers (an index a few pushes behind is walked to briefly), nor a
+            continued run, whose earlier runs said so already. */}
+        {p !== null && p.examined > 0 && p.indexed === 0 && job.from === null && historyOf(reader)?.coversVersions(tipOid) !== true ? (
+          // QW2-036: why this ref is slower than the default branch.
+          <p className="max-w-md text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="blame-walk-note">
+            No history index covers this commit (only pushes to the default branch publish one), so your browser walks the file’s history commit by
+            commit. On a long history that can take a minute.
+          </p>
+        ) : null}
         <div className="h-1.5 w-64 max-w-full overflow-hidden rounded-full bg-anvil-100 dark:bg-anvil-800" aria-hidden>
           <div className="h-full bg-forge-500 transition-[width]" style={{ width: `${done}%` }} />
         </div>
@@ -184,6 +192,17 @@ export function BlameBody({
     )
   }
   return <BlameTable result={run.result} name={path} addr={addr} permalink={permalink} onContinue={resume} />
+}
+
+/**
+ * The running blame's status line. The commit count only while commits are walked: versions the
+ * history index lists are found without examining any (QW2-039).
+ */
+export function blameProgressText(p: BlameProgress | null): string {
+  if (p === null) return 'Reading the file’s history…'
+  const walked = p.examined > 0 ? ` · ${plural(p.examined, 'commit')} examined` : ''
+  if (p.versions === 0) return `Looking for the file’s versions${walked}`
+  return `Compared ${plural(p.versions, 'version')} of up to ${p.versionLimit} · ${plural(p.total - p.pending, 'line')} of ${p.total.toLocaleString('en-US')} attributed${walked}`
 }
 
 /**

@@ -6,20 +6,24 @@
 //! repo at another relay is `dg webhook add` again with `--relay <other>` and the same
 //! `--name`.
 
+use std::path::PathBuf;
+
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use serde_json::json;
 
 use forge_core::cost::estimate;
 use forge_core::envelope::SecretBytes;
+use forge_core::user_error::{codes, UserError};
 use forge_core::webhooks::{
     generate_secret, hook_id_for_label, newest_per_hook, random_hook_id, NewWebhook, WebhookReader,
     WebhookService,
 };
 
-use crate::common::{resolve, RepoRef};
+use crate::common::{resolve, Reader, RepoRef};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, dash_usd_price};
+use crate::secret_out::{self, Stream, Surroundings};
 
 /// `dg webhook` subcommands.
 #[derive(Debug, Subcommand)]
@@ -58,9 +62,15 @@ pub struct AddArgs {
     #[arg(long, value_delimiter = ',')]
     events: Vec<String>,
     /// Read the secret from this environment variable (32..=96 printable ASCII characters,
-    /// no spaces). Without it a random secret is generated and printed once.
+    /// no spaces). Without it a random secret is generated: shown once on a terminal, or
+    /// written to --secret-file.
     #[arg(long, value_name = "VAR")]
     secret_env: Option<String>,
+    /// Write the generated secret to this new file (0600; an existing file is refused) instead
+    /// of showing it. Required without a terminal (CI, pipes, --json) unless --secret-env is
+    /// given: a generated secret is never printed there.
+    #[arg(long, value_name = "FILE", conflicts_with = "secret_env")]
+    secret_file: Option<PathBuf>,
     /// A name for the hook; adding again under the same name replaces it. Default: a new
     /// random hook id.
     #[arg(long)]
@@ -108,17 +118,7 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
         ..
     } = args;
     let repo_ref = RepoRef::parse(repo)?;
-    let (secret, generated) = match &args.secret_env {
-        Some(var) => (
-            SecretBytes::new(
-                std::env::var(var)
-                    .with_context(|| format!("reading the secret from ${var}"))?
-                    .into_bytes(),
-            ),
-            false,
-        ),
-        None => (generate_secret(), true),
-    };
+    let (secret, show) = hook_secret(ctx, args)?;
     let hook_id = args
         .name
         .as_deref()
@@ -162,14 +162,20 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
     if !ctx.confirm(&format!("Add the webhook to {}?", handle.display()))? {
         return Err(crate::errors::cancelled());
     }
+    // Kept before the hook is written, so a hook whose secret nobody holds is never added.
+    if let Some(p) = &args.secret_file {
+        secret_out::write_new_file(p, secret.expose())?;
+    }
     let document_id = svc
         .send(&handle, &prepared)
         .await
-        .context("writing the webhook")?;
+        .with_context(|| send_failure(args.secret_file.as_deref()))?;
 
-    // A generated secret is shown exactly once: on chain it exists only encrypted to the
-    // relay (and to this identity's own key). A secret from --secret-env is never echoed.
-    let secret_text = generated.then(|| String::from_utf8_lossy(secret.expose()).into_owned());
+    // A generated secret is shown exactly once, and only on a terminal: on chain it exists
+    // only encrypted to the relay (and to this identity's own key). A secret from
+    // --secret-env, or one written to --secret-file, is never echoed, and never in --json.
+    let secret_text = show
+        .then(|| zeroize::Zeroizing::new(String::from_utf8_lossy(secret.expose()).into_owned()));
     ctx.emit(
         json!({
             "status": "created",
@@ -182,7 +188,7 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
             "relayIdentityId": relay,
             "relayKeyId": prepared.relay_key_id,
             "senderKeyId": prepared.sender_key_id,
-            "secret": secret_text,
+            "secretFile": args.secret_file.as_ref().map(|p| p.display().to_string()),
             "estimate": cost_json(credits, price),
         }),
         || {
@@ -190,20 +196,92 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
                 "✓ webhook {} (document {document_id})",
                 hex::encode(hook_id)
             );
-            if let Some(s) = &secret_text {
-                println!("  secret (shown once; configure it at the receiver): {s}");
-            }
+            print_secret(
+                secret_text.as_deref().map(String::as_str),
+                args.secret_file.as_deref(),
+            );
         },
     );
     Ok(())
 }
 
+/// The context of a failed hook write: where its secret was kept, if in a file.
+fn send_failure(secret_file: Option<&std::path::Path>) -> String {
+    secret_file.map_or_else(
+        || "writing the webhook".to_string(),
+        |p| {
+            format!(
+                "writing the webhook (it may still land: `dg webhook list`; {} holds its secret \
+                 if it did, else delete it and run again)",
+                p.display()
+            )
+        },
+    )
+}
+
+/// The secret's line after a hook is added: the secret itself (a terminal only), or its file.
+fn print_secret(shown: Option<&str>, file: Option<&std::path::Path>) {
+    if let Some(s) = shown {
+        println!("  secret (shown once; configure it at the receiver): {s}");
+    }
+    if let Some(p) = file {
+        println!(
+            "  secret written to {} (0600); configure it at the receiver, then delete the file",
+            p.display()
+        );
+    }
+}
+
+/// The hook's secret, and whether to show it (a generated one going to no --secret-file),
+/// decided before anything is read or signed.
+fn hook_secret(ctx: &Ctx, args: &AddArgs) -> Result<(SecretBytes, bool)> {
+    if let Some(var) = &args.secret_env {
+        // `var_os`, not `var`: a `VarError::NotUnicode` would print the value itself.
+        let value = std::env::var_os(var)
+            .ok_or_else(|| crate::errors::usage(format!("--secret-env: ${var} is not set")))?
+            .into_string()
+            .map_err(|_| crate::errors::usage(format!("--secret-env: ${var} is not UTF-8")))?;
+        return Ok((SecretBytes::new(value.into_bytes()), false));
+    }
+    match &args.secret_file {
+        Some(p) if p.symlink_metadata().is_ok() => Err(crate::errors::usage(format!(
+            "--secret-file {} exists; name a new file (it is never overwritten)",
+            p.display()
+        ))),
+        Some(_) => Ok((generate_secret(), false)),
+        None => {
+            refuse_unless_shown(Surroundings::detect(ctx.json, Stream::Stdout))?;
+            Ok((generate_secret(), true))
+        }
+    }
+}
+
+/// Refuse to generate a secret that would be printed where a person may not be its only reader.
+fn refuse_unless_shown(here: Surroundings) -> Result<()> {
+    let Some(why) = here.why_not() else {
+        return Ok(());
+    };
+    Err(UserError::new(
+        codes::USAGE,
+        "the generated webhook secret has nowhere safe to go",
+    )
+    .cause(format!(
+        "{why}, and dg never prints a secret where a log or another program could keep it"
+    ))
+    .fix("pass --secret-file <new file>: the secret goes only to that file (0600) and only its path is printed")
+    .fix("or pass --secret-env <VAR> with a secret you made (32 to 96 printable characters)")
+    .fix("or run it in a terminal to see the secret once")
+    .note("nothing was written or paid")
+    .into())
+}
+
+/// A read: no key is opened for a public repository (QW-034: a sealed key with no terminal
+/// stopped it with E303, while every other list reads on).
 async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, _bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
+    let r = Reader::open(ctx, repo).await?;
+    let handle = &r.repo;
     let hooks = newest_per_hook(
-        WebhookReader::new(&client)
+        WebhookReader::new(&r.client)
             .for_repo(handle.id())
             .await
             .context("listing webhooks")?,
