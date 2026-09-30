@@ -174,6 +174,11 @@ struct Section {
 /// Run every check, apply the safe fixes when `fix` is set, and report.
 pub async fn run(ctx: &Ctx, fix: bool) -> Result<()> {
     let identity = check_identity(ctx).await;
+    let mut network = check_network(ctx).await;
+    let contracts = contract_rows(
+        &mut network,
+        check_contracts(&ctx.target, unchosen_undeployed(ctx)),
+    );
     let mut sections = vec![
         Section {
             title: "toolchain",
@@ -185,11 +190,11 @@ pub async fn run(ctx: &Ctx, fix: bool) -> Result<()> {
         },
         Section {
             title: "network",
-            checks: check_network(ctx).await,
+            checks: network,
         },
         Section {
             title: "contracts",
-            checks: vec![check_contracts(&ctx.target, unchosen_undeployed(ctx))],
+            checks: contracts,
         },
         Section {
             title: "storage",
@@ -723,23 +728,34 @@ async fn check_network(ctx: &Ctx) -> Vec<Check> {
             "run it again in a minute (a different node is asked)",
         ),
     });
-    out.push(check_forge_v2(&client, &ctx.target).await);
+    out.extend(check_forge_v2(&client, &ctx.target).await);
     out
+}
+
+/// The contracts section: one `forge-v2` row (QW-083 printed it under network and again
+/// here). The network section's proof-verified row, when it ran, moves here: it says all the
+/// recorded row does and whether the contracts are really there. Otherwise (a fresh install,
+/// no deployment, a DAPI that could not be reached) the recorded row is all there is.
+fn contract_rows(network: &mut Vec<Check>, recorded: Check) -> Vec<Check> {
+    match network.iter().position(|c| c.name == "forge-v2") {
+        Some(i) => vec![network.remove(i)],
+        None => vec![recorded],
+    }
+}
+
+/// Where the forge-v2 contract ids for `target` come from.
+fn deployment_source(target: &NetworkTarget) -> String {
+    format!("forge-contracts/deployments/{}.json", target.network.key())
 }
 
 /// The DPNS system contract: its id is fixed by rs-dpp and identical on every network.
 const DPNS_CONTRACT_ID: &str = "GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec";
 
 /// The forge-v2 contracts recorded for this network: each must fetch with a verified proof
-/// and be enrolled, as whole contracts, in the recorded contract group. A network
-/// with no forge-v2 deployment is reported by the contracts row, so this one only notes it.
-async fn check_forge_v2(client: &PlatformClient, target: &NetworkTarget) -> Check {
-    let Some(ids) = &target.v2 else {
-        return Check::ok(
-            "forge-v2",
-            format!("not deployed on {} (see contracts)", target.network.key()),
-        );
-    };
+/// and be enrolled, as whole contracts, in the recorded contract group. `None` for a network
+/// with no forge-v2 deployment: [`check_contracts`]' row reports that.
+async fn check_forge_v2(client: &PlatformClient, target: &NetworkTarget) -> Option<Check> {
+    let ids = target.v2.as_ref()?;
     let mut problems = Vec::new();
     // forge-community is forge-collab on a deployment that predates the split: checked once
     let mut contracts = ids.all().to_vec();
@@ -763,12 +779,16 @@ async fn check_forge_v2(client: &PlatformClient, target: &NetworkTarget) -> Chec
             Err(e) => problems.push(format!("{label} {id} group lookup failed: {e}")),
         }
     }
-    if problems.is_empty() {
+    Some(if problems.is_empty() {
         Check::ok(
             "forge-v2",
             format!(
-                "core={} collab={} community={} proof-verified and enrolled in group {}",
-                ids.core, ids.collab, ids.community, ids.group
+                "core={} collab={} community={} proof-verified and enrolled in group {} (source: {})",
+                ids.core,
+                ids.collab,
+                ids.community,
+                ids.group,
+                deployment_source(target)
             ),
         )
     } else {
@@ -777,7 +797,7 @@ async fn check_forge_v2(client: &PlatformClient, target: &NetworkTarget) -> Chec
             problems.join("; "),
             "the network may not run protocol 14 yet, or the deployment record is stale",
         )
-    }
+    })
 }
 
 /// A fresh install: no flag, `config.toml` or environment chose a network, and the default
@@ -812,12 +832,12 @@ fn check_contracts(target: &NetworkTarget, fresh_install: bool) -> Check {
         Ok(ids) => Check::ok(
             "forge-v2",
             format!(
-                "core={} collab={} community={} group={} (source: forge-contracts/deployments/{}.json)",
+                "core={} collab={} community={} group={} (source: {})",
                 ids.core,
                 ids.collab,
                 ids.community,
                 ids.group,
-                target.network.key()
+                deployment_source(target)
             ),
         ),
         Err(e) => Check::fail(
@@ -1414,6 +1434,42 @@ mod tests {
             &gw_health(&[("https://a.example", true), ("https://mine.example", true)]),
         );
         assert!(rows.iter().all(|c| c.status == Status::Ok));
+    }
+
+    /// QW-083: the forge-v2 row was printed under network and again under contracts.
+    #[test]
+    fn the_forge_v2_row_is_printed_once() {
+        let recorded = || Check::ok("forge-v2", "core=a (source: deployments/x.json)");
+        let proved = Check::ok("forge-v2", "core=a proof-verified and enrolled in group g");
+        let mut network = vec![
+            Check::ok("dapi", "reachable"),
+            Check::ok("protocol", "14"),
+            proved,
+        ];
+        let contracts = contract_rows(&mut network, recorded());
+        assert_eq!(contracts.len(), 1);
+        assert!(
+            contracts[0].detail.contains("proof-verified"),
+            "the live row is kept"
+        );
+        let sections = [
+            Section {
+                title: "network",
+                checks: network,
+            },
+            Section {
+                title: "contracts",
+                checks: contracts,
+            },
+        ];
+        let out = render_sections(&sections);
+        assert_eq!(out.matches("forge-v2").count(), 1, "{out}");
+
+        // No live row (fresh install, no deployment, DAPI down): the recorded one stands.
+        let mut network = vec![Check::fail("dapi", "could not connect", "retry")];
+        let contracts = contract_rows(&mut network, recorded());
+        assert!(contracts[0].detail.contains("source:"));
+        assert_eq!(network.len(), 1);
     }
 
     #[test]
