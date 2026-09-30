@@ -324,7 +324,8 @@ function DiffStat({ added, deleted }: { added: number; deleted: number }): JSX.E
   const p = DIFF_PALETTES[palette]
   return (
     <span className="shrink-0 font-mono text-[12px]">
-      <span className={p.added.marker}>+{added}</span> <span className={p.deleted.marker}>−{deleted}</span>
+      {/* Digit-grouped, as the file count beside it is (QW2-040: "+112,310 −69,084"). */}
+      <span className={p.added.marker}>+{added.toLocaleString('en-US')}</span> <span className={p.deleted.marker}>−{deleted.toLocaleString('en-US')}</span>
     </span>
   )
 }

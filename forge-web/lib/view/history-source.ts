@@ -39,6 +39,12 @@ export interface HistorySource {
   coversVersions(tip: string): boolean
   /** The version lists of `tip` (the whole index, a delta overlaid on its base). */
   loadVersions(tip: string): Promise<HistoryIndex>
+  /**
+   * The tips version lists cover, the newest upload first: the default branch's latest tip leads
+   * (only pushes to it publish an index). A walk from a commit no index covers (a tag, another
+   * branch) reads this list to find where its history joins an indexed one (QW2-036).
+   */
+  readonly versionTips?: readonly string[]
 }
 
 /** The live history indexes of `kind` (the column index by default) among `manifests`. */
@@ -56,6 +62,8 @@ export function liveHistoryIndexes(manifests: readonly PackManifest[], kind: num
 /** One kind's live indexes by tip, and a loader of a tip's index. */
 interface Series {
   readonly byTip: ReadonlyMap<string, HistoryEntry>
+  /** The tips of `byTip`, the newest upload first. */
+  readonly newestFirst: readonly string[]
   load(tip: string): Promise<HistoryIndex>
 }
 
@@ -88,8 +96,11 @@ function series(
     }
     return p
   }
+  // `live` is oldest upload first; a tip is as new as its newest upload.
+  const newestFirst = [...new Set(live.filter((e) => byTip.has(e.tip)).map((e) => e.tip).reverse())]
   return {
     byTip,
+    newestFirst,
     async load(tip: string): Promise<HistoryIndex> {
       const e = byTip.get(tip)
       if (e === undefined) throw new Error(`no history index covers ${tip.slice(0, 12)}`)
@@ -122,6 +133,7 @@ export function historySource(
     load: (tip) => columns.load(tip),
     coversVersions: (tip) => lists.byTip.has(tip),
     loadVersions: (tip) => lists.load(tip),
+    versionTips: lists.newestFirst,
   }
 }
 
@@ -143,6 +155,7 @@ export function chainHistory(own: HistorySource | null, inherited: HistorySource
     coversVersions: (tip) => own.coversVersions(tip) || inherited.coversVersions(tip),
     loadVersions: (tip) =>
       first(own.coversVersions(tip), inherited.coversVersions(tip), () => own.loadVersions(tip), () => inherited.loadVersions(tip)),
+    versionTips: [...new Set([...(own.versionTips ?? []), ...(inherited.versionTips ?? [])])],
   }
 }
 

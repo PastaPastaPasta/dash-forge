@@ -73,10 +73,17 @@ async function indexOf(s: Store, tip: string, paths: readonly string[], limit: n
  * A fresh reader of the store whose history source answers `tip`'s version lists (kind 5) with
  * `load`. It has no column index: a path's versions never read one.
  */
-function indexedReader(s: Store, tip: string, load: () => Promise<HistoryIndex>): PrefixReader {
+function indexedReader(s: Store, tip: string, load: () => Promise<HistoryIndex>, { versionTips }: { readonly versionTips?: readonly string[] } = {}): PrefixReader {
   const reader = readerOf(s)
   const none = (): Promise<HistoryIndex> => Promise.reject(new Error('the column index is not read here'))
-  const source: HistorySource = { byTip: new Map(), covers: () => false, load: none, coversVersions: (t) => t === tip, loadVersions: load }
+  const source: HistorySource = {
+    byTip: new Map(),
+    covers: () => false,
+    load: none,
+    coversVersions: (t) => t === tip,
+    loadVersions: load,
+    ...(versionTips !== undefined ? { versionTips } : {}),
+  }
   attachHistory(reader.memoScope, source)
   return reader
 }
@@ -290,5 +297,74 @@ describe('blame over the history index', () => {
     const reader = indexedReader(s, tip, () => indexOf(s, tip, ['a.txt'], 4))
     const got = await blameFile(reader, tip, 'a.txt')
     expect(got.hunks).toEqual(plain.hunks)
+  })
+})
+
+/**
+ * QW2-036: a tag or a branch no index covers, whose first-parent history joins the indexed default
+ * branch's: the walk goes only as far as the first version on the shared part, and the newest
+ * index's list answers the rest, with the plain walk's answer.
+ */
+describe('a walk from an unindexed commit joins the indexed history', () => {
+  /** 120 commits of {@link history}, and a 25-commit branch off commit 80 that edits a.txt every 4th. */
+  function branched(): { s: Store; tips: string[]; branch: string } {
+    const { s, tips } = history(120)
+    let at = tips[80] as string
+    for (let j = 0; j < 25; j++) {
+      const files: Record<string, string> = {
+        'a.txt': `a\n${Math.floor(80 / 3)}\nbranch ${Math.floor(j / 4)}\nend\n`,
+        'dir/b.txt': String(Math.floor(80 / 5)),
+        'c.txt': `branch ${j}`,
+        'late.txt': `late ${Math.floor(80 / 7)}\n`,
+      }
+      at = s.commit(s.files(files), [at], `branch ${j}`)
+    }
+    return { s, tips, branch: at }
+  }
+
+  it('stops walking at the first version the newest list holds', async () => {
+    const { s, tips, branch } = branched()
+    const tip = tips[119] as string
+    const ix = await indexOf(s, tip, ['a.txt'], 256)
+    const reader = indexedReader(s, tip, () => Promise.resolve(ix), { versionTips: [tip] })
+    const page = await pathVersions(reader, branch, 'a.txt', { limit: 1000, cap: 100_000 })
+    expect(page.entries.map((e) => e.oid)).toEqual(await walked(s, branch, 'a.txt'))
+    // The branch's 25 commits and the main-line commits down to a.txt's last change before 80.
+    expect(page.examined).toBeLessThanOrEqual(25 + 3)
+    expect(page.indexed).toBeGreaterThan(20)
+  })
+
+  it('pages the same answer, and walks as before with no newest tip to join', async () => {
+    const { s, tips, branch } = branched()
+    const tip = tips[119] as string
+    const ix = await indexOf(s, tip, ['a.txt', 'dir/b.txt'], 256)
+    for (const path of ['a.txt', 'dir/b.txt']) {
+      const joined = await paged(indexedReader(s, tip, () => Promise.resolve(ix), { versionTips: [tip] }), branch, path)
+      const alone = await paged(indexedReader(s, tip, () => Promise.resolve(ix)), branch, path)
+      const want = await walked(s, branch, path)
+      expect(joined.oids, path).toEqual(want)
+      expect(alone.oids, path).toEqual(want)
+      expect(joined.indexed, path).toBeGreaterThan(0)
+      expect(alone.indexed, path).toBe(0)
+    }
+  })
+
+  it('blames the branch tip as the walk does', async () => {
+    const { s, tips, branch } = branched()
+    const tip = tips[119] as string
+    const plain = await blameFile(readerOf(s), branch, 'a.txt')
+    const ix = await indexOf(s, tip, ['a.txt'], 256)
+    const got = await blameFile(indexedReader(s, tip, () => Promise.resolve(ix), { versionTips: [tip] }), branch, 'a.txt')
+    expect(got.hunks).toEqual(plain.hunks)
+    expect(got.versions).toBe(plain.versions)
+  })
+
+  it('a newest list that does not load leaves the walk as the answer', async () => {
+    const { s, tips, branch } = branched()
+    const tip = tips[119] as string
+    const reader = indexedReader(s, tip, () => Promise.reject(new Error('storage down')), { versionTips: [tip] })
+    const page = await pathVersions(reader, branch, 'a.txt', { limit: 1000, cap: 100_000 })
+    expect(page.entries.map((e) => e.oid)).toEqual(await walked(s, branch, 'a.txt'))
+    expect(page.indexed).toBe(0)
   })
 })

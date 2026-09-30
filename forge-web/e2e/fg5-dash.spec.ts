@@ -12,7 +12,7 @@ test.beforeEach(quorumGuard)
  *   E2E_DEVNET=bonsia pnpm exec playwright test fg5-dash.spec.ts
  *
  * - fg5-1: the 747-file merge f5979f7c5: whole-commit totals equal `git diff --shortstat`
- *   (+1331 −1906, L-25) once "Count lines" has read every file, and the Tree-SHA512 trailer wraps
+ *   (+1,331 −1,906, L-25) once "Count lines" has read every file, and the Tree-SHA512 trailer wraps
  *   (L-68).
  * - fg5-2: f1be1b800 moved three completion scripts: 69 files, the moves as renames (L-24), with
  *   the author and committer (L-26).
@@ -85,7 +85,7 @@ test.describe('FG-5 on the dash mirror (read-only)', () => {
     const before = total(counts)
     const t1 = Date.now()
     await page.getByTestId('count-lines').click()
-    await expect(page.getByTestId('diff-totals')).toContainText(/\+1331\s*−1906/, { timeout: 480_000 })
+    await expect(page.getByTestId('diff-totals')).toContainText(/\+1,331\s*−1,906/, { timeout: 480_000 })
     // Whole, not partial: src/validation.cpp and src/net_processing.cpp (~300 KiB each) are counted.
     await expect(page.getByTestId('diff-totals-partial')).toHaveCount(0)
     note('count all 747', counts, Date.now() - t1)
@@ -102,7 +102,7 @@ test.describe('FG-5 on the dash mirror (read-only)', () => {
     // The patch header's link (the file list is folded past 25 files, so its row is hidden).
     await expect(page.getByRole('link', { name: 'contrib/dash-cli.bash → contrib/completions/bash/dash-cli.bash-completion' })).toBeVisible()
     await expect(page.locator('span[title="renamed (100% similar)"]')).toHaveCount(6) // 3 in the list, 3 headers
-    await expect(page.getByTestId('diff-totals')).toContainText(/\+1264\s*−789/, { timeout: 240_000 })
+    await expect(page.getByTestId('diff-totals')).toContainText(/\+1,264\s*−789/, { timeout: 240_000 })
     await expect(page.getByTestId('commit-byline').locator('time')).not.toHaveCount(0)
     await shot(page, 'fg5-02-renames')
     expect(errors, errors.join('\n')).toEqual([])

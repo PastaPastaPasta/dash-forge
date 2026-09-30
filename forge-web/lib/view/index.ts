@@ -158,6 +158,7 @@ export {
   refParamFor,
   selectedTip,
   selectRef,
+  splitRefPath,
   tipOidOf,
   type SelectedRef,
 } from './refs'

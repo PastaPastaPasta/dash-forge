@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { gitLog, HAVE_GIT } from '../merge/git-oracle'
-import { dateOrderedPage, type DateWalk } from './date-log'
+import { dateOrderedPage, pathDateOrderedPage, type DateWalk } from './date-log'
 import { Store } from './diff-fixtures'
 import { logPage } from './path-history'
 
@@ -104,6 +104,94 @@ describe('the full commit log', () => {
     }
     // The histories are not straight lines: the first-parent log misses commits of most of them.
     expect(branchy).toBeGreaterThan(30)
+  })
+})
+
+/** Every page of `path`'s full history from `tip`, `limit` at a time. */
+async function wholePathLog(s: Store, tip: string, path: string, limit: number): Promise<string[]> {
+  const reader = { ...s.reader(), memoScope: {} }
+  const oids: string[] = []
+  let from: string | DateWalk | null = tip
+  while (from !== null) {
+    const page = await pathDateOrderedPage(reader, from, path, { limit, cap: 100_000 })
+    oids.push(...page.entries.map((e) => e.oid))
+    from = page.next
+  }
+  return oids
+}
+
+describe('a path’s full history (QW2-041)', () => {
+  it('lists a side branch’s own change, which the first-parent History stands a merge in for', async () => {
+    const s = new Store()
+    const base = s.commitAt(s.files({ f: '1', g: '1' }), [], 100, 'base')
+    const side = s.commitAt(s.files({ f: '2', g: '1' }), [base], 110, 'side edits f')
+    const main1 = s.commitAt(s.files({ f: '1', g: '2' }), [base], 120, 'main edits g')
+    const merge = s.commitAt(s.files({ f: '2', g: '2' }), [main1, side], 130, 'merge')
+    expect(await wholePathLog(s, merge, 'f', 40)).toEqual([side, base])
+    const firstParent = await logPage(s.reader(), merge, { path: 'f' })
+    expect(firstParent.entries.map((e) => e.oid)).toEqual([merge, base])
+    const want = gitLog(s.objects.values(), [merge], 'f')
+    if (want !== null) expect([side, base]).toEqual(want[0])
+  })
+
+  it('stops at its cap and goes on from where it stopped', async () => {
+    const s = new Store()
+    let tip = s.commitAt(s.files({ f: 'start' }), [], 1)
+    for (let i = 2; i <= 50; i++) tip = s.commitAt(s.files({ f: 'start', n: String(i) }), [tip], i)
+    const reader = { ...s.reader(), memoScope: {} }
+    const first = await pathDateOrderedPage(reader, tip, 'f', { cap: 20 })
+    expect(first.entries).toHaveLength(0)
+    expect(first.capped).toBe(true)
+    expect(first.examined).toBe(20)
+    const rest = await pathDateOrderedPage(reader, first.next as DateWalk, 'f', { cap: 100 })
+    expect(rest.entries).toHaveLength(1)
+    expect(rest.next).toBeNull()
+  })
+
+  it.skipIf(!HAVE_GIT)('matches git log -- <path> over random histories with merges', async () => {
+    const rand = prng(20260931)
+    const s = new Store()
+    const cases: { tip: string; path: string }[] = []
+    for (let c = 0; c < 30; c++) {
+      const commits: { oid: string; files: Record<string, string> }[] = []
+      const heads: { oid: string; files: Record<string, string> }[] = []
+      let clock = 1_000
+      for (let i = 0; i < 50; i++) {
+        clock += Math.floor(rand() * 20)
+        let parents: { oid: string; files: Record<string, string> }[]
+        if (commits.length === 0) parents = []
+        else if (heads.length > 1 && rand() < 0.25) parents = heads.splice(0, 2)
+        else {
+          const at = Math.floor(rand() * heads.length)
+          parents = [heads.length > 0 && rand() < 0.8 ? heads.splice(at, 1)[0]! : commits[Math.floor(rand() * commits.length)]!]
+        }
+        // A merge takes one side's files, or edits on top (an "evil" merge); others edit a few.
+        const files: Record<string, string> = { ...(parents[rand() < 0.5 ? 0 : parents.length - 1]?.files ?? { g: 'g0' }) }
+        if (parents.length < 2 || rand() < 0.2) {
+          if (rand() < 0.3) files['f'] = `c${c} ${i}`
+          if (rand() < 0.3) files['d/x'] = `x ${i}`
+          if (rand() < 0.5) files['g'] = `g ${i}`
+        }
+        const oid = s.commitAt(s.files(files), parents.map((p) => p.oid), clock, `c${c} ${i}`)
+        commits.push({ oid, files })
+        heads.push({ oid, files })
+      }
+      const tip = heads.length > 1 ? s.commitAt(s.files(heads[0]!.files), heads.map((h) => h.oid), clock + 1, `c${c} tip`) : heads[0]!.oid
+      cases.push({ tip, path: c % 2 === 0 ? 'f' : 'd' })
+    }
+    const objects = [...s.objects.values()]
+    let branchy = 0
+    for (const path of ['f', 'd']) {
+      const tips = cases.filter((c) => c.path === path).map((c) => c.tip)
+      const wants = gitLog(objects, tips, path) as string[][]
+      for (const [i, tip] of tips.entries()) {
+        const want = wants[i] as string[]
+        expect(await wholePathLog(s, tip, path, 7), `${tip} ${path}`).toEqual(want)
+        if ((await logPage(s.reader(), tip, { path, limit: 1000 })).entries.length !== want.length) branchy += 1
+      }
+    }
+    // The histories are not straight lines: the first-parent History differs from most of them.
+    expect(branchy).toBeGreaterThan(10)
   })
 })
 
