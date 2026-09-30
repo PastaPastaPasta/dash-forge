@@ -264,17 +264,29 @@ export interface LinkingPulls {
 const LINKING_CHUNKS = 3
 
 /**
- * The PRs whose description says they close issue `number` ("Fixes #12", `linkedIssues`): the
- * issue page's backlinks (review-parity P8, QW-015). Read from the pull index the PR list shares
- * (cached for the session), through the newest {@link LINKING_CHUNKS} chunks at most, so an
- * issue page on a repo with thousands of PRs stays cheap; `searched` says when the answer
+ * The PRs whose description says they close an issue ("Fixes #12", `linkedIssues`): the issue
+ * page's backlinks (review-parity P8, QW-015). `issue.number` is its native number;
+ * `issue.upstream` the source forge's number a trusted mirror recorded, or null. A description
+ * whose `#N` is the source's (`refsUpstream`: imported text, as the page renders it) links the
+ * issue through `upstream` only, never through the native number. Read from the pull index the PR
+ * list shares (cached for the session), through the newest {@link LINKING_CHUNKS} chunks at most,
+ * so an issue page on a repo with thousands of PRs stays cheap; `searched` says when the answer
  * covers only those.
  */
-export async function pullsLinking(sdk: EvoSDK, repo: RepoRef, number: number, network: Network = DEFAULT_NETWORK): Promise<LinkingPulls> {
+export async function pullsLinking(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  issue: { readonly number: number; readonly upstream: number | null },
+  refsUpstream: (r: PullRow) => boolean,
+  network: Network = DEFAULT_NETWORK,
+): Promise<LinkingPulls> {
   const index = await indexOf(sdk, repo, network)
   const selected = await selectRows(sdk, index, {
     candidates: null,
-    matches: (r) => linkedIssues(r.body).includes(number),
+    matches: (r) => {
+      const n = refsUpstream(r) ? issue.upstream : issue.number
+      return n !== null && linkedIssues(r.body).includes(n)
+    },
     cmp: compareRows('newest'),
     direction: 'desc',
     want: 20,

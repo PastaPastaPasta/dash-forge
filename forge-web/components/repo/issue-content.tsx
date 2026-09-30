@@ -27,6 +27,7 @@ import { ACL_NAME, ARCHIVED_REASON, issueWriteShows, loadIssueThread } from '@/l
 import { commentEditDrops } from '@/lib/view/issues-view'
 import { totalHidden } from '@/lib/repo/private-content'
 import { ISSUE_LOCK, ISSUE_UNLOCK } from '@/lib/rules/transition'
+import { RoleOracle, trustedUpstreamNumber } from '@/lib/rules/v2'
 import {
   commentFirsts,
   createComment,
@@ -403,6 +404,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 viewer: identity,
                 editing: editingComment,
                 disabled: composeBlock !== null || guard.disabledReason !== null,
+                deleteDisabled: archived || guard.disabledReason !== null,
                 onEdit: setEditingComment,
                 onSave: (id, body) => setPending({ kind: 'editComment', id, body }),
                 onDelete: (id) => setPending({ kind: 'deleteComment', id }),
@@ -519,7 +521,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           {isPrivate ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">The labels on this issue are encrypted; the label definitions (names, colours, descriptions) are not.</p> : null}
         </SidebarSection>
         <SidebarSection title="Development" icon={GitPullRequest}>
-          <LinkedPulls home={home} addr={addr} number={issue.number} />
+          <LinkedPulls home={home} addr={addr} number={issue.number} upstream={trustedUpstreamNumber(issue.upstreamNumber, issue.author, home.repo.ownerId, new RoleOracle([...members]))} />
         </SidebarSection>
       </aside>
 
@@ -587,6 +589,7 @@ function commentSlots({
   viewer,
   editing,
   disabled,
+  deleteDisabled,
   onEdit,
   onSave,
   onDelete,
@@ -596,6 +599,8 @@ function commentSlots({
   viewer: string | null
   editing: { id: string; body: string } | null
   disabled: boolean
+  /** Delete's own gate: a delete carries no content (see `CommentOwnActions`). */
+  deleteDisabled: boolean
   onEdit: (e: { id: string; body: string } | null) => void
   onSave: (id: string, body: string) => void
   onDelete: (id: string) => void
@@ -616,7 +621,7 @@ function commentSlots({
     ) }
   }
   if (viewer === null || viewer !== c.author) return {}
-  return { header: <CommentOwnActions onEdit={() => onEdit({ id: c.id, body: c.body })} onDelete={() => onDelete(c.id)} disabled={disabled} /> }
+  return { header: <CommentOwnActions onEdit={() => onEdit({ id: c.id, body: c.body })} onDelete={() => onDelete(c.id)} disabled={disabled} deleteDisabled={deleteDisabled} /> }
 }
 
 /**

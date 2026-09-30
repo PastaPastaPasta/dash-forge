@@ -307,6 +307,23 @@ describe('pull index', () => {
 })
 
 describe('pullsLinking (an issue\'s backlinks, QW-015)', () => {
+  const native = (): boolean => false
+
+  it("reads an imported description's #N as the source's number, never the native one", async () => {
+    const { sdk, repo, store } = fresh(250, { churn: false })
+    const patches = store['COLLAB']!['patch']!
+    // Imported: "#7761" is the source's issue, which the mirror numbered 1001 here.
+    patches[4]!['body'] = 'Fixes #7761'
+    // Imported: "#1001" is the source's #1001, not this issue.
+    patches[39]!['body'] = 'Fixes #1001'
+    // Native: "#1001" is this issue.
+    patches[59]!['body'] = 'Fixes #1001'
+    const imported = (r: { number: number }): boolean => r.number === 5 || r.number === 40
+    expect((await pullsLinking(sdk, repo, { number: 1001, upstream: 7761 }, imported, 'devnet')).pulls.map((p) => p.number)).toEqual([60, 5])
+    // No trusted upstream number: an imported description links nothing.
+    expect((await pullsLinking(sdk, repo, { number: 1001, upstream: null }, imported, 'devnet')).pulls.map((p) => p.number)).toEqual([60])
+  })
+
   it('finds the PRs whose description closes the issue, newest first, with their state', async () => {
     const { sdk, repo, store } = fresh(250, { churn: false })
     const patches = store['COLLAB']!['patch']!
@@ -314,7 +331,7 @@ describe('pullsLinking (an issue\'s backlinks, QW-015)', () => {
     patches[39]!['body'] = 'Fixes: #1001'
     patches[199]!['body'] = 'See #1001 (a mention, not a close)'
     patches[209]!['body'] = 'fixes #10011'
-    const got = await pullsLinking(sdk, repo, 1001, 'devnet')
+    const got = await pullsLinking(sdk, repo, { number: 1001, upstream: null }, native, 'devnet')
     expect(got.pulls.map((p) => p.number)).toEqual([40, 5])
     // #40 was merged (every 10th): the backlink says so.
     expect(got.pulls[0]?.state.merged).toBe(true)
@@ -324,7 +341,7 @@ describe('pullsLinking (an issue\'s backlinks, QW-015)', () => {
   it('looks through a bounded number of chunks on a large repo, and says how many it searched', async () => {
     const { sdk, repo, store } = fresh(650, { churn: false })
     store['COLLAB']!['patch']![1]!['body'] = 'Fixes #1001'
-    const got = await pullsLinking(sdk, repo, 1001, 'devnet')
+    const got = await pullsLinking(sdk, repo, { number: 1001, upstream: null }, native, 'devnet')
     // #2 is among the oldest: past the chunks a backlink read looks through.
     expect(got.pulls).toEqual([])
     expect(got.searched).toBeGreaterThanOrEqual(300)

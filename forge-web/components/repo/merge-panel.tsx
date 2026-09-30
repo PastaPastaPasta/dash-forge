@@ -160,7 +160,7 @@ export function MergePanel({
   const [alsoDelete, setAlsoDelete] = useState(true)
   // Linked issues the merger unticked (every other one offered is closed after the merge).
   const [keepOpen, setKeepOpen] = useState<ReadonlySet<number>>(() => new Set())
-  const closing = (closeIssues?.issues ?? []).filter((i) => !keepOpen.has(i.number)).map((i) => i.number)
+  const closing = useMemo(() => (closeIssues?.issues ?? []).filter((i) => !keepOpen.has(i.number)).map((i) => i.number), [closeIssues, keepOpen])
   const [closed, setClosed] = useState<readonly { number: number; error: string | null }[] | null>(null)
   const input = useMemo<MergeInput>(
     () => ({

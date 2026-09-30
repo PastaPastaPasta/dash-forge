@@ -15,7 +15,8 @@ import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
 import type { RepoAddress } from '@/hooks/use-query-param'
-import { pullHref } from '@/components/repo/target-href'
+import { mirrorRepo, pullHref } from '@/components/repo/target-href'
+import { importedHost } from '@/lib/view/ref-targets'
 
 function stateOf(p: PullRow): { label: string; icon: JSX.Element } {
   if (p.state.merged) return { label: 'merged', icon: <GitMerge className="h-3.5 w-3.5 shrink-0 text-dash-600 dark:text-dash-400" aria-hidden /> }
@@ -24,12 +25,23 @@ function stateOf(p: PullRow): { label: string; icon: JSX.Element } {
   return { label: 'open', icon: <GitPullRequest className="h-3.5 w-3.5 shrink-0 text-verify-700 dark:text-verify-400" aria-hidden /> }
 }
 
-export function LinkedPulls({ home, addr, number }: { home: RepoHome; addr: RepoAddress | undefined; number: number }): JSX.Element {
+/**
+ * `upstream`: the source forge's number of this issue a trusted mirror recorded, or null. An
+ * imported PR's "Fixes #N" is the source's N (as its description renders), so it links this
+ * issue only through `upstream`.
+ */
+export function LinkedPulls({ home, addr, number, upstream }: { home: RepoHome; addr: RepoAddress | undefined; number: number; upstream: number | null }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   const generation = useRepoWriteGeneration(home.repo)
-  const { data, error } = useAsync(() => pullsLinking(sdk!, home.repo, number, network), [ready, repoKey(home.repo), number, network, generation], {
-    enabled: ready && sdk !== null,
-  })
+  const description = home.description
+  const { data, error } = useAsync(
+    () => {
+      const source = mirrorRepo(description)
+      return pullsLinking(sdk!, home.repo, { number, upstream }, (r) => importedHost(r.importedUrl, source) !== null, network)
+    },
+    [ready, repoKey(home.repo), number, upstream, description, network, generation],
+    { enabled: ready && sdk !== null },
+  )
   if (error !== null) return <p className="text-anvil-500 dark:text-anvil-400">Couldn&apos;t read the pull requests.</p>
   if (data === null) return <p className="text-anvil-500 dark:text-anvil-400">Reading pull requests…</p>
   return (

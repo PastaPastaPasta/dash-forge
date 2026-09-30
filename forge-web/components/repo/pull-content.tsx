@@ -104,15 +104,15 @@ import { useAsync } from '@/hooks/use-async'
 import { useIntent } from '@/hooks/use-intent'
 import { useFirstWrite } from '@/hooks/use-first-write'
 import { useParam, repoHref, type RepoAddress } from '@/hooks/use-query-param'
-import { useRepoLinks } from '@/components/repo/target-href'
-import { importedUrlOf } from '@/lib/view/ref-targets'
+import { mirrorRepo, useRepoLinks } from '@/components/repo/target-href'
+import { importedHost, importedUrlOf } from '@/lib/view/ref-targets'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { TargetNotFound } from '@/components/repo/number-content'
 import { CommentOwnActions, Timeline, type CommentSlots } from '@/components/repo/timeline'
 import { ComparisonView, pullBase, pullSpec, usePullComparison } from '@/components/repo/pull-diff'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
-import { numberLabel, shownUpstreamNumber } from '@/lib/view/upstream'
+import { numberLabel, resolveUpstreamNumber, shownUpstreamNumber } from '@/lib/view/upstream'
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
@@ -129,7 +129,7 @@ import { ReviewDrawer, useReviewDraft } from '@/components/repo/review-drawer'
 import { BranchCommitCost, BranchRunContext, CommitIdentityPrompt, buildUpdateBranch, useSuggestions } from '@/components/repo/branch-commit-panel'
 import { PullMerge, useMergeSlot } from '@/components/repo/pull-merge'
 import type { CloseIssuesOption } from '@/components/repo/merge-panel'
-import { linkedIssueTargets } from '@/lib/view/jump'
+import { LINKED_ISSUES_MAX, linkedIssueTargets } from '@/lib/view/jump'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
 import { EditedMarker, MarkdownEditor } from '@/components/repo/issue-bits'
 import { AssigneePicker, LabelPicker, SidebarSection } from '@/components/repo/target-rail'
@@ -694,11 +694,17 @@ function PullPage({
         : { label: 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, bg: 'bg-verify-700' }
   const linked = linkedIssues(pull.body)
   // The open issues "Fixes #n" names, for the merge box's "Close #n after merging" (QW-015): read
-  // only for a viewer who can merge an open PR.
+  // only for a viewer who can merge an open PR. An imported description's #n is the source
+  // forge's (as it renders): the native issue a trusted mirror recorded with that upstream number.
   const linkedKey = linked.join(',')
+  const linkedUpstream = importedHost(pull.importedUrl, mirrorRepo(home.description)) !== null
   const linkedOpen = useAsync(
-    () => linkedIssueTargets(sdk!, repo, linked),
-    [ready, repoKey(repo), linkedKey],
+    async () => {
+      if (!linkedUpstream) return linkedIssueTargets(sdk!, repo, linked)
+      const hits = await Promise.all(linked.slice(0, LINKED_ISSUES_MAX).map((n) => resolveUpstreamNumber(sdk!, repo, n, thread.members)))
+      return linkedIssueTargets(sdk!, repo, hits.flatMap((h) => (h?.type === 'issue' ? [h.number] : [])))
+    },
+    [ready, repoKey(repo), linkedKey, linkedUpstream],
     { enabled: ready && sdk !== null && linked.length > 0 && open && actions.canMerge && !archived },
   )
   const closeLinked: CloseIssuesOption | null = useMemo(() => {
@@ -917,6 +923,7 @@ function PullPage({
                       viewer: identity,
                       editing: editingComment,
                       disabled: writeBlocked || guard.disabledReason !== null,
+                      deleteDisabled: archived || guard.disabledReason !== null,
                       onEdit: setEditingComment,
                       onSave: (id, body) => setPending({ kind: 'edit-comment', id, body }),
                       onDelete: (id) => setPending({ kind: 'delete-comment', id }),
@@ -1496,6 +1503,7 @@ function commentSlots({
   viewer,
   editing,
   disabled,
+  deleteDisabled,
   onEdit,
   onSave,
   onDelete,
@@ -1510,6 +1518,8 @@ function commentSlots({
   viewer: string | null
   editing: { id: string; body: string } | null
   disabled: boolean
+  /** Delete's own gate: a delete carries no content (see `CommentOwnActions`). */
+  deleteDisabled: boolean
   onEdit: (e: { id: string; body: string } | null) => void
   onSave: (id: string, body: string) => void
   onDelete: (id: string) => void
@@ -1531,7 +1541,7 @@ function commentSlots({
     ) : null
   const edit =
     viewer !== null && viewer === c.author && editing?.id !== c.id ? (
-      <CommentOwnActions onEdit={() => onEdit({ id: c.id, body: c.body })} onDelete={() => onDelete(c.id)} disabled={disabled} />
+      <CommentOwnActions onEdit={() => onEdit({ id: c.id, body: c.body })} onDelete={() => onDelete(c.id)} disabled={disabled} deleteDisabled={deleteDisabled} />
     ) : null
   const header = (
     <>
