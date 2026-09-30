@@ -741,19 +741,7 @@ fn gh_output_with_retry(path: &str, rest: &[&str], what: &str) -> Result<std::pr
             attempt -= 1;
             continue;
         }
-        let transient = [
-            "connection reset",
-            "timeout",
-            "TLS handshake",
-            "temporary failure",
-            "EOF",
-            "502",
-            "503",
-            "504",
-        ]
-        .iter()
-        .any(|m| stderr.contains(m));
-        if !transient || attempt == ATTEMPTS {
+        if !is_transient(&stderr) || attempt == ATTEMPTS {
             bail!("{what} failed: {stderr}");
         }
         let wait = std::time::Duration::from_secs(5 * u64::from(attempt));
@@ -762,6 +750,25 @@ fn gh_output_with_retry(path: &str, rest: &[&str], what: &str) -> Result<std::pr
         last_err = stderr;
     }
     Err(anyhow!("{what} failed: {last_err}"))
+}
+
+/// Whether `gh`'s stderr names a network failure worth another attempt. GitHub also resets a
+/// long paginated read's HTTP/2 stream mid-way (`stream error: stream ID 119; CANCEL; received
+/// from peer`, on page ~100 of dashpay/dash's 213-page review-comment listing).
+fn is_transient(stderr: &str) -> bool {
+    [
+        "connection reset",
+        "timeout",
+        "TLS handshake",
+        "temporary failure",
+        "EOF",
+        "stream error",
+        "502",
+        "503",
+        "504",
+    ]
+    .iter()
+    .any(|m| stderr.contains(m))
 }
 
 /// How long to wait out a rate limit on `path` (`stderr` is the refused call's): until the
@@ -985,6 +992,16 @@ mod tests {
         assert_eq!(rate_limit_headers("HTTP/2.0 403 Forbidden\n\n{}"), None);
         assert_eq!(rate_limit_headers(""), None);
     }
+    /// An HTTP/2 stream GitHub reset mid-listing is retried, as a 502 is; a 404 is not.
+    #[test]
+    fn a_reset_stream_is_transient() {
+        assert!(is_transient(
+            "stream error: stream ID 119; CANCEL; received from peer"
+        ));
+        assert!(is_transient("gh: Server Error (HTTP 502)"));
+        assert!(!is_transient("gh: Not Found (HTTP 404)"));
+    }
+
     /// F-7 against a whole recorded listing: set `FORGE_IMPORT_GH_NDJSON` to a file of
     /// `gh api repos/octocat/Hello-World/pulls/comments --paginate --jq '.[]'` output.
     #[test]
