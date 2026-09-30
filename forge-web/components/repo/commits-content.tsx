@@ -11,7 +11,7 @@
  * the tab, so Back from a commit returns to the same place in the list. Each row's date is the
  * author date, labelled so, with the exact time on hover (L-27). The footer says how many commits
  * are shown, out of how many when a history index gives the count (L-35). Each commit gets its CI
- * status dot once its page is shown (`./check-dot`: three proved counts per page of commits).
+ * status dot once its page is shown (`./check-dot`: three proved counts per page of commits, plus a run read per head whose re-runs disagree).
  */
 
 import Link from 'next/link'

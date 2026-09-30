@@ -12,7 +12,7 @@
  * of their transitions for their states; the rest of the feed once per repo (shared with the
  * issue index); keyset composites of 100 for later pages (L-77). The tab counts are the proved
  * totals. The search box and filters are the Issues list's (`./list-controls`). Once the page is
- * shown, each row's head gets its CI status dot (`./check-dot`: three proved counts for the page).
+ * shown, each row's head gets its CI status dot (`./check-dot`: three proved counts for the page, plus a run read per head whose re-runs disagree).
  *
  * "New pull request" opens `/repo/pulls/new` to propose an already-pushed branch.
  */
