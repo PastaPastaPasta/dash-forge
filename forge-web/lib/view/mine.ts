@@ -350,6 +350,53 @@ export function assignedTargets(
   return assigned
 }
 
+/** Review request (13) and its removal (14): `event.kind` codes; the reviewer is `refId`. */
+const REVIEW_REQUEST = 13
+const REVIEW_REQUEST_REMOVE = 14
+
+/** A thread whose events name `me` as their addressee: assigned, or asked for a review. */
+export interface AddressedTarget {
+  readonly targetId: string
+  readonly reason: 'assigned' | 'review-requested'
+  /** The first such event (ms). */
+  readonly firstAt: number
+}
+
+/** How many addressed events the inbox reads (newest first). */
+export const ADDRESSED_MAX = 100
+
+/**
+ * The threads that assigned `me` or asked `me` for a review, in any repo (QW2-009), from the
+ * sparse `event.addressee (refId, $createdAt)` index: an assign names the assignee in `refId`
+ * (since F-1), a review request the reviewer. Newest {@link ADDRESSED_MAX} events. A thread stays
+ * followed after an unassign, as GitHub keeps the subscription; an assignment wins over a review
+ * request as the reason.
+ */
+export async function listAddressedTargets(sdk: EvoSDK, forge: ForgeIds, me: string): Promise<AddressedTarget[]> {
+  const docs = parseDocs(
+    eventDoc,
+    await read(sdk, {
+      dataContractId: contractOf(forge, DOC.event),
+      documentTypeName: DOC.event,
+      where: [['refId', '==', me]],
+      orderBy: [['refId', 'desc'], ['$createdAt', 'desc']],
+      limit: ADDRESSED_MAX,
+    }),
+  )
+  const out = new Map<string, AddressedTarget>()
+  for (const e of docs) {
+    const reason = e.kind === ASSIGN || e.kind === UNASSIGN ? 'assigned' : e.kind === REVIEW_REQUEST || e.kind === REVIEW_REQUEST_REMOVE ? 'review-requested' : null
+    if (reason === null) continue
+    const prev = out.get(e.targetId)
+    out.set(e.targetId, {
+      targetId: e.targetId,
+      reason: prev?.reason === 'assigned' ? 'assigned' : reason,
+      firstAt: Math.min(prev?.firstAt ?? e.$createdAt, e.$createdAt),
+    })
+  }
+  return [...out.values()]
+}
+
 /** What {@link scanAssignedAndMentions} found, and over how much it looked. */
 export interface AssignedScan {
   readonly assigned: TargetRow[]

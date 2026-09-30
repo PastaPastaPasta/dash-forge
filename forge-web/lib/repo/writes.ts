@@ -47,7 +47,7 @@ import {
   type WriteAuth,
   type WriteResult,
 } from '../sdk'
-import { DOC, withVis, type RepoRef } from './contract'
+import { DOC, asIdentifierString, withVis, type RepoRef } from './contract'
 import { isRc1BranchName, isRc1OidHex, isRc1TagName } from '../rules'
 import { invalidateMembers, readMemberships } from './members'
 import { refNameHash, repoContentWritten } from './push'
@@ -61,6 +61,7 @@ import { writeLock, writeTransition, type StateTarget } from './transitions'
 import { LAG_RETRY_MS, retryAfterLag } from './lag-retry'
 import { sleep } from '../sdk/facade'
 import { retryWhileMissing } from '../view/retry'
+import { noteParticipation } from '../view/participation'
 
 /** The release rule that reads the tag's live total (RC1 O-04). */
 const ONE_LIVE_RULE: ReadonlySet<string> = new Set(['oneLive'])
@@ -276,6 +277,8 @@ export async function writeRepoDoc(
   // What the action says, before sealing: the retry cache compares this (sealed fields are
   // encrypted afresh on every attempt, so the sealed data never matches itself).
   let contentKey: string | undefined = sealedContentKey
+  // A review's PR, read before sealing: the inbox follows a PR its reviewer reviewed (QW2-009).
+  const reviewed = documentType === DOC.review ? asIdentifierString(data['patchId']) : ''
   const sealedType = repo.visibility === 'private' ? sealedTypeOf(documentType, data) : null
   if (sealedType !== null) {
     contentKey = contentHash(documentType, scoped(repo, data))
@@ -300,6 +303,7 @@ export async function writeRepoDoc(
     // repo header to re-read its counts at once, and that read must wait out a node a block
     // behind rather than cache the old total for the new write generation (QW-064).
     if (result?.confirmed && (documentType === DOC.issue || documentType === DOC.patch)) noteTargetCreated(repo, documentType === DOC.issue ? 'issue' : 'patch')
+    if (result?.confirmed && reviewed !== '') void noteParticipation(auth.network, auth.identityId, reviewed, 'reviewed')
     afterWrite(repo, auth.network, documentType)
   }
 }

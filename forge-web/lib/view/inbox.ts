@@ -4,8 +4,14 @@
  *
  * **Subscriptions** (recomputed every {@link SUBS_TTL_MS}): repos I own or belong to (`repo` by
  * `$ownerId`, `maintainer`/`writer` by `memberId`), repos I starred (opt-in, `star.byOwner`),
- * and the issues and PRs I opened (`issue`/`patch` `author`) or commented on (`comment.author`
- * → `targetId`). Both sets are capped ({@link MAX_REPOS}, {@link MAX_THREADS}), newest first.
+ * and the issues and PRs I opened (`issue`/`patch` `author`), commented on (`comment.author`
+ * → `targetId`), was assigned to or asked to review (`event.addressee`, QW2-009), and those this
+ * browser saw me review or be mentioned in (`./participation`: neither has an index). Both sets
+ * are capped ({@link MAX_REPOS}, {@link MAX_THREADS}), newest first.
+ *
+ * **Reasons** (QW2-056): each item says why it reached me when that is more than following the
+ * thread (assigned me, requested my review, mentioned me), and each thread why I follow it, so
+ * the inbox filters by Assigned, Participating, Mentioned and Review requested, as GitHub's.
  *
  * **Feeds**, one proof-checked query each, `$createdAt > cursor` ascending, {@link PAGE} rows:
  *   - my repos: new issues and PRs (`issue`/`patch` `created`), pushes (opt-in, the reflogs);
@@ -29,14 +35,18 @@ import { DOC } from '../repo/contract'
 import { contractOf } from '../repo/source'
 import { queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from '../sdk'
 import { listReposByOwner } from './discovery'
+import { listParticipation, noteParticipation } from './participation'
 import {
   baseDoc,
   eventDoc,
+  ident,
   int,
+  listAddressedTargets,
   listMyCommentTargets,
   listMyTargets,
   listStarredRepoIds,
   listWatchedRepoIds,
+  mentions,
   parseDocs,
   readReposByIds,
   readTargetsByIds,
@@ -77,13 +87,16 @@ export interface RepoSub {
   readonly reason: RepoReason
 }
 
+/** Why I follow a thread: I opened it, commented, was assigned, was asked to review, reviewed, or was mentioned. */
+export type ThreadReason = 'author' | 'commented' | 'assigned' | 'review-requested' | 'reviewed' | 'mentioned'
+
 export interface ThreadSub {
   readonly id: string
   readonly kind: 'issue' | 'pull'
   readonly number: number
   readonly title: string
   readonly repo: RepoLite
-  readonly reason: 'author' | 'commented'
+  readonly reason: ThreadReason
   /** When I joined the thread: activity before it is not news to me. */
   readonly since: number
 }
@@ -113,6 +126,9 @@ export const DEFAULT_PREFS: InboxPrefs = { stars: false, pushes: false }
 
 export type ItemKind = 'issue' | 'pull' | 'comment' | 'state' | 'review' | 'push'
 
+/** Why an item reached me beyond following its thread or repo (QW2-056). */
+export type ItemReason = 'assign' | 'review_requested' | 'mention'
+
 /** One notification. `id` is the document it came from, so a re-read never duplicates it. */
 export interface InboxItem {
   readonly id: string
@@ -125,6 +141,8 @@ export interface InboxItem {
   readonly actor: string
   readonly at: number
   readonly read: boolean
+  /** Why it reached me, when more than following (an earlier build stored none). */
+  readonly reason?: ItemReason
 }
 
 // ---------------------------------------------------------------------------
@@ -289,6 +307,10 @@ function asCursor(v: unknown): Cursor | undefined {
 }
 
 const reviewDoc = baseDoc.extend({ verdict: int })
+/** A state event, with the identity it addresses (`refId`) when it names one. */
+const addressedEventDoc = eventDoc.extend({ refId: ident.optional().catch(undefined) })
+/** A comment, with its body (for a mention). */
+const commentBodyDoc = baseDoc.extend({ body: z.string().optional().catch(undefined) })
 const refDoc = baseDoc.extend({ refName: z.string().optional().catch(undefined) })
 
 /** What a `transition` kind means to a reader of the inbox. */
@@ -313,22 +335,36 @@ export function transitionWhat(kind: number): string | null {
   }
 }
 
-/** What an `event` kind means to a reader of the inbox (state kinds are transitions). */
-export function stateWhat(kind: number, value: string | undefined, me: string): string | null {
+/**
+ * What an `event` kind means to a reader of the inbox (state kinds are transitions). `refId`: the
+ * identity an assign names (also in `value`, which a private repo seals) or a review request asks.
+ */
+export function stateWhat(kind: number, value: string | undefined, me: string, refId?: string): string | null {
+  const who = refId ?? value
   switch (kind) {
     case 4:
       return value ? `labelled ${value}` : 'labelled'
     case 5:
       return value ? `removed label ${value}` : 'removed a label'
     case 6:
-      return value === me ? 'assigned you' : 'assigned someone'
+      return who === me ? 'assigned you' : 'assigned someone'
     case 7:
-      return value === me ? 'unassigned you' : 'unassigned someone'
+      return who === me ? 'unassigned you' : 'unassigned someone'
     case 8:
       return 'retargeted'
+    case 13:
+      // A review request is news to the reviewer asked, not to everyone on the thread.
+      return refId === me ? 'requested your review' : null
     default:
       return null
   }
+}
+
+/** Why a state event reached me: it assigned me, or asked me for a review. */
+function stateReason(kind: number, value: string | undefined, me: string, refId: string | undefined): ItemReason | undefined {
+  if (kind === 6 && (refId ?? value) === me) return 'assign'
+  if (kind === 13 && refId === me) return 'review_requested'
+  return undefined
 }
 
 /** Review verdicts as the inbox words them; 4/5 are a non-member's approve and request changes (RC1). */
@@ -339,8 +375,13 @@ function shortRef(name: string | undefined): string {
   return name.replace(/^refs\/(heads|tags)\//, '')
 }
 
-/** The items a feed's documents make. Never my own; never before I joined a thread. */
-export function toItems(f: Feed, docs: readonly PlainDocument[], me: string): InboxItem[] {
+/**
+ * The items a feed's documents make. Never my own; never before I joined a thread. `name`: my
+ * DPNS name, so an `@name` in a new issue, PR or comment is a mention (a private repo's text is
+ * sealed and is never read for one).
+ */
+export function toItems(f: Feed, docs: readonly PlainDocument[], me: string, name: string | null = null): InboxItem[] {
+  const mentioned = (repo: RepoLite, body: string | undefined): Pick<InboxItem, 'reason'> => (!repo.private && mentions(body, me, name) ? { reason: 'mention' } : {})
   const item = (d: { $id: string; $ownerId: string; $createdAt: number }, rest: Pick<InboxItem, 'kind' | 'what' | 'repo'> & Partial<InboxItem>): InboxItem => ({
     id: d.$id,
     actor: d.$ownerId,
@@ -354,7 +395,7 @@ export function toItems(f: Feed, docs: readonly PlainDocument[], me: string): In
       const kind = f.type === 'issue' ? 'issue' : 'pull'
       return parseDocs(targetDoc, docs)
         .filter(notMine)
-        .map((d) => item(d, { kind, repo: f.repo, what: kind === 'issue' ? 'opened an issue' : 'opened a pull request', target: { kind, number: d.number, title: titleOf(d) } }))
+        .map((d) => item(d, { kind, repo: f.repo, what: kind === 'issue' ? 'opened an issue' : 'opened a pull request', target: { kind, number: d.number, title: titleOf(d) }, ...mentioned(f.repo, d.body) }))
     }
     case 'push':
       return parseDocs(refDoc, docs)
@@ -362,13 +403,16 @@ export function toItems(f: Feed, docs: readonly PlainDocument[], me: string): In
         .map((d) => item(d, { kind: 'push', repo: f.repo, what: `pushed to ${shortRef(d.refName)}` }))
     case 'state': {
       const threads = new Map(f.threads.map((t) => [t.id, t]))
-      return parseDocs(eventDoc, docs).flatMap((d) => {
+      return parseDocs(addressedEventDoc, docs).flatMap((d) => {
         const t = threads.get(d.targetId)
         // A private repo's value is sealed, or (plaintext) unchecked: the feed holds no keys,
-        // so it names the change without it (private-repos.md §8.1).
-        const what = f.type === 'transition' ? transitionWhat(d.kind) : stateWhat(d.kind, f.repo.private ? undefined : d.value, me)
+        // so it names the change without it (private-repos.md §8.1). `refId` is plaintext (the
+        // addressee index reads it).
+        const value = f.repo.private ? undefined : d.value
+        const what = f.type === 'transition' ? transitionWhat(d.kind) : stateWhat(d.kind, value, me, d.refId)
         if (!t || what === null || !notMine(d) || d.$createdAt <= t.since) return []
-        return [item(d, { kind: 'state', repo: t.repo, what, target: { kind: t.kind, number: t.number, title: t.title } })]
+        const reason = f.type === 'transition' ? undefined : stateReason(d.kind, value, me, d.refId)
+        return [item(d, { kind: 'state', repo: t.repo, what, target: { kind: t.kind, number: t.number, title: t.title }, ...(reason ? { reason } : {}) })]
       })
     }
     case 'comments':
@@ -376,9 +420,9 @@ export function toItems(f: Feed, docs: readonly PlainDocument[], me: string): In
       const t = f.thread
       const target = { kind: t.kind, number: t.number, title: t.title }
       if (f.kind === 'comments') {
-        return parseDocs(baseDoc, docs)
+        return parseDocs(commentBodyDoc, docs)
           .filter((d) => notMine(d) && d.$createdAt > t.since)
-          .map((d) => item(d, { kind: 'comment', repo: t.repo, what: 'commented', target }))
+          .map((d) => item(d, { kind: 'comment', repo: t.repo, what: 'commented', target, ...mentioned(t.repo, d.body) }))
       }
       return parseDocs(reviewDoc, docs)
         .filter(notMine)
@@ -413,11 +457,14 @@ export async function computeSubscriptions(
     listMyTargets(sdk, forge, me, 'pull'),
     listMyCommentTargets(sdk, forge, me),
     listWatchedRepoIds(sdk, forge, me),
+    listAddressedTargets(sdk, forge, me),
+    listParticipation(network, me),
   ] as const)
-  // Only sources actually read count: stars are skipped (not read) when the preference is off.
-  const read = settled.filter((_, i) => i !== 1 || prefs.stars)
+  // Only chain sources actually read count: stars are skipped (not read) when the preference is
+  // off, and this browser's own record is no read of the chain.
+  const read = settled.filter((_, i) => (i !== 1 || prefs.stars) && i !== 7)
   if (read.every((r) => r.status === 'rejected')) throw (read[0] as PromiseRejectedResult).reason
-  const [owned, starred, issues, pulls, commented, watching] = settled
+  const [owned, starred, issues, pulls, commented, watching, addressedRes, participatedRes] = settled
   const ok = <T>(r: PromiseSettledResult<T>, fallback: T): T => (r.status === 'fulfilled' ? r.value : fallback)
 
   const repoSubs: RepoSub[] = []
@@ -438,14 +485,26 @@ export async function computeSubscriptions(
   const authored = [...myIssues.rows, ...myPulls.rows]
   const authoredIds = new Set(authored.map((t) => t.id))
   const incomplete: string[] = []
-  const labels = ['repos you own or belong to', 'your stars', 'issues you opened', 'pull requests you opened', 'comments you wrote', 'the repos you watch'] as const
+  const labels = [
+    'repos you own or belong to',
+    'your stars',
+    'issues you opened',
+    'pull requests you opened',
+    'comments you wrote',
+    'the repos you watch',
+    'your assignments and review requests',
+    "this browser's record of your reviews and mentions",
+  ] as const
   settled.forEach((r, i) => {
     if (r.status === 'rejected') incomplete.push(labels[i] ?? 'a source')
   })
   if (myIssues.more) incomplete.push('issues you opened (more than the first 500)')
   if (myPulls.more) incomplete.push('pull requests you opened (more than the first 500)')
-  const commentedRows = await readTargetsByIds(sdk, forge, commentedTargets.map((c) => c.targetId).filter((id) => !authoredIds.has(id))).catch(() => {
-    incomplete.push('the threads you commented on')
+  const addressed = ok(addressedRes, [])
+  const participated = ok(participatedRes, [])
+  const joinedIds = [...commentedTargets.map((c) => c.targetId), ...addressed.map((a) => a.targetId), ...participated.map((p) => p.targetId)]
+  const commentedRows = await readTargetsByIds(sdk, forge, joinedIds.filter((id) => !authoredIds.has(id))).catch(() => {
+    incomplete.push('the threads you commented on, were assigned or reviewed')
     return new Map<string, TargetRow>()
   })
 
@@ -467,14 +526,26 @@ export async function computeSubscriptions(
   const repoById = new Map([...repoSubs.map((s) => [s.repo.id, s.repo] as const), ...extra])
 
   const threads: ThreadSub[] = []
-  for (const t of authored) {
-    const repo = t.repo ?? repoById.get(t.repoId)
-    if (repo) threads.push(threadOf(t, repo, 'author', t.createdAt))
+  const followed = new Set<string>()
+  const follow = (t: TargetRow | undefined, repo: RepoLite | null | undefined, reason: ThreadReason, since: number): void => {
+    if (!t || !repo || followed.has(t.id)) return
+    followed.add(t.id)
+    threads.push(threadOf(t, repo, reason, since))
   }
+  for (const t of authored) follow(t, t.repo ?? repoById.get(t.repoId), 'author', t.createdAt)
   for (const c of commentedTargets) {
     const t = commentedRows.get(c.targetId)
-    const repo = t ? repoById.get(t.repoId) : undefined
-    if (t && repo) threads.push(threadOf(t, repo, 'commented', c.firstAt))
+    follow(t, t ? repoById.get(t.repoId) : undefined, 'commented', c.firstAt)
+  }
+  // Assigned, asked to review (QW2-009): the assignment or request itself is news, so the thread
+  // is followed from just before it.
+  for (const a of addressed) {
+    const t = commentedRows.get(a.targetId)
+    follow(t, t ? repoById.get(t.repoId) : undefined, a.reason, a.firstAt - 1)
+  }
+  for (const p of participated) {
+    const t = commentedRows.get(p.targetId)
+    follow(t, t ? repoById.get(t.repoId) : undefined, p.reason, p.at - 1)
   }
   threads.sort((a, b) => b.since - a.since)
   return {
@@ -568,7 +639,8 @@ export async function pollOnce(
   network: Network,
   forge: ForgeIds,
   me: string,
-  opts: { now?: number; refreshSubs?: boolean; stop?: () => boolean } = {},
+  /** `name`: my DPNS name, for mentions (`@name`); an id is always matched. */
+  opts: { now?: number; refreshSubs?: boolean; stop?: () => boolean; name?: string | null } = {},
 ): Promise<PollResult> {
   const now = opts.now ?? Date.now()
   const p = prefix(network, me)
@@ -599,6 +671,8 @@ export async function pollOnce(
   let failed = 0
   let backfills = 0
   let backfillsFailed = 0
+  let joined = false
+  const name = opts.name ?? null
   const store = async (items: readonly InboxItem[]): Promise<void> => {
     for (const it of items) {
       if (stopped()) return
@@ -606,6 +680,12 @@ export async function pollOnce(
       existing.add(it.id)
       await idbPut('inbox', `${p}item:${it.id}`, it)
       added++
+      // A new issue or PR that mentions me: I follow it from then on, as GitHub subscribes a
+      // mentioned user (its id is the item's: the issue or patch document).
+      if (it.reason === 'mention' && (it.kind === 'issue' || it.kind === 'pull')) {
+        await noteParticipation(network, me, it.id, 'mentioned', it.at)
+        joined = true
+      }
     }
   }
   for (const f of round) {
@@ -636,7 +716,7 @@ export async function pollOnce(
             try {
               const inWindow = backfillWindow(t, cursor, start.at)
               const docs = (await queryDocumentsWithProof(sdk, q)).documents.filter((d) => inWindow(typeof d['$createdAt'] === 'number' ? d['$createdAt'] : 0))
-              await store(toItems({ ...f, threads: [t] }, docs, me))
+              await store(toItems({ ...f, threads: [t] }, docs, me, name))
             } catch {
               // Retried next poll; given up after BACKFILL_TRIES (a count below zero).
               backfillsFailed++
@@ -660,7 +740,7 @@ export async function pollOnce(
       continue
     }
     if (stopped()) break
-    await store(toItems(f, docs, me))
+    await store(toItems(f, docs, me, name))
     if (stopped()) break
     const page = parseDocs(baseDoc, docs).map((d) => ({ at: d.$createdAt, id: d.$id }))
     await idbPut('inbox', key, advanceCursor(cursor, page))
@@ -668,6 +748,8 @@ export async function pollOnce(
   if (added > 0 && !stopped()) {
     for (const id of itemsToDrop(await loadItems(network, me))) await idbDelete('inbox', `${p}item:${id}`)
   }
+  // A thread joined by a mention: the next poll recomputes the subscriptions to follow it.
+  if (joined && !stopped()) await idbDelete('inbox', `${p}subs`)
   return { added, feedsRead: round.length - failed, feedsTotal: feeds.length, failed: failed + backfillsFailed, subs }
 }
 
@@ -709,8 +791,9 @@ export function groupThreads(items: readonly InboxItem[]): InboxThread[] {
     .sort((a, b) => (b.items[0] as InboxItem).at - (a.items[0] as InboxItem).at)
 }
 
-// What the subscriptions are read from: repos owned, stars, issues and PRs opened, comments, watches.
-const PARTICIPATION_TYPES: ReadonlySet<string> = new Set([DOC.repo, DOC.issue, DOC.patch, DOC.comment, DOC.watch, DOC.star])
+// What the subscriptions are read from: repos owned, stars, issues and PRs opened, comments,
+// watches, and reviews (this browser's record of them).
+const PARTICIPATION_TYPES: ReadonlySet<string> = new Set([DOC.repo, DOC.issue, DOC.patch, DOC.comment, DOC.watch, DOC.star, DOC.review])
 
 /**
  * Whether a write of this kind (`create:comment`, `delete:watch`, …) changes what the writer is
@@ -720,4 +803,37 @@ const PARTICIPATION_TYPES: ReadonlySet<string> = new Set([DOC.repo, DOC.issue, D
 export function refreshesSubscriptions(kind: string): boolean {
   const [verb, type] = kind.split(':')
   return (verb === 'create' || verb === 'delete') && type !== undefined && PARTICIPATION_TYPES.has(type)
+}
+
+// ---------------------------------------------------------------------------
+// Reason filters (QW2-056): Assigned, Participating, Mentioned, Review requested, as GitHub's
+// ---------------------------------------------------------------------------
+
+export type InboxFilter = 'assigned' | 'participating' | 'mentioned' | 'review-requested'
+
+export const INBOX_FILTERS: readonly { readonly id: InboxFilter; readonly label: string }[] = [
+  { id: 'assigned', label: 'Assigned' },
+  { id: 'participating', label: 'Participating' },
+  { id: 'mentioned', label: 'Mentioned' },
+  { id: 'review-requested', label: 'Review requested' },
+]
+
+const ITEM_REASON: Readonly<Record<ItemReason, ThreadReason>> = { assign: 'assigned', review_requested: 'review-requested', mention: 'mentioned' }
+
+/** Why I get a thread's notifications: the reason I follow it, and each item's own. */
+export function threadReasons(thread: InboxThread, subs: Subscriptions | null): Set<ThreadReason> {
+  const out = new Set<ThreadReason>()
+  const target = thread.target
+  if (target !== undefined) {
+    const sub = subs?.threads.find((t) => t.repo.id === thread.repo.id && t.kind === target.kind && t.number === target.number)
+    if (sub !== undefined) out.add(sub.reason)
+  }
+  for (const i of thread.items) if (i.reason !== undefined) out.add(ITEM_REASON[i.reason])
+  return out
+}
+
+/** Whether a thread passes a reason filter: Participating is any part I took (not a repo I only watch). */
+export function matchesFilter(reasons: ReadonlySet<ThreadReason>, filter: InboxFilter): boolean {
+  if (filter === 'participating') return reasons.size > 0
+  return reasons.has(filter)
 }

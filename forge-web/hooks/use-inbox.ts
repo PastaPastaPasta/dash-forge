@@ -15,6 +15,7 @@ import { DEFAULT_NETWORK, NETWORKS, type Network } from '@/lib/constants'
 import { ensureSdk } from '@/lib/sdk'
 import { onSpendRecorded } from '@/lib/spend'
 import { errorMessage } from '@/lib/utils'
+import { resolveDpnsName } from '@/lib/view/dpns'
 import {
   refreshesSubscriptions,
   threadKey,
@@ -103,6 +104,9 @@ export function useInboxPoller(): void {
 
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | null = null
+    // My DPNS name, for mentions (`@name`); read once per identity, and a failed read retried
+    // on the next round (an id is matched meanwhile).
+    let name: string | null | undefined
     // Per effect (so a new identity never waits on the old one's poll).
     let inFlight = false
     let queued: { refreshSubs: boolean } | null = null
@@ -124,7 +128,8 @@ export function useInboxPoller(): void {
       set({ polling: true })
       try {
         const sdk = await ensureSdk(network)
-        const r = await pollOnce(sdk, network, forge, identity, { refreshSubs, stop: () => cancelled })
+        if (name === undefined) name = await resolveDpnsName(sdk, identity, network).catch(() => undefined)
+        const r = await pollOnce(sdk, network, forge, identity, { refreshSubs, stop: () => cancelled, name: name ?? null })
         if (cancelled || useInboxStore.getState().owner !== owner) return
         set({ lastPoll: Date.now(), lastFeeds: { read: r.feedsRead, total: r.feedsTotal, failed: r.failed }, error: null })
         await reloadLocal(owner, network, identity)
