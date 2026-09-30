@@ -67,7 +67,8 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     const { errors } = collectPageErrors(page)
     await page.goto(url(), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
-    await expectLanded(page, page.getByRole('heading', { name: NAME }))
+    // The repo title (the README's own "forge-v2-demo" heading may already be there too).
+    await expectLanded(page, page.getByTestId('repo-title').filter({ hasText: NAME }))
     // The published locator serves the root tree and README from Platform chunks.
     for (const entry of ['README.md', 'src', 'lib', 'docs']) {
       await expect(page.getByRole('link', { name: entry, exact: true }).first()).toBeVisible()
