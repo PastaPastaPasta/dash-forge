@@ -19,6 +19,8 @@ clap.workspace = true
 clap_complete = "4"
 tracing.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+# `dg release list` opens the sealed asset lists concurrently.
+futures = "0.3"
 serde = { workspace = true }
 serde_json.workspace = true
 toml = "0.8"

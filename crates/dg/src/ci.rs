@@ -684,9 +684,8 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
     // the policy (QW2-086): say so before anything is paid.
     let not_counted = pinned_elsewhere(&s, &r.name).await;
     if let Some(note) = &not_counted {
-        if !ctx.json {
-            eprintln!("warning: {note}");
-        }
+        // stderr, JSON mode too (as `warn_private`): before the prompt and the payment.
+        eprintln!("warning: {note}");
     }
     let runs = CheckRuns::new(&s.client, &s.identity, &s.bridge);
     // Decided before the prompt, so it prices the write that happens. The plan gets the
@@ -746,11 +745,7 @@ async fn pinned_elsewhere(s: &Session, name: &str) -> Option<String> {
 
 /// [`pinned_elsewhere`]'s rule on a read policy.
 fn pinned_note(policy: &forge_core::rules::review::Policy, name: &str, me: &str) -> Option<String> {
-    let rules = forge_core::rules::v2::ChecksPolicy {
-        require_checks: policy.require_checks,
-        required_checks: policy.required_checks.clone(),
-        required_check_sources: policy.required_check_sources.clone(),
-    };
+    let rules = policy.checks_policy();
     let pins = forge_core::rules::parity::pinned_sources(&rules);
     let sources = pins.get(name)?;
     if sources.contains(me) {
@@ -805,8 +800,8 @@ fn emit_report(ctx: &Ctx, r: &CheckReport, done: &Reported, o: &Outcome<'_>) {
             "leftOut": left_out,
             "url": url,
             "cost": cost_json(spent, dash_usd_price()),
-            // The policy pins this check to another source: the run never counts toward it.
-            "countsTowardPolicy": not_counted.is_none(),
+            // Set when the policy pins this check to another source: the run never counts
+            // toward it. `null` says only that no pin excludes it.
             "policyNote": not_counted,
         }),
         || {
@@ -918,8 +913,32 @@ async fn status(ctx: &Ctx, repo: &str, sha: &str) -> Result<()> {
     let sha = sha.to_ascii_lowercase();
     let runs = r.collab().check_runs(&r.repo, &sha).await?;
     let url = commit_web_url(&r.repo, &sha);
+    // The newest run per name is listed; when the branch policy pins that check to another
+    // source, the run is shown but not counted (the merge judges only the pinned source's).
+    let policy = if runs.is_empty() {
+        None
+    } else {
+        r.collab().policy(&r.repo).await.ok().flatten()
+    };
+    let pinned_to = |c: &forge_core::collab::v2::CheckRun| -> Option<String> {
+        let rules = policy.as_ref()?.checks_policy();
+        let pins = forge_core::rules::parity::pinned_sources(&rules);
+        let sources = pins.get(c.name.as_str())?;
+        (!sources.contains(c.reporter.as_str()))
+            .then(|| sources.iter().copied().collect::<Vec<_>>().join(" or "))
+    };
+    let rows: Vec<serde_json::Value> = runs
+        .iter()
+        .map(|c| {
+            let mut v = serde_json::to_value(c).unwrap_or_default();
+            if let (Some(o), Some(to)) = (v.as_object_mut(), pinned_to(c)) {
+                o.insert("notCountedPinnedTo".into(), json!(to));
+            }
+            v
+        })
+        .collect();
     ctx.emit(
-        json!({ "headOid": sha, "checks": runs, "url": url }),
+        json!({ "headOid": sha, "checks": rows, "url": url }),
         || {
             if runs.is_empty() {
                 println!("no checks reported for {}", &sha[..7.min(sha.len())]);
@@ -930,15 +949,14 @@ async fn status(ctx: &Ctx, repo: &str, sha: &str) -> Result<()> {
                 } else {
                     c.status.as_str()
                 };
-                println!(
-                    "  {:<24} {state}{}",
-                    crate::fmt::safe(&c.name),
-                    if c.trusted {
-                        ""
-                    } else {
-                        "  (reporter is no longer a member or runner: not counted)"
-                    }
-                );
+                let note = if !c.trusted {
+                    "  (reporter is no longer a member or runner: not counted)".to_string()
+                } else if let Some(to) = pinned_to(c) {
+                    format!("  (not counted: the branch policy counts only runs by {to})")
+                } else {
+                    String::new()
+                };
+                println!("  {:<24} {state}{note}", crate::fmt::safe(&c.name));
                 for x in &c.artifacts {
                     println!(
                         "    artifact {} ({} bytes, sha256 {})",

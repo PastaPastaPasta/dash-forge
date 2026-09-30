@@ -652,18 +652,24 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
         })
         .collect();
     ctx.emit(
-        json!({ "count": rows.len(), "prs": json_rows, "hidden": hidden, "truncated": more }),
+        json!({ "count": rows.len(), "prs": json_rows, "hidden": hidden, "truncated": more, "otherStates": others }),
         || {
             if rows.is_empty() {
-                println!("{}", state.empty("pull requests"));
-                if others > 0 {
+                // Only the newest `--limit` were read: say so rather than "none".
+                let among = if more {
+                    format!(" among the newest {read}")
+                } else {
+                    String::new()
+                };
+                println!("{}{among}", state.empty("pull requests"));
+                let other = match state {
+                    crate::StateArg::Open => "closed or merged",
+                    crate::StateArg::Closed => "open",
+                    crate::StateArg::All => "",
+                };
+                if others > 0 && !other.is_empty() {
                     println!(
-                        "({others} {}: `--state all` lists {})",
-                        if state.matches(true) {
-                            "closed or merged"
-                        } else {
-                            "open"
-                        },
+                        "({others} {other}: `--state all` lists {})",
                         if others == 1 { "it" } else { "them" }
                     );
                 }
@@ -1600,11 +1606,7 @@ async fn required_checks(
     if !checks_judged(policy) {
         return Ok(None);
     }
-    let rules = forge_core::rules::v2::ChecksPolicy {
-        require_checks: policy.require_checks,
-        required_checks: policy.required_checks.clone(),
-        required_check_sources: policy.required_check_sources.clone(),
-    };
+    let rules = policy.checks_policy();
     Ok(Some(
         collab
             .head_checks(handle, &view.head, oracle, &rules)

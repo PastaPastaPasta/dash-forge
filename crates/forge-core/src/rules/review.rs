@@ -257,6 +257,18 @@ pub struct Policy {
     pub required_check_sources: Vec<String>,
 }
 
+impl Policy {
+    /// The policy's check rules, as [`super::parity::checks_state`] judges them.
+    #[must_use]
+    pub fn checks_policy(&self) -> super::parity::ChecksPolicy {
+        super::parity::ChecksPolicy {
+            require_checks: self.require_checks,
+            required_checks: self.required_checks.clone(),
+            required_check_sources: self.required_check_sources.clone(),
+        }
+    }
+}
+
 /// How far the approvals are from a policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

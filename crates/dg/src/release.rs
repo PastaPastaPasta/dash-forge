@@ -668,28 +668,33 @@ async fn read_releases(ctx: &Ctx, repo: &str) -> Result<(ReleaseList, Vec<String
     } else {
         Vec::new()
     };
-    let mut sealed = SealedLists::new();
-    for r in &list.current {
-        let Some(fields) = r
+    // Each list is a Platform read and a storage fetch: opened side by side, so one slow copy
+    // does not hold up the others.
+    let opening = list.current.iter().filter_map(|r| {
+        let fields = r
             .sealed
             .as_ref()
             .map(|s| &s.fields)
-            .filter(|f| f.asset_manifest.is_some())
-        else {
-            continue;
-        };
-        let opened = collab
-            .release_manifest(&s.repo, fields)
-            .await
-            .map(|m| {
-                m.assets
-                    .into_iter()
-                    .map(|e| Wanted::from_manifest(e).asset)
-                    .collect()
-            })
-            .map_err(|e| e.to_string());
-        sealed.insert(r.document_id.clone(), opened);
-    }
+            .filter(|f| f.asset_manifest.is_some())?;
+        let (collab, repo) = (&collab, &s.repo);
+        Some(async move {
+            let opened = collab
+                .release_manifest(repo, fields)
+                .await
+                .map(|m| {
+                    m.assets
+                        .into_iter()
+                        .map(|e| Wanted::from_manifest(e).asset)
+                        .collect()
+                })
+                .map_err(|e| e.to_string());
+            (r.document_id.clone(), opened)
+        })
+    });
+    let sealed: SealedLists = futures::future::join_all(opening)
+        .await
+        .into_iter()
+        .collect();
     Ok((list, late, sealed))
 }
 

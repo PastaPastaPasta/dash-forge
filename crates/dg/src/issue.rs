@@ -351,7 +351,7 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
         }),
         || {
             if rows.is_empty() {
-                println!("{}", empty_issues_line(args));
+                println!("{}", empty_issues_line(args, total, pages));
             }
             for (n, title, _, st, pinned) in &rows {
                 let mark = state_word(st.open);
@@ -519,9 +519,15 @@ fn timeline<'a>(
     items.into_iter().map(|(_, _, i)| i).collect()
 }
 
-/// What an empty `dg issue list` says: the state filter named ("no open issues"), and whether
-/// other filters narrowed it.
-fn empty_issues_line(args: &IssueListArgs) -> String {
+/// What an empty `dg issue list` page says: a page past the last one of `total` matching
+/// issues, or the state filter named ("no open issues") and whether other filters narrowed it.
+fn empty_issues_line(args: &IssueListArgs, total: usize, pages: usize) -> String {
+    if total > 0 {
+        return format!(
+            "page {} is past the last page ({pages}) of {total} issue(s)",
+            args.page
+        );
+    }
     let filtered = !args.labels.is_empty()
         || args.author.is_some()
         || args.assignee.is_some()
