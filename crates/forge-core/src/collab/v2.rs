@@ -4356,10 +4356,11 @@ impl<'a> Collab<'a> {
             || input.prerelease.is_some()
             || input.draft.is_some()
             || input.unpublished
+            || input.imported.is_some()
         {
             return Err(Error::Config(
-                "files to seal, and the draft, pre-release and unpublish flags, are for a \
-                 private repository's sealed release"
+                "files to seal, the draft, pre-release and unpublish flags, and sealed \
+                 provenance are for a private repository's sealed release"
                     .into(),
             ));
         }
@@ -4429,6 +4430,7 @@ impl<'a> Collab<'a> {
     }
 
     /// A private repository's release revision (§16): see [`Self::create_release_stored`].
+    #[allow(clippy::too_many_lines)] // one sequential write: carry forward, list, seal, re-read
     async fn create_sealed_release(
         &self,
         repo: &RepoRef,
@@ -4467,12 +4469,22 @@ impl<'a> Collab<'a> {
             notes_continue: carried.notes_continue,
             asset_manifest: carried.asset_manifest.clone(),
         };
+        // an import states its provenance afresh
+        if let Some(i) = &input.imported {
+            (
+                fields.imported_author,
+                fields.imported_url,
+                fields.imported_created_at,
+            ) = sealed_provenance(i);
+        }
         // New files or notes build a new asset list from the previous one, and so do carried
         // notes that no longer fit beside a longer name (§16.2: the writer never refuses its
         // own budget); anything else keeps naming the list, unopened.
         let rebuild = !input.files.is_empty()
+            || !input.assets.is_empty()
             || !input.notes.is_empty()
             || release::writer_tlv(&fields).is_err();
+        let links: Vec<_> = input.assets.iter().map(external_link).collect();
         let prev_manifest = match &carried.asset_manifest {
             Some(_) if rebuild => Some(self.release_manifest(repo, &carried).await?),
             _ => None,
@@ -4500,6 +4512,8 @@ impl<'a> Collab<'a> {
                         fields: fields.clone(),
                         notes: &full_notes,
                         files: &input.files,
+                        links: &links,
+                        source: input.imported.as_ref().map(|i| i.url.as_str()),
                         prev: prev_manifest.as_ref(),
                         stored: &stored,
                     },
@@ -4550,10 +4564,11 @@ impl<'a> Collab<'a> {
     }
 
     /// A revision's new asset list under `keys` (§16.5): the previous list's assets but those a
-    /// new file replaces, then the new files sealed and stored, and the full notes when they
-    /// do not fit `enc`. The list is named again, not stored again, when nothing in it changes
-    /// (no new file, and no notes in it before or now), and when an earlier attempt at this
-    /// revision stored it ([`Self::stored_asset_list`]). Returns the fields with their notes
+    /// new file or link replaces, then the external links, then the new files sealed and
+    /// stored, and the full notes when they do not fit `enc`. The list is named again, not
+    /// stored again, when nothing in it changes (no new file or link, no notes in it before or
+    /// now, the same `source`), and when an earlier attempt at this revision stored it
+    /// ([`Self::stored_asset_list`]). Returns the fields with their notes
     /// fitted and TLV 21 set (none when there is no asset and nothing continues), the list's
     /// entries, and the sealed hashes it stored.
     async fn rebuild_asset_list(
@@ -4567,7 +4582,13 @@ impl<'a> Collab<'a> {
         // the hash of `from.prev`, as the carried fields name it
         let prev_hash = from.fields.asset_manifest.clone();
         let mut assets = from.prev.map(|m| m.assets.clone()).unwrap_or_default();
-        assets.retain(|a| !from.files.iter().any(|f| f.name == a.name));
+        assets.retain(|a| {
+            !from.files.iter().any(|f| f.name == a.name)
+                && !from.links.iter().any(|l| l.name == a.name)
+        });
+        // The external links are listed as they are, before the new files: they are among the
+        // entries an earlier attempt's stored list must state as kept.
+        assets.extend(from.links.iter().cloned());
         // TLV 21 is part of the 1507-byte budget whenever the revision names a list (§16.2):
         // a placeholder of its length is counted before the notes are fitted (each new file is
         // one entry, so whether there is a list is known before anything is stored)
@@ -4589,12 +4610,21 @@ impl<'a> Collab<'a> {
             fields.asset_manifest = None;
             return Ok(done(fields, assets));
         }
-        if from.files.is_empty() && !notes_continue && from.prev.is_some_and(|m| m.notes.is_none())
+        // an import states its source release; any other revision keeps the previous one
+        let source = from
+            .source
+            .map(str::to_string)
+            .or_else(|| from.prev.and_then(|m| m.source.clone()));
+        if from.files.is_empty()
+            && from.links.is_empty()
+            && !notes_continue
+            && from
+                .prev
+                .is_some_and(|m| m.notes.is_none() && m.source == source)
         {
             fields.asset_manifest = prev_hash;
             return Ok(done(fields, assets));
         }
-        let source = from.prev.and_then(|m| m.source.clone());
         let notes = notes_continue.then(|| from.notes.to_string());
         // An earlier attempt at this revision stored its list, and the release write failed:
         // named again, nothing sealed or stored again (§16.5).
@@ -5514,6 +5544,10 @@ struct RebuildFrom<'i> {
     notes: &'i str,
     /// The new files.
     files: &'i [ReleaseFile],
+    /// The new external links (an import's files it could not fetch and seal).
+    links: &'i [crate::private::release::ManifestAsset],
+    /// The import's source release (the list's `source`); `None` keeps the previous one.
+    source: Option<&'i str>,
     /// The previous revision's asset list.
     prev: Option<&'i crate::private::release::ReleaseManifest>,
     /// Where an earlier attempt's list may be ([`Collab::stored_asset_list`]).
@@ -5566,13 +5600,14 @@ impl StoredLists {
 /// The asset list a revision would build ([`Collab::stored_asset_list`]), to recognise an
 /// earlier attempt's.
 struct WantedList<'k> {
-    /// The previous list's entries no new file replaces, as they are.
+    /// The previous list's entries no new file or link replaces, then the external links, as
+    /// they are (the builder's order).
     kept: &'k [crate::private::release::ManifestAsset],
     /// The new files, in order.
     files: &'k [ReleaseFile],
     /// The notes it continues (flag `0x10`), or none.
     notes: Option<String>,
-    /// The previous list's `source`.
+    /// The `source` it states: an import's, else the previous list's.
     source: Option<String>,
 }
 
@@ -5631,24 +5666,74 @@ fn header_fits(header: &[u8], entry: &crate::private::release::ManifestAsset, ep
 }
 
 /// What a sealed writer refuses before anything is read or stored: the tag and text caps,
-/// plaintext asset entries, and two files of one name.
+/// provenance past the writer's caps or without its URL (§16.2), an external link with no
+/// name or URL, and two assets (files or links) of one name.
 fn check_sealed_input(input: &ReleaseInput) -> Result<()> {
     check_tag_name(&input.tag_name)?;
     check_text("release name", &input.name, 120, 480)?;
     check_text("release notes", &input.notes, 5120, 5120)?;
-    if !input.assets.is_empty() {
-        return Err(Error::Config(
-            "a private repository's assets are sealed files, never plaintext entries".into(),
-        ));
+    if let Some(i) = &input.imported {
+        if i.url.is_empty() || i.url.len() > 300 {
+            return Err(Error::Config(
+                "an imported release's provenance needs its source URL, of at most 300 bytes"
+                    .into(),
+            ));
+        }
+        check_text("imported author", &i.author, 64, 256)?;
+    }
+    if let Some(bad) = input
+        .assets
+        .iter()
+        .find(|a| a.name.is_empty() || !a.uris.iter().any(|u| !u.is_empty()))
+    {
+        return Err(Error::Config(format!(
+            "external link {:?} needs a name and a URL",
+            bad.name
+        )));
     }
     let mut names = BTreeSet::new();
-    if let Some(dup) = input.files.iter().find(|f| !names.insert(&f.name)) {
+    let all = input.files.iter().map(|f| &f.name);
+    if let Some(dup) = all
+        .chain(input.assets.iter().map(|a| &a.name))
+        .find(|n| !names.insert(*n))
+    {
         return Err(Error::Config(format!(
-            "two assets are named {:?}: a release lists each name once",
-            dup.name
+            "two assets are named {dup:?}: a release lists each name once"
         )));
     }
     Ok(())
+}
+
+/// An import's provenance as a sealed release states it (§16.2): TLV 13 the author (none
+/// when empty), TLV 14 the URL, TLV 20 the creation time in **milliseconds** (none when 0;
+/// [`Imported::created_at`] is seconds).
+#[must_use]
+pub fn sealed_provenance(i: &Imported) -> (Option<String>, Option<String>, Option<u64>) {
+    (
+        non_empty(&i.author),
+        non_empty(&i.url),
+        (i.created_at > 0).then(|| i.created_at.saturating_mul(1000)),
+    )
+}
+
+/// An external link's entry in a sealed asset list (§16.5): no `sealedSha256` or
+/// `sealedSizeBytes`, the source's `sha256` when it is 64 hex (lower-cased) else `""`, and
+/// its 1–8 non-empty URIs.
+#[must_use]
+pub fn external_link(a: &super::ReleaseAsset) -> crate::private::release::ManifestAsset {
+    let sha256 = if rules::is_sha256_hex(&a.sha256) {
+        a.sha256.to_ascii_lowercase()
+    } else {
+        String::new()
+    };
+    crate::private::release::ManifestAsset {
+        name: a.name.clone(),
+        sha256,
+        size_bytes: a.size_bytes,
+        uris: asset_uris(a.uris.iter().filter(|u| !u.is_empty()).cloned().collect()),
+        sealed_sha256: None,
+        sealed_size_bytes: None,
+    }
 }
 
 /// The refusal when the write epoch moved on both attempts: nothing was signed, and the copies
@@ -6944,6 +7029,113 @@ mod tests {
             &"a".repeat(64),
         ] {
             assert!(check_tag_name(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    /// An import into a private repository (§16.2, §16.5): provenance is sealed with its time
+    /// in ms, and never lands in the document's plaintext; a file it could not fetch is an
+    /// external link, with no sealed hash and a `""` sha256 unless the source gave one.
+    #[test]
+    fn an_imports_provenance_and_links_are_sealed() {
+        use crate::private::release::{self, ReleaseFields};
+        use crate::private::{EpochKey, EpochKeys};
+        let url = "https://github.com/o/r/releases/tag/v1.0.0";
+        let imp = Imported {
+            author: "octocat".into(),
+            created_at: 1_700_000_000,
+            url: url.into(),
+        };
+        let (author, src, at) = sealed_provenance(&imp);
+        assert_eq!(
+            (author.as_deref(), src.as_deref(), at),
+            (Some("octocat"), Some(url), Some(1_700_000_000_000))
+        );
+        let anon = Imported {
+            author: String::new(),
+            created_at: 0,
+            url: url.into(),
+        };
+        assert_eq!(sealed_provenance(&anon), (None, Some(url.into()), None));
+
+        let keys = EpochKeys::derive(&[0x11; 32], 0, &EpochKey::from_bytes([1; 32]));
+        let fields = ReleaseFields {
+            tag: "v1.0.0".into(),
+            imported_author: author,
+            imported_url: src,
+            imported_created_at: at,
+            ..ReleaseFields::default()
+        };
+        let (tag_name, enc) = release::seal(&keys, &[0x22; 32], &fields).unwrap();
+        let props = sealed_release_props(&tag_name, 0, enc.clone());
+        assert_eq!(
+            props.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["delta", "enc", "epoch", "tagName", "vis"]
+        );
+        assert!(!enc.windows(url.len()).any(|w| w == url.as_bytes()));
+
+        let asset = |sha: &str| super::super::ReleaseAsset {
+            name: "fd.tar.gz".into(),
+            sha256: sha.into(),
+            size_bytes: 7,
+            uris: vec![String::new(), "https://github.com/o/r/fd.tar.gz".into()],
+            uri: None,
+        };
+        let link = external_link(&asset(""));
+        assert_eq!(
+            (
+                link.sha256.as_str(),
+                link.sealed_sha256,
+                link.sealed_size_bytes
+            ),
+            ("", None, None)
+        );
+        assert_eq!(link.uris, ["https://github.com/o/r/fd.tar.gz"]);
+        assert_eq!(
+            external_link(&asset(&"AB".repeat(32))).sha256,
+            "ab".repeat(32)
+        );
+        assert_eq!(external_link(&asset("sha256:xyz")).sha256, "");
+    }
+
+    #[test]
+    fn a_sealed_input_refuses_bad_provenance_and_duplicate_links() {
+        let link = |name: &str, url: &str| super::super::ReleaseAsset {
+            name: name.into(),
+            sha256: String::new(),
+            size_bytes: 0,
+            uris: vec![url.into()],
+            uri: None,
+        };
+        let input =
+            |imported: Option<Imported>, assets: Vec<super::super::ReleaseAsset>| ReleaseInput {
+                tag_name: "v1".into(),
+                imported,
+                assets,
+                files: vec![ReleaseFile {
+                    name: "a".into(),
+                    bytes: vec![1],
+                }],
+                ..ReleaseInput::default()
+            };
+        let imp = |author: &str, url: &str| Imported {
+            author: author.into(),
+            created_at: 1,
+            url: url.into(),
+        };
+        assert!(check_sealed_input(&input(
+            Some(imp("octocat", "https://x/r")),
+            vec![link("b", "https://x/b")]
+        ))
+        .is_ok());
+        for bad in [
+            input(Some(imp("octocat", "")), Vec::new()),
+            input(Some(imp("octocat", &"u".repeat(301))), Vec::new()),
+            input(Some(imp(&"a".repeat(65), "https://x/r")), Vec::new()),
+            input(None, vec![link("a", "https://x/a")]),
+            input(None, vec![link("b", "")]),
+            input(None, vec![link("", "https://x/b")]),
+        ] {
+            assert!(check_sealed_input(&bad).is_err(), "{bad:?}");
         }
     }
 
