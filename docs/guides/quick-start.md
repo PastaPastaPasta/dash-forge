@@ -16,7 +16,7 @@ Replace every `<…>` placeholder in the commands with your own value before run
 
 Allow about 15 minutes. Most of it is the first build, or waiting for the network to confirm your identity.
 
-> **Which network?** This guide's commands target devnet **bonsia** (Platform protocol 14, v4.2.0-beta.7), where Forge's contracts were registered on 2026-09-29. The web app at forge.dashhq.org has not cut over yet: it was built for devnet moutai, whose forge-v2 contracts were retired when moutai was upgraded, and it is down until it moves to bonsia. Check [the network status table](../../README.md#status) before you start. Testnet gets a deployment when protocol 14 reaches it, and mainnet after protocol 14 activates there and the contracts are registered. On a network without a deployment the tools stop with a "not deployed" error ([E702](../errors.md#e702)).
+> **Which network?** This guide's commands target devnet **bonsia** (Platform protocol 14, v4.2.0-beta.7), where Forge's contracts were registered on 2026-09-29 and frozen (tag `contracts-rc1-frozen`). The web app at forge.dashhq.org is live on bonsia as of 2026-09-30. Moutai was upgraded in place to v4.2.0-beta.7, which retired its forge-v2 contracts, and it no longer has a Forge deployment. Check [the network status table](../../README.md#status) before you start. Testnet gets a deployment when protocol 14 reaches it, and mainnet after protocol 14 activates there and the contracts are registered. On a network without a deployment the tools stop with a "not deployed" error ([E702](../errors.md#e702)).
 
 ---
 
