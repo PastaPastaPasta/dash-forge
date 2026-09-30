@@ -21,9 +21,10 @@
 
 import { gitOidHex, MODE_TREE, type GitObject } from '../browse'
 import { checkCommit, checkTree, MalformedObjectError, MAX_TREE_DEPTH, parseCommit, parseTree, serializeTree, treeTooDeep, type TreeEntry } from '../view/git-objects'
-import { plural } from '../view/format'
+import { branchName, plural } from '../view/format'
 import { findMergeBases, MergeBaseSearchLimitError } from '../view/pull-diff'
 import type { ObjectReader } from '../view/tree-nav'
+import { isLegalRefName } from '../rules'
 import { newCommits, objectsToPack, UnsupportedChangeError, WalkLimitError } from './objects'
 import { writePack } from './pack-writer'
 import type { PackEstimate } from '../storage/merge-choice'
@@ -44,7 +45,7 @@ export interface MergeInput {
   /** The PR head, hex. */
   readonly headOid: string
   readonly prNumber: number
-  /** How the PR's source is named in the subject: its source branch (else the head oid). */
+  /** How the PR's source is named in the subject: {@link mergeSourceLabel}. */
   readonly sourceLabel: string
   /** The PR title, the message body. */
   readonly title?: string
@@ -85,6 +86,16 @@ export interface MergeOutcome {
 }
 
 export type MergeProgress = (phase: 'analyse' | 'merge' | 'pack', detail?: string) => void
+
+/**
+ * The merge commit subject's source label, as `dg pr merge` names it: the source ref's short
+ * branch name (`feature/x`, not `refs/heads/feature/x`) — closer to GitHub's `owner/branch`
+ * (Forge has no login to put before the branch) — when the PR author wrote a legal ref name,
+ * else the head oid.
+ */
+export function mergeSourceLabel(sourceRefName: string | null, headOid: string): string {
+  return sourceRefName !== null && isLegalRefName(sourceRefName) ? branchName(sourceRefName) : headOid
+}
 
 /**
  * The merge commit message, as `dg pr merge` writes it: the subject names the PR and its

@@ -176,12 +176,14 @@ export {
   type LineRange,
 } from './blob-view'
 export {
+  issueWriteShows,
   loadIssueThread,
   loadPullThread,
   readComments,
   readThread,
   type CommentView,
   type IssueThread,
+  type IssueWrite,
   type PullApprovals,
   type PullThread,
   type TimelineItem,

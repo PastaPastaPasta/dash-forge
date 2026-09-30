@@ -785,7 +785,7 @@ impl<'a> Sink<'a> {
                 .releases(repo)
                 .await
                 .context("reading the destination's releases")?
-                .0
+                .current
                 .into_iter()
                 .map(|r| {
                     known.add(&r.tag_name, &r.assets);

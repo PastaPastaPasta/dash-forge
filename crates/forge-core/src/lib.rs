@@ -20,6 +20,8 @@
 //! - [`rules`] — `FORGE_RULES_V2`: ref resolution, event folds, protected-pattern matching,
 //!   membership, numbering, approvals and the pack reader rule.
 //! - [`cost`] — fee constants and the storage-cost estimator.
+//! - [`cost_audit`] — `dg cost audit`: an identity's estimated Forge spend, from proved
+//!   counts of what it created (there is no spend ledger on forge-v2).
 //! - [`keystore`] — bridge-format identity JSON parsing with redacted secrets.
 //! - [`keyring`] — a private repository's keys on Platform: load and resolve the epochs,
 //!   open sealed documents, and write wraps, anchors, rotations and repairs.
@@ -42,6 +44,7 @@ pub mod ci;
 pub mod collab;
 pub mod config_file;
 pub mod cost;
+pub mod cost_audit;
 pub mod create;
 pub mod envelope;
 pub mod error;

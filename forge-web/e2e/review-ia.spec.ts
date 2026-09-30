@@ -112,7 +112,10 @@ test.beforeAll(() => {
   g('commit', '-q', '-m', 'base: greet')
   dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform')
   git('OWNER', src, ['push', '-q', `dash://${SLUG}`, 'main:refs/heads/main'])
-  dg('OWNER', 'collab', 'add', SLUG, ids.collab, '--role', 'writer')
+  // RC1 consent (R-06): the member accepts before the owner can add them (--wait rides out a
+  // node that has not seen the consent yet).
+  dg('COLLAB', 'collab', 'accept', SLUG)
+  dg('OWNER', 'collab', 'add', SLUG, ids.collab, '--role', 'writer', '--wait', '60')
   dg('CONTRIB', 'repo', 'fork', SLUG, '--name', FORK)
   const w = join(WORK, 'fork')
   git('CONTRIB', WORK, ['clone', '-q', `dash://${ids.contrib}/${FORK}`, w])

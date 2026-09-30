@@ -80,15 +80,18 @@ vi.mock('./key-registration', async (orig) => {
 describe('key spends reach the ledger (D-044)', () => {
   let controller: AuthController
   let events: SpendEvent[]
-  const sdk = {
-    identities: {
-      fetch: async () => ({
-        balance: chain.balance,
-        publicKeys: [{ keyId: 5, wif: wifOf(5), purposeNumber: 0, securityLevelNumber: 2, contractBounds: { toJSON: () => ({ $type: 'contractGroup', id: 'G' }) } }],
-      }),
-      keysRemainingBudgets: async () => new Map(),
-    },
-  } as unknown as EvoSDK
+  // A fresh connection per test: the write engine remembers, per connection, the balances earlier
+  // writes replaced (a read of one is stale), and each test starts the chain over at one balance.
+  const connect = (): EvoSDK =>
+    ({
+      identities: {
+        fetch: async () => ({
+          balance: chain.balance,
+          publicKeys: [{ keyId: 5, wif: wifOf(5), purposeNumber: 0, securityLevelNumber: 2, contractBounds: { toJSON: () => ({ $type: 'contractGroup', id: 'G' }) } }],
+        }),
+        keysRemainingBudgets: async () => new Map(),
+      },
+    }) as unknown as EvoSDK
   const next = (): Promise<SpendEvent> =>
     vi.waitFor(
       () => {
@@ -107,6 +110,7 @@ describe('key spends reach the ledger (D-044)', () => {
     chain.fail = false
     chain.revoked = false
     events = []
+    const sdk = connect()
     controller = new AuthController(async () => sdk, NET)
     controller.setSpendListener((e) => events.push(e))
   })

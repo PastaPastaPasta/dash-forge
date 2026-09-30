@@ -108,6 +108,8 @@ pub struct EpochKeys {
     prk: [u8; 32],
     doc: [u8; 32],
     ref_key: [u8; 32],
+    /// `K_tag,e`: the HMAC key of a sealed release's `tagName` (§16.1), never an AEAD key.
+    tag_key: [u8; 32],
     hedge: [u8; 32],
     #[zeroize(skip)]
     kcv: Kcv,
@@ -127,12 +129,14 @@ impl EpochKeys {
             prk: prk.into(),
             doc: [0; 32],
             ref_key: [0; 32],
+            tag_key: [0; 32],
             hedge: [0; 32],
             kcv: [0; 14],
             commit: [0; 32],
         };
         keys.doc = keys.expand("doc", &[]);
         keys.ref_key = keys.expand("ref", &[]);
+        keys.tag_key = keys.expand("tag", &[]);
         keys.hedge = keys.expand("hedge", &[]);
         keys.commit = keys.expand("commit", &[]);
         let kcv = Zeroizing::new(keys.expand("kcv", &[]));
@@ -189,6 +193,13 @@ impl EpochKeys {
     #[must_use]
     pub fn ref_name_hash(&self, ref_name: &str) -> [u8; 32] {
         hmac(&self.ref_key, &[ref_name.as_bytes()])
+    }
+
+    /// `HMAC-SHA256(K_tag,e, tag)` (§16.1): a sealed release's tag, keyed per epoch and in a
+    /// domain independent of [`Self::ref_name_hash`].
+    #[must_use]
+    pub fn release_tag_hash(&self, tag: &str) -> [u8; 32] {
+        hmac(&self.tag_key, &[tag.as_bytes()])
     }
 
     /// Whether `commit` is this epoch's commitment, in constant time.
