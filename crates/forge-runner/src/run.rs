@@ -761,6 +761,9 @@ fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Resul
         .cfg
         .artifacts
         .then(|| c.run_dir.join("artifacts").join(&art_key));
+    // One value for both: a bare `-s GITHUB_TOKEN` with no token in act's environment would
+    // make act prompt for it (on a null stdin, failing the run).
+    let token = github_token(c.secret_values);
     let args = act::run_args(
         c.cfg,
         &Invocation {
@@ -769,14 +772,13 @@ fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Resul
             workflow: &workflow_path,
             event: c.event,
             secrets: c.secrets,
-            github_token: github_token(c.secret_values),
+            github_token: token,
             action_cache: &action_cache,
             artifacts: art_dir.as_deref(),
         },
     );
     let started = Instant::now();
     let limit = c.deadline.saturating_duration_since(Instant::now());
-    let token = github_token(c.secret_values);
     let (results, timed_out, crashed) = run_act(c.cfg, &args, token, limit);
     if timed_out || crashed {
         sweep_containers(c.cfg);
