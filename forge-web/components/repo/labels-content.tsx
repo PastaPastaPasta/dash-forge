@@ -17,8 +17,8 @@ import { useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { Pencil, Plus, RefreshCw, RotateCcw, Tag, Trash2 } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { deleteLabel, defineLabel, invalidateRepoFeed, LABEL_COLORS, LABEL_LIMITS, readLabels, repoContractIds, repoKey, type LabelDef } from '@/lib/repo'
-import { previewCreate, previewDelete, type CostPreview as Cost } from '@/lib/sdk'
+import { checkLabelInput, deleteLabel, defineLabel, invalidateRepoFeed, LABEL_COLORS, LABEL_LIMITS, planLabelDelete, readLabelDocs, readLabels, repoContractIds, repoKey, type LabelDef } from '@/lib/repo'
+import { previewCreate, previewDelete, sumPreviews, type CostPreview as Cost } from '@/lib/sdk'
 import { readUntil } from '@/lib/view/retry'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -31,14 +31,15 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { LabelChip } from '@/components/repo/issue-bits'
 import { TriageNav } from '@/components/repo/triage-nav'
-import { cn } from '@/lib/utils'
+import { cn, inputProblem } from '@/lib/utils'
 
 const HEX = /^#[0-9a-fA-F]{6}$/
 
 /** A write the confirm dialog is about to sign. */
 type Pending =
   | { kind: 'define'; name: string; color: string; description: string; verb: 'create' | 'edit' | 'restore' }
-  | { kind: 'delete'; name: string }
+  /** `retire`: a retirement is written first (null: the definitions could not be read to tell); `deletes`: the signer's definitions removed. */
+  | { kind: 'delete'; name: string; retire: boolean | null; deletes: number }
   | null
 
 /** A random colour from GitHub's palette (the New label form's refresh). */
@@ -47,38 +48,46 @@ function randomColor(not: string): string {
   return choices[Math.floor(Math.random() * choices.length)] ?? '#1d76db'
 }
 
-/** The label form: name (fixed when editing), description, colour with a preview. */
+/**
+ * The label form: name (fixed once defined), description, colour with a preview. `mode`:
+ * `create` a new name, `edit` a live label, `restore` a retired one (its colour and description
+ * went with the retirement, so they are chosen afresh).
+ */
 function LabelForm({
   initial,
-  editing,
+  mode,
   taken,
   onCancel,
   onSubmit,
   disabledReason,
 }: {
   initial: { name: string; color: string; description: string }
-  editing: boolean
-  taken: ReadonlySet<string>
+  mode: 'create' | 'edit' | 'restore'
+  /** Every defined name, lower-cased, to whether it is retired. */
+  taken: ReadonlyMap<string, boolean>
   onCancel: () => void
   onSubmit: (v: { name: string; color: string; description: string }) => void
   disabledReason: string | null
 }): JSX.Element {
+  const editing = mode !== 'create'
   const [name, setName] = useState(initial.name)
   const [color, setColor] = useState(initial.color)
   const [description, setDescription] = useState(initial.description)
   const trimmed = name.trim()
+  const clash = editing ? undefined : taken.get(trimmed.toLowerCase())
+  // The schema's own bounds (characters and bytes) first, as `defineLabel` checks them. A name
+  // differing only in case is refused, as the issue page's picker refuses it.
   const problem =
-    trimmed === ''
-      ? 'A label needs a name.'
-      : [...trimmed].length > LABEL_LIMITS.name
-        ? `A label name is at most ${LABEL_LIMITS.name} characters.`
-        : !editing && taken.has(trimmed)
-          ? 'A label with this name exists.'
-          : color !== '' && !HEX.test(color)
-            ? 'A colour looks like #1f883d.'
-            : null
-  const unchanged = editing && color.toLowerCase() === initial.color.toLowerCase() && description === initial.description
-  const id = editing ? `label-${initial.name}` : 'new-label'
+    inputProblem(() => checkLabelInput({ name: trimmed, description })) ??
+    (clash === true
+      ? 'A retired label has this name: restore it below.'
+      : clash === false
+        ? 'A label with this name exists.'
+        : color !== '' && !HEX.test(color)
+          ? 'A colour looks like #1f883d.'
+          : null)
+  const unchanged = mode === 'edit' && color.toLowerCase() === initial.color.toLowerCase() && description === initial.description
+  const id = editing ? `label-${initial.name.replace(/\s+/g, '-')}` : 'new-label'
   return (
     <form
       className="space-y-3 rounded-lg border border-anvil-200 bg-anvil-50 p-4 dark:border-anvil-800 dark:bg-anvil-900"
@@ -86,7 +95,7 @@ function LabelForm({
         e.preventDefault()
         if (problem === null && !unchanged) onSubmit({ name: trimmed, color: color.toLowerCase(), description })
       }}
-      data-testid={editing ? 'label-edit-form' : 'label-new-form'}
+      data-testid={mode === 'create' ? 'label-new-form' : mode === 'edit' ? 'label-edit-form' : 'label-restore-form'}
     >
       <div>
         <LabelChip name={trimmed || 'Label preview'} def={{ name: trimmed, color: HEX.test(color) ? color.toLowerCase() : '', description, retired: false, createdAt: 0, id: '' }} />
@@ -142,7 +151,7 @@ function LabelForm({
           Cancel
         </Button>
         <Button type="submit" variant="primary" size="sm" disabled={problem !== null || unchanged || disabledReason !== null} title={disabledReason ?? undefined}>
-          {editing ? 'Save changes' : 'Create label'}
+          {mode === 'create' ? 'Create label' : mode === 'edit' ? 'Save changes' : 'Restore label'}
         </Button>
       </div>
     </form>
@@ -157,7 +166,10 @@ export function LabelsContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const canEdit = role !== null && home.config?.archived !== true
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
+  const [restoring, setRestoring] = useState<string | null>(null)
   const [pending, setPending] = useState<Pending>(null)
+  /** The label whose delete is being planned (its definitions read, to price it). */
+  const [planning, setPlanning] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
   // After a write the page re-reads until the write shows (a node a block behind answers without it).
   const expect = useRef<((l: LabelDef[]) => boolean) | null>(null)
@@ -178,11 +190,33 @@ export function LabelsContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const retired = labels.filter((l) => l.retired)
   const q = filter.trim().toLowerCase()
   const shown = q === '' ? live : live.filter((l) => l.name.toLowerCase().includes(q) || l.description.toLowerCase().includes(q))
-  const taken = useMemo(() => new Set(labels.map((l) => l.name)), [labels])
+  const taken = useMemo(() => new Map(labels.map((l) => [l.name.toLowerCase(), l.retired])), [labels])
   const disabledReason = signer === null ? 'Sign in to change labels' : null
 
+  // A delete is priced as it will run: a retirement (a charge) when another member also defined
+  // the name, then one refund per definition of the signer's.
   const cost: Cost | null =
-    pending === null ? null : pending.kind === 'define' ? previewCreate('label', { name: pending.name, color: pending.color, description: pending.description }) : previewDelete('label')
+    pending === null
+      ? null
+      : pending.kind === 'define'
+        ? previewCreate('label', { name: pending.name, color: pending.color, description: pending.description })
+        : sumPreviews([
+            ...(pending.retire !== false ? [previewCreate('label', { name: pending.name, retired: true })] : []),
+            ...Array.from({ length: pending.deletes }, () => previewDelete('label')),
+          ])
+
+  const askDelete = async (name: string): Promise<void> => {
+    if (!sdk || !signer) return
+    setPlanning(name)
+    try {
+      const plan = planLabelDelete(await readLabelDocs(sdk, repo, name), signer.identityId)
+      setPending({ kind: 'delete', name, retire: plan.retire, deletes: plan.mine.length })
+    } catch {
+      setPending({ kind: 'delete', name, retire: null, deletes: 1 })
+    } finally {
+      setPlanning(null)
+    }
+  }
 
   const run = async (intent: string): Promise<void> => {
     if (!sdk || !signer || pending === null) throw new Error('sign in to continue')
@@ -192,6 +226,7 @@ export function LabelsContent({ home, addr }: { home: RepoHome; addr: RepoAddres
       expect.current = (l) => l.some((d) => d.name === p.name && !d.retired && d.color === p.color && d.description === p.description)
       setCreating(false)
       setEditing(null)
+      setRestoring(null)
     } else {
       await deleteLabel(sdk, signer, repo, p.name, intent)
       expect.current = (l) => !l.some((d) => d.name === p.name && !d.retired)
@@ -207,8 +242,13 @@ export function LabelsContent({ home, addr }: { home: RepoHome; addr: RepoAddres
       : pending.kind === 'delete'
         ? {
             title: `Delete label "${pending.name}"`,
-            description:
-              'Deletes your definitions of it. If another member also defined it, a retirement is written first, so no one is offered it any more. Issues and pull requests that carry it keep it in their history.',
+            description: `${
+              pending.retire === true
+                ? 'Another member also defined it, so a retirement is written first (no one is offered it any more), then your definitions of it are deleted.'
+                : pending.retire === false
+                  ? 'Deletes your definitions of it.'
+                  : 'Deletes your definitions of it. If another member also defined it, a retirement is written first, so no one is offered it any more.'
+            } Issues and pull requests that carry it keep it in their history.`,
             label: 'Sign & delete',
           }
         : {
@@ -224,7 +264,7 @@ export function LabelsContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         <label htmlFor="label-search" className="sr-only">Search all labels</label>
         <Input id="label-search" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Search all labels" className="min-w-[10rem] flex-1" />
         {canEdit ? (
-          <Button variant="primary" size="sm" onClick={() => { setCreating(true); setEditing(null) }} disabled={creating}>
+          <Button variant="primary" size="sm" onClick={() => { setCreating(true); setEditing(null); setRestoring(null) }} disabled={creating}>
             <Plus className="h-3.5 w-3.5" aria-hidden /> New label
           </Button>
         ) : null}
@@ -233,7 +273,7 @@ export function LabelsContent({ home, addr }: { home: RepoHome; addr: RepoAddres
       {creating ? (
         <LabelForm
           initial={{ name: '', color: randomColor(''), description: '' }}
-          editing={false}
+          mode="create"
           taken={taken}
           disabledReason={disabledReason}
           onCancel={() => setCreating(false)}
@@ -262,7 +302,7 @@ export function LabelsContent({ home, addr }: { home: RepoHome; addr: RepoAddres
                 {editing === l.name ? (
                   <LabelForm
                     initial={{ name: l.name, color: l.color, description: l.description }}
-                    editing
+                    mode="edit"
                     taken={taken}
                     disabledReason={disabledReason}
                     onCancel={() => setEditing(null)}
@@ -283,10 +323,10 @@ export function LabelsContent({ home, addr }: { home: RepoHome; addr: RepoAddres
                       </Link>
                       {canEdit ? (
                         <>
-                          <button type="button" onClick={() => { setEditing(l.name); setCreating(false) }} className="inline-flex items-center gap-1 text-anvil-500 hover:text-forge-700 dark:text-anvil-400 dark:hover:text-forge-400 coarse:min-h-11" aria-label={`Edit label ${l.name}`}>
+                          <button type="button" onClick={() => { setEditing(l.name); setCreating(false); setRestoring(null) }} className="inline-flex items-center gap-1 text-anvil-500 hover:text-forge-700 dark:text-anvil-400 dark:hover:text-forge-400 coarse:min-h-11" aria-label={`Edit label ${l.name}`}>
                             <Pencil className="h-3 w-3" aria-hidden /> Edit
                           </button>
-                          <button type="button" onClick={() => setPending({ kind: 'delete', name: l.name })} disabled={disabledReason !== null} className="inline-flex items-center gap-1 text-anvil-500 hover:text-danger-700 disabled:opacity-50 dark:text-anvil-400 dark:hover:text-danger-400 coarse:min-h-11" aria-label={`Delete label ${l.name}`}>
+                          <button type="button" onClick={() => void askDelete(l.name)} disabled={disabledReason !== null || planning !== null} aria-busy={planning === l.name} className="inline-flex items-center gap-1 text-anvil-500 hover:text-danger-700 disabled:opacity-50 dark:text-anvil-400 dark:hover:text-danger-400 coarse:min-h-11" aria-label={`Delete label ${l.name}`}>
                             <Trash2 className="h-3 w-3" aria-hidden /> Delete
                           </button>
                         </>
@@ -305,16 +345,29 @@ export function LabelsContent({ home, addr }: { home: RepoHome; addr: RepoAddres
           <summary className="cursor-pointer text-anvil-600 dark:text-anvil-300">{retired.length} retired {retired.length === 1 ? 'label' : 'labels'}</summary>
           <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">A retired label is no longer offered; issues that carry it keep it.</p>
           <ul className="mt-2 space-y-2">
-            {retired.map((l) => (
-              <li key={l.name} className="flex flex-wrap items-center gap-3" data-testid="retired-label" data-label={l.name}>
-                <LabelChip name={l.name} def={{ ...l, color: '' }} />
-                {canEdit ? (
-                  <button type="button" onClick={() => setPending({ kind: 'define', verb: 'restore', name: l.name, color: randomColor(''), description: '' })} disabled={disabledReason !== null} className="inline-flex items-center gap-1 text-[12px] text-anvil-500 hover:text-forge-700 disabled:opacity-50 dark:text-anvil-400 dark:hover:text-forge-400 coarse:min-h-11">
-                    <RotateCcw className="h-3 w-3" aria-hidden /> Restore
-                  </button>
-                ) : null}
-              </li>
-            ))}
+            {retired.map((l) =>
+              restoring === l.name ? (
+                <li key={l.name}>
+                  <LabelForm
+                    initial={{ name: l.name, color: randomColor(''), description: '' }}
+                    mode="restore"
+                    taken={taken}
+                    disabledReason={disabledReason}
+                    onCancel={() => setRestoring(null)}
+                    onSubmit={(v) => setPending({ kind: 'define', verb: 'restore', ...v })}
+                  />
+                </li>
+              ) : (
+                <li key={l.name} className="flex flex-wrap items-center gap-3" data-testid="retired-label" data-label={l.name}>
+                  <LabelChip name={l.name} def={{ ...l, color: '' }} />
+                  {canEdit ? (
+                    <button type="button" onClick={() => { setRestoring(l.name); setEditing(null); setCreating(false) }} className="inline-flex items-center gap-1 text-[12px] text-anvil-500 hover:text-forge-700 dark:text-anvil-400 dark:hover:text-forge-400 coarse:min-h-11">
+                      <RotateCcw className="h-3 w-3" aria-hidden /> Restore
+                    </button>
+                  ) : null}
+                </li>
+              ),
+            )}
           </ul>
         </details>
       ) : null}

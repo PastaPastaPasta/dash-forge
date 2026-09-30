@@ -7,43 +7,54 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { foldMilestonesV2, type Milestone, type MilestoneDoc, type MilestoneItem } from '../rules/parity'
-import { deleteDocumentIdempotent, queryAllDocuments, type PlainDocument, type WriteAuth, type WriteResult } from '../sdk'
+import { deleteDocumentIdempotent, queryAllDocuments, type WriteAuth, type WriteResult } from '../sdk'
 import { utf8Length } from '../view/issue-query'
 import { DOC, num, str, type RepoRef } from './contract'
 import { repoSource } from './source'
 import { contractFor, writeRepoDoc } from './writes'
 
-/** Every `milestone` document of `repo` (all definitions, oldest first per title). */
-function readMilestoneDocs(sdk: EvoSDK, repo: RepoRef): Promise<PlainDocument[]> {
-  return queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.milestone, { orderBy: [['repoId', 'asc'], ['title', 'asc'], ['$createdAt', 'asc']] }))
+/** A milestone definition document's id and signer (a definition is deletable by its owner only). */
+export interface MilestoneDocRef {
+  readonly id: string
+  readonly owner: string
 }
 
-function milestoneDocOf(d: PlainDocument): MilestoneDoc {
-  return {
-    id: str(d, '$id'),
-    title: str(d, 'title'),
-    description: str(d, 'description'),
-    dueOn: typeof d['dueOn'] === 'number' ? d['dueOn'] : null,
-    closed: d['closed'] === true,
-    createdAt: num(d, '$createdAt'),
+/** Every `milestone` definition of a repo, read once: the documents to fold, and each title's documents by signer. */
+export interface MilestoneDefs {
+  readonly docs: readonly MilestoneDoc[]
+  readonly owners: ReadonlyMap<string, readonly MilestoneDocRef[]>
+}
+
+/** Every `milestone` document of `repo` (all definitions, oldest first per title), in one read. */
+export async function readMilestoneDefs(sdk: EvoSDK, repo: RepoRef): Promise<MilestoneDefs> {
+  const raw = await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.milestone, { orderBy: [['repoId', 'asc'], ['title', 'asc'], ['$createdAt', 'asc']] }))
+  const docs: MilestoneDoc[] = []
+  const owners = new Map<string, MilestoneDocRef[]>()
+  for (const d of raw) {
+    const doc: MilestoneDoc = {
+      id: str(d, '$id'),
+      title: str(d, 'title'),
+      description: str(d, 'description'),
+      dueOn: typeof d['dueOn'] === 'number' ? d['dueOn'] : null,
+      closed: d['closed'] === true,
+      createdAt: num(d, '$createdAt'),
+    }
+    docs.push(doc)
+    const list = owners.get(doc.title) ?? []
+    list.push({ id: doc.id, owner: str(d, '$ownerId') })
+    owners.set(doc.title, list)
   }
+  return { docs, owners }
 }
 
 /** A repo's milestones with their progress over `items` (each issue's open state and milestone). */
 export async function readMilestones(sdk: EvoSDK, repo: RepoRef, items: readonly MilestoneItem[] = []): Promise<Milestone[]> {
-  return foldMilestonesV2((await readMilestoneDocs(sdk, repo)).map(milestoneDocOf), items)
+  return foldMilestonesV2((await readMilestoneDefs(sdk, repo)).docs, items)
 }
 
-/** A milestone's definition documents' ids and signers, by title (a definition is deletable by its owner only). */
-export async function readMilestoneOwners(sdk: EvoSDK, repo: RepoRef): Promise<Map<string, { readonly id: string; readonly owner: string }[]>> {
-  const out = new Map<string, { id: string; owner: string }[]>()
-  for (const d of await readMilestoneDocs(sdk, repo)) {
-    const title = str(d, 'title')
-    const list = out.get(title) ?? []
-    list.push({ id: str(d, '$id'), owner: str(d, '$ownerId') })
-    out.set(title, list)
-  }
-  return out
+/** Each title's definition documents' ids and signers. */
+export async function readMilestoneOwners(sdk: EvoSDK, repo: RepoRef): Promise<ReadonlyMap<string, readonly MilestoneDocRef[]>> {
+  return (await readMilestoneDefs(sdk, repo)).owners
 }
 
 /** The `milestone` schema's bounds. */

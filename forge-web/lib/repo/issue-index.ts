@@ -43,6 +43,7 @@ import {
   resolveIds,
   rowsInAnyState,
   rowsOf,
+  rowsWithEvent,
   selectRows,
   transitionTargets,
   type ListIndex,
@@ -362,9 +363,6 @@ async function pinnedRows(sdk: EvoSDK, index: IssueIndex): Promise<IssueRow[]> {
  * progress is unknown rather than wrong.
  */
 export async function issueMilestoneItems(sdk: EvoSDK, repo: RepoRef, network: Network = DEFAULT_NETWORK): Promise<{ open: boolean; milestone: string | null }[] | null> {
-  const index = await indexOf(sdk, repo, network)
-  if (index.feed === null) return null
-  const ids = [...index.feed].filter(([, log]) => log.events.some((e) => e.kind === 'milestoneSet')).map(([id]) => id)
-  await resolveIds(sdk, index, ids)
-  return rowsOf(index, ids).map((r) => ({ open: r.state.open, milestone: r.milestone ?? null }))
+  const rows = await rowsWithEvent(sdk, await indexOf(sdk, repo, network), 'milestoneSet')
+  return rows?.map((r) => ({ open: r.state.open, milestone: r.milestone ?? null })) ?? null
 }

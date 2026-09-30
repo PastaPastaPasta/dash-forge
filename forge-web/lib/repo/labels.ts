@@ -118,6 +118,16 @@ export async function readLabelDocs(sdk: EvoSDK, repo: RepoRef, name: string): P
 }
 
 /**
+ * What {@link deleteLabel} writes for `docs` (a label's definitions) signed by `me`: a retirement
+ * first when someone else also defined it, then a delete of each of `me`'s definitions. Nothing
+ * for a name with no definitions. The confirm dialog prices this before anything is signed.
+ */
+export function planLabelDelete(docs: readonly LabelDocRef[], me: string): { readonly retire: boolean; readonly mine: readonly LabelDocRef[] } {
+  const mine = docs.filter((d) => d.owner === me)
+  return { retire: mine.length < docs.length, mine }
+}
+
+/**
  * Delete label `name` (parity: forge-core `Collab::delete_label`). A `label` document is
  * deletable by its owner only, so: when every definition of the name is the signer's, they are
  * all deleted (the label is gone); otherwise a retirement is written first (the newest definition
@@ -132,10 +142,7 @@ export async function deleteLabel(
   name: string,
   intent?: string,
 ): Promise<{ readonly retired: boolean; readonly deleted: number }> {
-  const docs = await readLabelDocs(sdk, repo, name)
-  if (docs.length === 0) return { retired: false, deleted: 0 }
-  const mine = docs.filter((d) => d.owner === auth.identityId)
-  const retired = mine.length < docs.length
+  const { retire: retired, mine } = planLabelDelete(await readLabelDocs(sdk, repo, name), auth.identityId)
   if (retired) await defineLabel(sdk, auth, repo, { name, retired: true, ...(intent ? { intent: `${intent}:retire` } : {}) })
   for (const d of mine) {
     await deleteDocumentIdempotent(sdk, auth, { contractId: repo.forge.core, documentType: DOC.label, documentId: d.id, repo: repo.repoId })

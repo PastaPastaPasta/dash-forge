@@ -51,6 +51,7 @@ export function MilestonePicker({
   manageHref?: string
 }): JSX.Element {
   const [open, setOpen] = useState(false)
+  const anyOpen = choices.some((c) => !c.closed)
   return (
     <div data-testid="milestone">
       {current === null ? (
@@ -74,13 +75,18 @@ export function MilestonePicker({
               ))}
               {loading ? (
                 <li className="text-[12px] text-anvil-500 dark:text-anvil-400">Reading milestones…</li>
-              ) : choices.every((c) => c.closed) ? (
+              ) : !anyOpen ? (
                 <li className="text-[12px] text-anvil-500 dark:text-anvil-400">No open milestones</li>
               ) : null}
               {canDefine && manageHref ? (
                 <li>
-                  <Link href={manageHref} className="hit-area inline-flex items-center gap-1 text-[12px] text-forge-700 hover:underline dark:text-forge-400" data-testid="manage-milestones">
-                    <Plus className="h-3 w-3" aria-hidden /> {choices.some((c) => !c.closed) ? 'Manage milestones' : 'Create a milestone'}
+                  {/* With none open the page opens on its New milestone form; otherwise on the list. */}
+                  <Link
+                    href={anyOpen ? manageHref : `${manageHref}${manageHref.includes('?') ? '&' : '?'}new=1`}
+                    className="hit-area inline-flex items-center gap-1 text-[12px] text-forge-700 hover:underline dark:text-forge-400"
+                    data-testid="manage-milestones"
+                  >
+                    {anyOpen ? <Settings2 className="h-3 w-3" aria-hidden /> : <Plus className="h-3 w-3" aria-hidden />} {anyOpen ? 'Manage milestones' : 'Create a milestone'}
                   </Link>
                 </li>
               ) : null}

@@ -492,7 +492,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             canDefine={!isPrivate}
             canEdit={isMember && !archived && guard.disabledReason === null}
             onChoose={(title) => setPending({ kind: 'milestone', title })}
-            {...(addr ? { manageHref: repoHref('/repo/milestones', addr, { new: '1' }) } : {})}
+            {...(addr ? { manageHref: repoHref('/repo/milestones', addr) } : {})}
           />
         </SidebarSection>
         {isMember || meta.pinned || meta.locked ? (

@@ -58,6 +58,20 @@ export function errorMessage(e: unknown, fallback = 'read failed (SDK error)'): 
   return fallback
 }
 
+/**
+ * What an input check (`checkLabelInput`, `checkMilestoneInput`, …) throws, as a sentence for a
+ * form, or null when the input passes: a form shows the reason its write would be refused.
+ */
+export function inputProblem(check: () => void): string | null {
+  try {
+    check()
+    return null
+  } catch (e) {
+    const m = errorMessage(e, 'this is not accepted')
+    return `${m.charAt(0).toUpperCase()}${m.slice(1)}.`
+  }
+}
+
 /** A base58 identity id (32 bytes: 42-44 characters). */
 const IDENTITY_ID = /^[1-9A-HJ-NP-Za-km-z]{42,44}$/
 

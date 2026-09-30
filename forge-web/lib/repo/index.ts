@@ -160,6 +160,8 @@ export {
   LABEL_COLORS,
   LABEL_LIMITS,
   newestLabels,
+  planLabelDelete,
+  readLabelDocs,
   readLabels,
   toLabelDef,
   type LabelDef,

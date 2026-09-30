@@ -20,8 +20,8 @@ import Link from 'next/link'
 import { AlertTriangle, CalendarDays, CheckCircle2, Milestone as MilestoneIcon, Pencil, Plus, RotateCcw, Trash2 } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { invalidateRepoFeed, issueMilestoneItems, pullMilestoneItems, repoContractIds, repoKey } from '@/lib/repo'
-import { MILESTONE_LIMITS, dayOf, defineMilestone, deleteMilestone, dueOnOf, readMilestoneOwners, readMilestones } from '@/lib/repo/milestones'
-import type { Milestone } from '@/lib/rules/parity'
+import { MILESTONE_LIMITS, checkMilestoneInput, dayOf, defineMilestone, deleteMilestone, dueOnOf, readMilestoneDefs, type MilestoneDocRef } from '@/lib/repo/milestones'
+import { foldMilestonesV2, type Milestone } from '@/lib/rules/parity'
 import { previewCreate, previewDelete, type CostPreview as Cost } from '@/lib/sdk'
 import { readUntil } from '@/lib/view/retry'
 import { invalidateSessionCache } from '@/lib/view/session-cache'
@@ -36,13 +36,17 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { StateTab } from '@/components/repo/list-controls'
 import { TriageNav } from '@/components/repo/triage-nav'
+import { inputProblem } from '@/lib/utils'
 
 /** What the page shows: the milestones, whether their progress is known, and who defined each title. */
 interface MilestonePage {
   readonly milestones: readonly Milestone[]
-  /** False when an index's feed was too large to read: the counts are not shown. */
-  readonly progressKnown: boolean
-  readonly owners: ReadonlyMap<string, readonly { readonly id: string; readonly owner: string }[]>
+  /**
+   * `known`: the counts are shown. `too-large`: an index's feed was too large to read. `failed`:
+   * the issues or PRs could not be read (a retry may do).
+   */
+  readonly progress: 'known' | 'too-large' | 'failed'
+  readonly owners: ReadonlyMap<string, readonly MilestoneDocRef[]>
 }
 
 type Pending =
@@ -84,18 +88,10 @@ function MilestoneForm({
   const [description, setDescription] = useState(initial.description)
   const trimmed = title.trim()
   const dueOn = due === '' ? null : dueOnOf(due)
+  // The schema's own bounds (characters and bytes) first, as `defineMilestone` checks them.
   const problem =
-    trimmed === ''
-      ? 'A milestone needs a title.'
-      : [...trimmed].length > MILESTONE_LIMITS.title
-        ? `A milestone title is at most ${MILESTONE_LIMITS.title} characters.`
-        : !editing && taken.has(trimmed)
-          ? 'A milestone with this title exists.'
-          : due !== '' && dueOn === null
-            ? 'The due date is not a day.'
-            : [...description].length > MILESTONE_LIMITS.description
-              ? `A description is at most ${MILESTONE_LIMITS.description} characters.`
-              : null
+    inputProblem(() => checkMilestoneInput({ title: trimmed, description, dueOn })) ??
+    (!editing && taken.has(trimmed) ? 'A milestone with this title exists.' : due !== '' && dueOn === null ? 'The due date is not a day.' : null)
   const unchanged = editing && description === initial.description && dueOn === initial.dueOn
   const id = editing ? 'edit-milestone' : 'new-milestone'
   return (
@@ -155,13 +151,17 @@ export function MilestonesContent({ home, addr }: { home: RepoHome; addr: RepoAd
   const { data, loading, error, reload } = useAsync<MilestonePage>(
     async () => {
       const read = async (): Promise<MilestonePage> => {
-        const [issues, pulls, owners] = await Promise.all([
-          issueMilestoneItems(sdk!, repo, network).catch(() => null),
-          pullMilestoneItems(sdk!, repo, network).catch(() => null),
-          readMilestoneOwners(sdk!, repo),
+        // One read of the definitions (folded and by signer), beside the issues' and PRs' items.
+        const failed = (): 'failed' => 'failed'
+        const [issues, pulls, defs] = await Promise.all([
+          issueMilestoneItems(sdk!, repo, network).catch(failed),
+          pullMilestoneItems(sdk!, repo, network).catch(failed),
+          readMilestoneDefs(sdk!, repo),
         ])
-        const progressKnown = issues !== null && pulls !== null
-        return { milestones: await readMilestones(sdk!, repo, [...(issues ?? []), ...(pulls ?? [])]), progressKnown, owners }
+        const lists = [issues, pulls]
+        const progress = lists.includes('failed') ? 'failed' : lists.includes(null) ? 'too-large' : 'known'
+        const items = lists.flatMap((l) => (Array.isArray(l) ? l : []))
+        return { milestones: foldMilestonesV2(defs.docs, items), progress, owners: defs.owners }
       }
       const first = await read()
       const want = expect.current
@@ -307,9 +307,18 @@ export function MilestonesContent({ home, addr }: { home: RepoHome; addr: RepoAd
                           {due.late ? <AlertTriangle className="h-3.5 w-3.5" aria-hidden /> : <CalendarDays className="h-3.5 w-3.5" aria-hidden />} {m.closed ? 'Closed' : due.text}
                         </p>
                         {m.description ? <p className="mt-2 whitespace-pre-line break-words text-dense text-anvil-700 dark:text-anvil-200">{m.description}</p> : null}
+                        {/* The counts cover both, so both lists are a click away (the title opens the issues). */}
+                        <p className="mt-2 flex flex-wrap gap-x-3 text-[12px]">
+                          <Link href={repoHref('/repo/issues', addr, { state: 'all', q })} className="text-anvil-500 hover:text-forge-700 hover:underline dark:text-anvil-400 dark:hover:text-forge-400 coarse:inline-flex coarse:min-h-11 coarse:items-center">
+                            Issues
+                          </Link>
+                          <Link href={repoHref('/repo/pulls', addr, { state: 'all', q })} className="text-anvil-500 hover:text-forge-700 hover:underline dark:text-anvil-400 dark:hover:text-forge-400 coarse:inline-flex coarse:min-h-11 coarse:items-center">
+                            Pull requests
+                          </Link>
+                        </p>
                       </div>
                       <div className="w-full shrink-0 md:w-72">
-                        {data?.progressKnown ? (
+                        {data?.progress === 'known' ? (
                           <>
                             <div className="h-2 overflow-hidden rounded-full bg-anvil-200 dark:bg-anvil-800" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct} aria-label={`${m.title} progress`}>
                               <div className="h-full rounded-full bg-verify-700 dark:bg-verify-400" style={{ width: `${pct}%` }} />
@@ -321,7 +330,11 @@ export function MilestonesContent({ home, addr }: { home: RepoHome; addr: RepoAd
                             </p>
                           </>
                         ) : (
-                          <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Progress unknown: the repo&apos;s event history is too large to read completely.</p>
+                          <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
+                            {data?.progress === 'failed'
+                              ? "Progress unknown: the repo's issues or pull requests could not be read."
+                              : "Progress unknown: the repo's event history is too large to read completely."}
+                          </p>
                         )}
                         {canEdit ? (
                           <div className="mt-2 flex flex-wrap gap-3 text-[12px]">

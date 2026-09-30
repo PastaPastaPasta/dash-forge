@@ -30,6 +30,9 @@ const labels: LabelDef[] = [
 vi.mock('@/lib/repo', async (orig) => ({
   ...(await orig<typeof import('@/lib/repo')>()),
   readLabels: async () => labels,
+  // `docs` was also defined by another member: deleting it writes a retirement first.
+  readLabelDocs: async (_sdk: unknown, _repo: unknown, name: string) =>
+    name === 'docs' ? [{ id: 'l2', owner: OTHER, createdAt: 2 }] : [{ id: 'l1', owner: ME, createdAt: 1 }],
   issueMilestoneItems: async () => [
     { open: true, milestone: 'v1.0' },
     { open: false, milestone: 'v1.0' },
@@ -41,24 +44,17 @@ const milestones: Milestone[] = [
   { id: 'm2', title: 'v2.0', description: '', dueOn: null, closed: false, open: 0, closedItems: 0 },
   { id: 'm3', title: 'v0.9', description: '', dueOn: null, closed: true, open: 0, closedItems: 0 },
 ]
-vi.mock('@/lib/repo/milestones', async (orig) => {
-  const real = await orig<typeof import('@/lib/repo/milestones')>()
-  const { foldMilestonesV2 } = await import('@/lib/rules/parity')
-  return {
-    ...real,
-    readMilestones: async (_sdk: unknown, _repo: unknown, items: { open: boolean; milestone: string | null }[]) =>
-      foldMilestonesV2(
-        milestones.map((m) => ({ id: m.id, title: m.title, description: m.description, dueOn: m.dueOn, closed: m.closed, createdAt: 1 })),
-        items,
-      ),
-    readMilestoneOwners: async () =>
-      new Map([
-        ['v1.0', [{ id: 'm1', owner: ME }]],
-        ['v2.0', [{ id: 'm2', owner: OTHER }]],
-        ['v0.9', [{ id: 'm3', owner: ME }]],
-      ]),
-  }
-})
+vi.mock('@/lib/repo/milestones', async (orig) => ({
+  ...(await orig<typeof import('@/lib/repo/milestones')>()),
+  readMilestoneDefs: async () => ({
+    docs: milestones.map((m) => ({ id: m.id, title: m.title, description: m.description, dueOn: m.dueOn, closed: m.closed, createdAt: 1 })),
+    owners: new Map([
+      ['v1.0', [{ id: 'm1', owner: ME }]],
+      ['v2.0', [{ id: 'm2', owner: OTHER }]],
+      ['v0.9', [{ id: 'm3', owner: ME }]],
+    ]),
+  }),
+}))
 
 const { LabelsContent } = await import('./labels-content')
 const { MilestonesContent } = await import('./milestones-content')
@@ -109,6 +105,14 @@ describe('Labels page (QW-019)', () => {
     act(() => type(name, 'bug'))
     expect(form.textContent).toContain('A label with this name exists.')
     expect((button(/Create label/) as HTMLButtonElement).disabled).toBe(true)
+    // A name differing only in case is the same label (as the issue page's picker has it).
+    act(() => type(name, 'Bug'))
+    expect(form.textContent).toContain('A label with this name exists.')
+    act(() => type(name, 'old'))
+    expect(form.textContent).toContain('A retired label has this name')
+    // The schema's byte bound, not only its character bound: 30 three-byte characters are 90 bytes.
+    act(() => type(name, '界'.repeat(30)))
+    expect((button(/Create label/) as HTMLButtonElement).disabled).toBe(true)
     act(() => type(name, 'good first issue'))
     expect((button(/Create label/) as HTMLButtonElement).disabled).toBe(false)
     act(() => button(/Create label/)!.click())
@@ -117,9 +121,21 @@ describe('Labels page (QW-019)', () => {
     act(() => button(/Cancel/)!.click())
     act(() => button(/Edit label bug/)!.click())
     expect((el.querySelector('#label-bug-name') as HTMLInputElement).disabled).toBe(true)
-    // Delete asks first, and says what it does.
-    act(() => button(/Delete label docs/)!.click())
+    // Delete asks first, and says what it does: here a retirement, as another member defined it too.
+    await act(async () => button(/Delete label docs/)!.click())
+    await settle()
     expect(document.body.textContent).toContain('Delete label "docs"')
+    expect(document.body.textContent).toContain('a retirement is written first')
+  })
+
+  it('restores a retired label with a colour and description chosen afresh', async () => {
+    await act(async () => root.render(<LabelsContent home={HOME} addr={addr} />))
+    await settle()
+    act(() => button(/Restore/)!.click())
+    const form = el.querySelector('[data-testid="label-restore-form"]')!
+    expect((form.querySelector('#label-old-name') as HTMLInputElement).disabled).toBe(true)
+    act(() => button(/Restore label/)!.click())
+    expect(document.body.textContent).toContain('Restore label "old"')
   })
 
   it('shows a visitor no write controls', async () => {
@@ -145,6 +161,8 @@ describe('Milestones page (QW-019)', () => {
     expect(rows[0]?.textContent).toMatch(/Past due by \d+ days/)
     expect(rows[1]?.textContent).toContain('No due date')
     expect(rows[0]?.querySelector('a')?.getAttribute('href')).toBe('/repo/issues/?owner=o&name=n&state=all&q=milestone%3Av1.0')
+    // The counts cover PRs too, so their list is linked beside the issues'.
+    expect([...(rows[0]?.querySelectorAll('a') ?? [])].map((a) => a.getAttribute('href'))).toContain('/repo/pulls/?owner=o&name=n&state=all&q=milestone%3Av1.0')
     act(() => (el.querySelectorAll('[role="tab"]')[1] as HTMLButtonElement).click())
     expect([...el.querySelectorAll('[data-testid="milestone-row"]')].map((r) => r.getAttribute('data-title'))).toEqual(['v0.9'])
     expect(button(/Reopen/)).toBeDefined()
