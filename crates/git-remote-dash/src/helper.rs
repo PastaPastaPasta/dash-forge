@@ -3264,11 +3264,14 @@ mod tests {
             2,
             "the column index and the version lists"
         );
+        // Off Platform an artifact costs its manifest alone: two manifests, each a repository's
+        // first of its kind, each carrying the targets' URIs.
+        for external in [0, 1, 3] {
+            let manifest =
+                forge_core::cost::push_fees::history_index(0, false, external, false, true);
+            assert_eq!(cost.credits(false, external, false), 2 * manifest);
+        }
         for (sealed, external, platform) in [(false, 0, true), (true, 2, true), (false, 1, false)] {
-            assert_eq!(
-                cost.credits(sealed, external, platform),
-                history.prepared.credits(sealed, external, platform)
-            );
             let as_one = forge_core::cost::push_fees::history_index(
                 cost.plain_len(),
                 sealed,

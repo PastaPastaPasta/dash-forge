@@ -568,7 +568,7 @@ fn print_reindex(
             if h.delta { " (delta)" } else { "" }
         );
         for (what, id) in [
-            ("history manifest: ", &h.manifest_id),
+            ("column index:     ", &h.manifest_id),
             ("version lists:    ", &h.versions_manifest_id),
         ] {
             if let Some(id) = id {

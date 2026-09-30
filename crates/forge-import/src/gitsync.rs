@@ -278,11 +278,10 @@ pub fn price_helper_estimate(mut r: PushReport, fallback: bool) -> PushReport {
         return r;
     }
     if fallback && r.chunks == 0 && r.pack_bytes > 0 {
-        // The pack's chunks and the history index's (it goes where the pack does), sealed.
+        // The pack's chunks and the history index's (it goes where the pack does), sealed: its
+        // two artifacts, the column index and the version lists, each stored as its own chunks.
         let history = if r.history_bytes > 0 {
-            push_fees::chunks(forge_core::private::pack::sealed_upper_bound(
-                r.history_bytes,
-            ))
+            push_fees::sealed_parts_chunks(r.history_bytes, 2)
         } else {
             0
         };
