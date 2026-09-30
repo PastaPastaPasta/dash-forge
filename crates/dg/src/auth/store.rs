@@ -77,6 +77,10 @@ pub fn describe_source(source: &str) -> (String, &'static str) {
         );
     }
     if source.starts_with(keystore::KEYCHAIN_PREFIX) {
+        if keystore::parse_keychain_source(source).is_none() {
+            // Malformed: whatever follows the prefix may be a pasted key.
+            return ("keychain:[redacted]".into(), "keychain");
+        }
         let s = Stored::Keychain {
             source: source.to_string(),
         };
@@ -95,7 +99,8 @@ pub fn describe_source(source: &str) -> (String, &'static str) {
         (s.describe(), s.kind())
     } else {
         (
-            format!("{} (identity file)", path.display()),
+            // Not `path.display()`: a value that names no file may be a pasted key.
+            format!("{} (identity file)", keystore::describe_key_source(&path)),
             "identity-file",
         )
     }

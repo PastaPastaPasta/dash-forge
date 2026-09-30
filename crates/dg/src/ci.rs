@@ -273,7 +273,7 @@ fn key_holder(ctx: &Ctx, args: &RunnerNewArgs, me: &str) -> Result<BridgeIdentit
     if b.master_key().is_none() {
         return Err(crate::errors::usage(format!(
             "{} has no master key; registering the runner key needs the runner identity's master key once",
-            file.display()
+            keystore::describe_key_source(file)
         )));
     }
     Ok(b)
