@@ -107,7 +107,7 @@ function after(a: ConfigRow, b: ConfigRow): boolean {
 }
 
 function anchorOf(c: ConfigRow): Anchor {
-  return { id: c.id, height: c.createdAtBlockHeight, owner: c.owner, commit: anchorCommit(c.enc), config: c }
+  return { id: c.id, height: c.createdAtBlockHeight, statedHeight: c.createdAtBlockHeight, owner: c.owner, commit: anchorCommit(c.enc), config: c }
 }
 
 /** Every config by epoch (any author), each list in anchor order (block height, id bytes). */
@@ -145,7 +145,7 @@ export function selectAnchors(configs: readonly ConfigRow[], maintainers: IdSet)
       return commit !== null && c !== null && bytesEqual(c, commit)
     }
     stated = valid.find(same) ?? anchor
-    anchors.set(e, { ...anchorOf(anchor), ...statedAtOf(byEpoch.get(e) ?? [], stated) })
+    anchors.set(e, { ...anchorOf(anchor), statedHeight: stated.createdAtBlockHeight, ...statedAtOf(byEpoch.get(e) ?? [], stated) })
   }
   return anchors
 }
@@ -381,8 +381,10 @@ export function manifestStanding(
   height: number,
   owner: PrivateId,
 ): ManifestStanding {
+  // an epoch is current from stated(e), when its key was first stated: a re-anchor does not make
+  // an old-key upload look timely
   let currentAt: number | null = null
-  for (const [e, a] of r.anchors) if (a.height <= height && (currentAt === null || e > currentAt)) currentAt = e
+  for (const [e, a] of r.anchors) if (a.statedHeight <= height && (currentAt === null || e > currentAt)) currentAt = e
   const suspect = (currentAt !== null && headerEpoch < currentAt) || r.burned.has(headerEpoch)
   const late = contentIsLate(r, headerEpoch, height, owner)
   return { suspect, readable: r.members.has(owner) || (!suspect && !late) }

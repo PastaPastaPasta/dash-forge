@@ -779,7 +779,7 @@ impl Keyring {
 
     /// Whether an artifact sealed under `epoch` and first recorded at block height `height` was
     /// uploaded after the late-content cut-off for that epoch, whoever uploaded it (§8.2):
-    /// `H(next(e)) + GRACE_BLOCKS`, or at any height under a burned epoch. A named sealed
+    /// `stated(next(e)) + GRACE_BLOCKS`, or at any height under a burned epoch. A named sealed
     /// release asset list stays readable (the revision's `enc` commits to it), but maintainers
     /// are warned: a member removed by the rotation may read it (§16.5).
     #[must_use]

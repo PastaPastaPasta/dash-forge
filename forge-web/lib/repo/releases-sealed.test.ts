@@ -17,7 +17,7 @@ async function fixture(): Promise<{ ctx: OpenContext; keys: EpochKeys }> {
   const keys = await EpochKeys.import(repoId, 0, new Uint8Array(32).fill(1))
   const ctx: OpenContext = {
     keys: new Map([[0, keys]]),
-    anchors: new Map([[0, { id: new Uint8Array(32).fill(9), height: 1 }]]),
+    anchors: new Map([[0, { id: new Uint8Array(32).fill(9), height: 1, statedHeight: 1 }]]),
     members: new IdSet(),
   }
   return { ctx, keys }
@@ -76,7 +76,7 @@ describe('sealedReleases', () => {
   it('marks a list stale when a newer revision is under a key the reader lacks', async () => {
     const { ctx, keys } = await fixture()
     const v1 = await sealReleaseWithNonce(keys, owner, { tag: 'v1' }, new Uint8Array(12))
-    const withEpoch1: OpenContext = { ...ctx, anchors: new Map([...ctx.anchors, [1, { id: new Uint8Array(32).fill(8), height: 5 }]]) }
+    const withEpoch1: OpenContext = { ...ctx, anchors: new Map([...ctx.anchors, [1, { id: new Uint8Array(32).fill(8), height: 5, statedHeight: 5 }]]) }
     const list = await sealedReleases(
       [doc(1, 100, { tagName: v1.tagName, epoch: 0, enc: v1.enc }), doc(2, 200, { tagName: 'A'.repeat(43), epoch: 1, enc: v1.enc })],
       withEpoch1,
@@ -92,7 +92,7 @@ describe('sealedReleases', () => {
     const old = await EpochKeys.import(repoId, 0, new Uint8Array(32).fill(7))
     const sealedOld = await sealReleaseWithNonce(old, owner, { tag: 'v0.1' }, new Uint8Array(12).fill(5))
     const current = await sealReleaseWithNonce(keys, owner, { tag: 'v1' }, new Uint8Array(12).fill(6))
-    const stated: OpenContext = { ...ctx, anchors: new Map([[0, { id: new Uint8Array(32).fill(9), height: 1, statedAt: 1000 }]]) }
+    const stated: OpenContext = { ...ctx, anchors: new Map([[0, { id: new Uint8Array(32).fill(9), height: 1, statedHeight: 1, statedAt: 1000 }]]) }
     const at = (id: number, createdAt: number, s: { tagName: string; enc: Uint8Array }) => doc(id, createdAt, { tagName: s.tagName, epoch: 0, enc: s.enc })
     const list = await sealedReleases([at(1, 900, sealedOld), at(2, 1100, current)], stated)
     expect(list.current.map((r) => r.tagName)).toEqual(['v1'])

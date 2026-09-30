@@ -286,7 +286,7 @@ Fix: ask the member who pushed it to push again (`git push` re-stores it under a
 
 ## E510
 
-**Written after the key was rotated.** The content is under a superseded key epoch and was written more than 240 blocks after the next epoch's anchor by someone who is no longer a member (the late-content rule). It is hidden, not deleted.
+**Written after the key was rotated.** The content is under a superseded key epoch and was written more than 240 blocks after the next epoch's key was first announced on chain (re-announcing the same key later does not move this) by someone who is no longer a member (the late-content rule). It is hidden, not deleted.
 
 Fix: none needed; if the writer is still meant to be a member, re-add them and have them write it again.
 

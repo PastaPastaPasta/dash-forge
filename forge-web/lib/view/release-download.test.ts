@@ -94,8 +94,8 @@ describe('an asset list uploaded under an old key (private-repos.md §16.5)', ()
     const sealed = await sealPack(k0, new TextEncoder().encode('{"v":1}'))
     const standing = {
       anchors: new Map([
-        [0, { id: new Uint8Array(32), height: 10 }],
-        [1, { id: new Uint8Array(32).fill(1), height: 100 }],
+        [0, { id: new Uint8Array(32), height: 10, statedHeight: 10 }],
+        [1, { id: new Uint8Array(32).fill(1), height: 100, statedHeight: 100 }],
       ]),
     }
     const at = (...heights: number[]) => heights.map((createdAtBlockHeight) => ({ createdAtBlockHeight }))

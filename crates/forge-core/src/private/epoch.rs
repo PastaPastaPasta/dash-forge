@@ -227,6 +227,7 @@ impl EpochResolution {
                     AnchorRef {
                         id: a.id,
                         height: a.height,
+                        stated_height: a.stated_height,
                     },
                 )
             })
@@ -262,7 +263,8 @@ impl EpochResolution {
     }
 
     /// How a manifest whose sealed header names `header_epoch`, written at `height` by `owner`,
-    /// stands (§8.2).
+    /// stands (§8.2). An epoch is current from stated(e), when its key was first stated on
+    /// chain, so a re-anchor does not make an old-key upload look timely.
     #[must_use]
     pub fn manifest_standing(
         &self,
@@ -273,7 +275,7 @@ impl EpochResolution {
         let current_at = self
             .anchors
             .iter()
-            .filter(|(_, a)| a.height <= height)
+            .filter(|(_, a)| a.stated_height <= height)
             .map(|(&e, _)| e)
             .max();
         let suspect =
