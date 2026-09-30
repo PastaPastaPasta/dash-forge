@@ -17,7 +17,7 @@ use forge_core::scope::RepoRef as Repo;
 use forge_core::user_error::{codes, UserError};
 
 use super::{estimate, event_estimate, open_pr, open_pr_read, Est, Pr};
-use crate::common::Session;
+use crate::common::{resolve_identity, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_line, dash_usd_price, route_text, safe, short, transition_route_text};
 use crate::git;
@@ -431,15 +431,6 @@ pub async fn resolve(
 // request-review / unrequest
 // ---------------------------------------------------------------------------
 
-/// The identity a reviewer argument names: an identity id, or a DPNS name (`@alice`,
-/// `alice`, `alice.dash`).
-async fn reviewer_id(s: &Session, who: &str) -> Result<String> {
-    let name = who.strip_prefix('@').unwrap_or(who);
-    forge_core::resolve::resolve_owner(&s.client, name)
-        .await
-        .with_context(|| format!("resolving reviewer {who}"))
-}
-
 /// `dg pr request-review` (`add`) / `unrequest-review`.
 pub async fn request_review(
     ctx: &Ctx,
@@ -460,7 +451,7 @@ pub async fn request_review(
         (EventKind::ReviewRequestRemove, "removed")
     };
     for who in reviewers {
-        let id = reviewer_id(&pr.s, who).await?;
+        let id = resolve_identity(&pr.s.client, who, "reviewer").await?;
         let standing = pr
             .view
             .review

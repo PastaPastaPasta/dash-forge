@@ -298,6 +298,16 @@ pub fn number_arg(n: u64) -> Result<u32> {
     })
 }
 
+/// The identity id an identity-naming argument (`who`) names: an identity id, or a DPNS
+/// name (`alice`, `@alice`, `alice.dash`). `what` names the argument in the error context
+/// (`resolving runner @alice`); `with_context` keeps the typed forge-core error for the
+/// error renderer.
+pub async fn resolve_identity(client: &PlatformClient, who: &str, what: &str) -> Result<String> {
+    forge_core::resolve::resolve_owner(client, who.strip_prefix('@').unwrap_or(who))
+        .await
+        .with_context(|| format!("resolving {what} {who}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{looks_like_identity_id, RepoRef};

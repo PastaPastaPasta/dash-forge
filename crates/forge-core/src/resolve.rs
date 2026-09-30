@@ -250,6 +250,30 @@ mod tests {
     }
 
     #[test]
+    fn identity_id_length_boundary_is_40_to_44() {
+        // 39 and 45 base58 characters are outside the range a 32-byte id decodes to.
+        assert!(!looks_like_identity_id(&"a".repeat(39)));
+        assert!(!looks_like_identity_id(&"a".repeat(45)));
+        // Inside the range but containing a base58-excluded character (`0`, `O`, `I`, `l`)
+        // is still not id-shaped, so it is tried as a DPNS name instead.
+        let mut excluded = "a".repeat(39);
+        excluded.push('0');
+        assert_eq!(excluded.len(), 40);
+        assert!(!looks_like_identity_id(&excluded));
+    }
+
+    #[test]
+    fn an_id_shaped_string_wins_over_the_dpns_reading() {
+        // `resolve_owner`'s doc comment promises the id reading wins when a string is both
+        // id-shaped and a legal DPNS label (an all-lowercase 40+ character string of
+        // `a-z0-9-`, e.g. a 44-char label, decodes as an id too): `looks_like_identity_id`
+        // must be checked before `dpns_label` is even consulted, which `resolve_owner` does.
+        let ambiguous = "9cBMULwtQUMtxhBkgaTKb4tJtoczd8TEQ8gmiroDWf4F";
+        assert!(looks_like_identity_id(ambiguous));
+        assert!(dpns_label(ambiguous).is_some());
+    }
+
+    #[test]
     fn slugs_follow_the_contract_pattern() {
         assert_eq!(repo_slug("Dash-Forge").unwrap(), "dash-forge");
         assert_eq!(repo_slug("a.b_c-1").unwrap(), "a.b_c-1");

@@ -33,7 +33,7 @@ use forge_core::storage::{Profile, StoragePolicy, StorageProfiles};
 use forge_core::user_error::{codes, UserError};
 
 use crate::auth::{dash_to_credits, expiry_ms, parse_days};
-use crate::common::{Reader, Session};
+use crate::common::{resolve_identity, Reader, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, credits_to_dash, dash_amount, dash_usd_price};
 
@@ -75,7 +75,7 @@ pub enum RunnerCommand {
     Add {
         /// The repository (`owner/name`).
         repo: String,
-        /// The runner identity id (base58).
+        /// The runner: an identity id (base58) or a DPNS name (`alice`, `@alice`, `alice.dash`).
         runner: String,
     },
     /// List the repo's runners.
@@ -87,7 +87,7 @@ pub enum RunnerCommand {
     Revoke {
         /// The repository (`owner/name`).
         repo: String,
-        /// The runner identity id (base58).
+        /// The runner: an identity id (base58) or a DPNS name (`alice`, `@alice`, `alice.dash`).
         runner: String,
     },
 }
@@ -408,6 +408,9 @@ async fn register_runner_key(
 
 async fn runner_add(ctx: &Ctx, repo: &str, runner: &str) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
+    // `runner` is an identity id or a DPNS name; resolve it once so the existence check and
+    // enrolment below both see a plain identity id.
+    let runner: &str = &resolve_identity(&s.client, runner, "runner").await?;
     s.client
         .fetch_identity(runner)
         .await
@@ -448,6 +451,9 @@ async fn runner_list(ctx: &Ctx, repo: &str) -> Result<()> {
 
 async fn runner_revoke(ctx: &Ctx, repo: &str, runner: &str) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
+    // `runner` is an identity id or a DPNS name; resolve it once so the revoke below sees a
+    // plain identity id.
+    let runner: &str = &resolve_identity(&s.client, runner, "runner").await?;
     ctx.confirm_or_cancel(&format!(
         "Revoke runner {runner} of {}? (one document delete)",
         s.repo.display()
