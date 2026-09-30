@@ -63,6 +63,7 @@ impl Config {
             dapi_addresses: self.dapi_addresses.clone(),
             quorum_base_url: None,
         }
+        .normalized()
     }
 
     /// Load the config from `config.toml`, returning [`Config::default`] when absent.

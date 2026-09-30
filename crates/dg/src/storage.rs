@@ -1058,6 +1058,16 @@ pub(crate) fn dash_remote_name() -> Option<String> {
     dash_remote_url().map(|(name, _)| name)
 }
 
+/// The repository this git repository's forge remote names, as a `dg` repository argument
+/// (`owner/name`, or the repo id of a `dash://<id>` remote).
+pub(crate) fn clone_repo() -> Option<String> {
+    let (_, url) = dash_remote_url()?;
+    Some(match crate::publish::parse_dash_url(&url)? {
+        (owner, Some(name)) => format!("{owner}/{name}"),
+        (id, None) => id,
+    })
+}
+
 /// The storage policy a push through this repository's forge remote uses: its
 /// `remote.<name>.dash*` settings over `dash.*`, by the helper's scope rule.
 pub(crate) fn push_policy() -> Result<ResolvedPolicy> {
@@ -1313,10 +1323,11 @@ async fn advertise(ctx: &Ctx, repo: &str, remote: Option<&str>) -> Result<()> {
 /// (on-chain `chunk` docs) are reported as on-chain; external copies are probed live —
 /// `ipfs://` URIs through every configured read gateway.
 async fn status(ctx: &Ctx, repo: &str) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
-    let svc = forge_core::repo::RepoService::new(&client, &identity, &bridge);
+    // A read: a public repository's key is never opened (QW-034: a sealed key without a
+    // terminal failed this with E303).
+    let reader = crate::common::Reader::open(ctx, repo).await?;
+    let handle = reader.repo.clone();
+    let svc = reader.service();
     let manifests = svc.read_pack_manifests(&handle).await.unwrap_or_default();
     let scope = handle.scope()?;
     let roles = svc.copy_roles(&handle).await.unwrap_or_default();

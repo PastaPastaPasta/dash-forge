@@ -7,11 +7,10 @@ use forge_core::cost::{estimate, push_fees};
 use forge_core::cost_audit::{self, AuditReport};
 use forge_core::pack::DOC_PAYLOAD_MAX;
 use forge_core::private::pack::{sealed_upper_bound, HEADER_LEN};
-use forge_core::repo::{prepare_history_index, HistoryCost, HistoryPlan, RepoService};
+use forge_core::repo::{prepare_history_index, HistoryCost, HistoryPlan};
 use forge_core::storage::human_bytes;
 use forge_import::budget::{collab_doc_credits, CollabDoc};
 
-use crate::common::{resolve, RepoRef};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, dash_usd_price, REPO_CREATE_ESTIMATE_CREDITS};
 use crate::{Backend, CostCommand};
@@ -436,11 +435,14 @@ async fn audit(
     };
 
     // Live storage tally for a repo.
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
-    let svc = RepoService::new(&client, &identity, &bridge);
-    let manifests = svc.read_pack_manifests(&handle).await.unwrap_or_default();
+    // A read: a public repository's key is never opened (QW-034).
+    let reader = crate::common::Reader::open(ctx, repo).await?;
+    let handle = &reader.repo;
+    let manifests = reader
+        .service()
+        .read_pack_manifests(handle)
+        .await
+        .unwrap_or_default();
     let total_bytes: u64 = manifests.iter().map(|m| m.size_bytes).sum();
     let deposit_locked: u64 = est_deposit(total_bytes);
 

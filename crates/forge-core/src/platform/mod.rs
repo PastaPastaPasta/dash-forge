@@ -714,6 +714,22 @@ impl PlatformClient {
         Ok(LoadedIdentity(identity))
     }
 
+    /// Fetch the identity `bridge` signs for. When this network has none, the error is
+    /// [`Error::IdentityNotFound`] (E304), naming this network and the one the key records.
+    pub async fn fetch_signer(
+        &self,
+        bridge: &crate::keystore::BridgeIdentity,
+    ) -> Result<LoadedIdentity> {
+        match self.fetch_identity(&bridge.identity_id).await {
+            Err(Error::NotFound) => Err(Error::IdentityNotFound {
+                identity_id: bridge.identity_id.clone(),
+                network: self.network().key(),
+                key_network: crate::network::full_network_key(&bridge.network),
+            }),
+            r => r,
+        }
+    }
+
     /// The identity's spendable credit balance.
     pub async fn get_balance(&self, identity_id: &str) -> Result<u64> {
         Ok(self.fetch_identity(identity_id).await?.balance())

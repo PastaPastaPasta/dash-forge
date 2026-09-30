@@ -661,9 +661,10 @@ async fn check_network(ctx: &Ctx) -> Vec<Check> {
             ),
         )];
     }
+    let source = ctx.network_source;
     let target = match network {
         Network::Devnet { dapi_addresses, .. } => format!(
-            "{network} (DAPI: {}; quorums: {})",
+            "{network}, {source} (DAPI: {}; quorums: {})",
             if dapi_addresses.is_empty() {
                 "discovered from the quorum service at connect".to_string()
             } else {
@@ -671,7 +672,7 @@ async fn check_network(ctx: &Ctx) -> Vec<Check> {
             },
             network.quorum_base_url()
         ),
-        _ => format!("{network} (built-in seed list)"),
+        _ => format!("{network}, {source} (built-in seed list)"),
     };
     let mut out = vec![Check::ok("target", target)];
 
@@ -1053,6 +1054,16 @@ fn check_git_config(ctx: &Ctx) -> Vec<Check> {
     let dg_net = ctx.network_label();
     out.push(match helper_net {
         Ok(h) if h == dg_net => Check::ok("dash.network", format!("git uses {h}, same as dg")),
+        // dg is on the built-in default only because nothing chose a network: aligning git
+        // with it would move a working setup onto a network without Forge (QW-032).
+        Ok(h) if ctx.network_is_default => Check::warn(
+            "dash.network",
+            format!("git uses {h}, but dg uses {dg_net} only because nothing chose a network for it"),
+            {
+                let flags = Network::from_key(&h).dg_flags();
+                format!("pass `{flags}` to dg, or sign in there once so dg records it: `dg auth login <file> {flags}`")
+            },
+        ),
         Ok(h) => Check::warn(
             "dash.network",
             format!("git would use {h}, but dg uses {dg_net}"),
