@@ -1825,9 +1825,9 @@ fn build_merge(
         (MergePlan::FastForward { oid }, Method::Merge) => (oid.clone(), "fast-forward to"),
         (MergePlan::MergeCommit { base, head }, Method::Merge) => {
             // The subject names the PR's source branch by its short name (`feature/x`, not
-            // `refs/heads/feature/x`): parity with the browser merge (`forge-web`
-            // `lib/merge/engine.ts` `mergeMessage`), and closer to GitHub's `owner/branch`
-            // (Forge has no login to put before the branch).
+            // `refs/heads/feature/x`), matching the browser merge's short-name format
+            // (`forge-web` `lib/merge/engine.ts` `mergeMessage`) and closer to GitHub's
+            // `owner/branch` (Forge has no login to put before the branch).
             let source = view
                 .patch
                 .source_ref_name
