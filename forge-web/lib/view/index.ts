@@ -123,6 +123,7 @@ export { QUORUM_CHECK_MAX_AGE_MS, crossCheckQuorumKeysCached, lastQuorumCheck, q
 export {
   describeUnavailable,
   onlyGatewaysFailed,
+  onlyUnfollowed,
   normalizeGateway,
   readGateways,
   readGatewaysFor,

@@ -13,9 +13,11 @@ import {
   MAX_REPO_GATEWAYS,
   noteRepoGateways,
   onlyGatewaysFailed,
+  onlyUnfollowed,
   readGatewaysFor,
   resetGatewayHealth,
   resetRepoGateways,
+  UNFOLLOWED,
 } from './storage-status'
 
 afterEach(() => {
@@ -119,5 +121,17 @@ describe('describePack', () => {
     expect(
       describePack({ packHash: 'bb', hosts: ['pub-1.r2.dev'], corrupt: false, reason: 'pub-1.r2.dev: upstream said gateway down (x)' }, []),
     ).toEqual(['pub-1.r2.dev (didn\'t answer)'])
+  })
+
+  it('names a recorded private or plain-http copy as not followed, not as nothing recorded (QW2-006)', () => {
+    const pack = { packHash: 'cc', hosts: [], corrupt: false, reason: 'nothing to try', unfollowed: ['127.0.0.1:9000'] }
+    expect(describePack(pack, [])).toEqual([`127.0.0.1:9000 (${UNFOLLOWED})`])
+    expect(onlyUnfollowed(describePack(pack, []))).toBe(true)
+    expect(describePack({ ...pack, unfollowed: [] }, [])).toEqual(['no place a browser can fetch from is recorded'])
+    expect(onlyUnfollowed(describePack({ ...pack, hosts: ['pub-1.r2.dev'], reason: 'pub-1.r2.dev: HTTP 403' }, []))).toBe(false)
+    // Beside failed gateways, an unfollowed local copy still leaves "add a gateway" as the fix.
+    const places = describePack({ ...pack, hosts: ['ipfs.io'], reason: 'ipfs.io: HTTP 404', unfollowed: ['127.0.0.1:8080'] }, ['https://ipfs.io'])
+    expect(onlyGatewaysFailed(places)).toBe(true)
+    expect(onlyUnfollowed(places)).toBe(false)
   })
 })

@@ -13,6 +13,7 @@ import { ContractsMissingState } from '@/components/ui/contracts-missing'
 import { useContractsMissing } from '@/hooks/use-sdk'
 import { useOfflineNavigation } from '@/hooks/use-offline-navigation'
 import { LowFundsBanner } from '@/components/low-funds-banner'
+import { ClockSkewBanner } from '@/components/clock-skew-banner'
 import { LoginModal } from '@/components/login-modal'
 import { PlatformBusy } from '@/components/platform-busy'
 import { StorageUpdated } from '@/components/storage-updated'
@@ -42,6 +43,7 @@ export function AppShell({
         Skip to content
       </a>
       <AppHeader />
+      <ClockSkewBanner />
       <LowFundsBanner />
       <main
         id="main"
