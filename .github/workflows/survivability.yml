@@ -13,7 +13,7 @@ name: Survivability drill
 #   browse — forge-web `lib/view/survivability.drill.test.ts`: the same breaks against the
 #            browser reader (in-browser clone and ranged reads) and its trust-panel source row;
 #            then `e2e-drill/web-host.spec.ts`: the static build's host is killed and the app
-#            runs from a second host and from its IPFS build (kubo's subdomain gateway), and
+#            runs from a second host and from its IPFS build (kubo's subdomain and path gateways), and
 #            reads the bucket (CORS) and the gateway from there.
 #
 # The S3 store is RustFS, not MinIO: the minio/minio images stopped pulling in 2026-04 (see
@@ -47,6 +47,8 @@ on:
       - 'forge-web/e2e-drill/**'
       - 'forge-web/e2e/static-server.mjs'
       - 'forge-web/next.config.js'
+      - 'forge-web/scripts/ipfs-postbuild.mjs'
+      - 'forge-web/scripts/ipfs-base.cjs'
       - 'forge-contracts/config/storage-defaults.json'
       # Dependency and toolchain bumps (an HTTP client, Next.js) can break either reader.
       - 'Cargo.lock'
@@ -190,11 +192,11 @@ jobs:
 
       # Any network works: the spec refuses every request but the page's own origin and the
       # storage fixture, so it never reads a chain.
-      - name: Build the static app
+      - name: Build the static app (the IPFS variant the releases publish)
         env:
           NEXT_PUBLIC_NETWORK: devnet
           NEXT_PUBLIC_DEVNET_NAME: bonsia
-        run: pnpm build
+        run: pnpm build:ipfs
 
       - name: Playwright browser
         run: pnpm exec playwright install --with-deps chromium

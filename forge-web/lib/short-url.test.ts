@@ -153,6 +153,9 @@ describe('hasShortUrl', () => {
       { owner: 'alice', name: '.hidden' },
       { owner: 'repo', name: 'x' },
       { owner: 'Explore', name: 'x' },
+      // The IPFS variant's base path prefixes.
+      { owner: 'ipfs', name: 'x' },
+      { owner: 'IPNS', name: 'x' },
     ]
     for (const repo of cases) {
       const expanded = expand(shortRepoPath(repo))

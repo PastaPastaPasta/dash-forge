@@ -2,7 +2,9 @@
  * The survivability drill, web host (roadmap Phase 1, launch criterion 3): take the host that
  * serves the web app down, and the same static build still runs from another origin — a second
  * static host, and the IPFS build through a gateway (kubo's subdomain gateway, the form a user
- * pinning the release would load) — and still reaches the repo owner's storage from there.
+ * pinning the release would load, and its path gateway, `/ipfs/<cid>/`) — and still reaches the
+ * repo owner's storage from there. The build is the IPFS variant the releases publish
+ * (`pnpm build:ipfs`, scripts/ipfs-release.sh), which runs from any of these.
  *
  * The app is a static export with no backend of its own, so there is no server-side state to
  * lose: what can break is the build assuming its origin (absolute URLs, a base path) or the
@@ -16,12 +18,12 @@
  * for browse, forge-core `src/survivability_tests.rs` for clone.
  *
  * Every request other than the page's own origin and the storage fixture is refused (no DAPI,
- * no devnet), so the run is deterministic. Needs `out/` (`pnpm build`) and the fixture
+ * no devnet), so the run is deterministic. Needs `out/` (`pnpm build:ipfs`) and the fixture
  * (`e2e-drill/fixture.ts`); opt-in with `FORGE_DRILL=1`.
  */
 
 import { spawn, type ChildProcess } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 
@@ -82,35 +84,51 @@ async function only(context: BrowserContext, origins: readonly string[]): Promis
 }
 
 /**
- * The app runs from `origin`: the landing page renders, the SDK wasm loads from there, a
- * client-side navigation works, and no request to `origin` fails.
+ * The app runs from `base` (an origin, or a gateway path under one): the landing page renders,
+ * the SDK wasm loads from there, a client-side navigation works (the page is not reloaded), an
+ * in-page link stays on the page, no request to the host fails (including one that escaped the
+ * gateway path to the host's root) and nothing throws.
  */
-async function expectAppRuns(page: Page, origin: string): Promise<void> {
+async function expectAppRuns(page: Page, base: string): Promise<void> {
+  const host = new URL(base).origin
   const failed: string[] = []
   const onResponse = (r: { url(): string; status(): number }): void => {
-    if (r.url().startsWith(`${origin}/`) && r.status() >= 400) failed.push(`${r.status()} ${r.url()}`)
+    if (r.url().startsWith(`${host}/`) && r.status() >= 400) failed.push(`${r.status()} ${r.url()}`)
   }
   const onFailed = (r: { url(): string; failure(): { errorText: string } | null }): void => {
-    if (r.url().startsWith(`${origin}/`)) failed.push(`${r.failure()?.errorText ?? 'failed'} ${r.url()}`)
+    if (r.url().startsWith(`${host}/`)) failed.push(`${r.failure()?.errorText ?? 'failed'} ${r.url()}`)
   }
+  const onError = (e: Error): void => void failed.push(`page error: ${e.message}`)
   page.on('response', onResponse)
   page.on('requestfailed', onFailed)
+  page.on('pageerror', onError)
   try {
-    const wasm = page.waitForResponse((r) => r.url().startsWith(`${origin}/`) && /\/_next\/static\/wasm\/[^/]+\.wasm$/.test(r.url()), { timeout: 90_000 })
-    await page.goto(`${origin}/`, { waitUntil: 'domcontentloaded' })
+    const wasm = page.waitForResponse((r) => r.url().startsWith(`${base}/`) && /\/_next\/static\/wasm\/[^/]+\.wasm$/.test(r.url()), { timeout: 90_000 })
+    await page.goto(`${base}/`, { waitUntil: 'domcontentloaded' })
     await expect(page.getByRole('heading', { level: 1 })).toContainText('no server to trust')
+    // The SDK loads after hydration, so from here a link click is the client router's.
     expect((await wasm).status(), 'the SDK wasm').toBe(200)
+    await page.evaluate(() => Object.assign(window, { __drillSameDocument: true }))
     await page.getByRole('link', { name: /Explore/ }).first().click()
-    await expect(page).toHaveURL(`${origin}/explore/`)
-    expect(failed, `requests to ${origin} failed`).toEqual([])
+    await expect(page).toHaveURL(`${base}/explore/`)
+    expect(await page.evaluate(() => '__drillSameDocument' in window), 'the navigation reloaded the page').toBe(true)
+    // An in-page link (the skip link, `href="#main"`) stays on this page, <base> or not.
+    const skip = page.getByRole('link', { name: 'Skip to content' })
+    await skip.focus()
+    await skip.press('Enter')
+    await expect(page).toHaveURL(`${base}/explore/#main`)
+    expect(await page.evaluate(() => '__drillSameDocument' in window), 'the in-page link reloaded the page').toBe(true)
+    expect(failed, `requests to ${host} failed`).toEqual([])
   } finally {
     page.off('response', onResponse)
     page.off('requestfailed', onFailed)
+    page.off('pageerror', onError)
   }
 }
 
 test('the web app survives its host going down: another static host and the IPFS build serve it', async ({ page, context }) => {
-  expect(existsSync(join(OUT, 'index.html')), 'build the app first (pnpm build)').toBe(true)
+  expect(existsSync(join(OUT, 'index.html')), 'build the app first (pnpm build:ipfs)').toBe(true)
+  expect(readFileSync(join(OUT, 'index.html'), 'utf8'), 'out/ is not the IPFS variant (scripts/ipfs-postbuild.mjs): pnpm build:ipfs').toContain('document.createElement("base")')
   await requireFixture()
 
   // The IPFS build: the static export added to the kubo fixture, loaded through its subdomain
@@ -137,9 +155,11 @@ test('the web app survives its host going down: another static host and the IPFS
     await expect(dead.goto(`${primary.origin}/`)).rejects.toThrow(/ERR_CONNECTION_REFUSED/)
     await dead.close()
 
-    // The same build, from elsewhere.
+    // The same build, from elsewhere: another host, a subdomain gateway, and a path gateway
+    // (`/ipfs/<cid>/`, where the IPFS variant finds its base path at run time).
     await expectAppRuns(page, secondary.origin)
     await expectAppRuns(page, ipfsOrigin)
+    await expectAppRuns(page, `${gw.origin}/ipfs/${cid}`)
 
     // From the IPFS origin, the owner's storage still answers: a bucket configured with the
     // CORS rules the app tells owners to paste, and the gateway.

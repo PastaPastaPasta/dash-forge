@@ -7,12 +7,62 @@
 //   - COOP/COEP 'credentialless' headers (dev only; static hosts set these themselves)
 // CSP is delivered via <meta> in app/layout.tsx so it survives static export.
 //
-// Deviations from yappr: no build-time git-info injection (kept the config pure and
-// dependency-free so the scaffold builds without a git checkout), and no basePath yet.
+// Reproducible (docs/guides/verify-the-app.md): one commit gives byte-identical output. The
+// build id is the commit (Next's default is random), and nothing reads the clock. The
+// canonical build is scripts/ipfs-release.sh, which also pins the toolchain.
+
+const { execFileSync } = require('node:child_process');
+
+// The commit this build is from: FORGE_BUILD_COMMIT (set by scripts/ipfs-release.sh, which
+// builds from a `git archive` with no .git), else the checkout's HEAD. The footer shows it.
+function buildCommit() {
+  const fromEnv = process.env.FORGE_BUILD_COMMIT;
+  if (fromEnv) {
+    if (!/^[0-9a-f]{40}$/.test(fromEnv)) throw new Error(`FORGE_BUILD_COMMIT must be a full commit id, got ${fromEnv}`);
+    return fromEnv;
+  }
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString()
+      .trim();
+  } catch {
+    return '';
+  }
+}
+const commit = buildCommit();
+
+// The IPFS variant (FORGE_IPFS_BUILD=1, scripts/ipfs-release.sh): one build that runs from any
+// path, `/ipfs/<cid>/` on a path gateway as well as the root of a subdomain gateway or a host.
+// The CID is only known after the build, so the base path is read from the URL at run time:
+// the client's router base path and webpack public path below, and a <base> that
+// scripts/ipfs-postbuild.mjs puts first in every page (whose asset URLs it makes relative).
+const ipfsBuild = process.env.FORGE_IPFS_BUILD === '1';
 
 // For project-site GitHub Pages the app is served under /<repo>. Set
 // NEXT_PUBLIC_BASE_PATH=/dash-forge in that deploy; unset for root/IPFS/custom-domain.
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+if (ipfsBuild && basePath) {
+  throw new Error('FORGE_IPFS_BUILD finds its base path at run time; unset NEXT_PUBLIC_BASE_PATH');
+}
+// The IPFS variant's run-time base path (scripts/ipfs-base.cjs). From `self.location`, so it also
+// holds in a worker (served from `<base>/_next/static/…`).
+const { IPFS_BASE_PATH } = require('./scripts/ipfs-base.cjs');
+const RUNTIME_BASE_PATH = `((/${IPFS_BASE_PATH}/.exec(self.location.pathname) || [""])[0])`;
+
+/** Webpack's `__webpack_require__.p` (where chunks, workers and the wasm load from), at run time. */
+class RuntimeBasePublicPath {
+  constructor(webpack) {
+    this.publicPath = webpack.RuntimeGlobals.publicPath;
+  }
+  apply(compiler) {
+    compiler.hooks.thisCompilation.tap('RuntimeBasePublicPath', (compilation) => {
+      compilation.hooks.runtimeModule.tap('RuntimeBasePublicPath', (module) => {
+        if (module.name !== 'publicPath') return;
+        module.generate = () => `${this.publicPath} = ${RUNTIME_BASE_PATH} + "/_next/";`;
+      });
+    });
+  }
+}
 
 // The Platform SDK, built from its unbundled modules (D-025). The published
 // `@dashevo/evo-sdk` entry is one file with the 23 MB wasm inlined as base64 gzip (an ~8 MB
@@ -46,6 +96,8 @@ const nextConfig = {
   output: 'export',
   basePath,
   assetPrefix: basePath || undefined,
+  // Next's default build id is random, and it lands in every page and in chunk hashes.
+  generateBuildId: () => commit || 'unversioned',
   images: {
     // Static export cannot use the Next.js image optimizer.
     unoptimized: true,
@@ -53,8 +105,45 @@ const nextConfig = {
   env: {
     // The wasm's size, so the download can show a percentage whatever the host's encoding.
     FORGE_WASM_SDK_BYTES: String(fs.statSync(WASM_FILE).size),
+    // "About this build" in the footer (lib/build-info.ts).
+    FORGE_BUILD_COMMIT: commit,
+    // The IPFS variant copies canonical links, not short ones (lib/short-url.ts).
+    FORGE_IPFS_BUILD: ipfsBuild ? '1' : '',
   },
-  webpack: (config, { isServer, webpack }) => {
+  webpack: (config, { dev, isServer, webpack }) => {
+    if (!dev && !isServer) {
+      // Reproducible output (docs/guides/verify-the-app.md). Two sources of run-to-run
+      // variation, both seen between identical builds on one machine:
+      // - Module ids. Webpack hashes each module's path into a range only ~20x the module count,
+      //   so a few collide, and it settles collisions in module-graph order, which varies with
+      //   timing: one module's id changed, and every chunk referring to it. A range this large
+      //   has no collision in practice (~1 in 2,000 at a thousand modules); failOnConflict makes
+      //   one a build error, not a random id. The fix for that commit is a `salt` here.
+      // - Entry chunk names. Next names them by [chunkhash], which hashes webpack's module-graph
+      //   state, and that varies under CPU load even when the chunk's bytes do not. [contenthash]
+      //   names each file by its final bytes (webpack's realContentHash, on in production), and
+      //   rewrites every reference (pages, manifests, the runtime) to match, as it already does
+      //   for the lazy chunks.
+      config.optimization.moduleIds = false;
+      config.plugins.push(new webpack.ids.DeterministicModuleIdsPlugin({ maxLength: 9, failOnConflict: true }));
+      config.output.filename = config.output.filename.replace('[chunkhash]', '[contenthash]');
+      if (!config.output.filename.includes('[contenthash]') || config.optimization.realContentHash === false) {
+        throw new Error(`reproducible chunk names: unexpected output.filename ${config.output.filename} (Next.js upgrade?)`);
+      }
+    }
+    if (ipfsBuild && !isServer) {
+      // Next writes the public path (`/_next/`) into the pages and the RSC payloads, which
+      // ipfs-postbuild.mjs makes base-relative; the running client computes it instead.
+      config.plugins.push(new RuntimeBasePublicPath(webpack));
+      // The router's base path, and lib/short-url.ts' BASE_PATH. The prerendered pages keep ''
+      // (the server compilation is untouched).
+      const define = config.plugins.find(
+        (p) => p instanceof webpack.DefinePlugin && 'process.env.__NEXT_ROUTER_BASEPATH' in p.definitions,
+      );
+      if (!define) throw new Error("FORGE_IPFS_BUILD: Next's DefinePlugin not found (Next.js upgrade?)");
+      define.definitions['process.env.__NEXT_ROUTER_BASEPATH'] = RUNTIME_BASE_PATH;
+      define.definitions['process.env.NEXT_PUBLIC_BASE_PATH'] = RUNTIME_BASE_PATH;
+    }
     config.resolve.alias = {
       ...config.resolve.alias,
       '@dashevo/evo-sdk$': path.join(evoSdkDist, 'sdk.js'),

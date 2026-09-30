@@ -128,7 +128,8 @@ storage-it: infra-up
 ## survivability: the survivability drill (roadmap Phase 1 gate) against the LOCAL fixture:
 ## deletes buckets of its own and STOPS/STARTS the kubo container (forge-e2e-kubo), so it is
 ## not part of storage-it. Clone (forge-core), browse (web reader) and web host (the static
-## build killed, served again from a second host and from kubo as an IPFS build). No chain.
+## build killed, served again from a second host and from kubo as an IPFS build, by subdomain
+## and by path). No chain.
 ## CI: .github/workflows/survivability.yml.
 survivability: infra-up
 	@for i in $$(seq 1 60); do \
@@ -139,7 +140,7 @@ survivability: infra-up
 	done
 	FORGE_DRILL=1 cargo test --locked -p forge-core --lib survivability -- --test-threads=1
 	cd forge-web && FORGE_DRILL=1 pnpm exec vitest run lib/view/survivability.drill.test.ts && \
-		pnpm build && FORGE_DRILL=1 pnpm exec playwright test -c e2e-drill/playwright.config.ts
+		pnpm build:ipfs && FORGE_DRILL=1 pnpm exec playwright test -c e2e-drill/playwright.config.ts
 
 ## storage-e2e: a REAL `git push` / `git clone` through git-remote-dash with packs stored
 ## on local RustFS (S3) + kubo and only the manifest + ref on devnet bonsia, against the

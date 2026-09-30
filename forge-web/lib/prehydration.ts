@@ -16,7 +16,8 @@
  * - Only buttons with `data-replay` are caught; any other tap before hydration does what it did
  *   before (nothing for a button, navigation for a link). An intent is only for a button whose
  *   action is safe to do a moment later: it opens something, it never writes.
- * - After {@link STOP_AFTER_MS}, or when one of the app's own scripts (same-origin `/_next/`)
+ * - After {@link STOP_AFTER_MS}, or when one of the app's own scripts (same-origin, under
+ *   `_next/static/` at any depth: an IPFS path gateway serves the app under `/ipfs/<cid>/`)
  *   fails to load, the catcher stops and the busy state clears, so a page that never hydrates
  *   does not keep a spinner forever. Other scripts failing do not stop it: the host may inject
  *   its own (Cloudflare's analytics beacon on forge.dashhq.org, refused by the page CSP), and
@@ -82,7 +83,7 @@ export function prehydrationScript(): string {
     var t = e.target;
     if (!t || t.tagName !== 'SCRIPT') return;
     var src = t.src || '';
-    if (src.indexOf(location.origin + '/_next/') === 0) state.stop();
+    if (src.indexOf(location.origin + '/') === 0 && /\\/_next\\/static\\//.test(src)) state.stop();
   }
   var timer = setTimeout(function(){ state.stop(); }, ${STOP_AFTER_MS});
   document.addEventListener('click', onClick, true);

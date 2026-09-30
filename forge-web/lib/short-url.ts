@@ -31,6 +31,9 @@ export const RESERVED_SEGMENTS: readonly string[] = [
   'explore',
   'favicon.ico',
   'index',
+  // The IPFS variant reads `/ipfs/<cid>/` and `/ipns/<name>/` as its base path (scripts/ipfs-base.cjs).
+  'ipfs',
+  'ipns',
   'login',
   'mirror',
   'new',
@@ -104,11 +107,18 @@ const OWNER_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9.-]*$/
 const NAME_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
 /**
+ * Whether this build hands out short URLs. Not the IPFS variant (`pnpm build:ipfs`): a short URL
+ * opens only through the `404.html` shim, and IPFS gateways do not serve `404.html` for a missing
+ * path, so its Copy link and permalinks use the canonical routes, which are real pages.
+ */
+const SHORT_URLS = process.env.FORGE_IPFS_BUILD !== '1'
+
+/**
  * Whether `repo`'s owner and name have a short path the shim expands back to them: an owner or
  * name the shim refuses (`.hidden`) or a reserved owner (`repo`) needs the canonical route.
  */
 function hasShortPath(repo: { readonly owner: string; readonly name: string }): boolean {
-  return OWNER_SEGMENT.test(repo.owner) && NAME_SEGMENT.test(repo.name) && !RESERVED_SEGMENTS.includes(repo.owner.toLowerCase())
+  return SHORT_URLS && OWNER_SEGMENT.test(repo.owner) && NAME_SEGMENT.test(repo.name) && !RESERVED_SEGMENTS.includes(repo.owner.toLowerCase())
 }
 
 /**

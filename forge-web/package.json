@@ -15,6 +15,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:ipfs": "FORGE_IPFS_BUILD=1 next build && node scripts/ipfs-postbuild.mjs out",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
