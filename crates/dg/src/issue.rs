@@ -711,8 +711,21 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()>
     let s = Session::open_for_write(ctx, repo, "state not changed").await?;
     let target = target(&s, repo, number).await?;
     let (done, prompt) = open_words(close);
-    ctx.confirm_or_cancel(&format!("{prompt} issue #{number}? (one small document)"))?;
     let collab = s.collab();
+    // Closing a closed issue (or reopening an open one) is not an error: nothing to write, as
+    // `gh issue close` says (QW-042: it stopped with E604, a code for consensus refusals). The
+    // state is the one the write would be judged against (its transition sum), read the same
+    // way `set_state` reads it.
+    let open = status_of_code(collab.state_sum(&s.repo, &target.id).await?).open;
+    if open != close {
+        let state = if open { "open" } else { "closed" };
+        ctx.emit(
+            json!({ "status": "unchanged", "issue": number, "open": open, "written": false }),
+            || println!("issue #{number} is already {state}; nothing written"),
+        );
+        return Ok(());
+    }
+    ctx.confirm_or_cancel(&format!("{prompt} issue #{number}? (one small document)"))?;
     let action = if close {
         StateAction::Close
     } else {

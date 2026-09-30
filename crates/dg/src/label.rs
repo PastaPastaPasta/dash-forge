@@ -87,6 +87,19 @@ async fn list(ctx: &Ctx, repo: &str, all: bool) -> Result<()> {
     Ok(())
 }
 
+/// A `--color` value as `#rrggbb`: six hex digits, with or without the `#`, lowercased as the
+/// importer stores colours; anything else is passed on as given, for the check in
+/// `create_label` to refuse.
+fn hex_color(color: &str) -> String {
+    let c = color.trim();
+    let digits = c.strip_prefix('#').unwrap_or(c);
+    if digits.len() == 6 && digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+        format!("#{}", digits.to_ascii_lowercase())
+    } else {
+        c.to_string()
+    }
+}
+
 async fn define(
     ctx: &Ctx,
     repo: &str,
@@ -95,6 +108,9 @@ async fn define(
     description: &str,
     retired: bool,
 ) -> Result<()> {
+    // `d73a4a` is taken as `#d73a4a`, as `gh label create --color` takes it (QW-082).
+    let color = hex_color(color);
+    let color = color.as_str();
     let s = Session::open_for_write(ctx, repo, "label not changed").await?;
     let verb = if retired { "Retire" } else { "Define" };
     // docs/security/private-repos.md §7: a label definition (name, colour, description) stays
@@ -121,4 +137,20 @@ async fn define(
         || println!("✓ {}d label {name}", verb.to_lowercase()),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hex_color;
+
+    /// QW-082: `--color d73a4a` (no `#`) is the colour it names, as with `gh`; anything else
+    /// goes on as given, for the contract rule to refuse with E201.
+    #[test]
+    fn a_hex_color_gets_its_hash() {
+        assert_eq!(hex_color("d73a4a"), "#d73a4a");
+        assert_eq!(hex_color("#d73a4a"), "#d73a4a");
+        assert_eq!(hex_color(" D73A4A "), "#d73a4a");
+        assert_eq!(hex_color("red"), "red");
+        assert_eq!(hex_color(""), "");
+    }
 }

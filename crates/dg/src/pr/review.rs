@@ -252,7 +252,7 @@ pub async fn review(ctx: &Ctx, a: &PrReviewArgs) -> Result<()> {
         if v.is_none() && !a.resume {
             return Err(UserError::new(codes::USAGE, "no verdict given")
                 .fix("pass --approve, --request-changes or --comment to submit a review")
-                .fix("or --pending to add the comments to your pending review without writing anything")
+                .fix("pass --pending to add the comments to your pending review without writing anything")
                 .into());
         }
         Mode::Submit(v)
@@ -328,7 +328,7 @@ fn refuse_attempted(d: &ReviewDraft, repo: &str, number: u64) -> anyhow::Error {
     .cause("its verdict, summary and comments are fixed once it has begun, so nothing is written twice")
     .fix(format!("finish it: `dg pr review {repo} {number} --resume`"))
     .fix(format!(
-        "or drop what is not written yet: `dg pr review {repo} {number} --discard`"
+        "drop what is not written yet: `dg pr review {repo} {number} --discard`"
     ))
     .note("nothing was written")
     .into()

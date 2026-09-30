@@ -630,7 +630,7 @@ fn unverifiable(asset: &ReleaseAsset, repo: &str, tag: &str) -> Option<UserError
             "a maintainer of {repo} re-runs the import with a current forge-import: it downloads and hashes each asset and republishes the release"
         ))
         .fix(format!(
-            "or re-publishes it with the file: `dg release create {repo} --tag {tag} --asset <file>`"
+            "a maintainer re-publishes it with the file: `dg release create {repo} --tag {tag} --asset <file>`"
         ))
         .note("nothing was downloaded: dg only saves bytes it can check against the recorded hash")
     })
@@ -925,7 +925,15 @@ fn save(dest: &Dest, bytes: &[u8]) -> Result<()> {
         Some(d) if !d.as_os_str().is_empty() => d,
         _ => Path::new("."),
     };
-    let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(fail)?;
+    // A downloaded asset is an ordinary file (0666 less the umask, as curl or a browser leaves
+    // it), not the temporary file's private 0600 (QW-083).
+    let mut builder = tempfile::Builder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        builder.permissions(std::fs::Permissions::from_mode(0o666));
+    }
+    let mut tmp = builder.tempfile_in(dir).map_err(fail)?;
     std::io::Write::write_all(&mut tmp, bytes).map_err(fail)?;
     if dest.replace {
         tmp.persist(&dest.path).map_err(|e| fail(e.error))?;
@@ -1285,6 +1293,28 @@ mod download_tests {
         assert_eq!(std::fs::read(&file.path).unwrap(), b"two");
         let left = std::fs::read_dir(dir.path()).unwrap().count();
         assert_eq!(left, 1, "no temporary file left behind");
+    }
+
+    /// QW-083: a downloaded asset gets an ordinary file's mode (0666 less the umask), not the
+    /// temporary file's private 0600.
+    #[cfg(unix)]
+    #[test]
+    fn a_saved_asset_has_an_ordinary_mode() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let umask = std::process::Command::new("sh")
+            .args(["-c", "umask"])
+            .output()
+            .ok()
+            .and_then(|o| u32::from_str_radix(String::from_utf8_lossy(&o.stdout).trim(), 8).ok())
+            .unwrap_or(0o022);
+        let dir = tempfile::tempdir().unwrap();
+        let dest = Dest {
+            path: dir.path().join("asset.tar.gz"),
+            replace: false,
+        };
+        save(&dest, b"x").unwrap();
+        let mode = std::fs::metadata(&dest.path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o666 & !umask, "mode {mode:o}");
     }
 
     /// A local write failure is its own error, not "could not read releases".

@@ -334,11 +334,14 @@ async fn runner_new(ctx: &Ctx, args: &RunnerNewArgs) -> Result<()> {
             );
             println!("  the key cost {}", cost_line(key_spent, dash_usd_price()));
             if membership.is_some() {
-                println!(
-                    "✓ enrolled as a runner of {} ({})",
-                    s.repo.display(),
+                // A balance read that has not moved yet is not a free write (QW-083: it read
+                // "(~0 DASH)").
+                let cost = if enrol_spent == 0 {
+                    "its cost is not visible in the balance yet".to_string()
+                } else {
                     cost_line(enrol_spent, dash_usd_price())
-                );
+                };
+                println!("✓ enrolled as a runner of {} ({cost})", s.repo.display());
             }
             println!("  use it as a CI secret: DASH_FORGE_KEY=<the file's contents>");
             println!(

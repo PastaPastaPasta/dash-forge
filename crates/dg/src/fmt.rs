@@ -124,9 +124,15 @@ pub fn cost_json(credits: u64, price_usd: f64) -> Value {
     json!({
         "credits": credits,
         "dash": dash,
-        "usd": (dash * price_usd),
+        "usd": usd_json(dash * price_usd),
         "usdPrice": price_usd,
     })
+}
+
+/// A USD amount for `--json`: to a millionth of a dollar, so float noise (`0.001663926`)
+/// reads `0.001664` while the smallest write still shows a cost (QW-081). `credits` is exact.
+fn usd_json(usd: f64) -> f64 {
+    (usd * 1_000_000.0).round() / 1_000_000.0
 }
 
 /// The `--json` block for `auth balance`.
@@ -175,6 +181,17 @@ pub fn event_values_note(hidden: usize, plaintext: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// QW-081: the `usd` of a cost carries no float noise.
+    #[test]
+    fn a_cost_in_usd_has_no_float_noise() {
+        let v = cost_json(95_093_000, 30.0);
+        assert_eq!(v["usd"].as_f64(), Some(0.028_528));
+        // the smallest writes still read as a cost, not as free
+        assert_eq!(cost_json(100_000, 30.0)["usd"].as_f64(), Some(0.00003));
+        assert_eq!(v["credits"].as_u64(), Some(95_093_000));
+        assert_eq!(cost_json(0, 30.0)["usd"].as_f64(), Some(0.0));
+    }
 
     /// The timeline's words for each transition kind (the web's), and how a state change was
     /// written.

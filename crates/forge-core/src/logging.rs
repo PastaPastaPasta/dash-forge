@@ -5,13 +5,16 @@
 //! nonce at ERROR (`rs_dapi_client`) and WARN (`dash_sdk`), and each transport retry at
 //! WARN. forge-core then re-prepares the write, or finds it already landed, and the run
 //! succeeds, but the user has read "ERROR … InvalidIdentityNonceError" and assumes it
-//! failed. Those events are hidden unless `RUST_LOG` asks for debug output.
+//! failed. The same goes for a write a node one block behind refused by a rule that reads
+//! a total (a manifest's `platformChunks`): forge-core sends the same bytes again once the node
+//! has caught up. Those events are hidden unless `RUST_LOG` asks for debug output.
 //!
 //! Nothing that matters is lost. Every SDK error reaches forge-core as a `Result`: a write
 //! it cannot recover fails with its own error, which the CLI prints. Any SDK event not
 //! recognised here (a node that is down, a refused transition, an unknown error) is still
 //! shown.
 
+use base64::Engine as _;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Metadata};
 use tracing_subscriber::layer::{Context, Filter, SubscriberExt as _};
@@ -32,10 +35,52 @@ const RECOVERED: [&str; 7] = [
     "code: AlreadyExists",
 ];
 
+/// Whether `error` is a refusal by a `propertyConstraints` rule that reads a total
+/// (`crate::platform::TOTAL_READING_RULES`): a node a block behind the writer's own writes
+/// refuses a correct write, and forge-core sends the same bytes again once it has caught up
+/// (D-5: a retried push printed the SDK's raw ERROR and WARN lines, base64 and all). A
+/// refusal that outlasts the retries reaches forge-core as its own error. The SDK names the
+/// rule in text (`dash_sdk`) or only in the serialized consensus error header
+/// (`rs_dapi_client`).
+fn is_lagging_total_refusal(error: &str) -> bool {
+    let quoted_after = |key: &str| {
+        let rest = &error[error.find(key)? + key.len()..];
+        rest.find('"').map(|end| rest[..end].to_string())
+    };
+    if let (Some(doc), Some(rule)) = (
+        quoted_after("document_type_name: \""),
+        quoted_after("constraint: \""),
+    ) {
+        return crate::platform::reads_a_total(&doc, &rule);
+    }
+    let Some(serialized) = quoted_after("\"dash-serialized-consensus-error-bin\": \"") else {
+        return false;
+    };
+    let engines = [
+        base64::engine::general_purpose::STANDARD_NO_PAD,
+        base64::engine::general_purpose::STANDARD,
+    ];
+    let Some(bytes) = engines.iter().find_map(|e| e.decode(&serialized).ok()) else {
+        return false;
+    };
+    // The serialized error holds the type and the rule as length-prefixed strings.
+    crate::platform::TOTAL_READING_RULES
+        .iter()
+        .any(|(doc, rule)| {
+            let mut want = Vec::new();
+            for s in [doc, rule] {
+                want.push(u8::try_from(s.len()).unwrap_or(u8::MAX));
+                want.extend_from_slice(s.as_bytes());
+            }
+            bytes.windows(want.len()).any(|w| w == want.as_slice())
+        })
+}
+
 /// Whether an event from `target` with `message` and `error` is the SDK reporting
 /// something forge-core recovers from.
 pub fn is_recovered_sdk_noise(target: &str, message: &str, error: &str) -> bool {
-    let recovered = || RECOVERED.iter().any(|m| error.contains(m));
+    let recovered =
+        || RECOVERED.iter().any(|m| error.contains(m)) || is_lagging_total_refusal(error);
     if target.starts_with("rs_dapi_client") {
         // A retry the client makes itself, and the node it failed on set aside for a while
         // ("ban address …": a rate limit, ResourceExhausted, or a transport error): the
@@ -262,6 +307,38 @@ mod tests {
         assert!(emit(Some("info")).is_empty());
         assert!(emit(Some("debug")).contains("another write took the nonce"));
         assert!(emit(Some("warn,forge_core=debug")).contains("another write took the nonce"));
+    }
+
+    /// D-5 (QW-082): a push whose manifest a lagging node refused by `platformChunks` printed
+    /// the SDK's raw ERROR (the rule only in a base64 header) and WARN lines, although
+    /// forge-core sends it again and it lands. A refusal by a rule that reads no total stays.
+    #[test]
+    fn a_lagging_total_refusal_is_recovered_noise() {
+        // Captured on bonsia (collab/push-collab-feature.log), trimmed.
+        let dapi = r#"ExecutionError { inner: Transport(Grpc(Status { code: InvalidArgument, message: "oWRk", metadata: MetadataMap { headers: {"content-type": "application/grpc", "code": "10422", "dash-serialized-consensus-error-bin": "AcYMcGFja01hbmlmZXN0DnBsYXRmb3JtQ2h1bmtzAA", "server": "envoy"} }, source: None })), retries: 0 }"#;
+        let sdk = r#"ExecutionError { inner: Protocol(ConsensusError(BasicError(DocumentPropertyConstraintViolatedError(DocumentPropertyConstraintViolatedError { document_type_name: "packManifest", constraint: "platformChunks", violation: NotMet })))), retries: 0 }"#;
+        assert!(is_recovered_sdk_noise(
+            "rs_dapi_client::dapi_client",
+            "request failed",
+            dapi
+        ));
+        assert!(is_recovered_sdk_noise(
+            "dash_sdk::platform::transition::broadcast",
+            "broadcast: request failed",
+            sdk
+        ));
+        let other = sdk.replace("platformChunks", "maxOneOpen");
+        assert!(!is_recovered_sdk_noise(
+            "dash_sdk::platform::transition::broadcast",
+            "broadcast: request failed",
+            &other
+        ));
+        let other_dapi = dapi.replace("AcYMcGFja01hbmlmZXN0DnBsYXRmb3JtQ2h1bmtzAA", "AAAA");
+        assert!(!is_recovered_sdk_noise(
+            "rs_dapi_client::dapi_client",
+            "request failed",
+            &other_dapi
+        ));
     }
 
     #[test]
