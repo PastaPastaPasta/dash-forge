@@ -1,0 +1,30 @@
+{
+  "name": "tag_named_like_a_branch",
+  "description": "a tag named refs/heads/main hashes under K_tag, never K_ref: its tagName is not the refNameHash of the branch (e729d18b... under K_ref,0), so a release never matches a ref update.",
+  "case": "private_release_seal",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+    "nonce": "000102030405060708090a0b",
+    "fields": {
+      "tag": "refs/heads/main"
+    }
+  },
+  "expected": {
+    "tagHash": "dfae5bf7f30fcc1aa4ac3c23bd0351934dd1d0b27de937b197218560992851b6",
+    "tagName": "365b9_MPzBqkrDwjvQNRk03R0LJ96TexlyGFYJkoUbY",
+    "ad": "646173682d666f7267652f76322f646f630001111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222220000000072656c656173650033363562395f4d507a42716b7244776a76514e526b303352304c4a39365465786c794746594a6b6f556259",
+    "tlv": "10000f726566732f68656164732f6d61696e",
+    "enc": "01000102030405060708090a0b0e702080a6549f56371975d7b304906fd073c267e8c79e68145c64198e93f7af9ae6",
+    "props": {
+      "tagName": "365b9_MPzBqkrDwjvQNRk03R0LJ96TexlyGFYJkoUbY",
+      "vis": "private",
+      "delta": 0,
+      "epoch": 0,
+      "enc": "01000102030405060708090a0b0e702080a6549f56371975d7b304906fd073c267e8c79e68145c64198e93f7af9ae6"
+    }
+  }
+}

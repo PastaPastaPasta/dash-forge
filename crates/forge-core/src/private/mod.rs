@@ -34,6 +34,8 @@ pub mod wrap;
 
 #[cfg(test)]
 mod conformance;
+#[cfg(test)]
+mod release_ref;
 
 use std::collections::BTreeMap;
 

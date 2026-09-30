@@ -50,8 +50,15 @@ interface Vector {
 
 const ROOT = resolve(process.cwd(), '..')
 const VECTORS_DIR = resolve(ROOT, 'forge-contracts', 'vectors')
+/**
+ * Sealed releases (`private-repos.md` §16) are specified but not implemented in the web app
+ * yet: their vectors are checked by gen.py and forge-core's test-only reference, and this
+ * harness takes them on with the web implementation (`lib/repo/releases.ts`), which removes
+ * this filter.
+ */
+const NOT_YET_IMPLEMENTED = /^private_release_(seal|open)__/
 const PRIVATE_FILES = readdirSync(VECTORS_DIR)
-  .filter((f) => f.startsWith('private_') && f.endsWith('.json'))
+  .filter((f) => f.startsWith('private_') && f.endsWith('.json') && !NOT_YET_IMPLEMENTED.test(f))
   .sort()
 
 // ---------------------------------------------------------------------------------------------

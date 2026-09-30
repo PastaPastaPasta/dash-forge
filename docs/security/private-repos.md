@@ -1,6 +1,6 @@
 # Private repositories: key model, framing and rules
 
-Status: design for roadmap Phase 3, revision 2 after an independent cryptographic review ("sound, with changes needed"; every finding is addressed, see §14). Implementers: `crates/forge-core/src/private.rs` (the `RepoCodec`, `RefNameHasher`, `PackCipher`, `RepoKeyReader` seams), `git-remote-dash`, `dg`, and `forge-web/lib/private/`. The contract fields this design writes into are fixed in `docs/contracts/forge-v2.md` §5 and `forge-contracts/contracts/forge-core.json` (`repoKey`, `enc`/`epoch` on `refUpdate`, `protectedRefUpdate`, `config`) and `forge-collab.json` (`enc`/`epoch` on `issue`, `patch`, `comment`, `review`). §13 lists the schema changes this design needs before mainnet registration. Where this document and §5 differ, this document wins and §5 is to be updated with it.
+Status: design for roadmap Phase 3, revision 2 after an independent cryptographic review ("sound, with changes needed"; every finding is addressed, see §14). Implementers: `crates/forge-core/src/private.rs` (the `RepoCodec`, `RefNameHasher`, `PackCipher`, `RepoKeyReader` seams), `git-remote-dash`, `dg`, and `forge-web/lib/private/`. The contract fields this design writes into are fixed in `docs/contracts/forge-v2.md` §5 and `forge-contracts/contracts/forge-core.json` (`repoKey`, `enc`/`epoch` on `refUpdate`, `protectedRefUpdate`, `config`) and `forge-collab.json` (`enc`/`epoch` on `issue`, `patch`, `comment`, `review`). §13 lists the schema changes this design needs before mainnet registration. §16 specifies sealed releases within the registered RC1 `release` schema; no client implements it yet. Where this document and §5 differ, this document wins and §5 is to be updated with it.
 
 Everything below is normative unless marked as a note. Byte layouts are exact; all integers are big-endian; `‖` is concatenation; `u8`/`u16`/`u32`/`u64` are 1, 2, 4 and 8 bytes.
 
@@ -33,6 +33,7 @@ subkey(label, x) = HKDF-Expand(PRK_e, info = "dash-forge/v2/" ‖ label ‖ 0x00
 | `KCV_e` | `kcv` | (empty) | first 14 bytes = the epoch's key-check value (§5.1) |
 | `COMMIT_e` | `commit` | (empty) | the 32-byte key commitment carried by anchors (§4.2, §5.3) |
 | `K_hedge,e` | `hedge` | (empty) | RNG hedging for nonces and file ids (§3.6) |
+| `K_tag,e` | `tag` | (empty) | HMAC-SHA256 of a sealed release's tag, its plaintext `tagName` (§16.1) |
 
 The salt binds every subkey to the repo, so a key accidentally wrapped into two repos still yields different subkeys, and the label/epoch in `info` separates purposes and epochs. There are no commit- or tree-level keys: the unit of pack encryption is the whole artifact, as the browse plane already reads packs by byte range.
 
@@ -42,7 +43,7 @@ An epoch number identifies a key everywhere the contract needs one (`epoch` on d
 
 ## 3. Sealed artifacts (packs, locators, flat indexes)
 
-Every `packManifest` artifact of a private repo, whatever its `kind` (0 git pack, 1 objectLocator, 2 flatIndex), is stored **sealed**. The plaintext is the exact bytes a public repo would store, so `git index-pack`, `ObjectLocator::parse` and the flatIndex reader are unchanged after decryption.
+Every `packManifest` artifact of a private repo, whatever its `kind` (0 git pack, 1 objectLocator, 2 flatIndex, 3 history index, 4 release assets (§16.5), …), is stored **sealed**. The plaintext is the exact bytes a public repo would store, so `git index-pack`, `ObjectLocator::parse` and the flatIndex reader are unchanged after decryption.
 
 ### 3.1 Cipher
 
@@ -161,12 +162,13 @@ The plaintext is a sequence of records `tag(u8) ‖ len(u16) ‖ value`. No JSON
 | 13 | `importedAuthor` | UTF-8 | issue, patch, comment, review (`imported.author`) | 1–120 chars, ≤ 480 B |
 | 14 | `importedUrl` | UTF-8 | issue, patch, comment, review (`imported.url`) | 1–300 B |
 | 15 | `eventValue` | UTF-8 | event (`value`: a label or milestone name, a dismiss reason, an assignee, a retarget base) | 1–120 chars, ≤ 480 B |
+| 16–21 | a release's `tag`, `name`, `targetOid`, flags, `importedCreatedAt`, `assetManifest` | see §16.2 | release only | §16.2 (a release also carries tags 2, 13 and 14) |
 
 **Strictness** (any violation is `Malformed`):
 
 - Records are in strictly ascending tag order, except that consecutive tag-7 records repeat; any other repeated tag is malformed.
 - A record whose declared `len` runs past the end of the plaintext, or fewer than 3 trailing bytes after the last complete record, is malformed. There are no padding bytes.
-- Tags 16–63 are **reserved**: a record with one is malformed. Tags 64–255 are **extension** tags: a reader skips them (forward compatibility) and never interprets them.
+- Tags 22–63 are **reserved**: a record with one is malformed. Tags 64–255 are **extension** tags: a reader skips them (forward compatibility) and never interprets them. (Tags 16–21 were reserved before §16; they are release-only, so in every other kind they are still malformed, as "not listed for the kind" below.)
 - A tag not listed for the document's kind (tag 3 in an issue, say) is malformed. Tags 11 and 12 are allowed only in a config with `e ≥ 1` (never epoch 0); tag 11's only value is the one byte `0x01`. A **burned** config (tag 11) carries `prevEpoch` but neither `prevEpochKey` nor `skipEpochKey`: its key may sit with someone who never held the key below it.
 - Every UTF-8 value must be valid UTF-8, within the cap above, and non-empty unless the cap says otherwise; a zero-length record for a field with `minLength 1` counts as absent. Fixed-size tags must be exactly their size.
 - Required fields by kind: issue/patch `title`; comment `body`; event `eventValue` (an event without a value is not sealed, see §7); refUpdate/protectedRefUpdate `refName`; every config with `e ≥ 1`, anchor or not, `prevEpoch`, and unless burned `prevEpochKey` (neither is allowed when `e = 0`): any config of an epoch can become its anchor when an earlier one's author stops being a maintainer (§5.3), and it must then still chain to the previous epoch, so a writer copies the anchor's whole chain link (`prevEpoch`, `prevEpochKey`, `skipEpochKey`, the burned flag) into every later config of the epoch; review and epoch-0 config have none. An empty plaintext is therefore valid only for a review or an epoch-0 non-anchor config.
@@ -178,7 +180,7 @@ The plaintext is a sequence of records `tag(u8) ‖ len(u16) ‖ value`. No JSON
 AD = "dash-forge/v2/doc" ‖ 0x00 ‖ enc[0] ‖ repoId(32) ‖ $ownerId(32) ‖ u32(epoch) ‖ docType(ASCII) ‖ 0x00 ‖ bind
 ```
 
-`enc[0]` is the version byte (`0x01` or `0x02`), so a ciphertext cannot be re-framed under another version. `docType` is the contract's type name (`issue`, `patch`, `comment`, `review`, `event`, `refUpdate`, `protectedRefUpdate`, `config`). `bind` is the type's immutable plaintext identity:
+`enc[0]` is the version byte (`0x01` or `0x02`), so a ciphertext cannot be re-framed under another version. `docType` is the contract's type name (`issue`, `patch`, `comment`, `review`, `event`, `refUpdate`, `protectedRefUpdate`, `config`, `release`). `bind` is the type's immutable plaintext identity:
 
 | type | bind |
 |---|---|
@@ -187,8 +189,9 @@ AD = "dash-forge/v2/doc" ‖ 0x00 ‖ enc[0] ‖ repoId(32) ‖ $ownerId(32) ‖
 | review | `patchId` (32) |
 | refUpdate, protectedRefUpdate | `refNameHash` (32) ‖ `oidf(newOid)` ‖ `oidf(prevOid or empty)` ‖ `force` (0x00/0x01) |
 | config | `COMMIT_e` (32) |
+| release | the document's `tagName` string, as its 43 ASCII bytes (§16.2) |
 
-`oidf(x) = u8(len(x)) ‖ x`. Binding `repoId`, `$ownerId`, `epoch` and the type means a ciphertext lifted from one document cannot be replayed as another: not by an outsider into a new comment in the same repo (different `$ownerId`), not into another repo, not under another type or epoch. `$ownerId` is safe to bind because these eight types are not transferable; making one transferable would be a breaking change to this design. The ref-update binding ties the hidden name to the visible tip, so a stored `enc` cannot be re-used to name a different ref for the same OID. The document's `$id`, `$createdAt` and `$createdAtBlockHeight` are not bound (unknown at encryption time).
+`oidf(x) = u8(len(x)) ‖ x`. Binding `repoId`, `$ownerId`, `epoch` and the type means a ciphertext lifted from one document cannot be replayed as another: not by an outsider into a new comment in the same repo (different `$ownerId`), not into another repo, not under another type or epoch. `$ownerId` is safe to bind because these nine types are not transferable; making one transferable would be a breaking change to this design. The ref-update binding ties the hidden name to the visible tip, so a stored `enc` cannot be re-used to name a different ref for the same OID. The document's `$id`, `$createdAt` and `$createdAtBlockHeight` are not bound (unknown at encryption time).
 
 ### 4.5 Ref-name hashing, and the hash check on read
 
@@ -337,7 +340,8 @@ Not defended: traffic analysis, the browser's or OS's memory, a malicious web-ap
 | Issue/PR numbers, comment targets, `replyTo`, review `verdict`, inline comment `line`/`side`/`startLine` (the `path` is encrypted, §4.3) | plaintext fields |
 | When an imported document was created at its source (`imported.createdAt`); its author handle and source URL are sealed (tags 13, 14) | `imported` |
 | Review structure and edit times (docs/design/review-parity-spec.md §3): `$updatedAt`/`$updatedAtBlockHeight` (when an issue, PR or comment was last edited); `comment.reviewId` (which review a comment belongs to), `review.commentCount`, `patch.draft`; `event`/`authorEvent` `refId` (the resolved thread's root comment, a requested reviewer's identity, a dismissed review, an assignee) and `oid` (a `headUpdate`'s new head, another commit-equality oracle); `policy` (required approvals, approver role, checks, merge methods) | plaintext by design; none carries a path or free text |
-| `release` (`tagName`, `name`, `notes`, `assets`), `label` definitions (`name`, `color`, `description`), `checkRun` (`name`, `summary`, `detailsUrl`), `webhook.url` | **not encrypted in this release** (§13). A label put on an issue is sealed, but a repository that also publishes its label **definitions** publishes the vocabulary: the event value hides *which* label an issue carries, not which labels exist. The importer therefore leaves definitions out of a private destination unless `--include-label-definitions` |
+| A sealed release's revisions: that one exists, when, by which maintainer, under which epoch; which revisions of one epoch share a tag (equal keyed `tagName`); the `enc` length; its kind-4 asset manifest's size and timing, and its sealed asset objects' sizes. The tag, name, notes, flags, target commit, provenance and asset list are sealed (§16.6) | `release`, `packManifest` kind 4, storage |
+| `label` definitions (`name`, `color`, `description`), `checkRun` (`name`, `summary`, `detailsUrl`), `webhook.url` | **not encrypted in this release** (§13). A label put on an issue is sealed, but a repository that also publishes its label **definitions** publishes the vocabulary: the event value hides *which* label an issue carries, not which labels exist. The importer therefore leaves definitions out of a private destination unless `--include-label-definitions` |
 
 Sizes are not padded. Padding to buckets would cost real credits at 27,000 credits/byte for little gain against an adversary who sees timing anyway; the trust panel states "sizes and timing are visible".
 
@@ -353,7 +357,7 @@ Sizes are not padded. Padding to buckets would cost real credits at 27,000 credi
 4. AES-GCM under `K_doc,epoch` with the §4.4 AD fails → `Unreadable(BadTag)` (a tampered document, an outsider's bytes, or a copy-paste).
 5. TLV parse fails per §4.3 → `Malformed`.
 6. Ref-name hash check per §4.5 fails → `Malformed`.
-7. The late-content rule of §8.2 applies → `Unreadable(Late)`. (A reading layer that sees `BadTag` or `CommitMismatch` on a document, or a segment-tag failure on an intact sealed pack, dated before `stated(e)` — when the epoch's current key was first stated, §5.3 — reports it as `Unreadable(EarlierUse)`: sealed under an earlier use of the epoch number, whose epochs stopped existing with a maintainer's removal, not tampering. A malformed or truncated pack is still `SealedPackCorrupt`.) A document without `$createdAtBlockHeight` (required by the schema, §13) cannot be judged and is `Malformed`, never assumed early. A member `event` skips this step: it is gated at consensus to current maintainers and writers, so a removed member cannot write one under any key, and its schema does not carry `$createdAtBlockHeight` (vectors `private_doc_open__event_not_judged_late`, `…__event_without_height`).
+7. The late-content rule of §8.2 applies → `Unreadable(Late)`. (A reading layer that sees `BadTag` or `CommitMismatch` on a document, or a segment-tag failure on an intact sealed pack, dated before `stated(e)` — when the epoch's current key was first stated, §5.3 — reports it as `Unreadable(EarlierUse)`: sealed under an earlier use of the epoch number, whose epochs stopped existing with a maintainer's removal, not tampering. A malformed or truncated pack is still `SealedPackCorrupt`.) A document without `$createdAtBlockHeight` (required by the schema, §13) cannot be judged and is `Malformed`, never assumed early. A member `event` skips this step: it is gated at consensus to current maintainers and writers, so a removed member cannot write one under any key, and its schema does not carry `$createdAtBlockHeight` (vectors `private_doc_open__event_not_judged_late`, `…__event_without_height`). A sealed `release` skips it on the same grounds (§16.4).
 
 Every other rule (folds, approvals, ref resolution) runs over `Readable` documents only. A member `event` is **always kept**: its kind and `refId` are plaintext and member-gated, so a close, a merge mark or a review dismissal counts whatever happens to its value. Only its `value` depends on the read: one sealed in `enc` is opened in place (TLV 15), and dropped when it does not open (`Unreadable` for this reader); a plaintext `value` next to `enc` is dropped too, the sealed one being the only one that counts. A plaintext `value` on its own was written by a client from before event sealing: consensus admits `event` only from a current member, so it is authentic member data, and it is kept and shown marked "not encrypted". An empty value is no value. The value-driven fold arms (label, assign, milestone, retarget) do nothing without a value; a dismissal still dismisses, without its reason. Readers report how many values were not readable and how many were plaintext (`dg … view` `hiddenEventValues` / `plaintextEventValues`; the web shows a note). The UI hides `Unreadable` and `Malformed` documents and shows maintainers the count (ux-dx-spec §9). A `review` whose `enc` is unreadable still has a plaintext `verdict` and `commitOid`; it is **not** counted, which keeps a non-member's approval from ever being tallied by accident, in line with `count_approvals` taking well-formed input.
 
@@ -428,13 +432,15 @@ New vector cases in `forge-contracts/vectors/` with `"rules": "v2"`, one file pe
 **`private_epoch__*`** (pure, over flattened `repoKey`, `config` and membership rows with `owner_role`, `created_at_block_height`, `id`, `commit`, like `pack_copies__*`):
 `accept_wrap_from_current_maintainer`, `reject_wrap_from_non_maintainer`, **`revoked_maintainer_wrap_not_current`** (a wrap whose author has no current `maintainer` document is ignored even though it predates the revocation), **`removed_maintainer_preposted_anchor_ignored`** (a config for `n+1` by a since-removed maintainer, earlier by block height than the real one, is not the anchor; the current maintainer's later config is), `anchor_first_by_block_height_then_id_among_current_maintainers`, `anchor_created_at_ms_not_used_for_order`, **`anchor_does_not_open_alert_no_skip`** (the first current-maintainer config for `e` has a commitment the reader's key does not match → `KeyMismatch`, and a later config for `e` that does match is *not* used), `unanchored_epoch_not_writable_and_unreadable`, `current_epoch_is_highest_anchored`, **`epoch_gap_ignored`** (a config above a missing epoch number is not an anchor: `EpochGap`), **`preposted_future_config_ignored`**, **`preposted_config_ignored_after_regrant`** (a config posted before the epoch below it had its key never counts), `preposted_after_other_key_ignored`, `reanchor_of_middle_epoch_keeps_epochs_above`, `anchor_tie_at_same_height_after_prev_by_id`, `huge_epoch_from_removed_maintainer_ignored`, `huge_epoch_from_current_maintainer_is_a_gap`, `chain_walk_reaches_epoch_0_from_one_wrap`, `chain_with_skipped_epoch_number` (now a gap), **`chain_prev_epoch_must_be_e_minus_1`**, **`burned_anchor_has_no_prev_key`**, **`skip_key_walks_past_burned`**, `consecutive_burned_skip`, **`missing_skip_key_chain_broken`**, `chain_prev_epoch_must_be_smaller` (`prevEpoch ≥ e` → `ChainBroken`), `chain_prev_epoch_without_anchor` (no epoch 0: a gap), **`burned_epoch_not_writable`**, `burned_epoch_chain_walks`, **`burned_current_requires_rotation`**, `burned_flag_only_on_the_anchor_counts`, **`chain_key_must_open_first_anchor_of_prev`** (`prevEpochKey` commits to a config for `prevEpoch` that is not its anchor → `ChainBroken`), **`rotation_required_when_wrapped_non_member`** (H2: `wrapped(n)` contains a removed member → the repair check returns `Rotate`, and no write epoch until it lands), `missing_wrap_repaired_without_rotation`, `wrap_to_disabled_key_requires_repair`, **`late_content_hidden_after_next_anchor_plus_grace`** (document under `n` at height `H + 241` by a removed member → `Unreadable(Late)`), `late_content_within_grace_shown`, `late_content_from_current_member_shown`, `manifest_under_old_epoch_flagged_suspect`.
 
+**`private_release_seal__*` / `private_release_open__*`**: sealed releases, listed in §16.7.
+
 ## 12. Changes this design asks of other documents and code
 
 1. **forge-v2.md §5**: the key-check value is the 14-byte `KCV_e` inside the wrap (error detection) and the key is authenticated by the anchor's commitment; anchors, wraps and the current epoch count only from current maintainers; `refNameHash` is under `K_ref,e`, a subkey, not the raw epoch key; `enc` layouts, TLV and AD as §4; the late-content rule of §8.2. Update the "Phase 3 fixes the exact field" sentence to point here. State in §6's rule table: `open_content`, `select_anchor`, `current_epoch`, `chain_walk`, `repair_check`, `is_late`, with the vectors of §11.
 2. **rules v2 `is_well_formed`**: `comment.path` joins `ContentKind::Comment`'s plaintext fields (vector `well_formed__private_comment_plaintext_path`).
 3. **errors.md**: new codes for "no encryption key", "no usable repoKey (not a member, or removed)", "key mismatch (a maintainer gave you the wrong key)", "key chain broken", "rotation pending / repair running", "sealed pack corrupt", "written after the key was rotated".
 4. **private.rs**: `RepoKeyReader` grows `current_epoch() -> Result<u32>`, `epoch_key(e)` walks the chain, `repair_check()`; `PackCipher` gets streaming and ranged forms with the header cache (keyed by the copy, and filled only once a segment tag has authenticated the header); `RefNameHasher` takes the epoch; `RepoCodec` grows `open_content`. Production seal APIs take no nonce/fileId (§3.6).
-5. **Not encrypted in this release** and to be stated in the UI: `release.notes`/`assets`, `label` definitions, `checkRun.summary`/`detailsUrl`, `webhook.url`, `repo.description`. `event.value` is sealed (TLV 15). Adding `enc`/`epoch` to `release` and `label` is an additive contract update (optional properties) and is the natural follow-up; `repo.description` should be left empty by private-repo creators and the create flow says so.
+5. **Not encrypted in this release** and to be stated in the UI: `label` definitions, `checkRun.summary`/`detailsUrl`, `webhook.url`, `repo.description`. `event.value` is sealed (TLV 15). Releases are sealed as §16 specifies; until the clients implement it they refuse releases on private repositories. `label` already has `enc`/`epoch` in forge-core (§13 row 6); `repo.description` should be left empty by private-repo creators and the create flow says so.
 
 ## 13. Contract changes required before mainnet registration
 
@@ -447,7 +453,7 @@ These are schema changes to `forge-core.json` / `forge-collab.json`; they must l
 | 3 | forge-core `repoKey`, `refUpdate`, `protectedRefUpdate`, `packManifest`; forge-collab `issue`, `patch`, `comment`, `review` — `required` | add **`$createdAtBlockHeight`** | the late-content rule compares every private document's and manifest's block height with the next anchor's |
 | 4 | forge-core `config` | no new index | anchors are found by reading all of a repo's `config` documents (append-only, rarely written) over the existing `(repoId, $createdAt)` index and ordering client-side; a `(repoId, epoch, $createdAtBlockHeight)` index is optional and can be added later, since indexes are additive on a fresh registration only |
 | 5 | forge-collab `comment.path` | none (stays optional plaintext-capable) | it becomes content by client rule (§8.1); the schema does not change |
-| 6 | (follow-up, not required) `release`, `label`, `event` | add optional `enc` + `epoch` with `dependentRequired` | to close the §7 plaintext list in a later release; additive. **`event` done** in the review-parity forge-collab (`6BbENuf3uZhkntw9DSsxQcTu9a5fATxQoSe6Ph1JxHkS`, 2026-09-27): optional `enc` (the shared `enc` shape) and `epoch`, `dependentRequired {enc: [epoch]}`; the CLI and the web seal every valued event with it (TLV 15). `release` and `label` are forge-core: **done** in the fresh registration after the beta.6 reset (forge-core `A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1`, 2026-09-28), `dependentRequired {enc: [epoch]}` plus a `noPlain` rule; the clients do not seal them yet |
+| 6 | (follow-up, not required) `release`, `label`, `event` | add optional `enc` + `epoch` with `dependentRequired` | to close the §7 plaintext list in a later release; additive. **`event` done** in the review-parity forge-collab (`6BbENuf3uZhkntw9DSsxQcTu9a5fATxQoSe6Ph1JxHkS`, 2026-09-27): optional `enc` (the shared `enc` shape) and `epoch`, `dependentRequired {enc: [epoch]}`; the CLI and the web seal every valued event with it (TLV 15). `release` and `label` are forge-core: **done** in the fresh registration after the beta.6 reset (forge-core `A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1`, 2026-09-28), `dependentRequired {enc: [epoch]}` plus a `noPlain` rule, and kept in the RC1 registration on bonsia. Release sealing is specified in §16, which fits that schema with no change; the clients do not seal releases or labels yet |
 
 The `webhook.secret` `encryptedFor` field, and both contracts' `readonly` decision, are unaffected.
 
@@ -472,4 +478,215 @@ The `webhook.secret` `encryptedFor` field, and both contracts' `readonly` decisi
 - **`$ownerId` in AD** assumes the eight sealed types stay non-transferable (they are).
 - **Events skip the late-content rule** (§8.1 step 7) on the strength of the forge-collab `event` schema: immutable, non-deletable and `ownerRefersTo`-gated to current maintainers and writers, so a removed member cannot write one under an old key. A contract change that relaxed any of the three would need the rule back; `forge-web/lib/private/event-contract.test.ts` and the Rust `event_schema_is_member_gated_and_append_only` test pin them.
 - **Encryption-key custody in the browser** widens the vault's blast radius to "read every private repo, and every key handed out as a maintainer". Passkey PRF must be the default where available.
-- **Un-encrypted release notes and label definitions** in the first release may surprise users; the UI must say so. (Event values, including the labels put on issues, are sealed.)
+- **Sealed releases skip the late-content rule** (§16.4) on the strength of the forge-core `release` schema: immutable, non-deletable and `ownerRefersTo`-gated to a current maintainer. The same caveat as for events applies: relaxing any of the three needs the rule back, and the rule would then need `$createdAtBlockHeight` in `release.required`.
+- **Un-encrypted label definitions** may surprise users; the UI must say so. (Event values, including the labels put on issues, are sealed; releases are sealed once §16 is implemented, and refused on private repositories until then.)
+
+## 16. Sealed releases
+
+Status: specification. Nothing implements it yet: `dg release create` and forge-core's `create_release` refuse a private repository (`require_public("releases")`), and forge-web refuses before signing (`PRIVATE_RELEASE_REFUSED`), until the CLI and the web implement this section against the §16.7 vectors. The section fits the forge-core `release` type as registered for RC1 on bonsia (§13), which mainnet registers unchanged. It needs **no schema change**, and the documents it produces are accepted by that schema (the "§16 vector" cases of `forge-contracts/vectors/rc1/forge-core.json`, judged by `tools/contract-validate --vectors`).
+
+### 16.0 What the registered contract fixes
+
+- `tagName` is required: a string of 1–63 bytes that matches the ref-grammar `pattern`. It keys three indexes, none of them unique: `tag (repoId, tagName, $createdAt)`, `created (repoId, $createdAt)` and `perTag (repoId, tagName)`, which is `summable` on `delta` and `rangeSummable`.
+- `enc` (`$defs.enc`, 29–1536 bytes) and `epoch` (u32), with `dependentRequired {enc: [epoch]}`.
+- `noPlain`: a document either has no `enc` and `vis = "public"`, or carries none of `name`, `notes`, `assets` and `assetManifest`. `yanked` and `imported` are outside the rule.
+- `oneLive`: with `enc` present, `delta = 0`. Otherwise the tag's `delta` sum after the write must be `min(delta + 1, 1)`. The live suite refuses a sealed release with `delta = 1` (`rc1-live.mjs`, "a sealed release that publishes").
+- `vis` is required, and `ownerRefersTo` needs a current `maintainer` document of the repository with the same `vis`. So only a current maintainer writes a release, and a private repository's releases are stamped `private`.
+- `documentsMutable: false` and `canBeDeleted: false`: every revision is a new document, and none is ever removed.
+- `release.required` has no `$createdAtBlockHeight`, so a release carries no network-set height.
+
+That gives four constraints, handled below:
+
+- `tagName` must be a keyed hash that fits 63 bytes of the grammar (§16.1).
+- Every sealed document has `delta = 0`, so the per-tag ledger and its "one live release" guarantee become client-side (§16.3).
+- The whole sealed content must fit 1536 − 29 = **1507 bytes** of plaintext (§16.2), so the asset list, and long notes, live in a sealed artifact (§16.5).
+- The late-content rule cannot be judged. It is not needed either (§16.4).
+
+### 16.1 The plaintext `tagName`
+
+```
+K_tag,e = HKDF-Expand(PRK_e, "dash-forge/v2/tag" ‖ 0x00 ‖ u32(e), 32)      (§2.2 label "tag")
+tagName = base64url(HMAC-SHA256(K_tag,e, tag))                              (RFC 4648 §5, unpadded: 43 characters)
+```
+
+`tag` is the release's tag as UTF-8, and `e` is the epoch the revision is sealed under, the document's `epoch`. The tag must be 1–63 bytes of the contract's `tagName` grammar (`rules::is_legal_tag_name`). The writer checks it before sealing, and the reader checks it again after decrypting, so a sealed tag never escapes the public grammar.
+
+- **It fits the contract.** The result is 43 characters of `[A-Za-z0-9_-]`, which the `tagName` pattern admits at every position: no `.`, `/`, `@` or `{`, and a leading `-` is legal (RC1 vector `tagName '-Ab3_x9QkZ'`).
+- **It has its own subkey, not `K_ref,e`.** `K_tag,e` and `K_ref,e` are independent HKDF outputs, so the release-tag and ref-name hash domains are independent PRFs. A release's `tagName` never equals, and never derives from, any `refNameHash`, `baseRefNameHash` or `sourceRefNameHash`, whatever the tag is called. For example, the tag `refs/heads/main` gives `365b9_MPzBqkrDwjvQNRk03R0LJ96TexlyGFYJkoUbY`, while the branch's `refNameHash` under `K_ref,0` is `e729d18b…` (`private_release_seal__tag_named_like_a_branch`). So an outsider cannot link a release to its `refs/tags/<tag>` update by equal hashes. That link is also why `HMAC(K_ref,e, "refs/tags/" ‖ tag)` was not used. A writer that hashes under `K_ref` produces a document readers refuse (`private_release_open__tag_name_under_ref_key`). `K_tag,e` is only ever an HMAC key.
+- **It is per epoch, like ref names (§4.5).** A removed member cannot use a dictionary to confirm that a tag exists in an epoch created after their removal. The cost is that one tag's revisions carry a different `tagName` in each epoch, so readers group revisions by the decrypted tag (§16.3).
+- **Readers compare strings, never decode.** The 43rd character carries 2 unused bits, so four spellings decode to the same 32 bytes. A reader computes the canonical encoding and compares it with the document's `tagName` as bytes, in constant time. Any other spelling is `Malformed` (`…__tag_name_noncanonical_base64`). The AD binds the string itself, not its decoding (§16.2).
+- Values (inputs of §11): `K_tag,0 = c0fde38636cc9f84810a94cd882035292ca5891c5884563869b17b5231bf91ee`. The tag `v1.0.0` gives `A0TK3ZkbqTL94-CbAhgvnnKHPpCVVjvXTNKOyh6BhlM` under epoch 0 and `RIgIOsyi-3hmGZTqr75wHSm48J_2WLR3WawK5CVj4Qg` under `K_1`, epoch 1.
+
+### 16.2 `enc`: framing, associated data and TLV
+
+`enc` is version `0x01` (§4.1) under `K_doc,e`, with a hedged random nonce (§3.6). The AD is §4.4's with `docType = "release"` and **`bind` = the document's `tagName` string** (its 43 ASCII bytes):
+
+```
+AD = "dash-forge/v2/doc" ‖ 0x00 ‖ 0x01 ‖ repoId(32) ‖ $ownerId(32) ‖ u32(epoch) ‖ "release" ‖ 0x00 ‖ tagName
+```
+
+The AD binds the repository, `$ownerId`, the epoch, the type and the `tagName`, so a revision's `enc` cannot be:
+
+- moved under another tag (`…__enc_moved_to_other_tag` → `BadTag`);
+- moved into another repository or epoch;
+- re-posted as another maintainer's (`…__other_owner` → `BadTag`).
+
+`release` is not transferable, so binding `$ownerId` is safe (§4.4). The same maintainer can re-post one of their own earlier `enc`s under the same `tagName` and epoch, which re-publishes that revision. They could write that revision again anyway.
+
+Maximum plaintext: forge-core's `enc.maxItems` 1536 − 29 = **1507 bytes**. The collab types get 5091.
+
+TLV (§4.3 strictness unchanged), for kind `release`:
+
+| tag | field | type | reader cap | writer |
+|---|---|---|---|---|
+| 2 | `notes` (the `body` tag) | UTF-8 | ≤ 5120 chars and bytes | omitted when empty; a prefix when the notes continue in the manifest (flag `0x10`) |
+| 13 | `importedAuthor` | UTF-8 | 1–120 chars, ≤ 480 B (as §4.3) | the release schema's `imported.author` cap: ≤ 64 chars, ≤ 256 B |
+| 14 | `importedUrl` | UTF-8 | 1–300 B | same |
+| 16 | `tag` | UTF-8, **required** | 1–63 B, the `tagName` grammar | same |
+| 17 | `name` | UTF-8 | 1–120 chars, ≤ 480 B | same |
+| 18 | `targetOid` | bytes | exactly 20 or 32 B | the commit the tag named at publish, when the writer knows it |
+| 19 | flags | u8 | exactly 1 B, non-zero; `0x01` prerelease, `0x02` draft, `0x04` yanked, `0x08` unpublished, `0x10` notes continue in the manifest; any other bit is malformed | omitted when no flag is set |
+| 20 | `importedCreatedAt` | u64 | exactly 8 B, ≤ 2⁵³ − 1 | `imported.createdAt` (ms) |
+| 21 | `assetManifest` | bytes | exactly 32 B | the `packHash` of the sealed kind-4 manifest (§16.5) |
+
+The rules for these records:
+
+- Tags 16–21 are release-only. In every other kind they are malformed, as "not listed for the kind" (§4.3), so no reader of an existing kind changes. Tags 22–63 stay reserved. Tags 2, 13 and 14 keep their meaning and reader caps. Tags 1, 3–12 and 15 are malformed in a release (`…__tlv_title_in_release`).
+- Tag 16 is required, and flag `0x10` requires tag 21.
+- A release is a pre-release if flag `0x01` is set **or** its tag has a pre-release suffix (`is_prerelease`). A sealed release is never less of a pre-release than the public rule makes it.
+- **Budget.** Every record costs 3 bytes, and the plaintext must fit 1507 bytes. If the notes do not fit whole, the writer puts the full notes in the manifest's `notes` (§16.5), keeps in tag 2 a prefix cut on a character boundary (it may be empty and then omitted), and sets `0x10`. If even that does not fit (a long name plus long provenance), sealing fails with `TooLarge` and the numbers, before anything is uploaded. The CLI says "a private release holds 1507 bytes of tag, name, notes preview and provenance". The web composer shows the budget as it does for issues (vectors `…__at_enc_cap`, `…__over_enc_cap`).
+
+**The document.** A writer's release carries exactly `repoId`, `tagName` (§16.1), `vis = "private"`, `delta = 0`, `epoch` and `enc` (`props` in each seal vector). It never carries:
+
+- `name`, `notes`, `assets` or `assetManifest`, which `noPlain` refuses;
+- `yanked` or `imported`. The contract admits both next to `enc`, so this is a client rule: a sealed release carrying either, `yanked: false` included, is `Malformed` and hidden (`…__plaintext_yanked_next_to_enc`, `…__plaintext_imported_next_to_enc`). `imported` requires a plaintext `url`, which would publish the source.
+
+Rules v2 `is_well_formed` gains `ContentKind::Release`, whose plaintext content fields are `name`, `notes`, `assets`, `assetManifest`, `yanked` and `imported`. A release of a private repository without `enc` and `epoch` is malformed, like every other private content type. A release that carries `enc` in a public repository is malformed too: public readers hold no keys, and the contract admits it only with no plaintext content.
+
+### 16.3 Revisions, `delta` and `oneLive`: the ledger moves to the reader
+
+Every sealed release has `delta = 0`. For a private repository that means:
+
+- `perTag` sums to 0 for every tag. The proved release count (forge-web `readReleaseCount`, the "Releases N" of a public repository) is not a count here, and clients neither call it nor show it for a private repository.
+- Consensus no longer keeps one live release per tag. Two maintainers may publish the same tag at the same time, and both revisions land.
+
+Readers fold the revisions they can open (`Readable`):
+
+1. Group by the decrypted tag (tag 16), compared as bytes, across all epochs.
+2. Within a tag, order newest first by `($createdAt, $id)`, the public fold's order (forge-core `newest_per_tag`, forge-web `newestPerTag`). The newest revision *is* the release; the others are its history ("previous"). Two maintainers racing on one tag therefore resolve to the later revision, and both show with their publisher.
+3. The tag is live unless its newest revision has flag `0x08`. Every revision of an unpublished tag is history. A later revision without the flag publishes the tag again.
+4. A revision is a complete statement. The writer carries forward every field it does not change (name, notes, target, provenance, manifest), as `dg release create` already does for public releases. A reader never merges fields across revisions.
+
+Derived values:
+
+- **Release count**: the live tags whose newest revision is not a draft.
+- **Latest release**: the public rule (`latest_release`, `latestRelease`) over the live releases that are not drafts, with pre-release as in §16.2 and yanked from the flag.
+- **Order**: each client's public order: `dg` by version, the web by publish date (`importedCreatedAt`, else `$createdAt`).
+- **Drafts** are shown to every member, marked "draft". Every member holds the key, so a draft is a label, not access control. Drafts count toward neither the release count nor the latest release.
+
+What readers show:
+
+- A member who can open everything sees the list, the count and the latest release as above.
+- A member who cannot open some revisions (`NoEpoch`, `NoKey`, `BadTag`, `Malformed`) sees what they can open, plus §8.1's count ("n release revisions could not be read"). A tag whose newest revisions are unreadable shows its newest readable revision, marked "a newer revision could not be read".
+- A non-member sees no tags, names or count. The repository page is already locked (§9), and its Releases tab says the releases are encrypted.
+
+Lookups: `dg release download <tag>` and every other single-tag lookup query `tag (repoId, tagName)` once per epoch the reader holds, with that epoch's `tagName`, then fold. Rotations are rare. Listing reads `created (repoId, $createdAt)`, as for public repositories today.
+
+### 16.4 Epochs, keys and reading
+
+**Which key seals a revision.** A revision is sealed under the writer's write epoch (§5.3): the current epoch, not burned, with the repair check passing. Writers re-read the anchors before every write. The document's `epoch` names that epoch, and the `tagName` and the AD use the same one. An edit, a yank or an unpublish is a new revision under the **current** epoch. Unlike a PR (§4.5), nothing ties a release to its first epoch, because revisions are grouped by the decrypted tag. Rotation re-seals nothing: revisions written before a removal stay readable to the removed member, as issues do (§5.5).
+
+**How readers find the key.** As for every sealed document: an accepted wrap for `epoch` (§5.4), or the chain walk from a later anchor (§5.3). A member added later reads older revisions through the chain.
+
+**`open`**, in the order of §8.1:
+
+0. Well-formedness, before any key is used: `enc` and `epoch` present, no plaintext content field (§16.2), `vis = "private"`.
+1. Framing: `len(enc) ≥ 29` and `enc[0] = 0x01`, else `Malformed` (`…__enc_version_2`).
+2. The epoch exists, else `Unreadable(NoEpoch)`. The reader holds its key, else `Unreadable(NoKey)`.
+3. (Config only in §8.1; releases carry no commitment.)
+4. AES-GCM under `K_doc,epoch` with the §16.2 AD, else `Unreadable(BadTag)`.
+5. The TLV parses per §16.2, else `Malformed`.
+6. **The `tagName` check**, §4.5's H3 check for releases: recompute `base64url(HMAC(K_tag,epoch, tag))` from tag 16 and compare it with the document's `tagName` as bytes. A mismatch is `Malformed` (`…__tag_name_hash_mismatch`). Without the check, one revision could be indexed under one tag and name another, and a lookup by tag would disagree with the list.
+7. **No late-content rule.** Like a member `event` (§8.1 step 7), a release carries no `$createdAtBlockHeight` to judge, and it does not need the rule. Consensus admits a release only from a current maintainer (`ownerRefersTo`), and releases are immutable and undeletable, so a removed maintainer cannot write one under any key. A holder of a burned key cannot write one either, unless they are a current maintainer, and a current maintainer is trusted with the content anyway. That covers what §8.2's burned clause guards (`…__late_rule_not_applied`). A contract change that relaxed any of the three would need the rule back, and `$createdAtBlockHeight` in `release.required` (§15).
+
+**The `tagName` check also commits to the key.** AES-GCM does not commit to its key, so a maintainer could in principle craft one `enc` that opens under two keys (a split view, §5.4). Such a revision is `Readable` only where `HMAC(K_tag, tag)` matches the one `tagName` on the document, for both keys and both decrypted tags, which HMAC-SHA256 makes infeasible. A sealed release therefore cannot read as two different releases to two members. §5.4's `KeyMismatch` detects the split view itself.
+
+### 16.5 Assets: a sealed kind-4 manifest and sealed files
+
+A sealed release never lists assets in `enc`: at about 255 bytes per entry, 1507 bytes hold a handful at most. Its asset list is always a `packManifest` of **kind 4** (`releaseAssets`, `docs/design/release-asset-manifest.md` §1.2), stored **sealed** like every artifact of a private repository (§3): same header, per-file key and segments; `packHash = SHA-256(sealed bytes)`; `sizeBytes` is the sealed length. Tag 21 holds that `packHash`.
+
+The plaintext is canonical JSON: UTF-8, keys sorted by code point, no insignificant whitespace, non-ASCII characters not escaped. It uses the v1 format of release-asset-manifest.md §1.2 with these rules:
+
+- `tag` is the plaintext tag (tag 16). A reader refuses a manifest whose `tag` differs (`…__manifest_for_another_tag`). The `tag` ties the manifest to one tag, and tag 21, inside a maintainer's `enc`, ties it to one revision.
+- `total` equals the number of `assets`, checked (`…__manifest_total_mismatch`).
+- `notes` (new, optional; ≤ 5120 chars and bytes, the public notes cap): the full notes when they do not fit in tag 2. The writer includes it exactly when it sets flag `0x10`, and then the reader shows it in place of tag 2's prefix.
+- `source` is as in §1.2, for imports.
+- Each asset is `{name, sha256, sizeBytes, uris, sealedSha256, sealedSizeBytes}`:
+  - `sha256` and `sizeBytes` describe the **plaintext** file: what the user downloads and checks against a `SHA256SUMS`, with the same meaning as on a public release.
+  - `sealedSha256` and `sealedSizeBytes` describe the sealed object that `uris` point at. That object is a §3 artifact of its own, with its own hedged `fileId`, sealed under the write epoch. A reader checks the length before allocating (§3.5 step 1) and the hash before decrypting, decrypts, then checks `sha256`.
+  - An entry without `sealedSha256` is an **external link**: an import whose source file could not be fetched and sealed. Its URL is inside the sealed manifest, so it is not published. Readers show it as external and never try to open it as sealed.
+
+A reader:
+
+1. fetches the manifest by `(repoId, packHash)`;
+2. checks `SHA-256(copy)` against tag 21 before any decryption. A mismatch is a failed copy, and the reader tries the next (`…__manifest_hash_mismatch`);
+3. runs the §3.5 checks with the key of the header's epoch, which may be older than the revision's;
+4. parses the JSON and requires `v = 1`, the `tag` and the `total`.
+
+Any failure is `manifestMismatch` or `SealedPackCorrupt`. The revision is then shown without assets ("asset list unavailable") and without the continued notes (tag 2's prefix, marked incomplete).
+
+§8.2's "uploaded under an old key" flag does not apply to a kind-4 artifact named by a readable release. The maintainer's `enc` commits to its exact bytes, so who uploaded it, and under which epoch, does not matter. A later revision may keep naming an older manifest: anyone who can open it could before. A writer that adds or changes assets or notes writes a new manifest under the current epoch.
+
+**Storage.** Asset objects and the manifest follow the repository's storage policy, as today (assets are external only). An object stored under a content name uses `sealedSha256`, **never** the plaintext `sha256`. A plaintext-hash name would tell an outsider which public binaries a private repository ships (§3.4's reasoning for `packHash`). `dg reseed` and mirrors copy the sealed bytes verbatim.
+
+Vector `private_release_seal__manifest_kind4` pins the canonical JSON and its sealed bytes (830 B, `packHash = 4a3f5093cd8d639b3f998ec93e3ebb5628c53b819f12895a4a54c62f6e8746fa`). Its first asset is the 40,000-byte file of the §11 pack vector, sealed exactly as that vector seals it (`sealedSha256 = 7e7e4e4e…`, `sha256 = 8f272ca6…`).
+
+### 16.6 What an outsider learns
+
+Anyone with the chain and the storage learns:
+
+- that a release revision exists, when (`$createdAt`), which maintainer wrote it, and its epoch; so the number of revisions;
+- **within one epoch**, which revisions share a tag (equal `tagName`), and so the number of distinct tags in that epoch and how often each was revised. An edit, a yank and an unpublish look the same. Nothing links revisions across epochs;
+- the `enc` length, which is the plaintext length exactly (sizes are not padded, §7): roughly how long the name, notes preview and provenance are, and that a revision is tag-only (an unpublish of `v1.0.0` is 42 bytes of `enc`);
+- the kind-4 manifest's `packManifest`: uploader, time, sealed size (about the canonical JSON's size, so roughly the number of assets and the length of the continued notes), chunk count and storage URIs. Timing likely links it to its release, even though the link itself is inside `enc`;
+- the sealed asset objects in storage: how many, their sizes (plaintext + 36 + 16 per 16 KiB), their upload times, and download patterns;
+- by timing, the likely target commit: a `refs/tags/*` ref update just before a release names its commit in plaintext `newOid` (§7's commit-equality oracle). Sealing `targetOid` hides nothing the ref update shows; it adds nothing either;
+- nothing from `delta` or `perTag`, which are always 0.
+
+Hidden: the tag, the name, the notes, the flags (draft, pre-release, yanked, unpublished), the target commit, the provenance, the asset names, hashes and URIs, and which manifest a revision names.
+
+A **removed member** keeps every revision, manifest and asset sealed under an epoch they held, forever, as for all content (§6). After the rotation they read nothing new, and cannot test tag names by dictionary in the new epochs.
+
+**Keys and nonces.** A release's `enc` nonce is a hedged 96-bit random value under `K_doc,e`, shared with the epoch's other documents. The §15 bound is unchanged; releases only add to the per-epoch count. Manifests and asset files use per-file keys with counter nonces (§3.3), so no nonce repeats under any key. `K_tag,e` is used only as an HMAC key, and no subkey serves two purposes.
+
+### 16.7 Vectors
+
+These vectors are written by `tools/private-repos-vectors/gen.py`, the independent Python reference. `gen.py` also asserts §16.1's values against this document. forge-core's test-only reference (`crates/forge-core/src/private/release_ref.rs`, run by the conformance test) reproduces every file byte for byte from the existing primitives. The fixed inputs are §11's (`repoId = 0x11×32`, `$ownerId = 0x22×32`, `K_0`, `K_1`, nonce `000102…0b`). The web harness skips these files until the web implements §16. Its implementation PR removes the skip.
+
+- **`private_release_seal__*`**: the input is the key, epoch, owner, nonce and release fields. The output is `tagHash`, `tagName`, the AD, the TLV, `enc`, and the document's plaintext properties (`props`); or the writer's refusal (`malformed`, `tooLarge`). Accepted: `v1_0_0`, `v1_0_0_epoch1` (a different `tagName` under epoch 1), `tag_only`, `prerelease_draft`, `yanked`, `unpublished`, `imported_with_manifest` (every tag, a 32-byte target), `tag_named_like_a_branch`, and `at_enc_cap` (a 1536-byte `enc`). Refused: `over_enc_cap`, `illegal_tag`, `tag_64_bytes`, `empty_tag`, `name_121_chars`, `notes_continue_without_manifest`, `target_oid_21_bytes`, and `imported_author_65_chars` (the writer's release cap). Also `manifest_kind4`, the sealed manifest.
+- **`private_release_open__*`**: the input is the reader's context (§11's shape) and a stored document; the output is `readable` with the fields, `unreadable` with its reason, or `malformed`. Covered:
+  - opens: `v1_0_0`, `v1_0_0_epoch1`, `imported_with_manifest`, and `late_rule_not_applied`;
+  - unreadable: `no_key`, `no_epoch`, `other_owner`, and `enc_moved_to_other_tag`;
+  - framing and hash checks: `enc_version_2`, `tag_name_hash_mismatch`, `tag_name_noncanonical_base64`, and `tag_name_under_ref_key`;
+  - plaintext next to `enc`: `plaintext_yanked_next_to_enc` and `plaintext_imported_next_to_enc`;
+  - TLV strictness: `tlv_without_tag`, `tlv_flags_zero`, `tlv_flags_unknown_bit`, `tlv_flags_two_bytes`, `tlv_notes_continue_without_manifest`, `tlv_target_oid_21_bytes`, `tlv_title_in_release`, `tlv_illegal_tag_grammar`, `tlv_created_at_over_2_53`, `tlv_manifest_31_bytes`, `tlv_extension_skipped` (readable), and `tlv_reserved_tag_22`;
+  - the manifest: `manifest_kind4` (readable), `manifest_for_another_tag`, `manifest_hash_mismatch`, and `manifest_total_mismatch`.
+- **RC1 contract vectors** (`forge-contracts/schema/vectors.py`, item R-02, "§16 vector"): the `v1_0_0`, `v1_0_0_epoch1`, `imported_with_manifest` and `at_enc_cap` documents, with their real `tagName` and `enc` and signed by `0x22×32`, are accepted. The imported one with its manifest hash also in plaintext is refused by `noPlain`, and the cap one with one more `enc` byte is refused by `maxItems`.
+
+### 16.8 What the implementation changes (non-normative)
+
+- **forge-core.**
+  - `private::keys` gains `K_tag,e` and `tag_name`.
+  - `private` gains a `release` codec that promotes `release_ref.rs` to production: the TLV of §16.2, the AD, the open of §16.4, and a hedged-nonce seal with no nonce parameter (§3.6).
+  - `rules::v2` gains `ContentKind::Release`, and `keyring::header_of` handles `release`.
+  - `collab::v2::create_release` seals when the repository is private. It resolves the write epoch, reads the tag's revisions in every held epoch (to carry fields forward), writes the sealed manifest and assets first, then the release with `delta = 0` and no `oneLive` retry.
+  - `releases()` opens and folds per §16.3.
+- **`dg release`.**
+  - `create` drops `require_public`. It seals every `--asset` with `PackCipher::seal` before upload and records `sealedSha256` and `sealedSizeBytes`. It writes the manifest (`packManifest` kind 4) through the push path, and states the 1507-byte budget.
+  - `list` and `download` fold per §16.3. `download` checks `sealedSha256`, decrypts, then checks `sha256`.
+- **forge-web.**
+  - `lib/repo/releases.ts`: `readReleases` opens and folds sealed revisions, and never calls `readReleaseCount` for a private repository.
+  - `lib/repo/writes.ts` `createRelease` seals: `PRIVATE_RELEASE_REFUSED` goes.
+  - `lib/repo/new-release.ts` seals the files and writes the manifest.
+  - The new-release dialog shows the budget and the draft and pre-release switches.
+  - `lib/private/conformance.test.ts` drops its skip of `private_release_*`.

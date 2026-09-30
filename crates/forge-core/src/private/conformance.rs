@@ -14,7 +14,7 @@ use super::epoch::{resolve_epochs, ConfigRow, MemberRow, WrapRow};
 use super::keys::{sha256, EpochKey, EpochKeys};
 use super::pack::{self, PackHeader};
 use super::tlv::Fields;
-use super::{wrap, PrivateError};
+use super::{release_ref, wrap, PrivateError};
 use crate::platform::FieldValue;
 
 #[derive(Clone, Deserialize)]
@@ -351,6 +351,121 @@ struct HedgeIn {
     fields: Option<Fields>,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReleaseSealIn {
+    repo_id: String,
+    key: String,
+    epoch: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owner_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    nonce: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fields: Option<release_ref::ReleaseFields>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    file_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    manifest: Option<Value>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ManifestIn {
+    sealed: String,
+    size_bytes: u64,
+    asset_manifest: String,
+    tag: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReleaseOpenIn {
+    repo_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    context: Option<OpenCtxIn>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    doc: Option<release_ref::StoredRelease>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    keys: Option<BTreeMap<String, String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    manifest: Option<ManifestIn>,
+}
+
+fn open_context(repo_id: &[u8; 32], c: &OpenCtxIn) -> OpenContext {
+    OpenContext {
+        keys: keyring(repo_id, &c.keys),
+        anchors: c
+            .anchors
+            .iter()
+            .map(|(e, a)| (e.parse().unwrap(), a.clone()))
+            .collect(),
+        members: c.members.iter().map(|m| h32(m)).collect(),
+        burned: c.burned.iter().copied().collect(),
+    }
+}
+
+/// `private_release_seal` / `private_release_open` (§16), through the test-only reference.
+fn run_release(v: &Vector) -> Value {
+    if v.case == "private_release_seal" {
+        let i: ReleaseSealIn = input(v);
+        let keys = EpochKeys::derive(&h32(&i.repo_id), i.epoch, &key(&i.key));
+        if let Some(m) = &i.manifest {
+            let fid: [u8; 16] = hex::decode(i.file_id.as_deref().unwrap())
+                .unwrap()
+                .try_into()
+                .unwrap();
+            let (canonical, sealed) = release_ref::seal_manifest(&keys, m, fid).unwrap();
+            return json!({
+                "canonical": canonical,
+                "header": hex::encode(&sealed[..36]),
+                "sealedLen": sealed.len(),
+                "packHash": hex::encode(sha256(&sealed)),
+                "sealed": hex::encode(&sealed),
+            });
+        }
+        let f = i.fields.as_ref().unwrap();
+        let owner = h32(i.owner_id.as_deref().unwrap());
+        return match release_ref::seal_with_nonce(
+            &keys,
+            &owner,
+            f,
+            nonce12(i.nonce.as_deref().unwrap()),
+        ) {
+            Ok(s) => json!({
+                "tagHash": hex::encode(release_ref::tag_hash(&keys, &f.tag)),
+                "tagName": s.tag_name,
+                "ad": hex::encode(s.ad),
+                "tlv": hex::encode(s.tlv),
+                "enc": hex::encode(&s.enc),
+                "props": {
+                    "tagName": s.tag_name, "vis": "private", "delta": 0, "epoch": i.epoch,
+                    "enc": hex::encode(&s.enc),
+                },
+            }),
+            Err(e) => error_json(&e),
+        };
+    }
+    let i: ReleaseOpenIn = input(v);
+    let repo_id = h32(&i.repo_id);
+    if let Some(m) = &i.manifest {
+        let ring = keyring(&repo_id, i.keys.as_ref().unwrap());
+        return match release_ref::open_manifest(
+            &hex::decode(&m.sealed).unwrap(),
+            m.size_bytes,
+            &h32(&m.asset_manifest),
+            &m.tag,
+            |e| ring.get(&e),
+        ) {
+            Ok(manifest) => json!({ "status": "readable", "manifest": manifest }),
+            Err(release_ref::ManifestError::Mismatch) => json!({ "error": "manifestMismatch" }),
+            Err(release_ref::ManifestError::Pack(e)) => error_json(&e),
+        };
+    }
+    let ctx = open_context(&repo_id, i.context.as_ref().unwrap());
+    release_ref::open_json(&ctx, i.doc.as_ref().unwrap())
+}
+
 // --- cases ------------------------------------------------------------------------------------
 
 fn opened_json(o: &Opened) -> Value {
@@ -460,17 +575,7 @@ fn run(v: &Vector) -> Value {
             let i: DocOpenIn = input(v);
             let repo_id = h32(&i.repo_id);
             let (header, enc) = i.doc.split();
-            let ctx = OpenContext {
-                keys: keyring(&repo_id, &i.context.keys),
-                anchors: i
-                    .context
-                    .anchors
-                    .iter()
-                    .map(|(e, a)| (e.parse().unwrap(), a.clone()))
-                    .collect(),
-                members: i.context.members.iter().map(|m| h32(m)).collect(),
-                burned: i.context.burned.iter().copied().collect(),
-            };
+            let ctx = open_context(&repo_id, &i.context);
             opened_json(&doc::open_content(&ctx, &header, &enc))
         }
         "private_pack_seal" => {
@@ -711,6 +816,7 @@ fn run(v: &Vector) -> Value {
                 json!({ "fileId": hex::encode(keys.hedged_file_id(&rnd, &sha256(&pt))) })
             }
         }
+        "private_release_seal" | "private_release_open" => run_release(v),
         other => panic!("vector `{}`: unknown private case `{other}`", v.name),
     }
 }
@@ -834,6 +940,6 @@ fn private_conformance_vectors() {
         assert_eq!(got, v.expected, "vector `{}` ({})", v.name, v.case);
         ran += 1;
     }
-    assert!(ran >= 221, "ran {ran} private vectors, expected 221+");
+    assert!(ran >= 269, "ran {ran} private vectors, expected 269+");
     println!("private conformance: {ran} vectors green");
 }

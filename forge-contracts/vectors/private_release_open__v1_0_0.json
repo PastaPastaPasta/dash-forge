@@ -1,0 +1,38 @@
+{
+  "name": "v1_0_0",
+  "description": "the v1.0.0 release opens under K_0; the recomputed tagName matches the document's.",
+  "case": "private_release_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "tagName": "A0TK3ZkbqTL94-CbAhgvnnKHPpCVVjvXTNKOyh6BhlM",
+      "vis": "private",
+      "delta": 0,
+      "enc": "01000102030405060708090a0b1c703ab4aa409f0d7f0f60d2a247982ecb7813a304816aa94996842aa8b3f5df2171308684245164672e34ca3044f13df6aed239822c11b72160aaf5710b729c53b3aa03727feefec12d445eb30914600bccdf7156d09595"
+    }
+  },
+  "expected": {
+    "status": "readable",
+    "fields": {
+      "tag": "v1.0.0",
+      "name": "Version 1.0.0",
+      "notes": "First stable release.",
+      "targetOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  }
+}

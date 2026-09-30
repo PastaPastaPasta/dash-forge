@@ -1,0 +1,35 @@
+{
+  "name": "tlv_extension_skipped",
+  "description": "an extension tag (200) is skipped: Readable.",
+  "case": "private_release_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "tagName": "epkPlFe5782luTKCh-jdiisv1geXoFXiXYPJdYBUfv0",
+      "vis": "private",
+      "delta": 0,
+      "enc": "01000102030405060708090a0b0e702d84f2faec7f390960c6b24e71657e34cc905116e4c312697d9ed40e"
+    }
+  },
+  "expected": {
+    "status": "readable",
+    "fields": {
+      "tag": "v1"
+    }
+  }
+}

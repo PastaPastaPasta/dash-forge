@@ -1,0 +1,19 @@
+{
+  "name": "illegal_tag",
+  "description": "a tag the public grammar refuses (v1..2) is refused sealed too.",
+  "case": "private_release_seal",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+    "nonce": "000102030405060708090a0b",
+    "fields": {
+      "tag": "v1..2"
+    }
+  },
+  "expected": {
+    "error": "malformed"
+  }
+}
