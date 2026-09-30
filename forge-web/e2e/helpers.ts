@@ -262,12 +262,13 @@ export function collectPageErrors(page: Page): { errors: string[]; consoleErrors
 }
 
 /**
- * Locator for the app's read-error state ("That read did not land", "Could not reach Platform").
- * The app currently renders this whenever a proof-verified SDK read rejects.
+ * Locator for the app's read-error state ("That read did not land", "Could not reach Platform",
+ * "Verification failed: Platform's answer did not match its proof"). The app renders one of these
+ * whenever a proof-verified SDK read rejects.
  */
 export function readErrorBanner(page: Page) {
   return page
-    .getByText(/did not land|could not reach platform|that read|read failed/i)
+    .getByText(/did not land|could not reach platform|that read|read failed|verification failed/i)
     .first()
 }
 

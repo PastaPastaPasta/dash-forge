@@ -12,7 +12,7 @@ import { IPFS_GATEWAYS, NETWORKS, QUORUM_KEY_ENDPOINT } from '../constants'
 import type { RefState } from '../rules'
 import { NO_CONTENT_CHECKS, type ContentChecks } from './content-checks'
 import type { QuorumCrossCheck } from './quorum-check'
-import { connectionTrust, deriveConnectionTrust, deriveTrust, TRUST_LABEL, worstOf, type TrustInputs } from './trust'
+import { connectionTrust, deriveConnectionTrust, deriveTrust, failedRows, TRUST_LABEL, worstOf, type TrustInputs } from './trust'
 
 const NOW = Date.now()
 const RESOLVED: RefState = { state: 'resolved', oid: '8f3e2a1'.padEnd(40, '0'), author: 'alice'.padEnd(44, 'x'), createdAt: NOW - 2 * 3600_000 }
@@ -284,5 +284,66 @@ describe('the offline summary names the overall state', () => {
     expect(r.summary).toBe(`${TRUST_LABEL[r.overall]} · Not re-checked · Platform unreachable`)
     const clean = deriveTrust(inputs({ connection: 'offline', quorum: AGREED }))
     expect(clean.summary).toBe('Partly verified · Not re-checked · Platform unreachable')
+  })
+})
+
+describe('a quorum-key mismatch leaves nothing verified that relied on it (QW-009)', () => {
+  const MISMATCH: QuorumCrossCheck = { state: 'mismatch', primary: 'q', secondary: 'd', quorums: ['5e5397c17bb1'.padEnd(64, '0')] }
+
+  it("the branch tip reads Couldn't verify, not Verified, under a Failed chain row", () => {
+    const r = deriveTrust(inputs({ quorum: MISMATCH }))
+    expect(r.chain.state).toBe('failed')
+    expect(r.tip.state).toBe('unverified')
+    expect(r.tip.note).toMatch(/quorum keys that a second source disputes/)
+    // The facts stay on the card; only the claim about them changes.
+    expect(r.tip.heads).toHaveLength(1)
+  })
+
+  it('a diverged tip is not Partly verified on disputed keys either, nor while offline', () => {
+    expect(deriveTrust(inputs({ quorum: MISMATCH, tip: DIVERGED })).tip.state).toBe('unverified')
+    expect(deriveTrust(inputs({ quorum: MISMATCH, connection: 'offline' })).tip.state).toBe('unverified')
+  })
+
+  it('file hashes still stand: an object matched its git id whatever the keys', () => {
+    const r = deriveTrust(inputs({ quorum: MISMATCH, checks: checks({ objectsVerified: 3 }) }))
+    expect(r.content.state).toBe('verified')
+    expect(r.overall).toBe('failed')
+  })
+
+  it('a commit pinned by id relies on no ref, so its row is unchanged', () => {
+    const r = deriveTrust(inputs({ quorum: MISMATCH, tip: { pinned: 'ab'.repeat(20) } }))
+    expect(r.tip.state).toBe('partial')
+  })
+
+  it('agreed keys leave the tip Verified', () => {
+    expect(deriveTrust(inputs()).tip.state).toBe('verified')
+  })
+})
+
+describe('failedRows: what the failure banner lists (QW-004)', () => {
+  it('lists each Failed row in card order, with its title and sentence', () => {
+    const r = deriveTrust(
+      inputs({
+        quorum: { state: 'mismatch', primary: 'q', secondary: 'd', quorums: ['00ab'] },
+        checks: checks({ objectsFailed: 1, objectsVerified: 2 }),
+      }),
+    )
+    const rows = failedRows(r)
+    expect(rows.map((f) => f.row)).toEqual(['chain', 'content'])
+    expect(rows[0]).toMatchObject({ title: 'Chain data', detail: r.chain.detail, note: r.chain.note })
+    expect(rows[1]).toMatchObject({ title: 'File contents', detail: r.content.detail })
+    expect(rows[1]).not.toHaveProperty('note')
+  })
+
+  it('limits to the rows a surface owns', () => {
+    const r = deriveTrust(inputs({ quorum: { state: 'mismatch', primary: 'q', secondary: 'd', quorums: ['00ab'] } }))
+    expect(failedRows(r).map((f) => f.row)).toEqual(['chain'])
+    expect(failedRows(r, ['tip', 'content', 'source'])).toEqual([])
+  })
+
+  it('is empty when nothing failed: a partial or unverified row is not a failure banner', () => {
+    expect(failedRows(deriveTrust(inputs()))).toEqual([])
+    expect(failedRows(deriveTrust(inputs({ connection: 'untrusted' })))).toEqual([])
+    expect(failedRows(deriveTrust(inputs({ quorum: { state: 'single', primary: 'q', reason: 'no-second-source' } })))).toEqual([])
   })
 })

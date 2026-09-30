@@ -23,7 +23,9 @@ import { PrivateBanner } from '@/components/repo/private-banner'
 import { InviteBanner } from '@/components/repo/invite-banner'
 import { PrivateRepoState } from '@/components/repo/private-repo-state'
 import { RepoNotFound } from '@/components/repo/repo-not-found'
-import { selectRef, type RepoHome } from '@/lib/view'
+import { failedRows, selectRef, type RepoHome, type SelectedRef } from '@/lib/view'
+import { useRepoTrust } from '@/hooks/use-repo-trust'
+import { TrustFailureBanner } from '@/components/ui/trust-alert'
 import { repoHref, useExpiredLink, type RepoAddress } from '@/hooks/use-query-param'
 
 export function RepoScaffold({
@@ -164,6 +166,7 @@ export function RepoScaffold({
   return (
     <>
       {offline}
+      <RepoTrustBanner home={home} selected={selected} />
       <RepoHeader home={home} addr={addr} />
       <InviteBanner repo={home.repo} />
       <PrivateBanner home={home} />
@@ -177,4 +180,23 @@ export function RepoScaffold({
       )}
     </>
   )
+}
+
+/**
+ * The Verification card's rows a repo page leads with. Not chain data: the app shell heads every
+ * page with it. Not "where the bytes came from": it is Failed only when the content check failed
+ * (listed already) or when no storage answered, which is an outage the page's own
+ * "Code unavailable" state reports, not a check that found the data wrong.
+ */
+const REPO_ROWS = ['tip', 'content'] as const
+
+/**
+ * Any Failed row of the Verification card, at the top of a repo page (QW-004): the card sits in
+ * the rail, which a phone lays out under the content and some pages do not show at all. A leaf,
+ * so a content check re-renders only this and the rail.
+ */
+function RepoTrustBanner({ home, selected }: { home: RepoHome; selected: SelectedRef }): JSX.Element | null {
+  const failures = failedRows(useRepoTrust(home, selected), REPO_ROWS)
+  if (failures.length === 0) return null
+  return <TrustFailureBanner lead="Nothing that failed its check is shown on this page." failures={failures} />
 }

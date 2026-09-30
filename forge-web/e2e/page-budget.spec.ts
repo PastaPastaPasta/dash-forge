@@ -34,7 +34,7 @@ const WARM_BUDGET = 8
 const DEMO_COLD_HOME = 12
 /**
  * The read fixture's issues list, cold (`issues/client.tsx` passes `rail={false}`: no About card,
- * so none of the home's rail sums). Measured 8, request by request:
+ * so none of the home's rail sums). 9 reads: measured 8, plus the key cross-check the app shell added. Request by request:
  *   - the contract fetch, the owner's DPNS name, and the repo chrome composite (3);
  *   - the transition counts by kind (1); the issue and PR totals are the chrome composite's own,
  *     seeded for the next count read (`seedTargetCounts`), so they cost nothing here;
@@ -43,14 +43,17 @@ const DEMO_COLD_HOME = 12
  *     would add a continuation, and nothing writes to the read fixture;
  *   - the mirror-source probe, one `author`-index read per trusted author (the fixture's owner
  *     and its one maintainer, 2);
- *   - the page rows' state sums (1).
+ *   - the page rows' state sums (1);
+ *   - the quorum-key cross-check's second source, DAPI's `getCurrentQuorumsInfo` (1). The app
+ *     shell runs it on every connected page, rail or not, so a key mismatch heads every page
+ *     (QW-004); it runs once per session, so a warm page never repeats it.
  * The header's open-count tabs, the list's total and the index each used to read the three
  * counts themselves (12-13 here); they now share one read (`sharedRepoCounts`). A return of that
  * duplication fails pb-1 by mechanism, not by count: the totals are then read with count requests
  * of their own, which pb-1 allows none of. The counts do not depend on how much the rest of the
  * devnet grows.
  */
-const DEMO_COLD_ISSUES = 8 + DAPI_RESEND_SLACK
+const DEMO_COLD_ISSUES = 9 + DAPI_RESEND_SLACK
 /**
  * The commit column's walk on a showcase repo: one chunk read per 256 KiB of pack history it
  * crosses (preact 12, dashpay/dash 20). Owned by the last-change index work; tracked, not S-1.

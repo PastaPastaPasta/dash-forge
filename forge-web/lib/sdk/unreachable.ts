@@ -18,6 +18,35 @@ const QUORUM_MISS = /quorum not found/i
 const UNREACHABLE =
   /failed to fetch|fetch failed|networkerror|network error|load failed|timed out|timeout|deadline exceeded|\bunavailable\b|resourceexhausted|resource exhausted|transport error|connection (?:refused|reset)|HTTP 5\d\d|could not reach platform|can't reach platform|internet disconnected/i
 
+/**
+ * The connect could not fetch the quorum public keys: wasm-sdk's trusted context reports
+ * "Failed to prefetch quorums: HTTP request error: error sending request" when
+ * `quorums.<net>.networks.dash.org` (or the deployment's quorum URL) does not answer. The
+ * connect never reached DAPI, so the failure is the key service's, not Platform's (QW-056).
+ */
+const QUORUM_SERVICE = /failed to prefetch quorums|fetching (?:current|previous) quorums/i
+/**
+ * An answer that failed its proof check: a proof whose GroveDB hashes do not chain up to the
+ * signed root ("grovedb: invalid proof: V1 mismatch in lower layer hash, expected …, got …"),
+ * or one the verifier rejected outright ("invalid proof"). The node answered; the data was
+ * wrong (QW-057). Not a bare mention of GroveDB (a Drive storage error is no proof failure),
+ * nor "Invalid proof verification parameters" (this app asking wrongly), nor a proof signed by a
+ * quorum the app has no key for yet ({@link QUORUM_MISS}: the key service lagging, retried).
+ */
+const PROOF_FAILED = /\binvalid proof\b|mismatch in lower layer hash/i
+const PROOF_MISUSE = /invalid proof verification parameters/i
+
+/** The connect failed because the quorum key service did not answer (see {@link QUORUM_SERVICE}). */
+export function isQuorumServiceError(e: unknown): boolean {
+  return QUORUM_SERVICE.test(errorMessage(e, ''))
+}
+
+/** A read's answer failed its proof check (see {@link PROOF_FAILED}). */
+export function isProofFailure(e: unknown): boolean {
+  const message = errorMessage(e, '')
+  return PROOF_FAILED.test(message) && !PROOF_MISUSE.test(message) && !QUORUM_MISS.test(message)
+}
+
 /** A read failed because its connection went stale, not because of what it asked. */
 export function isStaleConnectionError(e: unknown): boolean {
   return STALE.test(errorMessage(e, ''))

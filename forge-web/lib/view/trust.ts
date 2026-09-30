@@ -37,6 +37,17 @@ export const TRUST_LABEL: Readonly<Record<TrustState, string>> = {
   failed: 'Failed',
 }
 
+/** The card's four rows, in order. */
+export type TrustRow = 'chain' | 'tip' | 'content' | 'source'
+
+/** Each row's title on the card and in the failure banner (`ux-dx-spec.md` §6.2). */
+export const TRUST_ROW_TITLE: Readonly<Record<TrustRow, string>> = {
+  chain: 'Chain data',
+  tip: 'Branch tip',
+  content: 'File contents',
+  source: 'Where the bytes came from',
+}
+
 /** One row of the card: its state plus the sentence that justifies it. */
 export interface TrustLink {
   readonly state: TrustState
@@ -198,6 +209,17 @@ function newest(heads: readonly RefHead[]): RefHead | undefined {
 
 function deriveTip(input: TrustInputs): TipLink {
   const tip = deriveTipNow(input)
+  // The tip's proof was checked against quorum keys a second source disputes (chain data
+  // Failed): that proof shows nothing, so the tip is not verified, even in part (QW-009). A
+  // commit pinned by id relies on no ref, so its row stands.
+  const pinned = input.tip !== 'missing' && 'pinned' in input.tip
+  if (input.quorum?.state === 'mismatch' && !pinned && (tip.state === 'verified' || tip.state === 'partial')) {
+    return {
+      ...tip,
+      state: 'unverified',
+      note: `Its proof was checked against the quorum keys that a second source disputes (see Chain data), so it proves nothing. Folded by ${RULES} from that update log.`,
+    }
+  }
   // Offline: the tip was proven when it was read, but a newer push may exist.
   return input.connection === 'offline' && tip.state === 'verified' ? { ...tip, state: 'partial' } : tip
 }
@@ -393,6 +415,26 @@ export function deriveTrust(input: TrustInputs): TrustReport {
         ? `${TRUST_LABEL[overall]} · Not re-checked · Platform unreachable`
         : summaryOf(overall, chain, input.checks),
   }
+}
+
+/** A row whose check ran and found the data wrong: what the failure banner lists. */
+export interface TrustFailure {
+  readonly row: TrustRow
+  readonly title: string
+  readonly detail: string
+  readonly note?: string
+}
+
+/**
+ * The card's Failed rows, in card order, for the banner a page leads with (QW-004): a failure
+ * must not sit only in the rail. `rows` limits it to the rows a surface owns. The app shell
+ * already heads every page with a chain-data failure, so a repo page passes the other rows.
+ */
+export function failedRows(report: TrustReport, rows: readonly TrustRow[] = ['chain', 'tip', 'content', 'source']): TrustFailure[] {
+  return rows
+    .map((row) => ({ row, link: report[row] }))
+    .filter(({ link }) => link.state === 'failed')
+    .map(({ row, link }) => ({ row, title: TRUST_ROW_TITLE[row], detail: link.detail, ...(link.note ? { note: link.note } : {}) }))
 }
 
 /** The chain row alone, for surfaces (the landing page) that attest no repo. */

@@ -14,7 +14,7 @@
 import { useEffect, useId, useState } from 'react'
 import { ChevronRight, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { shortOid, timeAgo, type TrustLink, type TrustReport } from '@/lib/view'
+import { shortOid, timeAgo, TRUST_ROW_TITLE, type TrustLink, type TrustReport } from '@/lib/view'
 import { Author } from '@/components/author'
 import { TRUST_META } from './verification-chip'
 
@@ -133,12 +133,12 @@ export function TrustPanel({ report }: { report: TrustReport }): JSX.Element {
       {open ? (
         <div id={bodyId} className="animate-fade-in border-t border-anvil-200 px-3 py-3 dark:border-anvil-750">
           <ol className="mb-3">
-            <Row title="Chain data" link={report.chain} />
-            <Row title="Branch tip" link={report.tip}>
+            <Row title={TRUST_ROW_TITLE.chain} link={report.chain} />
+            <Row title={TRUST_ROW_TITLE.tip} link={report.tip}>
               <TipSentence report={report} />
             </Row>
-            <Row title="File contents" link={report.content} />
-            <Row title="Where the bytes came from" link={report.source} />
+            <Row title={TRUST_ROW_TITLE.content} link={report.content} />
+            <Row title={TRUST_ROW_TITLE.source} link={report.source} />
           </ol>
           <p className="rounded border border-anvil-200 bg-white px-2.5 py-2 text-[11px] leading-snug text-anvil-500 dark:border-anvil-750 dark:bg-anvil-900 dark:text-anvil-400">
             <HostingNote />

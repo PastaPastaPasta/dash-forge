@@ -58,6 +58,26 @@ export function useContractsMissing(): string | null {
   return useSyncExternalStore(subscribe, getContractsMissing, () => null)
 }
 
+/**
+ * The connection's trust state, following the service without starting a connect: for app-wide
+ * chrome (the trust-anchor banner) on pages that may never read Platform.
+ */
+export function useConnectionTrust(): { readonly network: Network; readonly connection: ConnectionTrust } {
+  const status = useSyncExternalStore(subscribe, getStatus, () => SERVER_STATUS)
+  const generation = useSyncExternalStore(subscribe, getGeneration, () => 0)
+  return { network: DEFAULT_NETWORK, connection: connectionState(status, generation).connection }
+}
+
+/**
+ * Whether a connection exists, and its trust state. `ready` stays true while Platform is
+ * unreachable after a connect, so views keep what they already read (under the unreachable
+ * banner) instead of resetting.
+ */
+function connectionState(status: SdkStatus, generation: number): { readonly ready: boolean; readonly connection: ConnectionTrust } {
+  const ready = generation > 0 && evoSdkService.isReady
+  return { ready, connection: connectionTrust(ready, ready && evoSdkService.isTrusted, status.phase === 'error') }
+}
+
 /** Connect the SDK (idempotent). Pass extra contract ids (e.g. a repo contract) to preload. */
 export function useSdk(extraContractIds: readonly string[] = []): SdkState {
   const network = DEFAULT_NETWORK
@@ -77,14 +97,12 @@ export function useSdk(extraContractIds: readonly string[] = []): SdkState {
   }, [key, network])
 
   const retry = useCallback(() => evoSdkService.retryNow(), [])
-  // A connection exists. It stays true while Platform is unreachable after a connect, so views
-  // keep what they already read (under the unreachable banner) instead of resetting.
-  const ready = generation > 0 && evoSdkService.isReady
+  const { ready, connection } = connectionState(status, generation)
   return {
     sdk: ready ? evoSdkService.getSdk() : null,
     ready,
     trusted: ready && evoSdkService.isTrusted,
-    connection: connectionTrust(ready, ready && evoSdkService.isTrusted, status.phase === 'error'),
+    connection,
     error: status.phase === 'error' ? status.message : null,
     network,
     status,

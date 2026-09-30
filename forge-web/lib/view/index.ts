@@ -104,13 +104,17 @@ export {
   connectionTrust,
   deriveConnectionTrust,
   deriveTrust,
+  failedRows,
   TRUST_LABEL,
+  TRUST_ROW_TITLE,
   worstOf,
   type ConnectionTrust,
   type TipLink,
+  type TrustFailure,
   type TrustInputs,
   type TrustLink,
   type TrustReport,
+  type TrustRow,
   type TrustState,
 } from './trust'
 export { QUORUM_CHECK_MAX_AGE_MS, crossCheckQuorumKeysCached, lastQuorumCheck, quorumCheckDueInMs, type QuorumCrossCheck } from './quorum-check'
