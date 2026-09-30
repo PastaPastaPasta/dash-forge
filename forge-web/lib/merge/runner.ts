@@ -2,7 +2,7 @@
  * The browser merge as a resumable chain of steps (`ux-dx-spec.md` §5.7):
  *
  *   fetch base + head → merge → build pack → upload → packManifest → browse index →
- *   ref update → merge event
+ *   ref update → merge event → (a maintainer's bypass of the branch rules) the bypass comment
  *
  * Each step's result is kept in a {@link MergeRun} the caller holds, so a retry resumes at the
  * step that failed and pays for nothing twice, and a failure after the upload names exactly
@@ -27,7 +27,7 @@ import type { MergeResult } from './protocol'
 import { mergeRefProblem } from '../view/pull-actions'
 import { formatBytes, plural } from '../view/format'
 
-export type MergeStepId = 'fetch' | 'merge' | 'pack' | 'upload' | 'manifest' | 'index' | 'ref' | 'event'
+export type MergeStepId = 'fetch' | 'merge' | 'pack' | 'upload' | 'manifest' | 'index' | 'ref' | 'event' | 'bypass'
 
 export const MERGE_STEPS: readonly { readonly id: MergeStepId; readonly label: string }[] = [
   { id: 'fetch', label: 'Fetch base and head' },
@@ -38,7 +38,13 @@ export const MERGE_STEPS: readonly { readonly id: MergeStepId; readonly label: s
   { id: 'index', label: 'Publish the browse index' },
   { id: 'ref', label: 'Move the base branch (ref update)' },
   { id: 'event', label: 'Record the merge (merge transition)' },
+  { id: 'bypass', label: 'Record the rules bypass (comment)' },
 ]
+
+/** The steps a merge shows: the bypass record only when the merge bypasses the branch rules. */
+export function mergeSteps(bypassing: boolean): readonly { readonly id: MergeStepId; readonly label: string }[] {
+  return bypassing ? MERGE_STEPS : MERGE_STEPS.filter((s) => s.id !== 'bypass')
+}
 
 /** Where an uploaded pack was stored, as its `packManifest` records it. */
 export interface StoredPack {
@@ -69,6 +75,7 @@ export interface MergeRun {
   readonly manifestId?: string
   readonly refDocumentId?: string
   readonly eventId?: string
+  readonly bypassCommentId?: string
 }
 
 /** A fresh run for `input`. */
@@ -108,6 +115,12 @@ export interface MergeRunDeps {
   readonly readBaseTip: () => Promise<string>
   /** The intent prefix for this merge's writes (one per PR head), so retries re-use them. */
   readonly intent: string
+  /**
+   * A maintainer's bypass of the branch rules: after the merge event, writes the comment that
+   * records it ({@link bypassNote}, given the new tip) and resolves with the comment's id.
+   * Absent: the rules are met, nothing to record.
+   */
+  readonly recordBypass?: (newTip: string, intent: string) => Promise<string>
 }
 
 export type StepEvent = { readonly step: MergeStepId; readonly state: 'running' | 'done' | 'skipped'; readonly detail?: string }
@@ -130,6 +143,7 @@ const DONE_PHRASES: Readonly<Partial<Record<MergeStepId, string>>> = {
   upload: 'Pack stored',
   manifest: 'manifest written',
   ref: 'base branch moved',
+  event: 'merge recorded',
 }
 
 const FAILED_PHRASES: Readonly<Record<MergeStepId, string>> = {
@@ -141,6 +155,7 @@ const FAILED_PHRASES: Readonly<Record<MergeStepId, string>> = {
   index: 'the browse index',
   ref: 'the ref update',
   event: 'the merge event',
+  bypass: 'recording the rules bypass',
 }
 
 const RETRY_LABEL: Readonly<Record<MergeStepId, string>> = {
@@ -152,6 +167,7 @@ const RETRY_LABEL: Readonly<Record<MergeStepId, string>> = {
   index: 'Retry',
   ref: 'Retry ref update',
   event: 'Retry merge event',
+  bypass: 'Retry the bypass record',
 }
 
 /** The retry button's label after `step` failed. */
@@ -164,7 +180,7 @@ export function retryLabel(step: MergeStepId): string {
  * update failed: <reason>. Retry ref update." Nothing on chain yet says so.
  */
 export function failureMessage(run: MergeRun, failed: MergeStepId, reason: string): string {
-  const existing = (['upload', 'manifest', 'ref'] as const).filter((s) => run.done.includes(s)).map((s) => DONE_PHRASES[s] as string)
+  const existing = (['upload', 'manifest', 'ref', 'event'] as const).filter((s) => run.done.includes(s)).map((s) => DONE_PHRASES[s] as string)
   const what = FAILED_PHRASES[failed]
   const head = existing.length === 0 ? `Nothing was written; ${what} failed` : `${sentence(existing)}; ${what} failed`
   return `${head}: ${reason}. ${RETRY_LABEL[failed]}.`
@@ -327,6 +343,14 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
       }),
     )
     mark('event', { eventId: w.documentId })
+  }
+
+  // The merge stands once recorded; a bypass of the branch rules is then recorded on the PR,
+  // where every reader sees it. A failure here is retryable and names what exists.
+  const recordBypass = deps.recordBypass
+  if (recordBypass !== undefined && !run.done.includes('bypass')) {
+    const id = await attempt('bypass', () => recordBypass(result.newTip, `${deps.intent}:bypass`))
+    mark('bypass', { bypassCommentId: id })
   }
   return run
 }

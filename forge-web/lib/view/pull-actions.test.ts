@@ -12,7 +12,22 @@ import type { PullView } from '../repo'
 import { historicalTipsPredicate } from '../repo'
 import type { Holdings } from '../rules'
 import { prStateV2 } from '../rules/v2'
-import { deleteBranchOffer, deleteBranchProblem, mergeBaseTip, mergeBoxShown, mergeBoxSlot, mergeButton, mergeRefProblem, policyOf, pullActions, verdictSummary, type PullActionInputs } from './pull-actions'
+import {
+  bypassNote,
+  deleteBranchOffer,
+  deleteBranchProblem,
+  mergeBaseTip,
+  mergeBoxShown,
+  mergeBoxSlot,
+  mergeButton,
+  mergeGate,
+  mergeRefProblem,
+  policyOf,
+  pullActions,
+  unmetRules,
+  verdictSummary,
+  type PullActionInputs,
+} from './pull-actions'
 
 const AUTHOR = 'author'
 const WRITER = 'writer'
@@ -38,48 +53,69 @@ function pull(over: Omit<Partial<Pull>, 'state'> & { state?: Partial<PullView['s
   }
 }
 
-describe('pullActions — who sees "Mark as merged"', () => {
+describe('pullActions — who may merge', () => {
   it('offers it to writers and maintainers', () => {
-    expect(pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE }).canMarkMerged).toBe(true)
-    expect(pullActions({ pull: pull(), viewer: MAINTAINER, holdings: MAINTAIN }).canMarkMerged).toBe(true)
+    expect(pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE }).canMerge).toBe(true)
+    expect(pullActions({ pull: pull(), viewer: MAINTAINER, holdings: MAINTAIN }).canMerge).toBe(true)
   })
 
   it('withholds it from a signed-in non-member, with the reason', () => {
     const a = pullActions({ pull: pull(), viewer: STRANGER, holdings: NONE })
-    expect(a.canMarkMerged).toBe(false)
+    expect(a.canMerge).toBe(false)
     expect(a.mergeHint).toMatch(/maintainers and writers/)
   })
 
   it('withholds it from the PR author who is not a member', () => {
     const a = pullActions({ pull: pull(), viewer: AUTHOR, holdings: NONE })
-    expect(a.canMarkMerged).toBe(false)
+    expect(a.canMerge).toBe(false)
     // …but the author may still close/reopen their own PR (an authorEvent).
     expect(a.canCloseReopen).toBe(true)
   })
 
   it('withholds it when logged out, with no hint', () => {
     const a = pullActions({ pull: pull(), viewer: null, holdings: null })
-    expect(a.canMarkMerged).toBe(false)
+    expect(a.canMerge).toBe(false)
     expect(a.canCloseReopen).toBe(false)
     expect(a.mergeHint).toBeNull()
   })
 
   it('withholds it silently while membership loads, and explains an unreadable one', () => {
     const loading = pullActions({ pull: pull(), viewer: WRITER, holdings: 'loading' })
-    expect(loading.canMarkMerged).toBe(false)
+    expect(loading.canMerge).toBe(false)
     expect(loading.mergeHint).toBeNull()
 
     const unknown = pullActions({ pull: pull(), viewer: WRITER, holdings: null })
-    expect(unknown.canMarkMerged).toBe(false)
+    expect(unknown.canMerge).toBe(false)
     expect(unknown.mergeHint).toMatch(/members/)
   })
 
   it('withholds it on merged, closed, headless, and unverified PRs', () => {
     const holder = { viewer: WRITER, holdings: WRITE }
-    expect(pullActions({ pull: pull({ state: { merged: true, open: false } }), ...holder }).canMarkMerged).toBe(false)
-    expect(pullActions({ pull: pull({ state: { open: false } }), ...holder }).canMarkMerged).toBe(false)
-    expect(pullActions({ pull: pull({ headOid: '' }), ...holder }).canMarkMerged).toBe(false)
-    expect(pullActions({ pull: pull({ stateComplete: false }), ...holder }).canMarkMerged).toBe(false)
+    expect(pullActions({ pull: pull({ state: { merged: true, open: false } }), ...holder }).canMerge).toBe(false)
+    expect(pullActions({ pull: pull({ state: { open: false } }), ...holder }).canMerge).toBe(false)
+    expect(pullActions({ pull: pull({ headOid: '' }), ...holder }).canMerge).toBe(false)
+    expect(pullActions({ pull: pull({ stateComplete: false }), ...holder }).canMerge).toBe(false)
+  })
+})
+
+describe('pullActions — "Mark as merged (done elsewhere)" records a merge, it never replaces one (QW-002)', () => {
+  it('is offered only once the head is on the base: there is no merge done elsewhere to record before', () => {
+    const notYet = pullActions({ pull: pull({ headOnBase: false }), viewer: MAINTAINER, holdings: MAINTAIN })
+    expect(notYet.canMerge).toBe(true)
+    expect(notYet.canMarkMerged).toBe(false)
+    const onBase = pullActions({ pull: pull({ headOnBase: true }), viewer: MAINTAINER, holdings: MAINTAIN })
+    expect(onBase.canMarkMerged).toBe(true)
+    expect(onBase.markCountsNow).toBe(true)
+  })
+
+  it('is never the policy override: unmet rules leave it a record, and a writer is refused it', () => {
+    const unmet = { met: false, have: 0, need: 1 }
+    const m = pullActions({ pull: pull({ headOnBase: true }), viewer: MAINTAINER, holdings: MAINTAIN, policy: unmet })
+    expect(m.canMarkMerged).toBe(true)
+    expect(m.unmetRules).toEqual(['required approvals: 0 of 1'])
+    expect(m.canBypass).toBe(true)
+    const w = pullActions({ pull: pull({ headOnBase: true }), viewer: WRITER, holdings: WRITE, policy: unmet })
+    expect(w.canMarkMerged).toBe(false)
   })
 })
 
@@ -103,41 +139,47 @@ describe('pullActions — protected base and branch policy (D-503)', () => {
 
   it('refuses a writer the merge into a protected base, and says why', () => {
     const a = pullActions({ pull: pull({ baseRefName: MAIN }), viewer: WRITER, holdings: WRITE, ...protectedMain })
-    expect(a.canMarkMerged).toBe(false)
+    expect(a.canMerge).toBe(false)
     expect(a.baseProtected).toBe(true)
     expect(a.mergeHint).toMatch(/main is a protected branch: only maintainers/)
   })
 
   it('offers a maintainer the merge into a protected base', () => {
     const a = pullActions({ pull: pull({ baseRefName: MAIN }), viewer: MAINTAINER, holdings: MAINTAIN, ...protectedMain })
-    expect(a.canMarkMerged).toBe(true)
-    expect(a.policyOverride).toBe(false)
+    expect(a.canMerge).toBe(true)
+    expect(a.canBypass).toBe(false)
+    expect(a.unmetRules).toEqual([])
   })
 
   it('matches the base with the FORGE_RULES globs, not by name', () => {
     const release = pull({ baseRefName: 'refs/heads/release/1.x' })
-    expect(pullActions({ pull: release, viewer: WRITER, holdings: WRITE, protectedPatterns: ['refs/heads/release/*'] }).canMarkMerged).toBe(false)
-    expect(pullActions({ pull: release, viewer: WRITER, holdings: WRITE, protectedPatterns: ['refs/heads/*'] }).canMarkMerged).toBe(true)
+    expect(pullActions({ pull: release, viewer: WRITER, holdings: WRITE, protectedPatterns: ['refs/heads/release/*'] }).canMerge).toBe(false)
+    expect(pullActions({ pull: release, viewer: WRITER, holdings: WRITE, protectedPatterns: ['refs/heads/*'] }).canMerge).toBe(true)
     // A bare branch name is not a full-ref pattern and protects nothing.
-    expect(pullActions({ pull: pull({ baseRefName: MAIN }), viewer: WRITER, holdings: WRITE, protectedPatterns: ['main'] }).canMarkMerged).toBe(true)
+    expect(pullActions({ pull: pull({ baseRefName: MAIN }), viewer: WRITER, holdings: WRITE, protectedPatterns: ['main'] }).canMerge).toBe(true)
   })
 
-  it('disables a writer on an unmet policy and offers a maintainer the override', () => {
+  it('disables a writer on an unmet policy and offers a maintainer the bypass, naming the rules (QW-001)', () => {
     const unmet = { met: false, have: 0, need: 2 }
     const w = pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: unmet })
-    expect(w.canMarkMerged).toBe(false)
-    expect(w.mergeHint).toMatch(/needs 2 approvals \(0 so far\)/)
-    const m = pullActions({ pull: pull(), viewer: MAINTAINER, holdings: MAINTAIN, policy: unmet })
-    expect(m.canMarkMerged).toBe(true)
-    expect(m.policyOverride).toBe(true)
+    expect(w.canMerge).toBe(false)
+    expect(w.canBypass).toBe(false)
+    expect(w.mergeHint).toMatch(/needs 2 approvals \(0 so far; the PR author's own never counts\)/)
+    const m = pullActions({ pull: pull(), viewer: MAINTAINER, holdings: MAINTAIN, policy: unmet, maintainersOnly: true })
+    expect(m.canMerge).toBe(true)
+    expect(m.canBypass).toBe(true)
+    expect(m.unmetRules).toEqual(['required approvals: 0 of 2 (maintainers only)'])
   })
 
   it('withholds a writer merge when the policy could not be read, and says so (M4: fail closed)', () => {
     const w = pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: 'unknown' })
-    expect(w.canMarkMerged).toBe(false)
+    expect(w.canMerge).toBe(false)
     expect(w.mergeHint).toMatch(/couldn't read the branch policy/i)
     const m = pullActions({ pull: pull(), viewer: MAINTAINER, holdings: MAINTAIN, policy: 'unknown' })
-    expect(m.canMarkMerged).toBe(true)
+    expect(m.canMerge).toBe(true)
+    // Unread is unmet: a maintainer's merge is a bypass too (fail closed).
+    expect(m.canBypass).toBe(true)
+    expect(m.unmetRules).toEqual(['the branch policy could not be read'])
   })
 
   it('treats unread approvals as an unknown policy (the approvals card could not load)', () => {
@@ -145,23 +187,84 @@ describe('pullActions — protected base and branch policy (D-503)', () => {
     const loaded = { policy: null, policyStatus: null }
     expect(policyOf(loaded)).toEqual({ policy: null, status: null })
     const w = pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: policyOf(null).status })
-    expect(w.canMarkMerged).toBe(false)
+    expect(w.canMerge).toBe(false)
   })
 
   it('lets a writer merge once the policy is met on an unprotected base', () => {
     const a = pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: { met: true, have: 2, need: 2 } })
-    expect(a.canMarkMerged).toBe(true)
-    expect(a.policyOverride).toBe(false)
+    expect(a.canMerge).toBe(true)
+    expect(a.canBypass).toBe(false)
+    expect(a.unmetRules).toEqual([])
   })
 
-  it('withholds a writer merge while required checks are not passing; a maintainer overrides', () => {
+  it('withholds a writer merge while required checks are not passing; a maintainer may bypass, the checks named', () => {
     const met = { met: true, have: 1, need: 1 }
-    const w = pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: met, checksBlocking: true })
-    expect(w.canMarkMerged).toBe(false)
+    const failing = { met: false, untrusted: 0, required: [{ name: 'build', state: 'missing' as const, runId: null }, { name: 'lint', state: 'passed' as const, runId: 'x' }] }
+    const w = pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: met, checks: failing })
+    expect(w.canMerge).toBe(false)
     expect(w.mergeHint).toMatch(/requires passing checks/)
-    const m = pullActions({ pull: pull(), viewer: MAINTAINER, holdings: MAINTAIN, policy: met, checksBlocking: true })
-    expect(m.canMarkMerged).toBe(true)
-    expect(m.policyOverride).toBe(true)
+    const m = pullActions({ pull: pull(), viewer: MAINTAINER, holdings: MAINTAIN, policy: met, checks: failing })
+    expect(m.canMerge).toBe(true)
+    expect(m.canBypass).toBe(true)
+    expect(m.unmetRules).toEqual(['required check `build`: missing'])
+    // Unread checks are unmet (fail closed); passing ones are met.
+    expect(pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: met, checks: 'unknown' }).canMerge).toBe(false)
+    expect(pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: met, checks: { met: true, untrusted: 0, required: [] } }).canMerge).toBe(true)
+  })
+})
+
+describe('mergeGate — the merge button against the branch rules (QW-001) and a locked tab (QW-014)', () => {
+  const unmet = ['required approvals: 0 of 1 (maintainers only)']
+
+  it('is disabled while a rule is unmet, with a reason, until a maintainer ticks "bypass rules"', () => {
+    const idle = mergeGate({ unmet, canBypass: true, bypassTicked: false, storageLocked: false })
+    expect(idle).toEqual({ enabled: false, bypassing: false, reason: expect.stringMatching(/blocked until the branch rules are met.*bypass/) })
+    expect(mergeGate({ unmet, canBypass: true, bypassTicked: true, storageLocked: false })).toEqual({ enabled: true, bypassing: true, reason: null })
+  })
+
+  it('never enables a bypass for someone who cannot bypass, ticked or not', () => {
+    expect(mergeGate({ unmet, canBypass: false, bypassTicked: true, storageLocked: false }).enabled).toBe(false)
+  })
+
+  it('is a plain merge when the rules are met (the tick changes nothing)', () => {
+    expect(mergeGate({ unmet: [], canBypass: false, bypassTicked: true, storageLocked: false })).toEqual({ enabled: true, bypassing: false, reason: null })
+  })
+
+  it('is disabled with a reason while the tab must unlock its storage settings (no silent click)', () => {
+    const g = mergeGate({ unmet: [], canBypass: false, bypassTicked: false, storageLocked: true })
+    expect(g.enabled).toBe(false)
+    expect(g.reason).toMatch(/Unlock above to merge/)
+  })
+})
+
+describe('mergeButton — a head the base already holds (QW-002)', () => {
+  const base = { canMerge: true, isPublic: true, refProblem: null, baseLoaded: true, isMaintainer: true, baseProtected: false, narrow: false, check: 'up-to-date' as const, checkout: '' }
+
+  it('points to "Mark as merged (done elsewhere)" only when that control is offered (the head was a base tip)', () => {
+    expect(mergeButton({ ...base, headOnBase: true })).toEqual({ kind: 'unavailable', reason: expect.stringContaining('"Mark as merged (done elsewhere)" below') })
+    const viaMergeCommit = mergeButton({ ...base, headOnBase: false })
+    expect(viaMergeCommit).toEqual({ kind: 'unavailable', reason: expect.stringContaining('--event-only --merge-oid') })
+    expect(JSON.stringify(viaMergeCommit)).not.toContain('Mark as merged')
+  })
+})
+
+describe('unmetRules and bypassNote — the rules named, as dg names them', () => {
+  it('names approvals, checks and an unreadable policy', () => {
+    expect(unmetRules(null)).toEqual([])
+    expect(unmetRules({ met: true, have: 1, need: 1 })).toEqual([])
+    expect(unmetRules('unknown')).toEqual(['the branch policy could not be read'])
+    expect(unmetRules({ met: false, have: 1, need: 2 }, { met: false, untrusted: 0, required: [] })).toEqual([
+      'required approvals: 1 of 2',
+      'required checks: none reported on the head',
+    ])
+    expect(unmetRules(null, { met: false, untrusted: 0, required: [{ name: 'ci', state: 'failing', runId: 'r' }] })).toEqual(['required check `ci`: failing'])
+  })
+
+  it('records the bypass with the merge commit, the base and every rule', () => {
+    const note = bypassNote('ab'.repeat(20), 'refs/heads/main', ['required approvals: 0 of 1', 'required check `build`: missing'])
+    expect(note).toContain('**Merged by bypassing the branch rules** (a maintainer override): abababababab into `main`.')
+    expect(note).toContain('- required approvals: 0 of 1\n- required check `build`: missing\n')
+    expect(note).toContain('consensus does not enforce them')
   })
 })
 
@@ -176,7 +279,7 @@ describe('pullActions agrees with the merge label', () => {
       const headOnBase = isAncestor(HEAD, baseTip)
 
       const a = pullActions({ pull: pull({ headOnBase }), viewer: WRITER, holdings: WRITE })
-      expect(a.canMarkMerged).toBe(true)
+      expect(a.canMarkMerged).toBe(expected)
       expect(a.markCountsNow).toBe(expected)
       // The recorded merge (state code 2, oid = the head) is merged either way, labelled when not on the base.
       const state = prStateV2(2, HEAD, [], baseTip, isAncestor)

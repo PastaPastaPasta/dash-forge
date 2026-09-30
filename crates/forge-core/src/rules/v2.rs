@@ -569,18 +569,25 @@ pub struct Approvals {
 /// Unlike an `event`, a `review` is un-gated, so nothing on chain proves its writer was a
 /// member; the oracle does. A revoked reviewer's document is gone, so their reviews stop
 /// counting, which is what a merge decision made now should see.
+///
+/// The PR's own author (`pr_author`, the patch document's owner) never counts: as on GitHub, an
+/// author cannot approve (or request changes on) their own PR, so one person alone never meets
+/// a branch policy. A review carries no PR author, so consensus admits the document; this rule
+/// is the clients'. Clients show such a review as "author, not counted".
 #[must_use]
 pub fn count_approvals(
     reviews: &[Review],
     oracle: &RoleOracle,
     head_oid: &str,
     dismissed: &BTreeSet<String>,
+    pr_author: &str,
 ) -> Approvals {
     let mut counting: Vec<(&Review, Verdict)> = reviews
         .iter()
         .map(|r| (r, Verdict::from_code(r.verdict)))
         .filter(|(r, v)| {
             matches!(v, Verdict::Approve | Verdict::RequestChanges)
+                && r.reviewer != pr_author
                 && !dismissed.contains(&r.id)
                 && r.commit_oid == head_oid
                 && oracle.member_at(&r.reviewer, r.created_at)

@@ -193,7 +193,7 @@ describe('review fold summary', () => {
   ])
   const r = (id: string, reviewer: string, verdict: number, commitOid: string, createdAt: number): Review => ({ id, reviewer, verdict, commitOid, createdAt })
 
-  it('shows the fold exactly: counted, stale, non-member and author approvals', () => {
+  it('shows the fold exactly: counted, stale, non-member, and the author not counted', () => {
     const reviews = [
       r('r1', M1, 1, HEAD, 10),
       r('r2', M2, 1, HEAD, 11),
@@ -202,12 +202,13 @@ describe('review fold summary', () => {
       r('r5', W, 1, HEAD, 20), // before W joined (50): doesn't count
       r('r6', W, 3, HEAD, 70), // comment-only: neither counts nor clears
     ]
+    // M2 opened the PR: their own approval is shown, never counted (QW-003).
     const s = summarizeReviews(reviews, oracle, HEAD, M2)
-    expect(s.approvedBy).toEqual({ maintainers: 2, writers: 0 })
-    expect(approverPhrase(s.approvedBy)).toBe('2 maintainers')
+    expect(s.approvedBy).toEqual({ maintainers: 1, writers: 0 })
+    expect(approverPhrase(s.approvedBy)).toBe('1 maintainer')
     expect(s.rows).toEqual([
-      { reviewer: M1, standing: { kind: 'approved', role: 'maintainer', self: false } },
-      { reviewer: M2, standing: { kind: 'approved', role: 'maintainer', self: true } },
+      { reviewer: M1, standing: { kind: 'approved', role: 'maintainer' } },
+      { reviewer: M2, standing: { kind: 'author', verdict: 'approve' } },
       { reviewer: W, standing: { kind: 'stale', verdict: 'changes', commitOid: OLD } },
       { reviewer: S, standing: { kind: 'not-member', verdict: 'approve' } },
     ])
@@ -216,13 +217,13 @@ describe('review fold summary', () => {
   it('a dismissed review neither counts nor shows, as in the fold', () => {
     const s = summarizeReviews([r('r1', M1, 1, HEAD, 10), r('r2', M2, 2, HEAD, 11)], oracle, HEAD, 'someone', new Set(['r2']))
     expect(s.changesRequestedBy).toEqual([])
-    expect(s.rows).toEqual([{ reviewer: M1, standing: { kind: 'approved', role: 'maintainer', self: false } }])
+    expect(s.rows).toEqual([{ reviewer: M1, standing: { kind: 'approved', role: 'maintainer' } }])
   })
 
   it('dismissing a newer request for changes leaves the earlier approval standing', () => {
     const s = summarizeReviews([r('r1', M1, 1, HEAD, 10), r('r2', M1, 2, HEAD, 11)], oracle, HEAD, 'someone', new Set(['r2']))
     expect(s.changesRequestedBy).toEqual([])
-    expect(s.rows).toEqual([{ reviewer: M1, standing: { kind: 'approved', role: 'maintainer', self: false } }])
+    expect(s.rows).toEqual([{ reviewer: M1, standing: { kind: 'approved', role: 'maintainer' } }])
   })
 
   it('a newer request for changes replaces an approval', () => {

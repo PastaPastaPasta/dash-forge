@@ -543,8 +543,8 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
         <Scale className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden /> Branch policy
       </h3>
       <p role="note" className="mt-1 rounded-md bg-caution/5 px-2 py-1.5 text-dense text-caution-700 dark:text-caution-400">
-        A client rule, not consensus: Forge clients disable a writer&apos;s merge until it is met, and a maintainer can override it.
-        Nothing on Platform requires approvals.
+        A client rule, not consensus: Forge clients disable the merge until it is met (the PR author&apos;s own approval never counts), and a
+        maintainer can bypass it explicitly; the bypass is recorded on the PR. Nothing on Platform requires approvals.
       </p>
       {current.loading && !current.settled ? (
         <LoadingBlock label="Reading the branch policy" />

@@ -196,8 +196,8 @@ describe.skipIf(!LIVE)('live review parity (bonsia)', () => {
       const oracle = new RoleOracle(memberships.map((m) => ({ identity: m.identity, role: m.role, createdAt: m.createdAt })))
       const dismissed = new Set(review.dismissedReviews.map((d) => d.reviewId))
       const rules = reviews.map((r) => ({ id: r.id, reviewer: r.reviewer, verdict: r.verdictCode, commitOid: r.commitOid, createdAt: r.createdAt }))
-      expect(countApprovals(rules, oracle, review.head)).toEqual({ approvers: [], changesRequested: [COLLAB.identityId] })
-      const approvals = countApprovals(rules, oracle, review.head, dismissed)
+      expect(countApprovals(rules, oracle, review.head, new Set(), CONTRIB.identityId)).toEqual({ approvers: [], changesRequested: [COLLAB.identityId] })
+      const approvals = countApprovals(rules, oracle, review.head, dismissed, CONTRIB.identityId)
       expect(approvals).toEqual({ approvers: [], changesRequested: [] })
       expect(meetsPolicy(approvals, oracle, { requiredApprovals: 1, approverRole: 0 })).toEqual({ met: false, have: 0, need: 1 })
 

@@ -174,6 +174,9 @@ pub enum Standing {
     Dismissed,
     /// They are not a maintainer or writer, so their verdict does not count.
     NotMember,
+    /// They opened the PR: their own verdict never counts (GitHub: authors can't approve their
+    /// own PR), as `count_approvals` rules.
+    Author,
 }
 
 impl Standing {
@@ -187,6 +190,7 @@ impl Standing {
             Standing::Stale => "stale — new commits since",
             Standing::Dismissed => "dismissed",
             Standing::NotMember => "doesn't count (not a maintainer or writer)",
+            Standing::Author => "author, not counted",
         }
     }
 }
@@ -228,13 +232,15 @@ fn newest_reviews(reviews: &[Review]) -> BTreeMap<&str, &Review> {
 }
 
 /// One row per reviewer (anyone with a review) and per requested reviewer, requested first,
-/// then by identity.
+/// then by identity. `pr_author`'s own approve / request-changes verdict is
+/// [`Standing::Author`]: shown, never counted.
 pub fn reviewer_rows(
     reviews: &[Review],
     fold: &PrReviewState,
     approvals: &Approvals,
     oracle: &RoleOracle,
     head: &str,
+    pr_author: &str,
 ) -> Vec<ReviewerRow> {
     let newest = newest_reviews(reviews);
     let requested: BTreeMap<&str, u64> = fold
@@ -267,6 +273,18 @@ pub fn reviewer_rows(
                 Standing::Dismissed
             } else {
                 match review {
+                    Some(r)
+                        if id == pr_author
+                            && matches!(
+                                r.verdict,
+                                Verdict::Approve
+                                    | Verdict::RequestChanges
+                                    | Verdict::ApproveNonMember
+                                    | Verdict::RequestChangesNonMember
+                            ) =>
+                    {
+                        Standing::Author
+                    }
                     // a non-member's verdict (4 / 5) is shown, never counted
                     Some(r)
                         if matches!(
@@ -475,6 +493,11 @@ mod tests {
                 role: Role::Writer,
                 created_at: 0,
             },
+            Membership {
+                identity: "auth".into(),
+                role: Role::Maintainer,
+                created_at: 0,
+            },
         ]);
         let reviews = vec![
             review("r-m", "m", Verdict::Approve, H2, 10),
@@ -484,6 +507,7 @@ mod tests {
             review("r-x", "stranger", Verdict::Approve, H2, 12),
             review("r-c", "chatty", Verdict::Comment, H2, 13),
             review("r-q", "q", Verdict::Approve, H1, 1),
+            review("r-a", "auth", Verdict::Approve, H2, 14),
         ];
         let mut f = fold(H2);
         f.dismissed_reviews = vec![Dismissal {
@@ -516,8 +540,11 @@ mod tests {
             &oracle,
             H2,
             &BTreeSet::from(["r-d".to_string()]),
+            "auth",
         );
-        let rows = reviewer_rows(&reviews, &f, &approvals, &oracle, H2);
+        // The PR author's own approval (a maintainer's, on the head) never counts (QW-003).
+        assert!(!approvals.approvers.contains("auth"), "{approvals:?}");
+        let rows = reviewer_rows(&reviews, &f, &approvals, &oracle, H2, "auth");
         let state: BTreeMap<&str, (Standing, bool)> = rows
             .iter()
             .map(|r| (r.identity.as_str(), (r.state, r.re_requested)))
@@ -528,6 +555,7 @@ mod tests {
         assert_eq!(state["d"].0, Standing::Dismissed);
         assert_eq!(state["stranger"].0, Standing::NotMember);
         assert_eq!(state["chatty"].0, Standing::Commented);
+        assert_eq!(state["auth"].0, Standing::Author);
         assert_eq!(
             state["q"],
             (Standing::Awaiting, true),

@@ -1,43 +1,55 @@
 /**
  * PR action gating (view glue) — which PR state controls a viewer is shown, and what the
- * merge control may honestly promise.
+ * merge controls may honestly promise.
  *
- * The web app cannot merge code. What it can do is record a merge `transition` naming the PR
- * head. Consensus admits a merge only from a current maintainer or writer, and only from an open,
- * ready PR; a recorded merge is final (D-9). Readers label a merge whose commit never was a tip
- * of the base ref ("merge commit not found on the base"). So the control is offered only to
- * members, is labelled "Mark as merged", and says up front whether the head is on the base
- * branch already or the merge will carry that label until a push puts it there.
+ * Two merge controls, for a current maintainer or writer on an open PR (consensus admits a merge
+ * `transition` only from them; a recorded merge is final, D-9):
  *
- * Two branch rules then narrow it for a writer (`review-parity-spec.md` §4.8):
+ * - **The merge box** (`MergePanel`): merges the code in the browser (pack, ref update), then
+ *   records the merge.
+ * - **"Mark as merged (done elsewhere)"**: records a merge that already happened some other way
+ *   (a push). It moves no code, so it is offered only once the head is on the base branch, where
+ *   the recorded merge counts (readers label a merge whose commit never was a base tip "merge
+ *   commit not found on the base"), as `dg pr merge --event-only` requires.
+ *
+ * Two branch rules narrow them (`review-parity-spec.md` §4.8):
  *
  * - A **protected** base (its full ref name matches `config.protectedPatterns`): only a
  *   maintainer can move it (`protectedRefUpdate` is maintainer-gated at consensus, and a plain
  *   `refUpdate` there is inert), so a writer's merge could never land. Refused for writers.
- * - An unmet **branch policy** (`policy`, newest wins): a client rule. A writer's button is
- *   disabled; a maintainer is offered "Merge anyway (policy override)". Nothing at consensus
- *   requires approvals.
+ * - The **branch policy** (`policy`, newest wins; a client rule, nothing at consensus requires
+ *   approvals): while its approvals or required checks are unmet ({@link unmetRules}), both
+ *   controls stay disabled, as GitHub's merge button does. A maintainer may bypass it, the
+ *   GitHub way: an explicit "bypass rules" step, a confirm naming the rules bypassed, and a real
+ *   merge whose bypass is recorded on the PR as a comment ({@link bypassNote}).
  *
  * Close/reopen stay available to the PR author as well (a transition written as the author), but
  * not to anyone consensus would refuse.
  */
 
 import { isOidHex, isPlainBranchRef, matchesProtected, type Holdings } from '../rules'
-import type { Approvals, Policy, PolicyStatus } from '../rules/v2'
+import type { Approvals, ChecksState, Policy, PolicyStatus } from '../rules/v2'
 import type { PullView } from '../repo'
 import type { ProvedVerdicts } from '../repo/verdicts'
 import { branchName, plural } from './format'
 
 /** What the viewer may do from the PR page, and why not when not. */
 export interface PullActions {
-  /** Offer "Mark as merged". */
+  /**
+   * Show the merge box: the viewer can merge this PR, now or (a maintainer, {@link canBypass})
+   * by bypassing the branch rules.
+   */
+  readonly canMerge: boolean
+  /**
+   * Offer "Mark as merged (done elsewhere)": {@link canMerge}, and the head is on the base
+   * already ({@link markCountsNow}).
+   */
   readonly canMarkMerged: boolean
   /** Offer close (open PRs) / reopen (closed, unmerged PRs). */
   readonly canCloseReopen: boolean
   /**
-   * The head has already been a tip of the base branch, so a merge mark is on the base. When
-   * false the mark still records the PR merged, labelled "merge commit not found on the base"
-   * until a push puts the head there — the dialog must say so.
+   * The head has already been a tip of the base branch: a merge recorded now is on the base.
+   * Only then is there a merge done elsewhere to record.
    */
   readonly markCountsNow: boolean
   /** A short reason shown when the merge control is withheld; null when shown. */
@@ -45,10 +57,12 @@ export interface PullActions {
   /** The base branch is protected (only maintainers can update it). */
   readonly baseProtected: boolean
   /**
-   * The branch policy is not met and the viewer is a maintainer: the mark is offered as an
-   * explicit override ("Merge anyway (policy override)").
+   * The branch rules this PR does not meet ({@link unmetRules}); empty when they are met or
+   * there is no policy. While any is unmet, merging stays disabled unless bypassed.
    */
-  readonly policyOverride: boolean
+  readonly unmetRules: readonly string[]
+  /** A rule is unmet and the viewer is a maintainer: they may bypass it (explicit, confirmed, recorded). */
+  readonly canBypass: boolean
 }
 
 export interface PullActionInputs {
@@ -67,15 +81,82 @@ export interface PullActionInputs {
   readonly protectedPatterns?: readonly string[]
   /**
    * How the PR's approvals stand against the branch policy; null or absent: no policy;
-   * `'unknown'`: it could not be read, so a writer's merge is withheld (fail closed).
+   * `'unknown'`: it could not be read, so the merge is withheld (fail closed).
    */
   readonly policy?: PolicyStatus | null | 'unknown'
+  /** The policy counts maintainers' approvals only (`approverRole` 1), for the rule's wording. */
+  readonly maintainersOnly?: boolean
   /**
-   * The branch policy requires passing checks (`requireChecks`) and the head's trusted check runs
-   * are not all passing (none, pending or failing). A client rule like the approvals: a writer's
-   * merge is withheld, a maintainer may override.
+   * The head's required checks (`checksState`) when the policy requires any; null or absent:
+   * none required; `'unknown'`: required, but the runs or the members could not be read. A
+   * client rule like the approvals.
    */
-  readonly checksBlocking?: boolean
+  readonly checks?: ChecksState | null | 'unknown'
+}
+
+/** The bypass record's line for a policy that could not be read (`dg`'s `POLICY_UNREAD`). */
+export const POLICY_UNREAD = 'the branch policy could not be read'
+
+/**
+ * The branch rules a PR does not meet, one line each, in `dg pr merge`'s words (its
+ * `unmet_rules`): "required approvals: 0 of 1 (maintainers only)", "required check `build`:
+ * missing". Empty when every rule is met or there is no policy. Unreadable counts as unmet.
+ */
+export function unmetRules(policy: PolicyStatus | null | 'unknown', checks: ChecksState | null | 'unknown' = null, maintainersOnly = false): string[] {
+  if (policy === 'unknown') return [POLICY_UNREAD]
+  const out: string[] = []
+  if (policy !== null && !policy.met) out.push(`required approvals: ${policy.have} of ${policy.need}${maintainersOnly ? ' (maintainers only)' : ''}`)
+  if (checks === 'unknown') {
+    out.push("required checks: unknown (the head's check runs are not read)")
+  } else if (checks !== null && !checks.met) {
+    if (checks.required.length === 0) out.push('required checks: none reported on the head')
+    for (const c of checks.required) if (c.state !== 'passed') out.push(`required check \`${c.name}\`: ${c.state}`)
+  }
+  return out
+}
+
+/**
+ * The comment a maintainer's bypass leaves on the PR, so the timeline shows that the merge
+ * skipped the branch rules and which (the merge `transition` has no field for it). `dg pr merge
+ * --override-policy` writes the same (`bypass_note`).
+ */
+export function bypassNote(mergeOid: string, baseRefName: string, rules: readonly string[]): string {
+  const base = baseRefName.replace(/^refs\/heads\//, '')
+  const list = rules.map((r) => `- ${r}\n`).join('')
+  return (
+    `**Merged by bypassing the branch rules** (a maintainer override): ${mergeOid.slice(0, 12)} into \`${base}\`.\n\n` +
+    `Rules not met at the merge:\n${list}\n` +
+    'Branch rules are a client rule every Forge client applies; consensus does not enforce them.'
+  )
+}
+
+/** What the merge box's merge button may do ({@link mergeGate}). */
+export interface MergeGate {
+  /** The button may be clicked. */
+  readonly enabled: boolean
+  /** The click merges by bypassing the unmet rules (after a confirm naming them). */
+  readonly bypassing: boolean
+  /** Why it is disabled, shown beside it; null when enabled. */
+  readonly reason: string | null
+}
+
+/**
+ * The merge button against the branch rules and the tab's unlock state (QW-001, QW-014):
+ * disabled while a rule is unmet, unless a maintainer ticked "bypass rules"; disabled while this
+ * tab must unlock its storage settings first (a click would do nothing). Never an enabled button
+ * that silently does nothing.
+ */
+export function mergeGate(i: { readonly unmet: readonly string[]; readonly canBypass: boolean; readonly bypassTicked: boolean; readonly storageLocked: boolean }): MergeGate {
+  const blocked = i.unmet.length > 0
+  if (blocked && !(i.canBypass && i.bypassTicked)) {
+    return {
+      enabled: false,
+      bypassing: false,
+      reason: i.canBypass ? 'Merging is blocked until the branch rules are met. As a maintainer you can bypass them below.' : 'Merging is blocked until the branch rules are met.',
+    }
+  }
+  if (i.storageLocked) return { enabled: false, bypassing: false, reason: 'Unlock above to merge: your storage settings are sealed in this tab.' }
+  return { enabled: true, bypassing: blocked, reason: null }
 }
 
 /** What a repo's ACL is read from, for "couldn't read …" messages. */
@@ -108,6 +189,8 @@ export interface MergeButtonInputs {
   /** The base branch matches the repo's current protected patterns. */
   readonly baseProtected: boolean
   readonly narrow: boolean
+  /** The head has been a tip of the base (`PullView.headOnBase`): "Mark as merged (done elsewhere)" records it. */
+  readonly headOnBase?: boolean
   /** The worker's verdict, or null while it runs; an error string when it could not decide. */
   readonly check: 'fast-forward' | 'merge' | 'conflict' | 'malformed' | 'too-large' | 'up-to-date' | 'unrelated' | { readonly error: string } | null
   /** `dg pr checkout <repo> <n>` for the conflicts row. */
@@ -140,7 +223,13 @@ export function mergeButton(i: MergeButtonInputs): MergeButton {
     case 'too-large':
       return { kind: 'unavailable', reason: 'This merge is too large to build in the browser; merge it with `dg pr merge`.' }
     case 'up-to-date':
-      return { kind: 'unavailable', reason: 'The base branch already contains this head; record the merge with "Mark as merged".' }
+      return i.headOnBase === true
+        ? { kind: 'unavailable', reason: 'The base branch already contains this head: it was merged elsewhere. Record that with "Mark as merged (done elsewhere)" below.' }
+        : {
+            kind: 'unavailable',
+            reason:
+              'The base branch already contains this head through a merge commit made elsewhere. Record it with `dg pr merge --event-only --merge-oid <that commit>`: a merge counts for a commit that has been a tip of the base.',
+          }
     case 'unrelated':
       return { kind: 'unavailable', reason: 'The head and the base branch share no history.' }
   }
@@ -244,7 +333,7 @@ export function verdictSummary(
 }
 
 /** Decide the PR controls for a viewer. Pure — the unit-tested core of the PR page gate. */
-export function pullActions({ pull, viewer, holdings, protectedPatterns = [], policy = null, checksBlocking = false }: PullActionInputs): PullActions {
+export function pullActions({ pull, viewer, holdings, protectedPatterns = [], policy = null, maintainersOnly = false, checks = null }: PullActionInputs): PullActions {
   const known = holdings !== null && holdings !== 'loading'
   const maintainer = known && holdings.maintain
   const holder = known && (holdings.write || holdings.maintain)
@@ -255,16 +344,17 @@ export function pullActions({ pull, viewer, holdings, protectedPatterns = [], po
   const base = pull.baseRefName ?? ''
   const baseProtected = base !== '' && matchesProtected(base, protectedPatterns)
   const policyUnknown = policy === 'unknown'
-  const policyUnmet = policyUnknown || (policy !== null && !policy.met) || checksBlocking
+  const unmet = unmetRules(policy, checks, maintainersOnly)
+  const policyUnmet = unmet.length > 0
 
   const eligible = actionable && open && viewer !== null && holder && pull.headOid !== ''
-  // A writer can neither move a protected base nor override the policy.
+  // A writer can neither move a protected base nor bypass the policy.
   const writerBlocked = !maintainer && (baseProtected || policyUnmet)
-  const canMarkMerged = eligible && !writerBlocked
+  const canMerge = eligible && !writerBlocked
   const canCloseReopen = actionable && viewer !== null && (holder || isAuthor)
 
   let mergeHint: string | null = null
-  if (!canMarkMerged && actionable && open && viewer !== null && holdings !== 'loading') {
+  if (!canMerge && actionable && open && viewer !== null && holdings !== 'loading') {
     if (holdings === null) {
       mergeHint = `Couldn't read this repo's ${ACL_NAME}, so merge permission is unknown.`
     } else if (pull.headOid === '') {
@@ -274,21 +364,23 @@ export function pullActions({ pull, viewer, holdings, protectedPatterns = [], po
     } else if (baseProtected) {
       mergeHint = `${branchName(base)} is a protected branch: only maintainers can merge into it.`
     } else if (policyUnknown) {
-      mergeHint = "Couldn't read the branch policy, so only a maintainer can merge for now."
+      mergeHint = "Couldn't read the branch policy, so merging is blocked for now; only a maintainer can bypass it."
     } else if (policy !== null && typeof policy === 'object' && !policy.met) {
-      mergeHint = `The branch policy needs ${plural(policy.need, 'approval')} (${policy.have} so far). Only a maintainer can merge before then.`
-    } else if (checksBlocking) {
-      mergeHint = 'The branch policy requires passing checks on the head. Only a maintainer can merge before then.'
+      mergeHint = `The branch policy needs ${plural(policy.need, 'approval')} (${policy.have} so far; the PR author's own never counts). Only a maintainer can bypass it.`
+    } else if (policyUnmet) {
+      mergeHint = 'The branch policy requires passing checks on the head. Only a maintainer can bypass it.'
     }
   }
 
   return {
-    canMarkMerged,
+    canMerge,
+    canMarkMerged: canMerge && pull.headOnBase,
     canCloseReopen,
     markCountsNow: pull.headOnBase,
     mergeHint,
     baseProtected,
-    policyOverride: canMarkMerged && maintainer && policyUnmet,
+    unmetRules: unmet,
+    canBypass: canMerge && maintainer && policyUnmet,
   }
 }
 

@@ -270,7 +270,7 @@ pub struct PolicyStatus {
 }
 
 /// Whether `approvals` (from [`super::v2::count_approvals`] on the current head, dismissed
-/// reviews excluded) meet `policy`. An approver counts when their current role satisfies
+/// reviews and the PR author's own reviews excluded) meet `policy`. An approver counts when their current role satisfies
 /// `approver_role` (1: maintainer only). A client rule for the merge box, never consensus.
 #[must_use]
 pub fn meets_policy(approvals: &Approvals, oracle: &RoleOracle, policy: &Policy) -> PolicyStatus {

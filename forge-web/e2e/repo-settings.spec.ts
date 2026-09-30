@@ -20,10 +20,12 @@ import { idFile, idOf, shot, signedIn, unlock, waitForRepoResolved } from './hel
  *   s2. COLLAB's CLI push to `main` is refused: by the helper with E601, and with the pre-check
  *       off, at consensus (the helper routes it to the maintainer-only `protectedRefUpdate`).
  *   s3. COLLAB's PR into `main`: the web offers COLLAB no merge ("protected branch"), and offers
- *       OWNER "Mark as merged".
+ *       OWNER the merge box (no "Mark as merged": the head is not on `main`, nothing was merged
+ *       elsewhere).
  *   s4. OWNER changes the default branch to `trunk`: the repo home opens on `trunk` and the
  *       clone box says a clone checks out `trunk`.
- *   s5. OWNER sets a branch policy (labelled a client rule); the PR shows "0 of 1".
+ *   s5. OWNER sets a branch policy (labelled a client rule); the PR shows "0 of 1", the merge is
+ *       disabled, and OWNER is offered the explicit "bypass rules" step (QW-001).
  *   s6. OWNER archives: composers are disabled for COLLAB; OWNER unarchives.
  */
 
@@ -152,7 +154,8 @@ test("s3. the writer's PR into main: no merge for the writer, a merge for the ma
   const maintainer = await signedIn(browser, 'OWNER', repoPath('pull', `&number=${prNumber}`))
   await waitForRepoResolved(maintainer)
   await expect(maintainer.getByTestId('protected-base')).toBeVisible({ timeout: 90_000 })
-  await expect(maintainer.getByRole('button', { name: /mark as merged/i })).toBeEnabled()
+  await expect(maintainer.getByTestId('merge-panel')).toBeVisible({ timeout: 90_000 })
+  await expect(maintainer.getByRole('button', { name: /mark as merged/i })).toHaveCount(0)
   await shot(maintainer, 'settings-04-maintainer-can-merge')
 })
 
@@ -191,8 +194,12 @@ test('s5. the branch policy is saved and shown on the PR as a client rule', asyn
   await unlock(page)
   await waitForRepoResolved(page)
   await expect(page.getByTestId('policy-status')).toContainText('0 of 1 required approval', { timeout: 90_000 })
-  await expect(page.getByText('Policy is a client rule; a maintainer can override it.')).toBeVisible()
-  await expect(page.getByRole('button', { name: /merge anyway \(policy override\)/i })).toBeVisible()
+  await expect(page.getByText(/Policy is a client rule; a maintainer can bypass it/)).toBeVisible()
+  await expect(page.getByTestId('merge-rules-unmet')).toContainText('required approvals: 0 of 1', { timeout: 240_000 })
+  await expect(page.getByTestId('merge-submit')).toBeDisabled()
+  await page.getByTestId('merge-bypass').check()
+  await expect(page.getByTestId('merge-submit')).toHaveText(/bypass rules and merge/i)
+  await expect(page.getByRole('button', { name: /merge anyway/i })).toHaveCount(0)
   await shot(page, 'settings-06-policy-override')
 })
 

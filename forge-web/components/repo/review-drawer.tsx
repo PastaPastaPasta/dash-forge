@@ -152,6 +152,7 @@ export function ReviewDrawer({
   update,
   ensure,
   isMember,
+  isAuthor = false,
   locked,
   lineExists,
   onSubmitted,
@@ -165,6 +166,12 @@ export function ReviewDrawer({
   update: (d: ReviewDraft | null) => void
   ensure: () => ReviewDraft | null
   isMember: boolean
+  /**
+   * The viewer opened this PR: their own approve / request changes never counts
+   * (`countApprovals`, as on GitHub), so only a comment-only review is offered (`dg pr review`
+   * refuses the others the same way).
+   */
+  isAuthor?: boolean
   /** The PR's conversation is locked: a member's review and its comments carry the membership proof. */
   locked: boolean
   /** Whether the current diff shows a line (for re-anchoring after the head moved). */
@@ -177,7 +184,9 @@ export function ReviewDrawer({
   const guard = useWriteGuard()
   const [open, setOpen] = useState(false)
   const [summary, setSummary] = useState(draft?.summary ?? '')
-  const [verdict, setVerdict] = useState<VerdictInput>(draft?.verdict ?? 'comment')
+  const [chosen, setVerdict] = useState<VerdictInput>(draft?.verdict ?? 'comment')
+  // A draft saved with a verdict before the viewer's authorship was known still submits as a comment.
+  const verdict: VerdictInput = isAuthor ? 'comment' : chosen
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
@@ -296,7 +305,7 @@ export function ReviewDrawer({
               <MarkdownEditor id="review-summary" label="Review summary" value={summary} onChange={setSummary} placeholder="Leave a summary (optional)" />
               <fieldset className="space-y-1.5">
                 <legend className="sr-only">Verdict</legend>
-                {VERDICTS.map((v) => (
+                {VERDICTS.filter((v) => !isAuthor || v.value === 'comment').map((v) => (
                   <label key={v.value} className="flex items-start gap-2 text-dense">
                     <input type="radio" name="verdict" value={v.value} checked={verdict === v.value} onChange={() => setVerdict(v.value)} className="mt-1 accent-forge-700" />
                     <span>
@@ -306,7 +315,13 @@ export function ReviewDrawer({
                   </label>
                 ))}
               </fieldset>
-              {!isMember && verdict !== 'comment' ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Only maintainers&apos; and writers&apos; verdicts count toward merging.</p> : null}
+              {isAuthor ? (
+                <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="review-author-note">
+                  You opened this PR: your own approval would never count, so your review is a comment.
+                </p>
+              ) : !isMember && verdict !== 'comment' ? (
+                <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Only maintainers&apos; and writers&apos; verdicts count toward merging.</p>
+              ) : null}
             </>
           )}
           {count > 0 ? (

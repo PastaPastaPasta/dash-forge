@@ -1007,8 +1007,10 @@ pub struct PrMergeArgs {
     /// Delete the source branch after merging (needs write access to the source repo).
     #[arg(long = "delete-branch", conflicts_with = "event_only")]
     pub delete_branch: bool,
-    /// Merge although the branch policy is not met (maintainers only). The policy is a
-    /// client rule every Forge client applies; consensus does not enforce it.
+    /// Merge although the branch policy's approvals or checks are not met (maintainers only;
+    /// "bypass rules"). The bypassed rules are recorded on the PR as a comment; the allowed
+    /// merge methods still apply. The policy is a client rule every Forge client applies;
+    /// consensus does not enforce it.
     #[arg(long = "override-policy")]
     pub override_policy: bool,
     /// Only post the merge event (the merge was pushed some other way).

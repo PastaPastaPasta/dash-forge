@@ -6,7 +6,8 @@
  * maintainers on 8f3e2a1", "Changes requested by bob"); every reviewer is listed with their
  * standing, including the ones that do not count and why: a verdict on an older head is
  * "stale — new commits since", a reviewer who is not a maintainer or writer "doesn't count",
- * and a member approving their own PR is an "author approval (counted)".
+ * and the PR author's own verdict is "author, not counted" (GitHub: authors can't approve their
+ * own PR).
  *
  * Its first line is the GitHub-style count ({@link VerdictLine}: "2 of 3 required approvals",
  * "Changes requested"), the fold's, with the proved on-chain count (RC1 R-16) beside it where
@@ -127,7 +128,7 @@ function Row({ row }: { row: ReviewerRow }): JSX.Element {
         {verdict}
         {counted ? ` · ${s.role}` : ''}
       </span>
-      {s.kind === 'approved' && s.self ? <Tag>author approval (counted)</Tag> : null}
+      {s.kind === 'author' ? <Tag>author, not counted</Tag> : null}
       {s.kind === 'stale' ? (
         <Tag>
           stale — new commits since <Oid value={s.commitOid} chars={7} copyable={false} />
