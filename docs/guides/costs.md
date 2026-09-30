@@ -48,18 +48,44 @@ Rule of thumb for packs on Platform: **1 MiB ≈ 0.33–0.36 DASH** measured, ab
 
 A chunk costs a little more the more chunks the whole network holds: every chunk of every repository sits in one tree, and adding one rewrites the chunks on its path to the root (about 7M credits per level, ~1.4% of a chunk). The quote allows for a network of up to about 65,000 chunks (~1 GB of packs on Platform). The dashpay/dash import on moutai (19,107 chunks, 2026-09-28) paid about 98M credits per chunk beyond its bytes, where the old quote allowed 94M, so its estimate came in 0.6% under the charge. The quote now allows 140M.
 
+`dg cost estimate` prices a first push the way `git push` prices it: the pack and its browse index, their two manifests, one ref update, and the history index a push to the default branch publishes. Run in a repository (or with `--path <repository>`), it builds the pack a push of `HEAD` would upload and computes the history index, as the push does, and prices them on the storage that repository's `git push` would use (its `dash.storage`, else Platform). `--backend` prices another:
+
+```sh
+dg cost estimate                  # the repository in the current directory, on its own storage
+dg cost estimate --backend s3     # the same repository, packs in your own bucket
+```
+
+```
+Estimate for a first push of the repository at /home/me/qw-cost-plat (HEAD: 336 B, 5 objects) to platform:
+  total:       ~0.01247089 DASH ≈ $0.37  (an upper bound, as `git push` quotes it; later pushes pay less)
+  metadata:    ~0.0062 DASH ≈ $0.19  4 manifests + 1 ref update, on Platform
+  chunks:      ~0.00627089 DASH ≈ $0.19  pack + browse index + history index on Platform; ~0.00051354 DASH ≈ $0.02 of it is the storage deposit, never refunded (Platform packs are permanent)
+```
+
+```
+Estimate for a first push of the repository at /home/me/qw-cost-s3 (HEAD: 334 B, 5 objects) to s3:
+  total:       ~0.00656 DASH ≈ $0.20  (an upper bound, as `git push` quotes it; later pushes pay less)
+  metadata:    ~0.00656 DASH ≈ $0.20  4 manifests + 1 ref update, on Platform
+  pack bytes:  on your own storage (s3), billed by your provider, not by Platform
+```
+
+On devnet bonsia (Platform 4.2.0-beta.7, 2026-09-30) these two first pushes were charged 0.0104 DASH and 0.0052 DASH. With `--backend s3`, `ipfs` or `https` the quote is the same whatever the size: Platform bills the manifests and the ref update, never the bytes. `--backend mixed` keeps a copy in each place and pays for both.
+
+`--bytes <N>` prices a pack of that size without a repository. It assumes one object per 512 bytes for the browse index, and on Platform it leaves out the history index's chunks, whose size depends on the repository (it says so):
+
 ```sh
 dg cost estimate --bytes 1048576
 ```
 
 ```
-Estimate for 1048576 bytes (platform tier):
-  total:      ~0.39384827 DASH ≈ $11.82
-  storage:    ~0.28311552 DASH ≈ $8.49 (deposit; Platform packs are permanent, not refunded)
-  fees:       ~0.11073275 DASH ≈ $3.32 (per-document and processing)
+Estimate for a first push of 1.0 MiB (~2048 objects assumed) to platform:
+  total:       ~0.42939169 DASH ≈ $12.88  (not counting the history index's chunks; later pushes pay less)
+  metadata:    ~0.0062 DASH ≈ $0.19  4 manifests + 1 ref update, on Platform
+  chunks:      ~0.42319169 DASH ≈ $12.70  pack + browse index on Platform; ~0.30331908 DASH ≈ $9.10 of it is the storage deposit, never refunded (Platform packs are permanent)
+  not priced:  the history index's chunks: their size depends on the repository; `dg cost estimate --path <repository>` prices them
 ```
 
-This is the price `git push` quotes: an upper bound, never below the charge. On the 15 first imports of the beta.6 showcase (a whole repository each: the repository, its pack, its refs, releases and labels), the estimate was 1.08–1.16x the charge for a pack of 5 MiB or more (dashpay/dash, 259 MiB: 1.08x), and 1.08–1.27x for a 1–3 MiB one, where the per-document fees weigh more.
+The price `git push` quotes is an upper bound, never below the charge. On the 15 first imports of the beta.6 showcase (a whole repository each: the repository, its pack, its refs, releases and labels), the estimate was 1.08–1.16x the charge for a pack of 5 MiB or more (dashpay/dash, 259 MiB: 1.08x), and 1.08–1.27x for a 1–3 MiB one, where the per-document fees weigh more.
 
 A deposit only comes back when the document is deleted. Some documents can never be deleted, by design (see [Refunds](#refunds)). For those, the deposit is effectively a one-time cost.
 
@@ -109,11 +135,13 @@ Per-operation cost reference (upper bounds; see `dg cost audit` for what you've 
   ref update                 ~0.00092 DASH ≈ $0.03
   pack manifest              ~0.00112 DASH ≈ $0.03
   pack chunk (14.7 KB)       ~0.00550791 DASH ≈ $0.17
-  issue (~500 B)             ~0.00108658 DASH ≈ $0.03
-  comment (~500 B)           ~0.00070658 DASH ≈ $0.02
+  issue (~500 B)             ~0.00158658 DASH ≈ $0.05
+  comment (~500 B)           ~0.00122658 DASH ≈ $0.04
 ```
 
-These are upper bounds, the prices `dg` and `git push` quote before they sign, not measurements: each is at or above the most the table above measured for that write.
+These are upper bounds, the prices `dg` and `git push` quote before they sign, not measurements: each is priced as the first of its kind (a repository's first issue, a thread's first comment), at or above the most the table above measured for that write.
+
+**Measured on devnet bonsia** (Platform 4.2.0-beta.7, 2026-09-30), where some writes cost more than on moutai: a repository's first issue 0.0012 DASH and a later one 0.0008; a first push to your own bucket 0.0052 DASH and a later one ~0.0040, the history index's manifests included; a limited key for `dg auth login` ~0.00027 DASH and a CI runner key 0.00043 (quoted 0.0005, one identity update); a CI check run 0.00082–0.00122 DASH (see [CI](ci.md#what-it-costs)).
 
 **What you've actually spent.** `dg cost audit` estimates one identity's total Forge spend — with no repository argument, every document it has created across the network, totalled by type and by repository; give it a repository (`dg cost audit owner/name`) for that repository's live pack-storage tally instead. forge-v2 keeps no on-chain spend ledger, so this is `(proved document count) × (that type's flat create cost)`, the same figure shape as the web app's **Settings → Spend** ledger — but the two are not expected to agree: the web ledger is a per-browser history of actual balance changes (so it sees refunds, and misses writes made from any other browser or from `dg` itself), while this audit is a network-wide estimate at each type's flat rate (so it misses a first-of-its-kind write's or an unusually large write's true cost — see the table above). Treat both as estimates, and see [above](#what-each-action-costs) for where they can diverge. `--owner` takes an identity id or a DPNS name and defaults to the signing identity; `--since` takes a duration (`24h`, `7d`, `2w`, `1y`) or an absolute date (`2026-01-01`); neither combines with the repository argument. Its repository scope has one gap: a membership revoked with no other trace left in that repo (no issue/patch filed, no still-registered CI runner, and — in a public repo — no `repoKey`) cannot be found by any proved query; the command's own output says so. `chunk` counts also come from each owned pack's own `packManifest` rather than being queried directly, so a chunk uploaded by a push that never finished with a manifest (interrupted, or a mid-push membership revocation) is not counted either — the output notes this gap too.
 
@@ -181,7 +209,7 @@ Pack bytes are almost all of a repository's size, so where you keep them decides
 
 | Where packs live | You pay | For a 50 MiB repository with 10 pushes a month |
 |---|---|---|
-| **Your bucket** (R2, B2, S3, MinIO) or IPFS | Platform: manifests + refs per push. Provider: storage and egress, at their prices. | ~0.02–0.03 DASH a month on Platform, plus cents to your provider (R2 has no egress fees) |
+| **Your bucket** (R2, B2, S3, MinIO) or IPFS | Platform: manifests + refs per push. Provider: storage and egress, at their prices. | ~0.04 DASH a month on Platform (~0.004 DASH a push to the default branch on bonsia, its history index included), plus cents to your provider (R2 has no egress fees) |
 | **Dash Platform** | ~0.33 DASH per MiB pushed, plus ~0.004 DASH per push | ~17 DASH for the first upload, then ~0.33 DASH per MiB pushed |
 
 Platform storage buys you something: it is stored by the network, and it can never be deleted, even by you. Your bucket is cheap, but it is only as available as your account with the provider. You can have both: `dg storage use r2-main,platform` keeps a copy in each place. See [Bring your own storage](bring-your-own-storage.md).
@@ -213,7 +241,7 @@ The audit trail grows forever: each ref update costs about 0.0006–0.0009 DASH 
 
 ## Seeing costs before you pay
 
-- **`dg` asks first.** Every command that writes asks before it writes (`[y/N]`; `dg init` and `dg repo create` ask `Proceed? [Y/n]` after showing the price) unless you pass `--yes`. `dg repo create`, `dg repack` and `dg repo reindex` show their price before the question. For other commands, use `dg cost estimate` before you write and `dg cost prices` / `dg cost audit` to see the reference table or what you've already spent. With `--json` or no terminal, `dg` refuses to write without `--yes` ([`E802`](../errors.md#e802)).
+- **`dg` asks first.** Every command that writes asks before it writes (`[y/N]`; `dg init` and `dg repo create` ask `Proceed? [Y/n]` after showing the price) unless you pass `--yes`. `dg repo create`, `dg repack` and `dg repo reindex` show their price before the question. For other commands, use `dg cost estimate` before you write (in a repository it quotes a first push of it to `--backend platform`, `s3`, `ipfs`, `https` or `mixed`) and `dg cost prices` / `dg cost audit` to see the reference table or what you've already spent. With `--json` or no terminal, `dg` refuses to write without `--yes` ([`E802`](../errors.md#e802)).
 - **`git push` prints its estimate** before it writes to Platform, and what Platform actually charged when it is done. The estimate prices every write as the first of its kind, so it is an upper bound: 1.08–1.27x the charge on a first import of 1 MiB or more, up to about 1.4x on a tiny first push and 1.7x on a small later one. To make it ask:
   ```sh
   git config --global dash.costWarnThreshold 0.01   # ask above 0.01 DASH
