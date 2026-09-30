@@ -368,6 +368,8 @@ dash: platform     manifest 2 · refUpdate 1     est 0.0032 DASH
 dash: done · Platform charged ≈0.0028 DASH · remaining 0.9938 DASH · https://forge.dashhq.org/repo?owner=5NGj…&name=nas-demo
 ```
 
+**The same profile also takes CI logs.** `dg ci report --log build.log --storage nas` (see [CI and check runs](ci.md)) uploads a run's log to this bucket and records its `https://s3.example.org/forge/...` URL on chain. Nothing extra to set up: the tunnel or reverse-proxy TLS you put in front of the store for pushes is exactly what a self-hosted CI runner needs too, since the web app (served over https) refuses to fetch a plain-http log.
+
 ### Pushing from home
 
 The endpoint, where `dg` writes, is never recorded on chain; only the public URL is. So a profile can write to the NAS over your LAN, which is faster and avoids the tunnel's upload limit, while readers use the public hostname:

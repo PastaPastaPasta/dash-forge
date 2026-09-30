@@ -27,6 +27,25 @@ pub const DOC_TOPIC: &str = "topic";
 /// A milestone of a repo with its progress (the fold's [`crate::rules::v2::Milestone`]).
 pub use crate::rules::v2::Milestone;
 
+/// A `milestone`'s properties besides `repoId` ([`Collab::define_milestone`], after its checks):
+/// `title`, `description` when given, `dueOn`, and `closed`.
+pub(crate) fn milestone_props(
+    title: &str,
+    description: &str,
+    due_on: Option<u64>,
+    closed: bool,
+) -> BTreeMap<String, FieldValue> {
+    let mut p = BTreeMap::from([("title".to_string(), FieldValue::text(title))]);
+    if !description.is_empty() {
+        p.insert("description".to_string(), FieldValue::text(description));
+    }
+    if let Some(due) = due_on {
+        p.insert("dueOn".to_string(), FieldValue::integer(due));
+    }
+    p.insert("closed".to_string(), FieldValue::boolean(closed));
+    p
+}
+
 impl Collab<'_> {
     // --- watch -----------------------------------------------------------------------
 
@@ -186,14 +205,7 @@ impl Collab<'_> {
                 "milestones in a private repository are sealed; this build does not seal them yet (use the web app)".into(),
             ));
         }
-        let mut p = BTreeMap::from([("title".to_string(), FieldValue::text(title))]);
-        if !description.is_empty() {
-            p.insert("description".to_string(), FieldValue::text(description));
-        }
-        if let Some(due) = due_on {
-            p.insert("dueOn".to_string(), FieldValue::integer(due));
-        }
-        p.insert("closed".to_string(), FieldValue::boolean(closed));
+        let p = milestone_props(title, description, due_on, closed);
         self.require_role(repo, Role::Writer, &format!("define milestone {title}"))
             .await?;
         let community = self.community_contract(repo).await?;
