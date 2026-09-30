@@ -30,11 +30,11 @@ The key is written to `runner.dfk1` (0600, unencrypted) *before* it is registere
 
 | Secret | In a terminal | Scripted, piped or in CI |
 |---|---|---|
-| Recovery words (`dg auth new`) | shown once, then the three-word check (`--skip-backup-check` skips only the check) | only in `--backup-file <new file>`, sealed under `DASH_FORGE_PASSPHRASE` (unsealed with `--reveal-secrets`); refused without it |
+| Recovery words (`dg auth new`) | shown once, then the three-word check (`--skip-backup-check` skips only the check, and needs `--backup-file`) | only in `--backup-file <new file>`, sealed under `DASH_FORGE_PASSPHRASE` (unsealed with `--reveal-secrets`); refused without it |
 | Runner key (`dg ci runner new`, `dg auth export`) | only in a new file (`-o`); only the path is printed | the same |
 | Webhook secret (`dg webhook add`) | shown once | only in `--secret-file <new file>`, or your own via `--secret-env`; refused without either |
 
-`dg auth export --format dfk1 --reveal-secrets -o -` prints this computer's limited key on stdout, for piping straight into a secret store (`| gh secret set DASH_FORGE_KEY`). That key can sign any Forge document within its budget; it is not a runner key, so use `dg ci runner new` for check runs. It is refused with `--json`. Never run it where stdout is a CI log.
+`dg auth export --format dfk1 --reveal-secrets -o -` prints this computer's limited key on stdout, for piping straight into a secret store (`| gh secret set DASH_FORGE_KEY`). That key can sign any Forge document within its budget; it is not a runner key, so use `dg ci runner new` for check runs. It is refused with `--json` and when a CI variable is set. Never run it where stdout is a log.
 
 Other commands:
 

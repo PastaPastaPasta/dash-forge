@@ -16,7 +16,7 @@ Reports a GitHub Actions job's result as a [Dash Forge](../README.md) check run 
    dg ci runner new alice/project --runner runner.json -o runner.dfk1
    ```
 
-   In a terminal, `dg auth new` shows the runner's 12 recovery words once and asks for three of them back; `runner.json` gets a passphrase-sealed copy too. Scripted (no terminal), it never prints the words: they go only to `runner.json`, sealed under `DASH_FORGE_PASSPHRASE`, and it refuses to run without `--backup-file`. `--skip-backup-check` only skips the three-word check.
+   In a terminal, `dg auth new` shows the runner's 12 recovery words once and asks for three of them back; `runner.json` gets a passphrase-sealed copy too. Scripted (no terminal), it never prints the words: they go only to `runner.json`, sealed under `DASH_FORGE_PASSPHRASE`, and it refuses to run without `--backup-file`. `--skip-backup-check` only skips the three-word check (and needs `--backup-file`).
 
    Add the contents of `runner.dfk1` as a GitHub secret named `FORGE_RUNNER_KEY`, then delete the file. Keep `runner.json` (it holds the runner's master key and words) somewhere safe, not in CI. See [CI and check runs](../docs/guides/ci.md#enrol-a-runner).
 

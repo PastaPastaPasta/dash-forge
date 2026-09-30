@@ -159,9 +159,9 @@ pub enum NameCommand {
 #[derive(Debug, clap::Args)]
 pub struct ExportArgs {
     /// Where to write (a new file, 0600; default: under the config directory's `exports/`).
-    /// `-` prints the key on stdout, only with --format dfk1 --reveal-secrets and not with
-    /// --json: pipe it straight into a secret store (`| gh secret set DASH_FORGE_KEY`), never
-    /// into a log.
+    /// `-` prints the key on stdout, only with --format dfk1 --reveal-secrets, and never with
+    /// --json or in CI: pipe it straight into a secret store (`| gh secret set DASH_FORGE_KEY`),
+    /// never into a log.
     #[arg(long, short = 'o')]
     pub output: Option<PathBuf>,
     /// Write the secrets unencrypted: a bridge-format file (0600), or with `--format dfk1` the
@@ -1167,6 +1167,8 @@ fn check_export_args(ctx: &Ctx, args: &ExportArgs, to_stdout: bool) -> Result<()
     } else if ctx.json {
         "`-o -` prints the key itself, not a JSON document; drop --json, or write it to a file \
          with -o <file>"
+    } else if crate::secret_out::in_ci() {
+        "`-o -` would print the key into this CI job's log; write it to a file with -o <file>"
     } else if args.new_key {
         "--new-key writes the key to a file (so it is kept before it is registered); pass -o <file>"
     } else {

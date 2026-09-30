@@ -236,8 +236,11 @@ fn print_secret(shown: Option<&str>, file: Option<&std::path::Path>) {
 /// decided before anything is read or signed.
 fn hook_secret(ctx: &Ctx, args: &AddArgs) -> Result<(SecretBytes, bool)> {
     if let Some(var) = &args.secret_env {
-        let value =
-            std::env::var(var).with_context(|| format!("reading the secret from ${var}"))?;
+        // `var_os`, not `var`: a `VarError::NotUnicode` would print the value itself.
+        let value = std::env::var_os(var)
+            .ok_or_else(|| crate::errors::usage(format!("--secret-env: ${var} is not set")))?
+            .into_string()
+            .map_err(|_| crate::errors::usage(format!("--secret-env: ${var} is not UTF-8")))?;
         return Ok((SecretBytes::new(value.into_bytes()), false));
     }
     match &args.secret_file {

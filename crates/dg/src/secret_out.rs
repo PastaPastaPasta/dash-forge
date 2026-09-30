@@ -9,7 +9,7 @@
 //! This covers recovery words (`dg auth new`) and generated webhook secrets (`dg webhook add`).
 //! Keys go only to a file (`dg ci runner new -o`, `dg auth export -o`); the one exception is
 //! `dg auth export --format dfk1 --reveal-secrets -o -`, which asks for stdout explicitly and is
-//! refused with `--json`.
+//! refused with `--json` and in CI.
 
 use std::io::IsTerminal as _;
 use std::path::Path;
@@ -140,6 +140,17 @@ mod tests {
             let x = s(json, terminal, ci);
             assert!(!x.may_show(), "{x:?}");
             assert!(x.why_not().is_some(), "{x:?}");
+        }
+    }
+
+    #[test]
+    fn the_pipe_test_clears_every_ci_marker() {
+        let test = include_str!("../tests/no_secrets_on_pipes.rs");
+        for m in CI_MARKERS {
+            assert!(
+                test.contains(&format!("\"{m}\",")),
+                "{m} is missing from CI_MARKERS there"
+            );
         }
     }
 

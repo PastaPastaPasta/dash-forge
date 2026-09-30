@@ -91,20 +91,21 @@ pub struct BackupArgs {
     /// Write the --backup-file unencrypted.
     #[arg(long, requires = "backup_file")]
     pub reveal_secrets: bool,
-    /// Skip the three-word check after the words are shown on a terminal. It does not print
-    /// or write the words anywhere else: without a terminal they are never shown, and go only
-    /// to --backup-file.
-    #[arg(long)]
+    /// Skip the three-word check after the words are shown on a terminal; needs --backup-file,
+    /// so a copy exists that was not checked by hand. It does not print or write the words
+    /// anywhere else: without a terminal they are never shown, and go only to --backup-file.
+    #[arg(long, requires = "backup_file")]
     pub skip_backup_check: bool,
 }
 
-/// Refuse, before anything is read or asked, a `--backup-file` that cannot be written: one
-/// already there (it is never overwritten), or a sealed one with no passphrase to seal it.
-fn check_backup_file(args: &BackupArgs) -> Result<()> {
+/// Refuse, before anything is read or asked, a `--backup-file` that cannot be written: for a
+/// fresh creation one already there (it is never overwritten; a resume may replace its own,
+/// see [`is_backup_of`]), or a sealed one with no passphrase to seal it.
+fn check_backup_file(args: &BackupArgs, fresh: bool) -> Result<()> {
     let Some(path) = &args.backup_file else {
         return Ok(());
     };
-    if path.symlink_metadata().is_ok() {
+    if fresh && path.symlink_metadata().is_ok() {
         return Err(crate::errors::usage(format!(
             "--backup-file {} exists; name a new file (it is never overwritten)",
             path.display()
@@ -553,13 +554,22 @@ async fn start_or_resume(
     };
     if let Some(path) = &args.backup.backup_file {
         if !fresh {
-            // A resume replaces its own backup (written when the creation started).
+            // A resume replaces its own backup (written when the creation started), and never
+            // any other file: an existing file that is not a backup of these words is refused.
+            let exists = path.symlink_metadata().is_ok();
+            if exists && !is_backup_of(path, &words, backup_pass) {
+                return Err(crate::errors::usage(format!(
+                    "--backup-file {} exists and is not this creation's backup (or its \
+                     passphrase differs); name a new file (it is never overwritten)",
+                    path.display()
+                )));
+            }
             write_backup(
                 path,
                 &keys,
                 j.identity_id.as_deref().unwrap_or(""),
                 backup_pass,
-                false,
+                !exists,
             )?;
         }
         say(
@@ -576,6 +586,26 @@ async fn start_or_resume(
         );
     }
     Ok((keys, j))
+}
+
+/// Whether `path` is a backup of `words` (opened with `pass` when it is sealed): the only file a
+/// resume may replace.
+fn is_backup_of(path: &std::path::Path, words: &Secret, pass: Option<&Secret>) -> bool {
+    let Ok(raw) = std::fs::read_to_string(path).map(zeroize::Zeroizing::new) else {
+        return false;
+    };
+    let json = if forge_core::sealed::is_sealed(&raw) {
+        let Some(pass) = pass else {
+            return false;
+        };
+        match forge_core::sealed::open(&raw, pass.expose()) {
+            Ok(bytes) => zeroize::Zeroizing::new(String::from_utf8_lossy(&bytes).into_owned()),
+            Err(_) => return false,
+        }
+    } else {
+        raw
+    };
+    BridgeIdentity::from_json(&json).is_ok_and(|b| b.mnemonic.expose() == words.expose())
 }
 
 /// Write the backup file: sealed under a passphrase unless `--reveal-secrets`. The first write
@@ -766,8 +796,8 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
     // put its recovery words is refused here (a resume reads the words; it shows none).
     if !args.resume {
         words_destination(&args.backup, Surroundings::detect(ctx.json, Stream::Stderr))?;
-        check_backup_file(&args.backup)?;
     }
+    check_backup_file(&args.backup, !args.resume)?;
     deposit_duffs(args.amount)?;
     let spec = key_spec(ctx, &args.limits, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS)?;
     if let Some(label) = &args.name {
@@ -964,6 +994,19 @@ mod tests {
     }
 
     #[test]
+    fn skip_backup_check_needs_a_backup_file() {
+        use clap::Args as _;
+        let cmd = BackupArgs::augment_args(clap::Command::new("new"));
+        let err = cmd
+            .clone()
+            .try_get_matches_from(["new", "--skip-backup-check"])
+            .unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        cmd.try_get_matches_from(["new", "--skip-backup-check", "--backup-file", "b.json"])
+            .unwrap();
+    }
+
+    #[test]
     fn skip_backup_check_help_does_not_promise_anything_about_printing() {
         use clap::Args as _;
         let cmd = BackupArgs::augment_args(clap::Command::new("new"));
@@ -976,6 +1019,32 @@ mod tests {
         assert!(help.contains("three-word check"), "{help}");
         assert!(!help.contains("Skip showing"), "{help}");
         assert!(help.contains("never shown"), "{help}");
+    }
+
+    #[test]
+    fn a_resume_replaces_only_a_backup_of_the_same_words() {
+        let dir = tempfile::tempdir().unwrap();
+        let words = identity::new_mnemonic().unwrap();
+        let keys =
+            NewIdentityKeys::from_mnemonic(&words, &forge_core::network::Network::Testnet).unwrap();
+        let pass = Secret::new("correct horse battery staple");
+        let sealed = dir.path().join("sealed.json");
+        write_backup(&sealed, &keys, "", Some(&pass), true).unwrap();
+        assert!(is_backup_of(&sealed, &words, Some(&pass)));
+        assert!(!is_backup_of(
+            &sealed,
+            &words,
+            Some(&Secret::new("another passphrase"))
+        ));
+        assert!(!is_backup_of(&sealed, &words, None));
+        let plain = dir.path().join("plain.json");
+        write_backup(&plain, &keys, "", None, true).unwrap();
+        assert!(is_backup_of(&plain, &words, None));
+        let other = identity::new_mnemonic().unwrap();
+        assert!(!is_backup_of(&plain, &other, None));
+        let unrelated = dir.path().join("notes.txt");
+        std::fs::write(&unrelated, "not a backup").unwrap();
+        assert!(!is_backup_of(&unrelated, &words, None));
     }
 
     #[test]

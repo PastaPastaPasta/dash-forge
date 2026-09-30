@@ -51,14 +51,14 @@ fn tokens(text: &str) -> impl Iterator<Item = String> + '_ {
         .map(str::to_ascii_lowercase)
 }
 
-/// The whole words of `text`: whitespace-separated, stripped of surrounding punctuation
-/// (quotes, commas, a list number's dot), and made only of letters. An address, an id or a
-/// path is one token with digits or slashes in it, so it never matches a word by accident.
+/// The words of `text`: its letter runs, in any punctuation (a numbered list, compact JSON,
+/// a comma- or colon-joined phrase). Whitespace-separated pieces holding a digit or a `/` are
+/// skipped first: an address, an id or a path, whose letter runs could match a short word by
+/// accident.
 fn words(text: &str) -> impl Iterator<Item = String> + '_ {
     text.split_whitespace()
-        .map(|t| t.trim_matches(|c: char| !c.is_ascii_alphabetic()))
-        .filter(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_alphabetic()))
-        .map(str::to_ascii_lowercase)
+        .filter(|t| !t.contains(|c: char| c.is_ascii_digit() || c == '/'))
+        .flat_map(tokens)
 }
 
 /// Every token of the dg and forge-core sources: the words dg's own messages can contain.
@@ -214,7 +214,8 @@ fn assert_not_leaked(what: &str, text: &str, secret_words: &str, wif: Option<&st
 
 #[test]
 fn the_grep_catches_words_printed_the_way_the_bug_printed_them() {
-    // QW2-001's output: the numbered list on stderr. Each check alone must catch it.
+    // QW2-001's output (the numbered list on stderr), and the other shapes a regression could
+    // print words in (a phrase, compact JSON, a comma list, a Debug list).
     let vocabulary = source_vocabulary();
     let mut caught_by_vocabulary = 0;
     for _ in 0..50 {
@@ -224,8 +225,20 @@ fn the_grep_catches_words_printed_the_way_the_bug_printed_them() {
             write!(leak, "  {:>2}. {w:<12}", i + 1).unwrap();
         }
         assert!(numbered_bip39_word(&leak).is_some());
-        let phrase = format!("\"mnemonic\": \"{}\"", words.expose());
-        if !foreign_bip39_words(&phrase, &vocabulary).is_empty() {
+        let list: Vec<&str> = words.expose().split(' ').collect();
+        let shapes = [
+            format!("\"mnemonic\": \"{}\"", words.expose()),
+            serde_json::to_string(&list).unwrap(),
+            list.join(","),
+            format!("{list:?}"),
+        ];
+        let foreign: Vec<_> = shapes
+            .iter()
+            .map(|s| foreign_bip39_words(s, &vocabulary))
+            .collect();
+        // Every shape yields the same words: the check does not depend on the formatting.
+        assert!(foreign.windows(2).all(|w| w[0] == w[1]), "{foreign:?}");
+        if !foreign[0].is_empty() {
             caught_by_vocabulary += 1;
         }
     }
@@ -251,15 +264,6 @@ fn auth_new_without_a_terminal_refuses_and_prints_no_words() {
             "bonsia",
         ][..],
         &[
-            "auth",
-            "new",
-            "--network",
-            "devnet",
-            "--devnet-name",
-            "bonsia",
-            "--skip-backup-check",
-        ],
-        &[
             "--json",
             "auth",
             "new",
@@ -267,7 +271,6 @@ fn auth_new_without_a_terminal_refuses_and_prints_no_words() {
             "devnet",
             "--devnet-name",
             "bonsia",
-            "--skip-backup-check",
         ],
     ] {
         let out = home.run(args);
@@ -277,8 +280,50 @@ fn auth_new_without_a_terminal_refuses_and_prints_no_words() {
         assert!(text.contains("--backup-file"), "dg {args:?}: {text}");
         assert_no_recovery_words(&format!("dg {args:?}"), &text, &vocabulary);
     }
+    // --skip-backup-check alone is refused too: it needs a --backup-file.
+    let out = home.run(&[
+        "auth",
+        "new",
+        "--network",
+        "devnet",
+        "--devnet-name",
+        "bonsia",
+        "--skip-backup-check",
+    ]);
+    let text = all_output(&out);
+    assert_eq!(out.status.code(), Some(2), "{text}");
+    assert!(text.contains("--backup-file"), "{text}");
+    assert_no_recovery_words("dg auth new --skip-backup-check", &text, &vocabulary);
     // Nothing was started: no journal asks for --resume.
     assert!(!home.path("state/dash-forge/journals").exists());
+}
+
+#[test]
+fn the_qa_repro_prints_no_words() {
+    // QW2-001's exact command, with every stream a pipe. The DAPI is dead here, so the run
+    // stops at the network; what matters is that nothing before that printed the words.
+    let vocabulary = source_vocabulary();
+    let home = Home::new();
+    let backup = home.path("b.json");
+    let out = home
+        .dg(&[
+            "auth",
+            "new",
+            "--network",
+            "devnet",
+            "--devnet-name",
+            "bonsia",
+            "--skip-backup-check",
+            "--backup-file",
+            backup.to_str().unwrap(),
+        ])
+        .env("DASH_FORGE_PASSPHRASE", "correct horse battery staple")
+        .output()
+        .unwrap();
+    let text = all_output(&out);
+    assert!(!out.status.success(), "{text}");
+    assert_no_recovery_words("the QW2-001 repro", &text, &vocabulary);
+    assert!(!text.contains("Your recovery words"), "{text}");
 }
 
 #[test]
@@ -294,7 +339,6 @@ fn auth_new_under_ci_refuses_without_a_backup_file() {
             "devnet",
             "--devnet-name",
             "bonsia",
-            "--skip-backup-check",
         ])
         .env("CI", "true")
         .output()
