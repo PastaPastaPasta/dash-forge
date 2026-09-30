@@ -69,21 +69,23 @@ export function TabStrip({
     // Keep the active tab inside the strip by scrolling the strip only (scrollIntoView would
     // also scroll the page, e.g. jump to the tabs when Back restores a scrolled position). On a
     // new active tab it is placed by `stripScroll`, and placed again on a resize (a count that
-    // loads later widens its tab) unless the user has swiped the strip since, in which case
-    // only an active tab pushed out of view brings it back.
-    let placedAt: number | null = null
+    // loads later widens its tab) until the user scrolls the strip themselves; after that only
+    // an active tab pushed out of view brings it back.
+    let userScrolled = false
+    const touched = (): void => {
+      userScrolled = true
+    }
     const reveal = (place: boolean): void => {
       const tabs = ([...el.children] as HTMLElement[]).filter((t) => t !== padRef.current)
       const at = tabs.findIndex((t) => t.matches('[aria-current="page"], [aria-selected="true"]'))
       const origin = tabs[0]?.offsetLeft ?? 0
       const boxes = tabs.map((t) => ({ left: t.offsetLeft - origin, width: t.offsetWidth }))
       const on = boxes[at]
-      const untouched = placedAt !== null && Math.abs(el.scrollLeft - placedAt) <= 1
-      if (on !== undefined && (place || untouched || on.left < el.scrollLeft - 1 || on.left + on.width > el.scrollLeft + el.clientWidth + 1)) {
+      const outOfView = on !== undefined && (on.left < el.scrollLeft - 1 || on.left + on.width > el.scrollLeft + el.clientWidth + 1)
+      if (on !== undefined && (place || !userScrolled || outOfView)) {
         const next = stripScroll(boxes, at, el.clientWidth)
         if (padRef.current) padRef.current.style.width = `${next.pad}px`
         el.scrollLeft = next.left
-        placedAt = el.scrollLeft
       }
       measure()
     }
@@ -91,7 +93,12 @@ export function TabStrip({
     const ro = new ResizeObserver(() => reveal(false))
     ro.observe(el)
     for (const tab of el.children) ro.observe(tab)
-    return () => ro.disconnect()
+    const gestures = ['pointerdown', 'wheel', 'keydown'] as const
+    for (const g of gestures) el.addEventListener(g, touched, { passive: true })
+    return () => {
+      ro.disconnect()
+      for (const g of gestures) el.removeEventListener(g, touched)
+    }
   }, [activeKey, measure])
   const fade = 'pointer-events-none absolute inset-y-0 w-8 from-anvil-50 to-transparent dark:from-anvil-950'
   const Tag = role === 'tablist' ? 'div' : 'nav'
