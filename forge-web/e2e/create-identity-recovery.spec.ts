@@ -48,6 +48,7 @@ async function openDeposit(page: Page): Promise<string> {
   await page.getByTestId('tile-create').click()
   const words = page.getByTestId('mnemonic-words')
   await expect(words).toBeVisible({ timeout: 60_000 })
+  await page.getByRole('button', { name: /reveal recovery words/i }).click()
   const list = await words.locator('[data-word]').allInnerTexts()
   await page.getByRole('button', { name: /i wrote them down/i }).click()
   for (const input of await page.getByLabel(/^Word \d+$/).all()) {

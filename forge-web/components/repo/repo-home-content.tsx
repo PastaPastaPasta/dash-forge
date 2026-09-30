@@ -246,11 +246,11 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
         </h2>
       </div>
       <h3 className="mb-1.5 text-dense font-medium">Push an existing repository</h3>
-      <CopyRow text={cmd.remoteAdd} />
+      <CopyRow text={cmd.remoteAdd} label="Copy the remote add command" />
       <CopyRow text={cmd.setNetwork} label="Copy the network setting" />
-      <CopyRow text={`git push -u origin ${shellWord(branch.replace(/^refs\/heads\//, ''))}`} />
+      <CopyRow text={`git push -u origin ${shellWord(branch.replace(/^refs\/heads\//, ''))}`} label="Copy the push command" />
       <h3 className="mb-1.5 mt-4 text-dense font-medium">Or start from scratch</h3>
-      <CopyRow text={`${cmd.dgClone} && cd ${shellWord(addr.name)}`} />
+      <CopyRow text={`${cmd.dgClone} && cd ${shellWord(addr.name)}`} label="Copy the clone command" />
       <p className="mt-2 text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="empty-repo-network">
         This repository is on <span className="font-mono">{ACTIVE_NETWORK.key}</span>: the commands set that in the
         repository&apos;s git config, so a later <span className="font-mono">git push</span> goes there.

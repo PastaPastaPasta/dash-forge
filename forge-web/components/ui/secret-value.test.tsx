@@ -31,6 +31,13 @@ describe('SecretValue', () => {
     expect(host.textContent).toContain('•')
   })
 
+  it('masks with the same 24 dots whatever the length (a short value, an empty one)', () => {
+    for (const value of ['abc', '']) {
+      act(() => root.render(<SecretValue label="the secret" value={value} />))
+      expect(host.querySelector('code')!.textContent).toBe('•'.repeat(24))
+    }
+  })
+
   it('shows the value only when asked, and hides it again', () => {
     act(() => root.render(<SecretValue label="the DASH_FORGE_KEY value" value={SECRET} />))
     const toggle = (): HTMLButtonElement => host.querySelector<HTMLButtonElement>('button[aria-pressed]')!

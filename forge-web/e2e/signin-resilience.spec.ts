@@ -290,6 +290,7 @@ test('s9. Create: a passphrase typed on Resume does not carry into the new words
   await expect(words12.or(anyway).first()).toBeVisible({ timeout: 60_000 })
   if (await anyway.isVisible()) await anyway.click()
   await expect(words12).toHaveCount(12, { timeout: 60_000 })
+  await dialog.getByRole('button', { name: /reveal recovery words/i }).click()
   const words = await page.getByTestId('mnemonic-words').locator('[data-word]').allInnerTexts()
   await dialog.getByRole('button', { name: /i wrote them down/i }).click()
   for (const input of await dialog.locator('input[id^="quiz-"]').all()) {

@@ -9,7 +9,7 @@
  * revoke disables it; without it, a registered key stays valid, unused, until it expires.
  */
 
-import { useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { useAuth } from '@/contexts/auth-context'
 import { useAsync } from '@/hooks/use-async'
 import { useUiStore } from '@/hooks/use-ui-store'
@@ -26,7 +26,17 @@ export function PendingRenewal({ identityId }: { identityId: string }): JSX.Elem
   const [error, setError] = useState<string | null>(null)
   const [discarding, setDiscarding] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [passphrase, setPassphrase] = useState('')
+  // The passphrase lives only in the input's value property (an uncontrolled input): React
+  // mirrors a controlled input's value into the `value` attribute, which puts it in the DOM.
+  const passphraseRef = useRef<HTMLInputElement | null>(null)
+  const [hasPassphrase, setHasPassphrase] = useState(false)
+  // Wipe the field as React detaches it (a cleanup effect runs too late: the ref is null); a
+  // remounted field is empty, and so is the flag.
+  const bindPassphrase = useCallback((el: HTMLInputElement | null) => {
+    if (el === null && passphraseRef.current) passphraseRef.current.value = ''
+    if (el === null) setHasPassphrase(false)
+    passphraseRef.current = el
+  }, [])
   // A reloaded tab holds the signing key only: keeping the renewal's key needs the vault open.
   const [unlockFirst, setUnlockFirst] = useState<(() => void) | null>(null)
   const { data, reload } = useAsync(() => controller.pendingRenewal(identityId), [identityId])
@@ -36,7 +46,8 @@ export function PendingRenewal({ identityId }: { identityId: string }): JSX.Elem
     setBusy(true)
     try {
       await controller.abandonPendingRenewal(identityId, unlockWith)
-      setPassphrase('')
+      if (passphraseRef.current) passphraseRef.current.value = ''
+      setHasPassphrase(false)
       setDiscarding(false)
       reload()
     } catch (e) {
@@ -83,12 +94,12 @@ export function PendingRenewal({ identityId }: { identityId: string }): JSX.Elem
           </p>
           {data.methods.includes('passphrase') ? (
             <Field label="The renewal's passphrase" htmlFor="discard-renewal-passphrase">
-              <Input id="discard-renewal-passphrase" type="password" autoComplete="off" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} />
+              <Input id="discard-renewal-passphrase" ref={bindPassphrase} type="password" autoComplete="off" onChange={(e) => setHasPassphrase(e.target.value !== '')} />
             </Field>
           ) : null}
           <div className="flex flex-wrap gap-2">
             {data.methods.includes('passphrase') ? (
-              <Button variant="outline" size="sm" loading={busy} disabled={passphrase === ''} onClick={() => void discard({ passphrase })}>
+              <Button variant="outline" size="sm" loading={busy} disabled={!hasPassphrase} onClick={() => void discard({ passphrase: passphraseRef.current?.value ?? '' })}>
                 Keep its key and discard
               </Button>
             ) : null}

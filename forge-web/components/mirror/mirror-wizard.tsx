@@ -98,6 +98,9 @@ export function MirrorWizard(): JSX.Element {
   // and only for the identity it was made on (a sign-out or switch drops it from view).
   const [made, setMade] = useState<{ identity: string; value: string } | null>(null)
   const secret = made !== null && made.identity === identity ? made.value : null
+  // A sign-out or switch drops the value itself, not only from view: switching back must not
+  // bring the last identity's key back.
+  useEffect(() => setMade(null), [identity])
 
   const show = useCallback((next: MirrorProgress): void => {
     progressRef.current = next

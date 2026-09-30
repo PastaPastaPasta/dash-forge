@@ -60,7 +60,8 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
   const network = ACTIVE_NETWORK.network
   const [step, setStep] = useState<Step>('loading')
   // The words are the identity: held in a ref (not React state) and dropped on unmount. They
-  // are rendered once for the backup, which is unavoidable; nothing else keeps them.
+  // are rendered for the backup only after "Reveal" (not in the DOM before it, so a screen
+  // share or a screenshot of the sheet does not carry them); nothing else keeps them.
   const mnemonicRef = useRef<string | null>(null)
   const [wordsShown, setWordsShown] = useState(0)
   const mnemonic = wordsShown > 0 ? mnemonicRef.current : null
@@ -68,8 +69,14 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     mnemonicRef.current = m
     setWordsShown((n) => n + 1)
   }
+  const [revealed, setRevealed] = useState(false)
   const [positions, setPositions] = useState<number[]>([])
-  const [answers, setAnswers] = useState<string[]>(['', '', ''])
+  // The quiz answers are words of the phrase: they live in the inputs' value property only (an
+  // uncontrolled input; React mirrors a controlled input's value into the `value` attribute).
+  // State keeps only whether each is filled in and whether it is wrong.
+  const answerRefs = useRef<(HTMLInputElement | null)[]>([null, null, null])
+  const [filled, setFilled] = useState<boolean[]>([false, false, false])
+  const [wrong, setWrong] = useState<boolean[]>([false, false, false])
   // Which quiz answers to judge: one the user has left (blur) or tried to continue with. A word
   // is not marked wrong while it is still being typed.
   const [judged, setJudged] = useState<boolean[]>([false, false, false])
@@ -155,9 +162,17 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     [],
   )
 
-  const quizOk = positions.length === 3 && positions.every((p, i) => quizAnswerOk(answers[i] ?? '', words[p]))
-  const quizFilled = answers.every((a) => a.trim() !== '')
-  const quizWrong = (i: number): boolean => judged[i] === true && (answers[i] ?? '').trim() !== '' && !quizAnswerOk(answers[i] ?? '', words[positions[i]!])
+  const answer = (i: number): string => answerRefs.current[i]?.value ?? ''
+  const answerWrong = (i: number): boolean => answer(i).trim() !== '' && !quizAnswerOk(answer(i), words[positions[i]!])
+  const quizFilled = filled.every(Boolean)
+  const quizWrong = (i: number): boolean => judged[i] === true && wrong[i] === true
+  /** The words masked again and the quiz empty (its fields remount empty: so does its state). */
+  const resetBackup = (): void => {
+    setRevealed(false)
+    setFilled([false, false, false])
+    setWrong([false, false, false])
+    setJudged([false, false, false])
+  }
 
   /** The deposit address of `m` once the words check out, or null with the error shown. */
   const checkWords = async (m: string): Promise<string | null> => {
@@ -271,8 +286,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
       setDiscardWarning(null)
       setResumeWords('')
       // Fresh words come from the loading step (bounded, with "Try again").
-      setAnswers(['', '', ''])
-      setJudged([false, false, false])
+      resetBackup()
       setStep('loading')
       setAttempt((a) => a + 1)
     } catch (e) {
@@ -324,10 +338,14 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         <ol data-testid="mnemonic-words" className="grid grid-cols-3 gap-1.5 rounded-md border border-anvil-200 p-3 font-mono text-dense dark:border-anvil-800">
           {words.map((w, i) => (
             <li key={i}>
-              <span className="text-anvil-500 dark:text-anvil-400">{i + 1}.</span> <span data-word={i}>{w}</span>
+              <span className="text-anvil-500 dark:text-anvil-400">{i + 1}.</span>{' '}
+              {revealed ? <span data-word={i}>{w}</span> : <span aria-hidden>••••••</span>}
             </li>
           ))}
         </ol>
+        <Button variant="outline" className="w-full" disabled={words.length === 0} aria-pressed={revealed} onClick={() => setRevealed((r) => !r)}>
+          {revealed ? 'Hide recovery words' : 'Reveal recovery words'}
+        </Button>
         <div className="flex gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-caution-700 dark:text-caution-400">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
           <span>
@@ -350,15 +368,22 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
           <Field key={p} label={`Word ${p + 1}`} htmlFor={`quiz-${p}`}>
             <Input
               id={`quiz-${p}`}
-              value={answers[i] ?? ''}
+              ref={(el) => {
+                answerRefs.current[i] = el
+              }}
               autoComplete="off"
               autoCapitalize="none"
               spellCheck={false}
               aria-invalid={quizWrong(i) || undefined}
               aria-describedby={quizWrong(i) ? `quiz-${p}-wrong` : undefined}
               className={quizWrong(i) ? 'border-danger focus-visible:border-danger dark:border-danger' : undefined}
-              onChange={(e) => setAnswers((a) => a.map((x, j) => (j === i ? e.target.value : x)))}
-              onBlur={() => setJudged((d) => d.map((x, j) => (j === i ? (answers[i] ?? '').trim() !== '' : x)))}
+              onChange={(e) => {
+                const isFilled = e.target.value.trim() !== ''
+                const isWrong = answerWrong(i)
+                setFilled((f) => f.map((x, j) => (j === i ? isFilled : x)))
+                setWrong((w) => w.map((x, j) => (j === i ? isWrong : x)))
+              }}
+              onBlur={() => setJudged((d) => d.map((x, j) => (j === i ? answer(i).trim() !== '' : x)))}
             />
             {quizWrong(i) ? (
               <p id={`quiz-${p}-wrong`} role="alert" className="text-[12px] text-danger-700 dark:text-danger-400" data-testid="quiz-wrong">
@@ -368,7 +393,13 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
           </Field>
         ))}
         <div className="flex gap-2">
-          <Button variant="ghost" onClick={() => setStep('words')}>
+          <Button
+            variant="ghost"
+            onClick={() => {
+              resetBackup()
+              setStep('words')
+            }}
+          >
             Show words again
           </Button>
           <Button
@@ -376,7 +407,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
             className="flex-1"
             disabled={!quizFilled}
             onClick={() => {
-              if (quizOk) setStep('protect')
+              if (positions.length === 3 && positions.every((p, i) => quizAnswerOk(answer(i), words[p]))) setStep('protect')
               // Say which words are wrong rather than doing nothing.
               else setJudged([true, true, true])
             }}

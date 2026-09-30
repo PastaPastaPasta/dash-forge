@@ -81,7 +81,17 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
    * passphrase or passkey, when the one chosen here is not it.
    */
   const [renewalLocked, setRenewalLocked] = useState<{ message: string; methods: readonly ('passkey' | 'passphrase')[] } | null>(null)
-  const [renewalPassphrase, setRenewalPassphrase] = useState('')
+  // The renewal's passphrase lives only in the input's value property (an uncontrolled input):
+  // React mirrors a controlled input's value into the `value` attribute, which puts it in the DOM.
+  const renewalPassphraseRef = useRef<HTMLInputElement | null>(null)
+  const [hasRenewalPassphrase, setHasRenewalPassphrase] = useState(false)
+  // Wipe the field as React detaches it (a cleanup effect runs too late: the ref is null); a
+  // remounted field is empty, and so is the flag.
+  const bindRenewalPassphrase = useCallback((el: HTMLInputElement | null) => {
+    if (el === null && renewalPassphraseRef.current) renewalPassphraseRef.current.value = ''
+    if (el === null) setHasRenewalPassphrase(false)
+    renewalPassphraseRef.current = el
+  }, [])
   // What the request is waiting for before its QR can show.
   const [preparing, setPreparing] = useState(PHASE_TEXT.connecting)
   const [attempt, setAttempt] = useState(0)
@@ -120,7 +130,8 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
       grant.current = null
       setPendingRenewal(null)
       setRenewalLocked(null)
-      setRenewalPassphrase('')
+      if (renewalPassphraseRef.current) renewalPassphraseRef.current.value = ''
+      setHasRenewalPassphrase(false)
       onDone()
     } catch (e) {
       if (e instanceof PendingRenewalChoiceError) setPendingRenewal(e.message)
@@ -267,12 +278,12 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
                 <p>{renewalLocked.message}</p>
                 {renewalLocked.methods.includes('passphrase') ? (
                   <Field label="The renewal's passphrase" htmlFor="renewal-passphrase">
-                    <Input id="renewal-passphrase" type="password" autoComplete="off" value={renewalPassphrase} onChange={(e) => setRenewalPassphrase(e.target.value)} />
+                    <Input id="renewal-passphrase" ref={bindRenewalPassphrase} type="password" autoComplete="off" onChange={(e) => setHasRenewalPassphrase(e.target.value !== '')} />
                   </Field>
                 ) : null}
                 <div className="flex flex-wrap gap-2">
                   {renewalLocked.methods.includes('passphrase') ? (
-                    <Button variant="outline" size="sm" loading={isLoading} disabled={renewalPassphrase === ''} onClick={() => void finish(true, { passphrase: renewalPassphrase })}>
+                    <Button variant="outline" size="sm" loading={isLoading} disabled={!hasRenewalPassphrase} onClick={() => void finish(true, { passphrase: renewalPassphraseRef.current?.value ?? '' })}>
                       Keep its key and continue
                     </Button>
                   ) : null}

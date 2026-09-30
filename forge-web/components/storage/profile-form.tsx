@@ -188,7 +188,9 @@ export function ProfileForm({
               spellCheck={false}
               className="font-mono"
               placeholder={keepable ? '•••••••• (stored)' : f.placeholder}
-              value={typeof values[f.key] === 'string' ? (values[f.key] as string) : ''}
+              // Secret fields are uncontrolled: React mirrors a controlled input's value into the
+              // `value` attribute, which would put the credential in the DOM. They start empty.
+              value={f.secret ? undefined : typeof values[f.key] === 'string' ? (values[f.key] as string) : ''}
               onChange={(e) => set(f.key, e.target.value)}
               aria-describedby={hint || f.secret ? `${id}-hint` : undefined}
             />

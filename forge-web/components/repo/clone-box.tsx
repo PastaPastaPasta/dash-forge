@@ -185,8 +185,8 @@ function InstallSheet({ open, onClose }: { open: boolean; onClose: () => void })
       <div className="space-y-3 text-dense">
         <div>
           <h3 className="mb-1 font-medium">From source (works today, any OS)</h3>
-          <CopyRow text="git clone https://github.com/PastaPastaPasta/dash-forge && cd dash-forge" />
-          <CopyRow text="cargo install --locked --path crates/dg && cargo install --locked --path crates/git-remote-dash" />
+          <CopyRow text="git clone https://github.com/PastaPastaPasta/dash-forge && cd dash-forge" label="Copy the source clone command" />
+          <CopyRow text="cargo install --locked --path crates/dg && cargo install --locked --path crates/git-remote-dash" label="Copy the cargo install command" />
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
             Needs Rust and protoc 25 or newer (
             <a href={BUILDING_URL} target="_blank" rel="noreferrer noopener" className={link}>
@@ -204,7 +204,7 @@ function InstallSheet({ open, onClose }: { open: boolean; onClose: () => void })
             </a>
             . Until there is one, the installer stops and says so. Linux and macOS:
           </p>
-          <CopyRow text="curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh" />
+          <CopyRow text="curl -fsSL https://raw.githubusercontent.com/PastaPastaPasta/dash-forge/master/install.sh | sh" label="Copy the install command" />
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
             It checks the release&apos;s SHA-256 (and its GitHub attestation when <span className="font-mono">gh</span> is signed in),
             then installs into <span className="font-mono">~/.local/bin</span>. Windows: the .zip on the Releases page.
