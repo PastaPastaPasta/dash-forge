@@ -6,7 +6,8 @@ use serde_json::json;
 use forge_core::cost::{estimate, push_fees};
 use forge_core::cost_audit::{self, AuditReport};
 use forge_core::pack::DOC_PAYLOAD_MAX;
-use forge_core::repo::RepoService;
+use forge_core::repo::{prepare_history_index, HistoryCost, HistoryPlan, RepoService};
+use forge_core::storage::human_bytes;
 use forge_import::budget::{collab_doc_credits, CollabDoc};
 
 use crate::common::{resolve, RepoRef};
@@ -37,22 +38,7 @@ pub async fn run(ctx: &Ctx, cmd: &CostCommand) -> Result<()> {
 /// §What each action costs).
 fn prices_cmd(ctx: &Ctx) {
     let price = dash_usd_price();
-    // Upper bounds from the fees measured on moutai (`push_fees`, the importer's calibrated
-    // collaboration model); docs/guides/costs.md has the measured table.
-    let ops = [
-        ("repo create", REPO_CREATE_ESTIMATE_CREDITS),
-        ("ref update", push_fees::REF_FIRST),
-        ("pack manifest", push_fees::MANIFEST_FIRST),
-        (
-            "pack chunk (14.7 KB)",
-            push_fees::chunks(DOC_PAYLOAD_MAX as u64),
-        ),
-        ("issue (~500 B)", collab_doc_credits(CollabDoc::Target, 500)),
-        (
-            "comment (~500 B)",
-            collab_doc_credits(CollabDoc::Comment, 500),
-        ),
-    ];
+    let ops = price_table();
     let rows: Vec<_> = ops
         .iter()
         .map(|(op, credits)| json!({ "op": op, "cost": cost_json(*credits, price) }))
@@ -61,7 +47,7 @@ fn prices_cmd(ctx: &Ctx) {
         json!({
             "mode": "per_operation_estimates",
             "operations": rows,
-            "note": "upper bounds from fees measured on devnet moutai; for what one identity has actually spent, use `dg cost audit`",
+            "note": "upper bounds: each write priced as the first of its kind (a repository's first issue, a thread's first comment), from fees measured on devnets moutai and bonsia; for what one identity has actually spent, use `dg cost audit`",
         }),
         || {
             println!("Per-operation cost reference (upper bounds; see `dg cost audit` for what you've spent):");
@@ -72,48 +58,332 @@ fn prices_cmd(ctx: &Ctx) {
     );
 }
 
-/// A pre-write quote for storing `bytes` bytes as Platform `chunk` documents, priced like
-/// `git push` prices them (platform tier). External
-/// backends move the pack bytes off-chain — only the manifest + refs are billed on-chain —
-/// so the figure is labeled with the chosen backend.
+/// What a write that is the first of its kind pays beyond a later one of the same size: its
+/// new index subtrees (a repository's first issue, a thread's first comment). Measured on
+/// devnet bonsia (Platform 4.2.0-beta.7, 2026-09-30): a repository's first issue 120.9M
+/// credits, its second 80.1M (QW-038: the table priced the later one, and was exceeded).
+const FIRST_OF_KIND_EXTRA: u64 = 50_000_000;
+
+/// `dg cost prices`' rows: upper bounds from the fees measured on moutai and bonsia
+/// (`push_fees`, the importer's calibrated collaboration model); docs/guides/costs.md has the
+/// measured table.
+fn price_table() -> [(&'static str, u64); 6] {
+    [
+        ("repo create", REPO_CREATE_ESTIMATE_CREDITS),
+        ("ref update", push_fees::REF_FIRST),
+        ("pack manifest", push_fees::MANIFEST_FIRST),
+        (
+            "pack chunk (14.7 KB)",
+            push_fees::chunks(DOC_PAYLOAD_MAX as u64),
+        ),
+        (
+            "issue (~500 B)",
+            collab_doc_credits(CollabDoc::Target, 500) + FIRST_OF_KIND_EXTRA,
+        ),
+        (
+            "comment (~500 B)",
+            collab_doc_credits(CollabDoc::Comment, 500) + FIRST_OF_KIND_EXTRA,
+        ),
+    ]
+}
+
+/// Pack bytes per object assumed when only a size is known (`--bytes`, a file), for the browse
+/// index a push publishes (36 bytes per object). A typical density, not a bound: a pack of many
+/// small deltas holds more objects, so a size-only Platform quote says the count is assumed and
+/// does not call itself an upper bound. `--path <repository>` counts the real objects.
+const BYTES_PER_OBJECT: u64 = 512;
+
+/// What `dg cost estimate` prices: a first push of `bytes` of pack (`objects` objects).
+#[derive(Debug, Clone)]
+struct PushInput {
+    /// What was measured, for the heading (`1.0 MiB`, `the repository at .`).
+    what: String,
+    bytes: u64,
+    objects: u64,
+    /// The objects were counted in a repository (else assumed from the size).
+    counted: bool,
+    /// The history index of the repository's `HEAD`, when it was computed (`--path`).
+    history: Option<HistoryCost>,
+    /// The repository, when one was measured (its storage policy is the default backend).
+    repo: Option<std::path::PathBuf>,
+}
+
+impl PushInput {
+    /// Only a size is known: objects are assumed ([`BYTES_PER_OBJECT`]), the history index is
+    /// not.
+    fn sized(what: String, bytes: u64) -> Self {
+        Self {
+            what,
+            bytes,
+            objects: bytes.div_ceil(BYTES_PER_OBJECT).max(1),
+            counted: false,
+            history: None,
+            repo: None,
+        }
+    }
+}
+
+/// Where a quoted push stores its pack bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Target {
+    /// `platform`, `s3`, or a repository's profiles (`r2-main, platform`).
+    label: String,
+    /// Platform stores the bytes as `chunk` documents.
+    platform: bool,
+    /// External targets: each adds its URIs to every manifest.
+    external: u64,
+}
+
+impl Target {
+    /// A `--backend`: `platform` stores on Platform, `mixed` on Platform and one bucket, and
+    /// `s3`, `ipfs` and `https` in one bucket or node of your own.
+    fn backend(b: Backend) -> Self {
+        Self {
+            label: b.label().to_string(),
+            platform: matches!(b, Backend::Platform | Backend::Mixed),
+            external: u64::from(b != Backend::Platform),
+        }
+    }
+
+    /// The storage `git push` in `dir` would use: its `dash.storage` / `dash.replicas` /
+    /// `dash.platformFallback` (repository or global git config), resolved against the storage
+    /// profiles; Platform when none is set.
+    fn repository(dir: &std::path::Path) -> Result<Self> {
+        use forge_core::storage::{StoragePolicy, StorageProfiles};
+        let get = |key: &str| crate::git::config_get(dir, key);
+        let policy = StoragePolicy::from_git_values(
+            get("dash.storage").as_deref(),
+            get("dash.replicas").as_deref(),
+            get("dash.platformFallback").as_deref(),
+        )?;
+        if policy.is_platform_only() {
+            return Ok(Self::backend(Backend::Platform));
+        }
+        let resolved = policy
+            .resolve(&StorageProfiles::load()?)
+            .context("resolving this repository's dash.storage (`--backend` prices another)")?;
+        Ok(Self {
+            label: format!("{} (dash.storage)", resolved.target_names().join(", ")),
+            platform: resolved.platform,
+            external: resolved.external.len() as u64,
+        })
+    }
+}
+
+/// A first push's on-chain price, as `git push` quotes it (`push_fees`; every write priced as
+/// the first of its kind, so an upper bound: later pushes pay less).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PushQuote {
+    /// The manifests (the pack's, its browse index's, the history index's) and the ref update:
+    /// on Platform whatever stores the bytes.
+    metadata: u64,
+    /// The `chunk` documents (pack, browse index, the history index when it is known): only
+    /// when Platform stores the bytes.
+    chunks: u64,
+    /// The storage deposit within `chunks` (Platform packs are never deleted, so never refunded).
+    deposit: u64,
+    /// `packManifest` documents written.
+    manifests: u32,
+    /// Platform stores the history index's chunks, but its size is unknown (only a size was
+    /// given), so they are not in the total.
+    history_chunks_unpriced: bool,
+}
+
+impl PushQuote {
+    fn total(&self) -> u64 {
+        self.metadata + self.chunks
+    }
+}
+
+/// Price a first push of `input` to `target` from the primitives git-remote-dash prices one
+/// with (`PackJob::estimate`): its pack and browse index (`push_fees::estimate_push`), one ref
+/// update, and the history index a push to the default branch publishes
+/// (`HistoryCost::credits`). External storage keeps the bytes off-chain: Platform bills only
+/// the manifests (with each target's URIs) and the ref update.
+fn quote(target: &Target, input: &PushInput) -> PushQuote {
+    let (platform, external) = (target.platform, target.external);
+    let push = push_fees::estimate_push(&push_fees::PushShape {
+        pack_bytes: input.bytes,
+        objects: input.objects,
+        index_objects: input.objects,
+        refs: 1,
+        external_targets: external,
+        platform_bytes: platform,
+        sealed: false,
+    });
+    // A first history index: each part pays the first-of-kind fee. Unknown, it is priced as
+    // the two manifests a first one writes, without chunks.
+    let (history_manifests, history_meta, history_chunks, history_bytes) = match input.history {
+        Some(h) => {
+            let meta = h.credits(false, external, false);
+            let all = h.credits(false, external, platform);
+            (h.manifests(), meta, all - meta, h.plain_len())
+        }
+        None => (
+            2,
+            2 * push_fees::history_index(0, false, external, false, true),
+            0,
+            0,
+        ),
+    };
+    let deposit = if platform {
+        let stored = input.bytes + push_fees::locator_bytes(input.objects) + history_bytes;
+        estimate(stored).deposit
+    } else {
+        0
+    };
+    PushQuote {
+        metadata: push.metadata_credits + history_meta,
+        chunks: push.chunk_credits + history_chunks,
+        deposit,
+        manifests: 2 + history_manifests,
+        history_chunks_unpriced: platform && input.history.is_none(),
+    }
+}
+
+/// What `--bytes` / `--path` name: a size, a file's size, or a repository (a directory; the
+/// current one when neither is given), whose objects are counted and whose history index is
+/// computed, as a push computes it.
+fn estimate_input(bytes: Option<u64>, path: Option<&std::path::Path>) -> Result<PushInput> {
+    if let Some(b) = bytes {
+        return Ok(PushInput::sized(human_bytes(b), b));
+    }
+    let dir = match path {
+        Some(p) => p.to_path_buf(),
+        None => std::env::current_dir().context("reading the current directory")?,
+    };
+    let meta = std::fs::metadata(&dir).with_context(|| format!("stat {}", dir.display()))?;
+    if meta.is_file() {
+        return Ok(PushInput::sized(
+            format!("{} ({})", dir.display(), human_bytes(meta.len())),
+            meta.len(),
+        ));
+    }
+    let no_size = |why: &str| {
+        crate::errors::usage(format!(
+            "nothing to price: {} {why}; pass --bytes <N>, or --path <a repository or a file>",
+            dir.display()
+        ))
+    };
+    if !crate::git::git_ok(&dir, &["rev-parse", "--git-dir"]) {
+        return Err(no_size("is not a git repository"));
+    }
+    let Ok(tip_hex) = crate::git::git(
+        &dir,
+        &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+        &[],
+    ) else {
+        return Err(no_size("has no commit to push yet"));
+    };
+    let tip = forge_core::pack::historyindex::parse_hex_oid(tip_hex.as_bytes())
+        .map_err(|e| no_size(&format!("has a HEAD ({tip_hex}) this cannot price: {e}")))?;
+    // The pack a first push of HEAD uploads, built as git builds it; else (git could not
+    // build it) every object stored, loose and packed.
+    let count = crate::git::ObjectCount::pack_of(&dir, &tip_hex)
+        .or_else(|| crate::git::ObjectCount::of(&dir))
+        .ok_or_else(|| {
+            no_size("could not be measured (`git pack-objects` and `git count-objects` failed)")
+        })?;
+    // Local only, as `git push` computes it; a repository it cannot index (a shallow clone)
+    // leaves the history index priced by its manifests alone.
+    let history = prepare_history_index(&dir, tip, &HistoryPlan::fresh())
+        .ok()
+        .flatten()
+        .map(|p| p.cost());
+    Ok(PushInput {
+        what: format!(
+            "the repository at {} (HEAD: {}, {} objects)",
+            dir.display(),
+            human_bytes(count.bytes),
+            count.objects
+        ),
+        bytes: count.bytes,
+        objects: count.objects,
+        counted: true,
+        history,
+        repo: Some(dir),
+    })
+}
+
+/// A pre-write quote for a first push (`dg cost estimate`): what Platform bills for the pack,
+/// its browse index and history index, and one ref update, on the chosen backend (else the
+/// repository's own storage policy, else Platform). Only Platform storage pays for the bytes;
+/// the rest bill the manifests and the ref.
 fn estimate_cmd(
     ctx: &Ctx,
     backend: Option<Backend>,
     bytes: Option<u64>,
     path: Option<&std::path::Path>,
 ) -> Result<()> {
-    let bytes = match (bytes, path) {
-        (Some(b), _) => b,
-        (None, Some(p)) => std::fs::metadata(p)
-            .with_context(|| format!("stat {}", p.display()))?
-            .len(),
-        (None, None) => 0,
+    let input = estimate_input(bytes, path)?;
+    let target = match (backend, input.repo.as_deref()) {
+        (Some(b), _) => Target::backend(b),
+        (None, Some(dir)) => Target::repository(dir)?,
+        (None, None) => Target::backend(Backend::Platform),
     };
-    // What `git push` would pay to store `bytes` as Platform chunks (the calibrated fees),
-    // split into the storage deposit and the rest (per-document and processing fees).
-    let deposit = estimate(bytes).deposit;
-    let total = push_fees::chunks(bytes);
-    let burn = total.saturating_sub(deposit);
+    let q = quote(&target, &input);
     let price = dash_usd_price();
-    let backend_label = backend.map_or("platform", Backend::label);
-
+    let label = target.label.as_str();
+    // Objects only price the browse index's chunks, which only Platform storage pays for.
+    let assumed = if input.counted || q.chunks == 0 {
+        String::new()
+    } else {
+        format!(" (~{} objects assumed)", input.objects)
+    };
+    let unpriced = if input.counted {
+        "the history index's chunks: it could not be computed in this repository (a shallow clone?)"
+    } else {
+        "the history index's chunks: their size depends on the repository; `dg cost estimate --path <repository>` prices them"
+    };
     ctx.emit(
         json!({
-            "bytes": bytes,
-            "backend": backend_label,
-            "depositCredits": deposit,
-            "burnCredits": burn,
-            "totalCredits": total,
-            "cost": cost_json(total, price),
-            "storageDeposit": cost_json(deposit, price),
+            "mode": "first_push",
+            "bytes": input.bytes,
+            "objects": input.objects,
+            "objectsCounted": input.counted,
+            "backend": label,
+            "platformStoresBytes": target.platform,
+            "externalTargets": target.external,
+            "manifests": q.manifests,
+            "refUpdates": 1,
+            "historyIndexBytes": input.history.map(|h| h.plain_len()),
+            "metadataCredits": q.metadata,
+            "chunkCredits": q.chunks,
+            "depositCredits": q.deposit,
+            "totalCredits": q.total(),
+            "cost": cost_json(q.total(), price),
+            "storageDeposit": cost_json(q.deposit, price),
+            "notPriced": q.history_chunks_unpriced.then_some(unpriced),
+            "upperBound": !q.history_chunks_unpriced,
+            "note": "every write is priced as the first of its kind, as `git push` quotes it; later pushes pay less",
         }),
         || {
-            println!("Estimate for {bytes} bytes ({backend_label} tier):");
-            println!("  total:      {}", cost_line(total, price));
-            println!("  storage:    {} (deposit; Platform packs are permanent, not refunded)", cost_line(deposit, price));
-            println!("  fees:       {} (per-document and processing)", cost_line(burn, price));
-            if !matches!(backend, None | Some(Backend::Platform)) {
-                println!("  note: external backends store pack bytes off-chain — only the manifest + refs are billed on-chain.");
+            println!("Estimate for a first push of {}{assumed} to {label}:", input.what);
+            let kind = if q.history_chunks_unpriced {
+                "not counting the history index's chunks"
+            } else {
+                "an upper bound, as `git push` quotes it"
+            };
+            println!("  total:       {}  ({kind}; later pushes pay less)", cost_line(q.total(), price));
+            println!(
+                "  metadata:    {}  {} manifests + 1 ref update, on Platform",
+                cost_line(q.metadata, price),
+                q.manifests
+            );
+            if q.chunks > 0 {
+                let what = if input.history.is_some() { "pack + browse index + history index" } else { "pack + browse index" };
+                println!(
+                    "  chunks:      {}  {what} on Platform; {} of it is the storage deposit, never refunded (Platform packs are permanent)",
+                    cost_line(q.chunks, price),
+                    cost_line(q.deposit, price)
+                );
+            }
+            if target.external > 0 {
+                let whose = if target.platform { "a copy also on your own storage" } else { "on your own storage" };
+                println!("  pack bytes:  {whose} ({label}), billed by your provider, not by Platform");
+            }
+            if q.history_chunks_unpriced {
+                println!("  not priced:  {unpriced}");
             }
         },
     );
@@ -289,6 +559,219 @@ fn format_utc(ms: u64) -> String {
     forge_import::github::unix_to_iso8601(ms / 1000)
         .trim_end_matches('Z')
         .replacen('T', " ", 1)
+}
+
+#[cfg(test)]
+mod estimate_tests {
+    use super::*;
+    use forge_core::cost::push_fees::{
+        chunks, index_chunks, HISTORY_FIRST_EXTRA, MANIFEST_FIRST, REF_FIRST, URIS_PER_TARGET,
+    };
+    use forge_core::cost::CREDITS_PER_DASH;
+    use std::path::Path;
+    use std::process::Command;
+
+    const MIB: u64 = 1 << 20;
+
+    /// Charged on devnet bonsia (Platform 4.2.0-beta.7, 2026-09-30, cli-dx QA stream): a first
+    /// push of a tiny repository with packs on your own storage (07-init.txt), and with packs
+    /// on Platform (09-init-platform-json.txt), history index included in both.
+    const BONSIA_FIRST_PUSH_OWN_STORAGE: u64 = 521_149_000;
+    const BONSIA_FIRST_PUSH_PLATFORM: u64 = 1_007_966_760;
+
+    fn sized(bytes: u64) -> PushInput {
+        PushInput::sized(format!("{bytes} bytes"), bytes)
+    }
+
+    /// Two pack manifests and two first history-index manifests, each with one target's URIs,
+    /// and one ref update: all a push to your own storage writes on Platform.
+    fn own_storage_metadata() -> u64 {
+        2 * (MANIFEST_FIRST + URIS_PER_TARGET)
+            + REF_FIRST
+            + 2 * (MANIFEST_FIRST + HISTORY_FIRST_EXTRA + URIS_PER_TARGET)
+    }
+
+    /// QW-008: `--backend s3` quoted the Platform price (0.39 DASH for 1 MiB). S3 keeps the
+    /// bytes: Platform bills the manifests and the ref update, whatever the size.
+    #[test]
+    fn s3_bills_only_the_manifests_and_the_ref() {
+        for bytes in [0, 388, MIB, 256 * MIB] {
+            let q = quote(&Target::backend(Backend::S3), &sized(bytes));
+            assert_eq!(q.chunks, 0, "{bytes}");
+            assert_eq!(q.deposit, 0, "{bytes}");
+            assert!(!q.history_chunks_unpriced);
+            assert_eq!(q.manifests, 4);
+            assert_eq!(q.total(), own_storage_metadata(), "{bytes}");
+        }
+        let total = quote(&Target::backend(Backend::S3), &sized(MIB)).total();
+        // ~0.0066 DASH: what `git push` quoted for the same push, above the 0.0052 it paid.
+        assert!(total >= BONSIA_FIRST_PUSH_OWN_STORAGE, "{total}");
+        assert!(total < CREDITS_PER_DASH / 100, "{total}");
+        // A MiB on Platform costs ~75x more.
+        assert!(50 * total < quote(&Target::backend(Backend::Platform), &sized(MIB)).total());
+    }
+
+    #[test]
+    fn ipfs_and_https_price_like_s3() {
+        for bytes in [388, MIB] {
+            let s3 = quote(&Target::backend(Backend::S3), &sized(bytes));
+            assert_eq!(quote(&Target::backend(Backend::Ipfs), &sized(bytes)), s3);
+            assert_eq!(quote(&Target::backend(Backend::Https), &sized(bytes)), s3);
+        }
+    }
+
+    /// Platform stores the pack and its browse index as chunks, on top of the metadata; the
+    /// history index's chunks are unknown from a size alone and said to be left out.
+    #[test]
+    fn platform_bills_the_pack_and_its_index_as_chunks() {
+        let input = sized(MIB);
+        let q = quote(&Target::backend(Backend::Platform), &input);
+        assert_eq!(input.objects, MIB / BYTES_PER_OBJECT);
+        assert_eq!(q.chunks, chunks(MIB) + index_chunks(input.objects, false));
+        assert_eq!(
+            q.metadata,
+            2 * MANIFEST_FIRST + REF_FIRST + 2 * (MANIFEST_FIRST + HISTORY_FIRST_EXTRA)
+        );
+        assert!(q.history_chunks_unpriced);
+        // At least what the old quote said (it priced the pack's chunks alone).
+        assert!(q.total() > 39_384_827_200, "{q:?}");
+        assert!(q.deposit < q.chunks);
+        // Mixed: the same chunks, plus the second target's URIs on each manifest.
+        let mixed = quote(&Target::backend(Backend::Mixed), &input);
+        assert_eq!(mixed.chunks, q.chunks);
+        assert_eq!(mixed.metadata, q.metadata + 4 * URIS_PER_TARGET);
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.org"])
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .output()
+            .expect("git")
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    /// A repository like the one bonsia's first pushes carried: three small files, one commit.
+    fn tiny_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q"]);
+        for (name, body) in [("README.md", "# qa\n"), ("a.txt", "a\n"), ("b.txt", "b\n")] {
+            std::fs::write(dir.path().join(name), body).unwrap();
+        }
+        git(dir.path(), &["add", "."]);
+        git(dir.path(), &["commit", "-q", "-m", "first"]);
+        dir
+    }
+
+    /// `--path <repository>` counts the objects and computes the history index, as a push does,
+    /// so the quote covers what a first push of such a repository paid on bonsia. The old
+    /// `--path .` priced the directory entry's own size (192 bytes, 0.0015 DASH for a push that
+    /// cost 0.0101).
+    #[test]
+    fn a_repository_is_priced_as_its_first_push() {
+        let repo = tiny_repo();
+        let input = estimate_input(None, Some(repo.path())).unwrap();
+        assert!(input.counted);
+        assert_eq!(input.objects, 5, "{input:?}");
+        // HEAD's objects as stored, not `count-objects`' 4 KiB disk blocks per loose object.
+        assert!(input.bytes < 4096, "{input:?}");
+        assert!(input.history.is_some(), "{input:?}");
+
+        let platform = quote(&Target::backend(Backend::Platform), &input);
+        assert!(!platform.history_chunks_unpriced);
+        assert!(
+            platform.total() >= BONSIA_FIRST_PUSH_PLATFORM,
+            "{platform:?}"
+        );
+        // The history index's two chunks are in: more than the pack and browse index alone.
+        let without = quote(
+            &Target::backend(Backend::Platform),
+            &PushInput {
+                history: None,
+                ..input.clone()
+            },
+        );
+        assert!(platform.chunks > without.chunks);
+
+        let s3 = quote(&Target::backend(Backend::S3), &input);
+        assert_eq!(s3.chunks, 0);
+        assert_eq!(s3.total(), own_storage_metadata());
+        assert!(s3.total() >= BONSIA_FIRST_PUSH_OWN_STORAGE);
+    }
+
+    /// With no `--backend`, a repository is priced on the storage its own `git push` would use:
+    /// Platform when `dash.storage` names none, and a malformed policy is an error, not a guess.
+    #[test]
+    fn a_repositorys_own_storage_policy_is_the_default_backend() {
+        let repo = tiny_repo();
+        git(repo.path(), &["config", "dash.storage", "platform"]);
+        assert_eq!(
+            Target::repository(repo.path()).unwrap(),
+            Target::backend(Backend::Platform)
+        );
+        git(repo.path(), &["config", "dash.replicas", "many"]);
+        let err = Target::repository(repo.path()).unwrap_err();
+        assert!(err.to_string().contains("dash.replicas"), "{err}");
+    }
+
+    /// The pack a first push sends is what git packs for HEAD: a second branch's objects stay
+    /// out of it.
+    #[test]
+    fn a_repository_is_measured_by_heads_pack() {
+        let repo = tiny_repo();
+        git(repo.path(), &["checkout", "-q", "-b", "side"]);
+        std::fs::write(repo.path().join("big.bin"), vec![7u8; 50_000]).unwrap();
+        git(repo.path(), &["add", "big.bin"]);
+        git(repo.path(), &["commit", "-q", "-m", "side"]);
+        git(repo.path(), &["checkout", "-q", "main"]);
+        let head = estimate_input(None, Some(repo.path())).unwrap();
+        assert_eq!(head.objects, 5, "{head:?}");
+        assert!(head.bytes < 4096, "{head:?}");
+    }
+
+    #[test]
+    fn a_file_is_priced_by_its_size_and_a_plain_directory_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("pack.bin");
+        std::fs::write(&file, vec![0u8; 5000]).unwrap();
+        let input = estimate_input(None, Some(&file)).unwrap();
+        assert_eq!((input.bytes, input.counted), (5000, false));
+        assert!(input.history.is_none());
+
+        let err = estimate_input(None, Some(dir.path())).unwrap_err();
+        assert!(err.to_string().contains("not a git repository"), "{err}");
+
+        git(dir.path(), &["init", "-q"]);
+        let err = estimate_input(None, Some(dir.path())).unwrap_err();
+        assert!(err.to_string().contains("no commit"), "{err}");
+
+        // --bytes wins without touching the filesystem.
+        assert_eq!(estimate_input(Some(7), None).unwrap().bytes, 7);
+    }
+
+    /// QW-038: `dg cost prices` called its rows upper bounds, but a repository's first issue
+    /// (120.9M credits on bonsia) paid more than the issue row (108.7M).
+    #[test]
+    fn the_price_table_covers_a_repositorys_first_issue() {
+        let row = |op: &str| {
+            price_table()
+                .into_iter()
+                .find(|(o, _)| o.starts_with(op))
+                .unwrap()
+                .1
+        };
+        assert!(row("issue") >= 120_878_000);
+        assert!(row("comment") >= collab_doc_credits(CollabDoc::Comment, 500));
+    }
 }
 
 #[cfg(test)]
