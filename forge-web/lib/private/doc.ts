@@ -253,6 +253,12 @@ export interface AnchorRef {
   readonly id: PrivateId
   /** The anchor's `$createdAtBlockHeight`. */
   readonly height: number
+  /**
+   * The `$createdAt` (ms) of stated(e), when the epoch's current key was first stated on chain
+   * (§5.3; a re-anchor does not move it), when known. A sealed release has no block height, so a
+   * `badTag` revision created before it is an earlier use of the epoch number (§16.3).
+   */
+  readonly statedAt?: number
 }
 
 /** A set of identities, by bytes (`IdSet`). */

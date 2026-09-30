@@ -15,6 +15,9 @@ import {
   ManifestMismatchError,
   PackError,
   RELEASE_MANIFEST_MAX_BYTES,
+  isLate,
+  parseHeader,
+  type OpenContext,
   openReleaseAsset,
   openReleaseManifest,
   type EpochKeyring,
@@ -226,9 +229,57 @@ export class ReleaseManifestUnavailableError extends Error {
  * cap before anything is fetched, then its sealed bytes checked against TLV 21, opened with the
  * key of its header's epoch from `keys`, and checked for canonical JSON, the tag, the total, the
  * entries and `notes` against flag 0x10. The first copy that passes wins. §8.2's "uploaded under
- * an old key" flag does not apply: the maintainer's `enc` commits to the exact bytes.
+ * an old key" flag never makes it unreadable: the maintainer's `enc` commits to the exact bytes.
+ * Maintainers are still warned of a late upload ({@link loadReleaseManifestStanding}).
  */
 export async function loadReleaseManifest(sdk: EvoSDK, repo: RepoRef, fields: ReleaseFields, keys: EpochKeyring): Promise<ReleaseManifest> {
+  return (await loadReleaseManifestStanding(sdk, repo, fields, keys)).manifest
+}
+
+/** A sealed release's opened asset list, and whether it was uploaded under an old key ({@link assetListUploadedLate}). */
+export interface OpenedReleaseManifest {
+  readonly manifest: ReleaseManifest
+  /** Judged only with the epochs (`standing`); false without them. */
+  readonly uploadedLate: boolean
+}
+
+/** What judges an asset list's upload time (§8.2): the repo's epochs, as a session resolves them. */
+export type ListStanding = Pick<OpenContext, 'anchors' | 'burned'>
+
+/**
+ * Whether a sealed asset list was uploaded under an old key (§16.5, §8.2; forge-core
+ * `late_asset_lists`): its first copy (`copies`: every kind-4 `packManifest` of its hash; a later
+ * copy re-stores the same bytes) was recorded after `H(next(e)) + GRACE_BLOCKS` for the epoch `e`
+ * its sealed header (`sealed`) names, or under a burned epoch. It stays readable (the revision's
+ * `enc` commits to it), but a member removed by the rotation may read it: maintainers are warned.
+ */
+export function assetListUploadedLate(sealed: Uint8Array, copies: readonly { readonly createdAtBlockHeight?: number }[], standing: ListStanding): boolean {
+  const heights = copies.flatMap((c) => (c.createdAtBlockHeight !== undefined && c.createdAtBlockHeight > 0 ? [c.createdAtBlockHeight] : []))
+  if (heights.length === 0) return false
+  let epoch: number
+  try {
+    epoch = parseHeader(sealed).epoch
+  } catch {
+    return false
+  }
+  return isLate(standing.anchors, NOBODY, epoch, Math.min(...heights), NO_OWNER, standing.burned)
+}
+
+/** No current member: the upload cut-off applies to every uploader ({@link assetListUploadedLate}). */
+const NOBODY = { has: (): boolean => false }
+const NO_OWNER = new Uint8Array(32)
+
+/**
+ * {@link loadReleaseManifest}, and whether the list was uploaded under an old key, judged with
+ * `standing` when given ({@link assetListUploadedLate}).
+ */
+export async function loadReleaseManifestStanding(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  fields: ReleaseFields,
+  keys: EpochKeyring,
+  standing?: ListStanding,
+): Promise<OpenedReleaseManifest> {
   const hash = fields.assetManifest
   if (hash === undefined) throw new ReleaseManifestUnavailableError(fields.tag, ['the release names no asset list'])
   const pack = await readPackCopies(sdk, repo, hash, PACK_KIND.RELEASE_ASSETS, true)
@@ -248,7 +299,8 @@ export async function loadReleaseManifest(sdk: EvoSDK, repo: RepoRef, fields: Re
       const { copies: _all, ...one } = copy
       void _all
       const sealed = await loadArtifactBytes(sdk, stored, one satisfies PackManifest)
-      return await openReleaseManifest(sealed, copy.sizeBytes, hexToBytes(hash), fields.tag, fields.notesContinue === true, keys)
+      const manifest = await openReleaseManifest(sealed, copy.sizeBytes, hexToBytes(hash), fields.tag, fields.notesContinue === true, keys)
+      return { manifest, uploadedLate: standing !== undefined && assetListUploadedLate(sealed, copies, standing) }
     } catch (e) {
       reasons.push(e instanceof ManifestMismatchError ? 'the asset list does not match the release that names it' : e instanceof Error ? e.message : String(e))
     }

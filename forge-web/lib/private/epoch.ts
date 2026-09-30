@@ -30,6 +30,8 @@ export interface ConfigRow {
   readonly epoch: number
   readonly createdAtBlockHeight: number
   readonly enc: Uint8Array
+  /** `$createdAt` (ms), when known: the time of stated(e) ({@link AnchorRef.statedAt}). */
+  readonly createdAt?: number
 }
 
 /** A `repoKey` document of the repo. */
@@ -142,10 +144,20 @@ export function selectAnchors(configs: readonly ConfigRow[], maintainers: IdSet)
       const c = anchorCommit(x.enc)
       return commit !== null && c !== null && bytesEqual(c, commit)
     }
-    anchors.set(e, anchorOf(anchor))
     stated = valid.find(same) ?? anchor
+    anchors.set(e, { ...anchorOf(anchor), ...statedAtOf(byEpoch.get(e) ?? [], stated) })
   }
   return anchors
+}
+
+/**
+ * The `$createdAt` of stated(e) (forge-core `Keyring::stated_at`): the earliest of epoch e's
+ * configs at the block height of `stated`, the config that first stated its key. Absent when no
+ * such config carries a `$createdAt`.
+ */
+function statedAtOf(configs: readonly ConfigRow[], stated: ConfigRow): { readonly statedAt?: number } {
+  const times = configs.filter((c) => c.createdAtBlockHeight === stated.createdAtBlockHeight && c.createdAt !== undefined).map((c) => c.createdAt as number)
+  return times.length === 0 ? {} : { statedAt: Math.min(...times) }
 }
 
 /** The first current-maintainer config of every epoch that is not an epoch (each an `epochGap` alert), by epoch. */
