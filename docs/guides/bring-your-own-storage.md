@@ -415,6 +415,8 @@ dg storage add minio-lan … --allow-private-uri     # this profile (allow_priva
 dg init --storage minio-lan --allow-private-uri    # dg init / dg repo create --push
 ```
 
+`dg init --allow-private-uri` also sets `dash.allowPrivateUri true` in the repository's git config when one of its storage profiles needs it, so later plain `git push`es go to the same place.
+
 The web app refuses the same loopback, private and plain-http addresses and warns about temporary tunnels; `forge-contracts/fixtures/public-urls.json` holds the cases both test.
 
 ## CORS header names

@@ -88,7 +88,7 @@ async fn list(ctx: &Ctx) -> Result<()> {
     let bridge = ctx.load_bridge()?;
     let client = ctx.connect().await?;
     let identity = client
-        .fetch_identity(&bridge.identity_id)
+        .fetch_signer(&bridge)
         .await
         .context("fetching the signing identity")?;
     let mine = identity.signing_key_id(&bridge, ctx.network());
@@ -177,7 +177,7 @@ async fn add_encryption(
     master: &forge_core::keystore::BridgeIdentity,
 ) -> Result<()> {
     use forge_core::platform::identity_keys;
-    let identity = client.fetch_identity(&master.identity_id).await?;
+    let identity = client.fetch_signer(master).await?;
     let key_id = identity_keys::next_key_id(&identity);
     let secret = if identity_keys::recorded_keys_match(master, &identity.public_keys()) {
         identity_keys::derive_encryption_secret(master, key_id, ctx.network())
@@ -226,7 +226,7 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
     if args.encryption {
         // Every identity dg creates already has one (key #4, from the recovery words). Adding
         // another would register a key whose private half nothing keeps yet.
-        let identity = client.fetch_identity(&master.identity_id).await?;
+        let identity = client.fetch_signer(&master).await?;
         let existing = identity
             .public_keys()
             .into_iter()
@@ -263,7 +263,7 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
         Some(id) => Some(id),
         None if args.keep_current => None,
         None => {
-            let identity = client.fetch_identity(&master.identity_id).await?;
+            let identity = client.fetch_signer(&master).await?;
             identity
                 .signing_key_id(&current, ctx.network())
                 .filter(|id| identity.is_limited_key(*id))
@@ -306,7 +306,7 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
 async fn disable(ctx: &Ctx, id: u32, master: Option<&std::path::Path>, force: bool) -> Result<()> {
     let current = ctx.load_bridge()?;
     let client = ctx.connect().await?;
-    let identity = client.fetch_identity(&current.identity_id).await?;
+    let identity = client.fetch_signer(&current).await?;
     let info = identity
         .public_keys()
         .into_iter()

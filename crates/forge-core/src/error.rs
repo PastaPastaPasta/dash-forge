@@ -52,6 +52,19 @@ pub enum Error {
     #[error("not found")]
     NotFound,
 
+    /// The signing identity does not exist on the network in use: usually the key belongs to
+    /// another network. Rendered as E304, naming both networks.
+    #[error("identity {identity_id} does not exist on {network}")]
+    IdentityNotFound {
+        /// The identity the key names.
+        identity_id: String,
+        /// The network searched ([`crate::platform::Network::key`]).
+        network: String,
+        /// The network the key itself records (`dfk1:<network>:…`, a key file's `network`),
+        /// when it names one.
+        key_network: Option<String>,
+    },
+
     /// A document create collided with a unique index (e.g. an `issue`/`patch`
     /// `number` already taken). The optimistic-numbering allocator catches this and
     /// retries with the next number; other callers surface it as a genuine collision.

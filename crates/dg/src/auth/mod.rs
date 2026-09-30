@@ -387,7 +387,7 @@ pub async fn register_limited_key(
             spec.group
         );
     }
-    let before = client.fetch_identity(&master.identity_id).await?;
+    let before = client.fetch_signer(master).await?;
     let disable: Vec<u32> = match replace {
         Some(id) if before.is_limited_key(id) => vec![id],
         Some(id) => {
@@ -692,7 +692,7 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
     let master = login_source(ctx, &client, args).await?;
     let network = ctx.network_label();
     let on_chain = client
-        .fetch_identity(&master.identity_id)
+        .fetch_signer(&master)
         .await
         .context("fetching the signing identity")?;
 
@@ -888,30 +888,46 @@ async fn status(ctx: &Ctx) -> Result<()> {
         return Ok(());
     };
     let (where_, kind) = store::describe_source(&source.to_string_lossy());
-    let bridge = ctx.load_bridge()?;
+    // A read needs no unlocked key: a sealed one that cannot be opened here (no terminal, no
+    // DASH_FORGE_PASSPHRASE) still names its identity when config.toml recorded the id, and
+    // the status reads on without the key's own details (QW-034).
+    // Only that case: a key that is missing, corrupt or behind a wrong passphrase still fails.
+    let (bridge, unopened) = match ctx.load_bridge() {
+        Ok(b) => (Some(b), None),
+        Err(e) => match passphrase_unavailable(&e).filter(|_| ctx.identity_id_hint().is_some()) {
+            Some(why) => (None, Some(why)),
+            None => return Err(e),
+        },
+    };
+    let identity_id = match &bridge {
+        Some(b) => b.identity_id.clone(),
+        None => ctx.identity_id_hint().unwrap_or_default(),
+    };
     let chain = match ctx.connect().await {
-        Ok(client) => match client.fetch_identity(&bridge.identity_id).await {
+        Ok(client) => match client.fetch_identity(&identity_id).await {
             Ok(identity) => {
-                let report = key_report(&client, &identity, &bridge, ctx).await;
-                let names = client
-                    .dpns_names_of(&bridge.identity_id)
-                    .await
-                    .unwrap_or_default();
+                let report = match &bridge {
+                    Some(b) => Some(key_report(&client, &identity, b, ctx).await),
+                    None => None,
+                };
+                let names = client.dpns_names_of(&identity_id).await.unwrap_or_default();
                 Some((identity.balance(), report, names))
             }
             Err(_) => None,
         },
         Err(_) => None,
     };
+    let reached = chain.is_some();
     let (balance, report, names) = match chain {
-        Some((b, r, n)) => (Some(b), Some(r), n),
+        Some((b, r, n)) => (Some(b), r, n),
         None => (None, None, vec![]),
     };
+    let master = bridge.as_ref().map(|b| b.master_key().is_some());
     ctx.emit(
         json!({
             "network": network,
             "authenticated": true,
-            "identityId": bridge.identity_id,
+            "identityId": identity_id,
             "names": names,
             "keyId": report.as_ref().and_then(|r| r.key_id),
             "limited": report.as_ref().map(|r| r.limited),
@@ -923,35 +939,24 @@ async fn status(ctx: &Ctx) -> Result<()> {
             "storage": kind,
             "storedAt": where_,
             "defaultIdentityId": config.default_identity_id,
-            "masterKeyStored": bridge.master_key().is_some(),
+            "masterKeyStored": master,
+            "keyUnopened": unopened,
         }),
         || {
             println!("Network:  {network}");
             match names.first() {
-                Some(n) => println!("Identity: {n} ({})", bridge.identity_id),
-                None => println!("Identity: {}", bridge.identity_id),
+                Some(n) => println!("Identity: {n} ({identity_id})"),
+                None => println!("Identity: {identity_id}"),
             }
-            match &report {
-                Some(r) => {
-                    let id = r.key_id.map_or("?".to_string(), |i| format!("#{i}"));
-                    if r.limited {
-                        println!(
-                            "Key:      {id} limited — {} of {} DASH left, expires {}",
-                            r.remaining.map_or("?".into(), |c| dash_amount(credits_to_dash(c))),
-                            r.total.map_or("?".into(), |c| dash_amount(credits_to_dash(c))),
-                            r.expires_at.map_or("never".into(), expiry_text)
-                        );
-                    } else {
-                        println!("Key:      {id} unlimited (not a Forge limited key)");
-                    }
-                }
-                None => println!("Key:      (Platform unreachable; not checked)"),
-            }
+            println!(
+                "Key:      {}",
+                key_line(report.as_ref(), unopened.as_deref(), reached)
+            );
             if let Some(b) = balance {
                 println!("Balance:  {} DASH", dash_amount(credits_to_dash(b)));
             }
             println!("Stored:   {where_}");
-            if bridge.master_key().is_some() {
+            if master == Some(true) {
                 println!("          (holds the master key: `dg auth login <file>` would store only a limited key)");
                 if kind == "keychain" {
                     println!("          warning: an older dg put this master key in the keychain, where any program running as you can read it; `dg auth login --full-key <file>` moves it to a sealed file");
@@ -962,16 +967,57 @@ async fn status(ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
+/// The status's `Key:` line: the key's limits, or why they were not checked (the key was not
+/// opened, or Platform was not `reached`).
+fn key_line(report: Option<&KeyReport>, unopened: Option<&str>, reached: bool) -> String {
+    match (report, unopened) {
+        (Some(r), _) => {
+            let id = r.key_id.map_or("?".to_string(), |i| format!("#{i}"));
+            if r.limited {
+                format!(
+                    "{id} limited — {} of {} DASH left, expires {}",
+                    r.remaining
+                        .map_or("?".into(), |c| dash_amount(credits_to_dash(c))),
+                    r.total
+                        .map_or("?".into(), |c| dash_amount(credits_to_dash(c))),
+                    r.expires_at.map_or("never".into(), expiry_text)
+                )
+            } else {
+                format!("{id} unlimited (not a Forge limited key)")
+            }
+        }
+        (None, Some(why)) => format!("not checked: the key was not opened ({why})"),
+        (None, None) if !reached => "(Platform unreachable; not checked)".into(),
+        (None, None) => "not checked".into(),
+    }
+}
+
+/// When `e` is a sealed key whose passphrase could not be asked for (no terminal, `--json`,
+/// no DASH_FORGE_PASSPHRASE), why, in one line (the E303 cause); `None` for any other failure.
+fn passphrase_unavailable(e: &anyhow::Error) -> Option<String> {
+    let u = forge_core::user_error::classify(
+        e.chain(),
+        &forge_core::user_error::ErrorContext::default(),
+    );
+    u.cause
+        .filter(|c| u.code == codes::IDENTITY_UNREADABLE && c.contains("needs a passphrase"))
+}
+
 async fn balance(ctx: &Ctx) -> Result<()> {
-    let bridge = ctx.load_bridge()?;
+    // Named without opening the key when the source (or config.toml, for a sealed default)
+    // says whose it is: a balance is a read (QW-034).
+    let identity_id = match ctx.identity_id_hint() {
+        Some(id) => id,
+        None => ctx.load_bridge()?.identity_id,
+    };
     let client = ctx.connect().await?;
     let credits = client
-        .get_balance(&bridge.identity_id)
+        .get_balance(&identity_id)
         .await
         .context("fetching balance")?;
     let network = ctx.network_label();
-    ctx.emit(balance_json(&bridge.identity_id, credits, &network), || {
-        println!("Identity: {}", bridge.identity_id);
+    ctx.emit(balance_json(&identity_id, credits, &network), || {
+        println!("Identity: {identity_id}");
         println!(
             "Balance:  {} DASH ({credits} credits)",
             dash_amount(credits_to_dash(credits))
@@ -1094,7 +1140,7 @@ async fn current_key_text(
     }
     let key = current.doc_op_key()?;
     let client = ctx.connect().await?;
-    let identity = client.fetch_identity(&current.identity_id).await?;
+    let identity = client.fetch_signer(current).await?;
     let id = identity
         .signing_key_id(current, ctx.network())
         .filter(|id| identity.is_limited_key(*id))
@@ -1228,7 +1274,7 @@ async fn logout(ctx: &Ctx, disable: bool, master: Option<&std::path::Path>) -> R
     if disable {
         let bridge = ctx.load_bridge()?;
         let client = ctx.connect().await?;
-        let identity = client.fetch_identity(&identity_id).await?;
+        let identity = client.fetch_signer(&bridge).await?;
         let key_id = identity
             .signing_key_id(&bridge, ctx.network())
             .filter(|id| identity.is_limited_key(*id))

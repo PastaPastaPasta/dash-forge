@@ -78,7 +78,7 @@ async fn connect() -> Result<(PlatformClient, BridgeIdentity)> {
 /// printing its ids and what it cost.
 async fn create_repo(name: &str) -> Result<()> {
     let (client, bridge) = connect().await?;
-    let identity = client.fetch_identity(&bridge.identity_id).await?;
+    let identity = client.fetch_signer(&bridge).await?;
     let before = identity.balance();
     let result = create_v2(
         &client,
@@ -105,7 +105,7 @@ async fn create_repo(name: &str) -> Result<()> {
 /// ref-advertisement line) before any document is written.
 async fn write_ref(owner: &str, repo: &str, ref_name: &str, oid_hex: &str) -> Result<()> {
     let (client, bridge) = connect().await?;
-    let identity = client.fetch_identity(&bridge.identity_id).await?;
+    let identity = client.fetch_signer(&bridge).await?;
     let svc = RepoService::new(&client, &identity, &bridge);
     let repo = resolve_named(&client, owner, repo)
         .await
@@ -270,7 +270,7 @@ async fn by_target(
 /// packs are sealed and start with `DFPK`; a public repo's start with `PACK`).
 async fn dump_pack_heads(owner: &str, repo: &str) -> Result<()> {
     let (client, bridge) = connect().await?;
-    let identity = client.fetch_identity(&bridge.identity_id).await?;
+    let identity = client.fetch_signer(&bridge).await?;
     let repo = resolve_named(&client, owner, repo).await?;
     let svc = RepoService::new(&client, &identity, &bridge);
     let reader = forge_core::storage::PackReader::from_user_config();

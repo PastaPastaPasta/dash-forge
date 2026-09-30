@@ -415,7 +415,7 @@ async fn register_runner_key(
     spec: &DocTypeKeySpec,
     output: &Path,
 ) -> Result<u32> {
-    let runner = s.client.fetch_identity(&holder.identity_id).await?;
+    let runner = s.client.fetch_signer(holder).await?;
     let fresh = FreshKey::generate(ctx.network());
     let wif = fresh.wif();
     let network = ctx.network_label();

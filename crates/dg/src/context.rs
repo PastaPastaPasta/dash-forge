@@ -8,7 +8,7 @@ use anyhow::{Context as _, Result};
 use serde_json::Value;
 
 use forge_core::keystore::{BridgeIdentity, Secret};
-use forge_core::network::{NetworkSettings, NetworkTarget};
+use forge_core::network::{full_network_key, NetworkSettings, NetworkTarget};
 use forge_core::platform::{LoadedIdentity, Network, PlatformClient};
 use forge_core::user_error::{codes, UserError};
 
@@ -27,6 +27,8 @@ pub struct Ctx {
     /// Nothing chose the network (no flag, no `config.toml` network, no environment), so
     /// `target` is the built-in default.
     pub network_is_default: bool,
+    /// Which layer chose the network (see [`stack`]).
+    pub network_source: NetworkSource,
     /// The resolved identity file path (from `--identity` / `DASH_FORGE_KEY` / config), if any.
     pub identity_path: Option<PathBuf>,
     /// `--identity` as given on the command line (not the environment or the default).
@@ -44,6 +46,21 @@ pub struct Ctx {
     /// The identity id config.toml records next to `default_identity`, when that default is
     /// the key source in use: it names the identity without unsealing its key.
     pub config_identity_id: Option<String>,
+    /// What the key source says about itself without being opened, read once.
+    source_facts: SourceFacts,
+}
+
+/// Whether `cmd` takes its network from the repository in the current directory (see
+/// [`stack`]). Sign-in commands record a network of their own, and a clone or a new repository
+/// is not the one here, so they do not.
+fn follows_repo_network(cmd: &crate::Command) -> bool {
+    use crate::{Command, RepoCommand};
+    !matches!(
+        cmd,
+        Command::Auth(_)
+            | Command::Repo(RepoCommand::Clone { .. } | RepoCommand::Create(_))
+            | Command::Completions { .. }
+    )
 }
 
 /// Why a confirmation prompt cannot be asked, or `None` when it can (or `--yes` answers it).
@@ -66,47 +83,180 @@ fn confirmation_required(cause: String) -> UserError {
         .note("nothing was written")
 }
 
-async fn fetch_signer(client: &PlatformClient, bridge: &BridgeIdentity) -> Result<LoadedIdentity> {
-    client
-        .fetch_identity(&bridge.identity_id)
-        .await
-        .context("fetching the signing identity")
+/// The fields a key source states about itself without being opened: its network key
+/// (`testnet`, `devnet-bonsia`, …, or a bare `devnet`) and its identity id.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct SourceFacts {
+    network: Option<String>,
+    identity_id: Option<String>,
 }
 
-/// The identity id a key source names without opening it (see [`Ctx::identity_id_hint`]).
-fn identity_id_of_source(source: &std::path::Path) -> Option<String> {
+/// What a key source says about itself without opening it: an inline `dfk1:` key and a
+/// `keychain:` source name both in their text, a plaintext identity file in its JSON. A
+/// sealed file says nothing without its passphrase.
+fn source_facts(source: &std::path::Path) -> SourceFacts {
     use forge_core::keystore::{parse_keychain_source, DFK1_PREFIX};
-    let s = source.to_str()?;
+    let own = |s: Option<&str>| s.filter(|v| !v.is_empty()).map(str::to_string);
+    let Some(s) = source.to_str() else {
+        return SourceFacts::default();
+    };
     if let Some(rest) = s.strip_prefix(DFK1_PREFIX) {
         // dfk1:<network>:<identityId>:<keyId>:<wif>
-        return rest.split(':').nth(1).map(str::to_string);
+        let mut parts = rest.split(':');
+        return SourceFacts {
+            network: own(parts.next()),
+            identity_id: own(parts.next()),
+        };
     }
     if let Some((_, account)) = parse_keychain_source(s) {
         // keychain:dash-forge/<network>/<identityId>
-        return account.rsplit('/').next().map(str::to_string);
+        return SourceFacts {
+            network: account.rsplit_once('/').and_then(|(n, _)| own(Some(n))),
+            identity_id: own(account.rsplit('/').next()),
+        };
     }
     // Only a regular file: reading a pipe (`--identity <(pass show …)`, /dev/stdin) here would
     // leave nothing for the key load that may follow.
     if !std::fs::metadata(source).is_ok_and(|m| m.is_file()) {
-        return None;
+        return SourceFacts::default();
     }
-    let raw = zeroize::Zeroizing::new(std::fs::read_to_string(source).ok()?);
+    let Ok(raw) = std::fs::read_to_string(source).map(zeroize::Zeroizing::new) else {
+        return SourceFacts::default();
+    };
     if forge_core::sealed::is_sealed(&raw) {
-        return None;
+        return SourceFacts::default();
     }
-    let v: Value = serde_json::from_str(&raw).ok()?;
-    v.get("identityId")?.as_str().map(str::to_string)
+    let Ok(v) = serde_json::from_str::<Value>(&raw) else {
+        return SourceFacts::default();
+    };
+    SourceFacts {
+        network: own(v.get("network").and_then(Value::as_str)),
+        identity_id: own(v.get("identityId").and_then(Value::as_str)),
+    }
 }
 
-/// Stack the network layers in `dg`'s precedence order, for [`NetworkSettings::resolve`].
+/// Fetch the signing identity: E304 naming this network (and the key's own, when it records
+/// another) when Platform has no such identity.
+async fn fetch_signer(client: &PlatformClient, bridge: &BridgeIdentity) -> Result<LoadedIdentity> {
+    client
+        .fetch_signer(bridge)
+        .await
+        .context("fetching the signing identity")
+}
+
+/// Where `dg`'s network came from: the highest layer that set it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkSource {
+    /// `--network` / `--devnet-name` / `--dapi-addresses`.
+    Flags,
+    /// This repository's own git config (`dash.network` & co., as `dg init` / `dg repo clone`
+    /// write them).
+    Repository,
+    /// `config.toml` (`dg auth new` / `dg auth login` record it).
+    Config,
+    /// `DASH_FORGE_NETWORK` and friends.
+    Environment,
+    /// The network the key in use records (`dfk1:<network>:…`, an identity file's `network`).
+    Key,
+    /// Nothing chose one: the built-in default.
+    Default,
+}
+
+impl std::fmt::Display for NetworkSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Flags => "from the command line",
+            Self::Repository => "from this repository's git config",
+            Self::Config => "from config.toml",
+            Self::Environment => "from DASH_FORGE_NETWORK",
+            Self::Key => "from the key in use",
+            Self::Default => "the default",
+        })
+    }
+}
+
+/// The network layers, highest precedence first (see [`stack`]).
+struct Layers {
+    flags: NetworkSettings,
+    repo: NetworkSettings,
+    config: NetworkSettings,
+    env: NetworkSettings,
+    key: NetworkSettings,
+}
+
+/// Stack the network layers in `dg`'s precedence order, for [`NetworkSettings::resolve`], and
+/// say which one chose the network.
 ///
 /// Precedence, field by field: flags (`--network` / `--devnet-name` / `--dapi-addresses`) >
-/// config file > environment (`DASH_FORGE_NETWORK`, `DASH_FORGE_DEVNET_NAME`,
-/// `DASH_FORGE_DAPI_ADDRESSES`) > the embedded
-/// `forge-contracts/deployments/<network>.json` > testnet. A lower layer that names a
-/// different network contributes nothing network-specific (see `NetworkSettings::overlay`).
-fn stack(flags: NetworkSettings, config: &Config, env: NetworkSettings) -> NetworkSettings {
-    flags.overlay(config.network_settings()).overlay(env)
+/// this repository's own git config (`local` / `worktree` `dash.network`, `dash.devnetName`,
+/// `dash.dapiAddresses`, `dash.quorumUrl`: a `dash://` repository lives on one network, and
+/// `git push` uses it too) > config file > environment (`DASH_FORGE_NETWORK`,
+/// `DASH_FORGE_DEVNET_NAME`, `DASH_FORGE_DAPI_ADDRESSES`) > the network the key records (a CI
+/// runner's `dfk1:` key) > the embedded `forge-contracts/deployments/<network>.json` > testnet.
+/// A lower layer that names a different network contributes nothing network-specific (see
+/// `NetworkSettings::overlay`).
+fn stack(l: Layers) -> (NetworkSettings, NetworkSource) {
+    let ordered = [
+        (NetworkSource::Flags, l.flags),
+        (NetworkSource::Repository, l.repo),
+        (NetworkSource::Config, l.config),
+        (NetworkSource::Environment, l.env),
+        (NetworkSource::Key, l.key),
+    ];
+    let source = ordered
+        .iter()
+        .find(|(_, layer)| !layer.is_unset())
+        .map_or(NetworkSource::Default, |(s, _)| *s);
+    let stacked = ordered
+        .into_iter()
+        .map(|(_, layer)| layer)
+        .reduce(NetworkSettings::overlay)
+        .unwrap_or_default();
+    (stacked, source)
+}
+
+/// The network the repository in the current directory pins in its own git config (`local`
+/// or `worktree` scope; `dg init` and `dg repo clone` write it). Global and system values do
+/// not count: they are not this repository's. Empty outside a repository, or with a git too
+/// old for `--show-scope`.
+fn repo_network() -> NetworkSettings {
+    let out = std::process::Command::new("git")
+        .args([
+            "config",
+            "--show-scope",
+            "--get-regexp",
+            r"^dash\.(network|devnetname|dapiaddresses|quorumurl)$",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    match out {
+        Ok(o) if o.status.success() => parse_repo_network(&String::from_utf8_lossy(&o.stdout)),
+        _ => NetworkSettings::default(),
+    }
+}
+
+/// [`repo_network`] from `git config --show-scope --get-regexp` output (`<scope>\t<key>
+/// <value>` lines, keys lowercased by git). A `worktree` value beats a `local` one; within a
+/// scope the last one wins, as in git.
+fn parse_repo_network(text: &str) -> NetworkSettings {
+    let mut found: std::collections::HashMap<String, (u8, String)> =
+        std::collections::HashMap::new();
+    for line in text.lines() {
+        let Some((scope, rest)) = line.split_once('\t') else {
+            continue;
+        };
+        let rank = match scope {
+            "worktree" => 2,
+            "local" => 1,
+            _ => continue,
+        };
+        let (key, value) = rest.split_once(' ').unwrap_or((rest, ""));
+        if found.get(key).is_none_or(|(r, _)| rank >= *r) {
+            found.insert(key.to_string(), (rank, value.to_string()));
+        }
+    }
+    NetworkSettings::from_git_config(|k| found.get(&k.to_ascii_lowercase()).map(|(_, v)| v.clone()))
 }
 
 impl Ctx {
@@ -120,19 +270,6 @@ impl Ctx {
             cli.devnet_name.clone(),
             cli.dapi_addresses.clone(),
         );
-        let layers = stack(flags, config, NetworkSettings::from_env());
-        let network_is_default = layers.is_unset();
-        let target = layers
-            .resolve()
-            .context("resolving the network (--network / --devnet-name / config.toml)")?;
-
-        if cli
-            .identity
-            .as_deref()
-            .is_some_and(forge_core::keystore::is_inline_key)
-        {
-            tracing::warn!("{}", forge_core::keystore::INLINE_KEY_ON_ARGV);
-        }
         let explicit = cli
             .identity
             .clone()
@@ -144,12 +281,50 @@ impl Ctx {
         };
         let identity_path =
             explicit.or_else(|| config.default_identity.as_deref().map(PathBuf::from));
+        let facts = identity_path
+            .as_deref()
+            .map(source_facts)
+            .unwrap_or_default();
+        let key = facts
+            .network
+            .as_deref()
+            .and_then(full_network_key)
+            .map(|k| NetworkSettings::from_flags(Some(k), None, None))
+            .unwrap_or_default();
+        let repo = if follows_repo_network(&cli.command) {
+            repo_network()
+        } else {
+            NetworkSettings::default()
+        };
+        let (layers, network_source) = stack(Layers {
+            flags,
+            repo,
+            config: config.network_settings(),
+            env: NetworkSettings::from_env(),
+            key,
+        });
+        let network_is_default = network_source == NetworkSource::Default;
+        let target = layers.resolve().with_context(|| {
+            format!(
+                "resolving the network, set {network_source} (--network / --devnet-name, git \
+                 config dash.network, config.toml or DASH_FORGE_NETWORK)"
+            )
+        })?;
+
+        if cli
+            .identity
+            .as_deref()
+            .is_some_and(forge_core::keystore::is_inline_key)
+        {
+            tracing::warn!("{}", forge_core::keystore::INLINE_KEY_ON_ARGV);
+        }
 
         Ok(Self {
             json: cli.json,
             yes: cli.yes,
             target,
             network_is_default,
+            network_source,
             identity_path,
             cli_identity: cli.identity.clone(),
             stdin_tty: std::io::stdin().is_terminal(),
@@ -157,6 +332,7 @@ impl Ctx {
             unlocked: std::sync::OnceLock::new(),
             helper_ok: std::sync::OnceLock::new(),
             config_identity_id,
+            source_facts: facts,
         })
     }
 
@@ -186,9 +362,11 @@ impl Ctx {
     /// plaintext identity file holds it. `None` when it cannot be told without the key (a
     /// sealed file given by path) or no identity is configured.
     pub fn identity_id_hint(&self) -> Option<String> {
-        let source = self.identity_path.as_deref()?;
+        self.identity_path.as_ref()?;
         // What the source itself says wins; the recorded id covers a sealed file.
-        identity_id_of_source(source)
+        self.source_facts
+            .identity_id
+            .clone()
             .or_else(|| self.config_identity_id.clone())
             .filter(|id| forge_core::resolve::looks_like_identity_id(id))
     }
@@ -352,14 +530,18 @@ impl Ctx {
         stdin_tty: bool,
         identity_path: Option<PathBuf>,
     ) -> Self {
-        let flags = NetworkSettings::from_flags(None, Some("moutai".into()), None);
         Self {
             json,
             yes,
-            target: stack(flags, &Config::default(), NetworkSettings::default())
+            target: NetworkSettings::from_flags(None, Some("moutai".into()), None)
                 .resolve()
                 .unwrap(),
             network_is_default: false,
+            network_source: NetworkSource::Flags,
+            source_facts: identity_path
+                .as_deref()
+                .map(source_facts)
+                .unwrap_or_default(),
             identity_path,
             cli_identity: None,
             stdin_tty,
@@ -380,6 +562,104 @@ mod tests {
             network: Some(network.into()),
             ..Default::default()
         }
+    }
+
+    /// [`super::stack`] without a repository pin or a key's network.
+    fn stack(flags: NetworkSettings, config: &Config, env: NetworkSettings) -> NetworkSettings {
+        super::stack(Layers {
+            flags,
+            repo: NetworkSettings::default(),
+            config: config.network_settings(),
+            env,
+            key: NetworkSettings::default(),
+        })
+        .0
+    }
+
+    fn net(key: &str) -> NetworkSettings {
+        NetworkSettings::from_flags(Some(key.into()), None, None)
+    }
+
+    /// QW-032: a clone's own network (what `git push` uses) beats the saved default, and a CI
+    /// runner's `dfk1:` key selects its network when nothing else does.
+    #[test]
+    fn the_repository_pin_and_the_keys_network_have_their_places() {
+        let none = NetworkSettings::default;
+        let layers = |repo, config, env, key| Layers {
+            flags: none(),
+            repo,
+            config,
+            env,
+            key,
+        };
+        let (s, src) = super::stack(layers(net("devnet-bonsia"), net("testnet"), none(), none()));
+        assert_eq!(src, NetworkSource::Repository);
+        assert_eq!(s.resolve().unwrap().network.key(), "devnet-bonsia");
+        // a flag still wins
+        let (s, src) = super::stack(Layers {
+            flags: net("mainnet"),
+            ..layers(net("devnet-bonsia"), none(), none(), none())
+        });
+        assert_eq!(
+            (src, s.resolve().unwrap().network.key()),
+            (NetworkSource::Flags, "mainnet".into())
+        );
+        // fresh HOME in CI: only the key names a network
+        let (s, src) = super::stack(layers(none(), none(), none(), net("devnet-bonsia")));
+        assert_eq!(src, NetworkSource::Key);
+        assert_eq!(s.resolve().unwrap().network.key(), "devnet-bonsia");
+        // the environment beats the key
+        let (_, src) = super::stack(layers(none(), none(), net("mainnet"), net("devnet-bonsia")));
+        assert_eq!(src, NetworkSource::Environment);
+        // nothing: the default
+        let (s, src) = super::stack(layers(none(), none(), none(), none()));
+        assert_eq!(src, NetworkSource::Default);
+        assert!(s.is_unset());
+    }
+
+    #[test]
+    fn only_the_repositorys_own_git_config_pins_its_network() {
+        let text = "global\tdash.network testnet\n\
+                    local\tdash.network devnet\n\
+                    local\tdash.devnetname bonsia\n\
+                    system\tdash.devnetname moutai\n";
+        let s = parse_repo_network(text);
+        assert_eq!(s.resolve().unwrap().network.key(), "devnet-bonsia");
+        // a worktree value beats a local one
+        let s = parse_repo_network("worktree\tdash.devnetname paloma\nlocal\tdash.network devnet\nlocal\tdash.devnetname bonsia\n");
+        assert_eq!(s.devnet_name.as_deref(), Some("paloma"));
+        // global only: nothing pinned here
+        assert!(parse_repo_network(
+            "global\tdash.network devnet\nglobal\tdash.devnetname bonsia\n"
+        )
+        .is_unset());
+    }
+
+    #[test]
+    fn a_key_source_names_its_network_without_being_opened() {
+        const ID: &str = "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB";
+        let facts = source_facts(std::path::Path::new(&format!(
+            "dfk1:devnet-bonsia:{ID}:6:cWIFWIFWIF"
+        )));
+        assert_eq!(facts.network.as_deref(), Some("devnet-bonsia"));
+        assert_eq!(facts.identity_id.as_deref(), Some(ID));
+        let kc = source_facts(std::path::Path::new(&format!(
+            "keychain:dash-forge/devnet-bonsia/{ID}"
+        )));
+        assert_eq!(kc.network.as_deref(), Some("devnet-bonsia"));
+        assert_eq!(
+            full_network_key("devnet-bonsia").as_deref(),
+            Some("devnet-bonsia")
+        );
+        assert_eq!(full_network_key("Testnet").as_deref(), Some("testnet"));
+        assert_eq!(
+            full_network_key("DEVNET-bonsia").as_deref(),
+            Some("devnet-bonsia")
+        );
+        assert_eq!(full_network_key("testnet").as_deref(), Some("testnet"));
+        // an older identity file's bare `devnet` names no devnet
+        assert_eq!(full_network_key("devnet"), None);
+        assert_eq!(full_network_key(""), None);
     }
 
     #[test]
