@@ -36,6 +36,6 @@ Dash Wallet sign-in is built. With today's wallets it works only in the iOS app 
 
 ## Which network
 
-Forge runs on **devnet moutai** (Platform protocol 14), the only network with a forge-v2 deployment today. The guides use it throughout. Testnet and mainnet run protocol 13 and have no Forge deployment: forge-v2 is registered on testnet when protocol 14 reaches it, and on mainnet after protocol 14 activates there and the owner registers the contracts. On a network without a deployment, the tools stop with a "not deployed" error. See [the network status table](../../README.md#status).
+Forge runs on **devnet moutai** (Platform protocol 14), the only network with a forge-v2 deployment today. The guides use it throughout. **The public devnet is moving to bonsia** (Platform 4.2.0-beta.7); moutai stays the default until the cut-over, and bonsia has no forge-v2 deployment yet, so don't point at it expecting Forge to work. Testnet and mainnet run protocol 13 and have no Forge deployment: forge-v2 is registered on testnet when protocol 14 reaches it, and on mainnet after protocol 14 activates there and the owner registers the contracts. On a network without a deployment, the tools stop with a "not deployed" error. See [the network status table](../../README.md#status).
 
 The product specification the planned features come from is [`docs/design/ux-dx-spec.md`](../design/ux-dx-spec.md) and [`docs/roadmap.md`](../roadmap.md).

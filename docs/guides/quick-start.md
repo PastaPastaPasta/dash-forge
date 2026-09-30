@@ -16,7 +16,7 @@ Replace every `<…>` placeholder in the commands with your own value before run
 
 Allow about 15 minutes. Most of it is the first build, or waiting for the network to confirm your identity.
 
-> **Which network?** Forge (forge-v2) needs Platform protocol 14, which only devnet **moutai** runs today. Testnet gets a deployment when protocol 14 reaches it, and mainnet after protocol 14 activates there and the contracts are registered. On a network without a deployment the tools stop with a "not deployed" error ([E702](../errors.md#e702)). See [the network status table](../../README.md#status).
+> **Which network?** Forge (forge-v2) needs Platform protocol 14, which only devnet **moutai** runs today. The public devnet is moving to **bonsia**, but bonsia has no forge-v2 deployment yet, so this guide still uses moutai. Testnet gets a deployment when protocol 14 reaches it, and mainnet after protocol 14 activates there and the contracts are registered. On a network without a deployment the tools stop with a "not deployed" error ([E702](../errors.md#e702)). See [the network status table](../../README.md#status).
 
 ---
 
