@@ -10,7 +10,7 @@
  * needs `dg` and `git-remote-dash` (E2E_BIN_DIR, else `target/release`). Its repo is
  * `forge-v2-private-<run>`, OWNER's, new each run (reserved in e2e/README.md).
  *
- *   E2E_DEVNET=moutai E2E_WRITE=1 E2E_BIN_DIR=… pnpm exec playwright test v2-private.spec.ts
+ *   E2E_DEVNET=bonsia E2E_WRITE=1 E2E_BIN_DIR=… pnpm exec playwright test v2-private.spec.ts
  */
 
 import { execFileSync } from 'node:child_process'

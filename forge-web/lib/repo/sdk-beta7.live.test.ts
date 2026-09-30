@@ -1,10 +1,10 @@
 /**
- * Live writes on devnet moutai through the web engine, on the pinned wasm-sdk (4.2.0-beta.7)
- * — SKIPPED by default (network, WASM, ~0.01 DASH). Needs a moutai on beta.7 with the contracts
+ * Live writes on devnet bonsia through the web engine, on the pinned wasm-sdk (4.2.0-beta.7)
+ * — SKIPPED by default (network, WASM, ~0.01 DASH). Needs a devnet on beta.7 with the contracts
  * registered in the findBy/where grammar (beta.7 cannot parse the earlier ones).
  *
  * Run with two identities minted for the run (never the shared fixtures):
- *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=moutai \
+ *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia \
  *     E2E_SDK_WRITER=<identity.json> E2E_SDK_OTHER=<identity.json> \
  *     pnpm exec vitest run lib/repo/sdk-beta7.live.test.ts
  *
@@ -64,7 +64,7 @@ function authOf(file: string): WriteAuth {
   return { identityId: parsed.identityId, network: 'devnet', getSigningKeyWif: () => parsed.signingKeyWif }
 }
 
-describe.skipIf(!LIVE)('live writes on wasm-sdk 4.2.0-beta.7 (moutai)', () => {
+describe.skipIf(!LIVE)('live writes on wasm-sdk 4.2.0-beta.7 (bonsia)', () => {
   it(
     'creates a repo, an issue and a comment, and reads a gate refusal with its code',
     async () => {

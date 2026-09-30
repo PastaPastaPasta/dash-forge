@@ -20,14 +20,14 @@
 #
 # Writes one new repository per run (`e2e-fresh-<run-id>`, about 0.0013 DASH plus two small
 # Platform-stored pushes) under an identity minted for the run (E2E_FRESH_IDENTITY skips the
-# mint). Needs the moutai funding key and tools/mint-identity's node modules to mint.
+# mint). Needs the devnet's funding key (E2E_MINT_FUNDING, config.sh) and tools/mint-identity's
+# node modules to mint.
 SCENARIO_NAME="24 fresh home: dg auth login → dg init → plain git push → dg repo clone (network from config.toml)"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
 
-: "${MOUTAI_FUNDING:=/Users/pasta/workspace/dash-forge-qa/secrets/moutai-funding.wif}"
 : "${MINT_DIR:=${E2E_REPO_ROOT}/tools/mint-identity}"
-DEVNET="${DASH_FORGE_DEVNET_NAME:-moutai}"
+DEVNET="$DASH_FORGE_DEVNET_NAME"
 LOG="${WORKROOT}/s23"
 IDS="${WORKROOT}/s23-ids"
 mkdir -p "$IDS" && chmod 700 "$IDS"
@@ -37,13 +37,13 @@ step "this run's identity"
 if [[ -n "${E2E_FRESH_IDENTITY:-}" ]]; then
   cp "$E2E_FRESH_IDENTITY" "$IDS/FRESH.identity.json"
 else
-  [[ -r "$MOUTAI_FUNDING" ]] || skip_scenario "no moutai funding key ($MOUTAI_FUNDING); set E2E_FRESH_IDENTITY"
+  [[ -r "$E2E_MINT_FUNDING" ]] || skip_scenario "no ${DASH_FORGE_DEVNET_NAME} funding key ($E2E_MINT_FUNDING); set E2E_FRESH_IDENTITY"
   [[ -d "$MINT_DIR/node_modules/@dashevo/evo-sdk" ]] || skip_scenario "tools/mint-identity has no node_modules (npm ci there)"
-  lock=() lf="${E2E_MINT_LOCK:-/tmp/qa-mint.lock}"
+  lock=() lf="$E2E_MINT_LOCK"
   if command -v lockf >/dev/null; then lock=(lockf -t 1200 "$lf")
   elif command -v flock >/dev/null; then lock=(flock -w 1200 "$lf"); fi
   "${lock[@]}" node "$MINT_DIR/mint.mjs" --network devnet --devnet-name "$DEVNET" --funding fund-from-key \
-    --funding-key-file "$MOUTAI_FUNDING" --out "$IDS" --label FRESH --amount 0.1 >"$LOG-mint.log" 2>&1 \
+    --funding-key-file "$E2E_MINT_FUNDING" --out "$IDS" --label FRESH --amount 0.1 >"$LOG-mint.log" 2>&1 \
     || { tail -5 "$LOG-mint.log" >&2; skip_scenario "minting failed (funding or network)"; }
 fi
 FRESH="$IDS/FRESH.identity.json"

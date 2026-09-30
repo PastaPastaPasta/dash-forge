@@ -25,7 +25,7 @@ import storageDefaults from '../../forge-contracts/config/storage-defaults.json'
 // Network
 // ---------------------------------------------------------------------------
 
-/** The network kinds forge-web can be built for. A devnet is further named (`moutai`). */
+/** The network kinds forge-web can be built for. A devnet is further named (`bonsia`). */
 export type Network = 'testnet' | 'mainnet' | 'devnet'
 
 /**
@@ -40,7 +40,7 @@ export const DEFAULT_DAPI_PORT = 1443
 /** One network's resolved configuration. */
 export interface NetworkConfig {
   readonly network: Network
-  /** The devnet name (`moutai`), or null for testnet/mainnet. */
+  /** The devnet name (`bonsia`), or null for testnet/mainnet. */
   readonly devnetName: string | null
   /** Deployment key / display label: `testnet`, `mainnet`, or `devnet-<name>`. */
   readonly key: string
@@ -109,7 +109,7 @@ export function parseDapiAddresses(list: string): string[] {
 function validateDevnetName(name: string): void {
   const reserved = ['mainnet', 'testnet', 'devnet', 'local', 'regtest']
   if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(name) || reserved.includes(name.toLowerCase())) {
-    throw new Error(`invalid NEXT_PUBLIC_DEVNET_NAME "${name}": use letters, digits and inner hyphens (e.g. moutai)`)
+    throw new Error(`invalid NEXT_PUBLIC_DEVNET_NAME "${name}": use letters, digits and inner hyphens (e.g. bonsia)`)
   }
 }
 
@@ -131,7 +131,7 @@ export function resolveNetworks(
   const active: Network = kind
   if (active === 'devnet') {
     if (devnetName === null) {
-      throw new Error('NEXT_PUBLIC_NETWORK=devnet needs NEXT_PUBLIC_DEVNET_NAME (e.g. moutai)')
+      throw new Error('NEXT_PUBLIC_NETWORK=devnet needs NEXT_PUBLIC_DEVNET_NAME (e.g. bonsia)')
     }
     validateDevnetName(devnetName)
   }

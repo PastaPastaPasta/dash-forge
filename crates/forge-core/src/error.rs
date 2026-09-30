@@ -91,7 +91,7 @@ pub enum Error {
     /// its deployment file). Returned instead of falling back to another network's
     /// contracts.
     #[error(
-        "forge-v2 isn't deployed on {network} yet; use --network devnet --devnet-name moutai \
+        "forge-v2 isn't deployed on {network} yet; use --network devnet --devnet-name bonsia \
          (see docs/mainnet-runbook.md)"
     )]
     V2NotDeployed {
@@ -104,7 +104,7 @@ pub enum Error {
     /// (a proof of absence, or Drive's `contract not found` refusal); retrying cannot help.
     #[error("the forge contracts are not on {network}: {detail}")]
     ContractsMissing {
-        /// The network as a person reads it (`devnet moutai`, `mainnet`); `user_error` tells a
+        /// The network as a person reads it (`devnet bonsia`, `mainnet`); `user_error` tells a
         /// devnet by the `devnet ` prefix.
         network: String,
         /// What Platform answered: the missing contract, or Drive's refusal.

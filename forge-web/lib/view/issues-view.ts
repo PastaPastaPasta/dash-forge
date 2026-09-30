@@ -45,6 +45,7 @@ import {
   type TransitionView,
 } from '../repo'
 import { sortTransitions, transitionOf } from '../repo/transitions'
+import { readProvedVerdicts, type ProvedVerdicts } from '../repo/verdicts'
 import { isLocked, stateCode } from '../rules/transition'
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import { compositeOf, docsAt, queryComposite, siblingOf } from '../sdk/composite'
@@ -350,6 +351,12 @@ export interface PullThread {
    * could not be read.
    */
   readonly approvals: PullApprovals | null
+  /**
+   * The member approvals and change requests on the head as consensus proves them (RC1 R-16, one
+   * grouped count): shown in the merge box beside the fold, never a merge gate (`approvals` is).
+   * Null when it could not be read or the PR records no head.
+   */
+  readonly verdicts: ProvedVerdicts | null
   /** The Reviewers card (requested reviewers and everyone who reviewed); empty when members are unknown. */
   readonly reviewers: readonly ReviewerCardRow[]
   /** The repo's current members (the reviewer and assignee pickers). */
@@ -446,6 +453,9 @@ export async function loadPullThread(
     readPull(sdk, repo, doc, log, base.configHistory, base.refUpdates, { transitions }),
     prefetchDpnsNames(sdk, shownIds.filter((x) => x !== ''), network).catch(() => undefined),
   ])
+  // The proved verdict count needs the folded head: one grouped count, alongside what follows.
+  // Display only, so a failed read shows nothing rather than failing the page.
+  const verdictsRead = readProvedVerdicts(sdk, repo, id, pull.headOid).catch(() => null)
 
   const tally = new HiddenTally()
   const comments = (await admitAll(gate, 'comment', [...commentDocs].sort(byTime), tally)).docs.map(toCommentView)
@@ -456,7 +466,7 @@ export async function loadPullThread(
   const policyDocs = docs(7).length < 100 ? docs(7) : null
   const policy: Promise<Policy | null> = policyDocs === null ? readPolicy(sdk, repo) : Promise.resolve(policyFromDocs(policyDocs))
   const members = memberships ?? (await readMembershipsCached(sdk, repo, network).catch(() => null))
-  const approvals = await readApprovals(members, policy, reviews, review, pull.author)
+  const [approvals, verdicts] = await Promise.all([readApprovals(members, policy, reviews, review, pull.author), verdictsRead])
   return {
     pull,
     timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews, tally.total > 0, transitions),
@@ -464,6 +474,7 @@ export async function loadPullThread(
     reviews,
     review,
     approvals: approvals?.approvals ?? null,
+    verdicts,
     reviewers: approvals?.reviewers ?? [],
     members: members ?? [],
     labels,

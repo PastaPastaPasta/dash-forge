@@ -15,7 +15,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
 /** The devnet the build under test (or the live test) reads. Keep in step with playwright.config.ts. */
-export const E2E_DEVNET = process.env['E2E_DEVNET'] || 'moutai'
+export const E2E_DEVNET = process.env['E2E_DEVNET'] || 'bonsia'
 
 const ROOT = resolve(__dirname, '../..')
 
@@ -37,6 +37,49 @@ function isSeedPulls(v: unknown): v is SeedPulls {
 
 let cached: SeedPulls | null = null
 
+/** The summary files to read, in order: `$FORGE_SEED_SUMMARY` if set, then the committed one. */
+function summaryPaths(): string[] {
+  const envPath = process.env['FORGE_SEED_SUMMARY']
+  const defaultPath = join(ROOT, `forge-contracts/deployments/fixtures/devnet-${E2E_DEVNET}.json`)
+  return envPath ? [envPath, defaultPath] : [defaultPath]
+}
+
+/**
+ * The first summary file on disk, parsed, with its path; null when there is none. Throws, naming
+ * the file, when that file is not JSON.
+ */
+function readSummary(): { readonly path: string; readonly summary: Record<string, unknown> } | null {
+  for (const path of summaryPaths()) {
+    if (!existsSync(path)) continue
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(readFileSync(path, 'utf8'))
+    } catch (e) {
+      throw new Error(`${path} is not a readable seed summary: ${(e as Error).message}`)
+    }
+    return { path, summary: typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : {} }
+  }
+  return null
+}
+
+/**
+ * A seeded fixture repo (`demo` = forge-v2-demo, `empty` = forge-v2-empty) as the seed summary
+ * records it, or null when there is no readable summary for this devnet. Never throws, so the
+ * module-level fixture constants in `e2e/helpers.ts` can use it (a spec that needs the fixture
+ * then fails on its placeholder owner; `loadSeedPulls` names the unreadable file).
+ */
+export function seedRepo(which: 'demo' | 'empty'): { readonly owner: string; readonly name: string } | null {
+  let repo: unknown
+  try {
+    repo = readSummary()?.summary[which]
+  } catch {
+    return null
+  }
+  if (typeof repo !== 'object' || repo === null) return null
+  const { owner, name } = repo as Record<string, unknown>
+  return typeof owner === 'string' && typeof name === 'string' ? { owner, name } : null
+}
+
 /**
  * The DEMO fixture's `pulls` numbers. Reads, in order, `$FORGE_SEED_SUMMARY` if set, then
  * `forge-contracts/deployments/fixtures/devnet-<E2E_DEVNET>.json` (repo-root relative); the
@@ -50,13 +93,11 @@ let cached: SeedPulls | null = null
  */
 export function loadSeedPulls(): SeedPulls {
   if (cached) return cached
-  const envPath = process.env['FORGE_SEED_SUMMARY']
-  const defaultPath = join(ROOT, `forge-contracts/deployments/fixtures/devnet-${E2E_DEVNET}.json`)
-  const tried = envPath ? [envPath, defaultPath] : [defaultPath]
-  for (const path of tried) {
-    if (!existsSync(path)) continue
-    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
-    const pulls = typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>)['pulls'] : undefined
+  const tried = summaryPaths()
+  const found = readSummary()
+  if (found !== null) {
+    const { path, summary } = found
+    const pulls = summary['pulls']
     if (!isSeedPulls(pulls)) {
       throw new Error(
         `${path} has no valid \`pulls\` (approved/merged/reviewParity numbers): the seed summary must carry \`pulls\` — re-run forge-contracts/scripts/seed-v2-fixture.mjs`,

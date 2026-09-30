@@ -9,7 +9,7 @@ import { answerStorageQuestion, expectPlatformPreAllowed, idFile, idOf, runAxe, 
  * The full GitHub-style review round trip in the browser (review-parity spec §7 PRs 3–6), two
  * users on a devnet with the spec's own identities (≈ 0.03 DASH plus a few KiB of storage):
  *
- *   E2E_DEVNET=moutai E2E_WRITE=1 E2E_IDENTITY_DIR=<dir with OWNER, CONTRIB, COLLAB> \
+ *   E2E_DEVNET=bonsia E2E_WRITE=1 E2E_IDENTITY_DIR=<dir with OWNER, CONTRIB, COLLAB> \
  *     E2E_BIN_DIR=<dir with dg, git-remote-dash, seed_check_run> \
  *     pnpm exec playwright test review-round-trip-web.spec.ts
  *
@@ -55,7 +55,7 @@ function env(who: string): NodeJS.ProcessEnv {
     ...process.env,
     DASH_FORGE_KEY: idFile(who),
     DASH_FORGE_NETWORK: 'devnet',
-    DASH_FORGE_DEVNET_NAME: process.env['E2E_DEVNET'] || 'moutai',
+    DASH_FORGE_DEVNET_NAME: process.env['E2E_DEVNET'] || 'bonsia',
     RUST_LOG: 'error',
     NO_COLOR: '1',
     PATH: `${BIN}:${process.env['PATH'] ?? ''}`,

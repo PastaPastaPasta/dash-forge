@@ -6,7 +6,7 @@ import { E2E_DEVNET, collectPageErrors, countDapi, loadSeedPulls, repoUrl as url
  * P-1: the shared DAPI request budget (`lib/sdk/budget.ts`) and the seeded contracts
  * (`lib/sdk/contract-seed.ts`), against the moutai read fixture:
  *
- *   E2E_DEVNET=moutai pnpm exec playwright test rate-budget.spec.ts
+ *   E2E_DEVNET=bonsia pnpm exec playwright test rate-budget.spec.ts
  *
  *  - A rate-limited node (a gateway `ResourceExhausted` reply with `ratelimit-reset`, mocked
  *    here) makes the page wait, showing "Platform is busy — waiting Ns", and then finish. It

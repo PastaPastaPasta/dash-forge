@@ -41,7 +41,7 @@ export function refreshSpecKeys(authDir: string, identityDir: string, devnet: st
 
 export default function globalSetup(): void {
   if (process.env['E2E_KEEP_KEYS'] === '1') return
-  const moved = refreshSpecKeys(join(__dirname, '.playwright', 'auth'), process.env['E2E_IDENTITY_DIR'] || '', process.env['E2E_DEVNET'] || 'moutai')
+  const moved = refreshSpecKeys(join(__dirname, '.playwright', 'auth'), process.env['E2E_IDENTITY_DIR'] || '', process.env['E2E_DEVNET'] || 'bonsia')
   // eslint-disable-next-line no-console -- the run log says which keys were renewed
   if (moved.length > 0) console.log(`[e2e] fresh browser keys this run: moved ${moved.length} saved vault(s) aside (${moved.join(', ')})`)
 }

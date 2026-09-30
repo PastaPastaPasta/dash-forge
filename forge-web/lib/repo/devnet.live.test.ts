@@ -2,7 +2,7 @@
  * Live devnet smoke — SKIPPED by default (needs network + WASM).
  *
  * Run with:
- *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=moutai \
+ *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia \
  *     pnpm exec vitest run lib/repo/devnet.live.test.ts
  *
  * Proves the devnet connect path of `evoSdkService` works as the app builds it: a trusted

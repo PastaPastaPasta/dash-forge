@@ -21,15 +21,14 @@
 #      public repo of theirs (which would otherwise write it in plaintext)
 #   6. P_OWNER merges the PR (1 approval counted from the sealed review)
 #
-# Needs the moutai funding key (MOUTAI_FUNDING, default the QA harness's) and
+# Needs the devnet's funding key (E2E_MINT_FUNDING, config.sh; default the QA harness's) and
 # tools/mint-identity's node modules; skips without them.
 SCENARIO_NAME="19 private repository: sealed issues, PRs, comments, reviews and labels"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
 
-: "${MOUTAI_FUNDING:=/Users/pasta/workspace/dash-forge-qa/secrets/moutai-funding.wif}"
 : "${MINT_DIR:=${E2E_REPO_ROOT}/tools/mint-identity}"
-[[ -n "${E2E_P_OWNER:-}" || -r "$MOUTAI_FUNDING" ]] || skip_scenario "no moutai funding key ($MOUTAI_FUNDING)"
+[[ -n "${E2E_P_OWNER:-}" || -r "$E2E_MINT_FUNDING" ]] || skip_scenario "no ${DASH_FORGE_DEVNET_NAME} funding key ($E2E_MINT_FUNDING)"
 [[ -n "${E2E_P_OWNER:-}" || -d "$MINT_DIR/node_modules/@dashevo/evo-sdk" ]] || skip_scenario "tools/mint-identity has no node_modules (npm ci there)"
 
 LOG="${WORKROOT}/s19"
@@ -37,13 +36,13 @@ IDS="${WORKROOT}/s19-ids"
 mkdir -p "$IDS" && chmod 700 "$IDS"
 json_field() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2], {"d": d}))' "$1" "$2" 2>/dev/null; }
 
-mint() { # mint <label>: a funded moutai identity with an ENCRYPTION key, for this run only
+mint() { # mint <label>: a funded devnet identity with an ENCRYPTION key, for this run only
   # One mint at a time across every agent sharing the funding key (its UTXOs), as `qa mint` does.
-  local lock=() lf="${E2E_MINT_LOCK:-/tmp/qa-mint.lock}"
+  local lock=() lf="$E2E_MINT_LOCK"
   if command -v lockf >/dev/null; then lock=(lockf -t 1200 "$lf")      # macOS
   elif command -v flock >/dev/null; then lock=(flock -w 1200 "$lf"); fi  # Linux
-  "${lock[@]}" node "$MINT_DIR/mint.mjs" --network devnet --devnet-name moutai --funding fund-from-key \
-    --funding-key-file "$MOUTAI_FUNDING" --out "$IDS" --label "$1" --amount 0.2 >"$LOG-mint-$1.log" 2>&1
+  "${lock[@]}" node "$MINT_DIR/mint.mjs" --network devnet --devnet-name "$DASH_FORGE_DEVNET_NAME" --funding fund-from-key \
+    --funding-key-file "$E2E_MINT_FUNDING" --out "$IDS" --label "$1" --amount 0.2 >"$LOG-mint-$1.log" 2>&1
 }
 
 step "this run's identities"

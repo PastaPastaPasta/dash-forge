@@ -81,7 +81,7 @@ import {
   type RepoRef,
   type VerdictInput,
 } from '@/lib/repo'
-import { checksPhrase, readCheckRuns, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
+import { checksPhrase, expectedChecks, readCheckRuns, requiredSources, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
 import { headSync, readBranchState, readBranchTip } from '@/lib/repo/source-branch'
 import type { Event, EventKind, Holdings, RefState } from '@/lib/rules'
 import { linkedIssues, RoleOracle, type Policy, type PolicyStatus } from '@/lib/rules/v2'
@@ -130,7 +130,7 @@ import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
 import { EditedMarker, MarkdownEditor } from '@/components/repo/issue-bits'
 import { AssigneePicker, LabelPicker, SidebarSection } from '@/components/repo/target-rail'
 import { ReviewersCard } from '@/components/repo/reviewers-card'
-import { Approvals } from '@/components/repo/approvals'
+import { Approvals, VerdictLine } from '@/components/repo/approvals'
 import { ChecksTab, CommitsTab } from '@/components/repo/pull-tabs'
 import { cn } from '@/lib/utils'
 
@@ -330,12 +330,17 @@ function PullPage({
   // Trust is by the current member set: keyed on the set itself (a swap of members re-reads).
   const membersKnown = thread.approvals !== null
   const memberKey = thread.members.map((m) => m.identity).sort().join(',')
+  const rules = policyOf(thread.approvals)
+  const policyNow = rules.policy === 'unknown' ? null : rules.policy
+  // The policy's pinned check sources (RC1 R-08): a pinned check lists and counts its source's run.
+  const pins = requiredSources(policyNow)
+  const pinKey = JSON.stringify([...pins])
   const checks = useAsync(
     async () => {
       const members = new Set(memberKey === '' ? [] : memberKey.split(','))
-      return readCheckRuns(sdk!, repo, pull.headOid, members)
+      return readCheckRuns(sdk!, repo, pull.headOid, members, pins)
     },
-    [ready, repoKey(repo), pull.headOid, memberKey],
+    [ready, repoKey(repo), pull.headOid, memberKey, pinKey],
     { enabled: ready && sdk !== null && pull.headOid !== '' },
   )
   const checkSummary = checks.data === null ? null : summarizeChecks(checks.data.runs, membersKnown)
@@ -367,8 +372,6 @@ function PullPage({
   const stillArriving = arriving !== null && !arrivedAll && !refreshing ? { shown: commentsShown(thread, arriving.commentIds), total: arriving.commentIds.length } : null
 
   // ---- controls ---------------------------------------------------------------------------------
-  const rules = policyOf(thread.approvals)
-  const policyNow = rules.policy === 'unknown' ? null : rules.policy
   // `requireChecks`: the newest trusted run per name on the head passed, and at least one was
   // reported; named `requiredChecks` (set by `dg`) must each pass, from their pinned source when
   // the policy names one (`checksState`, forge-core `checks_state`: `dg pr merge` applies the same rule).
@@ -896,7 +899,14 @@ function PullPage({
                 </section>
               ) : (
                 <>
-                  {thread.approvals !== null ? <Approvals approvals={thread.approvals} headOid={pull.headOid} /> : null}
+                  {thread.approvals !== null ? (
+                    <Approvals approvals={thread.approvals} proved={thread.verdicts} headOid={pull.headOid} />
+                  ) : thread.verdicts !== null ? (
+                    // The members could not be read (no fold): the proved count alone, said to be an upper bound.
+                    <section aria-label="Approvals" className="rounded-lg border border-anvil-200 px-4 py-3 text-dense dark:border-anvil-800">
+                      <VerdictLine approvals={null} proved={thread.verdicts} headOid={pull.headOid} />
+                    </section>
+                  ) : null}
                   <ChecksRow summary={checkSummary} headOid={pull.headOid} onOpen={() => setTab('checks')} />
                   {open && baseTipOid !== '' && cmp !== null && cmp.upToDate !== true && cmp.comparedBaseOid !== baseTipOid && (suggest.write.can || isAuthor) ? (
                     <section aria-label="Update branch" className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-200 px-4 py-2 text-dense dark:border-anvil-800" data-testid="update-branch">
@@ -1087,7 +1097,14 @@ function PullPage({
               onRetry={() => (comparison.error ? comparison.tryAgain() : commits.reload())}
             />
           ) : tab === 'checks' ? (
-            <ChecksTab runs={checks.data?.runs ?? null} summary={checkSummary} headOid={pull.headOid} error={checks.error} onRetry={checks.reload} />
+            <ChecksTab
+              runs={checks.data?.runs ?? null}
+              summary={checkSummary}
+              headOid={pull.headOid}
+              error={checks.error}
+              onRetry={checks.reload}
+              expected={expectedChecks(checks.data?.runs ?? [], policyNow)}
+            />
           ) : (
             <>
             {suggest.runner.view}
@@ -1514,6 +1531,9 @@ function BranchRules({
   checksBlocking: boolean
 }): JSX.Element {
   const short = shortBranch(base)
+  // The checks the policy requires: by name, or (none named) every reported one. Null: no policy read.
+  const known = policy !== null && policy !== 'unknown' ? policy : null
+  const named = known?.requiredChecks ?? []
   return (
     <section aria-label="Branch rules" className="rounded-lg border border-anvil-200 px-4 py-3 text-dense dark:border-anvil-800">
       {baseProtected ? (
@@ -1539,10 +1559,13 @@ function BranchRules({
           </span>
         </p>
       ) : null}
-      {policy !== null && policy !== 'unknown' && policy.requireChecks ? (
+      {known !== null && (named.length > 0 || known.requireChecks === true) ? (
         <p className="mt-1 flex items-center gap-2" data-testid="policy-checks">
-          {checksBlocking ? <X className="h-4 w-4 text-danger" aria-hidden /> : <Check className="h-4 w-4 text-verify" aria-hidden />}
-          <span>{checksBlocking ? 'Required checks are not all passing on the head' : 'Required checks pass'}</span>
+          {checksBlocking ? <X className="h-4 w-4 shrink-0 text-danger" aria-hidden /> : <Check className="h-4 w-4 shrink-0 text-verify" aria-hidden />}
+          <span className="min-w-0 [overflow-wrap:anywhere]">
+            {checksBlocking ? 'Required checks are not all passing on the head' : 'Required checks pass'}
+            {named.length > 0 ? `: ${named.join(', ')}` : ''}
+          </span>
         </p>
       ) : null}
       {policy !== null && policy !== 'unknown' && (policy.mergeMethods ?? 0) !== 0 ? (

@@ -1,0 +1,35 @@
+{
+  "network": "devnet-bonsia",
+  "forgeCore": "6SbihK14KP8RhUpSH4Tc6WNvWKziWEoAbkNZmi7RadwJ",
+  "forgeCollab": "H1H5VfTt2KWy1NhwEHoHuwYZGJm8eoetUCUt5xGNuZUp",
+  "forgeCommunity": "6ktYsH3cpxC7FbazwtVWGiNuVb4TNE5YrHD1hNY8XqNx",
+  "demo": {
+    "owner": "2X2XM6kF5DK9Vx8Mfot4wetvppBKLE1W3tC87NA36jXP",
+    "name": "forge-v2-demo",
+    "repoId": "HhkpzikUjK1k5f3JHpYGBLYHf9mYZJFKbyeK7mwrpYA3",
+    "reviewParityPull": 7
+  },
+  "pulls": {
+    "approved": 5,
+    "merged": 6,
+    "reviewParity": 7
+  },
+  "empty": {
+    "owner": "CG8Tf5rkeYtqnBfHHDHhf7rDev5c6Zjar1sXMXEVfTrQ",
+    "name": "forge-v2-empty",
+    "repoId": "CkgpyRAbupjPZqpvVaEisGvhbJxdDKWkQoniA7A3r5zW"
+  },
+  "check": {
+    "name": "fixture-ci",
+    "sha": "3a1300eb2441ef94fd927dbfc7548d34fbb8edc5",
+    "reporter": "gSrZguRmYiZ3fJ4mYnQvGxoAZ5wV6iUNNUPUq3vimCG"
+  },
+  "release": "v0.1.0",
+  "commits": {
+    "c1": "4a9c68802813c69452e1c46fba8d2acd67bec3a9",
+    "c2": "b35c50122cd51b2cc0345760721e6398fa0c31f5",
+    "c3": "3a1300eb2441ef94fd927dbfc7548d34fbb8edc5"
+  },
+  "packHash": "ef20a234d4e9be5a57515245d200c947222f98dbeea79dbc0643d948f6d89674",
+  "locatorHash": "3c34f7292c7092a4535af857f0e870571b53e416cd82bb3dd4094798a52f4453"
+}

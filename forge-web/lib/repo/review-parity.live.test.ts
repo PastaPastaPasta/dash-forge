@@ -1,13 +1,13 @@
 /**
- * Live review-parity writes and folds on devnet moutai — SKIPPED by default (network, WASM,
+ * Live review-parity writes and folds on devnet bonsia — SKIPPED by default (network, WASM,
  * about 0.01 DASH of spend).
  *
  * Run with:
- *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=moutai \
+ *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia \
  *     pnpm exec vitest run lib/repo/review-parity.live.test.ts
  *
  * Through the web's own writers (`review-writes.ts`, `replaceDocumentIdempotent`) and readers
- * (`readPull`, `readReviews`, the thread view), with the moutai test identities: OWNER creates
+ * (`readPull`, `readReviews`, the thread view), with the devnet's test identities: OWNER creates
  * a scratch repo (maintainer) with COLLAB as writer; CONTRIB (not a member) opens a draft PR;
  * the author marks it ready and moves its head; OWNER requests COLLAB as a reviewer; COLLAB submits a pending review (request changes + a single-line, a range and a
  * file-level comment) as one review and three `reviewId` comments; CONTRIB replies and resolves
@@ -49,7 +49,7 @@ import {
 import { createRepo, grantMember, nextNumber, setTargetState } from './writes'
 
 const LIVE = process.env['FORGE_LIVE'] === '1' && DEFAULT_NETWORK === 'devnet'
-const ID_DIR = join(homedir(), '.config/dash-forge/test-identities/devnet-moutai')
+const ID_DIR = join(homedir(), '.config/dash-forge/test-identities', NETWORKS[DEFAULT_NETWORK].key)
 // The fixture's history (forge-contracts/scripts/seed-v2-fixture.mjs): c2 then c3.
 const C2 = 'b35c50122cd51b2cc0345760721e6398fa0c31f5'
 const C3 = '3a1300eb2441ef94fd927dbfc7548d34fbb8edc5'
@@ -59,7 +59,7 @@ function authOf(name: string): WriteAuth {
   return { identityId: parsed.identityId, network: 'devnet', getSigningKeyWif: () => parsed.signingKeyWif }
 }
 
-describe.skipIf(!LIVE)('live review parity (moutai)', () => {
+describe.skipIf(!LIVE)('live review parity (bonsia)', () => {
   it(
     'writes every review-parity document through the web writers and folds it back',
     async () => {

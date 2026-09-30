@@ -127,12 +127,14 @@ describe('the lock bit is in the thread read (no request of its own)', () => {
     expect(locked.seen.composites).toHaveLength(1)
     expect(locked.seen.composites[0]?.subQueries.some((s) => s.documentType === 'transition')).toBe(true)
     expect(locked.seen.sums).toHaveLength(0)
-    expect(locked.seen.counts).toHaveLength(0)
+    // The one count is the merge box's proved verdict count (`review.verdicts`), not the lock.
+    expect(locked.seen.counts.map((q) => q.documentTypeName)).toEqual(['review'])
     expect(locked.seen.queries.filter((q) => q.documentTypeName === 'transition')).toHaveLength(0)
     expect(asked(locked.seen)).toEqual(asked(open.seen))
-    // The page's whole budget: the composite, the names (one DPNS read), the base ref's history and config.
-    expect(requests(locked.seen)).toBe(5)
-    expect(requests(open.seen)).toBe(5)
+    // The page's whole budget: the composite, the names (one DPNS read), the base ref's history
+    // and config, and the verdict count.
+    expect(requests(locked.seen)).toBe(6)
+    expect(requests(open.seen)).toBe(6)
   })
 
   it("the issue page's load: the same requests locked as unlocked", async () => {

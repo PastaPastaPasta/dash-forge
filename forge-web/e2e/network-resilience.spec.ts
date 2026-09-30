@@ -5,7 +5,7 @@ import { DEMO, EMPTY, collectPageErrors, idFile, repoUrl, shot, signedIn, unlock
 /**
  * Network resilience, against the moutai read fixture (e2e/helpers.ts `DEMO`):
  *
- *   E2E_DEVNET=moutai pnpm exec playwright test network-resilience.spec.ts
+ *   E2E_DEVNET=bonsia pnpm exec playwright test network-resilience.spec.ts
  *
  *  - nr-1 (D-025) Slow 3G: the shell paints fast, the SDK download shows progress, and it
  *    completes instead of dying at a chunk-load timeout. The SDK's JS chunk stays small; the

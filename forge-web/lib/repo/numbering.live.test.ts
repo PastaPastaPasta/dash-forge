@@ -1,10 +1,10 @@
 /**
- * Live dense numbering and transitions on devnet moutai, fresh beta.7 registration only
+ * Live dense numbering and transitions on devnet bonsia, fresh beta.7 registration only
  * (forge-v2.md §6, STATE-COUNTS §2–§4) — SKIPPED by default (network, WASM, about 0.01 DASH).
  * WIPE-PLAN §3 step 9 runs it once the three contracts are registered.
  *
  * Run with:
- *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=moutai \
+ *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia \
  *     E2E_NUMBERING_OWNER=<identity.json> E2E_NUMBERING_STRANGER=<identity.json> \
  *     pnpm exec vitest run lib/repo/numbering.live.test.ts
  *
@@ -46,7 +46,7 @@ async function liveSdk() {
   return { sdk: evoSdkService.getSdk(), forge }
 }
 
-describe.skipIf(!LIVE)('live dense numbering and transitions (moutai, fresh registration)', () => {
+describe.skipIf(!LIVE)('live dense numbering and transitions (bonsia, fresh registration)', () => {
   it(
     'numbers issues and PRs in one sequence and moves state only by legal transitions',
     async () => {

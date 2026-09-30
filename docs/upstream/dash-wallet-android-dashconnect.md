@@ -31,7 +31,7 @@ Dash Forge (a git forge on Platform) signs users in with the DashConnect key exc
 
 ## Acceptance
 
-- A Forge login on moutai/testnet (protocol 14) produces one AUTHENTICATION/HIGH key bound to the Forge contract group, with a budget and an expiry, and a `loginKeyResponse` in `H8F9…`.
+- A Forge login on a protocol-14 devnet (bonsia) or testnet produces one AUTHENTICATION/HIGH key bound to the Forge contract group, with a budget and an expiry, and a `loginKeyResponse` in `H8F9…`.
 - Existing yappr logins on testnet keep working.
 
 Reference implementation on the app side: dash-forge `forge-web/lib/auth/app-connect.ts` (reads both contracts) and `docs/design/wallet-login.md`.

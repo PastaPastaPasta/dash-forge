@@ -9,7 +9,7 @@ import { idFile, idOf, runAxe, shot, signedIn, unlock, waitForRepoResolved } fro
  * Pending reviews, ranges, resolution and comment edits in the browser (review-parity spec §7
  * PR 4), live on a devnet with the spec's own identities (about 0.01 DASH):
  *
- *   E2E_DEVNET=moutai E2E_WRITE=1 E2E_IDENTITY_DIR=<dir with OWNER, CONTRIB, COLLAB> \
+ *   E2E_DEVNET=bonsia E2E_WRITE=1 E2E_IDENTITY_DIR=<dir with OWNER, CONTRIB, COLLAB> \
  *     E2E_BIN_DIR=<dir with dg + git-remote-dash> pnpm exec playwright test review-pending.spec.ts
  *
  * The CLI sets up a repo (COLLAB a writer), CONTRIB's fork and a PR from it. Then, in the web:
@@ -61,7 +61,7 @@ function env(who: string): NodeJS.ProcessEnv {
     ...process.env,
     DASH_FORGE_KEY: idFile(who),
     DASH_FORGE_NETWORK: 'devnet',
-    DASH_FORGE_DEVNET_NAME: process.env['E2E_DEVNET'] || 'moutai',
+    DASH_FORGE_DEVNET_NAME: process.env['E2E_DEVNET'] || 'bonsia',
     RUST_LOG: 'error',
     NO_COLOR: '1',
     PATH: `${BIN}:${process.env['PATH'] ?? ''}`,

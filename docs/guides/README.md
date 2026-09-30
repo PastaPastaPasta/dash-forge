@@ -32,10 +32,10 @@ These guides describe what is on `master` today. Features that are specified but
 - editing files in the browser, and browser merges for private repositories (the CLI has them);
 - the `forge.dashhq.org/mirror` setup wizard.
 
-Dash Wallet sign-in is built. With today's wallets it works only in the iOS app pointed at moutai's key-exchange contract (not yet tried on a real device), and on testnet once Forge is deployed there: see [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today).
+Dash Wallet sign-in is built. With today's wallets it works only in the iOS app pointed at bonsia's key-exchange contract (not yet tried on a real device), and on testnet once Forge is deployed there: see [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today).
 
 ## Which network
 
-The guides use **devnet moutai** (Platform protocol 14) throughout, but **the public devnet is moving to devnet bonsia**: moutai was upgraded in place to Platform v4.2.0-beta.7, which retired its forge-v2 contracts, and forge-v2 is being re-registered on bonsia, the new public devnet, before the guides and [forge.dashhq.org](https://forge.dashhq.org) cut over. Until that happens, neither devnet has a working forge-v2 deployment — don't point at bonsia expecting Forge to work there yet, and expect moutai commands to stop with a "not deployed" error too. Testnet and mainnet run protocol 13 and have no Forge deployment: forge-v2 is registered on testnet when protocol 14 reaches it, and on mainnet after protocol 14 activates there and the owner registers the contracts. See [the network status table](../../README.md#status).
+The guides use **devnet bonsia** (Platform protocol 14, v4.2.0-beta.7) throughout, where Forge's RC1 contracts were registered on 2026-09-29. **The web app has not cut over yet**: [forge.dashhq.org](https://forge.dashhq.org) was built for devnet moutai, whose forge-v2 contracts were retired when moutai was upgraded in place to v4.2.0-beta.7, and it is down until it moves to bonsia. Moutai commands stop with a "not deployed" error. Testnet and mainnet run protocol 13 and have no Forge deployment: forge-v2 is registered on testnet when protocol 14 reaches it, and on mainnet after protocol 14 activates there and the owner registers the contracts. See [the network status table](../../README.md#status).
 
 The product specification the planned features come from is [`docs/design/ux-dx-spec.md`](../design/ux-dx-spec.md) and [`docs/roadmap.md`](../roadmap.md).

@@ -42,7 +42,7 @@ iso() { # iso <cmd...> — run in the isolated home, with no signing key (a func
 CONFIG="$ISO/xdg/dash-forge/config.toml"
 
 step "1. D-405: a config.toml syntax error is E204, everywhere"
-printf 'network = "devnet"\ndevnet_name = "moutai"\ndefault_identity = \n' >"$CONFIG"
+printf 'network = "devnet"\ndevnet_name = "%s"\ndefault_identity = \n' "$DASH_FORGE_DEVNET_NAME" >"$CONFIG"
 iso _tmo "$DG" auth status >"$LOG-status.out" 2>"$LOG-status.err"
 check "dg auth status exits 2" assert_eq "2" "$?"
 check "E204" assert_file_contains "$LOG-status.err" "[E204]"

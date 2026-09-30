@@ -12,7 +12,7 @@ import type { PullView } from '../repo'
 import { historicalTipsPredicate } from '../repo'
 import type { Holdings } from '../rules'
 import { prStateV2 } from '../rules/v2'
-import { deleteBranchOffer, deleteBranchProblem, mergeBaseTip, mergeBoxShown, mergeBoxSlot, mergeButton, mergeRefProblem, policyOf, pullActions, type PullActionInputs } from './pull-actions'
+import { deleteBranchOffer, deleteBranchProblem, mergeBaseTip, mergeBoxShown, mergeBoxSlot, mergeButton, mergeRefProblem, policyOf, pullActions, verdictSummary, type PullActionInputs } from './pull-actions'
 
 const AUTHOR = 'author'
 const WRITER = 'writer'
@@ -330,5 +330,54 @@ describe('where the merge box is, per tab', () => {
   it('after its merge it stays mounted: on screen where it ended, hidden on other tabs', () => {
     expect(at({ ranOnPage: true, ranOnThisTab: true })).toBe('shown')
     expect(at({ ranOnPage: true })).toBe('kept')
+  })
+})
+
+describe('the merge box review line (RC1 R-16): the fold gates, the proved count is shown beside it', () => {
+  const fold = (approvers: string[], changesRequested: string[] = [], policy: { requiredApprovals: number } | null = null, have = approvers.length) => ({
+    approvers,
+    changesRequested,
+    policy,
+    policyStatus: policy === null ? null : { met: have >= policy.requiredApprovals, have, need: policy.requiredApprovals },
+  })
+  const proved = (approvals: number, changesRequested = 0, headOid = HEAD) => ({ headOid, approvals, changesRequested })
+
+  it('says "N approvals", proved when the chain agrees', () => {
+    expect(verdictSummary(fold([MAINTAINER, WRITER]), proved(2), HEAD)).toEqual({ tone: 'approved', headline: '2 approvals', detail: null, onChain: null, proved: true })
+    expect(verdictSummary(fold([]), proved(0), HEAD)).toMatchObject({ tone: 'none', headline: 'No approvals yet', proved: true })
+  })
+
+  it('says "N of M required approvals" from the fold, and names a larger proved count "on chain"', () => {
+    const line = verdictSummary(fold([MAINTAINER], [], { requiredApprovals: 2 }), proved(3), HEAD)
+    expect(line).toMatchObject({ tone: 'required', headline: '1 of 2 required approvals', proved: false })
+    expect(line?.onChain).toMatch(/^3 member approvals on chain \(an upper bound/)
+    expect(verdictSummary(fold([MAINTAINER, WRITER], [], { requiredApprovals: 2 }), proved(2), HEAD)).toMatchObject({ tone: 'approved', headline: '2 of 2 required approvals', onChain: null })
+    // Maintainers only: the writer's approval is in the fold but not in the policy's count.
+    expect(verdictSummary(fold([MAINTAINER, WRITER], [], { requiredApprovals: 2 }, 1), null, HEAD)).toMatchObject({ headline: '1 of 2 required approvals', detail: '2 approvals in all' })
+  })
+
+  it('leads with "Changes requested", the approvals beside it', () => {
+    expect(verdictSummary(fold([MAINTAINER], [WRITER], { requiredApprovals: 1 }), proved(1, 1), HEAD)).toEqual({
+      tone: 'changes',
+      headline: 'Changes requested',
+      detail: '1 approval · 1 of 1 required approval',
+      onChain: null,
+      proved: true,
+    })
+  })
+
+  it('shows no "on chain" note for a proved count below the fold (a node behind)', () => {
+    expect(verdictSummary(fold([MAINTAINER, WRITER]), proved(1), HEAD)).toMatchObject({ headline: '2 approvals', onChain: null, proved: false })
+  })
+
+  it('ignores a proved count for another head', () => {
+    expect(verdictSummary(fold([MAINTAINER]), proved(5, 0, 'ef'.repeat(20)), HEAD)).toMatchObject({ headline: '1 approval', onChain: null, proved: false })
+  })
+
+  it('falls back to the proved count, said to be an upper bound, only when the members could not be read', () => {
+    const line = verdictSummary(null, proved(2, 1), HEAD.toUpperCase())
+    expect(line).toMatchObject({ tone: 'changes', headline: 'Changes requested', proved: false })
+    expect(line?.onChain).toMatch(/^2 member approvals and 1 change request on chain\. The members couldn't be read/)
+    expect(verdictSummary(null, null, HEAD)).toBeNull()
   })
 })

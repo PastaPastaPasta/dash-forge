@@ -1,10 +1,10 @@
 /**
  * Seed for the live browser-merge e2e (`e2e/v2-pulls.spec.ts` c7) — SKIPPED by default.
  *
- *   FORGE_LIVE=1 E2E_C_SEED_OUT=/tmp/…/seed.json NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=moutai \
+ *   FORGE_LIVE=1 E2E_C_SEED_OUT=/tmp/…/seed.json NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia \
  *     pnpm exec vitest run lib/merge/merge-seed.live.test.ts
  *
- * As the moutai OWNER, through the same code a browser push runs: a new repo `e2e-c-merge-<t>`
+ * As the devnet's OWNER fixture, through the same code a browser push runs: a new repo `e2e-c-merge-<t>`
  * whose history diverges — `main` = c1 → c3 (edits a.txt), `feature` = c1 → c2 (edits b.txt),
  * so the PR merges cleanly with a merge commit — stored as one pack on Platform (priced as a
  * browser upload with no storage configured), its index fragment, both refs, and PR #1
@@ -36,13 +36,13 @@ describe.skipIf(!LIVE)('seed a divergent repo for the live merge e2e', () => {
   it(
     'creates the repo, its history, refs and a PR',
     async () => {
-      const file = join(homedir(), '.config/dash-forge/test-identities/devnet-moutai/OWNER.identity.json')
+      const file = join(homedir(), '.config/dash-forge/test-identities', NETWORKS[DEFAULT_NETWORK].key, 'OWNER.identity.json')
       const parsed = parseIdentityFileText(readFileSync(file, 'utf8'))
       const auth: WriteAuth = { identityId: parsed.identityId, network: 'devnet', getSigningKeyWif: () => parsed.signingKeyWif }
       await evoSdkService.initialize({ network: 'devnet', contractIds: [], timeoutMs: 20000 })
       const sdk = evoSdkService.getSdk()
       const forge = NETWORKS.devnet.v2
-      if (forge === null) throw new Error('moutai has no forge-v2 deployment')
+      if (forge === null) throw new Error(`${NETWORKS[DEFAULT_NETWORK].key} has no forge-v2 deployment`)
 
       const name = `e2e-c-merge-${Date.now().toString(36)}`
       const created = await createRepo(sdk, auth, forge, { name, description: 'browser merge e2e (v2-pulls c7)' })

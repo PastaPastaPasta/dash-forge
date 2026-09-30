@@ -16,7 +16,7 @@
 //! ```text
 //! FORGE_RELAY_SECRET=shared-secret \
 //! CI_IDENTITY=/path/CI-RUNNER.identity.json \
-//! CI_REPO=<forge-v2 repo id> CI_NETWORK=devnet DASH_FORGE_DEVNET_NAME=moutai \
+//! CI_REPO=<forge-v2 repo id> CI_NETWORK=devnet DASH_FORGE_DEVNET_NAME=bonsia \
 //! CI_LISTEN=127.0.0.1:9099 \
 //! cargo run -p forge-relay --example ci_consumer
 //! ```

@@ -15,7 +15,7 @@ You don't have to move everything at once. Most projects start as a **mirror**, 
 9. [What it costs](#9-what-it-costs)
 10. [GitHub features with no Forge equivalent](#10-github-features-with-no-forge-equivalent)
 
-Replace every `<…>` placeholder with your own value. Forge runs on **devnet moutai** today, where Dash is free ([Which network](README.md#which-network)).
+Replace every `<…>` placeholder with your own value. Forge runs on **devnet bonsia** today, where Dash is free ([Which network](README.md#which-network)).
 
 ---
 
@@ -63,10 +63,10 @@ dg storage use <profile> --global       # two places for anything you care about
 A Dash identity is your account. You create it yourself by locking some Dash. Nobody issues it, and Forge never creates or funds one for you.
 
 ```sh
-dg auth new --network devnet --devnet-name moutai
+dg auth new --network devnet --devnet-name bonsia
 ```
 
-`dg` shows 12 recovery words (write them down), then a deposit address. Fund it from any Dash wallet; on moutai, use the [faucet](https://faucet.moutai.networks.dash.org). How much you need depends on the repository: `forge-import --dry-run` in the next step tells you. [Quick start §2–3](quick-start.md#2-get-an-identity) has the details, and [Identity and keys](identity-and-keys.md) covers backups and top-ups.
+`dg` shows 12 recovery words (write them down), then a deposit address. Fund it from any Dash wallet; on bonsia, use the [faucet](https://faucet.bonsia.networks.dash.org). How much you need depends on the repository: `forge-import --dry-run` in the next step tells you. [Quick start §2–3](quick-start.md#2-get-an-identity) has the details, and [Identity and keys](identity-and-keys.md) covers backups and top-ups.
 
 ## 4. Import the repository
 
@@ -80,7 +80,7 @@ gh auth login
 The standalone `forge-import` does not read `dg`'s saved identity or network, so give it both. `dg import <owner>/<repo>` is the same engine with `dg`'s defaults, if you prefer.
 
 ```sh
-export DASH_FORGE_KEY=keychain:dash-forge/devnet-moutai/<your identity id>   # the key dg auth stored
+export DASH_FORGE_KEY=keychain:dash-forge/devnet-bonsia/<your identity id>   # the key dg auth stored
 ```
 
 (If `dg auth status` says the key is in a passphrase-encrypted file, use that file's path instead, with `DASH_FORGE_PASSPHRASE` set or a terminal to ask on.)
@@ -88,11 +88,11 @@ export DASH_FORGE_KEY=keychain:dash-forge/devnet-moutai/<your identity id>   # t
 **Price it first.** A dry run reads everything and writes nothing:
 
 ```sh
-forge-import alice/project --network devnet --devnet-name moutai --dry-run
+forge-import alice/project --network devnet --devnet-name bonsia --dry-run
 ```
 
 ```
-github.com/alice/project → dash://5NGj…/project (devnet-moutai)
+github.com/alice/project → dash://5NGj…/project (devnet-bonsia)
   would write: 26 ref updates · 2 packs (794.4 KiB) · 1 issues · 36 PRs · 205 comments · 81 reviews · 32 events · 0 releases · 9 labels
   estimate: 0.436514 DASH (dry run: nothing written)
 ```
@@ -100,13 +100,13 @@ github.com/alice/project → dash://5NGj…/project (devnet-moutai)
 **Try a few items**, then look at the result on the web:
 
 ```sh
-forge-import alice/project --network devnet --devnet-name moutai --limit 5 --max-spend 0.1 --yes
+forge-import alice/project --network devnet --devnet-name bonsia --limit 5 --max-spend 0.1 --yes
 ```
 
 **Then import everything**, with a cap a little above the estimate and a state file for later runs:
 
 ```sh
-forge-import alice/project --network devnet --devnet-name moutai \
+forge-import alice/project --network devnet --devnet-name bonsia \
   --max-spend 0.5 --state ./project.sync.json --yes --summary-json ./import.json
 ```
 

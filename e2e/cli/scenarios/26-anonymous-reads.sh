@@ -26,11 +26,10 @@ SCENARIO_NAME="26 anonymous reads: repo/issue/pr view and list, release download
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
 
-: "${MOUTAI_FUNDING:=/Users/pasta/workspace/dash-forge-qa/secrets/moutai-funding.wif}"
 : "${MINT_DIR:=${E2E_REPO_ROOT}/tools/mint-identity}"
-: "${E2E_V2_OWNER:=HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr}"
+: "${E2E_V2_OWNER:=${IDID_OWNER}}"  # the read fixture is OWNER-owned (make e2e-fixture)
 : "${E2E_V2_NAME:=forge-v2-demo}"
-DEVNET="${DASH_FORGE_DEVNET_NAME:-moutai}"
+DEVNET="$DASH_FORGE_DEVNET_NAME"
 DEMO="${E2E_V2_OWNER}/${E2E_V2_NAME}"
 LOG="${WORKROOT}/s26"
 S3="http://127.0.0.1:9000"
@@ -124,13 +123,13 @@ mkdir -p "$IDS" && chmod 700 "$IDS"
 if [[ -n "${E2E_S26_OWNER:-}" ]]; then
   cp "$E2E_S26_OWNER" "$IDS/S26.identity.json"
 else
-  [[ -r "$MOUTAI_FUNDING" ]] || skip_scenario "no moutai funding key ($MOUTAI_FUNDING); set E2E_S26_OWNER"
+  [[ -r "$E2E_MINT_FUNDING" ]] || skip_scenario "no ${DASH_FORGE_DEVNET_NAME} funding key ($E2E_MINT_FUNDING); set E2E_S26_OWNER"
   [[ -d "$MINT_DIR/node_modules/@dashevo/evo-sdk" ]] || skip_scenario "tools/mint-identity has no node_modules (npm ci there)"
-  lock=() lf="${E2E_MINT_LOCK:-/tmp/qa-mint.lock}"
+  lock=() lf="$E2E_MINT_LOCK"
   if command -v lockf >/dev/null; then lock=(lockf -t 1200 "$lf")
   elif command -v flock >/dev/null; then lock=(flock -w 1200 "$lf"); fi
   "${lock[@]}" node "$MINT_DIR/mint.mjs" --network devnet --devnet-name "$DEVNET" --funding fund-from-key \
-    --funding-key-file "$MOUTAI_FUNDING" --out "$IDS" --label S26 --amount 0.05 >"$LOG-mint.log" 2>&1 \
+    --funding-key-file "$E2E_MINT_FUNDING" --out "$IDS" --label S26 --amount 0.05 >"$LOG-mint.log" 2>&1 \
     || { tail -5 "$LOG-mint.log" >&2; skip_scenario "minting failed (funding or network)"; }
 fi
 W="$IDS/S26.identity.json"
