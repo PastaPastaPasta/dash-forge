@@ -483,7 +483,7 @@ The `webhook.secret` `encryptedFor` field, and both contracts' `readonly` decisi
 
 ## 16. Sealed releases
 
-Status: specification, revision 2 after two independent security reviews (§16.9). The readers implement it (forge-core `releases()` and `dg release list`, forge-web `readReleases`). The writers do not yet: `dg release create` and forge-core's `create_release` refuse a private repository (`require_public("releases")`), and forge-web refuses before signing (`PRIVATE_RELEASE_REFUSED`), until they implement this section against the §16.7 vectors. The section fits the forge-core `release` type as registered for RC1 on bonsia (§13), which mainnet registers unchanged. It needs **no schema change**, and the documents it produces are accepted by that schema (the "§16" cases of `forge-contracts/vectors/rc1/forge-core.json`, judged by `tools/contract-validate --vectors`).
+Status: specification, revision 2 after two independent security reviews (§16.9). The readers implement it (forge-core `releases()`, `dg release list` and `download`, forge-web `readReleases`), and so do the CLI writers (forge-core `create_release_stored`, `dg release create` and `unpublish`). forge-web still refuses before signing (`PRIVATE_RELEASE_REFUSED`) until its writer implements this section; forge-import leaves releases out of a private destination. The section fits the forge-core `release` type as registered for RC1 on bonsia (§13), which mainnet registers unchanged. It needs **no schema change**, and the documents it produces are accepted by that schema (the "§16" cases of `forge-contracts/vectors/rc1/forge-core.json`, judged by `tools/contract-validate --vectors`).
 
 ### 16.0 What the registered contract fixes
 

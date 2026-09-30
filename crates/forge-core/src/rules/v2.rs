@@ -638,6 +638,9 @@ pub enum ContentKind {
     RefUpdate,
     /// `config`: plaintext `defaultBranch`, `protectedPatterns` (neither required).
     Config,
+    /// `release`: plaintext `name`, `notes`, `assets`, `assetManifest`, `yanked`, `imported`
+    /// (none required); a private repository's is sealed (`private-repos.md` §16).
+    Release,
 }
 
 /// The content fields of a document, flattened. An absent field, an empty string and an
@@ -686,7 +689,22 @@ pub struct ContentDoc {
     /// `epoch`.
     #[serde(default)]
     pub epoch: Option<u32>,
+    /// A release's plaintext content fields that are present, by name: `name`, `notes`,
+    /// `assets`, `assetManifest`, `yanked`, `imported` (`private-repos.md` §16.2).
+    #[serde(default)]
+    pub release_fields: Vec<String>,
 }
+
+/// A release's plaintext content fields: the contract's `noPlain` ones, and `yanked` and
+/// `imported`, which a sealed release never carries either (§16.2).
+pub const RELEASE_PLAINTEXT_FIELDS: [&str; 6] = [
+    "name",
+    "notes",
+    "assets",
+    "assetManifest",
+    "yanked",
+    "imported",
+];
 
 fn present(s: Option<&String>) -> bool {
     s.is_some_and(|s| !s.is_empty())
@@ -734,6 +752,8 @@ impl ContentDoc {
                         .as_ref()
                         .is_some_and(|p| !p.is_empty()),
             ),
+            // `tagName` is the key, not content: nothing is required
+            ContentKind::Release => (None, !self.release_fields.is_empty()),
         };
         Plaintext {
             required_missing: required.is_some_and(|f| !present(f)),

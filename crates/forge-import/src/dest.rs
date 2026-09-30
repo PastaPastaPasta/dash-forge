@@ -377,8 +377,8 @@ pub fn collab_plan(
         if private {
             plan.releases = None;
             warnings.push(
-                "releases were not mirrored: the destination is private, and release notes and \
-                 assets are not encrypted in this release"
+                "releases were not mirrored: the destination is private, and forge-import does \
+                 not seal releases yet (a maintainer publishes them with `dg release create`)"
                     .into(),
             );
         } else if role == Role::Writer {

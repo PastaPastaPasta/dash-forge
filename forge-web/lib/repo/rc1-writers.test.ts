@@ -20,6 +20,8 @@ const liveTags: string[] = []
 const held: Record<string, string[]> = {}
 /** A refusal the next create meets (then cleared). */
 let refuseNext: Error | null = null
+/** How many more `consent` reads answer "none" first (a node that has not indexed it yet). */
+let consentLag = 0
 
 const ALICE = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const BOB = 'CJao2MVHL4x3f2Ko2xTUibnZ8G1t9exTPtvJnCbHAgDH'
@@ -40,9 +42,13 @@ vi.mock('../sdk', async (importOriginal) => {
       creates.push({ signer: a.identityId, contractId: p.contractId, documentType: p.documentType, data: p.data })
       return { documentId: NEW_ID, confirmed: true, cost: { credits: 0, dash: 0 }, actualCredits: null }
     }),
-    queryDocumentsWithProof: vi.fn(async (_sdk: unknown, q: { documentTypeName: string }) => ({
-      documents: present.has(q.documentTypeName) ? [{ $id: NEW_ID, $ownerId: BOB }] : [],
-    })),
+    queryDocumentsWithProof: vi.fn(async (_sdk: unknown, q: { documentTypeName: string }) => {
+      if (q.documentTypeName === 'consent' && consentLag > 0) {
+        consentLag -= 1
+        return { documents: [] }
+      }
+      return { documents: present.has(q.documentTypeName) ? [{ $id: NEW_ID, $ownerId: BOB }] : [] }
+    }),
     queryAllDocuments: vi.fn(async (_sdk: unknown, q: { documentTypeName: string }) =>
       (held[q.documentTypeName] ?? []).map((memberId, i) => ({ $id: `${q.documentTypeName}${i}`, $ownerId: ALICE, $createdAt: 1, memberId })),
     ),
@@ -68,6 +74,7 @@ import { commentEditDrops, type CommentView } from '../view/issues-view'
 import type { ReleaseList } from './releases'
 import type { SealedReleaseEnv } from './sealed-release'
 import {
+  CONSENT_LAG_RETRIES,
   ConsentMissingError,
   acceptInvite,
   createComment,
@@ -118,6 +125,7 @@ beforeEach(() => {
   liveTags.length = 0
   for (const k of Object.keys(held)) delete held[k]
   refuseNext = null
+  consentLag = 0
   resetMemoryStores()
 })
 
@@ -280,8 +288,29 @@ describe('forge-community writers are RC1-valid', () => {
 
 describe('what the writers refuse or adjust before signing', () => {
   it('an invite the member has not accepted is pending, and nothing is signed', async () => {
-    await expect(grantMember(sdk, auth(ALICE), REPO, BOB, 'maintainer')).rejects.toBeInstanceOf(ConsentMissingError)
+    vi.useFakeTimers()
+    try {
+      const refused = expect(grantMember(sdk, auth(ALICE), REPO, BOB, 'maintainer')).rejects.toBeInstanceOf(ConsentMissingError)
+      await vi.runAllTimersAsync()
+      await refused
+    } finally {
+      vi.useRealTimers()
+    }
     expect(creates).toHaveLength(0)
+  })
+
+  it("a consent the owner's node has not indexed yet is re-read, not refused (D-10)", async () => {
+    present.add('consent')
+    consentLag = CONSENT_LAG_RETRIES
+    vi.useFakeTimers()
+    try {
+      const granted = grantMember(sdk, auth(ALICE), REPO, BOB, 'writer')
+      await vi.runAllTimersAsync()
+      await granted
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(types(await judged())).toEqual(['writer'])
   })
 
   it('an edit, a yank or a re-publish of a live tag is delta 0', async () => {

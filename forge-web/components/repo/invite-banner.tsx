@@ -21,6 +21,7 @@ import { CopyRow } from '@/components/ui/copy-row'
 import { previewCreate } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
+import { readUntil } from '@/lib/view/retry'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Author } from '@/components/author'
@@ -39,19 +40,31 @@ export function InviteBanner({ repo }: { repo: RepoRef }): JSX.Element | null {
   const { identity, signer } = useAuth()
   const guard = useWriteGuard()
   const [confirming, setConfirming] = useState(false)
+  // The identity whose accept this tab confirmed (the write's proof, or the consent it found). A
+  // node that has not indexed that consent yet answers "none"; that must not turn the banner back
+  // into "Accept invitation" (D-10). Keyed by identity so a switched account starts over.
+  const [acceptedBy, setAcceptedBy] = useState<string | null>(null)
+  const accepted = acceptedBy !== null && acceptedBy === identity
   const applies = invited && identity !== null && identity !== repo.ownerId
   const standing = useAsync<Standing>(
-    async () => {
-      const members = await readMembershipsCached(sdk!, repo, network)
-      if (members.some((m) => m.identity === identity)) return 'member'
-      return (await findConsent(sdk!, repo, identity!)) !== null ? 'accepted' : 'invited'
+    async (signal) => {
+      const read = async (): Promise<Standing> => {
+        const members = await readMembershipsCached(sdk!, repo, network)
+        if (members.some((m) => m.identity === identity)) return 'member'
+        return (await findConsent(sdk!, repo, identity!)) !== null ? 'accepted' : 'invited'
+      }
+      if (!accepted) return read()
+      // After this tab's accept, re-read until a node shows it (bounded; stops on unmount).
+      return (await readUntil(read, [(s) => s !== 'invited'], { attempts: 8, signal })) ?? 'accepted'
     },
     [ready, repo.repoId, identity ?? '', network],
     { enabled: applies && ready && sdk !== null },
   )
   if (!applies) return null
+  // Once accepted here, only a read that finds them a member changes what the banner says.
+  const shown: Standing | null = accepted && standing.data !== 'member' ? 'accepted' : standing.data
   // A read that failed says so (with a retry) rather than hiding the invitation.
-  if (standing.error) {
+  if (standing.error && !accepted) {
     return (
       <p role="alert" data-testid="invite-error" className="mb-3 text-[12px] text-danger-700 dark:text-danger-400">
         Couldn&apos;t check this invitation: {standing.error}{' '}
@@ -61,13 +74,13 @@ export function InviteBanner({ repo }: { repo: RepoRef }): JSX.Element | null {
       </p>
     )
   }
-  if (standing.data === null || standing.data === 'member') return null
+  if (shown === null || shown === 'member') return null
   const cost = previewCreate('consent')
   return (
     <div role="note" data-testid="invite-banner" className="mb-3 flex items-start gap-2 rounded-md border border-forge-500/40 bg-forge-500/5 px-3 py-2 text-dense text-anvil-700 dark:text-anvil-200">
       <UserPlus className="mt-0.5 h-4 w-4 shrink-0 text-forge-700 dark:text-forge-400" aria-hidden />
       <div className="min-w-0 flex-1">
-        {standing.data === 'accepted' ? (
+        {shown === 'accepted' ? (
           <p data-testid="invite-accepted">
             You accepted the invitation to collaborate on this repo. <Author identityId={repo.ownerId} link={false} /> can now add you as a maintainer or writer.
           </p>
@@ -101,7 +114,8 @@ export function InviteBanner({ repo }: { repo: RepoRef }): JSX.Element | null {
         confirmLabel="Sign & accept"
         onConfirm={async (intent) => {
           if (!sdk || !signer) throw new Error('sign in to continue')
-          await acceptInvite(sdk, signer, repo, intent)
+          const result = await acceptInvite(sdk, signer, repo, intent)
+          if (result.confirmed) setAcceptedBy(signer.identityId)
           standing.reload()
         }}
       />

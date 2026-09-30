@@ -62,7 +62,8 @@ import {
   type WrapDoc,
 } from './private-session'
 import { contractOf, repoSource } from './source'
-import { ConsentMissingError, assertNoPlaintext, findConsent, grantMembershipDoc, revokeMembershipDoc } from './writes'
+import { CONSENT_LAG_RETRIES, ConsentMissingError, assertNoPlaintext, findConsent, grantMembershipDoc, revokeMembershipDoc } from './writes'
+import { retryWhileMissing } from '../view/retry'
 
 
 /** An identity as the messages name it: its first 8 characters. */
@@ -906,7 +907,7 @@ async function postAnchor(
  * transitions.
  */
 export async function addPrivateMember(c: PrivateWriteContext, memberId: string, role: Role, intent: string): Promise<void> {
-  if ((await findConsent(c.sdk, c.repo, memberId)) === null) throw new ConsentMissingError(memberId)
+  if ((await retryWhileMissing(() => findConsent(c.sdk, c.repo, memberId), CONSENT_LAG_RETRIES)) === null) throw new ConsentMissingError(memberId)
   const keys = await fetchIdentityKeys(c.sdk, memberId)
   if (usableEncryptionKey(keys ?? [], c.repo.forge.core) === null) throw new PrivateMembersError(`${short(memberId)} has no encryption key yet`, 'E306')
   // Nothing is written unless the wrap can follow, and a new maintainer's old configs must not

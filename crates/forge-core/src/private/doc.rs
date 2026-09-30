@@ -63,6 +63,9 @@ pub struct DocHeader {
     /// patch `sourceRefNameHash`.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "opt_hex32")]
     pub source_ref_name_hash: Option<[u8; 32]>,
+    /// release `tagName`: the AD binds the string itself (§16.2), never its decoding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag_name: Option<String>,
     /// The document `$id`, 32 bytes (configs need it to know whether they are the anchor).
     #[serde(default, skip_serializing_if = "Option::is_none", with = "opt_hex32")]
     pub id: Option<[u8; 32]>,
@@ -92,6 +95,7 @@ impl DocHeader {
             force: None,
             base_ref_name_hash: None,
             source_ref_name_hash: None,
+            tag_name: None,
             id: None,
             created_at_block_height: None,
             updated_at_block_height: None,
@@ -117,6 +121,7 @@ impl DocHeader {
                 b
             }
             DocKind::Config => keys.commit().to_vec(),
+            DocKind::Release => self.tag_name.as_deref()?.as_bytes().to_vec(),
         })
     }
 
@@ -358,6 +363,8 @@ pub(crate) fn open_with(
 fn well_framed(header: &DocHeader, enc: &[u8]) -> bool {
     match header.kind {
         DocKind::Config => enc.len() >= MIN_V2 && enc[0] == V2,
+        // a release has its own TLV and open (`private::release`, §16.4)
+        DocKind::Release => false,
         _ => enc.len() >= MIN_V1 && enc[0] == V1,
     }
 }
