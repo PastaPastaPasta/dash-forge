@@ -133,12 +133,16 @@ export function historySource(
 export function chainHistory(own: HistorySource | null, inherited: HistorySource | null): HistorySource | null {
   if (own === null) return inherited
   if (inherited === null) return own
+  // Own first; the inherited index of the same tip when own's will not load.
+  const first = (mine: boolean, theirs: boolean, a: () => Promise<HistoryIndex>, b: () => Promise<HistoryIndex>): Promise<HistoryIndex> =>
+    mine ? a().catch((e: unknown) => (theirs ? b() : Promise.reject(e))) : b()
   return {
     byTip: new Map([...inherited.byTip, ...own.byTip]),
     covers: (tip) => own.covers(tip) || inherited.covers(tip),
-    load: (tip) => (own.covers(tip) ? own.load(tip) : inherited.load(tip)),
+    load: (tip) => first(own.covers(tip), inherited.covers(tip), () => own.load(tip), () => inherited.load(tip)),
     coversVersions: (tip) => own.coversVersions(tip) || inherited.coversVersions(tip),
-    loadVersions: (tip) => (own.coversVersions(tip) ? own.loadVersions(tip) : inherited.loadVersions(tip)),
+    loadVersions: (tip) =>
+      first(own.coversVersions(tip), inherited.coversVersions(tip), () => own.loadVersions(tip), () => inherited.loadVersions(tip)),
   }
 }
 

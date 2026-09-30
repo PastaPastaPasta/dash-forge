@@ -20,7 +20,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 
 import { ACTIVE_NETWORK, CHUNK_PAYLOAD_MAX, PACK_KIND } from '../constants'
 import { loadIndexArtifact } from './index-cache'
-import { attachHistory, chainHistory, historySource } from './history-source'
+import { attachHistory, chainHistory, historySource, type HistorySource } from './history-source'
 import {
   BrowseReader,
   FlatIndex,
@@ -1332,14 +1332,10 @@ export async function loadBrowseContext(
 
   const own = await publishedLocator(sdk, repo, manifests, livePacks)
   if (own === 'behind') return behind('index-behind')
-  let locator = own
   // A fork's own fragments index only the packs it pushed itself; the packs it holds by
-  // reference to its parent are indexed by the parent's (QW-023).
-  let inherited: Inherited | null = null
-  if (locator === null || !coversSpace(locator, livePacks)) {
-    inherited = await inheritedIndex(sdk, repo, livePacks)
-    if (inherited !== null) locator = locator === null ? inherited.locator : ObjectLocator.merge([locator, inherited.locator])
-  }
+  // reference to its parent (and the parent's parent) are indexed by theirs (QW-023).
+  const lineage: Ancestor[] = []
+  const locator = own !== null && coversSpace(own, livePacks) ? own : await withAncestors(sdk, repo, own, livePacks, lineage, 0)
   if (locator === null) return behind('no-index')
   // Coverage: every pack in the space that HOLDS anything must be indexed by some fragment.
   // A gap means objects that exist on-chain are unreachable through the index — the honest
@@ -1351,7 +1347,7 @@ export async function loadBrowseContext(
   // the same pack here.
   const packs = buildPackSource(sdk, repo, manifests)
   const reader = repoReader(sdk, repo, locator, packs, livePacks)
-  attachRepoHistory(sdk, repo, reader, manifests, inherited)
+  attachRepoHistory(sdk, repo, reader, manifests, lineage)
   return { kind: 'ready', context: { locator, packs, reader }, manifests: ids }
 }
 
@@ -1427,13 +1423,31 @@ async function publishedLocator(
   return locator
 }
 
-/** What a fork reuses of its parent's published indexes. */
-interface Inherited {
-  readonly parent: RepoRef
-  /** The parent's index, in the fork's `packRef` space: only the packs the fork holds. */
-  readonly locator: ObjectLocator
-  /** The parent's pack list, for its history indexes. */
+/** An ancestor of a fork whose pack list its resolve read: its history indexes serve the fork too. */
+interface Ancestor {
+  readonly repo: RepoRef
   readonly manifests: readonly PackManifest[]
+}
+
+/** How many forks up an index is looked for. A cycle cannot be written (`forkOf` names an older repo); the bound is cheap insurance. */
+const MAX_FORK_DEPTH = 4
+
+/**
+ * `own` (a repo's own published index over `space`, or null) completed with what its ancestors
+ * published (QW-023), each ancestor read pushed onto `lineage`. `own` when `repo` is not a fork
+ * or nothing more can be used.
+ */
+async function withAncestors(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  own: ObjectLocator | null,
+  space: readonly PackManifest[],
+  lineage: Ancestor[],
+  depth: number,
+): Promise<ObjectLocator | null> {
+  const inherited = depth < MAX_FORK_DEPTH ? await inheritedIndex(sdk, repo, space, lineage, depth) : null
+  if (inherited === null) return own
+  return own === null ? inherited : ObjectLocator.merge([own, inherited])
 }
 
 /**
@@ -1441,21 +1455,31 @@ interface Inherited {
  * parent pack by reference (`lib/repo/fork.ts`), the same `packHash` and so the same bytes, but
  * the parent's fragments number packs by the PARENT's list. Each parent `packRef` is mapped to
  * the fork's position of the same pack, and the rows of packs the fork does not hold (pushed to
- * the parent since) are dropped, so a fork reads nothing it does not have. Without this every
- * visitor of a fork rebuilt its whole index in the browser (the fallback clone).
+ * the parent since) are dropped, so a fork reads nothing it does not have. A parent that is a
+ * fork itself contributes its own parent's the same way. Without this every visitor of a fork
+ * rebuilt its whole index in the browser (the fallback clone).
  *
- * Null when `repo` is not a fork, the parent published no index this can trust, or none of it
+ * Null when `repo` is not a fork, no ancestor published an index this can trust, or none of it
  * is the fork's; a failed read is null too (the fallback clone is still correct), never an error.
  */
-async function inheritedIndex(sdk: EvoSDK, repo: RepoRef, space: readonly PackManifest[]): Promise<Inherited | null> {
+async function inheritedIndex(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  space: readonly PackManifest[],
+  lineage: Ancestor[],
+  depth: number,
+): Promise<ObjectLocator | null> {
   if (repo.visibility !== 'public') return null
   try {
     const parent = await readForkParent(sdk, repo)
     if (parent === null) return null
     const manifests = await readBrowseManifests(sdk, parent, { network: ACTIVE_NETWORK.network })
+    lineage.push({ repo: parent, manifests })
     const parentSpace = locatorPackSpace(manifests)
     const published = await publishedLocator(sdk, parent, manifests, parentSpace)
-    if (published === null || published === 'behind') return null
+    if (published === 'behind') return null
+    const full = published !== null && coversSpace(published, parentSpace) ? published : await withAncestors(sdk, parent, published, parentSpace, lineage, depth + 1)
+    if (full === null) return null
     const at = new Map(space.map((m, i) => [m.packHash.toLowerCase(), i]))
     const map = new Map<number, number>()
     parentSpace.forEach((m, i) => {
@@ -1463,8 +1487,8 @@ async function inheritedIndex(sdk: EvoSDK, repo: RepoRef, space: readonly PackMa
       if (j !== undefined) map.set(i, j)
     })
     if (map.size === 0) return null
-    const locator = published.remapPacks(map)
-    return locator.count === 0 ? null : { parent, locator, manifests }
+    const locator = full.remapPacks(map)
+    return locator.count === 0 ? null : locator
   } catch {
     return null
   }
@@ -1473,19 +1497,24 @@ async function inheritedIndex(sdk: EvoSDK, repo: RepoRef, space: readonly PackMa
 /**
  * Give a context's reader the repository's history index ({@link historySource}): the file list's
  * commit column and the commit count read it instead of walking history. From the manifests the
- * resolve already read, so it costs nothing until a view loads an index. A fork also reads its
- * parent's: an index describes a tip commit's history, the same in every repository holding it.
+ * resolve already read, so it costs nothing until a view loads an index. A fork also reads the
+ * indexes of the ancestors its resolve read (`lineage`, nearest first): an index describes a tip
+ * commit's history, the same in every repository holding it. (A fork whose own index covers all
+ * its packs reads no ancestor, and so has only its own.)
  */
 function attachRepoHistory(
   sdk: EvoSDK,
   repo: RepoRef,
   reader: BrowseReader,
   manifests: readonly PackManifest[],
-  inherited: Inherited | null,
+  lineage: readonly Ancestor[],
 ): void {
   const own = historySource(manifests, (m) => loadArtifactBytes(sdk, repo, m))
-  const parent = inherited === null ? null : historySource(inherited.manifests, (m) => loadArtifactBytes(sdk, inherited.parent, m))
-  attachHistory(reader.memoScope, chainHistory(own, parent))
+  const inherited = lineage.reduceRight<HistorySource | null>(
+    (older, a) => chainHistory(historySource(a.manifests, (m) => loadArtifactBytes(sdk, a.repo, m)), older),
+    null,
+  )
+  attachHistory(reader.memoScope, chainHistory(own, inherited))
 }
 
 /**

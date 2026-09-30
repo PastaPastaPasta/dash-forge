@@ -742,6 +742,40 @@ describe('loadBrowseContext for a fork (QW-023)', () => {
     expect(state.context.locator.lookup(oidBytes(0x13))).toMatchObject({ packRef: 1 })
   })
 
+  it("reads a fork of a fork through its grandparent's index and its parent's own push", async () => {
+    // B forked A and pushed pack a9 (indexed by B at its packRef 2); C forked B.
+    const own = fragmentBytes(2, [0x99])
+    const withOwn = new Map(artifacts).set(digest(own), own)
+    const b = [...forkPacks, { id: 'bp9', createdAt: 2000, kind: 0 as const, hash: 0xa9 }, frag('bf9', 2010, own)]
+    const c: ManifestSpec[] = [
+      { id: 'cp9', createdAt: 3000, kind: 0, hash: 0xa9 },
+      { id: 'cp0', createdAt: 3001, kind: 0, hash: 0xa0 },
+      { id: 'cp1', createdAt: 3002, kind: 0, hash: 0xa1 },
+    ]
+    const sdk = forkSdk({ PARENT6: parentManifests, B6: b, C6: c }, { C6: 'B6', B6: 'PARENT6', PARENT6: null }, withOwn)
+    const state = await loadBrowseContext(sdk, forkRepo('C6'))
+
+    expect(state.kind).toBe('ready')
+    if (state.kind !== 'ready') return
+    expect(state.context.locator.lookup(oidBytes(0x99))).toMatchObject({ packRef: 0 })
+    expect(state.context.locator.lookup(oidBytes(0x11))).toMatchObject({ packRef: 1 })
+    expect(state.context.locator.lookup(oidBytes(0x22))).toMatchObject({ packRef: 2 })
+  })
+
+  it('asks again for a fork whose repo document a lagging node did not return', async () => {
+    let lagging = true
+    const base = forkSdk({ PARENT7: parentManifests, FORK7: forkPacks }, { FORK7: 'PARENT7', PARENT7: null }, artifacts)
+    const query = base.documents.query.bind(base.documents)
+    const sdk = {
+      documents: {
+        query: (q: { documentTypeName: string }) => (lagging && q.documentTypeName === DOC.repo ? Promise.resolve(new Map()) : query(q as never)),
+      },
+    } as unknown as EvoSDK
+    expect(await loadBrowseContext(sdk, forkRepo('FORK7'))).toMatchObject({ kind: 'unindexed', reason: 'no-index' })
+    lagging = false
+    expect((await loadBrowseContext(sdk, forkRepo('FORK7'))).kind).toBe('ready')
+  })
+
   it('still falls back when the parent published no index, or its index does not cover the fork', async () => {
     const unindexed = parentManifests.filter((m) => m.kind === 0)
     const none = forkSdk({ PARENT3: unindexed, FORK3: forkPacks }, { FORK3: 'PARENT3', PARENT3: null }, artifacts)

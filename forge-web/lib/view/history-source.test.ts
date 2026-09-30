@@ -174,4 +174,17 @@ describe('chainHistory', () => {
     expect(chainHistory(null, parents)).toBe(parents)
     expect(chainHistory(mine, null)).toBe(mine)
   })
+
+  it("falls back to the parent's index of the same tip when the fork's will not load", async () => {
+    const tip = 'dd'.repeat(20)
+    const good = fullOf(tip)
+    const mine = historySource([manifest(good, [tip])], async () => {
+      throw new Error('storage down')
+    })
+    const parents = historySource([manifest(good, [tip])], async () => good)
+    expect((await chainHistory(mine, parents)?.load(tip))?.tip).toBe(tip)
+    await expect(chainHistory(mine, historySource([manifest(fullOf('ee'.repeat(20)), ['ee'.repeat(20)])], async () => good))?.load(tip)).rejects.toThrow(
+      /storage down/,
+    )
+  })
 })

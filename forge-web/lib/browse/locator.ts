@@ -234,12 +234,17 @@ export class ObjectLocator {
     return ObjectLocator.fromSortedRows(rows)
   }
 
+  /** {@link packRefsCovered}, scanned once (the rows never change). */
+  private covered: ReadonlySet<number> | undefined
+
   /** The distinct `packRef`s this locator indexes — what a coverage check compares. */
-  packRefsCovered(): Set<number> {
+  packRefsCovered(): ReadonlySet<number> {
+    if (this.covered !== undefined) return this.covered
     const refs = new Set<number>()
     for (let i = 0; i < this.count; i++) {
       refs.add(u16be(this.bytes, this.rowStart(i) + OID_LEN))
     }
+    this.covered = refs
     return refs
   }
 
