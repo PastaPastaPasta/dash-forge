@@ -102,7 +102,13 @@ test.describe('PR request budget (L-77)', () => {
   })
 
   test.describe('showcase repos', () => {
-    test('prb-2. the dash mirror: the PR list and PR #7762, cold, ≤ 25 each', async ({ browser }) => {
+    /**
+     * QW2-002: every tab of the largest PR list on the chain, cold, within the budget however many
+     * PRs the mirror holds (bonsia, 2026-09-30: 1,766 PRs, 1 open; the list read all of them on
+     * every load, 55 requests for Open and 66–75 for Merged). The list reads the newest chunks
+     * until the page is full or the tab's proved count is reached, at most three per load.
+     */
+    test('prb-2. the dash mirror: every PR tab and PR #7762, cold, ≤ 25 each', async ({ browser }) => {
       const dash = await showcaseRepo('DASHPAY', 'dash').catch(() => null)
       test.skip(dash === null, `the dash mirror is not imported on ${E2E_DEVNET}`)
       if (dash === null) return
@@ -116,6 +122,15 @@ test.describe('PR request budget (L-77)', () => {
       await expect(list.page.getByTestId('page-indicator')).toContainText(/Page 1 of ([5-9]|\d{2,})/, { timeout: 60_000 })
       await shot(list.page, 'prb-03-dash-pulls-cold')
       await list.close()
+
+      // The other tabs, each cold in a context of its own: the same budget, and the proved page count.
+      for (const state of ['merged', 'closed', 'all'] as const) {
+        const tab = await cold(browser, `dash PR list, ${state}`, repoUrl('pulls', `&state=${state}`, dash), listReady)
+        expect(tab.rows.length, summary(tab.rows)).toBeLessThanOrEqual(COLD_BUDGET)
+        await expect(tab.page.getByTestId('page-indicator')).toContainText(/Page 1 of \d+/, { timeout: 60_000 })
+        await shot(tab.page, `prb-03-dash-pulls-${state}-cold`)
+        await tab.close()
+      }
 
       const detail = await cold(browser, 'dash PR #7762', repoUrl('pull', '&number=7762', dash), detailReady)
       expect(detail.rows.length, summary(detail.rows)).toBeLessThanOrEqual(COLD_BUDGET)

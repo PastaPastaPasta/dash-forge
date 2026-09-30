@@ -15,6 +15,8 @@ test.beforeEach(quorumGuardLong)
  * - pb-2 (showcase repos): a mirrored repo's cold home. The file list's last-commit column is a
  *   history walk (its own agent is replacing it with a push-time index): its chunk reads are
  *   counted apart and budgeted on their own, so the rest of the home is held to S-1.
+ * - pb-4 (the dash mirror, QW2-002): the issue list's every state tab, cold, however many issues
+ *   the mirror holds (the PR list's tabs are `pulls-budget.spec.ts` prb-2).
  *
  * The budget covers what the page shows on load, plus the About card's release count and repo
  * size (read once their row scrolls into view, but on this fixture that happens within the fold
@@ -214,6 +216,41 @@ test.describe('page request budget (S-1)', () => {
       await shot(page, 'pb-04-preact-home-cold')
       await context.close()
     })
+  })
+})
+
+/**
+ * The issue list on a large repo (QW2-002), on the dash mirror: every state tab, cold, within
+ * S-1. The list used to read every issue whose tab was not full (the Open tab's 10 of 320 issues:
+ * all four chunks) and the Closed tab every close transition before its first row; it now reads
+ * the newest chunks until the page is full or the tab's proved count is reached, at most three
+ * per load, and a row's labels from its own events. The page-count indicator is the proved count.
+ *
+ * Run where the dash mirror is: bonsia, or elsewhere with its owner in `E2E_SHOWCASE_DASHPAY`.
+ */
+test.describe('list budgets on the dash mirror (QW2-002)', () => {
+  test.describe.configure({ timeout: 240_000 })
+
+  test('pb-4. the dash issue list, every state tab, cold, ≤ 25', async ({ browser }) => {
+    const dash = await showcaseRepo('DASHPAY', 'dash').catch(() => null)
+    test.skip(dash === null, `the dash mirror is not imported on ${E2E_DEVNET}`)
+    if (dash === null) return
+    for (const state of ['open', 'closed', 'all'] as const) {
+      const context = await browser.newContext()
+      const page = await context.newPage()
+      const { errors } = collectPageErrors(page)
+      const dapi = recordDapi(page)
+      await page.goto(repoUrl('issues', state === 'open' ? '' : `&state=${state}`, dash), { waitUntil: 'domcontentloaded' })
+      await waitForRepoResolved(page)
+      await expect(page.locator('main a[href*="/repo/issue/"][href*="number="]').first()).toBeVisible({ timeout: 90_000 })
+      await settle(page)
+      const all = dapi.all()
+      test.info().annotations.push({ type: 'dapi', description: `dash issues ${state}, cold: ${all.length} ${summary(all)}` })
+      expect(errors, errors.join('\n')).toEqual([])
+      expect(all.length, summary(all)).toBeLessThanOrEqual(COLD_BUDGET)
+      await shot(page, `pb-07-dash-issues-${state}-cold`)
+      await context.close()
+    }
   })
 })
 

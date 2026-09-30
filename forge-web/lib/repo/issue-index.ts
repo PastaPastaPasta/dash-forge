@@ -6,17 +6,22 @@
  * Reads, per repo, cached for the session and dropped by any write ({@link invalidateRepoFeed}):
  *
  * 1. **One composite** (the first request): the newest 100 issues, their comment counts
- *    (`comment.target` count tree), their authors' DPNS names, and as siblings under the same
- *    proof the label definitions and the first 100 rows of the repo's member `event` feed; and
- *    beside it one proved sum query for those issues' state codes (`transition.perTarget`).
- * 2. **The rest of the event feed**, only when its first page was full, read once per repo and
- *    shared with the pull index (`readRepoFeedFrom`). The feed decides every row's labels and
- *    assignees, so it is read to completion.
+ *    (`comment.target` count tree), their authors' DPNS names, their member events (the `event`
+ *    `target` lookup: labels, assignees, milestone), and as siblings under the same proof the
+ *    label definitions and the first 100 rows of the repo's member `event` feed; and beside it
+ *    one proved sum query for those issues' state codes (`transition.perTarget`), and the three
+ *    proved counts.
+ * 2. **The rest of the event feed**, for page 1's pinned issues (a pin can be on any issue) and
+ *    for a label, assignee or milestone filter, read once per repo and shared with the pull index
+ *    (`readRepoFeedFrom`); a row's own labels never wait for it.
  * 3. **More issues on demand**: a keyset composite per 100 (`$createdAt <=` the oldest loaded,
  *    newest first; `>=` the newest loaded for the oldest-first sort), each with its sum query,
- *    and `$id in` composites for issues the feed names but no loaded chunk holds.
+ *    and `$id in` composites for issues the feed names but no loaded chunk holds. An unfiltered
+ *    tab stops once it holds the page or every issue its proved count allows, and reads at most
+ *    `PAGE_CHUNKS` chunks per load (QW2-002).
  * 4. **The Closed tab's candidates**: the targets of the repo's issue-close transitions
- *    (`transition.perRepoKind`, `kind == 1`), read on first use; every closed issue has one.
+ *    (`transition.perRepoKind`, `kind == 1`), read on first use when the proved counts say that
+ *    is cheaper than walking; every closed issue has one.
  *
  * Counts: Open / Closed are the proved totals (`./transitions` `readRepoCounts`: the issue total
  * and the close / reopen counts), never a fold.
@@ -26,7 +31,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import type { RepoRef } from './contract'
-import { issueViewOf, type IssueView } from './issues'
+import { countsSettled, issueViewOf, type IssueView } from './issues'
 import { ISSUE_CLOSE } from '../rules/transition'
 import type { LabelDef } from './labels'
 import { foldThreadMetaV2, pinnedTargets } from '../rules/parity'
@@ -35,18 +40,29 @@ import { commentRange, searchTerms, type CountRange, type ExtraFilters, type Tex
 import type { HiddenCounts } from './private-content'
 import {
   authorCandidates,
+  candidatesCheaper,
+  feedOf,
+  hydrate,
   indexCache,
   intersect,
+  logsVerified,
+  matchingOf,
   metaCandidates,
   pageOf,
+  pageWalk,
   repoCountsOf,
   resolveIds,
   rowsInAnyState,
   rowsOf,
   rowsWithEvent,
+  searchedOfPage,
   selectRows,
+  shownRows,
   transitionTargets,
   type ListIndex,
+  type ListOptions,
+  type RepoCounts,
+  type SearchedOf,
 } from './target-index'
 
 /** An issue row: the folded issue, its comment count (null: not counted) and its milestone. */
@@ -63,10 +79,15 @@ type IssueIndex = ListIndex<IssueRow>
  * issue's view: its state code (the chunk's proved sum), its labels and assignees, and its
  * milestone from the feed.
  */
-const indexOf = indexCache<IssueRow>('issue', async (_sdk, _index, doc, log, code) => ({
-  ...issueViewOf(doc, log, code),
-  milestone: foldThreadMetaV2(log.events).milestone,
-}))
+const indexOf = indexCache<IssueRow>(
+  'issue',
+  async (_sdk, _index, doc, log, code) => ({
+    ...issueViewOf(doc, log, code),
+    milestone: foldThreadMetaV2(log.events).milestone,
+  }),
+  // Page 1 shows the pinned issues, which only the whole feed names: its first page rides the first composite.
+  { withFeed: true },
+)
 
 function sortRowsNewest(a: IssueRow, b: IssueRow): number {
   return b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1)
@@ -142,6 +163,14 @@ export function selectionFiltered(q: Omit<IssueSelection, 'mentions' | 'state' |
   )
 }
 
+/**
+ * Whether a selection matches on what a row's member events decide (labels, assignees,
+ * milestone): every row it matches needs its events first, and the feed may name candidates.
+ */
+export function eventFiltered(q: Pick<IssueSelection, 'labels' | 'assignee' | 'notLabels' | 'noLabel' | 'milestone' | 'noMilestone'>): boolean {
+  return q.labels.length > 0 || q.assignee !== null || (q.notLabels?.length ?? 0) > 0 || q.noLabel === true || (q.milestone ?? null) !== null || q.noMilestone === true
+}
+
 /** The answer for one list page. */
 export interface IssueListPage {
   readonly rows: readonly IssueRow[]
@@ -153,15 +182,15 @@ export interface IssueListPage {
   readonly openCount: number | null
   readonly closedCount: number | null
   /**
-   * When the answer covers only part of the repo (a text or mention search looks at loaded
-   * issues; a comment sort at most 30 chunks): how many issues it looked at.
+   * When the answer covers only part of the repo (a text or mention search, a comment sort at
+   * most 30 chunks, or a page that read its chunk budget): how far it read.
    */
-  readonly searchedOf: { readonly searched: number; readonly total: number | null } | null
-  /** False when the feed was too large to fold: states, labels and assignees are unverified. */
+  readonly searchedOf: SearchedOf | null
+  /** False when a shown issue's member events could not be read completely: its labels and assignees are unverified (states are proved). */
   readonly stateComplete: boolean
   /**
    * The repo's pinned issues (member pin events, kinds 19/20, from the complete feed), newest
-   * pin first: page 1 shows them above the list. Empty past page 1 or when the feed is partial.
+   * pin first: page 1 shows them above the list. Empty past page 1 or when the feed is too large.
    */
   readonly pinned: readonly IssueRow[]
   readonly labels: readonly LabelDef[]
@@ -272,14 +301,38 @@ async function exactCounts(sdk: EvoSDK, index: IssueIndex): Promise<{ open: numb
   const counts = await repoCountsOf(sdk, index)
   if (counts === null) return null
   if (index.repo.visibility === 'private' && !index.all) return null
+  return provedCounts(counts, index)
+}
+
+/** The proved Open / Closed issue totals, less (from Open) the open issues this reader skipped as not shown. */
+function provedCounts(counts: RepoCounts, index: IssueIndex): { open: number; closed: number } {
   return { open: Math.max(0, counts.issuesOpen - index.hiddenOpen), closed: counts.issuesClosed }
 }
 
 /**
- * One page of the issue list for `q`, reading only what it needs: the first chunk and the feed
- * (once), feed-named candidates by id, more keyset chunks while the page is not full, or every
- * chunk (up to 30) for a sort by comments. `total` is the repo's issue count
- * (the countable index), or null when it is not known.
+ * At most how many issues can be in `state`, by the proved counts (every reader's: a row this
+ * reader cannot open is in the count, never out of it), or null when unknown.
+ */
+function tabBound(counts: RepoCounts | null, index: IssueIndex, state: IssueSelection['state']): number | null {
+  if (counts === null) return null
+  return state === 'all' ? counts.issues : provedCounts(counts, index)[state]
+}
+
+/** The `state` tab's count: Open, Closed, or both (null when either is unknown). */
+function stateCount(state: IssueSelection['state'], open: number | null, closed: number | null): number | null {
+  if (state === 'open') return open
+  if (state === 'closed') return closed
+  return open === null || closed === null ? null : open + closed
+}
+
+/**
+ * One page of the issue list for `q`, reading only what it needs: the first chunk (with the
+ * proved counts beside it), then, unfiltered, keyset chunks until the page is full or every issue
+ * the tab's count allows is held (at most `PAGE_CHUNKS` per load), or the Closed tab's
+ * transitions when that is cheaper; filtered, feed-named candidates by id or up to 30 chunks (a
+ * search, reported through `onProgress`); a sort by comments reads every chunk up to 30. Page 1
+ * reads the feed for its pinned issues beside the list. `total` is the repo's issue count (the
+ * countable index), or null when it is not known.
  */
 export async function queryIssues(
   sdk: EvoSDK,
@@ -287,18 +340,26 @@ export async function queryIssues(
   q: IssueSelection,
   total: number | null,
   network: Network = DEFAULT_NETWORK,
+  { onProgress }: ListOptions = {},
 ): Promise<IssueListPage> {
-  const index = await indexOf(sdk, repo, network)
+  const index = await indexOf(sdk, repo, network, { withCounts: true })
+  const pinned = q.page === 1 ? pinnedRows(sdk, index) : Promise.resolve([])
+  pinned.catch(() => undefined)
   const filtered = selectionFiltered(q)
-  const matches = (r: IssueRow): boolean => stateMatches(r, q.state) && rowMatches(r, q)
+  const needLogs = eventFiltered(q)
+  if (needLogs) await feedOf(sdk, index)
+  const bound = await repoCountsOf(sdk, index)
+  const walk = pageWalk(q, filtered)
+  const byState = q.state === 'closed' && candidatesCheaper(index, walk, tabBound(bound, index, 'closed'), bound?.issues ?? null)
   const selected = await selectRows(sdk, index, {
-    candidates: await candidatesFor(sdk, index, q),
-    matches,
+    ...walk,
+    candidates: await candidatesFor(sdk, index, q, byState),
+    matches: (r) => stateMatches(r, q.state) && rowMatches(r, q),
     cmp: compareRows(q.sort),
-    direction: q.sort === 'oldest' ? 'asc' : 'desc',
-    want: q.page * q.pageSize,
-    walkAll: q.sort === 'comments',
-    partial: filtered || q.sort === 'comments',
+    // The walk stops at the tab's proved count (never a filter's), once it includes this browser's own writes.
+    known: () => (filtered || !countsSettled(repo) ? null : tabBound(bound, index, q.state)),
+    needLogs,
+    onProgress,
   })
 
   // Tab counts under the current filters: exact when the whole candidate set is known.
@@ -310,7 +371,7 @@ export async function queryIssues(
     closedCount = exact?.closed ?? null
   } else {
     // Both tabs' counts need every candidate in either state: an index names them, or every issue is loaded.
-    const all = await rowsInAnyState(sdk, index, await candidatesFor(sdk, index, { ...q, state: 'all' }), (r) => rowMatches(r, q))
+    const all = await rowsInAnyState(sdk, index, await candidatesFor(sdk, index, { ...q, state: 'all' }), (r) => rowMatches(r, q), needLogs)
     if (all !== null) {
       openCount = all.filter((r) => r.state.open).length
       closedCount = all.length - openCount
@@ -318,15 +379,18 @@ export async function queryIssues(
   }
 
   const page = pageOf(selected.rows, q.page, q.pageSize)
+  // Page 1 reads the feed for its pins: the shown rows take their events from it, not a read of their own.
+  const pins = await pinned
+  const rows = await shownRows(sdk, index, page.rows)
   return {
-    rows: page.rows,
-    pinned: q.page === 1 ? await pinnedRows(sdk, index) : [],
-    matching: selected.complete ? selected.rows.length : null,
+    rows,
+    pinned: pins,
+    matching: matchingOf(selected, filtered, stateCount(q.state, openCount, closedCount)),
     hasNext: page.hasNext,
     openCount,
     closedCount,
-    searchedOf: selected.searched === null ? null : { searched: selected.searched, total },
-    stateComplete: index.feed !== null,
+    searchedOf: searchedOfPage(selected, total),
+    stateComplete: logsVerified(index, [...rows, ...pins]),
     labels: index.labels,
     hidden: index.hidden.total,
     hiddenBy: index.hidden.value,
@@ -334,25 +398,27 @@ export async function queryIssues(
 }
 
 /**
- * Every issue that can match `q`, when an index names them: the feed (labels, assignee), the
- * `author` index and (the Closed tab) the issue-close transitions, intersected. Null when none
- * applies (the list walks chunks).
+ * Every issue that can match `q`, when an index names them: the feed (labels, assignee) and the
+ * `author` index, intersected; else, for the Closed tab when that is cheaper than walking
+ * (`byState`), the issue-close transitions. Null when none applies (the list walks chunks).
  */
-async function candidatesFor(sdk: EvoSDK, index: IssueIndex, q: IssueSelection): Promise<Set<string> | null> {
-  return intersect([
+async function candidatesFor(sdk: EvoSDK, index: IssueIndex, q: IssueSelection, byState = q.state === 'closed'): Promise<Set<string> | null> {
+  const named = intersect([
     metaCandidates(index, q, (row) => rowMatches(row, { ...q, author: null, mentions: null, text: '' })),
     q.author === null ? null : await authorCandidates(sdk, index, q.author),
-    // Every issue ever closed (the targets of issue-close transitions); its row says whether it still is.
-    q.state === 'closed' ? await transitionTargets(sdk, index, [ISSUE_CLOSE]) : null,
   ])
+  // Else every issue ever closed (the targets of issue-close transitions); its row says whether it still is.
+  return named ?? (byState ? transitionTargets(sdk, index, [ISSUE_CLOSE]) : null)
 }
 
-/** The repo's pinned issues, newest pin first (one `$id in` read for any not loaded yet). */
+/** The repo's pinned issues, newest pin first (from the feed; one `$id in` read for any not loaded yet). */
 async function pinnedRows(sdk: EvoSDK, index: IssueIndex): Promise<IssueRow[]> {
-  if (index.feed === null) return []
-  const ids = pinnedTargets([...index.feed.values()].flatMap((log) => log.events)).map((p) => p.targetId)
+  const feed = await feedOf(sdk, index)
+  if (feed === null) return []
+  const ids = pinnedTargets([...feed.values()].flatMap((log) => log.events)).map((p) => p.targetId)
   if (ids.length === 0) return []
   await resolveIds(sdk, index, ids)
+  await hydrate(sdk, index, ids)
   return rowsOf(index, ids)
 }
 

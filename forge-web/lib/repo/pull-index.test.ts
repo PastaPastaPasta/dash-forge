@@ -125,20 +125,24 @@ describe('pull index', () => {
     expect(page.rows.every((r) => r.state.open)).toBe(true)
     expect(page.counts).toEqual(expected(203))
     expect(page.matching).toBe(expected(203).open) // "Page 1 of N" from the proved count
-    // Budget: one composite (rows, comment counts, names, labels, first feed page), one sum for
-    // the rows' states, the feed's continuation, main's history ONCE (never a read per PR), and
-    // the three proved counts.
+    // Budget: one composite (rows, comment counts, names, the rows' member events, labels), one
+    // sum for the rows' states, main's history ONCE (never a read per PR), and the three proved
+    // counts. The repo's member-event feed (150+ events here) is not read at all: each row's
+    // labels come from its own events, the composite's `event` lookup (forge-community).
     expect(seen.composites).toHaveLength(1)
     expect(seen.sums).toHaveLength(1)
     expect(plainOf(seen, 'refUpdate')).toHaveLength(1)
     expect(plainOf(seen, 'protectedRefUpdate')).toHaveLength(1)
     expect(plainOf(seen, 'config').length).toBeLessThanOrEqual(1)
-    expect(plainOf(seen, 'event').length).toBeGreaterThan(0)
-    // The feed is read from forge-community (its first page as a sibling of the collab composite).
-    expect(plainOf(seen, 'event').every((q) => q.dataContractId === 'COMMUNITY')).toBe(true)
-    expect(seen.composites[0]?.subQueries.some((sq) => sq.documentType === 'event' && sq.dataContractId === 'COMMUNITY')).toBe(true)
+    expect(plainOf(seen, 'event')).toHaveLength(0)
+    const eventSubs = seen.composites[0]?.subQueries.filter((sq) => sq.documentType === 'event') ?? []
+    expect(eventSubs).toEqual([expect.objectContaining({ dataContractId: 'COMMUNITY', bind: { sourceProperty: '$id', field: 'targetId' } })])
     expect(seen.counts.map((q) => q.documentTypeName).sort()).toEqual(['issue', 'patch', 'transition'])
-    expect(requests(seen)).toBeLessThanOrEqual(10)
+    expect(requests(seen)).toBeLessThanOrEqual(8)
+    expect(page.stateComplete).toBe(true)
+    expect(page.rows.find((r) => r.number === 203)).toBeUndefined() // closed
+    const bug = await queryPulls(sdk, repo, { ...base, state: 'all', pageSize: 5 }, 203, 'devnet')
+    expect(bug.rows.find((r) => r.number === 203)?.state.labels).toEqual(['bug'])
     expect(page.rows.find((r) => r.number === 202)?.comments).toBe(1)
     expect(page.rows.find((r) => r.number === 6)).toBeUndefined() // not on page 1
   })

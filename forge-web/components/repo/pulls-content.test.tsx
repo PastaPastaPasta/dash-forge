@@ -170,6 +170,23 @@ describe('PullsContent (L-44)', () => {
     expect(asked[0]).toMatchObject({ state: 'open', page: 1, pageSize: 25, sort: 'newest' })
   })
 
+  it('says how far a page read when it stopped at its read budget, and reads on when asked (QW2-002)', async () => {
+    // The Open tab's first load read the newest 397 PRs and found none of the tab's 30.
+    answer = { ...answer, rows: [], matching: 30, hasNext: false, counts: { open: 30, merged: 1400, closed: 336 }, searchedOf: { searched: 397, total: 1766, more: true } }
+    await render()
+    expect(el.textContent).toContain('None among the newest 397 pull requests')
+    expect(el.textContent).not.toContain('No open pull requests')
+    expect(el.querySelector('[data-testid="list-read-budget"]')?.textContent).toContain('Read the newest 397 of 1766 pull requests; older ones are not read yet.')
+    // "Look through older" asks the same page again (the index reads on from where it stopped).
+    answer = { ...answer, rows: [row(30), row(29)], searchedOf: null }
+    act(() => button('Look through older pull requests').click())
+    await settle()
+    expect(asked).toHaveLength(2)
+    expect(asked[1]).toEqual(asked[0])
+    expect([...el.querySelectorAll('[data-testid="pull-row"]')].map((r) => r.getAttribute('data-number'))).toEqual(['30', '29'])
+    expect(el.querySelector('[data-testid="list-read-budget"]')).toBeNull()
+  })
+
   it("shows each head's CI status dot after the rows, from one read for the page (O-07)", async () => {
     let release = (): void => undefined
     dotGate = new Promise((r) => (release = r))

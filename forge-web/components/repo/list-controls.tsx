@@ -577,14 +577,73 @@ export function AuthorLoginNote({ login, notFound }: { login: string | null; not
 }
 
 /** "Searched the newest N of M …": a search or comment sort that looked at part of the repo. */
-export function SearchedNote({ searchedOf, noun }: { searchedOf: { readonly searched: number; readonly total: number | null } | null | undefined; noun: string }): JSX.Element | null {
+export function SearchedNote({
+  searchedOf,
+  noun,
+  onMore,
+  reading,
+}: {
+  searchedOf: { readonly searched: number; readonly total: number | null; readonly more?: boolean } | null | undefined
+  noun: string
+  /** Read on from where the list stopped (offered when it stopped at its read budget). */
+  onMore?: () => void
+  /** The list is reading on now: how many it has read so far, or null. */
+  reading?: number | null
+}): JSX.Element | null {
   if (!searchedOf) return null
+  const of = searchedOf.total !== null ? ` of ${searchedOf.total}` : ''
+  if (searchedOf.more && onMore) {
+    return (
+      <p className="mt-2 flex flex-wrap items-center gap-x-2 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="list-read-budget">
+        <span>
+          Read the newest {reading ?? searchedOf.searched}
+          {of} {noun}
+          {reading != null ? '…' : '; older ones are not read yet.'}
+        </span>
+        <Button variant="outline" size="sm" onClick={onMore} disabled={reading != null}>
+          {reading != null ? 'Reading…' : `Look through older ${noun}`}
+        </Button>
+      </p>
+    )
+  }
   return (
     <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
       Searched the newest {searchedOf.searched}
-      {searchedOf.total !== null ? ` of ${searchedOf.total}` : ''} {noun}; older ones were not read for this search.
+      {of} {noun}; older ones were not read for this search.
     </p>
   )
+}
+
+/**
+ * How many rows a list's walk (a search, or "look through older") has read so far, while it
+ * reads, and `track`, which runs a list read reporting into it. A read no longer wanted
+ * (`signal`, from `useAsync`) reports nothing, so it cannot overwrite the read that replaced it.
+ */
+export function useReadProgress(): {
+  progress: number | null
+  track: <T>(signal: AbortSignal, read: (options: { onProgress: (searched: number) => void }) => Promise<T>) => Promise<T>
+} {
+  const [progress, setProgress] = useState<number | null>(null)
+  async function track<T>(signal: AbortSignal, read: (options: { onProgress: (searched: number) => void }) => Promise<T>): Promise<T> {
+    setProgress(null)
+    try {
+      return await read({ onProgress: (n) => { if (!signal.aborted) setProgress(n) } })
+    } finally {
+      if (!signal.aborted) setProgress(null)
+    }
+  }
+  return { progress, track }
+}
+
+/** The empty list's title when a page stopped reading before it found a row for `page`: there are older ones to read. */
+export function budgetEmptyTitle(page: number, searched: number, noun: string): string {
+  return page === 1 ? `None among the newest ${searched} ${noun}` : `Nothing for page ${page} among the newest ${searched} ${noun}`
+}
+
+/** A list's loading line: what it reads, and (a walk under way) how many rows it has read. */
+export function readingLabel(what: string, progress: number | null, total: number | null): string {
+  if (progress === null) return `Reading ${what}`
+  return `Reading ${what}: ${progress}${total !== null ? ` of ${total}` : ''} read`
 }
 
 /** A row's label chip that adds the label to the list's filter. */

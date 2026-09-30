@@ -119,19 +119,33 @@ describe('issue index', () => {
     expect(page.rows.slice(0, 3).map((r) => r.number)).toEqual([1, 2, 3])
   })
 
-  it('finds closed issues from the close transitions and labelled ones from the feed, not by walking', async () => {
-    const { sdk, seen, repo } = fresh(112)
-    const closed = await queryIssues(sdk, repo, { ...base, state: 'closed' }, 112, 'devnet')
+  it('finds a sparse Closed tab from the close transitions and labelled issues from the feed, not by walking', async () => {
+    // 3 closed among 1,000: walking to them would take ten chunks, their transitions one page.
+    const { sdk, seen, repo } = fresh(1000)
+    const closed = await queryIssues(sdk, repo, { ...base, state: 'closed' }, 1000, 'devnet')
     // #40 was closed and reopened: a candidate, filtered out by its state.
     expect(closed.rows.map((r) => r.number)).toEqual([103, 33, 3])
+    expect(closed.matching).toBe(3)
     const closeReads = seen.queries.filter((q) => q.documentTypeName === 'transition')
     expect(closeReads.map((q) => q.where)).toEqual([[['repoId', '==', REPO], ['kind', '==', 1]]])
-    const tens = await queryIssues(sdk, repo, { ...base, state: 'all', labels: ['tens'] }, 112, 'devnet')
+    const tens = await queryIssues(sdk, repo, { ...base, state: 'all', labels: ['tens'] }, 1000, 'devnet')
     expect(tens.rows.map((r) => r.number)).toEqual([110, 10])
     expect(tens.openCount).toBe(2)
     expect(tens.closedCount).toBe(0)
     // No keyset walk was needed for either.
     expect(seen.composites.some((c) => (c.where ?? []).some(([f]) => f === '$createdAt'))).toBe(false)
+  })
+
+  it('walks a Closed tab when that is cheaper than its transitions, and stops once the proved count is reached', async () => {
+    // 3 closed among 112: the second chunk holds them all, and the count says there are no more.
+    const { sdk, seen, repo } = fresh(112)
+    const closed = await queryIssues(sdk, repo, { ...base, state: 'closed' }, 112, 'devnet')
+    expect(closed.rows.map((r) => r.number)).toEqual([103, 33, 3])
+    expect(closed.matching).toBe(3)
+    expect(closed.searchedOf).toBeNull()
+    expect(seen.queries.filter((q) => q.documentTypeName === 'transition')).toHaveLength(0)
+    expect(seen.composites).toHaveLength(2)
+    expect(seen.sums).toHaveLength(2)
   })
 
   it('answers "assigned to" and "no assignee" from the fold', async () => {
