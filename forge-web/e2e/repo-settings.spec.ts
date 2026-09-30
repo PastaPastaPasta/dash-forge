@@ -93,7 +93,10 @@ test.beforeAll(() => {
   dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform', '--description', 'Dash Forge e2e: repo settings from the web')
   const push = git('OWNER', ['push', REMOTE, 'main', 'trunk'])
   if (!push.ok) throw new Error(`owner push failed:\n${push.out}`)
-  dg('OWNER', 'collab', 'add', SLUG, idOf('COLLAB'), '--role', 'writer')
+  // RC1 consent (R-06): the member accepts before the owner can add them (--wait rides out a
+  // node that has not seen the consent yet).
+  dg('COLLAB', 'collab', 'accept', SLUG)
+  dg('OWNER', 'collab', 'add', SLUG, idOf('COLLAB'), '--role', 'writer', '--wait', '60')
 })
 
 test.afterAll(() => rmSync(SRC, { recursive: true, force: true }))

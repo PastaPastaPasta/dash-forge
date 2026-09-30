@@ -693,13 +693,25 @@ mod base64_lite {
     }
 }
 
-/// Run `gh`, retrying transient network failures; 4xx and auth failures fail at once.
-fn gh_output_with_retry(args: &[&str], what: &str) -> Result<std::process::Output> {
+/// Run `gh api <path> <rest…>`, retrying transient network failures; 4xx and auth failures
+/// fail at once.
+fn gh_output_with_retry(path: &str, rest: &[&str], what: &str) -> Result<std::process::Output> {
     const ATTEMPTS: u32 = 4;
+    // Waits for a rate limit, each up to 15 minutes: enough to reach the hourly reset. Every
+    // call has its own, so a run of many small reads larger than one hour's quota (dashpay/dash's
+    // ~7,000 per-PR review reads) goes on after the reset instead of failing.
+    const RATE_LIMIT_WAITS: u32 = 6;
+    let args: Vec<&str> = ["api", path]
+        .into_iter()
+        .chain(rest.iter().copied())
+        .collect();
     let mut last_err = String::new();
-    for attempt in 1..=ATTEMPTS {
+    let mut rate_waits = 0;
+    let mut attempt = 0;
+    while attempt < ATTEMPTS {
+        attempt += 1;
         let out = Command::new("gh")
-            .args(args)
+            .args(&args)
             .output()
             .context("running `gh` (is the GitHub CLI installed?)")?;
         if out.status.success() {
@@ -709,20 +721,24 @@ fn gh_output_with_retry(args: &[&str], what: &str) -> Result<std::process::Outpu
         if stderr.contains("rate limit") {
             // Primary or secondary rate limit: wait for the reset (bounded), then retry. A
             // run that keeps hitting it fails with a clear message rather than a raw 403.
-            if attempt == ATTEMPTS {
+            if rate_waits == RATE_LIMIT_WAITS {
                 bail!(
                     "{what} failed: the GitHub API rate limit was reached; re-run after it \
                      resets (`gh api rate_limit`), or with a token that has a higher limit"
                 );
             }
-            let wait = rate_limit_wait(attempt);
+            rate_waits += 1;
+            let wait = rate_limit_wait(path, &stderr, rate_waits);
             tracing::warn!(
-                attempt,
+                attempt = rate_waits,
                 wait_secs = wait.as_secs(),
+                %stderr,
                 "GitHub rate limit; waiting"
             );
             std::thread::sleep(wait);
             last_err = stderr;
+            // A rate limit is not a failed attempt: the transient budget stays as it was.
+            attempt -= 1;
             continue;
         }
         let transient = [
@@ -748,43 +764,64 @@ fn gh_output_with_retry(args: &[&str], what: &str) -> Result<std::process::Outpu
     Err(anyhow!("{what} failed: {last_err}"))
 }
 
-/// How long to wait out a rate limit: until the core limit resets (from `gh api
-/// rate_limit`, capped at 15 minutes), else a growing default (a secondary limit asks for
-/// a minute or so).
-fn rate_limit_wait(attempt: u32) -> std::time::Duration {
+/// How long to wait out a rate limit on `path` (`stderr` is the refused call's): until the
+/// limit resets (capped at 15 minutes), else a growing default (a secondary limit asks for a
+/// minute or so).
+///
+/// The reset comes from the refused request's own `X-RateLimit-*` headers (`gh api -i <path>`
+/// again: a refused request costs no quota). `gh api rate_limit` is not asked: it can report
+/// a fresh window (5000 remaining, used 0) while every core request is refused, as it did for
+/// a dashpay/dash import on 2026-09-30, and a wait sized by it ends long before the reset. A
+/// secondary limit is not probed (its quota is not used up, so the probe would spend some while
+/// GitHub asks clients to back off).
+fn rate_limit_wait(path: &str, stderr: &str, attempt: u32) -> std::time::Duration {
     let fallback = std::time::Duration::from_secs(60 * u64::from(attempt));
-    let reset = Command::new("gh")
-        .args([
-            "api",
-            "rate_limit",
-            "--jq",
-            ".resources.core | [.remaining, .reset] | @tsv",
-        ])
+    if stderr.contains("secondary rate limit") {
+        return fallback;
+    }
+    let probe = Command::new("gh")
+        .args(["api", "-i", path])
+        .env("NO_COLOR", "1")
         .output()
         .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| {
-            let text = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            let (remaining, reset) = text.split_once('\t')?;
-            let (remaining, reset) = (remaining.parse::<u64>().ok()?, reset.parse::<u64>().ok()?);
-            (remaining == 0).then_some(reset)
-        });
+        .and_then(|out| rate_limit_headers(&String::from_utf8_lossy(&out.stdout)));
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    match reset {
-        Some(at) if at > now => std::time::Duration::from_secs((at - now + 5).min(15 * 60)),
+    match probe {
+        Some((0, at)) if at > now => std::time::Duration::from_secs((at - now + 5).min(15 * 60)),
+        // The window reset between the refusal and the probe: retry now.
+        Some((remaining, _)) if remaining > 0 => std::time::Duration::from_secs(5),
         _ => fallback,
     }
 }
 
+/// `(X-RateLimit-Remaining, X-RateLimit-Reset)` from a `gh api -i` response's headers.
+fn rate_limit_headers(response: &str) -> Option<(u64, u64)> {
+    let header = |name: &str| {
+        response
+            .lines()
+            .take_while(|l| !l.trim().is_empty())
+            .find_map(|l| {
+                let (k, v) = l.split_once(':')?;
+                k.trim()
+                    .eq_ignore_ascii_case(name)
+                    .then(|| v.trim().to_string())
+            })
+    };
+    let remaining: u64 = header("x-ratelimit-remaining")?.parse().ok()?;
+    let reset: u64 = header("x-ratelimit-reset")?.parse().ok()?;
+    Some((remaining, reset))
+}
+
 fn api_json(path: &str) -> Result<Vec<u8>> {
-    Ok(gh_output_with_retry(&["api", path], &format!("`gh api {path}`"))?.stdout)
+    Ok(gh_output_with_retry(path, &[], &format!("`gh api {path}`"))?.stdout)
 }
 
 fn api_list_lines(path: &str) -> Result<Vec<String>> {
     let out = gh_output_with_retry(
-        &["api", path, "--paginate", "--jq", ".[]"],
+        path,
+        &["--paginate", "--jq", ".[]"],
         &format!("`gh api {path}`"),
     )?;
     let text = String::from_utf8(out.stdout).context("gh api output was not UTF-8")?;
@@ -935,6 +972,19 @@ mod tests {
         assert_eq!(nulls.head.sha, "");
     }
 
+    /// A rate-limited request's own headers name the reset (`gh api -i`, recorded from a
+    /// refused dashpay/dash review read while `gh api rate_limit` said 5000 remaining).
+    #[test]
+    fn a_refused_request_names_its_reset() {
+        // gh ends the status line with LF and each header with CRLF.
+        let refused = "HTTP/2.0 403 Forbidden\nX-Ratelimit-Limit: 5000\r\nX-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 1790747473\r\nX-Ratelimit-Resource: core\r\n\r\n{\"message\":\"API rate limit exceeded for user ID 1. X-Ratelimit-Remaining: 7\"}";
+        assert_eq!(rate_limit_headers(refused), Some((0, 1_790_747_473)));
+        let fine =
+            "HTTP/2.0 200 OK\nx-ratelimit-remaining: 4999\nx-ratelimit-reset: 1790747473\n\n[]";
+        assert_eq!(rate_limit_headers(fine), Some((4999, 1_790_747_473)));
+        assert_eq!(rate_limit_headers("HTTP/2.0 403 Forbidden\n\n{}"), None);
+        assert_eq!(rate_limit_headers(""), None);
+    }
     /// F-7 against a whole recorded listing: set `FORGE_IMPORT_GH_NDJSON` to a file of
     /// `gh api repos/octocat/Hello-World/pulls/comments --paginate --jq '.[]'` output.
     #[test]

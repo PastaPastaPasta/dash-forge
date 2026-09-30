@@ -8,7 +8,8 @@ import { fixtureWriteBlocked, idFile, idOrEmpty, loadSeedPulls, repoUrl, shot, s
  *   E2E_DEVNET=bonsia E2E_WRITE=1 pnpm exec playwright test v2-writes.spec.ts
  *
  * One story, four identities from ~/.config/dash-forge/test-identities/devnet-<name>/, each in
- * its own browser context: OWNER creates a repo and adds COLLAB as a writer; CONTRIB opens an
+ * its own browser context: OWNER creates a repo, COLLAB accepts its invite link, and OWNER adds
+ * COLLAB as a writer; CONTRIB opens an
  * issue, comments and closes it as its author (a `transition`, asAuthor = its number); COLLAB labels
  * it with a member `event`;
  * CONTRIB stars and unstars the repo (the unstar is an index-only delete); OWNER approves the
@@ -53,7 +54,17 @@ test('w1. owner creates a repo and sees the push commands', async ({ browser }) 
   await shot(page, 'v2w-01-created')
 })
 
-test('w2. owner adds COLLAB as a writer', async ({ browser }) => {
+test('w2. owner adds COLLAB as a writer, once COLLAB accepted the invitation', async ({ browser }) => {
+  // RC1 consent (R-06): the member accepts the invitation link before the owner can add them;
+  // the consent stands until deleted, so w8's re-grants need no second one.
+  const invited = await signedIn(browser, 'COLLAB', repoPath('', '&invite=1'))
+  const accept = invited.getByRole('button', { name: 'Accept invitation' })
+  await expect(accept).toBeVisible({ timeout: 90_000 })
+  await accept.click()
+  await confirmWrite(invited, /sign & accept/i)
+  await expect(invited.getByText(/You accepted the invitation/)).toBeVisible({ timeout: 60_000 })
+  await invited.context().close()
+
   const page = await signedIn(browser, 'OWNER', repoPath('settings'))
   await page.getByLabel('Identity ID').fill(COLLAB)
   await page.getByRole('radio', { name: 'writer' }).click()

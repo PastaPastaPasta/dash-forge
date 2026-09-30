@@ -224,6 +224,50 @@ export interface IssueThread {
   readonly meta: ThreadMeta
 }
 
+/** A write the issue page made, for {@link issueWriteShows}. */
+export type IssueWrite =
+  | { readonly kind: 'comment'; readonly id: string }
+  | { readonly kind: 'state'; readonly open: boolean }
+  | { readonly kind: 'label'; readonly label: string; readonly remove: boolean }
+  | { readonly kind: 'assign'; readonly who: string; readonly remove: boolean }
+  | { readonly kind: 'flag'; readonly flag: 'pin' | 'lock'; readonly on: boolean }
+  | { readonly kind: 'milestone'; readonly title: string | null }
+  | { readonly kind: 'defineLabel'; readonly name: string; readonly apply: boolean }
+  | { readonly kind: 'editIssue'; readonly title: string; readonly body: string }
+  | { readonly kind: 'editComment'; readonly id: string; readonly body: string }
+
+/**
+ * Whether a read of the thread already shows `w`: the page re-reads after a write until it does,
+ * so a node a block behind cannot hide the write it just made (L-77, as on the PR page).
+ */
+export function issueWriteShows(t: IssueThread, w: IssueWrite): boolean {
+  const comment = (id: string): CommentView | undefined => {
+    for (const it of t.timeline) if (it.kind === 'comment' && it.comment.id === id) return it.comment
+    return undefined
+  }
+  const { state } = t.issue
+  switch (w.kind) {
+    case 'comment':
+      return comment(w.id) !== undefined
+    case 'state':
+      return state.open === w.open
+    case 'label':
+      return state.labels.includes(w.label) !== w.remove
+    case 'assign':
+      return state.assignees.includes(w.who) !== w.remove
+    case 'flag':
+      return (w.flag === 'pin' ? t.meta.pinned : t.meta.locked) === w.on
+    case 'milestone':
+      return t.meta.milestone === w.title
+    case 'defineLabel':
+      return t.labels.some((l) => l.name === w.name) && (!w.apply || state.labels.includes(w.name))
+    case 'editIssue':
+      return t.issue.title === w.title && t.issue.body === w.body
+    case 'editComment':
+      return comment(w.id)?.body === w.body
+  }
+}
+
 /** How a private repo's event values were read ({@link TargetLog}). */
 export interface EventValueCounts {
   readonly hidden: number

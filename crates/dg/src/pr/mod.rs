@@ -230,13 +230,33 @@ pub(crate) async fn open_pr(ctx: &Ctx, repo: &str, number: u64, action: &str) ->
     Ok(Pr { s, view })
 }
 
+/// The stable three-value `"state"` field in JSON output: `merged`, `closed` or `open`. Draft is
+/// already its own boolean field (`"draft"`), so unlike [`state_label`] this never returns
+/// `"draft"` — a consumer filtering on `state=="open"` (as `gh`'s `state: OPEN` / `isDraft` split
+/// encourages) must keep seeing open drafts as `open`.
+pub(crate) fn state_field(v: &PatchView) -> &'static str {
+    if v.state.merged {
+        "merged"
+    } else if !v.state.open {
+        "closed"
+    } else {
+        "open"
+    }
+}
+
+/// The label `dg pr list` / `dg pr view` print for a PR's state in plain text: `merged`
+/// (terminal), `closed` (state code 1 or 9 — closed takes precedence over draft, as the web's
+/// `pullStatus` does), `draft` (open, state code 8) or `open`. JSON output uses [`state_field`]
+/// instead, since it already carries a separate `"draft"` boolean.
 pub(crate) fn state_label(v: &PatchView) -> &'static str {
     if v.state.merged {
         "merged"
-    } else if v.state.open {
-        "open"
-    } else {
+    } else if !v.state.open {
         "closed"
+    } else if v.state.draft {
+        "draft"
+    } else {
+        "open"
     }
 }
 
@@ -506,7 +526,7 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
                 "number": v.patch.number,
                 "title": v.patch.title,
                 "author": v.patch.author,
-                "state": state_label(v),
+                "state": state_field(v),
                 "baseRef": v.patch.base_ref_name,
                 "headOid": v.head,
                 "sourceRepoId": v.patch.source_repo_id,
@@ -665,7 +685,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
             "title": v.patch.title,
             "body": v.patch.body,
             "author": v.patch.author,
-            "state": state_label(&v),
+            "state": state_field(&v),
             "draft": v.state.draft,
             "labels": v.state.labels,
             "assignees": v.state.assignees,
@@ -702,10 +722,9 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
         }),
         || {
             println!(
-                "#{} [{}{}] {}",
+                "#{} [{}] {}",
                 v.patch.number,
                 state_label(&v),
-                if v.state.draft && v.state.open { ", draft" } else { "" },
                 safe(&v.patch.title)
             );
             println!("author: {}", v.patch.author);
@@ -1824,11 +1843,18 @@ fn build_merge(
         }
         (MergePlan::FastForward { oid }, Method::Merge) => (oid.clone(), "fast-forward to"),
         (MergePlan::MergeCommit { base, head }, Method::Merge) => {
+            // The subject names the PR's source branch by its short name (`feature/x`, not
+            // `refs/heads/feature/x`), matching the browser merge's short-name format
+            // (`forge-web` `lib/merge/engine.ts` `mergeMessage`) and closer to GitHub's
+            // `owner/branch` (Forge has no login to put before the branch).
+            let source = view
+                .patch
+                .source_ref_name
+                .as_deref()
+                .map_or(head.as_str(), forge_core::repo::short_branch_name);
             let message = format!(
                 "Merge pull request #{} from {}\n\n{}",
-                view.patch.number,
-                view.patch.source_ref_name.as_deref().unwrap_or(head),
-                view.patch.title
+                view.patch.number, source, view.patch.title
             );
             let c = git::merge_commit(dir, base, head, &message, &author())?
                 .ok_or_else(|| conflict(base, head))?;
@@ -2098,6 +2124,47 @@ mod tests {
             log: forge_core::collab::v2::TargetLog::default(),
             patch,
         }
+    }
+
+    /// `dg pr list` / `dg pr view` show an open draft (state code 8) as `draft`, not `open`
+    /// (it used to fall through to the `open` branch and read as a plain open PR). A closed
+    /// draft (code 9) still reads as `closed`, matching the web's `pullStatus` precedence.
+    #[test]
+    fn state_label_shows_an_open_draft_as_draft() {
+        let ok = "2".repeat(40);
+        let with = |merged: bool, open: bool, draft: bool| {
+            let mut v = view_with("refs/heads/main", &ok);
+            v.state.merged = merged;
+            v.state.open = open;
+            v.state.draft = draft;
+            v
+        };
+        assert_eq!(state_label(&with(false, true, false)), "open");
+        assert_eq!(state_label(&with(false, true, true)), "draft");
+        assert_eq!(state_label(&with(false, false, true)), "closed");
+        assert_eq!(state_label(&with(false, false, false)), "closed");
+        assert_eq!(state_label(&with(true, false, false)), "merged");
+    }
+
+    /// JSON's `"state"` field stays a stable three-value enum (`open`/`closed`/`merged`) even
+    /// for a draft, since `"draft"` is already its own boolean field: an open draft must keep
+    /// matching `dg pr list --state open --json | jq 'select(.state=="open")'`, unlike the
+    /// plain-text label which collapses it to `draft` ([`state_label_shows_an_open_draft_as_draft`]).
+    #[test]
+    fn state_field_never_reports_draft() {
+        let ok = "2".repeat(40);
+        let with = |merged: bool, open: bool, draft: bool| {
+            let mut v = view_with("refs/heads/main", &ok);
+            v.state.merged = merged;
+            v.state.open = open;
+            v.state.draft = draft;
+            v
+        };
+        assert_eq!(state_field(&with(false, true, false)), "open");
+        assert_eq!(state_field(&with(false, true, true)), "open");
+        assert_eq!(state_field(&with(false, false, true)), "closed");
+        assert_eq!(state_field(&with(false, false, false)), "closed");
+        assert_eq!(state_field(&with(true, false, false)), "merged");
     }
 
     /// A merge is recorded only from an open, ready PR (`c3_mergedAfter`): a draft or closed
