@@ -530,9 +530,10 @@ describe('security review of the sealed writes', () => {
     }
     await submitReviewDraft(sdk, auth, { ...REPO_REF, session: stale }, draft, { isMember: true })
     expect(chain['comment']).toHaveLength(1)
-    // The draft was lost locally (a closed tab) but has an attempt on record: resubmitting with
-    // the page's stale (epoch-0) session must adopt what landed, not post it again.
-    await submitReviewDraft(sdk, auth, { ...REPO_REF, session: stale }, { ...draft, attemptedAt: 0 }, { isMember: true })
+    // The draft's progress was lost locally (a closed tab) but it has the attempt on record, as
+    // saved before the first write (no earlier reviews): resubmitting with the page's stale
+    // (epoch-0) session must adopt what landed, not post it again.
+    await submitReviewDraft(sdk, auth, { ...REPO_REF, session: stale }, { ...draft, attemptedAt: 0, priorReviews: [] }, { isMember: true })
     expect(chain['comment']).toHaveLength(1)
     expect(chain['review']).toHaveLength(1)
   })

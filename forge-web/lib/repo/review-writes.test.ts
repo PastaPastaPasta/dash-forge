@@ -52,6 +52,7 @@ vi.mock('./private-writes', async (importOriginal) => {
 })
 
 import { resetMemoryStores } from '../idb'
+import { decodeIdentifier } from '../auth/base58'
 import { clearSignedWrites, lockVault } from '../auth/vault'
 import type { RepoRef } from './contract'
 import {
@@ -60,6 +61,7 @@ import {
   loadReviewDraft,
   postComment,
   postTargetEvent,
+  reconcileReviewDraft,
   reviewData,
   saveReviewDraft,
   setAssignee,
@@ -333,12 +335,16 @@ describe('pending review submit', () => {
   it('adopts writes that landed without their save instead of posting them twice', async () => {
     // The review and comment 1 landed on chain, but the tab died before either was saved:
     // the draft in IndexedDB knows nothing of them.
-    const d = { ...draft(), attemptedAt: 5 }
+    // x0 is an earlier review of Bob's, identical, recorded as prior before the first write.
+    const d = { ...draft(), attemptedAt: 5, priorReviews: ['x0'] }
     await saveReviewDraft(d)
     const landedReview: ChainReview = { id: D(1), reviewer: BOB, verdict: 2, commitOid: HEAD, body: 'two things', commentCount: 3, createdAt: 5 }
     const landedComment: ChainComment = { id: D(2), owner: BOB, reviewId: D(1), body: 'one', anchor: { path: 'a.rs', line: 3, side: 1, commitOid: HEAD }, createdAt: 6 }
     const reads: SubmitReads = {
       reviews: async () => [
+        { ...landedReview, id: 'x0', createdAt: 4 },
+        // an earlier identical review a lagging node left out of priorReviews: older than ours
+        { ...landedReview, id: 'x7', createdAt: 3 },
         landedReview,
         // not ours: another reviewer, an older head, another count, before the draft started
         { ...landedReview, id: 'x1', reviewer: ALICE },
@@ -373,6 +379,47 @@ describe('pending review submit', () => {
     const out = await submitReviewDraft(sdk, auth(BOB), REPO, d, MEMBER, undefined, { reviews: async () => [earlier], comments: async () => [] })
     expect(writes.map((w) => w.documentType)).toEqual(['review'])
     expect(out.reviewId).toBe(D(1))
+  })
+
+  it("files a second review's comments under the second review, as the drawer submits it (attempt stamped first)", async () => {
+    // Bob's first review (same verdict, head, summary and one comment) landed a minute ago. The
+    // drawer stamps `attemptedAt` before the first submit (`startSubmit`): the reconcile must not
+    // take the first review for this draft's own and write the new comment with its id.
+    const now = Date.now()
+    const first: ChainReview = { id: D(5), reviewer: BOB, verdict: 2, commitOid: HEAD, body: 'two things', commentCount: 1, createdAt: now - 60_000 }
+    const firstComment: ChainComment = { id: 'f1', owner: BOB, reviewId: D(5), body: 'earlier', anchor: { path: 'a.rs', line: 1, side: 1, commitOid: HEAD }, createdAt: now - 59_000 }
+    const reads: SubmitReads = { reviews: async () => [first], comments: async () => [firstComment] }
+    const d: ReviewDraft = { ...draft(), comments: [{ localId: 'c1', anchor: { path: 'a.rs', line: 3, side: 1 }, body: 'one' }], attemptedAt: now }
+    await saveReviewDraft(d)
+    const out = await submitReviewDraft(sdk, auth(BOB), REPO, d, MEMBER, undefined, reads)
+    expect(writes.map((w) => w.documentType)).toEqual(['review', 'comment'])
+    expect(out.reviewId).toBe(D(1))
+    expect(writes[1]?.data['reviewId']).toEqual(decodeIdentifier(D(1)))
+  })
+
+  it('records the earlier reviews before the first write, and a resume never adopts one of them', async () => {
+    const now = Date.now()
+    const first: ChainReview = { id: D(5), reviewer: BOB, verdict: 2, commitOid: HEAD, body: 'two things', commentCount: 3, createdAt: now - 60_000 }
+    const other: ChainReview = { ...first, id: 'x1', reviewer: ALICE }
+    let chain: ChainReview[] = [first, other]
+    const reads: SubmitReads = { reviews: async () => chain, comments: async () => [] }
+    failAt = 0 // the review write throws (a timeout) although it landed, so its id is never saved
+    await expect(submitReviewDraft(sdk, auth(BOB), REPO, { ...draft(), attemptedAt: now }, MEMBER, undefined, reads)).rejects.toThrow('network dropped')
+    const saved = (await loadReviewDraft('devnet', BOB, PR)) as ReviewDraft
+    expect(saved.priorReviews).toEqual([D(5)])
+    // The resume sees the first review and this draft's own, which landed without its save.
+    const own: ChainReview = { ...first, id: D(4), createdAt: now + 1_000 }
+    chain = [first, other, own]
+    const out = await submitReviewDraft(sdk, auth(BOB), REPO, saved, MEMBER, undefined, reads)
+    expect(out.reviewId).toBe(D(4))
+    expect(writes.map((w) => w.documentType)).toEqual(['comment', 'comment', 'comment'])
+  })
+
+  it('adopts no review for a draft without its record of earlier reviews (nothing of it was written)', async () => {
+    const now = Date.now()
+    const earlier: ChainReview = { id: D(5), reviewer: BOB, verdict: 2, commitOid: HEAD, body: 'two things', commentCount: 3, createdAt: now }
+    const d: ReviewDraft = { ...draft(), attemptedAt: now }
+    expect(await reconcileReviewDraft(d, { reviews: async () => [earlier], comments: async () => [] })).toBe(d)
   })
 
   it('records the attempt before the first write, so a crash after it reconciles', async () => {
