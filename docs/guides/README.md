@@ -5,7 +5,7 @@ Task-oriented guides for using Dash Forge. For how it is built, see the [documen
 | Guide | Read it when you want to… |
 |---|---|
 | [Quick start](quick-start.md) | install, get an identity, choose storage, publish with `dg init`, push, and see it on the web |
-| [Mirror a GitHub repository](mirror-a-github-repo.md) | keep a copy of a GitHub repository that nobody can take down, with the Mirror Action or `forge-import` |
+| [Mirror a GitHub repository](mirror-a-github-repo.md) | keep a copy of a GitHub repository that nobody can take down: set it up from the browser with the `/mirror` wizard, or by hand with the Mirror Action or `forge-import` |
 | [Mirror a GitLab project](mirror-a-gitlab-project.md) | the same for a project on gitlab.com or your own GitLab, with a GitLab CI template |
 | [Moving from GitHub or GitLab](moving-from-github.md) | move a project over end to end: storage, identity, import, the Mirror Action, cut-over, collaborators, CI and costs |
 | [Bring your own storage](bring-your-own-storage.md) | keep pack bytes in your own R2, B2, S3, Storj, self-hosted S3 or IPFS instead of on Platform, from the CLI or the browser |
@@ -29,8 +29,7 @@ Also:
 These guides describe what is on `master` today. Features that are specified but not built yet are marked **Coming soon**, and nothing marked that way works yet. The main ones:
 
 - prebuilt release binaries and `install.sh` (the pipeline is merged; no release is tagged yet);
-- editing files in the browser, and browser merges for private repositories (the CLI has them);
-- the `forge.dashhq.org/mirror` setup wizard.
+- editing files in the browser, and browser merges for private repositories (the CLI has them).
 
 Dash Wallet sign-in is built. With today's wallets it works only in the iOS app pointed at bonsia's key-exchange contract (not yet tried on a real device), and on testnet once Forge is deployed there: see [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today).
 

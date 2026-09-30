@@ -10,16 +10,36 @@ You do not have to move off GitHub. Keep working there, and let the mirror follo
 
 There are two ways to run a mirror, and both use the same engine, `forge-import`:
 
-- **The [Forge Mirror Action](#2-the-forge-mirror-action)** (recommended): one workflow file in the GitHub repository. On every push, issue, PR and release, and on a daily schedule, it mirrors what changed, under a per-run cost cap.
+- **The [Forge Mirror Action](#2-the-forge-mirror-action)** (recommended): one workflow file in the GitHub repository. On every push, issue, PR and release, and on a daily schedule, it mirrors what changed, under a per-run cost cap. **[The setup wizard](#the-setup-wizard) at forge.dashhq.org/mirror sets it up from your browser, with nothing to install.**
 - **By hand or from cron**: run `forge-import` (or `dg import`) yourself.
 
 This guide covers:
 
+1. [The setup wizard](#the-setup-wizard)
 1. [Before you start](#before-you-start)
 2. [First import: code, issues, PRs and releases](#1-first-import)
 3. [The Forge Mirror Action](#2-the-forge-mirror-action)
 4. [Keep it in sync without the Action](#3-keep-it-in-sync-without-the-action)
 5. [Check the mirror](#4-check-the-mirror)
+
+---
+
+## The setup wizard
+
+Open **[forge.dashhq.org/mirror](https://forge.dashhq.org/mirror/)**, or **New → Mirror a GitHub repo** in the header. You need a public GitHub repository and a Dash identity. You can create the identity on the same page ([Identity and keys](identity-and-keys.md)). The hosted site moves to bonsia when the web app cuts over ([Which network](README.md#which-network)). Until then, the wizard is at `/mirror` on any build of `forge-web` for bonsia. The wizard works through six steps:
+
+| Step | What happens | On chain |
+|---|---|---|
+| 1. GitHub repository | Your browser asks GitHub's public REST API, without signing in, whether the repository exists and is public. There is no GitHub OAuth app. | nothing |
+| 2. Forge repository | The name is suggested from GitHub, and the description is `… (mirror of github.com/<owner>/<repo>)`, which the web uses to link back. A repository of yours with that name is reused at no cost. | three documents, about 0.002 DASH |
+| 3. Storage | Pick a saved bucket, or add one with the [storage wizard](bring-your-own-storage.md). R2 or S3 is recommended. The step shows the CORS policy to paste, and also offers Dash Platform, priced for this repository's size. | nothing |
+| 4. Runner key | This registers a limited key on your identity: bound to Forge's contracts, with a budget (default 0.5 DASH) and an expiry (default 365 days). Your identity file or recovery words sign once and are not stored. The key is shown **once**, as the `DASH_FORGE_KEY` value to paste into GitHub. It belongs to the repository's owner, so the Action needs no membership. | one identity update, about 0.0003–0.0005 DASH |
+| 5. Workflow file | The wizard lists the secrets to add first (`DASH_FORGE_KEY`, plus `S3_ACCESS_KEY_ID` and `S3_SECRET_ACCESS_KEY` for a bucket), with copy buttons and a link to GitHub's *New repository secret* page. It then builds [the workflow below](#the-workflow) with every input filled in. **Create this file on GitHub** opens GitHub's new-file page with it filled in. | nothing |
+| 6. First run | Committing the file starts the first run. The page checks Platform every 10 seconds until the mirror's branches appear, then links to the repository. | the run, under its cost cap, paid through the runner key |
+
+The wizard pins the build and the Action to one Dash Forge commit, the one the site was built from. The workflow checks out that commit, builds the three tools, and runs the Action from the checkout (`uses: ./.dash-forge/action`). Progress is saved in the browser, so a closed tab picks up where it stopped. A key is never saved.
+
+**How long it takes.** A timed run on devnet bonsia (2026-09-30) mirrored a small public repository (two commits) with Platform storage. The wizard's own steps took 16 seconds of machine time: the GitHub check, signing in, creating the repository, the runner key and the workflow. A person reading, typing and pasting needs a few minutes more. From the workflow commit to the first mirrored push took 3 minutes 50 seconds. Of that, compiling the tools took 3 minutes 9 seconds, because no Dash Forge release is published yet. Mirroring took under 30 seconds and spent 0.018 DASH, the Action's own up-front estimate. Counted from opening the page, the mirror was live after 6 minutes 11 seconds, and that included a two-minute fix made during the run. Later runs reuse rust-cache.
 
 ---
 
@@ -229,7 +249,7 @@ Before you copy it:
 - A merged pull request is recorded as merged when the mirror has pushed a tip of its base branch that contains the merge commit (usually the next run after the merge). A PR merged into a branch that is not mirrored, or was deleted, is recorded as closed. A PR an older import recorded closed becomes merged on the next run: the first run after upgrading `forge-import` reads everything again, whatever its `--state` file says (the state's scope carries a version, `v2`), so older items are revisited once.
 - If a run fails after some ref updates or a pack landed, the summary counts them (and warns); a re-run does not write or pay for them again.
 
-**Coming soon:** a setup wizard at `forge.dashhq.org/mirror` that creates the identity, the storage and the runner key in your browser, with no local install.
+The [setup wizard](#the-setup-wizard) writes this file for you, with the secrets and every input filled in.
 
 ---
 
