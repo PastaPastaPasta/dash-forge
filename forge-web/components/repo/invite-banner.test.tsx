@@ -49,15 +49,17 @@ vi.mock('@/lib/repo', async (orig) => ({
   readConsents: async () => {
     const answer = consentLists[Math.min(consentListCalls++, consentLists.length - 1)] ?? []
     if (answer === 'throw') throw new Error('network: consents read failed')
-    return answer
+    if (Array.isArray(answer)) return answer
+    await new Promise((r) => setTimeout(r, answer.after))
+    return answer.ids
   },
 }))
 
-/** What each `readConsents` answers, in order (then the last one again). */
-let consentLists: (string[] | 'throw')[] = []
+/** What each `readConsents` answers, in order (then the last one again); `after` answers that much later. */
+let consentLists: (string[] | 'throw' | { after: number; ids: string[] })[] = []
 let consentListCalls = 0
 
-import { INVITES_POLL_MS, InviteBanner, Invitations } from './invite-banner'
+import { INVITES_POLL_MAX_MS, INVITES_POLL_MS, InviteBanner, Invitations } from './invite-banner'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -145,8 +147,10 @@ describe('the invite banner after a confirmed accept', () => {
 
 describe("the owner's pending invitations while Settings is open", () => {
   const INVITEE = 'EA8HsynH63cw1i8xQLoARwk43sDf74HrKut1D4RV3L35'
+  const OTHER = 'DBL7NnqGZjyVHwo2jp3K1QD9oRBcbFZnSnB9kQ8bmoYu'
   const ownerRepo = { ...repo } as RepoRef
   const pending = (): string => q('pending-invites')?.textContent ?? ''
+  const lists = (id: string): boolean => pending().includes(id.slice(0, 6))
   let visibility: DocumentVisibilityState = 'visible'
   const setVisibility = (v: DocumentVisibilityState): void => {
     visibility = v
@@ -157,7 +161,10 @@ describe("the owner's pending invitations while Settings is open", () => {
     visibility = 'visible'
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility })
   })
-  async function renderInvitations(memberIds: string[] = []): Promise<void> {
+  afterEach(() => {
+    delete (document as { visibilityState?: unknown }).visibilityState
+  })
+  async function renderInvitations(memberIds: string[] | null = []): Promise<void> {
     act(() => root.render(<Invitations repo={ownerRepo} members={memberIds} awaiting={null} disabled={false} onPick={() => undefined} />))
     await flush()
   }
@@ -168,26 +175,72 @@ describe("the owner's pending invitations while Settings is open", () => {
     expect(q('pending-invites')).toBeNull()
     await flush(INVITES_POLL_MS)
     expect(q('pending-invites')).toBeNull()
-    await flush(INVITES_POLL_MS)
-    expect(pending()).toContain(INVITEE.slice(0, 6))
+    await flush(INVITES_POLL_MS * 2)
+    expect(lists(INVITEE)).toBe(true)
   })
 
   it('keeps a shown accept through a lagging node and a failed re-read', async () => {
     consentLists = [[INVITEE], [], 'throw', []]
     await renderInvitations()
     for (let i = 0; i < 4; i++) {
-      expect(pending()).toContain(INVITEE.slice(0, 6))
-      await flush(INVITES_POLL_MS)
+      expect(lists(INVITEE)).toBe(true)
+      await flush(INVITES_POLL_MAX_MS)
     }
-    expect(pending()).toContain(INVITEE.slice(0, 6))
+    expect(consentListCalls).toBeGreaterThanOrEqual(4)
+    expect(lists(INVITEE)).toBe(true)
+    expect(host.textContent).not.toMatch(/Couldn.t read the invitations/)
   })
 
-  it('drops an invitation once they are a member', async () => {
-    consentLists = [[INVITEE]]
+  it("keeps a fresh node's answer when a lagging read that started earlier lands after it", async () => {
+    // Read 2 (a lagging node) starts first and answers last; read 3 (a fresh node) sees OTHER.
+    // Then another lagging node: what the page keeps must still hold OTHER.
+    consentLists = [[INVITEE], { after: 3000, ids: [INVITEE] }, { after: 500, ids: [INVITEE, OTHER] }, [INVITEE]]
     await renderInvitations()
-    expect(pending()).toContain(INVITEE.slice(0, 6))
-    await renderInvitations([INVITEE])
+    await act(async () => setVisibility('visible'))
+    await flush(100)
+    await act(async () => setVisibility('visible'))
+    await flush(4000)
+    expect(consentListCalls).toBe(3)
+    expect(lists(OTHER)).toBe(true)
+    await flush(INVITES_POLL_MAX_MS)
+    expect(consentListCalls).toBe(4)
+    expect(lists(OTHER)).toBe(true)
+  })
+
+  it('reports a first read that fails, and a later read clears it', async () => {
+    consentLists = ['throw', [INVITEE]]
+    await renderInvitations()
+    expect(host.textContent).toMatch(/Couldn.t read the invitations/)
+    await flush(INVITES_POLL_MS)
+    expect(host.textContent).not.toMatch(/Couldn.t read the invitations/)
+    expect(lists(INVITEE)).toBe(true)
+  })
+
+  it('lists nobody as pending until the members are read, and drops one once they are a member', async () => {
+    consentLists = [[INVITEE, OTHER]]
+    await renderInvitations(null)
     expect(q('pending-invites')).toBeNull()
+    await renderInvitations([])
+    expect(lists(INVITEE) && lists(OTHER)).toBe(true)
+    // The owner adds INVITEE; a lagging node then answers only INVITEE's consent: OTHER stays.
+    consentLists = [[INVITEE]]
+    await renderInvitations([INVITEE])
+    await flush(INVITES_POLL_MAX_MS)
+    expect(lists(INVITEE)).toBe(false)
+    expect(lists(OTHER)).toBe(true)
+  })
+
+  it('backs off while nothing new turns up, and starts over when something does', async () => {
+    consentLists = [[], [], [], [], [INVITEE], []]
+    await renderInvitations()
+    const at: number[] = []
+    for (let t = 1; t <= 200; t++) {
+      const before = consentListCalls
+      await flush(1000)
+      if (consentListCalls > before) at.push(t)
+    }
+    // 10 s, then 20, 40, 60 (the cap); the new consent at 130 s starts over at 10 s.
+    expect(at.slice(0, 6)).toEqual([10, 30, 70, 130, 140, 160])
   })
 
   it('re-reads only while the page is visible, and at once when it is shown again', async () => {
@@ -208,7 +261,7 @@ describe("the owner's pending invitations while Settings is open", () => {
     consentLists = [[]]
     await renderInvitations()
     act(() => root.render(<></>))
-    await flush(INVITES_POLL_MS * 3)
+    await flush(INVITES_POLL_MAX_MS * 3)
     expect(consentListCalls).toBe(1)
   })
 })

@@ -51,8 +51,17 @@ describe('the repo Storage section of a tab that needs an unlock', () => {
   it('points to the unlock above instead of a second prompt', async () => {
     await render(true)
     expect(q('storage-unlock')).toBeNull()
-    expect(q('storage-unlock-above')?.textContent).toMatch(/unlock under Collaborators opens them too/)
-    expect(q('storage-unlock-above')?.querySelector('a')?.getAttribute('href')).toBe('#collaborators')
+    expect(q('storage-unlock-above')?.textContent).toMatch(/the unlock under Collaborators opens them as well/)
+    expect(q('storage-unlock-above')?.querySelector('a')?.getAttribute('href')).toBe('#members-unlock')
+  })
+
+  it('points above too when this browser has no storage settings yet (a signing-only tab still needs the unlock, #216)', async () => {
+    // needsUnlock with nothing stored: config stays null until the unlock, as with stored settings.
+    storage.needsUnlock = true
+    await render(true)
+    expect(q('storage-unlock')).toBeNull()
+    expect(q('storage-unlock-above')).not.toBeNull()
+    expect(host.textContent).not.toMatch(/No storage set up/)
   })
 
   it('says nothing about unlocking once the settings are open', async () => {

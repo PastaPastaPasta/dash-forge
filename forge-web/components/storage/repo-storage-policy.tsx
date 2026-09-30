@@ -40,11 +40,11 @@ export function RepoStoragePolicy({
   if (needsUnlock && unlockAbove) {
     return (
       <p data-testid="storage-unlock-above" className="text-dense text-anvil-500 dark:text-anvil-400">
-        Your storage settings are locked in this tab: the unlock under{' '}
-        <a href="#collaborators" className="text-forge-700 underline dark:text-forge-400">
-          Collaborators
+        Your storage settings are locked in this tab too:{' '}
+        <a href="#members-unlock" className="text-forge-700 underline dark:text-forge-400">
+          the unlock under Collaborators
         </a>{' '}
-        opens them too.
+        opens them as well.
       </p>
     )
   }

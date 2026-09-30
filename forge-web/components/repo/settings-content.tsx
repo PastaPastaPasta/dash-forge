@@ -51,6 +51,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   const guard = useWriteGuard()
   const isOwner = identity === repo.ownerId
   const viewerRole = useViewerRole(repo).role
+  // The encryption key is in this browser, but this tab resumed with the signing key only: the
+  // page's one unlock sits under Collaborators (Storage points to it).
+  const locked = home.private?.access === 'locked'
   const members = useAsync<Membership[]>(
     () => readMembershipsCached(sdk!, repo, network),
     [ready, repo.repoId, network],
@@ -148,9 +151,8 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
             )}
           </div>
         )}
-        {home.private?.access === 'locked' ? (
-          // The encryption key is in this browser, but this tab resumed with the signing key only.
-          <div className="mt-4">
+        {locked ? (
+          <div id="members-unlock" className="mt-4 scroll-mt-20">
             <UnlockMore title={isOwner ? 'Unlock this tab to add or remove members' : "Unlock this tab to see the repo's key epoch"} testId="members-unlock" />
           </div>
         ) : isOwner && repo.visibility === 'private' ? (
@@ -196,7 +198,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
             {idError ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">{idError}</p> : null}
             <Invitations
               repo={repo}
-              members={memberRows.map((m) => m.identity)}
+              members={members.data === null ? null : memberRows.map((m) => m.identity)}
               awaiting={awaiting}
               disabled={guard.disabledReason !== null}
               onPick={(id, r) => {
@@ -237,8 +239,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
         <h3 className="mb-2 mt-5 flex items-center gap-2 text-dense font-medium">
           <HardDrive className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden /> Your browser pushes
         </h3>
-        {/* A locked private repo shows this tab's one unlock under Collaborators (D-9). */}
-        <RepoStoragePolicy repoId={repo.repoId} unlockAbove={home.private?.access === 'locked'} />
+        <RepoStoragePolicy repoId={repo.repoId} unlockAbove={locked} />
       </Section>
 
       <DangerZone home={home} maintainer={viewerRole === 'maintainer'} onSaved={reload} />
