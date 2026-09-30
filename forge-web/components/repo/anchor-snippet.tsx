@@ -20,37 +20,42 @@ import { Oid } from '@/components/ui/oid'
 const NO_TEXTS: ReadonlyMap<string, string | null> = new Map()
 
 /**
- * The text of each file `sources` names (null: not a readable text file there), each read once
- * through `reader`; what was read stays shown while more is read.
+ * The text of each file `sources` names (null: not a readable text file there), read through
+ * `reader` (null: nothing is read, e.g. off the Conversation tab): each commit's tree once, the
+ * commits side by side, each result shown as it lands. What is read belongs to that reader: a
+ * new one (a new head's) reads again, so a failed read is not kept for good.
  */
 export function useSnippetTexts(reader: ObjectReader | null, sources: readonly SnippetSource[]): ReadonlyMap<string, string | null> {
-  const [texts, setTexts] = useState<ReadonlyMap<string, string | null>>(NO_TEXTS)
+  const [state, setState] = useState<{ reader: ObjectReader | null; texts: ReadonlyMap<string, string | null> }>({ reader, texts: NO_TEXTS })
+  const texts = state.reader === reader ? state.texts : NO_TEXTS
   const known = useRef(texts)
   known.current = texts
-  const readerRef = useRef(reader)
-  readerRef.current = reader
   const key = [...new Set(sources.map(snippetKey))].sort().join('\n')
-  const hasReader = reader !== null
   useEffect(() => {
-    const r = readerRef.current
     const missing = key === '' ? [] : key.split('\n').filter((k) => !known.current.has(k))
-    if (r === null || missing.length === 0) return
+    if (reader === null || missing.length === 0) return
     let live = true
-    void (async () => {
-      const got: [string, string | null][] = []
-      for (const k of missing) {
-        const at = k.indexOf(':')
-        const commit = k.slice(0, at)
-        const path = k.slice(at + 1)
-        const text = await (async () => readTextFile(r, parseCommit((await r.readObject(commit)).bytes).tree, path))().catch(() => null)
-        got.push([k, text])
-      }
-      if (live) setTexts((t) => new Map([...t, ...got]))
-    })()
+    const byCommit = new Map<string, string[]>()
+    for (const k of missing) {
+      const at = k.indexOf(':')
+      byCommit.set(k.slice(0, at), [...(byCommit.get(k.slice(0, at)) ?? []), k.slice(at + 1)])
+    }
+    for (const [commit, paths] of byCommit) {
+      void (async () => {
+        const tree = await reader
+          .readObject(commit)
+          .then((o) => parseCommit(o.bytes).tree)
+          .catch(() => null)
+        const got = await Promise.all(
+          paths.map(async (p): Promise<[string, string | null]> => [`${commit}:${p}`, tree === null ? null : await readTextFile(reader, tree, p).catch(() => null)]),
+        )
+        if (live) setState((s) => ({ reader, texts: new Map([...(s.reader === reader ? s.texts : NO_TEXTS), ...got]) }))
+      })()
+    }
     return () => {
       live = false
     }
-  }, [key, hasReader])
+  }, [key, reader])
   return texts
 }
 
@@ -82,18 +87,22 @@ export function AnchorContext({
   text,
   outdated,
   applied,
+  label = true,
 }: {
   anchor: Anchor
   /** The file at the anchor's side (`useSnippetTexts`); undefined while unread. */
   text: string | null | undefined
   outdated: boolean
   applied: string | null
-}): JSX.Element {
+  /** Name where it points (a standalone comment's header already does). */
+  label?: boolean
+}): JSX.Element | null {
   const lines = snippetLines(text, anchor)
+  if (!label && lines === null && !outdated && applied === null) return null
   return (
     <div className="mb-2 overflow-hidden rounded-md border border-anvil-200 dark:border-anvil-800" data-testid="conversation-anchor">
       <div className="flex flex-wrap items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-3 py-1.5 dark:border-anvil-800 dark:bg-anvil-900">
-        <span className="min-w-0 break-all font-mono text-[12px] text-anvil-700 dark:text-anvil-300">{anchorLabel(anchor)}</span>
+        {label ? <span className="min-w-0 break-all font-mono text-[12px] text-anvil-700 dark:text-anvil-300">{anchorLabel(anchor)}</span> : null}
         <AnchorMarkers outdated={outdated} applied={applied} />
       </div>
       {lines !== null ? (

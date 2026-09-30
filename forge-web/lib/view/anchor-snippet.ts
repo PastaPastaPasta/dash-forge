@@ -1,9 +1,10 @@
 /**
  * The code an inline review comment was left on, for the Conversation tab (QW2-049): GitHub shows
  * a review comment there under a few lines of its diff hunk, and marks it Outdated once the
- * head has moved on. Here the lines come from the file at the anchor's side: the new side is the
- * file at the commit the comment names; the old side is the compared base, read only for a
- * comment on the current head (an older head's base is not known here).
+ * head has moved on. Here the lines come from the file at the commit the comment names, for a
+ * comment on the new side. An old-side comment's file is the base the reviewer compared
+ * against, which is not recorded (the base moves, and a merged PR compares differently), so it
+ * shows no code rather than lines that may not be the ones commented on.
  */
 
 import type { Anchor } from '../rules/v2'
@@ -32,14 +33,10 @@ export function snippetKey(s: SnippetSource): string {
   return `${s.commit}:${s.path}`
 }
 
-/**
- * Where `a`'s code is read from, or null (a file-level comment, no commit recorded, or an
- * old-side comment on an older head). `head` is the PR head, `base` the compared base.
- */
-export function snippetSource(a: Anchor, head: string, base: string | null): SnippetSource | null {
-  if (a.line === null || a.side === null || a.commitOid === '') return null
-  if (a.side === 1) return { commit: a.commitOid, path: a.path }
-  return base !== null && base !== '' && a.commitOid === head.toLowerCase() ? { commit: base, path: a.path } : null
+/** Where `a`'s code is read from, or null (a file-level or old-side comment, or no commit recorded). */
+export function snippetSource(a: Anchor): SnippetSource | null {
+  if (a.line === null || a.side !== 1 || a.commitOid === '') return null
+  return { commit: a.commitOid, path: a.path }
 }
 
 /**

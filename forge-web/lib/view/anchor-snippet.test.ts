@@ -5,25 +5,19 @@ import { SNIPPET_MAX_LINES, snippetLines, snippetSource } from './anchor-snippet
 
 const HEAD = 'ab'.repeat(20)
 const OLD = 'cd'.repeat(20)
-const BASE = 'ef'.repeat(20)
 const at = (a: Partial<Anchor>): Anchor => ({ path: 'src/calc.py', line: 5, startLine: null, side: 1, commitOid: HEAD, ...a })
 const FILE = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\n') + '\n'
 
 describe('snippetSource — which file a Conversation comment shows (QW2-049)', () => {
   it('reads the new side at the commit the comment names, any head', () => {
-    expect(snippetSource(at({}), HEAD, BASE)).toEqual({ commit: HEAD, path: 'src/calc.py' })
-    expect(snippetSource(at({ commitOid: OLD }), HEAD, BASE)).toEqual({ commit: OLD, path: 'src/calc.py' })
+    expect(snippetSource(at({}))).toEqual({ commit: HEAD, path: 'src/calc.py' })
+    expect(snippetSource(at({ commitOid: OLD }))).toEqual({ commit: OLD, path: 'src/calc.py' })
   })
 
-  it('reads the old side at the compared base, only for a comment on the current head', () => {
-    expect(snippetSource(at({ side: 0 }), HEAD, BASE)).toEqual({ commit: BASE, path: 'src/calc.py' })
-    expect(snippetSource(at({ side: 0, commitOid: OLD }), HEAD, BASE)).toBeNull()
-    expect(snippetSource(at({ side: 0 }), HEAD, null)).toBeNull()
-  })
-
-  it('has nothing to show for a file-level comment or one with no commit', () => {
-    expect(snippetSource(at({ line: null, side: null }), HEAD, BASE)).toBeNull()
-    expect(snippetSource(at({ commitOid: '' }), HEAD, BASE)).toBeNull()
+  it('shows no code for the old side (its compared base is not recorded), a file-level comment, or no commit', () => {
+    expect(snippetSource(at({ side: 0 }))).toBeNull()
+    expect(snippetSource(at({ line: null, side: null }))).toBeNull()
+    expect(snippetSource(at({ commitOid: '' }))).toBeNull()
   })
 })
 

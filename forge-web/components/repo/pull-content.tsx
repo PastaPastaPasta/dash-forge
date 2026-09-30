@@ -86,7 +86,7 @@ import {
 import { checksPhrase, expectedChecks, readCheckRuns, requiredSources, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
 import { headSync, readBranchState, readBranchTip } from '@/lib/repo/source-branch'
 import type { Event, EventKind, Holdings, RefState } from '@/lib/rules'
-import { RoleOracle, type ChecksState, type Policy, type PolicyStatus } from '@/lib/rules/v2'
+import { linkedIssues, RoleOracle, type ChecksState, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { checksState } from '@/lib/rules/parity'
 import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, type CostPreview as Cost } from '@/lib/sdk'
 import { commentEditDrops, pullSinceYourReview } from '@/lib/view/issues-view'
@@ -94,6 +94,7 @@ import { totalHidden } from '@/lib/repo/private-content'
 import { headUpdatePhrases } from '@/lib/view/head-updates'
 import { inlineCommentIds, lineKey, repliesByRoot } from '@/lib/view/inline-threads'
 import { appliedSuggestions, prCommits, prHaveSet } from '@/lib/view/pr-commits'
+import { anchorOnHead } from '@/lib/view/inline-threads'
 import { snippetKey, snippetSource } from '@/lib/view/anchor-snippet'
 import { AnchorContext, useSnippetTexts } from '@/components/repo/anchor-snippet'
 import { WALK_COMMIT_CAP } from '@/lib/merge/objects'
@@ -453,22 +454,19 @@ function PullPage({
   }, [])
   // Suggestions and "Update branch": commits to the PR's source branch (the fork).
   const applied = useMemo(() => appliedSuggestions(commits.data?.commits ?? []), [commits.data])
-  // The code each inline comment was left on, for Conversation (QW2-049).
-  const comparedBase = cmp?.comparedBaseOid ?? null
-  const snippetSources = useMemo(
-    () => thread.comments.flatMap((c) => (c.anchor === null ? [] : [snippetSource(c.anchor, pull.headOid, comparedBase)].filter((s) => s !== null))),
-    [thread.comments, pull.headOid, comparedBase],
-  )
-  const snippetTexts = useSnippetTexts(headReader, snippetSources)
-  const anchorContext = (c: CommentView): JSX.Element | null => {
+  // The code each inline comment was left on, for Conversation (QW2-049): read on that tab only.
+  const snippetSources = useMemo(() => thread.comments.flatMap((c) => (c.anchor === null ? [] : [snippetSource(c.anchor)].filter((s) => s !== null))), [thread.comments])
+  const snippetTexts = useSnippetTexts(tab === 'conversation' ? headReader : null, snippetSources)
+  const anchorContext = (c: CommentView, label = true): JSX.Element | null => {
     if (c.anchor === null) return null
-    const source = snippetSource(c.anchor, pull.headOid, comparedBase)
+    const source = snippetSource(c.anchor)
     return (
       <AnchorContext
         anchor={c.anchor}
         text={source === null ? null : snippetTexts.get(snippetKey(source))}
-        outdated={c.anchor.commitOid !== pull.headOid.toLowerCase()}
+        outdated={!anchorOnHead(c.anchor, pull.headOid)}
         applied={applied.get(c.id) ?? null}
+        label={label}
       />
     )
   }
@@ -715,12 +713,13 @@ function PullPage({
       : pull.state.draft
         ? { label: 'Draft', icon: <GitPullRequestDraft className="h-4 w-4" aria-hidden />, bg: 'bg-anvil-600' }
         : { label: 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, bg: 'bg-verify-700' }
-  const linked = prLinkedIssues(pull.body, pull.number)
+  const linkedUpstream = importedHost(pull.importedUrl, mirrorRepo(home.description)) !== null
+  // A mirrored description's #n are the source forge's numbers, not this PR's (QW2-054 applies here only).
+  const linked = linkedUpstream ? linkedIssues(pull.body) : prLinkedIssues(pull.body, pull.number)
   // The open issues "Fixes #n" names, for the merge box's "Close #n after merging" (QW-015): read
   // only for a viewer who can merge an open PR. An imported description's #n is the source
   // forge's (as it renders): the native issue a trusted mirror recorded with that upstream number.
   const linkedKey = linked.join(',')
-  const linkedUpstream = importedHost(pull.importedUrl, mirrorRepo(home.description)) !== null
   const linkedOpen = useAsync(
     async () => {
       if (!linkedUpstream) return linkedIssueTargets(sdk!, repo, linked)
@@ -847,7 +846,7 @@ function PullPage({
           <span className="min-w-0 flex-1">
             {isAuthor ? 'Your branch' : 'The source branch'} <span className="font-mono">{shortBranch(pull.sourceRefName ?? '')}</span> is at{' '}
             <Oid value={sync.tip} chars={7} copyable={false} />, but this PR is at <Oid value={pull.headOid} chars={7} copyable={false} />.
-            {canMoveHead ? null : (
+            {authorOrMember ? null : (
               <span className="text-anvil-600 dark:text-anvil-400"> Its commits, files and checks are the PR head&apos;s until the author or a maintainer or writer updates it.</span>
             )}
           </span>
@@ -965,7 +964,8 @@ function PullPage({
                       replies: repliesOf.get(item.comment.id) ?? [],
                       trust,
                       resolved: resolved.has(item.comment.id),
-                      context: anchorContext(item.comment),
+                      // The header already says where it points ("commented on …").
+                      context: anchorContext(item.comment, false),
                       onShowFiles: () => setTab('files'),
                     })
                   }
@@ -1357,13 +1357,18 @@ function PullPage({
                 ) : null}
               </p>
               {sync?.kind === 'deleted' ? (
-                // The branch is gone (deleted at the merge, say); the head stays reachable by its
-                // commit id, which is what `dg pr checkout` fetches.
-                <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">
-                  The branch was deleted; the PR keeps its head <Oid value={pull.headOid} chars={7} copyable={false} />, which this checks out:
-                </p>
-              ) : null}
-              <CopyRow text={checkout} className="mt-2" />
+                // `dg pr checkout` fetches the source's branches, so with the branch gone it has
+                // nothing to fetch: a merged head is in the base's history, checked out by id.
+                <>
+                  <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="source-branch-deleted-note">
+                    The branch was deleted. The PR&apos;s head is <Oid value={pull.headOid} chars={7} copyable={false} />
+                    {merged ? `, in ${shortBranch(pull.state.baseRef ?? pull.baseRefName)}'s history:` : '.'}
+                  </p>
+                  {merged ? <CopyRow text={`git switch --detach ${pull.headOid}`} className="mt-2" /> : null}
+                </>
+              ) : (
+                <CopyRow text={checkout} className="mt-2" />
+              )}
             </SidebarSection>
             {/* Lock conversation (GitHub: the rail's last entry): a member transition, for maintainers and writers. */}
             {isMember || thread.locked ? (
