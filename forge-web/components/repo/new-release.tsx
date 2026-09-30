@@ -32,8 +32,7 @@ import {
   SEALED_RELEASE_BUDGET,
   carriedFields,
   newestRevision,
-  sealedReleaseBudget,
-  sealedReleaseCost,
+  sealedReleasePreview,
   type SealedReleaseWarning,
 } from '@/lib/repo/sealed-release'
 import {
@@ -217,13 +216,16 @@ function NewReleaseDialog({
   const liveTag = existing !== null && sealedExisting?.unpublished !== true
   // Only a live tag can be unpublished: the switch left on for another tag says nothing.
   const unpublishing = unpublish && liveTag
+  // An unpublish sends no files: the ones picked before do not count for it.
+  const newFiles = unpublishing ? [] : files
   const kept = useMemo(() => carriedAssets(existing, files), [existing, files])
   const finalName = title.trim() || existing?.name || ''
   const finalNotes = notes.trimEnd() || existing?.notes || ''
   const yanked = yankedChoice ?? existing?.yanked ?? false
   const draftFlag = draftChoice ?? sealedExisting?.draft === true
   const prerelease = prereleaseChoice ?? sealedExisting?.prerelease === true
-  // The sealed revision's fields as it will state them, and the budget they take (§16.2).
+  // The sealed revision as the writer will build it: its budget (§16.2), whether it stores a new
+  // asset list, and what that costs.
   const sealedPlan = useMemo(() => {
     if (!sealedRepo) return null
     const base = carriedFields(
@@ -237,20 +239,14 @@ function NewReleaseDialog({
       },
       sealedExisting,
     )
-    const typed = notes.trimEnd()
-    const hasList = files.length > 0 || base.assetManifest !== undefined
-    // Notes left blank are carried as they are: their prefix, and the list they continue in.
-    const budget =
-      typed === ''
-        ? { ...sealedReleaseBudget(base, base.notes ?? '', hasList), notesContinue: base.notesContinue === true }
-        : sealedReleaseBudget(base, typed, hasList)
-    return { budget, cost: sealedReleaseCost(budget.used) }
-  }, [sealedRepo, trimmedTag, title, notes, yankedChoice, draftChoice, prereleaseChoice, unpublishing, sealedExisting, files.length])
+    return sealedReleasePreview(base, notes.trimEnd(), newFiles.length)
+  }, [sealedRepo, trimmedTag, title, notes, yankedChoice, draftChoice, prereleaseChoice, unpublishing, sealedExisting, newFiles.length])
   const problem =
     tagProblem(trimmedTag) ??
     releaseTextProblem(sealedRepo ? { name: title.trim(), notes: notes.trimEnd() } : { name: finalName, notes: finalNotes }) ??
-    assetFilesProblem(files) ??
-    (files.length > 0 && gap !== null ? gap.message : null) ??
+    assetFilesProblem(newFiles) ??
+    // A sealed revision whose notes continue stores an asset list even with no file.
+    ((newFiles.length > 0 || sealedPlan?.storesList === true) && gap !== null ? gap.message : null) ??
     (sealedRepo ? null : assetPlanProblem(files, policy, profiles, kept))
   // The release document as it will be written, with placeholder hashes: sizes the cost.
   const publicCost = useMemo(
@@ -287,7 +283,7 @@ function NewReleaseDialog({
           tagName: trimmedTag,
           name: title.trim(),
           notes: notes.trimEnd(),
-          files: unpublishing ? [] : files,
+          files: newFiles,
           draft,
           // An untouched switch (null) is absent: carried.
           yanked: yankedChoice ?? undefined,
@@ -305,6 +301,12 @@ function NewReleaseDialog({
             stored += 1
             setProgress((p) => ({ ...p, [e.asset]: { state: 'done', copies: e.copies, of: e.copies + e.failures.length } }))
             setStatus(`${e.asset} stored and verified.`)
+          }
+          if (e.step === 'resealing') {
+            // Everything is sealed again under the new key: the files upload again.
+            stored = 0
+            setProgress(Object.fromEntries(newFiles.map((f) => [f.name, { state: 'waiting' } as AssetState])))
+            setStatus('This repo’s key changed during the upload: sealing and uploading again…')
           }
           if (e.step === 'release') setStatus(sealedRepo ? 'Sealing and writing the release…' : 'Writing the release…')
         },
@@ -338,6 +340,9 @@ function NewReleaseDialog({
         setPhase('unconfirmed')
         setError(`${message}${context} Retry finishes the same write; nothing is signed twice.`)
       } else {
+        // A sealed revision that failed outright is built afresh from the form next time (a
+        // retry of it, once refused, can only be refused again: the key moved, say).
+        if (sealedRepo) setPendingAssets(null)
         setPhase('edit')
         setError(`${message}${context}`)
       }
@@ -422,7 +427,7 @@ function NewReleaseDialog({
         <Field label="Notes (optional)" htmlFor="release-notes" hint="Markdown supported.">
           <Textarea id="release-notes" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={existing?.notesBody || undefined} disabled={locked} />
         </Field>
-        {sealedPlan ? <SealedBudget {...sealedPlan.budget} /> : null}
+        {sealedPlan ? <SealedBudget used={sealedPlan.used} limit={sealedPlan.limit} notesContinue={sealedPlan.notesContinue} /> : null}
         <label className="flex items-start gap-2 text-dense text-anvil-700 dark:text-anvil-200">
           <input type="checkbox" checked={yanked} onChange={(e) => setYanked(e.target.checked)} disabled={locked} className="mt-0.5" data-testid="release-yanked" />
           <span>

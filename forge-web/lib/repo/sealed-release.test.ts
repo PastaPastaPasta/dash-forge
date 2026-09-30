@@ -52,6 +52,7 @@ import {
   notNewestWarning,
   sealedWriteWarnings,
   sealedReleaseBudget,
+  sealedReleasePreview,
   type SealedReleaseEnv,
 } from './sealed-release'
 
@@ -199,6 +200,38 @@ describe('carry-forward (§16.3: a revision is a complete statement)', () => {
     expect(assetListPlan(base, undefined, 1)).toBe('rebuild')
     // New notes replacing notes that continued in the list: the list's notes change.
     expect(assetListPlan({ ...base, notesContinue: true }, 'short', 0)).toBe('rebuild')
+    // Carried notes that no longer fit beside a longer name are fitted again.
+    expect(assetListPlan({ ...base, name: 'n'.repeat(120), notes: 'x'.repeat(1400) }, undefined, 0)).toBe('rebuild')
+  })
+
+  it('carried whole notes pushed over the budget by a longer name continue in a new list, never a refusal', async () => {
+    const near: ReleaseFields = { tag: 'v3', name: 'a', notes: 'x'.repeat(1480) }
+    const { env, stored } = envOf(await listOf(near), [k0])
+    await createSealedRelease(sdk, auth, REPO, { tagName: 'v3', name: 'n'.repeat(120) }, env)
+    const { fields } = await writtenFields()
+    expect(fields).toMatchObject({ name: 'n'.repeat(120), notesContinue: true })
+    const list = stored[0] as Uint8Array
+    const opened = await openReleaseManifest(list, list.length, Buffer.from(fields.assetManifest as string, 'hex'), 'v3', true, ctx.keys)
+    expect(opened.notes).toBe(near.notes)
+  })
+
+  it('the composer preview: the budget, whether a list is stored, and its cost', () => {
+    const edit = sealedReleasePreview(carriedFields({ tagName: 'v1.0.0' }, full), '', 0)
+    expect(edit).toMatchObject({ notesContinue: false, storesList: false })
+    expect(edit.used).toBe(encodeReleaseTlv(full).length)
+    const withFile = sealedReleasePreview(carriedFields({ tagName: 'v1.0.0' }, full), '', 1)
+    expect(withFile.storesList).toBe(true)
+    expect(withFile.cost.credits).toBeGreaterThan(edit.cost.credits)
+    const longNotes = sealedReleasePreview({ tag: 'v2' }, 'x'.repeat(3000), 0)
+    expect(longNotes).toMatchObject({ notesContinue: true, storesList: true })
+    expect(longNotes.used).toBeLessThanOrEqual(longNotes.limit)
+    expect(sealedReleasePreview({ tag: 'v2' }, 'short', 0)).toMatchObject({ notesContinue: false, storesList: false })
+  })
+
+  it('a retry names its own tag', async () => {
+    const { env } = envOf(await listOf(full), [k0])
+    const resolved = { fields: { tag: 'v9' }, epoch: 0, kcv: hexOf(k0.kcv), assets: [] }
+    await expect(createSealedRelease(sdk, auth, REPO, { tagName: 'v1.0.0', resolved }, env)).rejects.toThrow(/v9/)
   })
 })
 
@@ -361,7 +394,7 @@ describe('the warnings after the write (§16.3)', () => {
   it('warns when ours is visible and older than the newest, naming the newer one', () => {
     const w = notNewestWarning({ current: [view('THEIRS', 20, 'Q')], previous: [view('OURS', 10)] }, 'v1', 'OURS')
     expect(w?.newer?.id).toBe('THEIRS')
-    expect(w?.message).toMatch(/older than another maintainer's/)
+    expect(w?.message).toMatch(/older than another one/)
   })
 
   it('says nothing when ours is the newest', () => {

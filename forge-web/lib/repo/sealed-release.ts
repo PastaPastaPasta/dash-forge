@@ -30,9 +30,11 @@ import {
   canonicalJson,
   encodeReleaseTlv,
   fitReleaseNotes,
+  parseHeader,
   sealPack,
   sealRelease,
   sealReleaseManifest,
+  sealedLength,
   type EpochKeyring,
   type ReleaseAsset as SealedAsset,
   type ReleaseFields,
@@ -175,9 +177,24 @@ export function sealedReleaseEnv(
         session.close()
       }
     },
-    // Loaded when needed: the browse plane's reader imports this module's own writers.
+    // Imported when needed: the browse plane's reader registers with `push.ts` as it loads, and
+    // `push.ts` reaches this module through `writes.ts`, so a static import would load it mid-cycle.
     openManifest: async (fields, keys) => (await import('../view/release-download')).loadReleaseManifest(sdk, repo, fields, keys),
-    store: (sealed, onStep) => storeFile(sealed, { policy: storage?.policy ?? null, profiles: storage?.profiles ?? [], maxUris: ASSET_MAX_URIS, onStep }),
+    store: (sealed, onStep) => {
+      // Nothing of a private repo reaches storage unsealed (as `storeArtifact` refuses).
+      if (!isSealedPack(sealed)) throw new Error('refusing to upload an unencrypted release file for a private repo')
+      return storeFile(sealed, { policy: storage?.policy ?? null, profiles: storage?.profiles ?? [], maxUris: ASSET_MAX_URIS, onStep })
+    },
+  }
+}
+
+/** Whether `bytes` are shaped like a sealed artifact (§3.2): a header whose plaintext length gives this sealed length. */
+function isSealedPack(bytes: Uint8Array): boolean {
+  try {
+    const h = parseHeader(bytes)
+    return sealedLength(h.plaintextLen, h.segLog2) === bytes.length
+  } catch {
+    return false
   }
 }
 
@@ -214,7 +231,7 @@ export function notNewestWarning(after: ReleaseList | null, tag: string, ours: s
   if (newest?.id === ours) return null
   if (newest !== undefined && after?.previous.some((r) => r.id === ours) === true) {
     return {
-      message: `Your revision of release ${tag} is older than another maintainer's: they wrote one meanwhile, or your clock is behind theirs. Check the release, and publish again if theirs dropped your change.`,
+      message: `Your revision of release ${tag} is older than another one: another maintainer (or another tab) wrote one meanwhile, or your clock is behind theirs. Check the release, and publish again if the other revision dropped your change.`,
       newer: newest,
     }
   }
@@ -270,9 +287,42 @@ export function carriedFields(input: SealedReleaseInput, carried: ReleaseFields 
  */
 export function assetListPlan(base: ReleaseFields, newNotes: string | undefined, files: number): 'keep' | 'reuse' | 'rebuild' {
   if (files > 0) return 'rebuild'
-  if (newNotes === undefined) return 'keep'
+  // The carried notes no longer fit beside a longer name: fitted again, into a list if need be,
+  // so the writer never refuses its own revision (§16.2 "Budget").
+  if (newNotes === undefined) return encodeReleaseTlv(base).length > RELEASE_MAX_PLAINTEXT ? 'rebuild' : 'keep'
   if (base.notesContinue === true) return 'rebuild'
   return fitReleaseNotes(base, newNotes).notesContinue ? 'rebuild' : 'reuse'
+}
+
+/** What the composer shows of a revision before it is written. */
+export interface SealedReleasePreview {
+  /** Bytes of the sealed budget the TLV records take. */
+  readonly used: number
+  readonly limit: number
+  /** The notes continue in the asset list. */
+  readonly notesContinue: boolean
+  /** A new asset list is sealed, stored and recorded: storage is needed, and a `packManifest` paid for. */
+  readonly storesList: boolean
+  /** The release document, and the `packManifest` when `storesList`. */
+  readonly cost: CostPreview
+}
+
+/**
+ * The composer's preview of the revision `base` (the {@link carriedFields}) with `typedNotes` (``:
+ * carried) and `files` new files, as the writer will build it ({@link assetListPlan}). Carried
+ * notes that continue in a list the composer has not opened are measured by their prefix.
+ */
+export function sealedReleasePreview(base: ReleaseFields, typedNotes: string, files: number): SealedReleasePreview {
+  const newNotes = nonEmpty(typedNotes)
+  const plan = assetListPlan(base, newNotes, files)
+  const hasList = files > 0 || base.assetManifest !== undefined
+  const fit =
+    plan === 'keep'
+      ? { used: encodeReleaseTlv(base).length, notesContinue: base.notesContinue === true }
+      : sealedReleaseBudget(base, newNotes ?? base.notes ?? '', hasList)
+  const notesContinue = fit.notesContinue || (plan === 'rebuild' && newNotes === undefined && base.notesContinue === true)
+  const storesList = plan === 'rebuild' && (hasList || notesContinue)
+  return { used: fit.used, limit: RELEASE_MAX_PLAINTEXT, notesContinue, storesList, cost: sealedReleaseCost(fit.used, storesList) }
 }
 
 /**
@@ -292,11 +342,20 @@ function encLength(tlvBytes: number): number {
   return padded + 29
 }
 
-/** The cost of a sealed release document whose TLV records take `tlvBytes` (its `enc`, a 43-character `tagName`). */
-export function sealedReleaseCost(tlvBytes: number): CostPreview {
+/**
+ * The cost of a sealed release document whose TLV records take `tlvBytes` (its `enc`, a
+ * 43-character `tagName`), and of the kind-4 `packManifest` recording its new asset list when
+ * `withList` (one external copy, a URL of about 120 bytes).
+ */
+export function sealedReleaseCost(tlvBytes: number, withList = false): CostPreview {
   const enc = encLength(tlvBytes)
-  const credits = estimateBytesCredits(DOC.release, enc, { tagName: 'x'.repeat(43), vis: 'private', delta: 0, epoch: 0 })
-  return previewCredits(credits, admissionFor(DOC.release, enc, credits))
+  const release = estimateBytesCredits(DOC.release, enc, { tagName: 'x'.repeat(43), vis: 'private', delta: 0, epoch: 0 })
+  const admit = admissionFor(DOC.release, enc, release)
+  if (!withList) return previewCredits(release, admit)
+  const list = estimateBytesCredits(DOC.packManifest, 32, { kind: PACK_KIND.RELEASE_ASSETS, sizeBytes: 1 << 20, objectCount: 0, chunkCount: 0, storage: STORAGE.EXTERNAL, uris: ['x'.repeat(120)] })
+  const listAdmit = admissionFor(DOC.packManifest, 32, list)
+  // Two transitions, the list first: each is admitted on its own, and both are paid for.
+  return previewCredits(release + list, { budget: Math.max(admit.budget, listAdmit.budget), balance: admit.balance + listAdmit.balance })
 }
 
 /** A new revision's asset list, sealed and stored under `keys` (§16.5). */
@@ -421,6 +480,7 @@ export async function createSealedRelease(
 
   if (input.resolved !== undefined) {
     // An unconfirmed write, finished: exactly its revision, under exactly its key.
+    if (input.resolved.fields.tag !== tag) throw new Error(`the unconfirmed write was for release ${input.resolved.fields.tag}, not ${tag}`)
     const keys = await env.writeKeys()
     if (keys.epoch !== input.resolved.epoch || bytesToHex(keys.kcv) !== input.resolved.kcv) {
       throw new PrivateWriteError(`release ${tag} not retried: the key epoch moved since the unconfirmed write, whose assets are under the old key; publish it again`)

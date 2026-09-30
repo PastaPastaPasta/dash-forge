@@ -222,6 +222,8 @@ export type PublishEvent =
   | { readonly step: 'upload'; readonly asset: string; readonly event: UploadEvent }
   | { readonly step: 'uploaded'; readonly asset: string; readonly stored: ReleaseAsset; readonly copies: number; readonly failures: readonly TargetFailure[] }
   | { readonly step: 'release' }
+  /** A private repo's key moved during the upload: every file is sealed and uploaded again. */
+  | { readonly step: 'resealing' }
 
 /** The release write failed after every asset was stored: say so, as the CLI does. */
 export class ReleaseWriteError extends Error {
@@ -330,7 +332,10 @@ async function publishSealedRelease(
   let uploaded = 0
   const onSealed = (e: SealedReleaseEvent): void => {
     if (e.step === 'role' || e.step === 'upload') onEvent?.(e)
-    else if (e.step === 'uploaded') {
+    else if (e.step === 'resealing') {
+      uploaded = 0
+      onEvent?.({ step: 'resealing' })
+    } else if (e.step === 'uploaded') {
       uploaded += 1
       onEvent?.({ step: 'uploaded', asset: e.asset, stored: entryAsset(e.entry), copies: e.copies, failures: e.failures })
     } else if (e.step === 'release') {
