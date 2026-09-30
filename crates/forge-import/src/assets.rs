@@ -15,6 +15,10 @@
 //!   GitLab link) at most [`UNSIZED_BYTES`]. What does not fit is hashed by a later run.
 //! * An asset that cannot be hashed (unreachable, larger than recorded) keeps `""` and the
 //!   run warns: a missing hash is refused by readers, a guessed one would not be.
+//!
+//! A private destination seals its release assets instead ([`crate::sealed_release`]): the
+//! same rules decide what may be downloaded ([`admit`]), and the bytes are kept to be sealed
+//! ([`download`]), checked against the size and digest the source records.
 
 use std::collections::BTreeMap;
 
@@ -166,23 +170,59 @@ pub(crate) async fn fill_hashes(
     warnings
 }
 
-async fn hash_one(a: &ReleaseAsset, fetch: &impl Fetch, budget: &mut u64) -> Result<String> {
+/// Whether `a` may be downloaded with `budget` bytes left this run: its public `https` URL
+/// and the most it may be read ([`UNSIZED_BYTES`] when it has no recorded size), or why not.
+pub(crate) fn admit(a: &ReleaseAsset, budget: u64) -> Result<(&str, u64)> {
     let url = a
         .uris
         .iter()
         .find(|u| is_public_https_url(u))
-        .ok_or_else(|| anyhow!("no public https URL to hash it from"))?;
+        .ok_or_else(|| anyhow!("no public https URL to download it from"))?;
     let limit = if a.size_bytes > 0 {
         a.size_bytes
     } else {
         UNSIZED_BYTES
     };
     if limit > MAX_HASHED_BYTES {
-        bail!("it is larger than the {MAX_HASHED_BYTES}-byte hashing limit");
+        bail!("it is larger than the {MAX_HASHED_BYTES}-byte download limit");
     }
-    if limit > *budget {
-        bail!("this run's {RUN_BYTES}-byte hashing budget is spent; a later run hashes it");
+    if limit > budget {
+        bail!("this run's {RUN_BYTES}-byte download budget is spent; a later run takes it");
     }
+    Ok((url, limit))
+}
+
+/// Download `a` from `url` (admitted with [`admit`], at most `limit` bytes) to seal it into a
+/// private destination: its bytes, checked against the size and the SHA-256 the source
+/// records, when it records them.
+pub(crate) async fn download(
+    a: &ReleaseAsset,
+    url: &str,
+    limit: u64,
+    fetch: &impl Fetch,
+) -> Result<Vec<u8>> {
+    // sized once when the source records the size (a whole file is held to be sealed)
+    let mut bytes = Vec::with_capacity(usize::try_from(a.size_bytes.min(limit)).unwrap_or(0));
+    fetch
+        .fetch(url, limit, &mut |b| bytes.extend_from_slice(b))
+        .await?;
+    if a.size_bytes > 0 && bytes.len() as u64 != a.size_bytes {
+        bail!(
+            "served {} bytes, not the recorded {}",
+            bytes.len(),
+            a.size_bytes
+        );
+    }
+    if is_sha256_hex(&a.sha256)
+        && !hex::encode(Sha256::digest(&bytes)).eq_ignore_ascii_case(&a.sha256)
+    {
+        bail!("its bytes do not match the SHA-256 the source records");
+    }
+    Ok(bytes)
+}
+
+async fn hash_one(a: &ReleaseAsset, fetch: &impl Fetch, budget: &mut u64) -> Result<String> {
+    let (url, limit) = admit(a, *budget)?;
     let mut h = Sha256::new();
     // Charged as bytes arrive, so a failed download costs what it read.
     let got = fetch
@@ -316,6 +356,31 @@ mod tests {
         let w = fill_hashes("v1", &mut wrong, &Known::default(), &big, true, &mut budget).await;
         assert!(w[0].contains("served more than"), "{w:?}");
         assert_eq!(budget, 100 - 6, "the two 3-byte chunks read were charged");
+    }
+
+    /// A file downloaded to be sealed (a private destination) is kept only when it is what
+    /// the source records: its size, and its digest when the source gives one.
+    #[tokio::test]
+    async fn a_download_to_seal_is_checked_against_the_source() {
+        let body = b"release bytes";
+        let sha = hex::encode(Sha256::digest(body));
+        let got = |a: ReleaseAsset| async move {
+            let (url, limit) = admit(&a, RUN_BYTES).map(|(u, l)| (u.to_string(), l))?;
+            download(&a, &url, limit, &served(body)).await
+        };
+        let n = body.len() as u64;
+        assert_eq!(got(asset(&sha, n, URL)).await.unwrap(), body);
+        assert_eq!(
+            got(asset("", 0, URL)).await.unwrap(),
+            body,
+            "unsized, no digest"
+        );
+        let wrong = got(asset(&"00".repeat(32), n, URL)).await.unwrap_err();
+        assert!(wrong.to_string().contains("do not match"), "{wrong}");
+        let short = got(asset("", n + 1, URL)).await.unwrap_err();
+        assert!(short.to_string().contains("not the recorded"), "{short}");
+        let big = admit(&asset("", MAX_HASHED_BYTES + 1, URL), RUN_BYTES).unwrap_err();
+        assert!(big.to_string().contains("download limit"), "{big}");
     }
 
     #[tokio::test]

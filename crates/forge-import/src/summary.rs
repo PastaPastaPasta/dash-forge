@@ -49,6 +49,10 @@ pub struct Counts {
     /// Release assets written with no SHA-256 (this run's hashing budget ran out, or the
     /// file could not be read): readers refuse them until a later run hashes them.
     pub assets_unhashed: u64,
+    /// A private destination's release assets listed as external links, not sealed (this
+    /// run's download budget ran out, or the file could not be fetched): readers show them
+    /// as unverified links to the source until a later run seals them.
+    pub assets_linked: u64,
 }
 
 impl Counts {
@@ -229,6 +233,13 @@ impl Summary {
                 "  warning: release assets: {} not mirrored (past the 4,096-byte list), {} \
                  without a SHA-256 yet (a later run hashes them)",
                 c.assets_omitted, c.assets_unhashed
+            );
+        }
+        if c.assets_linked > 0 {
+            eprintln!(
+                "  warning: release assets: {} listed as links to the source, not sealed (a \
+                 later run seals them)",
+                c.assets_linked
             );
         }
         for w in &self.warnings {

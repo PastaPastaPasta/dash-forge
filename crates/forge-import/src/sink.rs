@@ -41,11 +41,13 @@ use forge_core::scope::RepoRef;
 use crate::budget::{collab_doc_credits, Budget, CollabDoc};
 use crate::gitsync::{ProofRepo, Unfetched};
 use crate::model::{same_item, same_item_renamed, SrcCollab, SrcLabel, SrcRelease, SrcTarget};
+use crate::sealed_release::{CollabDest, ReleaseStorage, ReleaseTargets};
 use crate::summary::Counts;
 
 /// The run's accounting: budget, counts, warnings.
 pub struct Ledger<'a> {
-    client: &'a PlatformClient,
+    /// `None` only in the unit tests' offline ledger ([`Ledger::offline`]).
+    client: Option<&'a PlatformClient>,
     signer: Option<String>,
     dry_run: bool,
     /// The spend ledger.
@@ -68,7 +70,7 @@ impl<'a> Ledger<'a> {
         budget: Budget,
     ) -> Self {
         Self {
-            client,
+            client: Some(client),
             signer,
             dry_run,
             budget,
@@ -76,6 +78,32 @@ impl<'a> Ledger<'a> {
             warnings: Vec::new(),
             refused: BTreeSet::new(),
         }
+    }
+
+    /// A ledger with no Platform client, for the unit tests: nothing it does reads the
+    /// network (no signer, so no balance to reconcile).
+    #[cfg(test)]
+    pub(crate) fn offline(dry_run: bool) -> Self {
+        Self {
+            client: None,
+            signer: None,
+            dry_run,
+            budget: Budget::new(None),
+            counts: Counts::default(),
+            warnings: Vec::new(),
+            refused: BTreeSet::new(),
+        }
+    }
+
+    /// The Platform client the destination is read through.
+    fn client(&self) -> Result<&'a PlatformClient> {
+        self.client
+            .context("this ledger is offline: it has no Platform client to read with")
+    }
+
+    /// Whether this is a dry run (every write replaced by a count and an estimate).
+    pub(crate) fn dry_run(&self) -> bool {
+        self.dry_run
     }
 
     /// Record a warning (also logged). Redacted: warnings are published (the Action's job
@@ -91,6 +119,23 @@ impl<'a> Ledger<'a> {
     pub fn skip(&mut self, msg: impl Into<String>) {
         self.counts.skipped += 1;
         self.warn(msg);
+    }
+
+    /// A release write that failed: one that concerns this release only (`item`: the
+    /// destination refusing its content, or a rule such as `oneLive` after a concurrent
+    /// publish) skips it, uncounted as written; spend-cap and network errors stop the run.
+    pub(crate) fn refused_release(
+        &mut self,
+        tag: &str,
+        e: anyhow::Error,
+        item: bool,
+    ) -> Result<()> {
+        if !item {
+            return Err(e);
+        }
+        self.counts.releases = self.counts.releases.saturating_sub(1);
+        self.skip(format!("release {tag} not mirrored this run: {e:#}"));
+        Ok(())
     }
 
     /// An optional git push skipped this run ([`crate::summary::Counts::git_skipped`]).
@@ -160,8 +205,8 @@ impl<'a> Ledger<'a> {
 
     /// Pull the measured balance drop into the budget; whether the balance could be read.
     pub async fn reconcile(&mut self) -> bool {
-        if let Some(signer) = &self.signer {
-            if let Ok(balance) = self.client.get_balance(signer).await {
+        if let (Some(signer), Some(client)) = (&self.signer, self.client) {
+            if let Ok(balance) = client.get_balance(signer).await {
                 self.budget.reconcile(balance);
                 return true;
             }
@@ -171,7 +216,7 @@ impl<'a> Ledger<'a> {
 
     /// `identity`'s balance now, when it can be read.
     pub async fn balance(&self, identity: &str) -> Option<u64> {
-        self.client.get_balance(identity).await.ok()
+        self.client?.get_balance(identity).await.ok()
     }
 
     fn is_mine(&self, author: &str) -> bool {
@@ -214,6 +259,9 @@ pub struct Sink<'a> {
     /// The first source item stored at a number other than its own ([`Sink::create`]):
     /// numbers diverge from there on, said once.
     diverged: bool,
+    /// Where a private destination's sealed release files and asset lists go (`None`: the
+    /// storage policy names no storage of your own).
+    release_storage: Option<ReleaseStorage>,
 }
 
 /// Pauses (ms) between re-reads of a base's history that does not show this run's push yet
@@ -443,7 +491,15 @@ impl<'a> Sink<'a> {
             fresh_read: BTreeSet::new(),
             known: BTreeMap::new(),
             diverged: false,
+            release_storage: None,
         }
+    }
+
+    /// Store a private destination's sealed release files and asset lists on `storage`.
+    #[must_use]
+    pub fn with_release_storage(mut self, storage: Option<ReleaseStorage>) -> Self {
+        self.release_storage = storage;
+        self
     }
 
     /// Check merge commits against the git data in `proof` (see [`Sink::merge_proof`]).
@@ -489,7 +545,7 @@ impl<'a> Sink<'a> {
         } else {
             freshness
         };
-        let client = self.ledger.client;
+        let client = self.ledger.client()?;
         let core = client.fetch_contract(&repo.forge().core).await?;
         Ok(forge_core::refs::read_merge_base(
             client,
@@ -586,7 +642,7 @@ impl<'a> Sink<'a> {
         }
         if self.members.is_none() {
             let members = match &self.repo {
-                Some(repo) => forge_core::members::MemberReader::new(self.ledger.client)
+                Some(repo) => forge_core::members::MemberReader::new(self.ledger.client()?)
                     .list(repo)
                     .await
                     .context("reading the destination's members")?
@@ -625,7 +681,12 @@ impl<'a> Sink<'a> {
             self.sync_labels(labels).await?;
         }
         if let Some(releases) = &src.releases {
-            self.sync_releases(releases).await?;
+            let private = self.repo.as_ref().map(|r| r.visibility) == Some(Visibility::Private);
+            if private {
+                self.sync_sealed_releases(releases).await?;
+            } else {
+                self.sync_releases(releases).await?;
+            }
         }
         self.check_order(src).await?;
         for t in &src.targets {
@@ -777,6 +838,8 @@ impl<'a> Sink<'a> {
     /// signatures and common platform builds first ([`crate::model::fit_assets`]), and its
     /// notes end with a line saying how many are not mirrored, linking the source release
     /// ([`crate::model::notes_with_footer`]), which readers show.
+    ///
+    /// A private destination's releases are sealed instead ([`crate::sealed_release`]).
     async fn sync_releases(&mut self, releases: &[SrcRelease]) -> Result<()> {
         let mut known = crate::assets::Known::default();
         let existing: BTreeMap<String, String> = match &self.repo {
@@ -829,7 +892,7 @@ impl<'a> Sink<'a> {
             prepared.push((r, assets_in));
         }
         for (r, assets_in) in prepared.into_iter().rev() {
-            let total = r.dropped + assets_in.len();
+            let total = r.omitted.len() + assets_in.len();
             let assets_in = crate::model::fit_assets(assets_in);
             let dropped = total - assets_in.len();
             let notes = crate::model::notes_with_footer(&r.notes, dropped, total, &r.source_url);
@@ -874,23 +937,32 @@ impl<'a> Sink<'a> {
                 )
                 .await;
             if let Err(e) = written {
-                self.refused_release(&r.tag_name, e)?;
+                let item = item_error(&e);
+                self.ledger.refused_release(&r.tag_name, e, item)?;
             }
         }
         Ok(())
     }
 
-    /// A release write that failed: the destination refusing this release (its content, or a
-    /// rule such as `oneLive` after a concurrent publish) skips it, uncounted as written;
-    /// spend-cap and network errors stop the run.
-    fn refused_release(&mut self, tag: &str, e: anyhow::Error) -> Result<()> {
-        if !item_error(&e) {
-            return Err(e);
-        }
-        self.ledger.counts.releases = self.ledger.counts.releases.saturating_sub(1);
-        self.ledger
-            .skip(format!("release {tag} not mirrored this run: {e:#}"));
-        Ok(())
+    /// A private destination's releases, sealed ([`crate::sealed_release`]), their files and
+    /// asset lists stored on the run's release storage.
+    async fn sync_sealed_releases(&mut self, releases: &[SrcRelease]) -> Result<()> {
+        let Some(repo) = self.repo.as_ref() else {
+            return Ok(());
+        };
+        let targets = self
+            .release_storage
+            .as_ref()
+            .map(ReleaseStorage::targets)
+            .transpose()
+            .context("opening the release storage")?;
+        let dest = CollabDest {
+            collab: &self.collab,
+            repo,
+            store: targets.as_ref().map(ReleaseTargets::store),
+        };
+        let fetch = crate::assets::Https::default();
+        crate::sealed_release::sync(&mut self.ledger, &dest, releases, &fetch).await
     }
 
     // --- issues and pull requests --------------------------------------------------------

@@ -232,6 +232,10 @@ pub struct ReleaseInput {
     /// yanked); a private one carries the tag's last revision's when `None` (§16.3).
     pub yanked: Option<bool>,
     /// Assets already stored (a public repository; a private one's are [`Self::files`]).
+    ///
+    /// A private repository: external links, listed in the sealed asset list without
+    /// `sealedSha256` and `sealedSizeBytes` (§16.5), each replacing a carried asset of its
+    /// name. Only an import writes them, for source files it could not fetch and seal.
     pub assets: Vec<ReleaseAsset>,
     /// A private repository: the files to seal and store as new assets.
     pub files: Vec<ReleaseFile>,
@@ -242,6 +246,10 @@ pub struct ReleaseInput {
     /// A private repository: unpublish the tag (flag `0x08`, every field carried forward;
     /// `delta` stays 0, §16.3).
     pub unpublished: bool,
+    /// A private repository: an import's provenance, sealed in TLV 13, 14 and 20
+    /// ([`v2::sealed_provenance`]); its `url` is also the asset list's `source`. `None`
+    /// carries the tag's last revision's. The public release has no field for it.
+    pub imported: Option<Imported>,
 }
 
 /// One file a sealed release stores as an asset (§16.5).

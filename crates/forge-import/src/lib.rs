@@ -5,6 +5,7 @@
 //! * [`importer`] — mirror a GitHub repository or GitLab project, once or incrementally.
 //! * [`sink`] — diff the desired collaboration state against the chain and write only the
 //!   difference, every write charged to the [`budget`] before it is signed.
+//! * [`sealed_release`] — releases into a private destination, sealed (private-repos.md §16).
 //! * [`gitsync`] — git data through the ordinary `git-remote-dash` push.
 //! * [`summary`] — the run summary (table and `--summary-json`).
 
@@ -17,6 +18,7 @@ pub mod gitlab;
 pub mod gitsync;
 pub mod importer;
 pub mod model;
+pub mod sealed_release;
 pub mod sink;
 pub mod source;
 pub mod source_github;
