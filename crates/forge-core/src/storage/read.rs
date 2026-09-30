@@ -77,6 +77,205 @@ impl Candidate {
             Candidate::S3 { profile, key } => format!("s3 profile {profile}: {key}"),
         }
     }
+
+    /// Where this copy lives, as a person names it: `IPFS gateway 127.0.0.1:8081`, a
+    /// mirror's `host:port`, or `S3 profile <name>`.
+    fn place(&self) -> String {
+        match self {
+            Candidate::Http(u) => {
+                let host = reqwest::Url::parse(u).ok().and_then(|p| {
+                    let host = p.host_str()?.to_string();
+                    Some(
+                        p.port()
+                            .map_or(host.clone(), |port| format!("{host}:{port}")),
+                    )
+                });
+                let host = host.unwrap_or_else(|| u.clone());
+                if gateway_cid(u).is_some() {
+                    format!("IPFS gateway {host}")
+                } else {
+                    host
+                }
+            }
+            Candidate::S3 { profile, .. } => format!("S3 profile {profile}"),
+        }
+    }
+}
+
+/// A read that a copy other than the reader's first choice served: where the bytes came from
+/// and every copy tried before it, with why it did not serve them. A clone that succeeds this
+/// way says so ([`fallback_lines`]), so a lost bucket or a dead gateway is noticed while the
+/// other copies still hold the history, not when the last one goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fallback {
+    /// The artifact's SHA-256 (lowercase hex).
+    pub pack: String,
+    /// The copy that served it (`IPFS gateway 127.0.0.1:8081`, `Platform chunks`).
+    pub served_by: String,
+    /// The copies that did not, each `place (why)`.
+    pub failed: Vec<String>,
+}
+
+impl std::fmt::Display for Fallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let short = self.pack.get(..12).unwrap_or(&self.pack);
+        write!(
+            f,
+            "pack {short}… read from {}; unavailable: {}",
+            self.served_by,
+            self.failed.join(", ")
+        )
+    }
+}
+
+/// At most this many [`Fallback`]s are listed one per line; the rest are counted.
+const FALLBACKS_SHOWN: usize = 3;
+
+/// What a clone or fetch of `repo` prints when some of its packs came from a fallback copy:
+/// one `warning:` line per pack (the first [`FALLBACKS_SHOWN`]), a count of the rest, and where
+/// to look. Empty when every pack came from its first choice.
+pub fn fallback_lines(fallbacks: &[Fallback], repo: &str) -> Vec<String> {
+    if fallbacks.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = fallbacks
+        .iter()
+        .take(FALLBACKS_SHOWN)
+        .map(|f| format!("warning: {f}"))
+        .collect();
+    if fallbacks.len() > FALLBACKS_SHOWN {
+        let more = fallbacks.len() - FALLBACKS_SHOWN;
+        out.push(format!(
+            "warning: and {more} more {} read from a fallback copy",
+            if more == 1 { "pack" } else { "packs" }
+        ));
+    }
+    out.push(format!(
+        "hint: a recorded copy of this repository is unavailable; `dg storage status {repo}` checks every copy"
+    ));
+    out
+}
+
+/// A failure in a few words for a [`Fallback`] line: the reader's error without the generic
+/// `io error:` / `GET request failed:` layers, and an HTTP status without the URL the line
+/// already names (`HTTP 403 Forbidden`).
+fn brief_why(why: &str) -> String {
+    const STATUS: &str = " failed with status ";
+    let why = why
+        .replace("io error: ", "")
+        .replace("GET request failed: ", "");
+    match why.find(STATUS) {
+        Some(at) if why.starts_with("GET ") || why.starts_with("S3 GET ") => {
+            // The status alone: an S3 error's credential hint and XML body are for `dg
+            // storage status`, not a one-line warning.
+            let rest = &why[at + STATUS.len()..];
+            let end = rest.find([':', '(']).unwrap_or(rest.len());
+            format!("HTTP {}", rest[..end].trim_end())
+        }
+        _ => why,
+    }
+}
+
+/// An artifact a copy served: the bytes, that copy's place, and the copies preferred to it that
+/// failed first (`place (why)` each; empty when the first choice served).
+pub(crate) struct Served {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) by: String,
+    pub(crate) failed: Vec<String>,
+}
+
+impl Served {
+    /// The bytes, recording on `reader` a [`Fallback`] for artifact `pack` when a preferred copy
+    /// failed first.
+    pub(crate) fn note_on(self, reader: &PackReader, pack: &str) -> Vec<u8> {
+        if !self.failed.is_empty() {
+            reader.note_fallback(Fallback {
+                pack: pack.to_ascii_lowercase(),
+                served_by: self.by,
+                failed: self.failed,
+            });
+        }
+        self.bytes
+    }
+}
+
+/// The failures (`(candidate index, place (why))`) worth naming when candidate `won` served:
+/// only candidates ranked before it (one ranked after that happened to fail first while the
+/// two raced is no fallback), and not another gateway's miss for the CID a gateway served —
+/// the IPFS copy is fine, a default gateway lacking it is not a lost copy. A gateway URL the
+/// manifest itself records is the repo's own and is kept.
+fn preferred_failures(
+    candidates: &[Candidate],
+    uris: &[String],
+    won: usize,
+    places: Vec<(usize, String)>,
+) -> Vec<String> {
+    let cid_of = |c: &Candidate| match c {
+        Candidate::Http(u) => gateway_cid(u),
+        Candidate::S3 { .. } => None,
+    };
+    let won_cid = cid_of(&candidates[won]);
+    places
+        .into_iter()
+        .filter(|(i, _)| {
+            let c = &candidates[*i];
+            let other_gateway = won_cid.is_some()
+                && cid_of(c) == won_cid
+                && matches!(c, Candidate::Http(u) if !uris.contains(u));
+            *i < won && !other_gateway
+        })
+        .map(|(_, p)| p)
+        .collect()
+}
+
+/// Why [`PackReader::race`] returned no bytes.
+pub(crate) enum Missed {
+    /// No candidate for these URIs at all (nothing this reader can fetch).
+    NoCandidate,
+    /// Every candidate failed: the error [`PackReader::fetch_verified`] returns, and each
+    /// copy's `place (why)` for a [`Fallback`] line.
+    Unverified { error: Error, places: Vec<String> },
+}
+
+impl Missed {
+    /// Every one of `candidates` failed: `reasons` (`label: why`) for the error, `places` for
+    /// a [`Fallback`].
+    fn unverified(candidates: &[Candidate], reasons: &[String], places: Vec<String>) -> Self {
+        let hint = if candidates
+            .iter()
+            .all(|c| matches!(c, Candidate::Http(u) if gateway_cid(u).is_some()))
+        {
+            " — every candidate was an IPFS gateway: if the node holding this content is \
+             reachable through a gateway you know, add it to `[read] ipfs_gateways` in \
+             storage.toml (`dg storage status <repo>` shows which gateways answer)"
+        } else {
+            ""
+        };
+        Missed::Unverified {
+            error: Error::Io(format!(
+                "no external copy verified ({} candidate(s)): {}{hint}",
+                candidates.len(),
+                reasons.join("; ")
+            )),
+            places,
+        }
+    }
+}
+
+impl Missed {
+    /// The error, and each failed copy's `place (why)`.
+    pub(crate) fn into_parts(self) -> (Error, Vec<String>) {
+        match self {
+            Missed::NoCandidate => (Error::NotFound, Vec::new()),
+            Missed::Unverified { error, places } => (error, places),
+        }
+    }
+}
+
+impl From<Missed> for Error {
+    fn from(m: Missed) -> Self {
+        m.into_parts().0
+    }
 }
 
 /// A read-side racer over external copies.
@@ -96,6 +295,10 @@ pub struct PackReader {
     /// Origins the user configured (read gateways, profiles' public URLs and gateways): a
     /// recorded URL on one of these is followed even when it is http or private.
     trusted_origins: Vec<String>,
+    /// Candidates raced at once ([`RACE_WIDTH`]; 1 in tests that need a fixed order).
+    race_width: usize,
+    /// Reads a fallback copy served, since the last [`Self::take_fallbacks`].
+    fallbacks: std::sync::Mutex<Vec<Fallback>>,
 }
 
 impl PackReader {
@@ -141,7 +344,37 @@ impl PackReader {
             candidate_timeout: None,
             first_byte_budget: FIRST_BYTE_BUDGET,
             trusted_origins,
+            race_width: RACE_WIDTH,
+            fallbacks: std::sync::Mutex::default(),
         }
+    }
+
+    /// Try candidates one at a time instead of racing them, so which copy is tried first (and
+    /// so which failures a [`Fallback`] names) is fixed. For tests: the survivability drill
+    /// asserts the exact warning a dead preferred copy produces.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn sequential(mut self) -> Self {
+        self.race_width = 1;
+        self
+    }
+
+    /// The reads a fallback copy served since the last call (oldest first), emptying the list.
+    pub fn take_fallbacks(&self) -> Vec<Fallback> {
+        std::mem::take(
+            &mut *self
+                .fallbacks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// Record a read a fallback copy served.
+    pub(crate) fn note_fallback(&self, f: Fallback) {
+        self.fallbacks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(f);
     }
 
     /// Whether `url` is on an origin this user configured.
@@ -297,26 +530,30 @@ impl PackReader {
             })
     }
 
-    /// Candidate `c`'s whole body if it hashes to `expected_sha256`; else `(its label, why)`.
+    /// Candidate `c`'s whole body if it hashes to `expected_sha256`; else why not.
     async fn fetch_one_verified(
         &self,
         c: &Candidate,
         expected_sha256: &str,
         size: Option<u64>,
         flowing: &AtomicBool,
-    ) -> std::result::Result<Vec<u8>, (String, String)> {
+    ) -> std::result::Result<Vec<u8>, String> {
         let bytes = self
             .fetch(c, None, size, Some(flowing))
             .await
-            .map_err(|e| (c.label(), e.to_string()))?;
+            .map_err(|e| e.to_string())?;
         if hex::encode(sha256(&bytes)).eq_ignore_ascii_case(expected_sha256) {
             Ok(bytes)
         } else {
-            Err((
-                c.label(),
-                "served bytes that do not match the manifest hash".to_string(),
-            ))
+            Err("served bytes that do not match the manifest hash".to_string())
         }
+    }
+
+    /// Where each candidate for `uris` lives ([`Candidate::place`]), in the order they are
+    /// tried: what the survivability drill checks a clone contacts.
+    #[cfg(test)]
+    pub(crate) fn candidate_places(&self, uris: &[String]) -> Vec<String> {
+        self.candidates(uris).iter().map(Candidate::place).collect()
     }
 
     /// Whether any candidate exists for `uris` (so the caller knows whether to bother).
@@ -329,6 +566,9 @@ impl PackReader {
     /// caps every candidate's body and scales its deadline ([`transfer_deadline`]).
     /// `budget`: no new candidate is started after it (in-flight ones keep their own
     /// deadline). Errors with every candidate's failure when none verifies.
+    ///
+    /// When a copy verifies after a copy preferred to it failed, the read is recorded as a
+    /// [`Fallback`] ([`Self::take_fallbacks`]).
     pub async fn fetch_verified(
         &self,
         uris: &[String],
@@ -336,13 +576,33 @@ impl PackReader {
         size: Option<u64>,
         budget: Option<Duration>,
     ) -> Result<Vec<u8>> {
+        self.race(uris, expected_sha256, size, budget)
+            .await
+            .map(|served| served.note_on(self, expected_sha256))
+            .map_err(Error::from)
+    }
+
+    /// [`Self::fetch_verified`] without recording anything: which copy served, and each
+    /// failed copy's `place (why)` apart from the error text, so a caller with more copies
+    /// (Platform chunks, other uploaders' copies) records one [`Fallback`] for the whole read.
+    pub(crate) async fn race(
+        &self,
+        uris: &[String],
+        expected_sha256: &str,
+        size: Option<u64>,
+        budget: Option<Duration>,
+    ) -> std::result::Result<Served, Missed> {
         use futures::stream::{FuturesUnordered, StreamExt as _};
         let candidates = self.candidates(uris);
         if candidates.is_empty() {
-            return Err(Error::NotFound);
+            return Err(Missed::NoCandidate);
         }
         let started = Instant::now();
         let mut reasons = Vec::new();
+        // The same failures, each `(candidate index, place (why))`, for a Fallback line.
+        let mut places: Vec<(usize, String)> = Vec::new();
+        // Set when the budget left candidates untried (said only if nothing serves).
+        let mut budget_skipped = None;
         // At most RACE_WIDTH in flight, and a slot is refilled as soon as its candidate
         // fails: a dead host (connection refused, no DNS) costs milliseconds instead of
         // holding its slot until the slow gateway racing next to it gives up, while a slow
@@ -376,11 +636,12 @@ impl PackReader {
         let mut pending = candidates.iter().enumerate();
         let mut race = FuturesUnordered::new();
         loop {
-            while race.len() < RACE_WIDTH {
+            while race.len() < self.race_width {
                 let Some((i, c)) = pending.next() else { break };
                 // Said once, and only when a candidate is actually left untried.
                 if let Some(b) = budget.filter(|b| started.elapsed() >= *b) {
                     reasons.push(format!("gave up after the {}s budget", b.as_secs()));
+                    budget_skipped = Some(b.as_secs());
                     pending = [].iter().enumerate();
                     break;
                 }
@@ -406,8 +667,12 @@ impl PackReader {
                     // requests) and give the next ones a fresh budget. Only when none are left
                     // does the read fail, so a copy that could serve the pack is always tried.
                     let waited = self.first_byte_budget;
-                    for (_, label) in in_flight.drain(..) {
+                    for (i, label) in in_flight.drain(..) {
                         reasons.push(format!("{label}: sent no data within {waited:?}"));
+                        places.push((
+                            i,
+                            format!("{} (sent no data within {waited:?})", candidates[i].place()),
+                        ));
                     }
                     race = FuturesUnordered::new();
                     first_byte
@@ -425,29 +690,30 @@ impl PackReader {
                     .as_mut()
                     .reset(tokio::time::Instant::now() + self.first_byte_budget);
             }
+            let c = &candidates[done];
             match res {
-                Ok(bytes) => return Ok(bytes),
-                Err((label, why)) => {
+                Ok(bytes) => {
+                    return Ok(Served {
+                        bytes,
+                        by: c.place(),
+                        failed: preferred_failures(&candidates, uris, done, places),
+                    })
+                }
+                Err(why) => {
+                    let label = c.label();
                     tracing::debug!(candidate = %label, reason = %why, "external copy unusable");
+                    places.push((done, format!("{} ({})", c.place(), brief_why(&why))));
                     reasons.push(format!("{label}: {why}"));
                 }
             }
         }
-        let hint = if candidates
-            .iter()
-            .all(|c| matches!(c, Candidate::Http(u) if gateway_cid(u).is_some()))
-        {
-            " — every candidate was an IPFS gateway: if the node holding this content is \
-             reachable through a gateway you know, add it to `[read] ipfs_gateways` in \
-             storage.toml (`dg storage status <repo>` shows which gateways answer)"
-        } else {
-            ""
-        };
-        Err(Error::Io(format!(
-            "no external copy verified ({} candidate(s)): {}{hint}",
-            candidates.len(),
-            reasons.join("; ")
-        )))
+        let mut places: Vec<String> = places.into_iter().map(|(_, p)| p).collect();
+        if let Some(secs) = budget_skipped {
+            places.push(format!(
+                "the other copies (not tried: gave up after the {secs}s budget)"
+            ));
+        }
+        Err(Missed::unverified(&candidates, &reasons, places))
     }
 
     /// Fetch `range` of the artifact (browse / partial reads). NOT hash-verified here — a
@@ -1298,6 +1564,140 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(got, good);
+    }
+
+    #[tokio::test]
+    async fn a_copy_served_after_others_failed_is_recorded_as_a_fallback() {
+        let good = b"the pack".to_vec();
+        let hash = hex::encode(sha256(&good));
+        let base = serve(vec![
+            ("/good", good.clone()),
+            ("/ipfs/bafyok", good.clone()),
+        ]);
+        let host = base.trim_start_matches("http://").to_string();
+        let r = PackReader::new(vec![base.clone()], &StorageProfiles::default()).sequential();
+        // The first choice serves: nothing to say.
+        let got = r
+            .fetch_verified(&[format!("{base}/good")], &hash, None, None)
+            .await
+            .unwrap();
+        assert_eq!(got, good);
+        assert_eq!(r.take_fallbacks(), []);
+        // A missing copy, then one serving other bytes, then the gateway: the gateway's read is
+        // a fallback naming both.
+        let base2 = serve(vec![("/evil", b"not the pack".to_vec())]);
+        let r = PackReader::new(
+            vec![base.clone(), base2.clone()],
+            &StorageProfiles::default(),
+        )
+        .sequential();
+        let got = r
+            .fetch_verified(
+                &[
+                    format!("{base}/gone"),
+                    format!("{base2}/evil"),
+                    "ipfs://bafyok".into(),
+                ],
+                &hash,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(got, good);
+        let host2 = base2.trim_start_matches("http://");
+        assert_eq!(
+            r.take_fallbacks(),
+            [Fallback {
+                pack: hash.clone(),
+                served_by: format!("IPFS gateway {host}"),
+                failed: vec![
+                    format!("{host} (not found)"),
+                    format!("{host2} (served bytes that do not match the manifest hash)"),
+                ],
+            }]
+        );
+        // Taken: the list starts over.
+        assert_eq!(r.take_fallbacks(), []);
+    }
+
+    #[tokio::test]
+    async fn no_fallback_when_the_first_choice_serves_or_only_a_default_gateway_missed() {
+        let good = b"slow but first".to_vec();
+        let hash = hex::encode(sha256(&good));
+        // Racing: the first choice trickles the pack while the second answers 404 at once.
+        // The second failed first, but it was never needed: nothing to say.
+        let slow = trickle(good.clone(), std::time::Duration::from_millis(20));
+        let fast404 = serve(vec![]);
+        let r = PackReader::new(
+            vec![slow.clone(), fast404.clone()],
+            &StorageProfiles::default(),
+        );
+        let got = r
+            .fetch_verified(
+                &[format!("{slow}/pack"), format!("{fast404}/pack")],
+                &hash,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(got, good);
+        assert_eq!(r.take_fallbacks(), []);
+        // One gateway lacks the CID and the next serves it: the IPFS copy is fine.
+        let lacking = serve(vec![]);
+        let having = serve(vec![("/ipfs/bafyhas", good.clone())]);
+        let r = PackReader::new(vec![lacking, having], &StorageProfiles::default()).sequential();
+        let got = r
+            .fetch_verified(&["ipfs://bafyhas".into()], &hash, None, None)
+            .await
+            .unwrap();
+        assert_eq!(got, good);
+        assert_eq!(r.take_fallbacks(), []);
+    }
+
+    #[test]
+    fn fallback_lines_name_each_pack_then_count_the_rest() {
+        let f = |n: u8| Fallback {
+            pack: format!("{n:02x}").repeat(32),
+            served_by: "Platform chunks".into(),
+            failed: vec!["pub.example (HTTP 403 Forbidden)".into()],
+        };
+        assert_eq!(fallback_lines(&[], "o/r"), Vec::<String>::new());
+        let lines = fallback_lines(&[f(1)], "o/r");
+        assert_eq!(
+            lines,
+            [
+                "warning: pack 010101010101… read from Platform chunks; unavailable: pub.example (HTTP 403 Forbidden)",
+                "hint: a recorded copy of this repository is unavailable; `dg storage status o/r` checks every copy",
+            ]
+        );
+        let lines = fallback_lines(&[f(1), f(2), f(3), f(4), f(5)], "o/r");
+        assert_eq!(lines.len(), 5, "{lines:?}");
+        assert_eq!(
+            lines[3],
+            "warning: and 2 more packs read from a fallback copy"
+        );
+    }
+
+    #[test]
+    fn brief_reasons_keep_the_status_and_drop_the_url_and_hints() {
+        assert_eq!(
+            brief_why("io error: GET http://h/b/k failed with status 403 Forbidden"),
+            "HTTP 403 Forbidden"
+        );
+        assert_eq!(
+            brief_why(
+                "io error: S3 GET k failed with status 403 Forbidden (access denied — check the \
+                 credentials): AccessDenied: Access Denied"
+            ),
+            "HTTP 403 Forbidden"
+        );
+        assert_eq!(
+            brief_why("io error: GET request failed: could not connect: Connection refused"),
+            "could not connect: Connection refused"
+        );
+        assert_eq!(brief_why("not found"), "not found");
     }
 
     #[tokio::test]
