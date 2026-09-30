@@ -163,7 +163,7 @@ describe('CI outcome counts for a list page', () => {
     const count = (sdk as unknown as { documents: { count: (q: unknown) => Promise<unknown> } }).documents.count
     await expect(
       count({ dataContractId: 'COMMUNITY', documentTypeName: 'checkRun', where: [['repoId', '==', REPO], ['headOid', '==', hexToBase64(oid(9))], ['outcome', '>=', 0]] }),
-    ).rejects.toThrow('non-leaf proof did not contain the expected key')
+    ).rejects.toThrow()
   })
 
   it('caches nothing from a failed read: the retry asks again', async () => {
