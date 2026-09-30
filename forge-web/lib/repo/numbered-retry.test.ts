@@ -35,6 +35,14 @@ vi.mock('../sdk/write', async (orig) => {
     },
   }
 })
+const slept: number[] = []
+vi.mock('../sdk/facade', async (orig) => ({
+  ...(await orig<typeof import('../sdk/facade')>()),
+  sleep: (ms: number) => {
+    slept.push(ms)
+    return Promise.resolve()
+  },
+}))
 vi.mock('../sdk/query', async (orig) => {
   const real = await orig<typeof import('../sdk/query')>()
   const rows = (): Record<string, unknown>[] => visible.map((n) => ({ $id: `id${n}`, $ownerId: 'someone', number: n }))
@@ -137,6 +145,8 @@ describe('a numbered write retried after an edit (review N1/N2)', () => {
     const r = await createIssue(sdk, AUTH, REPO, { title: 'A', body: '', intent: 'dense' }, (taken, next) => retried.push([taken, next]))
     expect(r.number).toBe(4)
     expect(intents).toEqual(['dense#3', 'dense#4'])
+    // The totals are read again after about a block (a node a block behind judged the first).
+    expect(slept).toContain(4_000)
     expect(retried).toEqual([[3, 4]])
   })
 

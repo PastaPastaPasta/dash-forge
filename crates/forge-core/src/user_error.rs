@@ -2005,7 +2005,7 @@ mod tests {
             &PUSH,
         );
         assert_eq!(u.code, "E702");
-        assert!(u.fix[0].contains("--devnet-name moutai"), "{u:?}");
+        assert!(u.fix[0].contains("--devnet-name bonsia"), "{u:?}");
     }
 
     /// Moutai after its reset to beta.6 (2026-09-28): the build's forge contracts are gone.
@@ -2081,10 +2081,10 @@ mod tests {
         assert_eq!(u.code, "E702");
         assert_eq!(
             u.fix[0],
-            "use a network where it is: `git config --global dash.network devnet && git config --global dash.devnetName moutai`, then run the git command again"
+            "use a network where it is: `git config --global dash.network devnet && git config --global dash.devnetName bonsia`, then run the git command again"
         );
         assert!(
-            u.fix[1].contains("DASH_FORGE_DEVNET_NAME=moutai git"),
+            u.fix[1].contains("DASH_FORGE_DEVNET_NAME=bonsia git"),
             "{u:?}"
         );
         assert!(u.fix.iter().all(|f| !f.contains("--network ")), "{u:?}");
