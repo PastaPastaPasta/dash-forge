@@ -382,9 +382,10 @@ describe('private writers are RC1-valid', () => {
         openManifest: async () => {
           throw new Error('no asset list in this test')
         },
-        store: async (sealed) => {
+        store: async (sealed, sha256Hex) => {
           stored.push(sealed)
           const h = Buffer.from(await crypto.subtle.digest('SHA-256', sealed as BufferSource)).toString('hex')
+          expect(sha256Hex).toBe(h)
           return { sha256: h, sizeBytes: sealed.length, uris: [`https://pub.example/rel/packs/${h}.pack`], confirmed: ['r2'], failures: [] }
         },
       }

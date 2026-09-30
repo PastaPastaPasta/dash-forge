@@ -97,54 +97,30 @@ function stateText(s: AssetState | undefined): string {
   return s.state
 }
 
+/** Why this viewer cannot publish here now (archived, or a private repo's key it can't write under), or null. */
+function publishBlock(home: RepoHome): string | null {
+  // A private repo's release is sealed under the current key: only a member holding it writes one.
+  return home.config?.archived === true ? ARCHIVED_REASON : privateComposeBlock(home)
+}
+
 export function NewReleaseButton({ home, releases, onPublished }: { home: RepoHome; releases: ReleaseList | null; onPublished: () => void }): JSX.Element | null {
-  return <ReleaseDialogButton home={home} releases={releases} onPublished={onPublished} />
-}
-
-/**
- * A maintainer's "Edit" on one sealed release (§16.3): the dialog for its tag, where an edit, a
- * yank, an unpublish or a draft or pre-release change is a new revision carrying every field it
- * does not change.
- */
-export function EditReleaseButton({ home, releases, tag, onPublished }: { home: RepoHome; releases: ReleaseList | null; tag: string; onPublished: () => void }): JSX.Element | null {
-  return <ReleaseDialogButton home={home} releases={releases} onPublished={onPublished} tag={tag} />
-}
-
-function ReleaseDialogButton({ home, releases, onPublished, tag }: { home: RepoHome; releases: ReleaseList | null; onPublished: () => void; tag?: string }): JSX.Element | null {
   const { role, known } = useViewerRole(home.repo)
   const [open, setOpen] = useState(false)
   // Held here, not in the dialog: closing it must not lose a write's intent.
   const draft = useIntent()
   // A settled marker (no visible output): tests can tell "no button" from "not decided yet".
-  if (role !== 'maintainer') return known && tag === undefined ? <span hidden data-testid="new-release-role" data-role={role ?? 'none'} /> : null
-  const archived = home.config?.archived === true
-  // A private repo's release is sealed under the current key: only a member holding it writes one.
-  const blocked = archived ? ARCHIVED_REASON : privateComposeBlock(home)
+  if (role !== 'maintainer') return known ? <span hidden data-testid="new-release-role" data-role={role ?? 'none'} /> : null
+  const blocked = publishBlock(home)
   return (
     <>
-      {tag === undefined ? (
-        <Button variant="primary" size="sm" onClick={() => setOpen(true)} disabled={blocked !== null} title={blocked ?? undefined} data-testid="new-release">
-          <Plus className="h-3.5 w-3.5" aria-hidden /> New release
-        </Button>
-      ) : (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => setOpen(true)}
-          disabled={blocked !== null}
-          title={blocked ?? `Edit, yank or unpublish ${tag}`}
-          aria-label={`Edit release ${tag}`}
-          data-testid="edit-release"
-        >
-          <Pencil className="h-3.5 w-3.5" aria-hidden /> Edit
-        </Button>
-      )}
+      <Button variant="primary" size="sm" onClick={() => setOpen(true)} disabled={blocked !== null} title={blocked ?? undefined} data-testid="new-release">
+        <Plus className="h-3.5 w-3.5" aria-hidden /> New release
+      </Button>
       {open ? (
         <NewReleaseDialog
           home={home}
           releases={releases}
           draft={draft.intent}
-          {...(tag !== undefined ? { fixedTag: tag } : {})}
           onClose={() => setOpen(false)}
           onPublished={() => {
             draft.renew()
@@ -154,6 +130,63 @@ function ReleaseDialogButton({ home, releases, onPublished, tag }: { home: RepoH
       ) : null}
     </>
   )
+}
+
+/**
+ * A maintainer's "Edit" on one sealed release (§16.3), for an edit, a yank, an unpublish or a
+ * draft or pre-release change: a new revision carrying every field it does not change. The
+ * button only asks the page to open {@link useReleaseEditor}'s dialog, which lives outside the
+ * release cards: the revision it writes remounts or removes the card, and the dialog's result
+ * and warnings must outlive that.
+ */
+export function EditReleaseButton({ home, tag, onEdit }: { home: RepoHome; tag: string; onEdit: (tag: string) => void }): JSX.Element | null {
+  const { role } = useViewerRole(home.repo)
+  if (role !== 'maintainer') return null
+  const blocked = publishBlock(home)
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      onClick={() => onEdit(tag)}
+      disabled={blocked !== null}
+      title={blocked ?? `Edit, yank or unpublish ${tag}`}
+      aria-label={`Edit release ${tag}`}
+      data-testid="edit-release"
+    >
+      <Pencil className="h-3.5 w-3.5" aria-hidden /> Edit
+    </Button>
+  )
+}
+
+/**
+ * The page-level state of the sealed-release editor: which tag's dialog is open (`edit` opens
+ * one), and the dialog itself (`dialog`), rendered by the page outside every keyed card so it
+ * stays open, with its warnings, until it is closed. The write's intent is held here too, so
+ * closing the dialog does not lose it.
+ */
+export function useReleaseEditor(
+  home: RepoHome,
+  releases: ReleaseList | null,
+  onPublished: () => void,
+): { readonly edit: (tag: string) => void; readonly dialog: JSX.Element | null } {
+  const [editing, setEditing] = useState<string | null>(null)
+  const draft = useIntent()
+  const dialog =
+    editing === null ? null : (
+      <NewReleaseDialog
+        key={editing}
+        home={home}
+        releases={releases}
+        draft={draft.intent}
+        fixedTag={editing}
+        onClose={() => setEditing(null)}
+        onPublished={() => {
+          draft.renew()
+          onPublished()
+        }}
+      />
+    )
+  return { edit: setEditing, dialog }
 }
 
 /** A sealed-only switch: `null` until touched, when the tag's newest revision's value is carried. */
@@ -271,7 +304,7 @@ function NewReleaseDialog({
     setError(null)
     setWarnings([])
     setStatus('Checking you are a maintainer…')
-    if (pendingAssets === null) setProgress(Object.fromEntries(files.map((f) => [f.name, { state: 'waiting' } as AssetState])))
+    if (pendingAssets === null) setProgress(Object.fromEntries(newFiles.map((f) => [f.name, { state: 'waiting' } as AssetState])))
     let stored = 0
     let current: string | null = null
     try {
@@ -323,8 +356,9 @@ function NewReleaseDialog({
       if (!(e instanceof ReleaseWriteError) && failedFile !== null) setProgress((p) => (p[failedFile]?.state === 'done' ? p : { ...p, [failedFile]: { state: 'failed' } }))
       const inner = e instanceof ReleaseWriteError ? e.cause : e
       const message = guard.failed(inner)
-      // A sealed file gets a fresh file key every time it is sealed: publishing again uploads it again.
-      const again = sealedRepo ? 'publishing again seals and uploads them again' : 'publishing again reuses them'
+      // A sealed file gets a fresh file key every time it is sealed: publishing again uploads it
+      // again, under a new asset list, so even the same content is a new revision.
+      const again = sealedRepo ? 'publishing again seals and uploads them afresh, a new revision even with the same content' : 'publishing again reuses them'
       const context =
         e instanceof ReleaseWriteError && e.assetsStored > 0
           ? ` The ${e.assetsStored === 1 ? 'asset was' : `${e.assetsStored} assets were`} uploaded and verified${sealedRepo ? '' : ' (content-addressed)'}: ${
@@ -353,7 +387,10 @@ function NewReleaseDialog({
   const busy = phase === 'publishing'
   const close = (): void => {
     if (busy) return
-    if (phase === 'unconfirmed' && !window.confirm('The release write may still land. Close anyway? Reopening with other content signs a new release; retry here to finish this one.')) return
+    const closing = sealedRepo
+      ? 'The release write may still land. Close anyway? Publishing again after closing, even with the same content, seals and signs a new revision (its files and asset list are encrypted afresh); retry here to finish this one.'
+      : 'The release write may still land. Close anyway? Reopening with other content signs a new release; retry here to finish this one.'
+    if (phase === 'unconfirmed' && !window.confirm(closing)) return
     onClose()
   }
   const shownProblem = touched || trimmedTag !== '' ? problem : null
@@ -425,9 +462,18 @@ function NewReleaseDialog({
           <Input id="release-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder={existing?.name || undefined} disabled={locked} />
         </Field>
         <Field label="Notes (optional)" htmlFor="release-notes" hint="Markdown supported.">
-          <Textarea id="release-notes" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={existing?.notesBody || undefined} disabled={locked} />
+          <Textarea
+            id="release-notes"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder={existing?.notesBody || undefined}
+            disabled={locked}
+            {...(sealedPlan ? { 'aria-describedby': 'sealed-release-budget' } : {})}
+          />
         </Field>
-        {sealedPlan ? <SealedBudget used={sealedPlan.used} limit={sealedPlan.limit} notesContinue={sealedPlan.notesContinue} /> : null}
+        {sealedPlan ? (
+          <SealedBudget used={sealedPlan.used} limit={sealedPlan.limit} notesContinue={sealedPlan.notesContinue} storageMaybe={sealedPlan.storesList === 'maybe' && gap !== null} />
+        ) : null}
         <label className="flex items-start gap-2 text-dense text-anvil-700 dark:text-anvil-200">
           <input type="checkbox" checked={yanked} onChange={(e) => setYanked(e.target.checked)} disabled={locked} className="mt-0.5" data-testid="release-yanked" />
           <span>
@@ -524,9 +570,24 @@ function NewReleaseDialog({
  * The composer line §16.2 asks for on a private repo, as the issue composer's `SealedLimit`: how
  * much of the sealed budget the revision's tag, name, notes preview, flags and provenance use.
  */
-function SealedBudget({ used, limit, notesContinue }: { used: number; limit: number; notesContinue: boolean }): JSX.Element {
+function SealedBudget({
+  used,
+  limit,
+  notesContinue,
+  storageMaybe,
+}: {
+  used: number
+  limit: number
+  notesContinue: boolean
+  /** The revision may store a new asset list, and no storage of the user's own is chosen. */
+  storageMaybe: boolean
+}): JSX.Element {
   return (
-    <div className={cn('text-[11px]', used > limit ? 'text-danger-700 dark:text-danger-400' : 'text-anvil-500 dark:text-anvil-400')} data-testid="sealed-release-budget">
+    <div
+      id="sealed-release-budget"
+      className={cn('text-[11px]', used > limit ? 'text-danger-700 dark:text-danger-400' : 'text-anvil-500 dark:text-anvil-400')}
+      data-testid="sealed-release-budget"
+    >
       <p className="flex items-start gap-1">
         <Lock className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
         <span>
@@ -534,6 +595,11 @@ function SealedBudget({ used, limit, notesContinue }: { used: number; limit: num
         </span>
       </p>
       {notesContinue ? <p className="mt-0.5 pl-4">The notes are longer: their start is kept here and the full notes continue in the encrypted asset list.</p> : null}
+      {storageMaybe ? (
+        <p className="mt-0.5 pl-4 text-caution-700 dark:text-caution-400">
+          This may need storage of your own: if the release&apos;s encrypted asset list also holds files, it is stored again without the old notes.
+        </p>
+      ) : null}
     </div>
   )
 }

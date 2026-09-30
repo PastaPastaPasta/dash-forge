@@ -230,7 +230,7 @@ export class ReleaseManifestUnavailableError extends Error {
 export async function loadReleaseManifest(sdk: EvoSDK, repo: RepoRef, fields: ReleaseFields, keys: EpochKeyring): Promise<ReleaseManifest> {
   const hash = fields.assetManifest
   if (hash === undefined) throw new ReleaseManifestUnavailableError(fields.tag, ['the release names no asset list'])
-  const pack = await readPackCopies(sdk, repo, hash, PACK_KIND.RELEASE_ASSETS)
+  const pack = await readPackCopies(sdk, repo, hash, PACK_KIND.RELEASE_ASSETS, true)
   const copies = pack?.copies ?? []
   if (copies.length === 0) throw new ReleaseManifestUnavailableError(fields.tag, [`no copy of asset list ${hash.slice(0, 12)}… is recorded`])
   // The stored (sealed) bytes: read without the session, which would open them as a pack.
@@ -253,6 +253,18 @@ export async function loadReleaseManifest(sdk: EvoSDK, repo: RepoRef, fields: Re
     }
   }
   throw new ReleaseManifestUnavailableError(fields.tag, reasons)
+}
+
+/** C0 and C1 controls, DEL, bidi embeddings, overrides and isolates, LRM, RLM and ALM. */
+const DISGUISING_CHARS = /[\u0000-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩؜]/g
+
+/**
+ * An asset name as this page shows it and saves it: control and text-direction characters, which
+ * could disguise a name (`evil‮gpj.exe`), each shown as U+FFFD. The manifest is a
+ * maintainer's, and the writer refuses such names; this is defence in depth for other writers'.
+ */
+export function displayAssetName(name: string): string {
+  return name.replace(DISGUISING_CHARS, '�')
 }
 
 /** Whether `asset` is a sealed object; else an external link, never opened and never verified. */
@@ -287,8 +299,10 @@ export async function downloadSealedAsset(
   try {
     return await openReleaseAsset(sealed, asset, keys)
   } catch (e) {
-    if (e instanceof PackError && e.code === 'noKey') throw new Error(`${asset.name} is sealed under a key you don't hold yet`)
-    // These are the sealed bytes the manifest names: every copy opens the same way.
-    throw new SealedAssetCorruptError(asset.name)
+    // These are the sealed bytes the manifest names: every copy fails their checks the same way.
+    if (e instanceof PackError && (e.code === 'sealedPackCorrupt' || e.code === 'sizeMismatch')) throw new SealedAssetCorruptError(asset.name)
+    // Anything else is this reader's keys (an epoch it can't read yet, say): not the file's fault,
+    // and a later try, with a fresh session, may open it.
+    throw new Error(`${asset.name} can't be opened with the keys you hold now${e instanceof PackError && e.code === 'noKey' ? ' (it is sealed under a key you don’t have yet)' : ''}`)
   }
 }

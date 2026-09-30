@@ -24,6 +24,7 @@ import {
   EpochKeys,
   MalformedError,
   PLACEHOLDER_ASSET_MANIFEST,
+  RELEASE_MANIFEST_MAX_BYTES,
   RELEASE_MAX_PLAINTEXT,
   TooLargeError,
   bytesEqual,
@@ -73,6 +74,8 @@ export interface ResolvedSealedRelease {
   readonly kcv: string
   /** The entries of the asset list this revision built (empty when it built none: none named, or the carried one kept). */
   readonly assets: readonly SealedAsset[]
+  /** The `$id` of the revision its fields were carried from, or null for a tag's first. */
+  readonly carriedId: string | null
 }
 
 /** What a sealed revision states; absent fields are carried from the tag's newest revision. */
@@ -136,8 +139,8 @@ export interface SealedReleaseEnv {
   releases(): Promise<{ readonly list: ReleaseList; readonly keys: EpochKeyring }>
   /** The kind-4 asset list `fields` names, opened by the §16.5 reader rules. */
   openManifest(fields: ReleaseFields, keys: EpochKeyring): Promise<ReleaseManifest>
-  /** Store sealed bytes on the user's own storage, named by their own SHA-256. */
-  store(sealed: Uint8Array, onStep: (e: UploadEvent) => void): Promise<StoredFile>
+  /** Store sealed bytes on the user's own storage, named by their own SHA-256 (`sha256Hex`, already computed). */
+  store(sealed: Uint8Array, sha256Hex: string, onStep: (e: UploadEvent) => void): Promise<StoredFile>
 }
 
 /** The storage the files and the asset list go to (the repo's browser-push policy). */
@@ -180,10 +183,10 @@ export function sealedReleaseEnv(
     // Imported when needed: the browse plane's reader registers with `push.ts` as it loads, and
     // `push.ts` reaches this module through `writes.ts`, so a static import would load it mid-cycle.
     openManifest: async (fields, keys) => (await import('../view/release-download')).loadReleaseManifest(sdk, repo, fields, keys),
-    store: (sealed, onStep) => {
+    store: (sealed, sha256Hex, onStep) => {
       // Nothing of a private repo reaches storage unsealed (as `storeArtifact` refuses).
       if (!isSealedPack(sealed)) throw new Error('refusing to upload an unencrypted release file for a private repo')
-      return storeFile(sealed, { policy: storage?.policy ?? null, profiles: storage?.profiles ?? [], maxUris: ASSET_MAX_URIS, onStep })
+      return storeFile(sealed, { policy: storage?.policy ?? null, profiles: storage?.profiles ?? [], maxUris: ASSET_MAX_URIS, sha256Hex, onStep })
     },
   }
 }
@@ -236,6 +239,23 @@ export function notNewestWarning(after: ReleaseList | null, tag: string, ours: s
     }
   }
   return { message: `Your revision of release ${tag} is not visible yet, so whether it is the newest could not be checked: reload the releases in a moment.` }
+}
+
+/**
+ * The warning a retry of an unconfirmed write gives when the tag's newest revision is neither the
+ * one its fields were carried from nor its own earlier attempt (the same statement, landed): the
+ * retry re-signs fields another revision may have changed since. Null otherwise, or when the
+ * read failed (the check after the write still runs).
+ */
+export function retryMovedWarning(list: ReleaseList | null, resolved: ResolvedSealedRelease): SealedReleaseWarning | null {
+  const newest = list === null ? undefined : newestRevision(list, resolved.fields.tag)
+  if (newest === undefined || newest.id === resolved.carriedId) return null
+  const fields = newest.sealed?.fields
+  if (fields !== undefined && canonicalJson(statement(fields)) === canonicalJson(statement(resolved.fields))) return null
+  return {
+    message: `Release ${resolved.fields.tag} has a newer revision than the one this retry was prepared from: the retry re-signs the fields as they were then. Check the release, and edit it again if the newer revision's change was dropped.`,
+    newer: newest,
+  }
 }
 
 /** Everything a sealed writer says once the revision `ours` of `tag` is written ({@link SealedReleaseWarning}). */
@@ -301,16 +321,21 @@ export interface SealedReleasePreview {
   readonly limit: number
   /** The notes continue in the asset list. */
   readonly notesContinue: boolean
-  /** A new asset list is sealed, stored and recorded: storage is needed, and a `packManifest` paid for. */
-  readonly storesList: boolean
-  /** The release document, and the `packManifest` when `storesList`. */
+  /**
+   * Whether a new asset list is sealed, stored and recorded (storage needed, a `packManifest` paid
+   * for): `maybe` when short notes replace notes that continued in a list the composer has not
+   * opened, which the writer keeps only if it also holds assets.
+   */
+  readonly storesList: boolean | 'maybe'
+  /** The release document, and the `packManifest` unless `storesList` is false (an upper bound). */
   readonly cost: CostPreview
 }
 
 /**
  * The composer's preview of the revision `base` (the {@link carriedFields}) with `typedNotes` (``:
  * carried) and `files` new files, as the writer will build it ({@link assetListPlan}). Carried
- * notes that continue in a list the composer has not opened are measured by their prefix.
+ * notes that continue in a list the composer has not opened are measured by their prefix, and a
+ * list it cannot tell is empty is counted (TLV 21's 35 bytes): the preview never understates.
  */
 export function sealedReleasePreview(base: ReleaseFields, typedNotes: string, files: number): SealedReleasePreview {
   const newNotes = nonEmpty(typedNotes)
@@ -321,8 +346,10 @@ export function sealedReleasePreview(base: ReleaseFields, typedNotes: string, fi
       ? { used: encodeReleaseTlv(base).length, notesContinue: base.notesContinue === true }
       : sealedReleaseBudget(base, newNotes ?? base.notes ?? '', hasList)
   const notesContinue = fit.notesContinue || (plan === 'rebuild' && newNotes === undefined && base.notesContinue === true)
-  const storesList = plan === 'rebuild' && (hasList || notesContinue)
-  return { used: fit.used, limit: RELEASE_MAX_PLAINTEXT, notesContinue, storesList, cost: sealedReleaseCost(fit.used, storesList) }
+  // The carried list held the notes: without them it survives only if it holds assets too.
+  const unknown = files === 0 && base.notesContinue === true && newNotes !== undefined && !notesContinue
+  const storesList = plan !== 'rebuild' ? false : unknown ? 'maybe' : hasList || notesContinue
+  return { used: fit.used, limit: RELEASE_MAX_PLAINTEXT, notesContinue, storesList, cost: sealedReleaseCost(fit.used, storesList !== false) }
 }
 
 /**
@@ -384,6 +411,17 @@ async function buildAssetList(
 ): Promise<BuiltList> {
   const replaced = new Set(from.files.map((f) => f.name))
   const assets: SealedAsset[] = (from.prev?.assets ?? []).filter((a) => !replaced.has(a.name))
+  // Refused before anything is stored: a list whose plaintext alone is over the 1 MiB cap (the
+  // new entries sized with one short URI, so this never refuses a list that would fit).
+  const estimate = canonicalJson({
+    v: 1,
+    tag: from.base.tag,
+    total: assets.length + from.files.length,
+    source: from.prev?.source,
+    notes: from.notes,
+    assets: [...assets, ...from.files.map((f) => ({ name: f.name, sha256: PLACEHOLDER_ASSET_MANIFEST, sizeBytes: f.size, uris: ['https://x'], sealedSha256: PLACEHOLDER_ASSET_MANIFEST, sealedSizeBytes: f.size }))],
+  })
+  if (new TextEncoder().encode(estimate).length > RELEASE_MANIFEST_MAX_BYTES) throw listTooLarge(from.base.tag)
   const stored: string[] = []
   for (const f of from.files) {
     // One file in memory at a time, with its sealed copy.
@@ -392,7 +430,7 @@ async function buildAssetList(
     const sealed = await sealPack(keys, plain)
     plain.fill(0)
     const sealedHash = hex256(sealed)
-    const copy = await env.store(sealed, (event) => onEvent({ step: 'upload', asset: f.name, event }))
+    const copy = await env.store(sealed, sealedHash, (event) => onEvent({ step: 'upload', asset: f.name, event }))
     stored.push(sealedHash)
     const entry: SealedAsset = {
       name: f.name,
@@ -416,9 +454,16 @@ async function buildAssetList(
     ...(fit.notesContinue ? { notes: from.notes } : {}),
     assets,
   }
-  const { sealed } = await sealReleaseManifest(keys, manifest)
+  let sealed: Uint8Array
+  try {
+    sealed = (await sealReleaseManifest(keys, manifest)).sealed
+  } catch (e) {
+    // Before the list is stored: its files are, and are named in the error's orphans by the caller.
+    if (e instanceof TooLargeError) throw listTooLarge(from.base.tag)
+    throw e
+  }
   const packHash = hex256(sealed)
-  const copy = await env.store(sealed, (event) => onEvent({ step: 'upload', asset: 'the asset list', event }))
+  const copy = await env.store(sealed, packHash, (event) => onEvent({ step: 'upload', asset: 'the asset list', event }))
   stored.push(packHash)
   await writePackManifest(
     sdk,
@@ -428,6 +473,11 @@ async function buildAssetList(
     from.intent === undefined ? undefined : `${from.intent}:${packHash}`,
   )
   return { fields: statement({ ...fit.fields, assetManifest: packHash }), assets, stored }
+}
+
+/** The refusal of an asset list over the reader's 1 MiB cap (§16.5): nothing names it. */
+function listTooLarge(tag: string): PrivateWriteError {
+  return new PrivateWriteError(`release ${tag} not written: its encrypted asset list would be over the 1 MiB readers accept (fewer assets, or shorter notes)`)
 }
 
 /** The sealed revision's document, written as `{repoId, tagName, vis: "private", delta: 0, epoch, enc}`. */
@@ -485,16 +535,20 @@ export async function createSealedRelease(
     if (keys.epoch !== input.resolved.epoch || bytesToHex(keys.kcv) !== input.resolved.kcv) {
       throw new PrivateWriteError(`release ${tag} not retried: the key epoch moved since the unconfirmed write, whose assets are under the old key; publish it again`)
     }
+    // A revision written since this one was prepared: the retry would carry fields it changed.
+    const moved = retryMovedWarning(await readList(env), input.resolved)
     onEvent({ step: 'release', resolved: input.resolved })
     const release = await writeSealed(sdk, auth, repo, keys, input.resolved.fields, input.intent)
-    return { release, resolved: input.resolved, warnings: [notNewestWarning(await readAfter(env), tag, release.documentId)].filter((w) => w !== null), orphaned: [] }
+    const warnings = [moved, notNewestWarning(await readList(env), tag, release.documentId)].filter((w) => w !== null)
+    return { release, resolved: input.resolved, warnings, orphaned: [] }
   }
 
   onEvent({ step: 'role' })
   await env.requireMaintainer()
   // Every revision of the tag, read now (§16.3): what this one does not change is carried.
   const before = await env.releases()
-  const carried = newestRevision(before.list, tag)?.sealed?.fields
+  const carriedFrom = newestRevision(before.list, tag)
+  const carried = carriedFrom?.sealed?.fields
   const base = carriedFields(input, carried)
   const newNotes = nonEmpty(input.notes)
   const plan = assetListPlan(base, newNotes, files.length)
@@ -533,14 +587,14 @@ export async function createSealedRelease(
     }
     onEvent({ step: 'resealing', epoch: now.epoch })
   }
-  const resolved: ResolvedSealedRelease = { fields, epoch: keys.epoch, kcv: bytesToHex(keys.kcv), assets }
+  const resolved: ResolvedSealedRelease = { fields, epoch: keys.epoch, kcv: bytesToHex(keys.kcv), assets, carriedId: carriedFrom?.id ?? null }
   onEvent({ step: 'release', resolved })
   const release = await writeSealed(sdk, auth, repo, keys, fields, input.intent)
-  return { release, resolved, warnings: sealedWriteWarnings(tag, before.list, await readAfter(env), release.documentId, orphaned), orphaned }
+  return { release, resolved, warnings: sealedWriteWarnings(tag, before.list, await readList(env), release.documentId, orphaned), orphaned }
 }
 
-/** The repo's releases read again after the write (§16.3), or null when that read fails. */
-async function readAfter(env: SealedReleaseEnv): Promise<ReleaseList | null> {
+/** The repo's releases read again (§16.3), or null when that read fails. */
+async function readList(env: SealedReleaseEnv): Promise<ReleaseList | null> {
   try {
     return (await env.releases()).list
   } catch {

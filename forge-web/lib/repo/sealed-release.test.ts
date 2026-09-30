@@ -30,6 +30,7 @@ import {
   EpochKeys,
   IdSet,
   RELEASE_MAX_PLAINTEXT,
+  TooLargeError,
   buildReleaseTlv,
   encodeReleaseTlv,
   fitReleaseNotes,
@@ -50,6 +51,7 @@ import {
   carriedFields,
   createSealedRelease,
   notNewestWarning,
+  retryMovedWarning,
   sealedWriteWarnings,
   sealedReleaseBudget,
   sealedReleasePreview,
@@ -116,9 +118,10 @@ function envOf(before: ReleaseList, keys: EpochKeys[], manifest: ReleaseManifest
       if (manifest === null) throw new Error('no manifest')
       return manifest
     },
-    store: async (sealed) => {
+    store: async (sealed, sha256Hex) => {
       stored.push(sealed)
       const h = await sha(sealed)
+      expect(sha256Hex).toBe(h)
       return { sha256: h, sizeBytes: sealed.length, uris: [`https://pub.example/packs/${h}.pack`], confirmed: ['r2'], failures: [] }
     },
   }
@@ -226,11 +229,14 @@ describe('carry-forward (§16.3: a revision is a complete statement)', () => {
     expect(longNotes).toMatchObject({ notesContinue: true, storesList: true })
     expect(longNotes.used).toBeLessThanOrEqual(longNotes.limit)
     expect(sealedReleasePreview({ tag: 'v2' }, 'short', 0)).toMatchObject({ notesContinue: false, storesList: false })
+    // Short notes replacing notes that continued in an unopened list: kept only if it holds assets.
+    const replaced = sealedReleasePreview({ tag: 'v2', notes: 'start', notesContinue: true, assetManifest: 'ab'.repeat(32) }, 'short', 0)
+    expect(replaced).toMatchObject({ notesContinue: false, storesList: 'maybe' })
   })
 
   it('a retry names its own tag', async () => {
     const { env } = envOf(await listOf(full), [k0])
-    const resolved = { fields: { tag: 'v9' }, epoch: 0, kcv: hexOf(k0.kcv), assets: [] }
+    const resolved = { fields: { tag: 'v9' }, epoch: 0, kcv: hexOf(k0.kcv), assets: [], carriedId: null }
     await expect(createSealedRelease(sdk, auth, REPO, { tagName: 'v1.0.0', resolved }, env)).rejects.toThrow(/v9/)
   })
 })
@@ -452,5 +458,57 @@ describe('sealReleaseManifest round trip', () => {
     const m: ReleaseManifest = { v: 1, tag: 'v1', total: 0, assets: [] }
     const { sealed } = await sealReleaseManifest(k0, m)
     await expect(openReleaseManifest(sealed, sealed.length, Buffer.from(await sha(sealed), 'hex'), 'v1', false, ctx.keys)).resolves.toEqual(m)
+  })
+})
+
+describe('the 1 MiB cap on an asset list (§16.5)', () => {
+  // About 2.5 KB of entry each: 8 URIs of 300 bytes.
+  const big = (i: number) => ({
+    name: `asset-${i}.bin`,
+    sha256: 'ab'.repeat(32),
+    sizeBytes: 1,
+    uris: Array.from({ length: 8 }, (_, u) => `https://mirror${u}.example/${'x'.repeat(270)}/${i}`),
+    sealedSha256: 'cd'.repeat(32),
+    sealedSizeBytes: 100,
+  })
+  const huge = (n: number): ReleaseManifest => ({ v: 1, tag: 'v1.0.0', total: n, assets: Array.from({ length: n }, (_, i) => big(i)) })
+
+  it('sealReleaseManifest refuses a sealed list readers would refuse unread', async () => {
+    await expect(sealReleaseManifest(k0, huge(440))).rejects.toBeInstanceOf(TooLargeError)
+    await expect(sealReleaseManifest(k0, huge(10))).resolves.toBeDefined()
+  })
+
+  it('the writer refuses such a list before storing anything', async () => {
+    const { env, stored } = envOf(await listOf(full), [k0], huge(440))
+    await expect(createSealedRelease(sdk, auth, REPO, { tagName: 'v1.0.0', files: [file('one-more.bin', 'x')] }, env)).rejects.toThrow(/1 MiB/)
+    expect(stored).toHaveLength(0)
+    expect(creates).toHaveLength(0)
+  })
+})
+
+describe('a retry after another revision landed (§16.3)', () => {
+  const view = (id: string, fields: ReleaseFields): ReleaseView => ({
+    id, tagName: fields.tag, name: '', notes: '', notesBody: '', omitted: null, published: null, yanked: false, delta: 0, assets: [], badAssets: 0, publisher: 'P', createdAt: 1,
+    sealed: { epoch: 0, fields },
+  })
+  const resolved = { fields: { tag: 'v1', name: 'Mine' }, epoch: 0, kcv: '', assets: [], carriedId: 'CARRIED' }
+
+  it('warns when the newest is neither the carried revision nor its own earlier attempt', () => {
+    expect(retryMovedWarning({ current: [view('CARRIED', { tag: 'v1' })], previous: [] }, resolved)).toBeNull()
+    // Its own attempt landed: the same statement.
+    expect(retryMovedWarning({ current: [view('LANDED', { tag: 'v1', name: 'Mine' })], previous: [] }, resolved)).toBeNull()
+    const w = retryMovedWarning({ current: [view('THEIRS', { tag: 'v1', name: 'Theirs' })], previous: [] }, resolved)
+    expect(w?.newer?.id).toBe('THEIRS')
+    expect(retryMovedWarning(null, resolved)).toBeNull()
+  })
+
+  it('the writer records the carried revision and the retry reports the newer one', async () => {
+    const first = envOf(await listOf(full), [k0])
+    const r = await createSealedRelease(sdk, auth, REPO, { tagName: 'v1.0.0', yanked: false }, first.env)
+    expect(r.resolved.carriedId).toBe(base58Encode(new Uint8Array(32).fill(1)))
+    const newer = await listOf(full, { ...full, name: 'Theirs' })
+    const retry = envOf(newer, [k0])
+    const again = await createSealedRelease(sdk, auth, REPO, { tagName: 'v1.0.0', resolved: r.resolved }, retry.env)
+    expect(again.warnings.some((w) => /prepared from/.test(w.message))).toBe(true)
   })
 })

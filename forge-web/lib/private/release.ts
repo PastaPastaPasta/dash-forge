@@ -599,14 +599,18 @@ export function encodeReleaseManifest(manifest: ReleaseManifest): string {
 
 /**
  * Seal a kind-4 manifest (§16.5) under `keys` with a hedged `fileId` (§3.6). `sealed` is what is
- * uploaded; its `packHash` is the release's `assetManifest`.
+ * uploaded; its `packHash` is the release's `assetManifest`. Throws {@link TooLargeError} when the
+ * sealed list is over {@link RELEASE_MANIFEST_MAX_BYTES}, which readers refuse unread.
  */
 export async function sealReleaseManifest(
   keys: EpochKeys,
   manifest: ReleaseManifest,
 ): Promise<{ readonly canonical: string; readonly sealed: Bytes }> {
   const canonical = encodeReleaseManifest(manifest)
-  return { canonical, sealed: await sealPack(keys, utf8(canonical)) }
+  const sealed = await sealPack(keys, utf8(canonical))
+  // A writer never seals a list readers refuse unread (forge-core `seal_manifest`).
+  if (sealed.length > RELEASE_MANIFEST_MAX_BYTES) throw new TooLargeError(RELEASE_MANIFEST_MAX_BYTES)
+  return { canonical, sealed }
 }
 
 /**

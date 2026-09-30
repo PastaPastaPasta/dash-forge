@@ -12,7 +12,7 @@
  */
 
 import { Time } from '@/components/repo/byline'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, CheckCircle2, Download, FileArchive, Loader2, Lock, Tag, XCircle } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
@@ -38,7 +38,7 @@ import { sourceUrl, useRepoLinks } from '@/components/repo/target-href'
 import { Button } from '@/components/ui/button'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
-import { EditReleaseButton, NewReleaseButton } from '@/components/repo/new-release'
+import { EditReleaseButton, NewReleaseButton, useReleaseEditor } from '@/components/repo/new-release'
 import { SealedAssets, useSealedManifest } from '@/components/repo/sealed-release-assets'
 import { useSdk } from '@/hooks/use-sdk'
 import { invalidateSessionCache } from '@/lib/view/session-cache'
@@ -48,24 +48,30 @@ import { errorMessage, cn } from '@/lib/utils'
 /** L-49: releases per page, with a "Show more" button for the rest. */
 const PAGE_SIZE = 10
 
+/** After a publish the node answering may be a block behind: the releases, re-read a few times. */
+function useRefreshAfterPublish(repo: RepoRef, reload: () => void): () => void {
+  const { network } = useSdk()
+  const timers = useRef<ReturnType<typeof setTimeout>[]>([])
+  useEffect(() => () => timers.current.forEach(clearTimeout), [])
+  return () => {
+    timers.current.forEach(clearTimeout)
+    timers.current = [0, 3000, 8000].map((delay) =>
+      setTimeout(() => {
+        invalidateSessionCache(`releases:${network}:${repoKey(repo)}`)
+        reload()
+      }, delay),
+    )
+  }
+}
+
 export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const { data, error, reload } = useReleases(home.repo)
   const links = useRepoLinks(addr, home.description)
   const [showPrevious, setShowPrevious] = useState(false)
   const [shown, setShown] = useState(PAGE_SIZE)
-  const { network } = useSdk()
-  const timers = useRef<ReturnType<typeof setTimeout>[]>([])
-  useEffect(() => () => timers.current.forEach(clearTimeout), [])
-  // After a publish the node answering may be a block behind: re-read a few times.
-  const refreshAfterPublish = (): void => {
-    timers.current.forEach(clearTimeout)
-    timers.current = [0, 3000, 8000].map((delay) =>
-      setTimeout(() => {
-        invalidateSessionCache(`releases:${network}:${repoKey(home.repo)}`)
-        reload()
-      }, delay),
-    )
-  }
+  const refreshAfterPublish = useRefreshAfterPublish(home.repo, reload)
+  // Outside the keyed cards: the revision an edit writes remounts (or, unpublished, removes) its card.
+  const editor = useReleaseEditor(home, data, refreshAfterPublish)
   // L-48: the one release GitHub would mark "Latest" — the newest non-prerelease, non-yanked one.
   const latest = data ? latestRelease(data) : undefined
 
@@ -107,7 +113,7 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
                   tagTip={releaseTagTip(home, r.tagName)}
                   isLatest={r.id === latest?.id}
                   stateUnknown={data.unknownTags?.includes(r.tagName) === true}
-                  actions={r.sealed ? <EditReleaseButton home={home} releases={data} tag={r.tagName} onPublished={refreshAfterPublish} /> : null}
+                  actions={r.sealed ? <EditReleaseButton home={home} tag={r.tagName} onEdit={editor.edit} /> : null}
                 />
               </li>
             ))}
@@ -144,6 +150,7 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
           ) : null}
         </>
       )}
+      {editor.dialog}
     </div>
   )
 }
@@ -175,6 +182,36 @@ function releaseTagTip(home: RepoHome, tag: string): string | null {
 export function ReleaseContent({ home, addr, tag }: { home: RepoHome; addr: RepoAddress; tag: string }): JSX.Element {
   const { data, error, reload } = useReleases(home.repo)
   const links = useRepoLinks(addr, home.description)
+  const refreshAfterPublish = useRefreshAfterPublish(home.repo, reload)
+  // Rendered whatever the page shows: an unpublish replaces the release with "not found".
+  const editor = useReleaseEditor(home, data, refreshAfterPublish)
+  return (
+    <>
+      <ReleasePage home={home} addr={addr} tag={tag} data={data} error={error} reload={reload} links={links} onEdit={editor.edit} />
+      {editor.dialog}
+    </>
+  )
+}
+
+function ReleasePage({
+  home,
+  addr,
+  tag,
+  data,
+  error,
+  reload,
+  links,
+  onEdit,
+}: {
+  home: RepoHome
+  addr: RepoAddress
+  tag: string
+  data: ReleaseList | null
+  error: string | null
+  reload: () => void
+  links: MarkdownLinks
+  onEdit: (tag: string) => void
+}): JSX.Element {
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (data === null) return <LoadingBlock label="Reading releases" />
   const release = data.current.find((r) => r.tagName === tag)
@@ -208,7 +245,7 @@ export function ReleaseContent({ home, addr, tag }: { home: RepoHome; addr: Repo
         tagTip={releaseTagTip(home, tag)}
         isLatest={release.id === latestRelease(data)?.id}
         stateUnknown={data.unknownTags?.includes(tag) === true}
-        actions={release.sealed ? <EditReleaseButton home={home} releases={data} tag={tag} onPublished={reload} /> : null}
+        actions={release.sealed ? <EditReleaseButton home={home} tag={tag} onEdit={onEdit} /> : null}
       />
       {previous.length > 0 ? (
         <section aria-label="Previous revisions" className="space-y-3">
@@ -258,6 +295,9 @@ function ReleaseCard({
   const sealedList = sealedFields?.assetManifest !== undefined
   const manifest = useSealedManifest(repo, sealedFields, sealedList && (full || assetsOpen))
   const continued = sealedFields?.notesContinue === true
+  const sealedAssetsId = useId()
+  // A list that holds only the continued notes has no assets to show.
+  const noSealedAssets = manifest.data?.assets.length === 0
   const notes = full && continued && manifest.data?.notes !== undefined ? manifest.data.notes : r.notesBody
   return (
     <article
@@ -386,18 +426,19 @@ function ReleaseCard({
         </p>
       ) : null}
       {sealedList && full ? <SealedAssets repo={repo} state={manifest} className="mt-3" /> : null}
-      {sealedList && !full ? (
+      {sealedList && !full && !noSealedAssets ? (
         <div className="mt-3">
           <button
             type="button"
             onClick={() => setAssetsOpen((o) => !o)}
             aria-expanded={assetsOpen}
+            aria-controls={sealedAssetsId}
             className="inline-flex items-center gap-1 text-dense text-anvil-600 underline dark:text-anvil-300"
           >
             <Lock className="h-3 w-3 shrink-0" aria-hidden />
             {assetsOpen ? 'Hide' : 'Show'} {manifest.data ? plural(manifest.data.assets.length, 'asset') : 'assets'}
           </button>
-          {assetsOpen ? <SealedAssets repo={repo} state={manifest} className="mt-2" /> : null}
+          {assetsOpen ? <SealedAssets repo={repo} state={manifest} className="mt-2" id={sealedAssetsId} /> : null}
         </div>
       ) : null}
       {r.omitted ? <OmittedAssetsNote omitted={r.omitted} /> : null}

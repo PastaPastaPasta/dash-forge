@@ -12,6 +12,7 @@ import {
   browserReadable,
   checkDownloadedFile,
   directDownloadUrls,
+  displayAssetName,
   downloadSealedAsset,
   downloadVerifiedAsset,
   isSealedAsset,
@@ -135,6 +136,20 @@ describe('a sealed asset (private-repos.md §16.5)', () => {
     const { keyring, sealed, entry } = await setup(padded)
     await expect(downloadSealedAsset(entry, keyring, undefined, at({ 'https://one.example/app': sealed }))).resolves.toEqual(file)
     await expect(openReleaseAsset(sealed, entry, keyring)).resolves.toEqual(file)
+  })
+
+  it('a key this reader lacks is not the file’s fault: a plain error, not a corrupt file', async () => {
+    const { sealed, entry } = await setup()
+    const err = await downloadSealedAsset(entry, new Map(), undefined, at({ 'https://one.example/app': sealed })).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect(err).not.toBeInstanceOf(SealedAssetCorruptError)
+    expect((err as Error).message).toMatch(/keys you hold/)
+  })
+
+  it('shows control and text-direction characters in a name as U+FFFD', () => {
+    expect(displayAssetName('evil‮gpj.exe')).toBe('evil�gpj.exe')
+    expect(displayAssetName('a\u0000b⁦c‏d')).toBe('a�b�c�d')
+    expect(displayAssetName('app-1.0.tar.gz')).toBe('app-1.0.tar.gz')
   })
 
   it('never opens an external link as sealed', async () => {
