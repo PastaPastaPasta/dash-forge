@@ -113,16 +113,28 @@ interface Fake {
 }
 
 /** Plain queries and composites over `store`; `calls` records one entry per request. */
-function fakeSdk(store: Store, { keyset = true }: { readonly keyset?: boolean } = {}): Fake {
+function fakeSdk(
+  store: Store,
+  {
+    keyset = true,
+    rangeAnswer,
+  }: {
+    readonly keyset?: boolean
+    /** Rewrites (or throws on) the answer to a key-ordered (`refNameHash`) read. */
+    readonly rangeAnswer?: (q: DocumentQuery, rows: Doc[]) => Doc[]
+  } = {},
+): Fake {
   const calls: string[] = []
   const fake: { hold: Promise<void> | null } = { hold: null }
   const rowsOf = (contract: string, type: string): Doc[] => [...(store[contract]?.[type] ?? [])]
   const plain = (q: DocumentQuery): Doc[] => {
+    const keyed = q.orderBy?.[0]?.[0] === 'refNameHash'
     // `keyset: false`: a node that ignores a `refNameHash` order (answers in `$createdAt` order).
-    const order = keyset && q.orderBy?.[0]?.[0] === 'refNameHash' ? byHash : byTime
+    const order = keyset && keyed ? byHash : byTime
     let rows = filter(rowsOf(q.dataContractId, q.documentTypeName), q.where).sort(order)
     if (q.startAfter !== undefined) rows = rows.slice(rows.findIndex((d) => d['$id'] === q.startAfter) + 1)
-    return rows.slice(0, Math.min(q.limit ?? 100, 100))
+    rows = rows.slice(0, Math.min(q.limit ?? 100, 100))
+    return keyed && rangeAnswer !== undefined ? rangeAnswer(q, rows) : rows
   }
   const wrap = (rows: Doc[]) => new Map(rows.map((d) => [String(d['$id']), d]))
   const sdk = {
@@ -221,6 +233,68 @@ describe('repo chrome: one composite for the whole chrome', () => {
     expect(new Set(t.refUpdate.map((d) => d['$id'])).size).toBe(251)
     // The ranges were refused, then ⌈251/100⌉ − 1 = 2 continuation pages.
     expect(calls.slice(-2)).toEqual(['query:refUpdate', 'query:refUpdate'])
+  })
+
+  /**
+   * `tags` tags each created then moved (the move's `prevOid` is the creation's `newOid`), so a
+   * lost creation is a missing parent; plus `main` (one plain update, {@link TIP}). `protectedMoves`:
+   * each move is a `protectedRefUpdate` whose parent is the plain creation.
+   */
+  function movedTags(tags: number, protectedMoves = false): { store: Store; creations: Doc[] } {
+    const store = fixture(0)
+    const creations: Doc[] = []
+    for (let i = 0; i < tags; i++) {
+      const refName = `refs/tags/m${i}`
+      const refNameHash = bytesToBase64(sha256(new TextEncoder().encode(refName)))
+      const first = hexToBase64(i.toString(16).padStart(40, '0'))
+      const created = doc({ $ownerId: OWNER, repoId: REPO, refName, refNameHash, newOid: first })
+      creations.push(created)
+      store.CORE!.refUpdate!.push(created)
+      const move = doc({ $ownerId: OWNER, repoId: REPO, refName, refNameHash, prevOid: first, newOid: hexToBase64('ee'.repeat(20)), force: true })
+      store.CORE![protectedMoves ? 'protectedRefUpdate' : 'refUpdate']!.push(move)
+    }
+    return { store, creations }
+  }
+
+  it('key ranges that lost a row (in order, so not refused) fail the parent check: read the plain way', async () => {
+    const { store, creations } = movedTags(120)
+    // A creation the composite's first page does not hold, so only the ranges could have read it.
+    const lost = creations[100]!['$id']
+    const { sdk, calls } = fakeSdk(store, { rangeAnswer: (_q, rows) => rows.filter((d) => d['$id'] !== lost) })
+    const t = await (await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet'))!.timelines!
+    expect(t.refUpdate).toHaveLength(241)
+    expect(t.refUpdate.map((d) => d['$id'])).toContain(lost)
+    // The ranges, then the `$createdAt` continuation of the composite's page: ⌈241/100⌉ − 1 = 2.
+    expect(calls).toEqual(['composite:repo', ...Array<string>(CHROME_KEYSET_SPLITS + 2).fill('query:refUpdate')])
+  })
+
+  it('a key range that fails outright: read the plain way, not fail the timeline', async () => {
+    let first = true
+    const { sdk, calls } = fakeSdk(fixture(250), {
+      rangeAnswer: (_q, rows) => {
+        if (first) {
+          first = false
+          throw new Error('node down')
+        }
+        return rows
+      },
+    })
+    const t = await (await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet'))!.timelines!
+    expect(t.refUpdate).toHaveLength(251)
+    expect(new Set(t.refUpdate.map((d) => d['$id'])).size).toBe(251)
+    expect(calls).toEqual(['composite:repo', ...Array<string>(CHROME_KEYSET_SPLITS + 2).fill('query:refUpdate')])
+  })
+
+  it('protected updates whose parents are plain updates are whole: the check groups both types, so no re-read', async () => {
+    // Both types past a page, both read as ranges; checked per type, every move would lack its parent.
+    const { store } = movedTags(120, true)
+    const { sdk, calls } = fakeSdk(store)
+    const t = await (await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet'))!.timelines!
+    expect(t.refUpdate).toHaveLength(121)
+    expect(t.protectedRefUpdate).toHaveLength(120)
+    expect([...calls].sort()).toEqual(
+      ['composite:repo', ...Array<string>(CHROME_KEYSET_SPLITS).fill('query:protectedRefUpdate'), ...Array<string>(CHROME_KEYSET_SPLITS).fill('query:refUpdate')].sort(),
+    )
   })
 
   it('a later read asks only for what is new, and keeps what it held', async () => {

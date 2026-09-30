@@ -309,7 +309,7 @@ export function hasMissingParent(updates: readonly RefUpdate[]): boolean {
 interface TypeScan {
   readonly type: string
   readonly isProtected: boolean
-  readonly rows: PlainDocument[]
+  readonly rows: readonly PlainDocument[]
 }
 
 /** Group rows per ref: plain before protected, each in read order (the fold re-sorts). */
@@ -328,6 +328,18 @@ function groupByRef(repo: RepoRef, scans: readonly TypeScan[]): Map<string, RefU
     }
   }
   return byHash
+}
+
+/**
+ * Whether rows of both ref-update types, grouped per ref ACROSS the two types, lose a parent
+ * ({@link hasMissingParent}): the check {@link readAllRefUpdates} runs after its keyset scan, for a
+ * reader that read the rows as key ranges ({@link readRefRowsInRanges}) and must catch rows that
+ * never came back. Across both types, never per type: a protected update's `prevOid` may be a
+ * plain update's `newOid`. `rowsByType`: each type's rows, keyed by document type name.
+ */
+export function refRowsMissParent(repo: RepoRef, rowsByType: Readonly<Record<string, readonly PlainDocument[]>>): boolean {
+  const scans = REF_UPDATE_TYPES.map(([type, isProtected]): TypeScan => ({ type, isProtected, rows: rowsByType[type] ?? [] }))
+  return [...groupByRef(repo, scans).values()].some(hasMissingParent)
 }
 
 /** `sha256(refName)` hex: the key a private ref is grouped under once its name is decrypted. */
