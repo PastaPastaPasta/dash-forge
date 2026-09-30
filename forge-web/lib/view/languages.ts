@@ -7,6 +7,11 @@
  * The walk (`walkFiles` in `zip.ts`) is bounded (`FILE_WALK_FILES` files) and shared with Go to file; when a
  * bound stops it, the result says how much it covered. Sizes are stored sizes, so the bar is an
  * approximation and says so.
+ *
+ * Linguist tells a `.h` (C, C++ or Objective-C) and a `.ts` (TypeScript or a Qt translation) apart by
+ * their content; with no blob read, the bar decides from the files around them (QW-024): a header
+ * takes the language of its nearest sources, and a `<name>_<locale>.ts` in a locale directory is a
+ * translation, not code.
  */
 
 import type { FileWalk } from './zip'
@@ -37,19 +42,28 @@ const MAKEFILE = L('Makefile', '#427819')
 const DOCKERFILE = L('Dockerfile', '#384d54')
 const M4 = L('M4', '#cccccc')
 
-/** Extension (lowercase, without the dot) → language. Programming languages and markup that count on GitHub. */
+const OBJC = L('Objective-C', '#438eff')
+const OBJCPP = L('Objective-C++', '#6866fb')
+
+/**
+ * Extension (lowercase, without the dot) → language. Programming languages and markup that count on
+ * GitHub. `.h` and `.ts` are not here: each names more than one language, and {@link languageShares}
+ * decides which from the files around it ({@link headerLanguage}, {@link isQtTranslation}).
+ */
 const BY_EXTENSION: Readonly<Record<string, Language>> = {
   rs: RUST,
   go: GO,
   c: C,
-  h: C,
   cc: CPP,
   cpp: CPP,
   cxx: CPP,
+  'c++': CPP,
   hpp: CPP,
   hh: CPP,
   hxx: CPP,
-  ts: TS,
+  'h++': CPP,
+  ipp: CPP,
+  tpp: CPP,
   tsx: TS,
   mts: TS,
   cts: TS,
@@ -67,8 +81,8 @@ const BY_EXTENSION: Readonly<Record<string, Language>> = {
   kt: KOTLIN,
   kts: KOTLIN,
   swift: L('Swift', '#F05138'),
-  m: L('Objective-C', '#438eff'),
-  mm: L('Objective-C++', '#6866fb'),
+  m: OBJC,
+  mm: OBJCPP,
   cs: L('C#', '#178600'),
   php: L('PHP', '#4F5D95'),
   lua: L('Lua', '#000080'),
@@ -108,6 +122,8 @@ const BY_EXTENSION: Readonly<Record<string, Language>> = {
   awk: L('Awk', '#c30e9b'),
   tex: L('TeX', '#3D6117'),
   roff: L('Roff', '#ecdebe'),
+  qml: L('QML', '#44a51c'),
+  sage: L('Sage', '#ab5c1f'),
 }
 
 /** Whole file names (lowercase) with a language of their own. */
@@ -125,15 +141,104 @@ const BY_NAME: Readonly<Record<string, Language>> = {
  */
 const EXCLUDED = /(^|\/)(vendor|vendored|third[-_]party|thirdparty|node_modules|bower_components|deps|external|dist|build)\/|(^|\/)(docs?|documentation|examples?|samples?)\/|\.min\.(js|css)$|(^|\/)\.[^/]+$/i
 
-/** The language of a file path, or null (not a language, or excluded from the bar). */
+/** A file's lowercase extension (without the dot), or '' for none (a dotfile has none). */
+function extensionOf(path: string): string {
+  const name = path.slice(path.lastIndexOf('/') + 1).toLowerCase()
+  const dot = name.lastIndexOf('.')
+  return dot <= 0 ? '' : name.slice(dot + 1)
+}
+
+/**
+ * A Qt Linguist translation (`src/qt/locale/dash_de.ts`): XML data that linguist keeps out of the
+ * bar, not TypeScript (it tells them apart by the `<TS` root; the bar reads no blob, so by where
+ * Qt keeps them: a `<name>_<locale>.ts` in a locale or translations directory).
+ */
+export function isQtTranslation(path: string): boolean {
+  return /(^|\/)(locales?|translations?|i18n|lang|languages)\/[\w.-]+_[a-z]{2,3}([_@-][A-Za-z0-9]{2,8})?\.ts$/i.test(path)
+}
+
+/** Source extensions that say what a `.h` beside them is. */
+const HEADER_SOURCES: Readonly<Record<string, Language>> = {
+  c: C,
+  cc: CPP,
+  cpp: CPP,
+  cxx: CPP,
+  'c++': CPP,
+  m: OBJC,
+  mm: OBJCPP,
+}
+
+/**
+ * What a `.h` is (linguist reads its content; the bar reads no blob): the language of the sources
+ * nearest to it, the first directory up from it whose subtree holds C, C++ or Objective-C sources,
+ * by count. A header of a C library inside a C++ project (`src/secp256k1/include`) is C; a C++
+ * project's headers are C++. With no such source anywhere: C, linguist's default.
+ */
+export function headerLanguage(paths: Iterable<string>): (path: string) => Language {
+  // Per directory ('' = root): how many sources of each language its subtree holds.
+  const counts = new Map<string, Map<Language, number>>()
+  for (const path of paths) {
+    if (EXCLUDED.test(path)) continue
+    const lang = HEADER_SOURCES[extensionOf(path)]
+    if (lang === undefined) continue
+    let dir = path
+    for (;;) {
+      const slash = dir.lastIndexOf('/')
+      dir = slash === -1 ? '' : dir.slice(0, slash)
+      const at = counts.get(dir) ?? new Map<Language, number>()
+      at.set(lang, (at.get(lang) ?? 0) + 1)
+      counts.set(dir, at)
+      if (dir === '') break
+    }
+  }
+  const decided = new Map<string, Language>()
+  return (path) => {
+    let dir = path
+    for (;;) {
+      const slash = dir.lastIndexOf('/')
+      dir = slash === -1 ? '' : dir.slice(0, slash)
+      const hit = decided.get(dir)
+      if (hit !== undefined) return hit
+      const at = counts.get(dir)
+      if (at !== undefined) {
+        // Most sources wins; a tie goes to the first of C++, C, Objective-C++, Objective-C.
+        let best: Language = C
+        let most = -1
+        for (const lang of [CPP, C, OBJCPP, OBJC]) {
+          const n = at.get(lang) ?? 0
+          if (n > most) {
+            best = lang
+            most = n
+          }
+        }
+        decided.set(dir, best)
+        return best
+      }
+      if (dir === '') return C
+    }
+  }
+}
+
+/**
+ * The language of a file path by its name alone, or null (not a language, excluded from the bar,
+ * or a `.h` / `.ts`, which need the files around them: {@link languageShares} decides those).
+ */
 export function languageOf(path: string): Language | null {
   if (EXCLUDED.test(path)) return null
   const name = path.slice(path.lastIndexOf('/') + 1).toLowerCase()
   const byName = BY_NAME[name]
   if (byName !== undefined) return byName
-  const dot = name.lastIndexOf('.')
-  if (dot <= 0) return null
-  return BY_EXTENSION[name.slice(dot + 1)] ?? null
+  return BY_EXTENSION[extensionOf(path)] ?? null
+}
+
+/** {@link languageOf}, with `.h` and `.ts` decided by the repo's other files. */
+function languageIn(path: string, header: () => (path: string) => Language): Language | null {
+  const lang = languageOf(path)
+  if (lang !== null || EXCLUDED.test(path)) return lang
+  const ext = extensionOf(path)
+  if (ext === 'h') return header()(path)
+  if (ext === 'ts') return isQtTranslation(path) ? null : TS
+  return null
 }
 
 /** One language's share. */
@@ -153,10 +258,14 @@ export interface LanguageStats {
 
 /** Shares from `(path, bytes)` pairs: grouped by language, largest first; languages under 0.1% fold into "Other". */
 export function languageShares(files: Iterable<readonly [path: string, bytes: number]>): LanguageShare[] {
+  const list = [...files]
+  // Built only when a `.h` needs it.
+  let header: ((path: string) => Language) | null = null
+  const headerOf = (): ((path: string) => Language) => (header ??= headerLanguage(list.map(([p]) => p)))
   const totals = new Map<string, { lang: Language; bytes: number }>()
   let sum = 0
-  for (const [path, bytes] of files) {
-    const lang = languageOf(path)
+  for (const [path, bytes] of list) {
+    const lang = languageIn(path, headerOf)
     if (lang === null || bytes <= 0) continue
     const t = totals.get(lang.name) ?? { lang, bytes: 0 }
     t.bytes += bytes

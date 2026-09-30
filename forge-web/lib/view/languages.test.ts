@@ -7,14 +7,15 @@ import { describe, expect, it } from 'vitest'
 
 import { MODE_TREE } from '../browse'
 import { Store } from './diff-fixtures'
-import { languageOf, languageShares, languageStats } from './languages'
+import { headerLanguage, isQtTranslation, languageOf, languageShares, languageStats } from './languages'
 import { walkFiles } from './zip'
 
 describe('languageOf', () => {
   it('maps extensions and whole names, case-insensitively', () => {
     expect(languageOf('crates/core/main.rs')?.name).toBe('Rust')
     expect(languageOf('src/Main.GO')?.name).toBe('Go')
-    expect(languageOf('src/jv.h')?.name).toBe('C')
+    expect(languageOf('src/jv.c')?.name).toBe('C')
+    expect(languageOf('src/net.cpp')?.name).toBe('C++')
     expect(languageOf('Makefile')?.name).toBe('Makefile')
     expect(languageOf('shell/key-bindings.bash')?.name).toBe('Shell')
     expect(languageOf('src/builtin.jq')?.name).toBe('jq')
@@ -24,6 +25,51 @@ describe('languageOf', () => {
     for (const p of ['README.md', 'Cargo.lock', 'LICENSE', '.editorconfig', 'vendor/decNumber/decNumber.c', 'node_modules/x/index.js', 'docs/content/manual.js', 'dist/app.min.js', 'x.min.js', 'third_party/y.cc', 'build/gen.c']) {
       expect(languageOf(p), p).toBeNull()
     }
+  })
+})
+
+describe('a .h and a .ts by the files around them (QW-024)', () => {
+  const tree = [
+    'src/validation.cpp',
+    'src/validation.h',
+    'src/net.cpp',
+    'src/net.h',
+    'src/secp256k1/src/secp256k1.c',
+    'src/secp256k1/src/field.h',
+    'src/secp256k1/include/secp256k1.h',
+    'src/univalue/lib/univalue.cpp',
+    'src/univalue/include/univalue.h',
+    'src/qt/locale/dash_de.ts',
+    'src/qt/locale/dash_zh_CN.ts',
+    'web/src/app.ts',
+    'web/src/i18n/en.ts',
+  ]
+
+  it('gives a header the language of the sources nearest to it', () => {
+    const of = headerLanguage(tree)
+    expect(of('src/validation.h').name).toBe('C++')
+    // A C library inside a C++ project: its own sources decide, even for headers in a sibling directory.
+    expect(of('src/secp256k1/src/field.h').name).toBe('C')
+    expect(of('src/secp256k1/include/secp256k1.h').name).toBe('C')
+    expect(of('src/univalue/include/univalue.h').name).toBe('C++')
+    // No C-family source anywhere: C, as linguist defaults.
+    expect(headerLanguage(['include/a.h'])('include/a.h').name).toBe('C')
+  })
+
+  it('keeps Qt translations out of TypeScript', () => {
+    expect(isQtTranslation('src/qt/locale/dash_de.ts')).toBe(true)
+    expect(isQtTranslation('src/qt/locale/bitcoin_sr@latin.ts')).toBe(true)
+    expect(isQtTranslation('web/src/app.ts')).toBe(false)
+    expect(isQtTranslation('web/src/i18n/en.ts')).toBe(false)
+  })
+
+  it('counts a C++ project as C++, not C, and its translations as nothing', () => {
+    const shares = languageShares(tree.map((p) => [p, 100] as const))
+    const by = new Map(shares.map((s) => [s.name, s.percent]))
+    // 3 C++ sources + 3 C++ headers, 1 C source + 2 C headers, 2 TypeScript files; no Qt .ts counted.
+    expect(by.get('C++')).toBe(54.5)
+    expect(by.get('C')).toBe(27.3)
+    expect(by.get('TypeScript')).toBe(18.2)
   })
 })
 
