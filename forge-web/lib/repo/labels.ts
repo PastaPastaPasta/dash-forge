@@ -10,7 +10,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { decodeIdentifier } from '../auth/base58'
-import { createDocumentIdempotent, queryAllDocuments, type PlainDocument, type WriteAuth, type WriteResult } from '../sdk'
+import { createDocumentIdempotent, deleteDocumentIdempotent, queryAllDocuments, type PlainDocument, type WriteAuth, type WriteResult } from '../sdk'
 import { compareStrings } from '../rules/oid'
 import { DOC, num, str, type RepoRef } from './contract'
 import { repoSource } from './source'
@@ -99,6 +99,48 @@ export function defineLabel(
     data,
     ...(input.intent ? { intent: input.intent } : {}),
   })
+}
+
+/** One definition document of a label, with its signer (a definition is deletable by its owner only). */
+export interface LabelDocRef {
+  readonly id: string
+  readonly owner: string
+  readonly createdAt: number
+}
+
+/** Every definition document of label `name` in `repo`, oldest first (the `(repoId, name, $createdAt)` index). */
+export async function readLabelDocs(sdk: EvoSDK, repo: RepoRef, name: string): Promise<LabelDocRef[]> {
+  const docs = await queryAllDocuments(
+    sdk,
+    repoSource(repo).repoQuery(DOC.label, { where: [['name', '==', name]], orderBy: [['name', 'asc'], ['$createdAt', 'asc']] }),
+  )
+  return docs.map((d) => ({ id: str(d, '$id'), owner: str(d, '$ownerId'), createdAt: num(d, '$createdAt') }))
+}
+
+/**
+ * Delete label `name` (parity: forge-core `Collab::delete_label`). A `label` document is
+ * deletable by its owner only, so: when every definition of the name is the signer's, they are
+ * all deleted (the label is gone); otherwise a retirement is written first (the newest definition
+ * wins, so every reader stops offering it) and the signer's older definitions are deleted,
+ * keeping that retirement. The labels already on issues and PRs are their history and stay.
+ * `retired`: a retirement was written; `deleted`: definition documents removed.
+ */
+export async function deleteLabel(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  name: string,
+  intent?: string,
+): Promise<{ readonly retired: boolean; readonly deleted: number }> {
+  const docs = await readLabelDocs(sdk, repo, name)
+  if (docs.length === 0) return { retired: false, deleted: 0 }
+  const mine = docs.filter((d) => d.owner === auth.identityId)
+  const retired = mine.length < docs.length
+  if (retired) await defineLabel(sdk, auth, repo, { name, retired: true, ...(intent ? { intent: `${intent}:retire` } : {}) })
+  for (const d of mine) {
+    await deleteDocumentIdempotent(sdk, auth, { contractId: repo.forge.core, documentType: DOC.label, documentId: d.id, repo: repo.repoId })
+  }
+  return { retired, deleted: mine.length }
 }
 
 /** GitHub's default label palette, offered when defining a label. */

@@ -46,6 +46,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
 import { useRepoTotals } from '@/components/repo/use-repo-totals'
 import { useMilestones } from '@/components/repo/use-milestones'
+import { TriageNav } from '@/components/repo/triage-nav'
 import {
   AuthorLoginNote,
   CommentCount,
@@ -141,6 +142,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
     <div className="mx-auto max-w-4xl">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <SearchBox id="pull-search" label="Search pull requests" search={search} placeholder="is:open label:bug author:@me" />
+        <TriageNav addr={addr} />
         <Link
           href={repoHref('/repo/pulls/new', addr)}
           className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md bg-forge-700 px-2.5 text-dense font-medium text-white hover:bg-forge-800 coarse:h-11"

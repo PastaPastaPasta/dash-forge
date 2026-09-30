@@ -60,7 +60,8 @@ export const CODE_ROUTES = ['/repo', '/repo/tree', '/repo/blob', '/repo/blame', 
 export function activeRepoTab(pathname: string): 'code' | 'issues' | 'pulls' | 'releases' | 'settings' | null {
   const p = bareRoute(pathname)
   if (CODE_ROUTES.includes(p)) return 'code'
-  if (p === '/repo/issues' || p === '/repo/issue') return 'issues'
+  // Labels and Milestones sit under Issues, as on GitHub.
+  if (p === '/repo/issues' || p === '/repo/issue' || p === '/repo/labels' || p === '/repo/milestones') return 'issues'
   if (p === '/repo/pulls' || p === '/repo/pull' || p === '/repo/pulls/new') return 'pulls'
   if (p === '/repo/releases' || p === '/repo/release') return 'releases'
   if (p === '/repo/settings') return 'settings'

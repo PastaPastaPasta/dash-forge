@@ -154,6 +154,7 @@ export {
 } from './issues'
 export {
   checkLabelInput,
+  deleteLabel,
   defineLabel,
   labelTextColor,
   LABEL_COLORS,
@@ -167,6 +168,7 @@ export {
   compareRows,
   matchesText,
   mentions,
+  issueMilestoneItems,
   queryIssues,
   rowFiltersOf,
   rowMatches,
@@ -176,6 +178,7 @@ export {
   type RowFilters,
 } from './issue-index'
 export {
+  pullMilestoneItems,
   pullsLinking,
   queryPulls,
   type LinkingPulls,

@@ -54,7 +54,7 @@ import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useIntent } from '@/hooks/use-intent'
 import { useFirstWrite } from '@/hooks/use-first-write'
-import { useParam, type RepoAddress } from '@/hooks/use-query-param'
+import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { useRepoLinks } from '@/components/repo/target-href'
 import { importedUrlOf } from '@/lib/view/ref-targets'
 import { CopyLinkButton } from '@/components/ui/copy-link'
@@ -492,6 +492,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             canDefine={!isPrivate}
             canEdit={isMember && !archived && guard.disabledReason === null}
             onChoose={(title) => setPending({ kind: 'milestone', title })}
+            {...(addr ? { manageHref: repoHref('/repo/milestones', addr, { new: '1' }) } : {})}
           />
         </SidebarSection>
         {isMember || meta.pinned || meta.locked ? (
@@ -517,6 +518,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             canEdit={isMember && !archived && guard.disabledReason === null}
             onToggle={(label, remove) => setPending({ kind: 'label', label, remove })}
             onDefine={(name, color, description) => setPending({ kind: 'defineLabel', name, color, description, apply: true })}
+            {...(addr ? { manageHref: repoHref('/repo/labels', addr) } : {})}
           />
           {isPrivate ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">The labels on this issue are encrypted; the label definitions (names, colours, descriptions) are not.</p> : null}
         </SidebarSection>

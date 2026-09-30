@@ -23,6 +23,8 @@ describe('activeRepoTab', () => {
 
   it('lights no tab on Stargazers, as on GitHub', () => {
     expect(activeRepoTab('/repo/stargazers')).toBeNull()
+    expect(activeRepoTab('/repo/labels/')).toBe('issues')
+    expect(activeRepoTab('/repo/milestones')).toBe('issues')
     expect(activeRepoTab('/repo/stargazers/')).toBeNull()
   })
 })

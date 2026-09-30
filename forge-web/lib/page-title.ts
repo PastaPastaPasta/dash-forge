@@ -47,6 +47,8 @@ const REPO_TITLES: Readonly<Record<string, (q: Query, repo: string) => string>> 
   '/repo/branches': (_q, repo) => `Branches · ${repo}`,
   '/repo/tags': (_q, repo) => `Tags · ${repo}`,
   '/repo/stargazers': (_q, repo) => `Stargazers · ${repo}`,
+  '/repo/labels': (_q, repo) => `Labels · ${repo}`,
+  '/repo/milestones': (_q, repo) => `Milestones · ${repo}`,
   '/repo/settings': (_q, repo) => `Settings · ${repo}`,
 }
 

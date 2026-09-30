@@ -340,6 +340,21 @@ dg label delete <owner>/<repo> bug                 # deletes your definitions; r
 dg issue label  <owner>/<repo> 12 --add bug
 ```
 
+On the web, **Issues → Labels** lists them and lets members create one, change its colour or description, and delete it (with the same retire-if-others-defined-it rule). A label keeps its name once defined: issues carry a label by its name, so a rename would leave them under the old one.
+
+### Milestones
+
+Members (maintainers and writers) define milestones and put issues and PRs in them:
+
+```sh
+dg milestone create <owner>/<repo> v1.0 --description "First release" --due 2026-12-01
+dg milestone list   <owner>/<repo>
+dg milestone close  <owner>/<repo> v1.0             # --reopen to reopen
+dg issue milestone  <owner>/<repo> 12 v1.0
+```
+
+On the web, **Issues → Milestones** lists them open and closed, with due dates and progress, and lets members create, edit, close, reopen and delete them. Like a label, a milestone keeps its title once defined. A milestone definition can be deleted only by the member who wrote it, so one another member also defined can be closed but not deleted. Milestones in a private repository are sealed, which this release does not do yet (web or `dg`).
+
 ### Stars
 
 ```sh
@@ -356,7 +371,7 @@ On forge.dashhq.org, signed in with a limited key ([Identity and keys](identity-
 | You can | Not yet (coming soon) |
 |---|---|
 | Browse code, commits, branches, tags and PR diffs; download a branch as a zip | Web editing of files |
-| File issues, comment, close and reopen; label them (members) | Merging a private repository's PRs, or committing to its branches (use `dg`) |
+| File issues, comment, close and reopen; label them and put them in milestones, and manage the repo's labels and milestones (members) | Merging a private repository's PRs, or committing to its branches (use `dg`) |
 | Open a PR from a branch you have already pushed, in the repository or your fork | Merging when both sides changed the same files (use `dg pr merge`) |
 | Review a PR: approve, request changes or comment, with inline comments, suggestions and a pending review | |
 | Merge a PR (see below) | |

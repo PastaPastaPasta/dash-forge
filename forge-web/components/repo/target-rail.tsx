@@ -7,6 +7,7 @@
  */
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { Plus, Settings2, X, type LucideIcon } from 'lucide-react'
 import { LABEL_COLORS, LABEL_LIMITS, type LabelDef } from '@/lib/repo'
 import { isIdentityId } from '@/lib/utils'
@@ -36,15 +37,18 @@ export function MilestonePicker({
   canDefine,
   canEdit,
   onChoose,
+  manageHref,
 }: {
   current: string | null
   choices: readonly Pick<Milestone, 'title' | 'closed'>[]
   /** The milestones are still being read. */
   loading: boolean
-  /** Whether `dg milestone create` can define one here (not yet in a private repo). */
+  /** Whether a milestone can be defined here (not yet in a private repo). */
   canDefine: boolean
   canEdit: boolean
   onChoose: (title: string | null) => void
+  /** The repo's Milestones page (QW-019): where a member creates and manages them. */
+  manageHref?: string
 }): JSX.Element {
   const [open, setOpen] = useState(false)
   return (
@@ -71,7 +75,14 @@ export function MilestonePicker({
               {loading ? (
                 <li className="text-[12px] text-anvil-500 dark:text-anvil-400">Reading milestones…</li>
               ) : choices.every((c) => c.closed) ? (
-                <li className="text-[12px] text-anvil-500 dark:text-anvil-400">{canDefine ? 'No open milestones (`dg milestone create`)' : 'No open milestones'}</li>
+                <li className="text-[12px] text-anvil-500 dark:text-anvil-400">No open milestones</li>
+              ) : null}
+              {canDefine && manageHref ? (
+                <li>
+                  <Link href={manageHref} className="hit-area inline-flex items-center gap-1 text-[12px] text-forge-700 hover:underline dark:text-forge-400" data-testid="manage-milestones">
+                    <Plus className="h-3 w-3" aria-hidden /> {choices.some((c) => !c.closed) ? 'Manage milestones' : 'Create a milestone'}
+                  </Link>
+                </li>
               ) : null}
               {current !== null ? (
                 <li>
@@ -160,6 +171,7 @@ export function LabelPicker({
   canEdit,
   onToggle,
   onDefine,
+  manageHref,
 }: {
   applied: readonly string[]
   defs: readonly LabelDef[]
@@ -167,6 +179,8 @@ export function LabelPicker({
   canEdit: boolean
   onToggle: (label: string, remove: boolean) => void
   onDefine: (name: string, color: string, description: string) => void
+  /** The repo's Labels page (QW-019): rename-free edits, colours, descriptions and deletes. */
+  manageHref?: string
 }): JSX.Element {
   const [open, setOpen] = useState(false)
   const [filter, setFilter] = useState('')
@@ -243,6 +257,11 @@ export function LabelPicker({
                     </Button>
                   </div>
                 </div>
+              ) : null}
+              {manageHref ? (
+                <Link href={manageHref} className="hit-area mt-2 inline-flex text-[12px] text-forge-700 hover:underline dark:text-forge-400" data-testid="manage-labels">
+                  Edit labels
+                </Link>
               ) : null}
             </div>
           ) : null}
