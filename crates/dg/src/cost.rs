@@ -22,11 +22,9 @@ pub async fn run(ctx: &Ctx, cmd: &CostCommand) -> Result<()> {
             bytes,
             path,
         } => estimate_cmd(ctx, *backend, *bytes, path.as_deref()),
-        CostCommand::Audit {
-            identity,
-            since,
-            repo,
-        } => audit(ctx, identity.as_deref(), since.as_deref(), repo.as_deref()).await,
+        CostCommand::Audit { owner, since, repo } => {
+            audit(ctx, owner.as_deref(), since.as_deref(), repo.as_deref()).await
+        }
         CostCommand::Prices => {
             prices_cmd(ctx);
             Ok(())
@@ -219,6 +217,7 @@ fn audit_json(report: &AuditReport, price: f64) -> serde_json::Value {
         })).collect::<Vec<_>>(),
         "excludedTypes": report.excluded_types,
         "note": "an estimate from proved document counts x each type's flat create cost; forge-v2 keeps no spend ledger",
+        "scopeNote": SCOPE_NOTE,
     })
 }
 
@@ -257,7 +256,15 @@ fn print_audit(report: &AuditReport, price: f64) {
             report.excluded_types.join(", ")
         );
     }
+    println!("  note: {SCOPE_NOTE}");
 }
+
+/// The repository-scope caveat every audit's output carries: which repositories it can find a
+/// repo-scoped write in, and the one case it structurally cannot (see
+/// `forge_core::cost_audit`'s module doc, `Auditor::repo_scope`).
+const SCOPE_NOTE: &str = "covers every repo owned, filed an issue/patch to, or still a \
+    maintainer/writer/CI-runner/private-repo-key-holder of; a membership revoked with no other \
+    trace in that repo cannot be found by any proved query";
 
 /// The refundable storage deposit for `bytes` (the deposit half of the estimate).
 fn est_deposit(bytes: u64) -> u64 {
@@ -266,37 +273,13 @@ fn est_deposit(bytes: u64) -> u64 {
 
 /// `ms` (epoch milliseconds) as `YYYY-MM-DD HH:MM:SS`, so `--since` prints back as a date a
 /// person gave it as, not the raw milliseconds `forge_core::cost_audit::parse_since` produced.
-/// No `chrono` / `time` dependency, matching `cost_audit`'s own `parse_since`: Howard Hinnant's
-/// `civil_from_days` (http://howardhinnant.github.io/date_algorithms.html#civil_from_days), the
-/// inverse of the `days_from_civil` that module already uses to parse an absolute date.
+/// No `chrono` / `time` dependency: the importer's existing `unix_to_iso8601` (Howard
+/// Hinnant's `civil_from_days`) does the calendar math.
 fn format_utc(ms: u64) -> String {
-    let days = i64::try_from(ms / 86_400_000).unwrap_or(i64::MAX);
-    let time_ms = ms % 86_400_000;
-    let hour = time_ms / 3_600_000;
-    let minute = (time_ms / 60_000) % 60;
-    let second = (time_ms / 1000) % 60;
-
-    let shifted_days = days + 719_468;
-    let era = if shifted_days >= 0 {
-        shifted_days
-    } else {
-        shifted_days - 146_096
-    } / 146_097;
-    let day_of_era = shifted_days - era * 146_097; // [0, 146096]
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365; // [0, 399]
-    let year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100); // [0, 365]
-    let march_based_month = (5 * day_of_year + 2) / 153; // [0, 11]
-    let day = day_of_year - (153 * march_based_month + 2) / 5 + 1; // [1, 31]
-    let month = if march_based_month < 10 {
-        march_based_month + 3
-    } else {
-        march_based_month - 9
-    }; // [1, 12]
-    let year = if month <= 2 { year + 1 } else { year };
-
-    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}")
+    // `YYYY-MM-DDTHH:MM:SSZ` -> `YYYY-MM-DD HH:MM:SS`.
+    forge_import::github::unix_to_iso8601(ms / 1000)
+        .trim_end_matches('Z')
+        .replacen('T', " ", 1)
 }
 
 #[cfg(test)]

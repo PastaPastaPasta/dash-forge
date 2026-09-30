@@ -21,30 +21,43 @@
 //!   `watch`, and `profile` handled alongside them) carry `$ownerId` as an index's leading
 //!   field, so a single query across the whole network finds every one the target created.
 //! * **[`REPO_OWNER_FILTERED_TYPES`]** (`refUpdate`, `protectedRefUpdate`, `packManifest`,
-//!   `chunk`, `consent`) index `repoId` and `$ownerId` together, so each repository the target
-//!   could plausibly have written to is queried with both as equality filters.
+//!   `consent`) index `repoId` and `$ownerId` together, so each repository the target could
+//!   plausibly have written to is queried with both as equality filters. `chunk` is not queried
+//!   here (see below).
 //! * **[`REPO_SCANNED_TYPES`]** (`maintainer`, `writer`, `config`, `release`, `label`,
 //!   `repoKey`, `runner`, `topic`, `event`, `authorEvent`, `checkRun`, `policy`, `webhook`,
 //!   `milestone`, `transition`) index `repoId` alone, so each such repository's complete set is
 //!   read and filtered to the target's own by [`FetchedDocument::owner_id`] (present on every
 //!   document regardless of its index).
-//! * **`review`** is the one type left out: its only index, `patch [patchId, $createdAt]`,
-//!   carries neither `repoId` nor `$ownerId`, so no proved query can find "every review
-//!   `target` wrote" — reaching them would mean reading every patch's reviews on the network.
-//!   A review the target wrote is still lost from its own total for this reason, same as it
-//!   would be from a from-scratch reconstruction of forge-web's local ledger.
+//! * **`chunk`** is counted, not queried: it has no `$createdAt` of its own and is by far the
+//!   largest and most numerous type (a full ~14.7 KB body each), so paging every chunk document
+//!   just to count rows would be both undatable and wasteful. Every pack's chunks are written by
+//!   the same push as its `packManifest`, so `Auditor::repo_scoped_pass` instead reads that
+//!   manifest's own required `chunkCount` and `$createdAt` and folds that many chunks in via
+//!   [`Totals::record_n`] — one proved read stands in for however many chunks the pack has, and
+//!   `--since` can actually date them.
+//! * **`review`** is the one type left out entirely: its only index, `patch [patchId,
+//!   $createdAt]`, carries neither `repoId` nor `$ownerId`, so no proved query can find "every
+//!   review `target` wrote" — reaching them would mean reading every patch's reviews on the
+//!   network. A review the target wrote is still lost from its own total for this reason, same
+//!   as it would be from a from-scratch reconstruction of forge-web's local ledger.
 //!
 //! "Each repository the target could plausibly have written to" ([`Auditor::repo_scope`]) is
-//! the union of: every repository a [`GLOBAL_TYPES`] document named in its `repoId` field
-//! (an `issue` or `patch` the target filed needs no membership), the repositories the `repo`
-//! query itself found (the target owns them), and every repository a `maintainer`, `writer` or
-//! `runner` document's `byMember` index says the target belongs to — a target can have a
+//! the union of: every repository a `issue` or `patch` [`GLOBAL_TYPES`] document named in its
+//! `repoId` field (filing either needs no membership), the repositories the `repo` query itself
+//! found (the target owns them), and every repository a `maintainer`, `writer`, `runner` or
+//! `repoKey` document's `byMember` index says the target belongs to — a target can have a
 //! repo-scoped footprint (an `authorEvent`, a `webhook`) through any of these without being a
-//! formal member.
+//! formal member. `repoKey` is included because it is never deleted on removal (unlike
+//! `maintainer` / `writer` / `runner`), so it is the one membership trace that survives a
+//! revocation — but only for a private repository (the only kind that has one). A member
+//! removed from a **public** repo, who never filed an issue/patch or registered a CI runner
+//! there, leaves no trace any proved query can find; this audit cannot see that repo-scoped
+//! history at all, and says so in its output rather than silently under-reporting with no hint.
 //!
-//! A document type with no `$createdAt` field at all (`chunk`, `star`, `watch`, `follow`,
-//! `profile`) is never dropped by `--since`: [`Totals::record`] only excludes a document it can
-//! actually date before the cutoff, not one it cannot date at all.
+//! A document type with no `$createdAt` field at all (`star`, `watch`, `follow`, `profile`) is
+//! never dropped by `--since`: [`Totals::record`] only excludes a document it can actually date
+//! before the cutoff, not one it cannot date at all.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -136,38 +149,38 @@ fn base_credits(doc_type: &str) -> u64 {
 /// forge-web's fallback for a document type it has no measured figure for.
 const DEFAULT_BASE_CREDITS: u64 = 50_000_000;
 
-/// A type reached by one `$ownerId`-led query across the whole network (see the module doc).
-struct GlobalType {
+/// One [`GLOBAL_TYPES`] or [`REPO_SCANNED_TYPES`] entry: a document type, the contract that
+/// holds it, and the ascending order fields applied after that pass's equality filter(s) — the
+/// index's remaining fields, in index order (matching `forge_core::resolve::list_owned`'s and
+/// `MemberReader::list_roles`'s convention for a query that filters a prefix and orders the
+/// rest, so the read pages completely and deterministically).
+struct TypeQuery {
     doc_type: &'static str,
     contract: ForgeContract,
-    /// Ascending order fields applied after the `$ownerId` equality filter — the index's
-    /// remaining fields, in index order (matching `forge_core::resolve::list_owned`'s and
-    /// `MemberReader::list_roles`'s convention for a query that filters a prefix and orders
-    /// the rest, so the read pages completely and deterministically).
     order: &'static [&'static str],
 }
 
-/// `$ownerId`-indexed document types, complete (see the module doc). `profile` is handled
-/// alongside these in [`Auditor::global_pass`] rather than listed here, since its unique index
-/// has no remaining field to order by and so it reads as a single bounded page, not a paged
-/// scan.
-const GLOBAL_TYPES: &[GlobalType] = &[
-    GlobalType {
+/// `$ownerId`-indexed document types, complete (see the module doc); `order` follows the
+/// `$ownerId` equality filter. `profile` is handled alongside these in [`Auditor::global_pass`]
+/// rather than listed here, since its unique index has no remaining field to order by and so it
+/// reads as a single bounded page, not a paged scan.
+const GLOBAL_TYPES: &[TypeQuery] = &[
+    TypeQuery {
         doc_type: resolve::DOC_REPO,
         contract: ForgeContract::Core,
         order: &["name"],
     },
-    GlobalType {
+    TypeQuery {
         doc_type: "issue",
         contract: ForgeContract::Collab,
         order: &["repoId", "number"],
     },
-    GlobalType {
+    TypeQuery {
         doc_type: "patch",
         contract: ForgeContract::Collab,
         order: &["repoId", "number"],
     },
-    GlobalType {
+    TypeQuery {
         doc_type: "comment",
         contract: ForgeContract::Collab,
         order: &["$createdAt"],
@@ -177,22 +190,22 @@ const GLOBAL_TYPES: &[GlobalType] = &[
     // order by. Ordering by the filtered field itself (rather than an empty order) matches
     // `Collab::patches_from_source`'s convention for this shape of query. All four are
     // forge-community types.
-    GlobalType {
+    TypeQuery {
         doc_type: "star",
         contract: ForgeContract::Community,
         order: &["$ownerId"],
     },
-    GlobalType {
+    TypeQuery {
         doc_type: "follow",
         contract: ForgeContract::Community,
         order: &["$ownerId"],
     },
-    GlobalType {
+    TypeQuery {
         doc_type: "starBeat",
         contract: ForgeContract::Community,
         order: &["$ownerId"],
     },
-    GlobalType {
+    TypeQuery {
         doc_type: "watch",
         contract: ForgeContract::Community,
         order: &["$ownerId"],
@@ -220,10 +233,8 @@ const REPO_OWNER_FILTERED_TYPES: &[RepoOwnerFilteredType] = &[
         doc_type: "packManifest",
         order: &["packHash"],
     },
-    RepoOwnerFilteredType {
-        doc_type: "chunk",
-        order: &["packHash", "seq"],
-    },
+    // `chunk` is deliberately absent: see the module doc — its count is derived from each
+    // `packManifest`'s own `chunkCount`, not queried as a document type here.
     // `consent`'s `byRepoOwner [repoId, $ownerId]` index is unique: both equality filters
     // together already identify at most one document, so there is no remaining field to order
     // by.
@@ -233,92 +244,85 @@ const REPO_OWNER_FILTERED_TYPES: &[RepoOwnerFilteredType] = &[
     },
 ];
 
-/// A type reached with only `repoId` filtered server-side, once per repository in
-/// [`Auditor::repo_scope`], then kept only where [`FetchedDocument::owner_id`] is the target
-/// (see the module doc).
-struct RepoScannedType {
-    doc_type: &'static str,
-    contract: ForgeContract,
-    /// Ascending order fields after the `repoId` equality filter.
-    order: &'static [&'static str],
-}
-
-const REPO_SCANNED_TYPES: &[RepoScannedType] = &[
-    RepoScannedType {
+/// Types reached with only `repoId` filtered server-side (`order` follows it), once per
+/// repository in [`Auditor::repo_scope`], then kept only where [`FetchedDocument::owner_id`] is
+/// the target (see the module doc).
+const REPO_SCANNED_TYPES: &[TypeQuery] = &[
+    TypeQuery {
         doc_type: "maintainer",
         contract: ForgeContract::Core,
         order: &["memberId"],
     },
-    RepoScannedType {
+    TypeQuery {
         doc_type: "writer",
         contract: ForgeContract::Core,
         order: &["memberId"],
     },
-    RepoScannedType {
+    TypeQuery {
         doc_type: "config",
         contract: ForgeContract::Core,
         order: &["$createdAt"],
     },
-    RepoScannedType {
+    TypeQuery {
         doc_type: "release",
         contract: ForgeContract::Core,
         order: &["$createdAt"],
     },
-    RepoScannedType {
+    TypeQuery {
         doc_type: "label",
         contract: ForgeContract::Core,
         order: &["name", "$createdAt"],
     },
-    RepoScannedType {
+    TypeQuery {
         doc_type: "topic",
         contract: ForgeContract::Core,
         order: &["name"],
     },
     // RC1 moved `repoKey` into forge-collab.
-    RepoScannedType {
+    TypeQuery {
         doc_type: "repoKey",
         contract: ForgeContract::Collab,
         order: &["memberId", "epoch", "$ownerId"],
     },
     // `transition`'s `feed [repoId, $createdAt]` index has no `$ownerId` of its own, but every
     // document still carries the system `$ownerId` this scan filters by.
-    RepoScannedType {
+    TypeQuery {
         doc_type: "transition",
         contract: ForgeContract::Collab,
         order: &["$createdAt"],
     },
     // RC1 moved these six into forge-community.
-    RepoScannedType {
+    TypeQuery {
         doc_type: "runner",
         contract: ForgeContract::Community,
         order: &["memberId"],
     },
-    RepoScannedType {
+    TypeQuery {
         doc_type: "event",
         contract: ForgeContract::Community,
         order: &["$createdAt"],
     },
-    RepoScannedType {
+    TypeQuery {
         doc_type: "authorEvent",
         contract: ForgeContract::Community,
         order: &["$createdAt"],
     },
-    RepoScannedType {
+    TypeQuery {
         doc_type: "checkRun",
         contract: ForgeContract::Community,
         order: &["$createdAt"],
     },
-    RepoScannedType {
+    TypeQuery {
         doc_type: "policy",
         contract: ForgeContract::Community,
         order: &["$createdAt"],
     },
-    RepoScannedType {
+    TypeQuery {
         doc_type: "webhook",
         contract: ForgeContract::Community,
         order: &["$createdAt"],
     },
-    RepoScannedType {
+    TypeQuery {
         doc_type: "milestone",
         contract: ForgeContract::Community,
         order: &["title", "$createdAt"],
@@ -330,8 +334,9 @@ fn order_of(fields: &[&'static str]) -> Vec<QueryOrder> {
 }
 
 /// The repository this document's cost is attributed to: `repo` itself (its own id), else its
-/// `repoId` field, else [`NO_REPO`] (`profile`, `follow`, `star`, `watch`, `starBeat`: none
-/// names a repository the way this report buckets by).
+/// `repoId` field, else [`NO_REPO`]. Only `profile` and `follow` truly name no repository at
+/// all; `star`, `watch` and `starBeat` do carry a `repoId` and are bucketed to it like anything
+/// else here.
 fn repo_bucket_for(doc_type: &str, doc: &FetchedDocument) -> String {
     if doc_type == resolve::DOC_REPO {
         return doc.id.clone();
@@ -340,42 +345,86 @@ fn repo_bucket_for(doc_type: &str, doc: &FetchedDocument) -> String {
         .map_or_else(|| NO_REPO.to_string(), platform::encode_identifier)
 }
 
+/// One running `(count, credits)` total in [`Totals`].
+#[derive(Default)]
+struct Tally {
+    count: u64,
+    credits: u64,
+}
+
+impl Tally {
+    fn add(&mut self, credits: u64) {
+        self.count += 1;
+        self.credits += credits;
+    }
+}
+
 /// The running totals [`audit`] folds documents into, split out so `audit` itself stays a
 /// short outline of the three passes (global, repo-scope discovery, repo-scoped).
 #[derive(Default)]
 struct Totals {
-    by_type: BTreeMap<&'static str, (u64, u64)>,
-    by_repo: BTreeMap<String, (u64, u64)>,
+    /// The `--since` cutoff [`Totals::record`] applies, in epoch ms, if any.
+    since_ms: Option<u64>,
+    by_type: BTreeMap<&'static str, Tally>,
+    by_repo: BTreeMap<String, Tally>,
 }
 
 impl Totals {
+    fn new(since_ms: Option<u64>) -> Self {
+        Self {
+            since_ms,
+            ..Self::default()
+        }
+    }
+
     /// Fold one document in, applying `since_ms` first. A document this audit cannot date (its
     /// type has no `$createdAt` — see the module doc) is never excluded by `--since`: only a
     /// document with a known creation time strictly before the cutoff is dropped.
-    fn record(&mut self, doc_type: &'static str, doc: &FetchedDocument, since_ms: Option<u64>) {
-        if let (Some(since), Some(created_at)) = (since_ms, doc.created_at) {
+    fn record(&mut self, doc_type: &'static str, doc: &FetchedDocument) {
+        if let (Some(since), Some(created_at)) = (self.since_ms, doc.created_at) {
             if created_at < since {
                 return;
             }
         }
         let credits = base_credits(doc_type);
-        let t = self.by_type.entry(doc_type).or_insert((0, 0));
-        t.0 += 1;
-        t.1 += credits;
-        let r = self
+        self.by_type.entry(doc_type).or_default().add(credits);
+        self.by_repo
+            .entry(repo_bucket_for(doc_type, doc))
+            .or_default()
+            .add(credits);
+    }
+
+    /// Fold `n` documents of `doc_type` in at once, all dated and bucketed like `doc` — used
+    /// only for `chunk`, whose own documents are never queried directly (see the module doc
+    /// and [`Auditor::repo_scoped_pass`]). `since_ms` is applied against `doc`'s own
+    /// `$createdAt` (its `packManifest`), same rule as [`Totals::record`]. A no-op for `n == 0`.
+    fn record_n(&mut self, doc_type: &'static str, n: u64, doc: &FetchedDocument) {
+        if n == 0 {
+            return;
+        }
+        if let (Some(since), Some(created_at)) = (self.since_ms, doc.created_at) {
+            if created_at < since {
+                return;
+            }
+        }
+        let credits = base_credits(doc_type) * n;
+        let type_tally = self.by_type.entry(doc_type).or_default();
+        type_tally.count += n;
+        type_tally.credits += credits;
+        let repo_tally = self
             .by_repo
             .entry(repo_bucket_for(doc_type, doc))
-            .or_insert((0, 0));
-        r.0 += 1;
-        r.1 += credits;
+            .or_default();
+        repo_tally.count += n;
+        repo_tally.credits += credits;
     }
 
     fn document_count(&self) -> u64 {
-        self.by_type.values().map(|(count, _)| count).sum()
+        self.by_type.values().map(|t| t.count).sum()
     }
 
     fn total_credits(&self) -> u64 {
-        self.by_type.values().map(|(_, credits)| credits).sum()
+        self.by_type.values().map(|t| t.credits).sum()
     }
 
     /// The rows for an [`AuditReport`], highest cost first.
@@ -383,7 +432,7 @@ impl Totals {
         let mut by_type: Vec<TypeTotal> = self
             .by_type
             .into_iter()
-            .map(|(doc_type, (count, credits))| TypeTotal {
+            .map(|(doc_type, Tally { count, credits })| TypeTotal {
                 doc_type: doc_type.to_string(),
                 count,
                 credits,
@@ -398,7 +447,7 @@ impl Totals {
         let mut by_repo: Vec<RepoTotal> = self
             .by_repo
             .into_iter()
-            .map(|(repo, (count, credits))| RepoTotal {
+            .map(|(repo, Tally { count, credits })| RepoTotal {
                 repo,
                 count,
                 credits,
@@ -431,27 +480,28 @@ impl Auditor<'_> {
         }
     }
 
+    /// An equality filter on `field` (`$ownerId`, `memberId`) against the audited identity.
+    fn target_is(&self, field: &str) -> QueryFilter {
+        QueryFilter::eq(field, FieldValue::identifier(self.target))
+    }
+
     /// The [`GLOBAL_TYPES`] pass plus `profile`: every document a single `$ownerId`-led query
-    /// reaches, folded into `totals`. Returns every repository named in a result's `repoId`
-    /// field (an `issue` or `patch` the target filed, say) plus, for `repo` itself, the
-    /// repositories it owns — for [`Auditor::repo_scope`] to extend further.
-    async fn global_pass(
-        &self,
-        since_ms: Option<u64>,
-        totals: &mut Totals,
-    ) -> Result<Vec<[u8; 32]>> {
-        let mut discovered_repos = Vec::new();
+    /// reaches, folded into `totals`. Returns every repository the `repo` query found (the
+    /// target owns them) plus every repository an `issue` or `patch` named in its `repoId`
+    /// field (filing either needs no membership) — for [`Auditor::repo_scope`] to extend
+    /// further. `star` / `watch` / `starBeat` / `comment` also carry a `repoId`, but are left
+    /// out of scope discovery: they name a repository the target merely interacted with, not
+    /// one it could have written a repo-scoped document to, and including them would page a
+    /// starred repo's full `event` / `checkRun` / `transition` feeds for no reason.
+    async fn global_pass(&self, totals: &mut Totals) -> Result<BTreeSet<[u8; 32]>> {
+        let mut discovered_repos = BTreeSet::new();
         for g in GLOBAL_TYPES {
-            let contract = self.contract(g.contract);
             let docs = self
                 .client
                 .query_all_documents(
-                    contract,
+                    self.contract(g.contract),
                     g.doc_type,
-                    &[QueryFilter::eq(
-                        "$ownerId",
-                        FieldValue::identifier(self.target),
-                    )],
+                    &[self.target_is("$ownerId")],
                     &order_of(g.order),
                 )
                 .await?;
@@ -460,11 +510,11 @@ impl Auditor<'_> {
                     docs.iter()
                         .filter_map(|d| platform::decode_identifier(&d.id).ok()),
                 );
-            } else {
+            } else if matches!(g.doc_type, "issue" | "patch") {
                 discovered_repos.extend(docs.iter().filter_map(|d| d.field_bytes32("repoId")));
             }
             for d in &docs {
-                totals.record(g.doc_type, d, since_ms);
+                totals.record(g.doc_type, d);
             }
         }
 
@@ -476,17 +526,14 @@ impl Auditor<'_> {
             .query_documents(
                 &self.community,
                 "profile",
-                &[QueryFilter::eq(
-                    "$ownerId",
-                    FieldValue::identifier(self.target),
-                )],
+                &[self.target_is("$ownerId")],
                 &[],
                 1,
                 None,
             )
             .await?;
         for d in &profile_docs {
-            totals.record("profile", d, since_ms);
+            totals.record("profile", d);
         }
         Ok(discovered_repos)
     }
@@ -494,29 +541,28 @@ impl Auditor<'_> {
     /// Every repository the target could plausibly have written a [`REPO_OWNER_FILTERED_TYPES`]
     /// or [`REPO_SCANNED_TYPES`] document to: `discovered` (repositories [`Auditor::global_pass`]
     /// already found, passed in so they are not queried twice) plus every repository a
-    /// `maintainer`, `writer` or `runner` document's `byMember` index says the target belongs
-    /// to. A target need not be a formal member to have a repo-scoped footprint — filing an
-    /// issue or being a registered CI runner is enough — so `discovered` and this `byMember`
-    /// union are both necessary; neither alone is complete.
-    async fn repo_scope(
-        &self,
-        discovered: impl IntoIterator<Item = [u8; 32]>,
-    ) -> Result<BTreeSet<[u8; 32]>> {
-        let mut scope: BTreeSet<[u8; 32]> = discovered.into_iter().collect();
+    /// `maintainer`, `writer`, `runner` or `repoKey` document's `byMember` index says the target
+    /// belongs to. A target need not be a formal member to have a repo-scoped footprint —
+    /// filing an issue or being a registered CI runner is enough — so `discovered` and this
+    /// `byMember` union are both necessary; neither alone is complete. `repoKey` is included
+    /// because, unlike the other three, it is never deleted when a membership is revoked, so it
+    /// is the one trace of a private repo's former member this audit can still find — a public
+    /// repo has no `repoKey` at all, so a removed writer/maintainer/runner there who never filed
+    /// an issue/patch is genuinely unreachable (the module doc says so).
+    async fn repo_scope(&self, discovered: BTreeSet<[u8; 32]>) -> Result<BTreeSet<[u8; 32]>> {
+        let mut scope = discovered;
         for (contract, doc_type) in [
             (&self.core, "maintainer"),
             (&self.core, "writer"),
             (&self.community, "runner"),
+            (&self.collab, "repoKey"),
         ] {
             let docs = self
                 .client
                 .query_all_documents(
                     contract,
                     doc_type,
-                    &[QueryFilter::eq(
-                        "memberId",
-                        FieldValue::identifier(self.target),
-                    )],
+                    &[self.target_is("memberId")],
                     &[QueryOrder::asc("memberId")],
                 )
                 .await?;
@@ -527,42 +573,43 @@ impl Auditor<'_> {
 
     /// The [`REPO_OWNER_FILTERED_TYPES`] and [`REPO_SCANNED_TYPES`] passes for one repository,
     /// folded into `totals`.
-    async fn repo_scoped_pass(
-        &self,
-        repo_id: [u8; 32],
-        since_ms: Option<u64>,
-        totals: &mut Totals,
-    ) -> Result<()> {
+    async fn repo_scoped_pass(&self, repo_id: [u8; 32], totals: &mut Totals) -> Result<()> {
+        let in_repo = || QueryFilter::eq("repoId", FieldValue::identifier(repo_id));
         for t in REPO_OWNER_FILTERED_TYPES {
             let docs = self
                 .client
                 .query_all_documents(
                     &self.core,
                     t.doc_type,
-                    &[
-                        QueryFilter::eq("repoId", FieldValue::identifier(repo_id)),
-                        QueryFilter::eq("$ownerId", FieldValue::identifier(self.target)),
-                    ],
+                    &[in_repo(), self.target_is("$ownerId")],
                     &order_of(t.order),
                 )
                 .await?;
             for d in &docs {
-                totals.record(t.doc_type, d, since_ms);
+                totals.record(t.doc_type, d);
+            }
+            if t.doc_type == "packManifest" {
+                // See the module doc: a pack's chunks are the same push as its manifest, so
+                // the manifest's own `chunkCount` (required) stands in for paging every
+                // ~14.7 KB `chunk` body just to count rows, and its `$createdAt` lets `--since`
+                // actually date them.
+                for d in &docs {
+                    totals.record_n("chunk", d.field_u64("chunkCount").unwrap_or(0), d);
+                }
             }
         }
         for t in REPO_SCANNED_TYPES {
-            let contract = self.contract(t.contract);
             let docs = self
                 .client
                 .query_all_documents(
-                    contract,
+                    self.contract(t.contract),
                     t.doc_type,
-                    &[QueryFilter::eq("repoId", FieldValue::identifier(repo_id))],
+                    &[in_repo()],
                     &order_of(t.order),
                 )
                 .await?;
             for d in docs.iter().filter(|d| d.owner_id == self.identity_id) {
-                totals.record(t.doc_type, d, since_ms);
+                totals.record(t.doc_type, d);
             }
         }
         Ok(())
@@ -578,7 +625,6 @@ pub async fn audit(
     since_ms: Option<u64>,
 ) -> Result<AuditReport> {
     let target = platform::decode_identifier(identity)?;
-    let identity_id = platform::encode_identifier(target);
     let forge = client.target().require_v2()?;
     let auditor = Auditor {
         client,
@@ -586,16 +632,14 @@ pub async fn audit(
         collab: client.fetch_contract(&forge.collab).await?,
         community: client.fetch_contract(&forge.community).await?,
         target,
-        identity_id: identity_id.clone(),
+        identity_id: platform::encode_identifier(target),
     };
 
-    let mut totals = Totals::default();
-    let discovered_repos = auditor.global_pass(since_ms, &mut totals).await?;
+    let mut totals = Totals::new(since_ms);
+    let discovered_repos = auditor.global_pass(&mut totals).await?;
     let scope = auditor.repo_scope(discovered_repos).await?;
     for repo_id in scope {
-        auditor
-            .repo_scoped_pass(repo_id, since_ms, &mut totals)
-            .await?;
+        auditor.repo_scoped_pass(repo_id, &mut totals).await?;
     }
 
     let document_count = totals.document_count();
@@ -603,7 +647,7 @@ pub async fn audit(
     let (by_type, by_repo) = totals.into_sorted();
 
     Ok(AuditReport {
-        identity_id,
+        identity_id: auditor.identity_id,
         since_ms,
         document_count,
         total_credits,
@@ -763,6 +807,7 @@ mod tests {
         covered.extend(REPO_OWNER_FILTERED_TYPES.iter().map(|t| t.doc_type));
         covered.extend(REPO_SCANNED_TYPES.iter().map(|t| t.doc_type));
         covered.insert("profile"); // special-cased in `Auditor::global_pass`.
+        covered.insert("chunk"); // derived from packManifest.chunkCount, see the module doc.
         covered.extend(EXCLUDED_TYPES.iter().copied());
 
         for doc_type in CORE_TYPES
@@ -807,6 +852,24 @@ mod tests {
                 Some(ForgeContract::Core),
                 "{} is queried against forge-core but does not live there",
                 t.doc_type
+            );
+        }
+    }
+
+    /// No document type appears in more than one query table — each must be reached exactly
+    /// one way, or attribution could double-count it.
+    #[test]
+    fn the_three_query_tables_are_mutually_disjoint() {
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for doc_type in GLOBAL_TYPES
+            .iter()
+            .map(|g| g.doc_type)
+            .chain(REPO_OWNER_FILTERED_TYPES.iter().map(|t| t.doc_type))
+            .chain(REPO_SCANNED_TYPES.iter().map(|t| t.doc_type))
+        {
+            assert!(
+                seen.insert(doc_type),
+                "{doc_type} appears in more than one query table"
             );
         }
     }
@@ -891,13 +954,14 @@ mod tests {
 
     #[test]
     fn undatable_documents_are_never_dropped_by_since() {
-        // No $createdAt at all (the type-level case `chunk` / `star` / `watch` / `follow` /
-        // `profile` are all in): `record` must not drop it even though `created_at` is `None`
-        // and a `since` filter is active.
+        // No $createdAt at all (the type-level case `star` / `watch` / `follow` / `profile`
+        // are all in — `chunk` no longer is, since it is now dated via its packManifest, see
+        // `record_n_dates_by_the_manifest_it_is_derived_from`): `record` must not drop it even
+        // though `created_at` is `None` and a `since` filter is active.
         let mut doc = fieldless_doc();
         doc.created_at = None;
-        let mut totals = Totals::default();
-        totals.record("chunk", &doc, Some(u64::MAX));
+        let mut totals = Totals::new(Some(u64::MAX));
+        totals.record("star", &doc);
         assert_eq!(
             totals.document_count(),
             1,
@@ -909,12 +973,49 @@ mod tests {
     fn datable_documents_before_since_are_dropped() {
         let mut doc = fieldless_doc();
         doc.created_at = Some(100);
-        let mut totals = Totals::default();
-        totals.record("comment", &doc, Some(200));
+        let mut totals = Totals::new(Some(200));
+        totals.record("comment", &doc);
         assert_eq!(
             totals.document_count(),
             0,
             "a document before --since must be dropped"
         );
+    }
+
+    #[test]
+    fn record_n_folds_in_n_documents_at_once_dated_and_bucketed_by_the_manifest() {
+        let mut manifest = fieldless_doc();
+        manifest.created_at = Some(500);
+        manifest
+            .fields
+            .insert("repoId".to_string(), FieldValue::Identifier([7u8; 32]));
+        let mut totals = Totals::new(Some(100));
+        totals.record_n("chunk", 12, &manifest);
+        assert_eq!(totals.document_count(), 12);
+        assert_eq!(totals.total_credits(), base_credits("chunk") * 12);
+        let (by_type, by_repo) = totals.into_sorted();
+        assert_eq!(by_type[0].count, 12);
+        assert_eq!(by_repo[0].repo, platform::encode_identifier([7u8; 32]));
+        assert_eq!(by_repo[0].count, 12);
+    }
+
+    #[test]
+    fn record_n_drops_the_whole_count_when_the_manifest_predates_since() {
+        let mut manifest = fieldless_doc();
+        manifest.created_at = Some(50);
+        let mut totals = Totals::new(Some(100));
+        totals.record_n("chunk", 12, &manifest);
+        assert_eq!(
+            totals.document_count(),
+            0,
+            "a manifest before --since must drop all of its chunks"
+        );
+    }
+
+    #[test]
+    fn record_n_is_a_noop_for_zero_chunks() {
+        let mut totals = Totals::new(None);
+        totals.record_n("chunk", 0, &fieldless_doc());
+        assert_eq!(totals.document_count(), 0);
     }
 }

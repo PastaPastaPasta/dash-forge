@@ -1199,10 +1199,13 @@ pub enum CostCommand {
     /// An identity's estimated Forge spend: total, per repository, per document type.
     Audit {
         /// The identity to audit (identity id or DPNS name); defaults to the signing
-        /// identity. Not combined with the positional REPO argument (that mode audits a
-        /// repository's storage, not an identity).
+        /// identity. Named `--owner`, not `--identity`, to avoid colliding with the global
+        /// `--identity <FILE>` (a key file, not the id being audited) and to mirror `repo
+        /// list --owner`'s same "defaults to the signing identity" meaning. Not combined
+        /// with the positional REPO argument (that mode audits a repository's storage, not
+        /// an identity).
         #[arg(long, conflicts_with = "repo")]
-        identity: Option<String>,
+        owner: Option<String>,
         /// Only count documents created at or after this: a duration (`24h`, `7d`, `2w`,
         /// `1y`) or an absolute date (`2026-01-01`). Not combined with REPO.
         #[arg(long, conflicts_with = "repo")]
@@ -1601,6 +1604,49 @@ mod tests {
             cli.identity.as_deref().unwrap().to_str().unwrap(),
             "/tmp/id.json"
         );
+    }
+
+    #[test]
+    fn cost_audit_owner_does_not_collide_with_the_global_identity_file_flag() {
+        // Regression test: `CostCommand::Audit` once named its "identity id to audit" field
+        // `identity`, the same clap arg id as the global `--identity <FILE>` key-file
+        // override. Both `Cli::try_parse_from` orders used to panic in `FromArgMatches`
+        // ("Mismatch between definition and access") instead of failing gracefully or
+        // parsing correctly, since `debug_assert()` does not catch a value-type mismatch on
+        // a shared id. Renaming the subcommand field to `--owner` fixed it; this pins both
+        // orders parsing cleanly, with each flag going to the right place.
+        let cli = Cli::try_parse_from([
+            "dg",
+            "cost",
+            "audit",
+            "--owner",
+            "9cBMULwtQUMtxhBkgaTKb4tJtoczd8TEQ8gmiroDWf4F",
+        ])
+        .expect("dg cost audit --owner <id> must parse");
+        assert!(matches!(
+            cli.command,
+            Command::Cost(CostCommand::Audit { owner: Some(o), .. })
+                if o == "9cBMULwtQUMtxhBkgaTKb4tJtoczd8TEQ8gmiroDWf4F"
+        ));
+
+        let cli = Cli::try_parse_from([
+            "dg",
+            "--identity",
+            "/tmp/id.json",
+            "cost",
+            "audit",
+            "--since",
+            "7d",
+        ])
+        .expect("dg --identity <file> cost audit --since <dur> must parse");
+        assert_eq!(
+            cli.identity.as_deref().unwrap().to_str().unwrap(),
+            "/tmp/id.json"
+        );
+        assert!(matches!(
+            cli.command,
+            Command::Cost(CostCommand::Audit { since: Some(s), .. }) if s == "7d"
+        ));
     }
 
     #[test]
