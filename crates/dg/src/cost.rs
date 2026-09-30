@@ -518,11 +518,7 @@ impl StorageTally {
 
     /// The storage deposit Platform's chunks of these packs hold.
     fn deposit_locked(&self) -> u64 {
-        if self.platform.count == 0 {
-            0
-        } else {
-            est_deposit(self.platform.bytes)
-        }
+        est_deposit(self.platform.bytes)
     }
 }
 

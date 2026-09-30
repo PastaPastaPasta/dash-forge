@@ -342,7 +342,7 @@ async fn create_sealed(ctx: &Ctx, args: &ReleaseCreateArgs, s: &Session) -> Resu
          for a new asset list: {})",
         s.repo.display(),
         cost_line(
-            crate::quote::sealed_release(true, targets.as_ref().map_or(1, |t| t.0.len() as u64)),
+            sealed_quote(&files, args, targets.as_ref()),
             ctx.usd_price()
         )
     ))?;
@@ -455,13 +455,24 @@ async fn unpublish(ctx: &Ctx, repo: &str, tag: &str) -> Result<()> {
     if !collab.tag_is_live(&s.repo, tag).await? {
         return Err(release_not_live(repo, tag).into());
     }
+    // The unpublish revision carries the live one's name, notes and assets forward.
+    let live = collab
+        .releases(&s.repo)
+        .await?
+        .current
+        .into_iter()
+        .find(|r| r.tag_name == tag);
+    let carried = ReleaseInput {
+        tag_name: tag.to_string(),
+        name: live.as_ref().map(|r| r.name.clone()).unwrap_or_default(),
+        notes: live.as_ref().map(|r| r.notes.clone()).unwrap_or_default(),
+        assets: live.map(|r| r.assets).unwrap_or_default(),
+        ..ReleaseInput::default()
+    };
     ctx.confirm_or_cancel(&format!(
         "Unpublish release {tag} of {}? (one document, {})",
         s.repo.display(),
-        cost_line(
-            crate::quote::release(tag.len() as u64, 0, 0),
-            ctx.usd_price()
-        )
+        cost_line(revision_quote(&carried), ctx.usd_price())
     ))?;
     let before = s.balance().await;
     let doc_id = collab.unpublish_release(&s.repo, tag).await?;
@@ -510,7 +521,10 @@ async fn unpublish_sealed(ctx: &Ctx, repo: &str, tag: &str, s: &Session) -> Resu
     ctx.confirm_or_cancel(&format!(
         "Unpublish sealed release {tag} of {}? (one document, {})",
         s.repo.display(),
-        cost_line(crate::quote::sealed_release(false, 0), ctx.usd_price())
+        cost_line(
+            forge_import::budget::sealed_release_credits(false, 0),
+            ctx.usd_price()
+        )
     ))?;
     let input = ReleaseInput {
         tag_name: tag.to_string(),
@@ -593,51 +607,53 @@ fn uploads_replace(uploads: &[PathBuf], name: &str) -> bool {
     uploads.iter().any(|p| upload_name(p) == Some(name))
 }
 
+/// The quote for a sealed release revision: the document, and a new asset list's manifest when
+/// there are new files or notes (which may move into it), naming each target's URIs.
+fn sealed_quote<F, T>(
+    files: &[F],
+    args: &ReleaseCreateArgs,
+    targets: Option<&(Vec<T>, usize)>,
+) -> u64 {
+    let new_list = !files.is_empty() || !args.notes.is_empty();
+    let targets = targets.map_or(1, |t| t.0.len() as u64);
+    forge_import::budget::sealed_release_credits(new_list, targets)
+}
+
+/// The longest URI an uploaded asset records (`ReleaseAsset::uris`), for a quote made before
+/// the upload names them.
+const MAX_ASSET_URI_BYTES: usize = 300;
+
+/// The quote for a public release revision (QW2-020): the revision [`superseding_input`] would
+/// write, with each new asset recorded at its longest (a full SHA-256, and one URI of
+/// [`MAX_ASSET_URI_BYTES`] per storage target, up to [`MAX_ASSET_URIS`]).
+fn release_quote(existing: Option<&Release>, args: &ReleaseCreateArgs, targets: usize) -> u64 {
+    let placeholders = args
+        .assets
+        .iter()
+        .map(|p| ReleaseAsset {
+            name: upload_name(p).unwrap_or_default().to_string(),
+            sha256: "0".repeat(64),
+            size_bytes: u64::MAX,
+            uris: vec!["u".repeat(MAX_ASSET_URI_BYTES); targets.min(MAX_ASSET_URIS)],
+            uri: None,
+        })
+        .collect();
+    revision_quote(&superseding_input(existing, args, placeholders))
+}
+
+/// The quote for writing `input` as a public release revision: its text and its asset list as
+/// stored (JSON).
+fn revision_quote(input: &ReleaseInput) -> u64 {
+    let text = input.tag_name.len() + input.name.len() + input.notes.len();
+    let assets = serde_json::to_string(&input.assets).map_or(0, |j| j.len());
+    crate::quote::release(text as u64, assets as u64)
+}
+
 /// The release `args` publishes (D-504). The newest release per tag wins, so a revision
 /// that left out what it did not mean to change would drop it: the current release's name
 /// and notes stay unless given, and its assets stay, except those a new upload of the same
 /// name replaces. `--yanked` is the one field each revision states afresh (a republish
 /// without it un-yanks).
-/// The longest URI an uploaded asset records (`ReleaseAsset::uris`), for a quote made before
-/// the upload names them.
-const MAX_ASSET_URI_BYTES: u64 = 300;
-
-/// The quote for a public release revision (QW2-020): its tag, name and notes as
-/// [`superseding_input`] carries them forward, the assets it keeps, and each new asset's name
-/// and up to one URI per storage target.
-fn release_quote(existing: Option<&Release>, args: &ReleaseCreateArgs, targets: usize) -> u64 {
-    let keep = |given: &str, old: &str| {
-        if given.is_empty() {
-            old.len()
-        } else {
-            given.len()
-        }
-    };
-    let (name, notes) = existing.map_or((args.name.len(), args.notes.len()), |r| {
-        (keep(&args.name, &r.name), keep(&args.notes, &r.notes))
-    });
-    let kept: Vec<&ReleaseAsset> = existing
-        .into_iter()
-        .flat_map(|r| &r.assets)
-        .filter(|a| !uploads_replace(&args.assets, &a.name))
-        .collect();
-    let kept_bytes: usize = kept
-        .iter()
-        .map(|a| a.name.len() + a.uris.iter().map(String::len).sum::<usize>())
-        .sum();
-    let uris = targets.min(MAX_ASSET_URIS) as u64;
-    let new_bytes: u64 = args
-        .assets
-        .iter()
-        .map(|p| upload_name(p).map_or(0, str::len) as u64 + uris * MAX_ASSET_URI_BYTES)
-        .sum();
-    crate::quote::release(
-        (args.tag.len() + name + notes) as u64,
-        (kept.len() + args.assets.len()) as u64,
-        kept_bytes as u64 + new_bytes,
-    )
-}
-
 fn superseding_input(
     existing: Option<&Release>,
     args: &ReleaseCreateArgs,

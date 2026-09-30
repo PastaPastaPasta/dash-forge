@@ -503,9 +503,9 @@ struct Plan {
     local: Option<Local>,
     size: Option<u64>,
     default_branch: String,
-    /// The repository is on chain already (a re-run): the plan says so instead of quoting a
-    /// create (QW2-083).
-    exists: bool,
+    /// The visibility of the repository already on chain (a re-run): the plan says so instead
+    /// of quoting a create (QW2-083).
+    existing: Option<forge_core::rules::v2::Visibility>,
 }
 
 /// The repo name: `--name`, else (pushing) the name in an existing `dash://` remote of this
@@ -572,22 +572,25 @@ async fn plan(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow) -
         None
     };
     let slug = repo_name(name, local.as_ref(), opts.remote(), &owner)?;
+    // The local checks refuse before anything needs the network.
+    let by_id = match &local {
+        Some(l) => check_local(l, opts.remote(), &owner, &slug)?,
+        None => None,
+    };
     let client = ctx.connect().await?;
-    if let Some(l) = &local {
-        if let Some(url) = check_local(l, opts.remote(), &owner, &slug)? {
-            // `dash://<repoId>`: it fits only if that id is this repository (a free read).
-            let id = url.trim_start_matches("dash://").trim_end_matches('/');
-            let id = id.strip_suffix(".git").unwrap_or(id);
-            let same = forge_core::resolve::resolve_id(&client, id)
-                .await
-                .is_ok_and(|r| r.owner_id() == owner && r.name() == slug);
-            if !same {
-                return Err(remote_in_use(opts.remote(), &[url], &owner, &slug));
-            }
+    if let Some(url) = by_id {
+        // `dash://<repoId>`: it fits only if that id is this repository (a free read).
+        let id = url.trim_start_matches("dash://").trim_end_matches('/');
+        let id = id.strip_suffix(".git").unwrap_or(id);
+        let same = forge_core::resolve::resolve_id(&client, id)
+            .await
+            .is_ok_and(|r| r.owner_id() == owner && r.name() == slug);
+        if !same {
+            return Err(remote_in_use(opts.remote(), &[url], &owner, &slug));
         }
     }
     // A re-run finds its repository (a free read): nothing to create, so nothing to quote.
-    let exists = forge_core::resolve::find_named(
+    let existing = forge_core::resolve::find_named(
         &client,
         ctx.target.require_v2()?,
         forge_core::platform::decode_identifier(&owner)?,
@@ -595,7 +598,7 @@ async fn plan(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow) -
     )
     .await
     .context("looking for the repository")?
-    .is_some();
+    .map(|r| r.visibility);
     // Priced by the repository being pushed; a plain create has nothing to price.
     let size = local.as_ref().and_then(Local::size_bytes);
     let default_branch = opts
@@ -627,7 +630,7 @@ async fn plan(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow) -
         local,
         size,
         default_branch,
-        exists,
+        existing,
     })
 }
 
@@ -725,9 +728,9 @@ fn confirm_plan(
 ) -> Result<()> {
     if !ctx.json {
         let who = format!("{}/{} on {}", plan.owner, plan.slug, ctx.network_label());
-        if plan.exists {
+        if let Some(visibility) = plan.existing {
             // A re-run: say so, not "Creating … ~0.002 DASH" (QW2-083).
-            let create_quote = if opts.private {
+            let create_quote = if visibility == forge_core::rules::v2::Visibility::Private {
                 PRIVATE_CREATE_ESTIMATE_CREDITS
             } else {
                 REPO_CREATE_ESTIMATE_CREDITS

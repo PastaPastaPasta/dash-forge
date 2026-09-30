@@ -160,8 +160,9 @@ pub enum Est {
     Replace,
 }
 
-/// A `refUpdate` (plus its small manifest share) a push to the PR branch pays, steady state.
-pub const REF_UPDATE_CREDITS: u64 = 45_000_000;
+/// A `refUpdate` a push to the PR branch pays, priced as `git push` prices one (a ref's first
+/// update, the upper bound): bonsia charged 56.8M-92M (QW2-020; this was a steady 45M).
+pub const REF_UPDATE_CREDITS: u64 = forge_core::cost::push_fees::REF_FIRST;
 
 /// Credits for one write of `kind` carrying `text_bytes` of text.
 pub fn estimate(kind: Est, text_bytes: usize) -> u64 {
@@ -1321,6 +1322,18 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     } else {
         Vec::new()
     };
+    // The push publishes a history index only into the default branch (an unread default
+    // counts as it, the dearer case).
+    let push = if event_only {
+        None
+    } else {
+        let default = default_branch_of(&s, handle).await;
+        Some(crate::quote::MergePush {
+            history_index: default.is_none_or(|d| git::full_ref(&d) == view.patch.base_ref_name),
+            platform_bytes: merge_stores_on_platform(),
+        })
+    };
+    let merge_quote = crate::quote::merge(push, delete.is_some());
     let mut steps = Steps::new(ctx.json);
     if !ctx.json && !not_passing.is_empty() {
         eprintln!(
@@ -1357,10 +1370,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         } else {
             ""
         },
-        cost_line(
-            crate::quote::merge(!event_only, delete.is_some(), merge_stores_on_platform()),
-            ctx.usd_price()
-        )
+        cost_line(merge_quote, ctx.usd_price())
     ))?;
 
     // What the merge costs: the push (the helper pays from this identity) and the events.
@@ -2287,22 +2297,33 @@ pub(crate) fn fetch_base_and_head(
     Ok(())
 }
 
+/// The repository's default branch, `None` when it cannot be read (or is not set).
+async fn default_branch_of(s: &Session, handle: &Repo) -> Option<String> {
+    forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge)
+        .read_default_branch(handle)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Whether a merge's push from here stores its bytes on Platform, as [`push_argv`]'s push
+/// resolves its storage: the current repository's `dash.storage` resolved against the storage
+/// profiles (Platform when nothing is set), or a Platform fallback. A policy that cannot be read
+/// or resolved counts as Platform, the dearer case.
+fn merge_stores_on_platform() -> bool {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let Ok(policy) = crate::storage::push_policy_in(&cwd) else {
+        return true;
+    };
+    let resolved = forge_core::storage::StorageProfiles::load()
+        .ok()
+        .and_then(|profiles| policy.resolve(&profiles).ok());
+    policy.platform_fallback || resolved.is_none_or(|r| r.platform)
+}
+
 /// `git [-c storage…] [-c dash.confirm=never] push -q <url> <oid>:<ref>`: the user's storage
 /// settings, and `--yes` passed on so the helper's cost guard does not ask again (it has no
 /// terminal here and would refuse with E801).
-/// Whether a merge's push from here stores its bytes on Platform, as [`push_argv`]'s push
-/// resolves its storage: `dash.storage` in the current repository names Platform, or nothing is
-/// set (Platform is the default). An unreadable policy counts as Platform, the dearer case.
-fn merge_stores_on_platform() -> bool {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    crate::storage::push_policy_in(&cwd).map_or(true, |p| {
-        p.targets
-            .iter()
-            .any(|t| t == forge_core::storage::PLATFORM_PROFILE)
-            || p.platform_fallback
-    })
-}
-
 pub(crate) fn push_argv(ctx: &Ctx, url: &str, oid: &str, dst: &str) -> Vec<String> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     merge_push_argv(

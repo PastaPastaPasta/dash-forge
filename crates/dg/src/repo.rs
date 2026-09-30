@@ -197,17 +197,28 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
     }
     let price = ctx.usd_price();
     let svc = RepoService::new(&client, &identity, &bridge);
-    let packs = svc
+    let parent_packs = svc
         .read_pack_manifests(&parent)
         .await
-        .context("reading the parent's packs")
-        .map(|m| forge_core::fork::plan_manifests(&m, &BTreeMap::new(), &BTreeSet::new()).len())?;
+        .context("reading the parent's packs")?;
+    // The manifests the fork will write, with the URIs each records (each adds to its price).
+    let manifest_uris: Vec<u64> =
+        forge_core::fork::plan_manifests(&parent_packs, &BTreeMap::new(), &BTreeSet::new())
+            .iter()
+            .filter_map(|copies| {
+                forge_core::fork::fork_manifest(&parent, copies)
+                    .ok()
+                    .flatten()
+            })
+            .map(|m| m.uris.len() as u64)
+            .collect();
+    let packs = manifest_uris.len();
     let refs = svc
         .read_refs(&parent)
         .await
         .context("reading the parent's refs")?
         .len();
-    let estimate = fork_estimate(packs as u64, refs as u64);
+    let estimate = fork_estimate(&manifest_uris, refs as u64);
     if !ctx.json {
         println!(
             "Forking {} as {}/{slug} on {}\n  repo + {packs} pack manifest(s), nothing re-uploaded, + {refs} ref(s)   {}",
@@ -235,18 +246,18 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
     report_fork(ctx, &parent, &result, price)
 }
 
-/// URIs a fork's manifest records per pack for the quote: the parent's Platform locator and
-/// one external copy (each adds [`push_fees::URIS_PER_TARGET`]).
-const FORK_URIS_PER_PACK: u64 = 2;
-
-/// The pre-sign quote for a fork of a parent with `packs` packs and `refs` refs (QW2-020: it
-/// priced each manifest and ref at 20M credits and was exceeded 1.5x): the repository's three
-/// documents, one first-of-kind manifest per pack, and a first update per ref, as `git push`
-/// prices them. An upper bound.
-fn fork_estimate(packs: u64, refs: u64) -> u64 {
+/// The pre-sign quote for a fork writing one manifest per entry of `manifest_uris` (each
+/// recording that many URIs) and copying `refs` refs (QW2-020: it priced each manifest and ref
+/// at 20M credits and was exceeded 1.5x): the repository's three documents, each manifest as a
+/// first of its kind with its URIs, and a first update per ref, as `git push` prices them. An
+/// upper bound.
+fn fork_estimate(manifest_uris: &[u64], refs: u64) -> u64 {
     use forge_core::cost::push_fees;
-    let manifest = push_fees::MANIFEST_FIRST + FORK_URIS_PER_PACK * push_fees::URIS_PER_TARGET;
-    REPO_CREATE_ESTIMATE_CREDITS + packs * manifest + push_fees::estimate_ref_updates(refs)
+    let manifests: u64 = manifest_uris
+        .iter()
+        .map(|uris| push_fees::MANIFEST_FIRST + uris * push_fees::URIS_PER_TARGET)
+        .sum();
+    REPO_CREATE_ESTIMATE_CREDITS + manifests + push_fees::estimate_ref_updates(refs)
 }
 
 /// Print (or `--json`-emit) a finished fork; an incomplete one is E503.
@@ -686,10 +697,15 @@ mod tests {
     /// charged 0.00494466 on bonsia.
     #[test]
     fn a_fork_quote_covers_its_charge() {
-        assert!(fork_estimate(2, 2) >= 494_466_000);
-        assert!(fork_estimate(2, 2) < 2 * 494_466_000);
-        assert!(fork_estimate(3, 2) > fork_estimate(2, 2));
-        assert!(fork_estimate(2, 3) > fork_estimate(2, 2));
+        // Each of the two manifests names the parent's Platform locator (live: 0.0061 DASH
+        // charged for 2 packs and 3 refs, quoted 0.00736).
+        assert!(fork_estimate(&[1, 1], 2) >= 494_466_000);
+        assert!(fork_estimate(&[1, 1], 3) >= 608_980_000);
+        assert!(fork_estimate(&[1, 1], 2) < 2 * 494_466_000);
+        assert!(fork_estimate(&[1, 1, 1], 2) > fork_estimate(&[1, 1], 2));
+        assert!(fork_estimate(&[1, 1], 3) > fork_estimate(&[1, 1], 2));
+        // A pack replicated to more stores records more URIs, and costs more.
+        assert!(fork_estimate(&[4, 4], 2) > fork_estimate(&[1, 1], 2));
     }
 
     #[test]
