@@ -7,6 +7,7 @@
 
 import { CREDITS_PER_DASH, dashRange, estimateChunkCredits, PUSH_COST_DASH } from '@/lib/sdk/cost'
 import { dashToUsd, formatDash } from '@/lib/view/format'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 import { ScrollRegion } from '@/components/ui/scroll-region'
 
 const MIB = 1024 * 1024
@@ -15,10 +16,15 @@ export function CostCard(): JSX.Element {
   const platform50 = estimateChunkCredits(50 * MIB) / CREDITS_PER_DASH
   const perMib = estimateChunkCredits(MIB) / CREDITS_PER_DASH
   const pushes = PUSH_COST_DASH.byo.max * 10
+  // USD only on mainnet (QW-046): test DASH has no price.
+  const usd = (dash: number): string => {
+    const v = dashToUsd(dash, ACTIVE_NETWORK.network)
+    return v === null ? '' : ` ≈ ${v}`
+  }
   const rows: [string, string, string, string][] = [
-    ['Your R2 bucket', `manifest + refs ≈ ${dashRange(PUSH_COST_DASH.byo)} DASH / push`, '≈ $0.001', `≈ ${formatDash(pushes)} DASH ≈ ${dashToUsd(pushes)} + $0.00`],
+    ['Your R2 bucket', `manifest + refs ≈ ${dashRange(PUSH_COST_DASH.byo)} DASH / push`, '≈ $0.001', `≈ ${formatDash(pushes)} DASH${usd(pushes)} + $0.00`],
     ['Your B2 / S3 bucket', 'same', '≈ $0.0003 / $0.001', `≈ ${formatDash(pushes)} DASH + < $0.01`],
-    ['Dash Platform', `${formatDash(perMib)} DASH / MiB, permanent`, '0', `≈ ${formatDash(platform50)} DASH ≈ ${dashToUsd(platform50)} first upload, then ${formatDash(perMib)} DASH per pushed MiB`],
+    ['Dash Platform', `${formatDash(perMib)} DASH / MiB, permanent`, '0', `≈ ${formatDash(platform50)} DASH${usd(platform50)} first upload, then ${formatDash(perMib)} DASH per pushed MiB`],
   ]
   return (
     <section aria-labelledby="cost-card-title" className="rounded-lg border border-anvil-200 bg-white p-4 dark:border-anvil-750 dark:bg-anvil-900">

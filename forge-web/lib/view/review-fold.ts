@@ -14,6 +14,7 @@
 import { countApprovals, type Review, type Role, type RoleOracle } from '../rules/v2'
 
 import { compareKey } from '../rules'
+import { importedVerdictOf, trustedOrigin, type ImportedVerdict, type Origin } from '../repo/provenance'
 import { plural } from './format'
 
 /**
@@ -220,4 +221,62 @@ export function sinceYourReview(
   const mine = newestPerReviewer(reviews).get(viewer)
   if (mine === undefined || mine.commitOid === head) return null
   return { reviewedOid: mine.commitOid, headOid: head, headUpdates: headUpdates.filter((h) => h.createdAt >= mine.createdAt).length }
+}
+
+// ---------------------------------------------------------------------------
+// Reviewers on the source forge (a mirrored PR, QW-017)
+// ---------------------------------------------------------------------------
+
+/** A reviewer on the source forge, as a trusted mirror's imported reviews record them. */
+export interface ImportedReviewer {
+  /** The source forge's login (`thephez`). */
+  readonly login: string
+  /** `github.com`, … (`''` when the import recorded no URL). */
+  readonly host: string
+  readonly verdict: ImportedVerdict
+}
+
+/** What {@link importedReviewers} reads of a review. */
+export interface ImportedReviewInput {
+  readonly reviewer: string
+  readonly body: string
+  readonly createdAt: number
+  readonly origin?: Origin | null
+}
+
+/**
+ * A mirrored PR's reviewers on the source forge (QW-017): each review a trusted mirror imported
+ * (`trustedOrigin`) names its source reviewer and verdict (`importedVerdictOf`). Per login, the
+ * newest approval or change request stands over later plain comments, as GitHub's Reviewers
+ * list shows it; a login with only comments shows as commented. Sorted by login.
+ *
+ * `mirrorOnly` is the signers every one of whose reviews was imported: the mirror identity,
+ * whose own row ("Commented") says nothing about who reviewed, so the card leaves it out.
+ */
+export function importedReviewers(
+  reviews: readonly ImportedReviewInput[],
+  trusted: ReadonlySet<string> | null,
+): { readonly reviewers: ImportedReviewer[]; readonly mirrorOnly: ReadonlySet<string> } {
+  const native = new Set<string>()
+  const signers = new Set<string>()
+  const byLogin = new Map<string, ImportedReviewer & { readonly at: number }>()
+  const standing = (v: ImportedVerdict): boolean => v !== 'commented'
+  for (const r of reviews) {
+    signers.add(r.reviewer)
+    const origin = trustedOrigin(r.origin, r.reviewer, trusted)
+    if (origin === null || origin.author === '') {
+      native.add(r.reviewer)
+      continue
+    }
+    const verdict = importedVerdictOf(r.body) ?? 'commented'
+    const at = origin.createdAt || r.createdAt
+    const held = byLogin.get(origin.author)
+    // A standing verdict beats a comment; between two of the same weight the newer wins.
+    const wins = held === undefined || (standing(verdict) === standing(held.verdict) ? at >= held.at : standing(verdict))
+    if (wins) byLogin.set(origin.author, { login: origin.author, host: origin.host, verdict, at })
+  }
+  const reviewers = [...byLogin.values()]
+    .sort((a, b) => a.login.toLowerCase().localeCompare(b.login.toLowerCase()))
+    .map(({ login, host, verdict }) => ({ login, host, verdict }))
+  return { reviewers, mirrorOnly: new Set([...signers].filter((s) => !native.has(s))) }
 }

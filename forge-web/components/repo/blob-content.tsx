@@ -52,11 +52,31 @@ import { permalinkPath, pinnedHref, usePermalinkKey } from '@/components/repo/pe
 import { useCopy } from '@/hooks/use-copy'
 import { bytesToBase64 } from '@/lib/sdk/query'
 import { cn } from '@/lib/utils'
+import { BLAME_MAX_BYTES } from '@/lib/view/blame'
+import { MarkdownView, type MarkdownRepoContext } from '@/components/markdown-view'
 
 interface BlobData {
   readonly oid: string
   readonly bytes: Uint8Array
   readonly text: string | null
+}
+
+/** A Markdown file: rendered by default, with its source a click away (GitHub's Preview / Code). */
+export function isMarkdownName(name: string): boolean {
+  return /\.(md|markdown|mdown|mkdn|mkd|mdwn)$/i.test(name)
+}
+
+/**
+ * Whether a Markdown file opens as its source: when the URL addresses its lines (`#L10`, a line
+ * link or a permalink to a selection) or asks for it (`?plain=1`, as GitHub's line links do).
+ */
+export function opensAsCode(hash: string, search: string): boolean {
+  return /^#L\d/.test(hash) || new URLSearchParams(search).get('plain') === '1'
+}
+
+/** Whether Blame can read a file: text (Blame refuses binaries) within its size bound. */
+export function blameable(size: number, text: string | null): boolean {
+  return text !== null && size <= BLAME_MAX_BYTES
 }
 
 /** A path that names a directory: the view sends it to the tree route (L-63). */
@@ -93,6 +113,9 @@ export function BlobContent({
 }): JSX.Element {
   const selected = selectRef(home.branches, home.tags, home.defaultBranch, refParam)
   const tipOid = selectedTip(selected)
+  // Blame is offered until the file turns out binary or too large (QW-060); a new file starts over.
+  const [canBlame, setCanBlame] = useState(true)
+  useEffect(() => setCanBlame(true), [path, tipOid])
   if (refParam && !selected.ref && !selected.pinned) {
     return <RefNotFoundState addr={addr} refParam={refParam} defaultBranch={home.defaultBranch} />
   }
@@ -108,13 +131,13 @@ export function BlobContent({
       <div className="flex flex-wrap items-center gap-3">
         <RefSwitcher home={home} addr={addr} current={selected} path={path} />
         <PathBreadcrumb addr={addr} path={path} refParam={refParam} />
-        {path ? <PathActions addr={addr} path={path} refParam={refParam} show={['blame', 'history']} /> : null}
+        {path ? <PathActions addr={addr} path={path} refParam={refParam} show={canBlame ? ['blame', 'history'] : ['history']} /> : null}
       </div>
       <BrowseBoundary repo={home.repo} addr={addr}>
         {(reader, retry) => (
           <ResolvedTip reader={reader} retry={retry} repo={home.repo} tip={tipOid} pinned={selected.pinned !== undefined} name={selected.name} addr={addr} refParam={refParam} accepts="any" label="Reconstructing blob">
             {(tip) => (
-              <BlobBody key={`${tip.oid}:${path}`} reader={reader} retry={retry} tip={tip} path={path} addr={addr} refParam={refParam} repo={home.repo} />
+              <BlobBody key={`${tip.oid}:${path}`} reader={reader} retry={retry} tip={tip} path={path} addr={addr} refParam={refParam} repo={home.repo} onBlameable={setCanBlame} />
             )}
           </ResolvedTip>
         )}
@@ -131,6 +154,7 @@ function BlobBody({
   addr,
   refParam,
   repo,
+  onBlameable,
 }: {
   reader: BrowseReader
   retry: () => void
@@ -139,6 +163,8 @@ function BlobBody({
   addr: RepoAddress
   refParam: string
   repo: RepoRef
+  /** Told whether the file can be blamed, once it is read. */
+  onBlameable?: (ok: boolean) => void
 }): JSX.Element {
   const { data, loading, error, cause } = useAsync(() => loadBlob(reader, tip, path), [tip.oid, path])
   const router = useRouter()
@@ -154,12 +180,30 @@ function BlobBody({
   usePermalinkKey(tipOid === null ? null : pinnedHref(addr, 'blob', tipOid, path, repo.visibility === 'private'))
   const name = path.split('/').pop() ?? path
   const [renderLarge, setRenderLarge] = useState(false)
-  // An image that is also text (SVG) can be read as code too, as on GitHub.
-  const [showCode, setShowCode] = useState(false)
+  // An image that is also text (SVG), or a Markdown file, can be read as code too, as on GitHub.
+  // Markdown opens rendered unless the URL addresses its lines (QW-025).
+  const markdown = isMarkdownName(name)
+  const [showCode, setShowCode] = useState(() => markdown && typeof window !== 'undefined' && opensAsCode(window.location.hash, window.location.search))
+  // The Markdown's relative links and images resolve against its directory at this commit.
+  const slash = path.lastIndexOf('/')
+  const markdownRepo = useMemo<MarkdownRepoContext>(
+    () => ({ addr, refParam, dir: slash === -1 ? '' : path.slice(0, slash), reader, ...(tip.type === 'commit' ? { tipOid: tip.oid } : {}) }),
+    [addr, refParam, path, slash, reader, tip.type, tip.oid],
+  )
 
   const shown = data ? blobDisplay(name, data.bytes, data.text, renderLarge) : null
-  const display: BlobDisplay | null =
-    shown?.kind === 'image' && showCode && data?.text != null ? { kind: 'text', text: data.text } : shown
+  const display: BlobDisplay | { readonly kind: 'markdown'; readonly text: string } | null =
+    shown?.kind === 'image' && showCode && data?.text != null
+      ? { kind: 'text', text: data.text }
+      : shown?.kind === 'text' && markdown && !showCode
+        ? { kind: 'markdown', text: shown.text }
+        : shown
+  // Preview / Code: an SVG (image and text), or a Markdown file shown in full.
+  const toggles = (shown?.kind === 'image' && data?.text != null) || (shown?.kind === 'text' && markdown)
+  // A binary file (a raster image too) or one too large to blame is offered no Blame (QW-060).
+  useEffect(() => {
+    if (data !== null) onBlameable?.(blameable(data.bytes.length, data.text))
+  }, [data, onBlameable])
   const downloadHref = useObjectUrl(data?.bytes, 'application/octet-stream')
   // "View raw" shows text in the tab (text/plain runs no script, even for HTML content).
   const rawHref = useObjectUrl(shown?.kind === 'confirm-large' ? data?.bytes : undefined, 'text/plain;charset=utf-8')
@@ -186,13 +230,14 @@ function BlobBody({
           <span className="shrink-0 text-anvil-500 dark:text-anvil-400">{formatBytes(data.bytes.length)}</span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {shown?.kind === 'image' && data.text !== null ? (
-            <div className="inline-flex rounded-md border border-anvil-200 p-0.5 text-[12px] dark:border-anvil-750">
+          {toggles ? (
+            <div className="inline-flex rounded-md border border-anvil-200 p-0.5 text-[12px] dark:border-anvil-750" role="group" aria-label="View">
               {(['Preview', 'Code'] as const).map((label) => (
                 <button
                   key={label}
                   type="button"
                   aria-pressed={showCode === (label === 'Code')}
+                  data-testid={`blob-${label.toLowerCase()}`}
                   onClick={() => setShowCode(label === 'Code')}
                   className={cn('rounded px-2 py-0.5 coarse:min-h-11 coarse:px-3', showCode === (label === 'Code') && 'bg-anvil-200 dark:bg-anvil-750')}
                 >
@@ -220,6 +265,7 @@ function BlobBody({
         imageHref={imageHref}
         rawHref={rawHref}
         permalink={permalink}
+        markdownRepo={markdownRepo}
         onRenderLarge={() => setRenderLarge(true)}
       />
     </div>
@@ -233,17 +279,28 @@ function BlobView({
   imageHref,
   rawHref,
   permalink,
+  markdownRepo,
   onRenderLarge,
 }: {
-  display: BlobDisplay
+  display: BlobDisplay | { readonly kind: 'markdown'; readonly text: string }
   size: number
   name: string
   imageHref: string | null
   rawHref: string | null
   permalink: string | null
+  markdownRepo: MarkdownRepoContext
   onRenderLarge: () => void
 }): JSX.Element {
   switch (display.kind) {
+    case 'markdown':
+      return (
+        <>
+          <BlobToolbar href={permalink} />
+          <article className="px-5 py-4 sm:px-8 sm:py-6" data-testid="blob-markdown">
+            <MarkdownView source={display.text} images="auto" repo={markdownRepo} />
+          </article>
+        </>
+      )
     case 'image':
       if (imageHref === null) return <LoadingBlock />
       return (

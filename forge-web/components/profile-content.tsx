@@ -19,8 +19,8 @@ import { GitBranch, UserPlus, Users } from 'lucide-react'
 import type { DiscoveredRepo } from '@/lib/view'
 import { listReposByOwner, resolveDpnsName } from '@/lib/view'
 import { followFirsts, followRelation, readFollowCounts, resolveOwner } from '@/lib/repo'
-import { previewCreate, previewDelete } from '@/lib/sdk'
-import { creditsAsDash } from '@/lib/view/format'
+import { firstWriteRead, previewCreate, previewDelete } from '@/lib/sdk'
+import { creditsAsDash, priceLabel } from '@/lib/view/format'
 import { NETWORKS } from '@/lib/constants'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -162,7 +162,7 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
               {following ? 'Following' : 'Follow'}
               {identity !== null && follow.on !== null ? (
                 <span className="ml-1 font-mono text-[11px]" data-testid="follow-cost">
-                  {following ? `+${creditsAsDash(-unfollowRefund.credits)}` : `~${creditsAsDash(followCost.credits)}`} DASH
+                  {following ? `+${creditsAsDash(-unfollowRefund.credits)}` : priceLabel(followCost.credits, !firstWriteRead(first))} DASH
                 </span>
               ) : null}
             </Button>

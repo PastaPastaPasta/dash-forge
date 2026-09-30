@@ -75,6 +75,6 @@ export const useUiStore = create<UiState>((set) => ({
   requestSignIn: () => set({ signInPending: true }),
   clearSignInRequest: () => set({ signInPending: false }),
   topUp: null,
-  openTopUp: (reason = { blocker: 'balance' }) => set({ topUp: reason }),
+  openTopUp: (reason = { blocker: 'balance', proactive: true }) => set({ topUp: reason }),
   closeTopUp: () => set({ topUp: null }),
 }))

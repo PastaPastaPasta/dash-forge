@@ -907,17 +907,17 @@ pub fn policy_from_doc(d: &FetchedDocument) -> Policy {
     }
 }
 
-/// What every edit checks on the stored document before any key or signing work, and its
-/// revision: it belongs to `repo` (its `repoId`), so the repo's visibility, not the caller's
-/// argument, decides whether the edit is sealed (an id of a private repo's comment named with a
-/// public repo must never take the plaintext path); `signer` wrote it (consensus admits a
-/// replace from the owner only); and it has a `$revision` for the guard.
-fn edit_check(
+/// What an edit or a delete checks on the stored document before any signing work: it belongs
+/// to `repo` (its `repoId`: a document of another repo named through this one is refused), and
+/// `signer` wrote it (consensus admits a replace or a delete from the owner only). `verb` names
+/// the refused action.
+fn owner_check(
     repo: &RepoRef,
     doc_type: &str,
     stored: &FetchedDocument,
     signer: &str,
-) -> Result<u64> {
+    verb: &str,
+) -> Result<()> {
     let own = stored
         .field_bytes32("repoId")
         .is_some_and(|r| platform::encode_identifier(r) == repo.id());
@@ -931,11 +931,26 @@ fn edit_check(
     }
     if stored.owner_id != signer {
         return Err(Error::NotPermitted {
-            action: format!("edit this {doc_type}"),
-            reason: "you are not its author; consensus admits an edit from the author only".into(),
+            action: format!("{verb} this {doc_type}"),
+            reason: format!("you are not its author; consensus lets only the author {verb} it"),
             needs: "owner".into(),
         });
     }
+    Ok(())
+}
+
+/// What every edit checks on the stored document before any key or signing work, and its
+/// revision: it belongs to `repo` (its `repoId`), so the repo's visibility, not the caller's
+/// argument, decides whether the edit is sealed (an id of a private repo's comment named with a
+/// public repo must never take the plaintext path); `signer` wrote it (consensus admits a
+/// replace from the owner only); and it has a `$revision` for the guard.
+fn edit_check(
+    repo: &RepoRef,
+    doc_type: &str,
+    stored: &FetchedDocument,
+    signer: &str,
+) -> Result<u64> {
+    owner_check(repo, doc_type, stored, signer, "edit")?;
     stored.revision.ok_or_else(|| {
         Error::Platform(format!(
             "{doc_type} {} came back without a $revision; it cannot be edited safely",
@@ -2039,10 +2054,10 @@ impl<'a> Collab<'a> {
         // a key source with no ENCRYPTION key at all (a limited `dg auth login` key): say so
         // (E306) rather than "no maintainer wrapped the key to you" (E307)
         if signer.encryption_keys(repo).is_empty() {
-            return Err(crate::keyring::no_encryption_key(
-                &identity.id(),
-                &format!("private repo {}", repo.display()),
-            ));
+            return Err(crate::keyring::no_encryption_key_held(&format!(
+                "private repo {}",
+                repo.display()
+            )));
         }
         crate::repo::cached_keyring(
             &self.keyring,
@@ -3852,6 +3867,39 @@ impl<'a> Collab<'a> {
             .await
     }
 
+    /// Delete one of the signer's comments (on an issue or a PR; QW-016). A `comment` is
+    /// deletable by its author only at consensus; the stored document is read first
+    /// ([`owner_check`]: it is `repo`'s and the signer's), so another's comment, or one of
+    /// another repo, is refused before signing. A delete carries no content, so a private repo's
+    /// comment is deleted the same way. Replies stay, and read as replies to a deleted comment.
+    /// `false` when the comment was already gone (nothing was written).
+    pub async fn delete_comment(&self, repo: &RepoRef, comment_id: &str) -> Result<bool> {
+        if !self.deletable_comment(repo, comment_id).await? {
+            return Ok(false);
+        }
+        let collab = self.collab_contract(repo).await?;
+        self.engine()?
+            .delete_document(&collab, DOC_COMMENT, comment_id)
+            .await?;
+        Ok(true)
+    }
+
+    /// Whether the signer may delete comment `comment_id` of `repo`: `false` when it is not
+    /// there, an error when it is someone else's or another repo's ([`owner_check`]). Nothing is
+    /// signed; a caller asks this before it asks the user to confirm.
+    pub async fn deletable_comment(&self, repo: &RepoRef, comment_id: &str) -> Result<bool> {
+        let collab = self.collab_contract(repo).await?;
+        let Some(stored) = self
+            .client
+            .fetch_document(&collab, DOC_COMMENT, comment_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        owner_check(repo, DOC_COMMENT, &stored, &self.signer_id()?, "delete")?;
+        Ok(true)
+    }
+
     /// Replace the text of the signer's `kind` document `id` of `repo`. The stored document is
     /// read first ([`edit_check`]: it is `repo`'s and the signer's). Public: the plaintext
     /// `changes`. Private: [`Self::private_edit`]'s `enc` / `epoch`, guarded by the revision
@@ -5116,9 +5164,13 @@ impl<'a> Collab<'a> {
         check_len("label name", name, 30)?;
         check_len("label description", description, 200)?;
         if !color.is_empty() && !is_hex_color(color) {
-            return Err(Error::Config(format!(
-                "label color {color:?} must look like #1f883d"
-            )));
+            // A bad argument (E201), not a bad configuration (E204, QW-082).
+            return Err(crate::user_error::UserError::new(
+                crate::user_error::codes::USAGE,
+                format!("label color {color:?} is not a hex color"),
+            )
+            .fix("pass six hex digits, like `--color '#1f883d'` (or `1f883d`)")
+            .into());
         }
         let mut p = BTreeMap::new();
         p.insert("name".to_string(), FieldValue::text(name));
@@ -6239,6 +6291,41 @@ mod tests {
             matches!(&err, Error::NotPermitted { needs, .. } if needs == "owner"),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn a_delete_is_refused_for_another_authors_or_another_repos_comment() {
+        // QW-016: a comment is owner-deletable at consensus; say so before signing.
+        let err = owner_check(
+            &repo_ref(Visibility::Public),
+            "comment",
+            &stored(ME, OTHER_REPO, Some(1)),
+            ME,
+            "delete",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, Error::NotPermitted { action, needs, .. } if action == "delete this comment" && needs == "owner"),
+            "{err:?}"
+        );
+        let err = owner_check(
+            &repo_ref(Visibility::Public),
+            "comment",
+            &stored(OTHER_REPO, ME, Some(1)),
+            ME,
+            "delete",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not in"), "{err}");
+        // The author's own comment of this repo passes, revision or not (a delete needs none).
+        owner_check(
+            &repo_ref(Visibility::Private),
+            "comment",
+            &stored(ME, ME, None),
+            ME,
+            "delete",
+        )
+        .unwrap();
     }
 
     #[test]

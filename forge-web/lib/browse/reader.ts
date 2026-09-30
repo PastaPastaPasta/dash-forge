@@ -403,6 +403,11 @@ export class BrowseReader {
     return Object.assign(walker, { flush: () => verdicts?.flush() })
   }
 
+  /** How many objects the locator indexes (git's automatic abbreviation length grows with it). */
+  get objectCount(): number {
+    return this.locator.count
+  }
+
   /** OIDs starting with a hex `prefix` ({@link ObjectLocator.findByPrefix}). */
   findByPrefix(prefix: string, limit?: number): string[] {
     return this.locator.findByPrefix(prefix, limit)

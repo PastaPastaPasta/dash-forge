@@ -11,6 +11,7 @@
  *   /alice/project/releases/tag/<tag>    /alice/project/commit/<oid>
  *   /alice/project/commits/<ref>/<path>  (a path's History)   /alice/project/blame/<ref>/<path>
  *   /alice/project/branches, /tags, /stargazers
+ *   /alice/project/compare/<base>...<head>, /alice/project/compare/<head>  (GitHub's compare)
  *
  * `?q=` on `/issues` carries GitHub's search qualifiers through (the shim appends the query
  * string, and the Issues page lifts `is:closed label:bug …` out of `q`).
@@ -55,6 +56,7 @@ export type ShortTarget =
   | { readonly kind: 'release'; readonly tag: string }
   | { readonly kind: 'branches' | 'tags' | 'stargazers' }
   | { readonly kind: 'commit'; readonly oid: string }
+  | { readonly kind: 'compare'; readonly base?: string; readonly head: string }
 
 const seg = (s: string): string => encodeURIComponent(s)
 const pathSegs = (p: string): string =>
@@ -97,6 +99,8 @@ export function shortRepoPath(repo: { readonly owner: string; readonly name: str
       return `${base}/releases/${seg(target.tag)}`
     case 'commit':
       return `${base}/commit/${seg(target.oid)}`
+    case 'compare':
+      return `${base}/compare/${target.base ? `${seg(target.base)}...` : ''}${seg(target.head)}`
   }
 }
 
@@ -176,6 +180,8 @@ function canonicalPath(repo: { readonly owner: string; readonly name: string; re
       return route('/release', { tag: target.tag })
     case 'commit':
       return route('/commit', { oid: target.oid })
+    case 'compare':
+      return route('/compare', { base: target.base, head: target.head })
   }
 }
 
@@ -218,6 +224,16 @@ export const SHORT_URL_EXPAND_SOURCE = `function (pathname, base, reserved) {
     return q('/repo/' + kind + '/', ['ref', ref, 'path', tail.join('/')]);
   }
   if (kind === 'commits' && tail.length > 0) return q('/repo/commits/', ['ref', ref, 'path', tail.join('/')]);
+  // GitHub's compare: \`<base>...<head>\` (or \`..\`), or \`<head>\` against the default branch. A ref
+  // may hold \`/\` unencoded here (\`compare/main...feature/x\`), so the rest of the path is the spec.
+  if (kind === 'compare' && rest.length >= 2) {
+    var spec = [arg].concat(tail).join('/');
+    var dots = spec.indexOf('...'), two = spec.indexOf('..');
+    var cut = dots >= 0 ? dots : two, len = dots >= 0 ? 3 : 2;
+    var cmpBase = cut >= 0 ? spec.slice(0, cut) : '', cmpHead = cut >= 0 ? spec.slice(cut + len) : spec;
+    if (cmpHead === '' || (cut >= 0 && cmpBase === '')) return null;
+    return q('/repo/compare/', ['base', cmpBase, 'head', cmpHead]);
+  }
   if ((kind === 'pull' || kind === 'pulls') && number && tail.length === 1 && /^(files|commits|checks)$/.test(tail[0])) {
     return q('/repo/pull/', ['number', number, 'tab', tail[0]]);
   }
@@ -229,7 +245,7 @@ export const SHORT_URL_EXPAND_SOURCE = `function (pathname, base, reserved) {
   if ((kind === 'pull' || kind === 'pulls') && number) return q('/repo/pull/', ['number', number]);
   if (kind === 'releases' && rest.length === 1) return q('/repo/releases/', []);
   if (kind === 'releases') return q('/repo/release/', ['tag', arg]);
-  if ((kind === 'branches' || kind === 'tags' || kind === 'stargazers') && rest.length === 1) return q('/repo/' + kind + '/', []);
+  if ((kind === 'branches' || kind === 'tags' || kind === 'stargazers' || kind === 'compare') && rest.length === 1) return q('/repo/' + kind + '/', []);
   if (kind === 'commit' && /^[0-9a-fA-F]{4,40}$/.test(arg)) return q('/repo/commit/', ['oid', arg.toLowerCase()]);
   return null;
 }`

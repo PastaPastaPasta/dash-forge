@@ -7,7 +7,7 @@
  * against the identity's balance change since the ledger's first row.
  */
 
-import type { Network } from './constants'
+import { NETWORKS, type Network } from './constants'
 import { idbEntries, idbGet, idbPut } from './idb'
 import type { SpendEvent } from './sdk/write'
 
@@ -58,7 +58,20 @@ export async function recordSpend(event: SpendEvent): Promise<void> {
 /** Every row of an identity's ledger, oldest first. */
 export async function readLedger(network: Network, identityId: string): Promise<SpendRow[]> {
   const rows = await idbEntries<SpendRow>('spend', prefix(network, identityId))
-  return rows.map(([, v]) => v).sort((a, b) => a.at - b.at)
+  const v2 = NETWORKS[network].v2
+  const contracts = new Set(v2 === null ? [] : [v2.core, v2.collab, v2.community])
+  return rows.map(([, v]) => repairRepo(v, contracts)).sort((a, b) => a.at - b.at)
+}
+
+/**
+ * Rows recorded before QW-054 named a contract's id as the repo of a write to a document without
+ * a `repoId`: a repo's creation (or its refused attempt), whose own document id is the repo, and
+ * repo-less writes such as follows, which belong to no repo. Read them as that.
+ */
+export function repairRepo(row: SpendRow, contracts: ReadonlySet<string> = new Set()): SpendRow {
+  if (/^(create|refused):repo$/.test(row.kind) && row.repo !== row.documentId) return { ...row, repo: row.documentId }
+  if (row.repo !== null && contracts.has(row.repo)) return { ...row, repo: null }
+  return row
 }
 
 /** The ledger's baseline balance (credits), or null before the first write. */
@@ -124,6 +137,7 @@ const KIND_LABELS: Readonly<Record<string, string>> = {
   'key:encryption': 'Register encryption key',
   'key:runner': 'Register a CI runner key',
   'identity:create': 'Create identity',
+  'create:repo': 'Create repo',
 }
 
 /**

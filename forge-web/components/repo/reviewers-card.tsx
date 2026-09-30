@@ -12,7 +12,8 @@ import { useState } from 'react'
 import { Check, Clock, Eye, MessageSquare, MinusCircle, RotateCcw, X, XCircle } from 'lucide-react'
 
 import type { Membership } from '@/lib/rules/v2'
-import { STANDING_LABEL, type ReviewerCardRow, type Standing } from '@/lib/view/review-fold'
+import { STANDING_LABEL, type ImportedReviewer, type ReviewerCardRow, type Standing } from '@/lib/view/review-fold'
+import type { ImportedVerdict } from '@/lib/repo/provenance'
 import { isIdentityId } from '@/lib/utils'
 import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
@@ -40,8 +41,41 @@ function StandingIcon({ state }: { state: Standing }): JSX.Element {
   }
 }
 
+/** How the Reviewers card words a source forge's verdict. */
+const IMPORTED_LABEL: Readonly<Record<ImportedVerdict, string>> = {
+  approved: 'Approved',
+  'requested changes': 'Changes requested',
+  commented: 'Commented',
+}
+
+/** A mirrored PR's reviewers on the source forge (QW-017): shown as they reviewed there, never counted here. */
+function ImportedReviewers({ reviewers }: { reviewers: readonly ImportedReviewer[] }): JSX.Element | null {
+  if (reviewers.length === 0) return null
+  const hosts = [...new Set(reviewers.map((r) => r.host).filter((h) => h !== ''))]
+  return (
+    <div className="mt-2" data-testid="imported-reviewers">
+      <p className="text-[11px] text-anvil-500 dark:text-anvil-400">
+        On {hosts.length === 1 ? hosts[0] : 'the source forge'} · not counted here
+      </p>
+      <ul className="mt-1 space-y-1.5" aria-label="Reviewers on the source forge">
+        {reviewers.map((r) => (
+          <li key={r.login} className="flex flex-wrap items-center gap-1.5 text-dense" data-testid="imported-reviewer" data-login={r.login} data-verdict={r.verdict}>
+            <StandingIcon state={r.verdict === 'approved' ? 'approved' : r.verdict === 'requested changes' ? 'changesRequested' : 'commented'} />
+            <span className="font-medium text-anvil-800 dark:text-anvil-100">@{r.login}</span>
+            <span className={cn('text-[12px]', r.verdict === 'approved' ? 'text-verify-700 dark:text-verify-400' : r.verdict === 'requested changes' ? 'text-danger-700 dark:text-danger-400' : 'text-anvil-500 dark:text-anvil-400')}>
+              {IMPORTED_LABEL[r.verdict]}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 export function ReviewersCard({
-  rows,
+  rows: allRows,
+  imported = [],
+  mirrorOnly,
   members,
   author,
   headOid,
@@ -52,6 +86,10 @@ export function ReviewersCard({
   onDismiss,
 }: {
   rows: readonly ReviewerCardRow[]
+  /** A mirrored PR's reviewers on the source forge (`importedReviewers`). */
+  imported?: readonly ImportedReviewer[]
+  /** Signers all of whose reviews were imported (the mirror identity): their row is left out unless requested. */
+  mirrorOnly?: ReadonlySet<string>
   members: readonly Membership[]
   author: string
   headOid: string
@@ -68,13 +106,14 @@ export function ReviewersCard({
   const [picking, setPicking] = useState(false)
   const [dismissing, setDismissing] = useState<{ id: string; reason: string } | null>(null)
   const [other, setOther] = useState('')
+  const rows = mirrorOnly === undefined ? allRows : allRows.filter((r) => r.requested || !mirrorOnly.has(r.identity))
   const listed = new Set(rows.filter((r) => r.requested).map((r) => r.identity))
   // Members first (their approvals count), never the author.
   const candidates = [...members].sort((a, b) => (a.role === b.role ? 0 : a.role === 'maintainer' ? -1 : 1)).filter((m) => m.identity !== author)
   return (
     <div data-testid="reviewers-card">
       {!membersKnown ? <p className="text-anvil-500 dark:text-anvil-400">Couldn&apos;t read the members, so standings are unknown.</p> : null}
-      {rows.length === 0 && membersKnown ? <p className="text-anvil-500 dark:text-anvil-400">No reviews yet</p> : null}
+      {rows.length === 0 && imported.length === 0 && membersKnown ? <p className="text-anvil-500 dark:text-anvil-400">No reviews yet</p> : null}
       <ul className="space-y-2" aria-label="Reviewers">
         {rows.map((r) => (
           <li key={r.identity} className="text-dense" data-testid="reviewer-row" data-identity={r.identity} data-state={r.state}>
@@ -149,6 +188,7 @@ export function ReviewersCard({
           </li>
         ))}
       </ul>
+      <ImportedReviewers reviewers={imported} />
       {canRequest ? (
         <div className="mt-2">
           <button type="button" onClick={() => setPicking((p) => !p)} aria-expanded={picking} className="inline-flex items-center gap-1 text-[12px] text-anvil-500 hover:text-forge-700 dark:text-anvil-400 dark:hover:text-forge-400">

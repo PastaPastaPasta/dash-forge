@@ -454,8 +454,7 @@ fn require_encryption_key(
     }
     let held = crate::keyring::EncryptionKeys::held(bridge, &identity.public_keys(), core, network);
     if held.sender().is_none() {
-        return Err(crate::keyring::no_encryption_key(
-            "your identity",
+        return Err(crate::keyring::no_encryption_key_held(
             "cannot create a private repository",
         ));
     }

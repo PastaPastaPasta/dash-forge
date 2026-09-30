@@ -45,7 +45,10 @@ test.describe('ref resolution (dash showcase mirror)', () => {
 
     await page.goto(repoUrl('blob', `&ref=${TAG}&path=README.md`, DASH), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
-    await expect(page.locator('#L1')).toBeVisible({ timeout: 90_000 })
+    // A Markdown file opens rendered (QW-025); its source is a click away.
+    await expect(page.getByTestId('blob-markdown')).toBeVisible({ timeout: 90_000 })
+    await page.getByTestId('blob-code').click()
+    await expect(page.locator('#L1')).toBeVisible()
     await expectNoReadError(page)
 
     await page.goto(repoUrl('commits', `&ref=tags%2F${TAG}`, DASH), { waitUntil: 'domcontentloaded' })

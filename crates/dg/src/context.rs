@@ -352,7 +352,7 @@ impl Ctx {
             UserError::new(codes::NO_IDENTITY, "no identity configured")
                 .cause("this command signs with an identity, and none was given or set as the default")
                 .fix("`dg auth new` creates an identity; `dg auth login <file>` (or `--mnemonic`) signs in with one")
-                .fix("or pass --identity <file>, or set DASH_FORGE_KEY=<file>")
+                .fix("pass --identity <file>, or set DASH_FORGE_KEY=<file>")
                 .into()
         })
     }

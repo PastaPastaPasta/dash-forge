@@ -102,7 +102,7 @@ export function LoginModal(): JSX.Element {
       {intent && view !== 'grant' ? (
         <p data-testid="signin-intent" className="mb-3 rounded-md bg-anvil-100 px-3 py-2 text-dense text-anvil-700 dark:bg-anvil-800 dark:text-anvil-200">
           {intent.credits !== undefined
-            ? `Once you're signed in, this costs about ${creditsAsDash(intent.credits)} DASH, paid from your identity's balance. You confirm before anything is signed.`
+            ? `Once you're signed in, this costs at most about ${creditsAsDash(intent.credits)} DASH, paid from your identity's balance (often less: the exact price shows before you confirm).`
             : "Once you're signed in, you see what it costs and confirm before anything is signed."}
         </p>
       ) : null}
@@ -633,7 +633,9 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
         Registers a key that can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for {BROWSER_KEY_DEFAULTS.days} days
         {renewing
           ? ` (renewing: ~${creditsAsDash(KEY_RENEW_CREDITS)} DASH, one master-key signature; the old key is disabled in the same update).`
-          : ` (~${creditsAsDash(KEY_REGISTER_CREDITS)} DASH, one master-key signature).`}
+          : // Platform meters the update: an identity that already holds a Forge key (from another
+            // browser or dg) pays the lower figure (QW-043).
+            ` (${creditsAsDash(KEY_RENEW_CREDITS)}–${creditsAsDash(KEY_REGISTER_CREDITS)} DASH, one master-key signature; the lower figure when the identity already has a Forge key).`}
       </p>
       {controller.supportsLimitedKeys() ? <GroupNotice check={() => controller.checkGroup()} /> : null}
       <div ref={errorRef} hidden={error === null}>

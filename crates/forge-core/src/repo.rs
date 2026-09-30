@@ -781,7 +781,7 @@ impl<'a> RepoService<'a> {
             UserError::new(codes::NO_IDENTITY, "no identity configured")
                 .cause("this operation signs (or opens a private repository), and it was started without an identity")
                 .fix("`dg auth login <file>` (or `dg auth new`) records a default key that git uses too")
-                .fix("or export DASH_FORGE_KEY=<identity file | keychain:… | dfk1:…>")
+                .fix("export DASH_FORGE_KEY=<identity file | keychain:… | dfk1:…>")
                 .into()
         })
     }

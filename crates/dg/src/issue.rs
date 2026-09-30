@@ -53,6 +53,9 @@ pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
             };
             edit_comment(ctx, repo, comment_id, &body).await
         }
+        IssueCommand::DeleteComment { repo, comment_id } => {
+            delete_comment(ctx, repo, comment_id).await
+        }
         IssueCommand::Close { repo, number } => set_open(ctx, repo, *number, true).await,
         IssueCommand::Reopen { repo, number } => set_open(ctx, repo, *number, false).await,
         IssueCommand::Label {
@@ -559,6 +562,43 @@ async fn edit_comment(ctx: &Ctx, repo: &str, comment_id: &str, body: &str) -> Re
     Ok(())
 }
 
+/// Delete one of the signer's comments (QW-016): an owner-only document delete, refused before
+/// signing for someone else's comment.
+async fn delete_comment(ctx: &Ctx, repo: &str, comment_id: &str) -> Result<()> {
+    let s = Session::open_for_write(ctx, repo, "comment not deleted").await?;
+    // Someone else's comment (or another repo's) is refused before the prompt, not after it.
+    let there = s.collab().deletable_comment(&s.repo, comment_id).await?;
+    if there {
+        ctx.confirm_or_cancel(&format!(
+            "Delete comment {comment_id}? (a document delete; replies to it stay)"
+        ))?;
+    }
+    let before = s.balance().await;
+    let deleted = there && s.collab().delete_comment(&s.repo, comment_id).await?;
+    let spent = s.spent_since(before).await;
+    let price = dash_usd_price();
+    ctx.emit(
+        json!({
+            "status": if deleted { "deleted" } else { "absent" },
+            "comment": comment_id,
+            "cost": cost_json(spent, price),
+        }),
+        || {
+            if deleted {
+                println!(
+                    "✓ deleted comment {comment_id} · {}",
+                    cost_line(spent, price)
+                );
+            } else {
+                println!(
+                    "comment {comment_id} is not there (already deleted?); nothing was written"
+                );
+            }
+        },
+    );
+    Ok(())
+}
+
 async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "issue not created").await?;
     ctx.confirm_or_cancel(&format!(
@@ -711,8 +751,21 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()>
     let s = Session::open_for_write(ctx, repo, "state not changed").await?;
     let target = target(&s, repo, number).await?;
     let (done, prompt) = open_words(close);
-    ctx.confirm_or_cancel(&format!("{prompt} issue #{number}? (one small document)"))?;
     let collab = s.collab();
+    // Closing a closed issue (or reopening an open one) is not an error: nothing to write, as
+    // `gh issue close` says (QW-042: it stopped with E604, a code for consensus refusals). The
+    // state is the one the write would be judged against (its transition sum), read the same
+    // way `set_state` reads it.
+    let open = status_of_code(collab.state_sum(&s.repo, &target.id).await?).open;
+    if open != close {
+        let state = if open { "open" } else { "closed" };
+        ctx.emit(
+            json!({ "status": "unchanged", "issue": number, "open": open, "written": false }),
+            || println!("issue #{number} is already {state}; nothing written"),
+        );
+        return Ok(());
+    }
+    ctx.confirm_or_cancel(&format!("{prompt} issue #{number}? (one small document)"))?;
     let action = if close {
         StateAction::Close
     } else {

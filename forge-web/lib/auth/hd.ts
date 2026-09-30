@@ -47,6 +47,14 @@ export function identityKeyPath(network: Network, keyIndex: number, identityInde
   return `m/9'/${coin(network)}'/5'/0'/0'/${identityIndex}'/${keyIndex}'`
 }
 
+/**
+ * DIP-13's identity-bound top-up funding key, `m/9'/<coin>'/5'/2'/<identityIndex>'/<index>`:
+ * the deposit key of a browser top-up (`./identity-top-up.ts`), recoverable from the phrase.
+ */
+export function topUpKeyPath(network: Network, index: number, identityIndex = 0): string {
+  return `m/9'/${coin(network)}'/5'/2'/${identityIndex}'/${index}`
+}
+
 export function assetLockKeyPath(network: Network): string {
   return `m/44'/${coin(network)}'/0'/0/0`
 }

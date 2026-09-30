@@ -159,7 +159,7 @@ export async function loadRepoFacts(
     }
     if (known.languages === undefined) {
       const walk = await repoFilesWalk(repoKey, tipOid, reader, rootTree)
-      publish(key, { languages: languageStats(walk) })
+      publish(key, { languages: languageStats(walk, (oid) => (reader.locate?.(oid)?.deltaDepth ?? 0) > 0) })
     }
   } finally {
     setLoading(key, -1)
