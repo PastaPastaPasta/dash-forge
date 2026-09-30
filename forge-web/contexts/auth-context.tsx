@@ -31,40 +31,10 @@ import { recordSpend } from '../lib/spend'
 import { errorMessage } from '../lib/utils'
 import { fundsState, nextFundsChange, type FundsState, type KeyLimits } from '../lib/view/funds'
 import { toast } from '../hooks/use-toasts'
+import { spendToast } from '../lib/spend-toast'
 
 /** setTimeout's longest delay (about 24.8 days); a later change is re-armed from there. */
 const MAX_TIMER_MS = 2 ** 31 - 1
-
-/** A write kind (`create:issue`) → the toast title. */
-const SPEND_TITLES: Readonly<Record<string, string>> = {
-  'create:repo': 'Repository created',
-  'create:maintainer': 'Maintainer added',
-  'create:writer': 'Writer added',
-  'create:config': 'Repository config written',
-  'create:repoKey': 'Repo key handed out',
-  'create:issue': 'Issue created',
-  'create:comment': 'Comment posted',
-  'create:event': 'State event recorded',
-  'create:authorEvent': 'State event recorded',
-  'create:review': 'Review submitted',
-  // Every release revision (publish, edit, yank, unpublish) is this kind: the dialog says which (QW-077).
-  'create:release': 'Release saved',
-  'create:webhook': 'Webhook saved',
-  'delete:webhook': 'Webhook revision deleted',
-  'create:star': 'Starred',
-  'create:follow': 'Following',
-  'delete:star': 'Unstarred',
-  'delete:follow': 'Unfollowed',
-  'delete:maintainer': 'Maintainer removed',
-  'delete:writer': 'Writer removed',
-  'key:register': "This browser's key registered",
-  'key:renew': "This browser's key renewed",
-  'key:topup': 'Key budget topped up',
-  'key:revoke': 'Key disabled on chain',
-  'key:encryption': 'Encryption key registered',
-  'key:runner': 'Runner key registered',
-  'identity:create': 'Identity created',
-}
 
 const NONE: readonly number[] = []
 
@@ -251,9 +221,9 @@ export function AuthProvider({
     (event: SpendEvent) => {
       const refused = event.kind.startsWith('refused:')
       toast({
-        title: refused ? 'Platform refused that write' : SPEND_TITLES[event.kind] ?? 'Write confirmed',
+        ...spendToast(event),
         credits: event.actualCredits ?? null,
-        ...(refused ? { tone: 'warn' as const, detail: 'A refused write still pays its processing fee.' } : {}),
+        ...(refused ? { title: 'Platform refused that write', tone: 'warn' as const, detail: 'A refused write still pays its processing fee.' } : {}),
       })
       // The row first, then the balance: a refresh that lands before the row would let Settings →
       // Spend reconcile a balance with this write in it against a ledger without it.

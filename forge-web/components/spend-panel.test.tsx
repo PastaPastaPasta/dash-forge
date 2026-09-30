@@ -99,7 +99,7 @@ describe('the spend reconciliation after a reload', () => {
     expect(q('spend-reconcile-pending')).not.toBeNull()
     await flush()
     expect(refreshBalance).toHaveBeenCalledTimes(1)
-    expect(q('spend-reconcile')?.textContent).toMatch(/0\.?0* DASH unexplained \(other apps or keys\)/)
+    expect(q('spend-reconcile')?.textContent).toMatch(/all of it in the ledger/)
     expect(q('spend-reconcile-pending')).toBeNull()
     // Settled: no further reads.
     await flush(60_000)
@@ -185,8 +185,39 @@ describe('the spend reconciliation after a reload', () => {
     auth.balance = '850'
     auth.balanceReadAt = 250
     await render()
-    expect(q('spend-reconcile')?.textContent).toMatch(/unexplained \(other apps or keys\)/)
+    expect(q('spend-reconcile')?.textContent).toMatch(/all of it in the ledger/)
     await flush(60_000)
     expect(refreshBalance).not.toHaveBeenCalled()
+  })
+
+  it('a top-up made here is a credit, and the balance change reads as growth (QW2-019)', async () => {
+    const [rowsBefore, baselineBefore] = [ledger.rows, ledger.baseline]
+    try {
+      // A key registration, then a 9.9997 DASH top-up from this browser.
+      ledger.baseline = { at: 100, credits: 100_000_000_000n }
+      ledger.rows = [
+        { ...row(100, 27_400_000, '100000000000'), kind: 'key:register', repo: null },
+        { ...row(200, 0, '99972600000'), kind: 'identity:topup', repo: null, actualCredits: -999_970_000_000 },
+      ]
+      auth.balance = String(100_000_000_000 - 27_400_000 + 999_970_000_000)
+      auth.balanceReadAt = 250
+      await render()
+      const line = q('spend-reconcile')?.textContent ?? ''
+      expect(line).toMatch(/0\.000274 DASH spent, \+9\.9997 DASH topped up here/)
+      expect(line).toMatch(/balance \+9\.99\d* DASH since the first row/)
+      expect(line).toMatch(/all of it in the ledger/)
+      expect(line).not.toMatch(/−9\.99/)
+      expect(host.textContent).toMatch(/All time \(1 write\)/)
+      expect(q('spend-rows')?.textContent).toMatch(/Top up identity.*\+9\.9997 DASH.*credited/)
+      // A top-up made elsewhere is what the ledger does not explain, and says so.
+      auth.balance = String(100_000_000_000 - 27_400_000 + 999_970_000_000 + 50_000_000_000)
+      auth.balanceReadAt = 260
+      await act(async () => rerender())
+      await flush()
+      expect(q('spend-reconcile')?.textContent).toMatch(/\+0\.5 DASH not in the ledger \(top-ups made elsewhere\)/)
+    } finally {
+      ledger.rows = rowsBefore
+      ledger.baseline = baselineBefore
+    }
   })
 })

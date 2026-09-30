@@ -114,7 +114,8 @@ test.describe('follow lists and cost hints (own identities)', () => {
     await expectLanded(page, page.getByRole('heading', { name: /Greet by name/ }))
 
     // The star's price is visible text next to the button, not only its tooltip (D-098).
-    await expect(page.getByTestId('star-cost')).toHaveText(/^[~+]\d[\d.]* DASH$/, { timeout: 60_000 })
+    // Starred already, it names the refund: "unstar +0.00012 DASH" (QW2-034).
+    await expect(page.getByTestId('star-cost')).toHaveText(/^(~|unstar \+)\d[\d.]* DASH$/, { timeout: 60_000 })
     await expect(page.getByTestId('star-cost')).toBeVisible()
     await shot(page, 'g17-04-star-cost')
   })

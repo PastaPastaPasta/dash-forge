@@ -31,6 +31,7 @@ export function Toaster(): JSX.Element {
                 <span className="font-mono text-anvil-500 dark:text-anvil-400">
                   {' · '}
                   {t.credits < 0 ? `+${creditsAsDash(-t.credits)} DASH refunded` : `${creditsAsDash(t.credits)} DASH`}
+                  {(t.writes ?? 1) > 1 ? ` for ${t.writes} writes` : ''}
                 </span>
               ) : null}
             </div>

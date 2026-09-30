@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest'
 
 import { firstWriteRead, previewCreate, STEADY } from '../sdk/cost'
 import { repairRepo, spendKindLabel, summarize, type SpendRow } from '../spend'
-import { dashToUsd, dashValueNote, priceLabel } from './format'
+import { dashToUsd, dashValueNote, priceLabel, refundLabel } from './format'
 
 describe('USD only on mainnet (QW-046)', () => {
   it('devnet and testnet DASH has no dollar figure', () => {
@@ -72,5 +72,12 @@ describe("a repo's creation is listed under the repo (QW-054)", () => {
     const r = row({})
     expect(repairRepo(r)).toBe(r)
     expect(spendKindLabel('create:repo')).toBe('Create repo')
+  })
+})
+
+describe('a refund beside its button names what gives it back (QW2-034)', () => {
+  it('reads "unstar +0.00012", not a bare "+0.00012"', () => {
+    expect(refundLabel('unstar', -12_000_000)).toBe('unstar +0.00012')
+    expect(refundLabel('unfollow', -23_000_000)).toBe('unfollow +0.00023')
   })
 })

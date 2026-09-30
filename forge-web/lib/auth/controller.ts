@@ -200,6 +200,15 @@ export const KEY_SPEND_ESTIMATES: Readonly<Record<KeySpendKind, number>> = {
 }
 
 /**
+ * The low end of a key registration's quoted range: adding a key when the identity already holds
+ * one (QW-043: bonsia charged 26.8M-27.8M for a sign-in's key, under the 48M first-key bound).
+ */
+export const KEY_SPEND_FLOORS: Readonly<Partial<Record<KeySpendKind, number>>> = {
+  'key:register': KEY_RENEW_CREDITS,
+  'key:runner': KEY_RENEW_CREDITS,
+}
+
+/**
  * A charge to report: its kind, the key it concerns, and the balance right before it (for an
  * identity creation, the asset lock's credit value: the fee comes out of the lock).
  */
@@ -397,6 +406,7 @@ export class AuthController {
       repo: null,
       documentId: keyId === null ? 'identity' : `key-${keyId}`,
       estimateCredits: KEY_SPEND_ESTIMATES[kind],
+      ...(KEY_SPEND_FLOORS[kind] !== undefined ? { estimateMinCredits: KEY_SPEND_FLOORS[kind] } : {}),
       actualCredits,
       balanceBefore,
     })

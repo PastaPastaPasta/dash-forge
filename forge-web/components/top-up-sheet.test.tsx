@@ -76,6 +76,6 @@ describe('the top-up sheet', () => {
   it('the pill opens it even when funds are comfortable, with the key spelled out (QW-048)', () => {
     act(() => q('[data-testid="funds-pill"]')!.click())
     expect(useUiStore.getState().topUp).toEqual({ blocker: 'balance', proactive: true })
-    expect(q('[data-testid="key-funds-line"]')!.textContent).toMatch(/0\.04 of 0\.05 DASH left, expires/)
+    expect(q('[data-testid="key-funds-line"]')!.textContent).toMatch(/0\.04 of 0\.05 DASH budget left, expires/)
   })
 })

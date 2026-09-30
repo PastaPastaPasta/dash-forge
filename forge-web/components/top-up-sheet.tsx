@@ -23,7 +23,7 @@ import { IdentityTopUpFlow } from '@/components/identity-top-up-flow'
 import { KeyFundsLine } from '@/components/funds-summary'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { typicalIssueCredits } from '@/lib/sdk'
-import type { KeyLimits } from '@/lib/view/funds'
+import { issueCoverage, type KeyLimits } from '@/lib/view/funds'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 
 /** Where dev networks get test DASH (mainnet and testnet show no faucet, spec §2.1). */
@@ -36,10 +36,9 @@ export function faucetUrl(): string | null {
 
 /**
  * What "an issue" costs in copy: the same figure the sign-in chooser and the New issue form quote
- * (`typicalIssueCredits`, QW-043), and how many such issues 0.05 DASH covers.
+ * (`typicalIssueCredits`, QW-043).
  */
 const ISSUE_CREDITS = typicalIssueCredits()
-const ISSUES_PER_005 = Math.floor(0.05 / (ISSUE_CREDITS / 1e11) / 10) * 10
 
 function short(shortfall: bigint | undefined): string {
   return shortfall && shortfall > 0n ? ` (short by ${creditsAsDash(Number(shortfall))} DASH)` : ''
@@ -81,7 +80,7 @@ export function TopUpSheet(): JSX.Element | null {
   const reason = useUiStore((s) => s.topUp)
   const close = useUiStore((s) => s.closeTopUp)
   const openLogin = useUiStore((s) => s.openLogin)
-  const { identity, storage, keyLimits, balance } = useAuth()
+  const { identity, storage, keyLimits, balance, funds } = useAuth()
   const [other, setOther] = useState(false)
   const [topUpKey, setTopUpKey] = useState(false)
   if (identity === null) return null
@@ -142,8 +141,8 @@ export function TopUpSheet(): JSX.Element | null {
           <>
             {/* From this browser: a deposit address any wallet (or the faucet) can pay (QW-012). */}
             <IdentityTopUpFlow faucet={faucet} />
-            <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-              About {creditsAsDash(ISSUE_CREDITS)} DASH covers an issue; 0.05 DASH covers about {ISSUES_PER_005} of them.
+            <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="top-up-coverage">
+              {issueCoverage(funds?.spendable ?? null, ISSUE_CREDITS, creditsAsDash)}
             </p>
             <div>
               <button type="button" aria-expanded={other} onClick={() => setOther((o) => !o)} className="hit-area text-[12px] text-anvil-500 underline hover:text-anvil-800 dark:text-anvil-400 dark:hover:text-anvil-100">
