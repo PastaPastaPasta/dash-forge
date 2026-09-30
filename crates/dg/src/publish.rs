@@ -179,9 +179,7 @@ impl Local {
 
     /// The repository's size on disk (loose objects + packs), from `git count-objects -v`.
     fn size_bytes(&self) -> Option<u64> {
-        git(&self.root, &["count-objects", "-v"], &[])
-            .ok()
-            .map(|out| count_objects_bytes(&out))
+        crate::git::ObjectCount::of(&self.root).map(|c| c.bytes)
     }
 
     /// Whether any history exists (any ref at all), for the unborn-branch message.
@@ -226,16 +224,6 @@ impl Local {
         .ok()
         .filter(|r| !r.is_empty())
     }
-}
-
-/// Bytes from `git count-objects -v` output (`size` + `size-pack`, both in KiB).
-fn count_objects_bytes(out: &str) -> u64 {
-    out.lines()
-        .filter_map(|l| l.split_once(": "))
-        .filter(|(k, _)| matches!(*k, "size" | "size-pack"))
-        .filter_map(|(_, v)| v.trim().parse::<u64>().ok())
-        .sum::<u64>()
-        * 1024
 }
 
 /// A repo name from a directory name: lower-cased, anything outside `a-z 0-9 . _ -` turned
@@ -1272,13 +1260,6 @@ mod tests {
         );
         assert!(u.fix[0].contains("set-url --push origin"), "{:?}", u.fix);
         assert_eq!(u.note.as_deref(), Some("nothing was written"));
-    }
-
-    #[test]
-    fn count_objects_sums_loose_and_packed_kib() {
-        let out = "count: 3\nsize: 12\nin-pack: 300\npacks: 1\nsize-pack: 1200\nprune-packable: 0\ngarbage: 0\nsize-garbage: 0\n";
-        assert_eq!(count_objects_bytes(out), 1212 * 1024);
-        assert_eq!(count_objects_bytes(""), 0);
     }
 
     #[test]

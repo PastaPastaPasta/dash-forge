@@ -1205,17 +1205,27 @@ pub enum CollabCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum CostCommand {
-    /// Pre-write cost quote.
+    /// Pre-write quote for a first push: what Platform bills on the chosen backend (an upper
+    /// bound, as `git push` quotes it). With neither --bytes nor --path, prices the repository
+    /// in the current directory.
     Estimate {
-        /// Backend to price against.
+        /// Where the pack bytes go (default: for a repository, the storage its `git push` uses;
+        /// for --bytes or a file, platform). s3, ipfs and https keep them off-chain: Platform
+        /// bills only the manifests and the ref update.
         #[arg(long)]
         backend: Option<Backend>,
-        /// Payload size in bytes.
-        #[arg(long)]
+        /// Pack size in bytes.
+        #[arg(long, conflicts_with = "path")]
         bytes: Option<u64>,
-        /// Path whose size is priced (alternative to --bytes).
+        /// A repository (the pack of its HEAD and its history index are built, as a push
+        /// builds them), or a file whose size is priced.
         #[arg(long)]
         path: Option<PathBuf>,
+        /// Price a private repository: its pack and indexes are stored sealed (a little
+        /// larger). Visibility is set on chain when the repository is created, so a local
+        /// clone cannot tell.
+        #[arg(long)]
+        private: bool,
     },
     /// An identity's estimated Forge spend: total, per repository, per document type.
     Audit {
@@ -1369,7 +1379,7 @@ pub struct StorageAddArgs {
 }
 
 /// A storage backend mode (`repo backend set`).
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Backend {
     Platform,
     Ipfs,

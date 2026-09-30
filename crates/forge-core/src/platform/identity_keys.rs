@@ -38,8 +38,11 @@ use super::{
 use crate::error::{Error, Result};
 use crate::keystore::{BridgeIdentity, IdentityKey, Secret};
 
-/// The pre-sign estimate for one identity update that adds one key, in credits. An upper
-/// bound: the measured cost is reported after the update lands.
+/// The pre-sign estimate for one identity update that adds one key, in credits: every key
+/// `dg` registers (a limited login key, a CI runner key, an encryption key). An upper bound
+/// over the charges measured on devnet bonsia (Platform 4.2.0-beta.7, 2026-09-30): a limited
+/// login key ~27M, a runner key bound to `checkRun` 43.0M (moutai beta.6: 28.5M). The measured
+/// cost is reported after the update lands.
 pub const ADD_KEY_ESTIMATE_CREDITS: u64 = 50_000_000;
 
 /// The `name` a new encryption key gets in the identity file.

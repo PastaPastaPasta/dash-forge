@@ -63,19 +63,18 @@ For each name, the newest run by `($createdAt, $id)` among runs by current membe
 
 ## What it costs
 
-Measured on devnet moutai (2026-09-29, drive 4.2.0-beta.6; 1 DASH = 10¹¹ credits):
+Measured on devnet bonsia (2026-09-30, drive 4.2.0-beta.7; 1 DASH = 10¹¹ credits):
 
 | Write | Who pays | Credits | DASH |
 |---|---|---|---|
-| Register the runner key (identity update) | the runner | 28,519,540 | 0.000285 |
-| Enrol the runner (`runner` document) | the owner | 45,820,360 | 0.000458 |
-| First report of a run (`checkRun` create) | the reporter | 55,036,900 – 78,132,420 | 0.00055 – 0.00078 |
-| Each later update (replace) | the reporter | 3,338,780 – 3,687,280 | ≈ 0.000035 |
-| First report with `--log` (adds the log URL and hash) | the reporter | 59,100,320 | 0.00059 |
+| Register the runner key (identity update) | the runner | 43,008,000 | 0.00043 |
+| Enrol the runner (`runner` document) | the owner | 47,298,000 | 0.00047 |
+| First report of a run (`checkRun` create) | the reporter | 81,508,000 – 95,093,000; a repository's first 121,929,000 | 0.00082 – 0.00095; the first 0.00122 |
+| Each later update (replace) | the reporter | 4,651,000 – 5,546,420 | ≈ 0.00005 |
 
-The create's price depends on the fields it carries; a report with a details URL and a summary sits at the top of the range. A typical run is one create plus two updates, about **0.00063 DASH**, so a 0.5 DASH runner key covers roughly 790 runs. The log itself costs nothing on Platform: it goes to your bucket.
+The create's price depends on the fields it carries (a details URL, a summary, artifacts, a log's URL and hash), and a repository's first check run pays more: it opens the check-run indexes. A typical run is one create plus two updates, about **0.001 DASH**, so a 0.5 DASH runner key covers roughly 500 runs. The log itself costs nothing on Platform: it goes to your bucket. On devnet moutai (drive 4.2.0-beta.6, 2026-09-29) the same writes cost less: the key 0.000285, the enrolment 0.000458, a create 0.00055–0.00078 (0.00059 with `--log`) and an update ≈ 0.000035 DASH.
 
-Before it signs, `dg` shows an estimate a little above these numbers: 0.00035 DASH for the key, 0.00055 for the enrolment, 0.00085 for a create and 0.00005 for an update. It reads the commit's runs first, so the prompt names the write that will happen (create or update). After the write it prints what was actually charged.
+Before it signs, `dg` shows an upper bound over these numbers: 0.0005 DASH for the key, 0.00055 for the enrolment, 0.0013 for a create and 0.00008 for an update, plus 27,700 credits (0.000000277 DASH) per byte of the text the report carries (name, details URL, summary, external id, artifacts; a log adds its URL and hash). The contract admits up to ~7 KB of that text, so a report with a full summary, artifacts and a log is quoted up to ~0.002 DASH more. It reads the commit's runs first, so the prompt names the write that will happen (create or update). After the write it prints what was actually charged.
 
 ## Security
 

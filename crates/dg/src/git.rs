@@ -363,6 +363,76 @@ pub fn has_object(dir: &Path, oid: &str) -> bool {
     git_ok(dir, &["cat-file", "-e", &format!("{oid}^{{commit}}")])
 }
 
+/// A repository's objects as `git count-objects -v` reports them: how many, loose and packed,
+/// and their size on disk (an upper bound on the pack a first push of them uploads: a loose
+/// object is compressed alone, not deltified).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ObjectCount {
+    /// Loose (`count`) plus packed (`in-pack`) objects.
+    pub objects: u64,
+    /// Loose (`size`) plus packed (`size-pack`) bytes.
+    pub bytes: u64,
+}
+
+impl ObjectCount {
+    /// `git count-objects -v` in `dir`, or `None` when it is not a repository.
+    pub fn of(dir: &Path) -> Option<Self> {
+        git(dir, &["count-objects", "-v"], &[])
+            .ok()
+            .map(|out| Self::parse(&out))
+    }
+
+    /// The pack a first push of `rev` uploads: every object reachable from it, packed as git
+    /// packs them (`git pack-objects --revs --stdout`), streamed and counted, never held in
+    /// memory. Its header carries the object count. A packed object stored as a delta against
+    /// one `rev` does not reach is sent whole, which this counts (an on-disk size would not).
+    pub fn pack_of(dir: &Path, rev: &str) -> Option<Self> {
+        use std::io::{Read, Write};
+        use std::process::Stdio;
+        let mut child = Command::new("git")
+            .current_dir(dir)
+            .args(["pack-objects", "--revs", "--stdout", "-q"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        // One rev, then EOF: pack-objects reads its whole input before it writes.
+        let fed = child
+            .stdin
+            .take()
+            .is_some_and(|mut stdin| stdin.write_all(format!("{rev}\n").as_bytes()).is_ok());
+        let mut header = [0u8; 12];
+        let read = child.stdout.take().and_then(|mut out| {
+            out.read_exact(&mut header).ok()?;
+            std::io::copy(&mut out, &mut std::io::sink()).ok()
+        });
+        let ok = child.wait().is_ok_and(|s| s.success());
+        let rest = read.filter(|_| fed && ok && header.starts_with(b"PACK"))?;
+        let count: [u8; 4] = header[8..12].try_into().ok()?;
+        Some(Self {
+            objects: u64::from(u32::from_be_bytes(count)),
+            bytes: 12 + rest,
+        })
+    }
+
+    /// Parse `git count-objects -v` output (its sizes are in KiB).
+    pub fn parse(out: &str) -> Self {
+        let mut c = Self::default();
+        for (key, value) in out.lines().filter_map(|l| l.split_once(": ")) {
+            let Ok(n) = value.trim().parse::<u64>() else {
+                continue;
+            };
+            match key {
+                "count" | "in-pack" => c.objects += n,
+                "size" | "size-pack" => c.bytes += n * 1024,
+                _ => {}
+            }
+        }
+        c
+    }
+}
+
 /// Whether `a` is an ancestor of (or equal to) `b` in `dir`'s repository.
 pub fn is_ancestor(dir: &Path, a: &str, b: &str) -> bool {
     git_ok(dir, &["merge-base", "--is-ancestor", a, b])
@@ -586,6 +656,17 @@ pub fn full_ref(b: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn count_objects_sums_loose_and_packed() {
+        let out = "count: 3\nsize: 12\nin-pack: 300\npacks: 1\nsize-pack: 1200\nprune-packable: 0\ngarbage: 0\nsize-garbage: 0\n";
+        let want = ObjectCount {
+            objects: 303,
+            bytes: 1212 * 1024,
+        };
+        assert_eq!(ObjectCount::parse(out), want);
+        assert_eq!(ObjectCount::parse(""), ObjectCount::default());
+    }
 
     /// Windows (no handoff): a sealed key with no passphrase source is refused before the
     /// create is paid for; anything the helper can open passes.
