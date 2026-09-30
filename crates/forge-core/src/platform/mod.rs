@@ -3255,7 +3255,9 @@ where
         // the wait returns (after a send or TxKnown) came from block execution: final.
         let at_check_tx = matches!(sent_now, Err(ref f) if !matches!(f, WriteFailure::TxKnown));
         let tried_before = tried;
-        tried |= !matches!(sent_now, Err(WriteFailure::TxKnown));
+        // Only a send that may have reached a node: accepted, or no answer (not one refused
+        // before it left, such as every node banned).
+        tried |= matches!(sent_now, Ok(()) | Err(WriteFailure::Retryable(_)));
         let failure = match sent_now {
             Ok(()) | Err(WriteFailure::TxKnown) => {
                 // Ok is our own send, and so is TxKnown after an earlier send of ours; TxKnown on
@@ -4434,6 +4436,16 @@ mod tests {
         .await;
         assert_eq!(out.unwrap(), super::BroadcastOutcome::AlreadyExists);
         assert_eq!((nb, nw), (2, 2));
+        // A first send that never left (every node banned over the quorum) is not ours either:
+        // the TxKnown after it is the replay's.
+        let (out, nb, nw) = scripted_write(
+            vec![Err(quorum_miss()), Err(super::WriteFailure::TxKnown)],
+            vec![Ok(())],
+            vec![false],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::AlreadyExists);
+        assert_eq!((nb, nw), (2, 1));
         // Past its three scripted waits: ordinary retries (4), then a timeout.
         let (out, nb, _) = scripted_write(
             (0..7).map(|_| Ok(())).collect(),

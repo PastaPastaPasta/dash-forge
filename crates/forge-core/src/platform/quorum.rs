@@ -40,8 +40,8 @@ pub(super) const QUORUM_WAITS: [Duration; 5] = [
 /// longer than the quorum service takes to catch up (a few minutes on bonsia).
 const QUORUM_BUDGET: Duration = Duration::from_secs(240);
 
-/// A miss this long after the last rotation's first one starts a new rotation (a new budget).
-const NEW_ROTATION_AFTER: Duration = Duration::from_secs(600);
+/// A miss after this long without one starts a new rotation (a new budget, a new probe).
+const QUIET_GAP: Duration = Duration::from_secs(120);
 
 /// SDKs this process keeps unbanning at once (a long-running process reconnects rarely; older
 /// entries are dropped).
@@ -56,8 +56,20 @@ struct Registered {
 
 static REGISTERED: OnceLock<Mutex<Registered>> = OnceLock::new();
 
-/// When the current rotation's first miss was seen.
-static ROTATION: Mutex<Option<Instant>> = Mutex::new(None);
+/// The rotation this process is waiting out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Rotation {
+    /// Its first miss: the budget counts from here.
+    start: Instant,
+    /// Its latest miss: a miss [`QUIET_GAP`] after it starts a new rotation.
+    last_miss: Instant,
+    /// Some wait has asked the quorum service whether it answers.
+    probed: bool,
+    /// It did not answer: no lag to wait out, for the rest of the rotation.
+    unreachable: bool,
+}
+
+static ROTATION: Mutex<Option<Rotation>> = Mutex::new(None);
 
 fn registered() -> std::sync::MutexGuard<'static, Registered> {
     REGISTERED
@@ -152,52 +164,107 @@ fn is_quorum_context_error(c: &ContextProviderError) -> bool {
     }
 }
 
-/// The pause before a loop's quorum retry `n` (0-based), paced by `waits`, cut to what is left
-/// of the rotation's budget. `None` past the loop's pacing or the budget, whose start
-/// `rotation` is set at the first miss (or when the last one is [`NEW_ROTATION_AFTER`] old).
-fn pause_within(
-    rotation: &mut Option<Instant>,
-    now: Instant,
-    waits: &[Duration],
-    n: usize,
-) -> Option<Duration> {
-    let pause = *waits.get(n)?;
-    let start = match *rotation {
-        Some(start) if now.duration_since(start) < NEW_ROTATION_AFTER => start,
-        _ => *rotation.insert(now),
+/// What one wait does ([`step`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    /// Pause this long; `waited` is the rotation's time so far, and `probe` says this wait is
+    /// the one to ask the quorum service whether it answers at all.
+    Wait {
+        pause: Duration,
+        waited: Duration,
+        probe: bool,
+    },
+    /// No wait: past the loop's pacing or the rotation's budget, or the quorum service does not
+    /// answer.
+    GiveUp,
+}
+
+/// The wait before a loop's quorum retry `n` (0-based) at `now`, paced by `waits` and cut to
+/// what is left of the rotation's budget, updating `rotation` (a new one after [`QUIET_GAP`]
+/// without a miss).
+fn step(rotation: &mut Option<Rotation>, now: Instant, waits: &[Duration], n: usize) -> Step {
+    let r = match rotation {
+        Some(r) if now.duration_since(r.last_miss) < QUIET_GAP => r,
+        _ => rotation.insert(Rotation {
+            start: now,
+            last_miss: now,
+            probed: false,
+            unreachable: false,
+        }),
     };
-    let left = QUORUM_BUDGET.saturating_sub(now.duration_since(start));
-    (!left.is_zero()).then(|| pause.min(left))
+    r.last_miss = now;
+    let Some(&pause) = waits.get(n) else {
+        return Step::GiveUp;
+    };
+    let waited = now.duration_since(r.start);
+    let left = QUORUM_BUDGET.saturating_sub(waited);
+    if r.unreachable || left.is_zero() {
+        return Step::GiveUp;
+    }
+    let probe = !r.probed;
+    r.probed = true;
+    Step::Wait {
+        pause: pause.min(left),
+        waited,
+        probe,
+    }
+}
+
+/// Whether the quorum service answers: some registered provider fetched its current quorums.
+/// With none registered (tests), it is taken to answer.
+async fn service_answers(providers: &[TrustedHttpContextProvider]) -> bool {
+    if providers.is_empty() {
+        return true;
+    }
+    let mut last = None;
+    for p in providers {
+        match p.fetch_current_quorums().await {
+            Ok(_) => return true,
+            Err(e) => last = Some(e),
+        }
+    }
+    if let Some(e) = last {
+        eprintln!(
+            "dash: a proof names a quorum this client cannot find, and the quorum service does \
+             not answer ({e}); not waiting for it"
+        );
+    }
+    false
 }
 
 /// Wait out a quorum miss before a loop's retry `n` (0-based), paced by `waits`: say so,
 /// unban the nodes banned over a quorum, wait, refresh the providers' quorum caches, and unban
 /// again (other requests in flight meanwhile banned them anew). `false` when the loop should
-/// not wait: past its pacing or the rotation's budget, or, at a rotation's first wait, when the
-/// quorum service does not answer at all (no lag: a wait would not help).
+/// not wait: past its pacing or the rotation's budget, or when the quorum service does not
+/// answer at all (asked once per rotation: no lag, a wait would not help). The quorum bans are
+/// cleared either way, so the loop's ordinary retries find nodes.
 pub(super) async fn wait_for_quorum(label: &str, waits: &[Duration], n: usize) -> bool {
-    let now = Instant::now();
-    let (pause, waited) = {
-        let mut rotation = ROTATION.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(pause) = pause_within(&mut rotation, now, waits, n) else {
-            return false;
-        };
-        (
-            pause,
-            rotation.map_or(Duration::ZERO, |s| now.duration_since(s)),
-        )
+    let decided = step(
+        &mut ROTATION.lock().unwrap_or_else(PoisonError::into_inner),
+        Instant::now(),
+        waits,
+        n,
+    );
+    let Step::Wait {
+        pause,
+        waited,
+        probe,
+    } = decided
+    else {
+        unban_quorum_bans();
+        return false;
     };
     let providers = registered().providers.clone();
-    if waited.is_zero() {
-        for p in &providers {
-            if let Err(e) = p.fetch_current_quorums().await {
-                eprintln!(
-                    "dash: a proof names a quorum this client cannot find, and the quorum \
-                     service does not answer ({e}); not waiting for it"
-                );
-                return false;
-            }
+    if probe && !service_answers(&providers).await {
+        if let Some(r) = ROTATION
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+        {
+            r.unreachable = true;
         }
+        unban_quorum_bans();
+        return false;
     }
     eprintln!(
         "dash: waiting for the network's new quorum (the quorum service lags a rotation); \
@@ -285,34 +352,44 @@ mod tests {
     }
 
     #[test]
-    fn the_waits_share_one_budget_from_the_rotations_first_miss() {
+    fn the_waits_share_one_budget_and_one_probe_per_rotation() {
         let t0 = Instant::now();
-        let mut rotation = None;
         let at = |s: u64| t0 + Duration::from_secs(s);
+        let wait = |pause: u64, waited: u64, probe: bool| Step::Wait {
+            pause: Duration::from_secs(pause),
+            waited: Duration::from_secs(waited),
+            probe,
+        };
+        let mut rotation = None;
+        // The first wait of a rotation is the one that asks the quorum service.
+        assert_eq!(step(&mut rotation, t0, &QUORUM_WAITS, 0), wait(15, 0, true));
         assert_eq!(
-            pause_within(&mut rotation, t0, &QUORUM_WAITS, 0),
-            Some(Duration::from_secs(15))
+            step(&mut rotation, at(10), &QUORUM_WAITS, 0),
+            wait(15, 10, false)
         );
-        assert_eq!(rotation, Some(t0));
-        // Another loop's first wait, 200 s into the rotation: its pacing, then what is left.
+        // Misses keep coming: 200 s in, a loop's third wait gets what is left of the budget.
+        for t in (20..200).step_by(30) {
+            step(&mut rotation, at(t), &QUORUM_WAITS, 0);
+        }
         assert_eq!(
-            pause_within(&mut rotation, at(200), &QUORUM_WAITS, 0),
-            Some(Duration::from_secs(15))
+            step(&mut rotation, at(200), &QUORUM_WAITS, 2),
+            wait(40, 200, false)
         );
+        // Spent: no wait, even for a loop that has not waited yet; past a loop's own pacing.
+        assert_eq!(step(&mut rotation, at(240), &QUORUM_WAITS, 0), Step::GiveUp);
+        assert_eq!(step(&mut None, t0, &QUORUM_WAITS, 5), Step::GiveUp);
+        // After a quiet gap, a miss is a new rotation: a new budget and a new probe.
         assert_eq!(
-            pause_within(&mut rotation, at(200), &QUORUM_WAITS, 2),
-            Some(Duration::from_secs(40))
+            step(&mut rotation, at(400), &QUORUM_WAITS, 0),
+            wait(15, 0, true)
         );
-        // Spent: no wait, even for a loop that has not waited yet.
-        assert_eq!(pause_within(&mut rotation, at(240), &QUORUM_WAITS, 0), None);
-        // Past its own pacing.
-        assert_eq!(pause_within(&mut None, t0, &QUORUM_WAITS, 5), None);
-        // Ten minutes on, a miss is a new rotation with a new budget.
+        // A quorum service that did not answer: no wait for the rest of the rotation.
+        rotation.as_mut().unwrap().unreachable = true;
+        assert_eq!(step(&mut rotation, at(410), &QUORUM_WAITS, 0), Step::GiveUp);
         assert_eq!(
-            pause_within(&mut rotation, at(700), &QUORUM_WAITS, 0),
-            Some(Duration::from_secs(15))
+            step(&mut rotation, at(600), &QUORUM_WAITS, 0),
+            wait(15, 0, true)
         );
-        assert_eq!(rotation, Some(at(700)));
         let total: Duration = QUORUM_WAITS.iter().sum();
         assert!(total + Duration::from_secs(20) >= QUORUM_BUDGET);
     }
