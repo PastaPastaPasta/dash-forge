@@ -120,8 +120,11 @@ pub fn parse_json_log(out: &str) -> Results {
 const ENV_ALLOW: [&str; 6] = ["PATH", "HOME", "TMPDIR", "USER", "LANG", "TZ"];
 const ENV_ALLOW_PREFIXES: [&str; 2] = ["DOCKER_", "XDG_"];
 
-/// An act command with a cleared environment (plus [`ENV_ALLOW`] / [`ENV_ALLOW_PREFIXES`]).
-pub fn command(cfg: &Config) -> Command {
+/// An act command with a cleared environment (plus [`ENV_ALLOW`] / [`ENV_ALLOW_PREFIXES`]),
+/// and `GITHUB_TOKEN` set to `github_token` when it is not empty: [`run_args`] then names the
+/// secret without a value (`-s GITHUB_TOKEN`), which act reads from its own environment. The
+/// environment is private to the runner's user; argv is not (`ps` shows it to everyone).
+pub fn command(cfg: &Config, github_token: &str) -> Command {
     let mut c = Command::new(&cfg.bin.act);
     c.env_clear();
     for (k, v) in std::env::vars_os() {
@@ -135,6 +138,9 @@ pub fn command(cfg: &Config) -> Command {
     // act reads the URL jobs reach its artifact server at from its own environment.
     if let Some(url) = cfg.artifact_server_url.as_ref().filter(|_| cfg.artifacts) {
         c.env("ACTIONS_RUNTIME_URL", url);
+    }
+    if !github_token.is_empty() {
+        c.env("GITHUB_TOKEN", github_token);
     }
     c
 }
@@ -151,10 +157,11 @@ pub struct Invocation<'a> {
     pub event: &'a Path,
     /// A secrets file, for a trusted ref only.
     pub secrets: Option<&'a Path>,
-    /// Whether `secrets` sets a non-empty `GITHUB_TOKEN`. Then act takes it from that file;
-    /// otherwise it is forced empty (act would fill it from the host's `gh auth token`). The
-    /// value never goes on act's command line, where `ps` shows it to every local user.
-    pub secrets_set_github_token: bool,
+    /// The `GITHUB_TOKEN` secret the job sees: empty unless the ref is trusted and the
+    /// secrets file sets one (act would otherwise fill it from the host's `gh auth token`).
+    /// Only whether it is empty shapes the arguments: the value goes to act through
+    /// [`command`]'s environment, never on its command line.
+    pub github_token: &'a str,
     /// Act's action cache and host workspaces for this run (`--action-cache-path`): per run, so
     /// nothing one run puts there reaches another.
     pub action_cache: &'a Path,
@@ -186,13 +193,16 @@ pub fn run_args(cfg: &Config, inv: &Invocation<'_>) -> Vec<String> {
         "--secret-file".into(),
         inv.secrets
             .map_or_else(|| "/dev/null".into(), |p| p.display().to_string()),
-    ];
-    if inv.secrets.is_none() || !inv.secrets_set_github_token {
-        // An empty value only: act lets `-s` override the secrets file and fills a missing
-        // token from `gh auth token`. A real token comes from the file, never from argv.
-        a.extend(["-s".into(), "GITHUB_TOKEN=".into()]);
-    }
-    a.extend([
+        // Always set, so act never falls back to the host's `gh auth token`, and set here so it
+        // overrides the secrets file: a bare name reads the value from act's environment (see
+        // [`command`]), `=` with nothing after it forces it empty.
+        "-s".into(),
+        if inv.github_token.is_empty() {
+            "GITHUB_TOKEN="
+        } else {
+            "GITHUB_TOKEN"
+        }
+        .into(),
         // No shared cache server: one repository's job could otherwise read or poison another's
         // `actions/cache` entries.
         "--no-cache-server".into(),
@@ -202,7 +212,7 @@ pub fn run_args(cfg: &Config, inv: &Invocation<'_>) -> Vec<String> {
         cfg.container_network.clone(),
         "--rm".into(),
         "--pull=false".into(),
-    ]);
+    ];
     if !cfg.mount_docker_socket {
         // `-`: act does not bind the Docker socket into job containers (its default does).
         a.push("--container-daemon-socket".into());
@@ -295,42 +305,46 @@ level=warning msg= ⚠ Apple M-series ⚠
             workflow: Path::new("/co/.forge/workflows/ci.yml"),
             event: Path::new("/ev.json"),
             secrets,
-            secrets_set_github_token: false,
+            github_token: "",
             action_cache: Path::new("/s/run/1/act"),
             artifacts: None,
         }
     }
 
-    /// A trusted ref's `GITHUB_TOKEN` comes from the secrets file act reads; argv (which `ps`
-    /// shows every local user) never holds it. Without one it is forced empty.
+    /// A trusted ref's `GITHUB_TOKEN` reaches act through its environment (private to the
+    /// runner's user), named by a bare `-s GITHUB_TOKEN`; argv, which `ps` shows every local
+    /// user, never holds the value. Without one it is forced empty, never left unset.
     #[test]
     fn the_github_token_is_never_on_the_command_line() {
-        let file = Path::new("/etc/forge/secrets");
-        let with = run_args(
-            &cfg(""),
+        let c = cfg("");
+        let token = "ghs_FAKEtokenFAKEtoken";
+        let args = run_args(
+            &c,
             &Invocation {
-                secrets_set_github_token: true,
-                ..inv(Some(file))
+                github_token: token,
+                ..inv(Some(Path::new("/etc/forge/secrets")))
             },
         );
-        assert_eq!(
-            pair(&with, "--secret-file").as_deref(),
-            Some("/etc/forge/secrets")
-        );
+        assert_eq!(pair(&args, "-s").as_deref(), Some("GITHUB_TOKEN"));
+        let cmd = command(&c, token);
         assert!(
-            !with.iter().any(|a| a.contains("GITHUB_TOKEN")),
-            "the file's token is not overridden: {with:?}"
+            !cmd.get_args().any(|a| a.to_string_lossy().contains("FAKE"))
+                && !args.iter().any(|a| a.contains("FAKE")),
+            "{args:?}"
         );
-        for (secrets, sets) in [(Some(file), false), (None, false), (None, true)] {
-            let a = run_args(
-                &cfg(""),
-                &Invocation {
-                    secrets_set_github_token: sets,
-                    ..inv(secrets)
-                },
-            );
-            assert_eq!(pair(&a, "-s").as_deref(), Some("GITHUB_TOKEN="), "{a:?}");
-        }
+        let env = |cmd: &Command| {
+            cmd.get_envs()
+                .find(|(k, _)| *k == "GITHUB_TOKEN")
+                .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+        };
+        assert_eq!(env(&cmd).as_deref(), Some(token));
+        let none = run_args(&c, &inv(None));
+        assert_eq!(pair(&none, "-s").as_deref(), Some("GITHUB_TOKEN="));
+        assert_eq!(
+            env(&command(&c, "")),
+            None,
+            "a host GITHUB_TOKEN is cleared"
+        );
     }
 
     #[test]
@@ -404,13 +418,13 @@ level=warning msg= ⚠ Apple M-series ⚠
             pair(&on, "--artifact-server-addr").as_deref(),
             Some("172.17.0.1")
         );
-        let url = command(&c)
+        let url = command(&c, "")
             .get_envs()
             .find(|(k, _)| *k == "ACTIONS_RUNTIME_URL")
             .and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()));
         assert_eq!(url.as_deref(), Some("http://host.docker.internal:34567/"));
         assert!(
-            command(&cfg(""))
+            command(&cfg(""), "")
                 .get_envs()
                 .all(|(k, _)| k != "ACTIONS_RUNTIME_URL"),
             "no runtime URL from the runner's own environment"
@@ -443,7 +457,7 @@ level=warning msg= ⚠ Apple M-series ⚠
 
     #[test]
     fn act_sees_only_the_allowed_environment() {
-        let c = command(&cfg(""));
+        let c = command(&cfg(""), "");
         let envs: BTreeMap<String, Option<String>> = c
             .get_envs()
             .map(|(k, v)| {

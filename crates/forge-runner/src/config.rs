@@ -275,6 +275,11 @@ impl Config {
                     r.repo
                 );
             }
+            // act resolves a relative --secret-file against the checkout (-C), which the pushed
+            // repository controls; the runner would read another file from its own directory.
+            if r.secrets_file.as_ref().is_some_and(|p| !p.is_absolute()) {
+                bail!("{}: secrets_file must be an absolute path", r.repo);
+            }
         }
         for (label, image) in &c.platforms {
             // `-self-hosted` makes act run the job directly on the runner's host, outside
@@ -358,16 +363,16 @@ impl RepoConfig {
 /// `[redacted]`, the scheme, host and path kept so the mistake is still visible.
 fn shown_url(url: &str) -> String {
     let (scheme, rest) = url.split_once("://").map_or(("", url), |(s, r)| (s, r));
-    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let (authority, tail) = rest.split_at(end);
     let sep = if scheme.is_empty() { "" } else { "://" };
-    let host = authority.rfind('@').map_or(authority.to_string(), |at| {
-        format!("[redacted]{}", &authority[at..])
+    // Everything before the last `@` goes, even across a `/`, `?` or `#`: a password with one
+    // of those unescaped is exactly the malformed URL that gets here.
+    let (user, rest) = rest
+        .rfind('@')
+        .map_or(("", rest), |at| ("[redacted]@", &rest[at + 1..]));
+    let rest = rest.find(['?', '#']).map_or(rest.to_string(), |q| {
+        format!("{}{}[redacted]", &rest[..q], &rest[q..=q])
     });
-    let path = tail
-        .find(['?', '#'])
-        .map_or(tail.to_string(), |q| format!("{}?[redacted]", &tail[..q]));
-    format!("{scheme}{sep}{host}{path}")
+    format!("{scheme}{sep}{user}{rest}")
 }
 
 /// A ref glob: `*` matches any run of characters within one path segment (never a `/`), and
@@ -489,6 +494,18 @@ repo = "alice/project"
             "https://[redacted]@h:1/x?[redacted]"
         );
         assert_eq!(shown_url("ftp://r"), "ftp://r");
+        assert_eq!(shown_url("https://u:pa/ss@h"), "https://[redacted]@h");
+        assert_eq!(shown_url("http://h/p#frag"), "http://h/p#[redacted]");
+    }
+
+    /// act would read a relative secrets file from the pushed checkout.
+    #[test]
+    fn a_relative_secrets_file_is_refused() {
+        let e = Config::parse(
+            "state_dir = \"/x\"\n[[repo]]\nrepo = \"a/b\"\ntrusted_refs = [\"refs/heads/main\"]\nsecrets_file = \"secrets\"",
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("absolute"), "{e}");
     }
 
     #[test]

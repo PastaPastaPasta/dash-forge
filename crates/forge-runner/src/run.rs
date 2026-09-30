@@ -769,14 +769,15 @@ fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Resul
             workflow: &workflow_path,
             event: c.event,
             secrets: c.secrets,
-            secrets_set_github_token: sets_github_token(c.secret_values),
+            github_token: github_token(c.secret_values),
             action_cache: &action_cache,
             artifacts: art_dir.as_deref(),
         },
     );
     let started = Instant::now();
     let limit = c.deadline.saturating_duration_since(Instant::now());
-    let (results, timed_out, crashed) = run_act(c.cfg, &args, limit);
+    let token = github_token(c.secret_values);
+    let (results, timed_out, crashed) = run_act(c.cfg, &args, token, limit);
     if timed_out || crashed {
         sweep_containers(c.cfg);
     }
@@ -905,12 +906,13 @@ fn read_secret_values(path: &Path) -> Result<Vec<(String, String)>> {
         .collect())
 }
 
-/// Whether a secrets file's pairs set a non-empty `GITHUB_TOKEN` (act upper-cases the names it
-/// reads from the file, so the match ignores case).
-fn sets_github_token(values: &[(String, String)]) -> bool {
+/// The `GITHUB_TOKEN` a secrets file's pairs set, or `""` (act upper-cases the names it reads
+/// from the file, so the match ignores case). act gets this value, the one [`redact`] masks.
+fn github_token(values: &[(String, String)]) -> &str {
     values
         .iter()
-        .any(|(k, v)| k.eq_ignore_ascii_case("GITHUB_TOKEN") && !v.is_empty())
+        .find(|(k, _)| k.eq_ignore_ascii_case("GITHUB_TOKEN"))
+        .map_or("", |(_, v)| v.as_str())
 }
 
 /// `log` with every secret value (of 4 characters or more) replaced by `***`, in the clear and
@@ -931,8 +933,13 @@ pub fn redact(log: &str, secrets: &[String]) -> String {
         .fold(log.to_string(), |acc, s| acc.replace(s.as_str(), "***"))
 }
 
-/// `s` itself, its URL-encoding, and the part of its base64 encoding that depends on `s` alone
-/// at each of the three byte alignments it can start at inside a longer encoded string.
+/// The shortest base64 part [`encoded_forms`] masks.
+const MIN_BASE64_FORM: usize = 6;
+
+/// `s` itself, its URL-encoding (RFC 3986, upper-case hex: best effort, other encoders
+/// differ), and the part of its base64 encoding that depends on `s` alone at each of the three
+/// byte alignments it can start at inside a longer encoded string. A base64 part shorter than
+/// [`MIN_BASE64_FORM`] is left out: it would match unrelated text too often.
 fn encoded_forms(s: &str) -> Vec<String> {
     use base64::engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD};
     use base64::Engine as _;
@@ -947,7 +954,7 @@ fn encoded_forms(s: &str) -> Vec<String> {
         let keep = bits / 6;
         for engine in [&STANDARD_NO_PAD, &URL_SAFE_NO_PAD] {
             let enc = engine.encode(&bytes);
-            if let Some(core) = enc.get(skip..keep).filter(|c| c.len() >= 4) {
+            if let Some(core) = enc.get(skip..keep).filter(|c| c.len() >= MIN_BASE64_FORM) {
                 forms.push(core.to_string());
             }
         }
@@ -969,9 +976,15 @@ fn url_encode(s: &str) -> String {
 }
 
 /// Run act with `args`, streaming its JSON log, stopped after `limit`: SIGINT first (act then
-/// tears its containers down), SIGKILL 20 s later. Returns (results, timed out, crashed).
-fn run_act(cfg: &Config, args: &[String], limit: Duration) -> (Results, bool, bool) {
-    let mut cmd = act::command(cfg);
+/// tears its containers down), SIGKILL 20 s later. `github_token` goes in act's environment
+/// ([`act::command`]). Returns (results, timed out, crashed).
+fn run_act(
+    cfg: &Config,
+    args: &[String],
+    github_token: &str,
+    limit: Duration,
+) -> (Results, bool, bool) {
+    let mut cmd = act::command(cfg, github_token);
     cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1414,13 +1427,14 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect()
         };
-        assert!(sets_github_token(&pairs(&[
-            ("A", "b"),
-            ("GITHUB_TOKEN", "ghs_FAKE")
-        ])));
-        assert!(sets_github_token(&pairs(&[("github_token", "ghs_FAKE")])));
-        assert!(!sets_github_token(&pairs(&[("GITHUB_TOKEN", "")])));
-        assert!(!sets_github_token(&pairs(&[("GH_TOKEN", "ghs_FAKE")])));
+        let with = pairs(&[("A", "b"), ("GITHUB_TOKEN", "ghs_FAKE")]);
+        assert_eq!(github_token(&with), "ghs_FAKE");
+        assert_eq!(
+            github_token(&pairs(&[("github_token", "ghs_FAKE")])),
+            "ghs_FAKE"
+        );
+        assert_eq!(github_token(&pairs(&[("GITHUB_TOKEN", "")])), "");
+        assert_eq!(github_token(&pairs(&[("GH_TOKEN", "ghs_FAKE")])), "");
     }
 
     /// A job that prints a secret base64-encoded (a `Basic` credential, at any alignment) or
@@ -1432,16 +1446,22 @@ mod tests {
         let secret = "ghs_FAKE+tok/en=Value?1".to_string();
         let values = std::slice::from_ref(&secret);
         for prefix in ["", "x", "xy", "x-access-token:"] {
+            // The characters holding only the secret's bits run from the first character that
+            // starts at or after its first bit to the last one that ends by its last bit: all
+            // of them go, and at most one character on each side (4 bits of it) is left.
+            let (from, to) = (prefix.len() * 8, (prefix.len() + secret.len()) * 8);
+            let (first, last) = (from.div_ceil(6), to / 6);
             for encoded in [
                 STANDARD.encode(format!("{prefix}{secret}")),
                 URL_SAFE_NO_PAD.encode(format!("{prefix}{secret}:suffix")),
             ] {
                 let log = format!("Authorization: Basic {encoded}\n");
-                let out = redact(&log, values);
-                assert!(out.contains("***"), "{prefix:?}: {out}");
-                // What is left can no longer be decoded back to the secret.
-                let fragment = &STANDARD.encode(&secret)[4..20];
-                assert!(!out.contains(fragment), "{prefix:?}: {out}");
+                let want = format!(
+                    "Authorization: Basic {}***{}\n",
+                    &encoded[..first],
+                    &encoded[last..]
+                );
+                assert_eq!(redact(&log, values), want, "{prefix:?}");
             }
         }
         let url = "https://h/?t=ghs_FAKE%2Btok%2Fen%3DValue%3F1&x=1";
@@ -1452,16 +1472,57 @@ mod tests {
         );
     }
 
+    /// End to end through a real process: act gets the token in its environment and a bare
+    /// `-s GITHUB_TOKEN`; its argv never holds the value.
+    #[cfg(unix)]
+    #[test]
+    fn act_gets_the_token_in_its_environment_not_its_argv() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = tempfile::tempdir().unwrap();
+        let (argv_file, env_file) = (d.path().join("argv"), d.path().join("env"));
+        let fake = d.path().join("act");
+        std::fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s' \"$GITHUB_TOKEN\" > '{}'\n",
+                argv_file.display(),
+                env_file.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let c = cfg(&format!("[bin]\nact = \"{}\"", fake.display()));
+        let token = "ghs_FAKEtokenFAKEtoken";
+        let act_args = act::run_args(
+            &c,
+            &Invocation {
+                event_name: "push",
+                checkout: d.path(),
+                workflow: d.path(),
+                event: d.path(),
+                secrets: Some(d.path()),
+                github_token: token,
+                action_cache: d.path(),
+                artifacts: None,
+            },
+        );
+        run_act(&c, &act_args, token, Duration::from_secs(10));
+        let argv = std::fs::read_to_string(argv_file).unwrap();
+        assert!(!argv.contains("FAKE"), "{argv}");
+        assert!(argv.lines().any(|l| l == "GITHUB_TOKEN"), "{argv}");
+        assert_eq!(std::fs::read_to_string(env_file).unwrap(), token);
+    }
+
     #[test]
     fn a_hung_act_is_stopped_and_a_missing_act_is_a_crash() {
         let c = cfg("[bin]\nact = \"sleep\"");
-        let (_, timed_out, _) = run_act(&c, &["5".into()], Duration::from_millis(600));
+        let (_, timed_out, _) = run_act(&c, &["5".into()], "", Duration::from_millis(600));
         assert!(timed_out);
         let c = cfg("[bin]\nact = \"/nonexistent/act\"");
-        let (_, timed_out, crashed) = run_act(&c, &[], Duration::from_secs(5));
+        let (_, timed_out, crashed) = run_act(&c, &[], "", Duration::from_secs(5));
         assert!(!timed_out && crashed);
         let c = cfg("[bin]\nact = \"false\"");
-        let (_, _, crashed) = run_act(&c, &[], Duration::from_secs(5));
+        let (_, _, crashed) = run_act(&c, &[], "", Duration::from_secs(5));
         assert!(!crashed, "a non-zero exit (a failed job) is not a crash");
     }
 }
