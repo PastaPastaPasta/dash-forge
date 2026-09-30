@@ -726,8 +726,9 @@ async fn a_stopped_ipfs_gateway_is_survived_by_the_s3_and_platform_copies() {
 /// helper, `dg`, forge-core — links the relay, directly or through another crate (the resolved
 /// graph from `cargo metadata`, normal and build dependencies). The web app has no relay client.
 ///
-/// The graph is this host's (`--filter-platform`): offline, cargo can only describe the
-/// packages a build here downloaded, and a fresh CI runner has no other platform's crates.
+/// The graph is this host's (`--filter-platform`), and cargo may fetch what it lacks: a runner
+/// that built only forge-core has neither another platform's crates nor `dg`'s, and cargo needs
+/// every package's manifest to resolve the graph.
 #[test]
 fn no_read_path_crate_depends_on_the_relay() {
     let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
@@ -742,7 +743,7 @@ fn no_read_path_crate_depends_on_the_relay() {
         .expect("rustc -vV names the host");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let out = std::process::Command::new(cargo)
-        .args(["metadata", "--format-version", "1", "--locked", "--offline"])
+        .args(["metadata", "--format-version", "1", "--locked"])
         .args(["--filter-platform", host])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
