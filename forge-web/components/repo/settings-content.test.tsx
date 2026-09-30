@@ -12,11 +12,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RepoHome } from '@/lib/view'
 
 const unlockMore = vi.fn(async () => undefined)
+const viewer = { id: 'owner' }
 vi.mock('@/contexts/auth-context', () => ({
   useAuth: () => ({
-    identity: 'owner',
-    signer: { identityId: 'owner' },
-    vaults: [{ identityId: 'owner', methods: ['passphrase'] }],
+    identity: viewer.id,
+    signer: { identityId: viewer.id },
+    vaults: [{ identityId: viewer.id, methods: ['passphrase'] }],
     controller: { unlockMore },
     isLoading: false,
   }),
@@ -45,18 +46,20 @@ import { SettingsContent } from './settings-content'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
-function privateHome(access: 'locked' | 'no-key'): RepoHome {
+function repoHome(visibility: 'private' | 'public', access?: 'locked' | 'no-key' | 'member'): RepoHome {
   return {
-    repo: { repoId: 'R', name: 'secret', ownerId: 'owner', visibility: 'private', forge: { core: 'C', collab: 'L', community: 'M' } },
+    repo: { repoId: 'R', name: 'secret', ownerId: 'owner', visibility, forge: { core: 'C', collab: 'L', community: 'M' } },
     backend: { kind: 'platform', uris: [] },
-    private: { access },
+    private: access === undefined ? undefined : access === 'member' ? { access, session: {} } : { access },
   } as unknown as RepoHome
 }
+const privateHome = (access: 'locked' | 'no-key' | 'member'): RepoHome => repoHome('private', access)
 
 let host: HTMLDivElement
 let root: Root
 beforeEach(() => {
   unlockMore.mockClear()
+  viewer.id = 'owner'
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -96,5 +99,24 @@ describe('private repo Settings → Collaborators before this tab opened the enc
     await render(privateHome('no-key'))
     expect(host.querySelector('[data-testid="members-unlock"]')).toBeNull()
     expect(host.textContent).toMatch(/add your encryption key to this browser/)
+  })
+
+  it('offers a locked member who is not the owner the unlock for the key epoch', async () => {
+    viewer.id = 'writer'
+    await render(privateHome('locked'))
+    expect(host.querySelector('[data-testid="members-unlock"]')?.textContent).toMatch(/Unlock this tab to see the repo's key epoch/)
+    expect(host.textContent).toMatch(/Only the owner can add or remove members/)
+  })
+
+  it('an unlocked member gets the private member view, without the unlock', async () => {
+    await render(privateHome('member'))
+    expect(host.querySelector('[data-testid="private-members"]')).not.toBeNull()
+    expect(host.querySelector('[data-testid="members-unlock"]')).toBeNull()
+  })
+
+  it("a public repo's owner still gets the add form", async () => {
+    await render(repoHome('public'))
+    expect(host.querySelector('#member-id')).not.toBeNull()
+    expect(host.querySelector('[data-testid="members-unlock"]')).toBeNull()
   })
 })

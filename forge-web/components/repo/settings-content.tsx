@@ -151,7 +151,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
         {home.private?.access === 'locked' ? (
           // The encryption key is in this browser, but this tab resumed with the signing key only.
           <div className="mt-4">
-            <UnlockMore title={isOwner ? 'Unlock this tab to add or remove members' : "Unlock this tab to read the repo's members and key epoch"} testId="members-unlock" />
+            <UnlockMore title={isOwner ? 'Unlock this tab to add or remove members' : "Unlock this tab to see the repo's key epoch"} testId="members-unlock" />
           </div>
         ) : isOwner && repo.visibility === 'private' ? (
           <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
