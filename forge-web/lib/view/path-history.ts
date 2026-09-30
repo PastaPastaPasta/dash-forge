@@ -18,7 +18,7 @@ import { MODE_GITLINK, MODE_TREE } from '../browse'
 import type { VersionList } from '../browse/history-index'
 import { commitSubject, type CommitObject } from './git-objects'
 import { historyWalker, type LogEntry, type PrefixReader, type WalkOptions } from './commit-log'
-import { historyOf } from './history-source'
+import { historyOf, type HistorySource } from './history-source'
 import { readCommit, readTree, type ObjectReader } from './tree-nav'
 import { trimOldest } from './pool'
 
@@ -53,6 +53,8 @@ interface WalkMemo {
   readonly entries: Map<string, Promise<PathEntry>>
   readonly commits: Map<string, Promise<CommitObject>>
   readonly listed: Map<string, ListedAt>
+  /** `tip\0path` of the newest index's lists already served for a walk to join ({@link serveNewestList}). */
+  readonly joined: Set<string>
 }
 
 /** A version inside a list the index served. */
@@ -93,7 +95,7 @@ function memoOf(reader: ObjectReader): WalkMemo {
   const scope = reader.memoScope ?? reader
   let m = memos.get(scope)
   if (m === undefined) {
-    m = { entries: new Map(), commits: new Map(), listed: new Map() }
+    m = { entries: new Map(), commits: new Map(), listed: new Map(), joined: new Set() }
     memos.set(scope, m)
   }
   return m
@@ -163,7 +165,12 @@ export interface LogPage {
 }
 
 /** A log row from a parsed commit. */
-export const logEntryOf = (oid: string, commit: CommitObject): LogEntry => ({ oid, subject: commitSubject(commit.message), author: commit.author })
+export const logEntryOf = (oid: string, commit: CommitObject): LogEntry => ({
+  oid,
+  subject: commitSubject(commit.message),
+  author: commit.author,
+  committedAt: commit.committer.when,
+})
 
 /**
  * Up to `limit` first-parent commits from `startOid` (a tip, or a page's `next`), newest first.
@@ -246,7 +253,12 @@ export interface PathVersionsPage extends LogPage {
  * 2. Past the end of a list that does not reach the path's first commit, the walk goes on from
  *    the oldest listed commit's parent.
  * 3. Otherwise it walks first-parent history ({@link logPage}), and stops where an index covers
- *    a commit to go on from its list (an index a few pushes behind).
+ *    a commit to go on from its list (an index a few pushes behind), or where it reaches a version
+ *    listed by the newest index (QW2-036): before its first walk it serves that index's list of
+ *    the path, so a tag or a branch whose first-parent history joins the default branch's walks
+ *    only to the first version on the shared part. A version in that list is on the indexed
+ *    tip's first-parent chain, so every older one is too, and the list from there is this
+ *    history's as well (checked against the trees at the version, as any served list is).
  *
  * An index that is missing, fails to load or does not match leaves the walk as the answer, and
  * so does a list naming a commit that cannot be read (from the last position the trees checked).
@@ -285,6 +297,9 @@ export async function pathVersions(
   // Set when a list named a commit this repository cannot read: the rest of this call walks.
   let distrusted = key === ''
   const most = Math.max(limit, listLimit)
+  const served = memoOf(reader).listed
+  // Whether the newest index's list of the path was served for this call's walk (once a call).
+  let joined = false
   while (next !== null && entries.length < limit && examined < cap) {
     signal?.throwIfAborted()
     const listed: ListedAt | null = distrusted ? null : await listedAt(reader, walker, next, key)
@@ -311,13 +326,22 @@ export async function pathVersions(
       continue
     }
     const from: string = next
+    if (history !== null && !joined && !distrusted) {
+      joined = true
+      await serveNewestList(reader, walker, history, from, key)
+      signal?.throwIfAborted()
+      // `from` is itself a version the list holds: go on from the list, not the walk.
+      if (served.has(`${from}\0${key}`)) continue
+    }
     const page = await logPage(reader, from, {
       path,
       limit: limit - entries.length,
       cap: Math.min(VERSIONS_STRIDE, cap - examined),
       walker,
       signal,
-      ...(history !== null ? { stopAt: (oid: string) => history.coversVersions(oid) } : {}),
+      ...(history !== null
+        ? { stopAt: (oid: string) => history.coversVersions(oid) || (!distrusted && served.has(`${oid}\0${key}`)) }
+        : {}),
     })
     entries.push(...page.entries)
     examined += page.examined
@@ -340,8 +364,11 @@ async function listedAt(reader: PrefixReader, walker: ObjectReader, start: strin
   const hit = memo.listed.get(`${start}\0${path}`)
   if (hit !== undefined) {
     // A list served before holds `start`: believed here only if the trees agree (a list's commits
-    // are keys for every view of this repo, so a wrong one must not answer another branch).
-    return matches(await entryHere(), hit.list.claims[hit.at] as VersionClaim) ? hit : null
+    // are keys for every view of this repo, so a wrong one must not answer another branch). One
+    // that misstates a version is not believed anywhere: no later walk stops to resume in it.
+    if (matches(await entryHere(), hit.list.claims[hit.at] as VersionClaim)) return hit
+    forgetList(memo, hit.list, path)
+    return null
   }
   const history = historyOf(reader)
   if (history === null || !history.coversVersions(start)) return null
@@ -368,6 +395,21 @@ async function listedAt(reader: PrefixReader, walker: ObjectReader, start: strin
   })
   trimOldest(memo.listed, MEMO_MAX)
   return { list, at: 0 }
+}
+
+/**
+ * Serve the newest index's list of `path` (once per session: {@link listedAt} memoizes it), so a
+ * walk from `start`, which no index covers, can stop at the first version it shares with that
+ * history. Best effort: a list that does not load or does not match leaves the walk as it is.
+ */
+async function serveNewestList(reader: PrefixReader, walker: ObjectReader, history: HistorySource, start: string, path: string): Promise<void> {
+  const tip = history.versionTips?.[0]
+  if (tip === undefined || tip === start) return
+  const joined = memoOf(reader).joined
+  const key = `${tip}\0${path}`
+  if (joined.has(key)) return
+  joined.add(key)
+  await listedAt(reader, walker, tip, path).catch(() => null)
 }
 
 /** Drop a list that turned out wrong, so no later page resumes in it. */

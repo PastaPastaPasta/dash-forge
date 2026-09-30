@@ -112,6 +112,8 @@ export interface TagObject {
   /** The type the tag declares for it (the object's own type is what counts). */
   readonly type: string
   readonly tag: string
+  /** Who tagged it and when (the `tagger` header); absent on an old tag without one. */
+  readonly tagger?: GitIdent
 }
 
 /**
@@ -126,7 +128,8 @@ export function parseTag(bytes: Uint8Array): TagObject | null {
   const type = lines[1]?.startsWith('type ') ? (lines[1] as string).slice(5) : ''
   if (!OID_HEX.test(object) || type === '') return null
   const tag = lines.find((l) => l.startsWith('tag '))?.slice(4) ?? ''
-  return { object, type, tag }
+  const tagger = lines.find((l) => l.startsWith('tagger '))
+  return { object, type, tag, ...(tagger !== undefined ? { tagger: parseIdent(tagger.slice(7)) } : {}) }
 }
 
 /** A commit or tree that `git fsck` would refuse (or that git and this client would read differently). */

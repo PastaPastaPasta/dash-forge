@@ -18,7 +18,7 @@
 
 import { historyWalker, type LogEntry, type WalkOptions } from './commit-log'
 import type { CommitObject } from './git-objects'
-import { commitVia, LOG_PAGE, logEntryOf } from './path-history'
+import { commitVia, LOG_PAGE, logEntryOf, PATH_WALK_CAP, pathEntryAt } from './path-history'
 import type { ObjectReader } from './tree-nav'
 
 /** A commit waiting in the walk's queue. */
@@ -101,4 +101,63 @@ export async function dateOrderedPage(
     walker.flush?.()
   }
   return { entries, next: queue.length > 0 ? { queue, seen } : null, examined }
+}
+
+/** One page of a path's full history ({@link pathDateOrderedPage}). */
+export interface PathDateLogPage extends DateLogPage {
+  /** The page stopped at its cap of commits examined without filling up. */
+  readonly capped: boolean
+}
+
+/**
+ * Up to `limit` commits of `git log <tip> -- <path>` from `from` (a tip, or a page's `next`): a
+ * file's or a directory's History with every commit, not the first-parent ones alone (QW2-041).
+ *
+ * git's default history simplification, over the same date-ordered walk as {@link dateOrderedPage}:
+ * a commit whose `path` entry equals one parent's is not listed, and the walk follows only the
+ * first such parent (a merge that took the file from one side stands for nothing); a commit that
+ * differs from every parent changed it (or deleted it), is listed, and the walk goes on through
+ * its parents. A root commit is listed when it has the path. Unlike git, the walk does not go on into a parent
+ * without the path: the commit that added it ends that line (an earlier life of the same path,
+ * deleted then added again, is not listed, as the first-parent History does not list it), so a
+ * History never walks the rest of the repository's past. At most `cap` commits are examined.
+ */
+export async function pathDateOrderedPage(
+  reader: ObjectReader,
+  from: string | DateWalk,
+  path: string,
+  { limit = LOG_PAGE, cap = PATH_WALK_CAP, walker = historyWalker(reader), signal }: WalkOptions & { readonly limit?: number; readonly cap?: number } = {},
+): Promise<PathDateLogPage> {
+  const entries: LogEntry[] = []
+  let examined = 0
+  let queue: Queued[]
+  let seen: Set<string>
+  try {
+    if (typeof from === 'string') {
+      queue = [{ oid: from, commit: await commitVia(reader, walker, from) }]
+      seen = new Set([from])
+    } else {
+      queue = [...from.queue]
+      seen = new Set(from.seen)
+    }
+    while (entries.length < limit && queue.length > 0 && examined < cap) {
+      signal?.throwIfAborted()
+      const { oid, commit } = queue.shift() as Queued
+      examined += 1
+      const [here = null, ...there] = await Promise.all([oid, ...commit.parents].map((c) => pathEntryAt(reader, walker, c, path)))
+      const same = there.indexOf(here)
+      // Unchanged against a parent: not listed, and only that parent's line is followed.
+      const follow = same >= 0 ? [commit.parents[same] as string] : commit.parents.filter((_, i) => there[i] !== null)
+      // Changed against every parent (a deletion too); a root commit only when it has the path.
+      if (same < 0 && (here !== null || commit.parents.length > 0)) entries.push(logEntryOf(oid, commit))
+      const fresh = follow.filter((p) => !seen.has(p))
+      for (const p of fresh) seen.add(p)
+      const parents = await Promise.all(fresh.map((p) => commitVia(reader, walker, p)))
+      fresh.forEach((p, i) => insertByDate(queue, { oid: p, commit: parents[i] as CommitObject }))
+    }
+  } finally {
+    walker.flush?.()
+  }
+  const next = queue.length > 0 ? { queue, seen } : null
+  return { entries, next, examined, capped: next !== null && examined >= cap && entries.length < limit }
 }

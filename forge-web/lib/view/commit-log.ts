@@ -27,6 +27,11 @@ export interface LogEntry {
   readonly subject: string
   /** Who wrote it and when (ms): all a log row shows, so the history index can supply it. */
   readonly author: LogAuthor
+  /**
+   * The committer time (ms), when the commit itself was read: what `git log` orders by, and what
+   * the list's day headers group by (QW2-044). The history index records author times only.
+   */
+  readonly committedAt?: number
 }
 
 /** A log row's author: a commit's `author` ident, or the history index's name and time. */

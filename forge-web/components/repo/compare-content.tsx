@@ -22,6 +22,7 @@ import { resolveTip } from '@/lib/view/tip'
 import { useAsync } from '@/hooks/use-async'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
+import { GoToFileHotkey } from '@/components/repo/go-to-file'
 import { DiffView } from '@/components/repo/diff-view'
 import { CommitList } from '@/components/repo/pull-tabs'
 import { ReadErrorState } from '@/components/repo/resolved-tip'
@@ -138,7 +139,13 @@ function Resolve({
   const [b, h] = tips.data
   const notCommit = ([[b, base], [h, head]] as const).find(([tip]) => tip.type !== 'commit')?.[1]
   if (notCommit !== undefined) return <EmptyState icon={GitCompare} title={`${notCommit.name} is not a commit`} body="Only commits (a branch, a tag of a commit, a commit id) have a history to compare." />
-  return <Compared key={`${b.oid}...${h.oid}`} reader={reader} addr={addr} base={base} head={head} params={params} baseOid={b.oid} headOid={h.oid} />
+  return (
+    <>
+      {/* `t`: a file at the head side (QW2-043). */}
+      <GoToFileHotkey reader={reader} repo={home.repo} tip={h} addr={addr} refParam={params[1]} />
+      <Compared key={`${b.oid}...${h.oid}`} reader={reader} addr={addr} base={base} head={head} params={params} baseOid={b.oid} headOid={h.oid} />
+    </>
+  )
 }
 
 function Progress({ label, onStop }: { label: string; onStop?: () => void }): JSX.Element {
