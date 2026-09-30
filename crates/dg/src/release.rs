@@ -836,7 +836,7 @@ async fn assets_to_download(
             )
         })?;
     // A sealed release lists its assets in its sealed kind-4 manifest (§16.5).
-    let all: Vec<Wanted> = match release.sealed.as_ref() {
+    let mut assets: Vec<Wanted> = match release.sealed.as_ref() {
         Some(sealed) if sealed.fields.asset_manifest.is_some() => collab
             .release_manifest(&s.repo, &sealed.fields)
             .await?
@@ -853,10 +853,7 @@ async fn assets_to_download(
             })
             .collect(),
     };
-    let assets: Vec<Wanted> = all
-        .into_iter()
-        .filter(|w| asset_name.is_none_or(|n| w.asset.name == n))
-        .collect();
+    assets.retain(|w| asset_name.is_none_or(|n| w.asset.name == n));
     if assets.is_empty() {
         return Err(crate::errors::not_found(
             match asset_name {
@@ -902,28 +899,26 @@ async fn fetch_asset(
     w: &Wanted,
 ) -> Result<Vec<u8>> {
     let a = &w.asset;
-    let Some(e) = &w.sealed else {
-        return reader
-            .fetch_verified(
-                &a.uris,
-                &a.sha256.to_ascii_lowercase(),
-                (a.size_bytes > 0).then_some(a.size_bytes),
-                None,
-            )
-            .await
-            .with_context(|| format!("downloading and verifying {}", a.name));
-    };
-    let sealed = reader
-        .fetch_verified(
-            &e.uris,
-            e.sealed_sha256.as_deref().unwrap_or_default(),
+    // a sealed entry's `uris` are its asset's (`Wanted::from_manifest`)
+    let (hash, size) = match &w.sealed {
+        Some(e) => (
+            e.sealed_sha256.clone().unwrap_or_default(),
             e.sealed_size_bytes,
-            None,
-        )
+        ),
+        None => (
+            a.sha256.to_ascii_lowercase(),
+            (a.size_bytes > 0).then_some(a.size_bytes),
+        ),
+    };
+    let bytes = reader
+        .fetch_verified(&a.uris, &hash, size, None)
         .await
         .with_context(|| format!("downloading and verifying {}", a.name))?;
+    let Some(e) = &w.sealed else {
+        return Ok(bytes);
+    };
     collab
-        .open_release_asset(repo, e, &sealed)
+        .open_release_asset(repo, e, &bytes)
         .await
         .with_context(|| format!("decrypting and verifying {}", a.name))
 }
@@ -983,7 +978,8 @@ async fn download(
     }
     let collab = s.collab();
     let mut saved = Vec::new();
-    for ((asset, w), dest) in assets.iter().zip(&wanted).zip(&dests) {
+    for (w, dest) in wanted.iter().zip(&dests) {
+        let asset = &w.asset;
         let shown = crate::fmt::safe(&dest.path.display().to_string()).into_owned();
         if !dest.replace && already_saved(&dest.path, &asset.sha256) {
             if !ctx.json {

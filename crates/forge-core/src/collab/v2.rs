@@ -4653,14 +4653,6 @@ impl<'a> Collab<'a> {
             .into_iter()
             .filter(|m| m.kind == u64::from(crate::pack::KIND_RELEASE_ASSETS))
             .collect();
-        let unavailable = |why: String| {
-            UserError::new(
-                codes::SEALED_PACK_CORRUPT,
-                format!("the asset list of release {} is unavailable", fields.tag),
-            )
-            .cause(why)
-            .into()
-        };
         let reader = crate::storage::PackReader::from_user_config();
         let mut last = format!("no copy of asset list {} is recorded", hex::encode(hash));
         for copy in copies {
@@ -4693,7 +4685,12 @@ impl<'a> Collab<'a> {
                 Err(ManifestError::Pack(e)) => last = e.to_string(),
             }
         }
-        Err(unavailable(last))
+        Err(UserError::new(
+            codes::SEALED_PACK_CORRUPT,
+            format!("the asset list of release {} is unavailable", fields.tag),
+        )
+        .cause(last)
+        .into())
     }
 
     /// A sealed asset's file from its stored `sealed` bytes (already checked against
@@ -5468,8 +5465,10 @@ fn sealed_release_props(tag_name: &str, epoch: u32, enc: Vec<u8>) -> BTreeMap<St
 /// writer's, since `$createdAt` is client-set. `None` when it is, or is not visible yet.
 fn not_newest_warning(after: &ReleaseList, tag: &str, ours: &str) -> Option<String> {
     let newest = newest_revision(after, tag)?;
-    let seen = newest.document_id == ours || after.previous.iter().any(|r| r.document_id == ours);
-    (seen && newest.document_id != ours).then(|| {
+    // ours is visible but not the newest: then it is among the older revisions
+    let superseded =
+        newest.document_id != ours && after.previous.iter().any(|r| r.document_id == ours);
+    superseded.then(|| {
         format!(
             "your revision of release {tag} is older than {}'s ({}): another maintainer wrote \
              one meanwhile, or your clock is behind theirs; check it with `dg release list`",
