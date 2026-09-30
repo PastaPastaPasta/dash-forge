@@ -671,8 +671,25 @@ export async function openReleaseAsset(sealed: Uint8Array, entry: ReleaseAsset, 
 // The fold (§16.3)
 // ---------------------------------------------------------------------------------------------
 
-/** What {@link openRelease} made of a revision. */
-export type ReleaseStatus = 'readable' | UnreadableReason | 'malformed'
+/**
+ * What {@link openRelease} made of a revision; `earlierUse` is a `badTag` revision created before
+ * stated(e) ({@link releaseStatusOf}): sealed under an earlier use of the epoch number, not
+ * tampering (§16.3).
+ */
+export type ReleaseStatus = 'readable' | UnreadableReason | 'malformed' | 'earlierUse'
+
+/**
+ * A revision's fold status: {@link openRelease}'s, except that a `badTag` revision whose
+ * `$createdAt` (`createdAt`) predates the block time of stated(e) for its epoch
+ * ({@link AnchorRef.statedAt}) is an `earlierUse`: sealed under a key this repository no longer
+ * uses, reported as such and not as tampering (§16.3; forge-core `Keyring::open_release`). Judged
+ * best-effort: `$createdAt` is client-set, and a release has no block height.
+ */
+export function releaseStatusOf(opened: ReleaseOpenResult, epoch: number | undefined, createdAt: number, ctx: OpenContext): ReleaseStatus {
+  if (opened.status !== 'unreadable') return opened.status
+  const statedAt = epoch === undefined ? undefined : ctx.anchors.get(epoch)?.statedAt
+  return opened.reason === 'badTag' && statedAt !== undefined && createdAt < statedAt ? 'earlierUse' : opened.reason
+}
 
 /** One revision as the fold sees it, after {@link openRelease}. */
 export interface FoldRevision {

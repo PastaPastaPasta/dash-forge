@@ -570,11 +570,38 @@ fn asset_json(a: &ReleaseAsset) -> serde_json::Value {
 }
 
 /// The releases of `repo` (newest per tag, newest first) and the superseded revisions. A
-/// private repository's are opened with the identity's keys and folded (§16.3).
-async fn read_releases(ctx: &Ctx, repo: &str) -> Result<ReleaseList> {
+/// private repository's are opened with the identity's keys and folded (§16.3); for a
+/// maintainer, also the live releases whose asset list was uploaded under an old key (§16.5).
+async fn read_releases(ctx: &Ctx, repo: &str) -> Result<(ReleaseList, Vec<String>)> {
     // No key is opened to read them for a public repository (L-12).
     let s = Reader::open(ctx, repo).await?;
-    Ok(s.collab().releases(&s.repo).await?)
+    let collab = s.collab();
+    let list = collab.releases(&s.repo).await?;
+    let maintainer = s.repo.visibility == Visibility::Private
+        && matches!(
+            collab.signer_role(&s.repo).await,
+            Ok(Some(Role::Maintainer))
+        );
+    // A warning, never a failure: a list that cannot be judged is not reported.
+    let late = if maintainer {
+        collab
+            .late_asset_lists(&s.repo, &list)
+            .await
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    Ok((list, late))
+}
+
+/// The warning `dg release list` gives a maintainer for release `tag`, whose asset list was
+/// uploaded under an old key (§16.5).
+fn late_list_note(tag: &str) -> String {
+    format!(
+        "the asset list of release {tag} was uploaded under an old key, after the key was \
+         rotated: a member removed since may be able to read it; publish the release again with \
+         its files to seal a new list"
+    )
 }
 
 /// `(draft, pre-release, yanked)`, as `dg release list` prints them after the tag.
@@ -638,7 +665,7 @@ fn asset_count(r: &Release) -> String {
 }
 
 async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
-    let list = read_releases(ctx, repo).await?;
+    let (list, late) = read_releases(ctx, repo).await?;
     let row = |r: &Release| {
         json!({
             "tag": r.tag_name,
@@ -651,6 +678,7 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
             "prerelease": r.is_prerelease(),
             "sealed": r.sealed.is_some(),
             "stateUnknown": list.unknown_tags.contains(&r.tag_name),
+            "assetListUploadedLate": late.contains(&r.tag_name),
             "publishedBy": r.publisher,
             "createdAt": r.created_at,
             "assets": r.assets.iter().map(asset_json).collect::<Vec<_>>(),
@@ -680,6 +708,9 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
                 );
                 if list.unknown_tags.contains(&r.tag_name) {
                     println!("  a newer revision of this release could not be read; its state is unknown");
+                }
+                if late.contains(&r.tag_name) {
+                    println!("  warning: {}", late_list_note(&r.tag_name));
                 }
             }
             for note in incomplete_notes(&list) {

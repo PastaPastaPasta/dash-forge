@@ -87,6 +87,7 @@ export {
   encodeReleaseTlv,
   fitReleaseNotes,
   foldReleases,
+  releaseStatusOf,
   openRelease,
   openReleaseAsset,
   openReleaseManifest,

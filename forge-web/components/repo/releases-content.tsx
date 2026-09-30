@@ -169,7 +169,12 @@ function SealedListNotes({ list }: { list: ReleaseList }): JSX.Element | null {
           <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden /> Releases may be out of date: newer revisions are under a key you don&apos;t hold yet.
         </p>
       ) : null}
-      {hidden > 0 ? <p>{plural(hidden, 'release revision')} could not be read.</p> : null}
+      {hidden > 0 ? (
+        <p>
+          {plural(hidden, 'release revision')} could not be read
+          {(list.earlierUse ?? 0) > 0 ? ` (${list.earlierUse} sealed under a key this repository no longer uses)` : ''}.
+        </p>
+      ) : null}
     </div>
   )
 }
@@ -297,8 +302,8 @@ function ReleaseCard({
   const continued = sealedFields?.notesContinue === true
   const sealedAssetsId = useId()
   // A list that holds only the continued notes has no assets to show.
-  const noSealedAssets = manifest.data?.assets.length === 0
-  const notes = full && continued && manifest.data?.notes !== undefined ? manifest.data.notes : r.notesBody
+  const noSealedAssets = manifest.data?.manifest.assets.length === 0
+  const notes = full && continued && manifest.data?.manifest.notes !== undefined ? manifest.data.manifest.notes : r.notesBody
   return (
     <article
       data-testid="release"
@@ -436,7 +441,7 @@ function ReleaseCard({
             className="inline-flex items-center gap-1 text-dense text-anvil-600 underline dark:text-anvil-300"
           >
             <Lock className="h-3 w-3 shrink-0" aria-hidden />
-            {assetsOpen ? 'Hide' : 'Show'} {manifest.data ? plural(manifest.data.assets.length, 'asset') : 'assets'}
+            {assetsOpen ? 'Hide' : 'Show'} {manifest.data ? plural(manifest.data.manifest.assets.length, 'asset') : 'assets'}
           </button>
           {assetsOpen ? <SealedAssets repo={repo} state={manifest} className="mt-2" id={sealedAssetsId} /> : null}
         </div>

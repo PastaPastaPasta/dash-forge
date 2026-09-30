@@ -4,10 +4,11 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import { describe, expect, it } from 'vitest'
 
-import { EpochKeys, openReleaseAsset, sealPack, type ReleaseAsset } from '../private'
+import { EpochKeys, GRACE_BLOCKS, openReleaseAsset, sealPack, type ReleaseAsset } from '../private'
 import type { ReleaseAssetView } from '../repo'
 import {
   AssetHashMismatchError,
+  assetListUploadedLate,
   SealedAssetCorruptError,
   browserReadable,
   checkDownloadedFile,
@@ -84,6 +85,28 @@ describe('release asset fallback (D-056)', () => {
     expect(read).toBe(false)
     // With no published size, the hash decides.
     await expect(checkDownloadedFile(new Blob([bytes]), { ...asset, size: null })).resolves.toEqual({ kind: 'match' })
+  })
+})
+
+describe('an asset list uploaded under an old key (private-repos.md §16.5)', () => {
+  it('is late when its first copy is past the next anchor plus GRACE_BLOCKS for its header epoch, or under a burned epoch', async () => {
+    const k0 = await EpochKeys.import(new Uint8Array(32).fill(0x11), 0, new Uint8Array(32).fill(1))
+    const sealed = await sealPack(k0, new TextEncoder().encode('{"v":1}'))
+    const standing = {
+      anchors: new Map([
+        [0, { id: new Uint8Array(32), height: 10 }],
+        [1, { id: new Uint8Array(32).fill(1), height: 100 }],
+      ]),
+    }
+    const at = (...heights: number[]) => heights.map((createdAtBlockHeight) => ({ createdAtBlockHeight }))
+    expect(assetListUploadedLate(sealed, at(100 + GRACE_BLOCKS), standing)).toBe(false)
+    expect(assetListUploadedLate(sealed, at(101 + GRACE_BLOCKS), standing)).toBe(true)
+    // a later copy (a reseed of the same bytes) does not make it late: the first upload decides
+    expect(assetListUploadedLate(sealed, at(5000, 50), standing)).toBe(false)
+    expect(assetListUploadedLate(sealed, at(50), { ...standing, burned: new Set([0]) })).toBe(true)
+    // nothing to judge: no block height, or not a sealed header
+    expect(assetListUploadedLate(sealed, [{}], standing)).toBe(false)
+    expect(assetListUploadedLate(new Uint8Array(10), at(9999), standing)).toBe(false)
   })
 })
 

@@ -13,14 +13,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AsyncState } from '@/hooks/use-async'
 import type { ReleaseManifest } from '@/lib/private'
 import type { RepoRef } from '@/lib/repo'
-import { SealedAssets } from './sealed-release-assets'
+import type { OpenedReleaseManifest } from '@/lib/view/release-download'
+import { LATE_ASSET_LIST, SealedAssets } from './sealed-release-assets'
 
-const { download, save } = vi.hoisted(() => ({ download: vi.fn<() => Promise<Uint8Array>>(), save: vi.fn() }))
+const { download, save, viewer } = vi.hoisted(() => ({ download: vi.fn<() => Promise<Uint8Array>>(), save: vi.fn(), viewer: { role: 'writer' as string | null } }))
 vi.mock('@/lib/view/release-download', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/view/release-download')>()),
   downloadSealedAsset: download,
   saveBytes: save,
 }))
+vi.mock('@/hooks/use-repo-chrome', () => ({ useViewerRole: () => ({ role: viewer.role, known: true }) }))
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -42,7 +44,8 @@ const MANIFEST: ReleaseManifest = {
     { name: 'LICENSE', sha256: '', sizeBytes: 0, uris: ['https://github.com/o/r/releases/download/v1/LICENSE'] },
   ],
 }
-const state = (over: Partial<AsyncState<ReleaseManifest>>): AsyncState<ReleaseManifest> => ({
+const opened = (manifest: ReleaseManifest, uploadedLate = false): OpenedReleaseManifest => ({ manifest, uploadedLate })
+const state = (over: Partial<AsyncState<OpenedReleaseManifest>>): AsyncState<OpenedReleaseManifest> => ({
   data: null,
   loading: false,
   error: null,
@@ -70,7 +73,7 @@ const rows = (): HTMLElement[] => [...host.querySelectorAll<HTMLElement>('[data-
 
 describe('a sealed release asset list', () => {
   it('lists a sealed asset with a Download and an external link as external, not verified', () => {
-    act(() => root.render(<SealedAssets repo={REPO} state={state({ data: MANIFEST })} />))
+    act(() => root.render(<SealedAssets repo={REPO} state={state({ data: opened(MANIFEST) })} />))
     const [sealed, external] = rows()
     expect(sealed?.dataset['state']).toBe('idle')
     expect(sealed?.querySelector('button[aria-label="Download app.tar.gz"]')).not.toBeNull()
@@ -81,7 +84,7 @@ describe('a sealed release asset list', () => {
   })
 
   it('shows the source link only after warning that opening it contacts the source host', () => {
-    act(() => root.render(<SealedAssets repo={REPO} state={state({ data: MANIFEST })} />))
+    act(() => root.render(<SealedAssets repo={REPO} state={state({ data: opened(MANIFEST) })} />))
     const external = rows()[1]!
     act(() => external.querySelector<HTMLButtonElement>('button')!.click())
     expect(external.textContent).toContain('contacts its source')
@@ -90,7 +93,7 @@ describe('a sealed release asset list', () => {
 
   it('saves a sealed asset only once its verified download resolves', async () => {
     download.mockResolvedValue(new Uint8Array([1, 2, 3]))
-    act(() => root.render(<SealedAssets repo={REPO} state={state({ data: MANIFEST })} />))
+    act(() => root.render(<SealedAssets repo={REPO} state={state({ data: opened(MANIFEST) })} />))
     await act(async () => rows()[0]!.querySelector<HTMLButtonElement>('button')!.click())
     expect(save).toHaveBeenCalledWith(new Uint8Array([1, 2, 3]), 'app.tar.gz')
     expect(rows()[0]?.dataset['state']).toBe('saved')
@@ -99,10 +102,25 @@ describe('a sealed release asset list', () => {
   it('saves nothing when the download is refused', async () => {
     const { SealedAssetCorruptError } = await import('@/lib/view/release-download')
     download.mockRejectedValue(new SealedAssetCorruptError('app.tar.gz'))
-    act(() => root.render(<SealedAssets repo={REPO} state={state({ data: MANIFEST })} />))
+    act(() => root.render(<SealedAssets repo={REPO} state={state({ data: opened(MANIFEST) })} />))
     await act(async () => rows()[0]!.querySelector<HTMLButtonElement>('button')!.click())
     expect(save).not.toHaveBeenCalled()
     expect(rows()[0]?.dataset['state']).toBe('mismatch')
+  })
+
+  it('warns a maintainer, and only a maintainer, of a list uploaded under an old key (§16.5)', () => {
+    const late = (): Element | null => host.querySelector('[data-testid="release-assets-late"]')
+    viewer.role = 'writer'
+    act(() => root.render(<SealedAssets repo={REPO} state={state({ data: opened(MANIFEST, true) })} />))
+    expect(late()).toBeNull()
+    viewer.role = 'maintainer'
+    act(() => root.render(<SealedAssets repo={REPO} state={state({ data: opened(MANIFEST, true) })} />))
+    expect(late()?.textContent).toBe(LATE_ASSET_LIST)
+    // Still listed: the revision's enc commits to it.
+    expect(rows()).toHaveLength(2)
+    act(() => root.render(<SealedAssets repo={REPO} state={state({ data: opened(MANIFEST) })} />))
+    expect(late()).toBeNull()
+    viewer.role = 'writer'
   })
 
   it('says the asset list is unavailable when it does not open', () => {
