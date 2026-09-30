@@ -5614,3 +5614,7 @@ mod rc1_tests {
 #[cfg(test)]
 #[path = "repo_roundtrip_tests.rs"]
 mod roundtrip_tests;
+
+#[cfg(test)]
+#[path = "survivability_tests.rs"]
+mod survivability_tests;
