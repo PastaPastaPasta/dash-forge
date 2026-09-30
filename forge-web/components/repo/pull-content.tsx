@@ -42,6 +42,7 @@ import {
   Lock,
   LockOpen,
   MessageSquare,
+  Milestone as MilestoneIcon,
   Pencil,
   RefreshCw,
   ShieldCheck,
@@ -76,6 +77,7 @@ import {
   setAssignee,
   setLabel,
   setLock,
+  setMilestone,
   setTargetState,
   updateComment,
   updateTarget,
@@ -130,13 +132,14 @@ import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { InlineCommentsProvider, type ThreadActions } from '@/components/repo/inline-comments'
 import { LockToggle, LockedBanner, lockConfirm, lockStateText, lockViewerOf } from '@/components/repo/locked-banner'
 import { ReviewDrawer, useReviewDraft } from '@/components/repo/review-drawer'
-import { BranchCommitCost, BranchRunContext, CommitIdentityPrompt, buildUpdateBranch, useSuggestions } from '@/components/repo/branch-commit-panel'
+import { BranchCommitCost, BranchRunContext, CommitIdentityPrompt, buildUpdateBranch, useSourceWrite, useSuggestions } from '@/components/repo/branch-commit-panel'
 import { PullMerge, useMergeSlot } from '@/components/repo/pull-merge'
 import type { CloseIssuesOption } from '@/components/repo/merge-panel'
 import { LINKED_ISSUES_MAX, linkedIssueTargets } from '@/lib/view/jump'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
 import { EditedMarker, MarkdownEditor } from '@/components/repo/issue-bits'
-import { AssigneePicker, LabelPicker, SidebarSection } from '@/components/repo/target-rail'
+import { AssigneePicker, LabelPicker, MilestonePicker, SidebarSection, assigneesConfirm, labelsConfirm, type SetChange } from '@/components/repo/target-rail'
+import { readMilestones } from '@/lib/repo/milestones'
 import { ReviewersCard } from '@/components/repo/reviewers-card'
 import { Approvals, VerdictLine } from '@/components/repo/approvals'
 import { ChecksTab, CommitsTab } from '@/components/repo/pull-tabs'
@@ -169,15 +172,20 @@ const VERDICT_RECORDS: Readonly<Record<VerdictInput, string>> = {
 
 /** The write the confirm dialog is about to sign. */
 type Pending =
-  | { kind: 'state'; to: 'close' | 'reopen' }
+  /** Close or reopen; with `comment`, the composer's text is posted first ("Close with comment", QW2-008). */
+  | { kind: 'state'; to: 'close' | 'reopen'; comment?: string }
   | { kind: 'mark-merged'; bypass: readonly string[] }
   | { kind: 'review'; verdict: VerdictInput; body: string }
   | { kind: 'draft'; to: 'draft' | 'ready' }
   | { kind: 'head'; oid: string }
   | { kind: 'request'; who: string; remove: boolean }
   | { kind: 'dismiss'; row: ReviewerCardRow; reason: string }
-  | { kind: 'label'; label: string; remove: boolean }
-  | { kind: 'assign'; who: string; remove: boolean }
+  /** A picker's change, applied together behind one confirm (QW2-046). */
+  | { kind: 'labels'; change: SetChange }
+  | { kind: 'assignees'; change: SetChange }
+  | { kind: 'milestone'; title: string | null }
+  /** Delete the source branch of a closed PR (QW2-057). */
+  | { kind: 'delete-branch'; label: string; run: () => Promise<void> }
   | { kind: 'define-label'; name: string; color: string; description: string }
   | { kind: 'edit-pull'; title: string; body: string }
   | { kind: 'edit-comment'; id: string; body: string }
@@ -369,6 +377,10 @@ function PullPage({
   // A same-repo source reads from the page's resolved branches (a branch never pushed there has
   // no entry: unknown, not deleted); a fork's branch is resolved in the fork.
   const sameRepoBranches = crossRepo ? '' : home.branches.map((b) => `${b.refName}:${tipOidOf(b) ?? ''}`).join(',')
+  // A closed or merged PR offers to delete its source branch, as GitHub does (QW2-057): the
+  // viewer's write access to it, read only once the PR is closed.
+  const closedSource = open ? null : sourceRef ?? (crossRepo ? null : repo)
+  const closedWrite = useSourceWrite(closedSource, pull.sourceRefName)
   const sourceState = useAsync<RefState | null>(
     () =>
       crossRepo
@@ -496,7 +508,7 @@ function PullPage({
   const sourceDefault = useAsync(
     async () => (sourceRef === null ? home.config?.defaultBranch ?? 'main' : await readDefaultBranch(sdk!, sourceRef)),
     [ready, sourceRef?.repoId ?? '', home.config?.defaultBranch ?? '', sourceWrite.can],
-    { enabled: ready && sdk !== null && open && sourceWrite.can },
+    { enabled: ready && sdk !== null && (open ? sourceWrite.can : closedWrite.can) },
   )
   const canResolve = authorOrMember && !writeBlocked && guard.disabledReason === null
   // Stable across renders (the diff's lines re-render only when these change): the handler
@@ -519,6 +531,14 @@ function PullPage({
   )
   const commentCost = composeCost(repo, 'comment', { body: comment.trim() }, commentFirst)
   const commentTooLong = composeTooLong(repo, 'comment', { body: comment.trim() })
+  // "Close with comment" (QW2-008): the composer's text goes with a close or reopen when it could be posted.
+  const withComment = comment.trim() !== '' && !writeBlocked && !commentTooLong ? comment.trim() : null
+  // The repo's milestones, for the picker (QW2-050): read for members only (only they can set one).
+  const milestones = useAsync(
+    () => readMilestones(sdk!, repo),
+    [ready, repoKey(repo), canMember ? 1 : 0],
+    { enabled: ready && sdk !== null && canMember },
+  )
 
   const postComment = async (): Promise<void> => {
     if (posting || comment.trim() === '' || commentTooLong || !guard.check(commentCost, 'collab', 'comment')) return
@@ -554,10 +574,23 @@ function PullPage({
     if (!sdk || !signer || pending === null) throw new Error('sign in to continue')
     const p = pending
     switch (p.kind) {
-      case 'state':
+      case 'state': {
+        // The comment first, as GitHub posts it; the composer's intent makes a retry re-use it.
+        let posted: string | null = null
+        if (p.comment !== undefined) {
+          posted = (
+            await createComment(sdk, signer, repo, { targetId: pull.id, body: p.comment, intent: commentIntent.intent, post: postContext }).catch((e: unknown) => {
+              if (e instanceof SupersededWriteError) return { documentId: e.documentId }
+              throw e
+            })
+          ).documentId
+          setComment('')
+          commentIntent.renew()
+        }
         await setTargetState(sdk, signer, repo, { target: stateTarget, action: p.to, isMember, intent })
-        refresh((t) => t.pull.state.open === (p.to === 'reopen'))
+        refresh((t) => t.pull.state.open === (p.to === 'reopen') && (posted === null || t.comments.some((c) => c.id === posted)))
         return
+      }
       case 'mark-merged':
         await setTargetState(sdk, signer, repo, { target: stateTarget, action: 'merge', isMember, oidHex: pull.headOid, intent })
         // A maintainer recording it past unmet branch rules: the bypass is recorded on the PR,
@@ -596,13 +629,26 @@ function PullPage({
         await post('reviewDismiss', intent, { refId: p.row.dismissId, ...(p.reason ? { value: p.reason } : {}) })
         refresh((t) => t.review.dismissedReviews.some((d) => d.reviewId === p.row.dismissId))
         return
-      case 'label':
-        await setLabel(sdk, signer, repo, { target, label: p.label, add: !p.remove, intent })
-        refresh((t) => t.pull.state.labels.includes(p.label) !== p.remove)
+      case 'labels':
+        // One event per label (the contract's shape), one confirm for all of them.
+        for (const label of p.change.add) await setLabel(sdk, signer, repo, { target, label, add: true, intent: `${intent}:add:${label}` })
+        for (const label of p.change.remove) await setLabel(sdk, signer, repo, { target, label, add: false, intent: `${intent}:remove:${label}` })
+        refresh((t) => p.change.add.every((l) => t.pull.state.labels.includes(l)) && !p.change.remove.some((l) => t.pull.state.labels.includes(l)))
         return
-      case 'assign':
-        await setAssignee(sdk, signer, repo, { target, assignee: p.who, assign: !p.remove, intent })
-        refresh((t) => t.pull.state.assignees.includes(p.who) !== p.remove)
+      case 'assignees':
+        for (const who of p.change.add) await setAssignee(sdk, signer, repo, { target, assignee: who, assign: true, intent: `${intent}:add:${who}` })
+        for (const who of p.change.remove) await setAssignee(sdk, signer, repo, { target, assignee: who, assign: false, intent: `${intent}:remove:${who}` })
+        refresh((t) => p.change.add.every((w) => t.pull.state.assignees.includes(w)) && !p.change.remove.some((w) => t.pull.state.assignees.includes(w)))
+        return
+      case 'milestone':
+        await setMilestone(sdk, signer, repo, { target, title: p.title, intent })
+        refresh((t) => t.review.milestone === p.title)
+        return
+      case 'delete-branch':
+        await p.run()
+        sourceState.reload()
+        // The branch list moved (a same-repo branch is read from the repo home).
+        reloadHome?.()
         return
       case 'define-label':
         await defineLabel(sdk, signer, repo, { name: p.name, color: p.color, description: p.description, intent: `${intent}:def` })
@@ -668,13 +714,17 @@ function PullPage({
           ? previewCredits(transitionCost.credits + previewCreate('event', { value: bypassValue(pending.bypass) }).credits)
           : transitionCost
       case 'state':
+        return pending.comment === undefined ? transitionCost : previewCredits(transitionCost.credits + composeCost(repo, 'comment', { body: pending.comment }, commentFirst).credits)
       case 'draft':
       case 'lock':
         return transitionCost
-      case 'label':
-        return previewCreate('event', { value: pending.label })
-      case 'assign':
-        return previewCreate('event', { value: pending.who })
+      case 'labels':
+      case 'assignees':
+        return previewCredits([...pending.change.add, ...pending.change.remove].reduce((sum, value) => sum + previewCreate('event', { value }).credits, 0))
+      case 'milestone':
+        return previewCreate('event', pending.title === null ? {} : { value: pending.title })
+      case 'delete-branch':
+        return previewCreate('refUpdate')
       case 'dismiss':
         return previewCreate('event', { value: pending.reason })
       case 'define-label':
@@ -756,6 +806,22 @@ function PullPage({
   // first-parent fallback).
   const mergedLead = counts.commits === null || cmp?.fellBack === true ? 'Merged' : `${plural(counts.commits, 'commit')} merged`
   const checkout = checkoutCommand(repo, pull.number)
+  // A closed or merged PR's source branch, still at its head, and the viewer may delete it (QW2-057).
+  const closedBranch = ((): { label: string; run: () => Promise<void> } | null => {
+    const name = pull.sourceRefName
+    if (open || closedSource === null || name === null || sync?.kind !== 'in-sync') return null
+    const offer = deleteBranchOffer({
+      refName: name,
+      source: { visibility: closedSource.visibility, sameRepo: closedSource.repoId === repo.repoId },
+      canWrite: closedWrite.known ? closedWrite.can : null,
+      baseRefName: pull.baseRefName,
+      defaultBranch: sourceDefault.data,
+      headOid: pull.headOid,
+    })
+    if (offer.kind !== 'offer') return null
+    const head = pull.headOid
+    return { label: `${crossRepo ? `${closedSource.name}:` : ''}${shortBranch(name)}`, run: () => deleteSourceBranch(closedSource, name, head) }
+  })()
   const sourceAddr = sourceRef === null ? null : { owner: sourceRef.ownerId, name: sourceRef.name }
 
   return (
@@ -978,6 +1044,23 @@ function PullPage({
               <HiddenNote hidden={0} what="comments and reviews" home={home} by={thread.hidden} />
               <EventValuesNote counts={thread.eventValues} />
 
+              {closedBranch !== null && guard.disabledReason === null && !archived ? (
+                <section aria-label="Source branch" className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-200 px-4 py-3 dark:border-anvil-800" data-testid="closed-branch-box">
+                  {merged ? <GitMerge className="h-5 w-5 shrink-0 text-dash" aria-hidden /> : <GitPullRequestClosed className="h-5 w-5 shrink-0 text-danger-700 dark:text-danger-400" aria-hidden />}
+                  <div className="min-w-0 flex-1 text-dense">
+                    <p className="font-medium">{merged ? 'Pull request merged and closed' : 'Closed with unmerged commits'}</p>
+                    <p className="break-words text-anvil-500 dark:text-anvil-400">
+                      {merged ? 'The ' : 'This pull request is closed, but the '}
+                      <span className="font-mono">{closedBranch.label}</span>
+                      {merged ? ' branch can be deleted.' : ' branch still has its commits.'}
+                    </p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => setPending({ kind: 'delete-branch', label: closedBranch.label, run: closedBranch.run })} data-testid="delete-branch">
+                    Delete branch
+                  </Button>
+                </section>
+              ) : null}
+
               {/* Merge box */}
               {open && pull.state.draft ? (
                 <section aria-label="Draft" className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-300 px-4 py-3 dark:border-anvil-700" data-testid="draft-box">
@@ -1121,8 +1204,14 @@ function PullPage({
                   {writeBlocked ? <span /> : <CostPreview cost={commentCost} />}
                   <div className="flex flex-wrap items-center gap-2">
                     {actions.canCloseReopen ? (
-                      <Button variant="outline" onClick={() => setPending({ kind: 'state', to: open ? 'close' : 'reopen' })} disabled={!signer || guard.disabledReason !== null || archived}>
-                        {open ? 'Close pull request' : 'Reopen pull request'}
+                      <Button
+                        variant="outline"
+                        onClick={() => setPending(withComment === null ? { kind: 'state', to: open ? 'close' : 'reopen' } : { kind: 'state', to: open ? 'close' : 'reopen', comment: withComment })}
+                        disabled={!signer || guard.disabledReason !== null || archived}
+                        data-testid="pull-state-toggle"
+                      >
+                        {open ? <GitPullRequestClosed className="h-3.5 w-3.5 text-danger-700 dark:text-danger-400" aria-hidden /> : <GitPullRequest className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden />}
+                        {pullStateLabel(open, withComment !== null)}
                       </Button>
                     ) : null}
                     {showMarkMerged ? (
@@ -1295,7 +1384,7 @@ function PullPage({
                 assignees={pull.state.assignees}
                 members={thread.members.map((m) => m.identity)}
                 canEdit={canMember}
-                onToggle={(who, remove) => setPending({ kind: 'assign', who, remove })}
+                onApply={(change) => setPending({ kind: 'assignees', change })}
               />
             </SidebarSection>
             <SidebarSection title="Labels" icon={Tag}>
@@ -1304,9 +1393,21 @@ function PullPage({
                 defs={thread.labels}
                 byName={new Map(thread.labels.map((l) => [l.name, l]))}
                 canEdit={canMember}
-                onToggle={(label, remove) => setPending({ kind: 'label', label, remove })}
+                onApply={(change) => setPending({ kind: 'labels', change })}
                 onDefine={(name, color, description) => setPending({ kind: 'define-label', name, color, description })}
                 manageHref={repoHref('/repo/labels', addr)}
+              />
+            </SidebarSection>
+            {/* Milestone, as on an issue (QW2-050): a member event naming it. */}
+            <SidebarSection title="Milestone" icon={MilestoneIcon}>
+              <MilestonePicker
+                current={review.milestone}
+                choices={milestones.data ?? []}
+                loading={milestones.data === null && milestones.error === null}
+                canDefine={repo.visibility !== 'private'}
+                canEdit={canMember}
+                onChoose={(title) => setPending({ kind: 'milestone', title })}
+                manageHref={repoHref('/repo/milestones', addr)}
               />
             </SidebarSection>
             <SidebarSection title="Linked issues" icon={Link2}>
@@ -1471,16 +1572,26 @@ function ChecksRow({ summary, headOid, onOpen }: { summary: ChecksSummary | null
 }
 
 /** The confirm dialog's words for each pending write. */
+/** The close / reopen button's words, as GitHub's: "Close with comment" while the composer holds text. */
+function pullStateLabel(open: boolean, withComment: boolean): string {
+  if (withComment) return open ? 'Close with comment' : 'Reopen with comment'
+  return open ? 'Close pull request' : 'Reopen pull request'
+}
+
 function confirmText(pending: Pending | null, number: number, isMember: boolean, head: string, base: string): { title: string; description: string; label: string } {
   const via = isMember ? 'a member event' : 'an author event (you opened this PR)'
   const move = isMember ? 'a state change as a member' : 'a state change as the PR author'
   switch (pending?.kind) {
-    case 'state':
-      return {
-        title: `${pending.to === 'close' ? 'Close' : 'Reopen'} PR #${number}`,
-        description: `Records ${move}. Platform accepts it only if the PR is still ${pending.to === 'close' ? 'open' : 'closed'}.`,
-        label: pending.to === 'close' ? 'Close PR' : 'Reopen PR',
-      }
+    case 'state': {
+      const still = `Platform accepts it only if the PR is still ${pending.to === 'close' ? 'open' : 'closed'}.`
+      return pending.comment !== undefined
+        ? {
+            title: `${pending.to === 'close' ? 'Close' : 'Reopen'} PR #${number} with your comment`,
+            description: `Two writes: your comment, then ${move}. ${still}`,
+            label: pullStateLabel(pending.to === 'close', true),
+          }
+        : { title: `${pending.to === 'close' ? 'Close' : 'Reopen'} PR #${number}`, description: `Records ${move}. ${still}`, label: pending.to === 'close' ? 'Close PR' : 'Reopen PR' }
+    }
     case 'mark-merged':
       return pending.bypass.length > 0
         ? {
@@ -1523,16 +1634,22 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
         description: `Appends a member event: the review no longer counts for or against the PR.${pending.reason ? ` The reason "${pending.reason}" is public, even in a private repo.` : ''}`,
         label: 'Sign & dismiss',
       }
-    case 'label':
-      return { title: `${pending.remove ? 'Remove' : 'Add'} label "${pending.label}"`, description: 'Appends a label event. Only maintainers and writers can label.', label: 'Sign & label' }
+    case 'labels':
+      return labelsConfirm(pending.change)
+    case 'assignees':
+      return assigneesConfirm(pending.change)
+    case 'milestone':
+      return pending.title === null
+        ? { title: 'Clear the milestone', description: 'Appends a milestone-clear event.', label: 'Sign & clear' }
+        : { title: `Set milestone "${pending.title}"`, description: 'Appends a milestone event naming it.', label: 'Sign & set' }
+    case 'delete-branch':
+      return {
+        title: `Delete branch ${pending.label}`,
+        description: 'Records a ref update that deletes the branch. Its commits stay reachable from this PR by their ids, and anyone who has them can push the branch again.',
+        label: 'Sign & delete branch',
+      }
     case 'define-label':
       return { title: `Create label "${pending.name}"`, description: 'Two documents: the label definition (for the whole repo), then a label event on this PR.', label: 'Sign & create' }
-    case 'assign':
-      return {
-        title: pending.remove ? 'Remove assignee' : 'Assign',
-        description: `${pending.remove ? 'Unassigns' : 'Assigns'} ${pending.who.slice(0, 10)}… with a member event.`,
-        label: pending.remove ? 'Sign & unassign' : 'Sign & assign',
-      }
     case 'edit-pull':
       return { title: `Edit PR #${number}`, description: 'Replaces your PR document; you pay only for the changed bytes. Earlier versions stay readable on Platform.', label: 'Sign & save' }
     case 'edit-comment':

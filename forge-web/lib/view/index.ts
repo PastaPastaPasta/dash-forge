@@ -58,7 +58,7 @@ export {
   type PullComparison,
   type PullComparisonInput,
 } from './pull-diff'
-export { highlightBlob, type HighlightedBlob } from './highlight'
+export { highlightBlob, highlightFence, type HighlightedBlob } from './highlight'
 export {
   listRecentRepos,
   listReposByOwner,
