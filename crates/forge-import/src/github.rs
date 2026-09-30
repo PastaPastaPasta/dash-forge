@@ -696,7 +696,7 @@ mod base64_lite {
 /// Run `gh api <path> <rest…>`, retrying transient network failures; 4xx and auth failures
 /// fail at once.
 fn gh_output_with_retry(path: &str, rest: &[&str], what: &str) -> Result<std::process::Output> {
-    const ATTEMPTS: u32 = 4;
+    const ATTEMPTS: u32 = 6;
     // Waits for a rate limit, each up to 15 minutes: enough to reach the hourly reset. Every
     // call has its own, so a run of many small reads larger than one hour's quota (dashpay/dash's
     // ~7,000 per-PR review reads) goes on after the reset instead of failing.
@@ -741,19 +741,7 @@ fn gh_output_with_retry(path: &str, rest: &[&str], what: &str) -> Result<std::pr
             attempt -= 1;
             continue;
         }
-        let transient = [
-            "connection reset",
-            "timeout",
-            "TLS handshake",
-            "temporary failure",
-            "EOF",
-            "502",
-            "503",
-            "504",
-        ]
-        .iter()
-        .any(|m| stderr.contains(m));
-        if !transient || attempt == ATTEMPTS {
+        if !is_transient(&stderr) || attempt == ATTEMPTS {
             bail!("{what} failed: {stderr}");
         }
         let wait = std::time::Duration::from_secs(5 * u64::from(attempt));
@@ -762,6 +750,26 @@ fn gh_output_with_retry(path: &str, rest: &[&str], what: &str) -> Result<std::pr
         last_err = stderr;
     }
     Err(anyhow!("{what} failed: {last_err}"))
+}
+
+/// Whether `gh`'s stderr names a network failure worth another attempt. GitHub also resets a
+/// long paginated read's HTTP/2 stream mid-way (`stream error: stream ID 119; CANCEL; received
+/// from peer`, on page ~100 of dashpay/dash's 213-page review-comment listing).
+fn is_transient(stderr: &str) -> bool {
+    [
+        "connection reset",
+        "timeout",
+        "TLS handshake",
+        "temporary failure",
+        "EOF",
+        "stream error",
+        "unexpected end of JSON input",
+        "502",
+        "503",
+        "504",
+    ]
+    .iter()
+    .any(|m| stderr.contains(m))
 }
 
 /// How long to wait out a rate limit on `path` (`stderr` is the refused call's): until the
@@ -818,19 +826,42 @@ fn api_json(path: &str) -> Result<Vec<u8>> {
     Ok(gh_output_with_retry(path, &[], &format!("`gh api {path}`"))?.stdout)
 }
 
+/// A listing's elements, one JSON document per line. A `per_page=100` listing is read a page
+/// at a time, each page retried on its own: `gh --paginate` restarts from page 1 whenever any
+/// page fails, and dashpay/dash's 213-page review-comment listing then never finished (GitHub
+/// answered a 502 or reset the stream somewhere past page 100 on every attempt).
 fn api_list_lines(path: &str) -> Result<Vec<String>> {
-    let out = gh_output_with_retry(
-        path,
-        &["--paginate", "--jq", ".[]"],
-        &format!("`gh api {path}`"),
-    )?;
-    let text = String::from_utf8(out.stdout).context("gh api output was not UTF-8")?;
-    Ok(text
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .map(str::to_string)
-        .collect())
+    let lines = |out: std::process::Output| -> Result<Vec<String>> {
+        let text = String::from_utf8(out.stdout).context("gh api output was not UTF-8")?;
+        Ok(text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect())
+    };
+    if !path.contains("per_page=100") {
+        return lines(gh_output_with_retry(
+            path,
+            &["--paginate", "--jq", ".[]"],
+            &format!("`gh api {path}`"),
+        )?);
+    }
+    let mut all = Vec::new();
+    for page in 1.. {
+        let paged = format!("{path}&page={page}");
+        let batch = lines(gh_output_with_retry(
+            &paged,
+            &["--jq", ".[]"],
+            &format!("`gh api {paged}`"),
+        )?)?;
+        let last = batch.len() < 100;
+        all.extend(batch);
+        if last {
+            break;
+        }
+    }
+    Ok(all)
 }
 
 /// ISO 8601 UTC (`YYYY-MM-DDTHH:MM:SSZ`) to unix seconds; `0` when unparseable (provenance
@@ -985,6 +1016,18 @@ mod tests {
         assert_eq!(rate_limit_headers("HTTP/2.0 403 Forbidden\n\n{}"), None);
         assert_eq!(rate_limit_headers(""), None);
     }
+    /// An HTTP/2 stream GitHub reset mid-listing is retried, as a 502 is; a 404 is not.
+    #[test]
+    fn a_reset_stream_is_transient() {
+        assert!(is_transient(
+            "stream error: stream ID 119; CANCEL; received from peer"
+        ));
+        assert!(is_transient("gh: Server Error (HTTP 502)"));
+        // A page cut short: gh's --jq meets truncated JSON (page 89 of the same listing).
+        assert!(is_transient("unexpected end of JSON input"));
+        assert!(!is_transient("gh: Not Found (HTTP 404)"));
+    }
+
     /// F-7 against a whole recorded listing: set `FORGE_IMPORT_GH_NDJSON` to a file of
     /// `gh api repos/octocat/Hello-World/pulls/comments --paginate --jq '.[]'` output.
     #[test]
