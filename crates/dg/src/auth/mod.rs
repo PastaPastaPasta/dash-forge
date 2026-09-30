@@ -826,13 +826,13 @@ pub fn explain_new_key(
     );
     eprintln!(
         "  one identity update, {}; the master key signs once and is not stored",
-        crate::fmt::cost_line(KEY_UPDATE_ESTIMATE_CREDITS, crate::fmt::dash_usd_price())
+        crate::fmt::cost_line(
+            forge_core::platform::identity_keys::ADD_KEY_ESTIMATE_CREDITS,
+            crate::fmt::dash_usd_price()
+        )
     );
     checked.print_notice(ctx, "  ");
 }
-
-/// Estimate for one identity update adding a key (credits; an upper bound).
-pub const KEY_UPDATE_ESTIMATE_CREDITS: u64 = 15_000_000;
 
 // ---------------------------------------------------------------------------------------
 // status / balance

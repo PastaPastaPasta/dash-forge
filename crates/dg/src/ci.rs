@@ -40,14 +40,46 @@ use crate::fmt::{cost_json, cost_line, credits_to_dash, dash_amount, dash_usd_pr
 /// Runner key defaults (spec §2.2): 0.5 DASH for 365 days.
 const RUNNER_KEY_BUDGET_DASH: f64 = 0.5;
 const RUNNER_KEY_DAYS: u64 = 365;
-/// Estimates (credits), upper bounds over what devnet moutai charged on 2026-09-29
-/// (docs/guides/ci.md "What it costs"): the runner key's identity update (28.5 M, paid by the
-/// runner), a `runner` document (45.8 M, paid by the owner), a `checkRun` create (55–78 M) and a
-/// replace (3.3–3.7 M).
-const KEY_ESTIMATE_CREDITS: u64 = 35_000_000;
+/// Estimates (credits), upper bounds over what devnet bonsia charged on 2026-09-30 (Platform
+/// 4.2.0-beta.7; docs/guides/ci.md "What it costs"): the runner key's identity update
+/// (`ADD_KEY_ESTIMATE_CREDITS`, 43.0 M, paid by the runner), a `runner` document (47.3 M, paid
+/// by the owner), a `checkRun` create (81.5–95.1 M; a repository's first, 121.9 M) and a
+/// replace (4.7–5.5 M). A check run's text is priced on top ([`report_estimate`]): the contract
+/// admits up to ~6 KB of it (a 1,000-character summary, 4,096 bytes of artifacts), which no
+/// flat figure covers (QW-038: the flat 85 M and 5 M were exceeded).
 const ENROL_ESTIMATE_CREDITS: u64 = 55_000_000;
-const CREATE_ESTIMATE_CREDITS: u64 = 85_000_000;
-const REPLACE_ESTIMATE_CREDITS: u64 = 5_000_000;
+const CREATE_BASE_CREDITS: u64 = 130_000_000;
+/// A replace re-serializes the whole stored run, whose text it may not carry (a status-only
+/// update of a run created with a full summary): the ~6 KB the contract admits, reprocessed at
+/// ~412 credits/B (drive's replaced-bytes rate), is ~2.5 M on top of the 4.7 M measured.
+const REPLACE_BASE_CREDITS: u64 = 8_000_000;
+/// What each byte of a check run's text adds (the storage, its processing, the replaced bytes).
+const REPORT_PER_BYTE_CREDITS: u64 = 27_500;
+/// A log's URL (at most 300 bytes) and its SHA-256, priced before the log is uploaded.
+const LOG_FIELDS_BYTES: u64 = 300 + 32;
+
+/// The quote for a check-run write: a create (the first report of a run) or a replace, plus
+/// the text it carries, and the log's URL and hash when one is uploaded after the prompt.
+fn report_estimate(r: &CheckReport, replaces: bool, with_log: bool) -> u64 {
+    let text = [
+        Some(r.name.as_str()),
+        r.details_url.as_deref(),
+        r.summary.as_deref(),
+        r.external_id.as_deref(),
+        r.artifacts.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|s| s.len() as u64)
+    .sum::<u64>()
+        + if with_log { LOG_FIELDS_BYTES } else { 0 };
+    let base = if replaces {
+        REPLACE_BASE_CREDITS
+    } else {
+        CREATE_BASE_CREDITS
+    };
+    base + REPORT_PER_BYTE_CREDITS * text
+}
 
 /// `dg ci` subcommands.
 #[derive(Debug, Subcommand)]
@@ -331,7 +363,10 @@ fn explain_runner_key(
     );
     eprintln!(
         "  the key: one identity update, {} (paid by {holder})",
-        cost_line(KEY_ESTIMATE_CREDITS, price)
+        cost_line(
+            forge_core::platform::identity_keys::ADD_KEY_ESTIMATE_CREDITS,
+            price
+        )
     );
     if enrol {
         eprintln!(
@@ -622,11 +657,8 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
     // run may have been created a moment ago.
     let plan = runs.plan(&s.repo, &r).await?;
     r = kept;
-    let (verb, estimate) = if plan.replaces() {
-        ("update", REPLACE_ESTIMATE_CREDITS)
-    } else {
-        ("create", CREATE_ESTIMATE_CREDITS)
-    };
+    let verb = if plan.replaces() { "update" } else { "create" };
+    let estimate = report_estimate(&r, plan.replaces(), a.log.is_some() && !private);
     ctx.confirm_or_cancel(&format!(
         "Report {} = {} on {} in {}? ({verb} a check run, {})",
         r.name,
@@ -714,6 +746,62 @@ async fn status(ctx: &Ctx, repo: &str, sha: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// QW-038: every check-run write and runner key measured on bonsia (Platform 4.2.0-beta.7,
+    /// 2026-09-30) is at or under its quote. The flat quotes it replaces were exceeded: a
+    /// repository's first create paid 121.9M against 85M, an update with a summary 5.5M
+    /// against 5M, and the runner key 43.0M against 35M.
+    #[test]
+    fn quotes_cover_what_bonsia_charged() {
+        let report = |summary: Option<&str>, details: Option<&str>| CheckReport {
+            head_oid: "ebd9aca21a24167d7b1f1544eca17ea2a9be6b4f".into(),
+            name: "build".into(),
+            status: "completed".into(),
+            conclusion: Some("success".into()),
+            details_url: details.map(str::to_string),
+            summary: summary.map(str::to_string),
+            ..CheckReport::default()
+        };
+        // (report, replaces, charged)
+        let first = report(None, Some("https://ci.example.org/runs/42"));
+        let lint = CheckReport {
+            name: "lint".into(),
+            ..report(Some("shellcheck: 1 warning"), None)
+        };
+        for (r, replaces, charged) in [
+            (&first, false, 121_929_000),
+            (&lint, false, 81_508_000),
+            (&report(None, None), false, 95_093_000),
+            (&report(None, None), true, 4_651_000),
+            (&report(Some("2 tests passed"), None), true, 5_546_420),
+        ] {
+            let quote = report_estimate(r, replaces, false);
+            assert!(quote >= charged, "{}: {quote} < {charged}", r.name);
+        }
+        const { assert!(forge_core::platform::identity_keys::ADD_KEY_ESTIMATE_CREDITS >= 43_008_000) };
+        const { assert!(ENROL_ESTIMATE_CREDITS >= 47_298_000) };
+    }
+
+    /// The contract admits ~6 KB of text on a run: the quote grows with it, and a log adds its
+    /// URL and hash.
+    #[test]
+    fn a_reports_text_and_log_are_priced() {
+        let bare = CheckReport {
+            name: "build".into(),
+            ..CheckReport::default()
+        };
+        let big = CheckReport {
+            summary: Some("x".repeat(1000)),
+            artifacts: Some("y".repeat(4096)),
+            ..bare.clone()
+        };
+        let extra = report_estimate(&big, false, false) - report_estimate(&bare, false, false);
+        assert_eq!(extra, REPORT_PER_BYTE_CREDITS * 5096);
+        assert_eq!(
+            report_estimate(&bare, true, true) - report_estimate(&bare, true, false),
+            REPORT_PER_BYTE_CREDITS * LOG_FIELDS_BYTES
+        );
+    }
 
     #[test]
     fn a_log_is_named_by_an_https_or_ipfs_url_only() {
