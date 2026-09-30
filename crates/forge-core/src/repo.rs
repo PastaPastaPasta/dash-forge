@@ -1359,9 +1359,38 @@ impl<'a> RepoService<'a> {
     ) -> Result<String> {
         let (scope, contract) = self.writable(repo).await?;
         let props = manifest.props(&scope)?;
-        self.doc_engine()?
+        match self
+            .doc_engine()?
             .create_document(&contract, DOC_PACK_MANIFEST, props)
             .await
+        {
+            // `platformChunks` still refuses it after the write loop waited out a lagging node
+            // (`TOTAL_READING_RULES`): say whether the chunks are really missing.
+            Err(Error::RuleRefused { rule, detail, .. }) if rule == "platformChunks" => {
+                let owner = self.identity_id()?;
+                let visible = self
+                    .client
+                    .query_all_documents(
+                        &contract,
+                        crate::backends::platform::CHUNK_DOC_TYPE,
+                        &scope.chunk_filters(&owner, manifest.pack_hash)?,
+                        &[crate::platform::QueryOrder::asc(
+                            crate::backends::platform::FIELD_SEQ,
+                        )],
+                    )
+                    .await
+                    .map_or_else(|e| format!("unknown ({e})"), |d| d.len().to_string());
+                Err(Error::Config(format!(
+                    "packManifest of {} refused by platformChunks: {visible} of its {} chunk(s) \
+                     are visible to the network ({detail}). Nothing was charged for the \
+                     manifest; re-run the push (stored chunks are reused, missing ones \
+                     re-uploaded)",
+                    hex::encode(manifest.pack_hash),
+                    manifest.chunk_count
+                )))
+            }
+            other => other,
+        }
     }
 
     /// Read **every** `packManifest` document of a repo, newest first.

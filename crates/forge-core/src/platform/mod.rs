@@ -83,6 +83,38 @@ pub const NONCE_MASK: u64 = (1 << 40) - 1;
 /// the write land once — never twice.
 const MAX_BROADCAST_ATTEMPTS: u32 = 4;
 
+/// The `propertyConstraints` rules that read a total (`countOf` / `sumOf`) the writer's own
+/// earlier documents feed, by document type: a `packManifest`'s chunks, a release tag's earlier
+/// revisions, an issue or PR number's predecessors, a thread's transitions. A node one block
+/// behind those documents judges the total without them and refuses a correct write (10422).
+/// That refusal is at CheckTx, before the nonce is spent, so the same signed bytes can be sent
+/// again once the node has caught up ([`MAX_LAG_RETRIES`]).
+const TOTAL_READING_RULES: [(&str, &str); 13] = [
+    ("packManifest", "platformChunks"),
+    ("release", "oneLive"),
+    ("topic", "atMost20"),
+    ("issue", "dense"),
+    ("patch", "dense"),
+    ("transition", "c1_closedAfter"),
+    ("transition", "c2_openAfter"),
+    ("transition", "c3_mergedAfter"),
+    ("transition", "c4_draftAfter"),
+    ("transition", "c5_draftClosedAfter"),
+    ("transition", "c6_lockedAfter"),
+    ("comment", "lockGate"),
+    ("review", "lockGate"),
+];
+
+/// Re-broadcasts of a transition a total-reading rule refused ([`TOTAL_READING_RULES`]): after
+/// about one block, then two (1.5 and 3 times the retry backoff: 3 s and 6 s). A refusal that
+/// outlasts them is the rule's answer, not lag.
+const MAX_LAG_RETRIES: u32 = 2;
+
+/// Whether `rule` of `document_type` reads a total that lags behind the writer's own writes.
+fn reads_a_total(document_type: &str, rule: &str) -> bool {
+    TOTAL_READING_RULES.contains(&(document_type, rule))
+}
+
 /// How long one `waitForStateTransitionResult` may take, on one node, before the write loop
 /// re-broadcasts instead.
 ///
@@ -3191,6 +3223,7 @@ where
     NFut: std::future::Future<Output = bool>,
 {
     let mut attempt: u32 = 0;
+    let mut lag_retries: u32 = 0;
     // Whether a broadcast in THIS call was accepted. A transition the node already knew on
     // our first send was broadcast by an earlier call (a replayed journal): its landing is
     // reported as `AlreadyExists`, not as a fresh `Applied`.
@@ -3257,6 +3290,26 @@ where
             WriteFailure::Retryable(_) | WriteFailure::TxKnown => {
                 tracing::warn!(document_type, attempt, "write not confirmed; giving up");
                 return Err(Error::Timeout { retryable: true });
+            }
+            // A total-reading rule refused it: the judging node may not hold this identity's
+            // documents of the last block yet (a manifest right after its chunks). Nothing was
+            // spent; send the same bytes again once it has caught up.
+            WriteFailure::Fatal(Error::RuleRefused {
+                document_type: refused,
+                rule,
+                detail,
+            }) if reads_a_total(&refused, &rule) && lag_retries < MAX_LAG_RETRIES => {
+                lag_retries += 1;
+                let delay = backoff_delay(backoff * 3 / 2, lag_retries);
+                tracing::warn!(
+                    document_type,
+                    rule,
+                    delay_ms = duration_ms(delay),
+                    error = %detail,
+                    "refused by a rule that reads a total; re-broadcasting once the node has \
+                     caught up with this identity's latest writes"
+                );
+                tokio::time::sleep(delay).await;
             }
             WriteFailure::Fatal(err) => return Err(err),
         }
@@ -4205,6 +4258,83 @@ mod tests {
 
     fn timeout() -> super::WriteFailure {
         super::WriteFailure::Retryable("wait timed out".into())
+    }
+
+    fn refused(document_type: &str, rule: &str) -> super::WriteFailure {
+        super::WriteFailure::Fatal(Error::RuleRefused {
+            document_type: document_type.into(),
+            rule: rule.into(),
+            detail: "10422".into(),
+        })
+    }
+
+    /// A manifest refused by `platformChunks` on a node a block behind its chunks is sent
+    /// again (the same bytes: nothing was spent) and lands; a rule that reads no total, or a
+    /// refusal that outlasts the retries, is final.
+    #[tokio::test]
+    async fn a_lagging_total_is_retried_and_a_real_refusal_is_final() {
+        let (out, nb, nw) = scripted_write(
+            vec![Err(refused("packManifest", "platformChunks")), Ok(())],
+            vec![Ok(())],
+            vec![],
+        )
+        .await;
+        assert_eq!(out.unwrap(), super::BroadcastOutcome::Applied);
+        assert_eq!((nb, nw), (2, 1));
+
+        let (out, nb, _) = scripted_write(
+            vec![
+                Err(refused("packManifest", "platformChunks")),
+                Err(refused("packManifest", "platformChunks")),
+                Err(refused("packManifest", "platformChunks")),
+            ],
+            vec![],
+            vec![],
+        )
+        .await;
+        assert!(
+            matches!(out, Err(Error::RuleRefused { ref rule, .. }) if rule == "platformChunks"),
+            "{out:?}"
+        );
+        assert_eq!(nb, 1 + super::MAX_LAG_RETRIES as usize);
+
+        // A rule that reads no total (a sealed private ref named in plaintext) is final at once.
+        let (out, nb, _) =
+            scripted_write(vec![Err(refused("refUpdate", "noPlain"))], vec![], vec![]).await;
+        assert!(matches!(out, Err(Error::RuleRefused { .. })));
+        assert_eq!(nb, 1);
+        for (t, r) in [
+            ("release", "oneLive"),
+            ("issue", "dense"),
+            ("transition", "c6_lockedAfter"),
+        ] {
+            assert!(super::reads_a_total(t, r), "{t}.{r}");
+        }
+        assert!(!super::reads_a_total("patch", "platformChunks"));
+    }
+
+    /// Every rule of the RC1 contracts that reads a total is one the write loop waits out.
+    #[test]
+    fn every_total_reading_rule_is_listed() {
+        for name in ["forge-core", "forge-collab", "forge-community"] {
+            let path = format!(
+                "{}/../../forge-contracts/contracts/{name}.json",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let c: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            for (t, schema) in c["documentSchemas"].as_object().unwrap() {
+                let Some(rules) = schema["propertyConstraints"].as_object() else {
+                    continue;
+                };
+                for (r, rule) in rules {
+                    let text = rule.to_string();
+                    if text.contains("countOf") || text.contains("sumOf") {
+                        assert!(super::reads_a_total(t, r), "{name}: {t}.{r}");
+                    }
+                }
+            }
+        }
     }
 
     #[tokio::test]
