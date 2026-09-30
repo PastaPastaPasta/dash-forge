@@ -36,7 +36,7 @@ use forge_core::user_error::{codes, UserError};
 use crate::auth::{dash_to_credits, expiry_ms, parse_days};
 use crate::common::{resolve_identity, Reader, Session};
 use crate::context::Ctx;
-use crate::fmt::{cost_json, cost_line, credits_to_dash, dash_amount, dash_usd_price};
+use crate::fmt::{cost_json, cost_line, credits_to_dash, dash_amount};
 
 /// Runner key defaults (spec §2.2): 0.5 DASH for 365 days.
 const RUNNER_KEY_BUDGET_DASH: f64 = 0.5;
@@ -279,6 +279,7 @@ fn key_holder(ctx: &Ctx, args: &RunnerNewArgs, me: &str) -> Result<BridgeIdentit
     Ok(b)
 }
 
+#[allow(clippy::too_many_lines)] // one linear flow: key, enrolment, report
 async fn runner_new(ctx: &Ctx, args: &RunnerNewArgs) -> Result<()> {
     if args.output.exists() {
         return Err(crate::errors::usage(format!(
@@ -295,7 +296,16 @@ async fn runner_new(ctx: &Ctx, args: &RunnerNewArgs) -> Result<()> {
         )));
     }
     let holder = key_holder(ctx, args, &s.identity.id())?;
-    let enrol = holder.identity_id != s.identity.id();
+    // A runner that is enrolled already needs only its key: no enrolment is quoted, written,
+    // or claimed (QW2-084).
+    let enrolled = if holder.identity_id == s.identity.id() {
+        None
+    } else {
+        RunnerReader::new(&s.client)
+            .get(&s.repo, &holder.identity_id)
+            .await?
+    };
+    let enrol = holder.identity_id != s.identity.id() && enrolled.is_none();
     let days = args
         .expires
         .as_deref()
@@ -306,7 +316,15 @@ async fn runner_new(ctx: &Ctx, args: &RunnerNewArgs) -> Result<()> {
         contract: s.repo.forge().community.clone(),
         document_type: forge_core::collab::v2::DOC_CHECK_RUN.to_string(),
     };
-    explain_runner_key(ctx, &s, &holder.identity_id, &spec, days, enrol);
+    explain_runner_key(
+        ctx,
+        &s,
+        &holder.identity_id,
+        &spec,
+        days,
+        enrol,
+        enrolled.is_some(),
+    );
     ctx.confirm_or_cancel("Register the runner key?")?;
     let holder_before = holder_balance(&s, &holder.identity_id).await;
     let key_id = register_runner_key(ctx, &s, &holder, &spec, &args.output).await?;
@@ -340,8 +358,9 @@ async fn runner_new(ctx: &Ctx, args: &RunnerNewArgs) -> Result<()> {
             "expiresAt": spec.expires_at_ms,
             "path": args.output.display().to_string(),
             "enrolled": membership.as_ref().map(|m| m.document_id.clone()),
-            "keyCost": cost_json(key_spent, dash_usd_price()),
-            "enrolCost": cost_json(enrol_spent, dash_usd_price()),
+            "alreadyEnrolled": enrolled.as_ref().map(|m| m.document_id.clone()),
+            "keyCost": cost_json(key_spent, ctx.usd_price()),
+            "enrolCost": cost_json(enrol_spent, ctx.usd_price()),
         }),
         || {
             println!(
@@ -349,16 +368,23 @@ async fn runner_new(ctx: &Ctx, args: &RunnerNewArgs) -> Result<()> {
                 holder.identity_id,
                 args.output.display()
             );
-            println!("  the key cost {}", cost_line(key_spent, dash_usd_price()));
+            println!("  the key cost {}", cost_line(key_spent, ctx.usd_price()));
             if membership.is_some() {
                 // A balance read that has not moved yet is not a free write (QW-083: it read
                 // "(~0 DASH)").
                 let cost = if enrol_spent == 0 {
                     "its cost is not visible in the balance yet".to_string()
                 } else {
-                    cost_line(enrol_spent, dash_usd_price())
+                    cost_line(enrol_spent, ctx.usd_price())
                 };
                 println!("✓ enrolled as a runner of {} ({cost})", s.repo.display());
+            }
+            if let Some(m) = &enrolled {
+                println!(
+                    "✓ already a runner of {} (membership {}); no enrolment written",
+                    s.repo.display(),
+                    m.document_id
+                );
             }
             println!("  use it as a CI secret: DASH_FORGE_KEY=<the file's contents>");
             println!(
@@ -378,11 +404,12 @@ fn explain_runner_key(
     spec: &DocTypeKeySpec,
     days: u64,
     enrol: bool,
+    already_enrolled: bool,
 ) {
     if ctx.json {
         return;
     }
-    let price = dash_usd_price();
+    let price = ctx.usd_price();
     eprintln!(
         "Registering a runner key on {holder} ({}):",
         ctx.network_label()
@@ -403,6 +430,11 @@ fn explain_runner_key(
             "  the enrolment as a runner of {}: one document, {} (paid by you)",
             s.repo.display(),
             cost_line(ENROL_ESTIMATE_CREDITS, price)
+        );
+    } else if already_enrolled {
+        eprintln!(
+            "  {holder} is already a runner of {}: no enrolment is written",
+            s.repo.display()
         );
     }
 }
@@ -480,10 +512,19 @@ async fn runner_add(ctx: &Ctx, repo: &str, runner: &str) -> Result<()> {
         .fetch_identity(runner)
         .await
         .with_context(|| format!("{runner} is not an identity on this network"))?;
+    // Enrolled already: nothing to quote or write (the enrolment is idempotent, and said "is a
+    // runner" as if it had just been written, QW2-084).
+    if let Some(m) = RunnerReader::new(&s.client).get(&s.repo, runner).await? {
+        ctx.emit(
+            json!({ "status": "exists", "runner": runner, "documentId": m.document_id, "id": m.document_id, "written": false }),
+            || println!("{runner} is already a runner of {}; nothing written", s.repo.display()),
+        );
+        return Ok(());
+    }
     ctx.confirm_or_cancel(&format!(
         "Enrol {runner} as a runner of {}? ({})",
         s.repo.display(),
-        cost_line(ENROL_ESTIMATE_CREDITS, dash_usd_price())
+        cost_line(ENROL_ESTIMATE_CREDITS, ctx.usd_price())
     ))?;
     let before = s.balance().await;
     let m = RunnerService::new(&s.client, &s.identity, &s.bridge)
@@ -491,8 +532,8 @@ async fn runner_add(ctx: &Ctx, repo: &str, runner: &str) -> Result<()> {
         .await?;
     let spent = s.spent_since(before).await;
     ctx.emit(
-        json!({ "status": "enrolled", "runner": runner, "documentId": m.document_id, "id": m.document_id, "cost": cost_json(spent, dash_usd_price()) }),
-        || println!("✓ {runner} is a runner of {} ({})", s.repo.display(), cost_line(spent, dash_usd_price())),
+        json!({ "status": "enrolled", "runner": runner, "documentId": m.document_id, "id": m.document_id, "cost": cost_json(spent, ctx.usd_price()) }),
+        || println!("✓ {runner} is a runner of {} ({})", s.repo.display(), cost_line(spent, ctx.usd_price())),
     );
     Ok(())
 }
@@ -706,7 +747,7 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
         r.conclusion.as_deref().unwrap_or(&r.status),
         &r.head_oid[..7.min(r.head_oid.len())],
         s.repo.display(),
-        cost_line(estimate, dash_usd_price())
+        cost_line(estimate, ctx.usd_price())
     ))?;
     if let Some(p) = a.log.as_ref().filter(|_| !private) {
         r.log = Some(upload_log(p, a.storage.as_deref()).await?);
@@ -804,7 +845,7 @@ fn emit_report(ctx: &Ctx, r: &CheckReport, done: &Reported, o: &Outcome<'_>) {
             // What a private repository's run left out (forge-community `privateNoText`).
             "leftOut": left_out,
             "url": url,
-            "cost": cost_json(spent, dash_usd_price()),
+            "cost": cost_json(spent, ctx.usd_price()),
             // Set when the policy pins this check to another source: the run never counts
             // toward it. `null` says only that no pin excludes it.
             "policyNote": not_counted,
@@ -815,7 +856,7 @@ fn emit_report(ctx: &Ctx, r: &CheckReport, done: &Reported, o: &Outcome<'_>) {
                 done.action,
                 r.name,
                 r.conclusion.as_deref().unwrap_or(&r.status),
-                cost_line(spent, dash_usd_price())
+                cost_line(spent, ctx.usd_price())
             );
             if let Some((u, _)) = &r.log {
                 println!("  log: {u}");

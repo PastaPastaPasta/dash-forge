@@ -14,7 +14,7 @@ use forge_core::scope::RepoRef;
 
 use crate::common::Session;
 use crate::context::Ctx;
-use crate::fmt::{cost_json, cost_line, dash_usd_price};
+use crate::fmt::{cost_json, cost_line};
 use crate::RepoKeysCommand;
 
 /// One `repoKey` wrap costs about this much (a 64-byte encrypted property, three integers).
@@ -270,7 +270,7 @@ async fn repair(ctx: &Ctx, repo: &str) -> Result<()> {
         });
         return Ok(());
     }
-    let price = dash_usd_price();
+    let price = ctx.usd_price();
     if !ctx.confirm(&format!(
         "Repair the key of {}: {what}, {}?",
         s.repo.display(),
@@ -285,7 +285,7 @@ async fn repair(ctx: &Ctx, repo: &str) -> Result<()> {
     Ok(())
 }
 
-fn emit_repair(ctx: &Ctx, repo: &RepoRef, report: &RepairReport, spent: u64, price: f64) {
+fn emit_repair(ctx: &Ctx, repo: &RepoRef, report: &RepairReport, spent: u64, price: Option<f64>) {
     ctx.emit(
         json!({
             "status": "repaired",
@@ -324,7 +324,7 @@ async fn rotate(ctx: &Ctx, repo: &str) -> Result<()> {
     let kr = signer(&s).keyring(&s.repo).await?;
     require_maintainer(&kr, &s.repo, "rotate the key")?;
     let (est, what) = rotation_cost(&kr, distinct_members(kr.members()));
-    let price = dash_usd_price();
+    let price = ctx.usd_price();
     if !ctx.confirm(&format!(
         "Rotate the key of {}: {what}, {}?",
         s.repo.display(),
