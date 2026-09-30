@@ -297,6 +297,10 @@ pub struct TargetInfo {
     pub last_activity: u64,
     /// A draft PR now (its state code at startup, then each transition seen).
     pub draft: bool,
+    /// A merged PR (terminal: its state code at startup, or a `PR_MERGE` transition seen
+    /// since). Kept so a later lock/unlock on an already-merged PR reports `merged: true`
+    /// rather than the lock/unlock's own hardcoded `false` ([`translate_transition`]).
+    pub merged: bool,
 }
 
 impl TargetInfo {
@@ -314,6 +318,7 @@ impl TargetInfo {
             baseline,
             last_activity: d.created_at.unwrap_or(0),
             draft: false,
+            merged: false,
         }
     }
 
@@ -331,6 +336,7 @@ impl TargetInfo {
             baseline,
             last_activity: d.created_at.unwrap_or(0),
             draft: false,
+            merged: false,
         }
     }
 
@@ -634,7 +640,8 @@ pub fn draft_after(kind: u64) -> bool {
 /// readers show ("merge commit not found on the base").
 ///
 /// A lock or unlock ([`lock_action`]) is `locked` / `unlocked` with the object's `locked` set
-/// and its state as the relay last saw it: open unless the target is in `closed`.
+/// and its state as the relay last saw it: open unless the target is in `closed`, and merged
+/// per [`TargetInfo::merged`] (a lock/unlock is no state move, so it never changes either).
 pub fn translate_transition(
     repo: &RepositoryMeta,
     d: &FetchedDocument,
@@ -651,7 +658,7 @@ pub fn translate_transition(
     if let Some((action, locked)) = lock_action(kind) {
         let open = !closed.contains(&target_id);
         let (mut e, obj) = if target.is_pr {
-            let pr = target.pr_obj(&target_id, open, false);
+            let pr = target.pr_obj(&target_id, open, target.merged);
             (pull_request_event(repo, &d.id, action, &pr), "pull_request")
         } else {
             let issue = target.issue_obj(&target_id, open);
@@ -753,6 +760,7 @@ mod tests {
             baseline: Baseline::Beginning,
             last_activity: 0,
             draft: false,
+            merged: false,
         }
     }
 
@@ -1128,6 +1136,35 @@ mod tests {
         // An issue kind on a PR (or the reverse) is nothing.
         assert!(translate_transition(&meta(), &tr(3, [9; 32]), &prs, true, &none).is_none());
         assert!(translate_transition(&meta(), &tr(18, [1; 32]), &issues, true, &none).is_none());
+    }
+
+    /// A lock or unlock on an already-merged PR reports `merged: true` (the chain fact),
+    /// not the lock/unlock's own state — merging is terminal and a lock/unlock never
+    /// changes it (`TargetInfo::merged`).
+    #[test]
+    fn a_lock_on_a_merged_pr_still_reports_merged() {
+        let tr = |kind: u64| {
+            doc(
+                &format!("t{kind}"),
+                "ACTOR",
+                vec![
+                    ("targetId", FieldValue::identifier([7; 32])),
+                    ("kind", FieldValue::integer(kind)),
+                ],
+            )
+        };
+        let mut merged_pr = target(true, 4);
+        merged_pr.merged = true;
+        let prs = targets([7; 32], merged_pr);
+        let closed = BTreeSet::from([encode_identifier([7; 32])]);
+        for kind in [18, 19] {
+            let e = translate_transition(&meta(), &tr(kind), &prs, true, &closed).unwrap();
+            assert_eq!(
+                e.payload["pull_request"]["merged"], true,
+                "kind {kind} on an already-merged PR"
+            );
+            assert_eq!(e.payload["pull_request"]["state"], "closed");
+        }
     }
 
     /// An in-memory index ordered by `($createdAt, $id)`. A `start_after` naming a document

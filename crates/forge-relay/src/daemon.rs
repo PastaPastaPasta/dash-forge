@@ -1451,6 +1451,7 @@ fn apply_codes(
         let status = rules::v2::status_of_code(code);
         if let Some(t) = targets.get_mut(&id) {
             t.draft = t.is_pr && status.draft;
+            t.merged = t.is_pr && status.merged;
         }
         if !status.open {
             closed.insert(id);
@@ -1480,11 +1481,14 @@ fn note_transition(s: &mut RepoState, d: &FetchedDocument) {
     let Some(kind) = d.field_u64("kind") else {
         return;
     };
-    let Some((_, open, _)) = ingest::transition_action(kind) else {
+    let Some((_, open, merged)) = ingest::transition_action(kind) else {
         return;
     };
     if let Some(t) = s.targets.get_mut(&tid) {
         t.draft = t.is_pr && ingest::draft_after(kind);
+        // Merge is terminal (no further state move follows it, lock/unlock aside): once set,
+        // never cleared by a later transition of this kind.
+        t.merged = t.merged || merged;
     }
     if open {
         s.closed.remove(&tid);
@@ -1658,6 +1662,7 @@ mod tests {
                         baseline: Baseline::Beginning,
                         last_activity: 0,
                         draft: false,
+                        merged: false,
                     },
                 )
             })
@@ -1735,6 +1740,7 @@ mod tests {
             baseline: Baseline::Beginning,
             last_activity: 0,
             draft: false,
+            merged: false,
         };
         st.tips
             .entry(hash.clone())
@@ -1878,10 +1884,13 @@ mod tests {
         );
         let drafts: Vec<bool> = (1..=6).map(|b| targets[&id(b)].draft).collect();
         assert_eq!(drafts, [false, false, false, true, true, false]);
+        // Code 2 (merged) seeds `merged`; nothing else does.
+        let merges: Vec<bool> = (1..=6).map(|b| targets[&id(b)].merged).collect();
+        assert_eq!(merges, [false, false, true, false, false, false]);
         // A transition seen live moves the flag.
         let mut st = state_with_threads(0);
         st.targets = targets;
-        let tr = |kind: u64| FetchedDocument {
+        let tr = |target: u8, kind: u64| FetchedDocument {
             id: format!("t{kind}"),
             owner_id: "M".into(),
             created_at: Some(2),
@@ -1889,13 +1898,20 @@ mod tests {
             updated_at_block_height: None,
             revision: None,
             fields: BTreeMap::from([
-                ("targetId".into(), FieldValue::identifier([4; 32])),
+                ("targetId".into(), FieldValue::identifier([target; 32])),
                 ("kind".into(), FieldValue::integer(kind)),
             ]),
         };
-        note_transition(&mut st, &tr(15));
+        note_transition(&mut st, &tr(4, 15));
         assert!(!st.targets[&id(4)].draft);
-        note_transition(&mut st, &tr(14));
+        note_transition(&mut st, &tr(4, 14));
         assert!(st.targets[&id(4)].draft);
+        // A merge transition, seen live, sets `merged` and never clears it again (D-4: a
+        // lock/unlock on the now-merged PR must keep reporting `merged: true`).
+        assert!(!st.targets[&id(6)].merged);
+        note_transition(&mut st, &tr(6, 13));
+        assert!(st.targets[&id(6)].merged);
+        note_transition(&mut st, &tr(6, 18));
+        assert!(st.targets[&id(6)].merged, "a lock does not touch merged");
     }
 }
