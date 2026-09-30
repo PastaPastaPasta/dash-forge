@@ -57,7 +57,11 @@ import { invalidateRepoFeed } from './issues'
 import { noteTargetCreated } from './social'
 import { repoSource } from './source'
 import { writeLock, writeTransition, type StateTarget } from './transitions'
-import { refusedRule } from '../rules/transition'
+import { LAG_RETRY_MS, retryAfterLag } from './lag-retry'
+import { sleep } from '../sdk/facade'
+
+/** The release rule that reads the tag's live total (RC1 O-04). */
+const ONE_LIVE_RULE: ReadonlySet<string> = new Set(['oneLive'])
 
 // ---------------------------------------------------------------------------
 // event kind name → integer (parity with forge-core `event_kind_to_u64`)
@@ -488,9 +492,20 @@ async function createNumbered(
         if (holder === undefined || holder === null || holder === auth.identityId) throw e
       } else if (!race) throw e
       const taken: number = number
-      number = await next()
-      if (number !== null && number <= taken) number = taken + 1
-      if (number !== null) onRetry?.(taken, number)
+      if (isDenseRefusal(e)) {
+        // `dense` judges the totals the validating node holds: after about a block they are
+        // current, and the fresh read is the number to use (a node a block behind may have
+        // refused one that was right, so it is not skipped).
+        await sleep(LAG_RETRY_MS[0] as number)
+        number = await next()
+        // A read from a node further behind still never goes below the refused number.
+        if (number !== null && number < taken) number = taken
+      } else {
+        // The number is held (the unique index): the next one, even if a read still lags.
+        number = await next()
+        if (number !== null && number <= taken) number = taken + 1
+      }
+      if (number !== null && number !== taken) onRetry?.(taken, number)
     }
   }
   throw new Error(`could not claim ${type === 'issue' ? 'an issue' : 'a PR'} number after several attempts; try again`)
@@ -719,14 +734,10 @@ export async function createRelease(
   const attempt = async (): Promise<WriteResult> =>
     writeRepoDoc(sdk, auth, repo, DOC.release, { ...fields, delta: publishDelta(await readTagLive(sdk, repo, input.tagName)) }, input.intent)
   try {
-    try {
-      return await attempt()
-    } catch (e) {
-      // The live total was read from a node a block behind (a publish that just landed): read
-      // it again and retry once (`oneLive` refused the delta; nothing was stored).
-      if (!(e instanceof ConsensusRefusal && e.code === RULE_REFUSED_CODE && refusedRule(e.message) === 'oneLive')) throw e
-      return await attempt()
-    }
+    // The live total was read from (or judged by) a node a block behind a publish that just
+    // landed: `oneLive` refuses the delta and nothing is stored. Read it again after about a
+    // block and retry, bounded.
+    return await retryAfterLag(attempt, ONE_LIVE_RULE, LAG_RETRY_MS.slice(0, 2))
   } finally {
     // A release names a tag just pushed, often from another client: browse it afresh.
     repoContentWritten(repo)
