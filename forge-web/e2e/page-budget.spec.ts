@@ -29,10 +29,19 @@ const WARM_BUDGET = 8
  */
 const DEMO_COLD_HOME = 12
 /**
- * The read fixture's issues list, cold (measured 7; then +2: every page with the rail reads the
- * About card's release count and repo size once it is in view).
+ * The read fixture's issues list, cold. `issues/client.tsx` passes `rail={false}`: there is no
+ * About card here, so this does not carry the home's rail-sum reads at all.
+ *
+ * What it does carry is `target-index.ts`'s `loadListIndex`: the repo's member `event` feed
+ * (shared with the pull index) is read as a 100-row page inside the index's first composite, and
+ * a full first page pulls the rest of the feed in a follow-up composite (`readRepoFeedFrom`),
+ * once per repo. Bonsia is a live, shared devnet under continuous CI and QA use, not a static
+ * fixture: the repo's event volume only grows, so this count steps up by one every time it
+ * crosses another 100-row boundary. That is not a regression, so the pin below carries headroom
+ * for a couple of those steps rather than pinning the exact count last measured (13); a jump big
+ * enough to still clear it would still be one.
  */
-const DEMO_COLD_ISSUES = 12
+const DEMO_COLD_ISSUES = 16
 /**
  * The commit column's walk on a showcase repo: one chunk read per 256 KiB of pack history it
  * crosses (preact 12, dashpay/dash 20). Owned by the last-change index work; tracked, not S-1.
