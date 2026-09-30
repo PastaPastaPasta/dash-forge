@@ -78,12 +78,23 @@ export function branchCommitCost(isMember: boolean): ReturnType<typeof sumPrevie
  */
 export type BranchRunAt = 'update' | 'batch' | `comment:${string}`
 
-/** One click of an action: rerun as is by Retry, or once an unlock it waited for opens the settings. */
+/** One click of an action, on the PR head it was clicked on: Retry, or the unlock, reruns it. */
 interface BranchAction {
   readonly key: string
   readonly label: string
   readonly build: () => Promise<BranchCommit>
   readonly at: BranchRunAt
+  readonly head: string
+}
+
+/**
+ * An action waiting for the storage settings: sealed (the unlock asks), or still being read.
+ * `go`: it goes on by itself once they open (the unlock here was used, or they were only being
+ * read); an unlock made elsewhere on the page waits for "Continue".
+ */
+interface Waiting {
+  readonly action: BranchAction
+  readonly go: boolean
 }
 
 /** Run a branch commit, showing its steps; `build` makes the commit when clicked. */
@@ -119,7 +130,7 @@ export function useBranchCommit({
   const { signer } = useAuth()
   const guard = useWriteGuard()
   const uploadRepo = source ?? repo
-  const { upload, question, questionStep, begin, storageNeedsUnlock } = useMergeUpload(uploadRepo)
+  const { upload, question, questionStep, begin, storageNeedsUnlock, storageError } = useMergeUpload(uploadRepo)
   const [label, setLabel] = useState<string | null>(null)
   const [at, setAt] = useState<BranchRunAt | null>(null)
   const [steps, setSteps] = useState<Partial<Record<BranchStepId | 'build', StepState>>>({})
@@ -130,33 +141,46 @@ export function useBranchCommit({
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [done, setDone] = useState<string | null>(null)
-  // The action waiting for the unlock (it goes on once the settings open), and the one a step
-  // failure stopped (Retry reruns it: its key resumes what landed).
-  const waiting = useRef<BranchAction | null>(null)
-  const [locked, setLocked] = useState(false)
+  const [waiting, setWaiting] = useState<Waiting | null>(null)
+  // The action a step failure stopped: Retry reruns it (its key resumes what landed).
   const [retry, setRetry] = useState<BranchAction | null>(null)
+  // The action whose steps are shown: another one starts from an empty list.
+  const shown = useRef<string | null>(null)
 
-  const run = useCallback(
-    async (key: string, what: string, build: () => Promise<BranchCommit>, where: BranchRunAt = 'update'): Promise<void> => {
+  const start = useCallback(
+    async (action: BranchAction): Promise<void> => {
       if (!sdk || !signer || source === null || pull.sourceRefName === null || busy) return
+      const { key, label: what, build, at: where } = action
       setLabel(what)
       setAt(where)
       setRetry(null)
       setError(null)
       setDone(null)
+      if (shown.current !== key) {
+        setSteps({})
+        setDetails({})
+        shown.current = key
+      }
+      setWaiting(null)
+      if (action.head.toLowerCase() !== pull.headOid.toLowerCase()) {
+        // Retry or the unlock came after the PR head moved: this commit was built on the old head.
+        setError(`The PR head moved to ${pull.headOid.slice(0, 9)} since this was started; nothing more was written for it. Start it again on the new head.`)
+        return
+      }
       if (storageNeedsUnlock) {
         // Storage settings are stored, sealed in this tab (a resumed session): ask for the unlock
         // right here, and go on with this very action once they open.
-        waiting.current = { key, label: what, build, at: where }
-        setLocked(true)
-        setSteps({})
-        setDetails({})
+        setWaiting({ action, go: false })
         return
       }
-      waiting.current = null
-      setLocked(false)
-      if (verifyReader === null || upload === null) {
-        setError(verifyReader === null ? "The source repo's objects are still loading; try again in a moment." : 'Your storage settings are still opening; try again in a moment.')
+      if (upload === null) {
+        if (storageError !== null) setError(`Your storage settings could not be opened (${storageError}). Fix or discard them in Settings → Storage, then try again.`)
+        // Still being read (this page just loaded): goes on once they are.
+        else setWaiting({ action, go: true })
+        return
+      }
+      if (verifyReader === null) {
+        setError("The source repo's objects are still loading; try again in a moment.")
         return
       }
       if (!guard.check(branchCommitCost(isMember), 'core')) return
@@ -211,7 +235,7 @@ export function useBranchCommit({
           guard.failed(e.failure)
           setSteps((s) => ({ ...s, [e.step]: 'failed' }))
           setError(e.message)
-          setRetry({ key, label: what, build, at: where })
+          setRetry(action)
         } else if (e instanceof BranchStopped || e instanceof SuggestionRefused) {
           setSteps((s) => (s.build === 'running' ? { ...s, build: 'failed' } : s))
           setError(e.message)
@@ -223,37 +247,57 @@ export function useBranchCommit({
         setBusy(false)
       }
     },
-    [sdk, signer, source, pull, busy, guard, isMember, begin, repo, upload, onDone, verifyReader, storageNeedsUnlock],
+    [sdk, signer, source, pull, busy, guard, isMember, begin, repo, upload, onDone, verifyReader, storageNeedsUnlock, storageError],
+  )
+  const run = useCallback(
+    (key: string, what: string, build: () => Promise<BranchCommit>, where: BranchRunAt = 'update') => start({ key, label: what, build, at: where, head: pull.headOid }),
+    [start, pull.headOid],
   )
 
-  // The unlock opened the settings (and they are read): the action that waited goes on.
+  // The settings opened (by the unlock here, or once read): the action that waited goes on.
   useEffect(() => {
-    const w = waiting.current
-    if (w === null || storageNeedsUnlock || upload === null) return
-    waiting.current = null
-    void run(w.key, w.label, w.build, w.at)
-  }, [storageNeedsUnlock, upload, run])
+    if (waiting === null || !waiting.go || storageNeedsUnlock || upload === null) return
+    void start(waiting.action)
+  }, [waiting, storageNeedsUnlock, upload, start])
 
-  const dismiss = (): void => {
-    waiting.current = null
-    setLocked(false)
-    setLabel(null)
-    setAt(null)
-    setError(null)
-    setDone(null)
-    setRetry(null)
-  }
-
-  const view =
-    label === null ? null : (
+  const view = useMemo(() => {
+    if (label === null) return null
+    const dismiss = (): void => {
+      setWaiting(null)
+      setLabel(null)
+      setAt(null)
+      setError(null)
+      setDone(null)
+      setRetry(null)
+    }
+    return (
       <div className="space-y-2" data-testid="branch-commit">
-        {locked ? (
+        {waiting !== null ? (
           storageNeedsUnlock ? (
-            <UnlockMore title={`Unlock this tab to use your storage settings. ${label} goes on once they open.`} testId="branch-storage-unlock" />
-          ) : (
+            <UnlockMore
+              title={`Unlock this tab to use your storage settings. ${label} goes on once they open.`}
+              testId="branch-storage-unlock"
+              then={() => setWaiting((w) => (w === null ? w : { ...w, go: true }))}
+            />
+          ) : storageError !== null ? (
+            <p role="alert" className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400">
+              Your storage settings could not be opened ({storageError}). Fix or discard them in{' '}
+              <Link href="/settings/storage/" className="underline">
+                Settings → Storage
+              </Link>
+              , then try again.
+            </p>
+          ) : waiting.go ? (
             <p className="text-dense text-anvil-600 dark:text-anvil-300" role="status">
               Opening your storage settings…
             </p>
+          ) : (
+            <div className="flex flex-wrap items-center gap-2 text-dense text-anvil-700 dark:text-anvil-200">
+              <span>Your storage settings are open.</span>
+              <Button size="sm" variant="primary" onClick={() => void start(waiting.action)}>
+                Continue: {label}
+              </Button>
+            </div>
           )
         ) : (
           <ol aria-label={`${label}: steps`} className="space-y-1 rounded-md border border-anvil-200 p-3 dark:border-anvil-800">
@@ -265,8 +309,8 @@ export function useBranchCommit({
         {error ? (
           <div role="alert" className="flex flex-wrap items-center gap-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400">
             <span className="min-w-0 flex-1">{error}</span>
-            {retry !== null ? (
-              <Button size="sm" variant="outline" onClick={() => void run(retry.key, retry.label, retry.build, retry.at)}>
+            {retry !== null && !busy ? (
+              <Button size="sm" variant="outline" onClick={() => void start(retry)}>
                 Retry
               </Button>
             ) : null}
@@ -280,11 +324,12 @@ export function useBranchCommit({
         ) : null}
         {!busy ? (
           <Button size="sm" variant="ghost" onClick={dismiss}>
-            {locked ? 'Cancel' : 'Dismiss'}
+            {waiting !== null ? 'Cancel' : 'Dismiss'}
           </Button>
         ) : null}
       </div>
     )
+  }, [label, waiting, storageNeedsUnlock, storageError, steps, details, questionStep, question, error, retry, busy, done, start])
   return { run, busy, at, view }
 }
 

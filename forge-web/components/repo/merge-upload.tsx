@@ -41,6 +41,8 @@ export interface MergeUpload {
    * the upload waits for the in-page unlock. With none stored there is nothing to unlock.
    */
   readonly storageNeedsUnlock: boolean
+  /** The storage settings could not be read (a vault or IndexedDB error), or null. */
+  readonly storageError: string | null
 }
 
 export function useMergeUpload(repo: RepoRef): MergeUpload {
@@ -74,6 +76,7 @@ export function useMergeUpload(repo: RepoRef): MergeUpload {
   // The settings the upload uses: after a reload with none stored in this browser, the empty
   // ones (Platform, asked for) with no unlock; stored ones only once this tab is unlocked.
   const config = storage.usable
+  const { storedSince } = storage
   const policy = config === null ? null : policyForRepo(config, repo.repoId)
   const upload = useCallback<UploadPack>(
     async (bytes, info) => {
@@ -82,6 +85,8 @@ export function useMergeUpload(repo: RepoRef): MergeUpload {
       setAsking(kind)
       if (!sdk || !signer) throw new Error('sign in to continue')
       if (config === null) throw new Error("your storage settings aren't unlocked yet")
+      // The empty settings of a tab that found none stored: none may have been saved since.
+      if (await storedSince()) throw new Error('storage settings were saved in another tab since this page loaded: unlock this tab to use them, then retry')
       // The pre-answer covers the pack and its index fragment together (both priced in the
       // Storage row): each Platform copy spends from it, and one past what is left asks. An
       // answer given mid-run covers the rest of the run (`confirmPlatform` remembers it).
@@ -89,7 +94,7 @@ export function useMergeUpload(repo: RepoRef): MergeUpload {
       if (stored.storage === 0) preAgreed.current = remainingPreAgreement(preAgreed.current, estimateChunkCredits(bytes.length))
       return { storage: stored.storage, chunkCount: stored.chunkCount, uris: stored.uris }
     },
-    [sdk, signer, config, policy, repo, confirmPlatform],
+    [sdk, signer, config, policy, repo, confirmPlatform, storedSince],
   )
 
   const choiceFor = useCallback(
@@ -114,6 +119,7 @@ export function useMergeUpload(repo: RepoRef): MergeUpload {
     questionStep: asking,
     begin,
     storageNeedsUnlock: storage.sealed,
+    storageError: storage.error,
   }
 }
 

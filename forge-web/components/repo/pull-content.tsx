@@ -453,6 +453,7 @@ function PullPage({
     onCommitted: (c) => refresh((t) => t.pull.headOid === c),
   })
   const sourceWrite = suggest.branchWrite
+  const branchRun = useMemo(() => ({ at: suggest.runner.at, view: suggest.runner.view }), [suggest.runner.at, suggest.runner.view])
   // The source repo's default branch (never deleted after a merge): the base repo's own config
   // for a same-repo PR, else read once the merger could delete there.
   const sourceDefault = useAsync(
@@ -1111,7 +1112,7 @@ function PullPage({
               expected={expectedChecks(checks.data?.runs ?? [], policyNow)}
             />
           ) : (
-            <BranchRunContext.Provider value={{ at: suggest.runner.at, view: suggest.runner.view }}>
+            <BranchRunContext.Provider value={branchRun}>
             {/* A suggestion's run shows under its comment, the batch's in the batch bar (QW-007);
                 only an "Update branch" run started on the conversation shows here. */}
             {suggest.runner.at === 'update' ? suggest.runner.view : null}

@@ -36,6 +36,12 @@ export interface StorageConfigState {
   readonly usable: StorageConfig | null
   /** Settings are stored in this browser, and this tab must unlock to use them. */
   readonly sealed: boolean
+  /**
+   * `usable` is the empty settings of a tab that found none stored, and some were stored since
+   * (another tab): true, and the hook reads again (now sealed: the unlock asks). Checked by an
+   * upload just before it uses `usable`.
+   */
+  storedSince: () => Promise<boolean>
   save: (next: StorageConfig) => Promise<void>
   reload: () => void
   /** Delete stored settings this key cannot open, then reload (empty). */
@@ -71,14 +77,20 @@ export function useStorageConfig(): StorageConfigState {
     },
     [identity, reload, storable],
   )
+  const noneStored = state.data === NONE_STORED
+  const storedSince = useCallback(async (): Promise<boolean> => {
+    if (!noneStored || identity === null || !(await hasStorageBlob(DEFAULT_NETWORK, identity))) return false
+    reload()
+    return true
+  }, [noneStored, identity, reload])
   const discard = useCallback(async (): Promise<void> => {
     if (identity === null) return
     await discardStorageConfig(DEFAULT_NETWORK, identity)
     reload()
   }, [identity, reload])
   const sealed = state.data === SEALED
-  const needsUnlock = sealed || state.data === NONE_STORED
+  const needsUnlock = sealed || noneStored
   const config = identity === null || needsUnlock ? null : (state.data as StorageConfig | null)
-  const usable = config ?? (identity !== null && state.data === NONE_STORED ? EMPTY_STORAGE_CONFIG : null)
-  return { config, loading: state.loading, error: state.error, storable, needsUnlock, usable, sealed, save, reload, discard }
+  const usable = config ?? (identity !== null && noneStored ? EMPTY_STORAGE_CONFIG : null)
+  return { config, loading: state.loading, error: state.error, storable, needsUnlock, usable, sealed, storedSince, save, reload, discard }
 }

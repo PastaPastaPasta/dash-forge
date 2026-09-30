@@ -75,6 +75,21 @@ describe('useStorageConfig', () => {
     expect(s.usable).toEqual({ profiles: [], policies: [] })
   })
 
+  it('notices settings stored since (another tab) before an upload uses the empty ones', async () => {
+    scope = 'signing'
+    const s = await settle()
+    expect(await s.storedSince()).toBe(false)
+    stored = true
+    let since = false
+    await act(async () => {
+      since = await s.storedSince()
+    })
+    await act(async () => new Promise((r) => setTimeout(r, 0)))
+    expect(since).toBe(true)
+    expect(seen!.sealed).toBe(true)
+    expect(seen!.usable).toBeNull()
+  })
+
   it('keeps stored settings sealed for an upload until the unlock', async () => {
     scope = 'signing'
     stored = true

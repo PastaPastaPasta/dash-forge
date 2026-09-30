@@ -4,7 +4,7 @@
  * (QW-007): stored storage settings are sealed in a resumed tab, so the run asks for the unlock
  * where it was started, never failing its upload step with "your storage settings are not
  * unlocked yet" and nothing to unlock with. Once they open, the very action goes on. A step that
- * fails offers a real Retry, which resumes the same commit.
+ * fails offers a real Retry, which resumes the same commit, and never on a PR head that moved.
  */
 
 import { act } from 'react'
@@ -17,7 +17,7 @@ import type { ObjectReader } from '@/lib/view'
 import { useBranchCommit, type BranchRunAt } from './branch-commit-panel'
 
 // The tab's storage settings: sealed until `unlockMore`, then read (the upload appears).
-const store = { sealed: true }
+const store: { sealed: boolean; reading: boolean; error: string | null } = { sealed: true, reading: false, error: null }
 const rerender: { current: () => void } = { current: () => undefined }
 const uploadFn = vi.fn(async () => ({ storage: 0, chunkCount: 1, uris: [] as string[] }))
 const unlockMore = vi.fn(async () => {
@@ -33,12 +33,13 @@ vi.mock('@/contexts/auth-context', () => ({
 vi.mock('@/hooks/use-write-guard', () => ({ useWriteGuard: () => ({ check: () => true, failed: (e: unknown) => String(e), disabledReason: null }) }))
 vi.mock('@/components/repo/merge-upload', () => ({
   useMergeUpload: () => ({
-    upload: store.sealed ? null : uploadFn,
+    upload: store.sealed || store.reading || store.error !== null ? null : uploadFn,
     question: null,
     questionStep: 'upload',
     begin: () => undefined,
     choiceFor: () => null,
     storageNeedsUnlock: store.sealed,
+    storageError: store.error,
   }),
 }))
 // The chain itself is `branch-runner`'s (tested there): record what each run was given.
@@ -70,22 +71,26 @@ vi.mock('@/lib/merge/branch-runner', async (importOriginal) => {
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const repo = { repoId: 'R', name: 'repo', visibility: 'public' } as unknown as RepoRef
-const pull = { id: 'P', number: 2, author: 'me', headOid: 'a'.repeat(40), sourceRefName: 'refs/heads/feature', baseRefName: 'refs/heads/main', state: { open: true } } as unknown as PullView
+const PULL = { id: 'P', number: 2, author: 'me', headOid: 'a'.repeat(40), sourceRefName: 'refs/heads/feature', baseRefName: 'refs/heads/main', state: { open: true } } as unknown as PullView
 const built: BranchCommit = { commit: 'c'.repeat(40), files: ['src/greet.sh'], pack: { bytes: new Uint8Array(4), packHash: 'h', objectCount: 3 } } as unknown as BranchCommit
 const build = vi.fn(async () => built)
 const onDone = vi.fn()
 
+const current = { pull: PULL }
 let host: HTMLDivElement
 let root: Root
 let hook: ReturnType<typeof useBranchCommit>
 function Harness(): JSX.Element {
-  hook = useBranchCommit({ repo, source: repo, pull, isMember: true, verifyReader: {} as ObjectReader, onDone })
+  hook = useBranchCommit({ repo, source: repo, pull: current.pull, isMember: true, verifyReader: {} as ObjectReader, onDone })
   return <div>{hook.view}</div>
 }
 const render = (): void => root.render(<Harness />)
 
 beforeEach(() => {
   store.sealed = true
+  store.reading = false
+  store.error = null
+  current.pull = PULL
   runs.length = 0
   failNext = false
   build.mockClear()
@@ -159,5 +164,59 @@ describe('a branch commit in a tab resumed after a reload', () => {
     expect(runs.map((r) => r.key)).toEqual(['suggest:k', 'suggest:k'])
     expect(onDone).toHaveBeenCalledOnce()
     expect(host.querySelector('[role="alert"]')).toBeNull()
+  })
+
+  it('never retries on a PR head that moved since: the commit was built on the old one', async () => {
+    store.sealed = false
+    act(render)
+    failNext = true
+    await start('batch')
+    act(() => {
+      current.pull = { ...PULL, headOid: 'b'.repeat(40) } as unknown as PullView
+      render()
+    })
+    const retry = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Retry')!
+    await act(async () => {
+      retry.click()
+    })
+    expect(runs).toHaveLength(1)
+    expect(host.querySelector('[role="alert"]')!.textContent).toContain('The PR head moved to bbbbbbbbb')
+  })
+
+  it('waits for "Continue" when the settings were unlocked elsewhere on the page', async () => {
+    await start('comment:c1')
+    act(() => {
+      store.sealed = false
+      render()
+    })
+    await act(async () => new Promise((r) => setTimeout(r, 0)))
+    expect(build).not.toHaveBeenCalled()
+    const go = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Continue: Apply 3 suggestions')!
+    await act(async () => {
+      go.click()
+    })
+    await act(async () => new Promise((r) => setTimeout(r, 0)))
+    expect(runs.map((r) => r.key)).toEqual(['suggest:k'])
+  })
+
+  it('goes on by itself once settings still being read are, and says so when they cannot be', async () => {
+    store.sealed = false
+    store.reading = true
+    act(render)
+    await start('batch')
+    expect(host.textContent).toContain('Opening your storage settings')
+    expect(build).not.toHaveBeenCalled()
+    act(() => {
+      store.reading = false
+      render()
+    })
+    await act(async () => new Promise((r) => setTimeout(r, 0)))
+    expect(runs).toHaveLength(1)
+
+    store.error = 'the vault record is unreadable'
+    act(render)
+    await start('batch')
+    expect(host.querySelector('[role="alert"]')!.textContent).toContain('could not be opened (the vault record is unreadable)')
+    expect(host.textContent).not.toContain('Opening your storage settings')
   })
 })

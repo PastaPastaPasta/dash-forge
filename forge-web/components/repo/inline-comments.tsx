@@ -37,7 +37,7 @@ import { MarkdownView } from '@/components/markdown-view'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/input'
 import { MarkdownEditor } from '@/components/repo/issue-bits'
-import { BranchRunSlot, CommitIdentityPrompt } from '@/components/repo/branch-commit-panel'
+import { BranchRunContext, BranchRunSlot, CommitIdentityPrompt } from '@/components/repo/branch-commit-panel'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong } from '@/components/repo/private-compose'
 import { EditedMarker } from '@/components/repo/issue-bits'
@@ -357,7 +357,10 @@ function Thread({ thread, repo, pullId, onPosted, writeBlock, actions, suggestio
   const [replying, setReplying] = useState(false)
   const resolved = actions?.resolved.has(thread.root.id) ?? false
   const [expanded, setExpanded] = useState(false)
-  if (resolved && !expanded) {
+  // A thread holding a suggestion's run stays open: its steps (maybe a storage question) show here.
+  const runAt = useContext(BranchRunContext).at
+  const running = runAt !== null && [thread.root, ...thread.replies].some((c) => runAt === `comment:${c.id}`)
+  if (resolved && !expanded && !running) {
     return (
       <div className="flex flex-wrap items-center gap-2 rounded-md border border-anvil-200 bg-white px-3 py-1.5 text-[12px] text-anvil-600 dark:border-anvil-750 dark:bg-anvil-950 dark:text-anvil-400" data-testid="thread-collapsed" data-root={thread.root.id}>
         <CheckCircle2 className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden />
@@ -476,12 +479,21 @@ function CommentBlock({
   )
 }
 
+/**
+ * How a body's ```suggestion blocks render: as diffs of the lines they replace on `anchor` (null
+ * when the body has none). Stable while those lines are, so the body is not re-rendered for them.
+ */
+function useSuggestionContext(body: string, anchor: SuggestionAnchor | null, suggestions: SuggestionActions | undefined): { original: readonly string[] | null } | null {
+  const has = body.includes('```suggestion') || body.includes('~~~suggestion')
+  const lines = has && suggestions !== undefined && anchor !== null ? suggestions.original(anchor) : null
+  const key = lines === null ? null : lines.join('\n')
+  return useMemo(() => (has ? { original: key === null ? null : key.split('\n') } : null), [has, key])
+}
+
 /** A comment body: its ```suggestion blocks as diffs, with Apply / Add to batch / "Applied in". */
 function SuggestedBody({ comment: c, suggestions }: { comment: CommentView; suggestions?: SuggestionActions | undefined }): JSX.Element {
-  const has = c.body.includes('```suggestion') || c.body.includes('~~~suggestion')
-  const original = has && suggestions && c.anchor !== null ? suggestions.original(c.anchor) : null
-  const ctx = useMemo(() => (has ? { original } : null), [has, original])
-  if (!has || !suggestions) return <MarkdownView source={c.body} suggestion={ctx} />
+  const ctx = useSuggestionContext(c.body, c.anchor, suggestions)
+  if (ctx === null || !suggestions) return <MarkdownView source={c.body} suggestion={ctx} />
   const applied = suggestions.applied.get(c.id)
   const refused = suggestions.unapplicable(c)
   const inBatch = suggestions.batch.has(c.id)
@@ -519,9 +531,7 @@ function SuggestedBody({ comment: c, suggestions }: { comment: CommentView; sugg
 /** A comment of the viewer's pending review, shown in place (a suggestion as the diff it will be). */
 function PendingComment({ draft, pending, suggestions }: { draft: DraftComment; pending: PendingReview | undefined; suggestions?: SuggestionActions | undefined }): JSX.Element {
   const [editing, setEditing] = useState<string | null>(null)
-  const has = draft.body.includes('```suggestion') || draft.body.includes('~~~suggestion')
-  const original = has && suggestions ? suggestions.original(draft.anchor) : null
-  const ctx = useMemo(() => (has ? { original } : null), [has, original])
+  const ctx = useSuggestionContext(draft.body, draft.anchor, suggestions)
   return (
     <div className="rounded-md border border-dashed border-caution/60 bg-caution/5 px-3 py-2" data-testid="pending-comment" data-local={draft.localId}>
       <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
