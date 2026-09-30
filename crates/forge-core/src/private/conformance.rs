@@ -376,6 +376,13 @@ struct ManifestIn {
     size_bytes: u64,
     asset_manifest: String,
     tag: String,
+    notes_continue: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReleaseFoldIn {
+    revisions: Vec<release_ref::FoldRow>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -446,6 +453,10 @@ fn run_release(v: &Vector) -> Value {
             Err(e) => error_json(&e),
         };
     }
+    if v.case == "private_release_fold" {
+        let i: ReleaseFoldIn = input(v);
+        return release_ref::fold(&i.revisions);
+    }
     let i: ReleaseOpenIn = input(v);
     let repo_id = h32(&i.repo_id);
     if let Some(m) = &i.manifest {
@@ -455,6 +466,7 @@ fn run_release(v: &Vector) -> Value {
             m.size_bytes,
             &h32(&m.asset_manifest),
             &m.tag,
+            m.notes_continue,
             |e| ring.get(&e),
         ) {
             Ok(manifest) => json!({ "status": "readable", "manifest": manifest }),
@@ -816,7 +828,7 @@ fn run(v: &Vector) -> Value {
                 json!({ "fileId": hex::encode(keys.hedged_file_id(&rnd, &sha256(&pt))) })
             }
         }
-        "private_release_seal" | "private_release_open" => run_release(v),
+        "private_release_seal" | "private_release_open" | "private_release_fold" => run_release(v),
         other => panic!("vector `{}`: unknown private case `{other}`", v.name),
     }
 }
@@ -940,6 +952,6 @@ fn private_conformance_vectors() {
         assert_eq!(got, v.expected, "vector `{}` ({})", v.name, v.case);
         ran += 1;
     }
-    assert!(ran >= 269, "ran {ran} private vectors, expected 269+");
+    assert!(ran >= 298, "ran {ran} private vectors, expected 298+");
     println!("private conformance: {ran} vectors green");
 }

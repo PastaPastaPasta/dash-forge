@@ -1,0 +1,46 @@
+{
+  "name": "tie_by_raw_id_bytes",
+  "description": "equal $createdAt: the larger $id as raw bytes is newer, not the larger base58 string (§5.3).",
+  "case": "private_release_fold",
+  "rules": "v2",
+  "input": {
+    "revisions": [
+      {
+        "id": "0e043d5b78235ce930e1025d7cba74e118fb25d041dda79d91d4a0d026c117c9",
+        "createdAt": 100,
+        "epoch": 0,
+        "tagName": "tn-v1-e0",
+        "status": "readable",
+        "enc": "e-b'\\x0e\\x04=[x#\\\\\\xe90\\xe1\\x02]|\\xbat\\xe1\\x18\\xfb%\\xd0A\\xdd\\xa7\\x9d\\x91\\xd4\\xa0\\xd0&\\xc1\\x17\\xc9'",
+        "fields": {
+          "tag": "v1"
+        }
+      },
+      {
+        "id": "2291fc36ca86092d437eaead1f9e55b9415debe4d4757cbd5729b3a6a6c59403",
+        "createdAt": 100,
+        "epoch": 0,
+        "tagName": "tn-v1-e0",
+        "status": "readable",
+        "enc": "e-b'\"\\x91\\xfc6\\xca\\x86\\t-C~\\xae\\xad\\x1f\\x9eU\\xb9A]\\xeb\\xe4\\xd4u|\\xbdW)\\xb3\\xa6\\xa6\\xc5\\x94\\x03'",
+        "fields": {
+          "tag": "v1",
+          "yanked": true
+        }
+      }
+    ]
+  },
+  "expected": {
+    "live": {
+      "v1": "2291fc36ca86092d437eaead1f9e55b9415debe4d4757cbd5729b3a6a6c59403"
+    },
+    "history": [
+      "0e043d5b78235ce930e1025d7cba74e118fb25d041dda79d91d4a0d026c117c9"
+    ],
+    "count": 1,
+    "replays": [],
+    "unknownTags": [],
+    "stale": false,
+    "hidden": 0
+  }
+}

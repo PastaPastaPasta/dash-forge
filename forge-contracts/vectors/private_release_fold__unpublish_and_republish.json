@@ -1,0 +1,83 @@
+{
+  "name": "unpublish_and_republish",
+  "description": "an unpublish takes the tag down; a later revision without the flag publishes it again.",
+  "case": "private_release_fold",
+  "rules": "v2",
+  "input": {
+    "revisions": [
+      {
+        "id": "ef68fb8db87e0cc5dfa498227b092b005b4ae5f7e586b56b7d3531e234606cbd",
+        "createdAt": 100,
+        "epoch": 0,
+        "tagName": "tn-v1-e0",
+        "status": "readable",
+        "enc": "e-a",
+        "fields": {
+          "tag": "v1"
+        }
+      },
+      {
+        "id": "c72666dc00b61e990341322ae496a7fc23136137541b975a3121763846e2e4a9",
+        "createdAt": 200,
+        "epoch": 0,
+        "tagName": "tn-v1-e0",
+        "status": "readable",
+        "enc": "e-b",
+        "fields": {
+          "tag": "v1",
+          "unpublished": true
+        }
+      },
+      {
+        "id": "628e7dbf694364f059987d6d865486bd43c620f7cedefa2e913b395b816e2d18",
+        "createdAt": 300,
+        "epoch": 0,
+        "tagName": "tn-v2-e0",
+        "status": "readable",
+        "enc": "e-c",
+        "fields": {
+          "tag": "v2"
+        }
+      },
+      {
+        "id": "c3de41518509d56561e0efb247e97616ad89ef5fc0098fbe565f033f3f2699ca",
+        "createdAt": 400,
+        "epoch": 0,
+        "tagName": "tn-v2-e0",
+        "status": "readable",
+        "enc": "e-d",
+        "fields": {
+          "tag": "v2",
+          "unpublished": true
+        }
+      },
+      {
+        "id": "89d23479a9cd80fea41368cc4039f0a7657d8fe97269f022215cdc870ebf3594",
+        "createdAt": 500,
+        "epoch": 0,
+        "tagName": "tn-v2-e0",
+        "status": "readable",
+        "enc": "e-e",
+        "fields": {
+          "tag": "v2"
+        }
+      }
+    ]
+  },
+  "expected": {
+    "live": {
+      "v2": "89d23479a9cd80fea41368cc4039f0a7657d8fe97269f022215cdc870ebf3594"
+    },
+    "history": [
+      "c3de41518509d56561e0efb247e97616ad89ef5fc0098fbe565f033f3f2699ca",
+      "628e7dbf694364f059987d6d865486bd43c620f7cedefa2e913b395b816e2d18",
+      "c72666dc00b61e990341322ae496a7fc23136137541b975a3121763846e2e4a9",
+      "ef68fb8db87e0cc5dfa498227b092b005b4ae5f7e586b56b7d3531e234606cbd"
+    ],
+    "count": 1,
+    "replays": [],
+    "unknownTags": [],
+    "stale": false,
+    "hidden": 0
+  }
+}

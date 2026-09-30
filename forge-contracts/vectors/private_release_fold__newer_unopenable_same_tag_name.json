@@ -1,0 +1,42 @@
+{
+  "name": "newer_unopenable_same_tag_name",
+  "description": "a newer revision under a held epoch with the same tagName that does not open (badTag) leaves the tag's state unknown; the readable revision is still listed.",
+  "case": "private_release_fold",
+  "rules": "v2",
+  "input": {
+    "revisions": [
+      {
+        "id": "ef68fb8db87e0cc5dfa498227b092b005b4ae5f7e586b56b7d3531e234606cbd",
+        "createdAt": 100,
+        "epoch": 0,
+        "tagName": "T1",
+        "status": "readable",
+        "enc": "e-a",
+        "fields": {
+          "tag": "v1"
+        }
+      },
+      {
+        "id": "c72666dc00b61e990341322ae496a7fc23136137541b975a3121763846e2e4a9",
+        "createdAt": 200,
+        "epoch": 0,
+        "tagName": "T1",
+        "status": "badTag",
+        "enc": "e-b"
+      }
+    ]
+  },
+  "expected": {
+    "live": {
+      "v1": "ef68fb8db87e0cc5dfa498227b092b005b4ae5f7e586b56b7d3531e234606cbd"
+    },
+    "history": [],
+    "count": 1,
+    "replays": [],
+    "unknownTags": [
+      "v1"
+    ],
+    "stale": false,
+    "hidden": 1
+  }
+}

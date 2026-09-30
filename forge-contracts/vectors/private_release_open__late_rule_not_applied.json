@@ -1,6 +1,6 @@
 {
   "name": "late_rule_not_applied",
-  "description": "a release carries no $createdAtBlockHeight and is maintainer-gated at consensus, so the late-content rule does not apply: a revision under superseded epoch 0 by a since-removed maintainer still opens (§16.4).",
+  "description": "a release carries no $createdAtBlockHeight and is maintainer-gated at consensus, so the height part of the late-content rule does not apply: a revision under superseded epoch 0 by a since-removed maintainer still opens (§16.4).",
   "case": "private_release_open",
   "rules": "v2",
   "input": {
@@ -28,7 +28,7 @@
       "tagName": "A0TK3ZkbqTL94-CbAhgvnnKHPpCVVjvXTNKOyh6BhlM",
       "vis": "private",
       "delta": 0,
-      "enc": "01000102030405060708090a0b1c703ab4aa409f0d7f0f60d2a247982ecb7813a304816aa94996842aa8b3f5df2171308684245164672e34ca3044f13df6aed239822c11b72160aaf5710b729c53b3aa03727feefec12d445eb30914600bccdf7156d09595"
+      "enc": "01000102030405060708090a0b1c703ab4aa409f0d7f0f60d2a247982ecb7813a304816aa94996842aa8b3f5df2171308684245164672e34ca3044f13df6aed239822c11b72160aaf5710b729c53b3aa03727feefeb272ab1c48a938ea8a155bc02d513d87c976c4447d35583d1ece6f0259a4661d29a4f7bba9d2ab92"
     }
   },
   "expected": {

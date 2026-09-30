@@ -33,6 +33,9 @@ const FLAGS: u8 = 19;
 const IMPORTED_CREATED_AT: u8 = 20;
 const ASSET_MANIFEST: u8 = 21;
 const FIRST_EXTENSION: u8 = 64;
+const PAD_BUCKET: usize = 32;
+/// A reader refuses a kind-4 manifest whose `sizeBytes` is larger (§16.5).
+pub const MAX_MANIFEST_BYTES: u64 = 1 << 20;
 
 const PRERELEASE: u8 = 0x01;
 const DRAFT: u8 = 0x02;
@@ -148,7 +151,18 @@ fn rec(out: &mut Vec<u8>, tag: u8, value: &[u8]) {
     out.extend_from_slice(value);
 }
 
-/// The TLV of `f`, ascending (§16.2).
+/// The tag-64 record that pads a TLV of `n` bytes to a multiple of [`PAD_BUCKET`] within
+/// [`MAX_PLAINTEXT`] (§16.2); nothing when not even an empty record fits.
+fn pad(out: &mut Vec<u8>) {
+    let n = out.len();
+    if n + 3 > MAX_PLAINTEXT {
+        return;
+    }
+    let r = ((PAD_BUCKET - (n + 3) % PAD_BUCKET) % PAD_BUCKET).min(MAX_PLAINTEXT - 3 - n);
+    rec(out, FIRST_EXTENSION, &vec![0; r]);
+}
+
+/// The TLV records of `f`, ascending, without padding (§16.2).
 pub fn encode(f: &ReleaseFields) -> Vec<u8> {
     let mut out = Vec::new();
     let hex_ = |h: &str| hex::decode(h).expect("hex");
@@ -168,9 +182,8 @@ pub fn encode(f: &ReleaseFields) -> Vec<u8> {
     if let Some(o) = &f.target_oid {
         rec(&mut out, TARGET_OID, &hex_(o));
     }
-    if f.flags() != 0 {
-        rec(&mut out, FLAGS, &[f.flags()]);
-    }
+    // always written, 0x00 included: a flag change never changes the length
+    rec(&mut out, FLAGS, &[f.flags()]);
     if let Some(t) = f.imported_created_at {
         rec(&mut out, IMPORTED_CREATED_AT, &t.to_be_bytes());
     }
@@ -188,6 +201,7 @@ fn text_ok(s: &str, min: usize, chars: usize, bytes: usize) -> bool {
 pub fn parse(pt: &[u8]) -> Option<ReleaseFields> {
     let mut f = ReleaseFields::default();
     let mut tag_seen = false;
+    let mut flags_seen = false;
     let mut last: Option<u8> = None;
     let mut rest = pt;
     while !rest.is_empty() {
@@ -232,9 +246,10 @@ pub fn parse(pt: &[u8]) -> Option<ReleaseFields> {
             }
             FLAGS => {
                 let [b] = v else { return None };
-                if *b == 0 || b & !ALL_FLAGS != 0 {
+                if b & !ALL_FLAGS != 0 {
                     return None;
                 }
+                flags_seen = true;
                 f.prerelease = b & PRERELEASE != 0;
                 f.draft = b & DRAFT != 0;
                 f.yanked = b & YANKED != 0;
@@ -257,7 +272,13 @@ pub fn parse(pt: &[u8]) -> Option<ReleaseFields> {
             _ => return None, // reserved, or a tag that is not a release field
         }
     }
-    if !tag_seen || (f.notes_continue && f.asset_manifest.is_none()) {
+    let provenance_without_url = (f.imported_author.is_some() || f.imported_created_at.is_some())
+        && f.imported_url.is_none();
+    if !tag_seen
+        || !flags_seen
+        || (f.notes_continue && f.asset_manifest.is_none())
+        || provenance_without_url
+    {
         return None;
     }
     Some(f)
@@ -277,14 +298,17 @@ pub fn writer_check(f: &ReleaseFields) -> Result<Vec<u8>, PrivateError> {
         || f.imported_url.as_deref().is_some_and(|u| !text_ok(u, 1, 300, 300))
         || f.imported_created_at.is_some_and(|t| t > MAX_SAFE_INT)
         || f.asset_manifest.as_deref().is_some_and(|m| m.len() != 64)
-        || (f.notes_continue && f.asset_manifest.is_none());
+        || (f.notes_continue && f.asset_manifest.is_none())
+        || ((f.imported_author.is_some() || f.imported_created_at.is_some())
+            && f.imported_url.is_none());
     if f.tag.is_empty() || bad {
         return Err(PrivateError::Malformed);
     }
-    let pt = encode(f);
+    let mut pt = encode(f);
     if pt.len() > MAX_PLAINTEXT {
         return Err(PrivateError::TooLarge("release", MAX_PLAINTEXT));
     }
+    pad(&mut pt);
     // a writer never emits what a reader refuses
     if parse(&pt).as_ref() != Some(f) {
         return Err(PrivateError::Malformed);
@@ -352,15 +376,17 @@ pub struct StoredRelease {
     /// `$ownerId` (hex).
     pub owner_id: String,
     /// `epoch`.
-    pub epoch: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub epoch: Option<u32>,
     /// `tagName`.
     pub tag_name: String,
     /// `vis`.
     pub vis: String,
     /// `delta`.
     pub delta: i64,
-    /// `enc` (hex).
-    pub enc: String,
+    /// `epoch` is absent only on a document without `enc`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enc: Option<String>,
     /// A plaintext `yanked` next to `enc` (never written; Malformed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub yanked: Option<bool>,
@@ -369,7 +395,15 @@ pub struct StoredRelease {
     pub imported: Option<Value>,
 }
 
-/// §16.4: well-formedness, framing, epoch, key, AES-GCM, TLV, the tagName check; no late rule.
+/// Whether `s` has the shape of a sealed `tagName`: 43 characters of the base64url alphabet.
+fn tag_name_shaped(s: &str) -> bool {
+    s.len() == 43
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// §16.4: well-formedness, framing, epoch, key, AES-GCM, TLV, the tagName check, and the
+/// burned clause of the late-content rule (the only part a release can be judged by).
 pub fn open(ctx: &OpenContext, d: &StoredRelease) -> Opened {
     let owner: [u8; 32] = match hex::decode(&d.owner_id)
         .ok()
@@ -378,21 +412,30 @@ pub fn open(ctx: &OpenContext, d: &StoredRelease) -> Opened {
         Some(o) => o,
         None => return Opened::Malformed,
     };
-    let Ok(enc) = hex::decode(&d.enc) else {
+    // step 0, key-independent: a private release is sealed, carries no plaintext content (the
+    // contract's noPlain, plus `yanked` and `imported` by client rule), is stamped private,
+    // publishes nothing and has a tagName of the sealed shape
+    let (Some(enc), Some(epoch)) = (d.enc.as_deref(), d.epoch) else {
         return Opened::Malformed;
     };
-    // key-independent: a sealed release carries no plaintext content (the contract's noPlain,
-    // plus `yanked` and `imported` by client rule), is stamped private and publishes nothing
-    if d.yanked.is_some() || d.imported.is_some() || d.vis != "private" || d.delta != 0 {
+    let Ok(enc) = hex::decode(enc) else {
+        return Opened::Malformed;
+    };
+    if d.yanked.is_some()
+        || d.imported.is_some()
+        || d.vis != "private"
+        || d.delta != 0
+        || !tag_name_shaped(&d.tag_name)
+    {
         return Opened::Malformed;
     }
     if enc.len() < 29 || enc[0] != 0x01 {
         return Opened::Malformed;
     }
-    if !ctx.anchors.contains_key(&d.epoch) {
+    if !ctx.anchors.contains_key(&epoch) {
         return Opened::Unreadable(Unreadable::NoEpoch);
     }
-    let Some(keys) = ctx.keys.get(&d.epoch) else {
+    let Some(keys) = ctx.keys.get(&epoch) else {
         return Opened::Unreadable(Unreadable::NoKey);
     };
     let ad = ad(keys, &owner, &d.tag_name);
@@ -408,6 +451,11 @@ pub fn open(ctx: &OpenContext, d: &StoredRelease) -> Opened {
     // the string the document carries, compared as bytes: never decoded (§16.1)
     if !ct_eq(tag_name(keys, &f.tag).as_bytes(), d.tag_name.as_bytes()) {
         return Opened::Malformed;
+    }
+    // §8.2's burned clause needs no height: nothing is written under a burned epoch except by
+    // someone its key leaked to
+    if ctx.burned.contains(&epoch) && !ctx.members.contains(&owner) {
+        return Opened::Unreadable(Unreadable::Late);
     }
     Opened::Readable(f)
 }
@@ -468,27 +516,182 @@ pub enum ManifestError {
     Pack(PrivateError),
 }
 
-/// Open the kind-4 manifest a release names (§16.5): hash first, then §3.5, then the JSON's
-/// version, tag and total.
+fn is_hex64(v: &Value) -> bool {
+    v.as_str().is_some_and(|s| {
+        s.len() == 64
+            && s.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
+
+/// One asset entry of §16.5: `{name, sha256, sizeBytes, uris}` plus, for a sealed object,
+/// `sealedSha256` and `sealedSizeBytes`.
+fn entry_ok(e: &Value) -> bool {
+    let Some(o) = e.as_object() else {
+        return false;
+    };
+    let keys_ok = o.keys().all(|k| {
+        [
+            "name",
+            "sha256",
+            "sizeBytes",
+            "uris",
+            "sealedSha256",
+            "sealedSizeBytes",
+        ]
+        .contains(&k.as_str())
+    });
+    let name_ok = e["name"].as_str().is_some_and(|n| !n.is_empty());
+    let uris_ok = e["uris"].as_array().is_some_and(|u| {
+        (1..=8).contains(&u.len()) && u.iter().all(|x| x.as_str().is_some_and(|x| !x.is_empty()))
+    });
+    let Some(size) = e["sizeBytes"].as_u64() else {
+        return false;
+    };
+    let sha_ok = is_hex64(&e["sha256"]) || e["sha256"] == "";
+    let sealed = match (o.get("sealedSha256"), o.get("sealedSizeBytes")) {
+        (None, None) => true,
+        // a sealed object: the writer hashed the file it sealed, and the object holds it
+        (Some(h), Some(n)) => {
+            is_hex64(h) && is_hex64(&e["sha256"]) && n.as_u64().is_some_and(|n| n >= 36 + size + 16)
+        }
+        _ => false,
+    };
+    keys_ok && name_ok && uris_ok && sha_ok && sealed
+}
+
+/// Open the kind-4 manifest a release names (§16.5): the size cap, the hash, §3.5, then the
+/// canonical encoding, the version, tag, total, entries and the notes flag.
 pub fn open_manifest<'k>(
     sealed: &[u8],
     size_bytes: u64,
     asset_manifest: &[u8; 32],
     tag: &str,
+    notes_continue: bool,
     key_of: impl Fn(u32) -> Option<&'k EpochKeys>,
 ) -> Result<Value, ManifestError> {
-    if !ct_eq(&sha256(sealed), asset_manifest) {
+    if size_bytes > MAX_MANIFEST_BYTES || !ct_eq(&sha256(sealed), asset_manifest) {
         return Err(ManifestError::Mismatch);
     }
     let pt = pack::open(sealed, size_bytes, key_of).map_err(ManifestError::Pack)?;
     let m: Value = serde_json::from_slice(&pt).map_err(|_| ManifestError::Mismatch)?;
-    let total = m["assets"].as_array().map(Vec::len);
-    let ok = m["v"] == 1
+    // its own canonical re-encoding, byte for byte: whitespace, duplicate keys, escapes and
+    // number spellings that two parsers could read differently are all refused
+    if canonical_json(&m).as_bytes() != pt.as_slice() {
+        return Err(ManifestError::Mismatch);
+    }
+    let known = m.as_object().is_some_and(|o| {
+        o.keys()
+            .all(|k| ["v", "tag", "total", "source", "notes", "assets"].contains(&k.as_str()))
+    });
+    let assets = m["assets"].as_array();
+    let ok = known
+        && m["v"].as_u64() == Some(1)
         && m["tag"] == tag
-        && total.is_some()
-        && m["total"].as_u64() == total.map(|t| t as u64);
+        && assets.is_some_and(|a| m["total"].as_u64() == Some(a.len() as u64))
+        && assets.is_some_and(|a| a.iter().all(entry_ok))
+        && m.get("source")
+            .is_none_or(|s| s.as_str().is_some_and(|s| !s.is_empty()))
+        && m.get("notes").is_some() == notes_continue
+        && m.get("notes").is_none_or(|n| {
+            n.as_str()
+                .is_some_and(|n| !n.is_empty() && n.len() <= 5120 && n.chars().count() <= 5120)
+        });
     if !ok {
         return Err(ManifestError::Mismatch);
     }
     Ok(m)
+}
+
+/// One revision as the §16.3 fold sees it, after [`open`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FoldRow {
+    /// `$id` (hex; compared as raw bytes).
+    pub id: String,
+    /// `$createdAt`.
+    pub created_at: u64,
+    /// `epoch`.
+    pub epoch: u32,
+    /// `tagName`.
+    pub tag_name: String,
+    /// `readable`, or the unreadable reason (`noKey`, `badTag`, `late`, …), or `malformed`.
+    pub status: String,
+    /// `enc` (any string: only equality matters).
+    pub enc: String,
+    /// The opened fields of a readable revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fields: Option<ReleaseFields>,
+}
+
+/// The §16.3 fold: live tags, history, the count, replays, tags whose state is unknown, and
+/// whether the list may be stale.
+pub fn fold(rows: &[FoldRow]) -> Value {
+    use std::collections::{BTreeMap, BTreeSet};
+    let key = |r: &FoldRow| (r.created_at, hex::decode(&r.id).expect("hex id"));
+    let mut rows: Vec<&FoldRow> = rows.iter().collect();
+    rows.sort_by_key(|r| key(r));
+
+    let mut seen_enc = BTreeSet::new();
+    let mut replays = Vec::new();
+    let mut by_tag: BTreeMap<&str, Vec<&FoldRow>> = BTreeMap::new();
+    for r in &rows {
+        let Some(f) = r.fields.as_ref().filter(|_| r.status == "readable") else {
+            continue;
+        };
+        // honest writers never repeat a hedged nonce, so an equal enc is a copy
+        if !seen_enc.insert(r.enc.as_str()) {
+            replays.push(r.id.clone());
+            continue;
+        }
+        by_tag.entry(f.tag.as_str()).or_default().push(r);
+    }
+    let hidden = rows.iter().filter(|r| r.status != "readable").count();
+
+    let mut live = serde_json::Map::new();
+    let mut history: Vec<&FoldRow> = Vec::new();
+    let mut count = 0usize;
+    let mut unknown = Vec::new();
+    for (tag, revs) in &by_tag {
+        let newest = revs.last().expect("a group has a revision");
+        let nf = newest.fields.as_ref().expect("readable");
+        if nf.unpublished {
+            history.extend(revs.iter());
+        } else {
+            live.insert((*tag).to_string(), Value::from(newest.id.clone()));
+            count += usize::from(!nf.draft);
+            history.extend(&revs[..revs.len() - 1]);
+        }
+        // a newer revision that shares an (epoch, tagName) with this tag but does not open
+        let names: BTreeSet<(u32, &str)> = revs
+            .iter()
+            .map(|r| (r.epoch, r.tag_name.as_str()))
+            .collect();
+        let shadowed = rows.iter().any(|u| {
+            matches!(u.status.as_str(), "badTag" | "malformed")
+                && names.contains(&(u.epoch, u.tag_name.as_str()))
+                && key(u) > key(newest)
+        });
+        if shadowed {
+            unknown.push((*tag).to_string());
+        }
+    }
+    history.sort_by_key(|r| std::cmp::Reverse(key(r)));
+    let newest_readable = rows
+        .iter()
+        .filter(|r| r.status == "readable")
+        .map(|r| key(r))
+        .max();
+    let stale = rows
+        .iter()
+        .any(|r| r.status == "noKey" && newest_readable.as_ref().is_none_or(|n| key(r) > *n));
+    serde_json::json!({
+        "live": live,
+        "history": history.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
+        "count": count,
+        "replays": replays,
+        "unknownTags": unknown,
+        "stale": stale,
+        "hidden": hidden,
+    })
 }

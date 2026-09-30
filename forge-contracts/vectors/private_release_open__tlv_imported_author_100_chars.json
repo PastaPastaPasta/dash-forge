@@ -1,0 +1,37 @@
+{
+  "name": "tlv_imported_author_100_chars",
+  "description": "the reader's tag-13 cap is §4.3's (120 characters); only the writer applies the release schema's 64.",
+  "case": "private_release_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        }
+      },
+      "members": []
+    },
+    "doc": {
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 0,
+      "tagName": "epkPlFe5782luTKCh-jdiisv1geXoFXiXYPJdYBUfv0",
+      "vis": "private",
+      "delta": 0,
+      "enc": "01000102030405060708090a0b13704b93a2538d183e1d75d2a14a9c6fd87c1ea704936ee638f7e33df8fca490700151eab32042766f203b8b600ba072a7ddb34c49e7da7ceaab613ebac0b957987861c8b9b42535c013cb7d69c8488beb743aa14c305ce6a817a5251c54395ced835529a44802fac102ebd28c2ecf50599b4a1f2964a3a9342f74746db4008c5c26d753d9ad51b26b0a0f5519a3da3e9be4361fd7bc"
+    }
+  },
+  "expected": {
+    "status": "readable",
+    "fields": {
+      "tag": "v1",
+      "importedAuthor": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "importedUrl": "https://x.example/r"
+    }
+  }
+}

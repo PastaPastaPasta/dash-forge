@@ -1,6 +1,6 @@
 {
   "name": "tlv_flags_zero",
-  "description": "a flags record is written only when a flag is set: 0x00 is Malformed.",
+  "description": "a zero flags byte is the normal case: Readable, no flag set.",
   "case": "private_release_open",
   "rules": "v2",
   "input": {
@@ -27,6 +27,9 @@
     }
   },
   "expected": {
-    "status": "malformed"
+    "status": "readable",
+    "fields": {
+      "tag": "v1"
+    }
   }
 }
