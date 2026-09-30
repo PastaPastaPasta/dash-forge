@@ -149,7 +149,8 @@ node mint.mjs --network devnet --devnet-name moutai --out <dir> --label OWNER --
   `encryptedFor` needs on the sender side, and it also serves as the recipient key
   when a contract does not require a contract-bound DECRYPTION key.
 - To mint from an existing recovery phrase instead, give `--mnemonic-file <path>`
-  (the file's words, trimmed) or `--mnemonic -` (read from a pipe or redirect,
+  (the file's words, trimmed; a path without spaces, and errors never repeat
+  it) or `--mnemonic -` (read from a pipe or redirect,
   e.g. `pass show forge/owner | node mint.mjs --mnemonic - --out <dir>`; a
   terminal is refused, since typing would echo the words).
   `--mnemonic "<12 words>"` still works but prints a warning: a phrase on the

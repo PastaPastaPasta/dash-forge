@@ -15,6 +15,21 @@ function phrase(text, source) {
 }
 
 /**
+ * Read `--mnemonic-file`. Like funding.mjs readKeyFile, no error carries the value: someone who
+ * pastes the phrase itself as the path would otherwise see it echoed in fs's ENOENT message.
+ */
+function readMnemonicFile(path, readFile) {
+  if (/\s/.test(path)) {
+    throw new Error('--mnemonic-file takes a path (without spaces), not the phrase itself; to pipe the phrase in, use --mnemonic -');
+  }
+  try {
+    return readFile(path);
+  } catch (err) {
+    throw new Error(`Cannot read the --mnemonic-file file (${err?.code ?? 'read error'})`);
+  }
+}
+
+/**
  * The mnemonic from parsed args, or undefined when none was given:
  *   --mnemonic-file <path>  read the file (trimmed)
  *   --mnemonic -            read stdin (a pipe or redirect: a terminal would echo the words)
@@ -36,7 +51,7 @@ export function resolveMnemonicArg(
   if (file !== undefined && inline !== undefined) throw new Error('Give either --mnemonic-file or --mnemonic, not both');
   if (file !== undefined) {
     if (file === true) throw new Error('--mnemonic-file needs a path');
-    return phrase(readFile(String(file)), String(file));
+    return phrase(readMnemonicFile(String(file), readFile), 'the --mnemonic-file file');
   }
   if (inline === undefined) return undefined;
   if (inline === true) throw new Error('--mnemonic needs a value: - to read it from stdin (or use --mnemonic-file <path>)');

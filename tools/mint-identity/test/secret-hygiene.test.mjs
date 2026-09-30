@@ -92,6 +92,22 @@ test('--mnemonic-file reads a real file', (t) => {
   assert.equal(resolveMnemonicArg({ 'mnemonic-file': file }, { warn: () => assert.fail('no warning expected') }), FAKE_PHRASE);
 });
 
+test('--mnemonic-file never echoes its value: a pasted phrase is refused', () => {
+  const read = () => assert.fail('a phrase must not be opened as a path');
+  assert.throws(
+    () => resolveMnemonicArg({ 'mnemonic-file': FAKE_PHRASE }, { readFile: read }),
+    (err) => /takes a path/.test(err.message) && !err.message.includes('eleven') && !err.message.includes('fake one')
+  );
+});
+
+test('--mnemonic-file: a missing path is reported by code, without the path', (t) => {
+  const missing = join(tempDir(t), 'no-such-phrase-file.txt');
+  assert.throws(
+    () => resolveMnemonicArg({ 'mnemonic-file': missing }),
+    (err) => err.message.includes('ENOENT') && !err.message.includes('no-such-phrase-file') && !err.message.includes(missing)
+  );
+});
+
 test('--mnemonic - reads stdin, without a warning', () => {
   const warnings = [];
   const got = resolveMnemonicArg({ mnemonic: '-' }, { readStdin: () => `${FAKE_PHRASE}\n`, stdinIsTTY: false, warn: (m) => warnings.push(m) });
