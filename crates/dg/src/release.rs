@@ -168,7 +168,7 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
                 .iter()
                 .filter(|a| !uploads_replace(&args.assets, &a.name))
                 .count(),
-            if r.yanked && !args.yanked {
+            if r.yanked && args.yanked != Some(true) {
                 " (it is yanked now: without --yanked this un-yanks it)"
             } else {
                 ""
@@ -283,10 +283,13 @@ async fn create_sealed(ctx: &Ctx, args: &ReleaseCreateArgs, s: &Session) -> Resu
         .create_release_stored(&s.repo, &input, store.as_ref())
         .await
         .map_err(|e| {
-            anyhow::Error::from(e).context(if input.files.is_empty() {
+            // new files or notes may store sealed copies and an asset list before the release
+            // itself is signed
+            anyhow::Error::from(e).context(if input.files.is_empty() && input.notes.is_empty() {
                 "nothing was written"
             } else {
-                "sealed assets may have been stored; a re-run seals and stores them again"
+                "the release was not written; sealed copies and an asset list may have been \
+                 stored, and a re-run seals and stores them again"
             })
         })?;
     let spent = s.spent_since(before).await;
@@ -298,7 +301,8 @@ async fn create_sealed(ctx: &Ctx, args: &ReleaseCreateArgs, s: &Session) -> Resu
             "sealed": true,
             "documentId": written.document_id,
             "assets": written.sealed_assets,
-            "warning": written.warning,
+            "assetListKept": written.asset_list_kept,
+            "warnings": written.warnings,
             "cost": cost_json(spent, price),
         }),
         || {
@@ -311,18 +315,26 @@ async fn create_sealed(ctx: &Ctx, args: &ReleaseCreateArgs, s: &Session) -> Resu
                     a.sealed_sha256.as_deref().map_or("external", short)
                 );
             }
+            let assets = if written.asset_list_kept {
+                "asset list unchanged".to_string()
+            } else {
+                format!("{} asset(s)", written.sealed_assets.len())
+            };
             println!(
-                "✓ published sealed release {tag} of {} ({} asset(s)) · {}",
+                "✓ published sealed release {tag} of {} ({assets}) · {}",
                 s.repo.display(),
-                written.sealed_assets.len(),
                 cost_line(spent, price)
             );
-            if let Some(w) = &written.warning {
-                println!("warning: {w}");
-            }
+            print_warnings(&written.warnings);
         },
     );
     Ok(())
+}
+
+fn print_warnings(warnings: &[String]) {
+    for w in warnings {
+        println!("warning: {w}");
+    }
 }
 
 /// `dg release unpublish <tag>`: writes a release revision with `delta` −1 (maintainers only),
@@ -405,7 +417,7 @@ async fn unpublish_sealed(ctx: &Ctx, repo: &str, tag: &str, s: &Session) -> Resu
     ))?;
     let input = ReleaseInput {
         tag_name: tag.to_string(),
-        yanked: live.yanked,
+        yanked: Some(live.yanked),
         unpublished: true,
         ..ReleaseInput::default()
     };
@@ -422,7 +434,7 @@ async fn unpublish_sealed(ctx: &Ctx, repo: &str, tag: &str, s: &Session) -> Resu
             "tag": tag,
             "sealed": true,
             "documentId": written.document_id,
-            "warning": written.warning,
+            "warnings": written.warnings,
             "cost": cost_json(spent, price),
         }),
         || {
@@ -431,9 +443,7 @@ async fn unpublish_sealed(ctx: &Ctx, repo: &str, tag: &str, s: &Session) -> Resu
                 s.repo.display(),
                 cost_line(spent, price)
             );
-            if let Some(w) = &written.warning {
-                println!("warning: {w}");
-            }
+            print_warnings(&written.warnings);
         },
     );
     Ok(())
@@ -1235,7 +1245,7 @@ mod tests {
     #[test]
     fn yanking_keeps_the_assets_name_and_notes() {
         let input = superseding_input(Some(&current()), &args(&["--yanked"]), Vec::new());
-        assert!(input.yanked);
+        assert_eq!(input.yanked, Some(true));
         assert_eq!(
             (input.name.as_str(), input.notes.as_str()),
             ("One", "first")
@@ -1247,7 +1257,11 @@ mod tests {
     fn given_fields_win_and_a_same_named_upload_replaces_its_asset() {
         let a = args(&["--notes", "second", "--asset", "dist/app.tar.gz"]);
         let input = superseding_input(Some(&current()), &a, vec![asset("app.tar.gz", 'c')]);
-        assert!(!input.yanked, "a republish without --yanked un-yanks");
+        assert_ne!(
+            input.yanked,
+            Some(true),
+            "a republish without --yanked un-yanks"
+        );
         assert_eq!(
             (input.name.as_str(), input.notes.as_str()),
             ("One", "second")

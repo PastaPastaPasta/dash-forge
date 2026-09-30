@@ -858,7 +858,7 @@ impl<'a> Sink<'a> {
                 tag_name: r.tag_name.clone(),
                 name: r.name.clone(),
                 notes,
-                yanked: false,
+                yanked: Some(false),
                 assets: assets_in,
                 ..ReleaseInput::default()
             };

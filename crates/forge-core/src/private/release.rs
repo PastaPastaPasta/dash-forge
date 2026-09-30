@@ -381,7 +381,7 @@ pub fn fit_notes(mut f: ReleaseFields, notes: &str) -> (ReleaseFields, bool) {
     f.notes_continue = true;
     f.asset_manifest.get_or_insert_with(|| "00".repeat(32));
     // the room a notes record has: the rest, then its 3-byte header
-    let room = MAX_PLAINTEXT.saturating_sub(len(&f) + 3);
+    let room = MAX_PLAINTEXT.saturating_sub(len(&f).saturating_add(3));
     let mut cut = room.min(notes.len());
     while !notes.is_char_boundary(cut) {
         cut -= 1;
@@ -890,6 +890,32 @@ mod tests {
         assert!(writer_tlv(&f).unwrap().len() <= MAX_PLAINTEXT);
         let (empty, cont) = fit_notes(base, "");
         assert!(!cont && empty.notes.is_none());
+    }
+
+    /// A revision that names an asset list budgets TLV 21 before the notes are fitted: notes
+    /// that would fit whole without its 35 bytes continue in the list instead, and the TLV
+    /// with the real hash still fits (the writer never refuses its own list, §16.2).
+    #[test]
+    fn a_named_asset_list_is_in_the_notes_budget() {
+        let base = ReleaseFields {
+            tag: "v1".into(),
+            ..ReleaseFields::default()
+        };
+        for n in 1455..=1500 {
+            let notes = "n".repeat(n);
+            let (mut f, cont) = fit_notes(
+                ReleaseFields {
+                    asset_manifest: Some("00".repeat(32)),
+                    ..base.clone()
+                },
+                &notes,
+            );
+            f.asset_manifest = Some("ab".repeat(32));
+            let tlv = writer_tlv(&f).unwrap_or_else(|e| panic!("{n} bytes of notes: {e:?}"));
+            assert!(tlv.len() <= MAX_PLAINTEXT);
+            // without the list, these fit whole
+            assert!(!fit_notes(base.clone(), &notes).1 || cont);
+        }
     }
 
     /// The writer's asset list opens as the reader's (§16.5), and a sealed file opens,

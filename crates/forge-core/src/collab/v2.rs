@@ -4374,7 +4374,10 @@ impl<'a> Collab<'a> {
         if !input.notes.is_empty() {
             p.insert("notes".to_string(), FieldValue::text(&input.notes));
         }
-        p.insert("yanked".to_string(), FieldValue::boolean(input.yanked));
+        p.insert(
+            "yanked".to_string(),
+            FieldValue::boolean(input.yanked.unwrap_or(false)),
+        );
         if !input.assets.is_empty() {
             let json = serde_json::to_string(&input.assets)?;
             if json.len() > 4096 {
@@ -4434,14 +4437,7 @@ impl<'a> Collab<'a> {
     ) -> Result<ReleaseWritten> {
         use crate::private::release::{self, ReleaseFields};
         let tag = &input.tag_name;
-        check_tag_name(tag)?;
-        check_text("release name", &input.name, 120, 480)?;
-        check_text("release notes", &input.notes, 5120, 5120)?;
-        if !input.assets.is_empty() {
-            return Err(Error::Config(
-                "a private repository's assets are sealed files, never plaintext entries".into(),
-            ));
-        }
+        check_sealed_input(input)?;
         self.require_role(repo, Role::Maintainer, &format!("publish release {tag}"))
             .await?;
         let owner = platform::decode_identifier(&self.signer_id()?)?;
@@ -4468,7 +4464,7 @@ impl<'a> Collab<'a> {
             imported_created_at: carried.imported_created_at,
             prerelease: input.prerelease.unwrap_or(carried.prerelease),
             draft: input.draft.unwrap_or(carried.draft),
-            yanked: input.yanked,
+            yanked: input.yanked.unwrap_or(carried.yanked),
             unpublished: input.unpublished,
             // an edit of nothing but the name or the flags keeps the notes and the list as
             // they are: the same prefix, flag and manifest
@@ -4483,6 +4479,7 @@ impl<'a> Collab<'a> {
             (None, _) => carried.notes.clone().unwrap_or_default(),
         };
         let mut sealed_assets = Vec::new();
+        let mut orphaned = Vec::new();
         let mut attempts = 0;
         let (keys, epoch) = loop {
             attempts += 1;
@@ -4491,7 +4488,7 @@ impl<'a> Collab<'a> {
             if !rebuild {
                 break (w.write_keys().clone(), w.write_epoch());
             }
-            (fields, sealed_assets) = self
+            let list = self
                 .rebuild_asset_list(
                     repo,
                     w.write_keys(),
@@ -4504,12 +4501,18 @@ impl<'a> Collab<'a> {
                     store,
                 )
                 .await?;
+            (fields, sealed_assets) = (list.fields, list.assets);
             // The final anchor re-read before signing (§5.3, §16.5): a rotation during the
-            // upload would leave the new artifacts readable to the member it removed.
+            // upload would leave the new artifacts readable to the member it removed. The key
+            // is compared, not only its number: a dropped epoch number can be used again.
             let now = self.fresh_keyring(repo).await?.writer(repo)?;
-            if now.write_epoch() == w.write_epoch() {
+            if now.write_epoch() == w.write_epoch()
+                && now.write_keys().kcv() == w.write_keys().kcv()
+            {
                 break (now.write_keys().clone(), now.write_epoch());
             }
+            // what was stored under the superseded key stays where it is: say so
+            orphaned.extend(list.stored);
             if attempts >= 2 {
                 return Err(Error::Config(format!(
                     "release {tag} not written: the key epoch of {} moved twice while its \
@@ -4537,39 +4540,53 @@ impl<'a> Collab<'a> {
             .await?;
         let after = self.releases(repo).await?;
         Ok(ReleaseWritten {
-            warning: not_newest_warning(&after, tag, &document_id),
+            warnings: sealed_write_warnings(repo, tag, &before, &after, &document_id, &orphaned),
             document_id,
             sealed_assets,
+            asset_list_kept: !rebuild,
         })
     }
 
     /// A revision's new asset list under `keys` (§16.5): the previous list's assets but those a
     /// new file replaces, then the new files sealed and stored, and the full notes when they
-    /// do not fit `enc`. Returns the fields with their notes fitted and TLV 21 set (none when
-    /// there is no asset and nothing continues), and the list's entries.
+    /// do not fit `enc`. The list is named again, not stored again, when nothing in it changes
+    /// (no new file, and no notes in it before or now). Returns the fields with their notes
+    /// fitted and TLV 21 set (none when there is no asset and nothing continues), the list's
+    /// entries, and the sealed hashes it stored.
     async fn rebuild_asset_list(
         &self,
         repo: &RepoRef,
         keys: &crate::private::EpochKeys,
         from: RebuildFrom<'_>,
         store: Option<&ReleaseStore<'_>>,
-    ) -> Result<(
-        crate::private::release::ReleaseFields,
-        Vec<crate::private::release::ManifestAsset>,
-    )> {
+    ) -> Result<Rebuilt> {
         use crate::private::release::{self, ReleaseFields, ReleaseManifest};
+        // the hash of `from.prev`, as the carried fields name it
+        let prev_hash = from.fields.asset_manifest.clone();
         let mut assets = from.prev.map(|m| m.assets.clone()).unwrap_or_default();
         assets.retain(|a| !from.files.iter().any(|f| f.name == a.name));
-        assets.extend(self.seal_release_files(keys, from.files, store).await?);
+        let uploaded = self.seal_release_files(keys, from.files, store).await?;
+        let mut stored: Vec<String> = uploaded
+            .iter()
+            .filter_map(|a| a.sealed_sha256.clone())
+            .collect();
+        assets.extend(uploaded);
+        // TLV 21 is part of the 1507-byte budget whenever the revision names a list (§16.2):
+        // a placeholder of its length is counted before the notes are fitted
         let (mut fields, notes_continue) = release::fit_notes(
             ReleaseFields {
-                asset_manifest: None,
+                asset_manifest: (!assets.is_empty()).then(|| "00".repeat(32)),
                 ..from.fields
             },
             from.notes,
         );
+        let unchanged = from.files.is_empty()
+            && !notes_continue
+            && from.prev.is_some_and(|m| m.notes.is_none());
         fields.asset_manifest = if assets.is_empty() && !notes_continue {
             None
+        } else if unchanged {
+            prev_hash
         } else {
             let manifest = ReleaseManifest {
                 v: 1,
@@ -4579,12 +4596,18 @@ impl<'a> Collab<'a> {
                 notes: notes_continue.then(|| from.notes.to_string()),
                 assets: assets.clone(),
             };
-            let hash = self
-                .store_release_manifest(repo, keys, &manifest, notes_continue, store)
-                .await?;
-            Some(hex::encode(hash))
+            let hash = hex::encode(
+                self.store_release_manifest(repo, keys, &manifest, notes_continue, store)
+                    .await?,
+            );
+            stored.push(hash.clone());
+            Some(hash)
         };
-        Ok((fields, assets))
+        Ok(Rebuilt {
+            fields,
+            assets,
+            stored,
+        })
     }
 
     /// Seal each of `files` under `keys` and store it, as manifest entries (§16.5): the
@@ -5385,6 +5408,67 @@ struct RebuildFrom<'i> {
     prev: Option<&'i crate::private::release::ReleaseManifest>,
 }
 
+/// What a sealed writer refuses before anything is read or stored: the tag and text caps,
+/// plaintext asset entries, and two files of one name.
+fn check_sealed_input(input: &ReleaseInput) -> Result<()> {
+    check_tag_name(&input.tag_name)?;
+    check_text("release name", &input.name, 120, 480)?;
+    check_text("release notes", &input.notes, 5120, 5120)?;
+    if !input.assets.is_empty() {
+        return Err(Error::Config(
+            "a private repository's assets are sealed files, never plaintext entries".into(),
+        ));
+    }
+    let mut names = BTreeSet::new();
+    if let Some(dup) = input.files.iter().find(|f| !names.insert(&f.name)) {
+        return Err(Error::Config(format!(
+            "two assets are named {:?}: a release lists each name once",
+            dup.name
+        )));
+    }
+    Ok(())
+}
+
+/// [`ReleaseWritten::warnings`] for the revision `ours` of `tag` (§16.3): the view it carried
+/// forward from missed a newer revision; it is not the newest after the write (or that could
+/// not be checked); a rotation during the upload left copies under the old key (`orphaned`).
+fn sealed_write_warnings(
+    repo: &RepoRef,
+    tag: &str,
+    before: &ReleaseList,
+    after: &ReleaseList,
+    ours: &str,
+    orphaned: &[String],
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    if before.stale || before.unknown_tags.iter().any(|t| t == tag) {
+        warnings.push(format!(
+            "release {tag} was carried forward from the newest revision you can read; a newer \
+             one exists that you cannot read (`dg repo keys status {}`)",
+            repo.display()
+        ));
+    }
+    warnings.extend(not_newest_warning(after, tag, ours));
+    if !orphaned.is_empty() {
+        warnings.push(format!(
+            "the key epoch moved during the upload, so this release was sealed again; the first \
+             copies, under the old key, are still in your storage: {}",
+            orphaned.join(", ")
+        ));
+    }
+    warnings
+}
+
+/// What [`Collab::rebuild_asset_list`] built.
+struct Rebuilt {
+    /// The revision's fields, notes fitted and TLV 21 set.
+    fields: crate::private::release::ReleaseFields,
+    /// The list's entries.
+    assets: Vec<crate::private::release::ManifestAsset>,
+    /// The sealed hashes it stored (files, then the list).
+    stored: Vec<String>,
+}
+
 /// The newest readable revision of `tag`: its release when live, else the newest of its
 /// history (an unpublished tag's included).
 fn newest_revision<'l>(list: &'l ReleaseList, tag: &str) -> Option<&'l Release> {
@@ -5401,7 +5485,7 @@ fn non_empty(s: &str) -> Option<String> {
 /// The URIs a sealed asset entry records: 1–8 (§16.5), private `s3://` copies dropped first.
 fn asset_uris(mut uris: Vec<String>) -> Vec<String> {
     const MAX: usize = 8;
-    if uris.len() > MAX {
+    if uris.len() > MAX && uris.iter().any(|u| !u.starts_with("s3://")) {
         uris.retain(|u| !u.starts_with("s3://"));
     }
     uris.truncate(MAX);
@@ -5462,18 +5546,25 @@ fn sealed_release_props(tag_name: &str, epoch: u32, enc: Vec<u8>) -> BTreeMap<St
 
 /// The warning a sealed writer gives when its revision `ours` is not the newest of `tag`
 /// after the write (§16.3): a concurrent revision (a lost update) or a clock behind another
-/// writer's, since `$createdAt` is client-set. `None` when it is, or is not visible yet.
+/// writer's, since `$createdAt` is client-set. When the read does not show it yet, the check
+/// could not be made, and the warning says so. `None` when it is the newest.
 fn not_newest_warning(after: &ReleaseList, tag: &str, ours: &str) -> Option<String> {
-    let newest = newest_revision(after, tag)?;
+    let newest = newest_revision(after, tag);
+    if newest.is_some_and(|n| n.document_id == ours) {
+        return None;
+    }
     // ours is visible but not the newest: then it is among the older revisions
-    let superseded =
-        newest.document_id != ours && after.previous.iter().any(|r| r.document_id == ours);
-    superseded.then(|| {
-        format!(
+    let seen = after.previous.iter().any(|r| r.document_id == ours);
+    Some(match newest {
+        Some(n) if seen => format!(
             "your revision of release {tag} is older than {}'s ({}): another maintainer wrote \
              one meanwhile, or your clock is behind theirs; check it with `dg release list`",
-            newest.publisher, newest.document_id
-        )
+            n.publisher, n.document_id
+        ),
+        _ => format!(
+            "your revision of release {tag} ({ours}) is not visible yet, so whether it is the \
+             newest could not be checked; check it with `dg release list`"
+        ),
     })
 }
 
@@ -6796,7 +6887,8 @@ mod tests {
         let w = not_newest_warning(&list, "v1", "ours").unwrap();
         assert!(w.contains("bob") && w.contains("theirs"), "{w}");
         assert_eq!(not_newest_warning(&list, "v1", "theirs"), None);
-        assert_eq!(not_newest_warning(&list, "v1", "unseen"), None);
+        let unseen = not_newest_warning(&list, "v1", "unseen").unwrap();
+        assert!(unseen.contains("not visible yet"), "{unseen}");
     }
 
     /// `ContentKind::Release` (§16.2): a private release without `enc`, or with plaintext
