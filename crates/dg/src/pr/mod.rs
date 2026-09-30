@@ -1843,11 +1843,18 @@ fn build_merge(
         }
         (MergePlan::FastForward { oid }, Method::Merge) => (oid.clone(), "fast-forward to"),
         (MergePlan::MergeCommit { base, head }, Method::Merge) => {
+            // The subject names the PR's source branch by its short name (`feature/x`, not
+            // `refs/heads/feature/x`), matching the browser merge's short-name format
+            // (`forge-web` `lib/merge/engine.ts` `mergeMessage`) and closer to GitHub's
+            // `owner/branch` (Forge has no login to put before the branch).
+            let source = view
+                .patch
+                .source_ref_name
+                .as_deref()
+                .map_or(head.as_str(), forge_core::repo::short_branch_name);
             let message = format!(
                 "Merge pull request #{} from {}\n\n{}",
-                view.patch.number,
-                view.patch.source_ref_name.as_deref().unwrap_or(head),
-                view.patch.title
+                view.patch.number, source, view.patch.title
             );
             let c = git::merge_commit(dir, base, head, &message, &author())?
                 .ok_or_else(|| conflict(base, head))?;

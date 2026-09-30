@@ -4,7 +4,7 @@ import { gitOidHex, ObjectLocator, BrowseReader } from '../browse'
 import { indexPacks, memoryPackSource, serializeLocator } from '../browse/indexer'
 import { Store } from '../view/diff-fixtures'
 import { parseCommit, parseTree } from '../view/git-objects'
-import { checkMerge, mergeMessage, planMerge, runMerge, type MergeInput } from './engine'
+import { checkMerge, mergeMessage, mergeSourceLabel, planMerge, runMerge, type MergeInput } from './engine'
 import { newCommits } from './objects'
 import { writePack } from './pack-writer'
 
@@ -20,6 +20,24 @@ async function readBack(pack: Uint8Array) {
   const reader = new BrowseReader(ObjectLocator.parse(serializeLocator(indexed)), memoryPackSource([pack]))
   return { indexed, reader }
 }
+
+describe('mergeSourceLabel (D-7: the subject names the short branch, parity with `dg pr merge`)', () => {
+  it('shortens a legal ref name, dropping refs/heads/', () => {
+    expect(mergeSourceLabel('refs/heads/feature/farewell', 'deadbeef')).toBe('feature/farewell')
+  })
+
+  it('falls back to the head oid when there is no source ref name', () => {
+    expect(mergeSourceLabel(null, 'deadbeef')).toBe('deadbeef')
+  })
+
+  it('falls back to the head oid when the source ref name is not legal (the PR author wrote it)', () => {
+    expect(mergeSourceLabel('not a ref', 'deadbeef')).toBe('deadbeef')
+  })
+
+  it('feeds a message with a plain owner-free branch name, as the CLI writes it', () => {
+    expect(mergeMessage(2, mergeSourceLabel('refs/heads/feature/farewell', 'deadbeef'))).toBe('Merge pull request #2 from feature/farewell\n')
+  })
+})
 
 describe('pack writer', () => {
   it('writes a non-thin pack that indexPacks parses and verifies', async () => {
