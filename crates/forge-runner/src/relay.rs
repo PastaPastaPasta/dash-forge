@@ -33,7 +33,7 @@ pub enum Wake {
     /// The relay cannot say what happened (it restarted, or more happened than it keeps):
     /// poll every repository.
     All,
-    /// These repositories had a push: each by every name the relay
+    /// These repositories had a push or pull-request activity: each by every name the relay
     /// gives it (`<owner id>/<name>` and the relay's own label).
     Repos(Vec<Vec<String>>),
 }

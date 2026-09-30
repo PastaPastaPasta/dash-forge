@@ -97,7 +97,7 @@ These are what the protocol and the current forge-collab contract allow. They ar
 
 ## Self-host a runner
 
-[`forge-runner`](self-host-runner.md) watches a repository, runs `.forge/workflows/*.yml` (GitHub Actions syntax) with [nektos/act](https://github.com/nektos/act) in Docker on every push, and reports each job through `dg ci report` with its log. It polls; [your own relay can wake it](self-host-runner.md#wake-it-from-your-relay) within seconds of a push.
+[`forge-runner`](self-host-runner.md) watches a repository, runs `.forge/workflows/*.yml` (GitHub Actions syntax) with [nektos/act](https://github.com/nektos/act) in Docker on every push and pull request, and reports each job through `dg ci report` with its log. It polls; [your own relay can wake it](self-host-runner.md#wake-it-from-your-relay) within seconds of a push.
 
 **The security boundary is the Docker daemon you give the runner.** Give it a daemon of its own: rootless, sysbox, or a Docker-in-Docker sidecar over TLS. Never the host's socket. On top of that, the runner:
 
@@ -105,7 +105,7 @@ These are what the protocol and the current forge-collab contract allow. They ar
 - **Keeps the daemon's socket out of jobs,** and puts jobs on the `bridge` network, not the host's.
 - **Hands secrets and a `GITHUB_TOKEN` to trusted refs only.** Other runs get an empty token, and secret values are redacted from logs before upload.
 - **Clears act's environment,** so `DASH_FORGE_KEY` never reaches act or a job, and ignores act configuration planted in the checkout.
-- **Never runs a fork's pull request:** it runs pushes to the watched repository's own refs only.
+- **Follows GitHub's fork-PR model:** a pull request runs with the secrets only when its head is a trusted branch of the repository itself and its author a member; a fork's or a non-member's PR runs with no secrets and an empty token, and by default a non-member's PR does not run at all ([Pull requests](self-host-runner.md#pull-requests)).
 
 [Self-host a CI runner](self-host-runner.md#security) has the details.
 

@@ -28,7 +28,39 @@ On every poll (every `interval_secs`, default 120 s, and within seconds of a pus
    - A job's reports share one run id, a hash of the repository, ref, commit, workflow file and job, so they update a single check run.
 5. **Uploads each job's log** (capped at 16 MiB) to your storage profile, with secret values redacted. The check run records the log's URL and SHA-256, and the web app shows the log only if the bytes match.
 
+6. **Lists the pull requests** (`dg pr list`, the newest 50) and runs each one that was opened, reopened or marked ready for review, or whose head moved, as [Pull requests](#pull-requests) says. The first poll only records them.
+
 If a run could not start because the fetch or checkout failed, the next polls try it again, up to `attempts` (default 3). A run whose jobs did run is not repeated; `forge-runner run` repeats one by hand.
+
+## Pull requests
+
+A workflow whose `on:` includes `pull_request` runs when a pull request is opened, its head moves (`synchronize`), it is reopened, or (when the workflow's `types` asks for it) it is marked ready for review. Drafts run too, as on GitHub.
+
+- **What runs is the PR's head commit.** The runner fetches the branch the PR names, from this repository or from the fork that holds it, and runs only if the branch's tip is the head `dg` reports. GitHub runs a merge preview instead; here `github.sha` is the head.
+- **The event is GitHub's `pull_request` payload.** It carries `action`, `number`, `pull_request.{number, title, draft, user.login, head.{ref, sha, repo.fork}, base.{ref, sha}}`, and `before`/`after` on a `synchronize`. act turns these into `github.ref` = `refs/pull/<n>/merge`, `github.head_ref` and `github.base_ref`.
+- **Filters are GitHub's.** `types` (by default `opened`, `synchronize` and `reopened`), `branches` / `branches-ignore` on the base branch, and `paths` / `paths-ignore` on the PR's changes (`base...head`).
+- **Checks go on the head, named apart from pushes.** A job's check is `<workflow> / <job> (pull_request)` on the head commit, keyed by `refs/pull/<n>/head`, so a PR's run and the branch's own push run on the same commit never replace each other. Require `ci / build (pull_request)` in a branch policy to gate merges on it.
+- **`pull_request_target`, `schedule` and `workflow_dispatch` never run.**
+
+Which pull requests run is the repository's `pull_requests` setting:
+
+| `pull_requests` | Runs |
+|---|---|
+| `"members"` (default) | PRs whose author is a current member (owner, maintainer or writer), from a branch here or from a fork. Others are skipped with a log line. |
+| `"all"` | Every PR, anyone's. A stranger's code then runs on your Docker daemon, as a fork's PR does on GitHub without the approval step. |
+| `"off"` | No PR. |
+
+`forge-runner -c runner.toml run alice/project --pr 12` runs one PR's current head by hand, for example a stranger's that `"members"` skipped, after you read it. It gets no secrets either.
+
+**Secrets follow GitHub's fork-PR model.** A pull request's run gets the secrets file and its `GITHUB_TOKEN` only when all three hold:
+
+1. its head is a branch of **this** repository, not a fork's;
+2. that branch matches `trusted_refs`, so only those who could push there with secrets anyway wrote the code;
+3. its author is a current member, so the PR's title and the other event fields that a workflow might paste into a shell are a member's too.
+
+Every other PR, including a member's PR from a fork, and every PR from a non-member, runs with no secrets and an empty `GITHUB_TOKEN`. Forge has no job token at all: the runner key never reaches a job, so an untrusted run can read public data and nothing else. Its check-run summary says "with secrets" only when it had them.
+
+The runner reads pull requests without its key; a private repository's pull requests are sealed to its members, so a runner that is not a member reads none and runs none.
 
 ## Set it up
 
@@ -54,17 +86,18 @@ repo = "alice/project"
 refs = ["refs/heads/**"]            # which pushes run; `*` stays in one path segment, `**` does not
 trusted_refs = ["refs/heads/main"]  # only these get the secrets
 secrets_file = "/etc/forge-runner/project.secrets"   # KEY=value lines, as act reads them
+# pull_requests = "members"         # or "all" (strangers' too, never with secrets) or "off"
 # allow_container_options = false   # see Security before turning it on
 ```
 
 5. **Run it.**
    - `DASH_FORGE_KEY="$(cat runner.dfk1)" forge-runner -c runner.toml watch` runs the service. It needs `dg`, `git`, `git-remote-dash` and `act` on `PATH`, and `DOCKER_HOST` pointing at the runner's daemon.
    - `forge-runner … watch --once` polls once, for cron or a first try.
-   - `forge-runner … run alice/project --ref refs/heads/main --sha <oid>` runs one commit again.
+   - `forge-runner … run alice/project --ref refs/heads/main --sha <oid>` runs one commit again; `--pr <n>` runs a pull request's head.
 
 ### Wake it from your relay
 
-Polling finds a push within `interval_secs`. If you run a [relay](../../crates/forge-relay/README.md#wake-a-runner), it can wake the runner as soon as it sees a push:
+Polling finds a push within `interval_secs`. If you run a [relay](../../crates/forge-relay/README.md#wake-a-runner), it can wake the runner as soon as it sees a push or a pull request's activity (opened, head moved, reopened, marked ready, …):
 
 ```toml
 # runner.toml
@@ -81,7 +114,7 @@ secret-file = "/run/secrets/wake"
 ```
 
 - **The runner connects to the relay.** A thread long-polls `GET /v1/wake`, so nothing listens on the runner's machine and it works behind NAT. It logs `woken by the relay at …` once connected.
-- **A wake only moves the next poll earlier.** The runner polls a woken repository at once (never within 10 s of its last poll), and once more 20 s later in case its DAPI node is a block behind the relay's. It still reads the refs itself; a wake decides nothing about what runs.
+- **A wake only moves the next poll earlier.** The runner polls a woken repository at once (never within 10 s of its last poll), and once more 20 s later in case its DAPI node is a block behind the relay's. It still reads the refs and pull requests itself; a wake decides nothing about what runs.
 - **Polling stays the default.** Without `[relay]`, the runner only polls. With it, it still polls every `interval_secs`; if the relay is down, the runner logs the error, retries with a backoff (5 s up to 2 min) and keeps polling. A relay that restarted tells the runner to poll everything.
 - **Authentication is the shared secret.** Every request is signed with it (HMAC-SHA256, a fresh nonce, the time) and every answer is signed over the request, so neither can be forged or replayed, and the secret never crosses the wire. The relay refuses a request more than 5 minutes off its clock: keep the runner's clock in sync (NTP), or every request gets `401`. The protocol is in the [relay README](../../crates/forge-relay/README.md#wake-a-runner).
 - **Names must match.** A repository's `repo` here must be spelled as the relay's `[wake] repos` entry, or as `<owner id>/<name>`. The runner logs the names once if a wake matches none of its repositories.
@@ -148,7 +181,8 @@ The runner executes code from the repository: anyone who can push to a watched r
   - Anyone who can push a branch that matches `trusted_refs` can read the secrets. Keep `trusted_refs` to branches only maintainers can update: [protected branches](collaborating.md) take a maintainer's `protectedRefUpdate`.
   - Job summaries say "with secrets" when a run had them.
   - Secret values are masked in logs by act, and the runner replaces them again before a log is uploaded, because logs are public.
-- **Never a fork's code with secrets.** The runner runs pushes to the watched repository's own refs, which only its members can make. A pull request from a fork is a ref in the fork, which the runner does not watch. To test fork PRs, watch the fork as its own `[[repo]]` without `trusted_refs`.
+- **Never a fork's or a stranger's code with secrets.** A push run is of the repository's own refs, which only its members can make. A pull request's run gets the secrets only when its head is a `trusted_refs` branch of this repository and its author a current member ([Pull requests](#pull-requests)); a fork's head never does, whoever wrote it.
+- **Strangers' pull requests do not run by default.** With `pull_requests = "members"` only members' PRs run. `"all"` runs anyone's PR on your daemon (without secrets): turn it on only for a daemon you would let anyone on the network use for the job timeout.
 - **The checkout cannot configure act.**
   - act is given `/dev/null` for its `.env`, `.secrets`, `.vars` and `.input` files, and is run with `-C <checkout>` from the runner's own directory. A `.actrc`, `.secrets` or `.env` committed to the repository is never read; the end-to-end test plants all three.
   - act has no flag to turn `.actrc` off: it reads it from its working directory, `HOME` and `XDG_CONFIG_HOME`. So run the runner from a directory with no `.actrc`, and keep none in the runner user's home.
@@ -161,7 +195,8 @@ The runner executes code from the repository: anyone who can push to a watched r
 
 ## What it does not do (yet)
 
-- **Only `push` runs.** There are no `pull_request`, `schedule` or `workflow_dispatch` events.
+- **Only `push` and `pull_request` run.** There are no `pull_request_target`, `schedule` or `workflow_dispatch` events, and a pull request runs its head, not a merge preview.
+- **Only the newest 50 pull requests are watched.** An older open PR's new head is not run until it is among them (`forge-runner run --pr <n>` runs it by hand).
 - **No artefacts.** `actions/upload-artifact` needs act's artifact server, which the runner does not start.
 - **One push at a time.** The workflow files of a push run one after another, within one `job_timeout_secs`.
 - **Only configured `runs-on` labels.** A job whose `runs-on` label is not in `[platforms]` is refused, rather than run on act's own default image.
@@ -178,4 +213,6 @@ The runner executes code from the repository: anyone who can push to a watched r
 - jobs get no Docker socket, no secrets, an empty `GITHUB_TOKEN` and no Forge key on an untrusted branch;
 - a trusted branch gets the secrets, and their value appears in no report;
 - a planted `.actrc` and `.secrets` are ignored;
+- a member's pull request from a trusted branch here runs as `pull_request` with GitHub's context and the secrets, a member's from a fork runs without them, and a stranger's is skipped, then runs by hand without them;
+- a pull request's moved head runs as `synchronize`, and a closed one runs nothing;
 - a commit without workflows runs nothing, and no `act-*` container is left behind.

@@ -15,7 +15,11 @@
 #   6. a job with container.options, and a reusable-workflow call, are refused (one failed check
 #      each, with the reason) and never reach act; an invalid workflow file is one failed check;
 #      a workflow whose on.push.branches excludes the ref does not run; GITHUB_TOKEN is empty;
-#   7. a push without .forge/workflows runs nothing; a second poll re-runs nothing.
+#   7. a push without .forge/workflows runs nothing; a second poll re-runs nothing;
+#   8. pull requests (a recording `dg pr list`): a member's PR from a trusted branch here runs
+#      as `pull_request` with GitHub's context and the secrets; a member's PR from a fork runs
+#      without them; a stranger's is skipped, then runs by hand (`run --pr`) without them; a
+#      moved head is a `synchronize`; a closed PR and a re-poll run nothing.
 set -uo pipefail
 RUNNER="${1:-${CARGO_TARGET_DIR:-target}/debug/forge-runner}"
 [[ -x "$RUNNER" ]] || { echo "SKIP: no forge-runner binary at $RUNNER"; exit 2; }
@@ -41,6 +45,11 @@ echo seed >"$R/README.md"; git -C "$R" add README.md; git -C "$R" commit -qm see
 mkdir -p "$W/bin"
 cat >"$W/bin/dg" <<'EOF'
 #!/usr/bin/env bash
+# Reads answer from fixture files (and are not recorded); reports are recorded.
+case " $* " in
+  *" pr list "*) cat "$FAKE_PRS" 2>/dev/null || echo '{"prs":[]}'; exit 0 ;;
+  *" collab list "*) echo '{"members":[{"identityId":"MEMBER","role":"maintainer"}]}'; exit 0 ;;
+esac
 python3 - "$@" >>"$FAKE_DG_LOG" <<'PY'
 import json, sys, os
 a = sys.argv[1:]
@@ -57,6 +66,7 @@ echo '{"status":"created","documentId":"doc"}'
 EOF
 chmod +x "$W/bin/dg"
 export FAKE_DG_LOG="$W/reports.jsonl"; : >"$FAKE_DG_LOG"
+export FAKE_PRS="$W/prs.json"
 export DASH_FORGE_KEY="dfk1:devnet:fake:9:fake"
 printf 'E2E_SECRET=hunter2-%s\n' "$RANDOM" >"$W/secrets"
 
@@ -72,8 +82,9 @@ dg = "$W/bin/dg"
 repo = "e2e/app"
 url = "$R"
 refs = ["refs/heads/**"]
-trusted_refs = ["refs/heads/main"]
+trusted_refs = ["refs/heads/main", "refs/heads/release/*"]
 secrets_file = "$W/secrets"
+fork_url = "$W/{id}"
 EOF
 poll() { "$RUNNER" -c "$W/runner.toml" watch --once >>"$W/runner.log" 2>&1; }
 reports() { python3 -c "import json,sys; [print(json.dumps(json.loads(l))) for l in open('$FAKE_DG_LOG')]"; }
@@ -162,6 +173,69 @@ echo "== 4. no workflows → nothing; a re-poll runs nothing again"
 git -C "$R" switch -q -c docs; git -C "$R" rm -rq .forge; git -C "$R" commit -qm "no ci"
 poll; poll
 check "no reports for a commit without .forge/workflows, nor on a re-poll" test "$(wc -l <"$FAKE_DG_LOG" | tr -d ' ')" = 0
+
+echo "== 5. pull requests: a member's from a trusted branch here, a member's fork, a stranger's fork"
+: >"$FAKE_DG_LOG"
+prwf() {
+  mkdir -p .forge/workflows
+  cat >.forge/workflows/pr.yml <<'EOF'
+name: pr
+on: pull_request
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "action=${{ github.event.action }} number=${{ github.event.number }} head=$GITHUB_HEAD_REF base=$GITHUB_BASE_REF ref=$GITHUB_REF fork=${{ github.event.pull_request.head.repo.fork }}"
+      - run: echo "secret=[${{ secrets.E2E_SECRET }}] token=[${{ secrets.GITHUB_TOKEN }}]"
+EOF
+}
+# PR #1: a member's, from release/1 in the repository itself (a trusted ref).
+git -C "$R" switch -q -c release/1 docs
+(cd "$R" && prwf && git add -A && git commit -qm "pr ci")
+H1=$(git -C "$R" rev-parse HEAD)
+# PRs #2 and #3: the same workflow from a fork's branch.
+git clone -q "$R" "$W/fork"
+git -C "$W/fork" switch -q -c evil release/1
+echo evil >"$W/fork/evil.txt"; git -C "$W/fork" add evil.txt; git -C "$W/fork" commit -qm evil
+HF=$(git -C "$W/fork" rev-parse HEAD)
+prs() { python3 - "$@" >"$FAKE_PRS" <<'PY'
+import json, sys
+rows = []
+for spec in sys.argv[1:]:
+    n, author, src, ref, head, state = spec.split(",")
+    rows.append({"number": int(n), "title": f"pr {n}", "author": author, "state": state,
+                 "baseRef": "refs/heads/main", "baseTip": None, "headOid": head,
+                 "repoId": "app", "sourceRepoId": src, "sourceRefName": ref, "draft": False})
+print(json.dumps({"count": len(rows), "prs": rows}))
+PY
+}
+prs "1,MEMBER,app,refs/heads/release/1,$H1,open" "2,STRANGER,fork,refs/heads/evil,$HF,open" "3,MEMBER,fork,refs/heads/evil,$HF,open"
+poll
+check "the pushed release/1 ran nothing on push (its workflow is pull_request only)" test "$(q "len([r for r in rs if 'pull_request' not in r['name']])")" = 0
+check "two PR runs (the members'); the stranger's PR is skipped" test "$(q "len([r for r in rs if r['status']=='completed'])")" = 2
+check "checks are named '(pull_request)'" test "$(q "sorted({r['name'] for r in rs})")" = "['pr / check (pull_request)']"
+check "…and posted on the heads" test "$(q "sorted(set(r['sha'] for r in rs)) == sorted(['$H1', '$HF'])")" = True
+check "the job sees GitHub's pull_request context" test "$(q "'action=opened number=1 head=release/1 base=main ref=refs/pull/1/merge fork=false' in [r['log_text'] for r in rs if r['status']=='completed' and r['sha']=='$H1'][0]")" = True
+check "a member's PR from a trusted branch here gets the secrets" test "$(q "'secret=[***]' in [r['log_text'] for r in rs if r['status']=='completed' and r['sha']=='$H1'][0]")" = True
+check "a member's PR from a fork gets no secrets and an empty token" test "$(q "'secret=[] token=[]' in [r['log_text'] for r in rs if r['status']=='completed' and r['sha']=='$HF'][0]")" = True
+check "the fork's run knows it is a fork" test "$(q "'fork=true' in [r['log_text'] for r in rs if r['status']=='completed' and r['sha']=='$HF'][0]")" = True
+check "PR runs are keyed apart from each other" test "$(q "len({r['external-id'] for r in rs})")" = 2
+check "the stranger's PR is logged as skipped" grep -q "PR #2 is by STRANGER, not a member: not run" "$W/runner.log"
+check "a re-poll runs nothing again" bash -c ": >'$FAKE_DG_LOG'; '$RUNNER' -c '$W/runner.toml' watch --once >>'$W/runner.log' 2>&1; test ! -s '$FAKE_DG_LOG'"
+
+echo "== 6. a pull request's head moves (synchronize); a stranger's runs by hand, without secrets"
+: >"$FAKE_DG_LOG"
+echo more >>"$R/README.md"; git -C "$R" commit -qam more
+H1B=$(git -C "$R" rev-parse HEAD)
+prs "1,MEMBER,app,refs/heads/release/1,$H1B,open" "2,STRANGER,fork,refs/heads/evil,$HF,open" "3,MEMBER,fork,refs/heads/evil,$HF,closed"
+poll
+check "synchronize runs the new head, with before and after" test "$(q "[('action=synchronize' in r['log_text']) for r in rs if r['status']=='completed' and r['sha']=='$H1B']")" = "[True]"
+check "nothing else ran (a closed PR does not)" test "$(q "len([r for r in rs if r['status']=='completed'])")" = 1
+: >"$FAKE_DG_LOG"
+"$RUNNER" -c "$W/runner.toml" run e2e/app --pr 2 >>"$W/runner.log" 2>&1
+check "run --pr runs the stranger's head" test "$(q "[r['sha'] for r in rs if r['status']=='completed']")" = "['$HF']"
+check "…with no secrets" test "$(q "'secret=[] token=[]' in [r['log_text'] for r in rs if r['status']=='completed'][0]")" = True
+check "the secret value appears in no PR report" bash -c "! grep -q -- '$SECRET' '$FAKE_DG_LOG'"
 
 check "no act container, volume or network left behind" bash -c "! docker ps -a --format '{{.Names}}' | grep -q '^act-e2e'"
 

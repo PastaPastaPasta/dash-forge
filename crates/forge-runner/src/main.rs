@@ -13,9 +13,11 @@
 //! (`container.options` / `.volumes`, the same on services) or calls a reusable workflow is
 //! refused unless the repository allows it; secrets and a `GITHUB_TOKEN` go only to
 //! `trusted_refs`; act runs with a cleared environment and never reads the checkout's `.actrc`,
-//! `.env`, `.secrets`, `.vars` or `.input`; no cache server is shared between runs. The runner
-//! runs pushes to the repository's own refs only, so a pull request from a fork never runs. It
-//! does NOT isolate jobs from the Docker daemon it drives: give it a daemon of its own.
+//! `.env`, `.secrets`, `.vars` or `.input`; no cache server is shared between runs. Pull
+//! requests run as `pull_request` on their head, by default only members' (`pull_requests`), and
+//! with the secrets only from a trusted branch of the repository itself by a member
+//! ([`run::pull_trusted`]): a fork's or a stranger's head never gets them. It does NOT isolate
+//! jobs from the Docker daemon it drives: give it a daemon of its own.
 //!
 //! Module map: [`config`] (runner.toml), [`watch`] (refs, cursors), [`relay`] (wake-ups),
 //! [`workflow`] (the YAML the runner reads before act), [`act`] (act's CLI and JSON log),
@@ -34,8 +36,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand};
 
-use crate::config::Config;
-use crate::watch::{parse_ls_remote, pushes, state_path, RepoState};
+use crate::config::{Config, PullPolicy};
+use crate::watch::{parse_ls_remote, pull_events, pushes, state_path, RepoState};
 
 /// forge-runner command line.
 #[derive(Debug, Parser)]
@@ -60,16 +62,21 @@ enum Cmd {
         #[arg(long)]
         once: bool,
     },
-    /// Run one commit now, without watching (a manual re-run).
+    /// Run one commit or one pull request now, without watching (a manual re-run, or a PR the
+    /// `pull_requests` policy skipped).
     Run {
         /// The repository (`owner/name`, as configured).
         repo: String,
         /// The ref it was pushed to (`refs/heads/main`).
-        #[arg(long = "ref")]
-        refname: String,
+        #[arg(long = "ref", requires = "sha", conflicts_with = "pr")]
+        refname: Option<String>,
         /// The commit.
-        #[arg(long)]
-        sha: String,
+        #[arg(long, requires = "refname")]
+        sha: Option<String>,
+        /// A pull request: its current head runs as `pull_request` (`opened`), with the secrets
+        /// only if its head is a trusted branch here and its author a member.
+        #[arg(long, required_unless_present = "refname")]
+        pr: Option<u64>,
     },
 }
 
@@ -96,18 +103,43 @@ fn real_main(cli: &Cli) -> Result<()> {
     }
     match &cli.command {
         Cmd::Watch { once } => watch(&cfg, *once),
-        Cmd::Run { repo, refname, sha } => {
+        Cmd::Run {
+            repo,
+            refname,
+            sha,
+            pr,
+        } => {
             let r = cfg
                 .repos
                 .iter()
                 .find(|r| &r.repo == repo)
                 .with_context(|| format!("{repo} is not in {}", cli.config.display()))?;
-            let push = watch::Push {
-                refname: refname.clone(),
-                oid: sha.to_ascii_lowercase(),
-                before: None,
+            let trig = match (refname, sha, pr) {
+                (Some(refname), Some(sha), _) => run::Trigger::Push(watch::Push {
+                    refname: refname.clone(),
+                    oid: sha.to_ascii_lowercase(),
+                    before: None,
+                }),
+                (_, _, Some(n)) => {
+                    let pr = run::list_pulls(&cfg, r, PULL_LIMIT)?
+                        .into_iter()
+                        .find(|p| p.number == *n)
+                        .with_context(|| {
+                            format!("no PR #{n} among {repo}'s newest {PULL_LIMIT}")
+                        })?;
+                    let members = run::list_members(&cfg, r)?;
+                    run::Trigger::Pull {
+                        author_member: members.contains(&pr.author),
+                        event: Box::new(watch::PullEvent {
+                            action: "opened",
+                            before: None,
+                            pr,
+                        }),
+                    }
+                }
+                _ => anyhow::bail!("give --ref and --sha, or --pr"),
             };
-            let ran = run_locked(&cfg, r, &push)?;
+            let ran = run_locked(&cfg, r, &trig)?;
             for (name, conclusion) in &ran.checks {
                 println!("{name}\t{conclusion}");
             }
@@ -255,10 +287,10 @@ fn woken(cfg: &Config, w: &relay::Wake) -> Vec<usize> {
     }
 }
 
-/// Run one push in its own directory (`<repo dir>/runs/<n>`), holding the repo's lock so two
-/// runners on one state dir never share a checkout. The run directory is removed afterwards;
-/// the logs were uploaded.
-fn run_locked(cfg: &Config, repo: &config::RepoConfig, push: &watch::Push) -> Result<run::Ran> {
+/// Run one push or pull request in its own directory (`<repo dir>/runs/<n>`), holding the repo's
+/// lock so two runners on one state dir never share a checkout. The run directory is removed
+/// afterwards; the logs were uploaded.
+fn run_locked(cfg: &Config, repo: &config::RepoConfig, trig: &run::Trigger) -> Result<run::Ran> {
     let dir = run::repo_dir(cfg, repo);
     std::fs::create_dir_all(&dir)?;
     let lock_path = dir.join("lock");
@@ -284,15 +316,19 @@ fn run_locked(cfg: &Config, repo: &config::RepoConfig, push: &watch::Push) -> Re
             .map_or(0, |d| d.as_millis())
     ));
     std::fs::create_dir_all(&run_dir)?;
-    let result = run::run_push(cfg, repo, push, &run_dir);
+    let result = run::run(cfg, repo, trig, &run_dir);
     let _ = std::fs::remove_dir_all(&run_dir);
     drop(lock);
     result
 }
 
-/// One poll of one repository: list its refs, run the pushes to watched refs, save the tips.
-/// A push whose run could not start (fetch, checkout) is retried on the next polls, up to
-/// `attempts`; one whose jobs ran is never re-run (`forge-runner run` does that by hand).
+/// How many of a repository's newest pull requests a poll reads.
+const PULL_LIMIT: u32 = 50;
+
+/// One poll of one repository: list its refs, run the pushes to watched refs, then its pull
+/// requests' activity (unless `pull_requests = "off"`), and save what was handled. A run that
+/// could not start (fetch, checkout) is retried on the next polls, up to `attempts`; one whose
+/// jobs ran is never re-run (`forge-runner run` does that by hand).
 fn poll(cfg: &Config, repo: &config::RepoConfig) -> Result<()> {
     let path = state_path(&cfg.state_dir, &repo.repo);
     let mut state = RepoState::load(&path)?;
@@ -302,7 +338,8 @@ fn poll(cfg: &Config, repo: &config::RepoConfig) -> Result<()> {
         eprintln!("forge-runner: watching {} ({} refs)", repo.repo, now.len());
         state.tips = now;
         state.primed = true;
-        return state.save(&path);
+        state.save(&path)?;
+        return poll_pulls(cfg, repo, &mut state, &path);
     }
     for push in pushes(&state.tips, &now) {
         let key = format!("{} {}", push.refname, push.oid);
@@ -314,7 +351,7 @@ fn poll(cfg: &Config, repo: &config::RepoConfig) -> Result<()> {
                 push.refname,
                 &push.oid[..12]
             );
-            if let Err(e) = run_locked(cfg, repo, &push) {
+            if let Err(e) = run_locked(cfg, repo, &run::Trigger::Push(push.clone())) {
                 let tries = state.failed.entry(key.clone()).or_insert(0);
                 *tries += 1;
                 eprintln!(
@@ -333,10 +370,101 @@ fn poll(cfg: &Config, repo: &config::RepoConfig) -> Result<()> {
     // Deleted refs leave the cursor too, and so do retries of refs that moved on.
     state.tips.retain(|r, _| now.contains_key(r));
     state.failed.retain(|k, _| {
-        k.split_once(' ')
-            .is_some_and(|(r, o)| now.get(r).is_some_and(|t| t == o))
+        k.starts_with("pull/")
+            || k.split_once(' ')
+                .is_some_and(|(r, o)| now.get(r).is_some_and(|t| t == o))
     });
-    state.save(&path)
+    state.save(&path)?;
+    poll_pulls(cfg, repo, &mut state, &path)
+}
+
+/// The pull-request half of a poll: list the newest [`PULL_LIMIT`] PRs, and run each one that
+/// was opened, reopened, marked ready or whose head moved since the last poll, as the
+/// repository's `pull_requests` policy allows. The first read only records them.
+fn poll_pulls(
+    cfg: &Config,
+    repo: &config::RepoConfig,
+    state: &mut RepoState,
+    path: &std::path::Path,
+) -> Result<()> {
+    if repo.pull_requests == PullPolicy::Off {
+        return Ok(());
+    }
+    let rows = run::list_pulls(cfg, repo, PULL_LIMIT)?;
+    let open = rows.iter().filter(|r| r.state == "open").count();
+    if !state.pulls_primed {
+        eprintln!(
+            "forge-runner: watching {}'s pull requests ({open} open)",
+            repo.repo
+        );
+        for r in &rows {
+            state.saw_pull(r);
+        }
+        state.pulls_primed = true;
+        return state.save(path);
+    }
+    let pull_key = |n: u64, head: &str| format!("pull/{n} {}", head.to_ascii_lowercase());
+    let mut members: Option<Vec<String>> = None;
+    let mut pending = Vec::new();
+    for ev in pull_events(&state.pulls, &rows) {
+        let n = ev.pr.number;
+        let key = pull_key(n, &ev.pr.head_oid);
+        let members = match &members {
+            Some(m) => m,
+            None => members.insert(run::list_members(cfg, repo)?),
+        };
+        let author_member = members.contains(&ev.pr.author);
+        let mut done = true;
+        if repo.pull_requests == PullPolicy::Members && !author_member {
+            eprintln!(
+                "forge-runner: {} PR #{n} is by {}, not a member: not run (pull_requests = \
+                 \"members\"; `forge-runner run {} --pr {n}` runs it, without secrets)",
+                repo.repo, ev.pr.author, repo.repo
+            );
+        } else {
+            eprintln!(
+                "forge-runner: {} PR #{n} {} → {}",
+                repo.repo,
+                ev.action,
+                &ev.pr.head_oid[..12]
+            );
+            let trig = run::Trigger::Pull {
+                event: Box::new(ev.clone()),
+                author_member,
+            };
+            if let Err(e) = run_locked(cfg, repo, &trig) {
+                let tries = state.failed.entry(key.clone()).or_insert(0);
+                *tries += 1;
+                eprintln!(
+                    "forge-runner: {} PR #{n} (attempt {tries} of {}): {e:#}",
+                    repo.repo, cfg.attempts
+                );
+                done = *tries >= cfg.attempts;
+            }
+        }
+        if done {
+            state.failed.remove(&key);
+            state.saw_pull(&ev.pr);
+        } else {
+            pending.push(n);
+        }
+        state.save(path)?;
+    }
+    // Everything else listed is as seen (closed, merged, unchanged); what is no longer listed
+    // is forgotten, and so are retries of heads that moved on.
+    for r in rows.iter().filter(|r| !pending.contains(&r.number)) {
+        state.saw_pull(r);
+    }
+    state
+        .pulls
+        .retain(|n, _| rows.iter().any(|r| r.number == *n));
+    state.failed.retain(|k, _| {
+        !k.starts_with("pull/")
+            || rows
+                .iter()
+                .any(|r| r.state == "open" && pull_key(r.number, &r.head_oid) == *k)
+    });
+    state.save(path)
 }
 
 #[cfg(test)]
