@@ -66,6 +66,9 @@ function withMergeCommit(e: PackEstimate | null): PackEstimate | null {
   return e === null ? null : { bytes: e.bytes + 1024, objectCount: e.objectCount + 1 }
 }
 
+/** The method picker's name for a merge commit, the plan's or a --no-ff one alike. */
+const MERGE_COMMIT_OPTION = 'Create a merge commit'
+
 /** The merge methods: the plan's (fast-forward, or a merge commit), --no-ff, or a squash. */
 type Method = 'merge' | 'no-ff' | 'squash'
 
@@ -448,12 +451,14 @@ export function MergePanel({
                 disabled={busy || newTip !== null}
                 className="h-9 rounded-md border border-anvil-300 bg-white px-2 text-dense text-anvil-900 coarse:h-11 dark:border-anvil-700 dark:bg-anvil-950 dark:text-anvil-100"
               >
+                {/* One name per method, whether or not a fast-forward is possible (QW2-051); the
+                    button says the action ("Create merge commit and merge"). */}
                 <option value="merge" disabled={!policyAllows(button.kind === 'fast-forward' ? 1 : 2)}>
-                  {button.label}
+                  {button.kind === 'fast-forward' ? button.label : MERGE_COMMIT_OPTION}
                 </option>
                 {ffPossible ? (
                   <option value="no-ff" disabled={!policyAllows(2)}>
-                    Create a merge commit
+                    {MERGE_COMMIT_OPTION}
                   </option>
                 ) : null}
                 <option value="squash" disabled={!policyAllows(4)}>

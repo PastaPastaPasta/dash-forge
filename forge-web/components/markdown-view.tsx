@@ -33,6 +33,7 @@ import {
   type TreeEntry,
 } from '@/lib/view'
 import { splitUrls, type AlertKind, type Footnote, type RefPiece } from '@/lib/view/markdown'
+import { highlightFence } from '@/lib/view/highlight'
 import { importedHost, refTarget, type ForgeRepo, type RefContext, type RefTarget } from '@/lib/view/ref-targets'
 import { MODE_TREE } from '@/lib/browse'
 import { imagePreviewType } from '@/lib/view/blob-view'
@@ -726,6 +727,35 @@ const ALERTS: Readonly<Record<AlertKind, { title: string; icon: typeof Info; box
 
 const CODE_BLOCK = 'overflow-x-auto rounded-md border border-anvil-200 bg-anvil-50 p-3 text-[13px] dark:border-anvil-800 dark:bg-anvil-950'
 
+/**
+ * A fenced code block: plain at once, then highlighted when the fence names a language
+ * (```python, QW2-058), as GitHub renders them; the highlighter loads lazily in its own chunk.
+ */
+function CodeBlock({ text, lang }: { text: string; lang: string }): JSX.Element {
+  const [html, setHtml] = useState<{ for: string; html: string } | null>(null)
+  const want = `${lang}\n${text}`
+  useEffect(() => {
+    if (lang.trim() === '') return
+    let live = true
+    void highlightFence(text, lang).then((h) => {
+      if (live && h !== null) setHtml({ for: want, html: h })
+    })
+    return () => {
+      live = false
+    }
+  }, [text, lang, want])
+  const shown = html !== null && html.for === want ? html.html : null
+  return (
+    <ScrollRegion as="pre" label="Code block" className={cn('my-3', CODE_BLOCK)}>
+      {shown === null ? (
+        <code data-lang={lang || undefined}>{text}</code>
+      ) : (
+        <code className="hljs" data-lang={lang} data-highlighted="true" dangerouslySetInnerHTML={{ __html: shown }} />
+      )}
+    </ScrollRegion>
+  )
+}
+
 /** A mermaid diagram's source, shown as code: rendering it needs mermaid's ~1 MB of script, which would draw attacker-written SVG. */
 function MermaidBlock({ source }: { source: string }): JSX.Element {
   return (
@@ -766,11 +796,7 @@ function renderBlock(b: Block, key: string, slugs: Map<string, number>): ReactNo
     case 'code':
       if (b.lang === 'suggestion') return <SuggestionBlock key={key} text={b.v} />
       if (b.lang === 'mermaid') return <MermaidBlock key={key} source={b.v} />
-      return (
-        <ScrollRegion as="pre" key={key} label="Code block" className={cn('my-3', CODE_BLOCK)}>
-          <code>{b.v}</code>
-        </ScrollRegion>
-      )
+      return <CodeBlock key={key} text={b.v} lang={b.lang} />
     case 'list': {
       const tasks = b.tasks
       const items = b.items.map((it, i) => {

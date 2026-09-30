@@ -109,7 +109,7 @@ beforeAll(() => setPlatformVersion(14))
 
 describe('list request budget on a dash-sized repo (QW2-002)', () => {
   for (const prs of [1766, 6900]) {
-    for (const state of ['open', 'merged', 'closed', 'all'] as PullStateFilter[]) {
+    for (const state of ['open', 'merged', 'closed', 'all'] as const) {
       it(`the ${state} PR tab's page 1, cold, on ${prs} PRs: at most ${LIST_BUDGET} list reads`, async () => {
         const { sdk, seen, repo } = fresh({ ...DASH, prs })
         const page = await queryPulls(sdk, repo, { ...pulls, state }, prs, 'devnet')
@@ -133,6 +133,15 @@ describe('list request budget on a dash-sized repo (QW2-002)', () => {
       })
     }
   }
+
+  it('is:unmerged (open or closed without merging), cold: within budget, its count the proved open + closed', async () => {
+    const { sdk, seen, repo } = fresh(DASH)
+    const page = await queryPulls(sdk, repo, { ...pulls, state: 'unmerged' }, DASH.prs, 'devnet')
+    expect(listReads(seen)).toBeLessThanOrEqual(LIST_BUDGET)
+    expect(page.rows).toHaveLength(25)
+    expect(page.rows.every((r) => !r.state.merged)).toBe(true)
+    expect(page.matching).toBe(page.counts.open! + page.counts.closed!)
+  })
 
   it('the Open tab holds the one open PR after the first chunk, and stops there (its proved count)', async () => {
     const { sdk, seen, repo } = fresh(DASH)

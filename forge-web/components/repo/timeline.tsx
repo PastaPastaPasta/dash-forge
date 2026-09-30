@@ -10,15 +10,16 @@
 
 import { Byline } from '@/components/repo/byline'
 import { importedVerdictOf, trustedOrigin } from '@/lib/repo/provenance'
-import { Check, CheckCircle2, Eye, GitCommit, GitMerge, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, ShieldAlert, Tag, Trash2, UserPlus, X } from 'lucide-react'
+import { Check, CheckCircle2, CircleDot, Eye, GitCommit, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, ShieldAlert, Tag, Trash2, UserPlus, X } from 'lucide-react'
 import type { CommentView, TimelineItem } from '@/lib/view'
 import { branchName, plural, timeAgo } from '@/lib/view'
 import { anchorLabel } from '@/lib/view/inline-threads'
 import { VERDICT_LABEL, type VerdictName } from '@/lib/repo'
 import type { Event } from '@/lib/rules'
-import { ISSUE_CLOSE, PR_CLOSE, PR_DRAFT, PR_DRAFT_CLOSE, PR_MERGE, PR_READY, transitionPhrase } from '@/lib/rules/transition'
+import { ISSUE_CLOSE, ISSUE_LOCK, ISSUE_REOPEN, ISSUE_UNLOCK, PR_CLOSE, PR_DRAFT, PR_DRAFT_CLOSE, PR_DRAFT_REOPEN, PR_LOCK, PR_MERGE, PR_READY, PR_REOPEN, PR_UNLOCK, transitionPhrase } from '@/lib/rules/transition'
 import type { TransitionView } from '@/lib/repo'
 import { Author } from '@/components/author'
+import Link from 'next/link'
 import type { ReactNode } from 'react'
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
 import { importedUrlOf } from '@/lib/view/ref-targets'
@@ -47,10 +48,11 @@ function eventPhrase(e: Event): { text: string; icon: JSX.Element; who?: string;
   const { kind, value } = e
   const muted = 'h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400'
   switch (kind) {
+    // A padlock means the conversation was locked, never a state change (QW2-045).
     case 'close':
-      return { text: 'closed this', icon: <Lock className="h-3.5 w-3.5 text-forge-500" aria-hidden /> }
+      return { text: 'closed this', icon: <CheckCircle2 className={CLOSED_ICON} aria-hidden /> }
     case 'reopen':
-      return { text: 'reopened this', icon: <LockOpen className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden /> }
+      return { text: 'reopened this', icon: <CircleDot className={OPEN_ICON} aria-hidden /> }
     case 'merge':
       // The event records a claim; whether the PR folds as merged depends on who signed it
       // and whether the oid reached the base branch, so say what the event is.
@@ -66,9 +68,9 @@ function eventPhrase(e: Event): { text: string; icon: JSX.Element; who?: string;
     case 'retarget':
       return { text: `retargeted to ${branchName(value ?? '')}`, icon: <GitMerge className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden /> }
     case 'draft':
-      return { text: 'converted this to a draft', icon: <Lock className={muted} aria-hidden /> }
+      return { text: 'converted this to a draft', icon: <GitPullRequestDraft className={muted} aria-hidden /> }
     case 'ready':
-      return { text: 'marked this ready for review', icon: <LockOpen className={muted} aria-hidden /> }
+      return { text: 'marked this ready for review', icon: <Eye className={muted} aria-hidden /> }
     case 'headUpdate':
       return { text: e.oid ? `pushed new commits (head ${e.oid.slice(0, 9)})` : 'pushed new commits', icon: <GitCommit className={muted} aria-hidden /> }
     case 'threadResolve':
@@ -111,13 +113,44 @@ export function bypassPhrase(value: string | null | undefined, ofMerge: boolean)
   return ofMerge ? `merged by bypassing the branch rules${rules}` : `recorded a branch-rules bypass${rules} naming a commit this PR was not merged at`
 }
 
-/** The icon of a state change. */
-function transitionIcon(t: TransitionView): JSX.Element {
+/** Open and closed, in the colours of the issue and PR state badges. */
+const OPEN_ICON = 'h-3.5 w-3.5 text-verify-700 dark:text-verify-400'
+const CLOSED_ICON = 'h-3.5 w-3.5 text-forge-700 dark:text-forge-400'
+const PR_CLOSED_ICON = 'h-3.5 w-3.5 text-danger-700 dark:text-danger-400'
+
+/**
+ * The icon of a state change, as GitHub draws them (QW2-045): an issue closes with a check circle
+ * and reopens with an open circle, a PR closes and reopens with its own pull-request glyphs, and
+ * only a lock or unlock of the conversation shows a padlock.
+ */
+export function transitionIcon(kind: number): JSX.Element {
   const muted = 'h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400'
-  if (t.kind === PR_MERGE) return <GitMerge className="h-3.5 w-3.5 text-dash" aria-hidden />
-  if (t.kind === ISSUE_CLOSE || t.kind === PR_CLOSE || t.kind === PR_DRAFT_CLOSE) return <Lock className="h-3.5 w-3.5 text-forge-500" aria-hidden />
-  if (t.kind === PR_DRAFT || t.kind === PR_READY) return <GitPullRequestDraft className={muted} aria-hidden />
-  return <LockOpen className={muted} aria-hidden />
+  switch (kind) {
+    case PR_MERGE:
+      return <GitMerge className="h-3.5 w-3.5 text-dash" aria-hidden />
+    case ISSUE_CLOSE:
+      return <CheckCircle2 className={CLOSED_ICON} aria-hidden data-icon="closed" />
+    case ISSUE_REOPEN:
+      return <CircleDot className={OPEN_ICON} aria-hidden data-icon="reopened" />
+    case PR_CLOSE:
+    case PR_DRAFT_CLOSE:
+      return <GitPullRequestClosed className={PR_CLOSED_ICON} aria-hidden data-icon="closed" />
+    case PR_REOPEN:
+    case PR_DRAFT_REOPEN:
+      return <GitPullRequest className={OPEN_ICON} aria-hidden data-icon="reopened" />
+    case PR_DRAFT:
+      return <GitPullRequestDraft className={muted} aria-hidden data-icon="draft" />
+    case PR_READY:
+      return <Eye className={muted} aria-hidden data-icon="ready" />
+    case ISSUE_LOCK:
+    case PR_LOCK:
+      return <Lock className={muted} aria-hidden data-icon="locked" />
+    case ISSUE_UNLOCK:
+    case PR_UNLOCK:
+      return <LockOpen className={muted} aria-hidden data-icon="unlocked" />
+    default:
+      return <Tag className={muted} aria-hidden />
+  }
 }
 
 /** What a page adds to a comment card: header actions, or a body that replaces the rendered one (an editor). */
@@ -161,6 +194,45 @@ export function CommentOwnActions({
   )
 }
 
+/** A pull request elsewhere in the repo that names this issue (QW2-048). */
+export interface TimelineRef {
+  readonly number: number
+  readonly title: string
+  readonly href: string
+}
+
+/** "mentioned this issue in #4": a PR whose description references the issue without closing it. */
+export interface CrossRefItem extends TimelineRef {
+  readonly id: string
+  readonly actor: string
+  readonly at: number
+  /** The PR's state, for its icon. */
+  readonly state: 'open' | 'merged' | 'closed' | 'draft'
+}
+
+function crossRefIcon(state: CrossRefItem['state']): JSX.Element {
+  switch (state) {
+    case 'merged':
+      return <GitMerge className="h-3.5 w-3.5 text-dash" aria-hidden />
+    case 'closed':
+      return <GitPullRequestClosed className={PR_CLOSED_ICON} aria-hidden />
+    case 'draft':
+      return <GitPullRequestDraft className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
+    default:
+      return <GitPullRequest className={OPEN_ICON} aria-hidden />
+  }
+}
+
+/** `#4 title`, linked, as the timeline names another thread. */
+function RefLink({ to }: { to: TimelineRef }): JSX.Element {
+  return (
+    <Link href={to.href} className="font-medium text-anvil-800 hover:text-forge-700 hover:underline dark:text-anvil-100 dark:hover:text-forge-400">
+      <span className="font-mono">#{to.number}</span>
+      {to.title ? <span className="break-words"> {to.title}</span> : null}
+    </Link>
+  )
+}
+
 /** What a comment's header says it did. */
 function commentVerb(item: Extract<TimelineItem, { kind: 'comment' }>): string {
   let verb = 'commented'
@@ -176,6 +248,8 @@ export function Timeline({
   eventText,
   anchorContext,
   trust = null,
+  closedIn,
+  crossRefs = [],
 }: {
   items: readonly TimelineItem[]
   /** Where `#n` / `@name` in bodies link (omit: plain text). Keep it referentially stable. */
@@ -191,13 +265,41 @@ export function Timeline({
   anchorContext?: (c: CommentView) => ReactNode
   /** Who may mirror (`useMirrorTrust`): their imported comments and reviews show the original author and date. */
   trust?: ReadonlySet<string> | null
+  /** The pull request whose merge made a close ("closed this as completed in #3"), or null. */
+  closedIn?: (t: TransitionView) => TimelineRef | null
+  /** PRs that mention this issue, placed in time order among the items. */
+  crossRefs?: readonly CrossRefItem[]
 }): JSX.Element {
   // The merge commits of this thread's merge transitions: a policy-bypass event is the record of
   // one of them only when it names it.
   const mergeOids = new Set(items.flatMap((x) => (x.kind === 'transition' && x.transition.kind === PR_MERGE && x.transition.oid ? [x.transition.oid.toLowerCase()] : [])))
+  const rows: ({ kind: 'item'; item: TimelineItem } | { kind: 'ref'; ref: CrossRefItem })[] = items.map((item) => ({ kind: 'item', item }))
+  for (const ref of [...crossRefs].sort((a, b) => a.at - b.at)) {
+    // After every row at or before it (the items are oldest first).
+    let at = rows.length
+    while (at > 0) {
+      const prev = rows[at - 1]!
+      if ((prev.kind === 'item' ? prev.item.at : prev.ref.at) <= ref.at) break
+      at--
+    }
+    rows.splice(at, 0, { kind: 'ref', ref })
+  }
   return (
     <div className="space-y-3">
-      {items.map((item, i) => {
+      {rows.map((row, i) => {
+        if (row.kind === 'ref') {
+          const r = row.ref
+          return (
+            <div key={`x-${r.id}`} className={EVENT_ROW} data-testid="timeline-event" data-kind="cross-reference">
+              <span className={EVENT_ICON}>{crossRefIcon(r.state)}</span>
+              <p className={EVENT_TEXT}>
+                <Author identityId={r.actor} link={false} className="align-middle" /> mentioned this issue in <RefLink to={r} />
+                <span className="whitespace-nowrap"> · {timeAgo(r.at)}</span>
+              </p>
+            </div>
+          )
+        }
+        const item = row.item
         if (item.kind === 'comment') {
           const slot = renderComment?.(item) ?? {}
           return (
@@ -275,13 +377,19 @@ export function Timeline({
         }
         if (item.kind === 'transition') {
           const t = item.transition
+          const cause = closedIn?.(t) ?? null
           return (
             <div key={`t-${t.id}-${i}`} className={EVENT_ROW} data-testid="timeline-event" data-kind={`transition-${t.kind}`}>
-              <span className={EVENT_ICON}>{transitionIcon(t)}</span>
+              <span className={EVENT_ICON}>{transitionIcon(t.kind)}</span>
               {/* One sentence that wraps as text (QW-070): the age never breaks onto a line of its own. */}
               <p className={EVENT_TEXT}>
                 <Author identityId={t.actor} link={false} className="align-middle" />{' '}
-                {t.kind === PR_MERGE && t.oid ? (
+                {cause !== null ? (
+                  <>
+                    closed this as completed in <RefLink to={cause} />
+                    <span className="whitespace-nowrap"> · {timeAgo(t.createdAt)}</span>
+                  </>
+                ) : t.kind === PR_MERGE && t.oid ? (
                   <>
                     {transitionPhrase(t.kind)} at{' '}
                     <span className="whitespace-nowrap">

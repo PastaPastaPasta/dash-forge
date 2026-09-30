@@ -39,6 +39,7 @@ import { compareRows, eventFiltered, rowMatches, selectionFiltered, type RowFilt
 import { baseRefReaders, countsSettled, incompletePullView, readPull, type BaseRefReaders, type PullView } from './issues'
 import { PR_CLOSE, PR_DRAFT_CLOSE, PR_MERGE } from '../rules/transition'
 import { linkedIssues } from '../rules/review'
+import { referencedNumbers } from '../view/cross-refs'
 import type { LabelDef } from './labels'
 import type { HiddenCounts } from './private-content'
 import {
@@ -74,8 +75,11 @@ export interface PullRow extends PullView {
   readonly comments: number | null
 }
 
-/** The Pull requests tabs. Closed means closed without merging; a draft is open. */
-export type PullStateFilter = 'open' | 'merged' | 'closed' | 'all'
+/**
+ * The Pull requests tabs. Closed means closed without merging; a draft is open. `unmerged` (the
+ * search box's `is:unmerged`, QW2-055) is open or closed without merging, as on GitHub.
+ */
+export type PullStateFilter = 'open' | 'merged' | 'closed' | 'unmerged' | 'all'
 
 type PullIndex = ListIndex<PullRow>
 
@@ -158,6 +162,7 @@ function pullStateMatches(row: Pick<PullView, 'state'>, tab: PullStateFilter): b
   if (tab === 'all') return true
   if (tab === 'merged') return row.state.merged
   if (tab === 'closed') return !row.state.open && !row.state.merged
+  if (tab === 'unmerged') return !row.state.merged
   return row.state.open
 }
 
@@ -232,7 +237,9 @@ function provedCounts(counts: RepoCounts, index: PullIndex): { open: number; mer
  */
 function tabBound(counts: RepoCounts | null, index: PullIndex, tab: PullStateFilter): number | null {
   if (counts === null) return null
-  return tab === 'all' ? counts.patches : provedCounts(counts, index)[tab]
+  if (tab === 'all') return counts.patches
+  const proved = provedCounts(counts, index)
+  return tab === 'unmerged' ? proved.open + proved.closed : proved[tab]
 }
 
 /** Every PR shown (open + merged + closed), or null when a count is not proven. */
@@ -284,7 +291,8 @@ export async function queryPulls(
     if (all !== null) counts = countRows(all)
   }
 
-  const tabCount = q.state === 'all' ? sum(counts) : counts[q.state]
+  const tabCount =
+    q.state === 'all' ? sum(counts) : q.state === 'unmerged' ? (counts.open === null || counts.closed === null ? null : counts.open + counts.closed) : counts[q.state]
   const page = pageOf(selected.rows, q.page, q.pageSize)
   const rows = await shownRows(sdk, index, page.rows)
   return {
@@ -302,8 +310,10 @@ export async function queryPulls(
 
 /** The PRs whose description links an issue ({@link pullsLinking}). */
 export interface LinkingPulls {
-  /** Newest first. */
+  /** The PRs that close it ("Fixes #12"), newest first. */
   readonly pulls: readonly PullRow[]
+  /** The PRs that only mention it ("Refs #12"), newest first (QW2-048). */
+  readonly mentioning: readonly PullRow[]
   /** How many PRs were looked at when not all of them were, else null. */
   readonly searched: number | null
 }
@@ -312,8 +322,8 @@ export interface LinkingPulls {
 const LINKING_CHUNKS = 3
 
 /**
- * The PRs whose description says they close an issue ("Fixes #12", `linkedIssues`): the issue
- * page's backlinks (review-parity P8, QW-015). `issue.number` is its native number;
+ * The PRs whose description says they close an issue ("Fixes #12", `linkedIssues`), and those
+ * that only mention it ("Refs #12", QW2-048): the issue page's backlinks (review-parity P8, QW-015). `issue.number` is its native number;
  * `issue.upstream` the source forge's number a trusted mirror recorded, or null. A description
  * whose `#N` is the source's (`refsUpstream`: imported text, as the page renders it) links the
  * issue through `upstream` only, never through the native number. Read from the pull index the PR
@@ -337,7 +347,7 @@ export async function pullsLinking(
     candidates: null,
     matches: (r) => {
       const n = refsUpstream(r) ? issue.upstream : issue.number
-      return n !== null && linkedIssues(r.body).includes(n)
+      return n !== null && (linkedIssues(r.body).includes(n) || referencedNumbers(r.body).includes(n))
     },
     cmp: compareRows('newest'),
     direction: 'desc',
@@ -346,7 +356,10 @@ export async function pullsLinking(
     partial: true,
     maxChunks: Math.max(0, LINKING_CHUNKS + 1 - walked),
   })
-  return { pulls: selected.rows.slice(0, 20), searched: selected.searched }
+  // Every match in the window (`walkAll`), so the closers are capped apart from the mentions: many
+  // newer "see #12" never crowd out the PR that closes it.
+  const closes = (r: PullRow): boolean => linkedIssues(r.body).includes((refsUpstream(r) ? issue.upstream : issue.number) ?? -1)
+  return { pulls: selected.rows.filter(closes).slice(0, 20), mentioning: selected.rows.filter((r) => !closes(r)).slice(0, 20), searched: selected.searched }
 }
 
 /** Each PR a milestone event names, with its open state and milestone (see `issueMilestoneItems`); null when the feed is partial. */
