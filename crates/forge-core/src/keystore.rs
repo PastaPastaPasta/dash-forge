@@ -160,9 +160,10 @@ pub fn looks_like_pasted_key(source: &Path) -> bool {
 /// How to name a key source in messages: the path of an identity file, a keychain entry's
 /// name, or for an inline `dfk1:` key everything but its WIF. Pasted key material (see
 /// [`looks_like_pasted_key`]) is never shown, and neither is anything else that may be a key
-/// rather than a path: a value that names no file on disk (a `dfk1` value without its
-/// prefix, a mistyped path), a bare value with whitespace in it (a recovery phrase), or 64
-/// hex digits (a raw private key).
+/// rather than a path: a bare value with whitespace in it (a recovery phrase), a 64-hex name
+/// (a raw private key), or a value that names no file on disk (a `dfk1` value without its
+/// prefix, a mistyped path). A missing file in Forge's own config directory is still named:
+/// that path is a default the tools chose, which no pasted key starts with.
 pub fn describe_key_source(source: &Path) -> String {
     if looks_like_pasted_key(source) {
         return "[an identity's contents, not a path: redacted]".to_string();
@@ -189,10 +190,24 @@ pub fn describe_key_source(source: &Path) -> String {
     // A path with a space in a directory name (`Application Support`) still has a separator;
     // a recovery phrase has none.
     let bare_words = t.contains(char::is_whitespace) && !t.contains(['/', '\\']);
-    if is_hex_key || bare_words || !source.exists() {
-        return "[not a file on disk: redacted]".to_string();
+    if is_hex_key || bare_words {
+        return "[may be a key, not a path: redacted]".to_string();
+    }
+    if !source.exists() && !in_forge_config_dir(source) {
+        return "[no such file: redacted]".to_string();
     }
     source.display().to_string()
+}
+
+/// Whether `path` is inside Forge's config directory (or the pre-XDG one), judged from the
+/// environment alone: no migration runs, unlike [`forge_config_dir`].
+fn in_forge_config_dir(path: &Path) -> bool {
+    let xdg = std::env::var_os("XDG_CONFIG_HOME");
+    let home = std::env::var_os("HOME");
+    path.is_absolute()
+        && config_dirs(xdg.as_deref(), home.as_deref()).is_some_and(|(dir, legacy)| {
+            path.starts_with(&dir) || legacy.is_some_and(|l| path.starts_with(l))
+        })
 }
 
 /// The prefix of a key source kept in the OS keychain (`keychain:<service>/<account>`).
@@ -1104,7 +1119,10 @@ mod tests {
         ] {
             let p = std::path::Path::new(v);
             let shown = super::describe_key_source(p);
-            assert_eq!(shown, "[not a file on disk: redacted]", "{v}");
+            assert!(
+                shown.starts_with('[') && shown.ends_with("redacted]"),
+                "{v}: {shown}"
+            );
             let e = format!(
                 "{:#}",
                 super::BridgeIdentity::load_from_file(p).unwrap_err()
@@ -1120,6 +1138,21 @@ mod tests {
         std::fs::create_dir_all(f.parent().unwrap()).unwrap();
         std::fs::write(&f, "{}").unwrap();
         assert_eq!(super::describe_key_source(&f), f.display().to_string());
+        // A missing file in Forge's own config directory is a default the tools chose: named.
+        let env = |k| std::env::var_os(k);
+        if let Some((dir, _)) =
+            super::config_dirs(env("XDG_CONFIG_HOME").as_deref(), env("HOME").as_deref())
+        {
+            let own = dir.join("identities").join("no-such-default.identity.json");
+            assert_eq!(super::describe_key_source(&own), own.display().to_string());
+        }
+        // A malformed keychain source is neither described nor echoed by the load error.
+        let bad_kc = std::path::Path::new("keychain:FAKEsecretFAKEsecret");
+        assert_eq!(super::describe_key_source(bad_kc), "keychain:[redacted]");
+        let e = super::BridgeIdentity::load_from_file(bad_kc)
+            .unwrap_err()
+            .to_string();
+        assert!(!e.contains("FAKEsecret"), "{e}");
         let kc = std::path::Path::new("keychain:dash-forge/testnet-X");
         assert_eq!(
             super::describe_key_source(kc),

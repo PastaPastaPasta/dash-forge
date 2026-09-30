@@ -333,7 +333,7 @@ impl Helper {
                 Ok((sealed, m)) => {
                     let got = PackMeta::for_bytes(&sealed).pack_hash;
                     if !got.eq_ignore_ascii_case(&hash) {
-                        bail!("pack integrity check failed: expected {hash}, got {got}");
+                        bail!("pack integrity check failed: expected {}…, got {}…", progress::abbrev(&hash, 16), progress::abbrev(&got, 16));
                     }
                     match svc.open_artifact_of(repo, copies, m.size_bytes, sealed).await {
                         Ok(b) => Ok((b, m)),
@@ -343,7 +343,7 @@ impl Helper {
                         }
                         Err(e) => {
                             return Err(anyhow::Error::from(e)
-                                .context(format!("opening pack {hash}")));
+                                .context(format!("opening pack {}…", progress::abbrev(&hash, 12))));
                         }
                     }
                 }
@@ -359,7 +359,7 @@ impl Helper {
             let bytes = match got {
                 Ok((bytes, _)) => bytes,
                 Err(e) if on_chain => {
-                    return Err(anyhow::Error::from(e).context(format!("downloading pack {hash}")));
+                    return Err(anyhow::Error::from(e).context(format!("downloading pack {}…", progress::abbrev(&hash, 12))));
                 }
                 // An external-only pack whose copies are down, rate-limited or absent is set
                 // aside rather than failing the fetch at once: it may not be needed (it only
@@ -2118,7 +2118,7 @@ async fn confirm_existing_manifest(
                 codes::RECORDED_COPY_LOST,
                 format!("push refused: pack {short} is already recorded, and no recorded copy is readable"),
             )
-            .cause(format!("pack {} already recorded at {recorded}: {why}", job.meta.pack_hash))
+            .cause(format!("pack {short}… already recorded at {recorded}: {why}"))
             .fix(format!(
                 "re-upload it from this clone: `dg reseed {} --from-local` (run inside this repository; a private repo's sealed copy is only kept by the clone that pushed it), then push again",
                 ctx.repo_label

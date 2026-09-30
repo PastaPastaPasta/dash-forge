@@ -1491,37 +1491,37 @@ const SECRET_KEYS: &[&str] = &[
 /// Works on `char`s throughout (never slices inside a multi-byte character) and matches keys
 /// only at a word boundary, so prose ("a basic idea", "monkey=…") is left alone.
 pub fn redact(s: &str) -> String {
-    let s = redact_userinfo(s);
+    // Phrases first: a `key=` in front of the first word would otherwise be redacted with that
+    // word alone, leaving the other eleven.
+    let s = redact_phrases(s);
+    let s = redact_userinfo(&s);
     let s = redact_key_values(&s);
     let s = redact_authorization(&s);
-    let s = redact_phrases(&s);
     redact_tokens(&s)
 }
 
 /// The shortest recovery phrase (12 words; 24 is the other common length).
 const PHRASE_WORDS: usize = 12;
 
-/// A run of [`PHRASE_WORDS`] or more whitespace-separated BIP39 English words (each may carry
-/// quotes or punctuation around it) becomes one `[redacted]`. Prose never has twelve in a row:
-/// the list has no "the", "a", "to", "of" or "is".
+/// A run of [`PHRASE_WORDS`] or more BIP39 English words becomes one `[redacted]`. Words are
+/// runs of ASCII letters and digits, so whatever sits between them (spaces, quotes, `=`,
+/// `Some("`) does not break a run. Prose never has twelve in a row: the list has no "the",
+/// "a", "to", "of" or "is".
 fn redact_phrases(s: &str) -> String {
-    let not_letter = |c: char| !c.is_ascii_alphabetic();
-    // Each whitespace-separated token's letters, as a byte span, and whether they are a word.
+    // Each alphanumeric run as a byte span, and whether it is a list word.
     let mut tokens: Vec<(usize, usize, bool)> = Vec::new();
     let mut start = None;
     for (i, c) in s.char_indices().chain(std::iter::once((s.len(), ' '))) {
-        match (c.is_whitespace(), start) {
-            (false, None) => start = Some(i),
-            (true, Some(st)) => {
+        match (c.is_ascii_alphanumeric(), start) {
+            (true, None) => start = Some(i),
+            (false, Some(st)) => {
                 let tok = &s[st..i];
-                let lead = tok.len() - tok.trim_start_matches(not_letter).len();
-                let core = tok.trim_matches(not_letter);
-                let is_word = core.len() >= 3
-                    && core.bytes().all(|b| b.is_ascii_alphabetic())
+                let is_word = tok.len() >= 3
+                    && tok.bytes().all(|b| b.is_ascii_alphabetic())
                     && bip39::Language::English
-                        .find_word(&core.to_ascii_lowercase())
+                        .find_word(&tok.to_ascii_lowercase())
                         .is_some();
-                tokens.push((st + lead, st + lead + core.len(), is_word));
+                tokens.push((st, i, is_word));
                 start = None;
             }
             _ => {}
@@ -2970,6 +2970,20 @@ mod tests {
         let upper = twelve.to_uppercase();
         assert_eq!(redact(&format!("x {upper}, y")), "x [redacted], y");
         assert_eq!(redact(&format!("{twelve} {twelve}\n")), "[redacted]\n");
+        // Glued to what comes before it: `KEY=…`, a Debug `Some("…")`, a `--flag=…`.
+        for glued in [
+            format!("DASH_FORGE_KEY={twelve}"),
+            format!("password={twelve}"),
+            format!("mnemonic: Some(\"{twelve}\")"),
+            format!("--mnemonic={twelve}"),
+            format!("é{twelve}é"),
+        ] {
+            let out = redact(&glued);
+            for w in ["ability", "absurd", "accident"] {
+                assert!(!out.contains(w), "{glued} → {out}");
+            }
+        }
+        assert_eq!(redact(&format!("é {twelve} é")), "é [redacted] é");
         // Eleven words, or twelve broken by a word off the list, are left alone.
         let eleven = twelve.rsplit_once(' ').unwrap().0;
         assert_eq!(redact(eleven), eleven);

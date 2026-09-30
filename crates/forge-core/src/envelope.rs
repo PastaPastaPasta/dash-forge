@@ -279,10 +279,10 @@ impl EncryptionKeyFile {
 
     /// [`Self::from_json`] of a file on disk (read into memory that is wiped afterwards).
     pub fn load(path: &std::path::Path) -> Result<Self> {
-        let raw = Zeroizing::new(
-            std::fs::read_to_string(path)
-                .map_err(|e| Error::Io(format!("reading key file {}: {e}", path.display())))?,
-        );
+        let raw = Zeroizing::new(std::fs::read_to_string(path).map_err(|e| {
+            let shown = crate::keystore::describe_key_source(path);
+            Error::Io(format!("reading key file {shown}: {e}"))
+        })?);
         Self::from_json(&raw)
     }
 }

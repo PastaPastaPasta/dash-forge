@@ -77,6 +77,10 @@ pub fn describe_source(source: &str) -> (String, &'static str) {
         );
     }
     if source.starts_with(keystore::KEYCHAIN_PREFIX) {
+        if keystore::parse_keychain_source(source).is_none() {
+            // Malformed: whatever follows the prefix may be a pasted key.
+            return ("keychain:[redacted]".into(), "keychain");
+        }
         let s = Stored::Keychain {
             source: source.to_string(),
         };
