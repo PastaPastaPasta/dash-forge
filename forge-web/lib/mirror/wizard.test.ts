@@ -248,7 +248,10 @@ describe('workflowYaml', () => {
     expect(y).toContain('pull_request_target:')
     // The job never checks out the mirrored repository (pull_request_target stays safe).
     expect(y.match(/actions\/checkout/g)).toHaveLength(1)
-    expect(y).toMatch(/actions\/checkout@v4\n {8}with:\n {10}repository: PastaPastaPasta\/dash-forge\n/)
+    expect(y).toMatch(/actions\/checkout@[0-9a-f]{40} # v[\d.]+\n {8}with:\n {10}repository: PastaPastaPasta\/dash-forge\n/)
+    // Nothing the job builds from can move: every action by commit, protoc by checksum.
+    for (const uses of y.matchAll(/uses: (\S+)/g)) expect(uses[1]).toMatch(/@[0-9a-f]{40}$|^\.\//)
+    expect(y).toContain("echo '0ad949f04a6a174da83cdcbdb36dee0a4925272a5b6d83f79a6bf9852076d53f  /tmp/protoc.zip' | sha256sum -c -")
   })
 
   it('drops the issue and PR triggers when only code is mirrored, and devnet-name off a devnet', () => {

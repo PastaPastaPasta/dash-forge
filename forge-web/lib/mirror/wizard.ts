@@ -270,6 +270,18 @@ export const DASH_FORGE_REPO: GithubName = { owner: 'PastaPastaPasta', name: 'da
 /** The workflow's path in the GitHub repository. */
 export const WORKFLOW_PATH = '.github/workflows/forge-mirror.yml'
 
+/**
+ * What the generated job runs before the Action, pinned: the job later runs binaries with the
+ * runner key, so nothing it builds from may move under it. The action commits are the ones this
+ * repository's own workflows pin; the checksum is of the protoc 28.3 release asset.
+ */
+export const WORKFLOW_PINS = {
+  checkout: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1',
+  rustCache: 'Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2',
+  protocUrl: 'https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protoc-28.3-linux-x86_64.zip',
+  protocSha256: '0ad949f04a6a174da83cdcbdb36dee0a4925272a5b6d83f79a6bf9852076d53f',
+} as const
+
 export interface WorkflowOptions {
   readonly github: GithubName
   /** `dash://<owner identity id>/<name>`. */
@@ -359,17 +371,18 @@ export function workflowYaml(o: WorkflowOptions): string {
     '      # commit. The first run compiles for several minutes; rust-cache makes later runs quick.',
     '      - name: Install protoc',
     '        run: |',
-    '          curl -sSLo /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protoc-28.3-linux-x86_64.zip',
+    `          curl -sSLo /tmp/protoc.zip ${WORKFLOW_PINS.protocUrl}`,
+    `          echo '${WORKFLOW_PINS.protocSha256}  /tmp/protoc.zip' | sha256sum -c -`,
     "          sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'",
     '          sudo chmod +x /usr/local/bin/protoc',
     `      - name: Check out Dash Forge ${o.commit.slice(0, 12)}`,
-    '        uses: actions/checkout@v4',
+    `        uses: ${WORKFLOW_PINS.checkout}`,
     '        with:',
     `          repository: ${src}`,
     `          ref: ${o.commit}`,
     '          path: .dash-forge',
     '          persist-credentials: false',
-    '      - uses: Swatinem/rust-cache@v2',
+    `      - uses: ${WORKFLOW_PINS.rustCache}`,
     '        with:',
     '          workspaces: .dash-forge',
     '      - name: Build dg, git-remote-dash and forge-import',
