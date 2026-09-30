@@ -944,7 +944,12 @@ async fn wire_and_push(
         track,
         opts.allow_private_uri,
     )?;
-    let after = client.get_balance(&plan.owner).await.ok();
+    // The helper measured the balance after its own writes; a read here can lag a block
+    // behind them (QW-083: init and the helper printed different balances).
+    let after = match outcome.remaining {
+        Some(r) => Some(r),
+        None => client.get_balance(&plan.owner).await.ok(),
+    };
     // The helper's own measurement; the balance change only when it reported none.
     let push_cost = outcome
         .charged
@@ -1037,6 +1042,8 @@ fn needs_private_uri_allowance<'a>(
 struct PushOutcome {
     /// The helper's measured (or estimated) Platform charge, in credits.
     charged: Option<u64>,
+    /// The balance the helper read after its writes, in credits.
+    remaining: Option<u64>,
     /// The helper's `indexSkipped` event: the pack was stored without its browse index (D-920).
     index_skipped: Option<Value>,
 }
@@ -1125,11 +1132,9 @@ fn run_push(
     }
     let status = cmd.status().context("running git push")?;
     let events = report.events();
-    let charged = events
-        .iter()
-        .rev()
-        .find(|e| e["event"] == "done")
-        .and_then(|e| e["chargedCredits"].as_u64());
+    let done = events.iter().rev().find(|e| e["event"] == "done");
+    let charged = done.and_then(|e| e["chargedCredits"].as_u64());
+    let remaining = done.and_then(|e| e["remainingCredits"].as_u64());
     let index_skipped = events
         .iter()
         .rev()
@@ -1138,6 +1143,7 @@ fn run_push(
     if status.success() {
         return Ok(PushOutcome {
             charged,
+            remaining,
             index_skipped,
         });
     }

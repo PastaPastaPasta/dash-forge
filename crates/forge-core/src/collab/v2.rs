@@ -2039,10 +2039,10 @@ impl<'a> Collab<'a> {
         // a key source with no ENCRYPTION key at all (a limited `dg auth login` key): say so
         // (E306) rather than "no maintainer wrapped the key to you" (E307)
         if signer.encryption_keys(repo).is_empty() {
-            return Err(crate::keyring::no_encryption_key(
-                &identity.id(),
-                &format!("private repo {}", repo.display()),
-            ));
+            return Err(crate::keyring::no_encryption_key_held(&format!(
+                "private repo {}",
+                repo.display()
+            )));
         }
         crate::repo::cached_keyring(
             &self.keyring,
@@ -5116,9 +5116,13 @@ impl<'a> Collab<'a> {
         check_len("label name", name, 30)?;
         check_len("label description", description, 200)?;
         if !color.is_empty() && !is_hex_color(color) {
-            return Err(Error::Config(format!(
-                "label color {color:?} must look like #1f883d"
-            )));
+            // A bad argument (E201), not a bad configuration (E204, QW-082).
+            return Err(crate::user_error::UserError::new(
+                crate::user_error::codes::USAGE,
+                format!("label color {color:?} is not a hex color"),
+            )
+            .fix("pass six hex digits, like `--color '#1f883d'` (or `1f883d`)")
+            .into());
         }
         let mut p = BTreeMap::new();
         p.insert("name".to_string(), FieldValue::text(name));

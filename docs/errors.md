@@ -5,8 +5,8 @@ Every error `dg` and `git-remote-dash` print carries a stable code:
 ```
 error: push rejected: you are not a writer of alice/project            [E601]
   cause: Platform refused the write at consensus (40120: no writer/maintainer document for your identity)
-  fix:   ask the owner to run `dg collab add alice/project <your identity id> --role write`
-  or:    push to a repo of your own and open a pull request: `dg pr create …`
+  fix:   not a member yet? run `dg collab accept alice/project` first (your consent, as the web's Accept; the add is refused without it), then ask the owner to run `dg collab add alice/project <your identity id> --role writer`
+  or:    push to a repo of your own: `dg repo create <name>`, then `git push dash://<you>/<name> <branch>`
   more:  https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/errors.md#e601
 ```
 
@@ -79,7 +79,7 @@ Fix: apply the suggestions that still fit, one by one or with `--all`, and edit 
 
 ## E201
 
-**Invalid arguments.** The flags or arguments do not make sense together, for example `dg issue label` without exactly one of `--add` or `--remove`.
+**Invalid arguments.** The flags or arguments do not make sense together, for example `dg issue label` without exactly one of `--add` or `--remove`, or a value is not of the form the flag takes (a `--color` that is not a hex color). A command line `dg` cannot parse at all (a missing argument, an unknown flag) is E201 too: the cause quotes what is wrong, and the command's usage line follows the error block. Inside a `dash://` clone, a command that leaves out the repository uses the clone's, so `dg issue list` there is not an error.
 
 Fix: see `dg <command> --help`.
 
@@ -91,13 +91,13 @@ Fix: pick a name like `my-project`.
 
 ## E203
 
-**Invalid repository reference or `dash://` URL.** `dg` takes `owner/name`, where `owner` is the owner's base58 identity id, or a bare `name` for your own repositories. The helper takes `dash://<owner>/<repo>` or `dash://<contract id>`. DPNS usernames are not resolved yet.
+**Invalid repository reference or `dash://` URL.** `dg` takes `owner/name`, where `owner` is the owner's base58 identity id or DPNS username (`alice`, `alice.dash`), a bare `name` for your own repositories, or the repository's id. The helper takes `dash://<owner>/<repo>` (identity id or DPNS username) or `dash://<repo id>`. A reference with more than one `/` (`alice/b/c`) is E203 too.
 
-Fix: use the owner's identity id, e.g. `dg repo view 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB/project`.
+Fix: use `owner/name`, e.g. `dg repo view alice/project` or `dg repo view 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB/project`.
 
 ## E204
 
-**Invalid configuration.** A value in `~/.config/dash-forge/config.toml`, in git config `dash.*`, a devnet name or a DAPI address could not be used. The `cause:` line names the value.
+**Invalid configuration.** A value in `~/.config/dash-forge/config.toml`, in git config `dash.*`, in `DASH_FORGE_NETWORK` and friends, a devnet name or a DAPI address could not be used. The `cause:` line names the value. A bad command-line argument is E201, not E204.
 
 Fix: correct the value (`git config --show-origin --get-regexp '^dash\.'` shows where each git setting comes from). `dg doctor` checks the rest.
 
@@ -119,15 +119,17 @@ Fix: run `git init` first (or `cd` into the repository), or pass `--remote <name
 
 ## E207
 
-**Not supported for a private repository.** The operation would publish a private repository's content unencrypted, or needs keys that only its members hold, so `dg` refuses it before writing anything. In this release that covers releases (`dg release create`: the tag, title, notes and assets are not encrypted), forks of a private repository, webhooks, and verifying ref tips without the repository's keys.
+**Not supported for a private repository.** The operation would publish a private repository's content unencrypted, or needs keys that only its members hold, so `dg` refuses it before writing anything. In this release that covers forks of a private repository, webhooks, and verifying ref tips without the repository's keys. Releases are supported: a private repository's releases are sealed ([private repositories §16](security/private-repos.md#16-sealed-releases)), and `dg release create`, `dg release unpublish` and `dg release download` handle them.
 
-Fix: none within the private repository in this release. Publish releases from a public repository (a public mirror, for example), and keep sensitive text out of what is published there. The label definitions (`dg label create`) and the other plaintext items in [private-repos §7](security/private-repos.md#7-metadata-that-stays-visible) are allowed but visible to everyone; `dg` says so before it writes them.
+Fix: none within the private repository in this release. The label definitions (`dg label create`) and the other plaintext items in [private-repos §7](security/private-repos.md#7-metadata-that-stays-visible) are allowed but visible to everyone; `dg` says so before it writes them.
 
 ## E301
 
 **No identity configured.** The command needs to sign (a push, a `dg` write) or to open a private repository, and no identity or key was found. Reading a public repository never needs one: `git clone dash://<owner>/<repo>` works anonymously, and so do `dg repo view`, `dg issue list` / `view`, `dg pr list` / `view` and `dg release list` / `download`.
 
 Fix: `dg auth new` creates an identity and stores a limited key for this computer; `dg auth login <file>` (or `dg auth login --mnemonic`) signs in with an existing one. For a single command pass `--identity <file>`, or set `DASH_FORGE_KEY` to a file, a `keychain:dash-forge/<network>/<id>` entry, or a `dfk1:` key (this is also how `git-remote-dash` finds the key; without it the helper uses the default `dg auth` recorded, then `~/.config/dash-forge/identities/<owner>.identity.json`).
+
+A private repository needs more than a signing key: its content is encrypted to each member's `ENCRYPTION` key, which the limited key `dg auth login <file>` and `dg auth new` store does not hold (that would be [E306](#e306) next). For one, sign in with `dg auth login --full-key <identity file>`, or `dg auth login --mnemonic --full-key` with the 12 recovery words.
 
 ## E302
 
@@ -168,9 +170,12 @@ Fix: register a fresh one with your master key (used once): `dg auth login <iden
 
 ## E306
 
-**No encryption key for private repositories.** Private repositories encrypt their content to each member's identity `ENCRYPTION` key, and the identity file in use holds none that matches an enabled key on the identity (or, for `dg collab add`, the member you named has none).
+**No encryption key for private repositories.** Private repositories encrypt their content to each member's identity `ENCRYPTION` key. Two cases:
 
-Fix: if the identity has an ENCRYPTION key (`dg auth keys list`; identities from `dg auth new`, the bridge and the web app have key 4), use a key source that holds its private half: the limited key `dg auth login` stores holds only a signing key, so point `DASH_FORGE_KEY` at the identity file, or sign in with `dg auth login --full-key <identity file>` (a passphrase-sealed file). If it has none, `dg auth keys add --encryption` adds one, derived from the recovery words (one identity update signed by the master key). A member you are adding does this themselves, or uses Settings → Keys → Enable private repos in the web app. See [identity and keys](guides/identity-and-keys.md#encryption-key-private-repositories).
+- "the key stored on this computer holds no encryption key": your identity usually has one (`dg auth keys list`; identities from `dg auth new`, the bridge and the web app have key 4), but the key source in use does not hold its private half. The limited key `dg auth login` and `dg auth new` store is a signing key only.
+- "`<member>` has no encryption key" (`dg collab add` to a private repository): the member you named has no enabled `ENCRYPTION` key on their identity.
+
+Fix: for the first, store a key source that holds it: `dg auth login --full-key <identity file>` (a passphrase-sealed file), or `dg auth login --mnemonic --full-key` with the 12 recovery words if you have no identity file (a `dg auth new` identity). For one command, point `DASH_FORGE_KEY` at the identity file. If the identity has no ENCRYPTION key at all, `dg auth keys add --encryption` adds one, derived from the recovery words (one identity update signed by the master key). A member you are adding does this themselves, or uses Settings → Keys → Enable private repos in the web app. See [identity and keys](guides/identity-and-keys.md#encryption-key-private-repositories).
 
 ## E307
 
@@ -312,7 +317,7 @@ Outside a push (collaborator admin, releases, repo config) the headline says you
 
 The helper checks this before building or paying for anything and refuses early with the same advice.
 
-Fix: ask the owner to add you (`dg collab add <owner>/<repo> <your identity id> --role writer`), or push to a repository of your own.
+Fix: give your consent first, once: `dg collab accept <owner>/<repo>` (or **Accept** in the web app). Then ask the owner to add you: `dg collab add <owner>/<repo> <your identity id> --role writer`. A membership names the member's own consent, so an add before the accept is refused ([E604](#e604): "has not accepted membership"). Or push to a repository of your own.
 
 ## E602 (retired)
 
@@ -328,7 +333,12 @@ Fix: pick another name. Issue and PR numbers are retried automatically, so Platf
 
 ## E604
 
-**Rejected by Platform.** Consensus refused the state transition for a reason not listed above. This includes 40120 on any path other than `$ownerId`: a document, contract or identity the write refers to does not exist (the headline names the path). The `cause:` line carries Platform's message, which names the rule.
+**Rejected by Platform.** Consensus refused the state transition for a reason not listed above, or would refuse it: `dg` and the helper check the contract's rules they can read before signing, and report a write consensus is certain to refuse with the same code, with the note "checked before anything was signed; nothing was written or paid". This includes 40120 on any path other than `$ownerId`: a document, contract or identity the write refers to does not exist (the headline names the path). The `cause:` line carries Platform's message, or the rule, when it has one.
+
+Two common ones:
+
+- `dg collab add` for someone who has not given their consent: "has not accepted membership". They run `dg collab accept <owner>/<repo>` (or **Accept** in the web app), then you add them again, or pass `--wait` to wait for it.
+- A state change the issue or PR's current state does not allow (reopening a merged PR). Closing a closed issue, or reopening an open one, is not an error: `dg` says so and writes nothing.
 
 Fix: if the message does not explain it, [open an issue](https://github.com/PastaPastaPasta/dash-forge/issues) with it.
 

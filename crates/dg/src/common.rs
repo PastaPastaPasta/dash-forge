@@ -35,6 +35,10 @@ impl RepoRef {
         if owner.is_empty() || name.is_empty() {
             return Err(invalid_ref(s, "expected `owner/name`"));
         }
+        // `a/b/c` is a malformed reference (E203), not a bad name `b/c` (E202, QW-082).
+        if name.contains('/') {
+            return Err(invalid_ref(s, "expected `owner/name`, with one `/`"));
+        }
         if !looks_like_identity_id(owner) && forge_core::resolve::dpns_label(owner).is_none() {
             return Err(invalid_ref(
                 s,
@@ -60,16 +64,13 @@ impl RepoRef {
 
 /// E606: `action` refused because `repo` is archived.
 pub fn archived_refusal(repo: &str, action: &str) -> UserError {
-    UserError::new(
-        codes::ARCHIVED,
-        format!("{action} refused: {repo} is archived"),
-    )
-    .cause("a maintainer marked the repository archived (read-only by agreement)")
-    .fix(format!(
-        "ask a maintainer to run `dg repo unarchive {repo}`"
-    ))
-    .fix("or pass --allow-archived (archiving is a client rule; consensus does not enforce it)")
-    .note("checked before anything was signed; nothing was written or paid")
+    UserError::new(codes::ARCHIVED, format!("{action}: {repo} is archived"))
+        .cause("a maintainer marked the repository archived (read-only by agreement)")
+        .fix(format!(
+            "ask a maintainer to run `dg repo unarchive {repo}`"
+        ))
+        .fix("pass --allow-archived (archiving is a client rule; consensus does not enforce it)")
+        .note("checked before anything was signed; nothing was written or paid")
 }
 
 /// E203 for an unusable `owner/name`.
@@ -350,7 +351,12 @@ mod tests {
             assert_eq!(r.owner.as_deref(), Some(owner));
             assert_eq!(r.name, "project");
         }
-        for bad in ["al ice/project", "a_b/project", ".dash/project"] {
+        for bad in [
+            "al ice/project",
+            "a_b/project",
+            ".dash/project",
+            "alice/b/c",
+        ] {
             assert!(RepoRef::parse(bad).is_err(), "{bad:?} should be refused");
         }
     }

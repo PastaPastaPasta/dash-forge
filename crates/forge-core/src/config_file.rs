@@ -45,7 +45,7 @@ pub fn config_toml_error(path: &Path, raw: &str, e: &toml::de::Error) -> UserErr
         Some(n) => format!("fix line {n} of {}", path.display()),
         None => format!("fix {}", path.display()),
     })
-    .fix("or move it aside and sign in again with `dg auth login`, which writes a new one")
+    .fix("move it aside and sign in again with `dg auth login`, which writes a new one")
 }
 
 /// `dg`'s `config.toml`: `<forge config dir>/config.toml`, or `None` with no config dir.

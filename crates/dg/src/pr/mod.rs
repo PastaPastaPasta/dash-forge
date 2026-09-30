@@ -2850,6 +2850,8 @@ mod tests {
     fn an_archived_repo_refuses_writes_with_e606() {
         let u = crate::common::archived_refusal("o/r", "issue not created");
         assert_eq!((u.code, u.exit_code()), ("E606", 6));
+        // QW-082: it read "issue not created refused: …"
+        assert_eq!(u.message, "issue not created: o/r is archived");
         let text = u.to_json().to_string();
         assert!(
             text.contains("--allow-archived") && text.contains("dg repo unarchive o/r"),

@@ -390,7 +390,12 @@ impl UserError {
             line("cause", "33", c);
         }
         for (i, f) in e.fix.iter().enumerate() {
-            line(if i == 0 { "fix" } else { "or" }, "1;32", f);
+            if i == 0 {
+                line("fix", "1;32", f);
+            } else {
+                // The label says "or" already: a fix written "or …" must not read "or: or …".
+                line("or", "1;32", f.strip_prefix("or ").unwrap_or(f));
+            }
         }
         if let Some(n) = &e.note {
             line("note", "36", n);
@@ -748,11 +753,26 @@ fn not_permitted(ctx: &ErrorContext<'_>, action: &str, reason: &str, needs: &str
     } else if needs == "owner" {
         // An edit: consensus admits a document replace from its owner only, members included.
         u.fix("only the author can edit it; comment instead, or ask them to make the change")
+    } else if matches!(needs, "writer" | "maintainer") {
+        u.fix(join_fix(&repo, "<your identity id>", needs))
     } else {
-        u.fix(format!(
-            "ask the owner to run `dg collab add {repo} <your identity id> --role {needs}`"
-        ))
+        // Not a role a member can be given (the repository's owner, …).
+        u.fix(format!("ask {needs} to do it"))
     }
+}
+
+/// How a member stores a key source that can open private repositories: the limited key
+/// `dg auth login` and `dg auth new` store is a signing key only, so the full identity is kept
+/// instead, from its file or from the recovery words (QW-040).
+pub const FIX_FULL_KEY_LOGIN: &str = "`dg auth login --full-key <identity file>`, or `dg auth login --mnemonic --full-key` with your 12 recovery words";
+
+/// The E601 way in: the owner's add, and before it, for someone not a member yet, their own
+/// consent (`member_consent`: a `member` document naming the add is refused without it, E604;
+/// QW-039). `who` is the member's id as the reader should type it.
+pub fn join_fix(repo: &str, who: &str, role: &str) -> String {
+    format!(
+        "not a member yet? run `dg collab accept {repo}` first (your consent, as the web's Accept; the add is refused without it), then ask the owner to run `dg collab add {repo} {who} --role {role}`"
+    )
 }
 
 fn from_config(msg: &str, chain: &str, ctx: &ErrorContext<'_>) -> UserError {
@@ -1011,11 +1031,9 @@ fn needs_maintainer(ctx: &ErrorContext<'_>, document_type: &str, why: &str) -> U
     .cause(format!(
         "Platform refused the {document_type} at consensus ({why})"
     ))
-    .fix(format!(
-        "ask the owner to run `dg collab add {repo} <your identity id> --role maintainer`"
-    ));
+    .fix(join_fix(&repo, "<your identity id>", "maintainer"));
     if document_type == "protectedRefUpdate" {
-        u.fix("or push to a branch that is not protected")
+        u.fix("push to a branch that is not protected")
     } else {
         u
     }
@@ -1229,9 +1247,7 @@ fn not_a_writer(ctx: &ErrorContext<'_>, why: &str) -> UserError {
             )),
         )
         .cause(format!("Platform refused the write at consensus ({why})"))
-        .fix(format!(
-            "ask the owner of {repo} to grant you the role this needs (`dg collab add {repo} <your identity id> --role writer|maintainer`)"
-        ));
+        .fix(join_fix(&repo, "<your identity id>", "writer|maintainer"));
     }
     UserError::new(
         codes::NOT_A_WRITER,
@@ -1241,9 +1257,7 @@ fn not_a_writer(ctx: &ErrorContext<'_>, why: &str) -> UserError {
         )),
     )
     .cause(format!("Platform refused the write at consensus ({why})"))
-    .fix(format!(
-        "ask the owner to run `dg collab add {repo} <your identity id> --role writer`"
-    ))
+    .fix(join_fix(&repo, "<your identity id>", "writer"))
     .fix("push to a repo of your own: `dg repo create <name>`, then `git push dash://<you>/<name> <branch>`")
 }
 
@@ -1338,8 +1352,9 @@ pub fn private_needs_identity(repo: &str) -> UserError {
         codes::NO_IDENTITY,
         format!("{repo} is private: reading it needs your identity"),
     )
-    .cause("its issues, pull requests and comments are encrypted to its members' keys")
-    .fix("`dg auth login <file>` signs in as a member; or pass --identity <file>, or set DASH_FORGE_KEY=<file>")
+    .cause("its issues, pull requests and comments are encrypted to its members' ENCRYPTION keys")
+    .fix(format!("sign in as a member with a key source that holds your ENCRYPTION key: {FIX_FULL_KEY_LOGIN}"))
+    .fix("for one command: --identity <identity file>, or DASH_FORGE_KEY=<identity file>")
     .note("public repositories are read without an identity")
 }
 
@@ -2721,6 +2736,41 @@ mod tests {
             .unwrap()
             .contains("Platform (devnet-bonsia) has no identity 4UF1"));
         assert!(u.fix[0].contains("--network"), "{:?}", u.fix);
+    }
+
+    /// QW-082: an alternative fix written "or …" renders under the `or:` label once, not
+    /// "or: or …".
+    #[test]
+    fn an_or_fix_does_not_say_or_twice() {
+        let out = UserError::new(codes::USAGE, "x")
+            .fix("a")
+            .fix("or pass --identity <file>")
+            .render("", false);
+        assert!(out.contains("  or:    pass --identity <file>"), "{out}");
+        assert!(!out.contains("or: or"), "{out}");
+    }
+
+    /// QW-039 / QW-040: the E601 way in names the member's consent first, and a private
+    /// repository's E301 points at a key source that can open it (not a limited key, which
+    /// would be E306 next).
+    #[test]
+    fn e601_and_private_e301_name_the_step_that_works() {
+        let ctx = ErrorContext {
+            rejected: Some("push rejected"),
+            repo: Some("alice/project"),
+            ..Default::default()
+        };
+        let u = not_a_writer(&ctx, "40120");
+        assert!(
+            u.fix[0].starts_with("not a member yet? run `dg collab accept alice/project` first")
+                && u.fix[0]
+                    .contains("dg collab add alice/project <your identity id> --role writer"),
+            "{:?}",
+            u.fix
+        );
+        let u = private_needs_identity("alice/secret");
+        assert!(u.fix[0].contains("--full-key"), "{:?}", u.fix);
+        assert!(u.fix[0].contains("--mnemonic --full-key"), "{:?}", u.fix);
     }
 
     #[test]
