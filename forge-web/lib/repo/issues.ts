@@ -49,7 +49,7 @@ import { HiddenTally, SEALED_EPOCH, admitAll, gateFor, readableEvents } from './
 import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
 import { base64ToHex, hexToBase64 } from '../sdk'
-import { readStateCodes, readTransitions, type TransitionView } from './transitions'
+import { readRepoCounts, readStateCodes, readTransitions, type TransitionView } from './transitions'
 
 /** A row's title; ciphertext (a private repo's, which this client cannot decrypt) says so. */
 export function titleOf(doc: PlainDocument): string {
@@ -324,6 +324,8 @@ function ttlCached<T>(cache: Cache<T>, key: string, load: () => Promise<T>): Pro
 }
 
 const feedCache: Cache<Map<string, TargetLog> | null> = new Map()
+/** {@link sharedRepoCounts}' reads, by `feedKey@write generation`. */
+const countsCache: Cache<Awaited<ReturnType<typeof readRepoCounts>>> = new Map()
 /** Per repo: bumped by every {@link invalidateRepoFeed}, so a read started before a write can tell. */
 const epochs = new Map<string, number>()
 /** Per repo: bumped when a write that can change an open count drops its caches. */
@@ -385,6 +387,7 @@ export function invalidateRepoFeed(repo: RepoRef, { counts = true }: { counts?: 
   for (const k of [...feedCache.keys()]) if (ofRepo(k)) feedCache.delete(k)
   for (const drop of invalidationHooks) drop(repo)
   if (!counts) return
+  for (const k of [...countsCache.keys()]) if (k.startsWith(`${prefix}@`)) countsCache.delete(k)
   changed(repo, [writes])
 }
 
@@ -400,6 +403,18 @@ export function onRepoInvalidated(drop: (repo: RepoRef) => void): void {
 /** How many writes to `repo` dropped its caches this session: a cache key for reads a write changes. */
 export function repoWriteGeneration(repo: RepoRef): number {
   return writes.get(feedKey(repo)) ?? 0
+}
+
+/**
+ * The repo's proved issue and PR totals by state ({@link readRepoCounts}: the issue and PR totals
+ * and one count of transitions by kind), read once for every reader on the page: the header's
+ * open-count tabs, the list's total and the issue or pull index all ask for the same three
+ * counts on the same load, and each used to read its own (the Issues list read them three
+ * times). Joined in flight and for {@link FEED_TTL_MS} after; a write that can change a count
+ * moves to a new write generation, so a read issued before it never answers after it.
+ */
+export function sharedRepoCounts(sdk: EvoSDK, repo: RepoRef): Promise<Awaited<ReturnType<typeof readRepoCounts>>> {
+  return ttlCached(countsCache, `${feedKey(repo)}@${repoWriteGeneration(repo)}`, () => readRepoCounts(sdk, repo))
 }
 
 /** Be told whenever any repo's list pages change; returns the unsubscribe. */

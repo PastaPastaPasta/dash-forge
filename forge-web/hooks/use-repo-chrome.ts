@@ -19,11 +19,11 @@ import { useSdk } from '@/hooks/use-sdk'
 import {
   latestRelease,
   readReleases,
-  readRepoCounts,
   readViewerPermissions,
   repoContractIds,
   repoKey,
   repoWriteGeneration,
+  sharedRepoCounts,
   subscribeRepoLists,
   type ReleaseList,
   type ReleaseView,
@@ -66,7 +66,7 @@ export function useViewerRole(repo: RepoRef): {
  * The OPEN issue and PR counts for the tabs (null: not read yet, so no number is shown), as
  * GitHub's tabs show them. Every state change is a legal `transition`, so the proved issue and
  * PR totals and one count of transitions by kind give them exactly, in three requests
- * (`readRepoCounts`). A write bumps the repo's write generation, which re-reads them; the last
+ * (`readRepoCounts`), shared with the list's index and total (`sharedRepoCounts`). A write bumps the repo's write generation, which re-reads them; the last
  * numbers stay shown meanwhile, so the badge never blanks.
  */
 export function useTargetCounts(repo: RepoRef): TargetTotals {
@@ -76,7 +76,7 @@ export function useTargetCounts(repo: RepoRef): TargetTotals {
   const { data } = useAsync(
     () =>
       sessionCached(`openCounts:${network}:${repo.repoId}:${generation}`, MINUTE, async (): Promise<TargetTotals> => {
-        const c = await readRepoCounts(sdk!, repo)
+        const c = await sharedRepoCounts(sdk!, repo)
         return { issues: c.issuesOpen, pulls: c.prsOpen }
       }),
     [ready, repoKey(repo), network, generation],
