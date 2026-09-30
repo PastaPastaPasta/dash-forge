@@ -24,6 +24,8 @@ import { baseRefReaders } from './issues'
 import { invalidateMembers, readMembershipsCached } from './members'
 import { noteTargetCreated } from './social'
 import { readBrowseManifests } from './packs'
+import { loadBrowseContextCached, peekBrowseState, resetBrowseCache, type BrowseState } from '../view/browse-source'
+import { repoKey } from './contract'
 import { readTargetCounts } from './social'
 import type { RepoRef } from './contract'
 
@@ -240,13 +242,14 @@ describe('repo chrome store: the pack list and base refs come from the same read
     expect(calls.filter((c) => c.includes('packManifest') || c.startsWith('composite'))).toEqual(['composite:repo'])
   })
 
-  it('a re-resolve (fresh) reads again, for the delta only', async () => {
+  it('a re-resolve of the list the last read gave reads again, for the delta only', async () => {
     const store = fixture(3)
     const { sdk, calls } = fakeSdk(store)
     await loadRepoHome(sdk, { network: 'devnet', owner: OWNER, name: 'demo' })
+    const checked = Date.now()
     calls.length = 0
-    store.CORE!.packManifest!.push(doc({ $ownerId: OWNER, repoId: REPO, kind: 0, packHash: hexToBase64('22'.repeat(32)), sizeBytes: 5, objectCount: 1, chunkCount: 1, storage: 0 }))
-    const manifests = await readBrowseManifests(sdk, REF, { fresh: true, network: 'devnet' })
+    store.CORE!.packManifest!.push(newPack('22'))
+    const manifests = await readBrowseManifests(sdk, REF, { after: checked, network: 'devnet' })
     expect(manifests).toHaveLength(2)
     expect(calls).toEqual(['composite:repo'])
   })
@@ -289,6 +292,76 @@ describe('repo chrome store: the pack list and base refs come from the same read
     const chrome = await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet')
     expect(chrome?.repo.repoId).toBe(NEW)
     expect((await chrome!.timelines!).refUpdate).toEqual([])
+  })
+})
+
+/** A pack pushed since (another user's push). */
+function newPack(hash: string): Doc {
+  return doc({ $ownerId: OWNER, repoId: REPO, kind: 0, packHash: hexToBase64(hash.repeat(32)), sizeBytes: 5, objectCount: 1, chunkCount: 1, storage: 0 })
+}
+
+describe('a re-resolve takes a read issued after the list it checks (D-11)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    resetBrowseCache()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    resetBrowseCache()
+  })
+
+  it("the home's read of a moment ago, issued after the list was read, answers it with no request", async () => {
+    const store = fixture(3)
+    const { sdk, calls } = fakeSdk(store)
+    const checked = Date.now()
+    vi.setSystemTime(checked + 31_000)
+    store.CORE!.packManifest!.push(newPack('22'))
+    await loadRepoHome(sdk, { network: 'devnet', owner: OWNER, name: 'demo' })
+    vi.setSystemTime(Date.now() + 150)
+    calls.length = 0
+    expect(await readBrowseManifests(sdk, REF, { after: checked, network: 'devnet' })).toHaveLength(2)
+    expect(calls).toEqual([])
+  })
+
+  it('the read issued in the same millisecond the list was checked is the one it checks: read again', async () => {
+    const { sdk, calls } = fakeSdk(fixture(3))
+    await loadRepoHome(sdk, { network: 'devnet', owner: OWNER, name: 'demo' })
+    const checked = Date.now()
+    calls.length = 0
+    await readBrowseManifests(sdk, REF, { after: checked, network: 'devnet' })
+    expect(calls).toEqual(['composite:repo'])
+  })
+
+  it('a read issued after the list but older than the store keeps a read fresh is not taken', async () => {
+    const { sdk, calls } = fakeSdk(fixture(3))
+    const checked = Date.now()
+    vi.setSystemTime(checked + 1)
+    await loadRepoHome(sdk, { network: 'devnet', owner: OWNER, name: 'demo' })
+    vi.setSystemTime(Date.now() + 5_000)
+    calls.length = 0
+    await readBrowseManifests(sdk, REF, { after: checked, network: 'devnet' })
+    expect(calls).toEqual(['composite:repo'])
+  })
+
+  it("after another user's push, the home's revalidation and the browse revalidation behind it cost ONE composite", async () => {
+    const store = fixture(3)
+    const { sdk, calls } = fakeSdk(store)
+    const packs = (s: BrowseState | undefined): number | undefined => (s?.kind === 'unindexed' ? s.manifests.size : undefined)
+    const reads = (): string[] => calls.filter((c) => c.startsWith('composite') || c.includes('packManifest'))
+    // The tab opens the repo: the home's composite, and the browse context from the store.
+    await loadRepoHome(sdk, { network: 'devnet', owner: OWNER, name: 'demo' })
+    expect(packs(await loadBrowseContextCached(sdk, REF))).toBe(1)
+    expect(reads()).toEqual(['composite:repo'])
+    // Someone else pushes; 31 s later the tab navigates: the home revalidates (one composite)...
+    store.CORE!.packManifest!.push(newPack('22'))
+    vi.setSystemTime(Date.now() + 31_000)
+    calls.length = 0
+    await loadRepoHome(sdk, { network: 'devnet', owner: OWNER, name: 'demo' })
+    vi.setSystemTime(Date.now() + 150)
+    // ...and the page's browse context, served stale, re-resolves from that read, not a second one.
+    expect(packs(await loadBrowseContextCached(sdk, REF))).toBe(1)
+    await vi.waitFor(() => expect(packs(peekBrowseState(repoKey(REF)))).toBe(2))
+    expect(reads()).toEqual(['composite:repo'])
   })
 })
 
