@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import { collectPageErrors, countDapi, E2E_DEVNET, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
-import { quorumGuard } from './quorum-sync'
+import { quorumGuard, quorumHeldMs } from './quorum-sync'
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
 test.beforeEach(quorumGuard)
@@ -55,7 +55,7 @@ test.describe('FG-5 on the dash mirror (read-only)', () => {
   })
 
   test('fg5-1. the 747-file merge: whole-commit totals equal git, within a request budget', async ({ browser }) => {
-    test.setTimeout(600_000)
+    test.setTimeout(600_000 + quorumHeldMs())
     const page = await (await browser.newContext()).newPage()
     const { errors } = collectPageErrors(page)
     const counts = countDapi(page)
@@ -96,7 +96,7 @@ test.describe('FG-5 on the dash mirror (read-only)', () => {
   })
 
   test('fg5-3. compare v22.0.0...develop: commits and diff from the merge base, within budget', async ({ browser }) => {
-    test.setTimeout(300_000)
+    test.setTimeout(300_000 + quorumHeldMs())
     const page = await (await browser.newContext()).newPage()
     const { errors } = collectPageErrors(page)
     const counts = countDapi(page)

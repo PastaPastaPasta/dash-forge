@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { collectPageErrors, countDapi, countDocumentQueries, DEMO, E2E_DEVNET, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
-import { quorumGuard } from './quorum-sync'
+import { quorumGuard, quorumHeldMs } from './quorum-sync'
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
 test.beforeEach(quorumGuard)
@@ -250,7 +250,7 @@ test.describe('commits paging, History and Blame (showcase repos)', () => {
   })
 
   test('hb-5. blame of fzf main.go matches git blame --first-parent line for line; cancel stops a run', async ({ page }) => {
-    test.setTimeout(240_000)
+    test.setTimeout(240_000 + quorumHeldMs())
     const want = readFileSync(join(__dirname, 'fixtures/fzf-main-go-blame.txt'), 'utf8')
       .trim()
       .split('\n')

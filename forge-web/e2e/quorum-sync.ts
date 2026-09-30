@@ -18,31 +18,39 @@
  * Verification state, nothing else) polls in Node, so none of it counts in a page's requests,
  * until the service lists every quorum DAPI lists and the next new quorum is at least
  * {@link MARGIN_BLOCKS} away. This is a wait on a known infra outage, not a retry of a failure:
- * the test still fails on its own merits. It gives up waiting (and lets the test run) after
- * {@link MAX_WAIT_MS}, or at once when either source cannot be asked, and logs every wait.
+ * the test still fails on its own merits. It never fails a test itself: it lets the test run at
+ * once when either source cannot be asked, after {@link MAX_WAIT_MS}, and for the rest of the run
+ * once a wait has run out (the service is stuck, not lagging). It logs every wait.
  */
 
+import { test } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
-import { test } from '@playwright/test'
-
+import { decodeCurrentQuorumsInfo, grpcWebMessage, parseQuorumService, protoFields, QUORUMS_INFO_REQUEST } from '../lib/view/quorum-check'
 import { E2E_DEVNET } from './seed-summary'
 
-/** Blocks between a quorum's base height and DAPI listing it (the DKG mining window; measured). */
+/** Core blocks between two quorums of the platform quorum type on bonsia (its DKG interval). */
+const QUORUM_INTERVAL = 24
+/** Blocks between a quorum's base height and DAPI listing it (its DKG commitment mined; measured). */
 const DKG_MINED_AFTER = 11
 /**
  * Fewer blocks than this (about 10 s each) before the next quorum appears, and the test waits for
- * it to settle: most guarded tests run well within it ({@link quorumGuardLong} for those that
- * do not).
+ * it to settle: most guarded tests run well within it ({@link quorumGuardLong} for those that do
+ * not).
  */
 const MARGIN_BLOCKS = 4
-/** {@link quorumGuardLong}'s margin: for a test that runs a minute or more (still well inside the ~19 clean blocks after a rotation settles). */
+/** {@link quorumGuardLong}'s margin, for tests that run a minute or more (still well inside the ~19 clean blocks after a rotation settles). */
 const LONG_MARGIN_BLOCKS = 10
-/** The longest a test waits: one quorum interval at bonsia's pace, past the lag plus the margin. */
+/** The longest one test waits: one quorum interval at bonsia's pace, past the lag plus the margin. */
 const MAX_WAIT_MS = 4 * 60_000
 const POLL_MS = 3_000
 const ASK_MS = 6_000
+
+/** A wait ran out: the service is stuck rather than lagging, and later tests do not wait on it. */
+let givenUp = false
+/** How long the current test was held (a body's `test.setTimeout` adds it: {@link quorumHeldMs}). */
+let heldMs = 0
 
 interface Deployment {
   readonly quorumBaseUrl?: string
@@ -52,131 +60,92 @@ interface Deployment {
 const deployment = (): Deployment =>
   JSON.parse(readFileSync(join(resolve(__dirname, '../..'), `forge-contracts/deployments/devnet-${E2E_DEVNET}.json`), 'utf8')) as Deployment
 
-function varint(b: Uint8Array, at: number): [number, number] {
-  let v = 0
-  let shift = 0
-  for (;;) {
-    const x = b[at++] as number
-    v += (x & 0x7f) * 2 ** shift
-    shift += 7
-    if ((x & 0x80) === 0) return [v, at]
-  }
-}
-
-/** Top-level protobuf fields: `[number, varint | bytes]`; fixed-width fields are skipped. */
-function fields(b: Uint8Array): [number, number | Uint8Array][] {
-  const out: [number, number | Uint8Array][] = []
-  let at = 0
-  while (at < b.length) {
-    let key: number
-    ;[key, at] = varint(b, at)
-    const wire = key & 7
-    if (wire === 0) {
-      let v: number
-      ;[v, at] = varint(b, at)
-      out.push([key >>> 3, v])
-    } else if (wire === 2) {
-      let len: number
-      ;[len, at] = varint(b, at)
-      out.push([key >>> 3, b.subarray(at, at + len)])
-      at += len
-    } else if (wire === 1) at += 8
-    else if (wire === 5) at += 4
-    else break
-  }
-  return out
-}
-
-const bytesAt = (f: [number, number | Uint8Array][], n: number): Uint8Array | undefined => {
-  const v = f.find(([k]) => k === n)?.[1]
-  return v instanceof Uint8Array ? v : undefined
-}
-const intAt = (f: [number, number | Uint8Array][], n: number): number | undefined => {
-  const v = f.find(([k]) => k === n)?.[1]
-  return typeof v === 'number' ? v : undefined
-}
-
 /**
- * One DAPI node's current quorums (their base heights) and its core chain-locked height:
- * `GetCurrentQuorumsInfoResponse.v0` = validator_sets 3 (`core_height` 2), metadata 5
- * (`core_chain_locked_height` 2).
+ * One DAPI node's current quorums (the app's own decoder) and its core chain-locked height
+ * (`GetCurrentQuorumsInfoResponse.v0.metadata`, field 5, `core_chain_locked_height` 2).
  */
-async function dapiQuorums(address: string): Promise<{ heights: number[]; core: number }> {
+async function dapiQuorums(address: string): Promise<{ hashes: string[]; heights: number[]; core: number }> {
   const res = await fetch(`${address.replace(/\/+$/, '')}/org.dash.platform.dapi.v0.Platform/getCurrentQuorumsInfo`, {
     method: 'POST',
     headers: { 'content-type': 'application/grpc-web+proto', 'x-grpc-web': '1' },
-    body: new Uint8Array([0, 0, 0, 0, 2, 0x0a, 0x00]),
+    body: QUORUMS_INFO_REQUEST,
     signal: AbortSignal.timeout(ASK_MS),
   })
-  const body = new Uint8Array(await res.arrayBuffer())
-  const len = ((body[1] as number) << 24) | ((body[2] as number) << 16) | ((body[3] as number) << 8) | (body[4] as number)
-  const v0 = bytesAt(fields(body.subarray(5, 5 + len)), 1)
-  if (v0 === undefined) throw new Error('no v0 body')
-  const top = fields(v0)
-  const heights = top.filter(([n, v]) => n === 3 && v instanceof Uint8Array).map(([, v]) => intAt(fields(v as Uint8Array), 2) ?? 0)
-  const core = intAt(fields(bytesAt(top, 5) ?? new Uint8Array()), 2) ?? 0
-  if (heights.length === 0 || core === 0) throw new Error('no validator sets')
-  return { heights, core }
+  const message = grpcWebMessage(new Uint8Array(await res.arrayBuffer()))
+  const keys = decodeCurrentQuorumsInfo(message)
+  const v0 = protoFields(message).find((f) => f.no === 1)?.bytes
+  const metadata = v0 === undefined ? undefined : protoFields(v0).find((f) => f.no === 5)?.bytes
+  const core = metadata === undefined ? 0 : protoFields(metadata).find((f) => f.no === 2)?.int ?? 0
+  if (keys.length === 0 || core === 0) throw new Error('no validator sets')
+  return { hashes: keys.map((k) => k.hash), heights: keys.map((k) => k.height), core }
 }
 
-async function serviceQuorums(base: string): Promise<number[]> {
+async function serviceQuorums(base: string): Promise<string[]> {
   const res = await fetch(`${base.replace(/\/+$/, '')}/quorums`, { signal: AbortSignal.timeout(ASK_MS) })
-  const json = (await res.json()) as { data?: { height?: number }[] }
-  return (json.data ?? []).map((q) => q.height ?? 0)
+  return parseQuorumService(await res.json()).map((q) => q.hash)
 }
 
-/** Why a test should not start yet, or null when it may. Null too when a source cannot be asked. */
-export async function quorumWait(margin = MARGIN_BLOCKS, dep: Deployment = deployment()): Promise<string | null> {
+/** Why a test should not start yet, or null when it may (null too when a source cannot be asked). */
+async function quorumWait(margin: number, dep: Deployment): Promise<string | null> {
   if (!dep.quorumBaseUrl || dep.dapiAddresses.length === 0) return null
-  const addresses = [...dep.dapiAddresses].sort(() => Math.random() - 0.5).slice(0, 2)
-  let chain: { heights: number[]; core: number } | null = null
-  for (const a of addresses) {
-    chain = await dapiQuorums(a).catch(() => null)
+  let chain: Awaited<ReturnType<typeof dapiQuorums>> | null = null
+  for (const address of [...dep.dapiAddresses].sort(() => Math.random() - 0.5).slice(0, 2)) {
+    chain = await dapiQuorums(address).catch(() => null)
     if (chain !== null) break
   }
   const listed = await serviceQuorums(dep.quorumBaseUrl).catch(() => null)
   if (chain === null || listed === null || listed.length === 0) return null
-  const missing = chain.heights.filter((h) => !listed.includes(h))
+  const { hashes, heights, core } = chain
+  const missing = heights.filter((_, i) => !listed.includes(hashes[i] as string))
   if (missing.length > 0) return `the quorum service does not list DAPI's quorum ${missing.join(', ')} yet`
-  // Quorums come at a fixed interval; the next one is listed once its commitment is mined.
-  const sorted = [...chain.heights].sort((a, b) => b - a)
-  const interval = sorted.length > 1 ? (sorted[0] as number) - (sorted[1] as number) : 0
-  if (interval > 0) {
-    const ahead = (sorted[0] as number) + interval + DKG_MINED_AFTER - chain.core
-    if (ahead < margin) return `a new quorum is due in ${ahead} block(s)`
-  }
+  // The next quorum is listed once its commitment is mined. One already late (a slow or failed
+  // DKG: `ahead` below 0) is not about to appear on a schedule, so it holds nothing.
+  const ahead = Math.max(...heights) + QUORUM_INTERVAL + DKG_MINED_AFTER - core
+  if (ahead >= 0 && ahead < margin) return `a new quorum is due in ${ahead} block(s)`
   return null
 }
 
-/** Wait until {@link quorumWait} lets a test start (at most {@link MAX_WAIT_MS}); returns what was waited for. */
+/** Wait until {@link quorumWait} lets a test start; what was waited for, or null. */
 async function waitForQuorumsInSync(margin: number): Promise<string | null> {
+  const dep = deployment()
   const started = Date.now()
   let first: string | null = null
   for (;;) {
-    const why = await quorumWait(margin)
-    if (why === null) return first === null ? null : `${first} (waited ${Math.round((Date.now() - started) / 1000)} s)`
+    const why = await quorumWait(margin, dep)
+    const secs = Math.round((Date.now() - started) / 1000)
+    if (why === null) return first === null ? null : `${first} (held ${secs} s)`
     first ??= why
-    if (Date.now() - started > MAX_WAIT_MS) return `${first} (gave up after ${Math.round(MAX_WAIT_MS / 1000)} s)`
+    if (Date.now() - started > MAX_WAIT_MS) {
+      givenUp = true
+      return `${first} (gave up after ${secs} s; no more waits this run)`
+    }
     await new Promise((r) => setTimeout(r, POLL_MS))
   }
 }
 
 /**
- * `test.beforeEach(quorumGuard)`: hold the test until {@link quorumWait} lets it start. The wait
- * is added to the test's timeout, and logged (and annotated on the test) whenever it happens. (A
- * `test.setTimeout` in the test's body counts from its start, the wait included.)
+ * `test.beforeEach(quorumGuard)`: hold the test until the quorum list is in step (see the module
+ * comment). The time held is added to the test's timeout (a disabled timeout stays disabled), and
+ * logged and annotated on the test whenever it happens. A test whose body sets its own timeout
+ * adds {@link quorumHeldMs} to it: `test.setTimeout` counts from the start, the hold included.
  */
 export const quorumGuard = (): Promise<void> => guard(MARGIN_BLOCKS)
 /** {@link quorumGuard} for a spec whose tests run a minute or more. */
 export const quorumGuardLong = (): Promise<void> => guard(LONG_MARGIN_BLOCKS)
 
+/** How long {@link quorumGuard} held the current test. */
+export const quorumHeldMs = (): number => heldMs
+
 async function guard(margin: number): Promise<void> {
+  heldMs = 0
+  if (givenUp) return
   const info = test.info()
   const timeout = info.timeout
   const started = Date.now()
-  info.setTimeout(timeout + MAX_WAIT_MS + ASK_MS * 3)
+  if (timeout > 0) info.setTimeout(timeout + MAX_WAIT_MS + POLL_MS + ASK_MS * 3)
   const waited = await waitForQuorumsInSync(margin)
-  info.setTimeout(timeout + (Date.now() - started))
+  heldMs = Date.now() - started
+  if (timeout > 0) info.setTimeout(timeout + heldMs)
   if (waited === null) return
   info.annotations.push({ type: 'quorum-wait', description: waited })
   // eslint-disable-next-line no-console -- the run log says when and why a test was held (#212)

@@ -45,9 +45,10 @@ const DEMO_COLD_HOME = 12
  *     and its one maintainer, 2);
  *   - the page rows' state sums (1).
  * The header's open-count tabs, the list's total and the index each used to read the three
- * counts themselves (12-13 here); they now share one read (`sharedRepoCounts`), and a return of
- * that duplication (11) clears the SDK re-send slack below and fails. The counts do not depend on
- * how much the rest of the devnet grows.
+ * counts themselves (12-13 here); they now share one read (`sharedRepoCounts`). A return of that
+ * duplication fails pb-1 by mechanism, not by count: the totals are then read with count requests
+ * of their own, which pb-1 allows none of. The counts do not depend on how much the rest of the
+ * devnet grows.
  */
 const DEMO_COLD_ISSUES = 8 + DAPI_RESEND_SLACK
 /**
@@ -150,6 +151,13 @@ test.describe('page request budget (S-1)', () => {
     await settle(issues)
     const list = issueDapi.all()
     test.info().annotations.push({ type: 'dapi', description: `fixture cold issues: ${list.length} ${summary(list)}` })
+    // The issue and PR totals come with the chrome composite (seeded for the one shared counts
+    // read): a count request of its own for either means a reader reads them again.
+    const totals = list.filter((r) => {
+      const q = r.method === 'getDocuments' ? decodeDocumentsRequest(r.body) : null
+      return q !== null && q.count && (q.documentType === 'issue' || q.documentType === 'patch')
+    })
+    expect(totals.length, 'the issue and PR totals are not read again').toBe(0)
     expect(list.length, summary(list)).toBeLessThanOrEqual(DEMO_COLD_ISSUES)
     await shot(issues, 'pb-03-fixture-issues-cold')
     await issuesContext.close()

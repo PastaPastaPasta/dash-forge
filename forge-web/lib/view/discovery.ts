@@ -29,7 +29,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { DEFAULT_NETWORK, NETWORKS, type Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import type { Role } from '../rules/v2'
-import { queryDocumentsWithProof, type PlainDocument, type WhereClause, type WhereOperator } from '../sdk'
+import { queryDocumentsWithProof, RANGE_OPERATORS, type PlainDocument, type WhereClause } from '../sdk'
 import { countsAt, docsAt, queryComposite, type CompositeSub, type CompositeResult } from '../sdk/composite'
 import { DOC, readMemberRepoIds, toRepoDoc, type RepoDoc } from '../repo'
 import { readMostForked, readMostStarred, readTrending, type TrendingWindow } from '../repo/trending'
@@ -202,25 +202,25 @@ function reposOf(res: CompositeResult, repoDocs: readonly PlainDocument[], first
 }
 
 /**
+ * The direction the node walks a page, which is the one a composite's bound documents sub-query
+ * must be ordered in (drive's `page_direction`: the page path query's `left_to_right`). A page
+ * whose last clause is a range (`in` counts as one) walks in its order's direction; a page whose
+ * clauses are all `==` walks ascending, whatever its order asks; a page with no clause walks in
+ * its order's direction (drive `single_in_path_query`). Measured on bonsia: `repo.recent
+ * (visibility, $createdAt)` pages `$createdAt desc`; its first page needed `asc`, and its later
+ * pages, which add `$createdAt <=`, needed `desc`. A later page sent with the first page's `asc`
+ * was refused, fell back to the plain query, and lost its counts and names.
+ */
+export function pageWalk(where: readonly WhereClause[], order: { field: string; direction: 'asc' | 'desc' }): 'asc' | 'desc' {
+  const walks = where.length === 0 || where.some(([, op]) => op === 'in' || RANGE_OPERATORS.has(op))
+  return walks ? order.direction : 'asc'
+}
+
+/**
  * One keyset page of `repo` documents ordered by `field`, with the page's counts, names and
  * pushes in the same composite. If the composite surface is refused, the same page is read as
  * a plain query without counts (never one count request per repo).
  */
-const RANGE_OPS: ReadonlySet<WhereOperator> = new Set<WhereOperator>(['<', '<=', '>', '>=', 'startsWith'])
-
-/**
- * The direction the node walks a page read through an `==`-prefixed index, which is the one a
- * composite's bound documents sub-query must be ordered in (drive's `page_direction`, the page
- * path query's `left_to_right`). A range on the ordered field walks in the page's own order; with
- * no range (every clause `==`) the walk is ascending whatever the order asks (both measured on
- * bonsia: `repo.recent (visibility, $createdAt)` pages `$createdAt desc`, and its first page
- * needed `asc`, its later pages — which add `$createdAt <=` — `desc`). A later page sent with
- * the first page's `asc` was refused, fell back to the plain query, and lost its counts and names.
- */
-export function pageWalk(where: readonly WhereClause[], order: { field: string; direction: 'asc' | 'desc' }): 'asc' | 'desc' {
-  return where.some(([field, op]) => field === order.field && RANGE_OPS.has(op)) ? order.direction : 'asc'
-}
-
 async function readRepoPage<T extends string | number>(
   sdk: EvoSDK,
   forge: ForgeIds,

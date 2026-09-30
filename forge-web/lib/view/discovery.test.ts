@@ -89,12 +89,14 @@ function mockSdk(store: Record<string, Record<string, Doc[]>>, seen: Seen, opts:
   const composite = async (q: CompositeQuery) => {
     seen.composites.push(q)
     // Drive's `page_direction`: the page path query's outer `left_to_right`. A page with a range
-    // (or an `in`) walks in its order's direction; an all-`==` page walks ascending whatever its
-    // order asks. A bound documents sub-query (not a by-id join) whose outer ordering disagrees
-    // is refused, with drive's message (bonsia refused Explore's later recent pages this way).
-    const orderDir = (f: string): string | undefined => (q.orderBy as readonly (readonly [string, string])[] | undefined)?.find(([o]) => o === f)?.[1]
-    const walked = (q.where ?? []).find(([f, op]) => op !== '==' && orderDir(f as string) !== undefined)
-    const pageDir = walked === undefined ? 'asc' : orderDir(walked[0] as string)
+    // (or an `in`) walks in that field's order direction; an all-`==` page walks ascending
+    // whatever its order asks; a page with no clause walks in its order's direction. A bound
+    // documents sub-query (not a by-id join) whose outer ordering disagrees is refused, with
+    // drive's message (bonsia refused Explore's later recent pages this way).
+    const order = (q.orderBy ?? []) as readonly (readonly [string, string])[]
+    const orderDir = (f: string): string | undefined => order.find(([o]) => o === f)?.[1]
+    const walked = (q.where ?? []).find(([, op]) => op !== '==')
+    const pageDir = (q.where ?? []).length === 0 ? order[0]?.[1] : walked === undefined ? 'asc' : orderDir(walked[0] as string)
     for (const s of q.subQueries) {
       const outer = (s.orderBy as readonly (readonly [string, string])[] | undefined)?.[0]?.[1]
       if (s.kind !== 'counts' && s.bind !== undefined && s.bind.field !== '$id' && outer !== undefined && outer !== pageDir) {
@@ -338,6 +340,10 @@ describe('pageWalk', () => {
     expect(pageWalk([['visibility', '==', 'public'], ['$createdAt', '<=', 1]], recent)).toBe('desc')
     expect(pageWalk([['visibility', '==', 'public'], ['$createdAt', '<', 1]], recent)).toBe('desc')
     expect(pageWalk([['name', '>=', 'a'], ['name', '<', 'b']], { field: 'name', direction: 'asc' })).toBe('asc')
+  })
+  it('walks an `in` (a range to drive) and a page with no clause in the order direction', () => {
+    expect(pageWalk([['$id', 'in', ['a', 'b']]], { field: '$id', direction: 'desc' })).toBe('desc')
+    expect(pageWalk([], recent)).toBe('desc')
   })
 })
 

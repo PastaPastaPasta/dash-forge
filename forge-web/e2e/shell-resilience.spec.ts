@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import { DEMO, repoUrl, waitForRepoResolved } from './helpers'
-import { quorumGuardLong } from './quorum-sync'
+import { quorumGuardLong, quorumHeldMs } from './quorum-sync'
 
 // Not inside bonsia's quorum-service lag (#212): these specs count requests or read Verification.
 test.beforeEach(quorumGuardLong)
@@ -27,7 +27,7 @@ const summary = (page: Page) => page.getByTestId('verification-summary')
 
 test.describe('shell resilience (L-10, L-56)', () => {
   test('offline mid-load: no false hash failure, and the page recovers by itself once online', async ({ page, context }) => {
-    test.setTimeout(4 * 60_000)
+    test.setTimeout(4 * 60_000 + quorumHeldMs())
     await page.goto(repoUrl(), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
     // Drop the connection while the home's reads are in flight (the file list, README, commit
@@ -49,7 +49,7 @@ test.describe('shell resilience (L-10, L-56)', () => {
   })
 
   test('a tab opened offline: a plain offline state, then it loads by itself', async ({ page, context }) => {
-    test.setTimeout(4 * 60_000)
+    test.setTimeout(4 * 60_000 + quorumHeldMs())
     await page.goto(repoUrl(), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
     await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
@@ -72,7 +72,7 @@ test.describe('shell resilience (L-10, L-56)', () => {
     await expect(page.getByRole('heading', { name: /pull requests/i }).or(page.getByText(/No pull requests|open/i)).first()).toBeVisible({ timeout: 60_000 })
   })
   test('a list read that fails offline (its code already loaded): the offline state, then it loads', async ({ page, context }) => {
-    test.setTimeout(4 * 60_000)
+    test.setTimeout(4 * 60_000 + quorumHeldMs())
     await page.goto(repoUrl('pulls'), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
     await expect(page.getByRole('link', { name: 'New pull request' })).toBeVisible({ timeout: 60_000 })

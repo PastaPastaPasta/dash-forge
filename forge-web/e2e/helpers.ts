@@ -173,6 +173,8 @@ export interface DocumentsRequest {
   readonly documentType: string
   /** Each where clause's field, and for an `in` the number of values. */
   readonly where: readonly { readonly field: string; readonly inCount: number | null }[]
+  /** It selects a COUNT (a proved count), not documents. */
+  readonly count: boolean
 }
 
 function readVarint(b: Uint8Array, at: number): [number, number] {
@@ -213,7 +215,8 @@ const text = (b: Uint8Array | undefined): string => (b ? Buffer.from(b).toString
 /**
  * Decode a `getDocuments` gRPC-web body (5-byte frame header, then `GetDocumentsRequest`) as
  * `platform.proto` defines v1: `document_type` 2, `where_clauses` 3 (`WhereClause`: `field` 1,
- * `value` 3; an `IN`'s value is a `list`, field 7, of values). Null for another shape (v0).
+ * `value` 3; an `IN`'s value is a `list`, field 7, of values), `selects` 9 (`Select`: `function`
+ * 1, COUNT = 1). Null for another shape (v0).
  */
 export function decodeDocumentsRequest(body: Buffer | null): DocumentsRequest | null {
   if (body === null || body.length < 6) return null
@@ -231,6 +234,8 @@ export function decodeDocumentsRequest(body: Buffer | null): DocumentsRequest | 
         const inCount = list ? protoFields(list).filter(([f]) => f === 1).length : null
         return { field: text(fieldOf(c, 1)), inCount }
       }),
+    // `function` is a varint (key 0x08), which protoFields skips: read it in place.
+    count: fields.some(([f, select]) => f === 9 && select[0] === 0x08 && select[1] === 1),
   }
 }
 

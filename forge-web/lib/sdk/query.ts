@@ -302,7 +302,7 @@ export function countDocuments(sdk: EvoSDK, query: DocumentQuery): Promise<numbe
 }
 
 /** The operators that make a `where` a range (the aggregate walks a subtree, not a point). */
-const RANGE_OPERATORS: ReadonlySet<WhereOperator> = new Set(['>', '>=', '<', '<=', 'startsWith'])
+export const RANGE_OPERATORS: ReadonlySet<WhereOperator> = new Set(['>', '>=', '<', '<=', 'startsWith'])
 
 /**
  * Why an aggregate (count or sum) of `query` without `groupBy` cannot be proved, or null. An
