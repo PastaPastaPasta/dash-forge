@@ -40,10 +40,13 @@ import { controlsKey, normalizeToWif } from './wif'
 import { decodeIdentifier } from './base58'
 import { retryWhileMissing } from '../view/retry'
 import { identityFileMatchesNetwork, masterMaterialFromFile } from './identity-file'
-import { deriveMasterKey, isValidMnemonic, mnemonicProblem } from './hd'
+import { deriveMasterKey, invalidMnemonicMessage, isValidMnemonic } from './hd'
 import { identityOfMasterKey } from './identity-lookup'
 import { PLATFORM_READ_MS, withPlatformRead } from './connect'
 import { withTimeout } from '../timeout'
+import { clearLedger } from '../spend'
+import { clearInbox } from '../view/inbox'
+import { forgetLastIdentity, rememberLastIdentity } from './last-identity'
 import { checkWalletKey, hasNoLimits, isForgeContract, keyScope, scopeCovers, type KeyScope, type WalletKey } from './key-registration'
 import { PRIVATE_REPOS_FLOW, encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
 import {
@@ -102,7 +105,7 @@ import {
 
 /** The notice when a renewal could not carry the encryption key over. */
 const ENCRYPTION_KEY_DROPPED =
-  'Your encryption key for private repos was sealed with the previous key, which was locked when you renewed it, so it was not carried over. Add it again in Settings → Keys → Enable private repos.'
+  'Your encryption key for private repos was sealed with the previous key, which was locked when you renewed it, so it was not carried over. Add it again in Settings → Private repos.'
 
 /** The public (key-free) session snapshot. */
 export interface AuthSession {
@@ -415,6 +418,8 @@ export class AuthController {
   }
 
   private setState(patch: Partial<AuthState>): void {
+    // The identity signed in last: Unlock preselects it among several stored keys (QW2-025).
+    if (patch.session != null && patch.session.storage === 'vault') rememberLastIdentity(this.network, patch.session.identityId)
     this.state = { ...this.state, ...patch }
     for (const l of this.listeners) l(this.state)
   }
@@ -800,7 +805,7 @@ export class AuthController {
         masterWif = m.masterWif ?? (m.mnemonic ? (await deriveMasterKey(m.mnemonic, this.network)).wif : null)
       } else {
         this.step('Checking the recovery phrase')
-        if (!(await isValidMnemonic(input.mnemonic))) throw new Error(mnemonicProblem(input.mnemonic))
+        if (!(await isValidMnemonic(input.mnemonic))) throw new Error(await invalidMnemonicMessage(input.mnemonic))
         const master = await deriveMasterKey(input.mnemonic, this.network)
         masterWif = master.wif
         identityId = input.identityId.trim()
@@ -890,7 +895,7 @@ export class AuthController {
       if (keyId === null) {
         this.setState({
           notice:
-            'This identity has no encryption key that your file or phrase can open, so private repos are not enabled yet. Settings → Keys → Enable private repos registers one (one master-key signature).',
+            'This identity has no encryption key that your file or phrase can open, so private repos are not enabled yet. Settings → Private repos registers one (one master-key signature).',
         })
       }
     } catch (e) {
@@ -1099,13 +1104,13 @@ export class AuthController {
         // current key and say how to finish the renewal (never a dead end).
         this.setState({
           notice:
-            "This device has an unfinished key renewal, protected with another passphrase or passkey than this one. Lock and unlock with that one to finish it, or discard it in Settings → Keys.",
+            "This device has an unfinished key renewal, protected with another passphrase or passkey than this one. Lock and unlock with that one to finish it, or discard it in Settings → This browser's key.",
         })
         break
       case 'conflict':
         this.setState({
           notice:
-            'This device has an unfinished key renewal from before your latest sign-in. It was kept; finish or discard it in Settings → Keys.',
+            'This device has an unfinished key renewal from before your latest sign-in. It was kept; finish or discard it in Settings → This browser\'s key.',
         })
         break
     }
@@ -1402,17 +1407,23 @@ export class AuthController {
       this.checkFileNetwork(m.networkKey)
       masterWif = m.masterWif ?? (m.mnemonic ? (await deriveMasterKey(m.mnemonic, this.network)).wif : null)
     } else {
-      if (!(await isValidMnemonic(input.mnemonic))) throw new Error(mnemonicProblem(input.mnemonic))
+      if (!(await isValidMnemonic(input.mnemonic))) throw new Error(await invalidMnemonicMessage(input.mnemonic))
       masterWif = (await deriveMasterKey(input.mnemonic, this.network)).wif
     }
     if (!masterWif) throw new Error('no master key found')
     return masterWif
   }
 
-  /** Delete the stored key of `identityId` from this device (ending its session if open). */
+  /**
+   * Delete the stored key of `identityId` from this device (ending its session if open), and
+   * what this browser recorded for the identity: its spend ledger, its notifications inbox and
+   * the last-used marker (QW2-028). Write journals stay: they finish an interrupted write.
+   */
   async forget(identityId: string): Promise<void> {
     if (this.state.session?.identityId === identityId) this.logout()
     await forgetVault(this.network, identityId)
+    forgetLastIdentity(this.network, identityId)
+    await Promise.allSettled([clearLedger(this.network, identityId), clearInbox(this.network, identityId)])
   }
 }
 
@@ -1428,7 +1439,7 @@ function stagedUnlockMessage(status: RecoverResult['status'] | 'none', hasMain: 
     case 'discarded':
       return `That passphrase or passkey was for a key renewal that never reached Platform, so it was discarded. ${earlier}`
     case 'conflict':
-      return 'That passphrase or passkey is for an unfinished key renewal from before your latest sign-in. It was kept: unlock with your current passphrase or passkey, then finish or discard it in Settings → Keys.'
+      return 'That passphrase or passkey is for an unfinished key renewal from before your latest sign-in. It was kept: unlock with your current passphrase or passkey, then finish or discard it in Settings → This browser\'s key.'
     default:
       return hasMain
         ? `That passphrase or passkey is the one for this device's unfinished key renewal, which Platform does not show yet. Try again in a minute, or: ${earlier}`
@@ -1443,7 +1454,7 @@ function stagedUnlockMessage(status: RecoverResult['status'] | 'none', hasMain: 
 export class PendingRenewalChoiceError extends Error {
   constructor(readonly keyId: number) {
     super(
-      `This device has an unfinished key renewal (key ${keyId}). Finish it by unlocking with the passphrase or passkey you chose for it, or continue with your wallet: this browser then keeps the renewal's key only so that your next key renewal or "Revoke on chain" (Settings → Keys) disables it. It never signs.`,
+      `This device has an unfinished key renewal (key ${keyId}). Finish it by unlocking with the passphrase or passkey you chose for it, or continue with your wallet: this browser then keeps the renewal's key only so that your next key renewal or "Revoke on chain" (Settings → This browser's key) disables it. It never signs.`,
     )
     this.name = 'PendingRenewalChoiceError'
   }

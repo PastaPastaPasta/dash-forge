@@ -1237,14 +1237,14 @@ export async function createRepo(
   // step instead (it resumes with its own standing self-wrap, whatever key that went to).
   const resumed = (await idbGet<RepoCreationJournal>('journal', key))?.repoId != null
   if (visibility === 'private') {
-    if (privateCreate === undefined) throw new Error('cannot create a private repository: add your encryption key to this browser first (Settings → Keys)')
+    if (privateCreate === undefined) throw new Error('cannot create a private repository: add your encryption key to this browser first (Settings → Private repos)')
   }
   if (visibility === 'private' && !resumed && privateCreate !== undefined) {
     const current = usableEncryptionKey((await fetchIdentityKeys(sdk, ownerId)) ?? [], forge.core)
     if (current === null) throw new Error('cannot create a private repository: your identity has no encryption key')
     if (current.keyId !== privateCreate.ops.keyId) {
       throw new Error(
-        `cannot create a private repository: your identity's current encryption key is key ${current.keyId}, but this browser holds key ${privateCreate.ops.keyId}; add key ${current.keyId} here (Settings → Keys)`,
+        `cannot create a private repository: your identity's current encryption key is key ${current.keyId}, but this browser holds key ${privateCreate.ops.keyId}; add key ${current.keyId} here (Settings → Private repos)`,
       )
     }
   }

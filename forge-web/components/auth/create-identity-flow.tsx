@@ -42,7 +42,7 @@ import {
   type CreateStage,
   type CreationJournal,
 } from '@/lib/auth/create-identity'
-import { isValidMnemonic, mnemonicProblem, newMnemonic, normalizeMnemonic, quizAnswerOk, quizPositions } from '@/lib/auth/hd'
+import { invalidMnemonicMessage, isValidMnemonic, newMnemonic, normalizeMnemonic, quizAnswerOk, quizPositions } from '@/lib/auth/hd'
 import { errorMessage } from '@/lib/utils'
 
 type Step = 'loading' | 'words' | 'quiz' | 'protect' | 'fund' | 'resume'
@@ -165,7 +165,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     try {
       await loadSdkLibrary()
       if (!(await withTimeout(isValidMnemonic(m), STEP_MS, 'Checking the words'))) {
-        setError(mnemonicProblem(m))
+        setError(await invalidMnemonicMessage(m))
         return null
       }
       const deposit = await withTimeout(depositAddressOf(m, network), STEP_MS, 'Deriving the deposit address')

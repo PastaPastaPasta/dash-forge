@@ -7,7 +7,9 @@
  * repo, so an invitation is two steps: the owner shares the repo's invite link (`&invite=1`,
  * Settings → Collaborators), the invitee accepts here (their `consent`), then the owner adds them.
  * The banner shows only on an invite link, to a signed-in viewer who is neither the owner nor a
- * member yet. Nothing on chain names an invitation: a consent is the invitee's standing "yes" to
+ * member yet. Signed out (or locked), it shows the invitation with Sign in (Unlock) to accept,
+ * as GitHub sends an invitee through sign-in to the accept page (QW2-012); the sheet opens over
+ * this page, so the link's `&invite=1` is still there once they are in. Nothing on chain names an invitation: a consent is the invitee's standing "yes" to
  * this repo, and lets the owner add them again later.
  */
 
@@ -23,6 +25,7 @@ import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { readUntil } from '@/lib/view/retry'
 import { useAuth } from '@/contexts/auth-context'
+import { useUiStore } from '@/hooks/use-ui-store'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
@@ -42,7 +45,8 @@ export function InviteBanner({ repo }: { repo: RepoRef }): JSX.Element | null {
   const params = useSearchParams()
   const invited = params.get(INVITE_PARAM) !== null
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
-  const { identity, signer } = useAuth()
+  const { identity, signer, locked, resuming } = useAuth()
+  const openLogin = useUiStore((s) => s.openLogin)
   const guard = useWriteGuard()
   const [confirming, setConfirming] = useState(false)
   // The identity whose accept this tab confirmed (the write's proof, or the consent it found). A
@@ -65,6 +69,28 @@ export function InviteBanner({ repo }: { repo: RepoRef }): JSX.Element | null {
     [ready, repo.repoId, identity ?? '', network],
     { enabled: applies && ready && sdk !== null },
   )
+  if (invited && identity === null && !resuming) {
+    return (
+      <div role="note" data-testid="invite-banner-signed-out" className="mb-3 flex items-start gap-2 rounded-md border border-forge-500/40 bg-forge-500/5 px-3 py-2 text-dense text-anvil-700 dark:text-anvil-200">
+        <UserPlus className="mt-0.5 h-4 w-4 shrink-0 text-forge-700 dark:text-forge-400" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <p>
+            <Author identityId={repo.ownerId} link={false} /> invited you to collaborate on this repo. {locked ? 'Unlock' : 'Sign in'} to accept
+            the invitation.
+          </p>
+          <Button
+            size="sm"
+            variant="primary"
+            className="mt-2"
+            data-testid="invite-sign-in"
+            onClick={() => openLogin(undefined, undefined, { action: 'accept this invitation', credits: previewCreate('consent').credits })}
+          >
+            {locked ? 'Unlock to accept' : 'Sign in to accept'}
+          </Button>
+        </div>
+      </div>
+    )
+  }
   if (!applies) return null
   // Once accepted here, only a read that finds them a member changes what the banner says.
   const shown: Standing | null = accepted && standing.data !== 'member' ? 'accepted' : standing.data

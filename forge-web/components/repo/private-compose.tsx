@@ -23,7 +23,7 @@ export function privateComposeBlock(home: RepoHome): string | null {
 /** {@link privateComposeBlock} from a repo and its private access (components without a home). */
 export function privateWriteBlock(repo: RepoRef, access: RepoHome['private']): string | null {
   if (repo.visibility !== 'private') return null
-  if (access?.access === 'no-key') return 'Add your encryption key to this browser (Settings → Keys) to write to this private repo.'
+  if (access?.access === 'no-key') return 'Add your encryption key to this browser (Settings → Private repos) to write to this private repo.'
   if (access?.access === 'locked') return 'Unlock to write to this private repo.'
   if (access?.access !== 'member') return 'Only members can write to a private repo.'
   return writeBlockReason(access.session.resolution)

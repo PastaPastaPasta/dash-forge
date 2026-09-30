@@ -14,6 +14,7 @@
 
 import type { Network } from '../constants'
 import { loadSdkLibrary } from './connect'
+import { errorMessage } from '../utils'
 
 export type KeyPurpose = 'AUTHENTICATION' | 'TRANSFER' | 'ENCRYPTION'
 export type KeyLevel = 'MASTER' | 'CRITICAL' | 'HIGH' | 'MEDIUM'
@@ -107,16 +108,38 @@ const PHRASE_LENGTHS = [12, 15, 18, 21, 24] as const
 
 /**
  * What is wrong with a recovery phrase that is not valid, in words a user can act on: the word
- * count when it is not one a phrase can have, else the checksum (a misspelt word, one not from the
- * BIP-39 English list, or the words out of order: without the word list here the three cannot be
- * told apart, so the message names all of them).
+ * count when it is not one a phrase can have; the word that is not on the BIP-39 English list,
+ * when `sdkReason` (the SDK's parse error, {@link invalidMnemonicMessage}) names it; else the
+ * checksum (a misspelt word, or the words out of order).
  */
-export function mnemonicProblem(m: string): string {
-  const n = normalizeMnemonic(m) === '' ? 0 : normalizeMnemonic(m).split(' ').length
+export function mnemonicProblem(m: string, sdkReason?: string): string {
+  const words = normalizeMnemonic(m) === '' ? [] : normalizeMnemonic(m).split(' ')
+  const n = words.length
   if (!(PHRASE_LENGTHS as readonly number[]).includes(n)) {
     return `A recovery phrase has 12 or 24 words (sometimes 15, 18 or 21); this has ${n === 1 ? '1 word' : `${n} words`}. Check it against your backup.`
   }
+  // rs bip39: "mnemonic contains an unknown word (word 11)", 0-based.
+  const unknown = /unknown word \(word (\d+)\)/i.exec(sdkReason ?? '')
+  const at = unknown === null ? -1 : Number(unknown[1])
+  const word = words[at]
+  if (word !== undefined) {
+    return `"${word}" (word ${at + 1}) is not a BIP-39 word: it is not on the standard English word list. Check its spelling against your backup.`
+  }
   return `These ${n} words aren't a valid recovery phrase: a word is misspelt or not from the standard (BIP-39 English) word list, or two words are swapped. Check each word, in order, against your backup.`
+}
+
+/**
+ * {@link mnemonicProblem} with the SDK's own reason, so a word that is not on the list is named
+ * (the SDK's validator answers only yes or no; deriving a key from the phrase says why).
+ */
+export async function invalidMnemonicMessage(m: string): Promise<string> {
+  let reason: string | undefined
+  try {
+    await (await wallet()).deriveKeyFromSeedWithPath({ mnemonic: normalizeMnemonic(m), path: identityKeyPath('testnet', 0), network: 'testnet' })
+  } catch (e) {
+    reason = errorMessage(e, '')
+  }
+  return mnemonicProblem(m, reason)
 }
 
 /** Lowercase, single-spaced. */

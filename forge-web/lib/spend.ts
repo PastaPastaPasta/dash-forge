@@ -8,7 +8,7 @@
  */
 
 import { NETWORKS, type Network } from './constants'
-import { idbEntries, idbGet, idbPut } from './idb'
+import { idbBatch, idbEntries, idbGet, idbPut } from './idb'
 import type { SpendEvent } from './sdk/write'
 
 /** A ledger row. */
@@ -34,6 +34,15 @@ function prefix(network: Network, identityId: string): string {
 
 function baselineKey(network: Network, identityId: string): string {
   return `baseline:${network}:${identityId}`
+}
+
+/**
+ * Delete this browser's spend ledger for `identityId` (its rows and baseline): "Sign out &
+ * forget key" leaves no record of what the identity spent here (QW2-028).
+ */
+export async function clearLedger(network: Network, identityId: string): Promise<void> {
+  const rows = await idbEntries('spend', prefix(network, identityId))
+  await idbBatch('spend', [...rows.map(([k]) => [k, undefined] as const), [baselineKey(network, identityId), undefined] as const])
 }
 
 /** Told of every write this tab records (whether or not its ledger row could be stored). */

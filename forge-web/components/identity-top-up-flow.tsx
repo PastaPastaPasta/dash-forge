@@ -21,7 +21,7 @@ import { Qr } from '@/components/ui/qr'
 import { ErrorBox } from '@/components/auth/protection-fields'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { PHASE_TEXT, connectPlatform, type ConnectPhase } from '@/lib/auth/connect'
-import { isValidMnemonic, mnemonicProblem } from '@/lib/auth/hd'
+import { invalidMnemonicMessage, isValidMnemonic } from '@/lib/auth/hd'
 import { MIN_TOP_UP_DUFFS, discardTopUp, readTopUpJournal, topUpIdentity, type TopUpJournal, type TopUpStage } from '@/lib/auth/identity-top-up'
 import { useConfirmAction } from '@/components/ui/confirm-action'
 import { isAbort } from '@/lib/sdk/facade'
@@ -79,7 +79,7 @@ export function IdentityTopUpFlow({ faucet }: { faucet: string | null }): JSX.El
     if (running) return
     setError(null)
     if (!(await isValidMnemonic(phrase).catch(() => false))) {
-      setError(mnemonicProblem(phrase))
+      setError(await invalidMnemonicMessage(phrase))
       return
     }
     const controller = new AbortController()

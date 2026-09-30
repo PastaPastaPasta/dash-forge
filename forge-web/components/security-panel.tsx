@@ -14,8 +14,11 @@ import { askToUnlockEveryVisit } from '@/lib/auth/vault'
 import { errorMessage } from '@/lib/utils'
 
 export function SecurityPanel(): JSX.Element {
-  const { controller } = useAuth()
+  const { controller, storage } = useAuth()
   const [stay, setStay] = useState(() => !askToUnlockEveryVisit())
+  // A pasted key is held in this tab only and never kept (QW2-026): the preference does not
+  // apply to it, so it is shown off and disabled, saying why (it still applies to stored keys).
+  const pasted = storage === 'session'
   const [error, setError] = useState<string | null>(null)
   const toggle = (on: boolean): void => {
     setError(null)
@@ -28,11 +31,21 @@ export function SecurityPanel(): JSX.Element {
         Security
       </h2>
       <label className="flex items-start gap-2 text-dense">
-        <input type="checkbox" className="mt-0.5" checked={stay} onChange={(e) => toggle(e.target.checked)} data-testid="stay-signed-in" />
-        <span>
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={stay && !pasted}
+          disabled={pasted}
+          aria-describedby="stay-signed-in-note"
+          onChange={(e) => toggle(e.target.checked)}
+          data-testid="stay-signed-in"
+        />
+        <span className={pasted ? 'opacity-75' : undefined}>
           <span className="font-medium">Stay signed in for public repos (12 h)</span>
-          <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">
-            {stay
+          <span id="stay-signed-in-note" className="block text-[12px] text-anvil-500 dark:text-anvil-400">
+            {pasted
+              ? 'Not for a pasted key: it is held in this tab only and is gone after a reload. Import your identity file or recovery phrase to get a key this browser can keep.'
+              : stay
               ? `Keeps a spend-capped signing key in this browser (a browser key: ${BROWSER_KEY_DEFAULTS.budgetDash} DASH and ${BROWSER_KEY_DEFAULTS.days} days by default; never a key without a budget, an expiry or Forge-only bounds), so reloads and new tabs stay signed in for public repos. Private repos, storage credentials and wallet grants still ask you to unlock.`
               : 'Off: each reload or new tab starts locked; unlock with your passkey or passphrase to write.'}
           </span>

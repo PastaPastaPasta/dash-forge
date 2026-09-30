@@ -11,12 +11,14 @@
 import { useState } from 'react'
 import { Fingerprint, Lock } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
+import { useUiStore } from '@/hooks/use-ui-store'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { errorMessage } from '@/lib/utils'
 
 export function UnlockMore({ title, testId = 'unlock-more', then }: { title: string; testId?: string; then?: () => void }): JSX.Element {
   const { identity, vaults, controller, isLoading } = useAuth()
+  const openLogin = useUiStore((s) => s.openLogin)
   const [passphrase, setPassphrase] = useState('')
   const [error, setError] = useState<string | null>(null)
   const methods = vaults.find((v) => v.identityId === identity)?.methods ?? []
@@ -73,6 +75,13 @@ export function UnlockMore({ title, testId = 'unlock-more', then }: { title: str
           {error}
         </p>
       ) : null}
+      {/* The recovery route, as on the Unlock sheet (QW2-031). */}
+      <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid={`${testId}-forgot`}>
+        {methods.includes('passphrase') ? 'Forgot the passphrase' : 'Lost the passkey'}?{' '}
+        <button type="button" onClick={() => openLogin('import')} className="hit-area text-forge-700 underline dark:text-forge-400">
+          Replace this key with your recovery phrase or identity file
+        </button>
+      </p>
     </div>
   )
 }
