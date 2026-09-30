@@ -189,7 +189,8 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
         </p>
       </div>
 
-      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-anvil-200 p-3 dark:border-anvil-800">
+      {/* Each field may shrink below its select's widest option, so a long branch name never pushes the pickers past a phone's edge. */}
+      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-anvil-200 p-3 dark:border-anvil-800 [&>*]:min-w-0 [&>*]:max-w-full">
         <Field label="Base" htmlFor="pr-base">
           <select
             id="pr-base"
