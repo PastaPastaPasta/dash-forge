@@ -105,6 +105,8 @@ export function ReviewersCard({
   onDismiss: (row: ReviewerCardRow, reason: string) => void
 }): JSX.Element {
   const [picking, setPicking] = useState(false)
+  // Keyed by the review being dismissed, not the reviewer (QW2-047): once it is dismissed, the
+  // reviewer's older verdict that resurfaces is another review, and the form does not follow it.
   const [dismissing, setDismissing] = useState<{ id: string; reason: string } | null>(null)
   const [other, setOther] = useState('')
   const rows = mirrorOnly === undefined ? allRows : allRows.filter((r) => r.requested || !mirrorOnly.has(r.identity))
@@ -156,13 +158,13 @@ export function ReviewersCard({
               {r.state === 'dismissed' && r.dismissReason ? `: ${r.dismissReason}` : ''}
             </p>
             {canDismiss && r.dismissId !== null && (r.state === 'approved' || r.state === 'changesRequested') ? (
-              dismissing?.id === r.identity ? (
+              dismissing?.id === r.dismissId ? (
                 <div className="ml-5 mt-1 space-y-1">
                   <Input
                     aria-label="Reason for dismissing"
                     value={dismissing.reason}
                     maxLength={120}
-                    onChange={(e) => setDismissing({ id: r.identity, reason: e.target.value })}
+                    onChange={(e) => setDismissing({ id: dismissing.id, reason: e.target.value })}
                     placeholder="Reason (public, optional)"
                     className="h-7 py-0 text-[12px]"
                     autoFocus
@@ -179,7 +181,7 @@ export function ReviewersCard({
               ) : (
                 <button
                   type="button"
-                  onClick={() => setDismissing({ id: r.identity, reason: '' })}
+                  onClick={() => r.dismissId !== null && setDismissing({ id: r.dismissId, reason: '' })}
                   className="ml-5 text-[12px] text-anvil-500 underline-offset-2 hover:text-danger-700 hover:underline dark:text-anvil-400 dark:hover:text-danger-400"
                 >
                   Dismiss review

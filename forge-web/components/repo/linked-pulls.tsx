@@ -9,9 +9,11 @@
 
 import Link from 'next/link'
 import { GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft } from 'lucide-react'
-import { pullsLinking, repoContractIds, repoKey, type PullRow } from '@/lib/repo'
+import { pullsLinking, readTransitions, repoContractIds, repoKey, type LinkingPulls, type PullRow } from '@/lib/repo'
+import { PR_MERGE } from '@/lib/rules/transition'
+import type { ClosingMerge } from '@/lib/view/cross-refs'
 import type { RepoHome } from '@/lib/view'
-import { useAsync } from '@/hooks/use-async'
+import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
 import type { RepoAddress } from '@/hooks/use-query-param'
@@ -25,23 +27,57 @@ function stateOf(p: PullRow): { label: string; icon: JSX.Element } {
   return { label: 'open', icon: <GitPullRequest className="h-3.5 w-3.5 shrink-0 text-verify-700 dark:text-verify-400" aria-hidden /> }
 }
 
+/** An issue's backlinks, and the merges of those that close it (for "closed this in #3"). */
+export interface IssueBacklinks {
+  readonly linking: AsyncState<LinkingPulls>
+  /** Read after `linking`, so the Development box never waits for them; empty until then. */
+  readonly merges: readonly ClosingMerge<PullRow>[]
+}
+
+const NO_MERGES: readonly ClosingMerge<PullRow>[] = []
+
+/** How many merged closing PRs' transitions are read, newest first (one small read each). */
+const MERGES_READ = 5
+
 /**
- * `upstream`: the source forge's number of this issue a trusted mirror recorded, or null. An
- * imported PR's "Fixes #N" is the source's N (as its description renders), so it links this
- * issue only through `upstream`.
+ * The PRs whose description closes or mentions issue `number` (`pullsLinking`), and for the merged
+ * ones that close it, the transition that merged each (QW2-048). `upstream`: the source forge's
+ * number of this issue a trusted mirror recorded, or null. An imported PR's "Fixes #N" is the
+ * source's N (as its description renders), so it links this issue only through `upstream`.
  */
-export function LinkedPulls({ home, addr, number, upstream }: { home: RepoHome; addr: RepoAddress | undefined; number: number; upstream: number | null }): JSX.Element {
+export function useIssueBacklinks(home: RepoHome, number: number, upstream: number | null, enabled = true): IssueBacklinks {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   const generation = useRepoWriteGeneration(home.repo)
   const description = home.description
-  const { data, error } = useAsync(
+  const linking = useAsync(
     () => {
       const source = mirrorRepo(description)
       return pullsLinking(sdk!, home.repo, { number, upstream }, (r) => importedHost(r.importedUrl, source) !== null, network)
     },
     [ready, repoKey(home.repo), number, upstream, description, network, generation],
-    { enabled: ready && sdk !== null },
+    { enabled: enabled && ready && sdk !== null },
   )
+  const merged = (linking.data?.pulls ?? []).filter((p) => p.state.merged).slice(0, MERGES_READ)
+  const merges = useAsync(
+    async () => {
+      // A failed read loses only the "in #3" (the close still shows).
+      const found = await Promise.all(
+        merged.map(async (pull) => {
+          const merge = (await readTransitions(sdk!, home.repo, pull.id).catch(() => [])).filter((t) => t.kind === PR_MERGE).pop()
+          return merge === undefined ? [] : [{ pull, merge }]
+        }),
+      )
+      return found.flat()
+    },
+    [ready, repoKey(home.repo), merged.map((p) => p.id).join(','), network, generation],
+    { enabled: enabled && ready && sdk !== null && merged.length > 0 },
+  )
+  return { linking, merges: merges.data ?? NO_MERGES }
+}
+
+/** An issue's "Development" box: the PRs that close it (`backlinks`: {@link useIssueBacklinks}). */
+export function LinkedPulls({ addr, number, backlinks }: { addr: RepoAddress | undefined; number: number; backlinks: AsyncState<LinkingPulls> }): JSX.Element {
+  const { data, error } = backlinks
   if (error !== null) return <p className="text-anvil-500 dark:text-anvil-400">Couldn&apos;t read the pull requests.</p>
   if (data === null) return <p className="text-anvil-500 dark:text-anvil-400">Reading pull requests…</p>
   return (
