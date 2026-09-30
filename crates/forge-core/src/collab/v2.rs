@@ -3848,6 +3848,20 @@ impl<'a> Collab<'a> {
     /// comment is deleted the same way. Replies stay, and read as replies to a deleted comment.
     /// `false` when the comment was already gone (nothing was written).
     pub async fn delete_comment(&self, repo: &RepoRef, comment_id: &str) -> Result<bool> {
+        if !self.deletable_comment(repo, comment_id).await? {
+            return Ok(false);
+        }
+        let collab = self.collab_contract(repo).await?;
+        self.engine()?
+            .delete_document(&collab, DOC_COMMENT, comment_id)
+            .await?;
+        Ok(true)
+    }
+
+    /// Whether the signer may delete comment `comment_id` of `repo`: `false` when it is not
+    /// there, an error when it is someone else's or another repo's ([`owner_check`]). Nothing is
+    /// signed; a caller asks this before it asks the user to confirm.
+    pub async fn deletable_comment(&self, repo: &RepoRef, comment_id: &str) -> Result<bool> {
         let collab = self.collab_contract(repo).await?;
         let Some(stored) = self
             .client
@@ -3857,9 +3871,6 @@ impl<'a> Collab<'a> {
             return Ok(false);
         };
         owner_check(repo, DOC_COMMENT, &stored, &self.signer_id()?, "delete")?;
-        self.engine()?
-            .delete_document(&collab, DOC_COMMENT, comment_id)
-            .await?;
         Ok(true)
     }
 

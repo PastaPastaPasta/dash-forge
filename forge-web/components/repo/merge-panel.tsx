@@ -70,6 +70,8 @@ export type DeleteBranchOption = { readonly label: string; readonly run: () => P
 export interface CloseIssuesOption {
   readonly issues: readonly { readonly number: number; readonly title: string }[]
   readonly close: (number: number) => Promise<void>
+  /** Linked issues past the most a merge offers (`LINKED_ISSUES_MAX`): said, not silently dropped. */
+  readonly omitted?: number
 }
 
 export function MergePanel({
@@ -550,6 +552,11 @@ export function MergePanel({
               </span>
             </label>
           ))}
+          {closeIssues.omitted ? (
+            <p className="ml-6 text-[12px] text-anvil-500 dark:text-anvil-400">
+              {closeIssues.omitted} more linked {closeIssues.omitted === 1 ? 'issue is' : 'issues are'} not offered here; close {closeIssues.omitted === 1 ? 'it' : 'them'} from {closeIssues.omitted === 1 ? 'its page' : 'their pages'}.
+            </p>
+          ) : null}
         </fieldset>
       ) : null}
       {mergeable && !identityOk ? (

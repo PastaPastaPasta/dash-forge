@@ -566,11 +566,15 @@ async fn edit_comment(ctx: &Ctx, repo: &str, comment_id: &str, body: &str) -> Re
 /// signing for someone else's comment.
 async fn delete_comment(ctx: &Ctx, repo: &str, comment_id: &str) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "comment not deleted").await?;
-    ctx.confirm_or_cancel(&format!(
-        "Delete comment {comment_id}? (a document delete; replies to it stay)"
-    ))?;
+    // Someone else's comment (or another repo's) is refused before the prompt, not after it.
+    let there = s.collab().deletable_comment(&s.repo, comment_id).await?;
+    if there {
+        ctx.confirm_or_cancel(&format!(
+            "Delete comment {comment_id}? (a document delete; replies to it stay)"
+        ))?;
+    }
     let before = s.balance().await;
-    let deleted = s.collab().delete_comment(&s.repo, comment_id).await?;
+    let deleted = there && s.collab().delete_comment(&s.repo, comment_id).await?;
     let spent = s.spent_since(before).await;
     let price = dash_usd_price();
     ctx.emit(

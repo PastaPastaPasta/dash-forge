@@ -712,6 +712,7 @@ function PullPage({
     if (issues.length === 0 || !sdk || !signer) return null
     return {
       issues: issues.map((i) => ({ number: i.number, title: i.title })),
+      omitted: Math.max(0, linked.length - LINKED_ISSUES_MAX),
       close: async (n: number) => {
         const i = issues.find((x) => x.number === n)
         if (i === undefined) throw new Error(`#${n} is not an open issue here`)
@@ -723,7 +724,7 @@ function PullPage({
         })
       },
     }
-  }, [linkedOpen.data, sdk, signer, repo, pull.number])
+  }, [linkedOpen.data, sdk, signer, repo, pull.number, linked.length])
   // D-104: a merged PR's header says what happened ("2 commits merged into main"), not "wants to".
   // Who recorded the merge is in the timeline. A count only from a real comparison (not the
   // first-parent fallback).
@@ -1277,7 +1278,8 @@ function PullPage({
                 <ul className="space-y-1" data-testid="linked-issues">
                   {linked.map((n) => (
                     <li key={n}>
-                      <Link href={repoHref('/repo/issue', addr, { number: String(n) })} className="text-forge-700 underline underline-offset-2 dark:text-forge-400">
+                      {/* An imported description's #n is the source forge's: resolved to the native issue (`upstream=`). */}
+                      <Link href={repoHref('/repo/issue', addr, linkedUpstream ? { upstream: String(n) } : { number: String(n) })} className="text-forge-700 underline underline-offset-2 dark:text-forge-400">
                         #{n}
                       </Link>
                     </li>

@@ -281,6 +281,10 @@ export async function pullsLinking(
   network: Network = DEFAULT_NETWORK,
 ): Promise<LinkingPulls> {
   const index = await indexOf(sdk, repo, network)
+  // The window is the newest LINKING_CHUNKS + 1 chunks (the first load's included), whatever the
+  // session has walked already: a later issue page reads no further (the rows loaded past it, by
+  // the PR list, are matched too, at no cost).
+  const walked = Math.ceil(index.walks.desc.ids.length / 100)
   const selected = await selectRows(sdk, index, {
     candidates: null,
     matches: (r) => {
@@ -292,7 +296,7 @@ export async function pullsLinking(
     want: 20,
     walkAll: true,
     partial: true,
-    maxChunks: LINKING_CHUNKS,
+    maxChunks: Math.max(0, LINKING_CHUNKS + 1 - walked),
   })
   return { pulls: selected.rows.slice(0, 20), searched: selected.searched }
 }
