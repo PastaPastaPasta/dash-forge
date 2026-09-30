@@ -53,7 +53,7 @@ import {
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
-import { bypassValue, deleteBranchOffer, deleteBranchProblem, requiredChecksLine } from '@/lib/view/pull-actions'
+import { bypassValue, deleteBranchOffer, deleteBranchProblem, prLinkedIssues, requiredChecksLine } from '@/lib/view/pull-actions'
 import {
   createComment,
   recordPolicyBypass,
@@ -86,7 +86,7 @@ import {
 import { checksPhrase, expectedChecks, readCheckRuns, requiredSources, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
 import { headSync, readBranchState, readBranchTip } from '@/lib/repo/source-branch'
 import type { Event, EventKind, Holdings, RefState } from '@/lib/rules'
-import { linkedIssues, RoleOracle, type ChecksState, type Policy, type PolicyStatus } from '@/lib/rules/v2'
+import { RoleOracle, type ChecksState, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { checksState } from '@/lib/rules/parity'
 import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, type CostPreview as Cost } from '@/lib/sdk'
 import { commentEditDrops, pullSinceYourReview } from '@/lib/view/issues-view'
@@ -94,6 +94,8 @@ import { totalHidden } from '@/lib/repo/private-content'
 import { headUpdatePhrases } from '@/lib/view/head-updates'
 import { inlineCommentIds, lineKey, repliesByRoot } from '@/lib/view/inline-threads'
 import { appliedSuggestions, prCommits, prHaveSet } from '@/lib/view/pr-commits'
+import { snippetKey, snippetSource } from '@/lib/view/anchor-snippet'
+import { AnchorContext, useSnippetTexts } from '@/components/repo/anchor-snippet'
 import { WALK_COMMIT_CAP } from '@/lib/merge/objects'
 import { commentsShown, draftIsEmpty, draftWhereabouts, reviewShows, SUBMIT_WAIT } from '@/lib/view/pending-review'
 import { tipOidOf } from '@/lib/view/refs'
@@ -368,7 +370,8 @@ function PullPage({
         ? readBranchState(sdk!, sourceRef!, pull.sourceRefName!)
         : Promise.resolve(repo.visibility === 'private' ? null : home.branches.find((b) => b.refName === pull.sourceRefName)?.state ?? null),
     [ready, crossRepo ? sourceRef?.repoId ?? '' : repoKey(repo), pull.sourceRefName ?? '', pull.headOid, sameRepoBranches],
-    { enabled: ready && sdk !== null && open && pull.sourceRefName !== null && (!crossRepo || sourceRef !== null) },
+    // Read for a merged or closed PR too: its sidebar says whether the branch still exists (QW2-053).
+    { enabled: ready && sdk !== null && pull.sourceRefName !== null && (!crossRepo || sourceRef !== null) },
   )
   const sync = sourceState.settled && !sourceState.error && pull.sourceRefName !== null ? headSync(pull.headOid, sourceState.data) : null
   // The PR's author or a maintainer/writer: who may move the head, mark draft/ready, resolve and request.
@@ -450,6 +453,25 @@ function PullPage({
   }, [])
   // Suggestions and "Update branch": commits to the PR's source branch (the fork).
   const applied = useMemo(() => appliedSuggestions(commits.data?.commits ?? []), [commits.data])
+  // The code each inline comment was left on, for Conversation (QW2-049).
+  const comparedBase = cmp?.comparedBaseOid ?? null
+  const snippetSources = useMemo(
+    () => thread.comments.flatMap((c) => (c.anchor === null ? [] : [snippetSource(c.anchor, pull.headOid, comparedBase)].filter((s) => s !== null))),
+    [thread.comments, pull.headOid, comparedBase],
+  )
+  const snippetTexts = useSnippetTexts(headReader, snippetSources)
+  const anchorContext = (c: CommentView): JSX.Element | null => {
+    if (c.anchor === null) return null
+    const source = snippetSource(c.anchor, pull.headOid, comparedBase)
+    return (
+      <AnchorContext
+        anchor={c.anchor}
+        text={source === null ? null : snippetTexts.get(snippetKey(source))}
+        outdated={c.anchor.commitOid !== pull.headOid.toLowerCase()}
+        applied={applied.get(c.id) ?? null}
+      />
+    )
+  }
   const suggest = useSuggestions({
     repo,
     source: sourceRef,
@@ -462,6 +484,7 @@ function PullPage({
     isMember,
     isAuthor,
     signedIn: identity !== null && guard.disabledReason === null && !archived,
+    branchAhead: sync?.kind === 'ahead',
     onCommitted: (c) => refresh((t) => t.pull.headOid === c),
   })
   const sourceWrite = suggest.branchWrite
@@ -692,7 +715,7 @@ function PullPage({
       : pull.state.draft
         ? { label: 'Draft', icon: <GitPullRequestDraft className="h-4 w-4" aria-hidden />, bg: 'bg-anvil-600' }
         : { label: 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, bg: 'bg-verify-700' }
-  const linked = linkedIssues(pull.body)
+  const linked = prLinkedIssues(pull.body, pull.number)
   // The open issues "Fixes #n" names, for the merge box's "Close #n after merging" (QW-015): read
   // only for a viewer who can merge an open PR. An imported description's #n is the source
   // forge's (as it renders): the native issue a trusted mirror recorded with that upstream number.
@@ -816,24 +839,33 @@ function PullPage({
       </div>
 
       {/* Banners */}
-      {canMoveHead && sync?.kind === 'ahead' ? (
+      {open && sync?.kind === 'ahead' ? (
+        // Every reader is told the PR shows an older head than its branch (QW2-007: an
+        // interrupted browser commit, or a push with auto-sync off); who can move it gets the button.
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-forge-500/40 bg-forge-500/5 px-4 py-3 text-dense" data-testid="head-sync-banner">
           <RefreshCw className="h-4 w-4 text-forge-700 dark:text-forge-400" aria-hidden />
           <span className="min-w-0 flex-1">
             {isAuthor ? 'Your branch' : 'The source branch'} <span className="font-mono">{shortBranch(pull.sourceRefName ?? '')}</span> is at{' '}
             <Oid value={sync.tip} chars={7} copyable={false} />, but this PR is at <Oid value={pull.headOid} chars={7} copyable={false} />.
+            {canMoveHead ? null : (
+              <span className="text-anvil-600 dark:text-anvil-400"> Its commits, files and checks are the PR head&apos;s until the author or a maintainer or writer updates it.</span>
+            )}
           </span>
-          <CostPreview cost={eventCost} />
-          <Button
-            variant="primary"
-            size="sm"
-            disabled={guard.disabledReason !== null}
-            onClick={() => {
-              confirmEvent({ kind: 'head', oid: sync.tip })
-            }}
-          >
-            Update PR head
-          </Button>
+          {canMoveHead ? (
+            <>
+              <CostPreview cost={eventCost} />
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={guard.disabledReason !== null}
+                onClick={() => {
+                  confirmEvent({ kind: 'head', oid: sync.tip })
+                }}
+              >
+                Update PR head
+              </Button>
+            </>
+          ) : null}
         </div>
       ) : null}
       {open && sync?.kind === 'deleted' && pull.sourceRefName ? (
@@ -918,6 +950,7 @@ function PullPage({
                   links={links}
                   trust={trust}
                   eventText={eventText}
+                  anchorContext={anchorContext}
                   renderComment={(item) =>
                     commentSlots({
                       item,
@@ -932,7 +965,7 @@ function PullPage({
                       replies: repliesOf.get(item.comment.id) ?? [],
                       trust,
                       resolved: resolved.has(item.comment.id),
-                      outdated: item.comment.anchor !== null && item.comment.anchor.commitOid !== pull.headOid,
+                      context: anchorContext(item.comment),
                       onShowFiles: () => setTab('files'),
                     })
                   }
@@ -986,7 +1019,8 @@ function PullPage({
                             size="sm"
                             variant="outline"
                             loading={suggest.runner.busy}
-                            disabled={headReader === null || comparison.headOnly === null || guard.disabledReason !== null}
+                            // The branch is past the head: its ref update would be refused (QW2-007); the banner above moves the head first.
+                            disabled={headReader === null || comparison.headOnly === null || guard.disabledReason !== null || sync?.kind === 'ahead'}
                             onClick={() => {
                               const who = suggest.who
                               if (headReader !== null && who !== null) void suggest.runner.run(`update:${pull.headOid}:${baseTipOid}`, 'Update branch', () => buildUpdateBranch(headReader, pull, baseTipOid, who))
@@ -1318,9 +1352,17 @@ function PullPage({
                   <>
                     {' '}
                     on <span className="font-mono">{shortBranch(pull.sourceRefName)}</span>
+                    {sync?.kind === 'deleted' ? <span data-testid="source-branch-deleted"> (deleted)</span> : null}
                   </>
                 ) : null}
               </p>
+              {sync?.kind === 'deleted' ? (
+                // The branch is gone (deleted at the merge, say); the head stays reachable by its
+                // commit id, which is what `dg pr checkout` fetches.
+                <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">
+                  The branch was deleted; the PR keeps its head <Oid value={pull.headOid} chars={7} copyable={false} />, which this checks out:
+                </p>
+              ) : null}
               <CopyRow text={checkout} className="mt-2" />
             </SidebarSection>
             {/* Lock conversation (GitHub: the rail's last entry): a member transition, for maintainers and writers. */}
@@ -1513,7 +1555,7 @@ function commentSlots({
   replies,
   trust,
   resolved,
-  outdated,
+  context,
   onShowFiles,
 }: {
   item: Extract<TimelineItem, { kind: 'comment' }>
@@ -1530,14 +1572,14 @@ function commentSlots({
   /** Who may mirror: an imported reply of theirs shows its original author and date (FG-6). */
   trust?: ReadonlySet<string> | null
   resolved: boolean
-  outdated: boolean
+  /** An inline comment's heading: its place, markers and code (`AnchorContext`). */
+  context: ReactNode
   onShowFiles: () => void
 }): CommentSlots {
   const c = item.comment
   const tags =
     c.anchor !== null ? (
       <span className="flex items-center gap-1.5">
-        {outdated ? <span className="rounded-full bg-anvil-100 px-2 py-0.5 text-[11px] text-anvil-700 dark:bg-anvil-800 dark:text-anvil-300">Outdated</span> : null}
         {resolved ? <span className="rounded-full bg-verify/10 px-2 py-0.5 text-[11px] text-verify-700 dark:text-verify-400" data-testid="thread-resolved">Resolved</span> : null}
       </span>
     ) : null
@@ -1574,6 +1616,7 @@ function commentSlots({
     header,
     body: (
       <div className="space-y-2 px-4 py-3">
+        {context}
         <MarkdownView source={c.body} links={links} imported={importedUrlOf(c.importedRaw)} />
         {replies.map((r) => (
           <div key={r.id} className="border-l-2 border-anvil-200 pl-3 dark:border-anvil-750">

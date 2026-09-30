@@ -24,6 +24,7 @@ import {
   mergeGate,
   mergeRefProblem,
   policyOf,
+  prLinkedIssues,
   pullActions,
   requiredChecksLine,
   unmetRules,
@@ -517,5 +518,13 @@ describe('the merge box review line (RC1 R-16): the fold gates, the proved count
     expect(line).toMatchObject({ tone: 'changes', headline: 'Changes requested', proved: false })
     expect(line?.onChain).toMatch(/^2 member approvals and 1 change request on chain\. The members couldn't be read/)
     expect(verdictSummary(null, null, HEAD)).toBeNull()
+  })
+})
+
+describe('prLinkedIssues — never the PR itself (QW2-054)', () => {
+  it('drops the PR\'s own number from "Fixes #n"', () => {
+    expect(prLinkedIssues('Adds a name. Fixes #1', 1)).toEqual([])
+    expect(prLinkedIssues('Fixes #1, closes #4', 3)).toEqual([1, 4])
+    expect(prLinkedIssues('Fixes #3 and resolves #2', 3)).toEqual([2])
   })
 })
