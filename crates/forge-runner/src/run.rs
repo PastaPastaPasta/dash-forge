@@ -79,7 +79,7 @@ impl Trigger {
     /// that decides the member's required check (readers keep the newest run per name).
     pub fn check_name(&self, base: &str) -> String {
         let suffix = match self {
-            Trigger::Push(_) => return base.chars().take(100).collect(),
+            Trigger::Push(_) => "",
             Trigger::Pull {
                 author: Author::Stranger,
                 ..

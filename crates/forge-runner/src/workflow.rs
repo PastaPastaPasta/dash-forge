@@ -428,7 +428,7 @@ fn paths_ok(filters: &Value, changed: Option<&[String]>) -> bool {
 }
 
 /// The `pull_request` activity types a workflow runs on when it names none (GitHub's default).
-pub const DEFAULT_PULL_TYPES: [&str; 3] = ["opened", "synchronize", "reopened"];
+const DEFAULT_PULL_TYPES: [&str; 3] = ["opened", "synchronize", "reopened"];
 
 /// Whether a workflow whose `on` is `on` runs on this pull-request activity (GitHub's rules for
 /// `pull_request`: `types`, then `branches` / `branches-ignore` on the base branch, then

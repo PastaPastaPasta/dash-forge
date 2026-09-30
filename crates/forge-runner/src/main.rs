@@ -409,21 +409,22 @@ fn poll_pulls(
             Err(e) => eprintln!("forge-runner: {} PR #{n}: {e:#}", repo.repo),
         }
     }
-    let mut members: Option<run::Members> = None;
     if !state.pulls_primed {
         let open = rows.iter().filter(|r| r.state == "open").count();
         eprintln!(
             "forge-runner: watching {}'s pull requests ({open} open)",
             repo.repo
         );
-        let m = members.insert(run::list_members(cfg, repo)?);
+        let members = run::list_members(cfg, repo)?;
         for r in &rows {
-            let member = run::author_of(m, &r.author) != run::Author::Stranger;
+            let member = run::author_of(&members, &r.author) != run::Author::Stranger;
             state.saw_pull(r, Some(member));
         }
         state.pulls_primed = true;
         return state.save(path);
     }
+    // Read only when some PR has activity.
+    let mut members: Option<run::Members> = None;
     let pull_key = |n: u64, head: &str| format!("pull/{n} {}", head.to_ascii_lowercase());
     let mut pending = Vec::new();
     for ev in pull_events(&state.pulls, &rows) {

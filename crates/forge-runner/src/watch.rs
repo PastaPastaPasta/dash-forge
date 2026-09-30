@@ -320,43 +320,17 @@ mod tests {
 
     #[test]
     fn pull_activity_is_opened_synchronize_reopened_or_ready() {
+        let at_a = |open, draft| PullSeen {
+            head: A.into(),
+            open,
+            draft,
+            member: false,
+        };
         let seen = BTreeMap::from([
-            (
-                1,
-                PullSeen {
-                    head: A.into(),
-                    open: true,
-                    draft: false,
-                    member: false,
-                },
-            ),
-            (
-                2,
-                PullSeen {
-                    head: A.into(),
-                    open: false,
-                    draft: false,
-                    member: false,
-                },
-            ),
-            (
-                3,
-                PullSeen {
-                    head: A.into(),
-                    open: true,
-                    draft: true,
-                    member: false,
-                },
-            ),
-            (
-                4,
-                PullSeen {
-                    head: A.into(),
-                    open: true,
-                    draft: false,
-                    member: false,
-                },
-            ),
+            (1, at_a(true, false)),
+            (2, at_a(false, false)),
+            (3, at_a(true, true)),
+            (4, at_a(true, false)),
         ]);
         let mut imported = row(6, "open", C, false);
         imported.source_ref_name = None;
