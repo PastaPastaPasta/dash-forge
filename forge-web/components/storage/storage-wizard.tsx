@@ -55,7 +55,7 @@ export function StorageWizard(): JSX.Element {
   const [provider, setProvider] = useState<ProviderId | null>(null)
   const [editing, setEditing] = useState<StorageProfile | null>(null)
 
-  if (needsUnlock) return <UnlockMore title="Unlock to open your storage settings" testId="storage-unlock" />
+  if (needsUnlock) return <UnlockMore title="Unlock this tab to set up or open your storage settings" testId="storage-unlock" />
   if (loading && !config) return <LoadingBlock label="Opening your storage settings" />
   if (error) return <UnreadableSettings message={error} onRetry={reload} onDiscard={discard} />
   if (!config) return <LoadingBlock />
