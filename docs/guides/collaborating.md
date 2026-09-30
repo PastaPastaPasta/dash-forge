@@ -304,6 +304,7 @@ dg release create <owner>/<repo> --tag v1.0.0 --name "1.0.0" --notes "First stab
   --asset ./dist/app-linux.tar.gz --asset ./dist/app-macos.tar.gz [--storage <profiles>]
 dg release list   <owner>/<repo>
 dg release download <owner>/<repo> v1.0.0 [--asset <name>] [--output <dir | file>]
+dg release unpublish <owner>/<repo> v1.0.0
 ```
 
 `--asset` uploads each file to your own storage and records its SHA-256, size and URLs in the release. The storage is the repository's `dash.storage` profiles, or `--storage`, and each copy is read back and verified. Platform stores packs, not arbitrary files, so publishing an asset needs an S3 or IPFS profile ([bring your own storage](bring-your-own-storage.md)).
@@ -312,7 +313,11 @@ dg release download <owner>/<repo> v1.0.0 [--asset <name>] [--output <dir | file
 
 `dg release list` always names who published each release. Every publish, edit or unpublish is a fresh revision that needs a *current* maintainer to sign it, so a maintainer who is later removed can no longer touch the releases they published — not edit them, and not unpublish them either. Only a maintainer still on the repo can do that.
 
-**Releases can be unpublished, not deleted.** To withdraw a release, publish it again with `--yanked`. The newest release for a tag wins, so a new revision keeps what you leave out: its assets, name and notes carry over (an `--asset` of the same file name replaces that one asset), and `--yanked` alone withdraws the release without dropping its files. Publishing again without `--yanked` un-yanks it. Releases are listed by version (highest first), and the latest is the highest that is neither a pre-release nor yanked. There is no delete: every revision a release ever had stays on chain, so a tag's publication history can always be reconstructed.
+**Yanking keeps the release, flagged; unpublishing takes it down.** To flag a release as withdrawn while keeping it listed, publish it again with `--yanked`. The newest release for a tag wins, so a new revision keeps what you leave out: its assets, name and notes carry over (an `--asset` of the same file name replaces that one asset), and `--yanked` alone marks the release without dropping its files. Publishing again without `--yanked` un-yanks it.
+
+`dg release unpublish <owner>/<repo> <tag>` goes further: it takes the tag off the release list entirely (it no longer shows in `dg release list` or counts toward the repo's release total), and only works while the tag currently has a live release — a tag that was never published, or is already unpublished, is refused. Publishing the same tag again afterwards starts a fresh release.
+
+**Releases are never deleted.** Releases are listed by version (highest first), and the latest is the highest that is neither a pre-release nor yanked. Every revision a release ever had — including an unpublish — stays on chain, so a tag's publication history can always be reconstructed.
 
 ### Labels
 
