@@ -76,7 +76,7 @@ export function AppHeader(): JSX.Element {
   }, [settled, signInPending, identity, openLogin, clearSignInRequest])
 
   return (
-    <header className="relative z-40 border-b sm:sticky sm:top-0 border-anvil-200 bg-anvil-50/85 backdrop-blur dark:border-anvil-800 dark:bg-anvil-950/85">
+    <header className="relative z-40 border-b border-anvil-200 bg-anvil-50 dark:border-anvil-800 dark:bg-anvil-950 sm:sticky sm:top-0 sm:bg-anvil-50/85 sm:backdrop-blur sm:dark:bg-anvil-950/85">
       <div className="mx-auto flex h-14 max-w-[1280px] items-center gap-2 px-3 sm:gap-3 sm:px-6">
         <NavDrawer signedIn={identity !== null} />
         <Link href="/" className="flex shrink-0 items-center gap-2 coarse:min-h-11 coarse:min-w-11" aria-label="Dash Forge home">

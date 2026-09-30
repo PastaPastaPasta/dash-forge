@@ -11,7 +11,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { TextDiffLine } from '@/lib/view/text-diff'
-import { gutterKeys, gutterTabStop, nextGutterIndex } from '@/lib/view/gutter-rove'
+import { gutterKeys, gutterTabStop, nextRovingIndex } from '@/lib/view/gutter-rove'
 import { InlineCommentsContext, PatchLines, type InlineComments } from './diff-view'
 
 vi.mock('next/link', () => ({ default: ({ href, children }: { href: string; children: React.ReactNode }) => <a href={href}>{children}</a> }))
@@ -38,13 +38,13 @@ describe('gutter-rove', () => {
     expect(gutterTabStop([], null)).toBeNull()
   })
   it('moves by one with Up/Down, to the ends with Home/End, and ignores other keys', () => {
-    expect(nextGutterIndex(3, 0, 'ArrowDown')).toBe(1)
-    expect(nextGutterIndex(3, 2, 'ArrowDown')).toBe(2)
-    expect(nextGutterIndex(3, 0, 'ArrowUp')).toBe(0)
-    expect(nextGutterIndex(3, 1, 'End')).toBe(2)
-    expect(nextGutterIndex(3, 2, 'Home')).toBe(0)
-    expect(nextGutterIndex(3, 1, 'Enter')).toBeNull()
-    expect(nextGutterIndex(3, -1, 'ArrowDown')).toBeNull()
+    expect(nextRovingIndex(3, 0, 'ArrowDown')).toBe(1)
+    expect(nextRovingIndex(3, 2, 'ArrowDown')).toBe(2)
+    expect(nextRovingIndex(3, 0, 'ArrowUp')).toBe(0)
+    expect(nextRovingIndex(3, 1, 'End')).toBe(2)
+    expect(nextRovingIndex(3, 2, 'Home')).toBe(0)
+    expect(nextRovingIndex(3, 1, 'Enter')).toBeNull()
+    expect(nextRovingIndex(3, -1, 'ArrowDown')).toBeNull()
   })
 })
 
@@ -96,11 +96,24 @@ describe('PatchLines gutter', () => {
     expect(document.activeElement?.getAttribute('aria-label')).toBe('Comment on old line 3 of f.txt')
   })
 
-  it('crosses to the other side with Left/Right: this row, else the next one below', () => {
+  it('ignores modified arrows (browser shortcuts), and Left on the old side', () => {
+    const first = gutter()[0]!
+    act(() => first.focus())
+    act(() => {
+      first.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', altKey: true, bubbles: true }))
+    })
+    expect(document.activeElement).toBe(first)
+    key(first, 'ArrowLeft')
+    expect(document.activeElement).toBe(first)
+  })
+
+  it('crosses to the other side with Right and back with Left: this row, else the next one below', () => {
     const first = gutter()[0]!
     act(() => first.focus())
     key(first, 'ArrowRight')
     expect(document.activeElement?.getAttribute('aria-label')).toBe('Comment on new line 1 of f.txt')
+    key(document.activeElement as HTMLElement, 'ArrowLeft')
+    expect(document.activeElement).toBe(first)
     // The deleted line has no new-side number: Right goes to the next new line below it.
     const deleted = gutter().find((b) => b.getAttribute('aria-label') === 'Comment on old line 2 of f.txt')!
     act(() => deleted.focus())

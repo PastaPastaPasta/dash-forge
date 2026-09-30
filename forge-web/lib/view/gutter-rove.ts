@@ -31,8 +31,8 @@ export function gutterTabStop(keys: readonly string[], last: string | null): str
   return keys[0] ?? null
 }
 
-/** Where an arrow key moves focus in one side's buttons (`count` of them, focus at `index`); null: not a move. */
-export function nextGutterIndex(count: number, index: number, key: string): number | null {
+/** Where an arrow key moves focus in a column of `count` controls (focus at `index`); null: not a move. */
+export function nextRovingIndex(count: number, index: number, key: string): number | null {
   if (count === 0 || index < 0) return null
   switch (key) {
     case 'ArrowDown':

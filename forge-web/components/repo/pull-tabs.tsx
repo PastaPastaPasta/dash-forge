@@ -148,7 +148,7 @@ function RunLog({ run }: { run: CheckRun }): JSX.Element | null {
           : `Not the reported log: these bytes hash to ${log.sha256.slice(0, 12)}…, the run records ${run.logSha256.slice(0, 12)}…`}
       </p>
       {log.verified ? (
-        <ScrollRegion as="pre" label="Check log" className="mt-1 max-h-96 overflow-auto rounded border border-anvil-200 bg-anvil-50 p-2 font-mono text-[12px] dark:border-anvil-800 dark:bg-anvil-950">
+        <ScrollRegion as="pre" label={`Log of ${run.name}`} className="mt-1 max-h-96 overflow-auto rounded border border-anvil-200 bg-anvil-50 p-2 font-mono text-[12px] dark:border-anvil-800 dark:bg-anvil-950">
           {log.text}
         </ScrollRegion>
       ) : null}

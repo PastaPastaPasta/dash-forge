@@ -263,8 +263,8 @@ test.describe('signed in with a low balance', () => {
     const account = await page.getByRole('button', { name: 'Account menu' }).boundingBox()
     expect(account!.x + account!.width).toBeLessThanOrEqual(width)
     expect(account!.width).toBeGreaterThanOrEqual(43.5)
-    // One line of text: the pill is no taller than its text plus the budget bar.
-    expect((await pill.boundingBox())!.height).toBeLessThanOrEqual(34)
+    // The balance is one line of text (it wrapped onto two).
+    expect(await pill.locator('span.font-mono').first().evaluate((s) => s.getBoundingClientRect().height)).toBeLessThanOrEqual(20)
     await context.close()
   })
 })

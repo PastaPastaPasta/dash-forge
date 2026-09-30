@@ -41,7 +41,7 @@ import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/states'
 import { ScrollRegion } from '@/components/ui/scroll-region'
 import { cn } from '@/lib/utils'
-import { gutterKey, gutterKeys, gutterTabStop, nextGutterIndex } from '@/lib/view/gutter-rove'
+import { gutterKey, gutterKeys, gutterTabStop, nextRovingIndex } from '@/lib/view/gutter-rove'
 
 /**
  * Inline comments on a diff (the PR view provides this; a commit diff has none): what to show
@@ -563,6 +563,7 @@ export function PatchLines({ path, oldPath = path, full }: { path: string; oldPa
   const pathOf = (side: 0 | 1): string => (side === 0 ? oldPath : path)
   const expand = (range: readonly [number, number]): void => setRevealed((r) => [...r, range])
   const inline = useContext(InlineCommentsContext)
+  const visible = useMemo(() => lines.slice(0, limit), [lines, limit])
   // Report the rows on screen (not past the "show more" cut), and withdraw them on unmount
   // (a collapsed file), so threads under lines nobody can see are listed elsewhere.
   useEffect(() => {
@@ -571,7 +572,7 @@ export function PatchLines({ path, oldPath = path, full }: { path: string; oldPa
       [oldPath, new Set()],
       [path, new Set()],
     ])
-    for (const l of lines.slice(0, limit)) {
+    for (const l of visible) {
       if (l.kind === 'gap') continue
       if (l.kind !== 'added' && l.oldLine !== null) shown.get(oldPath)!.add(lineKey(oldPath, 0, l.oldLine))
       if (l.kind !== 'deleted' && l.newLine !== null) shown.get(path)!.add(lineKey(path, 1, l.newLine))
@@ -580,30 +581,31 @@ export function PatchLines({ path, oldPath = path, full }: { path: string; oldPa
     return () => {
       for (const p of shown.keys()) inline.report(p, null)
     }
-  }, [inline, path, oldPath, lines, limit])
+  }, [inline, path, oldPath, visible])
   const [prefs] = usePrefs()
   const wide = useMinWidth(1024)
   const split = wide && prefs.diffLayout === 'split'
   const palette = prefs.palette
-  const visible = useMemo(() => lines.slice(0, limit), [lines, limit])
   // The gutter's one tab stop: the line last focused while shown, else the first.
   const [lastGutter, setLastGutter] = useState<string | null>(null)
   const shownGutter = useMemo(() => gutterKeys(visible), [visible])
   const rove: Rove = { tabStop: gutterTabStop(shownGutter, lastGutter), onFocus: setLastGutter }
-  // Up/Down (Home/End) move along one side's line numbers; Left/Right cross to the other side.
+  // Up/Down (Home/End) move along one side's line numbers; Right goes from the old side (the
+  // left column) to the new, Left back. Modified keys are the browser's.
   const onGutterKey = (e: React.KeyboardEvent<HTMLTableElement>): void => {
+    if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
     const t = e.target
     if (!(t instanceof HTMLButtonElement) || t.dataset['gutterSide'] === undefined) return
     const side = t.dataset['gutterSide']
     const buttons = (s: string): HTMLButtonElement[] => [...e.currentTarget.querySelectorAll<HTMLButtonElement>(`button[data-gutter-side="${s}"]`)]
     let to: HTMLButtonElement | undefined
-    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    if ((e.key === 'ArrowRight' && side === '0') || (e.key === 'ArrowLeft' && side === '1')) {
       const other = side === '0' ? '1' : '0'
       // The other side's number on this row, else its next one below.
       to = t.closest('tr')?.querySelector<HTMLButtonElement>(`button[data-gutter-side="${other}"]`) ?? buttons(other).find((b) => (t.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0)
     } else {
       const same = buttons(side)
-      const next = nextGutterIndex(same.length, same.indexOf(t), e.key)
+      const next = nextRovingIndex(same.length, same.indexOf(t), e.key)
       to = next === null ? undefined : same[next]
     }
     if (to === undefined) return
