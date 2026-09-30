@@ -50,7 +50,7 @@ After **Dash Platform protocol 14** activates on mainnet and the project owner r
 
 | Network | Status |
 |---|---|
-| **Devnet moutai** | Live, with the whole product: `dg`, `git-remote-dash`, `forge-import`, the Mirror Action, the relay and forge.dashhq.org all use it. The public devnet is moving to **bonsia**; moutai stays live until that cut-over, and bonsia has no forge-v2 deployment yet. |
+| **Devnet moutai** | **Moving to devnet bonsia.** Moutai was upgraded in place to Platform v4.2.0-beta.7, which retired its forge-v2 contracts; forge-v2 is being re-registered on bonsia, the new public devnet, and forge.dashhq.org is down until that cut-over. See [the root README's status table](../README.md#status) for the current state. |
 | **Testnet** | Not deployed yet. Testnet runs protocol 13; forge-v2 is registered there as soon as protocol 14 reaches it, expected soon. |
 | **Mainnet** | Not deployed yet. After protocol 14 activates, the owner registers the forge-v2 contracts ([runbook](mainnet-runbook.md)). |
 
