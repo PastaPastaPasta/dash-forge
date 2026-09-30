@@ -12,9 +12,9 @@ import { releasePublishedOf, type ReleasePublished } from './provenance'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { z } from 'zod'
 
-import { queryAllDocuments, type PlainDocument } from '../sdk'
+import { queryAllDocuments, sumDocumentsGrouped, type PlainDocument } from '../sdk'
 import { DOC, str, type RepoRef } from './contract'
-import { repoSource } from './source'
+import { contractOf, repoSource } from './source'
 import { isPrerelease } from './ref-order'
 
 export { compareRefNames, compareTagNames, isPrerelease, naturalRuns, tagVersion, type TagVersion } from './ref-order'
@@ -265,4 +265,30 @@ export async function readReleases(sdk: EvoSDK, repo: RepoRef): Promise<ReleaseL
     repoSource(repo).repoQuery(DOC.release, { orderBy: [['$createdAt', 'asc']] }),
   )
   return newestPerTag(docs.map(toRelease).filter((r) => r.tagName !== ''))
+}
+
+/**
+ * How many tags have a live (published) release: GitHub's "Releases N". One proved sum of
+ * `release.delta` on `perTag` (`(repoId, tagName)`, `summable: "delta"`, `rangeSummable`; RC1
+ * O-04): a publish adds 1, an edit or yank 0, an unpublish takes 1 away, so each tag totals 1 or 0.
+ *
+ * The shape is Drive's carrier `AggregateSumOnRange` (`repoId in [R]` grouped by `repoId`, with
+ * `tagName > ""`, which ranges over every tag since a tag name is never empty). `perTag` is not
+ * `summable`-covered by `repoId` alone, and the plain range shape (`repoId == R`, no `groupBy`)
+ * proves its path key by existence only: for a repo that never had a release the proof fails to
+ * verify. The carrier proves an absent `R` as absent, an empty map: 0.
+ */
+export async function readReleaseCount(sdk: EvoSDK, repo: RepoRef): Promise<number> {
+  const sums = await sumDocumentsGrouped(
+    sdk,
+    {
+      dataContractId: contractOf(repo.forge, DOC.release),
+      documentTypeName: DOC.release,
+      where: [['repoId', 'in', [repo.repoId]], ['tagName', '>', '']],
+      orderBy: [['repoId', 'asc']],
+      groupBy: ['repoId'],
+    },
+    'delta',
+  )
+  return [...sums.values()].reduce((a, b) => a + b, 0)
 }

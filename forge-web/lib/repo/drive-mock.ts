@@ -1,6 +1,6 @@
 /**
  * A Drive-shaped mock SDK for the list index tests (`issue-index.test.ts`, `pull-index.test.ts`):
- * it answers plain, composite, grouped count and grouped sum queries the way Drive does (every
+ * it answers plain, composite, grouped count and sum (grouped or total) queries the way Drive does (every
  * `where` applied, ordered, capped at 100, paged by `startAfter`; a composite's page, counts per
  * bound value, bound lookups and siblings), and records every request so a list page's budget is
  * asserted, not assumed. Test-only.
@@ -20,6 +20,8 @@ function groupKey(v: unknown): string {
   if (typeof v === 'number') return (v ^ 0x80).toString(16).padStart(2, '0')
   return [...base58Decode(String(v))].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
+
+const RANGE_OPS = new Set(['<', '<=', '>', '>='])
 
 function matches(doc: Doc, [field, op, value]: readonly [string, string, unknown]): boolean {
   const v = field.split('.').reduce<unknown>((o, k) => (o !== null && typeof o === 'object' ? (o as Doc)[k] : undefined), doc)
@@ -119,11 +121,24 @@ export function mockSdk(store: Store, seen: Seen): EvoSDK {
       },
       sum: async (q: DocumentQuery & { groupBy?: string[] }, property: string) => {
         seen.sums.push(q)
-        const out = new Map<string, bigint>()
-        for (const d of rows(q.dataContractId, q.documentTypeName).filter(where(q))) {
-          const k = groupKey(d[q.groupBy?.[0] ?? ''])
-          out.set(k, (out.get(k) ?? 0n) + BigInt(Number(d[property] ?? 0)))
+        const all = rows(q.dataContractId, q.documentTypeName).filter(where(q))
+        const value = (d: Doc): bigint => BigInt(Number(d[property] ?? 0))
+        const by = q.groupBy?.[0]
+        if (by === undefined) {
+          // A range with no `groupBy` is proved as a plain `AggregateSumOnRange`, whose path keys
+          // (the `==` prefix) are proved by existence only: over an absent path it fails to verify.
+          const clauses = (q.where ?? []) as unknown as (readonly [string, string, unknown])[]
+          if (clauses.some(([, op]) => RANGE_OPS.has(op))) {
+            const prefix = clauses.filter(([, op]) => !RANGE_OPS.has(op))
+            if (!rows(q.dataContractId, q.documentTypeName).some((d) => prefix.every((w) => matches(d, w)))) {
+              throw new Error('mock: aggregate range sum over an absent path fails proof verification')
+            }
+          }
+          // Drive's `Aggregate` mode: one entry keyed '' (the total).
+          return new Map([['', all.reduce((t, d) => t + value(d), 0n)]])
         }
+        const out = new Map<string, bigint>()
+        for (const d of all) out.set(groupKey(d[by]), (out.get(groupKey(d[by])) ?? 0n) + value(d))
         return out
       },
     },

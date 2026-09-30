@@ -21,9 +21,15 @@ import { collectPageErrors, DAPI_METHOD, decodeDocumentsRequest, E2E_DEVNET, EMP
 const COLD_BUDGET = 25
 /** S-1's warm budget: a page of a repo already open in the tab. */
 const WARM_BUDGET = 8
-/** The read fixture's cold home (measured 8: the chrome composite, counts, locator, objects). */
+/**
+ * The read fixture's cold home (measured 8: the chrome composite, counts, locator, objects; then
+ * +2 for the About card's release count and repo size, two proved sums read once it is in view).
+ */
 const DEMO_COLD_HOME = 12
-/** The read fixture's issues list, cold (measured 7). */
+/**
+ * The read fixture's issues list, cold (measured 7; then +2: every page with the rail reads the
+ * About card's release count and repo size once it is in view).
+ */
 const DEMO_COLD_ISSUES = 12
 /**
  * The commit column's walk on a showcase repo: one chunk read per 256 KiB of pack history it
@@ -77,6 +83,7 @@ test.describe('page request budget (S-1)', () => {
     // Nothing the home shows went missing: counts, stars, members, the owner's name.
     const about = page.getByRole('complementary', { name: 'About this repository' })
     await expect(about.getByRole('link', { name: /Stars/ })).toContainText(/\d/)
+    await expect(about.getByTestId('repo-releases')).toContainText(/\d/)
     await expect(about.getByTestId('rail-members')).toBeVisible()
     await shot(page, 'pb-01-fixture-home-cold')
 
