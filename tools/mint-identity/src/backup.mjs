@@ -4,6 +4,7 @@
 //     identityKeys[...], assetLockKey }
 import { randomBytes } from 'node:crypto';
 import { closeSync, fsyncSync, openSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { bytesToHex, privateKeyToWif } from './bytes.mjs';
 import { getAssetLockDerivationPath } from './hd.mjs';
 
@@ -46,7 +47,7 @@ export function buildIdentityBackup(role, networkConfig) {
  * created exclusively (`wx`, so nothing already there is opened or followed), synced, then
  * renamed over `path`. rename replaces a symlink at `path` rather than writing through it, and
  * the result is 0600 whatever the permissions of a file it replaces. The temp file is removed
- * on failure.
+ * on failure; the directory is synced after the rename, so the new name survives a crash too.
  */
 export function writeSecretFile(path, data) {
   const tmp = `${path}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
@@ -59,9 +60,29 @@ export function writeSecretFile(path, data) {
     fd = undefined;
     renameSync(tmp, path);
   } catch (err) {
-    if (fd !== undefined) closeSync(fd);
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* the write already failed: report that error */
+      }
+    }
     rmSync(tmp, { force: true });
     throw err;
+  }
+  syncDir(dirname(path));
+}
+
+/** Best effort: not every platform can fsync a directory (Windows cannot open one). */
+function syncDir(dir) {
+  let fd;
+  try {
+    fd = openSync(dir, 'r');
+    fsyncSync(fd);
+  } catch {
+    /* the file itself is written and synced */
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 

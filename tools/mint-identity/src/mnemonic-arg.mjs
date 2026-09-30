@@ -16,7 +16,7 @@ function phrase(text, source) {
 /**
  * The mnemonic from parsed args, or undefined when none was given:
  *   --mnemonic-file <path>  read the file (trimmed)
- *   --mnemonic -            read stdin
+ *   --mnemonic -            read stdin (a pipe or redirect: a terminal would echo the words)
  *   --mnemonic <words>      the words themselves (warns: visible in ps and shell history)
  */
 export function resolveMnemonicArg(
@@ -24,6 +24,7 @@ export function resolveMnemonicArg(
   {
     readFile = (path) => readFileSync(path, 'utf8'),
     readStdin = () => readFileSync(0, 'utf8'),
+    stdinIsTTY = process.stdin.isTTY === true,
     warn = (msg) => process.stderr.write(`${msg}\n`),
   } = {}
 ) {
@@ -36,7 +37,10 @@ export function resolveMnemonicArg(
   }
   if (inline === undefined) return undefined;
   if (inline === true) throw new Error('--mnemonic needs a value: - to read it from stdin (or use --mnemonic-file <path>)');
-  if (inline === '-') return phrase(readStdin(), 'stdin');
+  if (inline === '-') {
+    if (stdinIsTTY) throw new Error('--mnemonic - reads a pipe or redirect, not a terminal (typing would echo the words); use --mnemonic-file <path>');
+    return phrase(readStdin(), 'stdin');
+  }
   warn(MNEMONIC_ARGV_WARNING);
   return phrase(String(inline), '--mnemonic');
 }

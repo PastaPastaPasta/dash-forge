@@ -82,9 +82,16 @@ test('--mnemonic-file reads a real file', (t) => {
 
 test('--mnemonic - reads stdin, without a warning', () => {
   const warnings = [];
-  const got = resolveMnemonicArg({ mnemonic: '-' }, { readStdin: () => `${FAKE_PHRASE}\n`, warn: (m) => warnings.push(m) });
+  const got = resolveMnemonicArg({ mnemonic: '-' }, { readStdin: () => `${FAKE_PHRASE}\n`, stdinIsTTY: false, warn: (m) => warnings.push(m) });
   assert.equal(got, FAKE_PHRASE);
   assert.deepEqual(warnings, []);
+});
+
+test('--mnemonic - refuses a terminal (typed words would be echoed)', () => {
+  assert.throws(
+    () => resolveMnemonicArg({ mnemonic: '-' }, { readStdin: () => assert.fail('stdin must not be read'), stdinIsTTY: true }),
+    /--mnemonic-file/
+  );
 });
 
 test('--mnemonic <words> still works, with a warning that never echoes the phrase', () => {
