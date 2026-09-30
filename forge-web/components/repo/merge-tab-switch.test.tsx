@@ -29,7 +29,7 @@ vi.mock('@/hooks/use-prefs', () => ({
   useMinWidth: () => true,
 }))
 // No storage configured: Platform, and the merger unticks "Allow" so the run has to ask.
-vi.mock('@/hooks/use-storage-config', () => ({ useStorageConfig: () => ({ config: { profiles: [], policies: [] }, needsUnlock: false }) }))
+vi.mock('@/hooks/use-storage-config', () => ({ useStorageConfig: () => ({ config: { profiles: [], policies: [] }, usable: { profiles: [], policies: [] }, needsUnlock: false, sealed: false, error: null, storedSince: async () => false }) }))
 const stored: number[] = []
 vi.mock('@/lib/storage', async (importOriginal) => {
   const real = await importOriginal<typeof import('@/lib/storage')>()

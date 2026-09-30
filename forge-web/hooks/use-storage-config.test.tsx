@@ -4,6 +4,10 @@
  * settings, so it asks for the unlock whether any settings are stored yet or not. A first setup
  * after a reload used to show an empty page whose Save failed with "unlock this tab to save
  * storage settings" and nothing on the page to unlock with.
+ *
+ * A write that only uses the settings (a pack upload) is another matter: with none stored in
+ * this browser there is nothing to open, so it goes on with the empty settings (QW-007: batch
+ * suggestions failed after every reload with "your storage settings are not unlocked yet").
  */
 
 import { act } from 'react'
@@ -13,11 +17,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useStorageConfig, type StorageConfigState } from './use-storage-config'
 
 let scope: 'signing' | 'full' = 'signing'
+let stored = false
 const loadStorageConfig = vi.fn(async () => ({ profiles: [], policies: [] }))
 
 vi.mock('@/contexts/auth-context', () => ({
   useAuth: () => ({ identity: 'me', storage: 'vault', unlockScope: scope, controller: { unlockScope: () => scope } }),
 }))
+vi.mock('@/lib/auth/vault', () => ({ hasStorageBlob: async () => stored }))
 vi.mock('@/lib/storage', () => ({
   EMPTY_STORAGE_CONFIG: { profiles: [], policies: [] },
   loadStorageConfig: () => loadStorageConfig(),
@@ -35,6 +41,7 @@ let host: HTMLDivElement
 let root: Root
 beforeEach(() => {
   loadStorageConfig.mockClear()
+  stored = false
   seen = null
   host = document.createElement('div')
   document.body.appendChild(host)
@@ -61,11 +68,45 @@ describe('useStorageConfig', () => {
     expect(loadStorageConfig).not.toHaveBeenCalled()
   })
 
+  it('lets an upload use the empty settings in a signing-only tab with none stored', async () => {
+    scope = 'signing'
+    const s = await settle()
+    expect(s.sealed).toBe(false)
+    expect(s.usable).toEqual({ profiles: [], policies: [] })
+  })
+
+  it('notices settings stored since (another tab) before an upload uses the empty ones', async () => {
+    scope = 'signing'
+    const s = await settle()
+    expect(await s.storedSince()).toBe(false)
+    stored = true
+    let since = false
+    await act(async () => {
+      since = await s.storedSince()
+    })
+    await act(async () => new Promise((r) => setTimeout(r, 0)))
+    expect(since).toBe(true)
+    expect(seen!.sealed).toBe(true)
+    expect(seen!.usable).toBeNull()
+  })
+
+  it('keeps stored settings sealed for an upload until the unlock', async () => {
+    scope = 'signing'
+    stored = true
+    const s = await settle()
+    expect(s.needsUnlock).toBe(true)
+    expect(s.sealed).toBe(true)
+    expect(s.usable).toBeNull()
+    expect(loadStorageConfig).not.toHaveBeenCalled()
+  })
+
   it('opens the settings once the tab is unlocked', async () => {
     scope = 'full'
     const s = await settle()
     expect(s.needsUnlock).toBe(false)
+    expect(s.sealed).toBe(false)
     expect(s.config).not.toBeNull()
+    expect(s.usable).toBe(s.config)
     expect(loadStorageConfig).toHaveBeenCalledOnce()
   })
 })

@@ -19,13 +19,14 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { CheckCircle2, MessageSquare, Pencil, Trash2 } from 'lucide-react'
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
+import { CheckCircle2, FileDiff, MessageSquare, Pencil, Trash2 } from 'lucide-react'
 
 import { commentFirsts, postComment, type AnchorInput, type PostContext, type RepoRef } from '@/lib/repo'
 import type { DraftComment } from '@/lib/repo'
 import { plural, type CommentView } from '@/lib/view'
 import { anchorLabel, extendSelection, lineKey, placeThreads, rangeKeys, type InlineThread, type LineSelection } from '@/lib/view/inline-threads'
+import { insertSuggestion, type SuggestionAnchor } from '@/lib/view/suggest-block'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
@@ -35,6 +36,8 @@ import { InlineCommentsContext, type InlineComments } from '@/components/repo/di
 import { MarkdownView } from '@/components/markdown-view'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/input'
+import { MarkdownEditor } from '@/components/repo/issue-bits'
+import { BranchRunContext, BranchRunSlot, CommitIdentityPrompt } from '@/components/repo/branch-commit-panel'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong } from '@/components/repo/private-compose'
 import { EditedMarker } from '@/components/repo/issue-bits'
@@ -60,9 +63,14 @@ export interface SuggestionActions {
   /** The viewer can move the PR branch (a writer of the source repo); else why not. */
   readonly canApply: boolean
   readonly why: string | null
-  /** The file lines a comment's suggestion would replace (the head's text), or null when unknown. */
-  readonly original: (c: CommentView) => readonly string[] | null
-  /** Whether `c`'s suggestion applies on the head (one block, the new side, this head). */
+  /** The browser commit's name and email are not set yet (asked for beside Apply). */
+  readonly needsIdentity: boolean
+  /** Apply can run now: the identity is set, the head is read, no other commit is running. */
+  readonly ready: boolean
+  /** The file lines a suggestion on `a` would replace (the head's text), or null when unknown. */
+  readonly original: (a: SuggestionAnchor) => readonly string[] | null
+  /** Read `path`'s head text (a composer on it: "Insert a suggestion", Preview). */
+  readonly want: (path: string) => void
   /** Why the comment's suggestion cannot be applied on the head, or null when it can. */
   readonly unapplicable: (c: CommentView) => string | null
   /** Comment id → the commit that applied it. */
@@ -219,7 +227,7 @@ export function InlineCommentsProvider({
               <Thread key={t.root.id} thread={t} {...threadProps} />
             ))}
             {drafts.map((d) => (
-              <PendingComment key={d.localId} draft={d} pending={pending} />
+              <PendingComment key={d.localId} draft={d} pending={pending} suggestions={suggestions} head={headOid} />
             ))}
             {open && selection !== null ? (
               <Composer
@@ -228,6 +236,7 @@ export function InlineCommentsProvider({
                 anchor={{ path, line: selection.line, ...(selection.startLine !== selection.line ? { startLine: selection.startLine } : {}), side, commitOid: headOid }}
                 label={`Your comment on ${path} ${range} (${side === 1 ? 'new' : 'old'})`}
                 pending={pending}
+                suggestions={suggestions}
                 onDone={(id) => {
                   setSelection(null)
                   onPosted(id)
@@ -291,7 +300,7 @@ export function InlineCommentsProvider({
                     </>
                   ) : null}
                 </p>
-                <PendingComment draft={d} pending={pending} />
+                <PendingComment draft={d} pending={pending} suggestions={suggestions} />
               </div>
             ))}
           </div>
@@ -348,7 +357,10 @@ function Thread({ thread, repo, pullId, onPosted, writeBlock, actions, suggestio
   const [replying, setReplying] = useState(false)
   const resolved = actions?.resolved.has(thread.root.id) ?? false
   const [expanded, setExpanded] = useState(false)
-  if (resolved && !expanded) {
+  // A thread holding a suggestion's run stays open: its steps (maybe a storage question) show here.
+  const runAt = useContext(BranchRunContext).at
+  const running = runAt !== null && [thread.root, ...thread.replies].some((c) => runAt === `comment:${c.id}`)
+  if (resolved && !expanded && !running) {
     return (
       <div className="flex flex-wrap items-center gap-2 rounded-md border border-anvil-200 bg-white px-3 py-1.5 text-[12px] text-anvil-600 dark:border-anvil-750 dark:bg-anvil-950 dark:text-anvil-400" data-testid="thread-collapsed" data-root={thread.root.id}>
         <CheckCircle2 className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden />
@@ -467,12 +479,21 @@ function CommentBlock({
   )
 }
 
+/**
+ * How a body's ```suggestion blocks render: as diffs of the lines they replace on `anchor` (null
+ * when the body has none). Stable while those lines are, so the body is not re-rendered for them.
+ */
+function useSuggestionContext(body: string, anchor: SuggestionAnchor | null, suggestions: SuggestionActions | undefined): { original: readonly string[] | null } | null {
+  const has = body.includes('```suggestion') || body.includes('~~~suggestion')
+  const lines = has && suggestions !== undefined && anchor !== null ? suggestions.original(anchor) : null
+  const key = lines === null ? null : lines.join('\n')
+  return useMemo(() => (has ? { original: key === null ? null : key.split('\n') } : null), [has, key])
+}
+
 /** A comment body: its ```suggestion blocks as diffs, with Apply / Add to batch / "Applied in". */
 function SuggestedBody({ comment: c, suggestions }: { comment: CommentView; suggestions?: SuggestionActions | undefined }): JSX.Element {
-  const has = c.body.includes('```suggestion') || c.body.includes('~~~suggestion')
-  const original = has && suggestions ? suggestions.original(c) : null
-  const ctx = useMemo(() => (has ? { original } : null), [has, original])
-  if (!has || !suggestions) return <MarkdownView source={c.body} suggestion={ctx} />
+  const ctx = useSuggestionContext(c.body, c.anchor, suggestions)
+  if (ctx === null || !suggestions) return <MarkdownView source={c.body} suggestion={ctx} />
   const applied = suggestions.applied.get(c.id)
   const refused = suggestions.unapplicable(c)
   const inBatch = suggestions.batch.has(c.id)
@@ -488,26 +509,41 @@ function SuggestedBody({ comment: c, suggestions }: { comment: CommentView; sugg
           <span className="text-anvil-500 dark:text-anvil-400">{refused}</span>
         ) : suggestions.canApply ? (
           <>
-            <Button size="sm" variant="primary" onClick={() => suggestions.onApply(c)}>
+            <Button size="sm" variant="primary" onClick={() => suggestions.onApply(c)} disabled={!suggestions.ready}>
               Apply suggestion
             </Button>
             <Button size="sm" variant="outline" aria-pressed={inBatch} onClick={() => suggestions.onToggleBatch(c)}>
               {inBatch ? 'Remove from batch' : 'Add to batch'}
             </Button>
+            {suggestions.needsIdentity ? <CommitIdentityPrompt what="apply suggestions" /> : null}
           </>
         ) : (
           <span className="text-anvil-500 dark:text-anvil-400" title={suggestions.why ?? undefined}>
             {suggestions.why}
           </span>
         )}
+        <BranchRunSlot at={`comment:${c.id}`} />
       </div>
     </>
   )
 }
 
-/** A comment of the viewer's pending review, shown in place. */
-function PendingComment({ draft, pending }: { draft: DraftComment; pending: PendingReview | undefined }): JSX.Element {
+/** A comment of the viewer's pending review, shown in place (a suggestion as the diff it will be). */
+function PendingComment({
+  draft,
+  pending,
+  suggestions,
+  head,
+}: {
+  draft: DraftComment
+  pending: PendingReview | undefined
+  suggestions?: SuggestionActions | undefined
+  /** The head it is shown on, for a comment on its lines: a draft's anchor omits its own head. */
+  head?: string
+}): JSX.Element {
   const [editing, setEditing] = useState<string | null>(null)
+  const anchor = useMemo(() => ({ ...draft.anchor, commitOid: draft.anchor.commitOid ?? head }), [draft.anchor, head])
+  const ctx = useSuggestionContext(draft.body, anchor, suggestions)
   return (
     <div className="rounded-md border border-dashed border-caution/60 bg-caution/5 px-3 py-2" data-testid="pending-comment" data-local={draft.localId}>
       <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
@@ -546,7 +582,7 @@ function PendingComment({ draft, pending }: { draft: DraftComment; pending: Pend
         </div>
       ) : (
         <div className="mt-1">
-          <MarkdownView source={draft.body} />
+          <MarkdownView source={draft.body} suggestion={ctx} />
         </div>
       )}
     </div>
@@ -560,6 +596,7 @@ function Composer({
   replyTo,
   label,
   pending,
+  suggestions,
   onDone,
   onCancel,
 }: {
@@ -570,6 +607,8 @@ function Composer({
   label: string
   /** The pending review (a line comment only): offers "Start a review" / "Add review comment". */
   pending?: PendingReview | undefined
+  /** A line comment on the new side: "Insert a suggestion" and a Preview showing it as a diff. */
+  suggestions?: SuggestionActions | undefined
   onDone: (id?: string) => void
   onCancel: () => void
 }): JSX.Element {
@@ -623,6 +662,35 @@ function Composer({
       setPosting(false)
     }
   }
+  // GitHub's "Insert a suggestion" (review-parity R5): on the new side only, pre-filled with the
+  // lines the comment is on (the head's text; the button waits for it).
+  const id = useId()
+  const field = useRef<HTMLTextAreaElement>(null)
+  const suggestAt = anchor !== undefined && anchor.side === 1 && suggestions !== undefined ? anchor : null
+  const want = suggestions?.want
+  const path = suggestAt?.path ?? null
+  useEffect(() => {
+    if (path !== null) want?.(path)
+  }, [path, want])
+  const lines = suggestAt !== null ? suggestions?.original(suggestAt) ?? null : null
+  // The preview's context, stable while the lines are (the preview re-renders only then).
+  const suggesting = suggestAt !== null
+  const linesKey = lines === null ? null : lines.join('\n')
+  const preview = useMemo(() => (suggesting ? { original: linesKey === null ? null : linesKey.split('\n') } : null), [suggesting, linesKey])
+  const insert = (): void => {
+    if (lines === null) return
+    const el = field.current
+    const start = el?.selectionStart ?? body.length
+    const end = el?.selectionEnd ?? body.length
+    const out = insertSuggestion(body, start, end, lines)
+    setBody(out.body)
+    requestAnimationFrame(() => {
+      const t = field.current
+      if (t === null) return
+      t.focus()
+      t.setSelectionRange(out.caret, out.caret)
+    })
+  }
   const reviewing = pending !== undefined && anchor !== undefined && !pending.frozen
   const addToReview = (): void => {
     if (!reviewing || body.trim() === '' || anchor === undefined) return
@@ -632,7 +700,30 @@ function Composer({
   }
   return (
     <div className="space-y-2 font-sans">
-      <Textarea aria-label={label} value={body} onChange={(e) => setBody(e.target.value)} placeholder="Leave a comment" className="min-h-[72px]" autoFocus />
+      <MarkdownEditor
+        id={`${id}-body`}
+        label={label}
+        value={body}
+        onChange={setBody}
+        placeholder="Leave a comment"
+        autoFocus
+        textareaRef={field}
+        suggestion={preview}
+        hint={null}
+        tools={
+          suggestAt !== null ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={insert}
+              disabled={lines === null}
+              title={lines === null ? 'Reading the lines…' : 'The selected lines, to edit into the change you suggest'}
+            >
+              <FileDiff className="h-3.5 w-3.5" aria-hidden /> Insert a suggestion
+            </Button>
+          ) : null
+        }
+      />
       <SealedLimit repo={repo} kind="comment" text={body.trim() + (anchor?.path ?? '')} />
       <BodyCounter repo={repo} text={body.trim()} field="comment" />
       <div className="flex flex-wrap items-center justify-between gap-2">

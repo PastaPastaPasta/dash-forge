@@ -12,13 +12,17 @@ import { answerStorageQuestion, idFile, idOf, shot, signedIn, unlock, waitForRep
  *   E2E_DEVNET=bonsia E2E_WRITE=1 E2E_IDENTITY_DIR=<dir with OWNER, CONTRIB, COLLAB> \
  *     E2E_BIN_DIR=<dir with dg + git-remote-dash> pnpm exec playwright test review-suggestions.spec.ts
  *
- *   s1. OWNER (maintainer) comments two suggestions on CONTRIB's PR from the web: each renders
- *       as a diff (the lines removed, the suggested ones), with no Apply for OWNER (not a writer of
- *       the fork) and the reason why.
- *   s2. CONTRIB (the author, writer of the fork) batches both → "Apply 2 suggestions in one
- *       commit" → the step list completes → the PR head moves ("pushed 1 commit") → both read
- *       "Applied in <oid>". The fork's branch holds the commit with dg's trailers
- *       (`Forge-Suggestion:` ×2, `Co-authored-by:`), and the file has the suggested text.
+ *   s1. OWNER (maintainer) comments two suggestions on CONTRIB's PR from the web, the first with
+ *       "Insert a suggestion" (pre-filled with the line) and checked in Preview (QW-067): each
+ *       renders as a diff (the lines removed, the suggested ones), with no Apply for OWNER (not a
+ *       writer of the fork) and the reason why. A pending review comment's suggestion shows the
+ *       line it replaces too.
+ *   s2. CONTRIB (the author, writer of the fork), in a tab resumed after a reload (the signing
+ *       key only; QW-007) and with no commit name and email yet (QW-065: set beside Apply),
+ *       batches both → "Apply 2 suggestions in one commit" → the step list completes in the
+ *       batch bar → the PR head moves ("pushed 1 commit") → both read "Applied in <oid>". The
+ *       fork's branch holds the commit with dg's trailers (`Forge-Suggestion:` ×2,
+ *       `Co-authored-by:`), and the file has the suggested text.
  *   s3. OWNER pushes to main; CONTRIB's "Update branch" merges it into the PR branch (parents:
  *       the old head and main), and the PR follows.
  */
@@ -110,16 +114,35 @@ test.afterAll(() => rmSync(WORK, { recursive: true, force: true }))
 test('s1. the maintainer suggests two changes; they render as diffs, with no Apply for the maintainer', async ({ browser }) => {
   const page = await signedIn(browser, 'OWNER', pr('&tab=files'))
   await waitForRepoResolved(page)
-  for (const [line, text] of [
-    [2, '    let name = "Dash Forge";'],
-    [3, '    let punct = "!";'],
-  ] as const) {
-    await expect(lineButton(page, line)).toBeVisible({ timeout: 180_000 })
-    await lineButton(page, line).click()
-    await page.getByRole('textbox', { name: `Your comment on ${FILE} line ${line} (new)` }).fill(`Suggest:\n\n\`\`\`suggestion\n${text}\n\`\`\``)
-    await page.getByRole('button', { name: 'Add single comment' }).click()
-    await expect(page.getByTestId('suggestion').filter({ hasText: text })).toBeVisible({ timeout: 180_000 })
-  }
+  // Line 2 with "Insert a suggestion": the block comes pre-filled with the line, edited in place.
+  await expect(lineButton(page, 2)).toBeVisible({ timeout: 180_000 })
+  await lineButton(page, 2).click()
+  const box2 = page.getByRole('textbox', { name: `Your comment on ${FILE} line 2 (new)` })
+  await page.getByRole('button', { name: 'Insert a suggestion' }).click()
+  await expect(box2).toHaveValue('```suggestion\n    let name = "forge";\n```\n')
+  await box2.fill(`Suggest:\n\n${(await box2.inputValue()).replace('"forge"', '"Dash Forge"')}`)
+  await page.getByRole('tab', { name: 'Preview' }).click()
+  const preview = page.getByTestId('markdown-preview')
+  await expect(preview.locator('[data-kind=removed]')).toContainText('let name = "forge";')
+  await expect(preview.locator('[data-kind=added]')).toContainText('let name = "Dash Forge";')
+  await shot(page, 'review-suggest-00-insert-preview')
+  await page.getByRole('button', { name: 'Add single comment' }).click()
+  await expect(page.getByTestId('suggestion').filter({ hasText: 'let name = "Dash Forge";' })).toBeVisible({ timeout: 180_000 })
+  // Line 3 typed by hand.
+  await lineButton(page, 3).click()
+  await page.getByRole('textbox', { name: `Your comment on ${FILE} line 3 (new)` }).fill('Suggest:\n\n```suggestion\n    let punct = "!";\n```')
+  await page.getByRole('button', { name: 'Add single comment' }).click()
+  await expect(page.getByTestId('suggestion').filter({ hasText: 'let punct = "!";' })).toBeVisible({ timeout: 180_000 })
+  // A pending review comment's suggestion shows the line it replaces (kept in this browser, free).
+  await lineButton(page, 4).click()
+  await page.getByRole('button', { name: 'Insert a suggestion' }).click()
+  await page.getByRole('button', { name: 'Start a review' }).click()
+  const pendingOne = page.getByTestId('pending-comment')
+  await expect(pendingOne.locator('[data-kind=removed]')).toContainText('println!("hello, {name}{punct}");')
+  await expect(pendingOne.locator('[data-kind=added]')).toContainText('println!("hello, {name}{punct}");')
+  await shot(page, 'review-suggest-00-pending-suggestion')
+  await pendingOne.getByRole('button', { name: 'Delete pending comment' }).click()
+  await expect(page.getByTestId('pending-comment')).toHaveCount(0)
   const first = page.getByTestId('suggestion').first()
   await expect(first.locator('[data-kind=removed]')).toContainText('let name = "forge";')
   await expect(first.locator('[data-kind=added]')).toContainText('let name = "Dash Forge";')
@@ -128,21 +151,39 @@ test('s1. the maintainer suggests two changes; they render as diffs, with no App
   await shot(page, 'review-suggest-01-maintainer-view')
 })
 
-test('s2. the author batches both into one commit; the head follows; "Applied in"', async ({ browser }) => {
+test('s2. after a reload, the author sets a commit identity in place and batches both into one commit; the head follows; "Applied in"', async ({ browser }) => {
   const page = await signedIn(browser, 'CONTRIB', '/settings/')
-  await commitIdentity(page, 'E2E Contrib', 'contrib@e2e.forge.invalid')
+  // No commit identity yet: it is asked for beside Apply (QW-065).
+  await page.evaluate(() => {
+    const raw = window.localStorage.getItem('forge.prefs.v1')
+    const prefs = raw === null ? {} : (JSON.parse(raw) as Record<string, unknown>)
+    window.localStorage.setItem('forge.prefs.v1', JSON.stringify({ ...prefs, mergeName: '', mergeEmail: '' }))
+  })
   await page.goto(pr('&tab=files'), { waitUntil: 'domcontentloaded' })
   await unlock(page)
+  // A tab resumed after a reload holds the signing key only (QW-007): the batch must still apply.
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await expect(page.getByTestId('funds-pill')).toBeVisible({ timeout: 60_000 })
   await waitForRepoResolved(page)
   const actions = page.getByTestId('suggestion-actions')
   await expect(actions).toHaveCount(2, { timeout: 180_000 })
+  await expect(actions.nth(0).getByRole('button', { name: 'Apply suggestion' })).toBeDisabled()
   await actions.nth(0).getByRole('button', { name: 'Add to batch' }).click()
   await actions.nth(1).getByRole('button', { name: 'Add to batch' }).click()
-  await expect(page.getByTestId('suggestion-batch')).toContainText('2 suggestions in the batch')
+  const bar = page.getByTestId('suggestion-batch')
+  await expect(bar).toContainText('2 suggestions in the batch')
+  await expect(bar.getByRole('button', { name: 'Apply 2 suggestions in one commit' })).toBeDisabled()
+  await shot(page, 'review-suggest-02a-identity-prompt')
+  await bar.getByRole('button', { name: 'Set name and email' }).click()
+  await bar.getByLabel('Commit name').fill('E2E Contrib')
+  await bar.getByLabel('Commit email').fill('contrib@e2e.forge.invalid')
+  await bar.getByRole('button', { name: 'Save' }).click()
+  await expect(bar.getByRole('button', { name: 'Apply 2 suggestions in one commit' })).toBeEnabled()
   await shot(page, 'review-suggest-02-batch')
-  await page.getByRole('button', { name: 'Apply 2 suggestions in one commit' }).click()
-  await answerStorageQuestion(page, page.getByTestId('branch-commit').locator('[data-step="upload"]:is([data-state="done"],[data-state="skipped"])'))
-  const steps = page.getByTestId('branch-commit')
+  await bar.getByRole('button', { name: 'Apply 2 suggestions in one commit' }).click()
+  // The run shows in the batch bar, where it was started, with no unlock needed (none stored).
+  const steps = bar.getByTestId('branch-commit')
+  await answerStorageQuestion(page, steps.locator('[data-step="upload"]:is([data-state="done"],[data-state="skipped"])'))
   await expect(steps.locator('[data-step="head"]')).toHaveAttribute('data-state', 'done', { timeout: 300_000 })
   await shot(page, 'review-suggest-03-steps')
   await expect(page.getByTestId('suggestion-applied')).toHaveCount(2, { timeout: 240_000 })
