@@ -76,14 +76,18 @@ test.describe('page request budget (S-1)', () => {
     await expect(fileRows(page).first()).toBeVisible({ timeout: 60_000 })
     await expect(page.locator('section[aria-label=README]')).toBeVisible({ timeout: 60_000 })
     await expect(page.getByTestId('commit-count')).toContainText(/\d/, { timeout: 30_000 })
+    const about = page.getByRole('complementary', { name: 'About this repository' })
+    // The release count and repo size are proved sums read only once their row is scrolled into
+    // view (useInView, repo-rail.tsx). Scroll it in now, before the cold snapshot, so those +2
+    // reads land in the cold budget below rather than silently never firing.
+    await about.getByTestId('repo-releases').scrollIntoViewIfNeeded()
+    await expect(about.getByTestId('repo-releases')).toContainText(/\d/, { timeout: 30_000 })
     await settle(page)
     const cold = dapi.all().length
     test.info().annotations.push({ type: 'dapi', description: `fixture cold home: ${cold} ${summary(dapi.all())}` })
     expect(cold, summary(dapi.all())).toBeLessThanOrEqual(DEMO_COLD_HOME)
     // Nothing the home shows went missing: counts, stars, members, the owner's name.
-    const about = page.getByRole('complementary', { name: 'About this repository' })
     await expect(about.getByRole('link', { name: /Stars/ })).toContainText(/\d/)
-    await expect(about.getByTestId('repo-releases')).toContainText(/\d/)
     await expect(about.getByTestId('rail-members')).toBeVisible()
     await shot(page, 'pb-01-fixture-home-cold')
 
