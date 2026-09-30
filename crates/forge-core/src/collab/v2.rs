@@ -4516,8 +4516,10 @@ impl<'a> Collab<'a> {
             if attempts >= 2 {
                 return Err(Error::Config(format!(
                     "release {tag} not written: the key epoch of {} moved twice while its \
-                     assets were uploaded; run the command again",
-                    repo.display()
+                     assets were uploaded; run the command again (copies stored under the old \
+                     keys stay in your storage: {})",
+                    repo.display(),
+                    orphaned.join(", ")
                 )));
             }
         };
