@@ -217,8 +217,14 @@ prints the network, the forge-core, forge-collab and forge-community ids, and wh
 | any of the above (env) | `DASH_FORGE_NETWORK` | `DASH_FORGE_DEVNET_NAME` | `DASH_FORGE_DAPI_ADDRESSES` |
 | forge-web (build env) | `NEXT_PUBLIC_NETWORK` | `NEXT_PUBLIC_DEVNET_NAME` | `NEXT_PUBLIC_DAPI_ADDRESSES` |
 
-Precedence is per field. For `dg`, `forge-relay` and `forge-import` it is: flags, then the
-config file, then the environment, then the deployment file. For `git-remote-dash` it is the
+Precedence is per field. For `forge-relay` and `forge-import` it is: flags, then the config
+file, then the environment, then the deployment file. For `dg` it is: flags, then the git
+config of the repository in the current directory (only its own `local` / `worktree` values,
+which `dg init` and `dg repo clone` write; `dg auth`, `dg repo clone` and `dg repo create`
+skip it), then `config.toml`, then the environment, then the
+network the key in use records (`dfk1:<network>:…`, an identity file's `network`, so a CI runner
+key needs no network setting), then the deployment file. `dg doctor` shows which one chose the
+network. For `git-remote-dash` it is the
 environment, then git config, then the network `dg` recorded in `config.toml` (by `dg auth new`
 or `dg auth login`), then the deployment file. The environment comes first there because `dg`
 and `forge-import` pass their resolved network to the helper through it. `dg init` and
@@ -226,6 +232,8 @@ and `forge-import` pass their resolved network to the helper through it. `dg ini
 when the default changes. Two more rules apply to every tool:
 
 - `--devnet-name` on its own implies `--network devnet`.
+- A network value may name the devnet itself, as the tools print it:
+  `DASH_FORGE_NETWORK=devnet-bonsia` is `devnet` plus the name `bonsia`.
 - A layer that names a different network contributes nothing network-specific. For example,
   `dapi_addresses` saved for a devnet in `config.toml` are ignored under
   `--network mainnet`.

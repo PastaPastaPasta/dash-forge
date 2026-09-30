@@ -691,6 +691,11 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
         .fix("try again in a minute: a node served an incomplete page, and another node will be asked")
         .note("nothing partial was used: an incomplete history is refused rather than folded"),
         CoreError::NotFound => not_found(chain, ctx),
+        CoreError::IdentityNotFound {
+            identity_id,
+            network,
+            key_network,
+        } => identity_not_found(ctx, identity_id, network, key_network.as_deref()),
         CoreError::DuplicateUniqueIndex(what) => UserError::new(
             codes::ALREADY_EXISTS,
             ctx.headline("it already exists"),
@@ -893,6 +898,51 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
         );
     }
     None
+}
+
+/// E304 for a signing identity that `network` does not have (QW-032: it named no network).
+/// When the key records another network, the fix selects that one, in the form the failing
+/// tool takes (`dg` flags, or the git config and environment the helper reads).
+fn identity_not_found(
+    ctx: &ErrorContext<'_>,
+    identity_id: &str,
+    network: &str,
+    key_network: Option<&str>,
+) -> UserError {
+    let u = UserError::new(
+        codes::IDENTITY_NOT_FOUND,
+        ctx.headline(&format!("your identity does not exist on {network}")),
+    );
+    let Some(there) = key_network
+        .filter(|k| *k != network)
+        .map(crate::platform::Network::from_key)
+    else {
+        return u
+            .cause(format!("Platform ({network}) has no identity {identity_id}"))
+            .fix(if ctx.via_git {
+                "select the network the identity was created on: `git config dash.network <net>` (and `dash.devnetName` on a devnet), or DASH_FORGE_NETWORK for one command"
+            } else {
+                "select the network the identity was created on: `--network testnet|mainnet`, or `--network devnet --devnet-name <name>`; `dg auth status` shows the network in use"
+            });
+    };
+    let u = u.cause(format!(
+        "your key is for {there}, and Platform ({network}) has no identity {identity_id}"
+    ));
+    if ctx.via_git {
+        u.fix(format!(
+            "use the key's network in this repository: `{}`",
+            there.git_config_command("")
+        ))
+        .fix(format!(
+            "for one command: `{} git …`",
+            there.env_assignments()
+        ))
+    } else {
+        u.fix(format!(
+            "use the key's network: `{}` (`dg auth login` records it as the default)",
+            there.dg_flags()
+        ))
+    }
 }
 
 fn not_found(chain: &str, ctx: &ErrorContext<'_>) -> UserError {
@@ -1294,13 +1344,25 @@ pub fn private_needs_identity(repo: &str) -> UserError {
 }
 
 fn identity_unreadable(msg: &str) -> UserError {
+    // A sealed key that cannot be asked for (QW-034): the way out is the passphrase, not a
+    // new sign-in, which costs a key registration.
+    if msg.contains("needs a passphrase") {
+        return UserError::new(
+            codes::IDENTITY_UNREADABLE,
+            "your key is sealed with a passphrase, and it could not be asked for",
+        )
+        .cause(msg)
+        .fix("run the same command in a terminal: it asks for the passphrase once")
+        .fix("scripts and CI: set DASH_FORGE_PASSPHRASE, or DASH_FORGE_KEY to a `dg auth export --format dfk1` key")
+        .note("reads of public repositories, `dg auth status` and `dg auth balance` do not need the key opened");
+    }
     UserError::new(
         codes::IDENTITY_UNREADABLE,
         "could not load your identity file",
     )
     .cause(msg)
-    .fix("`dg auth login <file>` stores a key again (from the identity file or --mnemonic); `dg auth status` shows which key source is in use")
-    .fix("or pass `--identity <file>` / set DASH_FORGE_KEY for one command (the helper reads DASH_FORGE_KEY)")
+    .fix("`dg auth status` shows which key source is in use; `dg auth login <file>` (or `--mnemonic`) stores a key again")
+    .fix("pass `--identity <file>` / set DASH_FORGE_KEY for one command (the helper reads DASH_FORGE_KEY)")
 }
 
 /// E302 — the identity file has no key at the level an operation needs.
@@ -2567,6 +2629,98 @@ mod tests {
             u.message,
             "could not show the repo: alice/project was not found"
         );
+    }
+
+    /// QW-034: a sealed key with no terminal says how to give the passphrase, not to sign in
+    /// again (a new key registration) or to run a command that fails the same way.
+    #[test]
+    fn a_sealed_key_without_a_terminal_names_the_passphrase_ways() {
+        let io = CoreError::Io(
+            "/h/.config/dash-forge/identities/x.key needs a passphrase and there is no terminal to ask on (os error 6); set DASH_FORGE_PASSPHRASE".into(),
+        );
+        let outer = Ctx("loading identity from /h/x.key", Box::new(io));
+        let u = classify(
+            [&outer as &(dyn StdError + 'static), outer.source().unwrap()],
+            &ErrorContext::default(),
+        );
+        assert_eq!(u.code, "E303");
+        assert!(
+            u.message.contains("sealed with a passphrase"),
+            "{}",
+            u.message
+        );
+        assert!(
+            u.fix.iter().any(|f| f.contains("DASH_FORGE_PASSPHRASE")),
+            "{:?}",
+            u.fix
+        );
+        assert!(
+            !u.fix.iter().any(|f| f.contains("dg auth login")),
+            "{:?}",
+            u.fix
+        );
+    }
+
+    /// QW-032: E304 names the network searched, and the key's own network when it records
+    /// another, in the form the failing tool takes.
+    #[test]
+    fn a_missing_identity_names_both_networks() {
+        let err = CoreError::IdentityNotFound {
+            identity_id: "4UF1".into(),
+            network: "testnet".into(),
+            key_network: Some("devnet-bonsia".into()),
+        };
+        let ctx = ErrorContext {
+            goal: Some("check run not reported"),
+            ..Default::default()
+        };
+        let u = classify([&err as &(dyn StdError + 'static)], &ctx);
+        assert_eq!(u.code, "E304");
+        assert_eq!(
+            u.message,
+            "check run not reported: your identity does not exist on testnet"
+        );
+        assert!(u
+            .cause
+            .as_deref()
+            .unwrap()
+            .contains("your key is for devnet-bonsia"));
+        assert!(
+            u.fix[0].contains("--network devnet --devnet-name bonsia"),
+            "{:?}",
+            u.fix
+        );
+        let git = ErrorContext {
+            via_git: true,
+            ..Default::default()
+        };
+        let u = classify([&err as &(dyn StdError + 'static)], &git);
+        assert!(
+            u.fix[0].contains("git config dash.network devnet"),
+            "{:?}",
+            u.fix
+        );
+        assert!(
+            u.fix[1].contains("DASH_FORGE_NETWORK=devnet"),
+            "{:?}",
+            u.fix
+        );
+        // A key that records no network (or the same one): the generic network fix.
+        let same = CoreError::IdentityNotFound {
+            identity_id: "4UF1".into(),
+            network: "devnet-bonsia".into(),
+            key_network: Some("devnet-bonsia".into()),
+        };
+        let u = classify(
+            [&same as &(dyn StdError + 'static)],
+            &ErrorContext::default(),
+        );
+        assert!(u
+            .cause
+            .as_deref()
+            .unwrap()
+            .contains("Platform (devnet-bonsia) has no identity 4UF1"));
+        assert!(u.fix[0].contains("--network"), "{:?}", u.fix);
     }
 
     #[test]

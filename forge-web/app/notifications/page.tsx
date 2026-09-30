@@ -38,7 +38,7 @@ function hrefOf(item: InboxItem): string {
 }
 
 export default function NotificationsPage(): JSX.Element {
-  const { identity } = useAuth()
+  const { identity, locked } = useAuth()
   const { items, subs, prefs, polling, lastPoll, lastFeeds, error } = useInboxStore()
   const { markRead, markAllRead, setPrefs, pollNow } = useInboxActions()
   const [filter, setFilter] = useState<'unread' | 'all'>('unread')
@@ -58,7 +58,7 @@ export default function NotificationsPage(): JSX.Element {
         <h1 className="mb-4 text-xl">Notifications</h1>
         <EmptyState
           icon={Bell}
-          title="Sign in to see your notifications"
+          title={locked ? 'Unlock to see your notifications' : 'Sign in to see your notifications'}
           body={`${INBOX_EMPTY} They follow the identity you sign in with.`}
           action={<SignInButton />}
         />
@@ -97,7 +97,7 @@ export default function NotificationsPage(): JSX.Element {
               type="button"
               aria-pressed={filter === f}
               onClick={() => setFilter(f)}
-              className={cn('rounded px-3 py-1 text-dense font-medium', filter === f ? 'bg-forge-500/15 text-forge-800 dark:text-forge-300' : 'text-anvil-600 dark:text-anvil-300')}
+              className={cn('rounded px-3 py-1 text-dense font-medium coarse:min-h-11', filter === f ? 'bg-forge-500/15 text-forge-800 dark:text-forge-300' : 'text-anvil-600 dark:text-anvil-300')}
             >
               {f === 'unread' ? `Unread (${unread})` : `All (${items.length})`}
             </button>
@@ -161,11 +161,11 @@ export default function NotificationsPage(): JSX.Element {
           )}
           {prefs ? (
             <div className="mt-3 space-y-1.5">
-              <label className="flex items-center gap-2">
+              <label className="flex items-center gap-2 coarse:min-h-11">
                 <input type="checkbox" className="h-4 w-4 accent-forge-600" checked={prefs.stars} onChange={(e) => void setPrefs({ ...prefs, stars: e.target.checked })} />
                 Also watch repos I starred
               </label>
-              <label className="flex items-center gap-2">
+              <label className="flex items-center gap-2 coarse:min-h-11">
                 <input type="checkbox" className="h-4 w-4 accent-forge-600" checked={prefs.pushes} onChange={(e) => void setPrefs({ ...prefs, pushes: e.target.checked })} />
                 Tell me about pushes to repos I watch
               </label>
@@ -187,8 +187,9 @@ function InboxRow({ item, onRead }: { item: InboxItem; onRead: () => void }): JS
   return (
     <li className={cn('flex items-start gap-3 px-3 py-2.5 sm:px-4', item.read ? 'bg-transparent' : 'bg-forge-500/5')} data-read={item.read}>
       <Icon className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
-      <div className="min-w-0 flex-1">
-        <Link href={hrefOf(item)} onClick={onRead} className="block text-dense hover:underline">
+      {/* Touch: the thread link covers its whole text column (the meta line holds no links). */}
+      <div className="relative min-w-0 flex-1">
+        <Link href={hrefOf(item)} onClick={onRead} className="block text-dense hover:underline coarse:after:absolute coarse:after:inset-x-0 coarse:after:-inset-y-2.5 coarse:after:content-['']">
           <span className="font-mono text-anvil-500 dark:text-anvil-400">{item.repo.name}</span>
           {item.target ? (
             <>

@@ -214,6 +214,6 @@ describe('identity file → master material', () => {
   })
 
   it('refuses a file with neither a master key nor a mnemonic', () => {
-    expect(() => masterMaterialFromFile(JSON.stringify({ identityId: ID, identityKeys: [] }))).toThrow(/MASTER/)
+    expect(() => masterMaterialFromFile(JSON.stringify({ identityId: ID, identityKeys: [] }))).toThrow(/neither the identity.s master key nor its recovery phrase/)
   })
 })

@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { PackManifest } from '../repo'
 import { countCommits, walkCommitColumn } from './commit-log'
-import { historySource, liveHistoryIndexes } from './history-source'
+import { chainHistory, historySource, liveHistoryIndexes } from './history-source'
 
 /** forge-core's fixture: a delta of tip ab… over the full index 5c5c…. */
 const deltaBody = Uint8Array.from(
@@ -152,5 +152,39 @@ describe('historySource', () => {
     const column = manifest(fullOf(tip), [tip], { kind: 5 })
     const src = historySource([column], async () => fullOf(tip))
     await expect(src?.loadVersions(tip)).rejects.toThrow(/kind-5 artifact must be format 2/)
+  })
+})
+
+describe('chainHistory', () => {
+  // A fork reads its parent's history indexes for the tips it shares (QW-023), its own first.
+  it("answers from the fork's own index first, then its parent's", async () => {
+    const own = 'aa'.repeat(20)
+    const shared = 'bb'.repeat(20)
+    const ownBytes = fullOf(own)
+    const parentBytes = fullOf(shared)
+    const mine = historySource([manifest(ownBytes, [own])], async () => ownBytes)
+    const parents = historySource([manifest(parentBytes, [shared])], async () => parentBytes)
+    const src = chainHistory(mine, parents)
+    if (src === null) throw new Error('a history source')
+    expect(src.covers(own) && src.covers(shared)).toBe(true)
+    expect(src.covers('cc'.repeat(20))).toBe(false)
+    expect([...src.byTip.keys()].sort()).toEqual([own, shared])
+    expect((await src.load(own)).tip).toBe(own)
+    expect((await src.load(shared)).tip).toBe(shared)
+    expect(chainHistory(null, parents)).toBe(parents)
+    expect(chainHistory(mine, null)).toBe(mine)
+  })
+
+  it("falls back to the parent's index of the same tip when the fork's will not load", async () => {
+    const tip = 'dd'.repeat(20)
+    const good = fullOf(tip)
+    const mine = historySource([manifest(good, [tip])], async () => {
+      throw new Error('storage down')
+    })
+    const parents = historySource([manifest(good, [tip])], async () => good)
+    expect((await chainHistory(mine, parents)?.load(tip))?.tip).toBe(tip)
+    await expect(chainHistory(mine, historySource([manifest(fullOf('ee'.repeat(20)), ['ee'.repeat(20)])], async () => good))?.load(tip)).rejects.toThrow(
+      /storage down/,
+    )
   })
 })

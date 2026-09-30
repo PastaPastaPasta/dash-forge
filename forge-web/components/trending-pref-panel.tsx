@@ -17,7 +17,7 @@ export function TrendingPrefPanel(): JSX.Element {
   const beat = previewCreate('starBeat', {})
   return (
     <div className="space-y-2" data-testid="trending-pref">
-      <label className="flex items-center gap-2 text-dense">
+      <label className="flex items-center gap-2 text-dense coarse:min-h-11">
         <input
           type="checkbox"
           checked={on}

@@ -29,7 +29,9 @@ import type { RepoRef } from './contract'
 import { issueViewOf, type IssueView } from './issues'
 import { ISSUE_CLOSE } from '../rules/transition'
 import type { LabelDef } from './labels'
-import { pinnedTargets } from '../rules/parity'
+import { foldThreadMetaV2, pinnedTargets } from '../rules/parity'
+import { searchableBody, trustedOrigin } from './provenance'
+import { commentRange, searchTerms, type CountRange, type ExtraFilters, type TextScope } from '../view/issue-query'
 import type { HiddenCounts } from './private-content'
 import {
   authorCandidates,
@@ -46,18 +48,24 @@ import {
   type ListIndex,
 } from './target-index'
 
-/** An issue row: the folded issue and its comment count (null: not counted). */
+/** An issue row: the folded issue, its comment count (null: not counted) and its milestone. */
 export interface IssueRow extends IssueView {
   readonly comments: number | null
+  /** The milestone title its member events leave it in (`foldThreadMetaV2`), or null. */
+  readonly milestone?: string | null
 }
 
 type IssueIndex = ListIndex<IssueRow>
 
 /**
  * The index, loading it on first use (one per repo and network, until a write drops it). An
- * issue's view: its state code (the chunk's proved sum) and its labels and assignees from the feed.
+ * issue's view: its state code (the chunk's proved sum), its labels and assignees, and its
+ * milestone from the feed.
  */
-const indexOf = indexCache<IssueRow>('issue', async (_sdk, _index, doc, log, code) => issueViewOf(doc, log, code))
+const indexOf = indexCache<IssueRow>('issue', async (_sdk, _index, doc, log, code) => ({
+  ...issueViewOf(doc, log, code),
+  milestone: foldThreadMetaV2(log.events).milestone,
+}))
 
 function sortRowsNewest(a: IssueRow, b: IssueRow): number {
   return b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1)
@@ -67,8 +75,41 @@ function sortRowsNewest(a: IssueRow, b: IssueRow): number {
 // Queries
 // ---------------------------------------------------------------------------
 
+/**
+ * The filters the Issues and Pull requests lists share beyond labels, author and assignee (the
+ * search box's `ExtraFilters`, resolved: `comments` as a range). Each is optional: absent, it
+ * does not narrow.
+ */
+export interface RowFilters {
+  readonly notLabels?: readonly string[]
+  readonly noLabel?: boolean
+  readonly milestone?: string | null
+  readonly noMilestone?: boolean
+  /** A source forge's login: an item whose trusted import recorded it as the author. */
+  readonly authorLogin?: string | null
+  /** Who may mirror (`useMirrorTrust`): only their items' recorded author matches `authorLogin`. */
+  readonly mirrorTrust?: ReadonlySet<string> | null
+  /** Where `text` is looked for (default: titles and bodies). */
+  readonly scope?: TextScope
+  readonly comments?: CountRange | null
+}
+
+/** A list query's {@link ExtraFilters} as the {@link RowFilters} a selection carries. */
+export function rowFiltersOf(q: ExtraFilters, mirrorTrust: ReadonlySet<string> | null): RowFilters {
+  return {
+    notLabels: q.notLabels,
+    noLabel: q.noLabel,
+    milestone: q.milestone,
+    noMilestone: q.noMilestone,
+    authorLogin: q.authorLogin,
+    mirrorTrust,
+    scope: q.scope,
+    comments: commentRange(q.comments),
+  }
+}
+
 /** What the list asks for (resolved: `me` is replaced by the viewer's id by the caller). */
-export interface IssueSelection {
+export interface IssueSelection extends RowFilters {
   readonly state: 'open' | 'closed' | 'all'
   readonly labels: readonly string[]
   /** An identity id, or null. */
@@ -81,6 +122,23 @@ export interface IssueSelection {
   readonly text: string
   readonly page: number
   readonly pageSize: number
+}
+
+/** Whether a selection narrows the list beyond its state tab. */
+export function selectionFiltered(q: Omit<IssueSelection, 'mentions' | 'state' | 'sort' | 'page' | 'pageSize'> & { readonly mentions?: IssueSelection['mentions'] }): boolean {
+  return (
+    q.labels.length > 0 ||
+    q.author !== null ||
+    q.assignee !== null ||
+    (q.mentions ?? null) !== null ||
+    q.text.trim() !== '' ||
+    (q.notLabels?.length ?? 0) > 0 ||
+    q.noLabel === true ||
+    (q.milestone ?? null) !== null ||
+    q.noMilestone === true ||
+    (q.authorLogin ?? null) !== null ||
+    (q.comments ?? null) !== null
+  )
 }
 
 /** The answer for one list page. */
@@ -116,14 +174,27 @@ function stateMatches(row: IssueRow, state: IssueSelection['state']): boolean {
   return state === 'all' || (state === 'open' ? row.state.open : !row.state.open)
 }
 
+/** What {@link rowMatches} reads of a row: an issue row, or a PR row with its milestone passed in. */
+export type MatchRow = Pick<IssueRow, 'title' | 'number' | 'body' | 'author' | 'origin' | 'comments' | 'milestone'> & {
+  readonly state: { readonly labels: readonly string[]; readonly assignees: readonly string[] }
+}
+
 /** Whether a row passes every filter but the state tab. */
-export function rowMatches(row: IssueRow, q: IssueSelection): boolean {
-  if (q.labels.some((l) => !row.state.labels.includes(l))) return false
+export function rowMatches(row: MatchRow, q: Omit<IssueSelection, 'state' | 'sort' | 'page' | 'pageSize'>): boolean {
+  const labels = row.state.labels
+  if (q.labels.some((l) => !labels.includes(l))) return false
+  if (q.notLabels?.some((l) => labels.includes(l))) return false
+  if (q.noLabel && labels.length > 0) return false
+  const milestone = row.milestone ?? null
+  if (q.milestone != null && milestone !== q.milestone) return false
+  if (q.noMilestone && milestone !== null) return false
   if (q.author !== null && row.author !== q.author) return false
+  if (q.authorLogin != null && trustedOrigin(row.origin, row.author, q.mirrorTrust ?? null)?.author.toLowerCase() !== q.authorLogin.toLowerCase()) return false
   if (q.assignee === 'none' && row.state.assignees.length > 0) return false
   if (q.assignee !== null && q.assignee !== 'none' && !row.state.assignees.includes(q.assignee)) return false
+  if (q.comments != null && (row.comments === null || row.comments < q.comments.min || row.comments > q.comments.max)) return false
   if (q.mentions !== null && !mentions(row.body, q.mentions.id, q.mentions.name)) return false
-  return matchesText(q.text, row)
+  return matchesText(q.text, row, q.scope)
 }
 
 /**
@@ -141,23 +212,44 @@ export function mentions(body: string | undefined, id: string, name: string | nu
 }
 
 /**
- * Whether `row`'s title holds every word of `text`, case-insensitively; a word that is all
- * digits (with or without a leading `#`) also matches the issue number directly (L-43: a title
- * substring check alone missed a bare `7512`, even though `#7512` matched by number — a word
- * checks both, so neither form of the same search regresses the other).
+ * A body as a text search reads it (lowercased, without a mirrored provenance quote), kept per
+ * body: a walk re-matches every loaded row after each chunk it reads.
  */
-export function matchesText(text: string, row: { readonly title: string; readonly number: number }): boolean {
-  const words = text.trim().toLowerCase().split(/\s+/).filter((w) => w !== '')
-  const title = row.title.toLowerCase()
-  return words.every((w) => {
-    // `#n` (review L-43) is a number-only match: it never falls back to a title substring, even
+const searchBodies = new Map<string, string>()
+function searchBody(body: string): string {
+  let hit = searchBodies.get(body)
+  if (hit === undefined) {
+    if (searchBodies.size >= 4096) searchBodies.clear()
+    hit = searchableBody(body).toLowerCase()
+    searchBodies.set(body, hit)
+  }
+  return hit
+}
+
+/**
+ * Whether `row` holds every term of `text` ({@link searchTerms}: a word, or a `"quoted phrase"`
+ * as a whole, QW-021), case-insensitively, in its title or body (GitHub's default; `scope`
+ * `title` / `body` is `in:`). A mirrored body's provenance quote is not searched: it names the
+ * source repo and author on every row. A word that is all digits (with or without a leading
+ * `#`) also matches the issue number directly (L-43: a title substring check alone missed a bare
+ * `7512`, even though `#7512` matched by number — a word checks both, so neither form of the
+ * same search regresses the other).
+ */
+export function matchesText(text: string, row: { readonly title: string; readonly number: number; readonly body?: string }, scope: TextScope = 'any'): boolean {
+  const terms = searchTerms(text)
+  if (terms.length === 0) return true
+  const fields: string[] = []
+  if (scope !== 'body') fields.push(row.title.toLowerCase())
+  if (scope !== 'title' && row.body) fields.push(searchBody(row.body))
+  return terms.every((w) => {
+    // `#n` (review L-43) is a number-only match: it never falls back to a text substring, even
     // when the digits happen to appear in the title of a different-numbered row.
     const hash = /^#(\d+)$/.exec(w)
     if (hash) return Number(hash[1]) === row.number
-    // A bare number matches the number OR (additively) a title substring.
+    // A bare number matches the number OR (additively) a text substring.
     const bare = /^(\d+)$/.exec(w)
     if (bare && Number(bare[1]) === row.number) return true
-    return title.includes(w)
+    return fields.some((f) => f.includes(w))
   })
 }
 
@@ -196,7 +288,7 @@ export async function queryIssues(
   network: Network = DEFAULT_NETWORK,
 ): Promise<IssueListPage> {
   const index = await indexOf(sdk, repo, network)
-  const filtered = q.labels.length > 0 || q.author !== null || q.assignee !== null || q.mentions !== null || q.text.trim() !== ''
+  const filtered = selectionFiltered(q)
   const matches = (r: IssueRow): boolean => stateMatches(r, q.state) && rowMatches(r, q)
   const selected = await selectRows(sdk, index, {
     candidates: await candidatesFor(sdk, index, q),
@@ -205,7 +297,7 @@ export async function queryIssues(
     direction: q.sort === 'oldest' ? 'asc' : 'desc',
     want: q.page * q.pageSize,
     walkAll: q.sort === 'comments',
-    partial: q.text.trim() !== '' || q.mentions !== null || q.sort === 'comments',
+    partial: filtered || q.sort === 'comments',
   })
 
   // Tab counts under the current filters: exact when the whole candidate set is known.

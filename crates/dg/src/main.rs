@@ -17,6 +17,7 @@ mod errors;
 mod fmt;
 mod git;
 mod import;
+mod infer;
 mod issue;
 mod keys;
 mod label;
@@ -231,7 +232,8 @@ pub struct CreateOptions {
     pub remote: Option<String>,
     /// Record the storage's public URL on chain even though it is not a public https
     /// address (loopback, LAN, plain http, a temporary tunnel). Without it the command stops
-    /// before creating anything.
+    /// before creating anything. `dg init` keeps it for the repository (git config
+    /// `dash.allowPrivateUri`), so later plain `git push`es record it too.
     #[arg(long)]
     pub allow_private_uri: bool,
     /// Create a private repository: contents (code, ref names, issues, PRs, comments,
@@ -1474,8 +1476,18 @@ impl RoleArg {
 fn main() {
     forge_core::logging::init_cli();
 
-    let cli = match Cli::try_parse() {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let cli = match Cli::try_parse_from(&args) {
         Ok(cli) => cli,
+        // Inside a `dash://` clone a left-out repository is the clone's, as with `gh`.
+        Err(e) if e.kind() == clap::error::ErrorKind::MissingRequiredArgument => {
+            match infer::with_repo(&args, storage::clone_repo)
+                .and_then(|a| Cli::try_parse_from(a).ok())
+            {
+                Some(cli) => cli,
+                None => exit_on_parse_error(&e),
+            }
+        }
         Err(e) => exit_on_parse_error(&e),
     };
 

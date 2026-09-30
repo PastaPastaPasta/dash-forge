@@ -4,13 +4,15 @@
  * App header (`ux-dx-spec.md` §5.2): wordmark · network badge (every network except mainnet) ·
  * jump box (`owner/name`, `@name`, `#n` in a repo) · New ▾ (Repository, Mirror a GitHub repo) ·
  * notifications bell with the unread count · identity pill. Below `sm` the jump box moves to a
- * second row so the bar fits 360 px.
+ * second row so the bar fits 360 px, and the header scrolls away with the page (as GitHub's
+ * does) rather than pinning ~114 px of a phone's screen; from `sm` up it stays pinned. Below `lg`
+ * the wordmark and the account name give way to their icons so a tablet's bar fits too.
  */
 
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Bell, ChevronDown, Compass, GitFork, Hammer, LogOut, Menu, Plus, Search, Settings, Wallet, X } from 'lucide-react'
+import { Bell, ChevronDown, Compass, GitFork, Hammer, Lock, Menu, Plus, Search, Settings, Wallet, X } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { signInRequestOutcome, useUiStore } from '@/hooks/use-ui-store'
 import { useUnreadCount } from '@/hooks/use-inbox'
@@ -53,7 +55,7 @@ function useSlashToSearch(): void {
 }
 
 export function AppHeader(): JSX.Element {
-  const { identity, balance, logout, resuming, vaultsLoaded, vaultsError } = useAuth()
+  const { identity, balance, logout, resuming, vaultsLoaded, vaultsError, storage } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
   useSlashToSearch()
   // "Sign in" asked for before it was known whether this browser's kept session resumes: a tap
@@ -75,26 +77,26 @@ export function AppHeader(): JSX.Element {
   }, [settled, signInPending, identity, openLogin, clearSignInRequest])
 
   return (
-    <header className="sticky top-0 z-40 border-b border-anvil-200 bg-anvil-50/85 backdrop-blur dark:border-anvil-800 dark:bg-anvil-950/85">
+    <header className="relative z-40 border-b border-anvil-200 bg-anvil-50 dark:border-anvil-800 dark:bg-anvil-950 sm:sticky sm:top-0 sm:bg-anvil-50/85 sm:backdrop-blur sm:dark:bg-anvil-950/85">
       <div className="mx-auto flex h-14 max-w-[1280px] items-center gap-2 px-3 sm:gap-3 sm:px-6">
         <NavDrawer signedIn={identity !== null} />
         <Link href="/" className="flex shrink-0 items-center gap-2 coarse:min-h-11 coarse:min-w-11" aria-label="Dash Forge home">
           <span className="flex h-7 w-7 items-center justify-center rounded-md bg-forge-500/15">
             <Hammer className="h-4 w-4 text-forge-500" aria-hidden />
           </span>
-          <span className="hidden text-prose font-semibold tracking-tight text-anvil-900 dark:text-anvil-50 md:inline">Dash Forge</span>
+          <span className="hidden text-prose font-semibold tracking-tight text-anvil-900 dark:text-anvil-50 lg:inline">Dash Forge</span>
         </Link>
 
         {/* A devnet (resettable, test funds only) is flagged at every width. */}
         <NetworkBadge compact className={ACTIVE_NETWORK.network === 'devnet' ? undefined : 'hidden sm:inline'} />
 
-        <div className="ml-1 hidden max-w-xs flex-1 sm:block">
+        <div className="ml-1 hidden min-w-0 max-w-xs flex-1 sm:block">
           <Suspense fallback={null}>
             <JumpBox />
           </Suspense>
         </div>
 
-        <div className="ml-auto flex items-center sm:gap-1">
+        <div className="ml-auto flex shrink-0 items-center sm:gap-1">
           <Link
             href="/explore/"
             className="hidden h-8 items-center gap-1.5 rounded-md px-2 text-dense text-anvil-700 hover:bg-anvil-100 dark:text-anvil-200 dark:hover:bg-anvil-800 lg:inline-flex"
@@ -107,7 +109,7 @@ export function AppHeader(): JSX.Element {
           {identity ? (
             <>
               <FundsPill />
-              <AccountMenu identity={identity} balance={balance} onLogout={logout} />
+              <AccountMenu identity={identity} balance={balance} pasted={storage === 'session'} onLogout={logout} />
             </>
           ) : (
             <SignInButton size="sm" label="long" />
@@ -556,10 +558,13 @@ function NotificationsBell(): JSX.Element {
 function AccountMenu({
   identity,
   balance,
+  pasted,
   onLogout,
 }: {
   identity: string
   balance: string | null
+  /** Signed in with a pasted key (tab only): locking forgets it. */
+  pasted: boolean
   onLogout: (forget?: boolean) => void
 }): JSX.Element {
   const { open, setOpen, ref, trigger } = usePopover()
@@ -578,7 +583,7 @@ function AccountMenu({
         aria-label="Account menu"
         className="flex items-center justify-center gap-2 rounded-full py-0.5 pl-0.5 pr-1 hover:bg-anvil-100 coarse:min-h-11 coarse:min-w-11 dark:hover:bg-anvil-800"
       >
-        <IdentityPill identityId={identity} className="max-sm:bg-transparent max-sm:p-0 max-sm:dark:bg-transparent [&>*:not(:first-child)]:max-sm:hidden" />
+        <IdentityPill identityId={identity} className="max-lg:bg-transparent max-lg:p-0 max-lg:dark:bg-transparent [&>*:not(:first-child)]:max-lg:hidden" />
       </button>
       {open ? (
         <div id="account-panel" className="absolute right-0 z-50 mt-2 w-60 animate-fade-in rounded-lg border border-anvil-200 bg-white p-1 shadow-xl dark:border-anvil-750 dark:bg-anvil-900">
@@ -623,9 +628,16 @@ function AccountMenu({
               setOpen(false)
               onLogout(false)
             }}
-            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-dense text-danger-700 dark:text-danger-400 hover:bg-danger/5"
+            className="flex w-full items-start gap-2 rounded-md px-3 py-2 text-left text-dense text-danger-700 dark:text-danger-400 hover:bg-danger/5"
           >
-            <LogOut className="h-3.5 w-3.5" aria-hidden /> Lock &amp; sign out
+            <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+            {/* What Lock does (QW-044): the pages then say "Session locked", not "Not signed in". */}
+            <span>
+              Lock
+              <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">
+                {pasted ? 'Signs you out and forgets the pasted key.' : 'Signs you out; your key stays in this browser until you forget it in Settings.'}
+              </span>
+            </span>
           </button>
         </div>
       ) : null}

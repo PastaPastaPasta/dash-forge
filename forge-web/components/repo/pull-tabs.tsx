@@ -40,6 +40,7 @@ import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { errorMessage } from '@/lib/utils'
 import { Author } from '@/components/author'
 import { Oid } from '@/components/ui/oid'
+import { ScrollRegion } from '@/components/ui/scroll-region'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { AssetRow } from '@/components/repo/releases-content'
 
@@ -77,13 +78,16 @@ export function CommitList({ commits, addr: at, allHint }: { commits: PrCommits;
         {commits.commits.map((c) => (
           <div key={c.oid} className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850" data-testid="pr-commit">
             <GitCommit className="h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
-            <div className="min-w-0 flex-1">
-              <Link href={repoHref('/repo/commit', at, { oid: c.oid })} className="block truncate text-dense font-medium text-anvil-900 hover:text-forge-800 dark:text-anvil-50 dark:hover:text-forge-400">
+            {/* Touch: the subject link stretches over the whole text column (both lines and the
+                row's padding), as on the commits list; the copy button beside it stays its own. */}
+            <div className="relative min-w-0 flex-1">
+              <Link href={repoHref('/repo/commit', at, { oid: c.oid })} className="block truncate text-dense font-medium text-anvil-900 hover:text-forge-800 coarse:after:absolute coarse:after:inset-x-0 coarse:after:-inset-y-2.5 coarse:after:content-[''] dark:text-anvil-50 dark:hover:text-forge-400">
                 {c.subject || '(no message)'}
               </Link>
-              <div className="mt-0.5 flex items-center gap-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-                <span>{c.commit.author.name || 'unknown'}</span>
-                <span>
+              {/* One line on a phone: the name gives way (ellipsis), the age never breaks. */}
+              <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400">
+                <span className="min-w-0 truncate">{c.commit.author.name || 'unknown'}</span>
+                <span className="shrink-0 whitespace-nowrap">
                   · <Time ms={c.commit.author.when} prefix="authored " />
                 </span>
               </div>
@@ -143,7 +147,11 @@ function RunLog({ run }: { run: CheckRun }): JSX.Element | null {
           ? `Log verified: its SHA-256 matches the one the run records (${log.bytes} bytes)`
           : `Not the reported log: these bytes hash to ${log.sha256.slice(0, 12)}…, the run records ${run.logSha256.slice(0, 12)}…`}
       </p>
-      {log.verified ? <pre className="mt-1 max-h-96 overflow-auto rounded border border-anvil-200 bg-anvil-50 p-2 font-mono text-[12px] dark:border-anvil-800 dark:bg-anvil-950">{log.text}</pre> : null}
+      {log.verified ? (
+        <ScrollRegion as="pre" label={`Log of ${run.name}`} className="mt-1 max-h-96 overflow-auto rounded border border-anvil-200 bg-anvil-50 p-2 font-mono text-[12px] dark:border-anvil-800 dark:bg-anvil-950">
+          {log.text}
+        </ScrollRegion>
+      ) : null}
     </div>
   )
 }
@@ -230,7 +238,7 @@ export function ChecksTab({
                 by <Author identityId={r.reporter} link={false} /> · {timeAgo(r.createdAt)}
               </span>
               {url ? (
-                <a href={url} target="_blank" rel="noopener noreferrer" className="text-[12px] text-forge-700 underline underline-offset-2 dark:text-forge-400">
+                <a href={url} target="_blank" rel="noopener noreferrer" className="hit-area text-[12px] text-forge-700 underline underline-offset-2 dark:text-forge-400">
                   Details
                 </a>
               ) : null}

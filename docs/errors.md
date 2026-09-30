@@ -47,6 +47,8 @@ Fix: run the command again with `RUST_LOG=debug` for more detail. If it keeps ha
 
 Fix: check the owner id and the name (`dg repo list --owner <identity id>`). Also check the network, because a repo created on testnet does not exist on mainnet: `dg doctor` shows which network and contracts are in use.
 
+`dg` also reports E102 before anything is written when a command names a ref the repository does not have: a pull request's base branch (`dg pr create --base`), or a release's tag (`dg release create --tag`; push the tag first). The message lists the branches or tags it does have.
+
 ## E103
 
 **Not implemented yet.** The command exists but is not wired yet. The output describes the manual workaround.
@@ -139,9 +141,11 @@ Fix: pass the identity file with `--master <file>`, or type the recovery words w
 
 Fix: `dg auth status` shows which key source is in use. Sign in again with `dg auth login <file>` or `dg auth login --mnemonic`. For a sealed file, set `DASH_FORGE_PASSPHRASE` or type the passphrase when asked.
 
+Reads do not open the key: `dg auth status`, `dg auth balance`, and `dg storage status` / `dg cost audit` of a public repository work with a sealed key and no terminal (the status says the key itself was not checked).
+
 Two cases have their own message:
 
-- **A sealed key, and no terminal to ask for the passphrase on.** For example, a `git push` from a GUI client or a cron job, or `GIT_TERMINAL_PROMPT=0`. Any of these works:
+- **A sealed key, and no terminal to ask for the passphrase on.** For example, a `git push` from a GUI client or a cron job, `GIT_TERMINAL_PROMPT=0`, or a `dg` write under `--json` or without a terminal. Any of these works:
   - run the same command in a terminal;
   - keep the key in the OS keychain (`dg auth login` without `DASH_FORGE_NO_KEYCHAIN`);
   - push through `dg init`, which asks once and hands the key to git;
@@ -152,9 +156,9 @@ Two cases have their own message:
 
 ## E304
 
-**Identity not found on this network.** Platform has no identity with the id in your identity file, usually because the identity was created on a different network.
+**Identity not found on this network.** Platform has no identity with the id in your key, usually because the identity was created on a different network. The headline names the network searched. When the key records its own network (a `dfk1:` key, an identity file's `network`) and it is another one, the cause says so and the fix selects it.
 
-Fix: select the network the identity was created on: `--network testnet|mainnet`, or `--network devnet --devnet-name <name>`.
+Fix: select the network the identity was created on: `--network testnet|mainnet`, or `--network devnet --devnet-name <name>` (for `git`, git config `dash.network` / `dash.devnetName` or `DASH_FORGE_NETWORK`). `dg doctor` shows the network in use and what chose it. `dg` also takes the network from the repository in the current directory (the one `dg init` / `dg repo clone` pinned), and when nothing else names one, from the key itself, so a CI runner's `dfk1:` key needs no network setting.
 
 ## E305
 
@@ -318,7 +322,9 @@ Fix: ask the owner to add you (`dg collab add <owner>/<repo> <your identity id> 
 
 **Already exists.** Platform refused a document that collides with a unique index, for example a repository name you already use.
 
-Fix: pick another name. Issue and PR numbers are retried automatically, so this only surfaces for names.
+Fix: pick another name. Issue and PR numbers are retried automatically, so Platform raises this only for names.
+
+`dg pr create` also reports E603, before anything is signed, when you already have an open pull request from the same head branch into the same base (as GitHub refuses a second one): a pull request cannot be deleted, so a duplicate would stay. The message names the open one. Push to the branch to update it, or pick another base. Pull requests other people opened from your branch do not count.
 
 ## E604
 

@@ -161,7 +161,7 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
               <UserPlus className="h-3.5 w-3.5" aria-hidden />
               {following ? 'Following' : 'Follow'}
               {identity !== null && follow.on !== null ? (
-                <span className="ml-1 font-mono text-[11px] opacity-80" data-testid="follow-cost">
+                <span className="ml-1 font-mono text-[11px]" data-testid="follow-cost">
                   {following ? `+${creditsAsDash(-unfollowRefund.credits)}` : priceLabel(followCost.credits, !firstWriteRead(first))} DASH
                 </span>
               ) : null}

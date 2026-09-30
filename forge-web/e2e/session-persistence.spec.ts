@@ -108,7 +108,7 @@ test('p2. Lock in one tab locks the others; pages offer Unlock; write buttons op
   await expectSignedIn(b)
 
   await a!.getByRole('button', { name: 'Account menu' }).click()
-  await a!.getByRole('button', { name: /lock & sign out/i }).click()
+  await a!.getByRole('button', { name: /^lock\b/i }).click()
   await expectLocked(a!)
   // Tab B locks at once, with no reload.
   await expectLocked(b)
@@ -200,7 +200,7 @@ test('p4. the locked OWNER of a private repo is offered Unlock, not "You\'re not
   await other.close()
 
   await page.getByRole('button', { name: 'Account menu' }).click()
-  await page.getByRole('button', { name: /lock & sign out/i }).click()
+  await page.getByRole('button', { name: /^lock\b/i }).click()
   await page.goto(privateUrl, { waitUntil: 'domcontentloaded' })
   await expectLocked(page)
   const sealed = page.getByTestId('private-signed-out')

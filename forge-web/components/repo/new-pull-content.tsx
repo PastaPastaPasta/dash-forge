@@ -13,7 +13,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { GitBranch } from 'lucide-react'
 
 import { DraftMarkError, createPatch, findForks, readRefs, repoKey, type ResolvedRef, type RepoRef } from '@/lib/repo'
 import { branchName, commitSubject, readCommit, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
@@ -33,7 +32,7 @@ import { MarkdownView } from '@/components/markdown-view'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
-import { CopyRow } from '@/components/ui/copy-row'
+import { PushBranchHint } from '@/components/repo/push-branch-hint'
 import { cn } from '@/lib/utils'
 
 /** A branch a PR can come from: this repo's, or one of the viewer's forks'. */
@@ -83,7 +82,17 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   const forks = useAsync(
     async () => {
       const mine = await findForks(sdk!, repo.forge, repo.repoId, identity!)
-      return Promise.all(mine.map(async (f) => ({ fork: f, refs: (await readRefs(sdk!, f)).filter((r) => r.refName.startsWith('refs/heads/')) })))
+      // One fork whose refs will not read loses its branches, not the viewer's other forks (nor
+      // the push hint's knowledge that the fork exists).
+      return Promise.all(
+        mine.map(async (f) => ({
+          fork: f,
+          refs: await readRefs(sdk!, f).then(
+            (rs) => rs.filter((r) => r.refName.startsWith('refs/heads/')),
+            () => [],
+          ),
+        })),
+      )
     },
     [ready, repo.repoId, identity ?? ''],
     // A private repo has no forks (only public repos fork).
@@ -177,21 +186,21 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     }
   }
 
-  const you = identity ?? 'you'
   return (
     <div className="mx-auto max-w-5xl space-y-5">
       <div>
         <h1 className="text-xl">Open a pull request</h1>
         <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">
           Propose merging a branch into {repo.name}. Anyone can open one; maintainers and writers merge.{' '}
-          <Link href={repoHref('/repo/compare', addr, { base: branchName(base), head: head === null || head.repo.repoId !== repo.repoId ? '' : branchName(head.refName) })} className="text-forge-700 underline underline-offset-2 dark:text-forge-400">
+          <Link href={repoHref('/repo/compare', addr, { base: branchName(base), head: head === null || head.repo.repoId !== repo.repoId ? '' : branchName(head.refName) })} className="hit-area text-forge-700 underline underline-offset-2 dark:text-forge-400">
             Compare tags or commits
           </Link>{' '}
           without opening one.
         </p>
       </div>
 
-      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-anvil-200 p-3 dark:border-anvil-800">
+      {/* Each field may shrink below its select's widest option, so a long branch name never pushes the pickers past a phone's edge. */}
+      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-anvil-200 p-3 dark:border-anvil-800 [&>*]:min-w-0 [&>*]:max-w-full">
         <Field label="Base" htmlFor="pr-base">
           <select
             id="pr-base"
@@ -243,13 +252,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
         {forks.loading && identity !== null ? <span className="pb-2 text-[12px] text-anvil-600 dark:text-anvil-400">Looking for your forks…</span> : null}
       </div>
 
-      <div className="text-dense text-anvil-600 dark:text-anvil-300">
-        <p className="mb-1.5">
-          <GitBranch className="mr-1 inline h-3.5 w-3.5" aria-hidden />
-          Need to push a branch first?
-        </p>
-        <CopyRow text={`git push dash://${you}/${repo.name} HEAD:my-fix`} />
-      </div>
+      <PushBranchHint repo={repo} forks={forks.error !== null ? 'failed' : forks.data === null ? null : forks.data.map((f) => f.fork)} />
 
       {noBase ? (
         <p role="alert" className="text-dense text-caution-700 dark:text-caution-400">
@@ -307,7 +310,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
         <div className="flex flex-wrap items-center justify-between gap-3">
           <CostPreview cost={cost} />
           <div className="flex flex-wrap items-center gap-3">
-            <label className="flex items-center gap-1.5 text-dense text-anvil-700 dark:text-anvil-200">
+            <label className="flex items-center gap-1.5 text-dense text-anvil-700 coarse:min-h-11 dark:text-anvil-200">
               <input type="checkbox" className="h-4 w-4 accent-forge-700" checked={asDraft} onChange={(e) => setAsDraft(e.target.checked)} />
               Open as a draft
             </label>

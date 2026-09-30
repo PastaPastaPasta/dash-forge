@@ -54,7 +54,7 @@ const TOP_N = 12
 
 export function ExploreClient(): JSX.Element {
   const { sdk, ready, network, status: sdkStatus, retry: retrySdk } = useSdk()
-  const { identity } = useAuth()
+  const { identity, locked } = useAuth()
   const forge = NETWORKS[network].v2
   const on = ready && sdk !== null && forge !== null
 
@@ -246,7 +246,7 @@ export function ExploreClient(): JSX.Element {
           </div>
         ) : on ? (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed border-anvil-300 px-4 py-3 text-dense dark:border-anvil-700">
-            <span>Sign in to see your repos, issues, pull requests and stars.</span>
+            <span>{locked ? 'Unlock' : 'Sign in'} to see your repos, issues, pull requests and stars.</span>
             <SignInButton size="sm" />
           </div>
         ) : null}
@@ -436,7 +436,7 @@ function TrendWindowToggle({ value, onChange }: { value: TrendingWindow; onChang
           type="button"
           aria-pressed={value === w}
           onClick={() => onChange(w)}
-          className={`hit-area px-3 py-1 ${value === w ? 'bg-anvil-100 font-medium dark:bg-anvil-800' : 'text-anvil-600 dark:text-anvil-300'}`}
+          className={`px-3 py-1 coarse:min-h-11 ${value === w ? 'bg-anvil-100 font-medium dark:bg-anvil-800' : 'text-anvil-600 dark:text-anvil-300'}`}
           data-testid={`trending-${w}`}
         >
           {w === 'week' ? 'This week' : 'Today'}

@@ -23,10 +23,21 @@ import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { INSIGHT_OVERRIDE_KEY, coreEndpoints } from '@/lib/auth/asset-lock'
 import { KeyTopUpDialog } from '@/components/key-top-up-dialog'
 import { PendingRenewal } from '@/components/pending-renewal'
+import { useConfirmAction, type ConfirmActionOptions } from '@/components/ui/confirm-action'
 
 /** Shown before deleting a stored key: for a wallet-granted key this is the only copy. */
-export const FORGET_CONFIRM =
-  "Delete this browser's key from this device? This does not revoke it: the key stays valid on chain until it expires, and a wallet key never expires (use \"Revoke on chain\" or \"Disable key on chain\" for that). You will need your identity file, recovery phrase or wallet to sign in again here."
+export const FORGET_CONFIRM: ConfirmActionOptions = {
+  title: "Forget this browser's key?",
+  body: "This deletes the key from this device. It does not revoke it: the key stays valid on chain until it expires, and a wallet key never expires (use \"Revoke on chain\" or \"Disable key on chain\" for that). You will need your identity file, recovery phrase or wallet to sign in here again.",
+  confirmLabel: 'Forget key',
+}
+
+/** Shown before a revoke, once the identity file is chosen. */
+const REVOKE_CONFIRM: ConfirmActionOptions = {
+  title: "Disable this browser's key on chain?",
+  body: "Your identity file's master key signs one identity update that disables this key everywhere, and is not stored. This browser then signs nothing until you sign in again.",
+  confirmLabel: 'Disable key',
+}
 
 export function KeysPanel(): JSX.Element {
   const { identity, keyId, heldOnly, keyLimits, storage, funds, logout, forget, revokeStored, isLoading, grants, unlimitedKey, unboundedKey } = useAuth()
@@ -34,6 +45,7 @@ export function KeysPanel(): JSX.Element {
   const [revokeError, setRevokeError] = useState<string | null>(null)
   // A reloaded tab holds the signing key only: a revoke must see every key held, so unlock first.
   const [unlockFirst, setUnlockFirst] = useState<(() => void) | null>(null)
+  const [confirm, confirmDialog] = useConfirmAction()
   const revoke = async (file: File): Promise<void> => {
     if (!identity) return
     setRevokeError(null)
@@ -59,6 +71,9 @@ export function KeysPanel(): JSX.Element {
   const [topUpOpen, setTopUpOpen] = useState(false)
   // Only a stored Forge browser key (a budget on a group-bound key) can be topped up here.
   const canTopUp = storage === 'vault' && keyLimits?.total != null
+  // A pasted key is not Forge's to renew (it may be a wallet's, and has no Forge limits): the
+  // offer is a limited key from the identity file or phrase instead, and signing out forgets it.
+  const pasted = storage === 'session'
 
   return (
     <div className="space-y-4 text-dense" data-testid="keys-panel">
@@ -121,21 +136,29 @@ export function KeysPanel(): JSX.Element {
             <BatteryCharging className="h-3.5 w-3.5" aria-hidden /> Top up key budget
           </Button>
         ) : null}
-        <Button variant={unlimitedKey ? 'primary' : 'outline'} size="sm" onClick={() => openLogin('import')}>
-          <RefreshCw className="h-3.5 w-3.5" aria-hidden /> {unlimitedKey ? 'Replace with a limited key' : 'Renew key'}
+        <Button variant={unlimitedKey || pasted ? 'primary' : 'outline'} size="sm" onClick={() => openLogin('import')}>
+          <RefreshCw className="h-3.5 w-3.5" aria-hidden /> {pasted ? 'Use a limited key instead' : unlimitedKey ? 'Replace with a limited key' : 'Renew key'}
         </Button>
-        <Button variant="outline" size="sm" onClick={() => logout()}>
-          <Lock className="h-3.5 w-3.5" aria-hidden /> Lock
-        </Button>
-        <Button
-          variant="danger"
-          size="sm"
-          onClick={() => {
-            if (identity && window.confirm(FORGET_CONFIRM)) void forget(identity)
-          }}
-        >
-          <LogOut className="h-3.5 w-3.5" aria-hidden /> Sign out &amp; forget key
-        </Button>
+        {pasted ? (
+          <Button variant="danger" size="sm" onClick={() => logout()}>
+            <LogOut className="h-3.5 w-3.5" aria-hidden /> Sign out
+          </Button>
+        ) : (
+          <>
+            <Button variant="outline" size="sm" onClick={() => logout()}>
+              <Lock className="h-3.5 w-3.5" aria-hidden /> Lock
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => {
+                if (identity) void confirm(FORGET_CONFIRM).then((ok) => (ok ? forget(identity) : undefined))
+              }}
+            >
+              <LogOut className="h-3.5 w-3.5" aria-hidden /> Sign out &amp; forget key
+            </Button>
+          </>
+        )}
         {storage === 'vault' ? (
           <>
             <Button variant="danger" size="sm" loading={isLoading} onClick={() => revokeRef.current?.click()}>
@@ -149,23 +172,33 @@ export function KeysPanel(): JSX.Element {
               className="sr-only"
               onChange={(e) => {
                 const f = e.target.files?.[0]
-                if (f && window.confirm('Disable this browser\'s key on chain? Your identity file\'s master key signs it once and is not stored.')) void revoke(f)
                 e.target.value = ''
+                if (f) void confirm(REVOKE_CONFIRM).then((ok) => (ok ? revoke(f) : undefined))
               }}
             />
           </>
         ) : null}
       </div>
-      {unlimitedKey ? null : (
+      {pasted ? (
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-          Top-up keeps this key and adds budget (or a later expiry). Renew replaces it with a new key and disables this one.
-          Both use your master key once and do not store it.
+          Importing your identity file or recovery phrase gives this browser its own key, limited to Forge, a budget and an expiry. The pasted key
+          is left as it is: Forge did not register it, so it does not renew or revoke it.
         </p>
+      ) : (
+        <>
+          {unlimitedKey ? null : (
+            <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
+              {canTopUp ? 'Top-up keeps this key and adds budget (or a later expiry). ' : ''}Renew replaces it with a new key and disables this one.
+              {canTopUp ? ' Both use' : ' It uses'} your master key once and {canTopUp ? 'do' : 'does'} not store it.
+            </p>
+          )}
+          <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
+            Forgetting deletes the key from this device only. Revoking disables it on chain (needs your identity file once).
+          </p>
+        </>
       )}
       {topUpOpen ? <KeyTopUpDialog onClose={() => setTopUpOpen(false)} /> : null}
-      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        Forgetting deletes the key from this device only. Revoking disables it on chain (needs your identity file once).
-      </p>
+      {confirmDialog}
       {unlockFirst ? <UnlockMore title="Unlock this tab to revoke on chain" testId="revoke-unlock" then={unlockFirst} /> : null}
       {revokeError ? <p role="alert" className="text-[12px] text-danger-700 dark:text-danger-400">{revokeError}</p> : null}
       <Field

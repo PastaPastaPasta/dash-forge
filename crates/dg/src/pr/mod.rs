@@ -324,6 +324,11 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         draft: args.draft,
         patch_manifest_hash: None,
     };
+    let journal = default_journal_dir()?;
+    // An interrupted create of this same PR resumes (it is not a second PR).
+    if !s.collab().patch_create_pending(handle, &input, &journal)? {
+        refuse_duplicate(&s, handle, &source, &head_ref, &base, args.draft).await?;
+    }
     if !ctx.json {
         println!(
             "Open PR {title:?} in {}: {} {head_ref} ({}) → {base}",
@@ -338,10 +343,7 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         "Open it? (one small document, ~0.0001 DASH)"
     })?;
     let before = s.balance().await;
-    let created = s
-        .collab()
-        .create_patch(handle, &input, &default_journal_dir()?)
-        .await?;
+    let created = s.collab().create_patch(handle, &input, &journal).await?;
     let spent = s.spent_since(before).await;
     let price = dash_usd_price();
     ctx.emit(
@@ -501,6 +503,112 @@ fn require_base_branch(target: &Repo, base: &str, refs: &[(String, RefState)]) -
     .fix("pass --base <branch> naming one of them, or push the base branch first")
     .note("nothing was written")
     .into())
+}
+
+/// How many of the target's newest PRs a private repository's duplicate check reads (its
+/// patches are sealed, so the branch index cannot find them).
+const DUPLICATE_SCAN: u32 = 100;
+
+/// At most this many of your PRs from the branch are read in full by the duplicate check.
+const DUPLICATE_READS: usize = 20;
+
+/// Refuse a PR when you already have an open one from the same head branch into the same base
+/// (E603), as GitHub does: PRs cannot be deleted, so a duplicate is paid for and stays
+/// (QW-036). Only your own PRs count, so nobody can block your branch by opening a PR from it
+/// first. A public source is found through the `sourceRef` index, whatever the PR's age; a
+/// private repository's newest [`DUPLICATE_SCAN`] PRs are read instead. A PR that cannot be
+/// read is skipped: the check is advisory, like the role pre-checks.
+async fn refuse_duplicate(
+    s: &Session,
+    target: &Repo,
+    source: &Repo,
+    head_ref: &str,
+    base: &str,
+    draft: bool,
+) -> Result<()> {
+    let collab = s.collab();
+    let me = s.identity.id();
+    let open: Vec<PatchView> = if target.visibility == forge_core::rules::v2::Visibility::Public
+        && source.visibility == forge_core::rules::v2::Visibility::Public
+    {
+        let mine: Vec<Patch> = collab
+            .patches_from_branch(target.forge(), source.id(), head_ref)
+            .await?
+            .into_iter()
+            .filter(|p| p.repo_id == target.id() && p.author == me)
+            .take(DUPLICATE_READS)
+            .collect();
+        let mut views = Vec::new();
+        for p in mine {
+            // The index saw the raw document; the reader rule (§5) is per repo.
+            let read = async {
+                match collab.patch(target, p.number).await? {
+                    Some(p) => collab.patch_view(target, p).await.map(Some),
+                    None => Ok(None),
+                }
+            };
+            match read.await {
+                Ok(Some(v)) => views.push(v),
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(pr = p.number, error = %e, "duplicate check: skipping a pull request that cannot be read");
+                }
+            }
+        }
+        views
+    } else {
+        collab
+            .list_patch_views(target, DUPLICATE_SCAN)
+            .await?
+            .rows
+            .into_iter()
+            .map(|(v, _)| v)
+            .filter(|v| v.patch.author == me)
+            .collect()
+    };
+    let Some(existing) = open
+        .iter()
+        .find(|v| same_head_and_base(v, source.id(), head_ref, base))
+    else {
+        return Ok(());
+    };
+    let n = existing.patch.number;
+    let repo = target.display();
+    let u = UserError::new(
+        codes::ALREADY_EXISTS,
+        format!(
+            "pull request not created: your #{n} is already open for {} → {}",
+            safe(head_ref.trim_start_matches("refs/heads/")),
+            safe(base.trim_start_matches("refs/heads/"))
+        ),
+    )
+    .cause(format!(
+        "you have an open pull request from this branch into the same base of {repo}; a second one could not be deleted"
+    ))
+    .fix(format!(
+        "push to the branch to update #{n} (`dg pr sync {repo} {n}` moves its head if the push did not)"
+    ));
+    let u = if draft && !existing.state.draft {
+        u.fix(format!("`dg pr draft {repo} {n}` makes it a draft"))
+    } else {
+        u.fix(format!("`dg pr view {repo} {n}` shows it"))
+    };
+    Err(u
+        .note("checked before anything was signed; nothing was written or paid")
+        .into())
+}
+
+/// Whether `v` is an open PR from `head_ref` in `source_id` into `base` (after retargets).
+fn same_head_and_base(v: &PatchView, source_id: &str, head_ref: &str, base: &str) -> bool {
+    v.state.open
+        && v.patch.source_repo_id == source_id
+        && v.patch.source_ref_name.as_deref() == Some(head_ref)
+        && git::full_ref(
+            v.state
+                .base_ref
+                .as_deref()
+                .unwrap_or(&v.patch.base_ref_name),
+        ) == base
 }
 
 // ---------------------------------------------------------------------------
@@ -2292,6 +2400,61 @@ mod tests {
             log: forge_core::collab::v2::TargetLog::default(),
             patch,
         }
+    }
+
+    /// QW-036: an open PR from the same source branch into the same base (after a retarget)
+    /// is a duplicate; a closed one, another branch, source or base is not.
+    #[test]
+    fn a_duplicate_is_an_open_pr_from_the_same_branch_into_the_same_base() {
+        let head = "a".repeat(40);
+        let v = view_with("refs/heads/main", &head);
+        assert!(v.state.open, "a fresh PrState is open");
+        assert!(same_head_and_base(
+            &v,
+            "s",
+            "refs/heads/f",
+            "refs/heads/main"
+        ));
+        assert!(!same_head_and_base(
+            &v,
+            "s",
+            "refs/heads/g",
+            "refs/heads/main"
+        ));
+        assert!(!same_head_and_base(
+            &v,
+            "fork",
+            "refs/heads/f",
+            "refs/heads/main"
+        ));
+        assert!(!same_head_and_base(
+            &v,
+            "s",
+            "refs/heads/f",
+            "refs/heads/dev"
+        ));
+        let mut retargeted = view_with("refs/heads/main", &head);
+        retargeted.state.base_ref = Some("dev".into());
+        assert!(same_head_and_base(
+            &retargeted,
+            "s",
+            "refs/heads/f",
+            "refs/heads/dev"
+        ));
+        assert!(!same_head_and_base(
+            &retargeted,
+            "s",
+            "refs/heads/f",
+            "refs/heads/main"
+        ));
+        let mut closed = view_with("refs/heads/main", &head);
+        closed.state.open = false;
+        assert!(!same_head_and_base(
+            &closed,
+            "s",
+            "refs/heads/f",
+            "refs/heads/main"
+        ));
     }
 
     /// `dg pr list` / `dg pr view` show an open draft (state code 8) as `draft`, not `open`

@@ -177,7 +177,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                     aria-checked={role === r}
                     onClick={() => setRole(r)}
                     className={
-                      'rounded px-3 py-1.5 text-dense font-medium ' +
+                      'rounded px-3 py-1.5 text-dense font-medium coarse:min-h-11 ' +
                       (role === r ? 'bg-forge-500/15 text-forge-800 dark:text-forge-400' : 'text-anvil-500 dark:text-anvil-400')
                     }
                   >

@@ -81,6 +81,20 @@ export function pullOriginOf(body: string): PullOrigin | null {
   return { baseOid: m[1] ?? '', headLabel: m[2] ?? '' }
 }
 
+/**
+ * `body` without the provenance quote an import opens it with (the `> Mirrored from …` line and
+ * the quote lines right after it, such as a PR's `> Base … · head …`): what a text search looks
+ * in, since that quote names the source repo and author on every mirrored row.
+ */
+export function searchableBody(body: string): string {
+  if (!body.startsWith('> Mirrored from ')) return body
+  const lines = body.split('\n')
+  if (!PROVENANCE.test(lines[0] ?? '')) return body
+  let i = 1
+  while (i < lines.length && (lines[i] ?? '').startsWith('>')) i++
+  return lines.slice(i).join('\n')
+}
+
 /** A review's verdict at the source, from its provenance line (`(review, approved, 2026-…)`). */
 export type ImportedVerdict = 'approved' | 'requested changes' | 'commented'
 

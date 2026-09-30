@@ -31,7 +31,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import { IncompleteReadError } from '../sdk'
 import type { RepoRef } from './contract'
-import { compareRows, rowMatches } from './issue-index'
+import { compareRows, rowMatches, selectionFiltered, type RowFilters } from './issue-index'
 import { baseRefReaders, incompletePullView, readPull, type BaseRefReaders, type PullView } from './issues'
 import { PR_CLOSE, PR_DRAFT_CLOSE, PR_MERGE } from '../rules/transition'
 import type { LabelDef } from './labels'
@@ -94,7 +94,7 @@ const indexOf = indexCache<PullRow>('patch', async (sdk, index, doc, log, code) 
 // ---------------------------------------------------------------------------
 
 /** What the list asks for (`me` already replaced by the viewer's id). */
-export interface PullSelection {
+export interface PullSelection extends RowFilters {
   readonly state: PullStateFilter
   readonly labels: readonly string[]
   /** An identity id, or null. */
@@ -105,6 +105,10 @@ export interface PullSelection {
   readonly text: string
   readonly page: number
   readonly pageSize: number
+  /** `draft:true` / `draft:false` (`is:draft`): only drafts, or none; null either. */
+  readonly draft?: boolean | null
+  /** `review-requested:x`: an identity with a standing review request. */
+  readonly reviewRequested?: string | null
 }
 
 /** Open / Merged / Closed counts (null: not proven). */
@@ -141,9 +145,19 @@ function pullStateMatches(row: Pick<PullView, 'state'>, tab: PullStateFilter): b
   return row.state.open
 }
 
-/** Whether a row passes every filter but the state tab (labels, author, assignee, title / `#n`): the issue list's rule. */
+/**
+ * Whether a row passes every filter but the state tab: the issue list's rule (labels, author,
+ * assignee, milestone, comments, text / `#n`), plus the PR-only draft and review-request filters.
+ */
 function filtersMatch(row: PullRow, q: PullSelection): boolean {
-  return rowMatches(row, { ...q, state: 'all', mentions: null })
+  if (q.draft != null && row.state.draft !== q.draft) return false
+  if (q.reviewRequested != null && !row.review.requestedReviewers.some((r) => r.identity === q.reviewRequested)) return false
+  return rowMatches({ ...row, milestone: row.review.milestone }, { ...q, mentions: null })
+}
+
+/** Whether a selection narrows the list beyond its state tab. */
+function pullFiltered(q: PullSelection): boolean {
+  return selectionFiltered(q) || q.draft != null || q.reviewRequested != null
 }
 
 /** Open / Merged / Closed of `rows`. */
@@ -200,7 +214,7 @@ export async function queryPulls(
   network: Network = DEFAULT_NETWORK,
 ): Promise<PullListPage> {
   const index = await indexOf(sdk, repo, network)
-  const filtered = q.labels.length > 0 || q.author !== null || q.assignee !== null || q.text.trim() !== ''
+  const filtered = pullFiltered(q)
   const selected = await selectRows(sdk, index, {
     candidates: await candidatesFor(sdk, index, q),
     matches: (r) => pullStateMatches(r, q.state) && filtersMatch(r, q),
@@ -208,7 +222,7 @@ export async function queryPulls(
     direction: q.sort === 'oldest' ? 'asc' : 'desc',
     want: q.page * q.pageSize,
     walkAll: q.sort === 'comments',
-    partial: q.text.trim() !== '' || q.sort === 'comments',
+    partial: filtered || q.sort === 'comments',
   })
 
   let counts = NO_COUNTS

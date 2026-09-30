@@ -125,6 +125,27 @@ export function historySource(
   }
 }
 
+/**
+ * `own`'s indexes, then `inherited`'s for a tip `own` does not cover: a fork reads its parent's
+ * (QW-023). An index describes a tip commit's history, which is the same in every repository
+ * holding that commit, so a parent's index of a tip the fork shares is the fork's too.
+ */
+export function chainHistory(own: HistorySource | null, inherited: HistorySource | null): HistorySource | null {
+  if (own === null) return inherited
+  if (inherited === null) return own
+  // Own first; the inherited index of the same tip when own's will not load.
+  const first = (mine: boolean, theirs: boolean, a: () => Promise<HistoryIndex>, b: () => Promise<HistoryIndex>): Promise<HistoryIndex> =>
+    mine ? a().catch((e: unknown) => (theirs ? b() : Promise.reject(e))) : b()
+  return {
+    byTip: new Map([...inherited.byTip, ...own.byTip]),
+    covers: (tip) => own.covers(tip) || inherited.covers(tip),
+    load: (tip) => first(own.covers(tip), inherited.covers(tip), () => own.load(tip), () => inherited.load(tip)),
+    coversVersions: (tip) => own.coversVersions(tip) || inherited.coversVersions(tip),
+    loadVersions: (tip) =>
+      first(own.coversVersions(tip), inherited.coversVersions(tip), () => own.loadVersions(tip), () => inherited.loadVersions(tip)),
+  }
+}
+
 /** Every browse context's history source, by the reader's memo scope (one per resolve). */
 const sources = new WeakMap<object, HistorySource | null>()
 

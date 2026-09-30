@@ -1003,8 +1003,34 @@ fn configure_local(
         // target list, and a stale count could exceed it.
         let _ = git(root, &["config", "--unset", "dash.replicas"], &[]);
     }
+    // `--allow-private-uri` let this run record a non-public address: keep the allowance for
+    // this repository, so the next plain `git push` goes where this one went (QW-033). Only
+    // while a target needs it: storage that no longer does drops a stale local allowance, so
+    // the E501 guard stands again for what the repository uses next.
+    let allow_key = forge_core::storage::publish::ALLOW_PRIVATE_URI_GIT_KEY;
+    if needs_private_uri_allowance(storage.policy.external.iter().map(|(_, p)| p)) {
+        if opts.allow_private_uri {
+            set(allow_key, "true")?;
+            out.push(format!("{allow_key}=true"));
+        }
+    } else {
+        let _ = git(root, &["config", "--local", "--unset", allow_key], &[]);
+    }
     out.extend(pin_network(ctx, root)?);
     Ok(out)
+}
+
+/// Whether a push to `targets` needs `dash.allowPrivateUri`: one records a read address the
+/// E501 guard refuses, and its profile does not allow that itself.
+fn needs_private_uri_allowance<'a>(
+    targets: impl IntoIterator<Item = &'a forge_core::storage::Profile>,
+) -> bool {
+    targets.into_iter().any(|p| {
+        !p.allow_private_uri()
+            && forge_core::storage::publish::profile_problems(p)
+                .iter()
+                .any(|x| x.problem.refused())
+    })
 }
 
 /// What the helper reported about the push.
@@ -1146,6 +1172,39 @@ const REPORT_FILE_ENV: &str = "DASH_FORGE_REPORT_FILE";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// QW-033: `dg init --allow-private-uri` keeps the allowance for the repository only when
+    /// its storage needs it, so a later plain `git push` is not refused with E501.
+    #[test]
+    fn init_keeps_the_private_uri_allowance_only_where_storage_needs_it() {
+        let profile = |url: &str, allow: bool| {
+            let mut argv = vec![
+                "p",
+                "--kind",
+                "s3",
+                "--endpoint",
+                url,
+                "--bucket",
+                "b",
+                "--public-url",
+                url,
+            ];
+            if allow {
+                argv.push("--allow-private-uri");
+            }
+            crate::storage::profile_from_args(&crate::storage::tests::add_args(&argv)).unwrap()
+        };
+        let loopback = profile("http://127.0.0.1:9000", false);
+        assert!(needs_private_uri_allowance([&loopback]));
+        // the profile allows it itself, or the address is public: nothing to keep
+        let own = profile("http://127.0.0.1:9000", true);
+        assert!(!needs_private_uri_allowance([&own]));
+        let public = profile("https://files.example.org", false);
+        assert!(!needs_private_uri_allowance([&public]));
+        assert!(!needs_private_uri_allowance([]));
+        // one target that needs it is enough
+        assert!(needs_private_uri_allowance([&public, &loopback]));
+    }
 
     /// F-17: without --yes and without a terminal, `dg init` / `dg repo create` stop with E802
     /// naming --yes before anything else runs (here, before the identity is even read: the

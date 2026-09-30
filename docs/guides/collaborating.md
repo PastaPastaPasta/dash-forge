@@ -149,6 +149,8 @@ dg issue label  <owner>/<repo> 12 add bug docs     # or: remove bug (the older -
 dg issue assign <owner>/<repo> 12 me alice         # or: unassign; ids or DPNS names
 ```
 
+A label the issue already has, or an assignee already assigned, is left alone: `dg` says so and writes (and charges) nothing for it, so the timeline never shows the same change twice. Removing one the issue does not have is skipped the same way.
+
 **Who can change state.** The issue's author can close and reopen it (an `authorEvent`). Writers and maintainers can close, reopen, label and assign any issue (an `event`). `dg` picks the right one for you. Consensus refuses both from anyone else, and `dg` says so before anything is signed ([`E601`](../errors.md#e601)).
 
 **Edits.** Only the author can edit an issue's title or body, or a comment's body (`dg issue edit-comment` takes the comment's id from `dg issue view --json` or `dg pr view --comments --json`, and works for PR comments too): an edit replaces their document, so consensus admits it from them alone, members included. The earlier text stays readable on Platform to anyone who could read it, and the web shows "edited". Re-running an edit that already landed writes nothing. In a private repository the whole text is re-sealed (a PR's under the key epoch it was opened with, the others under the current one) and nothing is written in plaintext. An edit made against text someone else replaced in the meantime is refused before signing ([`E607`](../errors.md#e607)).
@@ -193,7 +195,7 @@ dg repo fork <owner>/project            # or --name <another name>
   cost:    ~0.03 DASH ≈ $0.90
 ```
 
-A fork is a new repository with `forkOf` set to the parent. It records the parent's packs **by reference**, so nothing is uploaded again. Packs on external storage keep their URLs, and packs on Platform are read from the parent's chunks, which are permanent. The fork's cost is its own documents: the repo, one small manifest per pack, and the refs. Re-running an interrupted fork finishes it without paying twice. It never moves a branch you have already pushed to the fork.
+A fork is a new repository with `forkOf` set to the parent. It records the parent's packs **by reference**, so nothing is uploaded again. Packs on external storage keep their URLs, and packs on Platform are read from the parent's chunks, which are permanent. The fork's cost is its own documents: the repo, one small manifest per pack, and the refs. Re-running an interrupted fork finishes it without paying twice. It never moves a branch you have already pushed to the fork. In the web, the fork browses through the parent's published browse and history index, so no visitor rebuilds it in the browser; your own pushes to the fork index just the packs they add.
 
 **2. Push your branch to it.**
 
@@ -310,6 +312,8 @@ dg release list   <owner>/<repo>
 dg release download <owner>/<repo> v1.0.0 [--asset <name>] [--output <dir | file>]
 dg release unpublish <owner>/<repo> v1.0.0
 ```
+
+The tag must exist in the repository first (push it, as above): a release cannot be deleted, only unpublished, so `dg release create` refuses a tag the repository does not have ([E102](../errors.md#e102)) before anything is uploaded or signed. A new revision of an existing release (to yank it or change its notes) is allowed even if its tag was deleted since.
 
 `--asset` uploads each file to your own storage and records its SHA-256, size and URLs in the release. The storage is the repository's `dash.storage` profiles, or `--storage`, and each copy is read back and verified. Platform stores packs, not arbitrary files, so publishing an asset needs an S3 or IPFS profile ([bring your own storage](bring-your-own-storage.md)).
 

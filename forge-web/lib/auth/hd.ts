@@ -102,9 +102,31 @@ export async function isValidMnemonic(m: string): Promise<boolean> {
   }
 }
 
+/** The word counts a BIP-39 recovery phrase can have. */
+const PHRASE_LENGTHS = [12, 15, 18, 21, 24] as const
+
+/**
+ * What is wrong with a recovery phrase that is not valid, in words a user can act on: the word
+ * count when it is not one a phrase can have, else the checksum (a misspelt word, one not from the
+ * BIP-39 English list, or the words out of order: without the word list here the three cannot be
+ * told apart, so the message names all of them).
+ */
+export function mnemonicProblem(m: string): string {
+  const n = normalizeMnemonic(m) === '' ? 0 : normalizeMnemonic(m).split(' ').length
+  if (!(PHRASE_LENGTHS as readonly number[]).includes(n)) {
+    return `A recovery phrase has 12 or 24 words (sometimes 15, 18 or 21); this has ${n === 1 ? '1 word' : `${n} words`}. Check it against your backup.`
+  }
+  return `These ${n} words aren't a valid recovery phrase: a word is misspelt or not from the standard (BIP-39 English) word list, or two words are swapped. Check each word, in order, against your backup.`
+}
+
 /** Lowercase, single-spaced. */
 export function normalizeMnemonic(m: string): string {
   return m.trim().toLowerCase().split(/\s+/).join(' ')
+}
+
+/** Whether a backup-quiz answer is `word` (case and surrounding spaces ignored). */
+export function quizAnswerOk(answer: string, word: string | undefined): boolean {
+  return word !== undefined && answer.trim().toLowerCase() === word
 }
 
 /**
