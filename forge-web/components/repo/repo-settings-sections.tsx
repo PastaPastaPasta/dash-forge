@@ -89,6 +89,7 @@ const SECTIONS = [
   ['branches', 'Branches'],
   ['collaborators', 'Collaborators'],
   ['storage', 'Storage'],
+  ['webhooks', 'Webhooks'],
   ['danger', 'Danger zone'],
 ] as const
 
@@ -160,6 +161,8 @@ interface PendingConfig {
   readonly description: string
   readonly change: ConfigChange
   readonly confirmLabel: string
+  /** Once the write holds on chain (e.g. clear the field it came from). */
+  readonly onDone?: () => void
 }
 
 /**
@@ -186,6 +189,7 @@ function useConfigWrite(home: RepoHome, onSaved: () => void) {
       const read = await readConfig(sdk, home.repo)
       return read !== null && changeHolds(read, change) ? true : null
     }, 8)
+    pending.onDone?.()
     onSaved()
   }
   const dialog = (
@@ -452,6 +456,8 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
                     description: `Appends a config adding ${candidate}. From then on only maintainers can update ${preview.length > 0 ? preview.join(', ') : 'the branches it matches'}; a writer's push there is refused.`,
                     change: { addPattern: candidate },
                     confirmLabel: 'Sign & protect',
+                    // QW-072: a protected pattern leaves the field, not "already protected" under it.
+                    onDone: () => setEntry(''),
                   })
                 }
               >

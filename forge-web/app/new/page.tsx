@@ -64,7 +64,7 @@ const STEPS: readonly { step: CreateRepoStep; label: string; privateLabel?: stri
  */
 const PRIVATE_FACTS: readonly string[] = [
   'private: code, ref names, issues, PRs, comments, reviews and the labels on them are encrypted to members',
-  'visible to everyone: that it exists, its name, owner, members, sizes and timing, commit ids, and releases and label definitions (not encrypted in this release)',
+  'visible to everyone: that it exists, its name, owner, members, sizes and timing, commit ids, and label definitions (not encrypted in this release); releases are sealed',
   'members keep whatever they could already read, even after they are removed',
   'no recovery: if every member loses their encryption key, the contents are gone',
 ]
@@ -365,7 +365,7 @@ export default function NewRepoPage(): JSX.Element {
         title={confirm ? `Create ${confirm.name}?` : 'Create repository?'}
         description={
           confirm?.visibility === 'private'
-            ? `Writes the repo document, makes you its first maintainer, and records your repo key and its sealed config. ${PRIVATE_FACTS.join('. ')}. Repos cannot be deleted (archive instead); the name and visibility are permanent.`
+            ? `Writes the repo document, makes you its first maintainer, and records your repo key and its sealed config. ${PRIVATE_FACTS.map((f) => f.charAt(0).toUpperCase() + f.slice(1)).join('. ')}. Repos cannot be deleted (archive instead); the name and visibility are permanent.`
             : 'Writes the repo document, makes you its first maintainer, and records its config. Repos cannot be deleted (archive instead), and the name is permanent.'
         }
         cost={confirm ? costOf(confirm) : cost}

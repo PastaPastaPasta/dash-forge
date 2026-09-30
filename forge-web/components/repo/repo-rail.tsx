@@ -92,8 +92,20 @@ function About({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; se
       {home.v2.topics.length > 0 ? (
         <ul className="mb-2 flex flex-wrap gap-1.5" aria-label="Topics" data-testid="repo-topics">
           {home.v2.topics.map((t) => (
-            <li key={t} className="rounded-full bg-forge-50 px-2 py-0.5 font-mono text-[11px] text-forge-800 dark:bg-forge-950 dark:text-forge-300">
-              {t}
+            <li key={t}>
+              {/* GitHub's topic chips open the topic's page: Explore lists the repos tagged with it
+                  (a private repo has no topic documents, so its chips stay plain). */}
+              {home.repo.visibility === 'public' ? (
+                <Link
+                  href={`/explore/?topic=${encodeURIComponent(t)}`}
+                  className="hit-area inline-block rounded-full bg-forge-50 px-2 py-0.5 font-mono text-[11px] text-forge-800 hover:bg-forge-100 hover:underline dark:bg-forge-950 dark:text-forge-300 dark:hover:bg-forge-900"
+                  title={`Public repos tagged ${t}`}
+                >
+                  {t}
+                </Link>
+              ) : (
+                <span className="inline-block rounded-full bg-forge-50 px-2 py-0.5 font-mono text-[11px] text-forge-800 dark:bg-forge-950 dark:text-forge-300">{t}</span>
+              )}
             </li>
           ))}
         </ul>

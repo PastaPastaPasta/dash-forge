@@ -396,3 +396,54 @@ export async function encryptionOps(sdk: EvoSDK, network: Network, identityId: s
       ),
   }
 }
+
+/** Why a webhook's secret cannot be sealed from this browser (QW-071), or the sealer. */
+export type WebhookSealer =
+  | { readonly kind: 'ready'; readonly seal: (plaintext: Uint8Array, recipientIdentityId: string) => Promise<Record<string, unknown>> }
+  | { readonly kind: 'no-key' }
+  | { readonly kind: 'wrong-contract' }
+
+/**
+ * The sealer of a forge-community `webhook.secret` (`encryptedFor`: the relay's ENCRYPTION key,
+ * from the writer's): it seals from this browser's stored encryption key, which must be usable
+ * for forge-community (unbound, or bound to it), to the recipient identity's highest-id usable
+ * key there (forge-core `select_recipient_key`). `no-key`: this browser holds none;
+ * `wrong-contract`: the one it holds is bound to another contract. Each seal opens the key from
+ * the vault and wipes it; a locked vault makes the call throw.
+ */
+export async function webhookSealer(sdk: EvoSDK, network: Network, identityId: string, communityId: string): Promise<WebhookSealer> {
+  const keyId = await storedEncryptionKeyId(network, identityId)
+  if (keyId === null) return { kind: 'no-key' }
+  const mine = await requireIdentityKeys(sdk, identityId)
+  const senderKey = mine.find((k) => k.keyId === keyId)
+  if (senderKey === undefined || !isUsableEncryptionKey(senderKey, communityId)) return { kind: 'wrong-contract' }
+  const facade = (sdk as unknown as { encryptedFor: WrapFacade }).encryptedFor
+  const { PrivateKey } = await import('@dashevo/evo-sdk')
+  const net = wasmNetwork(network)
+  const seal = async (plaintext: Uint8Array, recipientIdentityId: string): Promise<Record<string, unknown>> => {
+    const theirs = await fetchIdentityKeys(sdk, recipientIdentityId)
+    if (theirs === null) throw new Error(`relay ${recipientIdentityId} is not an identity on this network`)
+    const recipientKey = usableEncryptionKey(theirs, communityId)
+    if (recipientKey === null) throw new Error(`relay ${recipientIdentityId} has no enabled ECDSA_SECP256K1 ENCRYPTION key to encrypt the secret to`)
+    const contract = (await authSdk(sdk).contracts.fetch(communityId)) as DataContract | undefined
+    if (contract === undefined) throw new Error('forge-community could not be read')
+    return withEncryptionKey(network, identityId, async (heldId, secret) => {
+      if (heldId !== keyId) throw new VaultLockedError('the encryption key in this browser changed; reload')
+      const pk = PrivateKey.fromBytes(secret, net)
+      try {
+        return await facade.encrypt({
+          dataContract: contract,
+          documentTypeName: 'webhook',
+          property: 'secret',
+          plaintext,
+          senderKey,
+          senderPrivateKey: pk,
+          recipientKey,
+        })
+      } finally {
+        pk.free()
+      }
+    })
+  }
+  return { kind: 'ready', seal }
+}

@@ -102,4 +102,15 @@ describe('the sealed release editor', () => {
     act(() => button(/^Close$/).click())
     expect(document.querySelector('[data-testid="release-written-warning"]')).toBeNull()
   })
+  it('shows the result, not the form again in "new revision" mode (QW-076)', async () => {
+    act(() => root.render(<Page after={{ current: [revision('NEW')], previous: [revision('OLD')] }} />))
+    await editAndPublish()
+    // The form is gone: no tag field, no carry-over note, no second Sign & publish.
+    expect(document.querySelector('#release-tag')).toBeNull()
+    expect(document.querySelector('[data-testid="release-sealed-carry"]')).toBeNull()
+    expect(button(/Sign & publish/)).toBeUndefined()
+    const view = document.querySelector<HTMLAnchorElement>('[data-testid="release-done-view"]')
+    expect(view?.textContent).toBe('View release v1')
+    expect(view?.getAttribute('href')).toContain('tag=v1')
+  })
 })

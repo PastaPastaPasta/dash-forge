@@ -21,7 +21,7 @@
 
 import { useMemo, useState } from 'react'
 import Link from 'next/link'
-import { AlertTriangle, CheckCircle2, FilePlus2, Loader2, Lock, Pencil, Plus, XCircle } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, FilePlus2, Loader2, Lock, Pencil, Plus, RotateCcw, XCircle } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { ARCHIVED_REASON, formatBytes, plural } from '@/lib/view'
 import { repoKey, type ReleaseList } from '@/lib/repo'
@@ -143,21 +143,22 @@ export function NewReleaseButton({ home, releases, onPublished }: { home: RepoHo
  * release cards: the revision it writes remounts or removes the card, and the dialog's result
  * and warnings must outlive that.
  */
-export function EditReleaseButton({ home, tag, onEdit }: { home: RepoHome; tag: string; onEdit: (tag: string) => void }): JSX.Element | null {
+export function EditReleaseButton({ home, tag, onEdit, restore = false }: { home: RepoHome; tag: string; onEdit: (tag: string) => void; restore?: boolean }): JSX.Element | null {
   const { role } = useViewerRole(home.repo)
   if (role !== 'maintainer') return null
   const blocked = publishBlock(home)
+  // An unpublished tag's editor publishes it again: "Restore" (QW-078).
   return (
     <Button
       variant="ghost"
       size="sm"
       onClick={() => onEdit(tag)}
       disabled={blocked !== null}
-      title={blocked ?? `Edit, yank or unpublish ${tag}`}
-      aria-label={`Edit release ${tag}`}
-      data-testid="edit-release"
+      title={blocked ?? (restore ? `Publish ${tag} again` : `Edit, yank or unpublish ${tag}`)}
+      aria-label={`${restore ? 'Restore' : 'Edit'} release ${tag}`}
+      data-testid={restore ? 'restore-release' : 'edit-release'}
     >
-      <Pencil className="h-3.5 w-3.5" aria-hidden /> Edit
+      {restore ? <RotateCcw className="h-3.5 w-3.5" aria-hidden /> : <Pencil className="h-3.5 w-3.5" aria-hidden />} {restore ? 'Restore' : 'Edit'}
     </Button>
   )
 }
@@ -231,6 +232,8 @@ function NewReleaseDialog({
   const [files, setFiles] = useState<File[]>([])
   const [progress, setProgress] = useState<Record<string, AssetState>>({})
   const [phase, setPhase] = useState<'edit' | 'publishing' | 'unconfirmed' | 'done'>('edit')
+  // What the finished write did (the form's own reading of the tag flips once the list reloads).
+  const [done, setDone] = useState<'published' | 'unpublished' | null>(null)
   const [touched, setTouched] = useState(false)
   const [status, setStatus] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -357,6 +360,7 @@ function NewReleaseDialog({
       setPhase('done')
       setWarnings(published.warnings ?? [])
       setStatus(unpublishing ? 'Release unpublished.' : 'Release published.')
+      setDone(unpublishing ? 'unpublished' : 'published')
       onPublished()
     } catch (e) {
       // The file whose upload threw (a single target failing is not the file failing).
@@ -438,6 +442,20 @@ function NewReleaseDialog({
       }
     >
       <div className="space-y-3">
+        {/* QW-076: once written, the dialog is the result (status, warnings, where to go), not the
+            form again: re-read against the new list, it would offer a "new revision" of the tag. */}
+        {done !== null ? (
+          <p className="text-dense text-anvil-700 dark:text-anvil-200" data-testid="release-done">
+            {done === 'published' ? (
+              <Link href={repoHref('/repo/release', addr, { tag: trimmedTag })} className="font-medium text-forge-700 underline underline-offset-2 dark:text-forge-400" data-testid="release-done-view">
+                View release {trimmedTag}
+              </Link>
+            ) : (
+              <>{trimmedTag} is off the list. Maintainers can restore it from Releases (Unpublished) by publishing the tag again.</>
+            )}
+          </p>
+        ) : (
+          <>
         <Field label="Tag" htmlFor="release-tag" hint="The git tag this release is for, e.g. v1.2.0 (push the tag with git; publishing does not create it).">
           <Input
             id="release-tag"
@@ -557,6 +575,8 @@ function NewReleaseDialog({
         </div>
         )}
         <CostPreview cost={cost} />
+          </>
+        )}
         {warnings.map((w) => (
           <WrittenWarning key={w.message} warning={w} />
         ))}

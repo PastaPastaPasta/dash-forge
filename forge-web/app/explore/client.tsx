@@ -8,7 +8,10 @@
  * section reads an index that answers it; where none exists the section says so rather than
  * implying it saw everything.
  *
- * Request budget, signed out: search 1 composite per page; trending, most starred and most forked
+ * `?topic=` lists the public repos tagged with a topic (the `topic` documents' name index), newest
+ * tag first; a repo's topic chips link there.
+ *
+ * Request budget, signed out: search 1 composite per page; a topic 2 (its tags, then those repos); trending, most starred and most forked
  * 2 each (a proved ranked read, then the ranked repos in one composite); recent 1
  * composite per page (its pushes feed "Recently updated", its first 24 repos "Recently released").
  */
@@ -16,7 +19,7 @@
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { Suspense, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { CircleDot, Compass, Flame, Info, GitBranch, GitFork, GitPullRequest, History, Package, Search, Star, UserCheck } from 'lucide-react'
+import { CircleDot, Compass, Flame, Hash, Info, GitBranch, GitFork, GitPullRequest, History, Package, Search, Star, UserCheck, X } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
 import { SignInButton } from '@/components/sign-in-button'
 import { RepoCard } from '@/components/repo-card'
@@ -31,7 +34,8 @@ import { useRepoPages, type RepoPages } from '@/hooks/use-repo-pages'
 import { useSdk } from '@/hooks/use-sdk'
 import { NETWORKS, type Network } from '@/lib/constants'
 import { listReposByOwner, plural, resolveDpnsName, timeAgo, type DiscoveredRepo } from '@/lib/view'
-import { rankedRepos, recentReposPage, recentlyUpdated, searchPrefix, searchRepos, PUSH_WINDOW_MS, type RankedRepos } from '@/lib/view/discovery'
+import { rankedRepos, recentReposPage, recentlyUpdated, reposWithTopic, searchPrefix, searchRepos, PUSH_WINDOW_MS, TOPIC_PAGE, type RankedRepos } from '@/lib/view/discovery'
+import { MAX_TOPIC_CHARS, TOPIC_PATTERN } from '@/lib/repo/settings'
 import type { TrendingWindow } from '@/lib/repo/trending'
 import {
   latestReleases,
@@ -300,8 +304,45 @@ function ExploreSearch({ on, network }: { on: boolean; network: Network }): JSX.
   const q = (params.get('q') ?? '').trim()
   const prefix = searchPrefix(q)
   const search = useRepoPages<string>((after) => searchRepos(sdk!, q, { network, after }), `${network}:${q}`, on && prefix !== null)
+  const topic = (params.get('topic') ?? '').trim().toLowerCase()
+  const topicValid = TOPIC_PATTERN.test(topic) && topic.length <= MAX_TOPIC_CHARS
+  const tagged = useAsync(() => reposWithTopic(sdk!, topic, { network }), [network, topic], { enabled: on && topicValid })
+  const clearTopic = (): void => {
+    const next = new URLSearchParams(params.toString())
+    next.delete('topic')
+    const qs = next.toString()
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
+  }
   return (
     <>
+      {topic !== '' ? (
+        topicValid ? (
+          <Section
+            title={`Repos tagged “${topic}”`}
+            testId="explore-topic"
+            icon={Hash}
+            state={tagged}
+            empty={`No public repo is tagged “${topic}”.`}
+            emptyAction={<ClearTopic onClear={clearTopic} />}
+            note="Every public repo whose owner gave it this topic, newest tag first, proved by the topic index. A private repo's topics are never listed."
+            partial={(d) =>
+              d.more ? `Showing the newest ${TOPIC_PAGE} repos tagged “${topic}”; more carry it.` : d.missing > 0 ? `${plural(d.missing, 'tagged repo')} could not be read.` : null
+            }
+          >
+            {(d) => (
+              <>
+                <ClearTopic onClear={clearTopic} />
+                <RepoGrid repos={d.repos} />
+              </>
+            )}
+            {(d) => d.repos.length === 0}
+          </Section>
+        ) : (
+          <p role="status" className="rounded-lg border border-dashed border-anvil-300 px-4 py-3 text-dense text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-testid="explore-topic-invalid">
+            “{topic}” is not a topic: topics are up to {MAX_TOPIC_CHARS} of a–z and 0–9, words joined by single dashes.
+          </p>
+        )
+      ) : null}
       <SearchBox
         initial={q}
         onSearch={(text) => {
@@ -337,6 +378,14 @@ function ExploreSearch({ on, network }: { on: boolean; network: Network }): JSX.
         )
       ) : null}
     </>
+  )
+}
+
+function ClearTopic({ onClear }: { onClear: () => void }): JSX.Element {
+  return (
+    <button type="button" onClick={onClear} className="mb-3 inline-flex items-center gap-1 text-dense text-anvil-600 hover:text-forge-700 coarse:min-h-11 dark:text-anvil-300 dark:hover:text-forge-400">
+      <X className="h-3.5 w-3.5" aria-hidden /> Clear topic
+    </button>
   )
 }
 

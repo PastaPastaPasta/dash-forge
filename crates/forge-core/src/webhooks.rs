@@ -41,7 +41,9 @@ use crate::platform::{
     PlatformClient, QueryFilter, QueryOrder, WriteEngine,
 };
 use crate::rules::v2::{Role, Visibility};
+use crate::keyring::FIX_ADD_ENCRYPTION_KEY;
 use crate::scope::RepoRef;
+use crate::user_error::{codes, UserError};
 
 /// The forge-community document type.
 pub const DOC_WEBHOOK: &str = "webhook";
@@ -367,6 +369,28 @@ pub fn decrypt_secret(
     Ok(secret)
 }
 
+/// E306 for a webhook written from a key source with no usable `ENCRYPTION` key (QW-071): the
+/// secret is encrypted from the writer's encryption key. Said as that, not as E303 "could not
+/// load your identity file", which a limited key from `dg auth login` (signing only) used to get
+/// because the old text mentioned the identity file.
+fn no_sender_encryption_key(who: &str) -> Error {
+    UserError::new(
+        codes::NO_ENCRYPTION_KEY,
+        format!("webhook secret: {who} has no encryption key here"),
+    )
+    .cause(
+        "a webhook's secret is encrypted from the writer's identity ENCRYPTION key to the relay's, \
+         and the key source in use holds none that matches an enabled key on the identity \
+         (a limited key from `dg auth login` holds only a signing key)",
+    )
+    .fix(
+        "if the identity has an ENCRYPTION key (`dg auth keys list`), use a source that holds it: \
+         `DASH_FORGE_KEY=<identity file>`, or `dg auth login --full-key <identity file>`",
+    )
+    .fix(format!("if it has none: {FIX_ADD_ENCRYPTION_KEY}"))
+    .into()
+}
+
 /// The forge-community contract of `client`'s network (where `webhook` lives).
 async fn community(client: &PlatformClient) -> Result<LoadedContract> {
     let forge = client
@@ -591,13 +615,10 @@ impl<'a> WebhookService<'a> {
             &self.identity.public_keys(),
             &forge.community,
         );
-        let (sender_key_id, sender) = mine.iter().next_back().ok_or_else(|| {
-            Error::Config(
-                "the identity file has no ENCRYPTION key matching an enabled on-chain \
-                 ENCRYPTION key of the identity; the webhook secret must be encrypted from one"
-                    .into(),
-            )
-        })?;
+        let (sender_key_id, sender) = mine
+            .iter()
+            .next_back()
+            .ok_or_else(|| no_sender_encryption_key(&self.identity.id()))?;
         let ciphertext = envelope::encrypt(sender, &recipient.public_key, input.secret.expose())?;
 
         // Ids, key ids and the ciphertext, the text fields, and ~100 bytes of document and
@@ -681,6 +702,20 @@ impl<'a> WebhookService<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_key_source_without_an_encryption_key_is_e306_not_e303() {
+        let e = no_sender_encryption_key("IDENT");
+        let Error::User(u) = &e else {
+            panic!("expected a user error, got {e:?}")
+        };
+        let text = u.to_string();
+        assert_eq!(u.code, codes::NO_ENCRYPTION_KEY, "{text}");
+        assert!(text.contains("webhook secret: IDENT has no encryption key"), "{text}");
+        assert!(text.contains("limited key"), "{text}");
+        // Not the misleading "identity file" wording the E303 classifier keys on.
+        assert!(!text.contains("could not load your identity file"), "{text}");
+    }
 
     fn hook(doc: &str, repo: u8, hook: u8, at: u64, disabled: bool) -> Webhook {
         Webhook {
