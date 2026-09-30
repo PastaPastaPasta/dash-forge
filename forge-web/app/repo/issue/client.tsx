@@ -12,7 +12,7 @@ export function IssueClient(): JSX.Element {
   const upstream = Number.parseInt(useParam('upstream'), 10)
   return (
     <RepoScaffold addr={addr} rail={false}>
-      {(home) => (Number.isFinite(upstream) ? <UpstreamRedirect home={home} addr={addr} upstream={upstream} /> : <IssueContent home={home} addr={addr} number={number} />)}
+      {(home) => (Number.isFinite(upstream) ? <UpstreamRedirect home={home} addr={addr} upstream={upstream} /> : <IssueContent key={number} home={home} addr={addr} number={number} />)}
     </RepoScaffold>
   )
 }
