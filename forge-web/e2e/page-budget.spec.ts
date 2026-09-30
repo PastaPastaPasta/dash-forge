@@ -12,9 +12,11 @@ import { collectPageErrors, DAPI_METHOD, decodeDocumentsRequest, E2E_DEVNET, EMP
  *   history walk (its own agent is replacing it with a push-time index): its chunk reads are
  *   counted apart and budgeted on their own, so the rest of the home is held to S-1.
  *
- * The budget covers what the page shows on load. Below the fold the About card's LICENSE and
- * language bar, and the latest release, are read when scrolled into view (skeletons until then):
- * pb-1 checks that scrolling there reads them.
+ * The budget covers what the page shows on load, plus the About card's release count and repo
+ * size (read once their row scrolls into view, but on this fixture that happens within the fold
+ * pb-1 already scrolls for). Further below the fold, the LICENSE and language bar, and the
+ * latest release, are read only when scrolled to (skeletons until then): pb-1 checks that
+ * scrolling there reads them, separately from the cold count above.
  */
 
 /** S-1's cold page budget. */
@@ -82,6 +84,11 @@ test.describe('page request budget (S-1)', () => {
     // reads land in the cold budget below rather than silently never firing.
     await about.getByTestId('repo-releases').scrollIntoViewIfNeeded()
     await expect(about.getByTestId('repo-releases')).toContainText(/\d/, { timeout: 30_000 })
+    // Latest release must still be an unread skeleton here, or its reads have already landed in
+    // the cold count above rather than the "below the fold, on scroll" one further down — a
+    // layout change (a shorter rail, a different fixture, font metrics) could otherwise pull it
+    // into view together with the releases row and silently zero out the `scrolled` check below.
+    await expect(about.getByTestId('latest-release-skeleton')).toBeVisible()
     await settle(page)
     const cold = dapi.all().length
     test.info().annotations.push({ type: 'dapi', description: `fixture cold home: ${cold} ${summary(dapi.all())}` })
