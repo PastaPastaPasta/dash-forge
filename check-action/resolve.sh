@@ -67,15 +67,19 @@ sha="${INPUT_SHA:-}"
 sha=$(printf '%s' "$sha" | tr 'A-F' 'a-f')
 [[ "$sha" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || die "sha must be a 40 or 64 hex digit commit id, got '$sha'"
 
+# forge-community's checkRun.detailsUrl pattern: https, a host without user:password@, no spaces.
+https_url='^https://[^[:space:]/?#@]+([/?#][^[:space:]]*)?$'
 server="${GITHUB_SERVER_URL:-https://github.com}"
 details="${INPUT_DETAILS_URL:-}"
 if [[ -z "$details" && -n "${GITHUB_REPOSITORY:-}" && -n "${GITHUB_RUN_ID:-}" ]]; then
   details="$server/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
   [[ -n "${GITHUB_RUN_ATTEMPT:-}" ]] && details="$details/attempts/$GITHUB_RUN_ATTEMPT"
+  # A GitHub Enterprise Server on plain http: no link rather than one Forge refuses.
+  [[ "$details" =~ $https_url && ${#details} -le 300 ]] || details=""
 fi
 if [[ -n "$details" ]]; then
-  [[ "$details" == https://* && ${#details} -le 300 && "$details" != *[[:space:]]* ]] \
-    || die "details-url must be an https URL of at most 300 characters"
+  [[ "$details" =~ $https_url && ${#details} -le 300 ]] \
+    || die "details-url must be an https URL (a host, no user:password@, no spaces) of at most 300 characters"
 fi
 
 summary="${INPUT_SUMMARY:-}"
@@ -104,6 +108,9 @@ if [[ -n "$log" ]]; then
   [[ "$log_storage" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || die "log-storage must be a profile name"
 fi
 case "${INPUT_PUBLIC_LOG:-false}" in true|false) ;; *) die "public-log must be true or false";; esac
+if [[ "${INPUT_PUBLIC_LOG:-false}" == true ]]; then
+  echo "::warning title=Dash Forge check::public-log has no effect any more: a private repository's check run cannot carry a log"
+fi
 
 # One job's reports share a run id: the run, the attempt, the job, the matrix leg and the name.
 # The contract allows 120 bytes; a longer one keeps its head and a hash of the whole.
@@ -127,10 +134,7 @@ out=$(mktemp "${RUNNER_TEMP:-/tmp}/forge-check-args.XXXXXX")
   if [[ -n "$details" ]]; then printf '%s\n' "--details-url=$details"; fi
   if [[ -n "$summary" ]]; then printf '%s\n' "--summary=$summary"; fi
   if [[ -n "$ext" ]]; then printf '%s\n' "--external-id=$ext"; fi
-  if [[ -n "$log" ]]; then
-    printf '%s\n' "--log=$log" "--storage=$log_storage"
-    if [[ "${INPUT_PUBLIC_LOG:-false}" == true ]]; then printf '%s\n' --public-log; fi
-  fi
+  if [[ -n "$log" ]]; then printf '%s\n' "--log=$log" "--storage=$log_storage"; fi
 } >"$out"
 {
   echo "args-file=$out"

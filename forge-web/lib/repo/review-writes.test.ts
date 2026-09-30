@@ -77,6 +77,8 @@ import type { WriteAuth } from '../sdk'
 
 const ALICE = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const BOB = 'CJao2MVHL4x3f2Ko2xTUibnZ8G1t9exTPtvJnCbHAgDH'
+/** A member posting to an unlocked PR. */
+const MEMBER = { isMember: true }
 const PR = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'
 const REPO: RepoRef = {
   forge: { core: 'A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1', collab: 'C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS', community: 'C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS', group: '6dV3kMBWHGR7pLKrHToMBQgbTpjqeE2VAyCEWmLbrkWC' },
@@ -204,6 +206,10 @@ describe('assignees and labels (F-1)', () => {
     // The comment's provenance is re-sealed, and the edit names the revision and the repo it read.
     expect(sealed[1]?.[5]).toEqual({ author: 'octocat', url: 'u' })
     expect(replaces[1]).toMatchObject({ expectedRevision: 2n, expectRepoId: PRIVATE.repoId })
+    // RC1: a dead parent and a lapsed proof are removed in the sealed replace too (plaintext references).
+    await updateComment(sdk, auth(ALICE), PRIVATE, { id: PR, body: 'again', dropReplyTo: true, dropProof: true, expectedRevision: 3n, seal: { current: { body: 'edited' }, bind: { targetId: PR } } })
+    expect(replaces[2]?.changes).toEqual({ enc: new Uint8Array([1, 2, 3]), epoch: 4, body: undefined, replyTo: undefined, asMember: undefined })
+    expect(Object.keys(replaces[2]?.changes ?? {})).toEqual(expect.arrayContaining(['replyTo', 'asMember']))
     // A private comment edit without the revision it read is refused (both clients guard edits by revision).
     await expect(updateComment(sdk, auth(ALICE), PRIVATE, { id: PR, body: 'x', seal: { current: { body: 'was' }, bind: { targetId: PR } } })).rejects.toThrow(/revision/)
     // The author (and repo, revision) is checked before any key work: a refused precheck seals nothing.
@@ -215,7 +221,7 @@ describe('assignees and labels (F-1)', () => {
     expect(prechecks.length).toBeGreaterThan(0)
     // A public edit is plaintext, as before.
     await updateTarget(sdk, auth(ALICE), REPO, { type: 'issue', id: PR, title: 'pub' })
-    expect(replaces[2]?.changes).toEqual({ title: 'pub' })
+    expect(replaces[3]?.changes).toEqual({ title: 'pub' })
   })
 })
 
@@ -231,8 +237,8 @@ describe('anchors and reviews', () => {
   })
 
   it('writes commentCount on a review and bounds it', () => {
-    expect(reviewData({ patchId: PR, verdict: 'requestChanges', commitOid: HEAD, commentCount: 2 })).toMatchObject({ verdict: 2, commentCount: 2 })
-    expect(() => reviewData({ patchId: PR, verdict: 'approve', commitOid: HEAD, commentCount: 65536 })).toThrow()
+    expect(reviewData({ patchId: PR, verdict: 'requestChanges', commitOid: HEAD, commentCount: 2, post: MEMBER }, BOB)).toMatchObject({ verdict: 2, commentCount: 2 })
+    expect(() => reviewData({ patchId: PR, verdict: 'approve', commitOid: HEAD, commentCount: 65536, post: MEMBER }, BOB)).toThrow()
   })
 })
 
@@ -242,7 +248,7 @@ describe('private repos', () => {
     await expect(postComment(sdk, auth(BOB), PRIVATE, { targetId: PR, body: 'secret' })).rejects.toThrow(/private repo/)
     await expect(updateComment(sdk, auth(BOB), PRIVATE, { id: PR, body: 'secret' })).rejects.toThrow(/private repo/)
     const d = { draftId: 'p', network: 'devnet', identity: BOB, repoId: REPO.repoId, prId: PR, headOid: HEAD, verdict: 'approve' as const, summary: '', comments: [], startedAt: 0 }
-    await expect(submitReviewDraft(sdk, auth(BOB), PRIVATE, d, undefined, NO_CHAIN)).rejects.toThrow(/private repo/)
+    await expect(submitReviewDraft(sdk, auth(BOB), PRIVATE, d, MEMBER, undefined, NO_CHAIN)).rejects.toThrow(/private repo/)
     expect(writes).toHaveLength(0)
     // Events are plaintext by design, and still allowed.
     await postTargetEvent(sdk, auth(ALICE), PRIVATE, { target, kind: 'headUpdate', author: ALICE, isMember: false, payload: { oidHex: HEAD } })
@@ -297,7 +303,7 @@ describe('pending review submit', () => {
   it('writes the review first with commentCount, then each comment with reviewId and the head', async () => {
     await saveReviewDraft(draft())
     const progress: number[] = []
-    const out = await submitReviewDraft(sdk, auth(BOB), REPO, draft(), (p) => progress.push(p.done), NO_CHAIN)
+    const out = await submitReviewDraft(sdk, auth(BOB), REPO, draft(), MEMBER, (p) => progress.push(p.done), NO_CHAIN)
     expect(writes.map((w) => w.documentType)).toEqual(['review', 'comment', 'comment', 'comment'])
     expect(writes[0]?.data).toMatchObject({ verdict: 2, body: 'two things', commentCount: 3 })
     for (const w of writes.slice(1)) {
@@ -314,11 +320,11 @@ describe('pending review submit', () => {
   it('resumes after a failure at comment 2 of 3 without rewriting what landed', async () => {
     await saveReviewDraft(draft())
     failAt = 2 // the review and comment 1 land, comment 2 fails
-    await expect(submitReviewDraft(sdk, auth(BOB), REPO, draft(), undefined, NO_CHAIN)).rejects.toThrow('network dropped')
+    await expect(submitReviewDraft(sdk, auth(BOB), REPO, draft(), MEMBER, undefined, NO_CHAIN)).rejects.toThrow('network dropped')
     const saved = await loadReviewDraft('devnet', BOB, PR)
     expect(saved?.reviewId).toBe(D(1))
     expect(saved?.comments.map((c) => c.landedId ?? null)).toEqual([D(2), null, null])
-    const out = await submitReviewDraft(sdk, auth(BOB), REPO, saved as ReviewDraft, undefined, NO_CHAIN)
+    const out = await submitReviewDraft(sdk, auth(BOB), REPO, saved as ReviewDraft, MEMBER, undefined, NO_CHAIN)
     expect(writes.map((w) => w.documentType)).toEqual(['review', 'comment', 'comment', 'comment'])
     expect(out.commentIds).toEqual([D(2), D(3), D(4)])
     expect(await loadReviewDraft('devnet', BOB, PR)).toBeUndefined()
@@ -351,7 +357,7 @@ describe('pending review submit', () => {
     writes.length = 0
     const pad = (n: number) => { while (writes.length < n) writes.push({ documentType: 'pad', data: {} }) }
     pad(2) // the next fake id the engine hands out is D(3)
-    const out = await submitReviewDraft(sdk, auth(BOB), REPO, d, undefined, reads)
+    const out = await submitReviewDraft(sdk, auth(BOB), REPO, d, MEMBER, undefined, reads)
     const posted = writes.filter((w) => w.documentType !== 'pad')
     expect(posted.map((w) => w.documentType)).toEqual(['comment', 'comment'])
     expect(posted.map((w) => w.intent)).toEqual(['review:d1:comment:c2', 'review:d1:comment:c3'])
@@ -364,7 +370,7 @@ describe('pending review submit', () => {
     // the same person): a first submit must still write its own.
     const d = { ...draft(), comments: [] }
     const earlier: ChainReview = { id: D(5), reviewer: BOB, verdict: 2, commitOid: HEAD, body: 'two things', commentCount: 0, createdAt: Date.now() + 60_000 }
-    const out = await submitReviewDraft(sdk, auth(BOB), REPO, d, undefined, { reviews: async () => [earlier], comments: async () => [] })
+    const out = await submitReviewDraft(sdk, auth(BOB), REPO, d, MEMBER, undefined, { reviews: async () => [earlier], comments: async () => [] })
     expect(writes.map((w) => w.documentType)).toEqual(['review'])
     expect(out.reviewId).toBe(D(1))
   })
@@ -372,12 +378,12 @@ describe('pending review submit', () => {
   it('records the attempt before the first write, so a crash after it reconciles', async () => {
     await saveReviewDraft(draft())
     failAt = 0
-    await expect(submitReviewDraft(sdk, auth(BOB), REPO, draft(), undefined, NO_CHAIN)).rejects.toThrow('network dropped')
+    await expect(submitReviewDraft(sdk, auth(BOB), REPO, draft(), MEMBER, undefined, NO_CHAIN)).rejects.toThrow('network dropped')
     expect((await loadReviewDraft('devnet', BOB, PR))?.attemptedAt).toBeTypeOf('number')
   })
 
   it("refuses to submit another identity's draft", async () => {
-    await expect(submitReviewDraft(sdk, auth(ALICE), REPO, draft(), undefined, NO_CHAIN)).rejects.toThrow(/another identity/)
+    await expect(submitReviewDraft(sdk, auth(ALICE), REPO, draft(), MEMBER, undefined, NO_CHAIN)).rejects.toThrow(/another identity/)
     expect(writes).toHaveLength(0)
   })
 })

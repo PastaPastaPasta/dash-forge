@@ -10,10 +10,11 @@ export function PullClient(): JSX.Element {
   const number = Number.parseInt(useParam('number'), 10)
   // `?upstream=N`: a mirrored body's `#N` (the source's number), resolved to this repo's item.
   const upstream = Number.parseInt(useParam('upstream'), 10)
+  // Keyed by number: another PR is a fresh page (its reads, its refresh state), not this one's.
   return (
     <RepoScaffold addr={addr} rail={false}>
       {(home, reloadHome) =>
-        Number.isFinite(upstream) ? <UpstreamRedirect home={home} addr={addr} upstream={upstream} /> : <PullContent home={home} addr={addr} number={number} reloadHome={reloadHome} />
+        Number.isFinite(upstream) ? <UpstreamRedirect home={home} addr={addr} upstream={upstream} /> : <PullContent key={number} home={home} addr={addr} number={number} reloadHome={reloadHome} />
       }
     </RepoScaffold>
   )

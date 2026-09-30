@@ -232,7 +232,7 @@ pub fn fold_pr_review_v2(
 
 /// A `policy` document, flattened (forge-v2.md §2). The newest by `(createdAt, id)` among the
 /// repo's policies is the one in force; the reader picks it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Policy {
     /// Approvals a merge needs (0–10).
@@ -243,9 +243,18 @@ pub struct Policy {
     /// Passing checks required (informational to [`meets_policy`], which judges approvals).
     #[serde(default)]
     pub require_checks: bool,
-    /// Allowed merge methods, bitmask (1 ff, 2 merge commit, 4 squash, 8 rebase; 0 any).
+    /// Allowed merge methods, bitmask (1 ff, 2 merge commit, 4 squash, 8 rebase; 0 any; the
+    /// contract caps it at 15).
     #[serde(default)]
     pub merge_methods: u8,
+    /// The checks a merge needs by name (`requiredChecks`: at most 10, unique).
+    #[serde(default)]
+    pub required_checks: Vec<String>,
+    /// `requiredCheckSources`: the runner or maintainer (base58) whose runs alone decide each
+    /// of `required_checks`, paired by position; as many as the names, or none (any trusted
+    /// reporter's run decides). See [`super::parity::checks_state`].
+    #[serde(default)]
+    pub required_check_sources: Vec<String>,
 }
 
 /// How far the approvals are from a policy.

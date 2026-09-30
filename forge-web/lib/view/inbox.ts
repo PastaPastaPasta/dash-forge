@@ -26,6 +26,7 @@ import type { Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 import { DOC } from '../repo/contract'
+import { contractOf } from '../repo/source'
 import { queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from '../sdk'
 import { listReposByOwner } from './discovery'
 import {
@@ -217,9 +218,8 @@ export function feedQuery(forge: ForgeIds, f: Feed, cursor: Cursor): DocumentQue
   switch (f.kind) {
     case 'new':
     case 'state':
-      return { dataContractId: forge.collab, documentTypeName: f.type, where: [['repoId', '==', f.repo.id], after], ...shape }
     case 'push':
-      return { dataContractId: forge.core, documentTypeName: f.type, where: [['repoId', '==', f.repo.id], after], ...shape }
+      return { dataContractId: contractOf(forge, f.type), documentTypeName: f.type, where: [['repoId', '==', f.repo.id], after], ...shape }
     case 'comments':
       return { dataContractId: forge.collab, documentTypeName: DOC.comment, where: [['targetId', '==', f.thread.id], after], ...shape }
     case 'reviews':
@@ -240,10 +240,10 @@ export function backfillQuery(forge: ForgeIds, f: Extract<Feed, { kind: 'state' 
   // A target's transitions are few and indexed by `targetId` alone (`perTarget`): read them all
   // and let `toItems` keep the window (`backfillWindow`).
   if (f.type === 'transition') {
-    return { dataContractId: forge.collab, documentTypeName: f.type, where: [['targetId', '==', thread.id]], orderBy: [['targetId', 'asc']], limit: 100 }
+    return { dataContractId: contractOf(forge, f.type), documentTypeName: f.type, where: [['targetId', '==', thread.id]], orderBy: [['targetId', 'asc']], limit: 100 }
   }
   return {
-    dataContractId: forge.collab,
+    dataContractId: contractOf(forge, f.type),
     documentTypeName: f.type,
     // `<= at`: a page that stopped inside a block at `at` read part of it; the rest comes here or
     // with the feed's next read (an item is stored once, by document id).
@@ -331,7 +331,8 @@ export function stateWhat(kind: number, value: string | undefined, me: string): 
   }
 }
 
-const VERDICT_WHAT: Readonly<Record<number, string>> = { 1: 'approved', 2: 'requested changes', 3: 'reviewed' }
+/** Review verdicts as the inbox words them; 4/5 are a non-member's approve and request changes (RC1). */
+const VERDICT_WHAT: Readonly<Record<number, string>> = { 1: 'approved', 2: 'requested changes', 3: 'reviewed', 4: 'approved', 5: 'requested changes' }
 
 function shortRef(name: string | undefined): string {
   if (!name) return 'a branch'

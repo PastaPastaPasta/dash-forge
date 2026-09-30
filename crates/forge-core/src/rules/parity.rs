@@ -56,6 +56,11 @@ pub struct ChecksPolicy {
     /// These checks must be reported and pass (overrides "every reported check" when set).
     #[serde(default)]
     pub required_checks: Vec<String>,
+    /// `requiredCheckSources` (RC1 `check_sources`): the identity (base58, a runner or a
+    /// maintainer of the repo) whose runs alone decide each of `required_checks`, paired by
+    /// position. Empty: any trusted reporter's run decides (the rule before RC1).
+    #[serde(default)]
+    pub required_check_sources: Vec<String>,
 }
 
 /// Where one required check stands.
@@ -127,6 +132,12 @@ fn check_state_of(run: &CheckRunRow) -> CheckState {
 /// * `requiredChecks` set: each named check must be decided by a passing run; a missing one is
 ///   `missing`. Otherwise `requireChecks`: every counting name must pass, and at least one
 ///   must exist. Neither: nothing is required and `met` is true.
+/// * **Pinned sources** (`requiredCheckSources`, paired with `requiredChecks` by position):
+///   a pinned name counts only the runs its source signed, so another member's or runner's run
+///   of that name neither passes nor blocks it (nor counts as untrusted). The source must still
+///   be a current member or runner. Consensus admits as many sources as names or none
+///   (`sourcesMatchNames`); a list that does not pair up pins nothing, and an empty one is the
+///   rule without pinning.
 ///
 /// A client rule for the merge box (a maintainer may override), never consensus.
 #[must_use]
@@ -138,6 +149,11 @@ pub fn checks_state(
     policy: &ChecksPolicy,
 ) -> ChecksState {
     let trusted = |who: &str| oracle.current_role(who).is_some() || runners.contains(who);
+    let pins = pinned_sources(policy);
+    let pinned_out = |run: &CheckRunRow| {
+        pins.get(run.name.as_str())
+            .is_some_and(|sources| !sources.contains(run.reporter.as_str()))
+    };
     let mut newest: BTreeMap<&str, &CheckRunRow> = BTreeMap::new();
     let mut untrusted = 0u32;
     for run in runs
@@ -146,6 +162,9 @@ pub fn checks_state(
     {
         if !trusted(&run.reporter) {
             untrusted = untrusted.saturating_add(1);
+            continue;
+        }
+        if pinned_out(run) {
             continue;
         }
         let newer = newest.get(run.name.as_str()).is_none_or(|held| {
@@ -192,6 +211,26 @@ pub fn checks_state(
     }
 }
 
+/// Each pinned check name and the sources that may decide it ([`checks_state`]): empty unless
+/// `requiredCheckSources` pairs up with `requiredChecks`. An empty name or source pins nothing.
+fn pinned_sources(policy: &ChecksPolicy) -> BTreeMap<&str, BTreeSet<&str>> {
+    let mut pins: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    if policy.required_check_sources.len() != policy.required_checks.len() {
+        return pins;
+    }
+    for (name, source) in policy
+        .required_checks
+        .iter()
+        .zip(&policy.required_check_sources)
+        .filter(|(n, s)| !n.is_empty() && !s.is_empty())
+    {
+        pins.entry(name.as_str())
+            .or_default()
+            .insert(source.as_str());
+    }
+    pins
+}
+
 // ===========================================================================
 // Milestone, pin, lock (event kinds 17–22)
 // ===========================================================================
@@ -206,7 +245,9 @@ pub struct ThreadMeta {
     pub pinned: bool,
     /// When the standing pin was made (ms); `None` when not pinned.
     pub pinned_at: Option<u64>,
-    /// Locked: clients offer the composer to members only.
+    /// Locked, from the retired lock events (kinds 21/22, refused on chain since RC1 by
+    /// `noState`). Kept for the shared vectors only: read a thread's lock from its transitions
+    /// (`TargetLog::locked`, a sum of 16 or more).
     pub locked: bool,
 }
 
@@ -672,4 +713,128 @@ pub fn check_run_write(
             &report.external_id,
         ),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::v2::{Membership, Role};
+    use super::*;
+
+    const HEAD: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    fn run(id: &str, name: &str, reporter: &str, at: u64, conclusion: &str) -> CheckRunRow {
+        CheckRunRow {
+            id: id.into(),
+            head_oid: HEAD.into(),
+            name: name.into(),
+            status: "completed".into(),
+            conclusion: Some(conclusion.into()),
+            reporter: reporter.into(),
+            created_at: at,
+        }
+    }
+
+    fn oracle() -> RoleOracle {
+        RoleOracle::new(vec![
+            Membership {
+                identity: "maint".into(),
+                role: Role::Maintainer,
+                created_at: 1,
+            },
+            Membership {
+                identity: "writ".into(),
+                role: Role::Writer,
+                created_at: 1,
+            },
+        ])
+    }
+
+    fn policy(names: &[&str], sources: &[&str]) -> ChecksPolicy {
+        ChecksPolicy {
+            require_checks: true,
+            required_checks: names.iter().map(|s| (*s).to_string()).collect(),
+            required_check_sources: sources.iter().map(|s| (*s).to_string()).collect(),
+        }
+    }
+
+    fn states(s: &ChecksState) -> Vec<(&str, CheckState)> {
+        s.required
+            .iter()
+            .map(|c| (c.name.as_str(), c.state))
+            .collect()
+    }
+
+    #[test]
+    fn a_pinned_check_counts_only_its_sources_runs() {
+        let runners = BTreeSet::from(["bot".to_string()]);
+        // A writer's newer passing `build` does not decide a `build` pinned to the runner,
+        // whose run failed; `lint`, pinned to the maintainer, passes by the maintainer's run.
+        let runs = [
+            run("r1", "build", "bot", 10, "failure"),
+            run("r2", "build", "writ", 20, "success"),
+            run("r3", "lint", "maint", 10, "success"),
+            run("r4", "lint", "bot", 20, "failure"),
+        ];
+        let s = checks_state(
+            &runs,
+            HEAD,
+            &oracle(),
+            &runners,
+            &policy(&["build", "lint"], &["bot", "maint"]),
+        );
+        assert_eq!(
+            states(&s),
+            [("build", CheckState::Failing), ("lint", CheckState::Passed)]
+        );
+        assert!(!s.met);
+        assert_eq!(s.untrusted, 0, "another member's run is not untrusted");
+        assert_eq!(s.required[0].run_id.as_deref(), Some("r1"));
+        // Only another reporter's run: the pinned check is missing.
+        let s = checks_state(
+            &runs[1..2],
+            HEAD,
+            &oracle(),
+            &runners,
+            &policy(&["build"], &["bot"]),
+        );
+        assert_eq!(states(&s), [("build", CheckState::Missing)]);
+    }
+
+    #[test]
+    fn no_sources_or_a_list_that_does_not_pair_up_is_the_unpinned_rule() {
+        let runners = BTreeSet::from(["bot".to_string()]);
+        let runs = [
+            run("r1", "build", "bot", 10, "failure"),
+            run("r2", "build", "writ", 20, "success"),
+        ];
+        for sources in [&[][..], &["bot", "maint"][..]] {
+            let s = checks_state(
+                &runs,
+                HEAD,
+                &oracle(),
+                &runners,
+                &policy(&["build"], sources),
+            );
+            assert_eq!(states(&s), [("build", CheckState::Passed)], "{sources:?}");
+            assert!(s.met);
+        }
+    }
+
+    #[test]
+    fn a_revoked_source_decides_nothing() {
+        // The pinned runner was revoked: its run is untrusted, and nobody else's counts.
+        let runs = [
+            run("r1", "build", "bot", 10, "success"),
+            run("r2", "build", "writ", 20, "success"),
+        ];
+        let s = checks_state(
+            &runs,
+            HEAD,
+            &oracle(),
+            &BTreeSet::new(),
+            &policy(&["build"], &["bot"]),
+        );
+        assert_eq!(states(&s), [("build", CheckState::Missing)]);
+        assert_eq!(s.untrusted, 1);
+    }
 }

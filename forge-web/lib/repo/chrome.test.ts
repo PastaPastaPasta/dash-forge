@@ -20,6 +20,7 @@ import { bytesToBase64, hexToBase64, setPlatformVersion, type DocumentQuery } fr
 import { loadRepoHome } from '../view/repo-view'
 import { cachedDpnsName, clearDpnsCache } from '../view/dpns'
 import { chromeFallbacks, readRepoChrome, repoTimelines, resetRepoTimelines, staleRepoTimelines } from './chrome'
+import { baseRefReaders } from './issues'
 import { invalidateMembers, readMembershipsCached } from './members'
 import { noteTargetCreated } from './social'
 import { readBrowseManifests } from './packs'
@@ -256,6 +257,20 @@ describe('repo chrome store: the pack list and base refs come from the same read
     staleRepoTimelines(REF)
     calls.length = 0
     await repoTimelines(sdk, REF, { network: 'devnet' })
+    expect(calls).toEqual(['composite:repo'])
+  })
+
+  it('a PR page right after the home folds its base ref from the store; after its own write, from a delta read (L-77)', async () => {
+    const { sdk, calls } = fakeSdk(fixture(3))
+    await loadRepoHome(sdk, { network: 'devnet', owner: OWNER, name: 'demo' })
+    calls.length = 0
+    const base = baseRefReaders(sdk, REF)
+    expect(await base.refUpdates(mainHash)).toHaveLength(1)
+    expect(await base.configHistory()).toHaveLength(1)
+    expect(calls).toEqual([]) // no refUpdate, protectedRefUpdate or config read
+    // The detail page re-reads after a merge with `fresh`: one delta composite, not three reads.
+    const fresh = baseRefReaders(sdk, REF, { maxAgeMs: 0 })
+    await Promise.all([fresh.refUpdates(mainHash), fresh.configHistory()])
     expect(calls).toEqual(['composite:repo'])
   })
 

@@ -226,23 +226,39 @@ pub async fn create(
 }
 
 /// The signer's role in `repo`, refusing a signer that is not a member (nothing could be
-/// written; say who can fix it).
+/// written; say who can fix it). Every imported issue, PR, comment and review carries the
+/// importer's membership proof (`asMember`, RC1 `import_provenance`), so a mirror must be a
+/// proved member, and membership needs the mirror identity's own consent first.
 pub async fn require_member(client: &PlatformClient, repo: &RepoRef, signer: &str) -> Result<Role> {
-    let role = MemberReader::new(client)
+    let reader = MemberReader::new(client);
+    let role = reader
         .roles_of(repo, signer)
         .await?
         .iter()
         .map(|m| m.role)
         .min();
-    role.ok_or_else(|| {
-        anyhow::anyhow!(
-            "{signer} is not a member of {}: the mirror identity writes pushes and issue state, \
-             so it must be a maintainer (or a writer, without releases). The owner can run \
-             `dg collab add {} {signer} --role maintainer`",
-            repo.display(),
-            repo.display()
-        )
-    })
+    if let Some(role) = role {
+        return Ok(role);
+    }
+    let consented = reader.consented(repo, signer).await.unwrap_or(false);
+    let repo = repo.display();
+    Err(anyhow::anyhow!(
+        "{signer} is not a member of {repo}: the mirror identity writes pushes, issue state and \
+         imported items (which carry its membership proof), so it must be a maintainer (or a \
+         writer, without releases). {}",
+        member_hint(&repo, signer, consented)
+    ))
+}
+
+/// How to make `signer` a member of `repo`: the mirror identity accepts first (its consent,
+/// `dg collab accept`), then the owner adds it.
+fn member_hint(repo: &str, signer: &str, consented: bool) -> String {
+    let add = format!("the owner runs `dg collab add {repo} {signer} --role maintainer`");
+    if consented {
+        format!("It has accepted; {add}")
+    } else {
+        format!("Run `dg collab accept {repo}` as {signer}, then {add}")
+    }
 }
 
 /// What a write-phase run leaves behind for its summary, whatever path it exits by: the

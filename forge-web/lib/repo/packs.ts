@@ -1,7 +1,9 @@
 /**
  * packManifest reads — locating browse-plane artifacts (`forge-v2.md` §4).
  *
- * `packManifest.kind`: 0 = git pack, 1 = objectLocator, 2 = flatIndex. The `(kind,
+ * `packManifest.kind`: 0 = git pack, 1 = objectLocator, 2 = flatIndex, 3 = history index,
+ * 4 = release assets (`PACK_KIND`). Every reader selects its kind ({@link packsOfKind}), so a
+ * kind it does not know (an asset manifest's JSON) is never read as a pack. The `(kind,
  * $createdAt desc)` index lets a reader grab the newest locator / flatIndex in one query.
  * The manifest's `uris` (external) or platform `chunk` documents (storage 0) carry the
  * actual bytes the browse reader range-fetches.
@@ -15,16 +17,17 @@ import { repoTimelines } from './chrome'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { v2PackList, type Role } from '../rules/v2'
 import { DOC, str, stringArray, type RepoRef } from './contract'
-import { base64ToBytes, base64ToHex, hexToBase64 } from '../sdk'
+import { base64ToBytes } from '../sdk'
 import { readRoleOracle } from './members'
+import { packHashHex, packHashOperand } from './pack-hash'
 import { blockHeightOf } from './private-content'
 import { repoSource } from './source'
 
 /** A parsed `packManifest`. */
 export interface PackManifest {
-  /** SHA-256 of the pack, hex. */
+  /** SHA-256 of the pack, lowercase hex (an identifier on chain: see `pack-hash.ts`). */
   readonly packHash: string
-  /** 0 git pack | 1 objectLocator | 2 flatIndex | 3 history index. */
+  /** 0 git pack | 1 objectLocator | 2 flatIndex | 3 history index | 4 release assets. */
   readonly kind: PackKind
   readonly sizeBytes: number
   readonly objectCount: number
@@ -57,12 +60,6 @@ export interface PackManifest {
   readonly copies?: readonly PackManifest[]
   /** Raw copies: the uploader's current role (null: not a member). */
   readonly ownerRole?: Role | null
-  /**
-   * A history index's (kind 3) format version: 2 lists each path's versions, 0 is a v1 writer's.
-   * Carried in `offsetIndexParts`, which a self-locating artifact does not otherwise use (forge-core
-   * `HistoryEntry::format`; to move when the contract rework drops that field).
-   */
-  readonly historyFormat?: number
 }
 
 /**
@@ -92,17 +89,8 @@ function parsePackedHashes(doc: PlainDocument, field: string, entryLen: number):
 function toManifest(doc: PlainDocument): PackManifest {
   const height = blockHeightOf(doc)
   const num = (f: string): number => (typeof doc[f] === 'number' ? (doc[f] as number) : 0)
-  const packHashRaw = doc['packHash']
-  let packHash = ''
-  if (typeof packHashRaw === 'string') {
-    try {
-      packHash = base64ToHex(packHashRaw)
-    } catch {
-      packHash = packHashRaw
-    }
-  }
   return {
-    packHash,
+    packHash: packHashHex(doc['packHash']),
     kind: num('kind') as PackKind,
     sizeBytes: num('sizeBytes'),
     objectCount: num('objectCount'),
@@ -115,7 +103,6 @@ function toManifest(doc: PlainDocument): PackManifest {
     documentId: str(doc, '$id'),
     uploader: str(doc, '$ownerId'),
     ...(height !== undefined ? { createdAtBlockHeight: height } : {}),
-    ...(num('kind') === 3 ? { historyFormat: num('offsetIndexParts') } : {}),
   }
 }
 
@@ -231,14 +218,14 @@ export async function readBrowseManifests(
 export async function readPackCopies(
   sdk: EvoSDK,
   repo: RepoRef,
-  packHashHex: string,
+  hashHex: string,
   kind: number,
 ): Promise<PackManifest | null> {
   const [documents, oracle] = await Promise.all([
     queryAllDocuments(
       sdk,
       repoSource(repo).repoQuery(DOC.packManifest, {
-        where: [['packHash', '==', hexToBase64(packHashHex)]],
+        where: [['packHash', '==', packHashOperand(hashHex)]],
       }),
     ),
     readRoleOracle(sdk, repo),

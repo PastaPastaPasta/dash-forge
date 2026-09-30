@@ -13,9 +13,8 @@
  *     the fork owner's from then on and is never moved. No refs at all when some pack has no
  *     copy a fork could name (they could point at objects the fork cannot serve).
  *
- * Known deviation: the fork's manifests record `offsetIndexParts = 0` (the web never reads or
- * writes offset-index parts; forge-core copies the parent's value, which is 0 for every pack the
- * push helper writes).
+ * Each by-reference manifest is external-only (`storage` 1, no chunks: RC1 `storageShape`) and
+ * keeps the parent's `sizeBytes`, which the parent's own manifest already held to 0–1 TiB.
  *
  * Browse locators are not copied: their `packRef`s index the parent's pack list. The fork
  * browses by the in-browser fallback clone (which follows `platform://` locators) until its

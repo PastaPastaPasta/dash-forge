@@ -17,8 +17,11 @@ dg webhook add <owner>/<repo> --url https://ci.example/hook \
 ```
 
 This writes a forge-community `webhook` document. **The URL and event list are public on
-chain**; `dg` refuses a URL with a query string or `user:password@` unless `--force`, so do
-not put tokens in it (the signature authenticates deliveries). The `secret` (32–96 printable
+chain**; the contract accepts only `https://` to a DNS name (no IP address, `localhost` or
+`user:password@`), and `dg` refuses a query string unless `--force`, so do not put tokens in
+it (the signature authenticates deliveries). Private repositories cannot have webhooks. For
+local tests against `http://127.0.0.1`, use a static `[[webhook]]` block in `--config`
+(below): it never goes on chain. The `secret` (32–96 printable
 ASCII characters) is encrypted (`encryptedFor`, `ecdh-secp256k1-aes256-cbc`) from the
 maintainer's ENCRYPTION key to the relay identity's ENCRYPTION key. The relay:
 

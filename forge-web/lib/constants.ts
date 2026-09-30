@@ -232,10 +232,10 @@ export function requireForge(network: Network): ForgeIds {
 // ---------------------------------------------------------------------------
 // Chunk / browse constants — MIRROR forge-core (parity via forge-contracts/vectors).
 // See docs/contracts/forge-v2.md and forge-contracts/contracts/forge-core.json for the
-// normative `chunk` / `manifestPart` / `packManifest` field definitions.
+// normative `chunk` / `packManifest` field definitions.
 // ---------------------------------------------------------------------------
 
-/** Max bytes per byteArray field on `chunk` (d0..d2) and per `manifestPart` entry column. */
+/** Max bytes per byteArray field on `chunk` (d0..d2). */
 export const FIELD_MAX = 4900
 
 /** `chunk` carries three byteArray fields d0..d2. */
@@ -249,11 +249,21 @@ export const PACK_KIND = {
   GIT_PACK: 0,
   OBJECT_LOCATOR: 1,
   FLAT_INDEX: 2,
-  /** The history column index: each path's last change and the commit counts of a tip (format 1). */
+  /**
+   * The history index: each path's last change and the commit count of a tip. RC1 `kindShape`
+   * requires its `tips` to be 20, 32, 40 or 64 bytes (one or two SHA-1 / SHA-256 oids).
+   */
   HISTORY_INDEX: 3,
-  /** Release assets (D-4). */
+  /**
+   * A release's asset manifest (D-4, `release-asset-manifest.md`; RC1 R-11 renumbered it from 3
+   * so history readers never load asset JSON as an index). No web writer yet — the browser records
+   * assets inline in `release.assets` — and no reader: every reader selects its own kind.
+   */
   RELEASE_ASSETS: 4,
-  /** The history index's per-path version lists, the whole index of the same tip (format 2). */
+  /**
+   * The history index's per-path version lists (format 2, the whole index), the companion of the
+   * column index (kind 3, format 1) of the same tip: only Blame and a path's History read it.
+   */
   HISTORY_VERSIONS: 5,
 } as const
 export type PackKind = (typeof PACK_KIND)[keyof typeof PACK_KIND]
@@ -264,6 +274,13 @@ export const STORAGE = {
   EXTERNAL: 1,
 } as const
 export type Storage = (typeof STORAGE)[keyof typeof STORAGE]
+
+/**
+ * `packManifest.sizeBytes` bounds (RC1 `sizeNonNeg`: a plain integer, 0 to 1 TiB). A Platform
+ * copy (`storage` 0) must also fit its chunks (`storageShape`: at most `chunkCount` ×
+ * {@link CHUNK_PAYLOAD_MAX}), and an external-only one (`storage` 1) records no chunks.
+ */
+export const MANIFEST_SIZE_MAX = 2 ** 40
 
 /** `packManifest` array bounds (normative). */
 export const MANIFEST_MAX_URIS = 8

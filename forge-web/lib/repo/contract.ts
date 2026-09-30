@@ -14,17 +14,20 @@ import { isWellFormed, type ContentKind, type Visibility } from '../rules/v2'
 import { base58Decode, base58Encode } from '../auth/base58'
 import { base64ToBytes, base64ToHex, type PlainDocument } from '../sdk'
 
-/** The forge-core, forge-collab and forge-community document type names (`forge-v2.md` §2). */
+/**
+ * The forge-core, forge-collab and forge-community document type names (`forge-v2.md` §2).
+ * Which contract holds each is `source.ts` {@link contractOf} (the RC1 layout).
+ */
 export const DOC = {
   repo: 'repo',
   maintainer: 'maintainer',
   writer: 'writer',
+  consent: 'consent',
   config: 'config',
   repoKey: 'repoKey',
   refUpdate: 'refUpdate',
   protectedRefUpdate: 'protectedRefUpdate',
   packManifest: 'packManifest',
-  manifestPart: 'manifestPart',
   chunk: 'chunk',
   issue: 'issue',
   patch: 'patch',
@@ -44,10 +47,11 @@ export const DOC = {
   watch: 'watch',
   milestone: 'milestone',
   profile: 'profile',
-  // forge-core (C-1)
   runner: 'runner',
   topic: 'topic',
 } as const
+
+export { withVis } from '../layout'
 
 /** `event.kind` integer → FORGE_RULES {@link EventKind} (`forge-v2.md` §3). */
 const EVENT_KIND_BY_INT: Readonly<Record<number, EventKind>> = {

@@ -11,6 +11,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { ForgeIds } from '../deployments'
 import { countDocuments, queryAllDocuments, queryDocuments } from '../sdk'
 import { DOC, asIdentifierString, str, type RepoRef } from './contract'
+import { packHashHex } from './pack-hash'
 
 /** A repo's star count (`star.byRepo`, countable). */
 export function readStarCount(sdk: EvoSDK, forge: ForgeIds, repoId: string): Promise<number> {
@@ -149,7 +150,8 @@ export async function readPublicRepoFacts(
   const at = newest[0]?.['$createdAt']
   const sizes = new Map<string, number>()
   for (const m of manifests) {
-    const hash = str(m, 'packHash')
+    // Keyed by the hash's hex, whichever form the SDK returned the identifier in.
+    const hash = packHashHex(m['packHash'])
     const size = typeof m['sizeBytes'] === 'number' ? m['sizeBytes'] : Number(m['sizeBytes'] ?? 0)
     if (hash !== '' && Number.isFinite(size)) sizes.set(hash, size)
   }

@@ -85,6 +85,12 @@ fn real_main(cli: &Cli) -> Result<()> {
             "forge-runner: warning: DASH_FORGE_KEY is not set; reports use dg's default identity"
         );
     }
+    if cfg.public_log {
+        eprintln!(
+            "forge-runner: warning: public_log has no effect any more: a private repository's \
+             check run cannot carry a log, so its logs are never uploaded"
+        );
+    }
     match &cli.command {
         Cmd::Watch { once } => loop {
             for repo in &cfg.repos {

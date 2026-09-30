@@ -17,6 +17,11 @@
 //!
 //! The code is a bit set: bit 0 closed, bit 1 merged, bit 3 draft ([`status_of_code`]).
 //!
+//! A lock (kinds 3 / 18, `delta` +16) and an unlock (4 / 19, −16) move bit 4 of the running
+//! sum, which is the thread's lock. So a reader folds the sum **mod 16** into the state code
+//! and reads the thread as locked when the sum is ≥ 16 ([`fold_sum`]; the contract's
+//! `c1`…`c6` take the same modulo). Only members lock (`g_memberLock`).
+//!
 //! What stays client-side, and must be identical in every client, is here:
 //!
 //! * [`next_transition`] — the kind (and `delta`, `asAuthor`) of the move a client writes for a
@@ -52,11 +57,23 @@ pub const PR_READY: u8 = 15;
 pub const PR_DRAFT_CLOSE: u8 = 16;
 /// A closed draft PR reopened (−1, 9 → 8).
 pub const PR_DRAFT_REOPEN: u8 = 17;
+/// Issue conversation locked (+16; members only).
+pub const ISSUE_LOCK: u8 = 3;
+/// Issue conversation unlocked (−16; members only).
+pub const ISSUE_UNLOCK: u8 = 4;
+/// PR conversation locked (+16; members only).
+pub const PR_LOCK: u8 = 18;
+/// PR conversation unlocked (−16; members only).
+pub const PR_UNLOCK: u8 = 19;
+/// The `delta` of a lock: the bit above every state code.
+pub const LOCK_DELTA: i64 = 16;
 
 /// Every `transition.kind` the contract accepts (its `kind` enum).
-pub const TRANSITION_KINDS: [u8; 9] = [
+pub const TRANSITION_KINDS: [u8; 13] = [
     ISSUE_CLOSE,
     ISSUE_REOPEN,
+    ISSUE_LOCK,
+    ISSUE_UNLOCK,
     PR_CLOSE,
     PR_REOPEN,
     PR_MERGE,
@@ -64,9 +81,11 @@ pub const TRANSITION_KINDS: [u8; 9] = [
     PR_READY,
     PR_DRAFT_CLOSE,
     PR_DRAFT_REOPEN,
+    PR_LOCK,
+    PR_UNLOCK,
 ];
 
-/// The `delta` the contract pins for `kind` (`b1`…`b3`), or `None` for a kind it does not have.
+/// The `delta` the contract pins for `kind` (`b1`…`b4`), or `None` for a kind it does not have.
 #[must_use]
 pub fn delta_of(kind: u8) -> Option<i64> {
     match kind {
@@ -75,6 +94,8 @@ pub fn delta_of(kind: u8) -> Option<i64> {
         PR_MERGE => Some(2),
         PR_DRAFT => Some(8),
         PR_READY => Some(-8),
+        ISSUE_LOCK | PR_LOCK => Some(LOCK_DELTA),
+        ISSUE_UNLOCK | PR_UNLOCK => Some(-LOCK_DELTA),
         _ => None,
     }
 }
@@ -114,6 +135,10 @@ pub enum StateAction {
     Draft,
     /// Mark a draft PR ready for review.
     Ready,
+    /// Lock the conversation (members only; any state).
+    Lock,
+    /// Unlock the conversation (members only).
+    Unlock,
 }
 
 /// Who asks for a state change, as the contract's `ownerRefersTo` operands see them.
@@ -146,27 +171,34 @@ pub struct TransitionMove {
     pub after: i64,
 }
 
-/// The move that carries out `action` on a `target` whose state code is `code`, written by
+/// The move that carries out `action` on a `target` whose transitions sum to `sum`, written by
 /// `actor`; `None` when consensus would refuse it: a writer no operand admits (40120), an
-/// illegal move from this state (`c1`…`c5`), or a merge by a non-member (`f_authorNoMerge`).
+/// illegal move from this state (`c1`…`c6`), a merge by a non-member (`f_authorNoMerge`) or a
+/// lock or unlock by one (`g_memberLock`).
 ///
 /// A member writes `asAuthor = 0`; an author who is not a member writes the target's
-/// `number` (the author operands of `ownerRefersTo` agree on `number == asAuthor`).
+/// `number` (the author operands of `ownerRefersTo` agree on `number == asAuthor`). A state
+/// code below 16 is its own sum, so a caller that holds only the code may pass it.
 #[must_use]
 pub fn next_transition(
     target: TransitionTarget,
-    code: i64,
+    sum: i64,
     action: StateAction,
     actor: Actor,
     target_number: u32,
 ) -> Option<TransitionMove> {
-    use StateAction::{Close, Draft, Merge, Ready, Reopen};
+    use StateAction::{Close, Draft, Lock, Merge, Ready, Reopen, Unlock};
     let member = match actor {
         Actor::Member => true,
         Actor::Author => false,
         Actor::Other => return None,
     };
+    let (code, locked) = fold_sum(sum);
     let kind = match (target, action, code) {
+        (TransitionTarget::Issue, Lock, _) if member && !locked => ISSUE_LOCK,
+        (TransitionTarget::Issue, Unlock, _) if member && locked => ISSUE_UNLOCK,
+        (TransitionTarget::Patch, Lock, _) if member && !locked => PR_LOCK,
+        (TransitionTarget::Patch, Unlock, _) if member && locked => PR_UNLOCK,
         (TransitionTarget::Issue, Close, 0) => ISSUE_CLOSE,
         (TransitionTarget::Issue, Reopen, 1) => ISSUE_REOPEN,
         (TransitionTarget::Patch, Close, 0) => PR_CLOSE,
@@ -184,13 +216,21 @@ pub fn next_transition(
         delta,
         target_kind: target.code(),
         as_author: if member { 0 } else { target_number },
-        after: code + delta,
+        after: sum + delta,
     })
+}
+
+/// A target's transition sum folded into its state code (the sum mod 16) and whether its
+/// conversation is locked (the sum is ≥ 16): the reading `c1`…`c6` pin.
+#[must_use]
+pub fn fold_sum(sum: i64) -> (i64, bool) {
+    (sum.rem_euclid(LOCK_DELTA), sum >= LOCK_DELTA)
 }
 
 /// A target's state, read off its code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)] // the bits of the state code, read out
 pub struct StateStatus {
     /// Neither closed nor merged.
     pub open: bool,
@@ -198,16 +238,23 @@ pub struct StateStatus {
     pub merged: bool,
     /// A draft (open or closed).
     pub draft: bool,
+    /// The conversation is locked (members only may post). Serialized only when set, so the
+    /// shared `status_of_code` vectors (codes below 16) read unchanged.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub locked: bool,
 }
 
-/// The state a code stands for (bit 0 closed, bit 1 merged, bit 3 draft).
+/// The state a code or a whole transition sum stands for (bit 0 closed, bit 1 merged, bit 3
+/// draft; a sum of 16 or more is also locked, [`fold_sum`]).
 #[must_use]
-pub fn status_of_code(code: i64) -> StateStatus {
+pub fn status_of_code(sum: i64) -> StateStatus {
+    let (code, locked) = fold_sum(sum);
     let (closed, merged, draft) = (code & 1 != 0, code & 2 != 0, code & 8 != 0);
     StateStatus {
         open: !closed && !merged,
         merged,
         draft,
+        locked,
     }
 }
 
@@ -234,11 +281,23 @@ pub struct Transition {
     pub created_at: u64,
 }
 
-/// The state code a target's transitions sum to (unknown kinds count 0). On chain every stored
+/// The sum of a target's transition deltas (unknown kinds count 0). On chain every stored
 /// transition was a legal move, so this is the same number the proved sum query returns.
 #[must_use]
-pub fn state_code(transitions: &[Transition]) -> i64 {
+pub fn state_sum(transitions: &[Transition]) -> i64 {
     transitions.iter().filter_map(|t| delta_of(t.kind)).sum()
+}
+
+/// The state code a target's transitions fold to: their sum mod 16 ([`fold_sum`]).
+#[must_use]
+pub fn state_code(transitions: &[Transition]) -> i64 {
+    fold_sum(state_sum(transitions)).0
+}
+
+/// Whether a target's conversation is locked: its transitions sum to 16 or more.
+#[must_use]
+pub fn is_locked(transitions: &[Transition]) -> bool {
+    fold_sum(state_sum(transitions)).1
 }
 
 /// The target's merge transition (kind 13), if any: a merged PR has exactly one.
@@ -319,8 +378,92 @@ mod tests {
             assert!(delta_of(k).is_some(), "kind {k}");
             assert!(k / 10 <= 1, "kind {k} names issue or patch");
         }
-        assert_eq!(delta_of(3), None);
+        assert_eq!(delta_of(5), None);
         assert_eq!(delta_of(9), None);
+    }
+
+    #[test]
+    fn a_lock_is_bit_four_of_the_sum() {
+        assert_eq!(fold_sum(0), (0, false));
+        assert_eq!(fold_sum(17), (1, true));
+        assert_eq!(fold_sum(24), (8, true));
+        let lock = next_transition(
+            TransitionTarget::Issue,
+            1,
+            StateAction::Lock,
+            Actor::Member,
+            3,
+        )
+        .unwrap();
+        assert_eq!((lock.kind, lock.delta, lock.after), (ISSUE_LOCK, 16, 17));
+        assert!(status_of_code(lock.after).locked && !status_of_code(lock.after).open);
+        // locked already; unlock only when locked; members only
+        assert_eq!(
+            next_transition(
+                TransitionTarget::Issue,
+                17,
+                StateAction::Lock,
+                Actor::Member,
+                3
+            ),
+            None
+        );
+        assert_eq!(
+            next_transition(
+                TransitionTarget::Patch,
+                0,
+                StateAction::Unlock,
+                Actor::Member,
+                3
+            ),
+            None
+        );
+        assert_eq!(
+            next_transition(
+                TransitionTarget::Patch,
+                0,
+                StateAction::Lock,
+                Actor::Author,
+                3
+            ),
+            None
+        );
+        let unlock = next_transition(
+            TransitionTarget::Patch,
+            18,
+            StateAction::Unlock,
+            Actor::Member,
+            3,
+        )
+        .unwrap();
+        assert_eq!(
+            (unlock.kind, unlock.delta, unlock.after),
+            (PR_UNLOCK, -16, 2)
+        );
+        // a locked, closed issue reopens and stays locked
+        let reopen = next_transition(
+            TransitionTarget::Issue,
+            17,
+            StateAction::Reopen,
+            Actor::Author,
+            3,
+        )
+        .unwrap();
+        assert_eq!((reopen.kind, reopen.after), (ISSUE_REOPEN, 16));
+        assert!(status_of_code(16).locked && status_of_code(16).open);
+        let t = |kind| Transition {
+            id: String::new(),
+            kind,
+            actor: String::new(),
+            oid: None,
+            as_author: 0,
+            created_at: 0,
+        };
+        let log = [t(ISSUE_CLOSE), t(ISSUE_LOCK)];
+        assert_eq!(
+            (state_sum(&log), state_code(&log), is_locked(&log)),
+            (17, 1, true)
+        );
     }
 
     #[test]

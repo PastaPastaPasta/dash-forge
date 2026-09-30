@@ -29,7 +29,7 @@ describe('comment documents as views (anchors read by anchorOf)', () => {
   const doc = (extra: Record<string, unknown>) => ({ $id: ID_A, $ownerId: ID_B, $createdAt: 5, targetId: REPO, body: 'hi', ...extra })
 
   it('writes the contract fields and reads them back, a range included', () => {
-    const data = commentData({ targetId: REPO, body: 'Nit', anchor: { path: 'src/a.ts', line: 7, startLine: 5, side: 0, commitOid: HEAD } })
+    const data = commentData({ targetId: REPO, body: 'Nit', anchor: { path: 'src/a.ts', line: 7, startLine: 5, side: 0, commitOid: HEAD } }, ID_B)
     expect(Object.keys(data)).toEqual(['targetId', 'body', 'path', 'line', 'side', 'startLine', 'commitOid'])
     const v = toCommentView(doc({ path: 'src/a.ts', line: 7, startLine: 5, side: 0, commitOid: hexToBytes(HEAD) }))
     expect(v.anchor).toEqual({ path: 'src/a.ts', line: 7, startLine: 5, side: 0, commitOid: HEAD })

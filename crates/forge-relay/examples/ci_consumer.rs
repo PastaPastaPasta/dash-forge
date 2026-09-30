@@ -29,8 +29,9 @@ use std::env;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+use forge_core::ci::{CheckReport, CheckRuns};
 use forge_core::keystore::BridgeIdentity;
-use forge_core::platform::{FieldValue, Network, PlatformClient, WriteEngine};
+use forge_core::platform::{Network, PlatformClient};
 use forge_core::webhooks::verify_signature as verify;
 
 /// A parsed HTTP request: method/path plus lowercased headers and the raw body.
@@ -159,8 +160,6 @@ async fn verify_and_check_run(
 
     let client = PlatformClient::connect_network(network.clone()).await?;
     let repo = forge_core::resolve::resolve_id(&client, &repo_id).await?;
-    let forge = repo.forge().clone();
-    let scope = repo.scope()?;
 
     // Independent verification: did a *valid* update of this ref set it to `after`? forge's
     // own rule decides validity (legal name bound to its hash; on a protected ref, only a
@@ -191,32 +190,25 @@ async fn verify_and_check_run(
     };
     let bridge = BridgeIdentity::load_from_file(identity_path)?;
     let identity = client.fetch_identity(&bridge.identity_id).await?;
-    let engine = WriteEngine::new(&client, &identity, bridge.doc_op_key()?)?;
-
-    let after_bytes = hex::decode(&after).unwrap_or_default();
-    let now_ms = u64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_millis(),
-    )?;
-    let props: BTreeMap<String, FieldValue> = scope.props([
-        ("headOid", FieldValue::bytes(after_bytes)),
-        ("name", FieldValue::text("dash-forge-ci")),
-        ("status", FieldValue::text("completed")),
-        // A completed run records both times (forge-community checkRun rules; set once)
-        ("startedAt", FieldValue::integer(now_ms)),
-        ("completedAt", FieldValue::integer(now_ms)),
-        ("conclusion", FieldValue::text(conclusion)),
-        ("summary", FieldValue::text(summary)),
-    ]);
-    let community = client.fetch_contract(&forge.community).await?;
-
-    match engine.create_document(&community, "checkRun", props).await {
-        Ok(id) => {
-            tracing::info!(check_run_doc = %id, conclusion, "wrote checkRun back to Platform (CI loop closed)");
+    // Through forge-core's check-run writer, so the document is what forge-community accepts
+    // (RC1): `outcome`, the `vis` stamp, millisecond times, and no summary on a private repo.
+    let report = CheckReport {
+        head_oid: after.to_ascii_lowercase(),
+        name: "dash-forge-ci".into(),
+        status: "completed".into(),
+        conclusion: Some(conclusion.into()),
+        summary: Some(summary),
+        ..CheckReport::default()
+    };
+    match CheckRuns::new(&client, &identity, &bridge)
+        .report(&repo, &report)
+        .await
+    {
+        Ok(done) => {
+            tracing::info!(check_run_doc = %done.document_id, conclusion, "wrote checkRun back to Platform (CI loop closed)");
         }
         Err(e) => {
-            tracing::warn!(error = %e, "checkRun write skipped (the CI identity must be a writer or maintainer of the repo)");
+            tracing::warn!(error = %e, "checkRun write skipped (the CI identity must be a runner, writer or maintainer of the repo)");
         }
     }
     Ok(())
