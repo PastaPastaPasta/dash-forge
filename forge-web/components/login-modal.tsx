@@ -415,7 +415,7 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
 }
 
 function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (identityId: string) => void }): JSX.Element {
-  const { importIdentity, isLoading, step, vaults, identity, controller, unlockScope } = useAuth()
+  const { importIdentity, isLoading, step, vaults, identity, controller, unlockScope, storage } = useAuth()
   const [mode, setMode] = useState<'file' | 'mnemonic'>('file')
   // The identity file holds every private key: a ref (not React state), dropped on unmount
   // and after use; state only records that one was chosen.
@@ -451,8 +451,10 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
   const { fields, protection, problem } = useProtection()
   // Opt-in (`ux-dx-spec.md` §2.3): also keep the identity's encryption key, for private repos.
   const [enablePrivate, setEnablePrivate] = useState(false)
-  // The words found an identity this browser already holds a key for (its ID is now filled in).
-  const [foundStored, setFoundStored] = useState(false)
+  // The identity the words found, which this browser already holds a key for: filled into the ID
+  // field, and cleared with it when the words change (other words, another identity).
+  const [foundId, setFoundId] = useState<string | null>(null)
+  const foundStored = foundId !== null && identityId === foundId
   const who = mode === 'file' ? fileIdentity : identityId.trim()
   const previous = who === '' ? undefined : vaults.find((v) => v.identityId === who)
   // Offer Unlock for a key this device already holds, unless this is a renewal of the
@@ -462,10 +464,13 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
   const renewing = previous !== undefined
   // Replacing a key this tab has not unlocked drops what was sealed with it: its encryption key
   // for private repos goes unless this import brings it again (QW-052). Ticked by default then.
-  const dropsEncryption = previous?.encryptionKey === true && !(who === identity && unlockScope === 'full')
+  // (A pasted-key session is "full" too, but it is not the vault: the vault stays locked.)
+  const dropsEncryption = previous?.encryptionKey === true && !(who === identity && storage === 'vault' && unlockScope === 'full')
+  // The default follows it both ways: another identity (or mode) does not inherit the tick,
+  // which stores an encryption key only where the user chose to.
   useEffect(() => {
-    if (dropsEncryption) setEnablePrivate(true)
-  }, [dropsEncryption, who])
+    setEnablePrivate(dropsEncryption)
+  }, [dropsEncryption])
 
   const onFile = async (file: File): Promise<void> => {
     setError(null)
@@ -510,7 +515,7 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
       // forgotten passphrase, QW-010). Nothing was signed.
       if (e instanceof AlreadyStoredError) {
         setIdentityId(e.identityId)
-        setFoundStored(true)
+        setFoundId(e.identityId)
         return
       }
       // A reloaded tab holds the signing key only: a renewal must carry over (or disable) every
@@ -555,7 +560,9 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
               ref={bindMnemonic}
               onChange={(e) => {
                 setMnemonic(e.target.value)
-                setFoundStored(false)
+                // Other words: the identity found from the last ones no longer applies.
+                if (foundId !== null && identityId === foundId) setIdentityId('')
+                setFoundId(null)
               }}
               className="min-h-[72px] font-mono"
               spellCheck={false}
@@ -572,7 +579,7 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
               value={identityId}
               onChange={(e) => {
                 setIdentityId(e.target.value)
-                setFoundStored(false)
+                setFoundId(null)
               }}
               className="font-mono"
               spellCheck={false}

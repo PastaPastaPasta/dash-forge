@@ -52,7 +52,7 @@ function useSlashToSearch(): void {
 }
 
 export function AppHeader(): JSX.Element {
-  const { identity, balance, logout, resuming, vaultsLoaded, vaultsError } = useAuth()
+  const { identity, balance, logout, resuming, vaultsLoaded, vaultsError, storage } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
   useSlashToSearch()
   // "Sign in" asked for before it was known whether this browser's kept session resumes: a tap
@@ -106,7 +106,7 @@ export function AppHeader(): JSX.Element {
           {identity ? (
             <>
               <FundsPill />
-              <AccountMenu identity={identity} balance={balance} onLogout={logout} />
+              <AccountMenu identity={identity} balance={balance} pasted={storage === 'session'} onLogout={logout} />
             </>
           ) : (
             <SignInButton size="sm" label="long" />
@@ -555,10 +555,13 @@ function NotificationsBell(): JSX.Element {
 function AccountMenu({
   identity,
   balance,
+  pasted,
   onLogout,
 }: {
   identity: string
   balance: string | null
+  /** Signed in with a pasted key (tab only): locking forgets it. */
+  pasted: boolean
   onLogout: (forget?: boolean) => void
 }): JSX.Element {
   const { open, setOpen, ref, trigger } = usePopover()
@@ -612,7 +615,9 @@ function AccountMenu({
             {/* What Lock does (QW-044): the pages then say "Session locked", not "Not signed in". */}
             <span>
               Lock
-              <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">Signs you out; your key stays in this browser until you forget it in Settings.</span>
+              <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">
+                {pasted ? 'Signs you out and forgets the pasted key.' : 'Signs you out; your key stays in this browser until you forget it in Settings.'}
+              </span>
             </span>
           </button>
         </div>

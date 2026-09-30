@@ -43,6 +43,7 @@ vi.mock('@/contexts/auth-context', () => ({
     step: null,
     identity: null,
     unlockScope: null,
+    storage: null,
     controller: { supportsLimitedKeys: () => false, checkGroup: async () => ({ notice: null }) },
   }),
 }))
@@ -124,6 +125,17 @@ describe('QW-010: the words find a key this browser already holds', () => {
     expect(auth.importIdentity.mock.calls[1]![0]).toMatchObject({ identityId: ID })
   })
 
+  it('other words clear the identity the last ones found (it no longer applies)', async () => {
+    auth.importIdentity.mockRejectedValueOnce(new AlreadyStoredError(ID))
+    await openImportWithWords()
+    await click(byText("Create this browser's key"))
+    expect(q<HTMLInputElement>('#import-id')!.value).toBe(ID)
+    act(() => type(q<HTMLTextAreaElement>('#import-mnemonic')!, Array(12).fill('zoo').join(' ')))
+    await flush()
+    expect(q<HTMLInputElement>('#import-id')!.value).toBe('')
+    expect(q('[data-testid="import-already-stored"]')).toBeNull()
+  })
+
   it('"Unlock it instead" still switches to Unlock', async () => {
     auth.importIdentity.mockRejectedValueOnce(new AlreadyStoredError(ID))
     await openImportWithWords()
@@ -170,6 +182,19 @@ describe('QW-052: replacing a key that has an encryption key beside it', () => {
     await click(box)
     expect(box.checked).toBe(false)
     expect(q('[data-testid="import-keeps-encryption"]')!.textContent).toMatch(/is removed with the old key/)
+  })
+
+  it('another identity does not inherit the tick', async () => {
+    auth.vaults = [{ ...auth.vaults[0]!, encryptionKey: true }]
+    act(() => useUiStore.getState().openLogin('import'))
+    await flush()
+    await click(byText('Recovery phrase'))
+    act(() => type(q<HTMLInputElement>('#import-id')!, ID))
+    await flush()
+    expect(q<HTMLInputElement>('[data-testid="enable-private-repos"]')!.checked).toBe(true)
+    act(() => type(q<HTMLInputElement>('#import-id')!, 'BTJPjCLCnRaJQkqakpcdLYFsaHgFf5XSEBNxFCyYBteH'))
+    await flush()
+    expect(q<HTMLInputElement>('[data-testid="enable-private-repos"]')!.checked).toBe(false)
   })
 
   it('leaves the box unticked for a key without one', async () => {

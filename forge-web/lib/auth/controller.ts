@@ -820,7 +820,10 @@ export class AuthController {
       const previous = (await listVaults(this.network)).find((v) => v.identityId === identityId)
       // Found from the words, and this browser already holds a key for it: the user never saw
       // the "Unlock it instead" choice, so don't turn signing back in into a paid renewal.
-      if (foundByWords && previous && options.renew !== true) throw new AlreadyStoredError(identityId)
+      // `renew` is a renewal of the signed-in identity only: words that found another identity
+      // this browser holds still get the choice.
+      const renewing = options.renew === true && this.state.session?.identityId === identityId
+      if (foundByWords && previous && !renewing) throw new AlreadyStoredError(identityId)
       this.step('Connecting to Dash Platform')
       const sdk = await this.getSdk()
       // Renewing also disables the wallet keys this browser holds for the identity (a shipped
@@ -853,7 +856,9 @@ export class AuthController {
         this.step(protection.passkey ? 'Saving the key with your passkey' : 'Saving the key in this browser')
         return { key: registered, committed: await this.commitKey({ identityId, keyId: registered.keyId, wif: registered.wif }, protection) }
       })
-      const session = await this.adopt(identityId, key, protection, committed)
+      // This import brings the encryption key again (enableEncryption below says if it cannot):
+      // the old copy the replacement could not carry over is not "lost" (QW-052).
+      const session = await this.adopt(identityId, key, protection, material !== null ? { ...committed, encryptionKeyDropped: false } : committed)
       if (material !== null) {
         this.step('Enabling private repos')
         await this.enableEncryption(identityId, material)
@@ -1204,7 +1209,11 @@ export class AuthController {
       try {
         return await this.open(secret, 'session')
       } catch (e) {
-        if (e instanceof KeyNotUsableError) throw new WriteAuthError(problem())
+        // The key was usable a moment ago (findSigningKey above): a node that does not show it
+        // yet, or one that saw it disabled since. Not a reason to blame the key's level.
+        if (e instanceof KeyNotUsableError) {
+          throw new WriteAuthError(e.definite ? problem() : "Platform doesn't show that key on this identity right now. Try again in a moment.")
+        }
         throw e
       }
     })
@@ -1376,7 +1385,7 @@ export class AuthController {
     const liveOther = k !== undefined && k.disabledAt === undefined && !isForgeBrowserKey(k)
     if (liveOther || (await hasExtraKeys(this.network, identityId))) {
       throw new VaultLockedError(
-        'This device holds wallet keys for this identity. Unlock first (Sign in → Unlock), so they can be disabled on chain in the same update; otherwise they would stay live after this device forgets them.',
+        "This device holds wallet keys for this identity. Unlock first (Sign in → Unlock), so they can be disabled on chain in the same update; otherwise they would stay live after this device forgets them. If you can no longer unlock it, disable those keys from your wallet, then use \"Forget this key\" on the Unlock screen and sign in again.",
       )
     }
   }

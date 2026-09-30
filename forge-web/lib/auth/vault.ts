@@ -392,7 +392,8 @@ export async function enrollPasskey(label: string): Promise<{ credentialId: Uint
   let first = ext.prf?.results?.first
   if (!first) {
     if (ext.prf?.enabled !== true) return null
-    first = (await evaluatePasskey(credentialId, prfSalt)) ?? undefined
+    // Part of making the passkey: a failure reads as enrolment's, not an unlock's.
+    first = (await evaluatePasskey(credentialId, prfSalt, 'create')) ?? undefined
     if (!first) return null
   }
   return { credentialId, prfSalt, output: new Uint8Array(first) }
@@ -508,7 +509,7 @@ async function evaluateAnyPasskey(
   return (await evaluatePasskeyOnce(pick.credentialId, pick.prfSalt)) === null ? null : at[0]!
 }
 
-async function evaluatePasskey(credentialId: Uint8Array, prfSalt: Uint8Array): Promise<ArrayBuffer | null> {
+async function evaluatePasskey(credentialId: Uint8Array, prfSalt: Uint8Array, kind: 'create' | 'get' = 'get'): Promise<ArrayBuffer | null> {
   const assertion = (await passkeyCeremony((signal) => navigator.credentials.get({
     signal,
     publicKey: {
@@ -519,7 +520,7 @@ async function evaluatePasskey(credentialId: Uint8Array, prfSalt: Uint8Array): P
       userVerification: 'required',
       extensions: { prf: { eval: { first: buf(prfSalt) } } } as AuthenticationExtensionsClientInputs,
     },
-  }))) as PublicKeyCredential | null
+  }), kind)) as PublicKeyCredential | null
   const ext = assertion?.getClientExtensionResults() as PrfExtensionResults | undefined
   return ext?.prf?.results?.first ?? null
 }
