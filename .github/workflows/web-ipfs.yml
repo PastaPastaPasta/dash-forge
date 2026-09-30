@@ -1,0 +1,98 @@
+name: Web app IPFS build
+
+# The web app's reproducible IPFS build (docs/guides/verify-the-app.md). The same commit must
+# give byte-identical files and so the same CID, wherever it is built. This workflow builds it
+# twice, on an x86_64 and an arm64 runner, each with `forge-web/scripts/ipfs-release.sh
+# reproduce`: `git archive` of the commit, built in the Node image pinned by digest, with the
+# CID and CAR computed by the kubo image pinned by digest. The two CIDs, and the two CARs'
+# SHA-256s, must match. That is the same command anyone runs to check a release.
+#
+# release.yml calls it on every run and publishes the CAR and the CID with the release. It is
+# never pinned anywhere by this workflow: users pin the build themselves.
+
+on:
+  pull_request:
+    paths:
+      - 'forge-web/**'
+      # Bundled into the web app: the per-network contract ids (lib/deployments.ts) and the
+      # storage defaults (lib/constants.ts).
+      - 'forge-contracts/deployments/**'
+      - 'forge-contracts/config/**'
+      - '.github/workflows/web-ipfs.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'forge-web/**'
+      - 'forge-contracts/deployments/**'
+      - 'forge-contracts/config/**'
+      - '.github/workflows/web-ipfs.yml'
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build from git archive and compute the CID
+        run: forge-web/scripts/ipfs-release.sh reproduce HEAD "${RUNNER_TEMP}/ipfs-build"
+      - name: Summary
+        run: |
+          set -euo pipefail
+          cd "${RUNNER_TEMP}/ipfs-build"
+          {
+            echo "### ${RUNNER_ARCH}: \`$(cat forge-web.cid)\`"
+            echo
+            echo "CAR sha256 \`$(sha256sum forge-web.car | cut -d' ' -f1)\`, $(stat -c %s forge-web.car) bytes"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: web-ipfs-build-${{ matrix.runner }}
+          path: |
+            ${{ runner.temp }}/ipfs-build/forge-web.cid
+            ${{ runner.temp }}/ipfs-build/forge-web.car
+          if-no-files-found: error
+          retention-days: 7
+
+  compare:
+    name: same CID from both builds
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: web-ipfs-build-*
+          path: builds
+      - name: Compare
+        run: |
+          set -euo pipefail
+          a=builds/web-ipfs-build-ubuntu-24.04
+          b=builds/web-ipfs-build-ubuntu-24.04-arm
+          cid=$(cat "$a/forge-web.cid")
+          printf '%s\n' "$cid" | grep -Eq '^bafy[a-z2-7]{55}$' || { echo "::error::not a CIDv1: $cid"; exit 1; }
+          if [ "$cid" != "$(cat "$b/forge-web.cid")" ]; then
+            echo "::error::not reproducible: x86_64 built $cid, arm64 built $(cat "$b/forge-web.cid")"
+            exit 1
+          fi
+          cmp "$a/forge-web.car" "$b/forge-web.car" || { echo "::error::same CID, different CAR bytes"; exit 1; }
+          echo "### Reproducible: both builds are \`$cid\`" >> "$GITHUB_STEP_SUMMARY"
+          mkdir web-ipfs
+          cp "$a/forge-web.cid" "$a/forge-web.car" web-ipfs/
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: web-ipfs
+          path: web-ipfs/
+          if-no-files-found: error
+          retention-days: 7
