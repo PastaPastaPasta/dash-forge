@@ -219,7 +219,7 @@ test('r5. the maintainer re-reviews: resolves, approves; checks gate the merge u
   await page.getByTestId('pr-tab-conversation').click()
   await page.getByRole('button', { name: /^approve$/i }).click()
   await confirmWrite(page, /submit review/i)
-  await expect(page.getByTestId('policy-checks')).toContainText('not all passing', { timeout: 180_000 })
+  await expect(page.getByTestId('policy-checks')).toContainText('not passing on the head', { timeout: 180_000 })
   await expect(page.getByTestId('checks-row')).toContainText('No checks reported')
   await shot(page, 'review-rt-03-checks-required')
   // A relay-style check run for the head, by the maintainer.

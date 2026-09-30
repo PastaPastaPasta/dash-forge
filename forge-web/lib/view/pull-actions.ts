@@ -21,7 +21,8 @@
  *   approvals): while its approvals or required checks are unmet ({@link unmetRules}), both
  *   controls stay disabled, as GitHub's merge button does. A maintainer may bypass it, the
  *   GitHub way: an explicit "bypass rules" step, a confirm naming the rules bypassed, and a real
- *   merge whose bypass is recorded on the PR as a comment ({@link bypassNote}).
+ *   merge whose bypass is recorded on the PR as a policy-bypass event ({@link bypassValue}), which
+ *   nobody can delete.
  *
  * Close/reopen stay available to the PR author as well (a transition written as the author), but
  * not to anyone consensus would refuse.
@@ -116,18 +117,43 @@ export function unmetRules(policy: PolicyStatus | null | 'unknown', checks: Chec
 }
 
 /**
- * The comment a maintainer's bypass leaves on the PR, so the timeline shows that the merge
- * skipped the branch rules and which (the merge `transition` has no field for it). `dg pr merge
- * --override-policy` writes the same (`bypass_note`).
+ * The branch-rules card's line for the policy's required checks (QW2-052): the ones not passing
+ * on the head, by name ("lint", "e2e (pending)"), never those that pass; once all pass, the
+ * names that do. `named` is the policy's `requiredChecks` (shown while the runs are unread).
  */
-export function bypassNote(mergeOid: string, baseRefName: string, rules: readonly string[]): string {
-  const base = baseRefName.replace(/^refs\/heads\//, '')
-  const list = rules.map((r) => `- ${r}\n`).join('')
-  return (
-    `**Merged by bypassing the branch rules** (a maintainer override): ${mergeOid.slice(0, 12)} into \`${base}\`.\n\n` +
-    `Rules not met at the merge:\n${list}\n` +
-    'Branch rules are a client rule every Forge client applies; consensus does not enforce them.'
-  )
+export function requiredChecksLine(checks: ChecksState | null | 'unknown', named: readonly string[]): { readonly ok: boolean; readonly text: string } {
+  const list = (names: readonly string[]): string => (names.length > 0 ? `: ${names.join(', ')}` : '')
+  if (checks === 'unknown') return { ok: false, text: `Required checks not read yet${list(named)}` }
+  if (checks === null || checks.met) return { ok: true, text: `Required checks pass${list(checks === null ? named : checks.required.map((c) => c.name))}` }
+  if (checks.required.length === 0) return { ok: false, text: 'Required checks not passing on the head: none reported' }
+  const notPassing = checks.required.filter((c) => c.state !== 'passed').map((c) => (c.state === 'failing' ? c.name : `${c.name} (${c.state})`))
+  return { ok: false, text: `Required checks not passing on the head${list(notPassing)}` }
+}
+
+/** forge-community `event.value`: at most 120 characters (and 480 bytes, which 120 never pass). */
+export const BYPASS_VALUE_MAX = 120
+
+/**
+ * The `value` of the policy-bypass event a maintainer's bypass records on the PR (event kind
+ * 23; the merge `transition` has no field for it): the rules not met, `; `-joined, within the
+ * event's 120 characters. Whole rules only; those that do not fit are counted ("(+2 more)"), and
+ * a first rule too long on its own is cut. Parity: `dg`'s `bypass_value`.
+ */
+export function bypassValue(rules: readonly string[]): string {
+  const len = (t: string): number => [...t].length
+  let out = ''
+  for (let i = 0; i < rules.length; i++) {
+    const r = rules[i] as string
+    const rest = rules.length - i - 1
+    const sep = out === '' ? '' : '; '
+    const more = rest === 0 ? '' : ` (+${rest} more)`
+    if (len(out) + sep.length + len(r) + len(more) > BYPASS_VALUE_MAX) {
+      if (out === '') return [...r].slice(0, BYPASS_VALUE_MAX - len(more) - 1).join('') + '…' + more
+      return `${out} (+${rest + 1} more)`
+    }
+    out += sep + r
+  }
+  return out === '' ? 'the branch rules' : out
 }
 
 /** What the merge box's merge button may do ({@link mergeGate}). */

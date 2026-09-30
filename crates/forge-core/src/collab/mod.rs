@@ -138,6 +138,7 @@ pub(crate) fn event_kind_to_u64(kind: EventKind) -> u64 {
         EventKind::Unpin => 20,
         EventKind::Lock => 21,
         EventKind::Unlock => 22,
+        EventKind::PolicyBypass => 23,
     }
 }
 
@@ -166,6 +167,7 @@ pub(crate) fn u64_to_event_kind(kind: u64) -> Option<EventKind> {
         20 => EventKind::Unpin,
         21 => EventKind::Lock,
         22 => EventKind::Unlock,
+        23 => EventKind::PolicyBypass,
         _ => return None,
     })
 }
@@ -544,12 +546,13 @@ mod tests {
             (EventKind::Unpin, 20),
             (EventKind::Lock, 21),
             (EventKind::Unlock, 22),
+            (EventKind::PolicyBypass, 23),
         ] {
             assert_eq!(event_kind_to_u64(kind), n);
             assert_eq!(u64_to_event_kind(n), Some(kind));
         }
         assert_eq!(u64_to_event_kind(0), None);
-        assert_eq!(u64_to_event_kind(23), None);
+        assert_eq!(u64_to_event_kind(24), None);
     }
 
     #[test]

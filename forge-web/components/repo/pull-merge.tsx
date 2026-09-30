@@ -74,8 +74,6 @@ export interface MergeExtras {
   readonly unmetRules?: readonly string[]
   /** The merger may bypass them (a maintainer). */
   readonly canBypass?: boolean
-  /** The PR's conversation is locked. */
-  readonly locked?: boolean
 }
 
 function MergeReaders({
@@ -121,7 +119,6 @@ function MergeReaders({
       {...(extras.active !== undefined ? { active: extras.active } : {})}
       {...(extras.unmetRules !== undefined ? { unmetRules: extras.unmetRules } : {})}
       {...(extras.canBypass !== undefined ? { canBypass: extras.canBypass } : {})}
-      {...(extras.locked !== undefined ? { locked: extras.locked } : {})}
     />
   )
 }

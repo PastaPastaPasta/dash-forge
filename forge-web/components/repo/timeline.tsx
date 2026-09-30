@@ -10,7 +10,7 @@
 
 import { Byline } from '@/components/repo/byline'
 import { importedVerdictOf, trustedOrigin } from '@/lib/repo/provenance'
-import { Check, CheckCircle2, Eye, GitCommit, GitMerge, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, Tag, Trash2, UserPlus, X } from 'lucide-react'
+import { Check, CheckCircle2, Eye, GitCommit, GitMerge, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, ShieldAlert, Tag, Trash2, UserPlus, X } from 'lucide-react'
 import type { TimelineItem } from '@/lib/view'
 import { branchName, plural, timeAgo } from '@/lib/view'
 import { anchorLabel } from '@/lib/view/inline-threads'
@@ -93,9 +93,22 @@ function eventPhrase(e: Event): { text: string; icon: JSX.Element; who?: string;
       return { text: 'locked the conversation', icon: <Lock className={muted} aria-hidden /> }
     case 'unlock':
       return { text: 'unlocked the conversation', icon: <LockOpen className={muted} aria-hidden /> }
+    case 'policyBypass':
+      // The immutable record of a maintainer's bypass (QW2-003): what was not met at the merge.
+      return { text: bypassPhrase(value, true), icon: <ShieldAlert className="h-3.5 w-3.5 text-caution-700 dark:text-caution-400" aria-hidden /> }
     default:
       return { text: String(kind), icon: <Tag className={muted} aria-hidden /> }
   }
+}
+
+/**
+ * A policy-bypass event's words. `ofMerge`: it names a merge of this PR (any member can write the
+ * event, so one that names no merge here is a claim, not the record of this PR's merge).
+ */
+export function bypassPhrase(value: string | null | undefined, ofMerge: boolean): string {
+  // The value names checks in `backticks` (dg's words); the timeline is plain text.
+  const rules = value ? ` (${value.replace(/`/g, '')})` : ''
+  return ofMerge ? `merged by bypassing the branch rules${rules}` : `recorded a branch-rules bypass${rules} naming a commit this PR was not merged at`
 }
 
 /** The icon of a state change. */
@@ -173,6 +186,9 @@ export function Timeline({
   /** Who may mirror (`useMirrorTrust`): their imported comments and reviews show the original author and date. */
   trust?: ReadonlySet<string> | null
 }): JSX.Element {
+  // The merge commits of this thread's merge transitions: a policy-bypass event is the record of
+  // one of them only when it names it.
+  const mergeOids = new Set(items.flatMap((x) => (x.kind === 'transition' && x.transition.kind === PR_MERGE && x.transition.oid ? [x.transition.oid.toLowerCase()] : [])))
   return (
     <div className="space-y-3">
       {items.map((item, i) => {
@@ -273,7 +289,7 @@ export function Timeline({
             </div>
           )
         }
-        const own = eventText?.(item.event) ?? null
+        const own = eventText?.(item.event) ?? (item.event.kind === 'policyBypass' ? bypassPhrase(item.event.value, mergeOids.has((item.event.oid ?? '').toLowerCase())) : null)
         const base = eventPhrase(item.event)
         const phrase = own === null ? base : { ...base, text: own }
         return (

@@ -21,7 +21,7 @@
  * Branch rules (QW-001): while the policy's approvals or required checks are unmet, the button
  * stays disabled and says why. A maintainer gets GitHub's explicit bypass: tick "Merge without
  * waiting for the rules to be met (bypass rules)", confirm a dialog naming each rule bypassed,
- * and the merge really runs, then records the bypass on the PR as a comment (`bypassNote`; the
+ * and the merge really runs, then records the bypass on the PR as a policy-bypass event (`bypassValue`; the
  * merge transition has no field for it). The same rule as `dg pr merge --override-policy`.
  */
 
@@ -36,8 +36,8 @@ import { mergeReaders, missingFromClosure } from '@/lib/merge/verify'
 import { mergeSourceLabel, squashDraft, type MergeCheck, type MergeInput, type SquashAuthors } from '@/lib/merge/engine'
 import { checkMergeInWorker, runMergeInWorker } from '@/lib/merge/client'
 import { MergeStepError, mergeSteps, retryLabel, runFor, runMergeSteps, type MergeRun, type MergeStepId } from '@/lib/merge/runner'
-import { bypassNote, mergeButton, mergeGate, mergeRefProblem } from '@/lib/view/pull-actions'
-import { createComment } from '@/lib/repo'
+import { bypassValue, mergeButton, mergeGate, mergeRefProblem } from '@/lib/view/pull-actions'
+import { recordPolicyBypass } from '@/lib/repo'
 import { publishMergeIndex } from '@/lib/merge/locator'
 import { StorageRow, useMergeUpload } from '@/components/repo/merge-upload'
 import { StepRow, type StepState } from '@/components/repo/step-list'
@@ -101,7 +101,6 @@ export function MergePanel({
   active = true,
   unmetRules = [],
   canBypass = false,
-  locked = false,
 }: {
   repo: RepoRef
   pull: PullView
@@ -134,8 +133,6 @@ export function MergePanel({
   unmetRules?: readonly string[]
   /** The merger is a maintainer and may bypass {@link unmetRules} (explicit, confirmed, recorded). */
   canBypass?: boolean
-  /** The PR's conversation is locked (the bypass comment then carries `asMember`). */
-  locked?: boolean
 }): JSX.Element | null {
   const { sdk } = useSdk()
   const { signer } = useAuth()
@@ -303,7 +300,7 @@ export function MergePanel({
     previewCreate('event'),
     ...(deleting ? [previewCreate('refUpdate')] : []),
     ...closing.map(() => previewCreate('transition')),
-    ...(gate.bypassing || bypassed !== null ? [previewCreate('comment', { body: bypassNote('0'.repeat(40), baseRefName, bypassed ?? unmetRules) })] : []),
+    ...(gate.bypassing || bypassed !== null ? [previewCreate('event', { value: bypassValue(bypassed ?? unmetRules) })] : []),
   ])
   // Only a merge commit is authored; a fast-forward writes no commit.
   const identityOk = (button.kind !== 'merge-commit' && method === 'merge') || mergeIdentityValid(prefs)
@@ -350,8 +347,8 @@ export function MergePanel({
           intent,
           ...(bypass !== null && bypass.length > 0
             ? {
-                recordBypass: async (tip: string, commentIntent: string) =>
-                  (await createComment(sdk, signer, repo, { targetId: pull.id, body: bypassNote(tip, baseRefName, bypass), intent: commentIntent, post: { isMember: true, locked } })).documentId,
+                recordBypass: async (tip: string, eventIntent: string) =>
+                  (await recordPolicyBypass(sdk, signer, repo, { target: { id: pull.id, number: pull.number }, rules: bypass, mergeOid: tip, intent: eventIntent })).documentId,
               }
             : {}),
         },
@@ -397,7 +394,7 @@ export function MergePanel({
     } finally {
       setBusy(false)
     }
-  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, pull.author, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete, locked, closeIssues, closing])
+  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, pull.author, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete, closeIssues, closing])
   const onMergeClick = (): void => {
     // A retry resumes the merge it started with (and its bypass, already confirmed).
     if (failure !== null) void start(bypassed)
@@ -495,7 +492,7 @@ export function MergePanel({
               />
               <span>
                 Merge without waiting for the rules to be met (bypass rules)
-                <span className="block text-[12px] text-anvil-600 dark:text-anvil-400">Maintainers only. The bypass is recorded on this PR as a comment naming the rules.</span>
+                <span className="block text-[12px] text-anvil-600 dark:text-anvil-400">Maintainers only. The bypass is recorded on this PR as an event naming the rules, which nobody can delete.</span>
               </span>
             </label>
           ) : null}
@@ -663,7 +660,7 @@ export function MergePanel({
           ))}
         </ul>
         <p className="mt-3 text-[12px] text-anvil-600 dark:text-anvil-400">
-          After the merge, a comment on this PR records that you bypassed these rules, where every reader sees it. Branch rules are a client rule every Forge client applies;
+          After the merge, an event on this PR records that you bypassed these rules, where every reader sees it and nobody can delete it. Branch rules are a client rule every Forge client applies;
           consensus does not enforce them.
         </p>
       </Dialog>

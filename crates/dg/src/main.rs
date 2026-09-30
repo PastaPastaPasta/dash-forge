@@ -1022,8 +1022,8 @@ pub struct PrMergeArgs {
     #[arg(long = "delete-branch", conflicts_with = "event_only")]
     pub delete_branch: bool,
     /// Merge although the branch policy's approvals or checks are not met (maintainers only;
-    /// "bypass rules"). The bypassed rules are recorded on the PR as a comment; the allowed
-    /// merge methods still apply. The policy is a client rule every Forge client applies;
+    /// "bypass rules"). The bypassed rules are recorded on the PR as a policy-bypass event,
+    /// which nobody can delete; the allowed merge methods still apply. The policy is a client rule every Forge client applies;
     /// consensus does not enforce it.
     #[arg(long = "override-policy")]
     pub override_policy: bool,
