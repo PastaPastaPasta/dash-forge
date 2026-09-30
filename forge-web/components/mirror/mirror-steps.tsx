@@ -7,11 +7,12 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import type { EvoSDK } from '@dashevo/evo-sdk'
-import { AlertTriangle, CheckCircle2, ExternalLink, Eye, EyeOff, GitFork, Loader2, Plus } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, ExternalLink, GitFork, Loader2, Plus } from 'lucide-react'
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { CopyRow } from '@/components/ui/copy-row'
+import { SecretValue } from '@/components/ui/secret-value'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { CopyBlock } from '@/components/storage/copy-block'
 import { StorageWizardView } from '@/components/storage/storage-wizard'
@@ -439,7 +440,7 @@ export function KeyStep({
           <p className="text-dense font-medium">
             Secret name: <span className="font-mono">DASH_FORGE_KEY</span>
           </p>
-          <CopyRow text={secret} label="Copy the DASH_FORGE_KEY value" className="border-caution/40" />
+          <SecretValue label="the DASH_FORGE_KEY value" value={secret} />
           <Hint tone="caution">Shown once: it is not stored in this browser. Copy it into GitHub now; if it is lost, make another.</Hint>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -512,18 +513,6 @@ export function KeyStep({
 // ---------------------------------------------------------------------------
 // 5. The workflow file and its secrets
 // ---------------------------------------------------------------------------
-
-function SecretValue({ label, value }: { label: string; value: string }): JSX.Element {
-  const [shown, setShown] = useState(false)
-  return (
-    <div className="flex items-center gap-1">
-      <CopyRow text={value} display={shown ? value : '•'.repeat(Math.min(24, value.length))} label={`Copy ${label}`} className="mb-0 min-w-0 flex-1" />
-      <Button variant="ghost" size="icon" aria-label={shown ? `Hide ${label}` : `Show ${label}`} onClick={() => setShown(!shown)}>
-        {shown ? <EyeOff className="h-4 w-4" aria-hidden /> : <Eye className="h-4 w-4" aria-hidden />}
-      </Button>
-    </div>
-  )
-}
 
 export function WorkflowStep({
   identity,

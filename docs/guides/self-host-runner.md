@@ -72,7 +72,7 @@ The runner needs a `dg` of the same release: it reads `repoId`, `sourceRefName` 
 
 ## Set it up
 
-1. **A runner identity and key.** As the repository owner, run `dg ci runner new alice/project --runner runner.json -o runner.dfk1` ([CI and check runs](ci.md#enrol-a-runner)). `runner.dfk1` is the runner's `DASH_FORGE_KEY`.
+1. **A runner identity and key.** On your own computer, create the runner identity with `dg auth new --backup-file runner.json`. In a terminal it shows the recovery words once. Without one it never prints them: they go only to `runner.json`, sealed under `DASH_FORGE_PASSPHRASE`. Then, as the repository owner, run `dg ci runner new alice/project --runner runner.json -o runner.dfk1` ([CI and check runs](ci.md#enrol-a-runner)). `runner.dfk1` is the runner's `DASH_FORGE_KEY`: copy it to the runner host (0600) and delete your copy. Keep `runner.json` offline, not on the runner host.
 2. **A storage profile for logs.** This is optional, but without it reports carry no log. Run `dg storage add ci-logs --kind s3 …` on the runner's machine ([Bring your own storage](bring-your-own-storage.md)). Its public URL must be readable by browsers, with CORS for the web app.
 3. **A Docker daemon for the runner alone.** See [Security](#security).
 4. **`runner.toml`**:

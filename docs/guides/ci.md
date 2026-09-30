@@ -12,7 +12,7 @@ The design is in [platform-parity-spec §2](../design/platform-parity-spec.md#2-
 
 ## Enrol a runner
 
-A runner is an identity of its own. Mint one for CI with `dg auth new --backup-file runner.json` and a small deposit, since it pays for its own reports. `dg auth new` makes the new identity this computer's default, so sign back in as the repository owner (`dg auth login <your identity file>`), or pass `--identity` for the next command. Then, as the owner:
+A runner is an identity of its own. Mint one for CI with `dg auth new --backup-file runner.json` and a small deposit, since it pays for its own reports. Do this on your own computer, not in a CI job. `dg auth new` makes the new identity this computer's default, so sign back in as the repository owner (`dg auth login <your identity file>`), or pass `--identity` for the next command. Then, as the owner:
 
 ```sh
 dg ci runner new alice/project --runner runner.json -o runner.dfk1 \
@@ -25,6 +25,16 @@ This does two things:
 2. **Enrols the identity as a runner** of `alice/project`: a forge-core `runner` document that only the owner can write.
 
 The key is written to `runner.dfk1` (0600, unencrypted) *before* it is registered, so a key that nobody holds is never registered. Put the file's contents in your CI's secret store as `DASH_FORGE_KEY`, then delete the file.
+
+**Secrets never go to a log.** `dg` prints a secret it made only on a terminal, and never in `--json` output or when a CI variable (`CI`, `GITHUB_ACTIONS`, …) is set. Anywhere else it writes the secret to a new file you name (0600; an existing file is refused), prints only the path, or refuses before it creates anything:
+
+| Secret | In a terminal | Scripted, piped or in CI |
+|---|---|---|
+| Recovery words (`dg auth new`) | shown once, then the three-word check (`--skip-backup-check` skips only the check, and needs `--backup-file`) | only in `--backup-file <new file>`, sealed under `DASH_FORGE_PASSPHRASE` (unsealed with `--reveal-secrets`); refused without it |
+| Runner key (`dg ci runner new`, `dg auth export`) | only in a new file (`-o`); only the path is printed | the same |
+| Webhook secret (`dg webhook add`) | shown once | only in `--secret-file <new file>`, or your own via `--secret-env`; refused without either |
+
+`dg auth export --format dfk1 --reveal-secrets -o -` prints this computer's limited key on stdout, for piping straight into a secret store (`| gh secret set DASH_FORGE_KEY`). That key can sign any Forge document within its budget; it is not a runner key, so use `dg ci runner new` for check runs. It is refused with `--json` and when a CI variable is set. Never run it where stdout is a log.
 
 Other commands:
 

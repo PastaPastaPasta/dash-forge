@@ -35,6 +35,11 @@ tempfile = "3"
 # Hidden prompts: a pasted storage secret, the recovery words, backup-check words.
 rpassword = "7"
 
+[dev-dependencies]
+# tests/no_secrets_on_pipes.rs greps dg's piped output for every BIP-39 English word (the
+# version dash-sdk already pulls in).
+bip39 = "2"
+
 # `cargo binstall` fetches the prebuilt release archive instead of compiling (release.yml
 # publishes dash-forge-<version>-<target>.{tar.gz,zip}; the binaries sit in a top-level
 # dash-forge-<version>-<target>/ directory). Keep in step with crates/git-remote-dash.

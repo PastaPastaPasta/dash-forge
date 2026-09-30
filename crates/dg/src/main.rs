@@ -29,6 +29,7 @@ mod publish;
 mod release;
 mod repo;
 mod repo_settings;
+mod secret_out;
 mod storage;
 mod storage_wizard;
 mod webhook;
