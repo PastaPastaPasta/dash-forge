@@ -26,6 +26,7 @@ mod milestone;
 mod pr;
 mod prompt;
 mod publish;
+mod quote;
 mod release;
 mod repo;
 mod repo_settings;

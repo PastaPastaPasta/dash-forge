@@ -22,7 +22,7 @@ use forge_core::members::{
 use forge_core::rules::v2::Visibility;
 use forge_core::user_error::{codes, UserError};
 
-use crate::fmt::{cost_line, dash_usd_price};
+use crate::fmt::cost_line;
 
 use crate::common::{resolve_identity, Reader, Session};
 use crate::context::Ctx;
@@ -206,7 +206,7 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
             "a membership document + a key wrap, {}",
             cost_line(
                 MEMBER_DOC_ESTIMATE_CREDITS + crate::keys::WRAP_ESTIMATE_CREDITS,
-                dash_usd_price()
+                ctx.usd_price()
             )
         )
     } else {
@@ -267,7 +267,7 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     let prompt = if private {
         let members = MemberReader::new(client).list(handle).await?;
         let kr = crate::keys::signer(&s).keyring(handle).await?;
-        private_remove_prompt(&kr, &members, repo, member, role)
+        private_remove_prompt(&kr, &members, repo, member, role, ctx.usd_price())
     } else {
         format!(
             "Remove {member} as a {} of {repo}? Their next push is refused at once",
@@ -364,6 +364,7 @@ fn private_remove_prompt(
     repo: &str,
     member: &str,
     role: forge_core::rules::v2::Role,
+    price: Option<f64>,
 ) -> String {
     let keeps_other_role = members
         .iter()
@@ -388,7 +389,7 @@ fn private_remove_prompt(
          {member} — encryption can't take back what was shared.{burned}\n\
          Remove {member} as a {} of {repo}? (1 delete + {what}, {})",
         role_name(role),
-        cost_line(est + MEMBER_DOC_ESTIMATE_CREDITS, dash_usd_price())
+        cost_line(est + MEMBER_DOC_ESTIMATE_CREDITS, price)
     )
 }
 

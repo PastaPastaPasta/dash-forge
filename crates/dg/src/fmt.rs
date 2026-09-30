@@ -1,10 +1,11 @@
 //! Cost/DASH formatting and JSON-output helpers.
 //!
 //! These are the pure, side-effect-free building blocks the command handlers use to
-//! render both human output (DASH primary, USD secondary — style guide §A.2) and the
+//! render both human output (DASH primary, USD secondary on mainnet — style guide §A.2) and the
 //! `--json` structs. Keeping them pure keeps them unit-testable without a network.
 
 use forge_core::cost::CREDITS_PER_DASH;
+use forge_core::platform::Network;
 use forge_core::rules::v2::Visibility;
 use serde_json::{json, Value};
 
@@ -18,10 +19,6 @@ pub const FALLBACK_DASH_USD: f64 = 30.0;
 /// repo is three small documents (`repo`, the owner's `maintainer`, the first `config`).
 /// An upper bound; the measured cost is reported after the create lands.
 pub const REPO_CREATE_ESTIMATE_CREDITS: u64 = 200_000_000;
-
-/// The pre-write estimate per extra document a fork writes (a pack manifest or a ref
-/// update, each a few hundred bytes), in credits. An upper bound.
-pub const FORK_PER_DOC_CREDITS: u64 = 20_000_000;
 
 /// `text` with control characters (C0 except newline and tab, DEL, and C1) removed, for
 /// printing document text anyone could have written (titles, bodies, comments, ref names)
@@ -84,14 +81,24 @@ pub fn transition_phrase(kind: u8) -> &'static str {
     }
 }
 
-/// The DASH/USD price to use: `DASH_USD` env override, else the offline fallback.
-pub fn dash_usd_price() -> f64 {
+/// The DASH/USD price for the secondary USD display on `network`: `None` off mainnet, where
+/// DASH is test money with no cash value (QW2-075; the web says the same since QW-046), else
+/// the `DASH_USD` override, else the offline fallback.
+pub fn usd_price(network: &Network) -> Option<f64> {
+    matches!(network, Network::Mainnet).then(mainnet_usd_price)
+}
+
+/// The mainnet DASH/USD price: `DASH_USD` env override, else the offline fallback.
+fn mainnet_usd_price() -> f64 {
     std::env::var("DASH_USD")
         .ok()
         .and_then(|s| s.parse::<f64>().ok())
         .filter(|p| *p > 0.0)
         .unwrap_or(FALLBACK_DASH_USD)
 }
+
+/// What a DASH amount is worth off mainnet, for a line that shows a balance or a price list.
+pub const NO_CASH_VALUE: &str = "test DASH, no cash value";
 
 /// Convert credits to DASH (1 DASH = 1e11 credits).
 #[allow(clippy::cast_precision_loss)]
@@ -117,13 +124,15 @@ pub fn dash_amount(dash: f64) -> String {
 pub static ESTIMATE_SHOWN: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// A one-line cost display: DASH primary, USD secondary, e.g.
-/// `~0.0003 DASH ≈ $0.01`.
-pub fn cost_line(credits: u64, price_usd: f64) -> String {
+/// A one-line cost display: DASH primary, USD secondary on mainnet, e.g.
+/// `~0.0003 DASH ≈ $0.01` (`~0.0003 DASH` where [`usd_price`] is `None`).
+pub fn cost_line(credits: u64, price_usd: Option<f64>) -> String {
     ESTIMATE_SHOWN.store(true, std::sync::atomic::Ordering::Relaxed);
     let dash = credits_to_dash(credits);
-    let usd = dash * price_usd;
-    format!("~{} DASH ≈ ${:.2}", dash_amount(dash), usd)
+    match price_usd {
+        Some(price) => format!("~{} DASH ≈ ${:.2}", dash_amount(dash), dash * price),
+        None => format!("~{} DASH", dash_amount(dash)),
+    }
 }
 
 /// Platform's pack-storage rate for copy, e.g. `~0.39 DASH/MiB`: the calibrated `chunk`
@@ -136,12 +145,13 @@ pub fn platform_rate() -> String {
 }
 
 /// The `--json` block for a cost quote (shared by `cost estimate` and the write previews).
-pub fn cost_json(credits: u64, price_usd: f64) -> Value {
+/// `usd` and `usdPrice` are `null` off mainnet ([`usd_price`]).
+pub fn cost_json(credits: u64, price_usd: Option<f64>) -> Value {
     let dash = credits_to_dash(credits);
     json!({
         "credits": credits,
         "dash": dash,
-        "usd": usd_json(dash * price_usd),
+        "usd": price_usd.map(|p| usd_json(dash * p)),
         "usdPrice": price_usd,
     })
 }
@@ -293,12 +303,15 @@ mod tests {
     /// QW-081: the `usd` of a cost carries no float noise.
     #[test]
     fn a_cost_in_usd_has_no_float_noise() {
-        let v = cost_json(95_093_000, 30.0);
+        let v = cost_json(95_093_000, Some(30.0));
         assert_eq!(v["usd"].as_f64(), Some(0.028_528));
         // the smallest writes still read as a cost, not as free
-        assert_eq!(cost_json(100_000, 30.0)["usd"].as_f64(), Some(0.00003));
+        assert_eq!(
+            cost_json(100_000, Some(30.0))["usd"].as_f64(),
+            Some(0.00003)
+        );
         assert_eq!(v["credits"].as_u64(), Some(95_093_000));
-        assert_eq!(cost_json(0, 30.0)["usd"].as_f64(), Some(0.0));
+        assert_eq!(cost_json(0, Some(30.0))["usd"].as_f64(), Some(0.0));
     }
 
     /// QW-083: an id with a DPNS name shows it; one without (or whose read failed) is bare.
@@ -378,7 +391,7 @@ mod tests {
     #[test]
     fn cost_line_shows_dash_primary_usd_secondary() {
         // 1 MiB storage deposit ≈ 0.283 DASH.
-        let line = cost_line(118_000_000_000, 30.0);
+        let line = cost_line(118_000_000_000, Some(30.0));
         assert!(line.starts_with("~1.18 DASH"), "line was {line}");
         assert!(line.contains("$35.40"), "line was {line}");
         // A forge-v2 repo create is quoted well under a cent of a DASH.
@@ -387,7 +400,7 @@ mod tests {
 
     #[test]
     fn cost_json_shape_has_credits_dash_usd() {
-        let v = cost_json(118_000_000_000, 30.0);
+        let v = cost_json(118_000_000_000, Some(30.0));
         assert_eq!(v["credits"], 118_000_000_000_u64);
         assert!((v["dash"].as_f64().unwrap() - 1.18).abs() < 1e-9);
         assert!((v["usd"].as_f64().unwrap() - 35.4).abs() < 1e-6);
@@ -405,8 +418,27 @@ mod tests {
     #[test]
     fn price_env_override_is_respected() {
         std::env::set_var("DASH_USD", "42.5");
-        assert!((dash_usd_price() - 42.5).abs() < 1e-9);
+        assert_eq!(usd_price(&Network::Mainnet), Some(42.5));
         std::env::remove_var("DASH_USD");
-        assert!((dash_usd_price() - FALLBACK_DASH_USD).abs() < 1e-9);
+        assert_eq!(usd_price(&Network::Mainnet), Some(FALLBACK_DASH_USD));
+    }
+
+    /// QW2-075: devnet and testnet DASH has no cash value, so no dollar figure is shown for it,
+    /// whatever `DASH_USD` says.
+    #[test]
+    fn test_dash_has_no_usd_value() {
+        let devnet = Network::Devnet {
+            name: "bonsia".into(),
+            dapi_addresses: Vec::new(),
+            quorum_base_url: None,
+        };
+        for network in [Network::Testnet, devnet] {
+            assert_eq!(usd_price(&network), None, "{network:?}");
+        }
+        let line = cost_line(1_017_812_000, None);
+        assert_eq!(line, "~0.01017812 DASH");
+        let v = cost_json(1_017_812_000, None);
+        assert!(v["usd"].is_null() && v["usdPrice"].is_null(), "{v}");
+        assert_eq!(v["credits"].as_u64(), Some(1_017_812_000));
     }
 }

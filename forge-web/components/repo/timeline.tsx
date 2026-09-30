@@ -9,17 +9,19 @@
  */
 
 import { Byline } from '@/components/repo/byline'
-import { importedVerdictOf, trustedOrigin } from '@/lib/repo/provenance'
-import { Check, CheckCircle2, Eye, GitCommit, GitMerge, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, ShieldAlert, Tag, Trash2, UserPlus, X } from 'lucide-react'
+import { importedVerdictOf, searchableBody, trustedOrigin } from '@/lib/repo/provenance'
+import { Check, CheckCircle2, CircleDot, Eye, GitCommit, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, ShieldAlert, Tag, Trash2, UserPlus, X } from 'lucide-react'
 import type { CommentView, TimelineItem } from '@/lib/view'
 import { branchName, plural, timeAgo } from '@/lib/view'
 import { anchorLabel } from '@/lib/view/inline-threads'
 import { VERDICT_LABEL, type VerdictName } from '@/lib/repo'
 import type { Event } from '@/lib/rules'
-import { ISSUE_CLOSE, PR_CLOSE, PR_DRAFT, PR_DRAFT_CLOSE, PR_MERGE, PR_READY, transitionPhrase } from '@/lib/rules/transition'
+import { ISSUE_CLOSE, ISSUE_LOCK, ISSUE_REOPEN, ISSUE_UNLOCK, PR_CLOSE, PR_DRAFT, PR_DRAFT_CLOSE, PR_DRAFT_REOPEN, PR_LOCK, PR_MERGE, PR_READY, PR_REOPEN, PR_UNLOCK, transitionPhrase } from '@/lib/rules/transition'
 import type { TransitionView } from '@/lib/repo'
 import { Author } from '@/components/author'
-import type { ReactNode } from 'react'
+import Link from 'next/link'
+import { useState, type ReactNode } from 'react'
+import { isEmptyMirroredReview, mirroredCommentText } from '@/lib/view/mirror-review-fold'
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
 import { importedUrlOf } from '@/lib/view/ref-targets'
 import { EditedMarker } from '@/components/repo/issue-bits'
@@ -47,10 +49,11 @@ function eventPhrase(e: Event): { text: string; icon: JSX.Element; who?: string;
   const { kind, value } = e
   const muted = 'h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400'
   switch (kind) {
+    // A padlock means the conversation was locked, never a state change (QW2-045).
     case 'close':
-      return { text: 'closed this', icon: <Lock className="h-3.5 w-3.5 text-forge-500" aria-hidden /> }
+      return { text: 'closed this', icon: <CheckCircle2 className={CLOSED_ICON} aria-hidden /> }
     case 'reopen':
-      return { text: 'reopened this', icon: <LockOpen className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden /> }
+      return { text: 'reopened this', icon: <CircleDot className={OPEN_ICON} aria-hidden /> }
     case 'merge':
       // The event records a claim; whether the PR folds as merged depends on who signed it
       // and whether the oid reached the base branch, so say what the event is.
@@ -66,9 +69,9 @@ function eventPhrase(e: Event): { text: string; icon: JSX.Element; who?: string;
     case 'retarget':
       return { text: `retargeted to ${branchName(value ?? '')}`, icon: <GitMerge className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden /> }
     case 'draft':
-      return { text: 'converted this to a draft', icon: <Lock className={muted} aria-hidden /> }
+      return { text: 'converted this to a draft', icon: <GitPullRequestDraft className={muted} aria-hidden /> }
     case 'ready':
-      return { text: 'marked this ready for review', icon: <LockOpen className={muted} aria-hidden /> }
+      return { text: 'marked this ready for review', icon: <Eye className={muted} aria-hidden /> }
     case 'headUpdate':
       return { text: e.oid ? `pushed new commits (head ${e.oid.slice(0, 9)})` : 'pushed new commits', icon: <GitCommit className={muted} aria-hidden /> }
     case 'threadResolve':
@@ -111,13 +114,44 @@ export function bypassPhrase(value: string | null | undefined, ofMerge: boolean)
   return ofMerge ? `merged by bypassing the branch rules${rules}` : `recorded a branch-rules bypass${rules} naming a commit this PR was not merged at`
 }
 
-/** The icon of a state change. */
-function transitionIcon(t: TransitionView): JSX.Element {
+/** Open and closed, in the colours of the issue and PR state badges. */
+const OPEN_ICON = 'h-3.5 w-3.5 text-verify-700 dark:text-verify-400'
+const CLOSED_ICON = 'h-3.5 w-3.5 text-forge-700 dark:text-forge-400'
+const PR_CLOSED_ICON = 'h-3.5 w-3.5 text-danger-700 dark:text-danger-400'
+
+/**
+ * The icon of a state change, as GitHub draws them (QW2-045): an issue closes with a check circle
+ * and reopens with an open circle, a PR closes and reopens with its own pull-request glyphs, and
+ * only a lock or unlock of the conversation shows a padlock.
+ */
+export function transitionIcon(kind: number): JSX.Element {
   const muted = 'h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400'
-  if (t.kind === PR_MERGE) return <GitMerge className="h-3.5 w-3.5 text-dash" aria-hidden />
-  if (t.kind === ISSUE_CLOSE || t.kind === PR_CLOSE || t.kind === PR_DRAFT_CLOSE) return <Lock className="h-3.5 w-3.5 text-forge-500" aria-hidden />
-  if (t.kind === PR_DRAFT || t.kind === PR_READY) return <GitPullRequestDraft className={muted} aria-hidden />
-  return <LockOpen className={muted} aria-hidden />
+  switch (kind) {
+    case PR_MERGE:
+      return <GitMerge className="h-3.5 w-3.5 text-dash" aria-hidden />
+    case ISSUE_CLOSE:
+      return <CheckCircle2 className={CLOSED_ICON} aria-hidden data-icon="closed" />
+    case ISSUE_REOPEN:
+      return <CircleDot className={OPEN_ICON} aria-hidden data-icon="reopened" />
+    case PR_CLOSE:
+    case PR_DRAFT_CLOSE:
+      return <GitPullRequestClosed className={PR_CLOSED_ICON} aria-hidden data-icon="closed" />
+    case PR_REOPEN:
+    case PR_DRAFT_REOPEN:
+      return <GitPullRequest className={OPEN_ICON} aria-hidden data-icon="reopened" />
+    case PR_DRAFT:
+      return <GitPullRequestDraft className={muted} aria-hidden data-icon="draft" />
+    case PR_READY:
+      return <Eye className={muted} aria-hidden data-icon="ready" />
+    case ISSUE_LOCK:
+    case PR_LOCK:
+      return <Lock className={muted} aria-hidden data-icon="locked" />
+    case ISSUE_UNLOCK:
+    case PR_UNLOCK:
+      return <LockOpen className={muted} aria-hidden data-icon="unlocked" />
+    default:
+      return <Tag className={muted} aria-hidden />
+  }
 }
 
 /** What a page adds to a comment card: header actions, or a body that replaces the rendered one (an editor). */
@@ -161,12 +195,120 @@ export function CommentOwnActions({
   )
 }
 
+/** A pull request elsewhere in the repo that names this issue (QW2-048). */
+export interface TimelineRef {
+  readonly number: number
+  readonly title: string
+  readonly href: string
+}
+
+/** "mentioned this issue in #4": a PR whose description references the issue without closing it. */
+export interface CrossRefItem extends TimelineRef {
+  readonly id: string
+  readonly actor: string
+  readonly at: number
+  /** The PR's state, for its icon. */
+  readonly state: 'open' | 'merged' | 'closed' | 'draft'
+}
+
+function crossRefIcon(state: CrossRefItem['state']): JSX.Element {
+  switch (state) {
+    case 'merged':
+      return <GitMerge className="h-3.5 w-3.5 text-dash" aria-hidden />
+    case 'closed':
+      return <GitPullRequestClosed className={PR_CLOSED_ICON} aria-hidden />
+    case 'draft':
+      return <GitPullRequestDraft className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
+    default:
+      return <GitPullRequest className={OPEN_ICON} aria-hidden />
+  }
+}
+
+/** `#4 title`, linked, as the timeline names another thread. */
+function RefLink({ to }: { to: TimelineRef }): JSX.Element {
+  return (
+    <Link href={to.href} className="font-medium text-anvil-800 hover:text-forge-700 hover:underline dark:text-anvil-100 dark:hover:text-forge-400">
+      <span className="font-mono">#{to.number}</span>
+      {to.title ? <span className="break-words"> {to.title}</span> : null}
+    </Link>
+  )
+}
+
+/** A timeline item's stable key. */
+function itemKey(item: TimelineItem): string {
+  switch (item.kind) {
+    case 'comment':
+      return `c-${item.comment.id}`
+    case 'review':
+      return `r-${item.review.id}`
+    case 'transition':
+      return `t-${item.transition.id}`
+    default:
+      return `e-${item.event.id ?? item.at}`
+  }
+}
+
+/**
+ * A comment under its review, as a thread box: the file, who wrote it (the source author for a
+ * mirrored one), the page's slots (resolved and outdated tags, the author's actions; a thread's
+ * replies and "View in Files changed", or the inline editor, as its body).
+ */
+function ReviewComment({
+  comment: c,
+  links,
+  trust,
+  slot,
+  anchorContext,
+}: {
+  comment: CommentView
+  links?: MarkdownLinks
+  trust: ReadonlySet<string> | null
+  slot: CommentSlots
+  anchorContext?: ((c: CommentView) => ReactNode) | undefined
+}): JSX.Element {
+  const origin = trustedOrigin(c.origin, c.author, trust)
+  const mirrored = origin !== null ? mirroredCommentText(c.body, c.anchor) : null
+  const file = c.anchor ? anchorLabel(c.anchor) : mirrored?.file ?? null
+  return (
+    <div className="overflow-hidden rounded-md border border-anvil-200 dark:border-anvil-800" data-testid="review-comment">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-3 py-1.5 text-[12px] dark:border-anvil-800 dark:bg-anvil-900">
+        {file !== null ? <span className="break-all font-mono text-anvil-700 dark:text-anvil-300">{file}</span> : null}
+        {origin !== null ? <Byline author={c.author} createdAt={c.createdAt} origin={origin} link={false} /> : null}
+        {slot.header}
+      </div>
+      {slot.body ?? (
+        <div className="space-y-2 px-3 py-2">
+          {c.anchor ? anchorContext?.(c) : null}
+          <MarkdownView source={mirrored?.text ?? c.body} links={links} imported={importedUrlOf(c.importedRaw)} />
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** What a comment's header says it did. */
 function commentVerb(item: Extract<TimelineItem, { kind: 'comment' }>): string {
   let verb = 'commented'
   if (item.orphaned === 'deleted') verb = 'replied to a deleted comment'
   else if (item.orphaned === 'hidden') verb = 'replied to a comment you cannot read'
   return item.comment.anchor ? `${verb} on ${anchorLabel(item.comment.anchor)}` : verb
+}
+
+/** Past this many items the middle of a timeline is hidden, as GitHub hides it (QW2-010). */
+export const TIMELINE_FOLD_AT = 60
+/** Items shown at each end of a folded timeline. */
+export const TIMELINE_EDGE = 20
+/** Items each "Load more" reveals. */
+export const TIMELINE_PAGE = 50
+
+/**
+ * Which items a timeline of `n` shows: every one, or the first and last {@link TIMELINE_EDGE} plus
+ * the `revealed` after the first, and how many stay hidden between them.
+ */
+export function timelineWindow(n: number, revealed: number): { head: number; tail: number; hidden: number } {
+  if (n <= TIMELINE_FOLD_AT) return { head: n, tail: 0, hidden: 0 }
+  const head = Math.min(n - TIMELINE_EDGE, TIMELINE_EDGE + revealed)
+  return { head, tail: TIMELINE_EDGE, hidden: n - TIMELINE_EDGE - head }
 }
 
 export function Timeline({
@@ -176,6 +318,8 @@ export function Timeline({
   eventText,
   anchorContext,
   trust = null,
+  closedIn,
+  crossRefs = [],
 }: {
   items: readonly TimelineItem[]
   /** Where `#n` / `@name` in bodies link (omit: plain text). Keep it referentially stable. */
@@ -191,13 +335,65 @@ export function Timeline({
   anchorContext?: (c: CommentView) => ReactNode
   /** Who may mirror (`useMirrorTrust`): their imported comments and reviews show the original author and date. */
   trust?: ReadonlySet<string> | null
+  /** The pull request whose merge made a close ("closed this as completed in #3"), or null. */
+  closedIn?: (t: TransitionView) => TimelineRef | null
+  /** PRs that mention this issue, placed in time order among the items. */
+  crossRefs?: readonly CrossRefItem[]
 }): JSX.Element {
   // The merge commits of this thread's merge transitions: a policy-bypass event is the record of
   // one of them only when it names it.
   const mergeOids = new Set(items.flatMap((x) => (x.kind === 'transition' && x.transition.kind === PR_MERGE && x.transition.oid ? [x.transition.oid.toLowerCase()] : [])))
-  return (
-    <div className="space-y-3">
-      {items.map((item, i) => {
+  // Items and the PRs that mention this issue, in time order.
+  const merged: ({ kind: 'item'; item: TimelineItem; i: number } | { kind: 'ref'; ref: CrossRefItem })[] = items.map((item, i) => ({ kind: 'item', item, i }))
+  for (const ref of [...crossRefs].sort((a, b) => a.at - b.at)) {
+    // After every row at or before it (the items are oldest first).
+    let at = merged.length
+    while (at > 0) {
+      const prev = merged[at - 1]!
+      if ((prev.kind === 'item' ? prev.item.at : prev.ref.at) <= ref.at) break
+      at--
+    }
+    merged.splice(at, 0, { kind: 'ref', ref })
+  }
+  // A long timeline shows its ends; "Load more" reveals the middle in pages (QW2-010). Rows that
+  // arrive after the first render join the shown end; another thread starts folded afresh.
+  const first = items[0] === undefined ? '' : itemKey(items[0])
+  const [fold, setFold] = useState({ first, base: merged.length, revealed: 0 })
+  if (fold.first !== first) setFold({ first, base: merged.length, revealed: 0 })
+  const grown = Math.max(0, merged.length - fold.base)
+  const win = timelineWindow(merged.length - grown, fold.revealed)
+  const tail = win.tail + (win.hidden > 0 ? grown : 0)
+  const head = win.hidden > 0 ? win.head : merged.length
+  const cut = merged.length - tail
+  const rows: ReactNode[] = []
+  merged.forEach((row, k) => {
+    if (k >= head && k < cut) return
+    if (k === cut && head < cut) {
+      rows.push(
+        <div key="fold" className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 rounded-lg border border-dashed border-anvil-300 px-4 py-3 text-dense text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-testid="timeline-fold">
+          <span>{plural(cut - head, 'hidden item')}</span>
+          <button type="button" onClick={() => setFold((f) => ({ ...f, revealed: f.revealed + TIMELINE_PAGE }))} className="hit-area font-medium text-forge-700 hover:underline dark:text-forge-400">
+            Load more…
+          </button>
+        </div>,
+      )
+    }
+    if (row.kind === 'ref') {
+      const r = row.ref
+      rows.push(
+        <div key={`x-${r.id}`} className={EVENT_ROW} data-testid="timeline-event" data-kind="cross-reference">
+          <span className={EVENT_ICON}>{crossRefIcon(r.state)}</span>
+          <p className={EVENT_TEXT}>
+            <Author identityId={r.actor} link={false} className="align-middle" /> mentioned this issue in <RefLink to={r} />
+            <span className="whitespace-nowrap"> · {timeAgo(r.at)}</span>
+          </p>
+        </div>,
+      )
+    } else rows.push(renderItem(row.item, row.i))
+  })
+  return <div className="space-y-3">{rows}</div>
+
+  function renderItem(item: TimelineItem, i: number): ReactNode {
         if (item.kind === 'comment') {
           const slot = renderComment?.(item) ?? {}
           return (
@@ -227,6 +423,18 @@ export function Timeline({
           // Shown as what the source reviewer did, never as counted.
           const origin = trustedOrigin(review.origin, review.reviewer, trust)
           const source = origin !== null ? importedVerdictOf(review.body) : null
+          // A mirrored "commented" review with nothing of its own (a reply's wrapper at the
+          // source): one line, as GitHub shows no card for it (QW2-010).
+          if (origin !== null && isEmptyMirroredReview(item)) {
+            return (
+              <div key={`r-${review.id}-${i}`} className={EVENT_ROW} data-testid="timeline-event" data-kind="mirrored-review">
+                <span className={EVENT_ICON}>{verdictIcon(review.verdict)}</span>
+                <p className={`${EVENT_TEXT} flex flex-wrap items-center gap-x-1.5`}>
+                  <Byline author={review.reviewer} createdAt={review.createdAt} origin={origin} verb="reviewed" link={false} />
+                </p>
+              </div>
+            )
+          }
           return (
             <div key={`r-${review.id}-${i}`} className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
               <div className="flex flex-wrap items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 coarse:gap-y-3 coarse:py-3 dark:border-anvil-800 dark:bg-anvil-900">
@@ -249,7 +457,8 @@ export function Timeline({
                   <span className="flex items-center gap-1 text-anvil-500 dark:text-anvil-400">on <Oid value={review.commitOid} chars={9} /></span>
                 ) : null}
               </div>
-              {review.body ? (
+              {/* A mirrored review with no text of its own: its header already says who and when. */}
+              {review.body && !(origin !== null && searchableBody(review.body).trim() === '') ? (
                 <div className="px-4 py-3">
                   <MarkdownView source={review.body} links={links} imported={review.origin?.url ?? null} />
                 </div>
@@ -257,10 +466,7 @@ export function Timeline({
               {item.comments.length > 0 || item.expected > 0 ? (
                 <div className="space-y-2 border-t border-anvil-200 px-4 py-3 dark:border-anvil-800" data-testid="review-comments">
                   {item.comments.map((c) => (
-                    <div key={c.id}>
-                      {c.anchor ? (anchorContext?.(c) ?? <p className="mb-1 font-mono text-[12px] text-anvil-600 dark:text-anvil-400">{anchorLabel(c.anchor)}</p>) : null}
-                      <MarkdownView source={c.body} links={links} imported={importedUrlOf(c.importedRaw)} />
-                    </div>
+                    <ReviewComment key={c.id} comment={c} links={links} trust={trust} anchorContext={anchorContext} slot={renderComment?.({ kind: 'comment', at: c.createdAt, comment: c }) ?? {}} />
                   ))}
                   {/* A submit writes the review first, then its comments: say when some have not landed (yet). */}
                   {item.expected > item.comments.length ? (
@@ -275,13 +481,19 @@ export function Timeline({
         }
         if (item.kind === 'transition') {
           const t = item.transition
+          const cause = closedIn?.(t) ?? null
           return (
             <div key={`t-${t.id}-${i}`} className={EVENT_ROW} data-testid="timeline-event" data-kind={`transition-${t.kind}`}>
-              <span className={EVENT_ICON}>{transitionIcon(t)}</span>
+              <span className={EVENT_ICON}>{transitionIcon(t.kind)}</span>
               {/* One sentence that wraps as text (QW-070): the age never breaks onto a line of its own. */}
               <p className={EVENT_TEXT}>
                 <Author identityId={t.actor} link={false} className="align-middle" />{' '}
-                {t.kind === PR_MERGE && t.oid ? (
+                {cause !== null ? (
+                  <>
+                    closed this as completed in <RefLink to={cause} />
+                    <span className="whitespace-nowrap"> · {timeAgo(t.createdAt)}</span>
+                  </>
+                ) : t.kind === PR_MERGE && t.oid ? (
                   <>
                     {transitionPhrase(t.kind)} at{' '}
                     <span className="whitespace-nowrap">
@@ -316,7 +528,5 @@ export function Timeline({
             </p>
           </div>
         )
-      })}
-    </div>
-  )
+  }
 }

@@ -1008,7 +1008,7 @@ pub fn explain_new_key(
         "  one identity update, {}; the master key signs once and is not stored",
         crate::fmt::cost_line(
             forge_core::platform::identity_keys::ADD_KEY_ESTIMATE_CREDITS,
-            crate::fmt::dash_usd_price()
+            ctx.usd_price()
         )
     );
     checked.print_notice(ctx, "  ");
@@ -1252,8 +1252,14 @@ async fn balance(ctx: &Ctx) -> Result<()> {
     let network = ctx.network_label();
     ctx.emit(balance_json(&identity_id, credits, &network), || {
         println!("Identity: {identity_id}");
+        // Off mainnet the balance is test money: said so, as the web says it (QW2-075).
+        let value = if ctx.usd_price().is_none() {
+            format!(" · {}", crate::fmt::NO_CASH_VALUE)
+        } else {
+            String::new()
+        };
         println!(
-            "Balance:  {} DASH ({credits} credits)",
+            "Balance:  {} DASH ({credits} credits){value}",
             dash_amount(credits_to_dash(credits))
         );
         if credits == 0 {
@@ -1308,7 +1314,7 @@ async fn name_register(ctx: &Ctx, label: &str, master: Option<&std::path::Path>)
             None => identity_from_words(ctx, &client, &read_mnemonic()?).await?,
         },
     };
-    let price = crate::fmt::dash_usd_price();
+    let price = ctx.usd_price();
     if !ctx.json {
         eprintln!(
             "Registering {label}.dash for {}: preorder + domain, {}",

@@ -301,4 +301,22 @@ describe('--no-ff where a fast-forward is possible (QW-069)', () => {
     expect(mergeButton()?.disabled).toBe(false)
     expect(host.textContent).not.toMatch(/does not allow this merge method/)
   })
+
+  it('names the merge-commit option the same whether or not a fast-forward is possible (QW2-051)', async () => {
+    const label = (value: string): string | undefined => [...host.querySelectorAll<HTMLOptionElement>('#merge-method option')].find((o) => o.value === value)?.textContent ?? undefined
+    await render(0)
+    expect(label('no-ff')).toBe('Create a merge commit')
+    checks.mockReset()
+    checks.mockImplementation(async () => ({ check: 'merge', conflictPaths: [], packEstimate: { bytes: 900, objectCount: 3 } }))
+    act(() => root.unmount())
+    root = createRoot(host)
+    await act(async () =>
+      root.render(
+        <PullMerge repo={repo} home={homeAt(BASE)} pull={pullOf(false)} canMerge isMaintainer checkout="dg pr checkout …" onMerged={() => undefined} extras={{ deleteBranch: null, allowedMethods: 0 }} />,
+      ),
+    )
+    await act(async () => undefined)
+    expect(label('merge')).toBe('Create a merge commit')
+    expect(label('no-ff')).toBeUndefined()
+  })
 })

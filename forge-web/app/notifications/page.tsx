@@ -7,7 +7,7 @@
  */
 
 import Link from 'next/link'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Bell, CheckCheck, CircleDot, GitCommit, GitPullRequest, Info, MessageSquare, RefreshCw, ShieldCheck, Tag } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
 import { SignInButton } from '@/components/sign-in-button'
@@ -19,9 +19,35 @@ import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge
 import { useAuth } from '@/contexts/auth-context'
 import { useInboxActions, useInboxStore } from '@/hooks/use-inbox'
 import { repoHref } from '@/hooks/use-query-param'
-import { INBOX_EMPTY, MAX_REPOS, MAX_THREADS, POLL_MS, groupThreads, type InboxItem, type InboxThread } from '@/lib/view/inbox'
+import {
+  INBOX_EMPTY,
+  INBOX_FILTERS,
+  MAX_REPOS,
+  MAX_THREADS,
+  POLL_MS,
+  groupThreads,
+  matchesFilter,
+  subsByThread,
+  threadReasons,
+  type InboxFilter,
+  type InboxItem,
+  type InboxThread,
+  type ThreadReason,
+} from '@/lib/view/inbox'
 import { plural, timeAgo } from '@/lib/view'
 import { cn } from '@/lib/utils'
+
+/** Why I get a thread, in the row's words (GitHub's reason labels). */
+const REASON_LABEL: Readonly<Record<ThreadReason, string>> = {
+  author: 'author',
+  commented: 'comment',
+  assigned: 'assigned',
+  'review-requested': 'review requested',
+  reviewed: 'reviewed',
+  mentioned: 'mention',
+}
+/** The one reason a row shows: the most specific. */
+const REASON_ORDER: readonly ThreadReason[] = ['review-requested', 'assigned', 'mentioned', 'author', 'reviewed', 'commented']
 
 const ICON: Readonly<Record<InboxItem['kind'], typeof Bell>> = {
   issue: CircleDot,
@@ -43,10 +69,16 @@ export default function NotificationsPage(): JSX.Element {
   const { items, subs, prefs, polling, lastPoll, lastFeeds, error } = useInboxStore()
   const { markRead, markAllRead, setPrefs, pollNow } = useInboxActions()
   const [filter, setFilter] = useState<'unread' | 'all'>('unread')
+  // GitHub's reason filters (QW2-056): Assigned, Participating, Mentioned, Review requested.
+  const [reason, setReason] = useState<InboxFilter | null>(null)
   // One row per thread (an issue, a PR, a repo's pushes), as GitHub lists them (QW-066).
-  const threads = groupThreads(items)
-  const shown = filter === 'unread' ? threads.filter((t) => t.unread > 0) : threads
-  const unread = threads.filter((t) => t.unread > 0).length
+  const threads = useMemo(() => {
+    const index = subsByThread(subs)
+    return groupThreads(items).map((t) => ({ thread: t, reasons: threadReasons(t, index) }))
+  }, [items, subs])
+  const byReason = reason === null ? threads : threads.filter((t) => matchesFilter(t.reasons, reason))
+  const shown = filter === 'unread' ? byReason.filter((t) => t.thread.unread > 0) : byReason
+  const unread = byReason.filter((t) => t.thread.unread > 0).length
 
   if (!isForgeDeployed()) {
     return (
@@ -102,9 +134,32 @@ export default function NotificationsPage(): JSX.Element {
               onClick={() => setFilter(f)}
               className={cn('rounded px-3 py-1 text-dense font-medium coarse:min-h-11', filter === f ? 'bg-forge-500/15 text-forge-800 dark:text-forge-300' : 'text-anvil-600 dark:text-anvil-300')}
             >
-              {f === 'unread' ? `Unread (${unread})` : `All (${threads.length})`}
+              {f === 'unread' ? `Unread (${unread})` : `All (${byReason.length})`}
             </button>
           ))}
+        </div>
+        <div role="group" aria-label="Reason" className="flex flex-wrap gap-1.5" data-testid="inbox-reasons">
+          {INBOX_FILTERS.map((r) => {
+            const count = threads.filter((t) => matchesFilter(t.reasons, r.id) && t.thread.unread > 0).length
+            return (
+              <button
+                key={r.id}
+                type="button"
+                aria-pressed={reason === r.id}
+                onClick={() => setReason(reason === r.id ? null : r.id)}
+                data-reason={r.id}
+                className={cn(
+                  'rounded-full border px-3 py-1 text-dense coarse:min-h-11',
+                  reason === r.id
+                    ? 'border-forge-500 bg-forge-500/15 font-medium text-forge-800 dark:text-forge-300'
+                    : 'border-anvil-200 text-anvil-600 hover:border-anvil-300 dark:border-anvil-750 dark:text-anvil-300 dark:hover:border-anvil-600',
+                )}
+              >
+                {r.label}
+                {count > 0 ? <span className="ml-1 font-mono text-[11px] text-anvil-500 dark:text-anvil-400">{count}</span> : null}
+              </button>
+            )
+          })}
         </div>
 
         {error && items.length === 0 ? (
@@ -113,16 +168,25 @@ export default function NotificationsPage(): JSX.Element {
           <div data-testid="inbox-empty">
             <EmptyState
               icon={Bell}
-              title={filter === 'unread' && items.length > 0 ? 'All caught up' : 'Nothing new'}
+              title={
+                filter === 'unread' && byReason.length > 0
+                  ? 'All caught up'
+                  : reason !== null
+                    ? INBOX_FILTERS.find((r) => r.id === reason)?.none ?? 'Nothing new'
+                    : filter === 'unread' && items.length > 0
+                      ? 'All caught up'
+                      : 'Nothing new'
+              }
               body={INBOX_EMPTY}
             />
           </div>
         ) : (
           <ul className="divide-y divide-anvil-200 overflow-hidden rounded-lg border border-anvil-200 dark:divide-anvil-800 dark:border-anvil-800" data-testid="inbox-list">
-            {shown.map((t) => (
+            {shown.map(({ thread: t, reasons }) => (
               <ThreadRow
                 key={t.key}
                 thread={t}
+                reason={REASON_ORDER.find((r) => reasons.has(r)) ?? null}
                 onRead={() => {
                   const ids = t.items.filter((i) => !i.read).map((i) => i.id)
                   if (ids.length > 0) void markRead(ids)
@@ -145,8 +209,16 @@ export default function NotificationsPage(): JSX.Element {
                 requests{prefs?.pushes ? ', pushes' : ''}.
               </li>
               <li>
-                {plural(subs.threads.length, 'issue or pull request', 'issues and pull requests')} you opened or commented on: comments, state changes, and reviews
-                on your pull requests.
+                {plural(subs.threads.filter((t) => t.reason === 'author' || t.reason === 'commented').length, 'issue or pull request', 'issues and pull requests')} you
+                opened or commented on: comments, state changes, and reviews on your pull requests.
+              </li>
+              <li>
+                {plural(subs.threads.filter((t) => t.reason === 'assigned' || t.reason === 'review-requested').length, 'issue or pull request', 'issues and pull requests')} you
+                were assigned or asked to review (on every device): the assignment, comments and state changes.
+              </li>
+              <li>
+                {plural(subs.threads.filter((t) => t.reason === 'reviewed' || t.reason === 'mentioned').length, 'pull request or issue', 'pull requests and issues')} you
+                reviewed or were mentioned in, as this browser saw it: comments and state changes. Other devices do not know about these.
               </li>
               {prefs?.stars ? <li>{plural(subs.repos.filter((r) => r.reason === 'starred').length, 'starred repo')}: new issues and pull requests.</li> : null}
               {subs.droppedRepos > 0 ? (
@@ -192,7 +264,7 @@ export default function NotificationsPage(): JSX.Element {
   )
 }
 
-function ThreadRow({ thread, onRead }: { thread: InboxThread; onRead: () => void }): JSX.Element {
+function ThreadRow({ thread, reason, onRead }: { thread: InboxThread; reason: ThreadReason | null; onRead: () => void }): JSX.Element {
   const latest = thread.items[0] as InboxItem
   const Icon = ICON[thread.target?.kind ?? latest.kind]
   const more = thread.items.length - 1
@@ -215,6 +287,11 @@ function ThreadRow({ thread, onRead }: { thread: InboxThread; onRead: () => void
         <p className="mt-0.5 text-[12px] leading-5 text-anvil-500 dark:text-anvil-400">
           <Author identityId={latest.actor} link={false} className="align-middle" /> <WithAge text={latest.what} age={timeAgo(latest.at)} />
           {more > 0 ? <span className="whitespace-nowrap"> · {plural(more, 'earlier event')}</span> : null}
+          {reason !== null ? (
+            <span className="ml-1.5 whitespace-nowrap rounded-full border border-anvil-200 px-1.5 align-middle text-[10px] text-anvil-600 dark:border-anvil-750 dark:text-anvil-300" data-testid="inbox-reason">
+              {REASON_LABEL[reason]}
+            </span>
+          ) : null}
           {unread ? (
             <span className="ml-1.5 whitespace-nowrap rounded bg-forge-700 px-1 align-middle text-[10px] font-semibold uppercase text-white">
               {thread.unread > 1 ? `${thread.unread} new` : 'new'}

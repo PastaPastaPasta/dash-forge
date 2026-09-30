@@ -35,7 +35,7 @@ use super::inline::{read_body_file, InlineSpec};
 use super::{estimate, patch, Est};
 use crate::common::Session;
 use crate::context::Ctx;
-use crate::fmt::{cost_json, cost_line, dash_usd_price, safe, short};
+use crate::fmt::{cost_json, cost_line, safe, short};
 use crate::{PrCommentArgs, PrReviewArgs, VerdictArg};
 
 /// One comment of a draft.
@@ -509,7 +509,7 @@ async fn submit(
             None,
         )?;
     }
-    let price = dash_usd_price();
+    let price = ctx.usd_price();
     let todo = 1 + n - draft.landed();
     let est = submit_estimate(&draft);
     let moved = draft.head_oid != view.head;
@@ -777,7 +777,7 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
     } else {
         (None, "general")
     };
-    let price = dash_usd_price();
+    let price = ctx.usd_price();
     let path_len = spec.as_ref().map_or(0, |s| s.path.len());
     let est = estimate(Est::Comment, body.len() + path_len);
     ctx.confirm_or_cancel(&format!(
