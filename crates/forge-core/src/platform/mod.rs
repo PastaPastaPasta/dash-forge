@@ -3235,9 +3235,10 @@ where
         let started = std::time::Instant::now();
         let sent_now = broadcast().await;
         // A refusal the broadcast itself returned is CheckTx's: before the nonce is spent, so
-        // it can be sent again. One the wait returns came from block execution, which spent
-        // the nonce and charged a fee: final.
-        let at_check_tx = sent_now.is_err();
+        // it can be sent again. One the wait returns (after an accepted send, or a node that
+        // already holds the bytes: TxKnown, "already in chain") came from block execution,
+        // which spent the nonce and charged a fee: final.
+        let at_check_tx = matches!(sent_now, Err(ref f) if !matches!(f, WriteFailure::TxKnown));
         let failure = match sent_now {
             Ok(()) | Err(WriteFailure::TxKnown) => {
                 // A plain Ok is our own send. TxKnown on a later attempt is too: an earlier
@@ -3281,7 +3282,7 @@ where
             WriteFailure::AlreadyLanded => return Ok(BroadcastOutcome::AlreadyExists),
             WriteFailure::NonceConsumed => return Ok(BroadcastOutcome::NonceConsumed),
             WriteFailure::Retryable(reason) if attempt - lag_retries < MAX_BROADCAST_ATTEMPTS => {
-                let delay = backoff_delay(backoff, attempt);
+                let delay = backoff_delay(backoff, attempt - lag_retries);
                 tracing::warn!(
                     document_type,
                     attempt,
@@ -4312,6 +4313,16 @@ mod tests {
         // fee paid): final at once, nothing to wait out.
         let (out, nb, nw) = scripted_write(
             vec![Ok(())],
+            vec![Err(refused("packManifest", "platformChunks"))],
+            vec![],
+        )
+        .await;
+        assert!(matches!(out, Err(Error::RuleRefused { .. })), "{out:?}");
+        assert_eq!((nb, nw), (1, 1));
+        // Also when the node already held the bytes (a resend or a replayed journal of a
+        // transition a block refused: "already in chain").
+        let (out, nb, nw) = scripted_write(
+            vec![Err(super::WriteFailure::TxKnown)],
             vec![Err(refused("packManifest", "platformChunks"))],
             vec![],
         )
