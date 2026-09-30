@@ -99,6 +99,7 @@ struct Answer {
     repos: Vec<AnswerRepo>,
 }
 
+/// A woken repository in an [`Answer`], by the names the relay gives it.
 #[derive(Debug, Deserialize)]
 struct AnswerRepo {
     #[serde(default)]

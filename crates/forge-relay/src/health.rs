@@ -72,6 +72,7 @@ struct Head {
     signature: Option<String>,
 }
 
+/// Parse a request head read by [`read_head`]; `None` when it is not one.
 fn parse_head(raw: &[u8]) -> Option<Head> {
     let text = std::str::from_utf8(raw).ok()?;
     let mut lines = text.split("\r\n");
@@ -120,6 +121,7 @@ async fn read_head(stream: &mut TcpStream) -> Option<Vec<u8>> {
     Some(buf)
 }
 
+/// Write the response and close; `signature` is a wake answer's signature header.
 async fn reply(
     stream: &mut TcpStream,
     status: &str,
@@ -137,6 +139,13 @@ async fn reply(
     stream.shutdown().await
 }
 
+/// Refuse the request with `status` and `{"error": why}`.
+async fn refuse(stream: &mut TcpStream, status: &str, why: &str) -> std::io::Result<()> {
+    let body = serde_json::json!({ "error": why }).to_string();
+    reply(stream, status, &body, None).await
+}
+
+/// Serve one connection: a wake request on [`wake::PATH`], a health answer elsewhere.
 async fn handle(
     mut stream: TcpStream,
     durable: bool,
@@ -145,13 +154,7 @@ async fn handle(
 ) -> std::io::Result<()> {
     let head = read_head(&mut stream).await.and_then(|b| parse_head(&b));
     let Some(head) = head else {
-        return reply(
-            &mut stream,
-            "400 Bad Request",
-            "{\"error\":\"bad request\"}",
-            None,
-        )
-        .await;
+        return refuse(&mut stream, "400 Bad Request", "bad request").await;
     };
     let (path, query) = head
         .target
@@ -162,58 +165,35 @@ async fn handle(
         return reply(&mut stream, "200 OK", &body, None).await;
     }
     let Some(hub) = wake else {
-        return reply(
-            &mut stream,
-            "404 Not Found",
-            "{\"error\":\"no [wake] configured\"}",
-            None,
-        )
-        .await;
+        return refuse(&mut stream, "404 Not Found", "no [wake] configured").await;
     };
     if head.method != "GET" {
-        return reply(
-            &mut stream,
-            "405 Method Not Allowed",
-            "{\"error\":\"GET only\"}",
-            None,
-        )
-        .await;
+        return refuse(&mut stream, "405 Method Not Allowed", "GET only").await;
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let q = match wake::parse_query(query).and_then(|q| {
+    // The query is checked first: a malformed request never reaches the replay guard.
+    let checked = wake::parse_query(query).and_then(|q| {
         hub.authenticate(
             &head.target,
             head.time.as_deref(),
             head.signature.as_deref(),
             now,
-        )
-        .map(|()| q)
-    }) {
+        )?;
+        Ok(q)
+    });
+    let q = match checked {
         Ok(q) => q,
         Err(Refusal::BadRequest(why)) => {
-            let body = serde_json::json!({ "error": why }).to_string();
-            return reply(&mut stream, "400 Bad Request", &body, None).await;
+            return refuse(&mut stream, "400 Bad Request", why).await;
         }
         Err(Refusal::Unauthorized) => {
-            return reply(
-                &mut stream,
-                "401 Unauthorized",
-                "{\"error\":\"unauthorized\"}",
-                None,
-            )
-            .await;
+            return refuse(&mut stream, "401 Unauthorized", "unauthorized").await;
         }
     };
     let Ok(_slot) = waiting.try_acquire() else {
-        return reply(
-            &mut stream,
-            "503 Service Unavailable",
-            "{\"error\":\"busy\"}",
-            None,
-        )
-        .await;
+        return refuse(&mut stream, "503 Service Unavailable", "busy").await;
     };
     let signature = head.signature.unwrap_or_default();
     let (body, sig) = hub.respond(&q, &signature).await;

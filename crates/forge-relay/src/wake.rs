@@ -27,7 +27,7 @@
 //! signature>\n<body>`, which ties it to this request: a recorded answer cannot be replayed.
 
 use std::collections::{BTreeMap, HashSet, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use forge_core::envelope::SecretBytes;
@@ -82,7 +82,8 @@ pub struct WakeHub {
     epoch: String,
     /// Repo id → how it is named.
     repos: BTreeMap<String, WakeRepo>,
-    ring: Mutex<Ring>,
+    /// The last [`RING`] wakes, `(seq, repo id)`, oldest first.
+    wakes: Mutex<VecDeque<(u64, String)>>,
     seq: watch::Sender<u64>,
     seen: Mutex<Seen>,
 }
@@ -95,10 +96,9 @@ struct Seen {
     order: VecDeque<(Instant, String)>,
 }
 
-#[derive(Default)]
-struct Ring {
-    /// `(seq, repo id)`, oldest first.
-    wakes: VecDeque<(u64, String)>,
+/// Lock a mutex, ignoring poisoning (the data is plain state).
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// What a runner is told.
@@ -143,7 +143,7 @@ impl WakeHub {
             secret,
             epoch,
             repos,
-            ring: Mutex::new(Ring::default()),
+            wakes: Mutex::new(VecDeque::new()),
             seq: watch::channel(0).0,
             seen: Mutex::new(Seen::default()),
         }
@@ -159,24 +159,18 @@ impl WakeHub {
         if !self.serves(repo_id) {
             return;
         }
-        let mut ring = self
-            .ring
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut wakes = lock(&self.wakes);
         let seq = *self.seq.borrow() + 1;
-        ring.wakes.push_back((seq, repo_id.to_string()));
-        while ring.wakes.len() > RING {
-            ring.wakes.pop_front();
+        wakes.push_back((seq, repo_id.to_string()));
+        while wakes.len() > RING {
+            wakes.pop_front();
         }
         self.seq.send_replace(seq);
     }
 
     /// What a runner whose cursor is `after` is told now.
     fn answer(&self, after: Option<&str>) -> Answer {
-        let ring = self
-            .ring
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let wakes = lock(&self.wakes);
         let seq = *self.seq.borrow();
         let cursor = format!("{}.{seq}", self.epoch);
         let Some(after) = after else {
@@ -186,34 +180,31 @@ impl WakeHub {
                 repos: Vec::new(),
             };
         };
+        // Kept: every wake after `oldest - 1`.
+        let oldest = wakes.front().map_or(seq + 1, |(s, _)| *s);
         let from = after
             .split_once('.')
             .filter(|(e, _)| *e == self.epoch)
             .and_then(|(_, s)| s.parse::<u64>().ok())
-            .filter(|s| *s <= seq);
-        // Kept: every wake after `oldest - 1`.
-        let oldest = ring.wakes.front().map_or(seq + 1, |(s, _)| *s);
-        match from {
-            Some(from) if from + 1 >= oldest => {
-                let mut repos: Vec<String> = ring
-                    .wakes
-                    .iter()
-                    .filter(|(s, _)| *s > from)
-                    .map(|(_, r)| r.clone())
-                    .collect();
-                repos.sort();
-                repos.dedup();
-                Answer {
-                    cursor,
-                    resync: false,
-                    repos,
-                }
-            }
-            _ => Answer {
+            .filter(|s| *s <= seq && s + 1 >= oldest);
+        let Some(from) = from else {
+            return Answer {
                 cursor,
                 resync: true,
                 repos: Vec::new(),
-            },
+            };
+        };
+        let mut repos: Vec<String> = wakes
+            .iter()
+            .filter(|(s, _)| *s > from)
+            .map(|(_, r)| r.clone())
+            .collect();
+        repos.sort();
+        repos.dedup();
+        Answer {
+            cursor,
+            resync: false,
+            repos,
         }
     }
 
@@ -250,10 +241,7 @@ impl WakeHub {
         {
             return Err(Refusal::Unauthorized);
         }
-        let mut seen = self
-            .seen
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut seen = lock(&self.seen);
         let window = Duration::from_secs(2 * MAX_SKEW_SECS + 1);
         while seen
             .order

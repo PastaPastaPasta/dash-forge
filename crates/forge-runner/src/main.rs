@@ -1,11 +1,12 @@
 //! `forge-runner` — a self-hosted CI runner for Dash Forge, built on nektos/act.
 //!
 //! It watches repositories (`git ls-remote dash://…` every `interval_secs`, and at once when the
-//! owner's own relay wakes it, [`relay`]; cursors in the state dir), and on a push it checks the commit out, runs `.forge/workflows/*.yml` (GitHub Actions
-//! syntax) with [act](https://github.com/nektos/act) in Docker, and reports each job as a Forge
-//! check run through `dg ci report`, uploading the job's log to a storage profile with its
-//! SHA-256. It signs with DASH_FORGE_KEY: a runner key from `dg ci runner new`, which can write
-//! check runs and nothing else.
+//! owner's own relay wakes it, [`relay`]; cursors in the state dir), and on a push it checks the
+//! commit out, runs `.forge/workflows/*.yml` (GitHub Actions syntax) with
+//! [act](https://github.com/nektos/act) in Docker, and reports each job as a Forge check run
+//! through `dg ci report`, uploading the job's log to a storage profile with its SHA-256. It
+//! signs with DASH_FORGE_KEY: a runner key from `dg ci runner new`, which can write check runs
+//! and nothing else.
 //!
 //! What the runner enforces (docs/guides/self-host-runner.md §Security): job containers get no
 //! Docker socket and join the `bridge` network; a job that sets docker options or mounts
@@ -125,38 +126,44 @@ const FOLLOW_UP: Duration = Duration::from_secs(20);
 /// The polls wakes add, per repository: the wake's own poll and its follow-up, neither within
 /// [`WAKE_GAP`] of the repository's last poll. Two times per repository, however many wakes.
 #[derive(Debug)]
-struct Schedule {
-    last: Vec<Option<Instant>>,
-    next: Vec<Option<Instant>>,
-    follow: Vec<Option<Instant>>,
+struct Schedule(Vec<RepoTimes>);
+
+/// One repository's times in a [`Schedule`].
+#[derive(Debug, Clone, Default)]
+struct RepoTimes {
+    /// When its last poll ended.
+    last: Option<Instant>,
+    /// The earliest wake not yet served.
+    next: Option<Instant>,
+    /// The follow-up poll of the latest wake.
+    follow: Option<Instant>,
 }
 
 impl Schedule {
     fn new(repos: usize) -> Self {
-        Self {
-            last: vec![None; repos],
-            next: vec![None; repos],
-            follow: vec![None; repos],
-        }
+        Self(vec![RepoTimes::default(); repos])
     }
 
     /// Repository `i` was woken at `now`.
     fn wake(&mut self, i: usize, now: Instant) {
-        self.next[i] = Some(self.next[i].map_or(now, |t| t.min(now)));
-        self.follow[i] = Some(now + FOLLOW_UP);
+        let r = &mut self.0[i];
+        r.next = Some(r.next.map_or(now, |t| t.min(now)));
+        r.follow = Some(now + FOLLOW_UP);
     }
 
     /// When repository `i` is due for a wake's poll, if it is.
     fn due_at(&self, i: usize) -> Option<Instant> {
-        let t = self.next[i].into_iter().chain(self.follow[i]).min()?;
-        Some(self.last[i].map_or(t, |l| t.max(l + WAKE_GAP)))
+        let r = &self.0[i];
+        let t = r.next.into_iter().chain(r.follow).min()?;
+        Some(r.last.map_or(t, |l| t.max(l + WAKE_GAP)))
     }
 
     /// Repository `i` was polled, ending at `now`: every wake up to then is served.
     fn polled(&mut self, i: usize, now: Instant) {
-        self.last[i] = Some(now);
-        self.next[i] = self.next[i].filter(|t| *t > now);
-        self.follow[i] = self.follow[i].filter(|t| *t > now);
+        let r = &mut self.0[i];
+        r.last = Some(now);
+        r.next = r.next.filter(|t| *t > now);
+        r.follow = r.follow.filter(|t| *t > now);
     }
 }
 

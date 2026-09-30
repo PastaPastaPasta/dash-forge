@@ -57,7 +57,7 @@ impl std::fmt::Debug for StaticWebhook {
 }
 
 /// `[wake]`: runners long-poll the relay for wake-ups on these repos (see [`crate::wake`]).
-#[derive(Clone, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 struct WakeFile {
     /// `owner/name` or repo ids. The relay polls them even without a webhook.
