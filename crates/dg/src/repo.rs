@@ -483,7 +483,7 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
         svc.keyring(handle).await?.require_key(handle)?;
     }
     let default_branch = svc.read_default_branch(handle).await.unwrap_or(None);
-    let refs = svc.read_refs(handle).await.unwrap_or_default();
+    let refs = live_refs(svc.read_refs(handle).await.unwrap_or_default());
     let manifests = svc.read_pack_manifests(handle).await.unwrap_or_default();
     let members = MemberReader::new(client)
         .list(handle)
@@ -530,6 +530,19 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// Keep only refs that currently point at a commit: `read_refs` enumerates every ref name
+/// that ever had a push, and a ref folding to `Unborn` there means it was deleted (Platform
+/// history is append-only, so the name persists — `RefState::Unborn`'s doc comment). Neither
+/// `git ls-remote` nor the web's Branches/Tags count (`isLive`, forge-web `lib/view/refs.ts`)
+/// show a deleted ref, so `repo view` should not list or count one either (D-6).
+fn live_refs(
+    refs: Vec<(String, forge_core::rules::RefState)>,
+) -> Vec<(String, forge_core::rules::RefState)> {
+    refs.into_iter()
+        .filter(|(_, state)| forge_core::rules::tip_of(state).is_some())
+        .collect()
 }
 
 /// A compact human string for a resolved ref state.
@@ -644,5 +657,42 @@ mod tests {
             Some("could not create work tree dir 'p': Permission denied")
         );
         assert_eq!(last_fatal_line("Cloning into 'p'...\n"), None);
+    }
+
+    /// D-6: a deleted branch (folds to `Unborn`) is neither listed nor counted — parity with
+    /// `git ls-remote` and the web's Branches/Tags count. A resolved or diverged ref stays.
+    #[test]
+    fn live_refs_drops_deleted_branches_and_keeps_the_rest() {
+        use forge_core::rules::{RefHead, RefState};
+
+        let resolved = RefState::Resolved {
+            oid: "a".repeat(40),
+            author: "who".into(),
+            created_at: 1,
+        };
+        let diverged = RefState::Diverged {
+            heads: vec![RefHead {
+                id: "id".into(),
+                oid: "b".repeat(40),
+                author: "who".into(),
+                created_at: 2,
+            }],
+        };
+        let refs = vec![
+            ("refs/heads/main".to_string(), resolved.clone()),
+            (
+                "refs/heads/feature/greet-name".to_string(),
+                RefState::Unborn,
+            ),
+            ("refs/heads/diverged-branch".to_string(), diverged.clone()),
+        ];
+        let live = live_refs(refs);
+        assert_eq!(
+            live,
+            vec![
+                ("refs/heads/main".to_string(), resolved),
+                ("refs/heads/diverged-branch".to_string(), diverged),
+            ]
+        );
     }
 }
