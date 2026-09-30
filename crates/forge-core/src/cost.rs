@@ -133,6 +133,17 @@ pub mod push_fees {
         full.saturating_mul(doc(payload)).saturating_add(tail)
     }
 
+    /// An upper bound on the chunks of `parts` artifacts of `plain` bytes in all, each sealed
+    /// and stored as its own `chunk` documents, when only the total is known (a push reports
+    /// its history index's bytes, the column index and the version lists together). Each part
+    /// past the first adds at most one partial document and one seal header and tag.
+    pub fn sealed_parts_chunks(plain: u64, parts: u64) -> u64 {
+        let extra = parts.saturating_sub(1);
+        let seal_extra = extra * (crate::private::pack::HEADER_LEN as u64 + 16);
+        let doc_extra = extra * (CHUNK_PER_BYTE * CHUNK_OVERHEAD_BYTES + CHUNK_FLAT);
+        chunks(crate::private::pack::sealed_upper_bound(plain) + seal_extra) + doc_extra
+    }
+
     /// The size of a browse-index fragment over `objects` objects: the fanout, a header, and
     /// one row per object.
     pub fn locator_bytes(objects: u64) -> u64 {
@@ -272,6 +283,29 @@ mod tests {
         estimate_document_storage, BASE_ST_PROCESSING, CREDITS_PER_DASH, PROCESSING_PER_BYTE, SEEK,
         STORAGE_CREDIT_PER_BYTE, STORAGE_PROCESSING_PER_BYTE, WRITE_BASE,
     };
+
+    /// Two sealed artifacts cost no more than [`sealed_parts_chunks`] of their total, however
+    /// the bytes split between them (the forge-import fallback prices a history index so).
+    #[test]
+    fn parts_priced_from_their_total_are_an_upper_bound() {
+        use super::push_fees::sealed_parts_chunks;
+        use crate::private::pack::sealed_upper_bound;
+        for total in [1u64, 14_699, 14_700, 14_701, 29_400, 1 << 20, 753_000] {
+            for a in [0, 1, total / 3, total / 2, total.saturating_sub(1), total] {
+                let b = total - a;
+                let apart: u64 = [a, b]
+                    .into_iter()
+                    .filter(|&n| n > 0)
+                    .map(|n| chunks(sealed_upper_bound(n)))
+                    .sum();
+                assert!(apart <= sealed_parts_chunks(total, 2), "{a} + {b}");
+            }
+            assert_eq!(
+                sealed_parts_chunks(total, 1),
+                chunks(sealed_upper_bound(total))
+            );
+        }
+    }
 
     fn shape(bytes: u64, objects: u64, refs: u64, targets: u64, platform: bool) -> PushShape {
         PushShape {

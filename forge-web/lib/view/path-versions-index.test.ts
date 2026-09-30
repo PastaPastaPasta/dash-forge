@@ -66,13 +66,17 @@ async function indexOf(s: Store, tip: string, paths: readonly string[], limit: n
     }
     versions.set(path, { versions: list, complete: page.next === null && page.entries.length <= limit })
   }
-  return { tip, base: null, commitCount: 0, firstParentCount: 0, rootWhen: 0, tipWhen: 0, paths: new Map(), versions, versionLimit: limit }
+  return { tip, base: null, commitCount: 0, firstParentCount: 0, rootWhen: 0, tipWhen: 0, paths: new Map(), versions, versionLimit: limit, format: 2 }
 }
 
-/** A fresh reader of the store whose history source answers `tip` with `load`. */
+/**
+ * A fresh reader of the store whose history source answers `tip`'s version lists (kind 5) with
+ * `load`. It has no column index: a path's versions never read one.
+ */
 function indexedReader(s: Store, tip: string, load: () => Promise<HistoryIndex>): PrefixReader {
   const reader = readerOf(s)
-  const source: HistorySource = { byTip: new Map(), covers: (t) => t === tip, load }
+  const none = (): Promise<HistoryIndex> => Promise.reject(new Error('the column index is not read here'))
+  const source: HistorySource = { byTip: new Map(), covers: () => false, load: none, coversVersions: (t) => t === tip, loadVersions: load }
   attachHistory(reader.memoScope, source)
   return reader
 }

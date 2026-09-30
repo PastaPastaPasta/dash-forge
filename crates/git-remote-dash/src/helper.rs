@@ -30,8 +30,8 @@ use forge_core::network::{NetworkSettings, NetworkTarget};
 use forge_core::pack::{build_pack, split, KIND_GIT_PACK};
 use forge_core::platform::{LoadedIdentity, PlatformClient};
 use forge_core::repo::{
-    group_by_hash, PackManifestInput, PlatformChunkTarget, PreparedHistory, RepackTarget,
-    RepoService, StoredArtifact,
+    group_by_hash, HistoryCost, PackManifestInput, PlatformChunkTarget, PreparedHistory,
+    RepackTarget, RepoService, StoredArtifact,
 };
 use forge_core::rules::RefState;
 use forge_core::scope::RepoRef;
@@ -519,14 +519,11 @@ impl Helper {
                 dry_run,
                 identity: conn.identity().id(),
                 sealed: std::cell::RefCell::default(),
-                history_bytes: std::cell::Cell::new(
-                    history.as_ref().map(|h| h.prepared.plain_len()),
-                ),
-                history_first: history.as_ref().is_some_and(|h| h.prepared.is_first()),
+                history_cost: std::cell::Cell::new(history.as_ref().map(|h| h.prepared.cost())),
                 history_fallback: history
                     .as_ref()
                     .and_then(|h| h.prepared.fallback())
-                    .map(PreparedHistory::plain_len),
+                    .map(PreparedHistory::cost),
                 history_on_fallback: std::cell::Cell::new(false),
             }),
             _ => None,
@@ -1238,14 +1235,13 @@ struct PushContext<'a> {
     /// The sealed-pack cache path this push used ([`sealed_cache_path`]); dropped once the
     /// push's refs land ([`forget_sealed`]).
     sealed: std::cell::RefCell<Option<std::path::PathBuf>>,
-    /// The plaintext size of the history index this push publishes, if any: priced with it.
-    /// Becomes the fallback delta's size when the cost guard declines a due full index.
-    history_bytes: std::cell::Cell<Option<u64>>,
-    /// It is the repository's first history index (it pays the first-of-kind fee).
-    history_first: bool,
-    /// The size of the delta a due full index carries as its fallback
+    /// What the history index this push publishes costs, if any (both of its artifacts, each
+    /// priced as its own manifest): priced with the push. Becomes the fallback delta's when the
+    /// cost guard declines a due full index.
+    history_cost: std::cell::Cell<Option<HistoryCost>>,
+    /// The cost of the delta a due full index carries as its fallback
     /// ([`PreparedHistory::fallback`]), if any.
-    history_fallback: Option<u64>,
+    history_fallback: Option<HistoryCost>,
     /// The cost guard declined the full index and the fallback delta is priced instead: the
     /// push publishes the delta.
     history_on_fallback: std::cell::Cell<bool>,
@@ -1261,27 +1257,32 @@ fn take_history_fallback(ctx: &PushContext<'_>) -> bool {
     if ctx.history_on_fallback.replace(true) {
         return false;
     }
-    ctx.history_bytes.set(Some(delta));
+    ctx.history_cost.set(Some(delta));
     ctx.progress.note(&format!(
         "a full history index is due (its deltas have cost as much as one); publishing the \
-         {delta}-byte delta instead. `dg repo reindex {}` publishes the full one",
+         {}-byte delta instead. `dg repo reindex {}` publishes the full one",
+        delta.plain_len(),
         ctx.repo_label
     ));
     true
 }
 
-/// The on-chain price of the history index a push publishes (`ctx.history_bytes`), stored where
-/// its pack goes: 0 when it publishes none.
+/// The on-chain price of the history index a push publishes (`ctx.history_cost`: each of its
+/// artifacts), stored where its pack goes: 0 when it publishes none.
 fn history_credits(ctx: &PushContext<'_>, platform_bytes: bool) -> u64 {
-    ctx.history_bytes.get().map_or(0, |bytes| {
-        push_fees::history_index(
-            bytes,
-            ctx.repo.visibility == forge_core::rules::v2::Visibility::Private,
-            ctx.policy.resolved.external.len() as u64,
-            platform_bytes,
-            ctx.history_first,
-        )
-    })
+    history_price(
+        ctx,
+        ctx.policy.resolved.external.len() as u64,
+        platform_bytes,
+    )
+}
+
+/// [`HistoryCost::credits`] of the history this push publishes, 0 when none.
+fn history_price(ctx: &PushContext<'_>, external: u64, platform: bool) -> u64 {
+    let sealed = ctx.repo.visibility == forge_core::rules::v2::Visibility::Private;
+    ctx.history_cost
+        .get()
+        .map_or(0, |c| c.credits(sealed, external, platform))
 }
 
 impl PushContext<'_> {
@@ -1339,7 +1340,7 @@ async fn upload_push_pack(
         tracing::info!("push adds no new objects; skipping pack upload and browse index");
         // A fast-forward to a commit already stored still moves the default branch: its history
         // index goes where the policy stores (priced on top of the refs).
-        if ctx.dry_run || ctx.history_bytes.get().is_none() {
+        if ctx.dry_run || ctx.history_cost.get().is_none() {
             return Ok(None);
         }
         let refs_only = push_fees::estimate_ref_updates(ctx.refs.len() as u64);
@@ -1373,10 +1374,10 @@ async fn upload_push_pack(
     let platform_writes = |est: &push_fees::PushEstimate, stores_pack: bool| {
         progress::platform_line(&PlatformWrites {
             chunks: if stores_pack { job.chunk_count } else { 0 },
-            manifests: 2 + u32::from(ctx.history_bytes.get().is_some()),
+            manifests: 2 + ctx.history_cost.get().map_or(0, |c| c.manifests()),
             ref_updates: ctx.refs.len(),
             est_credits: est.total(),
-            history_bytes: ctx.history_bytes.get().unwrap_or(0),
+            history_bytes: ctx.history_cost.get().map_or(0, |c| c.plain_len()),
         })
     };
     if ctx.dry_run {
@@ -1973,10 +1974,10 @@ async fn dry_run_writes(
     let history = history_credits(ctx, ctx.policy.resolved.platform);
     progress::platform_line(&PlatformWrites {
         chunks: 0,
-        manifests: u32::from(ctx.history_bytes.get().is_some()),
+        manifests: ctx.history_cost.get().map_or(0, |c| c.manifests()),
         ref_updates: ctx.refs.len(),
         est_credits: push_fees::estimate_ref_updates(ctx.refs.len() as u64) + history,
-        history_bytes: ctx.history_bytes.get().unwrap_or(0),
+        history_bytes: ctx.history_cost.get().map_or(0, |c| c.plain_len()),
     })
 }
 
@@ -2331,24 +2332,13 @@ fn history_alone(
     refs_only: u64,
     replication: Replication,
 ) -> Result<(u64, HistoryTarget)> {
-    if ctx.history_bytes.get().is_none() {
+    if ctx.history_cost.get().is_none() {
         policy::enforce(refs_only, ctx.policy, false, policy::NOTE_NOTHING_STORED)?;
         return Ok((refs_only, HistoryTarget::None));
     }
     let platform = replication.has_platform();
     let external = replication.replicas.iter().filter(|r| !r.platform).count() as u64;
-    let with_history = || {
-        refs_only
-            + ctx.history_bytes.get().map_or(0, |bytes| {
-                push_fees::history_index(
-                    bytes,
-                    ctx.repo.visibility == forge_core::rules::v2::Visibility::Private,
-                    external,
-                    platform,
-                    ctx.history_first,
-                )
-            })
-    };
+    let with_history = || refs_only + history_price(ctx, external, platform);
     let note = policy::NOTE_NOTHING_STORED;
     // A declined due full history index: ask again with its cheaper delta (review L8).
     let mut outcome = policy::enforce(with_history(), ctx.policy, platform, note);
@@ -3260,6 +3250,45 @@ mod tests {
             branch: "refs/heads/main".into(),
         };
         (d, history, tip)
+    }
+
+    /// The cost guard prices a push's history as the artifacts it publishes, each its own
+    /// manifest (the column index and the version lists): exactly what forge-core quotes for
+    /// them, and more than one artifact of their combined size would cost.
+    #[test]
+    fn the_guard_prices_each_history_artifact() {
+        let (_d, history, _tip) = scratch_history();
+        let cost = history.prepared.cost();
+        assert_eq!(
+            cost.manifests(),
+            2,
+            "the column index and the version lists"
+        );
+        // Off Platform an artifact costs its manifest alone: two manifests, each a repository's
+        // first of its kind, each carrying the targets' URIs.
+        for external in [0, 1, 3] {
+            let manifest =
+                forge_core::cost::push_fees::history_index(0, false, external, false, true);
+            assert_eq!(cost.credits(false, external, false), 2 * manifest);
+        }
+        for (sealed, external, platform) in [(false, 0, true), (true, 2, true), (false, 1, false)] {
+            let as_one = forge_core::cost::push_fees::history_index(
+                cost.plain_len(),
+                sealed,
+                external,
+                platform,
+                true,
+            );
+            assert!(cost.credits(sealed, external, platform) > as_one);
+        }
+        let fallback_free = forge_core::repo::HistoryCost::default();
+        assert_eq!(
+            (
+                fallback_free.manifests(),
+                fallback_free.credits(false, 1, true)
+            ),
+            (0, 0)
+        );
     }
 
     /// Review H1: the history index is published only when the refs read after the push show

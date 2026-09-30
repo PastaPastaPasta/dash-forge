@@ -4,10 +4,11 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
-import { gzip } from 'pako'
+import { gzip, inflate as pakoInflate } from 'pako'
 import { describe, expect, it } from 'vitest'
 
 import type { PackManifest } from '../repo'
+import { countCommits, walkCommitColumn } from './commit-log'
 import { historySource, liveHistoryIndexes } from './history-source'
 
 /** forge-core's fixture: a delta of tip ab… over the full index 5c5c…. */
@@ -105,12 +106,51 @@ describe('historySource', () => {
     expect(historySource([manifest(new Uint8Array([1]), [], { kind: 1 })], async () => new Uint8Array())).toBeNull()
   })
 
-  it('prefers a full index at a tip over a delta (the format moves to the artifact header with RC1)', () => {
+  it('prefers a full index at a tip over a delta', () => {
     const tip = 'bb'.repeat(20)
     const base = manifest(fullOf('aa'.repeat(20)), ['aa'.repeat(20)])
-    const v2Delta = manifest(fullOf('cc'.repeat(20)), [tip, 'aa'.repeat(20)])
-    const v2Full = manifest(fullOf(tip), [tip])
-    const both = historySource([base, v2Delta, v2Full], () => Promise.reject(new Error('unused')))
-    expect(both?.byTip.get(tip)?.baseTip).toBeNull()
+    const delta = manifest(fullOf('cc'.repeat(20)), [tip, 'aa'.repeat(20)])
+    const full = manifest(fullOf(tip), [tip])
+    const src = historySource([base, delta, full], () => Promise.reject(new Error('unused')))
+    expect(src?.byTip.get(tip)?.baseTip).toBeNull()
+    expect(historySource([base, delta], () => Promise.reject(new Error('unused')))?.byTip.get(tip)?.baseTip).toBe('aa'.repeat(20))
+  })
+
+  it('reads the column index for the file list and the counts, and never the version lists', async () => {
+    const tip = 'ab'.repeat(20)
+    // The column index (kind 3, format 1) and the version lists (kind 5, format 2) of one tip.
+    const columnBytes = fullOf(tip)
+    const lists = (() => {
+      const b = pakoInflate(columnBytes)
+      b[4] = 2
+      return gzip(b)
+    })()
+    const column = manifest(columnBytes, [tip])
+    const versions = manifest(lists, [tip], { kind: 5 })
+    const fetched: number[] = []
+    const src = historySource([column, versions], async (m) => {
+      fetched.push(m.kind)
+      return m.packHash === column.packHash ? columnBytes : lists
+    })
+    if (src === null) throw new Error('a history source')
+    expect(src.covers(tip) && src.coversVersions(tip)).toBe(true)
+    // The file list's column and the ref bar's count, as the pages ask for them.
+    const reader = { memoScope: {} } as never
+    const names = [...(await src.load(tip)).paths.keys()].filter((p) => !p.includes('/'))
+    await walkCommitColumn(reader, tip, names, () => undefined, { history: src })
+    const count = await countCommits(reader, tip, 1000, { history: src })
+    expect(count.fromIndex).toBe(true)
+    expect(fetched).toEqual([3])
+    // Blame and History read the version lists, which the column index never carries.
+    expect((await src.load(tip)).format).toBe(1)
+    expect((await src.loadVersions(tip)).format).toBe(2)
+    expect(fetched).toEqual([3, 5])
+  })
+
+  it('refuses an artifact whose format is not its kind\'s', async () => {
+    const tip = 'ab'.repeat(20)
+    const column = manifest(fullOf(tip), [tip], { kind: 5 })
+    const src = historySource([column], async () => fullOf(tip))
+    await expect(src?.loadVersions(tip)).rejects.toThrow(/kind-5 artifact must be format 2/)
   })
 })

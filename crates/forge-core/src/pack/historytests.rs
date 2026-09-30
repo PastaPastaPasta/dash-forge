@@ -852,6 +852,23 @@ fn the_shared_v2_decoder_fixture_matches() {
         HistoryIndex::parse(&ix.to_compressed().unwrap()).unwrap(),
         ix
     );
+    // Its column index (kind 3): the same paths and last changes, format 1, the commit table
+    // cut to the paths' commits. forge-web reads this fixture as a kind-3 artifact.
+    let column = ix.column();
+    bless_or_check("history-index-v2-column.hex", &body_of(&column));
+    let kind3 = super::KIND_HISTORY_INDEX;
+    let kind5 = super::KIND_HISTORY_VERSIONS;
+    let parsed = HistoryIndex::parse_kind(&column.to_compressed().unwrap(), kind3).unwrap();
+    assert_eq!(parsed, column);
+    for (path, commit) in &ix.paths {
+        let last = parsed.last_change(path).unwrap();
+        let want = &ix.commits[*commit as usize];
+        assert_eq!((last.oid, &last.subject), (want.oid, &want.subject));
+    }
+    assert!(HistoryIndex::parse_kind(&ix.to_compressed().unwrap(), kind5).is_ok());
+    // A whole index read as a column (one published before the split): accepted, a superset.
+    assert!(HistoryIndex::parse_kind(&ix.to_compressed().unwrap(), kind3).is_ok());
+    assert!(HistoryIndex::parse_kind(&column.to_compressed().unwrap(), kind5).is_err());
 }
 
 /// An index's body before gzip (gzip output is not byte-stable across implementations).

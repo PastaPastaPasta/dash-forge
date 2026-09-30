@@ -260,6 +260,11 @@ export const PACK_KIND = {
    * assets inline in `release.assets` — and no reader: every reader selects its own kind.
    */
   RELEASE_ASSETS: 4,
+  /**
+   * The history index's per-path version lists (format 2, the whole index), the companion of the
+   * column index (kind 3, format 1) of the same tip: only Blame and a path's History read it.
+   */
+  HISTORY_VERSIONS: 5,
 } as const
 export type PackKind = (typeof PACK_KIND)[keyof typeof PACK_KIND]
 

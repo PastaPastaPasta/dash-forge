@@ -366,18 +366,26 @@ fn print_history_plan(
     price: &str,
 ) {
     let ix = h.index();
-    let versions: usize = ix
-        .versions
-        .as_ref()
-        .map_or(0, |v| v.lists.values().map(|l| l.versions.len()).sum());
+    // The path versions are published only with the version lists (a missing column alone
+    // carries none).
+    let versions = if h.publishes_lists() {
+        let n: usize = ix
+            .versions
+            .as_ref()
+            .map_or(0, |v| v.lists.values().map(|l| l.versions.len()).sum());
+        format!(", {n} path version(s)")
+    } else {
+        ", the column index only".to_string()
+    };
+    let manifests = h.cost().manifests();
     println!(
-        "History index of {}: {} path(s), {} commit(s), {versions} path version(s), {} bytes \
-         ({}) to {label} + its manifest   {price}",
+        "History index of {}: {} path(s), {} commit(s){versions}, {} bytes ({}) to {label} + \
+         {manifests} manifest(s)   {price}",
         handle.display(),
         ix.paths.len(),
         ix.commit_count,
         h.plain_len(),
-        if ix.base.is_some() { "delta" } else { "full" },
+        if h.is_delta() { "delta" } else { "full" },
     );
 }
 
@@ -390,6 +398,7 @@ fn history_json(
         Some(p) => json!({
             "status": "published",
             "manifestId": p.manifest_id,
+            "versionsManifestId": p.versions_manifest_id,
             "paths": p.rows,
             "delta": p.delta,
             "commits": p.commit_count,
@@ -558,7 +567,14 @@ fn print_reindex(
             h.commit_count,
             if h.delta { " (delta)" } else { "" }
         );
-        println!("  history manifest: {}", h.manifest_id);
+        for (what, id) in [
+            ("column index:     ", &h.manifest_id),
+            ("version lists:    ", &h.versions_manifest_id),
+        ] {
+            if let Some(id) = id {
+                println!("  {what}{id}");
+            }
+        }
     }
     for (h, why) in &report.skipped {
         println!("  not indexed:     {h}: {why}");

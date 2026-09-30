@@ -112,9 +112,10 @@ function session(withIndex: boolean): Replay {
   const meter = new Meter()
   const reader = new BrowseReader(ObjectLocator.parse(locator), platformSource(pack, meter))
   if (withIndex) {
+    // The fixture's index is the whole index (format 2): the version lists Blame and History read.
     const manifest = {
       packHash: bytesToHex(sha256(bytes)),
-      kind: 3,
+      kind: 5,
       sizeBytes: bytes.length,
       objectCount: 0,
       chunkCount: Math.ceil(bytes.length / CHUNK),
