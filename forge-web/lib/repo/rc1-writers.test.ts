@@ -51,13 +51,17 @@ vi.mock('../sdk', async (importOriginal) => {
 
 import { resetMemoryStores } from '../idb'
 import type { WriteAuth } from '../sdk'
-import { expectRc1Valid } from '../sdk/rc1-validate'
+import { expectRc1Valid, rc1Contracts } from '../sdk/rc1-validate'
 import type { RepoRef } from './contract'
 import { defineLabel } from './labels'
 import { putPlatformChunks, writePackManifest, writeRefUpdate } from './push'
 import { postTargetEvent, setAssignee, setLabel, setMilestone, setPolicy, setThreadFlag, submitReviewDraft, type ReviewDraft } from './review-writes'
 import { syncTopicDocs, updateConfig } from './settings'
 import { contractOf } from './source'
+import { repoKeyData } from './private-members'
+import { decodeIdentifier } from '../auth/base58'
+import { EpochKeys } from '../private/keys'
+import { sealWrap } from '../private/wrap'
 import { commentEditDrops, type CommentView } from '../view/issues-view'
 import {
   ConsentMissingError,
@@ -326,5 +330,30 @@ describe('the review fixes', () => {
     refuseNext = new ConsensusRefusal(10422, 'breaks its propertyConstraints rule "oneLive": NotMet')
     await createRelease(sdk, auth(ALICE), REPO, { tagName: 'v3' })
     expect(types(await judged())).toEqual(['release'])
+  })
+})
+
+describe('private writers are RC1-valid', () => {
+  // Key pairs the Rust wrap tests use (crates/forge-core/src/platform/wrap.rs).
+  const SENDER = { priv: '840fa5c84d8f6ecf5c27fd778356ba94480b9b35f264e7690933dcf1676f9ac0', pub: '03f3d414f81ac96cea14d3ec25685430f04c47c8b0559fff0ffe77113d8ada7948' }
+  const RECIPIENT_PUB = '035bf470bf1fbffac4b0b01c0ae8480b0b56d6695482bb116286c62e99af15e337'
+
+  it('a repoKey: a wrap the SDK seals, addressed as postWrap addresses it', async () => {
+    const evo = await import('@dashevo/evo-sdk')
+    await evo.EvoSDK.getLatestVersionNumber()
+    const dataContract = evo.DataContract.fromJSON(rc1Contracts()['forge-collab'] as Parameters<typeof evo.DataContract.fromJSON>[0], true, 14)
+    const key = (hex: string) =>
+      new evo.IdentityPublicKey({ keyId: 4, purpose: 'encryption', securityLevel: 'medium', keyType: 'ecdsa_secp256k1', data: Uint8Array.from(Buffer.from(hex, 'hex')) })
+    const raw = new Uint8Array(32).fill(0x5a)
+    for (const epoch of [0, 3]) {
+      const keys = await EpochKeys.import(decodeIdentifier(REPO.repoId), epoch, raw)
+      const props = await sealWrap(new evo.EvoSDK().encryptedFor, keys, raw, {
+        dataContract,
+        senderKey: key(SENDER.pub),
+        senderPrivateKey: evo.PrivateKey.fromHex(SENDER.priv, 'testnet'),
+        recipientKey: key(RECIPIENT_PUB),
+      })
+      await expectRc1Valid('repoKey', repoKeyData(REPO.repoId, BOB, epoch, props), ALICE)
+    }
   })
 })
