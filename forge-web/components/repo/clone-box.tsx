@@ -18,14 +18,16 @@ import type { RepoAddress } from '@/hooks/use-query-param'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { errorMessage } from '@/lib/utils'
 import { saveBytes } from '@/lib/view/release-download'
-import { formatBytes, plural, selectedTip, type RepoHome, type SelectedRef } from '@/lib/view'
+import { formatBytes, plural, selectedTip, tipOidOf, type RepoHome, type SelectedRef } from '@/lib/view'
 import { repoCommands } from '@/lib/view/repo-commands'
 import { resolveTip } from '@/lib/view/tip'
 import { repoKey } from '@/lib/repo'
 import {
   compressInWorker,
-  listFiles,
+  planArchive,
   readZipFiles,
+  substituteFiles,
+  type ArchiveRefs,
   storedSize,
   ZIP_MAX_BYTES,
   zipFileName,
@@ -78,6 +80,16 @@ export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoA
   )
 }
 
+/** The repo's tags and branches, as `%(describe)` and `%d` in an export-subst file read them. */
+function archiveRefs(home: RepoHome): ArchiveRefs {
+  const named = (refs: RepoHome['tags'], prefix: string) =>
+    refs.flatMap((r) => {
+      const oid = tipOidOf(r)
+      return oid === null ? [] : [{ name: r.refName.replace(prefix, ''), oid }]
+    })
+  return { tags: named(home.tags, 'refs/tags/'), heads: named(home.branches, 'refs/heads/') }
+}
+
 function ZipDownload({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; selected: SelectedRef }): JSX.Element | null {
   const state = useBrowseReader(home.repo)
   const [progress, setProgress] = useState<ZipProgress | null>(null)
@@ -97,14 +109,20 @@ function ZipDownload({ home, addr, selected }: { home: RepoHome; addr: RepoAddre
     setProgress({ phase: 'listing', files: 0, filesTotal: 0, bytes: 0 })
     try {
       // A short pinned id resolved to its commit, and a tag to what it names (L-01, L-32).
-      const files = await listFiles(reader, (await resolveTip(reader, tip, { repoKey: repoKey(home.repo), pinned: selected.pinned !== undefined })).oid)
+      // As `git archive` (QW-026): the tree's export-ignore and export-subst, modes, the commit's time.
+      const plan = await planArchive(reader, (await resolveTip(reader, tip, { repoKey: repoKey(home.repo), pinned: selected.pinned !== undefined })).oid)
+      const { files } = plan
       const stored = storedSize(files)
       if (stored > ZIP_MAX_BYTES) throw new ZipTooLargeError(stored)
       const entries = await readZipFiles(reader, files, setProgress, cancel.current.signal)
+      await substituteFiles(reader, plan, entries, archiveRefs(home))
       const name = zipFileName(addr.name, selected.name)
+      const prefix = `${name.replace(/\.zip$/, '')}/`
       const rooted: Record<string, Uint8Array> = {}
-      for (const [path, bytes] of Object.entries(entries)) rooted[`${name.replace(/\.zip$/, '')}/${path}`] = bytes
-      const zip = await compressInWorker(rooted, setProgress, cancel.current.signal)
+      const modes: Record<string, number> = {}
+      for (const f of files) modes[prefix + f.path] = f.mode
+      for (const [path, bytes] of Object.entries(entries)) rooted[prefix + path] = bytes
+      const zip = await compressInWorker(rooted, setProgress, cancel.current.signal, { modes, mtime: plan.mtime, comment: plan.commit?.oid ?? null })
       saveBytes(zip, name, 'application/zip')
       setMessage(`Saved ${name} (${formatBytes(zip.length)}, ${plural(files.length, 'file')}, each hash-checked).`)
     } catch (e) {

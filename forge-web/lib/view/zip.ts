@@ -8,7 +8,25 @@
 
 import { MODE_GITLINK, MODE_TREE } from '../browse'
 import type { ObjectReader } from './tree-nav'
-import { ObjectTypeError, peel, readCommit, readTree } from './tree-nav'
+import { ObjectTypeError, peel, readBlob, readTree } from './tree-nav'
+import { decodeTextBlob } from './git-objects'
+import { historyWalker } from './commit-log'
+import {
+  autoAbbrevLength,
+  describeCommit,
+  DescribeError,
+  expandExportSubst,
+  exportAttributes,
+  parseArchiveCommit,
+  parseDescribeOptions,
+  taggedCommits,
+  uniqueAbbrev,
+  type ArchiveCommit,
+  type DescribeOptions,
+  type DescribeTag,
+  type FormatContext,
+} from './archive'
+import type { ZipMessage } from './zip-entries'
 import { mapPooled } from './pool'
 
 /** The largest ref the browser zips (uncompressed bytes). Above it: clone instead. */
@@ -92,10 +110,140 @@ export async function walkFiles(
  * nested tags (L-01): the commit's tree, or a tagged tree itself. A tagged blob has no tree.
  */
 export async function listFiles(reader: ObjectReader, tipOid: string): Promise<ZipFile[]> {
+  return (await planArchive(reader, tipOid)).files
+}
+
+/** What `git archive` writes for a ref (QW-026): the files, and what it does to them. */
+export interface ArchivePlan {
+  /** The files, those `export-ignore` leaves out already left out. */
+  readonly files: ZipFile[]
+  /** The files whose `$Format:…$` are expanded (`export-subst`). */
+  readonly subst: ReadonlySet<string>
+  /** The commit archived, or null for a tag of a tree (git archive then has no commit to describe). */
+  readonly commit: ArchiveCommit | null
+  /** Every entry's time (ms): the committer time, as git archive stamps it; now for a tree. */
+  readonly mtime: number
+}
+
+/**
+ * The files of a ref's tip, as `git archive` takes them: the tree's own `.gitattributes` decide
+ * which are left out (`export-ignore`) and which are expanded (`export-subst`), and the commit's
+ * time is every entry's.
+ */
+export async function planArchive(reader: ObjectReader, tipOid: string): Promise<ArchivePlan> {
   const tip = await peel(reader, tipOid)
-  const tree = tip.type === 'commit' ? (await readCommit(reader, tip.oid)).tree : tip.type === 'tree' ? tip.oid : null
+  let commit: ArchiveCommit | null = null
+  let tree: string | null = tip.type === 'tree' ? tip.oid : null
+  if (tip.type === 'commit') {
+    const obj = await reader.readObject(tip.oid)
+    if (obj.type !== 'commit') throw new ObjectTypeError(tip.oid, obj.type, 'commit')
+    commit = parseArchiveCommit(tip.oid, obj.bytes)
+    tree = commit.tree
+  }
   if (tree === null) throw new ObjectTypeError(tip.oid, tip.type, 'tree')
-  return (await walkFiles(reader, tree)).files
+  const all = (await walkFiles(reader, tree)).files
+  // The tree's attributes, never the viewer's: every `.gitattributes` it holds (a few KiB).
+  const attrFiles = new Map<string, string>()
+  await mapPooled(
+    all.filter((f) => f.path === '.gitattributes' || f.path.endsWith('/.gitattributes')),
+    6,
+    async (f) => {
+      const text = decodeTextBlob(await readBlob(reader, f.oid, ATTRIBUTES_MAX_BYTES).catch(() => new Uint8Array()))
+      if (text !== null) attrFiles.set(f.path, text)
+    },
+  )
+  const attrs = exportAttributes(attrFiles)
+  const files: ZipFile[] = []
+  const subst = new Set<string>()
+  for (const f of all) {
+    const a = attrs(f.path)
+    if (a.ignore) continue
+    files.push(f)
+    // A symlink's target is not a file's text: git expands regular files only.
+    if (a.subst && commit !== null && (f.mode & 0o170000) === 0o100000) subst.add(f.path)
+  }
+  return { files, subst, commit, mtime: commit === null ? Date.now() : commit.committer.time * 1000 }
+}
+
+/** A `.gitattributes` larger than this is not read (git's own limit is 100 MB; real ones are a few KiB). */
+const ATTRIBUTES_MAX_BYTES = 1024 * 1024
+
+/** The refs `%(describe)` and `%d` read. */
+export interface ArchiveRefs {
+  readonly tags: readonly DescribeTag[]
+  /** Branch short names and tips. */
+  readonly heads: readonly { readonly name: string; readonly oid: string }[]
+}
+
+/**
+ * Expand the `export-subst` files of `entries` in place (`$Format:…$`, gitattributes(5)), for the
+ * plan's commit. `%(describe)` walks the history as `git describe` does, once per option set;
+ * `%d`/`%D` name the branches and tags at the commit. A file that is not UTF-8 is left as it is.
+ */
+export async function substituteFiles(reader: ObjectReader & { findByPrefix?(prefix: string, limit?: number): string[]; readonly objectCount?: number }, plan: ArchivePlan, entries: Record<string, Uint8Array>, refs: ArchiveRefs): Promise<void> {
+  const commit = plan.commit
+  if (commit === null || plan.subst.size === 0) return
+  const texts = new Map<string, string>()
+  for (const path of plan.subst) {
+    const bytes = entries[path]
+    if (bytes === undefined) continue
+    try {
+      texts.set(path, new TextDecoder('utf-8', { fatal: true }).decode(bytes))
+    } catch {
+      // Not UTF-8: left as stored.
+    }
+  }
+  const all = [...texts.values()].join('\n')
+  if (!all.includes('$Format:')) return
+  const findByPrefix = reader.findByPrefix?.bind(reader)
+  const auto = autoAbbrevLength(reader.objectCount ?? 0)
+  const abbrev = (oid: string, min = auto): string => uniqueAbbrev(oid, min, findByPrefix)
+
+  // `%(describe…)` is worked out before the (synchronous) expansion, once per option set.
+  const described = new Map<string, string | null>()
+  for (const [, spec] of all.matchAll(/%\(describe(?::([^)]*))?\)/g)) {
+    const key = spec ?? ''
+    if (described.has(key)) continue
+    const opts = parseDescribeOptions(key)
+    if (opts === null) {
+      described.set(key, null)
+      continue
+    }
+    const named = await taggedCommits(reader, refs.tags, opts)
+    const walker = historyWalker(reader)
+    try {
+      described.set(key, await describeCommit(walker, commit.oid, named, opts, abbrev))
+    } catch (e) {
+      if (!(e instanceof DescribeError)) throw e
+      described.set(key, null)
+    } finally {
+      walker.flush?.()
+    }
+  }
+  // `%d` / `%D`: the branches, then the tags, at the commit.
+  let decorations: string[] = []
+  if (/%[dD]/.test(all)) {
+    const tagged = await taggedCommits(reader, refs.tags, { match: [], exclude: [] })
+    const tagNames = refs.tags.filter((t) => t.oid === commit.oid || tagged.get(commit.oid)?.name === t.name).map((t) => `tag: ${t.name}`)
+    decorations = [...refs.heads.filter((h) => h.oid === commit.oid).map((h) => h.name), ...tagNames]
+  }
+  const ctx: FormatContext = {
+    commit,
+    abbrev,
+    decorations,
+    describe: (opts) => described.get(describeKey(opts)) ?? null,
+  }
+  for (const [path, text] of texts) entries[path] = new TextEncoder().encode(expandExportSubst(text, ctx))
+}
+
+/** The `%(describe:…)` spec an option set came from, to find its worked-out value. */
+function describeKey(opts: DescribeOptions): string {
+  const parts: string[] = []
+  if (opts.tags) parts.push('tags')
+  if (opts.abbrev !== null) parts.push(`abbrev=${opts.abbrev}`)
+  for (const m of opts.match) parts.push(`match=${m}`)
+  for (const x of opts.exclude) parts.push(`exclude=${x}`)
+  return parts.join(',')
 }
 
 /** Stored (compressed-on-disk) sizes from the locator: a lower bound, cheap to sum. */
@@ -126,11 +274,20 @@ export async function readZipFiles(
   return entries
 }
 
+/**
+ * How each entry is recorded, as `git archive --format=zip` records it (archive-zip.c): a file's
+ * git mode (`0100755` for an executable, `0120000` for a symlink; a regular file carries no Unix
+ * mode, as git writes it), every entry at `mtime` (DOS time and the `UT` extended timestamp), and
+ * the commit id as the archive comment.
+ */
+export type ZipMeta = NonNullable<ZipMessage['meta']>
+
 /** Compress in a worker (fflate); resolves with the zip bytes. */
 export function compressInWorker(
   entries: Record<string, Uint8Array>,
   onProgress?: (p: ZipProgress) => void,
   signal?: AbortSignal,
+  meta?: ZipMeta,
 ): Promise<Uint8Array> {
   const count = Object.keys(entries).length
   const bytes = Object.values(entries).reduce((n, b) => n + b.length, 0)
@@ -150,7 +307,7 @@ export function compressInWorker(
       worker.terminate()
       reject(new Error('cancelled'))
     })
-    worker.postMessage(entries, Object.values(entries).map((b) => b.buffer as ArrayBuffer))
+    worker.postMessage({ entries, meta: meta ?? null }, Object.values(entries).map((b) => b.buffer as ArrayBuffer))
   })
 }
 
