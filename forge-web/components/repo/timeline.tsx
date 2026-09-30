@@ -9,7 +9,7 @@
  */
 
 import { Byline } from '@/components/repo/byline'
-import { importedVerdictOf, trustedOrigin } from '@/lib/repo/provenance'
+import { importedVerdictOf, searchableBody, trustedOrigin } from '@/lib/repo/provenance'
 import { Check, CheckCircle2, CircleDot, Eye, GitCommit, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, ShieldAlert, Tag, Trash2, UserPlus, X } from 'lucide-react'
 import type { CommentView, TimelineItem } from '@/lib/view'
 import { branchName, plural, timeAgo } from '@/lib/view'
@@ -20,7 +20,8 @@ import { ISSUE_CLOSE, ISSUE_LOCK, ISSUE_REOPEN, ISSUE_UNLOCK, PR_CLOSE, PR_DRAFT
 import type { TransitionView } from '@/lib/repo'
 import { Author } from '@/components/author'
 import Link from 'next/link'
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
+import { isEmptyMirroredReview, mirroredCommentText } from '@/lib/view/mirror-review-fold'
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
 import { importedUrlOf } from '@/lib/view/ref-targets'
 import { EditedMarker } from '@/components/repo/issue-bits'
@@ -233,12 +234,81 @@ function RefLink({ to }: { to: TimelineRef }): JSX.Element {
   )
 }
 
+/** A timeline item's stable key. */
+function itemKey(item: TimelineItem): string {
+  switch (item.kind) {
+    case 'comment':
+      return `c-${item.comment.id}`
+    case 'review':
+      return `r-${item.review.id}`
+    case 'transition':
+      return `t-${item.transition.id}`
+    default:
+      return `e-${item.event.id ?? item.at}`
+  }
+}
+
+/**
+ * A comment under its review, as a thread box: the file, who wrote it (the source author for a
+ * mirrored one), the page's slots (resolved and outdated tags, the author's actions; a thread's
+ * replies and "View in Files changed", or the inline editor, as its body).
+ */
+function ReviewComment({
+  comment: c,
+  links,
+  trust,
+  slot,
+  anchorContext,
+}: {
+  comment: CommentView
+  links?: MarkdownLinks
+  trust: ReadonlySet<string> | null
+  slot: CommentSlots
+  anchorContext?: ((c: CommentView) => ReactNode) | undefined
+}): JSX.Element {
+  const origin = trustedOrigin(c.origin, c.author, trust)
+  const mirrored = origin !== null ? mirroredCommentText(c.body, c.anchor) : null
+  const file = c.anchor ? anchorLabel(c.anchor) : mirrored?.file ?? null
+  return (
+    <div className="overflow-hidden rounded-md border border-anvil-200 dark:border-anvil-800" data-testid="review-comment">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-3 py-1.5 text-[12px] dark:border-anvil-800 dark:bg-anvil-900">
+        {file !== null ? <span className="break-all font-mono text-anvil-700 dark:text-anvil-300">{file}</span> : null}
+        {origin !== null ? <Byline author={c.author} createdAt={c.createdAt} origin={origin} link={false} /> : null}
+        {slot.header}
+      </div>
+      {slot.body ?? (
+        <div className="space-y-2 px-3 py-2">
+          {c.anchor ? anchorContext?.(c) : null}
+          <MarkdownView source={mirrored?.text ?? c.body} links={links} imported={importedUrlOf(c.importedRaw)} />
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** What a comment's header says it did. */
 function commentVerb(item: Extract<TimelineItem, { kind: 'comment' }>): string {
   let verb = 'commented'
   if (item.orphaned === 'deleted') verb = 'replied to a deleted comment'
   else if (item.orphaned === 'hidden') verb = 'replied to a comment you cannot read'
   return item.comment.anchor ? `${verb} on ${anchorLabel(item.comment.anchor)}` : verb
+}
+
+/** Past this many items the middle of a timeline is hidden, as GitHub hides it (QW2-010). */
+export const TIMELINE_FOLD_AT = 60
+/** Items shown at each end of a folded timeline. */
+export const TIMELINE_EDGE = 20
+/** Items each "Load more" reveals. */
+export const TIMELINE_PAGE = 50
+
+/**
+ * Which items a timeline of `n` shows: every one, or the first and last {@link TIMELINE_EDGE} plus
+ * the `revealed` after the first, and how many stay hidden between them.
+ */
+export function timelineWindow(n: number, revealed: number): { head: number; tail: number; hidden: number } {
+  if (n <= TIMELINE_FOLD_AT) return { head: n, tail: 0, hidden: 0 }
+  const head = Math.min(n - TIMELINE_EDGE, TIMELINE_EDGE + revealed)
+  return { head, tail: TIMELINE_EDGE, hidden: n - TIMELINE_EDGE - head }
 }
 
 export function Timeline({
@@ -273,33 +343,57 @@ export function Timeline({
   // The merge commits of this thread's merge transitions: a policy-bypass event is the record of
   // one of them only when it names it.
   const mergeOids = new Set(items.flatMap((x) => (x.kind === 'transition' && x.transition.kind === PR_MERGE && x.transition.oid ? [x.transition.oid.toLowerCase()] : [])))
-  const rows: ({ kind: 'item'; item: TimelineItem } | { kind: 'ref'; ref: CrossRefItem })[] = items.map((item) => ({ kind: 'item', item }))
+  // Items and the PRs that mention this issue, in time order.
+  const merged: ({ kind: 'item'; item: TimelineItem; i: number } | { kind: 'ref'; ref: CrossRefItem })[] = items.map((item, i) => ({ kind: 'item', item, i }))
   for (const ref of [...crossRefs].sort((a, b) => a.at - b.at)) {
     // After every row at or before it (the items are oldest first).
-    let at = rows.length
+    let at = merged.length
     while (at > 0) {
-      const prev = rows[at - 1]!
+      const prev = merged[at - 1]!
       if ((prev.kind === 'item' ? prev.item.at : prev.ref.at) <= ref.at) break
       at--
     }
-    rows.splice(at, 0, { kind: 'ref', ref })
+    merged.splice(at, 0, { kind: 'ref', ref })
   }
-  return (
-    <div className="space-y-3">
-      {rows.map((row, i) => {
-        if (row.kind === 'ref') {
-          const r = row.ref
-          return (
-            <div key={`x-${r.id}`} className={EVENT_ROW} data-testid="timeline-event" data-kind="cross-reference">
-              <span className={EVENT_ICON}>{crossRefIcon(r.state)}</span>
-              <p className={EVENT_TEXT}>
-                <Author identityId={r.actor} link={false} className="align-middle" /> mentioned this issue in <RefLink to={r} />
-                <span className="whitespace-nowrap"> · {timeAgo(r.at)}</span>
-              </p>
-            </div>
-          )
-        }
-        const item = row.item
+  // A long timeline shows its ends; "Load more" reveals the middle in pages (QW2-010). Rows that
+  // arrive after the first render join the shown end; another thread starts folded afresh.
+  const first = items[0] === undefined ? '' : itemKey(items[0])
+  const [fold, setFold] = useState({ first, base: merged.length, revealed: 0 })
+  if (fold.first !== first) setFold({ first, base: merged.length, revealed: 0 })
+  const grown = Math.max(0, merged.length - fold.base)
+  const win = timelineWindow(merged.length - grown, fold.revealed)
+  const tail = win.tail + (win.hidden > 0 ? grown : 0)
+  const head = win.hidden > 0 ? win.head : merged.length
+  const cut = merged.length - tail
+  const rows: ReactNode[] = []
+  merged.forEach((row, k) => {
+    if (k >= head && k < cut) return
+    if (k === cut && head < cut) {
+      rows.push(
+        <div key="fold" className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 rounded-lg border border-dashed border-anvil-300 px-4 py-3 text-dense text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-testid="timeline-fold">
+          <span>{plural(cut - head, 'hidden item')}</span>
+          <button type="button" onClick={() => setFold((f) => ({ ...f, revealed: f.revealed + TIMELINE_PAGE }))} className="hit-area font-medium text-forge-700 hover:underline dark:text-forge-400">
+            Load more…
+          </button>
+        </div>,
+      )
+    }
+    if (row.kind === 'ref') {
+      const r = row.ref
+      rows.push(
+        <div key={`x-${r.id}`} className={EVENT_ROW} data-testid="timeline-event" data-kind="cross-reference">
+          <span className={EVENT_ICON}>{crossRefIcon(r.state)}</span>
+          <p className={EVENT_TEXT}>
+            <Author identityId={r.actor} link={false} className="align-middle" /> mentioned this issue in <RefLink to={r} />
+            <span className="whitespace-nowrap"> · {timeAgo(r.at)}</span>
+          </p>
+        </div>,
+      )
+    } else rows.push(renderItem(row.item, row.i))
+  })
+  return <div className="space-y-3">{rows}</div>
+
+  function renderItem(item: TimelineItem, i: number): ReactNode {
         if (item.kind === 'comment') {
           const slot = renderComment?.(item) ?? {}
           return (
@@ -329,6 +423,18 @@ export function Timeline({
           // Shown as what the source reviewer did, never as counted.
           const origin = trustedOrigin(review.origin, review.reviewer, trust)
           const source = origin !== null ? importedVerdictOf(review.body) : null
+          // A mirrored "commented" review with nothing of its own (a reply's wrapper at the
+          // source): one line, as GitHub shows no card for it (QW2-010).
+          if (origin !== null && isEmptyMirroredReview(item)) {
+            return (
+              <div key={`r-${review.id}-${i}`} className={EVENT_ROW} data-testid="timeline-event" data-kind="mirrored-review">
+                <span className={EVENT_ICON}>{verdictIcon(review.verdict)}</span>
+                <p className={`${EVENT_TEXT} flex flex-wrap items-center gap-x-1.5`}>
+                  <Byline author={review.reviewer} createdAt={review.createdAt} origin={origin} verb="reviewed" link={false} />
+                </p>
+              </div>
+            )
+          }
           return (
             <div key={`r-${review.id}-${i}`} className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
               <div className="flex flex-wrap items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 coarse:gap-y-3 coarse:py-3 dark:border-anvil-800 dark:bg-anvil-900">
@@ -351,7 +457,8 @@ export function Timeline({
                   <span className="flex items-center gap-1 text-anvil-500 dark:text-anvil-400">on <Oid value={review.commitOid} chars={9} /></span>
                 ) : null}
               </div>
-              {review.body ? (
+              {/* A mirrored review with no text of its own: its header already says who and when. */}
+              {review.body && !(origin !== null && searchableBody(review.body).trim() === '') ? (
                 <div className="px-4 py-3">
                   <MarkdownView source={review.body} links={links} imported={review.origin?.url ?? null} />
                 </div>
@@ -359,10 +466,7 @@ export function Timeline({
               {item.comments.length > 0 || item.expected > 0 ? (
                 <div className="space-y-2 border-t border-anvil-200 px-4 py-3 dark:border-anvil-800" data-testid="review-comments">
                   {item.comments.map((c) => (
-                    <div key={c.id}>
-                      {c.anchor ? (anchorContext?.(c) ?? <p className="mb-1 font-mono text-[12px] text-anvil-600 dark:text-anvil-400">{anchorLabel(c.anchor)}</p>) : null}
-                      <MarkdownView source={c.body} links={links} imported={importedUrlOf(c.importedRaw)} />
-                    </div>
+                    <ReviewComment key={c.id} comment={c} links={links} trust={trust} anchorContext={anchorContext} slot={renderComment?.({ kind: 'comment', at: c.createdAt, comment: c }) ?? {}} />
                   ))}
                   {/* A submit writes the review first, then its comments: say when some have not landed (yet). */}
                   {item.expected > item.comments.length ? (
@@ -424,7 +528,5 @@ export function Timeline({
             </p>
           </div>
         )
-      })}
-    </div>
-  )
+  }
 }

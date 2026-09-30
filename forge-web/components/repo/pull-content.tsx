@@ -103,6 +103,7 @@ import { WALK_COMMIT_CAP } from '@/lib/merge/objects'
 import { commentsShown, draftIsEmpty, draftWhereabouts, reviewShows, SUBMIT_WAIT } from '@/lib/view/pending-review'
 import { tipOidOf } from '@/lib/view/refs'
 import { importedReviewers, type ReviewerCardRow } from '@/lib/view/review-fold'
+import { foldMirroredReviews, mirroredCommentText } from '@/lib/view/mirror-review-fold'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
 import { readUntil, retryWhileMissing } from '@/lib/view/retry'
 import { useSdk } from '@/hooks/use-sdk'
@@ -758,7 +759,15 @@ function PullPage({
   const inlineIds = useMemo(() => new Set(inlineCommentIds(thread.comments)), [thread.comments])
   // Under the thread's root (a reply to a reply belongs to the same thread).
   const repliesOf = useMemo(() => repliesByRoot(thread.comments), [thread.comments])
-  const conversation = timeline.filter((t) => !(t.kind === 'comment' && t.comment.replyTo !== null && inlineIds.has(t.comment.id)))
+  // A mirrored PR's review comments under the review they were submitted with (QW2-010).
+  const conversation = useMemo(
+    () =>
+      foldMirroredReviews(
+        timeline.filter((t) => !(t.kind === 'comment' && t.comment.replyTo !== null && inlineIds.has(t.comment.id))),
+        (it) => (it.kind === 'review' ? trustedOrigin(it.review.origin, it.review.reviewer, trust) : trustedOrigin(it.comment.origin, it.comment.author, trust)),
+      ),
+    [timeline, inlineIds, trust],
+  )
   const resolved = new Set(review.resolvedThreads)
   const eventText = (e: Event): string | null => (e.kind === 'headUpdate' && e.id ? phrases.data?.get(e.id) ?? null : null)
 
@@ -1747,7 +1756,7 @@ function commentSlots({
     body: (
       <div className="space-y-2 px-4 py-3">
         {context}
-        <MarkdownView source={c.body} links={links} imported={importedUrlOf(c.importedRaw)} />
+        <MarkdownView source={trustedOrigin(c.origin, c.author, trust ?? null) !== null ? mirroredCommentText(c.body, c.anchor).text : c.body} links={links} imported={importedUrlOf(c.importedRaw)} />
         {replies.map((r) => (
           <div key={r.id} className="border-l-2 border-anvil-200 pl-3 dark:border-anvil-750">
             <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
