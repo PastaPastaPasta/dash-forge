@@ -263,6 +263,26 @@ describe('blame over the history index', () => {
     expect(blobs.length).toBe(got.versions + 1)
   })
 
+  // QW-005: the version cap lands inside the index's list, then past the list's cut, where the walk
+  // takes over; each continuation goes on from the cursor, and the end is the plain walk's answer.
+  it('continued past its version cap, inside the list and past its cut, ends at the plain answer', async () => {
+    const { s, tips } = history(90)
+    const tip = tips[89] as string
+    const plain = await blameFile(readerOf(s), tip, 'a.txt')
+    const reader = indexedReader(s, tip, () => indexOf(s, tip, ['a.txt'], 12))
+    let got = await blameFile(reader, tip, 'a.txt', { maxVersions: 5 })
+    expect(got.boundary?.reason).toBe('versions')
+    expect(got.hunks.find((h) => h.oid === got.boundary!.oid && h.unresolved !== true)).toBeUndefined()
+    let runs = 1
+    while (got.cursor !== null) {
+      got = await blameFile(reader, tip, 'a.txt', { maxVersions: 5, resume: got.cursor })
+      runs += 1
+    }
+    expect(runs).toBe(Math.ceil(plain.versions / 5))
+    expect(got.hunks).toEqual(plain.hunks)
+    expect(got.versions).toBe(plain.versions)
+  })
+
   it('with the list cut short, walks on and still matches', async () => {
     const { s, tips } = history(90)
     const tip = tips[89] as string

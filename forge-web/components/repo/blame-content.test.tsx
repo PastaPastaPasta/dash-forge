@@ -14,14 +14,14 @@ vi.mock('next/link', () => ({ default: ({ href, children }: { href: string; chil
 vi.mock('next/navigation', () => ({ usePathname: () => '/repo/blame/', useSearchParams: () => new URLSearchParams(), useRouter: () => ({ replace: () => undefined, push: () => undefined }) }))
 
 /** Each call's deferred result; the test settles them in the order it wants. */
-const calls: { signal: AbortSignal; resolve: (v: unknown) => void; reject: (e: unknown) => void }[] = []
+const calls: { signal: AbortSignal; resume: unknown; resolve: (v: unknown) => void; reject: (e: unknown) => void }[] = []
 vi.mock('@/lib/view/blame', async (importOriginal) => {
   const real = await importOriginal<typeof import('@/lib/view/blame')>()
   return {
     ...real,
-    blameFile: (_r: unknown, _t: string, _p: string, { signal }: { signal: AbortSignal }) =>
+    blameFile: (_r: unknown, _t: string, _p: string, { signal, resume }: { signal: AbortSignal; resume?: unknown }) =>
       new Promise((resolve, reject) => {
-        calls.push({ signal, resolve, reject })
+        calls.push({ signal, resume, resolve, reject })
         signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
       }),
   }
@@ -83,10 +83,11 @@ describe('BlameBody in StrictMode', () => {
       hunks: [{ start: 1, count: 2, oid: c }],
       commits: new Map([[c, { oid: c, subject: 'subject', author: { name: 'a', when: 0 } }]]),
       partial: true,
+      boundary: { oid: c, reason: 'stopped', lines: 0 },
+      cursor: null,
       approximate: false,
       versions: 3,
       renames: [],
-      unfollowedRename: null,
     }
     // The run answers its abort with what it had (the real blameFile does); rejected before the
     // click, so the mock's own AbortError on the signal comes too late to count.
@@ -99,5 +100,57 @@ describe('BlameBody in StrictMode', () => {
     expect(el.querySelector('[data-testid="blame-table"]')).not.toBeNull()
     expect(el.querySelector('[data-testid="blame-stopped"]')?.textContent).toContain('Run again')
     expect(el.textContent).not.toContain('Stopped before')
+  })
+})
+
+// QW-005: lines past the walk's cap were shown on the 200th version's commit, dated and linked as
+// if it were theirs. They read "not attributed yet", name no commit, and Continue goes on.
+describe('BlameBody past the version cap', () => {
+  const a = 'a'.repeat(40)
+  const b = 'b'.repeat(40)
+  const cursor = { marker: 'cursor' }
+  const capped = {
+    lines: ['new\n', 'old\n', 'older\n'],
+    hunks: [
+      { start: 1, count: 1, oid: a },
+      { start: 2, count: 2, oid: b, unresolved: true },
+    ],
+    commits: new Map([
+      [a, { oid: a, subject: 'the newest change', author: { name: 'x', when: Date.UTC(2025, 0, 1) } }],
+      [b, { oid: b, subject: 'the boundary commit', author: { name: 'y', when: Date.UTC(2023, 5, 4) } }],
+    ]),
+    partial: true,
+    boundary: { oid: b, reason: 'versions', lines: 2 },
+    cursor,
+    approximate: false,
+    versions: 200,
+    renames: [],
+  }
+
+  it('marks the unattributed lines, names no commit for them, and Continue resumes from the cursor', async () => {
+    await act(async () => {
+      root.render(<BlameBody reader={{} as never} tipOid={'f'.repeat(40)} path="f" addr={{ owner: 'o', name: 'n' }} />)
+    })
+    await act(async () => {
+      calls[0]!.resolve(capped)
+      await Promise.resolve()
+    })
+    const rows = [...el.querySelectorAll('[data-testid="blame-table"] tr[id]')]
+    expect(rows.map((r) => r.getAttribute('data-oid'))).toEqual([a, null, null])
+    expect(rows.map((r) => r.getAttribute('data-unresolved-at'))).toEqual([null, b, b])
+    // The boundary's subject is never shown as a line's commit.
+    expect(el.querySelector('[data-testid="blame-table"]')?.textContent).not.toContain('the boundary commit')
+    expect(el.querySelector('[data-testid="blame-unresolved"]')?.textContent).toContain('bbbbbbb or older')
+    const summary = el.querySelector('[data-testid="blame-partial"]')?.textContent ?? ''
+    expect(summary).toContain('2 lines are not attributed yet')
+    expect(summary).toContain('bbbbbbb')
+    // One commit owns lines; the boundary does not count.
+    expect(el.querySelector('[data-testid="blame-summary"]')?.textContent).toContain('1 commit ·')
+    await act(async () => {
+      ;(el.querySelector('[data-testid="blame-continue"]') as HTMLButtonElement).click()
+    })
+    expect(calls).toHaveLength(2)
+    expect(calls[1]!.resume).toBe(cursor)
+    expect(calls[0]!.resume).toBeUndefined()
   })
 })

@@ -91,6 +91,13 @@ export class BlameState {
     return this.open
   }
 
+  /** An independent copy: a walk continued from a stopped one steps the copy, not the original. */
+  clone(): BlameState {
+    const copy = Object.create(BlameState.prototype) as BlameState
+    Object.assign(copy, { lines: this.lines, owner: [...this.owner], at: Int32Array.from(this.at), open: this.open })
+    return copy
+  }
+
   /**
    * `commit` changed the file from `parentText` to the version being examined (null: `commit`
    * added it, or it is where the walk stops). Lines the map says are new are blamed on `commit`;

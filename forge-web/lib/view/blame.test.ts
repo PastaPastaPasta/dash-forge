@@ -187,13 +187,46 @@ describe('blame bounds', () => {
     expect(s.reads).not.toContain(c1)
   })
 
-  it('notes a rename with edits it does not follow', async () => {
+  // QW-005: dash's validation.cpp came from main.cpp in one commit that renamed it and cut it down
+  // (bitcoin#9260); git blame follows that rename, and the walk gave its 921 older lines to it.
+  it('follows a rename with edits, as git blame does (a file renamed and cut down)', async () => {
     const s = new Store()
-    const c1 = s.commit(s.files({ 'old/main.go': 'package main\nfunc a() {}\n' }), [], 'one')
-    const c2 = s.commit(s.files({ 'main.go': 'package main\nfunc a() { b() }\n' }), [c1], 'move and edit')
-    const got = await blameFile(s.reader(), c2, 'main.go')
-    expect(got.renames).toEqual([])
-    expect(got.unfollowedRename).toBe('old/main.go')
+    const body = Array.from({ length: 30 }, (_, i) => `line ${i}`)
+    const c1 = s.commit(s.files({ 'src/main.cpp': `${body.join('\n')}\n`, 'src/other.h': 'x\n' }), [], 'one')
+    const edited = [...body]
+    edited[3] = 'line 3 edited'
+    const c2 = s.commit(s.files({ 'src/main.cpp': `${edited.join('\n')}\n`, 'src/other.h': 'x\n' }), [c1], 'two')
+    // The rename: main.cpp becomes validation.cpp, six lines go, one comes.
+    const cut = [...edited.slice(0, 20), 'moved here', ...edited.slice(26)]
+    const peacock = s.commit(s.files({ 'src/validation.cpp': `${cut.join('\n')}\n`, 'src/other.h': 'y\n' }), [c2], 'kill main.cpp')
+    const later = [...cut]
+    later[0] = 'line 0 later'
+    const c4 = s.commit(s.files({ 'src/validation.cpp': `${later.join('\n')}\n`, 'src/other.h': 'y\n' }), [peacock], 'four')
+    const got = await blameFile(s.reader(), c4, 'src/validation.cpp')
+    expect(got.renames).toEqual([{ commit: peacock, from: 'src/main.cpp', to: 'src/validation.cpp' }])
+    expect(got.partial).toBe(false)
+    const want = gitBlame(s.objects.values(), c4, 'src/validation.cpp')
+    if (want !== null) expect(owners(got)).toEqual(want)
+    expect(owners(got).filter((o) => o === peacock)).toHaveLength(1)
+    expect(owners(got)[3]).toBe(c2)
+    expect(owners(got)[1]).toBe(c1)
+  })
+
+  it('a change too large to check for a rename leaves the lines it added unresolved, not on it', async () => {
+    // 70 files deleted with the path's addition: scoring them all is over the rename read budget.
+    const s = new Store()
+    const gone: Record<string, string> = {}
+    for (let i = 0; i < 70; i++) gone[`d/f${i}`] = `file ${i}\n${'filler\n'.repeat(i % 5)}`
+    const c1 = s.commit(s.files(gone), [], 'one')
+    const c2 = s.commit(s.files({ 'new.txt': 'a\nb\n' }), [c1], 'replace everything')
+    const c3 = s.commit(s.files({ 'new.txt': 'a\nb\nc\n' }), [c2], 'three')
+    const got = await blameFile(s.reader(), c3, 'new.txt')
+    expect(got.boundary).toEqual({ oid: c2, reason: 'rename', lines: 2 })
+    expect(got.cursor).toBeNull()
+    expect(got.hunks).toEqual([
+      { start: 1, count: 2, oid: c2, unresolved: true },
+      { start: 3, count: 1, oid: c3 },
+    ])
   })
 
   it('refuses a file over the size cap and a binary file, reading neither whole', async () => {
@@ -291,6 +324,163 @@ describe('blame bounds', () => {
     // Only the file's own versions (blobs) are new; commits and trees came from the History walk.
     const blobs = new Set(s.reads.slice(afterHistory))
     for (const oid of blobs) expect(s.objects.get(oid)?.type).toBe('blob')
+  })
+})
+
+// QW-005: dash's validation.cpp (490 first-parent versions) hit the 200-version cap, and every line
+// still open was blamed on the 200th version's commit: 3,098 lines on a commit git gives none of.
+describe('blame past its caps (QW-005)', () => {
+  /** A history where each commit rewrites one old line and adds one, so lines stay open far back. */
+  function longHistory(n: number): { s: Store; commits: string[] } {
+    const s = new Store()
+    const commits: string[] = []
+    let lines = ['root 0', 'root 1', 'root 2', 'root 3']
+    let tip = s.commit(s.files({ f: `${lines.join('\n')}\n`, g: '0' }), [], 'root')
+    commits.push(tip)
+    for (let i = 1; i < n; i++) {
+      // Every third commit leaves f alone, so the versions are not every commit.
+      if (i % 3 !== 0) {
+        lines = [...lines]
+        lines[(i * 7) % lines.length] = `edit ${i}`
+        lines.splice((i * 3) % (lines.length + 1), 0, `add ${i}`)
+      }
+      tip = s.commit(s.files({ f: `${lines.join('\n')}\n`, g: String(i) }), [tip], `c ${i}`)
+      commits.push(tip)
+    }
+    return { s, commits }
+  }
+
+  it('leaves the lines past the version cap unattributed, never on the oldest version reached', async () => {
+    const { s, commits } = longHistory(40)
+    const tip = commits.at(-1) as string
+    const want = gitBlame(s.objects.values(), tip, 'f')
+    const got = await blameFile(s.reader(), tip, 'f', { maxVersions: 5 })
+    expect(got.partial).toBe(true)
+    expect(got.boundary).toMatchObject({ reason: 'versions' })
+    const boundary = got.boundary!.oid
+    const unresolved = got.hunks.filter((h) => h.unresolved === true)
+    expect(unresolved.length).toBeGreaterThan(0)
+    expect(unresolved.every((h) => h.oid === boundary)).toBe(true)
+    expect(got.boundary!.lines).toBe(unresolved.reduce((n, h) => n + h.count, 0))
+    // Every line given a commit has git's commit; no line is given the boundary's.
+    const attributed = got.hunks.filter((h) => h.unresolved !== true)
+    for (const h of attributed) {
+      expect(h.oid).not.toBe(boundary)
+      if (want !== null) for (let k = 0; k < h.count; k++) expect(h.oid).toBe(want[h.start - 1 + k])
+    }
+    expect(got.cursor).not.toBeNull()
+  })
+
+  it('continues from the cursor, run after run, to exactly the uncapped answer (and git’s)', async () => {
+    const { s, commits } = longHistory(40)
+    const tip = commits.at(-1) as string
+    const whole = await blameFile(s.reader(), tip, 'f')
+    expect(whole.partial).toBe(false)
+    let got = await blameFile(s.reader(), tip, 'f', { maxVersions: 4 })
+    const first = got.cursor!
+    let runs = 1
+    while (got.cursor !== null) {
+      got = await blameFile(s.reader(), tip, 'f', { maxVersions: 4, resume: got.cursor })
+      runs += 1
+    }
+    expect(runs).toBeGreaterThan(3)
+    expect(got.partial).toBe(false)
+    expect(got.boundary).toBeNull()
+    expect(got.hunks).toEqual(whole.hunks)
+    expect(got.versions).toBe(whole.versions)
+    expect([...got.commits.keys()].sort()).toEqual([...whole.commits.keys()].sort())
+    const want = gitBlame(s.objects.values(), tip, 'f')
+    if (want !== null) expect(owners(got)).toEqual(want)
+    // A cursor is never changed by the run continued from it: continuing from it again answers alike.
+    const again = await blameFile(s.reader(), tip, 'f', { maxVersions: 4, resume: first })
+    const twice = await blameFile(s.reader(), tip, 'f', { maxVersions: 4, resume: first })
+    expect(twice.hunks).toEqual(again.hunks)
+    expect(twice.versions).toBe(again.versions)
+  })
+
+  it('continues past the commit budget and past a followed rename', async () => {
+    const s = new Store()
+    const c1 = s.commit(s.files({ 'old/f': 'a\nb\n', g: '0' }), [], 'one')
+    const c2 = s.commit(s.files({ 'old/f': 'a\nB\nc\n', g: '0' }), [c1], 'two')
+    const moved = s.commit(s.files({ f: 'a\nB\nc\n', g: '0' }), [c2], 'move')
+    let tip = moved
+    for (let i = 1; i <= 30; i++) tip = s.commit(s.files({ f: 'a\nB\nc\n', g: String(i) }), [tip], `g ${i}`)
+    tip = s.commit(s.files({ f: 'a\nB\nc\nd\n', g: 'x' }), [tip], 'four')
+    let got = await blameFile(s.reader(), tip, 'f', { maxCommits: 8, pageCap: 8 })
+    expect(got.boundary?.reason).toBe('commits')
+    // The tip's version was found but not the one before it: no line can be given a commit yet.
+    expect(got.hunks).toEqual([{ start: 1, count: 4, oid: tip, unresolved: true }])
+    while (got.cursor !== null) got = await blameFile(s.reader(), tip, 'f', { maxCommits: 8, pageCap: 8, resume: got.cursor })
+    expect(owners(got)).toEqual([c1, c2, c2, tip])
+    expect(got.renames).toEqual([{ commit: moved, from: 'old/f', to: 'f' }])
+    const want = gitBlame(s.objects.values(), tip, 'f')
+    if (want !== null) expect(owners(got)).toEqual(want)
+  })
+
+  it('a file no capped walk found a version of: every line unresolved at the tip, and the walk goes on', async () => {
+    const s = new Store()
+    const c1 = s.commit(s.files({ f: 'a\n', g: '0' }), [], 'one')
+    let tip = c1
+    for (let i = 1; i <= 30; i++) tip = s.commit(s.files({ f: 'a\n', g: String(i) }), [tip], `g ${i}`)
+    let got = await blameFile(s.reader(), tip, 'f', { maxCommits: 10, pageCap: 10 })
+    expect(got.boundary).toEqual({ oid: tip, reason: 'commits', lines: 1 })
+    expect(got.hunks).toEqual([{ start: 1, count: 1, oid: tip, unresolved: true }])
+    while (got.cursor !== null) got = await blameFile(s.reader(), tip, 'f', { maxCommits: 10, pageCap: 10, resume: got.cursor })
+    expect(owners(got)).toEqual([c1])
+    expect(got.partial).toBe(false)
+  })
+
+  it('a run stopped before it found any version still hands back a cursor that goes on', async () => {
+    const s = new Store()
+    const c1 = s.commit(s.files({ f: 'a\n', g: '0' }), [], 'one')
+    let tip = c1
+    for (let i = 1; i <= 120; i++) tip = s.commit(s.files({ f: 'a\n', g: String(i) }), [tip], `g ${i}`)
+    const stop = new AbortController()
+    const err = await blameFile(s.reader(), tip, 'f', {
+      signal: stop.signal,
+      onProgress: (p) => {
+        if (p.examined >= 50) stop.abort()
+      },
+    }).catch((e: unknown) => e)
+    const partial = (err as BlameStoppedError).partial!
+    expect(partial.boundary).toEqual({ oid: tip, reason: 'stopped', lines: 1 })
+    let got = await blameFile(s.reader(), tip, 'f', { resume: partial.cursor! })
+    while (got.cursor !== null) got = await blameFile(s.reader(), tip, 'f', { resume: got.cursor })
+    expect(owners(got)).toEqual([c1])
+  })
+
+  it('a stopped run’s partial result continues to the uncapped answer', async () => {
+    const { s, commits } = longHistory(30)
+    const tip = commits.at(-1) as string
+    const whole = await blameFile(s.reader(), tip, 'f')
+    const stop = new AbortController()
+    const err = await blameFile(s.reader(), tip, 'f', {
+      signal: stop.signal,
+      onProgress: (p) => {
+        if (p.versions === 3) stop.abort()
+      },
+    }).catch((e: unknown) => e)
+    const partial = (err as BlameStoppedError).partial!
+    expect(partial.boundary?.reason).toBe('stopped')
+    expect(partial.hunks.some((h) => h.unresolved === true)).toBe(true)
+    let got = await blameFile(s.reader(), tip, 'f', { resume: partial.cursor! })
+    while (got.cursor !== null) got = await blameFile(s.reader(), tip, 'f', { resume: got.cursor })
+    expect(got.hunks).toEqual(whole.hunks)
+  })
+
+  it('refuses a cursor of another file', async () => {
+    const { s, commits } = longHistory(12)
+    const tip = commits.at(-1) as string
+    const got = await blameFile(s.reader(), tip, 'f', { maxVersions: 2 })
+    await expect(blameFile(s.reader(), tip, 'g', { resume: got.cursor! })).rejects.toThrow(/another file/)
+  })
+
+  it('toHunks puts unattributed lines in their own hunks at the boundary', () => {
+    expect(toHunks(['a', null, null, 'b'], 'b')).toEqual([
+      { start: 1, count: 1, oid: 'a' },
+      { start: 2, count: 2, oid: 'b', unresolved: true },
+      { start: 4, count: 1, oid: 'b' },
+    ])
   })
 })
 

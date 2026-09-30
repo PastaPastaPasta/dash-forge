@@ -5,6 +5,8 @@
  * --first-parent`), computed in the browser over the file's History ({@link blameFile}). The walk
  * is bounded (file size, versions compared), reports progress as it goes, can be cancelled, and
  * yields between versions so the page stays responsive; long files render only the rows in view.
+ * Lines a bounded or cancelled walk did not reach are shown as not attributed yet (the version it
+ * stopped at "or older", QW-005), and "Continue blame" goes on from there.
  */
 
 import Link from 'next/link'
@@ -16,10 +18,10 @@ import type { RepoHome } from '@/lib/view'
 import type { RepoRef } from '@/lib/repo'
 import { lineHash, selectedTip, selectLine, selectRef, timeAgo } from '@/lib/view'
 import { ROW_PX, scrollToRow, useRowWindow } from '@/hooks/use-row-window'
-import { BLAME_MAX_COMMITS, BLAME_MAX_VERSIONS, BlameRefusedError, BlameStoppedError, blameFile, type BlameProgress, type BlameResult } from '@/lib/view/blame'
+import { BLAME_MAX_COMMITS, BLAME_MAX_VERSIONS, BlameRefusedError, BlameStoppedError, blameFile, type BlameCursor, type BlameProgress, type BlameResult } from '@/lib/view/blame'
 import { BlobToolbar, useLineSelection } from '@/components/repo/blob-content'
 import { permalinkPath, pinnedHref, usePermalinkKey } from '@/components/repo/permalink'
-import { plural } from '@/lib/view/format'
+import { formatDate, plural } from '@/lib/view/format'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { ReadErrorState, ResolvedTip } from '@/components/repo/resolved-tip'
 import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
@@ -93,14 +95,16 @@ export function BlameBody({
   repo?: RepoRef
 }): JSX.Element {
   const [run, setRun] = useState<RunState>({ kind: 'running', progress: null })
-  const [attempt, setAttempt] = useState(0)
+  // Each run: a fresh walk (`from` null), or one continued from where a partial one stopped.
+  const [job, setJob] = useState<{ readonly from: BlameCursor | null }>({ from: null })
   const stopRef = useRef<AbortController | null>(null)
   // `y` pins the address to this commit (as the file view does), keeping the `#L` selection (L-33).
   usePermalinkKey(pinnedHref(addr, 'blame', tipOid, path, privateRepo))
   // A full URL, as the file view copies (null in the instant a private repo's vault locks).
   const pinned = permalinkPath(addr, 'blame', tipOid, path, privateRepo)
   const permalink = pinned === null ? null : `${typeof window === 'undefined' ? '' : window.location.origin}${pinned}`
-  const restart = (): void => setAttempt((n) => n + 1)
+  const restart = (): void => setJob({ from: null })
+  const resume = (from: BlameCursor): void => setJob({ from })
 
   useEffect(() => {
     const stop = new AbortController()
@@ -112,6 +116,7 @@ export function BlameBody({
     const current = (): boolean => stopRef.current === stop
     blameFile(reader, tipOid, path, {
       signal: stop.signal,
+      ...(job.from !== null ? { resume: job.from } : {}),
       onProgress: (p) => {
         last = p
         if (current() && !stop.signal.aborted) setRun({ kind: 'running', progress: p })
@@ -131,15 +136,16 @@ export function BlameBody({
       if (stopRef.current === stop) stopRef.current = null
       stop.abort()
     }
-  }, [reader, tipOid, path, attempt])
+  }, [reader, tipOid, path, job])
 
   if (run.kind === 'failed') {
     if (run.error instanceof BlameRefusedError) return <EmptyState icon={FileText} title="Can't blame this file" body={run.error.message} />
-    return <ReadErrorState cause={run.error} retry={restart} addr={addr} repo={repo} />
+    // Retry runs the same job again: a failed continuation keeps the walk it was continuing.
+    return <ReadErrorState cause={run.error} retry={() => setJob((j) => ({ ...j }))} addr={addr} repo={repo} />
   }
   if (run.kind === 'cancelled' && run.partial !== null) {
     // Cancel keeps what was worked out (L-23): the table, marked stopped, and a way to run again.
-    return <BlameTable result={run.partial} addr={addr} permalink={permalink} stopped onRestart={restart} />
+    return <BlameTable result={run.partial} addr={addr} permalink={permalink} onRestart={restart} onContinue={resume} />
   }
   if (run.kind === 'cancelled') {
     return (
@@ -165,7 +171,7 @@ export function BlameBody({
             ? 'Reading the file’s history…'
             : p.versions === 0
               ? `Looking for the file’s versions · ${plural(p.examined, 'commit')} examined`
-              : `Compared ${plural(p.versions, 'version')} of up to ${BLAME_MAX_VERSIONS} · ${plural(p.total - p.pending, 'line')} of ${p.total} attributed · ${plural(p.examined, 'commit')} examined`}
+              : `Compared ${plural(p.versions, 'version')} of up to ${p.versionLimit} · ${plural(p.total - p.pending, 'line')} of ${p.total} attributed · ${plural(p.examined, 'commit')} examined`}
         </p>
         <div className="h-1.5 w-64 max-w-full overflow-hidden rounded-full bg-anvil-100 dark:bg-anvil-800" aria-hidden>
           <div className="h-full bg-forge-500 transition-[width]" style={{ width: `${done}%` }} />
@@ -176,24 +182,73 @@ export function BlameBody({
       </div>
     )
   }
-  return <BlameTable result={run.result} addr={addr} permalink={permalink} />
+  return <BlameTable result={run.result} addr={addr} permalink={permalink} onContinue={resume} />
+}
+
+/**
+ * The commit cell of lines the walk has not attributed (QW-005): the version it stopped at is a
+ * bound ("this or older"), never shown as their commit. With a cursor, it continues the walk.
+ */
+function UnresolvedCell({ oid, onContinue }: { oid: string; onContinue: (() => void) | undefined }): JSX.Element {
+  const short = oid.slice(0, 7)
+  const title = `Not attributed yet: last changed by ${short} or an older commit. The walk stopped at ${short}’s version of the file${onContinue ? '; click to continue it' : ''}.`
+  const text = (
+    <>
+      <span className="shrink-0 sm:hidden">older</span>
+      <span className="hidden min-w-0 truncate sm:inline">
+        Not attributed yet: <span className="font-mono">{short}</span> or older
+      </span>
+    </>
+  )
+  const cls = 'flex min-w-0 items-center gap-2 italic text-caution-700 dark:text-caution-400'
+  return onContinue ? (
+    // One per unattributed hunk, inside a 20 px code row (exempt, as the commit links are).
+    <button type="button" onClick={onContinue} className={cn(cls, 'hover:underline')} title={title} data-tap-exempt="code-line" data-testid="blame-unresolved" tabIndex={-1}>
+      {text}
+    </button>
+  ) : (
+    <span className={cls} title={title} data-testid="blame-unresolved">
+      {text}
+    </span>
+  )
+}
+
+/** Why the walk stopped short, for the summary line. */
+function stopReason(result: BlameResult): string {
+  switch (result.boundary?.reason) {
+    case 'stopped':
+      return 'Stopped'
+    case 'versions':
+      return `The walk stopped after ${plural(result.versions, 'version')} of the file`
+    case 'commits':
+      return `The walk stopped after examining ${BLAME_MAX_COMMITS.toLocaleString('en-US')} commits`
+    case 'rename':
+      return 'The walk reached the commit that added this path, a change too large to check for a rename here'
+    default:
+      return 'Partial'
+  }
 }
 
 function BlameTable({
   result,
   addr,
   permalink,
-  stopped = false,
   onRestart,
+  onContinue,
 }: {
   result: BlameResult
   addr: RepoAddress
   permalink: string | null
-  /** Cancelled: the table is what the walk had worked out when it stopped. */
-  stopped?: boolean
+  /** Run the blame again from the start (offered when it was cancelled). */
   onRestart?: () => void
+  /** Go on from where a partial walk stopped ({@link BlameResult.cursor}). */
+  onContinue?: (from: BlameCursor) => void
 }): JSX.Element {
-  const { lines, hunks, commits } = result
+  const { lines, hunks, commits, boundary, cursor } = result
+  const stopped = boundary?.reason === 'stopped'
+  // The commits that own lines: the boundary's, where lines are only unresolved, is not one of them.
+  const owning = useMemo(() => new Set(hunks.filter((h) => h.unresolved !== true).map((h) => h.oid)).size, [hunks])
+  const oldest = boundary === null ? undefined : commits.get(boundary.oid)
   // The hunk each line is in, and whether it starts one (where the commit cell is drawn).
   const hunkOf = useMemo(() => {
     const at = new Int32Array(lines.length)
@@ -216,10 +271,21 @@ function BlameTable({
     const first = hunk.start - 1 === i || i === from
     const commit = commits.get(hunk.oid)
     const on = range !== null && i + 1 >= range.start && i + 1 <= range.end
+    const unresolved = hunk.unresolved === true
     rows.push(
-      <tr key={i} id={`L${i + 1}`} data-oid={hunk.oid} data-selected={on || undefined} className={cn('h-5', k % 2 === 1 && 'bg-anvil-50/60 dark:bg-anvil-900/40', on && 'bg-caution/15', first && i > 0 && 'border-t border-anvil-100 dark:border-anvil-850')}>
+      <tr
+        key={i}
+        id={`L${i + 1}`}
+        // An unattributed line names no commit: the version where the walk stopped is only its bound.
+        data-oid={unresolved ? undefined : hunk.oid}
+        data-unresolved-at={unresolved ? hunk.oid : undefined}
+        data-selected={on || undefined}
+        className={cn('h-5', k % 2 === 1 && 'bg-anvil-50/60 dark:bg-anvil-900/40', on && 'bg-caution/15', first && i > 0 && 'border-t border-anvil-100 dark:border-anvil-850')}
+      >
         <td className="w-20 max-w-[5rem] truncate whitespace-nowrap border-r sm:w-72 sm:max-w-[18rem] border-anvil-100 px-3 py-0 align-top text-[12px] text-anvil-500 dark:border-anvil-850 dark:text-anvil-400">
-          {first && commit ? (
+          {first && unresolved ? (
+            <UnresolvedCell oid={hunk.oid} onContinue={cursor !== null && onContinue !== undefined ? () => onContinue(cursor) : undefined} />
+          ) : first && commit ? (
             <span className="flex items-center gap-2">
               {/* On a phone the column is an age gutter linking the commit; the subject shows from sm up (L-34). */}
               <Link
@@ -264,19 +330,24 @@ function BlameTable({
     <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-[12px] text-anvil-500 dark:border-anvil-800 dark:bg-anvil-900 dark:text-anvil-400" data-testid="blame-summary">
         <span>
-          {plural(lines.length, 'line')} · {plural(commits.size, 'commit')} · {plural(result.versions, 'version')} compared
+          {plural(lines.length, 'line')} · {plural(owning, 'commit')} · {plural(result.versions, 'version')} compared
         </span>
-        {stopped ? (
-          <span className="text-caution-700 dark:text-caution-400" data-testid="blame-stopped">
-            Stopped: lines not reached yet are shown on the oldest version compared.{' '}
-            <button type="button" onClick={onRestart} className="font-medium underline">
-              Run again
-            </button>
-          </span>
-        ) : result.partial ? (
-          <span className="text-caution-700 dark:text-caution-400" data-testid="blame-partial">
-            Partial: the walk hit a limit ({BLAME_MAX_VERSIONS} versions, {BLAME_MAX_COMMITS.toLocaleString('en-US')} commits, or a rename too large to look up), so the
-            oldest lines may be older than shown.
+        {boundary !== null ? (
+          <span className="text-caution-700 dark:text-caution-400" data-testid={stopped ? 'blame-stopped' : 'blame-partial'}>
+            {stopReason(result)}: {plural(boundary.lines, 'line')} {boundary.lines === 1 ? 'is' : 'are'} not attributed{cursor !== null ? ' yet' : ''}.{' '}
+            {boundary.lines === 1 ? 'It was' : 'They were'} {boundary.reason === 'rename' ? 'added by' : 'last changed by'}{' '}
+            <span className="font-mono">{boundary.oid.slice(0, 7)}</span>
+            {oldest ? ` (${formatDate(oldest.author.when)})` : ''} {boundary.reason === 'rename' ? 'or came from a file it renamed; git blame knows which.' : 'or an older commit.'}{' '}
+            {cursor !== null && onContinue !== undefined ? (
+              <Button size="sm" onClick={() => onContinue(cursor)} data-testid="blame-continue" title={`Compare up to ${BLAME_MAX_VERSIONS} more versions of the file`}>
+                Continue blame
+              </Button>
+            ) : null}{' '}
+            {stopped && onRestart !== undefined ? (
+              <button type="button" onClick={onRestart} className="font-medium underline">
+                Run again
+              </button>
+            ) : null}
           </span>
         ) : null}
         {result.approximate ? <span className="text-caution-700 dark:text-caution-400">Some changes were too large to align line by line.</span> : null}
@@ -285,16 +356,10 @@ function BlameTable({
             Followed a rename from <span className="font-mono">{r.from}</span>
           </span>
         ))}
-        {result.unfollowedRename !== null ? (
-          <span data-testid="blame-unfollowed-rename">
-            Stopped where the file was added; it may have been renamed from <span className="font-mono">{result.unfollowedRename}</span> with edits, which is not
-            followed.
-          </span>
-        ) : null}
       </div>
       <p className="border-b border-anvil-100 px-4 py-1.5 text-[11px] text-anvil-500 dark:border-anvil-850 dark:text-anvil-400" data-testid="blame-caveat">
         Computed in your browser from the file’s history. It can attribute some lines differently from{' '}
-        <span className="font-mono">git blame</span> (lines that repeat and move, renames with edits); <span className="font-mono">git blame --first-parent</span> is the
+        <span className="font-mono">git blame</span> (lines that repeat and move); <span className="font-mono">git blame --first-parent</span> is the
         authoritative answer.
       </p>
       <BlobToolbar href={href}>

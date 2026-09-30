@@ -54,7 +54,7 @@ describe('?pages=', () => {
 // L-35: the footer says how many commits are shown, never the loaded rows as if they were the history.
 describe('logStatus', () => {
   const shown = withPage(freshLog('c3'), page(['c3', 'c2'], 'c1'))
-  it('out of the first-parent count a history index gives', () => {
+  it('out of the count a history index gives', () => {
     expect(logStatus(shown, 7979)).toBe('Showing 2 of 7,979 commits')
   })
   it('as the newest ones while the total is unknown', () => {
@@ -63,8 +63,26 @@ describe('logStatus', () => {
   it('as the whole history once the walk reached the root', () => {
     expect(logStatus(withPage(shown, page(['c1'], null)), null)).toBe('The whole history: 3 commits')
   })
-  it("as a path's History", () => {
-    expect(logStatus(shown, 99, 'src/a.c')).toBe('Showing 2 commits that changed src/a.c')
-    expect(logStatus(withPage(shown, page(['c1'], null)), null, 'src/a.c')).toBe('The whole history of src/a.c: 3 commits')
+  it("as a path's History, which is first-parent and says so", () => {
+    expect(logStatus(shown, 99, 'src/a.c')).toBe('Showing 2 first-parent commits that changed src/a.c')
+    expect(logStatus(withPage(shown, page(['c1'], null)), null, 'src/a.c')).toBe('The first-parent history of src/a.c: 3 commits')
+  })
+  // QW-006: the first-parent log ended with "The whole history: 8,366 commits" on a repo of 34,007.
+  it('never calls the first-parent log the whole history', () => {
+    const end = withPage(shown, page(['c1'], null))
+    expect(logStatus(end, null, '', true)).toBe('Every first-parent commit: 3')
+    expect(logStatus(end, null, '', true)).not.toContain('whole history')
+    expect(logStatus(shown, 8366, '', true)).toBe('Showing 2 of 8,366 first-parent commits')
+    expect(logStatus(shown, null, '', true)).toBe('Showing the newest 2 first-parent commits')
+    expect(logStatus(shown, 34007)).toBe('Showing 2 of 34,007 commits')
+  })
+})
+
+describe('the full log’s pages', () => {
+  it('carry the date-ordered walk as the next page’s start', () => {
+    const walk = { queue: [], seen: new Set(['c3']) }
+    const s = withPage(freshLog('c3'), { entries: [entry('c3')], next: walk, examined: 3, capped: false, indexed: 0 })
+    expect(s.next).toBe(walk)
+    expect(withPage(s, { entries: [entry('c2')], next: null, examined: 1, capped: false, indexed: 0 }).next).toBeNull()
   })
 })

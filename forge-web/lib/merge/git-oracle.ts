@@ -109,6 +109,25 @@ export function gitBlameMany(objects: Iterable<GitObject>, targets: readonly (re
 }
 
 /**
+ * `git log --format=%H <tip>` for each of `tips` over `objects` (written once into a scratch
+ * repository): every commit reachable from the tip, in git's order. Null without git.
+ */
+export function gitLog(objects: Iterable<GitObject>, tips: readonly string[]): string[][] | null {
+  if (!HAVE_GIT) return null
+  const { dir, done } = scratchRepo()
+  try {
+    writeBatched(dir, objects)
+    return tips.map((tip) => {
+      const r = spawnSync('git', ['log', '--format=%H', tip], { cwd: dir, maxBuffer: 1 << 26 })
+      if (r.status !== 0) throw new Error(`git log failed: ${r.stderr.toString()}`)
+      return r.stdout.toString().split('\n').filter((l) => l !== '')
+    })
+  } finally {
+    done()
+  }
+}
+
+/**
  * `git merge-tree --write-tree` for each `[ours, theirs]` commit pair in `dir` (batched
  * through `--stdin`): the merged tree oid when clean, else null. Null without git.
  */
