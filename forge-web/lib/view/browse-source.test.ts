@@ -22,6 +22,7 @@ import { serializeLocator, type IndexedObject } from '../browse/indexer'
 import {
   artifactRangeFetch,
   buildPackSource,
+  CHUNK_QUERIES_IN_FLIGHT,
   clearChunkCache,
   loadArtifactBytesProgress,
   loadBrowseContext,
@@ -187,6 +188,31 @@ describe('chunk LRU', () => {
     await expect(fetchRange(0, 10)).rejects.toThrow('transient')
     fail = false
     expect(Array.from(await fetchRange(0, 10))).toEqual(Array.from(full.subarray(0, 10)))
+  })
+
+  it('keeps at most CHUNK_QUERIES_IN_FLIGHT chunk queries out across every pack read at once', async () => {
+    const inner = mockSdk(() => full) as unknown as { documents: { query: (q: unknown) => Promise<Map<string, unknown>> } }
+    let inFlight = 0
+    let peak = 0
+    let sent = 0
+    const sdk = {
+      documents: {
+        query: async (q: unknown): Promise<Map<string, unknown>> => {
+          sent++
+          inFlight++
+          peak = Math.max(peak, inFlight)
+          await new Promise((r) => setTimeout(r, 2))
+          inFlight--
+          return inner.documents.query(q)
+        },
+      },
+    } as unknown as EvoSDK
+    // 48 packs (a diff's count pool over several packs), each read at once: 48 separate queries.
+    const packs = Array.from({ length: 48 }, (_, i) => gitPack((0x40 + i).toString(16), 0, `p${i}`))
+    const got = await Promise.all(packs.map((p) => artifactRangeFetch(sdk, REPO, p)(0, 10)))
+    for (const bytes of got) expect(Array.from(bytes)).toEqual(Array.from(full.subarray(0, 10)))
+    expect(sent).toBe(48)
+    expect(peak).toBe(CHUNK_QUERIES_IN_FLIGHT)
   })
 })
 

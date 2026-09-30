@@ -3,7 +3,7 @@
  * blob reads counting a diff's lines, or a tree walk's parallel reads, each need a chunk or two.
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { chunkQueryCount, clearChunkCache, queueChunkSeqs } from './browse-source'
 
@@ -32,6 +32,21 @@ describe('queueChunkSeqs', () => {
       queueChunkSeqs('one', Array.from({ length: 20 }, (_, i) => 200 + i), query),
     ])
     expect(sent.map((s) => s.length).sort((x, y) => x - y)).toEqual([1, 20, 90])
+  })
+
+  it('gathers on a macrotask that is not a timer (background tabs clamp timers to ~1 s)', async () => {
+    clearChunkCache()
+    // Every timer frozen: a gather waiting on `setTimeout` would never send.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'setImmediate'] })
+    try {
+      const sent: number[][] = []
+      const query = (seqs: readonly number[]) => (sent.push([...seqs]), answer(seqs))
+      const got = await Promise.all([queueChunkSeqs('copy', [1], query), queueChunkSeqs('copy', [4], query)])
+      expect(sent).toEqual([[1, 4]])
+      for (const g of got) expect([...g.keys()]).toEqual([1, 4])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('a failed query fails its askers, and the next turn asks again', async () => {

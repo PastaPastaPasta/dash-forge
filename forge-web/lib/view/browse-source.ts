@@ -65,6 +65,33 @@ import { onPrivateSessionEnded } from '../repo/private-session'
 /** Chunk queries in flight at once when one range spans more than a single query. */
 const CHUNK_QUERY_POOL = 6
 
+/**
+ * Chunk queries in flight at once across every read of the session. Each range pools its own
+ * batches ({@link CHUNK_QUERY_POOL}), but a diff counting two dozen files over several packs, or
+ * rename detection reading candidates, runs many ranges side by side; without one global bound a
+ * turn could send ~50 proof-verified queries at once.
+ */
+export const CHUNK_QUERIES_IN_FLIGHT = 16
+const chunkQuerySlots = { active: 0, waiting: [] as (() => void)[] }
+
+/**
+ * Run `run` on the next macrotask. A `MessageChannel` post, not `setTimeout(0)`: browsers clamp
+ * timers in background tabs to ~1 s, which would stall every serial round of chunk reads while
+ * the tab is hidden. `setTimeout` only where there is no `MessageChannel`.
+ */
+function nextMacrotask(run: () => void): void {
+  if (typeof MessageChannel === 'undefined') {
+    setTimeout(run, 0)
+    return
+  }
+  const channel = new MessageChannel()
+  channel.port1.onmessage = () => {
+    channel.port1.close()
+    run()
+  }
+  channel.port2.postMessage(null)
+}
+
 /** Concatenate the `d0..d2` byteArray fields (base64) of one chunk row, in order. */
 function chunkPayload(doc: Record<string, unknown>): Uint8Array {
   const parts: Uint8Array[] = []
@@ -175,9 +202,8 @@ async function queryChunkBatch(
       const i = next++
       const batch = batches[i]
       if (batch === undefined) return
-      const { documents } = await queryDocumentsWithProof(
-        sdk,
-        source.chunkQuery(manifest.packHash, manifest.uploader, batch),
+      const { documents } = await withSlotOf(chunkQuerySlots, CHUNK_QUERIES_IN_FLIGHT, () =>
+        queryDocumentsWithProof(sdk, source.chunkQuery(manifest.packHash, manifest.uploader, batch)),
       )
       for (const doc of documents) {
         const raw = doc['seq']
@@ -228,11 +254,11 @@ export function queueChunkSeqs(
   if (pending === undefined) {
     const gathered = new Set<number>()
     const result = new Promise<Map<number, Uint8Array>>((resolve, reject) => {
-      setTimeout(() => {
+      nextMacrotask(() => {
         if (pendingChunkQueries.get(key)?.seqs === gathered) pendingChunkQueries.delete(key)
         chunkQueriesSent += Math.ceil(gathered.size / CHUNK_QUERY_MAX)
         query([...gathered].sort((a, b) => a - b)).then(resolve, reject)
-      }, 0)
+      })
     })
     pending = { seqs: gathered, result }
     pendingChunkQueries.set(key, pending)
@@ -425,14 +451,22 @@ async function withSlot<T>(key: string, run: () => Promise<T>): Promise<T> {
     slot = { active: 0, waiting: [] }
     originSlots.set(key, slot)
   }
-  const s = slot
-  if (s.active >= PER_ORIGIN_CONCURRENCY) await new Promise<void>((resolve) => s.waiting.push(resolve))
-  s.active += 1
+  return withSlotOf(slot, PER_ORIGIN_CONCURRENCY, run)
+}
+
+/**
+ * At most `limit` `run`s of `slots` in flight. A finishing run hands its slot straight to the
+ * next waiter, so a newcomer arriving in between cannot take it too and overshoot the limit.
+ */
+async function withSlotOf<T>(slots: { active: number; readonly waiting: (() => void)[] }, limit: number, run: () => Promise<T>): Promise<T> {
+  if (slots.active >= limit) await new Promise<void>((resolve) => slots.waiting.push(resolve))
+  else slots.active += 1
   try {
     return await run()
   } finally {
-    s.active -= 1
-    s.waiting.shift()?.()
+    const next = slots.waiting.shift()
+    if (next !== undefined) next()
+    else slots.active -= 1
   }
 }
 
