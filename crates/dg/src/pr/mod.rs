@@ -2309,35 +2309,8 @@ async fn checkout(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         ));
     }
     let branch = format!("pr/{number}");
-    // Tracked changes only: git refuses a switch that would overwrite an untracked file.
-    let clean = git::git(
-        &cwd,
-        &["status", "--porcelain", "--untracked-files=no"],
-        &[],
-    )
-    .is_ok_and(|out| out.is_empty());
-    let step = checkout_step(git::current_branch(&cwd).as_deref(), &branch, clean);
-    match step {
-        CheckoutStep::FastForward => {
-            git::git(&cwd, &["merge", "--ff-only", "-q", &head], &[]).with_context(|| {
-                format!(
-                    "moving {branch} (checked out) to the PR head {}: switch to another branch \
-                     and run `dg pr checkout` again to reset it",
-                    short(&head)
-                )
-            })?;
-        }
-        CheckoutStep::CreateAndSwitch | CheckoutStep::CreateOnly => {
-            git::git(&cwd, &["branch", "-f", &branch, &head], &[])
-                .with_context(|| format!("creating branch {branch}"))?;
-        }
-    }
-    if step == CheckoutStep::CreateAndSwitch {
-        git::git(&cwd, &["switch", "-q", &branch], &[]).with_context(|| {
-            format!("switching to {branch} (it is created: git switch {branch})")
-        })?;
-    }
-    let switched = step != CheckoutStep::CreateOnly;
+    let step = place_pr_branch(&cwd, &branch, &head)?;
+    let switched = !matches!(step, CheckoutStep::CreateOnly(_));
     ctx.emit(
         json!({
             "pr": number,
@@ -2355,37 +2328,104 @@ async fn checkout(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             CheckoutStep::FastForward => {
                 println!("✓ branch {branch} (checked out) at {}", short(&head));
             }
-            CheckoutStep::CreateOnly => {
+            CheckoutStep::CreateOnly(why) => {
                 println!(
                     "✓ branch {branch} at {} (git switch {branch})",
                     short(&head)
                 );
-                println!("  not switched: the working tree has uncommitted changes");
+                println!("  not switched: {why}");
             }
         },
     );
     Ok(())
 }
 
+/// Point `branch` (`pr/<n>`) at `head` in the repository at `cwd` and switch to it when that
+/// loses nothing ([`checkout_step`]).
+fn place_pr_branch(cwd: &Path, branch: &str, head: &str) -> Result<CheckoutStep> {
+    // A `pr/<n>` holding commits the PR head does not is left alone (as `gh pr checkout`
+    // refuses a non-fast-forward): moving it would leave them only in the reflog.
+    let local = format!("refs/heads/{branch}");
+    if git::git_ok(cwd, &["rev-parse", "--verify", "-q", &local])
+        && !git::is_ancestor(cwd, &local, head)
+    {
+        return Err(UserError::new(
+            codes::GIT_REPO,
+            format!(
+                "branch {branch} has commits the PR head {} does not",
+                short(head)
+            ),
+        )
+        .cause("moving it to the PR head would drop them; nothing was changed")
+        .fix(format!(
+            "keep them under another name (`git branch -m {branch} {branch}-old`) or drop them \
+             (`git branch -D {branch}`, from another branch), then run it again"
+        ))
+        .into());
+    }
+    // Tracked changes only: git refuses a switch that would overwrite an untracked file.
+    let clean = git::git(cwd, &["status", "--porcelain", "--untracked-files=no"], &[])
+        .is_ok_and(|out| out.is_empty());
+    let current = git::current_branch(cwd);
+    // A detached HEAD no ref holds would be left only in the reflog by a switch.
+    let a_ref_holds_head = || {
+        git::git(
+            cwd,
+            &[
+                "for-each-ref",
+                "--count=1",
+                "--contains",
+                "HEAD",
+                "refs/heads",
+                "refs/tags",
+                "refs/remotes",
+            ],
+            &[],
+        )
+        .is_ok_and(|out| !out.is_empty())
+    };
+    let stay = if !clean {
+        Some("the working tree has uncommitted changes")
+    } else if current.is_none() && !a_ref_holds_head() {
+        Some("HEAD is detached at a commit no branch or tag holds")
+    } else {
+        None
+    };
+    let step = checkout_step(current.as_deref(), branch, stay);
+    if step == CheckoutStep::FastForward {
+        // Never a real merge: the check above made the branch an ancestor of the head.
+        git::git(cwd, &["merge", "--ff-only", "-q", head], &[])
+            .with_context(|| format!("moving {branch} (checked out) to the PR head"))?;
+    } else {
+        git::git(cwd, &["branch", "-f", branch, head], &[])
+            .with_context(|| format!("creating branch {branch}"))?;
+    }
+    if step == CheckoutStep::CreateAndSwitch {
+        git::git(cwd, &["switch", "-q", branch], &[]).with_context(|| {
+            format!("switching to {branch} (it is created: git switch {branch})")
+        })?;
+    }
+    Ok(step)
+}
+
 /// What `dg pr checkout` does with branch `pr/<n>`, as `gh pr checkout` does, never losing
-/// uncommitted work.
+/// work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CheckoutStep {
-    /// Point the branch at the head and switch to it (the working tree is clean).
+    /// Point the branch at the head and switch to it.
     CreateAndSwitch,
-    /// Point the branch at the head, stay put: there are uncommitted changes.
-    CreateOnly,
+    /// Point the branch at the head, stay put, for this reason (uncommitted changes, …).
+    CreateOnly(&'static str),
     /// The branch is checked out: fast-forward it (git refuses what would lose work).
     FastForward,
 }
 
-fn checkout_step(current: Option<&str>, branch: &str, clean: bool) -> CheckoutStep {
-    if current == Some(branch) {
-        CheckoutStep::FastForward
-    } else if clean {
-        CheckoutStep::CreateAndSwitch
-    } else {
-        CheckoutStep::CreateOnly
+/// `stay`: why switching away from where the user is could lose work, if it could.
+fn checkout_step(current: Option<&str>, branch: &str, stay: Option<&'static str>) -> CheckoutStep {
+    match stay {
+        _ if current == Some(branch) => CheckoutStep::FastForward,
+        Some(why) => CheckoutStep::CreateOnly(why),
+        None => CheckoutStep::CreateAndSwitch,
     }
 }
 
@@ -2540,24 +2580,25 @@ mod tests {
     /// a clean working tree; already on it, it fast-forwards instead of failing.
     #[test]
     fn checkout_switches_only_from_a_clean_tree() {
+        let dirty = Some("the working tree has uncommitted changes");
         assert_eq!(
-            checkout_step(Some("main"), "pr/7", true),
+            checkout_step(Some("main"), "pr/7", None),
             CheckoutStep::CreateAndSwitch
         );
         assert_eq!(
-            checkout_step(None, "pr/7", true),
+            checkout_step(None, "pr/7", None),
             CheckoutStep::CreateAndSwitch
         );
         assert_eq!(
-            checkout_step(Some("main"), "pr/7", false),
-            CheckoutStep::CreateOnly
+            checkout_step(Some("main"), "pr/7", dirty),
+            CheckoutStep::CreateOnly("the working tree has uncommitted changes")
         );
         assert_eq!(
-            checkout_step(Some("pr/7"), "pr/7", false),
+            checkout_step(Some("pr/7"), "pr/7", dirty),
             CheckoutStep::FastForward
         );
         assert_eq!(
-            checkout_step(Some("pr/71"), "pr/7", true),
+            checkout_step(Some("pr/71"), "pr/7", None),
             CheckoutStep::CreateAndSwitch
         );
     }
