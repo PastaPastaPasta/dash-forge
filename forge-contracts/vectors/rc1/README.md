@@ -38,6 +38,6 @@ Some rules read a total or the block, and those are judged only on chain:
 - `atMost20`;
 - `notFuture`.
 
-Every `refersTo` / `where` / `findBy` reference is also judged only on chain. The live suite covers all of these (`forge-contracts/scripts/rc1-live.mjs`, run against devnet bonsia).
+Every `refersTo` / `where` / `findBy` reference is also judged only on chain. The live suite (`forge-contracts/scripts/rc1-live.mjs`, run against devnet bonsia) refuses each rule above at least once, and exercises the gates and stamps that guard membership, privacy and provenance: self-enrolment, revocation, the `vis` stamps both ways, consent, `asMember`, reply roots, check sources and wraps. Some references are not exercised negatively yet: `comment.reviewId`, `patch.sourceRepoId`, `repo.renamedTo`, `label` and `follow.identityId`.
 
 `vectors.py` fails when a rule has neither a refusing vector nor an entry in its `LIVE_ONLY` list.

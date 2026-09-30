@@ -992,7 +992,7 @@ mod tests {
     }
 
     #[test]
-    fn bonsia_resolves_its_addresses_and_quorum_service_and_has_no_forge_v2_yet() {
+    fn bonsia_resolves_its_addresses_quorum_service_and_rc1_contracts() {
         let t = NetworkSettings {
             network: Some("devnet".into()),
             devnet_name: Some("bonsia".into()),
@@ -1011,9 +1011,13 @@ mod tests {
             t.network.quorum_base_url(),
             "https://quorums.bonsia.networks.dash.org"
         );
-        // Nothing is registered on bonsia until the wipe deploy is sequenced. The deploy commit
-        // that records bonsia's v2 flips this (and the test name), with web constants.test.ts
-        assert!(t.v2.is_none());
+        // The RC1 registration (forge-contracts/deployments/devnet-bonsia.json), with web
+        // constants.test.ts
+        let v2 = t.v2.expect("bonsia records forge-v2");
+        assert_eq!(v2.core, "6SbihK14KP8RhUpSH4Tc6WNvWKziWEoAbkNZmi7RadwJ");
+        assert_eq!(v2.collab, "H1H5VfTt2KWy1NhwEHoHuwYZGJm8eoetUCUt5xGNuZUp");
+        // its own forge-community (a pre-split record would fall back to collab's id)
+        assert_eq!(v2.community, "6ktYsH3cpxC7FbazwtVWGiNuVb4TNE5YrHD1hNY8XqNx");
     }
 
     #[test]
@@ -1224,7 +1228,8 @@ mod tests {
             "git config dash.network mainnet"
         );
         assert_eq!(main.env_assignments(), "DASH_FORGE_NETWORK=mainnet");
-        assert_eq!(suggested_v2_network().unwrap().key(), "devnet-moutai");
+        // the devnets tie on rank and keep name order: bonsia before moutai
+        assert_eq!(suggested_v2_network().unwrap().key(), "devnet-bonsia");
     }
 
     #[test]

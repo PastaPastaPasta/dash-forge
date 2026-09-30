@@ -1454,7 +1454,8 @@ mod tests {
             c.fix
                 .as_deref()
                 .unwrap()
-                .contains("dg auth new --network devnet --devnet-name moutai"),
+                // the first devnet by name with forge-v2 (bonsia, since the RC1 registration)
+                .contains("dg auth new --network devnet --devnet-name bonsia"),
             "{:?}",
             c.fix
         );
