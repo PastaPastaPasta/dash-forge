@@ -240,8 +240,10 @@ async fn unpublish(ctx: &Ctx, repo: &str, tag: &str) -> Result<()> {
             &format!("unpublish release {tag}"),
         )
         .await?;
-    let (current, _) = collab.releases(&s.repo).await?;
-    if !current.iter().any(|r| r.tag_name == *tag) {
+    // The same sum-based liveness test the write itself will make (not `releases()`'s "newest
+    // per tag" pick, which tie-breaks by `$id` within a block and so can disagree with the sum
+    // -- and so with consensus -- for two revisions landing there together).
+    if !collab.tag_is_live(&s.repo, tag).await? {
         return Err(release_not_live(repo, tag).into());
     }
     ctx.confirm_or_cancel(&format!(

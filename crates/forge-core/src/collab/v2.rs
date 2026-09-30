@@ -4371,6 +4371,30 @@ impl<'a> Collab<'a> {
         }
     }
 
+    /// Whether `tag_name` is currently live for `repo`: its release revisions' `delta` sum to
+    /// at least 1 ([`tag_is_live`]), the same test [`Collab::create_release`] and
+    /// [`Collab::unpublish_release`] make before writing. Exposed for callers that want to fail
+    /// before an expensive step (a confirmation prompt, say) without going through
+    /// [`Collab::releases`]'s "newest per tag" pick -- that picks by `$createdAt` then `$id`,
+    /// which can disagree with the sum (and so with consensus) for two revisions written in the
+    /// same block.
+    pub async fn tag_is_live(&self, repo: &RepoRef, tag_name: &str) -> Result<bool> {
+        let core = self.core_contract(repo).await?;
+        let revisions = self
+            .client
+            .query_all_documents(
+                &core,
+                DOC_RELEASE,
+                &[
+                    Self::repo_filter(repo)?,
+                    QueryFilter::eq("tagName", FieldValue::text(tag_name)),
+                ],
+                &[QueryOrder::asc("$createdAt")],
+            )
+            .await?;
+        Ok(tag_is_live(revisions.iter().map(release_delta_of)))
+    }
+
     /// Unpublish a live release: writes a revision of `tag_name` with `delta` −1, which the
     /// contract's `oneLive` rule accepts only while the tag's revisions currently sum to 1
     /// ([`tag_is_live`]). Maintainer-only at consensus. Refused before signing for a private
@@ -4400,33 +4424,19 @@ impl<'a> Collab<'a> {
                 &[QueryOrder::asc("$createdAt")],
             )
             .await?;
-        if !tag_is_live(revisions.iter().map(|d| release_from_doc(d).delta)) {
+        if !tag_is_live(revisions.iter().map(release_delta_of)) {
             return Err(not_live_error(tag_name));
         }
         let newest = revisions
             .iter()
             .max_by_key(|d| d.created_at.unwrap_or(0))
-            .map(release_from_doc)
             .expect("tag_is_live(revisions) implies revisions is non-empty");
-        let mut p = BTreeMap::new();
-        p.insert("tagName".to_string(), FieldValue::text(tag_name));
-        if !newest.name.is_empty() {
-            p.insert("name".to_string(), FieldValue::text(&newest.name));
-        }
-        if !newest.notes.is_empty() {
-            p.insert("notes".to_string(), FieldValue::text(&newest.notes));
-        }
-        p.insert("yanked".to_string(), FieldValue::boolean(newest.yanked));
-        if !newest.assets.is_empty() {
-            let json = serde_json::to_string(&newest.assets)?;
-            p.insert("assets".to_string(), FieldValue::text(json));
-        }
-        crate::layout::stamp_vis(&mut p, repo.visibility);
-        p.insert("delta".to_string(), FieldValue::signed(-1));
+        let p = unpublish_props(tag_name, newest, repo.visibility);
         match self.write(repo, &core, DOC_RELEASE, p).await {
-            // Another client unpublished (or republished) the tag between our read and this
-            // write: the node we read from was behind. Nothing was written; the tag is no
-            // longer in the state we checked, so give the same refusal a fresh read would.
+            // Another client changed the tag's live revision between our read and this write
+            // (an unpublish, landing first; or, within the same block, a write `oneLive` would
+            // resolve differently than the revision we read): the node we read from no longer
+            // matches consensus. Nothing was written; give the same refusal a fresh read would.
             Err(Error::RuleRefused { rule, .. }) if rule == ONE_LIVE_RULE => {
                 Err(not_live_error(tag_name))
             }
@@ -4892,6 +4902,47 @@ fn tag_is_live(deltas: impl IntoIterator<Item = i64>) -> bool {
     deltas.into_iter().sum::<i64>() >= 1
 }
 
+/// A release revision's `delta`, straight off its raw field (0 for a pre-RC1 document that
+/// predates the field): the input [`tag_is_live`] sums, without going through [`release_from_doc`]
+/// and its `Release`/`ReleaseAsset` parse.
+fn release_delta_of(d: &FetchedDocument) -> i64 {
+    d.fields
+        .get("delta")
+        .and_then(FieldValue::as_i64)
+        .unwrap_or(0)
+}
+
+/// [`Collab::unpublish_release`]'s write: `tag_name` with `delta` −1, and every other field
+/// carried forward from `newest` unchanged -- its raw `name`/`notes`/`yanked`/`assets` fields,
+/// not reparsed and reserialized through [`release_from_doc`]'s `Release`/`ReleaseAsset` struct.
+/// Reserializing could grow `assets` past the contract's 4096-byte cap (an older document can
+/// gain bytes on a round trip, e.g. a bare `uri` becoming a one-element `uris` array), and a
+/// document the contract already accepted needs no revalidation here.
+fn unpublish_props(
+    tag_name: &str,
+    newest: &FetchedDocument,
+    visibility: Visibility,
+) -> BTreeMap<String, FieldValue> {
+    let mut p = BTreeMap::new();
+    p.insert("tagName".to_string(), FieldValue::text(tag_name));
+    if let Some(name) = newest.field_str("name").filter(|s| !s.is_empty()) {
+        p.insert("name".to_string(), FieldValue::text(name));
+    }
+    if let Some(notes) = newest.field_str("notes").filter(|s| !s.is_empty()) {
+        p.insert("notes".to_string(), FieldValue::text(notes));
+    }
+    p.insert(
+        "yanked".to_string(),
+        FieldValue::boolean(newest.field_bool("yanked")),
+    );
+    if let Some(assets) = newest.field_str("assets").filter(|s| !s.is_empty()) {
+        p.insert("assets".to_string(), FieldValue::text(assets));
+    }
+    crate::layout::stamp_vis(&mut p, visibility);
+    p.insert("delta".to_string(), FieldValue::signed(-1));
+    p
+}
+
 /// The `delta` of a new public revision of a tag (RC1 `oneLive`: the tag's sum after the write
 /// must be `min(delta + 1, 1)`): `+1` publishes a tag that is not live, `0` edits or yanks a
 /// live one. [`Collab::unpublish_release`] writes `-1` directly, since it only ever runs while
@@ -4909,7 +4960,9 @@ fn not_live_error(tag_name: &str) -> Error {
         format!("release {tag_name:?} not unpublished: it is not currently live"),
     )
     .cause("a release can be unpublished only while it is live (oneLive): never published, or already unpublished")
-    .fix("`dg release list <owner>/<repo>` shows which tags are currently live")
+    .fix("`dg release list <owner>/<repo>` shows which tags are currently live -- if you just \
+          published this tag, the node you read from may just be a block behind; wait a moment \
+          and retry before assuming it never went through")
     .note("nothing was written")
     .into()
 }
@@ -5910,6 +5963,93 @@ mod tests {
         ] {
             assert_eq!(tag_is_live(history.iter().copied()), live, "{history:?}");
         }
+    }
+
+    /// `release_delta_of` reads `delta` off the raw field, without a [`release_from_doc`]
+    /// parse: present (either sign), and absent (a pre-RC1 document).
+    #[test]
+    fn release_delta_of_reads_the_raw_field() {
+        let doc = |fields: BTreeMap<String, FieldValue>| FetchedDocument {
+            id: "r".into(),
+            owner_id: "m".into(),
+            created_at: Some(1),
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            revision: None,
+            fields,
+        };
+        assert_eq!(
+            release_delta_of(&doc(BTreeMap::from([(
+                "delta".into(),
+                FieldValue::signed(-1)
+            )]))),
+            -1
+        );
+        assert_eq!(
+            release_delta_of(&doc(BTreeMap::from([(
+                "delta".into(),
+                FieldValue::integer(1)
+            )]))),
+            1
+        );
+        assert_eq!(release_delta_of(&doc(BTreeMap::new())), 0);
+    }
+
+    /// `unpublish_props` carries the newest revision's `name`/`notes`/`yanked`/`assets` forward
+    /// as raw strings -- an oversized or oddly-formatted `assets` blob the contract already
+    /// accepted passes through unchanged, rather than being reparsed and regrown through
+    /// `Release`/`ReleaseAsset` (should-fix: a round trip can add bytes, e.g. a bare `uri`
+    /// becoming a one-element `uris` array). `delta` is always −1, and empty `name`/`notes`/
+    /// `assets` are omitted rather than sent as empty strings, matching `create_release`.
+    #[test]
+    fn unpublish_props_carries_the_newest_revision_forward_verbatim() {
+        let odd_assets = r#"[{"name":"a","uri":"ipfs://x","weird_extra_key":123}]"#;
+        let newest = FetchedDocument {
+            id: "r2".into(),
+            owner_id: "m".into(),
+            created_at: Some(9),
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            revision: None,
+            fields: BTreeMap::from([
+                ("tagName".into(), FieldValue::text("v1")),
+                ("name".into(), FieldValue::text("First cut")),
+                ("notes".into(), FieldValue::text("body")),
+                ("yanked".into(), FieldValue::boolean(true)),
+                ("assets".into(), FieldValue::text(odd_assets)),
+                ("delta".into(), FieldValue::integer(0)),
+            ]),
+        };
+        let p = unpublish_props("v1", &newest, Visibility::Public);
+        assert_eq!(p.get("tagName").and_then(FieldValue::as_str), Some("v1"));
+        assert_eq!(
+            p.get("name").and_then(FieldValue::as_str),
+            Some("First cut")
+        );
+        assert_eq!(p.get("notes").and_then(FieldValue::as_str), Some("body"));
+        assert!(matches!(p.get("yanked"), Some(FieldValue::Bool(true))));
+        // Byte-for-byte, not reparsed: the "weird_extra_key" a Release/ReleaseAsset round trip
+        // would drop is still there.
+        assert_eq!(
+            p.get("assets").and_then(FieldValue::as_str),
+            Some(odd_assets)
+        );
+        assert_eq!(p.get("delta").and_then(FieldValue::as_i64), Some(-1));
+
+        let bare = FetchedDocument {
+            id: "r3".into(),
+            owner_id: "m".into(),
+            created_at: Some(1),
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            revision: None,
+            fields: BTreeMap::from([("tagName".into(), FieldValue::text("v2"))]),
+        };
+        let p = unpublish_props("v2", &bare, Visibility::Public);
+        assert!(!p.contains_key("name"));
+        assert!(!p.contains_key("notes"));
+        assert!(!p.contains_key("assets"));
+        assert!(matches!(p.get("yanked"), Some(FieldValue::Bool(false))));
     }
 
     #[test]
