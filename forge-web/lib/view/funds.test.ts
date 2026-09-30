@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { affordability, fundsNotice, fundsState, LOW_BALANCE_CREDITS, nextFundsChange } from './funds'
 import { previewCreate } from '../sdk/cost'
-import { estimateMissed, reconcile, summarize, type SpendRow } from '../spend'
+import { balanceSettled, estimateMissed, reconcile, summarize, type SpendRow } from '../spend'
 
 const NOW = 1_800_000_000_000
 const DAY = 86_400_000
@@ -136,5 +136,15 @@ describe('spend ledger', () => {
   it('reconciles against the balance change since the baseline', () => {
     expect(reconcile(100, 1000n, 880n)).toEqual({ balanceChange: 120, unexplained: 20 })
     expect(reconcile(100, null, 880n)).toBeNull()
+  })
+  it('reconciles only a balance read from Platform after the last row (not a reload’s kept balance)', () => {
+    const rows = [row(100, 50, 60), row(300, 50, 55)]
+    // A reload shows the kept session's balance (no read yet): its gap is the writes it predates.
+    expect(balanceSettled(null, rows)).toBe(false)
+    // Read before the last row landed: that write is not in it yet.
+    expect(balanceSettled(299, rows)).toBe(false)
+    expect(balanceSettled(300, rows)).toBe(true)
+    expect(balanceSettled(null, [])).toBe(false)
+    expect(balanceSettled(1, [])).toBe(true)
   })
 })

@@ -399,6 +399,21 @@ describe('the controller', () => {
     expect(next.unlockScope()).toBe('signing')
   }, 30_000)
 
+  it("a reload shows the kept balance as not yet read; the chain check reads it (the spend ledger's gap waits)", async () => {
+    const c = await signIn()
+    expect(c.getState().session?.balanceReadAt).toBeTypeOf('number')
+    releaseUnlocked()
+    const next = make()
+    await next.resume()
+    // The hint's balance is from when the session was kept, many writes ago perhaps.
+    expect(next.getState().session?.balance).toBe((10n ** 11n).toString())
+    expect(next.getState().session?.balanceReadAt).toBeUndefined()
+    await vi.waitFor(() => expect(next.getState().session?.balanceReadAt).toBeTypeOf('number'))
+    const readAt = next.getState().session!.balanceReadAt!
+    await next.refreshBalance()
+    expect(next.getState().session!.balanceReadAt!).toBeGreaterThanOrEqual(readAt)
+  }, 30_000)
+
   it('a private repo asks to unlock once; after it this tab holds the key; a new tab asks again', async () => {
     const c = await signIn()
     await storeEncryptionKey(NET, ID, 4, new Uint8Array(ENC_SECRET))

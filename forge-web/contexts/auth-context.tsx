@@ -69,6 +69,11 @@ interface AuthContextValue {
   readonly identity: string | null
   /** Credit balance as a decimal string (bigint-safe), or null when logged out. */
   readonly balance: string | null
+  /**
+   * When this tab read `balance` from Platform (client ms), or null while a reload still shows
+   * the kept session's balance (or when logged out).
+   */
+  readonly balanceReadAt: number | null
   /** Balance and key-budget state (`ux-dx-spec.md` §4), or null when logged out. */
   readonly funds: FundsState | null
   /** The signing key's limits (a PV14 limited key), when it has any. */
@@ -296,6 +301,7 @@ export function AuthProvider({
     () => ({
       identity: session?.identityId ?? null,
       balance: session?.balance ?? null,
+      balanceReadAt: session?.balanceReadAt ?? null,
       funds,
       keyLimits,
       keyId: session?.keyId ?? null,

@@ -133,6 +133,18 @@ export function spendKindLabel(kind: string): string {
 }
 
 /**
+ * Whether the balance can be reconciled with the ledger yet: it was read from Platform in this
+ * tab (`balanceReadAt`; null while a reload shows the kept session's balance, which dates from
+ * when the session was kept) no earlier than the ledger's last row, so it has every recorded
+ * write in it. Until then the gap would be the writes the balance misses, read as "top-ups".
+ */
+export function balanceSettled(balanceReadAt: number | null, rows: readonly Pick<SpendRow, 'at'>[]): boolean {
+  if (balanceReadAt === null) return false
+  const last = rows.reduce((m, r) => Math.max(m, r.at), -Infinity)
+  return balanceReadAt >= last
+}
+
+/**
  * The reconciliation line: what the ledger explains vs what the balance actually moved since
  * the ledger began. Positive `unexplained` = spent elsewhere (another app or key); negative =
  * credited (a top-up).

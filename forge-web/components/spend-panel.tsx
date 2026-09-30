@@ -10,6 +10,7 @@
  * Both lists are stacked rows rather than wide tables, so they read on a 320 px phone.
  */
 
+import { useEffect } from 'react'
 import Link from 'next/link'
 import { AlertTriangle } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
@@ -20,6 +21,7 @@ import { ACTIVE_NETWORK, DEFAULT_NETWORK } from '@/lib/constants'
 import { readRepoById, type RepoDoc } from '@/lib/repo'
 import {
   NO_REPO,
+  balanceSettled,
   estimateMissed,
   isIdentityAction,
   readBaseline,
@@ -60,19 +62,27 @@ function useRepoNames(ids: readonly string[]): ReadonlyMap<string, RepoDoc | nul
 }
 
 export function SpendPanel(): JSX.Element {
-  const { identity, balance } = useAuth()
+  const { identity, balance, balanceReadAt, refreshBalance } = useAuth()
   const ledger = useAsync<{ rows: SpendRow[]; baseline: { at: number; credits: bigint } | null }>(
     async () => ({
       rows: await readLedger(DEFAULT_NETWORK, identity!),
       baseline: await readBaseline(DEFAULT_NETWORK, identity!),
     }),
-    [identity ?? '', balance ?? ''],
+    [identity ?? '', balance ?? '', balanceReadAt ?? ''],
     { enabled: identity !== null },
   )
   const rows = ledger.data?.rows ?? []
   const s = summarize(rows)
   const repoIds = s.byRepo.map((r) => r.repo).filter((r) => r !== NO_REPO)
   const repos = useRepoNames(repoIds)
+  // A balance that predates the ledger's last row (the kept session's, right after a reload, or
+  // one read before a write's row landed) is read again once; the gap line waits for it.
+  const settled = balanceSettled(balanceReadAt, rows)
+  const lastRowAt = rows.length === 0 ? null : rows[rows.length - 1]!.at
+  useEffect(() => {
+    if (identity === null || settled || lastRowAt === null) return
+    void refreshBalance().catch(() => undefined)
+  }, [identity, settled, lastRowAt, refreshBalance])
 
   if (ledger.loading && !ledger.settled) return <LoadingBlock label="Reading the spend ledger" />
   if (ledger.error) {
@@ -92,7 +102,7 @@ export function SpendPanel(): JSX.Element {
   // Only rows since the baseline explain the balance change (earlier ones predate it).
   const baseline = ledger.data?.baseline ?? null
   const sinceBaseline = baseline === null ? 0 : summarize(rows.filter((r) => r.at >= baseline.at)).allTime
-  const rec = reconcile(sinceBaseline, baseline?.credits ?? null, balance === null ? null : BigInt(balance))
+  const rec = settled ? reconcile(sinceBaseline, baseline?.credits ?? null, balance === null ? null : BigInt(balance)) : null
   const identityOnly = rows.every((r) => r.repo === null && isIdentityAction(r.kind))
   const latest = rows.slice(-50).reverse()
 
@@ -135,6 +145,10 @@ export function SpendPanel(): JSX.Element {
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="spend-reconcile">
           Ledger <Dash credits={s.allTime} /> · balance change <Dash credits={rec.balanceChange} /> ·{' '}
           <Dash credits={rec.unexplained} /> unexplained ({rec.unexplained >= 0 ? 'other apps or keys' : 'top-ups'})
+        </p>
+      ) : !settled && baseline !== null ? (
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="spend-reconcile-pending">
+          Ledger <Dash credits={s.allTime} /> · reading the balance to reconcile…
         </p>
       ) : null}
       {s.missed > 0 ? (
