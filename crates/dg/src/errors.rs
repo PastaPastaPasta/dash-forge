@@ -201,6 +201,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         // A download also fetches from storage and writes local files: "read" was wrong
         // for those failures (L-22).
         Command::Release(R::Download { repo, .. }) => ("release not downloaded", Some(repo)),
+        Command::Release(R::Unpublish { repo, .. }) => ("release not unpublished", Some(repo)),
         Command::Label(LabelCommand::List { repo, .. }) => ("could not list labels", Some(repo)),
         Command::Issue(I::Label { repo, .. })
         | Command::Label(

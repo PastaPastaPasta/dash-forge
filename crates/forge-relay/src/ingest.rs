@@ -297,6 +297,10 @@ pub struct TargetInfo {
     pub last_activity: u64,
     /// A draft PR now (its state code at startup, then each transition seen).
     pub draft: bool,
+    /// A merged PR (terminal: its state code at startup, or a `PR_MERGE` transition seen
+    /// since). Kept so a later lock/unlock on an already-merged PR reports `merged: true`
+    /// rather than the lock/unlock's own hardcoded `false` ([`translate_transition`]).
+    pub merged: bool,
 }
 
 impl TargetInfo {
@@ -314,6 +318,7 @@ impl TargetInfo {
             baseline,
             last_activity: d.created_at.unwrap_or(0),
             draft: false,
+            merged: false,
         }
     }
 
@@ -331,6 +336,7 @@ impl TargetInfo {
             baseline,
             last_activity: d.created_at.unwrap_or(0),
             draft: false,
+            merged: false,
         }
     }
 
@@ -487,18 +493,22 @@ pub fn translate_comment(
     ))
 }
 
-/// A `review` → `pull_request_review` submitted. Needs its PR in `targets`.
+/// A `review` → `pull_request_review` submitted. Needs its PR in `targets`. Its embedded PR's
+/// `open`/`merged` are the relay's last-seen fold (`closed`) and [`TargetInfo::merged`], same
+/// as [`translate_event`] -- a review carries no fold of its own either.
 pub fn translate_review(
     repo: &RepositoryMeta,
     d: &FetchedDocument,
     targets: &BTreeMap<String, TargetInfo>,
+    closed: &BTreeSet<String>,
 ) -> Option<WebhookEvent> {
     let patch_id = id_field(d, "patchId")?;
     let target = targets.get(&patch_id).filter(|t| t.is_pr)?;
+    let open = !closed.contains(&patch_id);
     Some(pull_request_review_event(
         repo,
         &d.id,
-        &target.pr_obj(&patch_id, true, false),
+        &target.pr_obj(&patch_id, open, target.merged),
         &d.owner_id,
         d.field_u64("verdict")?,
         &d.field_hex("commitOid").unwrap_or_default(),
@@ -506,8 +516,15 @@ pub fn translate_review(
     ))
 }
 
-/// A `release` → `release` published, or `unpublished` when it marks the tag yanked.
-pub fn translate_release(repo: &RepositoryMeta, d: &FetchedDocument) -> Option<WebhookEvent> {
+/// A `release` → `release` published, or `unpublished` when it newly marks the tag yanked.
+/// `was_yanked` is whether the tag's previous revision was already yanked (the caller's own
+/// per-tag cache, so this stays a pure function of its arguments): a further delta-0 revision on
+/// an already-yanked tag is `edited`, not a repeated `unpublished`.
+pub fn translate_release(
+    repo: &RepositoryMeta,
+    d: &FetchedDocument,
+    was_yanked: bool,
+) -> Option<WebhookEvent> {
     let assets = d
         .field_str("assets")
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -521,19 +538,28 @@ pub fn translate_release(repo: &RepositoryMeta, d: &FetchedDocument) -> Option<W
         author: d.owner_id.clone(),
         assets,
     };
-    Some(release_event(repo, &d.id, release_action(d, r.yanked), &r))
+    Some(release_event(
+        repo,
+        &d.id,
+        release_action(d, r.yanked, was_yanked),
+        &r,
+    ))
 }
 
 /// A release document's GitHub action from its RC1 `delta` (+1 publish, 0 edit / yank /
-/// sealed, −1 unpublish): `published`, `unpublished`, or for 0 `edited` (`unpublished` when it
-/// yanks). A document without a delta (before RC1) is `published` unless yanked.
-fn release_action(d: &FetchedDocument, yanked: bool) -> &'static str {
+/// sealed, −1 unpublish): `published`, `unpublished`, or for 0 `edited` -- unless this revision
+/// newly sets `yanked` (it was not set on the tag's previous revision), which is `unpublished`
+/// instead. `delta` is a required field of the contract's `release` schema, so the `None` arm
+/// (a document with none at all) is unreachable in practice; it is kept only as a defensive
+/// fallback, not a real pre-RC1 case.
+fn release_action(d: &FetchedDocument, yanked: bool, was_yanked: bool) -> &'static str {
+    let newly_yanked = yanked && !was_yanked;
     match d.fields.get("delta").and_then(FieldValue::as_i64) {
         Some(1) => "published",
         Some(-1) => "unpublished",
-        Some(_) if !yanked => "edited",
-        _ if yanked => "unpublished",
-        _ => "published",
+        _ if newly_yanked => "unpublished",
+        Some(_) => "edited",
+        None => "published",
     }
 }
 
@@ -634,7 +660,8 @@ pub fn draft_after(kind: u64) -> bool {
 /// readers show ("merge commit not found on the base").
 ///
 /// A lock or unlock ([`lock_action`]) is `locked` / `unlocked` with the object's `locked` set
-/// and its state as the relay last saw it: open unless the target is in `closed`.
+/// and its state as the relay last saw it: open unless the target is in `closed`, and merged
+/// per [`TargetInfo::merged`] (a lock/unlock is no state move, so it never changes either).
 pub fn translate_transition(
     repo: &RepositoryMeta,
     d: &FetchedDocument,
@@ -651,7 +678,7 @@ pub fn translate_transition(
     if let Some((action, locked)) = lock_action(kind) {
         let open = !closed.contains(&target_id);
         let (mut e, obj) = if target.is_pr {
-            let pr = target.pr_obj(&target_id, open, false);
+            let pr = target.pr_obj(&target_id, open, target.merged);
             (pull_request_event(repo, &d.id, action, &pr), "pull_request")
         } else {
             let issue = target.issue_obj(&target_id, open);
@@ -678,19 +705,29 @@ pub fn translate_transition(
 }
 
 /// An `event` or `authorEvent` → `issues` / `pull_request` with the matching action. Needs
-/// the target in `targets`. The `open` state is the action's own (an event about an issue
-/// carries no fold); a label or assignee event adds GitHub's `label` / `assignee` object.
+/// the target in `targets`. None of these kinds move the fold themselves ([`event_action`]'s
+/// own `open` is always `true`, so it is not used here), so `open` is the relay's last-seen
+/// fold (`closed`), and a PR's `merged` is [`TargetInfo::merged`] -- matching how
+/// [`translate_transition`]'s lock arm reads the same two facts. A label or assignee event
+/// adds GitHub's `label` / `assignee` object.
 pub fn translate_event(
     repo: &RepositoryMeta,
     d: &FetchedDocument,
     targets: &BTreeMap<String, TargetInfo>,
+    closed: &BTreeSet<String>,
 ) -> Option<WebhookEvent> {
     let target_id = id_field(d, "targetId")?;
     let target = targets.get(&target_id)?;
     let kind = d.field_u64("kind")?;
-    let (action, open) = event_action(kind, target.is_pr)?;
+    let (action, _) = event_action(kind, target.is_pr)?;
+    let open = !closed.contains(&target_id);
     let mut e = if target.is_pr {
-        pull_request_event(repo, &d.id, action, &target.pr_obj(&target_id, open, false))
+        pull_request_event(
+            repo,
+            &d.id,
+            action,
+            &target.pr_obj(&target_id, open, target.merged),
+        )
     } else {
         issues_event(repo, &d.id, action, &target.issue_obj(&target_id, open))
     };
@@ -753,6 +790,7 @@ mod tests {
             baseline: Baseline::Beginning,
             last_activity: 0,
             draft: false,
+            merged: false,
         }
     }
 
@@ -870,15 +908,28 @@ mod tests {
                 ("body", FieldValue::text("needs work")),
             ],
         );
-        let e = translate_review(&meta(), &r, &targets([3; 32], target(true, 8))).unwrap();
+        let empty = BTreeSet::new();
+        let e = translate_review(&meta(), &r, &targets([3; 32], target(true, 8)), &empty).unwrap();
         assert_eq!(e.event, "pull_request_review");
         assert_eq!(e.payload["review"]["state"], "changes_requested");
         assert_eq!(e.payload["review"]["commit_id"], "ab".repeat(20));
         assert_eq!(e.payload["pull_request"]["number"], 8);
+        assert_eq!(e.payload["pull_request"]["state"], "open");
         assert_eq!(e.payload["sender"]["login"], "REVIEWER");
         // A review of an issue id, or of an unknown PR, is not delivered.
-        assert!(translate_review(&meta(), &r, &targets([3; 32], target(false, 8))).is_none());
-        assert!(translate_review(&meta(), &r, &BTreeMap::new()).is_none());
+        assert!(
+            translate_review(&meta(), &r, &targets([3; 32], target(false, 8)), &empty).is_none()
+        );
+        assert!(translate_review(&meta(), &r, &BTreeMap::new(), &empty).is_none());
+        // A review of a PR the relay has seen closed or merged carries that fold, same as
+        // translate_event and translate_transition's lock arm.
+        let mut merged_t = target(true, 8);
+        merged_t.merged = true;
+        let e = translate_review(&meta(), &r, &targets([3; 32], merged_t), &empty).unwrap();
+        assert_eq!(e.payload["pull_request"]["merged"], true);
+        let closed = BTreeSet::from([encode_identifier([3; 32])]);
+        let e = translate_review(&meta(), &r, &targets([3; 32], target(true, 8)), &closed).unwrap();
+        assert_eq!(e.payload["pull_request"]["state"], "closed");
     }
 
     #[test]
@@ -893,7 +944,7 @@ mod tests {
                 ("assets", FieldValue::text(r#"[{"name":"x.tgz"}]"#)),
             ],
         );
-        let e = translate_release(&meta(), &d).unwrap();
+        let e = translate_release(&meta(), &d, false).unwrap();
         assert_eq!(e.event, "release");
         assert_eq!(e.payload["action"], "published");
         assert_eq!(e.payload["release"]["tag_name"], "v1.2.0");
@@ -907,7 +958,7 @@ mod tests {
                 ("assets", FieldValue::text("not json")),
             ],
         );
-        let e = translate_release(&meta(), &bad_assets).unwrap();
+        let e = translate_release(&meta(), &bad_assets, false).unwrap();
         assert_eq!(e.payload["release"]["assets"], serde_json::json!([]));
     }
 
@@ -981,7 +1032,7 @@ mod tests {
         assert_eq!(t.head_oid, newer);
         // The webhook: `synchronize` with the new head.
         let prs = targets([9; 32], t);
-        let e = translate_event(&meta(), &head("MEMBER", &newer), &prs).unwrap();
+        let e = translate_event(&meta(), &head("MEMBER", &newer), &prs, &BTreeSet::new()).unwrap();
         assert_eq!(e.payload["action"], "synchronize");
         assert_eq!(e.payload["pull_request"]["head"]["sha"], newer);
     }
@@ -999,24 +1050,55 @@ mod tests {
             doc(id, "ACTOR", f)
         };
         let issues = targets([1; 32], target(false, 8));
-        let e = translate_event(&meta(), &ev("l", 4, Some("bug"), [1; 32]), &issues).unwrap();
+        let empty = BTreeSet::new();
+        let e =
+            translate_event(&meta(), &ev("l", 4, Some("bug"), [1; 32]), &issues, &empty).unwrap();
         assert_eq!(e.payload["action"], "labeled");
         assert_eq!(e.payload["label"]["name"], "bug");
         assert_eq!(e.payload["sender"]["login"], "ACTOR");
-        let e = translate_event(&meta(), &ev("a", 6, Some("BOB"), [1; 32]), &issues).unwrap();
+        assert_eq!(e.payload["issue"]["state"], "open");
+        let e =
+            translate_event(&meta(), &ev("a", 6, Some("BOB"), [1; 32]), &issues, &empty).unwrap();
         assert_eq!(e.payload["assignee"]["login"], "BOB");
+
+        // The relay's last-seen fold, not the event's own: a labeled event on an issue the
+        // relay has seen closed still reports the issue closed.
+        let closed = BTreeSet::from([encode_identifier([1; 32])]);
+        let e =
+            translate_event(&meta(), &ev("l", 4, Some("bug"), [1; 32]), &issues, &closed).unwrap();
+        assert_eq!(e.payload["issue"]["state"], "closed");
+        // Likewise a PR event carries TargetInfo::merged forward.
+        let mut merged_pr = target(true, 3);
+        merged_pr.merged = true;
+        let prs_merged = targets([9; 32], merged_pr);
+        let e = translate_event(
+            &meta(),
+            &ev("l", 4, Some("bug"), [9; 32]),
+            &prs_merged,
+            &empty,
+        )
+        .unwrap();
+        assert_eq!(e.payload["pull_request"]["merged"], true);
 
         // State kinds are transitions now: an event of one is never a webhook. Retarget means
         // nothing on an issue; unknown targets and kinds are skipped.
         let prs = targets([9; 32], target(true, 3));
         for kind in [1, 2, 3, 9, 10] {
-            assert!(translate_event(&meta(), &ev("x", kind, None, [9; 32]), &prs).is_none());
-            assert!(translate_event(&meta(), &ev("x", kind, None, [1; 32]), &issues).is_none());
+            assert!(
+                translate_event(&meta(), &ev("x", kind, None, [9; 32]), &prs, &empty).is_none()
+            );
+            assert!(
+                translate_event(&meta(), &ev("x", kind, None, [1; 32]), &issues, &empty).is_none()
+            );
         }
         for kind in [8, 11] {
-            assert!(translate_event(&meta(), &ev("x", kind, None, [1; 32]), &issues).is_none());
+            assert!(
+                translate_event(&meta(), &ev("x", kind, None, [1; 32]), &issues, &empty).is_none()
+            );
         }
-        assert!(translate_event(&meta(), &ev("x", 4, Some("b"), [5; 32]), &issues).is_none());
+        assert!(
+            translate_event(&meta(), &ev("x", 4, Some("b"), [5; 32]), &issues, &empty).is_none()
+        );
     }
 
     /// Each transition kind is the GitHub action a receiver expects, on the right target kind.
@@ -1128,6 +1210,35 @@ mod tests {
         // An issue kind on a PR (or the reverse) is nothing.
         assert!(translate_transition(&meta(), &tr(3, [9; 32]), &prs, true, &none).is_none());
         assert!(translate_transition(&meta(), &tr(18, [1; 32]), &issues, true, &none).is_none());
+    }
+
+    /// A lock or unlock on an already-merged PR reports `merged: true` (the chain fact),
+    /// not the lock/unlock's own state — merging is terminal and a lock/unlock never
+    /// changes it (`TargetInfo::merged`).
+    #[test]
+    fn a_lock_on_a_merged_pr_still_reports_merged() {
+        let tr = |kind: u64| {
+            doc(
+                &format!("t{kind}"),
+                "ACTOR",
+                vec![
+                    ("targetId", FieldValue::identifier([7; 32])),
+                    ("kind", FieldValue::integer(kind)),
+                ],
+            )
+        };
+        let mut merged_pr = target(true, 4);
+        merged_pr.merged = true;
+        let prs = targets([7; 32], merged_pr);
+        let closed = BTreeSet::from([encode_identifier([7; 32])]);
+        for kind in [18, 19] {
+            let e = translate_transition(&meta(), &tr(kind), &prs, true, &closed).unwrap();
+            assert_eq!(
+                e.payload["pull_request"]["merged"], true,
+                "kind {kind} on an already-merged PR"
+            );
+            assert_eq!(e.payload["pull_request"]["state"], "closed");
+        }
     }
 
     /// An in-memory index ordered by `($createdAt, $id)`. A `start_after` naming a document
@@ -1337,11 +1448,12 @@ mod tests {
                 ("yanked", FieldValue::boolean(true)),
             ],
         );
-        let e = translate_release(&meta(), &yanked).unwrap();
+        let e = translate_release(&meta(), &yanked, false).unwrap();
         assert_eq!(e.payload["action"], "unpublished");
     }
 
-    /// RC1 `release.delta`: +1 publish, 0 edit (or yank), −1 unpublish.
+    /// RC1 `release.delta`: +1 publish, 0 edit (or yank), −1 unpublish. `was_yanked` is always
+    /// `false` here (a tag never yanked before), so 0-and-yanked is the moment it becomes yanked.
     #[test]
     fn a_release_action_follows_its_delta() {
         let rel = |delta: i64, yanked: bool| {
@@ -1361,11 +1473,42 @@ mod tests {
             (0, false, "edited"),
             (0, true, "unpublished"),
         ] {
-            let e = translate_release(&meta(), &rel(delta, yanked)).unwrap();
+            let e = translate_release(&meta(), &rel(delta, yanked), false).unwrap();
             assert_eq!(
                 e.payload["action"], action,
                 "delta {delta}, yanked {yanked}"
             );
         }
+    }
+
+    /// A further delta-0 edit of a release already yanked (`was_yanked: true`) is `edited`, not
+    /// a repeated `unpublished` -- only the revision that newly sets `yanked` is `unpublished`.
+    /// Un-yanking (publishing again without `--yanked`) is likewise `edited`, not a webhook
+    /// action of its own: GitHub has none for it, and the tag's publish state did not change.
+    #[test]
+    fn editing_an_already_yanked_release_is_edited_not_unpublished_again() {
+        let rel = |yanked: bool| {
+            doc(
+                "r",
+                "M",
+                vec![
+                    ("tagName", FieldValue::text("v1")),
+                    ("delta", FieldValue::signed(0)),
+                    ("yanked", FieldValue::boolean(yanked)),
+                ],
+            )
+        };
+        // Newly yanked: was_yanked false, yanked true -> unpublished.
+        let e = translate_release(&meta(), &rel(true), false).unwrap();
+        assert_eq!(e.payload["action"], "unpublished");
+        // Still yanked on a later edit: was_yanked true, yanked true -> edited.
+        let e = translate_release(&meta(), &rel(true), true).unwrap();
+        assert_eq!(e.payload["action"], "edited");
+        // Un-yanked: was_yanked true, yanked false -> edited.
+        let e = translate_release(&meta(), &rel(false), true).unwrap();
+        assert_eq!(e.payload["action"], "edited");
+        // Never yanked: was_yanked false, yanked false -> edited.
+        let e = translate_release(&meta(), &rel(false), false).unwrap();
+        assert_eq!(e.payload["action"], "edited");
     }
 }

@@ -3,7 +3,7 @@ SHELL := /bin/bash
 
 COMPOSE_FILE := infra/docker-compose.yml
 
-.PHONY: check check-rust check-web build build-rust build-web infra-up infra-down e2e e2e-fixture devnet-identities devnet-identities-verify storage-it storage-e2e
+.PHONY: check check-rust check-web build build-rust build-web infra-up infra-down e2e e2e-fixture devnet-identities devnet-identities-verify storage-it survivability storage-e2e
 
 ## check: run rust + web lint/test suites; tolerant of dirs that don't exist yet
 check: check-rust check-web
@@ -124,6 +124,22 @@ storage-it: infra-up
 		sleep 2; \
 	done
 	FORGE_IT_S3=1 FORGE_IT_IPFS=1 cargo test --locked -p forge-core --lib -- backends::live_tests storage::
+
+## survivability: the survivability drill (roadmap Phase 1 gate) against the LOCAL fixture:
+## deletes buckets of its own and STOPS/STARTS the kubo container (forge-e2e-kubo), so it is
+## not part of storage-it. Clone (forge-core), browse (web reader) and web host (the static
+## build killed, served again from a second host and from kubo as an IPFS build). No chain.
+## CI: .github/workflows/survivability.yml.
+survivability: infra-up
+	@for i in $$(seq 1 60); do \
+		curl -fsS -o /dev/null http://127.0.0.1:9000/health/ready && \
+		curl -fsS -o /dev/null http://127.0.0.1:8081/ipfs/bafkqaaa && break; \
+		[ "$$i" = 60 ] && { echo "storage fixture not ready after 120 s (docker compose -f $(COMPOSE_FILE) ps)" >&2; exit 1; }; \
+		sleep 2; \
+	done
+	FORGE_DRILL=1 cargo test --locked -p forge-core --lib survivability -- --test-threads=1
+	cd forge-web && FORGE_DRILL=1 pnpm exec vitest run lib/view/survivability.drill.test.ts && \
+		pnpm build && FORGE_DRILL=1 pnpm exec playwright test -c e2e-drill/playwright.config.ts
 
 ## storage-e2e: a REAL `git push` / `git clone` through git-remote-dash with packs stored
 ## on local RustFS (S3) + kubo and only the manifest + ref on devnet bonsia, against the

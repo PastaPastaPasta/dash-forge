@@ -323,11 +323,15 @@ function sourceName(source: string): string {
 }
 
 function deriveSource(input: TrustInputs, content: TrustLink): TrustLink {
-  const { sources, unreachable } = input.checks
+  const { sources, unreachable, fellBackFrom } = input.checks
   const gatewayHosts = new Set((input.gateways ?? readGateways()).map(urlHost))
   const tried = new Set(sources.map((s) => (gatewayHosts.has(s) ? 'ipfs' : s)))
   const notTried = [...new Set((input.configuredUris ?? []).map(urlHost))].filter((h) => h !== '' && !tried.has(h))
-  const also = notTried.length > 0 ? ` Also recorded: ${notTried.map((h) => `${h} (not tried)`).join(', ')}.` : ''
+  // A recorded copy that failed while another served: named, but nothing is missing, so the
+  // row's state is the content check's.
+  const fellBack = fellBackFrom.length > 0 ? ` Unavailable, another copy served instead: ${fellBackFrom.join(', ')}.` : ''
+  const alsoRecorded = notTried.length > 0 ? ` Also recorded: ${notTried.map((h) => `${h} (not tried)`).join(', ')}.` : ''
+  const also = fellBack + alsoRecorded
   const failedPlaces = unreachable.length > 0 ? `Didn't answer: ${unreachable.join(', ')}.` : undefined
   if (sources.length === 0) {
     if (failedPlaces !== undefined) {
