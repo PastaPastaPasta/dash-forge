@@ -4,8 +4,18 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import { describe, expect, it } from 'vitest'
 
+import { EpochKeys, openReleaseAsset, sealPack, type ReleaseAsset } from '../private'
 import type { ReleaseAssetView } from '../repo'
-import { browserReadable, checkDownloadedFile, directDownloadUrls, downloadVerifiedAsset } from './release-download'
+import {
+  AssetHashMismatchError,
+  SealedAssetCorruptError,
+  browserReadable,
+  checkDownloadedFile,
+  directDownloadUrls,
+  downloadSealedAsset,
+  downloadVerifiedAsset,
+  isSealedAsset,
+} from './release-download'
 
 const bytes = new TextEncoder().encode('ripgrep-15.0.0-x86_64-apple-darwin.tar.gz')
 const asset: ReleaseAssetView = {
@@ -73,5 +83,65 @@ describe('release asset fallback (D-056)', () => {
     expect(read).toBe(false)
     // With no published size, the hash decides.
     await expect(checkDownloadedFile(new Blob([bytes]), { ...asset, size: null })).resolves.toEqual({ kind: 'match' })
+  })
+})
+
+describe('a sealed asset (private-repos.md §16.5)', () => {
+  const file = new TextEncoder().encode('the release binary')
+  const setup = async (plain: Uint8Array = file) => {
+    const keys = await EpochKeys.import(new Uint8Array(32).fill(0x11), 0, new Uint8Array(32).fill(1))
+    const sealed = await sealPack(keys, plain)
+    const entry: ReleaseAsset = {
+      name: 'app.bin',
+      sha256: bytesToHex(sha256(file)),
+      sizeBytes: file.length,
+      uris: ['https://one.example/app', 'https://two.example/app'],
+      sealedSha256: bytesToHex(sha256(sealed)),
+      sealedSizeBytes: sealed.length,
+    }
+    return { keyring: new Map([[0, keys]]), sealed, entry }
+  }
+  const serving =
+    (bodies: Record<string, Uint8Array>): typeof fetch =>
+    (input) => {
+      const body = bodies[String(input)]
+      return Promise.resolve(body ? new Response(body as BodyInit) : new Response(null, { status: 404 }))
+    }
+  const at = (bodies: Record<string, Uint8Array>) => ({ fetch: serving(bodies), gateways: [] })
+
+  it('checks sealedSha256, opens under the header epoch, checks the file and hands back its bytes', async () => {
+    const { keyring, sealed, entry } = await setup()
+    await expect(downloadSealedAsset(entry, keyring, undefined, at({ 'https://one.example/app': sealed }))).resolves.toEqual(file)
+  })
+
+  it('refuses sealed bytes of the wrong hash, and takes the next place that serves the right ones', async () => {
+    const { keyring, sealed, entry } = await setup()
+    const tampered = sealed.slice()
+    tampered[tampered.length - 1] = (tampered[tampered.length - 1] as number) ^ 1
+    await expect(downloadSealedAsset(entry, keyring, undefined, at({ 'https://one.example/app': tampered }))).rejects.toBeInstanceOf(AssetHashMismatchError)
+    await expect(downloadSealedAsset(entry, keyring, undefined, at({ 'https://one.example/app': tampered, 'https://two.example/app': sealed }))).resolves.toEqual(file)
+  })
+
+  it('refuses a file whose plaintext does not match its sha256, or is shorter than its size: nothing is handed back', async () => {
+    const { keyring, sealed, entry } = await setup()
+    const served = at({ 'https://one.example/app': sealed })
+    await expect(downloadSealedAsset({ ...entry, sha256: 'ab'.repeat(32) }, keyring, undefined, served)).rejects.toBeInstanceOf(SealedAssetCorruptError)
+    await expect(downloadSealedAsset({ ...entry, sizeBytes: file.length + 1 }, keyring, undefined, served)).rejects.toBeInstanceOf(SealedAssetCorruptError)
+  })
+
+  it('truncates a padded plaintext to sizeBytes before checking the hash', async () => {
+    const padded = new Uint8Array(64 * 1024)
+    padded.set(file)
+    const { keyring, sealed, entry } = await setup(padded)
+    await expect(downloadSealedAsset(entry, keyring, undefined, at({ 'https://one.example/app': sealed }))).resolves.toEqual(file)
+    await expect(openReleaseAsset(sealed, entry, keyring)).resolves.toEqual(file)
+  })
+
+  it('never opens an external link as sealed', async () => {
+    const { keyring, entry } = await setup()
+    const link: ReleaseAsset = { name: 'x', sha256: '', sizeBytes: 0, uris: ['https://github.com/o/r/releases/download/v1/x'] }
+    expect(isSealedAsset(link)).toBe(false)
+    expect(isSealedAsset(entry)).toBe(true)
+    await expect(downloadSealedAsset(link, keyring)).rejects.toThrow(/external link/)
   })
 })

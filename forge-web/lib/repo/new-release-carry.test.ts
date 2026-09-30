@@ -35,8 +35,7 @@ const current: ReleaseView = {
 }
 
 vi.mock('./members', () => ({
-  invalidateMembers: () => undefined,
-  readViewerPermissions: async () => ({ maintain: true }),
+  requireMaintainer: async () => undefined,
 }))
 vi.mock('./releases', async (orig) => ({
   ...(await orig<typeof import('./releases')>()),

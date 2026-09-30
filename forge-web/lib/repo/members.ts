@@ -199,3 +199,14 @@ export async function readMemberRepoIds(
   }
   return [...byRepo.values()].sort((a, b) => b.createdAt - a.createdAt)
 }
+
+/**
+ * Re-read the signer's role, uncached (the CLI's `require_role` before uploading): a maintainer
+ * revoked since the page loaded must not upload for a write consensus will refuse.
+ */
+export async function requireMaintainer(sdk: EvoSDK, repo: RepoRef, identityId: string, network: Network): Promise<void> {
+  invalidateMembers(repo, network)
+  const holdings = await readViewerPermissions(sdk, repo, identityId, network)
+  if (holdings === null) throw new Error("couldn't read this repo's members to confirm you are a maintainer; try again")
+  if (!holdings.maintain) throw new Error('you are no longer a maintainer of this repo: only maintainers can publish releases')
+}

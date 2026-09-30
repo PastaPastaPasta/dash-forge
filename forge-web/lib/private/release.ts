@@ -10,7 +10,7 @@ import { bytes, bytesToHex, concat, constantTimeEqual, hexToBytes, isU32, random
 import { TooLargeError, type OpenContext, type UnreadableReason } from './doc'
 import { compareBytes } from './ids'
 import { hedgeNonce, releaseTagHash, releaseTagName, type EpochKeyring, type EpochKeys } from './keys'
-import { openPack, sealPack } from './pack'
+import { PackError, openPack, sealPack } from './pack'
 import { MalformedError } from './tlv'
 
 /** forge-core `$defs.enc.maxItems` (1536) minus the v0x01 framing (§16.2). */
@@ -279,6 +279,30 @@ export function buildReleaseTlv(f: ReleaseFields): Bytes {
   const back = parseReleaseTlv(pt)
   if (back === null || !sameFields(back, f)) throw new MalformedError('release fields do not round-trip')
   return pt
+}
+
+/** A stand-in `assetManifest` for sizing a TLV before the manifest's real hash is known. */
+export const PLACEHOLDER_ASSET_MANIFEST = '00'.repeat(32)
+
+/**
+ * The fields of a revision whose notes are `notes` (§16.2 "Budget"; forge-core `fit_notes`):
+ * whole in TLV 2 when every record fits {@link RELEASE_MAX_PLAINTEXT}, else a prefix cut on a
+ * character boundary with flag 0x10, the full notes going to the manifest's `notes`. `f` carries
+ * every other field; its `notes` and `notesContinue` are replaced, and a continuation sets a
+ * {@link PLACEHOLDER_ASSET_MANIFEST} when `f` has no `assetManifest` (only its length counts:
+ * the caller puts the manifest's hash there). The prefix is left out when it would be empty.
+ */
+export function fitReleaseNotes(f: ReleaseFields, notes: string): { readonly fields: ReleaseFields; readonly notesContinue: boolean } {
+  const len = (x: ReleaseFields): number => encodeReleaseTlv(x).length
+  const whole: ReleaseFields = { ...f, notes: notes === '' ? undefined : notes, notesContinue: undefined }
+  if (len(whole) <= RELEASE_MAX_PLAINTEXT) return { fields: clean(whole), notesContinue: false }
+  const rest: ReleaseFields = { ...whole, notes: undefined, notesContinue: true, assetManifest: f.assetManifest ?? PLACEHOLDER_ASSET_MANIFEST }
+  // the room a notes record has: the rest, then its 3-byte header
+  const b = utf8(notes)
+  let cut = Math.min(Math.max(0, RELEASE_MAX_PLAINTEXT - (len(rest) + 3)), b.length)
+  // back to a character boundary: never inside a UTF-8 continuation byte
+  while (cut > 0 && cut < b.length && ((b[cut] as number) & 0xc0) === 0x80) cut--
+  return { fields: clean({ ...rest, notes: cut > 0 ? decoder.decode(b.subarray(0, cut)) : undefined }), notesContinue: true }
 }
 
 /**
@@ -617,6 +641,26 @@ export async function openReleaseManifest(
     throw new ManifestMismatchError('does not match the release')
   }
   return m
+}
+
+/**
+ * A sealed asset's file (§16.5; forge-core `open_asset`): `sealed` (which must already hash to the
+ * entry's `sealedSha256`) opened with the key of its header's epoch, truncated to the entry's
+ * `sizeBytes` (a writer may pad), then checked against its plaintext `sha256`. Throws
+ * {@link PackError} (`sealedPackCorrupt` for a short or mismatching plaintext), or
+ * {@link MalformedError} for an external link, which is never opened as sealed.
+ */
+export async function openReleaseAsset(sealed: Uint8Array, entry: ReleaseAsset, keys: EpochKeyring): Promise<Bytes> {
+  if (entry.sealedSizeBytes === undefined || entry.sealedSha256 === undefined) throw new MalformedError('an external link is not a sealed asset')
+  const plain = await openPack(sealed, entry.sealedSizeBytes, keys)
+  try {
+    if (plain.length < entry.sizeBytes) throw new PackError('sealedPackCorrupt')
+    const file = plain.slice(0, entry.sizeBytes)
+    if (bytesToHex(await sha256(file)) !== entry.sha256.toLowerCase()) throw new PackError('sealedPackCorrupt')
+    return file
+  } finally {
+    plain.fill(0)
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
