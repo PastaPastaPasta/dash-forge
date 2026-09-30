@@ -84,21 +84,21 @@ impl std::fmt::Display for SecretRef {
 impl std::str::FromStr for SecretRef {
     type Err = Error;
 
+    // No error here echoes `s`: it may be a secret pasted in place of a reference, with or
+    // without a prefix in front of it.
     fn from_str(s: &str) -> Result<Self> {
         if let Some(var) = s.strip_prefix("env:") {
             let ok = !var.is_empty() && var.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
             if !ok {
-                return Err(Error::Config(format!(
-                    "`env:` reference needs a variable name of letters, digits and '_' (got {var:?})"
-                )));
+                return Err(Error::Config(
+                    "`env:` reference needs a variable name of letters, digits and '_'".into(),
+                ));
             }
             return Ok(SecretRef::Env(var.to_string()));
         }
         if let Some(rest) = s.strip_prefix("keychain:") {
             let (service, account) = rest.split_once('/').ok_or_else(|| {
-                Error::Config(format!(
-                    "`keychain:` reference must be keychain:<service>/<account> (got {rest:?})"
-                ))
+                Error::Config("`keychain:` reference must be keychain:<service>/<account>".into())
             })?;
             if service.is_empty() || account.is_empty() {
                 return Err(Error::Config(
@@ -646,20 +646,14 @@ impl StorageProfiles {
 
     /// Write to `path` atomically (temp file + rename), creating the directory.
     pub fn save_to(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| Error::Io(format!("creating {}: {e}", parent.display())))?;
-        }
         let body = format!(
             "# Dash Forge storage profiles (docs/guides/bring-your-own-storage.md).\n\
              # Secrets are references (env:VAR / keychain:service/account), never values.\n\n{}",
             self.to_toml()?
         );
-        let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, body)
-            .map_err(|e| Error::Io(format!("writing {}: {e}", tmp.display())))?;
-        std::fs::rename(&tmp, path)
-            .map_err(|e| Error::Io(format!("replacing {}: {e}", path.display())))
+        // Owner-only (it names keychain entries and access key ids), through an exclusively
+        // created temp file that never follows a symlink planted at its name.
+        crate::keystore::write_private_file(path, body.as_bytes())
     }
 
     /// Look up `name`, with `platform` always resolving to the built-in on-chain tier.
@@ -825,6 +819,43 @@ secret_access_key = "wJalrXUtnFEMI-LITERAL-SECRET"
                 .to_string(),
             "keychain:svc/acct"
         );
+        // A secret pasted after a prefix is refused without being echoed.
+        for bad in ["env:sk-FAKE/secret+value", "keychain:skFAKEsecretvalue"] {
+            let e = bad.parse::<SecretRef>().unwrap_err().to_string();
+            assert!(!e.contains("FAKE"), "{e}");
+        }
+    }
+
+    /// storage.toml is written owner-only through an exclusive temp file: a pre-existing
+    /// 0644 file ends up 0600, and a symlink at the path is replaced, not written through.
+    #[cfg(unix)]
+    #[test]
+    fn save_is_private_and_never_follows_a_symlink() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = tempfile::tempdir().unwrap();
+        let profiles = StorageProfiles::parse("").unwrap();
+        let path = d.path().join("storage.toml");
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        profiles.save_to(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let target = d.path().join("elsewhere");
+        std::fs::write(&target, "untouched").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        profiles.save_to(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "untouched");
+        assert!(!std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let left: Vec<_> = std::fs::read_dir(d.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(left.is_empty(), "no temp file is left behind");
     }
 
     #[test]

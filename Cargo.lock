@@ -1857,6 +1857,7 @@ dependencies = [
  "argon2",
  "async-trait",
  "base64 0.22.1",
+ "bip39",
  "chacha20poly1305",
  "command-fds",
  "dapi-grpc",

@@ -1483,7 +1483,8 @@ const SECRET_KEYS: &[&str] = &[
 
 /// Scrub credentials from a message before it is shown: URL userinfo, credential-looking
 /// `key=value` pairs (`?token=`, `X-Amz-Signature=`, `password=`), `Authorization:` header
-/// values, the WIF of a `dfk1:` key string, and WIF-shaped private keys (bare or after `=`).
+/// values, the WIF of a `dfk1:` key string, WIF-shaped and 64-hex private keys (bare or after
+/// `=`), and recovery phrases (a run of [`PHRASE_WORDS`] or more BIP39 words).
 /// The primary defence is that secrets never enter error text (they live in
 /// [`crate::keystore::Secret`]); this is the last line.
 ///
@@ -1493,7 +1494,53 @@ pub fn redact(s: &str) -> String {
     let s = redact_userinfo(s);
     let s = redact_key_values(&s);
     let s = redact_authorization(&s);
+    let s = redact_phrases(&s);
     redact_tokens(&s)
+}
+
+/// The shortest recovery phrase (12 words; 24 is the other common length).
+const PHRASE_WORDS: usize = 12;
+
+/// A run of [`PHRASE_WORDS`] or more whitespace-separated BIP39 English words (each may carry
+/// quotes or punctuation around it) becomes one `[redacted]`. Prose never has twelve in a row:
+/// the list has no "the", "a", "to", "of" or "is".
+fn redact_phrases(s: &str) -> String {
+    let not_letter = |c: char| !c.is_ascii_alphabetic();
+    // Each whitespace-separated token's letters, as a byte span, and whether they are a word.
+    let mut tokens: Vec<(usize, usize, bool)> = Vec::new();
+    let mut start = None;
+    for (i, c) in s.char_indices().chain(std::iter::once((s.len(), ' '))) {
+        match (c.is_whitespace(), start) {
+            (false, None) => start = Some(i),
+            (true, Some(st)) => {
+                let tok = &s[st..i];
+                let lead = tok.len() - tok.trim_start_matches(not_letter).len();
+                let core = tok.trim_matches(not_letter);
+                let is_word = core.len() >= 3
+                    && core.bytes().all(|b| b.is_ascii_alphabetic())
+                    && bip39::Language::English
+                        .find_word(&core.to_ascii_lowercase())
+                        .is_some();
+                tokens.push((st + lead, st + lead + core.len(), is_word));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut copied = 0;
+    let mut i = 0;
+    while i < tokens.len() {
+        let run = tokens[i..].iter().take_while(|t| t.2).count();
+        if run >= PHRASE_WORDS {
+            out.push_str(&s[copied..tokens[i].0]);
+            out.push_str(REDACTED);
+            copied = tokens[i + run - 1].1;
+        }
+        i += run.max(1);
+    }
+    out.push_str(&s[copied..]);
+    out
 }
 
 fn redact_userinfo(s: &str) -> String {
@@ -1704,6 +1751,11 @@ fn redact_token(t: &str) -> String {
         }
     }
     let core = t.trim_end_matches(['.', ':', ';']);
+    // A raw 32-byte private key in hex (optionally `0x`-prefixed).
+    let hex = core.strip_prefix("0x").unwrap_or(core);
+    if hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return format!("{REDACTED}{}", &t[core.len()..]);
+    }
     let is_base58 = |s: &str| {
         s.chars()
             .all(|c| c.is_ascii_alphanumeric() && !matches!(c, '0' | 'O' | 'I' | 'l'))
@@ -2908,6 +2960,26 @@ mod tests {
     }
 
     #[test]
+    fn redaction_scrubs_recovery_phrases() {
+        let twelve =
+            "abandon ability able about above absent absorb abstract absurd abuse access accident";
+        assert_eq!(
+            redact(&format!("source #1: \"{twelve}\": not found")),
+            "source #1: \"[redacted]\": not found"
+        );
+        let upper = twelve.to_uppercase();
+        assert_eq!(redact(&format!("x {upper}, y")), "x [redacted], y");
+        assert_eq!(redact(&format!("{twelve} {twelve}\n")), "[redacted]\n");
+        // Eleven words, or twelve broken by a word off the list, are left alone.
+        let eleven = twelve.rsplit_once(' ').unwrap().0;
+        assert_eq!(redact(eleven), eleven);
+        let broken = twelve.replace("absurd", "the");
+        assert_eq!(redact(&broken), broken);
+        let prose = "the pack upload to kubo failed after 3 tries; check the gateway and try again";
+        assert_eq!(redact(prose), prose);
+    }
+
+    #[test]
     fn redaction_scrubs_credentials() {
         assert_eq!(
             redact("GET https://user:hunter2@r2.example.com/b/k failed"),
@@ -2930,11 +3002,16 @@ mod tests {
             redact("key cVt4o7BGAig1UXywgGSmARhxMdzP5qvQsxKkSsc1XEkw3tDTQFpy."),
             "key [redacted]."
         );
-        // Identity/contract ids (43–44 chars) and hex hashes are left alone.
+        // Identity/contract ids (43–44 chars) and 40-hex object ids are left alone; 64 hex
+        // digits may be a raw private key, so they are not.
         let id = "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB";
         assert_eq!(redact(id), id);
+        let sha1 = "9c4e".repeat(10);
+        assert_eq!(redact(&sha1), sha1);
         let h = "9c4e".repeat(16);
-        assert_eq!(redact(&h), h);
+        assert_eq!(redact(&format!("key {h}.")), "key [redacted].");
+        assert_eq!(redact(&format!("key=0x{h}")), "key=[redacted]");
+        assert_eq!(redact(&format!("({h})")), "([redacted])");
         assert_eq!(redact("dash://alice/project"), "dash://alice/project");
         // Word boundaries and contexts: prose keeps its words.
         assert_eq!(

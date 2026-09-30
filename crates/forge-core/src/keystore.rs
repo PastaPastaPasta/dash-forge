@@ -157,23 +157,42 @@ pub fn looks_like_pasted_key(source: &Path) -> bool {
     t.starts_with('{') || t.contains('\n') || t.len() > 4096
 }
 
-/// How to name a key source in messages: the path of an identity file, or for an inline
-/// `dfk1:` key everything but its WIF. Pasted key material (see [`looks_like_pasted_key`])
-/// is never shown.
+/// How to name a key source in messages: the path of an identity file, a keychain entry's
+/// name, or for an inline `dfk1:` key everything but its WIF. Pasted key material (see
+/// [`looks_like_pasted_key`]) is never shown, and neither is anything else that may be a key
+/// rather than a path: a value that names no file on disk (a `dfk1` value without its
+/// prefix, a mistyped path), a bare value with whitespace in it (a recovery phrase), or 64
+/// hex digits (a raw private key).
 pub fn describe_key_source(source: &Path) -> String {
     if looks_like_pasted_key(source) {
         return "[an identity's contents, not a path: redacted]".to_string();
     }
-    match source.to_str().filter(|s| s.starts_with(DFK1_PREFIX)) {
-        Some(inline) => {
-            let parts: Vec<&str> = inline[DFK1_PREFIX.len()..].splitn(4, ':').collect();
-            match parts[..] {
-                [network, id, key, _] => format!("dfk1:{network}:{id}:{key}:[redacted]"),
-                _ => "dfk1:[redacted]".to_string(),
-            }
-        }
-        None => source.display().to_string(),
+    let text = source.to_string_lossy();
+    if let Some(inline) = text.strip_prefix(DFK1_PREFIX) {
+        let parts: Vec<&str> = inline.splitn(4, ':').collect();
+        return match parts[..] {
+            [network, id, key, _] => format!("dfk1:{network}:{id}:{key}:[redacted]"),
+            _ => "dfk1:[redacted]".to_string(),
+        };
     }
+    if text.starts_with(KEYCHAIN_PREFIX) {
+        return match parse_keychain_source(&text) {
+            Some(_) => text.into_owned(),
+            None => "keychain:[redacted]".to_string(),
+        };
+    }
+    let t = text.trim();
+    let name = Path::new(t)
+        .file_name()
+        .map_or_else(|| t.into(), |n| n.to_string_lossy());
+    let is_hex_key = name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit());
+    // A path with a space in a directory name (`Application Support`) still has a separator;
+    // a recovery phrase has none.
+    let bare_words = t.contains(char::is_whitespace) && !t.contains(['/', '\\']);
+    if is_hex_key || bare_words || !source.exists() {
+        return "[not a file on disk: redacted]".to_string();
+    }
+    source.display().to_string()
 }
 
 /// The prefix of a key source kept in the OS keychain (`keychain:<service>/<account>`).
@@ -687,10 +706,11 @@ impl BridgeIdentity {
             return Ok(Secret::new(inline));
         }
         if let Some(src) = path.to_str().filter(|s| s.starts_with(KEYCHAIN_PREFIX)) {
+            // The value is not echoed: a secret pasted after the prefix would be.
             let (service, account) = parse_keychain_source(src).ok_or_else(|| {
-                Error::Config(format!(
-                    "identity source {src:?} must be keychain:<service>/<account>"
-                ))
+                Error::Config(
+                    "a keychain: identity source must be keychain:<service>/<account>".into(),
+                )
             })?;
             return crate::keychain::get(service, account)?.ok_or_else(|| {
                 Error::Io(format!(
@@ -1065,6 +1085,52 @@ mod tests {
         assert!(!super::looks_like_pasted_key(std::path::Path::new(
             "/tmp/id.json"
         )));
+    }
+
+    /// A key pasted into `DASH_FORGE_KEY` / `--identity` in a shape that is neither JSON nor
+    /// multi-line (a recovery phrase, 64-hex, a `dfk1` value missing its prefix) names no file,
+    /// and neither the description nor the load error echoes it.
+    #[test]
+    fn a_value_that_is_not_a_file_is_never_echoed() {
+        let phrase =
+            "abandon ability able about above absent absorb abstract absurd abuse access accident";
+        let hex = "0f".repeat(32);
+        let no_prefix = "testnet:FAKEid1111111111111111111111111111111111111:5:cWIFsecretWIFsecret";
+        for v in [
+            phrase,
+            hex.as_str(),
+            no_prefix,
+            "/no/such/dir/cWIFsecret.json",
+        ] {
+            let p = std::path::Path::new(v);
+            let shown = super::describe_key_source(p);
+            assert_eq!(shown, "[not a file on disk: redacted]", "{v}");
+            let e = format!(
+                "{:#}",
+                super::BridgeIdentity::load_from_file(p).unwrap_err()
+            );
+            for part in ["abandon", "0f0f0f0f", "cWIFsecret"] {
+                assert!(!e.contains(part), "{e}");
+            }
+        }
+        // A file that exists is named, spaces in its directory included; a keychain entry is
+        // named too.
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("Application Support").join("id.json");
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, "{}").unwrap();
+        assert_eq!(super::describe_key_source(&f), f.display().to_string());
+        let kc = std::path::Path::new("keychain:dash-forge/testnet-X");
+        assert_eq!(
+            super::describe_key_source(kc),
+            "keychain:dash-forge/testnet-X"
+        );
+        // A file named like a key is still not shown.
+        let h = d.path().join(&hex);
+        std::fs::write(&h, "{}").unwrap();
+        assert!(!super::describe_key_source(&h).contains("0f0f"));
+        let hex_rel = std::path::Path::new(hex.as_str());
+        assert!(!super::describe_key_source(hex_rel).contains("0f0f"));
     }
 
     #[test]

@@ -251,7 +251,15 @@ impl EncryptionKeyFile {
         fn secp() -> String {
             "ECDSA_SECP256K1".into()
         }
-        let file: File = serde_json::from_str(raw)?;
+        // serde_json quotes the offending value in its errors (`invalid type: string "…"`), and
+        // this text holds keys: keep only where the problem is.
+        let file: File = serde_json::from_str(raw).map_err(|e| {
+            Error::Config(format!(
+                "the key file is not an identity key file (problem at line {}, column {})",
+                e.line(),
+                e.column()
+            ))
+        })?;
         let mut keys = Vec::new();
         let mut other_keys = 0;
         for k in file.identity_keys {
@@ -421,6 +429,23 @@ mod tests {
             r#"{"identityId":"ID","identityKeys":[{"id":4,"purpose":"ENCRYPTION","privateKeyHex":"zz"}]}"#
         )
         .is_err());
+    }
+
+    /// serde's "invalid type" text quotes the offending scalar; the error keeps only its place.
+    #[test]
+    fn a_malformed_key_file_error_never_quotes_its_contents() {
+        for raw in [
+            r#"{"identityId":"ID","identityKeys":[{"id":4,"purpose":"ENCRYPTION","privateKeyHex":1234567890123}]}"#,
+            r#"{"identityId":"ID","identityKeys":"FAKEsecretFAKEsecret"}"#,
+            r#"{"identityId":"ID","identityKeys":[],"mnemonic":["FAKEsecretFAKEsecret"]}"#,
+        ] {
+            let e = EncryptionKeyFile::from_json(raw).unwrap_err().to_string();
+            assert!(
+                !e.contains("FAKEsecret") && !e.contains("1234567890123"),
+                "{e}"
+            );
+            assert!(e.contains("line 1"), "{e}");
+        }
     }
 
     #[test]

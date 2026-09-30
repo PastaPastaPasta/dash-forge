@@ -95,7 +95,8 @@ pub fn describe_source(source: &str) -> (String, &'static str) {
         (s.describe(), s.kind())
     } else {
         (
-            format!("{} (identity file)", path.display()),
+            // Not `path.display()`: a value that names no file may be a pasted key.
+            format!("{} (identity file)", keystore::describe_key_source(&path)),
             "identity-file",
         )
     }
