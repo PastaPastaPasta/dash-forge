@@ -20,6 +20,7 @@ use forge_core::repo::credits_to_dash;
 use crate::budget::{Budget, CapExceeded};
 use crate::gitsync::ProofRepo;
 use crate::model::SrcCollab;
+use crate::sealed_release::ReleaseStorage;
 use crate::sink::{Ledger, Sink};
 use crate::summary::{KeyInfo, RepoInfo, Status, Summary};
 
@@ -342,6 +343,7 @@ pub async fn dry_collab<'a>(
     signer: Option<&'a Signer>,
     src: &SrcCollab,
     mirror: Option<ProofRepo>,
+    release_storage: Option<ReleaseStorage>,
 ) -> Result<Ledger<'a>> {
     // A private destination is read with the signer's keys (its documents are sealed).
     let collab = match signer {
@@ -353,17 +355,20 @@ pub async fn dry_collab<'a>(
         existing,
         Ledger::new(client, signer.map(Signer::id), true, Budget::new(None)),
     )
-    .with_mirror(mirror);
+    .with_mirror(mirror)
+    .with_release_storage(release_storage);
     dry.sync(src).await?;
     Ok(dry.ledger)
 }
 
 /// What of `src` is written to a destination the mirror identity holds `role` in, and the
-/// warnings that says so. A writer cannot publish releases, and a private destination cannot
-/// hold them (their notes and assets are not encrypted), so they are left out rather than
-/// failing the run. A private destination also leaves out the label definitions (their names,
-/// colours and descriptions are plaintext) unless `include_label_definitions`; the labels put
-/// on issues and PRs are event values, sealed like the rest.
+/// warnings that says so. A writer cannot publish releases, so they are left out rather than
+/// failing the run. A private destination's releases are sealed
+/// ([`crate::sealed_release`]); when they have assets, the run warns that exact asset sizes
+/// can still identify the public release it mirrors (private-repos.md §16.6). A private
+/// destination also leaves out the label definitions (their names, colours and descriptions
+/// are plaintext) unless `include_label_definitions`; the labels put on issues and PRs are
+/// event values, sealed like the rest.
 #[must_use]
 pub fn collab_plan(
     src: &SrcCollab,
@@ -373,19 +378,24 @@ pub fn collab_plan(
 ) -> (SrcCollab, Vec<String>) {
     let mut plan = src.clone();
     let mut warnings = Vec::new();
-    if src.releases.as_ref().is_some_and(|r| !r.is_empty()) {
-        if private {
-            plan.releases = None;
-            warnings.push(
-                "releases were not mirrored: the destination is private, and forge-import does \
-                 not seal releases yet (a maintainer publishes them with `dg release create`)"
-                    .into(),
-            );
-        } else if role == Role::Writer {
+    if let Some(releases) = src.releases.as_ref().filter(|r| !r.is_empty()) {
+        if role == Role::Writer {
             plan.releases = None;
             warnings.push(
                 "releases were not mirrored: the mirror identity is a writer, and only \
                  maintainers publish releases (`dg collab add … --role maintainer`)"
+                    .into(),
+            );
+        } else if private
+            && releases
+                .iter()
+                .any(|r| !r.assets.is_empty() || !r.omitted.is_empty())
+        {
+            warnings.push(
+                "the destination is private: releases are sealed (their tags, names, notes, \
+                 source and asset list are encrypted), but storage still shows each asset's \
+                 exact size, which can identify the public release they mirror \
+                 (docs/security/private-repos.md §16.6)"
                     .into(),
             );
         }
@@ -420,6 +430,8 @@ pub struct CollabSource<'s> {
     /// The run's git mirror, or the base branches fetched for the proof (`None`: no merged
     /// PR to prove, or nothing could be fetched).
     pub mirror: Option<ProofRepo>,
+    /// Where a private destination's sealed release files and asset lists go.
+    pub release_storage: Option<ReleaseStorage>,
 }
 
 /// Write the collaboration documents missing from `repo` with the run's ledger (taken from
@@ -434,7 +446,11 @@ pub async fn write_collab<'a>(
     include_label_definitions: bool,
     outcome: &mut Outcome<'a>,
 ) -> Result<()> {
-    let CollabSource { src, mirror } = source;
+    let CollabSource {
+        src,
+        mirror,
+        release_storage,
+    } = source;
     let mut ledger = outcome.ledger.take().expect("the write phase has a ledger");
     let private = repo.visibility == Visibility::Private;
     let (plan, warnings) = collab_plan(src, role, private, include_label_definitions);
@@ -446,7 +462,8 @@ pub async fn write_collab<'a>(
         Some(repo),
         ledger,
     )
-    .with_mirror(mirror);
+    .with_mirror(mirror)
+    .with_release_storage(release_storage);
     let result = sink.sync(&plan).await;
     outcome.ledger = Some(sink.ledger);
     result
@@ -470,9 +487,16 @@ mod tests {
                     tag_name: "v1".into(),
                     name: "v1".into(),
                     notes: String::new(),
-                    assets: Vec::new(),
-                    dropped: 0,
+                    assets: vec![forge_core::collab::ReleaseAsset {
+                        name: "fd.tar.gz".into(),
+                        sha256: String::new(),
+                        size_bytes: 1,
+                        uris: vec!["https://github.com/o/r/releases/download/v1/fd.tar.gz".into()],
+                        uri: None,
+                    }],
+                    omitted: Vec::new(),
                     source_url: String::new(),
+                    published: None,
                 }]
             }),
             ..SrcCollab::default()
@@ -503,16 +527,25 @@ mod tests {
         );
     }
 
+    /// A private destination seals its releases (§16), warning once that exact asset sizes
+    /// can identify the mirrored release (§16.6); a writer cannot publish them anywhere.
     #[test]
-    fn releases_are_left_out_for_a_private_destination_or_a_writer() {
+    fn releases_are_sealed_for_a_private_destination_and_left_out_for_a_writer() {
         let (plan, w) = collab_plan(&src_with(false, true), Role::Maintainer, true, false);
-        assert!(
-            plan.releases.is_none() && w.iter().any(|w| w.contains("releases were not mirrored"))
-        );
+        assert!(plan.releases.is_some(), "{w:?}");
+        assert!(!w.iter().any(|w| w.contains("releases were not mirrored")));
+        let sizes: Vec<_> = w.iter().filter(|w| w.contains("exact size")).collect();
+        assert_eq!(sizes.len(), 1, "{w:?}");
+        assert!(sizes[0].contains("§16.6"), "{sizes:?}");
+        let (plan, w) = collab_plan(&src_with(false, true), Role::Writer, true, false);
+        assert!(plan.releases.is_none());
+        assert!(w
+            .iter()
+            .any(|w| w.contains("the mirror identity is a writer")));
         let (plan, _) = collab_plan(&src_with(false, true), Role::Writer, false, false);
         assert!(plan.releases.is_none());
-        let (plan, _) = collab_plan(&src_with(false, true), Role::Maintainer, false, false);
-        assert!(plan.releases.is_some());
+        let (plan, w) = collab_plan(&src_with(false, true), Role::Maintainer, false, false);
+        assert!(plan.releases.is_some() && w.is_empty(), "{w:?}");
     }
 
     #[test]

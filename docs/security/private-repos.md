@@ -483,7 +483,7 @@ The `webhook.secret` `encryptedFor` field, and both contracts' `readonly` decisi
 
 ## 16. Sealed releases
 
-Status: specification, revision 2 after two independent security reviews (§16.9). The readers implement it (forge-core `releases()`, `dg release list` and `download`, forge-web `readReleases`), and so do the writers (forge-core `create_release_stored`, `dg release create` and `unpublish`, forge-web `createRelease` through `lib/repo/sealed-release.ts`). forge-import leaves releases out of a private destination. The section fits the forge-core `release` type as registered for RC1 on bonsia (§13), which mainnet registers unchanged. It needs **no schema change**, and the documents it produces are accepted by that schema (the "§16" cases of `forge-contracts/vectors/rc1/forge-core.json`, judged by `tools/contract-validate --vectors`).
+Status: specification, revision 2 after two independent security reviews (§16.9). The readers implement it (forge-core `releases()`, `dg release list` and `download`, forge-web `readReleases`), and so do the writers (forge-core `create_release_stored`, `dg release create` and `unpublish`, forge-web `createRelease` through `lib/repo/sealed-release.ts`), and forge-import seals the releases it mirrors into a private destination through `create_release_stored` (`crates/forge-import/src/sealed_release.rs`). The section fits the forge-core `release` type as registered for RC1 on bonsia (§13), which mainnet registers unchanged. It needs **no schema change**, and the documents it produces are accepted by that schema (the "§16" cases of `forge-contracts/vectors/rc1/forge-core.json`, judged by `tools/contract-validate --vectors`).
 
 ### 16.0 What the registered contract fixes
 
@@ -768,7 +768,7 @@ A **removed member** keeps every revision, manifest and asset sealed under an ep
 - **`dg release`.**
   - `create` drops `require_public`. It seals every `--asset` with `PackCipher::seal` before upload and records `sealedSha256` and `sealedSizeBytes`. It writes the manifest (`packManifest` kind 4, `objectCount = 0`, no `tips`) through the push path, and states the 1507-byte budget.
   - `list` and `download` fold per §16.3. `download` checks `sealedSha256`, decrypts, truncates to `sizeBytes`, then checks `sha256`.
-  - The importer warns that exact asset sizes can identify a mirrored public release.
+- **forge-import** writes a private destination's releases through `create_release_stored`: provenance in TLV 13, 14 and 20 and the manifest's `source`; every source asset it can download within its per-run budget, checked against the source's size and digest, sealed; the others as external links. A re-run compares the folded, decrypted current revision and writes only what changed. It warns that exact asset sizes can identify a mirrored public release.
 - **forge-web.**
   - `lib/repo/releases.ts`: `readReleases` opens and folds sealed revisions, shows `unknownTags` and `stale`, and never calls `readReleaseCount` for a private repository.
   - `lib/repo/writes.ts` `createRelease` seals: `PRIVATE_RELEASE_REFUSED` goes.

@@ -73,6 +73,22 @@ pub fn collab_doc_credits(kind: CollabDoc, bytes: u64) -> u64 {
     estimate_document_storage(bytes + DOC_SYSTEM_OVERHEAD).total() + kind.index_overhead()
 }
 
+/// The estimated credits of one sealed release revision (private-repos.md §16): the `release`
+/// document, priced at its largest (a 43-byte `tagName`, `enc` at its 1536-byte cap, `delta`,
+/// `epoch` and `vis`), and, when `new_list`, the kind-4 `packManifest` of its new asset list,
+/// priced as a repository's first of its kind naming each of `targets`' URIs. The files and
+/// the list's bytes go to your own storage, which Platform does not charge for.
+pub fn sealed_release_credits(new_list: bool, targets: u64) -> u64 {
+    use forge_core::cost::push_fees::{HISTORY_FIRST_EXTRA, MANIFEST_FIRST, URIS_PER_TARGET};
+    let doc = collab_doc_credits(CollabDoc::Release, 43 + 1536 + 40);
+    let list = if new_list {
+        MANIFEST_FIRST + HISTORY_FIRST_EXTRA + URIS_PER_TARGET * targets
+    } else {
+        0
+    };
+    doc + list
+}
+
 /// Why a run stopped at the cap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapExceeded {

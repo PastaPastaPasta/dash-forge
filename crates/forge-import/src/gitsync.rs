@@ -597,6 +597,31 @@ pub fn storage_policy(git_dir: &Path) -> Result<forge_core::storage::StoragePoli
     )?)
 }
 
+/// [`storage_policy`] resolved against the saved storage profiles (Platform alone reads none).
+pub fn resolved_storage(git_dir: &Path) -> Result<forge_core::storage::ResolvedPolicy> {
+    let policy = storage_policy(git_dir)?;
+    Ok(if policy.is_platform_only() {
+        forge_core::storage::StoragePolicy::platform_only()
+            .resolve(&forge_core::storage::StorageProfiles::default())?
+    } else {
+        policy.resolve(&forge_core::storage::StorageProfiles::load()?)?
+    })
+}
+
+/// The storage targets of `resolved`'s own (non-Platform) profiles.
+pub fn external_targets(
+    resolved: &forge_core::storage::ResolvedPolicy,
+) -> Result<Vec<forge_core::storage::ExternalTarget>> {
+    let http = forge_core::storage::http_client();
+    Ok(resolved
+        .external
+        .iter()
+        .map(|(name, profile)| {
+            forge_core::storage::ExternalTarget::from_profile(name, profile, &http)
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
 /// Price the first push into a repository that does not exist yet (so the helper cannot
 /// be asked): build the pack locally and price what `storage` writes on chain (the caller
 /// reads it with [`storage_policy`] and [`PackStorage::resolve`]). The PR heads' pack leaves out what the
@@ -713,13 +738,7 @@ pub async fn history_backfill(
     let Some(prepared) = forge_core::repo::prepare_history_index(git_dir, tip, &plan)? else {
         return Ok(None);
     };
-    let policy = storage_policy(git_dir)?;
-    let resolved = if policy.is_platform_only() {
-        forge_core::storage::StoragePolicy::platform_only()
-            .resolve(&forge_core::storage::StorageProfiles::default())?
-    } else {
-        policy.resolve(&forge_core::storage::StorageProfiles::load()?)?
-    };
+    let resolved = resolved_storage(git_dir)?;
     let credits = prepared.credits(
         repo.visibility == forge_core::rules::v2::Visibility::Private,
         resolved.external.len() as u64,
@@ -728,14 +747,7 @@ pub async fn history_backfill(
     if !fits(credits) {
         return Ok(None);
     }
-    let http = forge_core::storage::http_client();
-    let externals = resolved
-        .external
-        .iter()
-        .map(|(name, profile)| {
-            forge_core::storage::ExternalTarget::from_profile(name, profile, &http)
-        })
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let externals = external_targets(&resolved)?;
     let chain = resolved.platform.then(|| {
         forge_core::repo::PlatformChunkTarget::new(svc, repo, forge_core::storage::PLATFORM_PROFILE)
     });

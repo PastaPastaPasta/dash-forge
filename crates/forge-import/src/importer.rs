@@ -215,7 +215,26 @@ async fn run_inner<'a>(
     let heads_estimate = push_estimates.get(1).map_or(0, |p| p.est_credits);
     let git_estimate = code_estimate + heads_estimate;
     // An existing private destination is priced on what it will get (no plaintext label
-    // definitions unless asked; releases are skipped there too).
+    // definitions unless asked; its releases are sealed, their files and asset lists stored on
+    // the storage policy's own profiles).
+    let private = dest
+        .existing
+        .as_ref()
+        .is_some_and(|r| r.visibility == forge_core::rules::v2::Visibility::Private);
+    let release_storage = if private && collab_src.releases.as_ref().is_some_and(|r| !r.is_empty())
+    {
+        // the mirror's git config when there is one (its global scope too), else this
+        // directory's, as `dg release create` reads it
+        let dir = if work.is_dir() {
+            work.as_path()
+        } else {
+            Path::new(".")
+        };
+        crate::sealed_release::ReleaseStorage::from_git_dir(dir)
+            .context("reading the storage policy for the releases' assets")?
+    } else {
+        None
+    };
     let priced = match &dest.existing {
         Some(r) if r.visibility == forge_core::rules::v2::Visibility::Private => {
             let definitions = cfg.classes.include_label_definitions;
@@ -235,6 +254,7 @@ async fn run_inner<'a>(
         signer,
         &priced,
         mirror.clone(),
+        release_storage.clone(),
     )
     .await?;
     let collab_estimate = dry.budget.spent();
@@ -341,6 +361,7 @@ async fn run_inner<'a>(
     let source = dest::CollabSource {
         src: &collab_src,
         mirror,
+        release_storage,
     };
     dest::write_collab(client, signer, role, repo, source, definitions, outcome).await?;
 

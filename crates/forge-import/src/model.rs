@@ -100,13 +100,18 @@ pub struct SrcRelease {
     pub name: String,
     /// Notes.
     pub notes: String,
-    /// Assets referenced by URL and sha256 (never re-uploaded).
+    /// Assets referenced by URL and sha256 (never re-uploaded): on a public destination,
+    /// the ones that fit the 4096 bytes a release lists ([`fit_assets`]).
     pub assets: Vec<ReleaseAsset>,
-    /// Assets of the source release left out: the rest do not fit the 4096 bytes a release
-    /// lists (the run warns, and the notes' footer says so: [`notes_with_footer`]).
-    pub dropped: usize,
+    /// The source release's other assets, left out of a public release (the run warns, and
+    /// the notes' footer says so: [`notes_with_footer`]). A private destination's sealed
+    /// asset list holds any number, so it mirrors these too.
+    pub omitted: Vec<ReleaseAsset>,
     /// The release's page at the source (empty when unknown).
     pub source_url: String,
+    /// Who published it at the source, and when: a private destination seals it as the
+    /// release's provenance (private-repos.md §16.2).
+    pub published: Option<Published>,
 }
 
 /// Everything one run mirrors (beyond git data).
@@ -413,15 +418,18 @@ pub fn release(
         })
         .collect();
     let keep = fit_indices(&sized);
-    let total = assets.len();
-    let assets = select(assets, &keep);
+    let (kept, omitted): (Vec<_>, Vec<_>) = assets
+        .into_iter()
+        .enumerate()
+        .partition(|(i, _)| keep.contains(i));
     SrcRelease {
         tag_name: tag_name.to_string(),
         name: clip(name.unwrap_or(tag_name), 120, 480),
         notes: release_notes(notes.unwrap_or(""), published, &source_url),
-        dropped: total - assets.len(),
-        assets,
+        assets: kept.into_iter().map(|(_, a)| a).collect(),
+        omitted: omitted.into_iter().map(|(_, a)| a).collect(),
         source_url,
+        published: published.cloned(),
     }
 }
 
@@ -442,8 +450,20 @@ pub struct Published {
 /// then the source notes, fitted to the 5120-byte field at a boundary with a link to the full
 /// notes (L-06).
 fn release_notes(notes: &str, published: Option<&Published>, source_url: &str) -> String {
+    // Room for a later assets footer is made by `notes_with_footer` itself.
+    fit_text(
+        &headed(&published_line(published), notes),
+        NOTES_MAX,
+        source_url,
+    )
+}
+
+/// The line a release's notes open with (`> Published on github.com by @x on 2026-08-03`,
+/// then a blank line), or `""`. A private destination seals the same facts as provenance, so
+/// its notes leave it out ([`crate::sealed_release`]).
+pub fn published_line(published: Option<&Published>) -> String {
     // No date (an unparseable timestamp reads as 0): no line, rather than "Published … on 1970".
-    let head = published
+    published
         .filter(|p| p.at > 0)
         .map_or_else(String::new, |p| {
             let by = if p.author.is_empty() {
@@ -452,9 +472,7 @@ fn release_notes(notes: &str, published: Option<&Published>, source_url: &str) -
                 format!(" by @{}", p.author)
             };
             format!("> Published on {}{by} on {}\n\n", p.host, date(p.at))
-        });
-    // Room for a later assets footer is made by `notes_with_footer` itself.
-    fit_text(&headed(&head, notes), NOTES_MAX, source_url)
+        })
 }
 
 /// The most bytes a release's `assets` JSON may take (forge-core `release.assets`).
@@ -1035,9 +1053,13 @@ mod tests {
             odd.contains("(https://example.org/r/v1%20%28final%29)"),
             "{odd}"
         );
-        // Through `release`: the source URL and the dropped count travel with it.
+        // Through `release`: the source URL and the left-out assets travel with it.
         let r = release("v22.1.3", None, Some("n"), dash_22_1_3(), url.into(), None);
-        assert_eq!(r.dropped, 21 - r.assets.len());
+        assert_eq!(r.omitted.len(), 21 - r.assets.len());
+        assert!(r
+            .omitted
+            .iter()
+            .all(|o| r.assets.iter().all(|a| a.name != o.name)));
         assert_eq!(r.source_url, url);
     }
 }
