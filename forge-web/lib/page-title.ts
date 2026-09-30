@@ -61,6 +61,7 @@ const SITE_TITLES: Readonly<Record<string, string>> = {
   '/settings': 'Settings',
   '/settings/storage': 'Storage settings',
   '/login': 'Sign in',
+  '/start': 'Getting started',
 }
 
 const PROFILE_TITLES: Readonly<Record<string, (label: string) => string>> = {

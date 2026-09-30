@@ -60,7 +60,7 @@ export interface DiscoveredRepo {
   readonly role?: Role
 }
 
-function fromRepoDoc(doc: RepoDoc, extra: Partial<Pick<DiscoveredRepo, 'stars' | 'issues' | 'pushedAt'>> = {}): DiscoveredRepo {
+export function fromRepoDoc(doc: RepoDoc, extra: Partial<Pick<DiscoveredRepo, 'stars' | 'issues' | 'pushedAt'>> = {}): DiscoveredRepo {
   return {
     key: doc.repoId,
     ownerId: doc.ownerId,

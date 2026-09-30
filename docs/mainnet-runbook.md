@@ -15,14 +15,14 @@ Deploying Dash Forge to a network means registering one pair of shared contracts
 
 ## 1. Cost budget (mainnet DASH — real money)
 
-The fee schedule is the same on every network. Measured on devnet moutai:
+The fee schedule is the same on every network. Registration was measured on devnet moutai; the everyday writes on devnet bonsia (Platform 4.2.0-beta.7):
 
 | Item | Cost | Refundable? |
 |---|---|---|
 | forge-core registration (once per network, deployer) | 0.60 DASH fee + storage; 0.605711 DASH measured | No |
 | forge-collab registration (once per network, deployer) | 0.55 DASH fee + storage; 0.555523 DASH measured | No |
-| Create a repository (`repo` + `maintainer` + `config`) | ~0.0013 DASH | No (the documents are permanent) |
-| Push (tiny) | ~0.002–0.003 DASH to your own bucket, ~0.004–0.005 DASH with packs on Platform | No for Platform-stored packs |
+| Create a repository (`repo` + `maintainer` + `config`) | ~0.0016 DASH | No (the documents are permanent) |
+| Push (tiny) | ~0.004–0.0055 DASH to your own bucket, ~0.004–0.011 DASH with packs on Platform | No for Platform-stored packs |
 | Issue / comment | ~0.0005–0.0017 DASH | issues no; comments on delete |
 | Smoke-suite run (create + push + issue) | ≤ 0.05 DASH | mostly not: repos, issues and Platform packs are permanent |
 

@@ -35,7 +35,7 @@ You need Rust and `protoc` 25 or newer to build ([BUILDING.md](docs/BUILDING.md)
 3. **Publish** any git repository:
    ```sh
    dg storage add                          # optional: your own bucket or IPFS node, tested as you go
-   dg init                                 # ~0.0013 DASH: creates the repository, adds `origin`, pushes this branch
+   dg init                                 # ~0.007 DASH: creates the repository, adds `origin`, pushes this branch
    ```
    Without a storage profile, `dg init` stops before spending and prices the alternative; pass `--storage platform` to keep packs on Platform (~0.33 DASH/MiB; see [What things cost](docs/guides/costs.md)).
 

@@ -159,7 +159,7 @@ Rules (all surfaces):
 1. **Cost before the click.** Every signing button shows `~0.0004 DASH ≈ $0.01` inline (`CostPreview`), split into *stored* and *fee* on hover. Free actions show nothing.
 2. **Cost after the click.** Toasts show actuals: `Issue #43 created · 0.00038 DASH`. A > 25 % miss against the estimate is flagged in Settings → Spend, which is how estimate drift gets noticed.
 3. **Running spend.** A local ledger (IndexedDB; CLI `~/.local/state/dash-forge/spend.jsonl`) records estimate, actual, repo and kind per broadcast. Settings → Spend and `dg cost audit [repo]` show month / all-time by repo with a reconciliation line: *"Ledger 0.0142 DASH · balance change 0.0146 DASH · 0.0004 unexplained (other apps or keys)."*
-4. **Push cost guard** (helper): plan line on every push; asks on `/dev/tty` above `dash.costWarnThreshold` (default **0.01 DASH**); `dash.confirm = auto|always|never`; without a tty the push fails with the fix (§7.3 example 3).
+4. **Push cost guard** (helper): plan line on every push; asks on `/dev/tty` above `dash.costWarnThreshold` (default **0.05 DASH**, the value `dg doctor --fix` sets: on bonsia a small push with its packs on Platform is quoted ~0.012 DASH, so 0.01 stopped every one); `dash.confirm = auto|always|never`; without a tty the push fails with the fix (§7.3 example 3).
 5. **Two budgets, separately.** Identity *balance* and *this key's budget*. The preview says which one blocks: *"Costs 0.0004 DASH · key budget left 0.0002 — renew key"*.
 
 Low-balance states:
