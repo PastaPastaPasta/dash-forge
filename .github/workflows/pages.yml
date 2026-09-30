@@ -46,6 +46,8 @@ jobs:
         env:
           NEXT_PUBLIC_NETWORK: ${{ vars.PAGES_NETWORK || 'devnet' }}
           NEXT_PUBLIC_DEVNET_NAME: ${{ (vars.PAGES_NETWORK || 'devnet') == 'devnet' && (vars.PAGES_DEVNET_NAME || 'bonsia') || '' }}
+          # The /mirror wizard pins the Mirror Action and its binaries to the commit deployed.
+          FORGE_BUILD_COMMIT: ${{ github.sha }}
         run: pnpm build
       # Deploy skew: a tab opened before this deploy still runs the previous build and lazily
       # loads that build's chunks (the Platform SDK, the sign-in flows). Those files must stay

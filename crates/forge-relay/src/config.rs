@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+use forge_core::envelope::SecretBytes;
 use forge_core::network::{NetworkSettings, NetworkTarget};
 
 use crate::error::{RelayError, Result};
@@ -55,6 +56,74 @@ impl std::fmt::Debug for StaticWebhook {
     }
 }
 
+/// `[wake]`: runners long-poll the relay for wake-ups on these repos (see [`crate::wake`]).
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+struct WakeFile {
+    /// `owner/name` or repo ids. The relay polls them even without a webhook.
+    repos: Vec<String>,
+    /// The shared secret (32–96 printable ASCII), or
+    secret: Option<String>,
+    /// a file holding it (trailing whitespace is trimmed).
+    secret_file: Option<PathBuf>,
+}
+
+/// Runner wake-ups: which repos, and the secret runners sign their requests with.
+#[derive(Clone)]
+pub struct WakeConfig {
+    /// `owner/name` or repo ids, as configured.
+    pub repos: Vec<String>,
+    /// The shared secret.
+    pub secret: SecretBytes,
+}
+
+impl std::fmt::Debug for WakeConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WakeConfig")
+            .field("repos", &self.repos)
+            .field("secret", &"[redacted]")
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for WakeFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WakeFile")
+            .field("repos", &self.repos)
+            .field("secret", &self.secret.as_ref().map(|_| "[redacted]"))
+            .field("secret_file", &self.secret_file)
+            .finish()
+    }
+}
+
+impl WakeFile {
+    fn resolve(self) -> Result<WakeConfig> {
+        if self.repos.is_empty() {
+            return Err(RelayError::Config("[wake] repos is empty".into()));
+        }
+        let secret = match (self.secret, self.secret_file) {
+            (Some(s), None) => s,
+            (None, Some(path)) => std::fs::read_to_string(&path)
+                .map_err(|e| {
+                    RelayError::Io(format!("reading the wake secret {}: {e}", path.display()))
+                })?
+                .trim_end()
+                .to_string(),
+            _ => {
+                return Err(RelayError::Config(
+                    "[wake] needs exactly one of secret or secret-file".into(),
+                ))
+            }
+        };
+        forge_core::webhooks::check_secret(secret.as_bytes())
+            .map_err(|e| RelayError::Config(format!("[wake] secret: {e}")))?;
+        Ok(WakeConfig {
+            repos: self.repos,
+            secret: SecretBytes::new(secret.into_bytes()),
+        })
+    }
+}
+
 /// The on-disk TOML shape (all optional; CLI flags override). Unknown keys are ignored.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -78,6 +147,7 @@ struct FileConfig {
     retry_schedule_secs: Option<Vec<u64>>,
     #[serde(default)]
     webhook: Vec<StaticWebhook>,
+    wake: Option<WakeFile>,
 }
 
 /// The fully resolved relay configuration.
@@ -117,6 +187,8 @@ pub struct RelayConfig {
     pub state_dir_explicit: bool,
     /// Retry delays after the 1st, 2nd, ... failed delivery (the last repeats).
     pub retry_schedule: Vec<Duration>,
+    /// Runner wake-ups (`[wake]`), served on `listen`.
+    pub wake: Option<WakeConfig>,
 }
 
 /// CLI overrides applied on top of the file config.
@@ -180,6 +252,13 @@ impl RelayConfig {
             .resolve()
             .map_err(|e| RelayError::Config(e.to_string()))?;
 
+        let wake = file.wake.map(WakeFile::resolve).transpose()?;
+        let listen = cli.listen.clone().or(file.listen);
+        if wake.is_some() && listen.is_none() {
+            return Err(RelayError::Config(
+                "[wake] needs --listen (or listen): runners reach the relay there".into(),
+            ));
+        }
         Ok(Self {
             target,
             identity_path: cli.identity.clone().or(file.identity),
@@ -203,7 +282,7 @@ impl RelayConfig {
                 .or(file.web_base_url)
                 .unwrap_or_else(|| forge_core::user_error::WEB_ORIGIN.to_string()),
             use_platform_webhooks: file.use_platform_webhooks.unwrap_or(true),
-            listen: cli.listen.clone().or(file.listen),
+            listen,
             static_webhooks: file.webhook,
             state_dir_explicit: cli.state_dir.is_some() || file.state_dir.is_some(),
             state_dir: cli
@@ -212,6 +291,7 @@ impl RelayConfig {
                 .or(file.state_dir)
                 .or_else(|| crate::queue::default_state_dir().ok()),
             retry_schedule: retry_schedule(file.retry_schedule_secs)?,
+            wake,
         })
     }
 }
@@ -364,6 +444,40 @@ secret = "s3cr3t"
         std::fs::write(&path, "state-dir = \"/srv/q\"\n[[webhook]]\nsecret = 1\n").unwrap();
         assert_eq!(state_dir_from_file(&path).unwrap(), PathBuf::from("/srv/q"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn wake_needs_a_listener_repos_and_a_valid_secret() {
+        const S: &str = "secret = \"0123456789abcdef0123456789abcdef\"\n";
+        let ok = format!("listen = \"127.0.0.1:8080\"\n[wake]\nrepos = [\"alice/p\"]\n{S}");
+        let cfg = load_str("wake-ok", &ok, &CliOverrides::default()).unwrap();
+        assert_eq!(cfg.wake.as_ref().unwrap().repos, ["alice/p"]);
+        let dumped = format!("{cfg:?}");
+        assert!(!dumped.contains("0123456789abcdef0123"), "{dumped}");
+        for (name, bad) in [
+            ("wake-nolisten", format!("[wake]\nrepos = [\"a/p\"]\n{S}")),
+            (
+                "wake-short",
+                "listen = \"x:1\"\n[wake]\nrepos = [\"a/p\"]\nsecret = \"short\"\n".to_string(),
+            ),
+            (
+                "wake-norepo",
+                format!("listen = \"x:1\"\n[wake]\nrepos = []\n{S}"),
+            ),
+            (
+                "wake-nosecret",
+                "listen = \"x:1\"\n[wake]\nrepos = [\"a/p\"]\n".to_string(),
+            ),
+            (
+                "wake-typo",
+                format!("listen = \"x:1\"\n[wake]\nrepo = [\"a/p\"]\n{S}"),
+            ),
+        ] {
+            assert!(
+                load_str(name, &bad, &CliOverrides::default()).is_err(),
+                "{name}"
+            );
+        }
     }
 
     #[test]

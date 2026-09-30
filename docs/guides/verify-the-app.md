@@ -49,7 +49,7 @@ The footer of every page says **About this build**: the commit the app was built
 
 **The CID in the footer comes from the URL, so it is only as good as whatever served the page.** A public gateway could serve any bytes under any CID. Only an IPFS node checks the blocks it serves against the CID it was asked for. So load the app through a node you run yourself (`ipfs dag import` above, or `ipfs pin add <cid>`, then `http://<cid>.ipfs.localhost:8080/`). Your node then refuses any byte that does not hash to that CID, and the footer's CID is the app you are running.
 
-A build served from an ordinary host (such as forge.dashhq.org on GitHub Pages) shows its commit, but no CID. That build is not the IPFS variant. To check it, rebuild that commit with `pnpm build` and compare the files; the commit's page on GitHub is linked from the footer.
+A build served from an ordinary host (such as forge.dashhq.org on GitHub Pages) shows its commit, but no CID. That build is not the IPFS variant. To check it, rebuild that commit with `FORGE_BUILD_COMMIT=<commit> pnpm build` and the network it reads: every file you build should be served byte for byte (the Pages deploy also keeps the previous two builds' chunks, so it serves more files than you built). The commit's page on GitHub is linked from the footer.
 
 ---
 
@@ -74,7 +74,7 @@ Read the script before you run it: it is short, and it is what you are trusting.
 
 What makes the build reproducible, in `forge-web/next.config.js`: the Next.js build id is the commit (Next's default is random), module ids are hashed into a range wide enough that none collide (webpack's default settles collisions in an order that varies between runs), entry chunks are named by the hash of their final bytes (Next's default name hashes webpack's internal state, which varies under load), and nothing reads the clock. The release workflow builds every tag on an x86_64 and an arm64 runner and refuses to publish unless both give the same CID (`.github/workflows/web-ipfs.yml`), and every pull request that touches the web app runs the same check.
 
-**Without Docker.** In a checkout of the tag, `cd forge-web && pnpm install --frozen-lockfile && NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia pnpm build:ipfs` builds the same site with your own Node. The result matches only if your Node and pnpm are the pinned versions and your environment adds nothing, so a mismatch there is not evidence of anything. Use the script for the real check. To get a CID for a directory you built, `forge-web/scripts/ipfs-release.sh cid forge-web/out` (still needs Docker, for the pinned kubo), or, on a kubo of the pinned version, a repository initialised with `ipfs init --profile=unixfs-v1-2025` and `ipfs add` with the flags in `IPFS_ADD_FLAGS`.
+**Without Docker.** In a checkout of the tag, `cd forge-web && pnpm install --frozen-lockfile && FORGE_BUILD_COMMIT=$(git rev-parse HEAD) NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia pnpm build:ipfs` builds the same site with your own Node. The result matches only if your Node and pnpm are the pinned versions and your environment adds nothing, so a mismatch there is not evidence of anything. Use the script for the real check. To get a CID for a directory you built, `forge-web/scripts/ipfs-release.sh cid forge-web/out` (still needs Docker, for the pinned kubo), or, on a kubo of the pinned version, a repository initialised with `ipfs init --profile=unixfs-v1-2025` and `ipfs add` with the flags in `IPFS_ADD_FLAGS`.
 
 ---
 
@@ -124,7 +124,7 @@ Also:
 
 - **Public gateways are not checked.** A gateway you do not run could serve different bytes under the right CID. Pin the CAR on your own node, or rebuild and serve `site.tar` yourself.
 - **The build's network is fixed.** A release built for devnet bonsia reads bonsia. Proofs from Platform are still checked in the browser against the quorum keys, whatever the build ([Check that Forge isn't lying to you](verify-forge.md)).
-- **A new release changes the CID.** Every build embeds its commit (the footer), so no two commits share a CID.
+- **A new release changes the CID.** Every release build embeds its commit (the footer), so no two commits share a CID.
 - **Short links are for ordinary hosts.** A short URL such as `/<owner>/<name>/issues/12` opens through the build's `404.html`, which IPFS gateways do not serve for a missing path. So the IPFS build's **Copy link** and permalinks give the canonical routes (`/repo/?owner=…&name=…`) instead, which open from any gateway.
 
 ---

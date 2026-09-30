@@ -286,6 +286,15 @@ export async function readNewestManifestOfKind(
   repo: RepoRef,
   kind: PackKind,
 ): Promise<PackManifest | null> {
+  return (await readNewestManifestsOfKind(sdk, repo, kind, 1))[0] ?? null
+}
+
+/**
+ * The newest `limit` manifests of a given kind, newest first (`(kind, $createdAt desc)`): the
+ * current locator or flatIndex, and the newest kind-4 lists a sealed release writer looks among
+ * for one its earlier attempt stored (`sealed-release.ts`).
+ */
+export async function readNewestManifestsOfKind(sdk: EvoSDK, repo: RepoRef, kind: PackKind, limit: number): Promise<PackManifest[]> {
   const { documents } = await queryDocumentsWithProof(
     sdk,
     repoSource(repo).repoQuery(DOC.packManifest, {
@@ -294,11 +303,10 @@ export async function readNewestManifestOfKind(
         ['kind', 'asc'],
         ['$createdAt', 'desc'],
       ],
-      limit: 1,
+      limit,
     }),
   )
-  const doc = documents[0]
-  return doc === undefined ? null : toManifest(doc)
+  return documents.map(toManifest)
 }
 
 /** The current objectLocator manifest (kind 1) — the size-independent object index. */

@@ -4,8 +4,8 @@ import { useState } from 'react'
 import { Check, Copy } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-/** One copyable monospace line (a command, an address). */
-export function CopyRow({ text, label, className }: { text: string; label?: string; className?: string }): JSX.Element {
+/** One copyable monospace line (a command, an address). `display`: what to show instead (a masked secret). */
+export function CopyRow({ text, display, label, className }: { text: string; display?: string; label?: string; className?: string }): JSX.Element {
   const [copied, setCopied] = useState(false)
   const copy = async (): Promise<void> => {
     try {
@@ -23,7 +23,7 @@ export function CopyRow({ text, label, className }: { text: string; label?: stri
         className,
       )}
     >
-      <code className="min-w-0 flex-1 break-all font-mono text-dense text-anvil-800 dark:text-anvil-200">{text}</code>
+      <code className="min-w-0 flex-1 break-all font-mono text-dense text-anvil-800 dark:text-anvil-200">{display ?? text}</code>
       <button
         type="button"
         onClick={copy}

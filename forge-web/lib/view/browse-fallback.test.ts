@@ -32,6 +32,7 @@ import {
   artifactRangeFetch,
   externalFetchUrls,
   overrideMirrorRaceWidth,
+  PackUnavailableError,
   resetExternalFetchState,
   StorageUnreachableError,
 } from './browse-source'
@@ -237,8 +238,8 @@ describe('startFallback with external-storage packs', () => {
     const read = ctx.reader.readObject(inherited.oid)
     await expect(read).rejects.toThrow(/the parent repo's chunks on Platform/)
     await expect(read).rejects.not.toThrow(/external storage/)
-    expect(describeUnavailable(ctx.unavailable ?? [], [])).toEqual(["the parent repo's chunks on Platform (missing)"])
-    expect(contentChecks('FORK').unreachable).toEqual(["the parent repo's chunks on Platform (missing)"])
+    expect(describeUnavailable(ctx.unavailable ?? [], [])).toEqual(['chunks on Platform (missing)'])
+    expect(contentChecks('FORK').unreachable).toEqual(['chunks on Platform (missing)'])
   })
 
   it('the summary names the place that served the file on view, not the session\'s first (L-18)', async () => {
@@ -462,6 +463,81 @@ describe('startFallback with external-storage packs', () => {
     const repo = testRepo('fallback-platform-missing')
     // The chunk documents are absent: platform storage must not be skipped.
     await expect(startFallback(mockSdk(new Map()), repo, [platform])).rejects.toThrow(/missing chunk/)
+    // Nor a ranged read of it: no external copy is recorded, so the chunk error stands.
+    const range = artifactRangeFetch(mockSdk(new Map()), testRepo('range-platform-missing'), platform)(0, plat.pack.length)
+    await expect(range).rejects.toThrow(/missing chunk/)
+    await expect(range).rejects.not.toBeInstanceOf(PackUnavailableError)
+  })
+
+  it('reads an on-chain pack from its external copy when its chunks cannot be, naming the chunks', async () => {
+    const both = blobPack('pushed to platform and a bucket\n')
+    const hash = bytesToHex(sha256(both.pack))
+    // A push to ['platform', 's3']: storage 0, the bucket's URL (and the chunks' own locator,
+    // which is not an external copy) recorded alongside.
+    const manifest = manifestFor(both.pack, 1, {
+      uris: [`platform://CORE/REPO/owner/${hash}`, 'https://bucket.example/p.pack'],
+    })
+    const calls = stubFetch({ 'https://bucket.example/p.pack': () => both.pack })
+    const expectFellBack = (repo: RepoRef, why: string): void => {
+      const checks = contentChecks(repo.repoId)
+      expect(checks.sources).toEqual(['bucket.example'])
+      expect(checks.fellBackFrom).toEqual([`chunks on Platform (${why})`])
+      expect(checks.unreachable).toEqual([])
+      const trust = deriveTrust({ network: 'devnet', connection: 'trusted', tip: 'missing', checks, configuredBackend: 'platform' })
+      expect(trust.source.detail).toBe(`bucket.example. Unavailable, another copy served instead: chunks on Platform (${why}).`)
+      expect(trust.source.state).toBe(trust.content.state)
+    }
+
+    // The whole-pack load (the in-browser clone): the chunk documents are absent.
+    const cloned = testRepo('fallback-chunks-to-bucket')
+    const ctx = await startFallback(mockSdk(new Map()), cloned, [manifest])
+    expect(ctx.unavailable).toEqual([])
+    expect((await ctx.reader.readObject(both.oid)).type).toBe('blob')
+    expectFellBack(cloned, 'missing')
+
+    // A ranged read (the indexed browse): the chunk query itself fails.
+    const failing = { documents: { query: () => Promise.reject(new Error('node unreachable')) } } as unknown as EvoSDK
+    const ranged = testRepo('range-chunks-to-bucket')
+    const got = await artifactRangeFetch(failing, ranged, manifest)(5, 20)
+    expect(Array.from(got)).toEqual(Array.from(both.pack.subarray(5, 20)))
+    expectFellBack(ranged, "didn't answer")
+    expect(calls.every((u) => u === 'https://bucket.example/p.pack')).toBe(true)
+  })
+
+  it("tries a copy's external copies before the next copy's chunks", async () => {
+    const both = blobPack('two writers hold it\n')
+    // Copy 0: its chunks missing, its bucket down. Copy 1 (another writer's): readable chunks.
+    const first = manifestFor(both.pack, 1, { uris: ['https://bucket.example/p.pack'], documentId: 'c0', uploader: 'gone' })
+    const second = manifestFor(both.pack, 1, { documentId: 'c1', uploader: 'owner' })
+    const manifest = { ...first, copies: [first, second] }
+    const calls = stubFetch({})
+    const sdk = mockSdk(new Map([[first.packHash, both.pack]]))
+    // The mock serves chunks by pack hash alone: copy 0's reads fail as a missing uploader's would.
+    const byUploader = {
+      documents: {
+        query: (q: { where?: readonly (readonly unknown[])[] }) =>
+          (q.where ?? []).some((w) => w[0] === '$ownerId' && w[2] === 'gone') ? Promise.resolve(new Map()) : sdk.documents.query(q as never),
+      },
+    } as unknown as EvoSDK
+    const repo = testRepo('copies-chunks-then-bucket')
+    const got = await artifactRangeFetch(byUploader, repo, manifest)(0, both.pack.length)
+    expect(Array.from(got)).toEqual(Array.from(both.pack))
+    expect(calls).toEqual(['https://bucket.example/p.pack'])
+    expect(contentChecks(repo.repoId).sources).toEqual(['platform'])
+  })
+
+  it('names Platform and every host tried when neither the chunks nor an external copy serves', async () => {
+    const both = blobPack('nowhere to be found\n')
+    const manifest = manifestFor(both.pack, 1, { uris: ['https://bucket.example/p.pack'] })
+    stubFetch({})
+    const whole = startFallback(mockSdk(new Map()), testRepo('fallback-chunks-and-bucket'), [manifest])
+    await expect(whole).rejects.toBeInstanceOf(PackUnavailableError)
+    await expect(whole).rejects.toMatchObject({ hosts: ['platform', 'bucket.example'] })
+    const repo = testRepo('range-chunks-and-bucket')
+    const range = artifactRangeFetch(mockSdk(new Map()), repo, manifest)(0, both.pack.length)
+    await expect(range).rejects.toMatchObject({ hosts: ['platform', 'bucket.example'] })
+    expect(contentChecks(repo.repoId).unreachable).toEqual(['chunks on Platform (missing)', "bucket.example (didn't answer)"])
+    expect(contentChecks(repo.repoId).fellBackFrom).toEqual([])
   })
 
   it('fails with the reasons when no live pack at all could be fetched', async () => {

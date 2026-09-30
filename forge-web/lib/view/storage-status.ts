@@ -2,7 +2,7 @@
  * Storage status (view glue): the reader's own IPFS gateways, and the plain description of
  * where an unreadable pack was looked for (`ux-dx-spec.md` §6.3):
  * `pub-9a1.r2.dev (timed out)`, `ipfs gateway ipfs.io (down: HTTP 429)`,
- * `the parent repo's chunks on Platform (missing)`.
+ * `chunks on Platform (missing)`.
  */
 
 import { z } from 'zod'
@@ -245,8 +245,8 @@ function classify(message: string, platform: boolean): Why {
 }
 
 /**
- * Per-host failure reasons from a {@link UnavailablePack}. The whole-pack fetch records
- * `host: message` segments; a ranged read records one message for every host.
+ * Per-host failure reasons from a {@link UnavailablePack}. Whole-pack and ranged fetches record
+ * `host: message` segments; a host with no segment of its own gets the whole reason.
  */
 function reasonsByHost(pack: UnavailablePack): Map<string, string> {
   const out = new Map<string, string>()
@@ -270,7 +270,9 @@ export function describePack(pack: UnavailablePack, gateways: readonly string[])
   const ipfs: string[] = []
   for (const [host, message] of reasonsByHost(pack)) {
     if (host === 'platform') {
-      places.push(`the parent repo's chunks on Platform (${classify(message, true)})`)
+      // A pack's own chunks (`storage 0`) or, for a fork, its parent's (a `platform://` locator):
+      // the same place either way, and this line cannot tell which one was read.
+      places.push(`chunks on Platform (${classify(message, true)})`)
     } else if (gatewayHosts.has(host) || gatewayDownWhy(message) !== null) {
       const down = gatewayDownWhy(message)
       ipfs.push(`${GATEWAY_PLACE}${host} (${down !== null ? `down: ${down}` : classify(message, false)})`)

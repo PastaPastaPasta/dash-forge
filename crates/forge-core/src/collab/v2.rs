@@ -4444,10 +4444,12 @@ impl<'a> Collab<'a> {
         // Every revision of the tag, read now from the `created` listing (§16.3): what this
         // one does not change is carried forward from the newest readable one.
         let before = self.releases(repo).await?;
-        let carried = newest_revision(&before, tag)
+        let carried_from = newest_revision(&before, tag);
+        let carried = carried_from
             .and_then(|r| r.sealed.as_ref())
             .map(|s| s.fields.clone())
             .unwrap_or_default();
+        let stored = StoredLists::of(&before, carried_from);
         let mut fields = ReleaseFields {
             tag: tag.clone(),
             name: non_empty(&input.name).or(carried.name.clone()),
@@ -4481,9 +4483,8 @@ impl<'a> Collab<'a> {
             (None, Some(m)) if carried.notes_continue => m.notes.clone().unwrap_or_default(),
             (None, _) => carried.notes.clone().unwrap_or_default(),
         };
-        let mut sealed_assets = Vec::new();
-        let mut orphaned = Vec::new();
-        let mut attempts = 0;
+        let (mut sealed_assets, mut asset_list_reused) = (Vec::new(), false);
+        let (mut orphaned, mut attempts) = (Vec::new(), 0);
         let (keys, epoch) = loop {
             attempts += 1;
             // the write epoch of keys read now (§5.3)
@@ -4500,11 +4501,12 @@ impl<'a> Collab<'a> {
                         notes: &full_notes,
                         files: &input.files,
                         prev: prev_manifest.as_ref(),
+                        stored: &stored,
                     },
                     store,
                 )
                 .await?;
-            (fields, sealed_assets) = (list.fields, list.assets);
+            (fields, sealed_assets, asset_list_reused) = (list.fields, list.assets, list.reused);
             // The final anchor re-read before signing (§5.3, §16.5): a rotation during the
             // upload would leave the new artifacts readable to the member it removed. The key
             // is compared, not only its number: a dropped epoch number can be used again.
@@ -4543,13 +4545,15 @@ impl<'a> Collab<'a> {
             document_id,
             sealed_assets,
             asset_list_kept: !rebuild,
+            asset_list_reused,
         })
     }
 
     /// A revision's new asset list under `keys` (§16.5): the previous list's assets but those a
     /// new file replaces, then the new files sealed and stored, and the full notes when they
     /// do not fit `enc`. The list is named again, not stored again, when nothing in it changes
-    /// (no new file, and no notes in it before or now). Returns the fields with their notes
+    /// (no new file, and no notes in it before or now), and when an earlier attempt at this
+    /// revision stored it ([`Self::stored_asset_list`]). Returns the fields with their notes
     /// fitted and TLV 21 set (none when there is no asset and nothing continues), the list's
     /// entries, and the sealed hashes it stored.
     async fn rebuild_asset_list(
@@ -4564,49 +4568,156 @@ impl<'a> Collab<'a> {
         let prev_hash = from.fields.asset_manifest.clone();
         let mut assets = from.prev.map(|m| m.assets.clone()).unwrap_or_default();
         assets.retain(|a| !from.files.iter().any(|f| f.name == a.name));
+        // TLV 21 is part of the 1507-byte budget whenever the revision names a list (§16.2):
+        // a placeholder of its length is counted before the notes are fitted (each new file is
+        // one entry, so whether there is a list is known before anything is stored)
+        let has_assets = !assets.is_empty() || !from.files.is_empty();
+        let (mut fields, notes_continue) = release::fit_notes(
+            ReleaseFields {
+                asset_manifest: has_assets.then(|| "00".repeat(32)),
+                ..from.fields
+            },
+            from.notes,
+        );
+        let done = |fields, assets| Rebuilt {
+            fields,
+            assets,
+            stored: Vec::new(),
+            reused: false,
+        };
+        if !has_assets && !notes_continue {
+            fields.asset_manifest = None;
+            return Ok(done(fields, assets));
+        }
+        if from.files.is_empty() && !notes_continue && from.prev.is_some_and(|m| m.notes.is_none())
+        {
+            fields.asset_manifest = prev_hash;
+            return Ok(done(fields, assets));
+        }
+        let source = from.prev.and_then(|m| m.source.clone());
+        let notes = notes_continue.then(|| from.notes.to_string());
+        // An earlier attempt at this revision stored its list, and the release write failed:
+        // named again, nothing sealed or stored again (§16.5).
+        let want = WantedList {
+            kept: &assets,
+            files: from.files,
+            notes: notes.clone(),
+            source: source.clone(),
+        };
+        if let Some((hash, entries)) = self
+            .stored_asset_list(repo, keys, &fields.tag, &want, from.stored)
+            .await
+        {
+            fields.asset_manifest = Some(hash.clone());
+            // named by nothing if the key moves before signing, as files and a list stored now
+            // would be
+            let mut stored: Vec<String> = entries[assets.len()..]
+                .iter()
+                .filter_map(|a| a.sealed_sha256.clone())
+                .collect();
+            stored.push(hash);
+            return Ok(Rebuilt {
+                stored,
+                reused: true,
+                ..done(fields, entries)
+            });
+        }
         let uploaded = self.seal_release_files(keys, from.files, store).await?;
         let mut stored: Vec<String> = uploaded
             .iter()
             .filter_map(|a| a.sealed_sha256.clone())
             .collect();
         assets.extend(uploaded);
-        // TLV 21 is part of the 1507-byte budget whenever the revision names a list (§16.2):
-        // a placeholder of its length is counted before the notes are fitted
-        let (mut fields, notes_continue) = release::fit_notes(
-            ReleaseFields {
-                asset_manifest: (!assets.is_empty()).then(|| "00".repeat(32)),
-                ..from.fields
-            },
-            from.notes,
-        );
-        let unchanged = from.files.is_empty()
-            && !notes_continue
-            && from.prev.is_some_and(|m| m.notes.is_none());
-        fields.asset_manifest = if assets.is_empty() && !notes_continue {
-            None
-        } else if unchanged {
-            prev_hash
-        } else {
-            let manifest = ReleaseManifest {
-                v: 1,
-                tag: fields.tag.clone(),
-                total: assets.len() as u64,
-                source: from.prev.and_then(|m| m.source.clone()),
-                notes: notes_continue.then(|| from.notes.to_string()),
-                assets: assets.clone(),
-            };
-            let hash = hex::encode(
-                self.store_release_manifest(repo, keys, &manifest, notes_continue, store)
-                    .await?,
-            );
-            stored.push(hash.clone());
-            Some(hash)
+        let manifest = ReleaseManifest {
+            v: 1,
+            tag: fields.tag.clone(),
+            total: assets.len() as u64,
+            source,
+            notes,
+            assets: assets.clone(),
         };
+        let hash = hex::encode(
+            self.store_release_manifest(repo, keys, &manifest, notes_continue, store)
+                .await?,
+        );
+        stored.push(hash.clone());
+        fields.asset_manifest = Some(hash);
         Ok(Rebuilt {
             fields,
             assets,
             stored,
+            reused: false,
         })
+    }
+
+    /// The asset list an earlier attempt at this revision stored under `keys` before its
+    /// release write failed (§16.5: a sealed list is not content-addressed, so a retry reuses
+    /// the one on chain rather than sealing a new one), as its hash (hex) and entries. A
+    /// candidate is a kind-4 `packManifest` of this signer's that `scope` admits
+    /// ([`StoredLists::admits`]), and it is reused only when:
+    /// - it opens under exactly `keys` (so under the write epoch, as a new list would be);
+    /// - it states exactly `want`, the list this revision would build ([`WantedList`]);
+    /// - each new file it names is still stored, sealed under `keys`' epoch at its recorded
+    ///   sealed size: the header of its first copy that answers is read and checked.
+    ///
+    /// Best-effort: a candidate that cannot be read or checked is skipped, and none found builds
+    /// the list anew.
+    async fn stored_asset_list(
+        &self,
+        repo: &RepoRef,
+        keys: &crate::private::EpochKeys,
+        tag: &str,
+        want: &WantedList<'_>,
+        scope: &StoredLists,
+    ) -> Option<(String, Vec<crate::private::release::ManifestAsset>)> {
+        use crate::private::release::open_manifest;
+        let me = self.signer_id().ok()?;
+        let svc = self.repo_service().ok()?;
+        let candidates: Vec<_> = svc
+            .read_pack_manifests(repo)
+            .await
+            .ok()?
+            .into_iter()
+            .filter(|m| scope.admits(m, &me))
+            .take(STORED_LIST_CANDIDATES)
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        let hashes: Vec<String> = want
+            .files
+            .iter()
+            .map(|f| hex::encode(sha256(&f.bytes)))
+            .collect();
+        let reader = crate::storage::PackReader::from_user_config();
+        for copy in candidates {
+            let Ok(sealed) = svc.fetch_artifact(repo, &copy, &reader).await else {
+                continue;
+            };
+            // Under the write key only: a list sealed under another epoch is not this attempt's.
+            let only_write_key = |e: u32| (e == keys.epoch()).then_some(keys);
+            let Ok(m) = open_manifest(
+                &sealed,
+                copy.size_bytes,
+                &copy.pack_hash,
+                tag,
+                want.notes.is_some(),
+                only_write_key,
+            ) else {
+                continue;
+            };
+            if !want.is_stated_by(&m, &hashes) {
+                continue;
+            }
+            let mut stored = true;
+            for entry in &m.assets[want.kept.len()..] {
+                stored = stored && sealed_under(&reader, entry, keys.epoch()).await;
+            }
+            if stored {
+                return Some((hex::encode(copy.pack_hash), m.assets));
+            }
+        }
+        None
     }
 
     /// Seal each of `files` under `keys` and store it, as manifest entries (§16.5): the
@@ -5405,6 +5516,118 @@ struct RebuildFrom<'i> {
     files: &'i [ReleaseFile],
     /// The previous revision's asset list.
     prev: Option<&'i crate::private::release::ReleaseManifest>,
+    /// Where an earlier attempt's list may be ([`Collab::stored_asset_list`]).
+    stored: &'i StoredLists,
+}
+
+/// How many unnamed kind-4 lists of the signer's, newest first, a sealed writer opens looking
+/// for an earlier attempt's ([`Collab::stored_asset_list`]): a failed write leaves one per
+/// attempt, and each costs a fetch.
+const STORED_LIST_CANDIDATES: usize = 4;
+
+/// What rules a kind-4 list out as an earlier attempt's at a revision
+/// ([`Collab::stored_asset_list`]): a readable revision names it (it is that revision's, and
+/// the carried list is reused through the carried fields), or it predates the revision the new
+/// one is carried from.
+#[derive(Debug, Default)]
+struct StoredLists {
+    /// The lists readable revisions name.
+    named: BTreeSet<[u8; 32]>,
+    /// The carried revision's `$createdAt` (0 for a tag's first).
+    after: u64,
+}
+
+impl StoredLists {
+    fn of(list: &ReleaseList, carried_from: Option<&Release>) -> Self {
+        Self {
+            named: list
+                .current
+                .iter()
+                .chain(&list.previous)
+                .filter_map(|r| r.sealed.as_ref()?.fields.asset_manifest_hash())
+                .collect(),
+            after: carried_from.map_or(0, |r| r.created_at),
+        }
+    }
+
+    /// Whether `m` may be an earlier attempt's list: a kind-4 manifest `me` recorded after the
+    /// carried revision, within the reader's size cap, that no readable revision names. A cost
+    /// filter, not a guard (`$createdAt` is client-set): what makes a list reusable is
+    /// [`WantedList::is_stated_by`] against the carried list, and the write key.
+    fn admits(&self, m: &crate::repo::PackManifestInfo, me: &str) -> bool {
+        m.kind == u64::from(crate::pack::KIND_RELEASE_ASSETS)
+            && m.owner_id == me
+            && m.created_at > self.after
+            && m.size_bytes <= crate::private::release::MAX_MANIFEST_BYTES
+            && !self.named.contains(&m.pack_hash)
+    }
+}
+
+/// The asset list a revision would build ([`Collab::stored_asset_list`]), to recognise an
+/// earlier attempt's.
+struct WantedList<'k> {
+    /// The previous list's entries no new file replaces, as they are.
+    kept: &'k [crate::private::release::ManifestAsset],
+    /// The new files, in order.
+    files: &'k [ReleaseFile],
+    /// The notes it continues (flag `0x10`), or none.
+    notes: Option<String>,
+    /// The previous list's `source`.
+    source: Option<String>,
+}
+
+impl WantedList<'_> {
+    /// Whether the opened list `m` states exactly this list: the kept entries, then each new
+    /// file (by name, size and `hashes`, its plaintext `sha256` in order) sealed, whose URIs
+    /// and sealed hash are that attempt's, then the notes and the source.
+    fn is_stated_by(
+        &self,
+        m: &crate::private::release::ReleaseManifest,
+        hashes: &[String],
+    ) -> bool {
+        let (old, new) = m.assets.split_at(self.kept.len().min(m.assets.len()));
+        old == self.kept
+            && new.len() == self.files.len()
+            && hashes.len() == self.files.len()
+            && new
+                .iter()
+                .zip(self.files.iter().zip(hashes))
+                .all(|(a, (f, sha))| {
+                    a.name == f.name
+                        && a.sha256 == *sha
+                        && a.size_bytes == f.bytes.len() as u64
+                        && a.sealed_sha256.is_some()
+                        && a.sealed_size_bytes.is_some()
+                })
+            && m.notes == self.notes
+            && m.source == self.source
+    }
+}
+
+/// Whether the sealed object `entry` names is still stored, sealed under `epoch` at its
+/// recorded sealed size and holding at least its plaintext (§3.2): the header of its first copy
+/// that answers ([`Collab::stored_asset_list`]).
+async fn sealed_under(
+    reader: &crate::storage::PackReader,
+    entry: &crate::private::release::ManifestAsset,
+    epoch: u32,
+) -> bool {
+    let Ok(range) = crate::backends::ByteRange::new(0, crate::private::pack::HEADER_LEN as u64)
+    else {
+        return false;
+    };
+    match reader.fetch_range(&entry.uris, range).await {
+        Ok(header) => header_fits(&header, entry, epoch),
+        Err(_) => false,
+    }
+}
+
+/// Whether `header` is that of the sealed object `entry` names under `epoch` ([`sealed_under`]).
+fn header_fits(header: &[u8], entry: &crate::private::release::ManifestAsset, epoch: u32) -> bool {
+    entry.sealed_size_bytes.is_some_and(|size| {
+        crate::private::PackHeader::parse(header, size)
+            .is_ok_and(|h| h.epoch() == epoch && h.plaintext_len() >= entry.size_bytes)
+    })
 }
 
 /// What a sealed writer refuses before anything is read or stored: the tag and text caps,
@@ -5476,8 +5699,11 @@ struct Rebuilt {
     fields: crate::private::release::ReleaseFields,
     /// The list's entries.
     assets: Vec<crate::private::release::ManifestAsset>,
-    /// The sealed hashes it stored (files, then the list).
+    /// The sealed hashes it stored (files, then the list); for a reused list, the list's: what
+    /// is named by nothing if the key moves before signing.
     stored: Vec<String>,
+    /// The list is an earlier attempt's, named again ([`Collab::stored_asset_list`]).
+    reused: bool,
 }
 
 /// The newest readable revision of `tag`: its release when live, else the newest of its
@@ -6872,6 +7098,152 @@ mod tests {
         let input = release_manifest_input(sha256(&sealed), &sealed, stored);
         assert_eq!((input.object_count, input.tips.len()), (0, 0));
         rc1::assert_valid("packManifest", &input.props(&scope).unwrap());
+    }
+
+    /// §16.5: a retry after a failed release write finds the list its earlier attempt stored:
+    /// a kind-4 manifest of the signer's, newer than the carried revision, that no readable
+    /// revision names. Anyone else's, an older one, a named one or another kind is not it.
+    #[test]
+    fn an_earlier_attempts_asset_list_is_looked_for_among_unnamed_lists() {
+        let info = |owner: &str, at: u64, kind: u8, hash: u8| crate::repo::PackManifestInfo {
+            document_id: format!("m{hash}"),
+            created_at: at,
+            owner_id: owner.into(),
+            pack_hash: [hash; 32],
+            kind: u64::from(kind),
+            size_bytes: 900,
+            object_count: 0,
+            chunk_count: 0,
+            storage: 1,
+            uris: Vec::new(),
+            supersedes: Vec::new(),
+            tips: Vec::new(),
+            created_at_block_height: 10,
+        };
+        let lists = StoredLists {
+            named: BTreeSet::from([[2; 32]]),
+            after: 100,
+        };
+        let kind4 = crate::pack::KIND_RELEASE_ASSETS;
+        assert!(lists.admits(&info("me", 101, kind4, 1), "me"));
+        assert!(
+            !lists.admits(&info("bob", 101, kind4, 1), "me"),
+            "another signer's"
+        );
+        assert!(
+            !lists.admits(&info("me", 100, kind4, 1), "me"),
+            "not after the carried revision"
+        );
+        assert!(
+            !lists.admits(&info("me", 101, kind4, 2), "me"),
+            "a revision names it"
+        );
+        assert!(!lists.admits(&info("me", 101, 0, 1), "me"), "a git pack");
+        let mut big = info("me", 101, kind4, 1);
+        big.size_bytes = crate::private::release::MAX_MANIFEST_BYTES + 1;
+        assert!(!lists.admits(&big, "me"), "over the reader's cap");
+    }
+
+    /// §16.5: an earlier attempt's list is reused only when it opens under the write key and
+    /// states exactly the list the retry would build.
+    #[test]
+    fn an_earlier_attempts_asset_list_is_reused_only_when_it_states_the_same_list() {
+        use crate::private::release::{
+            open_manifest, seal_manifest, ManifestAsset, ReleaseManifest,
+        };
+        use crate::private::{EpochKey, EpochKeys};
+        let entry = |name: &str, sha: &str, sealed: bool| ManifestAsset {
+            name: name.into(),
+            sha256: sha.into(),
+            size_bytes: 5,
+            uris: vec![format!("https://bucket.example/{name}")],
+            sealed_sha256: sealed.then(|| "ab".repeat(32)),
+            sealed_size_bytes: sealed.then_some(100),
+        };
+        let kept = vec![entry("old.txt", &"11".repeat(32), true)];
+        let new_sha = hex::encode(sha256(b"hello"));
+        let manifest = ReleaseManifest {
+            v: 1,
+            tag: "v1".into(),
+            total: 2,
+            source: None,
+            notes: None,
+            assets: vec![kept[0].clone(), entry("new.txt", &new_sha, true)],
+        };
+        let files = [crate::collab::ReleaseFile {
+            name: "new.txt".into(),
+            bytes: b"hello".to_vec(),
+        }];
+        let want = WantedList {
+            kept: &kept,
+            files: &files,
+            notes: None,
+            source: None,
+        };
+        let hashes = [new_sha.clone()];
+        assert!(want.is_stated_by(&manifest, &hashes));
+        let differs = |f: &dyn Fn(&mut ReleaseManifest)| {
+            let mut m = manifest.clone();
+            f(&mut m);
+            !want.is_stated_by(&m, &hashes)
+        };
+        assert!(
+            differs(&|m| m.assets[1].sha256 = "22".repeat(32)),
+            "another file"
+        );
+        assert!(
+            differs(&|m| m.assets[1].name = "other.txt".into()),
+            "another name"
+        );
+        assert!(differs(&|m| m.assets[1].size_bytes = 6), "another size");
+        assert!(
+            differs(&|m| m.assets[1].sealed_sha256 = None),
+            "an external link"
+        );
+        assert!(
+            differs(&|m| m.assets[0].uris.clear()),
+            "a kept entry changed"
+        );
+        assert!(differs(&|m| drop(m.assets.pop())), "a file missing");
+        assert!(differs(&|m| m.notes = Some("notes".into())), "other notes");
+        assert!(
+            differs(&|m| m.source = Some("https://x".into())),
+            "another source"
+        );
+
+        // Opened under the write key only: a list sealed under another epoch is refused.
+        let repo = [0x11; 32];
+        let key = EpochKey::from_bytes([1; 32]);
+        let (e1, e2) = (
+            EpochKeys::derive(&repo, 1, &key),
+            EpochKeys::derive(&repo, 2, &key),
+        );
+        let sealed = seal_manifest(&e1, &manifest, false).unwrap();
+        let hash = sha256(&sealed);
+        let open_with = |keys: &EpochKeys| {
+            open_manifest(&sealed, sealed.len() as u64, &hash, "v1", false, |e| {
+                (e == keys.epoch()).then_some(keys)
+            })
+        };
+        assert!(want.is_stated_by(&open_with(&e1).unwrap(), &hashes));
+        assert!(open_with(&e2).is_err());
+
+        // A new file the list names must still be stored, sealed under the write epoch at its
+        // recorded sealed size: its header is read and checked.
+        let file = crate::private::pack::seal(&e1, b"hello").unwrap();
+        let stored = ManifestAsset {
+            sealed_size_bytes: Some(file.len() as u64),
+            ..entry("new.txt", &new_sha, true)
+        };
+        let header = &file[..crate::private::pack::HEADER_LEN];
+        assert!(header_fits(header, &stored, 1));
+        assert!(!header_fits(header, &stored, 2), "another epoch");
+        let resized = ManifestAsset {
+            sealed_size_bytes: Some(file.len() as u64 + 1),
+            ..stored.clone()
+        };
+        assert!(!header_fits(header, &resized, 1), "another sealed size");
+        assert!(!header_fits(&header[..20], &stored, 1), "a short read");
     }
 
     /// §16.3: a writer is warned when, read back, its revision is not the tag's newest; not

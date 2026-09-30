@@ -190,7 +190,7 @@ pnpm build                         # writes the static site to forge-web/out/
 npx serve out                      # or any static file server
 ```
 
-Choose the network at build time: `NEXT_PUBLIC_NETWORK=testnet|mainnet|devnet`, plus `NEXT_PUBLIC_DEVNET_NAME=bonsia` for a devnet. The hosted app is built from master by `.github/workflows/pages.yml`; from the cut-over it uses `NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia`, the only network with a Forge deployment today; a build for a network without one shows "not deployed". Contract ids come from `forge-contracts/deployments/`.
+Choose the network at build time: `NEXT_PUBLIC_NETWORK=testnet|mainnet|devnet`, plus `NEXT_PUBLIC_DEVNET_NAME=bonsia` for a devnet. The hosted app is built from master by `.github/workflows/pages.yml`, which uses `NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia`, the only network with a Forge deployment today; a build for a network without one shows "not deployed". Contract ids come from `forge-contracts/deployments/`.
 
 **Host it anywhere static:** another static host, your own server, or IPFS. For IPFS, build the IPFS variant, which finds its base path when it loads:
 

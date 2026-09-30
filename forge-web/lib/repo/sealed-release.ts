@@ -9,7 +9,10 @@
  * in a sealed kind-4 manifest recorded as a `packManifest` that publishes nothing about the list
  * (§16.5); notes over the 1507-byte budget continue in that manifest. If a final re-read of the
  * anchors finds the write key moved during the upload, everything new is sealed and stored again
- * under the new one (at most twice). The document is exactly `{repoId, tagName, vis: "private",
+ * under the new one (at most twice). A re-run after a failed release write names the list (and
+ * so the files) its earlier attempt stored instead of sealing a new one, when one of the signer's
+ * unnamed lists opens under the write key, states exactly the same list and its files are still
+ * stored (§16.5). The document is exactly `{repoId, tagName, vis: "private",
  * delta: 0, epoch, enc}`, with no `oneLive` retry: consensus keeps no ledger for a sealed tag,
  * so the tag is read again after the write and a revision that is not its newest is reported.
  */
@@ -47,6 +50,7 @@ import { admissionFor, estimateBytesCredits } from '../sdk/cost'
 import { storeFile, type StoragePolicy, type StorageProfile, type StoredFile, type TargetFailure, type UploadEvent } from '../storage'
 import { DOC, type RepoRef } from './contract'
 import { requireMaintainer } from './members'
+import { readNewestManifestsOfKind, type PackManifest } from './packs'
 import { PrivateWriteError, privateWriter, privateWriterWithSession, sealedIntent } from './private-writes'
 import { repoContentWritten, writePackManifest } from './push'
 import { readReleases, type ReleaseList, type ReleaseView } from './releases'
@@ -127,6 +131,8 @@ export type SealedReleaseEvent =
   | { readonly step: 'upload'; readonly asset: string; readonly event: UploadEvent }
   | { readonly step: 'uploaded'; readonly asset: string; readonly entry: SealedAsset; readonly copies: number; readonly failures: readonly TargetFailure[] }
   | { readonly step: 'resealing'; readonly epoch: number }
+  /** The asset list (and its new files) an earlier attempt stored before its release write failed: named again, nothing uploaded (§16.5). */
+  | { readonly step: 'reused'; readonly assets: readonly SealedAsset[] }
   | { readonly step: 'release'; readonly resolved: ResolvedSealedRelease }
 
 /** What a sealed revision reads and stores through: the signer's fresh sessions and own storage. */
@@ -139,6 +145,10 @@ export interface SealedReleaseEnv {
   releases(): Promise<{ readonly list: ReleaseList; readonly keys: EpochKeyring }>
   /** The kind-4 asset list `fields` names, opened by the §16.5 reader rules. */
   openManifest(fields: ReleaseFields, keys: EpochKeyring): Promise<ReleaseManifest>
+  /** The repo's newest kind-4 `packManifest`s, newest first: where an earlier attempt's list may be ({@link storedAssetList}). */
+  storedLists(): Promise<readonly PackManifest[]>
+  /** The first `HEADER_LEN` bytes of the sealed object `entry` names, from its first copy that answers. */
+  storedHeader(entry: SealedAsset): Promise<Uint8Array>
   /** Store sealed bytes on the user's own storage, named by their own SHA-256 (`sha256Hex`, already computed). */
   store(sealed: Uint8Array, sha256Hex: string, onStep: (e: UploadEvent) => void): Promise<StoredFile>
 }
@@ -162,6 +172,17 @@ export interface SealedReleaseOptions {
 /** A sealed asset entry holds at most 8 URIs (§16.5). */
 const ASSET_MAX_URIS = 8
 
+/**
+ * The newest kind-4 lists read when looking for an earlier attempt's ({@link storedAssetList}): one
+ * page, every uploader's (no index narrows by `$ownerId`). Never bounded by the carried revision's
+ * `$createdAt` in the query: that would tell the node which revision the next one is of (§16.3).
+ */
+const STORED_LIST_WINDOW = 100
+/** Of those, how many of the signer's unnamed ones are opened (each is a fetch; forge-core `STORED_LIST_CANDIDATES`). */
+const STORED_LIST_CANDIDATES = 4
+/** How long a reused list's file gets to answer its header read ({@link SealedReleaseEnv.storedHeader}). */
+const STORED_HEADER_TIMEOUT_MS = 15_000
+
 /** The default {@link SealedReleaseEnv}: fresh sessions of `auth`, and `storage` (none: nothing can be stored). */
 export function sealedReleaseEnv(
   sdk: EvoSDK,
@@ -183,6 +204,9 @@ export function sealedReleaseEnv(
     // Imported when needed: the browse plane's reader registers with `push.ts` as it loads, and
     // `push.ts` reaches this module through `writes.ts`, so a static import would load it mid-cycle.
     openManifest: async (fields, keys) => (await import('../view/release-download')).loadReleaseManifest(sdk, repo, fields, keys),
+    storedLists: () => readNewestManifestsOfKind(sdk, repo, PACK_KIND.RELEASE_ASSETS, STORED_LIST_WINDOW),
+    // Bounded: a stalled place must not hold the publish; the list is then sealed anew.
+    storedHeader: async (entry) => (await import('../view/release-download')).readSealedAssetHeader(entry, { signal: AbortSignal.timeout(STORED_HEADER_TIMEOUT_MS) }),
     store: (sealed, sha256Hex, onStep) => {
       // Nothing of a private repo reaches storage unsealed (as `storeArtifact` refuses).
       if (!isSealedPack(sealed)) throw new Error('refusing to upload an unencrypted release file for a private repo')
@@ -407,10 +431,25 @@ async function buildAssetList(
   env: SealedReleaseEnv,
   keys: EpochKeys,
   from: { readonly base: ReleaseFields; readonly notes: string; readonly files: readonly SealedReleaseFile[]; readonly prev: ReleaseManifest | null; readonly intent: string | undefined },
+  scope: StoredListScope,
   onEvent: (e: SealedReleaseEvent) => void,
 ): Promise<BuiltList> {
   const replaced = new Set(from.files.map((f) => f.name))
   const assets: SealedAsset[] = (from.prev?.assets ?? []).filter((a) => !replaced.has(a.name))
+  // TLV 21's 35 bytes are counted before the notes are fitted when there will be a list (each
+  // new file is one entry, so whether there is one is known before anything is stored).
+  const hasAssets = assets.length > 0 || from.files.length > 0
+  const fit = fitReleaseNotes({ ...from.base, assetManifest: hasAssets ? PLACEHOLDER_ASSET_MANIFEST : undefined }, from.notes)
+  if (!hasAssets && !fit.notesContinue) return { fields: statement({ ...fit.fields, assetManifest: undefined }), assets, stored: [] }
+  const notes = fit.notesContinue ? from.notes : undefined
+  // An earlier attempt at this revision stored its list, and the release write failed: named
+  // again, nothing sealed or uploaded again (§16.5). Named by nothing if the key moves before signing.
+  const found = await storedAssetList(env, keys, { tag: from.base.tag, kept: assets, files: from.files, notes, source: from.prev?.source }, scope)
+  if (found !== null) {
+    onEvent({ step: 'reused', assets: found.assets })
+    const files = found.assets.slice(assets.length).flatMap((a) => (a.sealedSha256 === undefined ? [] : [a.sealedSha256]))
+    return { fields: statement({ ...fit.fields, assetManifest: found.hash }), assets: [...found.assets], stored: [...files, found.hash] }
+  }
   // Refused before anything is stored: a list whose plaintext alone is over the 1 MiB cap (the
   // new entries sized with one short URI, so this never refuses a list that would fit).
   const estimate = canonicalJson({
@@ -443,15 +482,12 @@ async function buildAssetList(
     assets.push(entry)
     onEvent({ step: 'uploaded', asset: f.name, entry, copies: copy.confirmed.length, failures: copy.failures })
   }
-  // TLV 21's 35 bytes are counted before the notes are fitted when there will be a list.
-  const fit = fitReleaseNotes({ ...from.base, assetManifest: assets.length > 0 ? PLACEHOLDER_ASSET_MANIFEST : undefined }, from.notes)
-  if (assets.length === 0 && !fit.notesContinue) return { fields: statement({ ...fit.fields, assetManifest: undefined }), assets, stored }
   const manifest: ReleaseManifest = {
     v: 1,
     tag: from.base.tag,
     total: assets.length,
     ...(from.prev?.source !== undefined ? { source: from.prev.source } : {}),
-    ...(fit.notesContinue ? { notes: from.notes } : {}),
+    ...(notes !== undefined ? { notes } : {}),
     assets,
   }
   let sealed: Uint8Array
@@ -473,6 +509,131 @@ async function buildAssetList(
     from.intent === undefined ? undefined : `${from.intent}:${packHash}`,
   )
   return { fields: statement({ ...fit.fields, assetManifest: packHash }), assets, stored }
+}
+
+/**
+ * What rules a kind-4 list out as an earlier attempt's at a revision ({@link storedAssetList}): a
+ * readable revision names it, or it predates the revision the new one is carried from.
+ */
+interface StoredListScope {
+  /** The lists readable revisions name (lowercase hex). */
+  readonly named: ReadonlySet<string>
+  /** The carried revision's `$createdAt` (0 for a tag's first). */
+  readonly after: number
+  /** The signer: only its own lists are an earlier attempt's. */
+  readonly uploader: string
+}
+
+/** The {@link StoredListScope} of a revision carried from `carriedFrom`, read from `list`. */
+export function storedListScope(list: ReleaseList, carriedFrom: ReleaseView | undefined, uploader: string): StoredListScope {
+  const named = [...list.current, ...list.previous].flatMap((r) => (r.sealed?.fields.assetManifest === undefined ? [] : [r.sealed.fields.assetManifest.toLowerCase()]))
+  return { named: new Set(named), after: carriedFrom?.createdAt ?? 0, uploader }
+}
+
+/** Whether `m` may be an earlier attempt's list (forge-core `StoredLists::admits`). */
+export function admitsStoredList(scope: StoredListScope, m: PackManifest): boolean {
+  return (
+    m.kind === PACK_KIND.RELEASE_ASSETS &&
+    m.uploader === scope.uploader &&
+    m.createdAt > scope.after &&
+    m.sizeBytes <= RELEASE_MANIFEST_MAX_BYTES &&
+    !scope.named.has(m.packHash.toLowerCase())
+  )
+}
+
+/** The list a revision would build, to recognise an earlier attempt's ({@link storedAssetList}). */
+export interface WantedList {
+  /** The previous list's entries no new file replaces, as they are. */
+  readonly kept: readonly SealedAsset[]
+  /** Each new file: its name, plaintext `sha256` (hex) and size. */
+  readonly files: readonly { readonly name: string; readonly sha256: string; readonly sizeBytes: number }[]
+  /** The notes it continues (flag `0x10`), or none. */
+  readonly notes: string | undefined
+  /** The previous list's `source`. */
+  readonly source: string | undefined
+}
+
+/**
+ * Whether the opened list `m` states exactly `want` (forge-core `WantedList::is_stated_by`): the
+ * kept entries, then each new file sealed (its URIs and sealed hash are that attempt's), the notes
+ * and the source.
+ */
+export function listStates(m: ReleaseManifest, want: WantedList): boolean {
+  const old = m.assets.slice(0, want.kept.length)
+  const added = m.assets.slice(want.kept.length)
+  return (
+    canonicalJson(old) === canonicalJson(want.kept) &&
+    added.length === want.files.length &&
+    added.every((a, i) => {
+      const f = want.files[i]
+      return f !== undefined && a.name === f.name && a.sha256 === f.sha256 && a.sizeBytes === f.sizeBytes && a.sealedSha256 !== undefined && a.sealedSizeBytes !== undefined
+    }) &&
+    m.notes === want.notes &&
+    m.source === want.source
+  )
+}
+
+/**
+ * Whether `header` is that of the sealed object `entry` names under `epoch` (forge-core
+ * `header_fits`): sealed under that epoch, at its recorded sealed size, holding at least its
+ * plaintext (§3.2).
+ */
+export function headerFits(header: Uint8Array, entry: SealedAsset, epoch: number): boolean {
+  if (entry.sealedSizeBytes === undefined) return false
+  try {
+    const h = parseHeader(header)
+    return h.epoch === epoch && sealedLength(h.plaintextLen, h.segLog2) === entry.sealedSizeBytes && h.plaintextLen >= entry.sizeBytes
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The asset list an earlier attempt at this revision stored under `keys` before its release write
+ * failed, as its hash and entries (§16.5: a sealed list is not content-addressed, so a re-run
+ * reuses the one on chain rather than sealing and uploading a new one; forge-core
+ * `stored_asset_list`). A candidate is one of the signer's kind-4 lists that `scope` admits
+ * ({@link admitsStoredList}), and it is reused only when it opens under exactly `keys` (so under
+ * the write epoch, as a new list would be), states exactly `want` ({@link listStates}), and each
+ * new file it names is still stored under that epoch at its recorded size (the header of its
+ * first copy that answers, {@link headerFits}). Best-effort: a candidate that cannot be read or
+ * checked is skipped, and null builds the list anew.
+ */
+async function storedAssetList(
+  env: SealedReleaseEnv,
+  keys: EpochKeys,
+  want: { readonly tag: string; readonly kept: readonly SealedAsset[]; readonly files: readonly SealedReleaseFile[]; readonly notes: string | undefined; readonly source: string | undefined },
+  scope: StoredListScope,
+): Promise<{ readonly hash: string; readonly assets: readonly SealedAsset[] } | null> {
+  let candidates: PackManifest[]
+  try {
+    candidates = (await env.storedLists()).filter((m) => admitsStoredList(scope, m)).slice(0, STORED_LIST_CANDIDATES)
+  } catch {
+    return null
+  }
+  if (candidates.length === 0) return null
+  const files = []
+  for (const f of want.files) {
+    const plain = new Uint8Array(await f.arrayBuffer())
+    files.push({ name: f.name, sha256: hex256(plain), sizeBytes: plain.length })
+    plain.fill(0)
+  }
+  const wanted: WantedList = { kept: want.kept, files, notes: want.notes, source: want.source }
+  // Under the write key only: a list sealed under another epoch is not this attempt's.
+  const onlyWriteKey: EpochKeyring = new Map([[keys.epoch, keys]])
+  for (const c of candidates) {
+    const hash = c.packHash.toLowerCase()
+    try {
+      const m = await env.openManifest(statement({ tag: want.tag, notesContinue: want.notes !== undefined, assetManifest: hash }), onlyWriteKey)
+      if (!listStates(m, wanted)) continue
+      const added = m.assets.slice(want.kept.length)
+      const stored = await Promise.all(added.map(async (a) => headerFits(await env.storedHeader(a), a, keys.epoch)))
+      if (stored.every(Boolean)) return { hash, assets: m.assets }
+    } catch {
+      // unreadable, or a file no longer answers: not this one
+    }
+  }
+  return null
 }
 
 /** The refusal of an asset list over the reader's 1 MiB cap (§16.5): nothing names it. */
@@ -553,6 +714,7 @@ export async function createSealedRelease(
   const newNotes = nonEmpty(input.notes)
   const plan = assetListPlan(base, newNotes, files.length)
   const prev = plan === 'rebuild' && carried?.assetManifest !== undefined ? await env.openManifest(carried, before.keys) : null
+  const scope = storedListScope(before.list, carriedFrom, auth.identityId)
   // The full notes this revision states.
   const notes = newNotes ?? (carried?.notesContinue === true ? (prev?.notes ?? '') : (carried?.notes ?? ''))
 
@@ -569,7 +731,7 @@ export async function createSealedRelease(
       fields = plan === 'reuse' ? statement(fitReleaseNotes(base, notes).fields) : base
       break
     }
-    const built = await buildAssetList(sdk, auth, repo, env, w, { base, notes, files, prev, intent: input.intent }, onEvent)
+    const built = await buildAssetList(sdk, auth, repo, env, w, { base, notes, files, prev, intent: input.intent }, scope, onEvent)
     // The final anchor re-read before signing (§5.3, §16.5): a rotation during the upload would
     // leave the new artifacts readable to the member it removed.
     const now = await env.writeKeys()

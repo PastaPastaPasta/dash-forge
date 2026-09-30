@@ -11,25 +11,11 @@
 // build id is the commit (Next's default is random), and nothing reads the clock. The
 // canonical build is scripts/ipfs-release.sh, which also pins the toolchain.
 
-const { execFileSync } = require('node:child_process');
-
-// The commit this build is from: FORGE_BUILD_COMMIT (set by scripts/ipfs-release.sh, which
-// builds from a `git archive` with no .git), else the checkout's HEAD. The footer shows it.
-function buildCommit() {
-  const fromEnv = process.env.FORGE_BUILD_COMMIT;
-  if (fromEnv) {
-    if (!/^[0-9a-f]{40}$/.test(fromEnv)) throw new Error(`FORGE_BUILD_COMMIT must be a full commit id, got ${fromEnv}`);
-    return fromEnv;
-  }
-  try {
-    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'] })
-      .toString()
-      .trim();
-  } catch {
-    return '';
-  }
-}
-const commit = buildCommit();
+// The commit this build is from, when the build is told (a full commit id in FORGE_BUILD_COMMIT):
+// the Pages deploy of master (pages.yml) and the IPFS release build (scripts/ipfs-release.sh).
+// Any other build leaves it empty. No git call: a local or PR build's HEAD may not be on master,
+// and the /mirror wizard pins the Mirror Action to this commit. The footer shows it too.
+const commit = /^[0-9a-f]{40}$/.test(process.env.FORGE_BUILD_COMMIT || '') ? process.env.FORGE_BUILD_COMMIT : '';
 
 // The IPFS variant (FORGE_IPFS_BUILD=1, scripts/ipfs-release.sh): one build that runs from any
 // path, `/ipfs/<cid>/` on a path gateway as well as the root of a subdomain gateway or a host.
@@ -105,7 +91,9 @@ const nextConfig = {
   env: {
     // The wasm's size, so the download can show a percentage whatever the host's encoding.
     FORGE_WASM_SDK_BYTES: String(fs.statSync(WASM_FILE).size),
-    // "About this build" in the footer (lib/build-info.ts).
+    // The build's commit ('' unless the build was told): the /mirror wizard pins the Mirror Action
+    // and its binaries to it (else it asks GitHub for master's latest), and "About this build"
+    // in the footer shows it (lib/build-info.ts).
     FORGE_BUILD_COMMIT: commit,
     // The IPFS variant copies canonical links, not short ones (lib/short-url.ts).
     FORGE_IPFS_BUILD: ipfsBuild ? '1' : '',

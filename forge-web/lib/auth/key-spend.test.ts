@@ -25,7 +25,7 @@ const wifOf = (n: number): string => encodeWif(new Uint8Array(32).fill(n), NET)
 const PASS = { passphrase: 'correct horse battery' }
 
 // What each fake update costs, and the chain's balance (credits).
-const chain = vi.hoisted(() => ({ balance: 0n, cost: { register: 0n, topup: 0n, revoke: 0n }, fail: false, revoked: false }))
+const chain = vi.hoisted(() => ({ balance: 0n, cost: { register: 0n, topup: 0n, revoke: 0n }, fail: false, revoked: false, nextKeyId: 5, registered: [] as Record<string, unknown>[] }))
 
 vi.mock('../sdk/write', async (orig) => {
   const real = await orig<typeof import('../sdk/write')>()
@@ -49,10 +49,11 @@ vi.mock('./limited-key', async (orig) => {
   const limits = { remaining: 5_000_000_000n, total: 5_000_000_000n, expiresAt: Date.now() + 90 * 86_400_000 }
   return {
     ...real,
-    registerLimitedKey: async () => {
+    registerLimitedKey: async (_sdk: unknown, params: Record<string, unknown>) => {
       if (chain.fail) throw new Error('refused')
+      chain.registered.push(params)
       chain.balance -= chain.cost.register
-      return { keyId: 5, wif: wifOf(5), limits }
+      return { keyId: chain.nextKeyId, wif: wifOf(chain.nextKeyId), limits }
     },
     topUpLimitedKey: async () => {
       chain.balance -= chain.cost.topup
@@ -109,6 +110,8 @@ describe('key spends reach the ledger (D-044)', () => {
     chain.cost = { register: 47_111_680n, topup: 2_267_600n, revoke: 12_000_000n }
     chain.fail = false
     chain.revoked = false
+    chain.nextKeyId = 5
+    chain.registered = []
     events = []
     const sdk = connect()
     controller = new AuthController(async () => sdk, NET)
@@ -141,6 +144,22 @@ describe('key spends reach the ledger (D-044)', () => {
     expect(await next()).toMatchObject({ kind: 'key:topup', documentId: 'key-5', actualCredits: 2_267_600, estimateCredits: KEY_SPEND_ESTIMATES['key:topup'] })
     await controller.revokeStored(ID, { fileText: '{}' })
     expect(await next()).toMatchObject({ kind: 'key:revoke', documentId: 'key-5', actualCredits: 12_000_000 })
+  }, 30_000)
+
+  it('records a CI runner key, which is not stored and leaves this browser signing with its own key', async () => {
+    await controller.importIdentity({ fileText: '{}' }, PASS)
+    await next()
+    chain.nextKeyId = 6
+    chain.cost.register = 27_300_000n
+    const request = { budgetCredits: 50_000_000_000n, expiresAt: Date.now() + 365 * 86_400_000 }
+    const runner = await controller.createRunnerKey({ fileText: '{}' }, request)
+    expect(runner.keyId).toBe(6)
+    expect(await next()).toMatchObject({ kind: 'key:runner', documentId: 'key-6', actualCredits: 27_300_000, estimateCredits: KEY_SPEND_ESTIMATES['key:runner'] })
+    // Registered with the requested limits, disabling nothing and storing nothing here.
+    const params = chain.registered.at(-1)!
+    expect(params['request']).toEqual(request)
+    for (const k of ['replaceKeyId', 'disableHeld', 'persist']) expect(params[k], k).toBeUndefined()
+    expect(controller.getState().session?.keyId).toBe(5)
   }, 30_000)
 
   it('reports nothing for a refused update that took nothing, or a revoke that sent nothing', async () => {
