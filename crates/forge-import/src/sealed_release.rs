@@ -34,6 +34,7 @@ use forge_core::collab::{
 use forge_core::private::release::{fit_notes, ManifestAsset, ReleaseFields, ReleaseManifest};
 use forge_core::scope::RepoRef;
 use forge_core::storage::{ExternalTarget, ResolvedPolicy, StorageTarget};
+use forge_core::user_error::codes;
 
 use crate::assets::{admit, download, Fetch, RUN_BYTES};
 use crate::budget::sealed_release_credits;
@@ -270,6 +271,10 @@ fn plan_assets<'r>(r: &'r SrcRelease, held: Option<&Held>, budget: &mut u64) -> 
                 Take::Held
             } else {
                 match admit(asset, *budget) {
+                    Ok((_, limit)) if limit > RELEASE_BYTES => Take::Link(format!(
+                        "it is larger than the {RELEASE_BYTES} bytes a release's files may take \
+                         in memory while they are sealed"
+                    )),
                     Ok((_, limit)) if limit > in_memory => Take::Link(format!(
                         "this release already downloads {RELEASE_BYTES} bytes to seal this \
                          run; a later run takes it"
@@ -373,22 +378,40 @@ fn new_list(p: &Planned<'_>, notes: &str, imported: Option<&Imported>, changes: 
     changes || notes_continue || held.is_some_and(|h| h.fields.notes_continue) || source_moves
 }
 
-/// Whether a sealed write's failure concerns that release only (its content, its storage, its
-/// asset list, a rotation during its upload): it is skipped, and the run carries on with the
-/// rest (issues and PRs come after the releases). The spend cap, the network and a missing
-/// permission stop the run.
+/// Errors that concern the whole repository or the run, not one release: the repository's
+/// keys (a rotation pending, a broken chain, no key), the signer's access, and the storage
+/// policy not met. Each would refuse every release again, after downloading its files.
+const RUN_CODES: [&str; 7] = [
+    codes::NO_ENCRYPTION_KEY,
+    codes::NOT_A_KEY_HOLDER,
+    codes::KEY_MISMATCH,
+    codes::KEY_CHAIN_BROKEN,
+    codes::ROTATION_PENDING,
+    codes::NOT_A_WRITER,
+    codes::STORAGE_POLICY,
+];
+
+/// Whether a sealed write's failure concerns that release only (its content, its asset list,
+/// a rotation during its upload): it is skipped, and the run carries on with the rest (issues
+/// and PRs come after the releases). The spend cap, the network, a missing permission and the
+/// errors of [`RUN_CODES`] stop the run.
 fn release_error(e: &anyhow::Error) -> bool {
     use forge_core::Error;
-    e.chain().any(|c| {
+    let errors: Vec<&Error> = e
+        .chain()
+        .filter_map(|c| c.downcast_ref::<Error>())
+        .collect();
+    let run = errors
+        .iter()
+        .any(|e| matches!(e, Error::User(u) if RUN_CODES.contains(&u.code)));
+    !run && errors.iter().any(|e| {
         matches!(
-            c.downcast_ref::<Error>(),
-            Some(
-                Error::Config(_)
-                    | Error::User(_)
-                    | Error::Integrity
-                    | Error::DuplicateUniqueIndex(_)
-                    | Error::RuleRefused { .. }
-            )
+            e,
+            Error::Config(_)
+                | Error::User(_)
+                | Error::Integrity
+                | Error::DuplicateUniqueIndex(_)
+                | Error::RuleRefused { .. }
         )
     })
 }
@@ -494,6 +517,14 @@ async fn write_one(
     if stated && !changes {
         return Ok(());
     }
+    // links are an import's, recorded with its provenance (a source page of ≤ 300 bytes)
+    if imported.is_none() && !new_links.is_empty() {
+        ledger.skip(format!(
+            "release {tag} not mirrored: some of its assets could not be sealed, and with no \
+             source page to record they cannot be listed as links to it"
+        ));
+        return Ok(());
+    }
     for (a, why) in &new_links {
         ledger.warn(format!(
             "release {tag} asset {:?}: not sealed ({why}); listed as a link to the source, \
@@ -501,7 +532,6 @@ async fn write_one(
             a.name
         ));
     }
-    ledger.counts.assets_linked += linked;
     let credits = price(changes);
     let input = ReleaseInput {
         tag_name: tag.clone(),
@@ -517,14 +547,14 @@ async fn write_one(
         .write(what, credits, |c| c.releases += 1, || dest.write(input))
         .await;
     match written {
-        Ok(Some(w)) => {
-            // each names the release already
-            for msg in w.warnings {
+        Ok(w) => {
+            ledger.counts.assets_linked += linked;
+            // each names the release already (none in a dry run)
+            for msg in w.map(|w| w.warnings).unwrap_or_default() {
                 ledger.warn(msg);
             }
             Ok(())
         }
-        Ok(None) => Ok(()),
         Err(e) => {
             let one = release_error(&e);
             ledger.refused_release(tag, e, one)
@@ -620,7 +650,8 @@ mod tests {
                 !input.files.iter().any(|f| f.name == a.name)
                     && !input.assets.iter().any(|l| l.name == a.name)
             });
-            // the builder's order: the kept entries, the links, then the new files
+            // the builder's order (forge-core `rebuild_asset_list`): the kept entries, the
+            // links, then the new files
             assets.extend(input.assets.iter().map(external_link));
             assets.extend(input.files.iter().map(|f| ManifestAsset {
                 name: f.name.clone(),
@@ -915,27 +946,61 @@ mod tests {
     /// during the upload) skips it, and the run carries on to the issues and PRs; the network
     /// stops the run.
     #[tokio::test]
-    async fn a_release_failure_skips_it_and_a_network_failure_stops_the_run() {
+    async fn a_release_failure_skips_it_and_a_run_failure_stops_the_run() {
+        use forge_core::user_error::UserError;
         let src = source();
-        let storage = Fake {
-            fail: Some(|| forge_core::Error::Config("the storage policy was not met".into())),
+        let moved = Fake {
+            fail: Some(|| {
+                forge_core::Error::Config(
+                    "release v1.0.0 not written: the key epoch moved twice".into(),
+                )
+            }),
             ..Fake::default()
         };
-        let ledger = run(&storage, &[release("n")], &src).await;
+        let ledger = run(&moved, &[release("n")], &src).await;
         assert_eq!((ledger.counts.releases, ledger.counts.skipped), (0, 1));
         assert!(ledger
             .warnings
             .iter()
             .any(|w| w.contains("not mirrored this run")));
 
-        let network = Fake {
-            fail: Some(|| forge_core::Error::Platform("connection reset".into())),
-            ..Fake::default()
+        // the storage policy, the repository's keys, the signer's access and the network
+        // would refuse every release again: the first one stops the run
+        let stops: [fn() -> forge_core::Error; 4] = [
+            || UserError::new(codes::STORAGE_POLICY, "store the file: policy not met").into(),
+            || UserError::new(codes::ROTATION_PENDING, "a key rotation is pending").into(),
+            || UserError::new(codes::NOT_A_WRITER, "not a writer").into(),
+            || forge_core::Error::Platform("connection reset".into()),
+        ];
+        for fail in stops {
+            let dest = Fake {
+                fail: Some(fail),
+                ..Fake::default()
+            };
+            let mut ledger = Ledger::offline(false);
+            let err = sync(&mut ledger, &dest, &[release("n")], &src).await;
+            assert!(err.is_err(), "{:?}", fail());
+            assert_eq!(ledger.counts.skipped, 0);
+        }
+    }
+
+    /// Links are recorded with the import's provenance: without a source page to record, a
+    /// release with assets it could not seal is skipped rather than written without them.
+    #[tokio::test]
+    async fn links_need_the_source_page() {
+        let (dest, src) = (Fake::default(), source());
+        let r = SrcRelease {
+            source_url: String::new(),
+            ..release("n")
         };
-        let mut ledger = Ledger::offline(false);
-        assert!(sync(&mut ledger, &network, &[release("n")], &src)
-            .await
-            .is_err());
+        let ledger = run(&dest, &[r], &src).await;
+        assert!(dest.writes.borrow().is_empty());
+        assert_eq!(ledger.counts.skipped, 1);
+        assert!(
+            ledger.warnings[0].contains("no source page"),
+            "{:?}",
+            ledger.warnings
+        );
     }
 
     #[tokio::test]
@@ -971,7 +1036,11 @@ mod tests {
     fn a_releases_downloads_are_capped_in_memory() {
         let half = RELEASE_BYTES / 2 + 1;
         let r = SrcRelease {
-            assets: vec![asset("a", FD, half, ""), asset("b", GONE, half, "")],
+            assets: vec![
+                asset("a", FD, half, ""),
+                asset("b", GONE, half, ""),
+                asset("c", ISO, RELEASE_BYTES + 1, ""),
+            ],
             omitted: Vec::new(),
             ..release("n")
         };
@@ -979,7 +1048,41 @@ mod tests {
         let plan = plan_assets(&r, None, &mut budget);
         assert!(matches!(plan[0].take, Take::Fetch { .. }));
         assert!(matches!(&plan[1].take, Take::Link(why) if why.contains("a later run")));
+        // over the cap itself: never downloaded, and not promised to a later run
+        assert!(
+            matches!(&plan[2].take, Take::Link(why) if why.contains("in memory while they are sealed"))
+        );
         assert_eq!(budget, RUN_BYTES - half);
+    }
+
+    /// The writer rebuilds a carried list for an import only when its `source` moves (a
+    /// renamed source repository); the price and the storage check predict the same.
+    #[test]
+    fn a_new_list_is_predicted_when_the_source_moves() {
+        let r = release("n");
+        let imported = provenance(&r);
+        let held = |source: &str| Held {
+            fields: ReleaseFields {
+                tag: r.tag_name.clone(),
+                asset_manifest: Some("4a".repeat(32)),
+                ..ReleaseFields::default()
+            },
+            notes: "n".into(),
+            assets: vec![external_link(&r.assets[1])],
+            source: Some(source.into()),
+        };
+        let planned = |source: &str| Planned {
+            r: &r,
+            held: Some(held(source)),
+            assets: Vec::new(),
+        };
+        assert!(!new_list(&planned(PAGE), "n", imported.as_ref(), false));
+        assert!(new_list(
+            &planned("https://github.com/old/name/releases/tag/v1.0.0"),
+            "n",
+            imported.as_ref(),
+            false
+        ));
     }
 
     #[test]

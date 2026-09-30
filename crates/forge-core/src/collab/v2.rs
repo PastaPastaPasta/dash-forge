@@ -4480,9 +4480,12 @@ impl<'a> Collab<'a> {
         // New files or notes build a new asset list from the previous one, and so do carried
         // notes that no longer fit beside a longer name (§16.2: the writer never refuses its
         // own budget); anything else keeps naming the list, unopened.
+        // So does an import naming a list: its `source` must follow TLV 14 (the list is named
+        // again unchanged when it already does).
         let rebuild = !input.files.is_empty()
             || !input.assets.is_empty()
             || !input.notes.is_empty()
+            || (input.imported.is_some() && carried.asset_manifest.is_some())
             || release::writer_tlv(&fields).is_err();
         let links: Vec<_> = input.assets.iter().map(external_link).collect();
         let prev_manifest = match &carried.asset_manifest {
@@ -5666,8 +5669,9 @@ fn header_fits(header: &[u8], entry: &crate::private::release::ManifestAsset, ep
 }
 
 /// What a sealed writer refuses before anything is read or stored: the tag and text caps,
-/// provenance past the writer's caps or without its URL (§16.2), an external link with no
-/// name or URL, and two assets (files or links) of one name.
+/// provenance past the writer's caps or without its URL (§16.2), external links but for an
+/// import (with its provenance) or with no name or URL, and two assets (files or links) of
+/// one name.
 fn check_sealed_input(input: &ReleaseInput) -> Result<()> {
     check_tag_name(&input.tag_name)?;
     check_text("release name", &input.name, 120, 480)?;
@@ -5680,6 +5684,13 @@ fn check_sealed_input(input: &ReleaseInput) -> Result<()> {
             ));
         }
         check_text("imported author", &i.author, 64, 256)?;
+    }
+    if input.imported.is_none() && !input.assets.is_empty() {
+        return Err(Error::Config(
+            "a private repository's assets are sealed files: external links are only for an \
+             import, with its provenance"
+                .into(),
+        ));
     }
     if let Some(bad) = input
         .assets
@@ -7127,13 +7138,16 @@ mod tests {
             vec![link("b", "https://x/b")]
         ))
         .is_ok());
+        let ok = || Some(imp("octocat", "https://x/r"));
         for bad in [
             input(Some(imp("octocat", "")), Vec::new()),
             input(Some(imp("octocat", &"u".repeat(301))), Vec::new()),
             input(Some(imp(&"a".repeat(65), "https://x/r")), Vec::new()),
-            input(None, vec![link("a", "https://x/a")]),
-            input(None, vec![link("b", "")]),
-            input(None, vec![link("", "https://x/b")]),
+            // links are an import's only: never plaintext entries of another writer
+            input(None, vec![link("b", "https://x/b")]),
+            input(ok(), vec![link("a", "https://x/a")]),
+            input(ok(), vec![link("b", "")]),
+            input(ok(), vec![link("", "https://x/b")]),
         ] {
             assert!(check_sealed_input(&bad).is_err(), "{bad:?}");
         }
