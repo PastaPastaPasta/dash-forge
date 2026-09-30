@@ -47,6 +47,10 @@ import {
 } from '../sdk'
 import { DOC, withVis, type RepoRef } from './contract'
 import { packHashOperand } from './pack-hash'
+import { retryAfterLag } from './lag-retry'
+
+/** The manifest rule that counts its chunks (RC1 R-09). */
+const PLATFORM_CHUNKS_RULE: ReadonlySet<string> = new Set(['platformChunks'])
 import { privateWriter, sealForRepo, sealedIntent } from './private-writes'
 import { repoSource } from './source'
 import { assertNoPlaintext } from './writes'
@@ -208,7 +212,12 @@ export async function writePackManifest(
   if (input.tips && input.tips.length > 0) data['tips'] = concatHex(input.tips, (input.tips[0] as string).length / 2)
   if (input.supersedes && input.supersedes.length > 0) data['supersedes'] = concatHex(input.supersedes, 32)
   try {
-    return await createDocumentIdempotent(sdk, auth, { contractId: repo.forge.core, documentType: DOC.packManifest, data, ...(intent ? { intent } : {}) })
+    // `platformChunks` counts the chunks just written: a node a block behind refuses the manifest
+    // until it has applied them, so that refusal is retried after about a block.
+    return await retryAfterLag(
+      () => createDocumentIdempotent(sdk, auth, { contractId: repo.forge.core, documentType: DOC.packManifest, data, ...(intent ? { intent } : {}) }),
+      PLATFORM_CHUNKS_RULE,
+    )
   } catch (e) {
     if (!isDuplicate(e)) throw e
     const id = await findOwnManifest(sdk, repo, auth.identityId, input.packHash)

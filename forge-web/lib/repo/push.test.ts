@@ -17,6 +17,14 @@ vi.mock('../sdk', async (orig) => ({
   ...(await orig<typeof import('../sdk')>()),
   createDocumentIdempotent: (...a: unknown[]) => write(...a),
 }))
+const slept: number[] = []
+vi.mock('../sdk/facade', async (orig) => ({
+  ...(await orig<typeof import('../sdk/facade')>()),
+  sleep: (ms: number) => {
+    slept.push(ms)
+    return Promise.resolve()
+  },
+}))
 vi.mock('./config', () => ({ readConfigBundle: () => Promise.resolve({ config: { protectedPatterns: [] }, history: [] }) }))
 // A private repo's writer: sealing moves the name into `enc`, as `sealContent` does.
 vi.mock('./private-writes', () => ({
@@ -29,6 +37,7 @@ vi.mock('./private-writes', () => ({
 }))
 
 const { manifestShapeProblem, refUpdateData, writePackManifest, writeRefUpdate } = await import('./push')
+const { ConsensusRefusal } = await import('../sdk')
 
 const forge = { core: 'CORE', collab: 'COLLAB', community: 'COMM', group: 'GROUP' }
 const REPO: RepoRef = { forge, repoId: '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD', ownerId: 'o', name: 'p', visibility: 'public' }
@@ -45,6 +54,7 @@ const sdk = {
 } as unknown as EvoSDK
 
 beforeEach(() => {
+  slept.length = 0
   queries.length = 0
   write.mockReset()
   write.mockResolvedValue({ documentId: 'doc' })
@@ -92,6 +102,27 @@ describe('packManifest (R-09, R-11)', () => {
     for (const m of refused) expect(manifestShapeProblem(m), JSON.stringify(m)).not.toBeNull()
     await expect(writePackManifest(sdk, auth, REPO, { ...manifest, sizeBytes: 14_701 })).rejects.toThrow(/chunks/)
     expect(write).not.toHaveBeenCalled()
+  })
+})
+
+describe('a manifest refused by a node a block behind its chunks', () => {
+  const lagging = () => new ConsensusRefusal(10422, 'A document of type "packManifest" breaks its propertyConstraints rule "platformChunks": NotMet', {}, false)
+
+  it('is retried after about a block, with a bounded backoff', async () => {
+    write.mockRejectedValueOnce(lagging()).mockRejectedValueOnce(lagging()).mockResolvedValueOnce({ documentId: 'doc' })
+    await expect(writePackManifest(sdk, auth, REPO, manifest)).resolves.toMatchObject({ documentId: 'doc' })
+    expect(write).toHaveBeenCalledTimes(3)
+    expect(slept).toEqual([4_000, 8_000])
+  })
+
+  it('gives up after the last wait, and never retries another refusal', async () => {
+    write.mockRejectedValue(lagging())
+    await expect(writePackManifest(sdk, auth, REPO, manifest)).rejects.toThrow(/platformChunks/)
+    expect(write).toHaveBeenCalledTimes(4)
+    write.mockReset()
+    write.mockRejectedValue(new ConsensusRefusal(10422, 'breaks its propertyConstraints rule "storageShape": NotMet'))
+    await expect(writePackManifest(sdk, auth, REPO, manifest)).rejects.toThrow(/storageShape/)
+    expect(write).toHaveBeenCalledTimes(1)
   })
 })
 
