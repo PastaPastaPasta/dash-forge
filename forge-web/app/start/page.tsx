@@ -118,7 +118,11 @@ export default function GettingStartedPage(): JSX.Element {
               <Guide href={DOCS.costs}>What things cost</Guide>, measured
             </li>
             <li>
-              <Guide href={DOCS.movingFromGithub}>Moving from GitHub or GitLab</Guide>, or <Guide href={DOCS.mirror}>mirror a GitHub repository</Guide>
+              <Guide href={DOCS.movingFromGithub}>Moving from GitHub or GitLab</Guide>
+            </li>
+            {/* Its own row: two links on one wrapped line would overlap their hit areas. */}
+            <li>
+              <Guide href={DOCS.mirror}>Mirror a GitHub repository</Guide>
             </li>
             <li>
               <Guide href={DOCS.storage}>Bring your own storage</Guide>

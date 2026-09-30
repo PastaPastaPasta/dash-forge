@@ -168,7 +168,7 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
                 {showPrevious ? 'Hide' : 'Show'} {plural(data.previous.length, 'previous revision')}
               </button>
               {showPrevious ? (
-                <ul className="mt-2 space-y-3">
+                <ul className="mt-2 space-y-3 coarse:mt-4">
                   {data.previous.map((r) => (
                     <li key={r.id}>
                       <ReleaseCard release={r} repo={home.repo} addr={addr} links={links} previous />
@@ -352,6 +352,8 @@ function ReleaseCard({
   // A list that holds only the continued notes has no assets to show.
   const noSealedAssets = manifest.data?.manifest.assets.length === 0
   const notes = full && continued && manifest.data?.manifest.notes !== undefined ? manifest.data.manifest.notes : r.notesBody
+  // The list card links its full notes (L-79); the asset toggle below then keeps clear of that link on touch.
+  const notesLink = Boolean(notes) && !full && !previous
   return (
     <article
       data-testid="release"
@@ -447,7 +449,7 @@ function ReleaseCard({
         </p>
       ) : null}
       {/* L-79: line-clamp-6 silently cuts notes with no way back to the rest. */}
-      {notes && !full && !previous ? (
+      {notesLink ? (
         <Link
           href={repoHref('/repo/release', addr, { tag: r.tagName })}
           className="hit-area mt-1 inline-block text-dense text-anvil-600 underline dark:text-anvil-300"
@@ -460,8 +462,8 @@ function ReleaseCard({
           <AssetList assets={r.assets} accesses={accesses} className="mt-3" />
         ) : (
           // L-49: 2,039 asset rows fully expanded is most of a 238,000 px page; collapsed by default in the list.
-          // Touch: 44 px below "Full release notes", so the two hit areas do not overlap (QW2-069).
-          <div className="mt-3 coarse:mt-6">
+          // Touch: 44 px below a "Full release notes" link, so the two hit areas do not overlap (QW2-069).
+          <div className={cn('mt-3', notesLink && 'coarse:mt-6')}>
             <button
               type="button"
               onClick={() => setAssetsOpen((o) => !o)}
@@ -470,7 +472,7 @@ function ReleaseCard({
             >
               {assetsOpen ? 'Hide' : 'Show'} {plural(r.assets.length, 'asset')}
             </button>
-            {assetsOpen ? <AssetList assets={r.assets} accesses={accesses} className="mt-2" /> : null}
+            {assetsOpen ? <AssetList assets={r.assets} accesses={accesses} className="mt-2 coarse:mt-4" /> : null}
           </div>
         )
       ) : null}
@@ -481,7 +483,7 @@ function ReleaseCard({
       ) : null}
       {sealedList && full ? <SealedAssets repo={repo} state={manifest} className="mt-3" /> : null}
       {sealedList && !full && !noSealedAssets ? (
-        <div className="mt-3 coarse:mt-6">
+        <div className={cn('mt-3', notesLink && 'coarse:mt-6')}>
           <button
             type="button"
             onClick={() => setAssetsOpen((o) => !o)}
@@ -492,7 +494,7 @@ function ReleaseCard({
             <Lock className="h-3 w-3 shrink-0" aria-hidden />
             {assetsOpen ? 'Hide' : 'Show'} {manifest.data ? plural(manifest.data.manifest.assets.length, 'asset') : 'assets'}
           </button>
-          {assetsOpen ? <SealedAssets repo={repo} state={manifest} className="mt-2" id={sealedAssetsId} /> : null}
+          {assetsOpen ? <SealedAssets repo={repo} state={manifest} className="mt-2 coarse:mt-4" id={sealedAssetsId} /> : null}
         </div>
       ) : null}
       {/* A list of only continued notes, once opened: no assets, but a late upload is still said. */}
@@ -753,7 +755,7 @@ function OriginLinks({ asset, primary = false }: { asset: ReleaseAssetView; prim
             <Download className="h-3.5 w-3.5" aria-hidden /> Download from {urlHost(u)}
           </a>
         ) : (
-          <a key={u} href={u} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" className="hit-area font-mono text-forge-700 underline dark:text-forge-400">
+          <a key={u} href={u} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" className="font-mono text-forge-700 underline dark:text-forge-400">
             {urlHost(u)}
           </a>
         ),

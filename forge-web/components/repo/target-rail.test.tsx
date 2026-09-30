@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 /**
- * QW2-066: the issue sidebar's pickers carry no control inside a control (a checkbox in an
- * option button), every button has a name, and the assignee swatches are a named picture.
+ * QW2-066: the issue and PR pickers (labels, assignees, reviewers, the list label filter) carry
+ * no control inside a control (a checkbox in an option button), every button has a name, and
+ * the assignee swatches are a named picture.
  */
 
 import { act } from 'react'
@@ -15,6 +16,8 @@ vi.mock('@/components/author', () => ({ Author: ({ identityId }: { identityId: s
 
 const { AssigneePicker, LabelPicker } = await import('./target-rail')
 const { AssigneeAvatars } = await import('./issue-bits')
+const { LabelFilter } = await import('./list-controls')
+const { ReviewersCard } = await import('./reviewers-card')
 
 const A = 'AaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA'
 const B = 'BbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbB'
@@ -59,7 +62,7 @@ describe('issue sidebar pickers (QW2-066)', () => {
     expect(options.map((o) => o.getAttribute('aria-pressed'))).toEqual(['true', 'false'])
     expect(options.map((o) => o.querySelector('[data-checked]') !== null)).toEqual([true, false])
     expectCleanButtons()
-    expect(host.querySelector('button[aria-label="Assign this identity"]')).not.toBeNull()
+    expect(host.querySelector('button[aria-label="Assign the identity id entered"]')).not.toBeNull()
   })
 
   it('the label picker: tick marks, not nested checkboxes', () => {
@@ -68,6 +71,34 @@ describe('issue sidebar pickers (QW2-066)', () => {
     const options = [...host.querySelectorAll('[data-testid="label-option"]')]
     expect(options).toHaveLength(2)
     expect(options.map((o) => o.getAttribute('aria-pressed'))).toEqual(['true', 'false'])
+    expectCleanButtons()
+  })
+
+  it('the list label filter: options are ticked, not nested checkboxes', () => {
+    render(<LabelFilter labels={labels} selected={['docs']} onChange={() => undefined} />)
+    click(button('Label'))
+    const options = [...host.querySelectorAll('[role="option"]')]
+    expect(options.map((o) => o.getAttribute('aria-selected'))).toEqual(['false', 'true'])
+    expect(options.map((o) => o.querySelector('[data-checked]') !== null)).toEqual([false, true])
+    expectCleanButtons()
+  })
+
+  it('the reviewer picker: tick marks, not nested checkboxes', () => {
+    render(
+      <ReviewersCard
+        rows={[]}
+        members={[{ identity: A, role: 'maintainer' }, { identity: B, role: 'writer' }] as never}
+        author="Author"
+        headOid={'0'.repeat(40)}
+        membersKnown
+        canRequest
+        canDismiss={false}
+        onRequest={() => undefined}
+        onDismiss={() => undefined}
+      />,
+    )
+    click(button('Request a review'))
+    expect(host.querySelectorAll('[data-testid="reviewer-option"]')).toHaveLength(2)
     expectCleanButtons()
   })
 

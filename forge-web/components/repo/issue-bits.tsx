@@ -80,10 +80,11 @@ export function CheckMark({ on }: { on: boolean }): JSX.Element {
       data-checked={on || undefined}
       className={cn(
         'flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-sm border',
-        on ? 'border-forge-600 bg-forge-600 text-white' : 'border-anvil-400 bg-white dark:border-anvil-500 dark:bg-anvil-900',
+        // Unticked outline ≥ 3:1 on its surface (WCAG 1.4.11): anvil-500 on white, anvil-400 on anvil-900.
+        on ? 'border-forge-700 bg-forge-700' : 'border-anvil-500 bg-white dark:border-anvil-400 dark:bg-anvil-900',
       )}
     >
-      {on ? <Check className="h-3 w-3" strokeWidth={3} /> : null}
+      {on ? <Check className="h-3 w-3 text-white" strokeWidth={3} /> : null}
     </span>
   )
 }

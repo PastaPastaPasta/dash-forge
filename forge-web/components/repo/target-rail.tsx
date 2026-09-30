@@ -61,7 +61,7 @@ export function MilestonePicker({
       )}
       {canEdit ? (
         <div className="mt-2">
-          <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400 hover:text-forge-700 dark:hover:text-forge-400">
+          <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400 hover:text-forge-700 dark:hover:text-forge-400 coarse:min-h-11">
             <Settings2 className="h-3.5 w-3.5" aria-hidden /> Set milestone
           </button>
           {open ? (
@@ -132,7 +132,7 @@ export function AssigneePicker({
       </ul>
       {canEdit ? (
         <div className="mt-2">
-          <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400 hover:text-forge-700 dark:hover:text-forge-400">
+          <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400 hover:text-forge-700 dark:hover:text-forge-400 coarse:min-h-11">
             <Settings2 className="h-3.5 w-3.5" aria-hidden /> Edit assignees
           </button>
           {open ? (
@@ -156,7 +156,7 @@ export function AssigneePicker({
               })}
               <div className="flex gap-1 pt-1">
                 <Input aria-label="Assign identity id" value={other} onChange={(e) => setOther(e.target.value)} placeholder="identity id" className="h-7 py-0 font-mono text-[12px]" />
-                <Button variant="outline" size="sm" aria-label="Assign this identity" title="Assign this identity" disabled={!isIdentityId(other.trim())} onClick={() => onToggle(other.trim(), false)}>
+                <Button variant="outline" size="sm" aria-label="Assign the identity id entered" title="Assign" disabled={!isIdentityId(other.trim())} onClick={() => onToggle(other.trim(), false)}>
                   <Plus className="h-3.5 w-3.5" aria-hidden />
                 </Button>
               </div>
@@ -211,7 +211,7 @@ export function LabelPicker({
       </div>
       {canEdit ? (
         <div className="mt-2">
-          <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400 hover:text-forge-700 dark:hover:text-forge-400">
+          <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400 hover:text-forge-700 dark:hover:text-forge-400 coarse:min-h-11">
             <Settings2 className="h-3.5 w-3.5" aria-hidden /> Edit labels
           </button>
           {open ? (

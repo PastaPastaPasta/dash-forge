@@ -15,6 +15,7 @@ import { compareStrings } from '../rules/oid'
 import { DOC, num, str, type RepoRef } from './contract'
 import { repoSource } from './source'
 import { utf8Length } from '../view/issue-query'
+import { luminance } from '../design/avatar'
 
 /** A label's current definition. */
 export interface LabelDef {
@@ -166,23 +167,22 @@ export const LABEL_COLORS: readonly string[] = [
 ]
 
 /** WCAG 2 relative luminance of a `#rrggbb` colour. */
-function luminance(hex: string): number {
-  const [r = 0, g = 0, b = 0] = [1, 3, 5].map((i) => {
-    const v = Number.parseInt(hex.slice(i, i + 2), 16) / 255
-    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4
-  })
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+function hexLuminance(hex: string): number {
+  const [r = 0, g = 0, b = 0] = [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16))
+  return luminance([r, g, b])
 }
+
+/** WCAG 2 contrast ratio between two luminances. */
+const ratio = (la: number, lb: number): number => (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
 
 /** WCAG 2 contrast ratio between two `#rrggbb` colours (1 to 21). */
 export function contrastRatio(a: string, b: string): number {
-  const la = luminance(a)
-  const lb = luminance(b)
-  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
+  return ratio(hexLuminance(a), hexLuminance(b))
 }
 
 /** The theme's ink, which the chip's dark text renders as. */
 const INK = '#1f2328'
+const INK_LUM = hexLuminance(INK)
 /** WCAG AA for the chip's 11 px text. */
 const AA = 4.5
 
@@ -195,9 +195,10 @@ const AA = 4.5
  */
 export function labelTextColor(color: string): string | null {
   if (!HEX_COLOR.test(color)) return null
-  const ink = contrastRatio(color, INK)
-  const white = contrastRatio(color, '#ffffff')
+  const fill = hexLuminance(color)
+  const ink = ratio(fill, INK_LUM)
+  const white = ratio(fill, 1)
   if (ink >= white && ink >= AA) return INK
   if (white >= AA) return '#ffffff'
-  return contrastRatio(color, '#000000') >= white ? '#000000' : '#ffffff'
+  return ratio(fill, 0) >= white ? '#000000' : '#ffffff'
 }
