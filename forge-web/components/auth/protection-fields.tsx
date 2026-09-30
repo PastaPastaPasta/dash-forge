@@ -12,7 +12,7 @@ import { Fingerprint, KeyRound } from 'lucide-react'
 import { enrollPasskey, MIN_PASSPHRASE, passkeysAvailable, type Protection } from '@/lib/auth'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
-import { errorMessage } from '@/lib/utils'
+import { cn, errorMessage } from '@/lib/utils'
 
 /**
  * `preferPasskey`: the key has no budget or expiry (a shipped wallet's key), so a passkey is the
@@ -129,10 +129,10 @@ export function useProtection(opts: { readonly preferPasskey?: boolean } = {}): 
 }
 
 /** An error line in the sign-in sheet (alert role, wraps long SDK messages). */
-export function ErrorBox({ error }: { error: string | null }): JSX.Element | null {
+export function ErrorBox({ error, className }: { error: string | null; className?: string }): JSX.Element | null {
   if (!error) return null
   return (
-    <div role="alert" className="mt-3 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words">
+    <div role="alert" className={cn('mt-3 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words', className)}>
       {error}
     </div>
   )
