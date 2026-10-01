@@ -18,6 +18,7 @@ on:
     paths: &paths
       - check-action/**
       - install.sh
+      - action/install-forge.sh
       - crates/dg/src/ci.rs
       - crates/forge-core/src/ci.rs
       - .github/workflows/check-action.yml
@@ -49,7 +50,7 @@ jobs:
       - name: actionlint
         run: /tmp/actionlint -color .github/workflows/check-action.yml
       - name: shellcheck
-        run: shellcheck check-action/*.sh
+        run: shellcheck check-action/*.sh action/install-forge.sh
       - name: check-action/test.sh
         run: bash check-action/test.sh
 
@@ -86,26 +87,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install protoc
-        env:
-          PROTOC_VERSION: '28.3'
-        run: |
-          curl -sSLo /tmp/protoc.zip \
-            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
-          sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
-          sudo chmod +x /usr/local/bin/protoc
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: check-action
-
-      # No release is published yet: build dg from this commit and use install: 'false'.
-      - name: Build dg
-        timeout-minutes: 30
-        run: |
-          cargo build --locked -p dg
-          echo "$GITHUB_WORKSPACE/target/debug" >> "$GITHUB_PATH"
-
+      # No release is pinned yet, so the action's default install builds dg from this checkout
+      # (installing protoc and caching the build): the path a user's workflow takes today. The
+      # second use reuses the dg the first one built.
       - name: Report in_progress
         uses: ./check-action
         with:
@@ -114,7 +98,6 @@ jobs:
           status: in_progress
           network: devnet
           devnet-name: ${{ vars.FORGE_CHECK_DEVNET }}
-          install: 'false'
           fail-on-error: 'true'
         env:
           DASH_FORGE_KEY: ${{ secrets.FORGE_CI_RUNNER_KEY }}
@@ -129,7 +112,6 @@ jobs:
           job-status: ${{ job.status }}
           network: devnet
           devnet-name: ${{ vars.FORGE_CHECK_DEVNET }}
-          install: 'false'
           fail-on-error: 'true'
         env:
           DASH_FORGE_KEY: ${{ secrets.FORGE_CI_RUNNER_KEY }}
@@ -140,8 +122,10 @@ jobs:
           DEVNET: ${{ vars.FORGE_CHECK_DEVNET }}
           ACTION: ${{ steps.done.outputs.action }}
           SHA: ${{ steps.done.outputs.sha }}
+          DG: ${{ steps.done.outputs.dg }}
         run: |
           echo "report: $ACTION on $SHA"
           [ "$ACTION" = updated ] || { echo "::error::the completed report should update the in_progress run, got '$ACTION'"; exit 1; }
-          dg --json --network devnet --devnet-name "$DEVNET" ci status "$REPO" "$SHA" \
+          [ -x "$DG" ] || { echo "::error::the action reported no installed dg (got '$DG')"; exit 1; }
+          "$DG" --json --network devnet --devnet-name "$DEVNET" ci status "$REPO" "$SHA" \
             | jq -e '.checks[] | select(.name == "check-action-selftest" and .status == "completed" and .trusted)'

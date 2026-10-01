@@ -270,18 +270,6 @@ export const DASH_FORGE_REPO: GithubName = { owner: 'PastaPastaPasta', name: 'da
 /** The workflow's path in the GitHub repository. */
 export const WORKFLOW_PATH = '.github/workflows/forge-mirror.yml'
 
-/**
- * What the generated job runs before the Action, pinned: the job later runs binaries with the
- * runner key, so nothing it builds from may move under it. The action commits are the ones this
- * repository's own workflows pin; the checksum is of the protoc 28.3 release asset.
- */
-export const WORKFLOW_PINS = {
-  checkout: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1',
-  rustCache: 'Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2',
-  protocUrl: 'https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protoc-28.3-linux-x86_64.zip',
-  protocSha256: '0ad949f04a6a174da83cdcbdb36dee0a4925272a5b6d83f79a6bf9852076d53f',
-} as const
-
 export interface WorkflowOptions {
   readonly github: GithubName
   /** `dash://<owner identity id>/<name>`. */
@@ -295,7 +283,7 @@ export interface WorkflowOptions {
   readonly collab: boolean
   /** The per-run cap in DASH, as typed. */
   readonly costCap: string
-  /** The Dash Forge commit both the build and the Action are pinned to (40 hex). */
+  /** The Dash Forge commit the Action, and so the binaries it builds, are pinned to (40 hex). */
   readonly commit: string
 }
 
@@ -315,9 +303,10 @@ function q(v: string): string {
 
 /**
  * The `.github/workflows/forge-mirror.yml` of `docs/guides/mirror-a-github-repo.md`, prefilled.
- * No release of Dash Forge is published yet, so the job builds `dg`, `git-remote-dash` and
- * `forge-import` from the pinned commit (cached by rust-cache after the first run) and runs the
- * Action from that same checkout with `install: 'false'`.
+ * The network is always written out, never left to the Action's default, so the workflow keeps
+ * targeting the network this site reads when that default changes. The Action is pinned to one
+ * commit, and `install: 'source'` builds `dg`, `git-remote-dash` and `forge-import` from that
+ * same commit (no Dash Forge release is published yet; the Action caches the build).
  */
 export function workflowYaml(o: WorkflowOptions): string {
   if (!/^[0-9a-f]{40}$/.test(o.commit)) throw new Error('pin a full 40-character Dash Forge commit id')
@@ -332,7 +321,7 @@ export function workflowYaml(o: WorkflowOptions): string {
     ['sync', sync],
     ...o.storage.inputs,
     ['cost-cap', o.costCap.trim()],
-    ['install', 'false'],
+    ['install', 'source'],
   ]
   const envLines: Line[] = [
     ['DASH_FORGE_KEY', '${{ secrets.DASH_FORGE_KEY }}'],
@@ -367,32 +356,10 @@ export function workflowYaml(o: WorkflowOptions): string {
     '    timeout-minutes: 60',
     '    permissions: { contents: read, issues: read, pull-requests: read }',
     '    steps:',
-    '      # No Dash Forge release is published yet: build the three binaries from the pinned',
-    '      # commit. The first run compiles for several minutes; rust-cache makes later runs quick.',
-    '      - name: Install protoc',
-    '        run: |',
-    `          curl -sSLo /tmp/protoc.zip ${WORKFLOW_PINS.protocUrl}`,
-    `          echo '${WORKFLOW_PINS.protocSha256}  /tmp/protoc.zip' | sha256sum -c -`,
-    "          sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'",
-    '          sudo chmod +x /usr/local/bin/protoc',
-    `      - name: Check out Dash Forge ${o.commit.slice(0, 12)}`,
-    `        uses: ${WORKFLOW_PINS.checkout}`,
-    '        with:',
-    `          repository: ${src}`,
-    `          ref: ${o.commit}`,
-    '          path: .dash-forge',
-    '          persist-credentials: false',
-    `      - uses: ${WORKFLOW_PINS.rustCache}`,
-    '        with:',
-    '          workspaces: .dash-forge',
-    '      - name: Build dg, git-remote-dash and forge-import',
-    '        working-directory: .dash-forge',
-    '        run: |',
-    '          cargo build --locked -p dg -p git-remote-dash -p forge-import',
-    '          echo "$PWD/target/debug" >> "$GITHUB_PATH"',
-    // The Action from the same checkout: one pin, and no download of the whole repository as
-    // an action tarball.
-    '      - uses: ./.dash-forge/action',
+    '      # No Dash Forge release is published yet: the Action builds dg, git-remote-dash and',
+    "      # forge-import from this same pinned commit (install: 'source'). The first run compiles",
+    "      # for several minutes; later runs reuse the Action's build cache.",
+    `      - uses: ${src}/action@${o.commit}`,
     '        with:',
     ...withLines.map(([k, v]) => `          ${k}: ${q(v)}`),
     '        env:',

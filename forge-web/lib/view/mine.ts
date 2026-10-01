@@ -392,25 +392,27 @@ export function assignedTargets(
 const REVIEW_REQUEST = 13
 const REVIEW_REQUEST_REMOVE = 14
 
-/** A thread whose events name `me` as their addressee: assigned, or asked for a review. */
+/** A thread whose events name `me` as their addressee, for one reason: assigned, or asked for a review. */
 export interface AddressedTarget {
   readonly targetId: string
   readonly reason: 'assigned' | 'review-requested'
-  /** The first such event (ms). */
+  /** The first event of this reason (ms). */
   readonly firstAt: number
+  /** Some of them are the thread author's `authorEvent`s (a non-member PR author's review request). */
+  readonly viaAuthor: boolean
 }
 
-/** How many addressed events are read (newest first). */
+/** How many addressed events are read per document type (newest first). */
 export const ADDRESSED_MAX = 100
 
 /**
- * The newest {@link ADDRESSED_MAX} member events naming `me` as their addressee (`refId`), in any
- * repo: the sparse `event.addressee (refId, $createdAt)` index.
+ * The newest {@link ADDRESSED_MAX} events of `type` naming `me` as their addressee (`refId`), in
+ * any repo: the sparse `addressee (refId, $createdAt)` index both `event` and `authorEvent` have.
  */
-function readAddressedEvents(sdk: EvoSDK, forge: ForgeIds, me: string): Promise<PlainDocument[]> {
+function readAddressed(sdk: EvoSDK, forge: ForgeIds, me: string, type: typeof DOC.event | typeof DOC.authorEvent): Promise<PlainDocument[]> {
   return read(sdk, {
-    dataContractId: contractOf(forge, DOC.event),
-    documentTypeName: DOC.event,
+    dataContractId: contractOf(forge, type),
+    documentTypeName: type,
     where: [['refId', '==', me]],
     orderBy: [['refId', 'desc'], ['$createdAt', 'desc']],
     limit: ADDRESSED_MAX,
@@ -419,25 +421,34 @@ function readAddressedEvents(sdk: EvoSDK, forge: ForgeIds, me: string): Promise<
 
 /**
  * The threads that assigned `me` or asked `me` for a review, in any repo (QW2-009), from the
- * sparse `event.addressee (refId, $createdAt)` index: an assign names the assignee in `refId`
- * (since F-1), a review request the reviewer. Newest {@link ADDRESSED_MAX} events. A thread stays
- * followed after an unassign, as GitHub keeps the subscription; an assignment wins over a review
- * request as the reason.
+ * sparse `addressee (refId, $createdAt)` indexes: an assign names the assignee in `refId` (since
+ * F-1), a review request the reviewer. A member's request is an `event`; a PR author who is not a
+ * member asks with an `authorEvent` (`forge-v2.md` §3), so both are read, in parallel, newest
+ * {@link ADDRESSED_MAX} of each; when one read fails the other's threads are still returned (and
+ * `partial` says so), and only both failing is an error. One entry per thread and reason, the
+ * assignments first (an assignment wins over a review request as a thread's reason). A thread
+ * stays followed after an unassign, as GitHub keeps the subscription. Whether a review request
+ * is on a PR is for the caller, which reads the thread, to check.
  */
-export async function listAddressedTargets(sdk: EvoSDK, forge: ForgeIds, me: string): Promise<AddressedTarget[]> {
-  const docs = parseDocs(eventDoc, await readAddressedEvents(sdk, forge, me))
+export async function listAddressedTargets(sdk: EvoSDK, forge: ForgeIds, me: string): Promise<{ readonly targets: AddressedTarget[]; readonly partial: boolean }> {
+  const [events, authorEvents] = await Promise.allSettled([readAddressed(sdk, forge, me, DOC.event), readAddressed(sdk, forge, me, DOC.authorEvent)])
+  if (events.status === 'rejected' && authorEvents.status === 'rejected') throw events.reason
+  const docsOf = (r: PromiseSettledResult<PlainDocument[]>, viaAuthor: boolean) => (r.status === 'fulfilled' ? parseDocs(eventDoc, r.value).map((e) => ({ e, viaAuthor })) : [])
   const out = new Map<string, AddressedTarget>()
-  for (const e of docs) {
+  for (const { e, viaAuthor } of [...docsOf(events, false), ...docsOf(authorEvents, true)]) {
     const reason = e.kind === ASSIGN || e.kind === UNASSIGN ? 'assigned' : e.kind === REVIEW_REQUEST || e.kind === REVIEW_REQUEST_REMOVE ? 'review-requested' : null
     if (reason === null) continue
-    const prev = out.get(e.targetId)
-    out.set(e.targetId, {
+    const key = `${reason}:${e.targetId}`
+    const prev = out.get(key)
+    out.set(key, {
       targetId: e.targetId,
-      reason: prev?.reason === 'assigned' ? 'assigned' : reason,
+      reason,
       firstAt: Math.min(prev?.firstAt ?? e.$createdAt, e.$createdAt),
+      viaAuthor: (prev?.viaAuthor ?? false) || viaAuthor,
     })
   }
-  return [...out.values()]
+  const targets = [...out.values()].sort((a, b) => (a.reason === b.reason ? 0 : a.reason === 'assigned' ? -1 : 1))
+  return { targets, partial: events.status === 'rejected' || authorEvents.status === 'rejected' }
 }
 
 /** What {@link scanAssignedAndMentions} found, and over how much it looked. */
@@ -486,8 +497,9 @@ export async function scanAssignedAndMentions(
   // Assignments in ANY repo, from the sparse `event.addressee (refId, $createdAt)` index: an
   // assign names the assignee in `refId` since F-1 (platform-parity-spec §1.2). Only member
   // events can be assign kinds, and only those carrying `refId` are indexed. Newest first, so
-  // past 100 addressed events the newest 100 are the ones read.
-  const addressed = await readAddressedEvents(sdk, forge, me).catch(() => [] as PlainDocument[])
+  // past 100 addressed events the newest 100 are the ones read. (An `authorEvent` is never an
+  // assign kind, so its addressee index is not read here.)
+  const addressed = await readAddressed(sdk, forge, me, DOC.event).catch(() => [] as PlainDocument[])
   const indexed = parseDocs(eventDoc, addressed).filter((e) => e.kind === ASSIGN || e.kind === UNASSIGN)
   const fromIndex = assignedTargets(indexed, me)
   // The per-repo scan also sees older assigns written without `refId`. A target the index

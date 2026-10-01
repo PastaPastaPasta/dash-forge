@@ -135,11 +135,10 @@ A repository mirrored from GitHub keeps its CI on GitHub. The [check action](../
         with:
           repo: <owner identity id>/project
           job-status: ${{ job.status }}
-          network: devnet           # Forge runs on a devnet today
-          devnet-name: <devnet name>
-          install: 'false'          # until a release exists; build dg in an earlier step
+          network: devnet           # Forge runs on devnet bonsia today (the default)
+          devnet-name: bonsia
         env:
           DASH_FORGE_KEY: ${{ secrets.FORGE_RUNNER_KEY }}      # from `dg ci runner new`
 ```
 
-No Dash Forge release is published yet, so the step needs `dg` built earlier in the job: the [check action's README](../../check-action/README.md#quick-start) has the build steps. The check is named `<workflow> / <job>`, and each matrix leg is its own check. The check run's details link goes back to the GitHub run. A failed report warns and passes by default, so a Forge outage never fails your CI. A pull request from a fork has no access to the secret and does not report: do not use `pull_request_target` to give it one.
+No Dash Forge release is published yet, so the action builds `dg` from its own source, the ref after `@` in `uses:` (pin a commit you have reviewed). That works on Linux runners only, and takes a few minutes in every job that reports, even with a warm build cache: report from one Linux leg, or from one summary job that `needs:` the others. The [check action's README](../../check-action/README.md#quick-start) has the details. The check is named `<workflow> / <job>`, and each matrix leg is its own check. The check run's details link goes back to the GitHub run. A failed report warns and passes by default, so a Forge outage never fails your CI. A pull request from a fork has no access to the secret and does not report: do not use `pull_request_target` to give it one.

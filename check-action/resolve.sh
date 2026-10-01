@@ -91,13 +91,22 @@ summary=$(printf '%s' "$summary" | tr '\n\r' '  ')
 # 2000 bytes.
 [[ ${#summary} -le 500 ]] || summary="${summary:0:497}..."
 
-network="${INPUT_NETWORK:-mainnet}"
+# The default is the devnet the hosted site targets. devnet-name has a default too, so it is
+# used, and checked, only for network devnet.
+network="${INPUT_NETWORK:-devnet}"
 devnet="${INPUT_DEVNET_NAME:-}"
 case "$network" in
   mainnet|testnet) ;;
   devnet) [[ "$devnet" =~ ^[a-z0-9-]{1,32}$ ]] || die "network devnet needs devnet-name (lowercase letters, digits and -)";;
   *) die "network must be mainnet, testnet or devnet";;
 esac
+
+case "${INPUT_INSTALL:-true}" in true|source|false) ;; *) die "install must be true, source or false";; esac
+case "${INPUT_BUILD_CACHE:-true}" in true|false) ;; *) die "build-cache must be true or false";; esac
+if [[ -n "${INPUT_VERSION:-}" ]]; then
+  [[ "$INPUT_VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]] ||
+    die "version must be a release version like 0.1.0, or empty to build dg from source"
+fi
 
 log="${INPUT_LOG:-}"
 log_storage="${INPUT_LOG_STORAGE:-}"
