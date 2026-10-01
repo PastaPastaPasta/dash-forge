@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
 import { OfflineChain } from './offline-chain.mjs';
-import { TRANSITION, VIS, b58encode, documentReader, documentWriter, idBytes, membership, transition } from './seed-io.mjs';
+import { FUSED_STAR, TRANSITION, VIS, b58encode, documentReader, documentWriter, idBytes, membership, transition } from './seed-io.mjs';
 
 const person = (name) => ({ name, id: b58encode(createHash('sha256').update(name).digest()) });
 const OWNER = person('owner');
@@ -49,12 +49,18 @@ test('an invited member is enrolled only after its consent', async () => {
   await write(OWNER, 'writer', membership(R, OWNER.id, OTHER.id));
 });
 
-test('a non-member cannot write an event; the repo owner cannot beat its own repo', async () => {
+test('a non-member cannot write an event; the repo owner cannot beat its own repo (no beat with the fused star)', async () => {
   const { write, R } = await repoChain();
   const i1 = (await write(OWNER, 'issue', issue(R, 1))).id.toBase58();
   const label = { repoId: R, targetId: idBytes(i1), targetNumber: 1, kind: 4, value: 'bug' };
   await assert.rejects(write(OTHER, 'event', label), refusedWith(40120, 'event.ownerRefersTo'));
   await write(OWNER, 'event', label);
+  if (FUSED_STAR) {
+    // RC2 C1: the star is the trending entry, with no repoOwner to tell the owner apart
+    await assert.rejects(write(OTHER, 'starBeat', { repoId: R, vis: VIS, repoOwner: idBytes(OWNER.id) }), /starBeat/);
+    await write(OWNER, 'star', { repoId: R });
+    return;
+  }
   await assert.rejects(write(OWNER, 'starBeat', { repoId: R, vis: VIS, repoOwner: idBytes(OWNER.id) }), refusedWith(10419));
   await write(OTHER, 'starBeat', { repoId: R, vis: VIS, repoOwner: idBytes(OWNER.id) });
   // The repo is found, but its owner is not the beat's repoOwner: a `where` mismatch.

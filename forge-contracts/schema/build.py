@@ -1,19 +1,30 @@
 #!/usr/bin/env python3
-"""Build the RC1 registration (forge-core, forge-collab, forge-community) from the base schemas.
+"""Build the RC2 registration (forge-core, forge-collab, forge-community) from the base schemas.
 
-  python3 forge-contracts/schema/build.py [--check] [--gate <b7gate>] [--off flag,flag]
+  python3 forge-contracts/schema/build.py [--check] [--off flag,flag] [--on flag,flag] [--out <dir>]
+                                          [--validate <contract-validate>] [--gate <b7gate>]
 
-`base/` holds the three schemas registered-to-be before RC1 (the #154 build: the beta.7
-`refersTo` grammar with WIPE-DECISIONS D-2..D-5 applied). This script applies the RC1 items of
-`design/SCOPE-DECISION.md` / WIPE-DECISIONS D-10..D-12 on top, each behind a flag in FLAGS, and
-writes `forge-contracts/contracts/{forge-core,forge-collab,forge-community}.json` plus
-`contracts/registered/forge-core.v1.json` (RC1 registers fresh, so the registered core is the
-new core).
+`base/` holds the three schemas registered-to-be before RC1 (the #154 build: the `refersTo`
+grammar with WIPE-DECISIONS D-2..D-5 applied), with checkRun's set-once fields written as
+Platform v5 conditional `immutable` entries (RC2 item M1: v5 refuses `immutableAllowSetting`).
+This script applies the RC1 items of `design/SCOPE-DECISION.md` / WIPE-DECISIONS D-10..D-12 and
+the RC2 items of `design/v5/PLAN.md` §3 on top, each behind a flag in FLAGS, and writes
+`forge-contracts/contracts/{forge-core,forge-collab,forge-community}.json` plus
+`contracts/registered/forge-core.v1.json` (RC1 and RC2 register fresh, so the registered core is
+the new core).
 
---check   write nothing; exit 1 when the committed contracts differ from a fresh build (CI).
---gate    run b7gate (design/final-schema/b7gate, rs-dpp v4.2.0-beta.7) on the result and print
-          each contract's serialized size against the D-12 budget.
---off     turn flags off for a measurement run (implies nothing is written unless --out).
+--check     write nothing; exit 1 when the committed contracts differ from a fresh build (CI).
+--off/--on  turn flags off (or on) for a variant: nothing is written unless --out names a directory,
+            so the committed contracts always match FLAGS. A registration-time decision (a fee
+            probe that turns an RC2 item off) is made by flipping its default in FLAGS and
+            regenerating, never by registering an --out variant.
+--out       write the three files to this directory instead of forge-contracts/contracts.
+--validate  run tools/contract-validate (rs-dpp v5.0.0-beta.1) on the result and print each
+            contract's serialized size and create-transition size against the D-12 budget and
+            the 20,480-byte transition limit. forge-contracts/schema/variants.py does this for
+            every combination of the RC2 flags.
+--gate      run b7gate (design/final-schema/b7gate, rs-dpp v4.2.0-beta.7): RC1 only, since beta.7
+            refuses RC2's forge-community (an `immutable` entry that is an object).
 
 Item ids (R-xx, O-xx, INV-11, CL-7, CL-8, COMM-9) are those of dash-forge-qa
 beta6/RULES-PROPOSAL.md and beta6/OPPORTUNITIES.md; the docs in docs/contracts/forge-v2.md
@@ -24,6 +35,7 @@ import base64
 import copy
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -36,6 +48,8 @@ COLLAB = 'FORGE_COLLAB_CONTRACT_ID'
 
 # D-12: aim for TARGET gate bytes per contract; CEILING is hard (>= 2 KB of real signed room).
 TARGET, CEILING = 17408, 17832
+# Protocol 14's max_state_transition_size (v5: rs-platform-version system_limits/v4.rs:108)
+TRANSITION_LIMIT = 20480
 
 # ---- RC1 flags (D-10, D-11). Off: protected_ref (R-05), ref_ledger (O-09), label_tags (O-10).
 FLAGS = dict(
@@ -75,7 +89,18 @@ FLAGS = dict(
     text_grammar=True,          # CL-7: titles and bodies hold a visible character
     label_grammar=True,         # CL-8: label names trimmed, no control characters (no cap)
     social_counters=True,       # COMM-9 (provisional, step-8 fee gate): star/watch counts
+    # ---- RC2 (Platform v5.0.0-beta.1; design/v5/PLAN.md §3, owner decisions 2026-10-01). M1 is
+    # no flag: it is in base/. S2, S3 and C1 are decided at registration by a fee probe on the v5
+    # network (S2 and S3 each <= +10 % per review write, C1 <= 54.9 M credits per star): a probe
+    # that fails turns its flag off here (python3 build.py --off <flag> --out <dir> builds the
+    # probe variants).
+    check_evidence_freeze=True,  # S1: a completed run's summary, links, log and artifacts are frozen
+    review_to_author=True,       # S2: review index [patchId.$ownerId, $createdAt]: reviews on my PRs
+    review_author=True,          # S3: review index [$ownerId, $createdAt]: the reviews I wrote
+    fused_star=True,             # C1: star carries the trending window (byWeek, outlivesDelete); no starBeat
 )
+# The RC2 items with a flag: forge-contracts/schema/variants.py validates every combination.
+RC2_FLAGS = ('check_evidence_freeze', 'review_to_author', 'review_author', 'fused_star')
 TOPIC_CAP = 20
 
 ID = {"type": "array", "byteArray": True, "minItems": 32, "maxItems": 32,
@@ -101,7 +126,17 @@ def add_prop(t, name, schema, required=False, immutable=False):
     if required:
         t['required'].append(name)
     if immutable:
-        t.setdefault('immutable', []).append(name)
+        freeze(t, name)
+
+
+def freeze(t, name, when=None):
+    """List `name` under the type's `immutable`: frozen outright, or (v5) while `when` holds. A
+    name frozen outright goes before the conditional entries, which keep their order."""
+    imm = t.setdefault('immutable', [])
+    if when is not None:
+        imm.append({"property": name, "when": when})
+        return
+    imm.insert(next((k for k, e in enumerate(imm) if isinstance(e, dict)), len(imm)), name)
 
 
 def leaves(decl):
@@ -375,7 +410,7 @@ def build(flags):
         # ex-member's edit can drop it.
         for t in ('issue', 'patch', 'comment'):
             as_member(t)
-            ld[t]['immutable'].append('imported')
+            freeze(ld[t], 'imported')
         for t in ('issue', 'patch'):
             ld[t]['propertyConstraints']['i_provenance'] = {"anyOf": [
                 {"allOf": [{"absent": "imported"}, {"absent": "upstreamNumber"}]}, {"present": "asMember"}]}
@@ -510,6 +545,39 @@ def build(flags):
         wr['rangeCountable'] = True
         wr['rankedCountable'] = True
 
+    # ======================= RC2 (design/v5/PLAN.md §3) =======================
+    if f['check_evidence_freeze']:
+        # S1. Once the stored run is completed, its evidence stands (a v5 condition reads the
+        # document alone: no fee, book contract-keywords/mutability.md:111). status cannot leave
+        # `completed` again: conclusion is set-once (M1) and doneIfConclusion ties it to status,
+        # so the freeze is permanent. status and outcome are pinned by the same pair already.
+        done = {"equal": ["$old.status", {"const": "completed"}]}
+        for p in ('summary', 'detailsUrl', 'logUrl', 'logSha256', 'artifacts'):
+            freeze(cr, p, when=done)
+
+    rv = ld['review']
+    if f['review_to_author']:
+        # S2. A derived index property (v5 book contract-keywords/derived-index-properties.md):
+        # Drive files each review under the owner of the patch it reviews. patchId is a
+        # same-contract permanentDocument reference and review documents are immutable.
+        rv['indices'].append({"name": "toAuthor", "properties": [{"patchId.$ownerId": "asc"}, {"$createdAt": "asc"}]})
+    if f['review_author']:
+        # S3 (QW2-009, not a v5 feature): every review an identity wrote, newest last.
+        rv['indices'].append({"name": "author", "properties": [{"$ownerId": "asc"}, {"$createdAt": "asc"}]})
+
+    if f['fused_star']:
+        # C1. The star itself sits in the trending window: an `outlivesDelete` window entry stays
+        # (and counts) after an unstar until the window passes, so starBeat, which existed only
+        # because its entryPayload rules outlivesDelete out, goes (v5 book
+        # contract-keywords/index-only.md:197-230). Trending loses O-08's public-only and
+        # no-self-star filter: a client filters on read.
+        st = md['star']
+        st['required'] = ["repoId", "$createdAt"]
+        st['indices'].append({"name": "byWeek", "properties": [{"$createdAt": "asc"}, {"repoId": "asc"}],
+                              "timeRange": {"on": "$createdAt", "range": 604800, "step": 86400, "ttl": 604800},
+                              "rangeCountable": True, "rankedCountable": True, "outlivesDelete": True})
+        del md['starBeat']
+
     core['description'] = "Dash Forge v2 core: repositories, refs, packs, members, releases, labels, topics"
     collab['description'] = "Dash Forge v2 collaboration: issues, pull requests, transitions, comments, reviews, repo keys"
     comm['description'] = "Dash Forge v2 community: events, milestones, runners, check runs, policies, stars, webhooks"
@@ -545,46 +613,89 @@ def gate(gate_bin, contracts):
     return sizes
 
 
+def flags_from(off='', on=''):
+    """FLAGS with the comma-separated `off` flags turned off and the `on` ones turned on."""
+    flags = dict(FLAGS)
+    for value, names in ((False, off), (True, on)):
+        for fl in filter(None, names.split(',')):
+            if fl not in flags:
+                sys.exit(f'unknown flag {fl}')
+            flags[fl] = value
+    return flags
+
+
+def validate(validator, contracts, vectors=None):
+    """Run tools/contract-validate (its binary) on `contracts`, in registration order; return
+    (exit code, its output, {name: (contract bytes, create-transition bytes)})."""
+    with tempfile.TemporaryDirectory() as tmp:
+        paths = []
+        for name in NAMES:
+            paths.append(os.path.join(tmp, f'{name}.json'))
+            open(paths[-1], 'w').write(dumps(contracts[name]))
+        r = subprocess.run([validator, *(['--vectors', vectors] if vectors else []), *paths],
+                           capture_output=True, text=True)
+    sizes, current = {}, None
+    for line in r.stdout.splitlines():
+        if line.startswith('== '):
+            current = line.split()[1]
+        m = re.search(r'size: contract (\d+) B, create transition (\d+) B', line)
+        if m and current:
+            sizes[current] = (int(m.group(1)), int(m.group(2)))
+    return r.returncode, r.stdout + r.stderr, sizes
+
+
+def budget_note(n):
+    return 'over the ceiling' if n > CEILING else 'over the target' if n > TARGET else 'ok'
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--check', action='store_true')
     ap.add_argument('--gate')
+    ap.add_argument('--validate', metavar='CONTRACT_VALIDATE')
     ap.add_argument('--off', default='')
+    ap.add_argument('--on', default='')
     ap.add_argument('--out', help='write the three files here instead of forge-contracts/contracts')
     a = ap.parse_args()
-    flags = dict(FLAGS)
-    for fl in filter(None, a.off.split(',')):
-        if fl not in flags:
-            sys.exit(f'unknown flag {fl}')
-        flags[fl] = False
-    contracts = build(flags)
+    variant = bool(a.off or a.on)
+    contracts = build(flags_from(a.off, a.on))
     targets = {n: os.path.join(a.out or CONTRACTS, f'{n}.json') for n in NAMES}
-    if not a.out and not a.off:
+    if not a.out and not variant:
         targets['registered'] = os.path.join(CONTRACTS, 'registered', 'forge-core.v1.json')
     texts = {k: dumps(contracts['forge-core' if k == 'registered' else k]) for k in targets}
-    if a.check and a.off:
-        sys.exit('--check compares the full build: use it without --off')
+    if a.check and variant:
+        sys.exit('--check compares the full build: use it without --off/--on')
     if a.check:
         stale = [p for k, p in targets.items() if not os.path.exists(p) or open(p).read() != texts[k]]
         for p in stale:
             print(f'stale: {os.path.relpath(p)} (re-run forge-contracts/schema/build.py)')
         sys.exit(1 if stale else 0)
-    if a.out or not a.off:
+    if a.out or not variant:
         if a.out:
             os.makedirs(a.out, exist_ok=True)
         for k, p in targets.items():
             open(p, 'w').write(texts[k])
+    failed = False
+    if a.validate:
+        code, out, sizes = validate(a.validate, contracts)
+        for name in NAMES:
+            if name not in sizes:
+                print(f'{name:16} REFUSED: {out[-1500:]}')
+                continue
+            n, st = sizes[name]
+            print(f'{name:16} {n:6} B  target {TARGET} ({TARGET - n:+}), ceiling {CEILING} ({CEILING - n:+})  {budget_note(n)};'
+                  f'  create transition {st} B ({100 * st / TRANSITION_LIMIT:.1f} % of {TRANSITION_LIMIT})')
+            failed = failed or n > CEILING
+        failed = failed or code != 0
     if a.gate:
-        failed = False
         for name, n in gate(a.gate, contracts).items():
             if isinstance(n, str):
                 print(f'{name:16} {n[:1500]}')
                 failed = True
                 continue
-            note = 'over the ceiling' if n > CEILING else 'over the target' if n > TARGET else 'ok'
             failed = failed or n > CEILING
-            print(f'{name:16} {n:6} B  target {TARGET} ({TARGET - n:+}), ceiling {CEILING} ({CEILING - n:+})  {note}')
-        sys.exit(1 if failed else 0)
+            print(f'{name:16} {n:6} B  target {TARGET} ({TARGET - n:+}), ceiling {CEILING} ({CEILING - n:+})  {budget_note(n)}')
+    sys.exit(1 if failed else 0)
 
 
 if __name__ == '__main__':

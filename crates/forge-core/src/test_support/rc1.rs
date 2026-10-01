@@ -250,11 +250,12 @@ mod vectors {
     /// cases each holds: the sets only grow, so a smaller one means a file went missing or was
     /// cut. Every case is judged here: `vectors.py` keeps the checks that read a total, the block
     /// or another document (its `LIVE_ONLY` list) out of the sets, for
-    /// `forge-contracts/scripts/rc1-live.mjs`.
+    /// `forge-contracts/scripts/rc1-live.mjs`. RC2's fused star (build.py `fused_star`) drops
+    /// starBeat and its 6 community cases.
     const SETS: [(&str, usize); 3] = [
         ("forge-core", 171),
         ("forge-collab", 101),
-        ("forge-community", 117),
+        ("forge-community", 111),
     ];
 
     /// An identifier written as a byte `n` (32 bytes of n) or a base58 string.

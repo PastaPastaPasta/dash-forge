@@ -613,8 +613,10 @@ pub enum RunWriteAction {
 
 /// The write a report makes: create or replace, and the immutable-once-set fields it carries.
 /// On a replace, only a field the stored run does not have yet is set (`None` keeps the stored
-/// value: `startedAt`, `completedAt`, `conclusion` and `externalId` are `immutableAllowSetting`,
-/// so a set value never changes).
+/// value: `startedAt`, `completedAt`, `conclusion` and `externalId` are set once, each a
+/// conditional `immutable` entry frozen while the stored run holds it, so a set value never
+/// changes). With RC2's S1, a completed run's `summary`, `detailsUrl`, `logUrl`, `logSha256` and
+/// `artifacts` are frozen too.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunWrite {
