@@ -317,7 +317,7 @@ export function languageShares(files: Iterable<readonly [path: string, bytes: nu
   return out
 }
 
-/** The language bar of a walk; `isDelta` says which blobs are stored as deltas ({@link languageShares}). */
+/** The language bar of a walk; which blobs are stored as deltas ({@link languageShares}) the walk says, or `isDelta`. */
 export function languageStats(walk: FileWalk, isDelta: (oid: string) => boolean = () => false): LanguageStats {
-  return { languages: languageShares(walk.files.map((f) => [f.path, f.size, isDelta(f.oid)] as const)), files: walk.files.length, truncated: walk.truncated }
+  return { languages: languageShares(walk.files.map((f) => [f.path, f.size, f.delta === true || isDelta(f.oid)] as const)), files: walk.files.length, truncated: walk.truncated }
 }

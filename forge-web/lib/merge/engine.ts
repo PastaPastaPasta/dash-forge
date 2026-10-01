@@ -356,7 +356,7 @@ export function strictReader(reader: ObjectReader, budget = MERGE_READ_BUDGET): 
       else if (obj.type === 'tree') checkTree(oid, obj.bytes)
       return obj
     },
-    ...(reader.locate ? { locate: (oid: string) => reader.locate?.(oid) ?? null } : {}),
+    ...(reader.locate ? { locate: async (oid: string) => (await reader.locate?.(oid)) ?? null } : {}),
   }
 }
 

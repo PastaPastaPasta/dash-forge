@@ -33,6 +33,25 @@ export function ConnectingBlock({ status }: { status: SdkStatus }): JSX.Element 
   )
 }
 
+/** A thin determinate bar (`pct` null: a sliver, the size not known yet). */
+export function ProgressBar({ label, pct, valueText }: { label: string; pct: number | null; valueText: string }): JSX.Element {
+  return (
+    <div
+      role="progressbar"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={pct ?? undefined}
+      aria-valuetext={valueText}
+      className="h-1.5 w-full overflow-hidden rounded-full bg-anvil-200 dark:bg-anvil-800"
+    >
+      {/* The fill is a non-text graphic (WCAG 1.4.11, 3:1 against the track and the page):
+          forge-700 on light, forge-500 on dark; lib/design/contrast.test.ts pins both. */}
+      <div className="h-full bg-forge-700 transition-[width] duration-300 dark:bg-forge-500" style={{ width: `${pct ?? 5}%` }} />
+    </div>
+  )
+}
+
 /** Bytes of the SDK download, with a determinate bar when the size is known. */
 export function DownloadProgressBar({ status }: { status: Extract<SdkStatus, { phase: 'downloading' }> }): JSX.Element {
   const { loaded, total } = status.progress
@@ -41,19 +60,7 @@ export function DownloadProgressBar({ status }: { status: Extract<SdkStatus, { p
   return (
     <div className="w-full max-w-sm space-y-2 text-center" data-testid="sdk-download">
       <p className="text-dense text-anvil-600 dark:text-anvil-300">Downloading the Platform verifier</p>
-      <div
-        role="progressbar"
-        aria-label="Platform verifier download"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={pct ?? undefined}
-        aria-valuetext={bytes}
-        className="h-1.5 w-full overflow-hidden rounded-full bg-anvil-200 dark:bg-anvil-800"
-      >
-        {/* The fill is a non-text graphic (WCAG 1.4.11, 3:1 against the track and the page):
-            forge-700 on light, forge-500 on dark; lib/design/contrast.test.ts pins both. */}
-        <div className="h-full bg-forge-700 transition-[width] duration-300 dark:bg-forge-500" style={{ width: `${pct ?? 5}%` }} />
-      </div>
+      <ProgressBar label="Platform verifier download" pct={pct} valueText={bytes} />
       <p className="text-dense tabular-nums text-anvil-500 dark:text-anvil-400">
         {bytes}
         {pct !== null ? ` · ${pct}%` : ''}

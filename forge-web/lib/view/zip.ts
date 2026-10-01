@@ -21,7 +21,7 @@ import {
   parseArchiveCommit,
   parseDescribeOptions,
   peelTags,
-  uniqueAbbrev,
+  uniqueAbbrevLength,
   type ArchiveCommit,
   type DescribeTag,
   type FormatContext,
@@ -38,6 +38,8 @@ export interface ZipFile {
   readonly oid: string
   readonly mode: number
   readonly size: number
+  /** Stored as a delta, so `size` is the delta's, not the file's (the locator says; absent when it cannot). */
+  readonly delta?: boolean
 }
 
 /**
@@ -93,6 +95,9 @@ export async function walkFiles(
   treeOid: string,
   { maxTrees = Infinity, maxFiles = Infinity, pool = WALK_POOL }: { readonly maxTrees?: number; readonly maxFiles?: number; readonly pool?: number } = {},
 ): Promise<FileWalk> {
+  // Every file's size comes from its index entry: nearly every object is looked up, so an index
+  // read a slice at a time is read whole first, in large queries (QW3-001).
+  await reader.preloadIndex?.().catch(() => undefined)
   const files: ZipFile[] = []
   const queue: [string, string][] = [[treeOid, '']]
   let trees = 0
@@ -104,7 +109,7 @@ export async function walkFiles(
       const path = prefix ? `${prefix}/${e.name}` : e.name
       if (e.mode === MODE_TREE) queue.push([e.oid, path])
       else if (e.mode === MODE_GITLINK) continue
-      else if (files.length < maxFiles) files.push({ path, oid: e.oid, mode: e.mode, size: reader.locate?.(e.oid)?.length ?? 0 })
+      else if (files.length < maxFiles) files.push({ path, oid: e.oid, mode: e.mode, size: 0 })
       else dropped = true
     }
   }
@@ -143,7 +148,15 @@ export async function walkFiles(
     pump()
   })
   files.sort((a, b) => (a.path < b.path ? -1 : 1))
-  return { files, truncated: dropped || queue.length > 0 }
+  const sized = reader.locate === undefined ? files : await Promise.all(files.map((f) => withStoredSize(reader, f)))
+  return { files: sized, truncated: dropped || queue.length > 0 }
+}
+
+/** `file` with its stored size, and whether it is stored as a delta, from the reader's index. */
+async function withStoredSize(reader: ObjectReader, file: ZipFile): Promise<ZipFile> {
+  // A size is a hint: a lookup that cannot be made leaves it unknown (0), not the walk failed.
+  const entry = await reader.locate?.(file.oid).catch(() => null)
+  return entry == null ? file : { ...file, size: entry.length, delta: entry.deltaDepth > 0 }
 }
 
 /**
@@ -224,7 +237,7 @@ export interface ArchiveRefs {
  * commit. A file that is not UTF-8 is left as it is. `signal` stops the describe walk.
  */
 export async function substituteFiles(
-  reader: ObjectReader & { findByPrefix?(prefix: string, limit?: number): string[]; readonly objectCount?: number },
+  reader: ObjectReader & { findByPrefix?(prefix: string, limit?: number): Promise<string[]>; readonly objectCount?: number },
   plan: ArchivePlan,
   entries: Record<string, Uint8Array>,
   refs: ArchiveRefs,
@@ -244,9 +257,15 @@ export async function substituteFiles(
   }
   const formats = [...texts.values()].flatMap((t) => [...t.matchAll(/\$Format:([^$]*)\$/g)].map((m) => m[1] as string))
   if (formats.length === 0) return
-  const findByPrefix = reader.findByPrefix?.bind(reader)
   const auto = autoAbbrevLength(reader.objectCount ?? 0)
-  const abbrev = (oid: string, min: number = auto): string => uniqueAbbrev(oid, min, findByPrefix)
+  // git's abbreviations, worked out before the (synchronous) expansion: a format names only the
+  // commit, its tree and its parents (`%h %t %p`, and `%(describe)`'s suffix).
+  const unique = new Map<string, number>()
+  const findByPrefix = reader.findByPrefix?.bind(reader)
+  if (findByPrefix !== undefined) {
+    for (const oid of new Set([commit.oid, commit.tree, ...commit.parents])) unique.set(oid, await uniqueAbbrevLength(oid, findByPrefix))
+  }
+  const abbrev = (oid: string, min: number = auto): string => oid.slice(0, Math.max(4, min, unique.get(oid) ?? 4))
 
   // The one `%(describe…)` git archive expands: the first, worked out before the (synchronous) expansion.
   const first = formats.map((f) => /%\(describe(?::([^)]*))?\)/.exec(f)).find((m) => m !== null)

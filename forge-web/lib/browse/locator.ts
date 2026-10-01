@@ -8,7 +8,7 @@
  *
  * A lookup is the fanout header plus one ~1/256 slice: binary-search within the slice.
  * The whole point is size-independent single-object access — either from a fully-fetched
- * locator ({@link ObjectLocator.parse}) or via ranged reads ({@link lookupRanged}).
+ * locator ({@link ObjectLocator.parse}) or via ranged reads (`object-index.ts` `RangedLocator`).
  */
 
 export const OID_LEN = 20
@@ -71,7 +71,8 @@ function u40be(buf: Uint8Array, at: number): number {
   return v
 }
 
-function compareOid(row: Uint8Array, rowStart: number, oid: Uint8Array): number {
+/** Compare the OID of the row at byte `rowStart` of `row` with `oid` (both 20 bytes). */
+export function compareOid(row: Uint8Array, rowStart: number, oid: Uint8Array): number {
   for (let i = 0; i < OID_LEN; i++) {
     const a = row[rowStart + i] as number
     const b = oid[i] as number
@@ -287,32 +288,8 @@ export class ObjectLocator {
    * contiguous run found by binary search.
    */
   findByPrefix(prefix: string, limit = 2): string[] {
-    const hex = prefix.toLowerCase()
-    if (!/^[0-9a-f]{2,40}$/.test(hex)) return []
-    // The lowest OID the prefix allows: the prefix padded with zeros.
-    const low = new Uint8Array(OID_LEN)
-    for (let i = 0; i < hex.length; i++) {
-      const nibble = parseInt(hex[i] as string, 16)
-      low[i >> 1] = (low[i >> 1] as number) | (i % 2 === 0 ? nibble << 4 : nibble)
-    }
-    const b = low[0] as number
-    let lo = b === 0 ? 0 : this.fanout(b - 1)
-    let hi = this.fanout(b)
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1
-      if (compareOid(this.bytes, this.rowStart(mid), low) < 0) lo = mid + 1
-      else hi = mid
-    }
-    const out: string[] = []
-    for (let i = lo; i < this.count && out.length < limit; i++) {
-      const start = this.rowStart(i)
-      let oid = ''
-      for (let k = 0; k < OID_LEN; k++) oid += (this.bytes[start + k] as number).toString(16).padStart(2, '0')
-      if (!oid.startsWith(hex)) break
-      // Rows repeat an OID once per pack that stores it.
-      if (out[out.length - 1] !== oid) out.push(oid)
-    }
-    return out
+    const low = prefixLow(prefix)
+    return low === null ? [] : rowsWithPrefix(this.bucketRows(low[0] as number), prefix, limit)
   }
 
   /**
@@ -321,25 +298,13 @@ export class ObjectLocator {
    */
   lookup(oid: Uint8Array): LocatorEntry | null {
     if (oid.length !== OID_LEN) return null
-    const b = oid[0] as number
-    let lo = b === 0 ? 0 : this.fanout(b - 1)
-    let hi = this.fanout(b)
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1
-      const start = this.rowStart(mid)
-      const cmp = compareOid(this.bytes, start, oid)
-      if (cmp < 0) lo = mid + 1
-      else if (cmp > 0) hi = mid
-      else {
-        // A merged locator can hold one row per pack storing this OID ({@link merge}).
-        // They are adjacent and ordered by packRef, so walking back to the first makes the
-        // answer the lowest-packRef copy wherever the binary search landed.
-        let at = mid
-        while (at > 0 && compareOid(this.bytes, this.rowStart(at - 1), oid) === 0) at--
-        return decodeRow(this.bytes, this.rowStart(at))
-      }
-    }
-    return null
+    return searchRows(this.bucketRows(oid[0] as number), oid)
+  }
+
+  /** The rows whose OID starts with byte `b`: one contiguous run, the fanout's slice for it. */
+  bucketRows(b: number): Uint8Array {
+    const lo = b === 0 ? 0 : this.fanout(b - 1)
+    return this.bytes.subarray(this.rowStart(lo), this.rowStart(this.fanout(b)))
   }
 }
 
@@ -356,42 +321,97 @@ function compareBytes(x: Uint8Array, y: Uint8Array, n: number): number {
 export type RangeFetch = (start: number, end: number) => Promise<Uint8Array>
 
 /**
- * Look up an object using only ranged reads against the locator artifact — the
- * size-independent path (no need to download the whole locator). Reads the 1024-byte
- * fanout, computes the OID's 1/256 slice bounds, fetches just that slice, and binary
- * searches it. Returns `null` if absent.
+ * Binary-search `rows` (whole locator rows in `(oid, packRef)` order, such as one fanout slice)
+ * for `oid`. A merged locator can hold one row per pack storing an OID ({@link ObjectLocator.merge}):
+ * they are adjacent and ordered by packRef, and all inside the OID's fanout slice, so walking back
+ * to the first makes the answer the lowest-packRef copy wherever the search landed. Null if absent.
  */
-export async function lookupRanged(
-  fetchLocatorRange: RangeFetch,
-  oid: Uint8Array,
-): Promise<LocatorEntry | null> {
+export function searchRows(rows: Uint8Array, oid: Uint8Array): LocatorEntry | null {
   if (oid.length !== OID_LEN) return null
-  const fanout = await fetchLocatorRange(0, FANOUT_LEN)
-  const b = oid[0] as number
-  const lo = b === 0 ? 0 : u32be(fanout, (b - 1) * 4)
-  const hi = u32be(fanout, b * 4)
-  if (lo >= hi) return null
-  const sliceStart = FANOUT_LEN + lo * LOCATOR_ROW_LEN
-  const sliceEnd = FANOUT_LEN + hi * LOCATOR_ROW_LEN
-  const slice = await fetchLocatorRange(sliceStart, sliceEnd)
-  // Binary search the fetched slice (rows [lo, hi)).
   let a = 0
-  let c = hi - lo
+  let c = Math.floor(rows.length / LOCATOR_ROW_LEN)
   while (a < c) {
     const mid = (a + c) >>> 1
-    const start = mid * LOCATOR_ROW_LEN
-    const cmp = compareOid(slice, start, oid)
+    const cmp = compareOid(rows, mid * LOCATOR_ROW_LEN, oid)
     if (cmp < 0) a = mid + 1
     else if (cmp > 0) c = mid
     else {
-      // A merged locator can hold one row per pack storing this OID
-      // ({@link ObjectLocator.merge}). The whole group is inside this fanout slice, so
-      // walking back to its first row answers with the lowest packRef — the same choice
-      // {@link ObjectLocator.lookup} makes over the fully-downloaded locator.
       let at = mid
-      while (at > 0 && compareOid(slice, (at - 1) * LOCATOR_ROW_LEN, oid) === 0) at--
-      return decodeRow(slice, at * LOCATOR_ROW_LEN)
+      while (at > 0 && compareOid(rows, (at - 1) * LOCATOR_ROW_LEN, oid) === 0) at--
+      return decodeRow(rows, at * LOCATOR_ROW_LEN)
     }
   }
   return null
+}
+
+/** The lowest OID a hex prefix (2 to 40 digits, odd lengths too) allows; null for one that is not hex. */
+export function prefixLow(prefix: string): Uint8Array | null {
+  const hex = prefix.toLowerCase()
+  if (!/^[0-9a-f]{2,40}$/.test(hex)) return null
+  const low = new Uint8Array(OID_LEN)
+  for (let i = 0; i < hex.length; i++) {
+    const nibble = parseInt(hex[i] as string, 16)
+    low[i >> 1] = (low[i >> 1] as number) | (i % 2 === 0 ? nibble << 4 : nibble)
+  }
+  return low
+}
+
+/**
+ * The distinct OIDs (hex) of `rows` (sorted locator rows) that start with the hex `prefix`, in OID
+ * order, at most `limit` of them. Every match shares the prefix's first byte, so the caller passes
+ * that byte's fanout slice; the matches are one contiguous run found by binary search.
+ */
+export function rowsWithPrefix(rows: Uint8Array, prefix: string, limit: number): string[] {
+  const hex = prefix.toLowerCase()
+  const low = prefixLow(hex)
+  if (low === null) return []
+  const n = Math.floor(rows.length / LOCATOR_ROW_LEN)
+  let lo = 0
+  let hi = n
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1
+    if (compareOid(rows, mid * LOCATOR_ROW_LEN, low) < 0) lo = mid + 1
+    else hi = mid
+  }
+  const out: string[] = []
+  for (let i = lo; i < n && out.length < limit; i++) {
+    const start = i * LOCATOR_ROW_LEN
+    let oid = ''
+    for (let k = 0; k < OID_LEN; k++) oid += (rows[start + k] as number).toString(16).padStart(2, '0')
+    if (!oid.startsWith(hex)) break
+    // Rows repeat an OID once per pack that stores it.
+    if (out[out.length - 1] !== oid) out.push(oid)
+  }
+  return out
+}
+
+/** The `[lo, hi)` rows of first byte `b`, from a serialized fanout (256 cumulative u32 BE counts). */
+export function fanoutBounds(fanout: Uint8Array, b: number): readonly [number, number] {
+  return [b === 0 ? 0 : u32be(fanout, (b - 1) * 4), u32be(fanout, b * 4)]
+}
+
+/** The row count a serialized fanout declares; null when it is not one (wrong length, counts that fall). */
+export function fanoutCount(fanout: Uint8Array): number | null {
+  if (fanout.length !== FANOUT_LEN) return null
+  let prev = 0
+  for (let b = 0; b < 256; b++) {
+    const v = u32be(fanout, b * 4)
+    if (v < prev) return null
+    prev = v
+  }
+  return prev
+}
+
+/**
+ * Whether `rows` is a well-formed fanout slice for first byte `b`: whole rows, each starting with
+ * `b`, in `(oid, packRef)` order. A slice read as a range of the index cannot be hashed on its
+ * own, so it is checked against this before a lookup trusts it.
+ */
+export function wellFormedSlice(rows: Uint8Array, b: number): boolean {
+  if (rows.length % LOCATOR_ROW_LEN !== 0) return false
+  for (let at = 0; at < rows.length; at += LOCATOR_ROW_LEN) {
+    if (rows[at] !== b) return false
+    if (at > 0 && compareBytes(rows.subarray(at - LOCATOR_ROW_LEN), rows.subarray(at), OID_LEN + 2) > 0) return false
+  }
+  return true
 }

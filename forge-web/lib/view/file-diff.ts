@@ -105,7 +105,7 @@ export interface PatchOptions {
  */
 async function readText(reader: ObjectReader, oid: string | null, options: PatchOptions): Promise<{ text: string; size: number }> {
   if (oid === null) return { text: '', size: 0 }
-  const min = options.ignoreSizeHint ? null : knownMinSize(reader, oid)
+  const min = options.ignoreSizeHint ? null : await knownMinSize(reader, oid)
   if (min !== null && min > COUNT_BLOB_MAX_BYTES) {
     // The size is the index's claim, and so is where the prefix was read: the reviewer can still
     // download the file and check it (a false claim must not hide a small file's change).
@@ -118,7 +118,7 @@ async function readText(reader: ObjectReader, oid: string | null, options: Patch
   } catch (e) {
     if (!(e instanceof ObjectTooLargeError)) throw e
     // Refused on the entry's length alone: the index's claim, which nothing has checked.
-    const stored = e.size === reader.locate?.(oid)?.length
+    const stored = e.size === (await reader.locate?.(oid)?.catch(() => null))?.length
     if (!stored && (await sniffedBinary(reader, oid))) throw new Binary(true)
     if (stored) throw new TooLarge(e.size, 'stored')
     throw new TooLarge(null, 'refused')

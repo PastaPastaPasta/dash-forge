@@ -5,10 +5,11 @@
  * given a repo's locator + a way to fetch pack byte ranges, recover any single git object
  * (blob / tree / commit) without materializing the repo.
  *
- *   1. locator.lookup(oid) → {packRef, offset, length, deltaChainSpan, deltaDepth}
+ *   1. index.lookup(oid) → {packRef, offset, length, deltaChainSpan, deltaDepth}
  *   2. blob (contiguous span ≤ threshold): fetch `[end-span, end)` once → reconstruct
  *   3. tree / deep-delta (sentinel or oversized span): per-base walk — fetch each object's
- *      own slice and resolve OFS bases via the locator's offset index
+ *      own slice and resolve OFS bases via the index's offset map, or (an index read a slice
+ *      at a time, {@link ObjectIndex}) from the base's own entry header
  *
  * The pack bytes come from wherever the manifest points (a backend URI honoring HTTP
  * Range, or platform `chunk` documents reassembled by seq) — modeled as {@link PackSource}.
@@ -20,7 +21,9 @@ import { isOffline } from '../online'
 import { isUnreachableError } from '../sdk/unreachable'
 
 import { FlatIndex } from './flatindex'
-import { type LocatorEntry, ObjectLocator, offsetKey, singleReadAdvised } from './locator'
+import { type LocatorEntry, ObjectLocator, SPAN_SENTINEL, offsetKey, singleReadAdvised } from './locator'
+import { WalkIndex, scanCommitRun } from './commit-run'
+import { indexOf, type ObjectIndex } from './object-index'
 import {
   type GitObject,
   PACK_TYPE,
@@ -66,6 +69,12 @@ const READ_AHEAD_BLOCKS = 64
  */
 export const READ_AHEAD_SEQUENTIAL = 3
 
+/** A block a {@link readAheadSource} holds: where it starts in its pack, and its bytes. */
+export interface HeldBlock {
+  readonly start: number
+  readonly bytes: Uint8Array
+}
+
 /**
  * A {@link PackSource} that fetches aligned {@link READ_AHEAD_BLOCK}-byte blocks and serves
  * every range inside one from memory — for walks that read many small neighbouring objects.
@@ -75,17 +84,23 @@ export const READ_AHEAD_SEQUENTIAL = 3
  * commits cost one ranged GET (or chunk query) per commit. Through this it costs one per block,
  * a few hundred commits each. Ranges that span blocks, packs of unknown size, and blocks that
  * fail to load go straight to `inner`, so nothing it could read before becomes unreadable.
- * Every object read through it is still hash-checked by the reader.
+ * Every object read through it is still hash-checked by the reader. `heldBlock` hands a walk the
+ * block it read an object from, to find the commits after it ({@link scanCommitRun}).
  */
-export function readAheadSource(inner: PackSource, block = READ_AHEAD_BLOCK, maxBlocks = READ_AHEAD_BLOCKS, ahead = 0): PackSource {
+export function readAheadSource(
+  inner: PackSource,
+  block = READ_AHEAD_BLOCK,
+  maxBlocks = READ_AHEAD_BLOCKS,
+  ahead = 0,
+): PackSource & { heldBlock(packRef: number, offset: number, copy: number | undefined): Promise<HeldBlock> | undefined } {
   const blocks = new Map<string, Promise<Uint8Array>>()
   /** Per pack copy, the block the last read asked for (a read of the next one is a sequential run). */
   const lastBlock = new Map<string, number>()
+  // A single-copy pack reads the same bytes whether or not a copy is named: one key, so the
+  // reader pinning copy 0 after its first verified object does not refetch the block.
+  const copyKeyOf = (packRef: number, copy: number | undefined): string => `${packRef}:${(inner.copyCount?.(packRef) ?? 1) === 1 ? 0 : copy ?? ''}`
   const blockOf = (packRef: number, index: number, size: number, copy: number | undefined, demand = true): Promise<Uint8Array> => {
-    // A single-copy pack reads the same bytes whether or not a copy is named: one key, so the
-    // reader pinning copy 0 after its first verified object does not refetch the block.
-    const single = (inner.copyCount?.(packRef) ?? 1) === 1
-    const copyKey = `${packRef}:${single ? 0 : copy ?? ''}`
+    const copyKey = copyKeyOf(packRef, copy)
     const key = `${copyKey}:${index}`
     if (demand && ahead > 0) {
       // Reads running through the pack in order: ask for the next blocks now, side by side.
@@ -134,6 +149,11 @@ export function readAheadSource(inner: PackSource, block = READ_AHEAD_BLOCK, max
         if (isTransportError(e) || (e as { corrupt?: unknown } | null)?.corrupt === true) throw e
       }
       return inner.fetchRange(packRef, start, end, copy)
+    },
+    /** The block holding pack offset `offset`, if one was read (or is being read); nothing is fetched. */
+    heldBlock(packRef, offset, copy) {
+      const index = Math.floor(offset / block)
+      return blocks.get(`${copyKeyOf(packRef, copy)}:${index}`)?.then((bytes) => ({ start: index * block, bytes }))
     },
     ...(inner.copyCount ? { copyCount: (packRef: number) => inner.copyCount?.(packRef) ?? 1 } : {}),
     ...(inner.sizeOf ? { sizeOf: (packRef: number) => inner.sizeOf?.(packRef) } : {}),
@@ -255,7 +275,6 @@ export interface BrowseReaderOptions {
 
 /** The memos a reader and its {@link BrowseReader.forView} siblings share. */
 interface ReaderCaches {
-  offsetIndex: Map<string, LocatorEntry> | null
   readonly objectsByOid: ObjectLru
   readonly objectsByAddr: ObjectLru
   readonly copyOf: Map<number, number>
@@ -284,6 +303,25 @@ function checkStoredLength(entry: LocatorEntry, maxBytes: number): void {
 
 /** Bytes that hold any pack entry header (type, size varint, OFS offset or REF oid). */
 const ENTRY_HEAD_BYTES = 32
+
+/**
+ * A pack entry to decode: an index row, or a delta's OFS base found by its address alone
+ * (`bounded`), when the index is not held whole to say how long the base is. A bounded entry's
+ * `length` is only how far it can reach (to the delta that names it, which comes after it).
+ */
+type PackEntry = LocatorEntry & { readonly bounded?: true }
+
+/** A bounded entry's first read: its header, and the whole of a small object. */
+const BOUNDED_FIRST_READ = 4096
+
+/**
+ * The most bytes a zlib stream of `size` inflated bytes occupies, from any encoder that, as
+ * zlib, miniz and libdeflate all do, picks the smallest of stored, fixed and dynamic blocks:
+ * fixed codes cost at most 9 bits a byte, plus the header, block and trailer overhead.
+ */
+function zlibMaxBytes(size: number): number {
+  return size + Math.ceil(size / 8) + 64
+}
 
 /**
  * Delta-chain steps {@link BrowseReader.objectType} follows: git caps `pack.depth` at 4095, so
@@ -334,10 +372,10 @@ class ObjectLru {
   }
 }
 
-/** High-level browse reader over one repo's objectLocator + pack source. */
+/** High-level browse reader over one repo's object index + pack source. */
 export class BrowseReader {
   /**
-   * `offsetIndex`: built on first use. `objectsByOid`: the verified whole-object memo, keyed by
+   * `objectsByOid`: the verified whole-object memo, keyed by
    * lowercase OID hex. `objectsByAddr`: the decoded-entry memo keyed `(packRef, offset)`, where
    * repeated delta-base work lands. `copyOf`: the copy each pack is read from (forge-v2 packs have
    * one per writer); it starts at the top-ranked copy and moves on only when an object read
@@ -345,16 +383,19 @@ export class BrowseReader {
    * object is kept.
    */
   private readonly caches: ReaderCaches
+  /** The object index, shared by this reader's {@link forView} siblings (and its offset map with it). */
+  private readonly index: ObjectIndex
 
   constructor(
-    private readonly locator: ObjectLocator,
+    locator: ObjectLocator | ObjectIndex,
     private readonly packs: PackSource,
     private readonly opts: BrowseReaderOptions = {},
     /** The view whose reads this reader reports ({@link forView}); none for a shared reader. */
     private readonly view?: string,
     caches?: ReaderCaches,
   ) {
-    this.caches = caches ?? { offsetIndex: null, objectsByOid: new ObjectLru(), objectsByAddr: new ObjectLru(), copyOf: new Map() }
+    this.index = indexOf(locator)
+    this.caches = caches ?? { objectsByOid: new ObjectLru(), objectsByAddr: new ObjectLru(), copyOf: new Map() }
   }
 
   private get objectsByOid(): ObjectLru {
@@ -366,12 +407,6 @@ export class BrowseReader {
   private get copyOf(): Map<number, number> {
     return this.caches.copyOf
   }
-  private get offsetIndex(): Map<string, LocatorEntry> | null {
-    return this.caches.offsetIndex
-  }
-  private set offsetIndex(index: Map<string, LocatorEntry> | null) {
-    this.caches.offsetIndex = index
-  }
 
   /**
    * This reader for one view of a page (L-18): the same objects and memos, but every object it
@@ -379,7 +414,7 @@ export class BrowseReader {
    * served it, and a view the viewer left (a history walk still running) is told apart.
    */
   forView(view: string): BrowseReader {
-    return new BrowseReader(this.locator, this.packs, this.opts, view, this.caches)
+    return new BrowseReader(this.index, this.packs, this.opts, view, this.caches)
   }
 
   /**
@@ -414,25 +449,65 @@ export class BrowseReader {
    */
   forHistoryWalk(): BrowseReader & { flush(): void } {
     const verdicts = this.opts.onObject ? new BatchedVerdicts(this.opts.onObject) : null
+    const source = readAheadSource(this.packs, READ_AHEAD_BLOCK, READ_AHEAD_BLOCKS, READ_AHEAD_SEQUENTIAL)
+    // An index read a slice at a time would cost the walk a query per commit: it learns the
+    // commits after each one it reads from the block it read it from instead (QW3-001).
+    const walkIndex = this.index.inMemory ? null : new WalkIndex(this.index)
     const walker = new BrowseReader(
-      this.locator,
-      readAheadSource(this.packs, READ_AHEAD_BLOCK, READ_AHEAD_BLOCKS, READ_AHEAD_SEQUENTIAL),
+      walkIndex ?? this.index,
+      source,
       { ...this.opts, ...(verdicts ? { onObject: (v: ObjectVerdict) => verdicts.note(v) } : {}) },
       this.view,
       // The same object memos: what the walk verified, the page does not read again.
       this.caches,
     )
+    if (walkIndex !== null) {
+      walker.afterCommit = async (entry) => {
+        const next = entry.offset + entry.length
+        // Only the block the commit was just read from, which is in memory: the next one may still
+        // be on its way, and the walk is not held up for it (its next lookup asks the index).
+        if (Math.floor(next / READ_AHEAD_BLOCK) !== Math.floor(entry.offset / READ_AHEAD_BLOCK)) return
+        if (walkIndex.knows(entry.packRef, next)) return
+        // Read before the copy was pinned (the first object of a pack) or after: either key.
+        const held = source.heldBlock(entry.packRef, entry.offset, walker.copyOf.get(entry.packRef)) ?? source.heldBlock(entry.packRef, entry.offset, undefined)
+        const block = await held?.catch(() => undefined)
+        if (block !== undefined) walkIndex.learn(scanCommitRun(block.bytes, block.start, next, entry.packRef))
+      }
+    }
     return Object.assign(walker, { flush: () => verdicts?.flush() })
   }
 
+  /** Told of every commit this reader reads fresh, at its entry: a history walk learns from it. */
+  private afterCommit: ((entry: LocatorEntry) => Promise<void>) | undefined
+
   /** How many objects the locator indexes (git's automatic abbreviation length grows with it). */
   get objectCount(): number {
-    return this.locator.count
+    return this.index.count
   }
 
   /** OIDs starting with a hex `prefix` ({@link ObjectLocator.findByPrefix}). */
-  findByPrefix(prefix: string, limit?: number): string[] {
-    return this.locator.findByPrefix(prefix, limit)
+  async findByPrefix(prefix: string, limit?: number): Promise<string[]> {
+    return this.index.findByPrefix(prefix, limit).catch((e: unknown) => {
+      throw this.indexFailure(e)
+    })
+  }
+
+  /**
+   * Read the whole object index now, where it is read a slice at a time: for a walk about to look
+   * up nearly every object (every file of a tree, for Go to file and the language bar), which
+   * would otherwise read it slice by slice.
+   */
+  preloadIndex(): Promise<void> {
+    return this.index.preload().catch((e: unknown) => {
+      throw this.indexFailure(e)
+    })
+  }
+
+  /** An index read that failed: classified as a pack read is, and an outage noted (L-10). */
+  private indexFailure(e: unknown): unknown {
+    const tagged = tagFetchFailure(e)
+    if (readFailure(tagged) === 'transport') this.opts.onUnreachable?.()
+    return tagged
   }
 
   /** Whether some of the repo's packs are missing from this reader (a partial clone). */
@@ -450,15 +525,15 @@ export class BrowseReader {
    * Headers are not hash-checked: callers that act on an object read it ({@link readObject}).
    */
   async objectType(oidHex: string): Promise<GitObject['type'] | null> {
-    const entry = this.locate(oidHex)
     const cached = this.objectsByOid.get(oidHex.toLowerCase())
     if (cached !== undefined) {
-      if (entry !== null) this.noteRead(entry.packRef)
+      this.noteHeld(oidHex)
       return cached.type
     }
+    const entry = await this.locate(oidHex)
     if (entry === null) return null
     this.noteRead(entry.packRef)
-    let e = entry
+    let e: PackEntry = entry
     // A base seen before is a cycle (a hostile pack): fail at once, not after the whole budget.
     const seen = new Set<string>()
     for (let step = 0; step <= DELTA_WALK_MAX; step++) {
@@ -469,16 +544,13 @@ export class BrowseReader {
       const h = parseObjHeader(head, 0)
       if (h.type === PACK_TYPE.OFS_DELTA) {
         const [rel] = parseOfsBase(head, h.after)
-        if (this.offsetIndex === null) this.offsetIndex = this.locator.buildOffsetIndex()
-        const base = this.offsetIndex.get(offsetKey(e.packRef, e.offset - rel))
-        if (base === undefined) throw new Error(`base object at pack ${e.packRef} offset ${e.offset - rel} not in locator`)
-        e = base
+        e = this.entryAt(e, rel)
       } else if (h.type === PACK_TYPE.REF_DELTA) {
         if (head.length < h.after + 20) throw new Error('truncated REF_DELTA base oid')
         const baseOid = bytesToHex(head.subarray(h.after, h.after + 20))
         const known = this.objectsByOid.get(baseOid)
         if (known !== undefined) return known.type
-        const base = this.locate(baseOid)
+        const base = await this.locate(baseOid)
         if (base === null) throw this.missing(baseOid)
         this.noteRead(base.packRef)
         e = base
@@ -496,7 +568,7 @@ export class BrowseReader {
    * Not hash-checked (only the whole object can be): use it to classify, never to show.
    */
   async blobPrefix(oidHex: string, bytes: number): Promise<Uint8Array | null> {
-    const entry = this.locate(oidHex)
+    const entry = await this.locate(oidHex)
     if (entry === null) return null
     const cached = this.objectsByOid.get(oidHex.toLowerCase())
     if (cached !== undefined) return cached.type === 'blob' ? cached.bytes.subarray(0, bytes) : null
@@ -515,8 +587,35 @@ export class BrowseReader {
   }
 
   /** Look up a raw locator entry by OID hex (or null if absent). */
-  locate(oidHex: string): LocatorEntry | null {
-    return this.locator.lookup(hexToBytes(oidHex))
+  async locate(oidHex: string): Promise<LocatorEntry | null> {
+    try {
+      return await this.index.lookup(hexToBytes(oidHex))
+    } catch (e) {
+      throw this.indexFailure(e)
+    }
+  }
+
+  /**
+   * A memoized object served again: its pack is reported to `onRead` when the index can say
+   * which without a read (it can: the read that memoized it looked the object up).
+   */
+  private noteHeld(oidHex: string): void {
+    const entry = this.index.peek(hexToBytes(oidHex))
+    if (entry != null) this.noteRead(entry.packRef)
+  }
+
+  /**
+   * The OFS base of delta entry `e`, `rel` bytes before it in the same pack: its index row when
+   * the index holds that pack's rows in memory, else an entry bounded by the delta (a base sits
+   * wholly before the delta that names it), whose header says how much of that to read.
+   */
+  private entryAt(e: PackEntry, rel: number): PackEntry {
+    const offset = e.offset - rel
+    if (rel <= 0 || offset < 0) throw new Error(`OFS base of pack ${e.packRef} offset ${e.offset} is out of range`)
+    const known = this.index.atOffset(e.packRef, offset)
+    if (known === null) throw new Error(`base object at pack ${e.packRef} offset ${offset} not in locator`)
+    if (known !== undefined) return known
+    return { packRef: e.packRef, offset, length: rel, deltaChainSpan: SPAN_SENTINEL, deltaDepth: 0, bounded: true }
   }
 
   /**
@@ -537,18 +636,18 @@ export class BrowseReader {
   private async readBounded(oidHex: string, limits: Limits): Promise<GitObject> {
     const oidKey = oidHex.toLowerCase()
     const cached = this.objectsByOid.get(oidKey)
-    const entry = this.locate(oidHex)
     if (cached !== undefined) {
       const obj = withinLimit(cached, limits.item)
-      if (entry !== null) this.noteRead(entry.packRef)
+      this.noteHeld(oidHex)
       return obj
     }
 
+    const entry = await this.locate(oidHex)
     if (entry === null) {
       const fresher = await this.opts.onMiss?.(oidHex)
       // The retry keeps this read's limits (a README image stays capped on the fresher reader).
       // The fresher reader reads for this reader's view (its places still count for the page).
-      if (fresher != null && fresher !== this && fresher.locate(oidHex) !== null) {
+      if (fresher != null && fresher !== this && (await fresher.locate(oidHex)) !== null) {
         return (this.view === undefined ? fresher : fresher.forView(this.view)).readBounded(oidHex, limits)
       }
       throw this.missing(oidHex)
@@ -557,6 +656,7 @@ export class BrowseReader {
     const obj = await this.readVerified(entry, oidKey, limits)
     this.objectsByOid.set(oidKey, obj)
     this.noteRead(entry.packRef)
+    if (obj.type === 'commit') await this.afterCommit?.(entry)
     return obj
   }
 
@@ -565,7 +665,8 @@ export class BrowseReader {
    * suspect has its header read first, so one that declares too much costs ~32 bytes, not
    * its whole length (per copy tried).
    */
-  private async fetchEntry(e: LocatorEntry, maxBytes: number, copy: number | undefined): Promise<Uint8Array> {
+  private async fetchEntry(e: PackEntry, maxBytes: number, copy: number | undefined): Promise<Uint8Array> {
+    if (e.bounded === true) return this.fetchBounded(e, maxBytes, copy)
     checkStoredLength(e, maxBytes)
     if (maxBytes !== Infinity && e.length > maxBytes * 1.001 + 64) {
       const head = await this.fetchRange(e.packRef, e.offset, e.offset + Math.min(ENTRY_HEAD_BYTES, e.length), copy)
@@ -575,6 +676,26 @@ export class BrowseReader {
       if (size > (isDelta ? deltaMaxBytes(maxBytes) : maxBytes)) throw new ObjectTooLargeError(size, maxBytes)
     }
     return this.fetchRange(e.packRef, e.offset, e.offset + e.length, copy)
+  }
+
+  /**
+   * A {@link PackEntry} known only by its address (`bounded`): its header first (with the whole
+   * of a small object), whose declared size bounds how many bytes the rest can take
+   * ({@link zlibMaxBytes}); then those, never past the delta that named it.
+   */
+  private async fetchBounded(e: PackEntry, maxBytes: number, copy: number | undefined): Promise<Uint8Array> {
+    const head = await this.fetchRange(e.packRef, e.offset, e.offset + Math.min(BOUNDED_FIRST_READ, e.length), copy)
+    const h = parseObjHeader(head, 0)
+    const isDelta = h.type === PACK_TYPE.OFS_DELTA || h.type === PACK_TYPE.REF_DELTA
+    if (h.size > (isDelta ? deltaMaxBytes(maxBytes) : maxBytes)) throw new ObjectTooLargeError(h.size, maxBytes)
+    // After the type and size: an OFS base's distance (at most 10 bytes) or a REF base's oid.
+    const need = Math.min(e.length, h.after + (h.type === PACK_TYPE.REF_DELTA ? 20 : 10) + zlibMaxBytes(h.size))
+    if (need <= head.length) return head
+    const rest = await this.fetchRange(e.packRef, e.offset + head.length, e.offset + need, copy)
+    const all = new Uint8Array(head.length + rest.length)
+    all.set(head)
+    all.set(rest, head.length)
+    return all
   }
 
   /**
@@ -643,7 +764,7 @@ export class BrowseReader {
       const slice = await this.fetchRange(entry.packRef, end - entry.deltaChainSpan, end, copy)
       return reconstructFromSpan(entry, slice, limits.item, limits.base)
     }
-    const walk = async (e: LocatorEntry, limit: number): Promise<GitObject> => {
+    const walk = async (e: PackEntry, limit: number): Promise<GitObject> => {
       const self = await this.fetchEntry(e, limit, copy)
       const h = parseObjHeader(self, 0)
       switch (h.type) {
@@ -654,10 +775,7 @@ export class BrowseReader {
           return { type: objTypeFromCode(h.type), bytes: inflateZlib(self, h.after, h.size, limit) }
         case PACK_TYPE.OFS_DELTA: {
           const [rel, dpos] = parseOfsBase(self, h.after)
-          if (this.offsetIndex === null) this.offsetIndex = this.locator.buildOffsetIndex()
-          const baseEntry = this.offsetIndex.get(offsetKey(e.packRef, e.offset - rel))
-          if (baseEntry === undefined) throw new Error(`base object at pack ${e.packRef} offset ${e.offset - rel} not in locator`)
-          const base = await walk(baseEntry, limits.base)
+          const base = await walk(this.entryAt(e, rel), limits.base)
           return { type: base.type, bytes: inflateDelta(base.bytes, self, dpos, h.size, limit) }
         }
         case PACK_TYPE.REF_DELTA: {
@@ -684,7 +802,7 @@ export class BrowseReader {
    * bytes, resolve its immediate base individually (OFS by offset via the locator's offset
    * index, REF by OID), and apply. Avoids the single-span over-fetch (root tree 212×).
    */
-  private async decodeEntry(entry: LocatorEntry, maxBytes: number, limits: Limits): Promise<GitObject> {
+  private async decodeEntry(entry: PackEntry, maxBytes: number, limits: Limits): Promise<GitObject> {
     // Keyed by the copy too: bytes decoded from one writer's copy must not stand in for
     // another's once a bad copy has been skipped.
     const addrKey = `${offsetKey(entry.packRef, entry.offset)}:${this.copyOf.get(entry.packRef) ?? 0}`
@@ -696,7 +814,7 @@ export class BrowseReader {
   }
 
   /** `maxBytes` bounds this entry and `limits.base` its delta bases, at any depth. */
-  private async decodeEntryUncached(entry: LocatorEntry, maxBytes: number, limits: Limits): Promise<GitObject> {
+  private async decodeEntryUncached(entry: PackEntry, maxBytes: number, limits: Limits): Promise<GitObject> {
     const packRef = entry.packRef
     const self = await this.fetchEntry(entry, maxBytes, this.copyOf.get(packRef))
     const h = parseObjHeader(self, 0)
@@ -709,7 +827,8 @@ export class BrowseReader {
         return { type: objTypeFromCode(h.type), bytes: inflateZlib(self, h.after, h.size, maxBytes) }
       case PACK_TYPE.OFS_DELTA: {
         const [rel, dpos] = parseOfsBase(self, h.after)
-        const base = await this.decodeByOffset(packRef, entry.offset - rel, limits)
+        // An OFS base is always in the referencing object's own pack.
+        const base = await this.decodeEntry(this.entryAt(entry, rel), limits.base, limits)
         return { type: base.type, bytes: inflateDelta(base.bytes, self, dpos, h.size, maxBytes) }
       }
       case PACK_TYPE.REF_DELTA: {
@@ -722,17 +841,8 @@ export class BrowseReader {
     }
   }
 
-  private async decodeByOffset(packRef: number, off: number, limits: Limits): Promise<GitObject> {
-    if (this.offsetIndex === null) this.offsetIndex = this.locator.buildOffsetIndex()
-    // Keyed by (packRef, offset): offsets repeat across packs, and an OFS base is always
-    // in the referencing object's own pack.
-    const e = this.offsetIndex.get(offsetKey(packRef, off))
-    if (e === undefined) throw new Error(`base object at pack ${packRef} offset ${off} not in locator`)
-    return this.decodeEntry(e, limits.base, limits)
-  }
-
   private async decodeByOid(oidHex: string, limits: Limits): Promise<GitObject> {
-    const e = this.locator.lookup(hexToBytes(oidHex))
+    const e = await this.locate(oidHex)
     // A base this reader does not index: the same "missing object" as a direct read of it.
     if (e === null) throw this.missing(oidHex)
     const base = await this.decodeEntry(e, limits.base, limits)

@@ -178,7 +178,7 @@ describe('RepoImage (review of #82)', () => {
 
   it('refuses a blob over the cap even when its stored size is small (delta-compressed)', async () => {
     const { reader, tipOid, oids } = await imageRepo([{ name: 'big.png', delta: { base: png(1024), size: IMAGE_CAP + MIB } }])
-    expect(reader.locate(oids['big.png'] as string)?.length).toBeLessThan(4096)
+    expect((await reader.locate(oids["big.png"] as string))?.length).toBeLessThan(4096)
     const read = vi.spyOn(reader, 'readObject')
     await render(<MarkdownView source="![big](big.png)" images="auto" repo={repoContext(reader, tipOid)} />)
     await settle()
