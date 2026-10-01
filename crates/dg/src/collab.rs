@@ -19,7 +19,8 @@ use serde_json::json;
 
 use forge_core::keyring::PrivateSigner;
 use forge_core::members::{
-    awaiting_consent, check_role_for, doc_type, ConsentService, MemberReader, MemberService,
+    awaiting_consent, check_grant, check_role_for, doc_type, ConsentService, MemberReader,
+    MemberService,
 };
 use forge_core::rules::v2::{Role, Visibility};
 use forge_core::user_error::{codes, UserError};
@@ -166,6 +167,8 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     // `member` is an identity id or a DPNS name; resolve it once so every check and write
     // below sees a plain identity id.
     let member: &str = &resolve_identity(client, member, "member").await?;
+    // The owner cannot take triage or reader (as the web refuses it).
+    check_grant(handle, member, role)?;
     let signer = crate::keys::signer(&s);
     // The member's consent comes first (checked before any cost prompt or key work), unless
     // they already hold the role: re-running an add to finish its key wrap needs none. A
@@ -569,7 +572,15 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
             .await
     };
     ctx.emit(
-        json!({ "count": rows.len(), "members": rows, "ownerId": handle.owner_id() }),
+        // `roles: true`: each member's `role` is its real role (maintainer, writer, triage or
+        // reader). An older dg listed triage and reader documents as "writer"; a consumer that
+        // trusts writers (forge-runner) refuses a list without the marker.
+        json!({
+            "count": rows.len(),
+            "members": rows,
+            "ownerId": handle.owner_id(),
+            "roles": true,
+        }),
         || {
             println!("{} member(s) of {}:", members.len(), handle.display());
             for m in &members {

@@ -508,12 +508,7 @@ impl Keyring {
 
     /// The reader's role now.
     pub fn reader_role(&self) -> Option<Role> {
-        let me = platform::encode_identifier(self.reader);
-        self.members
-            .iter()
-            .filter(|m| m.identity_id == me)
-            .map(|m| m.role)
-            .min()
+        crate::members::best_role(&self.members, &platform::encode_identifier(self.reader))
     }
 
     /// Epochs with a wrap to the reader that it could not open.

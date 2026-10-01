@@ -101,18 +101,27 @@ pub fn stamp_claimed_role(
     }
 }
 
-/// The least role an `event` of `kind` needs as a member write: a writer for retarget (8),
-/// review dismiss (15), head update (16), pin and unpin (19, 20) and policy bypass (23) (the
-/// contract's `t_triageKinds` needs `r` 1), triage for every other kind.
+/// The `event` kinds the contract's `t_triageKinds` refuses below `r` 1: retarget (8), review
+/// dismiss (15), head update (16), pin and unpin (19, 20) and policy bypass (23). A deny-list:
+/// every other kind, an unknown or future one included, is open to triage.
+pub const WRITER_ONLY_EVENT_KINDS: [u64; 6] = [8, 15, 16, 19, 20, 23];
+
+/// The least role an `event` of stored `kind` needs as a member write: a writer for
+/// [`WRITER_ONLY_EVENT_KINDS`], triage for every other kind (unknown ones included). Hides
+/// (24, 25) are maintainer-gated elsewhere (`asMaintainer`, RC2 MOD).
+#[must_use]
+pub fn event_code_needs(kind: u64) -> Role {
+    if WRITER_ONLY_EVENT_KINDS.contains(&kind) {
+        Role::Writer
+    } else {
+        Role::Triage
+    }
+}
+
+/// [`event_code_needs`] for a known [`crate::rules::EventKind`].
 #[must_use]
 pub fn event_needs(kind: crate::rules::EventKind) -> Role {
-    use crate::rules::EventKind as K;
-    match kind {
-        K::Retarget | K::ReviewDismiss | K::HeadUpdate | K::Pin | K::Unpin | K::PolicyBypass => {
-            Role::Writer
-        }
-        _ => Role::Triage,
-    }
+    event_code_needs(crate::collab::event_kind_to_u64(kind))
 }
 
 /// The least role a member `transition` of `kind` needs: a writer for merge, draft and ready
@@ -159,6 +168,28 @@ pub fn role_limits(role: Role, repo: &RepoRef) -> Option<String> {
     }
 }
 
+/// Refuse a grant of `role` to `member` the clients do not make: a reader on a public
+/// repository ([`check_role_for`]), and the repo owner giving itself a triage or reader
+/// `writer` document (the owner already holds every right through its ownership and its
+/// maintainer document; forge-web refuses it too).
+pub fn check_grant(repo: &RepoRef, member: &str, role: Role) -> Result<()> {
+    check_role_for(repo, role)?;
+    if member == repo.owner_id() && matches!(role, Role::Triage | Role::Reader) {
+        return Err(UserError::new(
+            codes::REJECTED,
+            format!(
+                "you own {}: the owner cannot take the {role} role",
+                repo.display()
+            ),
+        )
+        .cause("the owner holds every right through its ownership and maintainer document")
+        .fix("add the owner as a maintainer or writer, or give the role to another identity")
+        .note("nothing was written")
+        .into());
+    }
+    Ok(())
+}
+
 /// Refuse a reader role on a public repository: everyone can already read it, and a reader
 /// can write nothing a non-member cannot (a client rule; consensus admits the document).
 pub fn check_role_for(repo: &RepoRef, role: Role) -> Result<()> {
@@ -194,13 +225,18 @@ pub struct Member {
 impl Member {
     /// A fetched membership document as a membership: `doc_role` is [`Role::Maintainer`] for
     /// a `maintainer` document, any other role for a `writer` document, whose own `role` then
-    /// decides (absent: writer; an out-of-range code, which consensus admits none of, is
-    /// skipped).
+    /// decides (absent: writer; a value that is not an integer, or an out-of-range code, which
+    /// consensus admits none of, is skipped).
     pub fn from_doc(doc: &FetchedDocument, doc_role: Role) -> Option<Self> {
         let member = doc.field_bytes32("memberId")?;
         let role = match doc_role {
             Role::Maintainer => Role::Maintainer,
-            _ => Role::from_writer_role_code(doc.field_u64(WRITER_ROLE))?,
+            // Absent: a writer. Present but not an integer, or out of range: no role at all
+            // (as forge-web `writerRoleOf`), never read as a writer.
+            _ => match doc.fields.get(WRITER_ROLE) {
+                None => Role::Writer,
+                Some(v) => Role::from_writer_role_code(Some(v.as_u64()?))?,
+            },
         };
         Some(Self {
             identity_id: platform::encode_identifier(member),
@@ -296,6 +332,58 @@ async fn doc_naming(
     Ok(docs.into_iter().next())
 }
 
+/// A role change of `member` from `from` to `to` that stopped after its delete landed
+/// (`deleted`), or may have (its delete failed: a timeout may still land): the member has no
+/// membership now, and the error says how to finish the change, or how to make their removal
+/// final.
+fn role_change_interrupted(
+    repo: &RepoRef,
+    member: &str,
+    from: Role,
+    to: Role,
+    cause: &Error,
+    deleted: bool,
+) -> Error {
+    let repo_name = repo.display();
+    let (headline, state) = if deleted {
+        (
+            format!(
+                "{member}'s {from} document of {repo_name} was deleted, but the {to} document \
+                 was not written"
+            ),
+            format!("{member} currently has no membership of {repo_name}"),
+        )
+    } else {
+        (
+            format!(
+                "changing {member}'s role in {repo_name} from {from} to {to} stopped at the \
+                 delete of the {from} document, which may still land"
+            ),
+            format!(
+                "{member} may currently have no membership of {repo_name}: `dg collab list \
+                 {repo_name}` shows whether the {from} document is gone"
+            ),
+        )
+    };
+    let finish = format!(
+        "run `dg collab add {repo_name} {member} --role {to}` again to finish the role change"
+    );
+    let mut u = UserError::new(codes::REJECTED, headline)
+        .cause(cause.to_string())
+        .fix(finish);
+    u = if repo.visibility == crate::rules::v2::Visibility::Private {
+        u.fix(format!(
+            "or, if {member} should not be re-added, run `dg collab remove {repo_name} {member}` \
+             (or `dg repo keys repair {repo_name}`) so the key rotates away from them"
+        ))
+    } else {
+        u.fix(format!(
+            "or, if {member} should not be re-added, leave them removed"
+        ))
+    };
+    u.note(state).into()
+}
+
 /// The refusal of a grant to `member`, who has not consented to `repo` yet.
 pub fn awaiting_consent(repo: &RepoRef, member: &str) -> Error {
     UserError::new(
@@ -372,6 +460,11 @@ impl<'a> MemberReader<'a> {
         Ok(consent_doc(self.client, repo, identity).await?.is_some())
     }
 
+    /// `identity`'s best current role in `repo` ([`best_role`] over [`Self::roles_of`]).
+    pub async fn best_role(&self, repo: &RepoRef, identity: &str) -> Result<Option<Role>> {
+        Ok(best_role(&self.roles_of(repo, identity).await?, identity))
+    }
+
     /// `identity`'s current membership documents in `repo` (at most one `maintainer` and one
     /// `writer`).
     pub async fn roles_of(&self, repo: &RepoRef, identity: &str) -> Result<Vec<Member>> {
@@ -432,7 +525,7 @@ impl<'a> MemberService<'a> {
     /// ([`check_role_for`]).
     pub async fn grant(&self, repo: &RepoRef, member: &str, role: Role) -> Result<Member> {
         self.require_owner(repo)?;
-        check_role_for(repo, role)?;
+        check_grant(repo, member, role)?;
         // Consensus checks `memberId` is an identity; checking here gives a clear error.
         self.client
             .fetch_identity(member)
@@ -476,9 +569,16 @@ impl<'a> MemberService<'a> {
         // is unique, and the document is immutable).
         let changed_from = existing.as_ref().map(|old| old.role);
         if let Some(old) = existing {
-            self.engine()?
+            // A failed delete (a timeout included) may still have landed: say so.
+            if let Err(e) = self
+                .engine()?
                 .delete_document(&core, doc_type(role), &old.document_id)
-                .await?;
+                .await
+            {
+                return Err(role_change_interrupted(
+                    repo, member, old.role, role, &e, false,
+                ));
+            }
         }
         let document_id = match self
             .engine()?
@@ -489,37 +589,37 @@ impl<'a> MemberService<'a> {
             // A concurrent grant won the unique index (or a node has not applied the delete
             // yet): read it back, and succeed only if it grants the role asked for.
             Err(Error::DuplicateUniqueIndex(_)) => {
-                return match reader.role_doc(repo, member, role).await? {
-                    Some(m) if m.role == role => Ok(m),
-                    Some(m) => Err(Error::Config(format!(
+                return match reader.role_doc(repo, member, role).await {
+                    Ok(Some(m)) if m.role == role => Ok(m),
+                    Ok(Some(m)) => Err(Error::Config(format!(
                         "{member} holds a {} document of {} now, not {role}: run the add again",
                         m.role,
                         repo.display()
                     ))),
-                    None => Err(Error::NotFound),
+                    Ok(None) => Err(match changed_from {
+                        Some(from) => role_change_interrupted(
+                            repo,
+                            member,
+                            from,
+                            role,
+                            &Error::NotFound,
+                            true,
+                        ),
+                        None => Error::NotFound,
+                    }),
+                    Err(e) => Err(match changed_from {
+                        Some(from) => role_change_interrupted(repo, member, from, role, &e, true),
+                        None => e,
+                    }),
                 }
             }
+            // The old document is gone and the new one is not written: the member has no
+            // role until the add runs again.
             Err(e) => {
-                let Some(from) = changed_from else {
-                    return Err(e);
-                };
-                // The old document is gone and the new one is not written: the member has no
-                // role until the add runs again.
-                return Err(UserError::new(
-                    codes::REJECTED,
-                    format!(
-                        "{member}'s {from} document of {} was deleted, but the {role} document \
-                         was not written",
-                        repo.display()
-                    ),
-                )
-                .cause(e.to_string())
-                .fix(format!(
-                    "run `dg collab add {} {member} --role {role}` again to finish the role change",
-                    repo.display()
-                ))
-                .note(format!("until then {member} is not a member"))
-                .into());
+                return Err(match changed_from {
+                    Some(from) => role_change_interrupted(repo, member, from, role, &e, true),
+                    None => e,
+                })
             }
         };
         Ok(Member {
@@ -619,37 +719,16 @@ impl<'a> ConsentService<'a> {
     }
 }
 
-/// The advisory push pre-check's verdict for `pusher` against `members`: `None` when the
-/// pusher is a maintainer or role-1 writer (consensus will admit the write), else the refusal
-/// to show (a triage member or reader is told what their role allows).
-///
-/// Advisory only: consensus (`ownerRefersTo`, whose writer leaf proves `role == r`, and a
-/// push claims `r` 1) is the authority. This exists so a non-member learns why before a pack
-/// is built and chunk writes are refused one by one.
-pub fn push_denied_reason(members: &[Member], pusher: &str, repo: &RepoRef) -> Option<String> {
-    let best = members
+/// `identity`'s best role among `members` (maintainer, writer, triage, reader), if it holds
+/// any. Writes are judged by it: a maintainer who also holds a triage document is a
+/// maintainer.
+#[must_use]
+pub fn best_role(members: &[Member], identity: &str) -> Option<Role> {
+    members
         .iter()
-        .filter(|m| m.identity_id == pusher)
+        .filter(|m| m.identity_id == identity)
         .map(|m| m.role)
-        .min();
-    match best {
-        Some(Role::Maintainer | Role::Writer) => return None,
-        Some(role) => {
-            return role_limits(role, repo).map(|why| {
-                format!(
-                    "{why} — ask its owner to run `dg collab add {} {pusher} --role writer`",
-                    repo.display()
-                )
-            })
-        }
-        None => {}
-    }
-    Some(format!(
-        "you are not a writer of {repo} — run `dg collab accept {repo}` and ask its owner to \
-         run `dg collab add {repo} {pusher} --role writer`, or push to your own repo (`dg repo \
-         create <name>`) and open a pull request",
-        repo = repo.display()
-    ))
+        .min()
 }
 
 #[cfg(test)]
@@ -678,26 +757,19 @@ mod tests {
     }
 
     #[test]
-    fn a_member_passes_the_precheck_and_a_stranger_is_pointed_at_collab_add() {
+    fn the_best_role_is_the_highest_document_held() {
         let members = [
             member("bob", Role::Writer, 10),
             member("alice", Role::Maintainer, 1),
+            member("both", Role::Triage, 10),
+            member("both", Role::Maintainer, 20),
         ];
-        assert_eq!(push_denied_reason(&members, "bob", &repo()), None);
-        assert_eq!(push_denied_reason(&members, "alice", &repo()), None);
-        let why = push_denied_reason(&members, "carol", &repo()).unwrap();
-        assert!(why.contains("not a writer of alice/proj"), "{why}");
-        assert!(
-            why.contains("dg collab add alice/proj carol --role writer"),
-            "{why}"
-        );
-    }
-
-    #[test]
-    fn a_revoked_member_is_simply_absent() {
+        assert_eq!(best_role(&members, "bob"), Some(Role::Writer));
+        assert_eq!(best_role(&members, "alice"), Some(Role::Maintainer));
+        // A triage member who is also a maintainer writes as the maintainer.
+        assert_eq!(best_role(&members, "both"), Some(Role::Maintainer));
         // Revoke deletes the document, so the list no longer names them.
-        let members = [member("alice", Role::Maintainer, 1)];
-        assert!(push_denied_reason(&members, "bob", &repo()).is_some());
+        assert_eq!(best_role(&members, "carol"), None);
     }
 
     #[test]
@@ -768,6 +840,17 @@ mod tests {
         assert_eq!(of(Some(2)), Some(Role::Triage));
         assert_eq!(of(Some(3)), Some(Role::Reader));
         assert_eq!(of(Some(4)), None, "no role consensus admits");
+        assert_eq!(of(Some(0)), None);
+        // Present but not an integer: skipped, never read as a writer.
+        let mut text = writer_doc(None);
+        text.fields
+            .insert(WRITER_ROLE.to_string(), FieldValue::text("writer"));
+        assert_eq!(Member::from_doc(&text, Role::Writer), None);
+        let mut negative = writer_doc(None);
+        negative
+            .fields
+            .insert(WRITER_ROLE.to_string(), FieldValue::signed(-1));
+        assert_eq!(Member::from_doc(&negative, Role::Writer), None);
         // A maintainer document is a maintainer whatever else it carries.
         let m = Member::from_doc(&writer_doc(Some(2)), Role::Maintainer).unwrap();
         assert_eq!(m.role, Role::Maintainer);
@@ -795,19 +878,6 @@ mod tests {
         assert_eq!(claimed_role(Some(Role::Reader), false), 3);
         // A non-member claims 1 (consensus refuses it for want of an operand).
         assert_eq!(claimed_role(None, false), 1);
-        assert_eq!(
-            ROLE_GATED_TYPES,
-            [
-                "refUpdate",
-                "packManifest",
-                "chunk",
-                "checkRun",
-                "label",
-                "milestone",
-                "transition",
-                "event"
-            ]
-        );
     }
 
     #[test]
@@ -845,6 +915,15 @@ mod tests {
         ] {
             assert_eq!(event_needs(k), Role::Triage, "{k:?}");
         }
+        // Every code outside the deny-list is open to triage, unknown ones included.
+        for code in 0..64u64 {
+            let want = if matches!(code, 8 | 15 | 16 | 19 | 20 | 23) {
+                Role::Writer
+            } else {
+                Role::Triage
+            };
+            assert_eq!(event_code_needs(code), want, "kind {code}");
+        }
         // e_mergeOid: merge, draft, ready (13, 14, 15) need r 1.
         for kind in crate::rules::v2::TRANSITION_KINDS {
             let want = if matches!(kind, 13..=15) {
@@ -868,6 +947,22 @@ mod tests {
     }
 
     #[test]
+    fn the_owner_cannot_take_triage_or_reader() {
+        for role in [Role::Triage, Role::Reader] {
+            let e = check_grant(&private_repo(), "alice", role)
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("the owner cannot take"), "{e}");
+            assert!(check_grant(&private_repo(), "bob", role).is_ok());
+        }
+        for role in [Role::Maintainer, Role::Writer] {
+            assert!(check_grant(&repo(), "alice", role).is_ok());
+        }
+        // A reader on a public repository is refused for anyone.
+        assert!(check_grant(&repo(), "bob", Role::Reader).is_err());
+    }
+
+    #[test]
     fn a_reader_is_for_private_repositories_only() {
         let e = check_role_for(&repo(), Role::Reader)
             .unwrap_err()
@@ -880,14 +975,8 @@ mod tests {
     }
 
     #[test]
-    fn triage_and_readers_are_refused_a_push_with_what_their_role_allows() {
-        let members = [
-            member("tri", Role::Triage, 10),
-            member("rdr", Role::Reader, 10),
-            member("both", Role::Triage, 10),
-            member("both", Role::Maintainer, 20),
-        ];
-        let tri = push_denied_reason(&members, "tri", &repo()).unwrap();
+    fn triage_and_readers_are_told_what_their_role_allows() {
+        let tri = role_limits(Role::Triage, &repo()).unwrap();
         assert!(
             tri.contains(
                 "you are a triage member of alice/proj: triage can close, reopen and lock"
@@ -895,12 +984,9 @@ mod tests {
             "{tri}"
         );
         assert!(tri.contains("cannot push, merge"), "{tri}");
-        assert!(tri.contains("--role writer"), "{tri}");
-        let rdr = push_denied_reason(&members, "rdr", &private_repo()).unwrap();
+        let rdr = role_limits(Role::Reader, &private_repo()).unwrap();
         assert!(rdr.contains("you are a reader of alice/proj"), "{rdr}");
         assert!(rdr.contains("cannot change state"), "{rdr}");
-        // The best role counts: a triage member who is also a maintainer pushes.
-        assert_eq!(push_denied_reason(&members, "both", &repo()), None);
         assert_eq!(role_limits(Role::Writer, &repo()), None);
         assert_eq!(role_limits(Role::Maintainer, &repo()), None);
     }

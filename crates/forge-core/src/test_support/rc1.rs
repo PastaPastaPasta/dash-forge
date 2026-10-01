@@ -459,14 +459,7 @@ mod builders {
             props.insert(AS_MEMBER.to_string(), FieldValue::identifier(OWNER));
         }
         // RC2 member roles: the `r` the write claims (`Collab::write`), as a role-1 writer.
-        let role = (by == By::Member).then_some(crate::rules::v2::Role::Writer);
-        if let Some(r) = crate::collab::v2::claimed_role_for(doc_type, &props, role) {
-            props.insert(
-                crate::members::CLAIMED_ROLE.to_string(),
-                FieldValue::integer(r),
-            );
-        }
-        props
+        claimed(doc_type, props, (by == By::Member).then_some(Role::Writer))
     }
 
     /// `props` with the `r` a signer of `role` claims on a `doc_type` write

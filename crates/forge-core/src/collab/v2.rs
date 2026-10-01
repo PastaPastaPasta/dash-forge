@@ -1841,11 +1841,8 @@ pub fn gated_write(doc_type: &str, props: &BTreeMap<String, FieldValue>) -> Opti
             let kind = kind.and_then(|k| u8::try_from(k).ok()).unwrap_or(0);
             Some((members::transition_needs(kind), as_author))
         }
-        DOC_EVENT => Some((
-            kind.and_then(super::u64_to_event_kind)
-                .map_or(Role::Writer, members::event_needs),
-            false,
-        )),
+        // `t_triageKinds` is a deny-list: an unknown kind (or none) is open to triage.
+        DOC_EVENT => Some((kind.map_or(Role::Triage, members::event_code_needs), false)),
         DOC_LABEL | DOC_MILESTONE => Some((Role::Triage, false)),
         _ => None,
     }
@@ -1854,9 +1851,11 @@ pub fn gated_write(doc_type: &str, props: &BTreeMap<String, FieldValue>) -> Opti
 /// The `r` a `doc_type` write with `props` by a signer of `role` claims (RC2 member roles,
 /// [`members::claimed_role`]): `None` for a type without it ([`members::ROLE_GATED_TYPES`]).
 /// The push types and `checkRun` always claim 1; an author's transition (`asAuthor` > 0)
-/// claims 1, whatever the signer's role.
+/// claims 1, whatever the signer's role. [`Collab::write`] stamps the same value; the tests
+/// build documents with it.
+#[cfg(test)]
 #[must_use]
-pub fn claimed_role_for(
+pub(crate) fn claimed_role_for(
     doc_type: &str,
     props: &BTreeMap<String, FieldValue>,
     role: Option<Role>,
@@ -1886,13 +1885,30 @@ pub fn role_refusal(
     Some(Error::NotPermitted {
         action: action.to_string(),
         reason: match role {
-            Some(r) => members::role_limits(r, repo).unwrap_or_else(|| {
-                format!("you are a {r} of {}; this needs a {need}", repo.display())
-            }),
+            Some(r) => match members::role_limits(r, repo) {
+                // A maintainer-only action: what the role allows, and what it needs.
+                Some(limits) if needs == Role::Maintainer => {
+                    format!("{limits}; this needs a maintainer")
+                }
+                Some(limits) => limits,
+                None => format!("you are a {r} of {}; this needs a {need}", repo.display()),
+            },
             None => format!("you are not a member of {}", repo.display()),
         },
         needs: need.to_string(),
     })
+}
+
+/// [`role_refusal`] for a member only: `None` for a non-member (whose refusal, if any, is
+/// another one: not a member, or not the author).
+pub fn member_role_refusal(
+    role: Option<Role>,
+    needs: Role,
+    repo: &RepoRef,
+    action: &str,
+) -> Option<Error> {
+    role?;
+    role_refusal(role, needs, repo, action)
 }
 
 /// Why no gate admits an event of `kind` on `target` from a signer of `role` ([`kind_route`]
@@ -1906,11 +1922,7 @@ pub fn kind_refusal(
     kind: EventKind,
     action: String,
 ) -> Error {
-    if let Some(e) = role
-        .is_some()
-        .then(|| role_refusal(role, members::event_needs(kind), repo, &action))
-        .flatten()
-    {
+    if let Some(e) = member_role_refusal(role, members::event_needs(kind), repo, &action) {
         return e;
     }
     Error::NotPermitted {
@@ -2516,15 +2528,14 @@ impl<'a> Collab<'a> {
         let mut props = props;
         if let Some((needs, as_author)) = gated_write(doc_type, &props) {
             let role = self.cached_role(repo).await?;
-            if !as_author && role.is_some() && precheck_enabled() {
-                if let Some(e) = role_refusal(role, needs, repo, &format!("write this {doc_type}"))
-                {
+            if !as_author && precheck_enabled() {
+                let action = format!("write this {doc_type}");
+                if let Some(e) = member_role_refusal(role, needs, repo, &action) {
                     return Err(e);
                 }
             }
-            if let Some(r) = claimed_role_for(doc_type, &props, role) {
-                members::stamp_claimed_role(contract, doc_type, &mut props, r);
-            }
+            let r = members::claimed_role(role, as_author);
+            members::stamp_claimed_role(contract, doc_type, &mut props, r);
         }
         // A private repo's member `event` carries its `value` (label or milestone name, dismiss
         // reason, assignee, retarget base) sealed (§7): every event write passes here.
@@ -2698,12 +2709,7 @@ impl<'a> Collab<'a> {
     /// The signer's best current role in `repo`, if any.
     pub async fn signer_role(&self, repo: &RepoRef) -> Result<Option<Role>> {
         let me = self.signer_id()?;
-        Ok(MemberReader::new(self.client)
-            .roles_of(repo, &me)
-            .await?
-            .iter()
-            .map(|m| m.role)
-            .min())
+        MemberReader::new(self.client).best_role(repo, &me).await
     }
 
     /// Refuse, before signing, a write the signer's role cannot make. `needs` is the least
@@ -4616,14 +4622,15 @@ impl<'a> Collab<'a> {
         // A triage member's merge, draft or ready of another's PR, or a reader's state change
         // of another's target: refused with what the role allows (consensus: `e_mergeOid`, the
         // writer leaf's `role == r`).
-        if actor != Actor::Author && role.is_some() && precheck_enabled() {
+        if actor != Actor::Author && precheck_enabled() {
             let what = format!(
                 "{} {} #{}",
                 action_verb(action),
                 target.kind.noun(),
                 target.number
             );
-            if let Some(e) = role_refusal(role, members::state_action_needs(action), repo, &what) {
+            let needs = members::state_action_needs(action);
+            if let Some(e) = member_role_refusal(role, needs, repo, &what) {
                 return Err(e);
             }
         }
@@ -7093,6 +7100,13 @@ mod tests {
         assert!(refused(Role::Maintainer, Role::Triage).is_none());
         let policy = refused(Role::Writer, Role::Maintainer).unwrap();
         assert!(policy.contains("this needs a maintainer"), "{policy}");
+        for role in [Role::Triage, Role::Reader] {
+            let policy = refused(role, Role::Maintainer).unwrap();
+            assert!(
+                policy.contains("cannot") && policy.ends_with("; this needs a maintainer"),
+                "{policy}"
+            );
+        }
         let none = role_refusal(None, Role::Triage, &repo, "x")
             .unwrap()
             .to_string();
@@ -7136,6 +7150,15 @@ mod tests {
         assert_eq!(
             gated_write(DOC_EVENT, &props(4, 0)),
             Some((Role::Triage, false))
+        );
+        // A deny-list, as the contract: an unknown or future kind is open to triage.
+        assert_eq!(
+            gated_write(DOC_EVENT, &props(99, 0)),
+            Some((Role::Triage, false))
+        );
+        assert_eq!(
+            gated_write(DOC_EVENT, &props(23, 0)),
+            Some((Role::Writer, false))
         );
         assert_eq!(
             gated_write(DOC_LABEL, &BTreeMap::new()),

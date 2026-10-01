@@ -2778,30 +2778,21 @@ async fn write_access_denied(
     specs: &[PushSpec],
 ) -> Option<Denied> {
     let me = conn.identity().id();
-    let members = MemberReader::new(&conn.client)
-        .roles_of(&conn.repo, &me)
+    let role = MemberReader::new(&conn.client)
+        .best_role(&conn.repo, &me)
         .await
         .ok()?;
-    if members.is_empty() {
-        return Some(write_denied(&conn.repo.display(), &me));
-    }
-    // RC2 member roles: a triage member or reader cannot push (every push document claims
-    // `r` 1, and their writer document's role is 2 or 3).
-    if let Some(role) = members
-        .iter()
-        .map(|m| m.role)
-        .min()
-        .filter(|r| !r.is_approver())
-    {
-        return Some(role_denied(&conn.repo, &me, role));
-    }
-    // A writer (not a maintainer) cannot update a protected ref: its `protectedRefUpdate`
-    // is maintainer-only at consensus. Refuse before the pack is stored and paid for.
-    if members
-        .iter()
-        .any(|m| m.role == forge_core::rules::v2::Role::Maintainer)
-    {
-        return None;
+    match role {
+        None => return Some(write_denied(&conn.repo.display(), &me)),
+        // RC2 member roles: a triage member or reader cannot push (every push document claims
+        // `r` 1, and their writer document's role is 2 or 3).
+        Some(role) if !role.is_approver() => return Some(role_denied(&conn.repo, &me, role)),
+        // A maintainer may update any ref.
+        Some(forge_core::rules::v2::Role::Maintainer) => return None,
+        // A writer (not a maintainer) cannot update a protected ref: its
+        // `protectedRefUpdate` is maintainer-only at consensus. Refuse before the pack is
+        // stored and paid for.
+        Some(_) => {}
     }
     let patterns = svc.protected_patterns(&conn.repo).await.ok()?;
     // Deletes too: a delete of a protected ref is a `protectedRefUpdate`.
@@ -2844,10 +2835,15 @@ fn role_denied(
     role: forge_core::rules::v2::Role,
 ) -> Denied {
     let display = repo.display();
+    let who = if role == forge_core::rules::v2::Role::Triage {
+        "a triage member"
+    } else {
+        "a reader"
+    };
     Denied {
         error: UserError::new(
             codes::NOT_A_WRITER,
-            format!("push rejected: you are a {role} of {display}, not a writer"),
+            format!("push rejected: you are {who} of {display}, not a writer"),
         )
         .cause(forge_core::members::role_limits(role, repo).unwrap_or_default())
         .fix(format!(
@@ -3047,7 +3043,7 @@ mod tests {
         is_head, list_lines, oid_to_bytes, packs_unreadable, protected_denied, resolve_network,
         settle_ref_writes, write_denied, Planned, PushOutcome, PushSpec, Unreadable,
     };
-    use super::{default_branch_hint, history_tip_landed, PushHistory};
+    use super::{default_branch_hint, history_tip_landed, role_denied, PushHistory};
 
     fn planned(dst: &str) -> Planned {
         Planned {
@@ -3574,6 +3570,37 @@ mod tests {
             "{text}"
         );
         assert!(text.lines().all(|l| l.starts_with("dash: ")), "{text}");
+    }
+
+    #[test]
+    fn a_triage_member_or_reader_is_told_what_the_role_allows() {
+        use forge_core::rules::v2::{Role, Visibility};
+        let repo = forge_core::scope::RepoRef {
+            forge: forge_core::network::ForgeIds::test_forge(),
+            repo_id: "R".into(),
+            owner_id: "owner".into(),
+            name: "repo".into(),
+            visibility: Visibility::Private,
+        };
+        let tri = role_denied(&repo, "me", Role::Triage);
+        assert_eq!(tri.wire, "triage members cannot push");
+        let text = tri.error.render("dash: ", false);
+        assert!(
+            text.contains("push rejected: you are a triage member of owner/repo, not a writer"),
+            "{text}"
+        );
+        assert!(
+            text.contains("triage can close, reopen and lock") && text.contains("cannot push"),
+            "{text}"
+        );
+        assert!(
+            text.contains("dg collab add owner/repo me --role writer"),
+            "{text}"
+        );
+        let rdr = role_denied(&repo, "me", Role::Reader);
+        assert_eq!(rdr.wire, "readers cannot push");
+        let text = rdr.error.render("dash: ", false);
+        assert!(text.contains("you are a reader of owner/repo"), "{text}");
     }
 
     fn git_devnet() -> NetworkSettings {

@@ -233,12 +233,7 @@ pub async fn create(
 /// proved member, and membership needs the mirror identity's own consent first.
 pub async fn require_member(client: &PlatformClient, repo: &RepoRef, signer: &str) -> Result<Role> {
     let reader = MemberReader::new(client);
-    let role = reader
-        .roles_of(repo, signer)
-        .await?
-        .iter()
-        .map(|m| m.role)
-        .min();
+    let role = reader.best_role(repo, signer).await?;
     if let Some(role) = role.filter(|r| r.is_approver()) {
         return Ok(role);
     }

@@ -694,21 +694,16 @@ impl<'a> CheckRuns<'a> {
             return Ok(());
         }
         let role = members::MemberReader::new(self.client)
-            .roles_of(repo, me)
-            .await?
-            .iter()
-            .map(|m| m.role)
-            .min();
-        if role.is_none_or(Role::is_approver) {
-            return Ok(());
-        }
-        Err(crate::collab::v2::role_refusal(
+            .best_role(repo, me)
+            .await?;
+        // A non-member is consensus's to refuse; a maintainer or writer passes.
+        crate::collab::v2::member_role_refusal(
             role,
             Role::Writer,
             repo,
             &format!("report check run {name}"),
         )
-        .unwrap_or(Error::Config("internal: no refusal".into())))
+        .map_or(Ok(()), Err)
     }
 
     /// Write what [`Self::plan`] decided. `report` is the one planned, perhaps with a log added

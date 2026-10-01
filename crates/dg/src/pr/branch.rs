@@ -127,14 +127,12 @@ async fn head_route(s: &Session, view: &PatchView, action: &str) -> Result<State
     )
     .ok_or_else(|| {
         // A triage member or reader who is not the author is told what the role allows.
-        if let Some(e) = role.and_then(|_| {
-            forge_core::collab::v2::role_refusal(
-                role,
-                forge_core::members::event_needs(EventKind::HeadUpdate),
-                &s.repo,
-                action,
-            )
-        }) {
+        if let Some(e) = forge_core::collab::v2::member_role_refusal(
+            role,
+            forge_core::members::event_needs(EventKind::HeadUpdate),
+            &s.repo,
+            action,
+        ) {
             return e.into();
         }
         forge_core::Error::NotPermitted {
