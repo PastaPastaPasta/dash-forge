@@ -486,7 +486,9 @@ async function reposById(
       { plainFallback: false },
     )
     ;({ repos: rows, pushesComplete } = reposOf(res, res.page, 0, network))
-    if (opts.ownerStars) ownerStars = ownerStarLookupOf(docsAt(res, subQueries.length - 1))
+    // A missing or wrong-kind sub-result is no lookup (every pair is read), not an empty one.
+    const lookup = res.subs[subQueries.length - 1]
+    if (opts.ownerStars && res.subs.length === subQueries.length && lookup?.kind === 'documents') ownerStars = ownerStarLookupOf(lookup.documents)
   } catch (e) {
     if (!isRefused(e)) throw e
     const plain = await queryDocumentsWithProof(sdk, { dataContractId: forge.core, documentTypeName: DOC.repo, where: [['$id', 'in', ids]], orderBy: [['$id', 'asc']], limit: ids.length })

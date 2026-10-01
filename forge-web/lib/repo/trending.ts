@@ -21,7 +21,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { ForgeIds } from '../deployments'
 import { STAR_BEAT_GRID, trendingWindow, type Window } from '../rules/parity'
 import { rankedDocuments, type RankedEntry, type RankedPage } from '../sdk'
-import { DOC } from './contract'
+import { DOC, asIdentifierString } from './contract'
 import { starShape } from './star-shape'
 import { hasStar } from './writes'
 
@@ -113,15 +113,20 @@ export const OWNER_STAR_LOOKUP_LIMIT = 100
  * <owners>`, in the same composite as the repos: Explore's Trending costs no request for it).
  */
 export interface OwnerStarLookup {
-  /** The `star` rows it returned (`$ownerId`, `repoId`). */
-  readonly stars: readonly { readonly $ownerId?: unknown; readonly repoId?: unknown }[]
-  /** Whether it returned every star of those owners; false when it hit {@link OWNER_STAR_LOOKUP_LIMIT}. */
+  /** The stars it returned, as `(owner id, repo id)` in base58. */
+  readonly stars: readonly { readonly ownerId: string; readonly repoId: string }[]
+  /**
+   * Whether it returned every star of those owners: false when it hit
+   * {@link OWNER_STAR_LOOKUP_LIMIT} or a row did not carry two identifiers (a shape it cannot
+   * be trusted on, so no absent pair is taken as unstarred).
+   */
   readonly complete: boolean
 }
 
-/** Whether `rows` (a `star` lookup's documents) saw every star of the owners it named. */
-export function ownerStarLookupOf(rows: OwnerStarLookup['stars']): OwnerStarLookup {
-  return { stars: rows, complete: rows.length < OWNER_STAR_LOOKUP_LIMIT }
+/** What `rows`, a `star` lookup's documents, saw of the owners' stars. */
+export function ownerStarLookupOf(rows: readonly Record<string, unknown>[]): OwnerStarLookup {
+  const stars = rows.map((r) => ({ ownerId: asIdentifierString(r['$ownerId']), repoId: asIdentifierString(r['repoId']) }))
+  return { stars: stars.filter((s) => s.ownerId !== '' && s.repoId !== ''), complete: rows.length < OWNER_STAR_LOOKUP_LIMIT && stars.every((s) => s.ownerId !== '' && s.repoId !== '') }
 }
 
 /**
@@ -141,7 +146,7 @@ export async function readOwnerStars(
   lookup: OwnerStarLookup | null = null,
 ): Promise<Set<string>> {
   const starred = new Set<string>()
-  const seen = new Set((lookup?.stars ?? []).map((s) => `${String(s.$ownerId)}/${String(s.repoId)}`))
+  const seen = new Set((lookup?.stars ?? []).map((s) => `${s.ownerId}/${s.repoId}`))
   const unsettled = pairs.filter(({ repoId, ownerId }) => {
     if (seen.has(`${ownerId}/${repoId}`)) {
       starred.add(repoId)
