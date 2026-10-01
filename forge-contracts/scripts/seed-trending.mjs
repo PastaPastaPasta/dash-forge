@@ -8,7 +8,7 @@
 //        --identity <A.identity.json> --identity <B.identity.json> --identity <C.identity.json> \
 //        [--network devnet --devnet-name bonsia] [--deployment <file>]
 //
-// Writes RC1 documents; needs `npm ci` in forge-contracts/sdk-v2 (evo-sdk 4.2.0-beta.7). The
+// Writes RC1 documents; needs `npm ci` in forge-contracts/sdk-v2 (evo-sdk 5.0.0-beta.1). The
 // network defaults to DASH_FORGE_NETWORK / DASH_FORGE_DEVNET_NAME, else devnet bonsia.
 //
 // Four identities, all minted for the run (`qa mint`), never the shared fixtures:

@@ -1,7 +1,7 @@
 // Register the forge-v2 contracts (forge-core, forge-collab, forge-community) in one PV14
 // contract group.
 //
-//   (cd forge-contracts/sdk-v2 && npm ci)           # @dashevo/evo-sdk@4.2.0-beta.7, pinned
+//   (cd forge-contracts/sdk-v2 && npm ci)           # @dashevo/evo-sdk@5.0.0-beta.1, pinned
 //   node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
 //        --network devnet --devnet-name bonsia [--addresses https://ip:1443,...] [--dry-run]
 //        [--only collab|community] [--force-new [--same-group]] [--update core]
@@ -73,7 +73,12 @@ import { createHash } from 'node:crypto';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
 // The pinned protocol-14 SDK lives in sdk-v2/ (`npm ci` there). The package is ESM-only.
-const EVO_SDK_ENTRY = join(ROOT, 'sdk-v2', 'node_modules', '@dashevo', 'evo-sdk', 'dist', 'evo-sdk.module.js');
+const EVO_SDK_DIR = join(ROOT, 'sdk-v2', 'node_modules', '@dashevo', 'evo-sdk');
+const EVO_SDK_ENTRY = join(EVO_SDK_DIR, 'dist', 'evo-sdk.module.js');
+/** `@dashevo/evo-sdk@<version>` as installed in sdk-v2/: what a deployment file records as `v2.sdk`. */
+export function installedEvoSdk() {
+  return `@dashevo/evo-sdk@${JSON.parse(readFileSync(join(EVO_SDK_DIR, 'package.json'), 'utf8')).version}`;
+}
 export async function loadEvoSdk() {
   if (!existsSync(EVO_SDK_ENTRY)) throw new Error('run `npm ci` in forge-contracts/sdk-v2 first');
   const evo = await import(pathToFileURL(EVO_SDK_ENTRY).href);
@@ -637,7 +642,7 @@ async function main() {
     v2.contractGroupId = groupIdFinal;
     v2.contractGroup = { id: groupIdFinal, name: GROUP.name, owner: ownerId, verifiedAt: new Date().toISOString() };
     v2.protocolVersion = PROTOCOL_VERSION;
-    v2.sdk = '@dashevo/evo-sdk@4.2.0-beta.7';
+    v2.sdk = installedEvoSdk();
     if (devnetName) v2.devnet = { name: devnetName, addresses: addresses ?? null };
     record();
     log(`contract group ${groupIdFinal} verified: owner ${ownerId}, every recorded contract enrolled`);

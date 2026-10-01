@@ -7,7 +7,7 @@
 //     [--repo issues-paging] [--count 112] [--assignee <identity id>] \
 //     [--network devnet --devnet-name bonsia] [--deployment <file>] [--pace-ms 700]
 //
-// Writes RC1 documents; needs `npm ci` in forge-contracts/sdk-v2 (evo-sdk 4.2.0-beta.7). The
+// Writes RC1 documents; needs `npm ci` in forge-contracts/sdk-v2 (evo-sdk 5.0.0-beta.1). The
 // network defaults to DASH_FORGE_NETWORK / DASH_FORGE_DEVNET_NAME, else devnet bonsia. The repo
 // is the identity's: when it does not exist yet the seed creates it (public, the owner its
 // maintainer), as `dg repo create issues-paging --storage platform` would.

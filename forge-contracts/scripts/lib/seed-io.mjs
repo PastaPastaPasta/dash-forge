@@ -84,7 +84,7 @@ export function resolveNetwork(a, env = process.env) {
 /**
  * The network the arguments name (`resolveNetwork`) and a connected SDK for it, with a writer
  * and a reader bound to it. `injected` is the SDK module to use (the offline chain), else the
- * pinned evo-sdk (4.2.0-beta.7, protocol 14). The reader waits `pace` ms between pages.
+ * pinned evo-sdk (5.0.0-beta.1, protocol 14). The reader waits `pace` ms between pages.
  *
  * The connection is not fixed: a quorum rotation the trusted connection's prefetched keys have
  * gone stale against, or a node-banning storm that leaves the SDK with none left, cannot be
