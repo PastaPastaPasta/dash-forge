@@ -138,6 +138,7 @@ Anyone with an identity and some credits can file an issue. Fees are the spam fl
 ```sh
 dg issue list   <owner>/<repo> [--state open|closed|all] [--label bug]... [--author me|<id|name>]
                 [--assignee me|<id|name>|none] [--search "crash #12"] [--limit 30] [--page 2]
+                [--include-hidden]
 dg issue view   <owner>/<repo> 12
 dg issue create <owner>/<repo> --title "Crash on empty input" --body "Steps: …"
 dg issue edit   <owner>/<repo> 12 --title "Crash on empty config" [--body … | --body-file notes.md]
@@ -196,13 +197,13 @@ dg issue view <owner>/<repo> 12 --show-hidden                            # read 
 
 Reasons are GitHub's: `spam`, `abuse`, `off-topic`, `outdated`, `resolved`, `duplicate`, or none. The ids come from `dg issue view --json` and `dg pr view --comments --json`. `dg` refuses a hide from someone who is not a maintainer before anything is signed.
 
-**What readers see.** On the web a hidden comment or review is one line, "A comment by bob was hidden by alice as spam · Show", in the timeline and in Files changed. A hidden issue or PR keeps its number; the web's Issues and Pull requests lists leave it out behind "N on this page hidden by maintainers · Show" (the Open and Closed counts do not change; `dg issue list` and `dg pr list` still list it), and its page opens behind a banner with "Show it anyway". `dg issue view` and `dg pr view` print the same one line unless you pass `--show-hidden`. The timeline records every hide and unhide that counts ("alice hid a comment by bob · spam"): they cannot be edited or deleted, so they are the record of who hid what.
+**What readers see.** On the web a hidden comment or review is one line, "A comment by bob was hidden by alice as spam · Show", in the timeline and in Files changed. A hidden issue or PR keeps its number; the web's Issues and Pull requests lists leave it out behind "N on this page hidden by maintainers · Show" (the Open and Closed counts do not change), and its page opens behind a banner with "Show it anyway". `dg issue list` and `dg pr list` leave it out the same way and end with "(2 hidden by maintainers on this page; --include-hidden shows them)"; `--include-hidden` lists it with "[hidden by alice as spam]" after the title, and `--json` gives each row a `hidden` field (`null`, or `by`, `reason`, `at`, `eventId`) and the page's `hiddenOmitted` count. The flag is meant for maintainers checking what was hidden, but anyone can use it: the hides are public. `dg issue view` and `dg pr view` print the same one line unless you pass `--show-hidden`. The timeline records every hide and unhide that counts ("alice hid a comment by bob · spam"): they cannot be edited or deleted, so they are the record of who hid what.
 
 **Who wins.** Any maintainer can hide or unhide. If the repository's owner hid or unhid something, the owner's latest decision stands whatever a maintainer does later, and only the owner can hide what the owner wrote; `dg` and the web refuse such a write before signing rather than spend credits on it. An inline comment hidden with its review shows again when the review is unhidden. A hide stays after its maintainer is removed (the network proved them a maintainer when they wrote it); unhide it to undo it.
 
 **A hidden review still counts.** Hiding is display only: an approval or a request for changes still counts toward the merge until a member dismisses it (`dg pr dismiss-review`, or **Dismiss** on the Reviewers card). Hiding an issue or PR does not close it either; the web's **Hide issue…** offers "Also close and lock it", which writes the close and the lock after the hide.
 
-**Limits.** A hidden post is still on Platform: anyone can read it with **Show**, `--show-hidden`, or any client that predates hiding. In a private repository the reason is encrypted like other event values; which item was hidden is not. Each hide costs about as much as a label (one small event). To stop a flood, lock the thread first, then hide what was already posted.
+**Limits.** A hidden post is still on Platform: anyone can read it with **Show**, `--show-hidden`, `--include-hidden`, or any client that predates hiding. In a private repository the reason is encrypted like other event values; which item was hidden is not. Each hide costs about as much as a label (one small event). To stop a flood, lock the thread first, then hide what was already posted.
 
 ---
 
@@ -262,7 +263,7 @@ PR numbers follow the same rule as issue numbers.
 **4. Review.** Reviewers fetch your commit straight from your repository:
 
 ```sh
-dg pr list     <owner>/project [--state open|closed|all]
+dg pr list     <owner>/project [--state open|closed|all] [--include-hidden]
 dg pr view     <owner>/project 7          # state, reviewers, approvals, reviews
 dg pr view     <owner>/project 7 --comments   # + threads under their file and line
 dg pr diff     <owner>/project 7          # fetches head and base, then git diff base...head

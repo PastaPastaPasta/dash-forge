@@ -9,7 +9,7 @@
 //! and current maintainers' ([`crate::rules::v2::hidden_items`]). Nothing is deleted: Platform v5
 //! cannot scope a delete of someone else's document to one repo.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::v2::{event_payload_props, Collab, Comment, EventPayload, Review, Target, TargetLog};
 use super::v2::{TargetKind, DOC_EVENT};
@@ -17,9 +17,9 @@ use crate::error::{Error, Result};
 use crate::members::MemberReader;
 use crate::platform::{self, FieldValue};
 use crate::rules::v2::{
-    hidden_items, hide_blocked, HiddenItems, HideBlock, HideScope, Role, ThreadItem,
+    hidden_items, hide_blocked, Hidden, HiddenItems, HideBlock, HideScope, Role, ThreadItem,
 };
-use crate::rules::EventKind;
+use crate::rules::{Event, EventKind};
 use crate::scope::RepoRef;
 
 /// forge-community `event.asMaintainer` (RC2 MOD): the writer's maintainer document, proved.
@@ -48,6 +48,55 @@ pub fn thread_items(
         })
         .collect();
     (comments, reviews)
+}
+
+/// Whose hides a reader of one repo counts: a [`HideScope`] without its thread, read once for a
+/// whole list page.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Hiders {
+    /// The repo's owner.
+    pub owner: String,
+    /// The repo's maintainers now (read only without `proved`).
+    pub maintainers: BTreeSet<String>,
+    /// Whether the contract proves a hide's maintainer (`event.asMaintainer`).
+    pub proved: bool,
+}
+
+impl Hiders {
+    /// The [`HideScope`] of thread `target`.
+    #[must_use]
+    pub fn scope(&self, target: &Target) -> HideScope {
+        HideScope {
+            thread_id: target.id.clone(),
+            thread_author: target.author.clone(),
+            owner: self.owner.clone(),
+            maintainers: self.maintainers.clone(),
+            proved: self.proved,
+        }
+    }
+}
+
+/// Whether `events` hold a hide or unhide of the whole thread (no `refId`): only then can a list
+/// row be hidden, and only then does a list read whose hides count (web `threadHidesOf`).
+#[must_use]
+pub fn has_thread_hides(events: &[Event]) -> bool {
+    events
+        .iter()
+        .any(|e| matches!(e.kind, EventKind::Hide | EventKind::Unhide) && e.ref_id.is_none())
+}
+
+/// The rows of a list page whose whole thread is hidden, by `$id`: each row's
+/// [`HiddenItems::thread`] by [`hidden_items`], without its comments and reviews (a list reads
+/// neither, and a thread's own hide does not depend on them). Web `hiddenRowIds`.
+#[must_use]
+pub fn hidden_threads_of(rows: &[(Target, &[Event])], hiders: &Hiders) -> BTreeMap<String, Hidden> {
+    rows.iter()
+        .filter(|(_, events)| has_thread_hides(events))
+        .filter_map(|(target, events)| {
+            let thread = hidden_items(events, &hiders.scope(target), &[], &[]).thread?;
+            Some((target.id.clone(), thread))
+        })
+        .collect()
 }
 
 impl Collab<'_> {
@@ -139,30 +188,49 @@ impl Collab<'_> {
         self.write(repo, &community, DOC_EVENT, props).await
     }
 
-    /// Who may hide in `target`, as a reader judges it. A failed read of the contract's proof or
-    /// of the members falls back to the stricter rule (no proof, no maintainers: the owner's hides
-    /// alone), so a reader never fails over it.
-    async fn hide_scope(&self, repo: &RepoRef, target: &Target) -> HideScope {
+    /// Whose hides a reader of `repo` counts. The proof is the forge-community contract, already
+    /// loaded by every read of the repo (no request); without it, one read of the maintainers. A
+    /// failed read of either falls back to the stricter rule (no proof, no maintainers: the
+    /// owner's hides alone), so a reader never fails over it.
+    async fn hiders(&self, repo: &RepoRef) -> Hiders {
         let proved = self.hides_proved(repo).await.unwrap_or(false);
         let maintainers: BTreeSet<String> = if proved {
             BTreeSet::new()
         } else {
             MemberReader::new(self.client())
-                .list(repo)
+                .maintainers(repo)
                 .await
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|m| m.role == Role::Maintainer)
                 .map(|m| m.identity_id)
                 .collect()
         };
-        HideScope {
-            thread_id: target.id.clone(),
-            thread_author: target.author.clone(),
+        Hiders {
             owner: repo.owner_id().to_string(),
             maintainers,
             proved,
         }
+    }
+
+    /// Who may hide in `target`, as a reader judges it ([`Self::hiders`]).
+    async fn hide_scope(&self, repo: &RepoRef, target: &Target) -> HideScope {
+        self.hiders(repo).await.scope(target)
+    }
+
+    /// The rows of a list page whose whole thread a maintainer hid ([`hidden_threads_of`]), from
+    /// each row's events as the list already read them. Reads nothing when no row holds a hide or
+    /// unhide of its thread; otherwise [`Self::hiders`] once for the page (no request where the
+    /// contract proves hides, else one read of the maintainers). Never an error.
+    pub async fn hidden_threads(
+        &self,
+        repo: &RepoRef,
+        rows: &[(Target, &[Event])],
+    ) -> BTreeMap<String, Hidden> {
+        if !rows.iter().any(|(_, events)| has_thread_hides(events)) {
+            return BTreeMap::new();
+        }
+        let hiders = self.hiders(repo).await;
+        hidden_threads_of(rows, &hiders)
     }
 
     /// What a reader collapses in `target` ([`hidden_items`]), from its log, comments and reviews
@@ -204,5 +272,101 @@ fn blocked_words(block: HideBlock, what: &str, repo: &RepoRef) -> String {
         }
         HideBlock::AlreadyHidden => format!("{what} is already hidden; nothing written"),
         HideBlock::NotHidden => format!("{what} is not hidden; nothing written"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::collab::v2::TargetKind;
+
+    fn target(id: &str, number: u32) -> Target {
+        Target {
+            kind: TargetKind::Issue,
+            id: id.into(),
+            number,
+            author: "bob".into(),
+        }
+    }
+    fn ev(id: &str, on: &str, kind: EventKind, actor: &str, at: u64) -> Event {
+        Event {
+            id: id.into(),
+            target_id: on.into(),
+            kind,
+            actor: actor.into(),
+            value: Some("spam".into()),
+            oid: None,
+            ref_id: None,
+            created_at: at,
+        }
+    }
+    fn hiders(proved: bool, maintainers: &[&str]) -> Hiders {
+        Hiders {
+            owner: "own".into(),
+            maintainers: maintainers.iter().map(|m| (*m).to_string()).collect(),
+            proved,
+        }
+    }
+
+    #[test]
+    fn a_thread_hide_hides_its_row_and_an_unhide_shows_it() {
+        let a = [ev("e1", "A", EventKind::Hide, "alice", 1)];
+        let b = [
+            ev("e2", "B", EventKind::Hide, "alice", 1),
+            ev("e3", "B", EventKind::Unhide, "carol", 2),
+        ];
+        let rows: [(Target, &[Event]); 3] = [
+            (target("A", 1), &a),
+            (target("B", 2), &b),
+            (target("C", 3), &[]),
+        ];
+        let got = hidden_threads_of(&rows, &hiders(true, &[]));
+        assert_eq!(got.keys().collect::<Vec<_>>(), ["A"]);
+        let h = &got["A"];
+        assert_eq!(
+            (
+                h.by.as_str(),
+                h.reason.as_deref(),
+                h.at,
+                h.event_id.as_str()
+            ),
+            ("alice", Some("spam"), 1, "e1")
+        );
+    }
+
+    #[test]
+    fn a_writers_hide_without_the_proof_is_ignored() {
+        let a = [ev("e1", "A", EventKind::Hide, "wendy", 1)];
+        let rows: [(Target, &[Event]); 1] = [(target("A", 1), &a)];
+        assert!(hidden_threads_of(&rows, &hiders(false, &["alice"])).is_empty());
+        assert!(hidden_threads_of(&rows, &hiders(false, &["wendy"])).contains_key("A"));
+        // with the proof consensus checked the writer at write time: it counts
+        assert!(hidden_threads_of(&rows, &hiders(true, &[])).contains_key("A"));
+    }
+
+    #[test]
+    fn only_a_hide_of_the_whole_thread_hides_a_row() {
+        let mut item = ev("e1", "A", EventKind::Hide, "own", 1);
+        item.ref_id = Some("c1".into());
+        assert!(!has_thread_hides(std::slice::from_ref(&item)));
+        let rows: [(Target, &[Event]); 1] = [(target("A", 1), std::slice::from_ref(&item))];
+        assert!(hidden_threads_of(&rows, &hiders(true, &[])).is_empty());
+        assert!(has_thread_hides(&[ev(
+            "e2",
+            "A",
+            EventKind::Unhide,
+            "own",
+            2
+        )]));
+    }
+
+    #[test]
+    fn the_owners_unhide_outranks_a_later_maintainer_hide() {
+        let a = [
+            ev("e1", "A", EventKind::Unhide, "own", 1),
+            ev("e2", "A", EventKind::Hide, "alice", 2),
+        ];
+        let rows: [(Target, &[Event]); 1] = [(target("A", 1), &a)];
+        assert!(hidden_threads_of(&rows, &hiders(true, &[])).is_empty());
     }
 }

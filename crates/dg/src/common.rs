@@ -337,6 +337,20 @@ pub async fn resolve_identity(client: &PlatformClient, who: &str, what: &str) ->
         .with_context(|| format!("resolving {what} {who}"))
 }
 
+/// DPNS names of who hid the listed rows, for the human list only (`--include-hidden`): no read
+/// in `--json` or when no listed row is hidden; a failed read shows the bare id.
+pub async fn hider_names<'a>(
+    ctx: &crate::context::Ctx,
+    client: &PlatformClient,
+    hides: impl Iterator<Item = &'a forge_core::rules::v2::Hidden>,
+) -> std::collections::BTreeMap<String, String> {
+    let ids: Vec<&str> = hides.map(|h| h.by.as_str()).collect();
+    if ctx.json || ids.is_empty() {
+        return std::collections::BTreeMap::new();
+    }
+    client.dpns_first_names(ids).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::{document_id_arg, looks_like_identity_id, RepoRef};

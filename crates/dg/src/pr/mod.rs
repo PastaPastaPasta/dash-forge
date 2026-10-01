@@ -79,7 +79,12 @@ pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
     check_id_args(cmd)?;
     match cmd {
         PrCommand::Create(args) => create(ctx, args).await,
-        PrCommand::List { repo, limit, state } => list(ctx, repo, *limit, *state).await,
+        PrCommand::List {
+            repo,
+            limit,
+            state,
+            include_hidden,
+        } => list(ctx, repo, *limit, *state, *include_hidden).await,
         PrCommand::View {
             repo,
             number,
@@ -719,7 +724,13 @@ fn same_head_and_base(v: &PatchView, source_id: &str, head_ref: &str, base: &str
 // list / view
 // ---------------------------------------------------------------------------
 
-async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::PrStateArg) -> Result<()> {
+async fn list(
+    ctx: &Ctx,
+    repo: &str,
+    limit: u32,
+    state: crate::PrStateArg,
+    include_hidden: bool,
+) -> Result<()> {
     let s = Reader::open(ctx, repo).await?;
     let handle = &s.repo;
     let collab = s.collab();
@@ -734,9 +745,24 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::PrStateArg) -> Re
         .collect();
     // The PRs the state filter left out, for the empty list's hint.
     let others = read - rows.len();
+    // RC2 MOD: the PRs a maintainer hid, from the events already read (the feed).
+    let threads: Vec<(forge_core::collab::v2::Target, &[forge_core::rules::Event])> = rows
+        .iter()
+        .map(|(v, _)| (v.patch.target(), v.log.events.as_slice()))
+        .collect();
+    let hides = collab.hidden_threads(handle, &threads).await;
+    let (rows, omitted) = crate::fmt::split_hidden(
+        rows,
+        &hides,
+        |(v, _)| v.patch.document_id.as_str(),
+        include_hidden,
+    );
+    let names =
+        crate::common::hider_names(ctx, &s.client, rows.iter().filter_map(|(_, h)| *h)).await;
+    let who = |id: &str| crate::fmt::with_name(id, &names);
     let json_rows: Vec<_> = rows
         .iter()
-        .map(|(v, a)| {
+        .map(|((v, a), h)| {
             json!({
                 "number": v.patch.number,
                 "title": v.patch.title,
@@ -752,13 +778,21 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::PrStateArg) -> Re
                 "draft": v.state.draft,
                 "approvals": a.approvers.len(),
                 "changesRequested": a.changes_requested.len(),
+                "hidden": crate::fmt::hidden_row_json(*h),
             })
         })
         .collect();
     ctx.emit(
-        json!({ "count": rows.len(), "prs": json_rows, "hidden": hidden, "truncated": more, "otherStates": others }),
+        json!({
+            "count": rows.len(),
+            "prs": json_rows,
+            "hidden": hidden,
+            "hiddenOmitted": omitted,
+            "truncated": more,
+            "otherStates": others,
+        }),
         || {
-            if rows.is_empty() {
+            if rows.is_empty() && omitted == 0 {
                 // Only the newest `--limit` were read: say so rather than "none".
                 let among = if more {
                     format!(" among the newest {read}")
@@ -773,22 +807,12 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::PrStateArg) -> Re
                     );
                 }
             }
-            for (v, a) in &rows {
-                let count = |mark: &str, n: usize| {
-                    if n == 0 {
-                        String::new()
-                    } else {
-                        format!("  {mark}{n}")
-                    }
-                };
-                let extra = count("✓", a.approvers.len()) + &count("✗", a.changes_requested.len());
-                println!(
-                    "#{:<4} {:<6} {}  ({}){extra}",
-                    v.patch.number,
-                    state_label(v),
-                    safe(&v.patch.title),
-                    short(&v.head)
-                );
+            for ((v, a), h) in &rows {
+                let hid = h.map(|h| crate::fmt::hidden_row_mark(h, &who));
+                println!("{}", pr_line(v, a, &hid.unwrap_or_default()));
+            }
+            if let Some(note) = crate::fmt::hidden_rows_note(omitted) {
+                println!("{note}");
             }
             if hidden > 0 {
                 println!("{}", crate::fmt::hidden_note(handle, hidden));
@@ -801,6 +825,27 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::PrStateArg) -> Re
         },
     );
     Ok(())
+}
+
+/// One `dg pr list` row: number, state, title, head, approvals and change requests, and `hid`,
+/// a hidden PR's mark (`--include-hidden`).
+fn pr_line(v: &PatchView, a: &forge_core::rules::v2::Approvals, hid: &str) -> String {
+    let count = |mark: &str, n: usize| {
+        if n == 0 {
+            String::new()
+        } else {
+            format!("  {mark}{n}")
+        }
+    };
+    let extra = count("✓", a.approvers.len()) + &count("✗", a.changes_requested.len());
+    format!(
+        "#{:<4} {:<6} {}  ({}){extra}{}",
+        v.patch.number,
+        state_label(v),
+        safe(&v.patch.title),
+        short(&v.head),
+        safe(hid)
+    )
 }
 
 /// A PR's reviews for `dg pr view --json`: stale when not on the current head, dismissed when

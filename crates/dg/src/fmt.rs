@@ -254,6 +254,18 @@ pub fn hidden_line(
     who: &dyn Fn(&str) -> String,
     shown: bool,
 ) -> String {
+    let by = hidden_by(h, who);
+    if shown {
+        format!("[{what} {by}; shown because of --show-hidden]")
+    } else {
+        format!("[{what} {by}; --show-hidden to read it]")
+    }
+}
+
+/// "hidden by alice as spam" (with " with its review" for an inline comment of a hidden review):
+/// the words [`hidden_line`] and a listed hidden issue or PR share.
+#[must_use]
+pub fn hidden_by(h: &forge_core::rules::v2::Hidden, who: &dyn Fn(&str) -> String) -> String {
     let reason = h
         .reason
         .as_deref()
@@ -264,12 +276,54 @@ pub fn hidden_line(
     } else {
         ""
     };
-    let by = who(&h.by);
-    if shown {
-        format!("[{what} hidden by {by}{reason}{via}; shown because of --show-hidden]")
-    } else {
-        format!("[{what} hidden by {by}{reason}{via}; --show-hidden to read it]")
+    format!("hidden by {}{reason}{via}", who(&h.by))
+}
+
+/// A list row a maintainer hid (`dg issue list` / `dg pr list --include-hidden`): its mark after
+/// the title, "[hidden by alice as spam]".
+#[must_use]
+pub fn hidden_row_mark(h: &forge_core::rules::v2::Hidden, who: &dyn Fn(&str) -> String) -> String {
+    format!("  [{}]", hidden_by(h, who))
+}
+
+/// `dg issue list` / `dg pr list --json`: a row's whole-thread hide (null when it has none).
+#[must_use]
+pub fn hidden_row_json(h: Option<&forge_core::rules::v2::Hidden>) -> Value {
+    h.map_or(
+        Value::Null,
+        |h| json!({ "by": h.by, "reason": h.reason, "at": h.at, "eventId": h.event_id }),
+    )
+}
+
+/// A list page's rows with each one's whole-thread hide (`hides`, by `$id` as `id` gives it),
+/// and how many were left out: a hidden row is kept, marked, only with `include`
+/// (`--include-hidden`), as the web's toggle shows it.
+pub fn split_hidden<T>(
+    page: impl IntoIterator<Item = T>,
+    hides: &std::collections::BTreeMap<String, forge_core::rules::v2::Hidden>,
+    id: impl Fn(&T) -> &str,
+    include: bool,
+) -> (Vec<(T, Option<&forge_core::rules::v2::Hidden>)>, usize) {
+    let mut omitted = 0;
+    let mut kept = Vec::new();
+    for row in page {
+        let hidden = hides.get(id(&row));
+        if hidden.is_some() && !include {
+            omitted += 1;
+        } else {
+            kept.push((row, hidden));
+        }
     }
+    (kept, omitted)
+}
+
+/// What a list page says when it left out rows maintainers hid (`omitted`, on this page only;
+/// nothing when none): how many, and the flag that shows them.
+#[must_use]
+pub fn hidden_rows_note(omitted: usize) -> Option<String> {
+    (omitted > 0).then(|| {
+        format!("({omitted} hidden by maintainers on this page; --include-hidden shows them)")
+    })
 }
 
 /// A hide or unhide event's timeline phrase (RC2 MOD): "hid <id> as spam", "unhid this".
@@ -393,6 +447,102 @@ mod tests {
             transition_route_text(forge_core::collab::v2::StateRoute::Member),
             "as a member (transition)"
         );
+    }
+
+    /// A list page's issues or PRs as `dg issue list` / `dg pr list` fold them: the rows'
+    /// thread hides by the shared fold, then left out or marked.
+    fn listed_hides(
+        include: bool,
+    ) -> (
+        Vec<(&'static str, Option<forge_core::rules::v2::Hidden>)>,
+        usize,
+    ) {
+        use forge_core::collab::moderation::{hidden_threads_of, Hiders};
+        use forge_core::collab::v2::{Target, TargetKind};
+        use forge_core::rules::{Event, EventKind};
+        let ev = |id: &str, on: &str, kind, actor: &str, at| Event {
+            id: id.into(),
+            target_id: on.into(),
+            kind,
+            actor: actor.into(),
+            value: Some("spam".into()),
+            oid: None,
+            ref_id: None,
+            created_at: at,
+        };
+        let target = |id: &str, number| Target {
+            kind: TargetKind::Issue,
+            id: id.into(),
+            number,
+            author: "bob".into(),
+        };
+        // A: hidden by a maintainer; B: hidden, then unhidden; C: a writer's hide (no proof);
+        // D: no events; E: hidden by the owner.
+        let a = [ev("e1", "A", EventKind::Hide, "alice", 1)];
+        let b = [
+            ev("e2", "B", EventKind::Hide, "alice", 1),
+            ev("e3", "B", EventKind::Unhide, "alice", 2),
+        ];
+        let c = [ev("e4", "C", EventKind::Hide, "wendy", 1)];
+        let e = [ev("e5", "E", EventKind::Hide, "own", 1)];
+        let rows: Vec<(Target, &[Event])> = vec![
+            (target("A", 1), &a),
+            (target("B", 2), &b),
+            (target("C", 3), &c),
+            (target("D", 4), &[]),
+            (target("E", 5), &e),
+        ];
+        let counted = Hiders {
+            owner: "own".into(),
+            maintainers: ["alice".to_string()].into(),
+            proved: false,
+        };
+        let hides = hidden_threads_of(&rows, &counted);
+        let (kept, omitted) = split_hidden(["A", "B", "C", "D", "E"], &hides, |r| r, include);
+        let kept = kept.into_iter().map(|(r, h)| (r, h.cloned())).collect();
+        (kept, omitted)
+    }
+
+    #[test]
+    fn a_list_leaves_out_what_maintainers_hid() {
+        let (kept, omitted) = listed_hides(false);
+        // an unhide after a hide shows B; a writer's hide without the proof does not hide C
+        assert_eq!(
+            kept.iter().map(|(r, _)| *r).collect::<Vec<_>>(),
+            ["B", "C", "D"]
+        );
+        assert!(kept.iter().all(|(_, h)| h.is_none()));
+        assert_eq!(omitted, 2);
+        assert_eq!(
+            hidden_rows_note(omitted).as_deref(),
+            Some("(2 hidden by maintainers on this page; --include-hidden shows them)")
+        );
+        assert_eq!(hidden_rows_note(0), None);
+    }
+
+    #[test]
+    fn include_hidden_marks_the_rows_it_shows() {
+        let (kept, omitted) = listed_hides(true);
+        assert_eq!(omitted, 0);
+        assert_eq!(kept.len(), 5);
+        let marked: Vec<_> = kept
+            .iter()
+            .filter_map(|(r, h)| h.as_ref().map(|h| (*r, h.by.as_str())))
+            .collect();
+        assert_eq!(marked, [("A", "alice"), ("E", "own")]);
+        let names: std::collections::BTreeMap<String, String> =
+            [("alice".to_string(), "alice.dash".to_string())].into();
+        let who = |id: &str| with_name(id, &names);
+        let a = kept[0].1.as_ref().expect("A is hidden");
+        assert_eq!(
+            hidden_row_mark(a, &who),
+            format!("  [hidden by {} as spam]", with_name("alice", &names))
+        );
+        assert_eq!(
+            hidden_row_json(Some(a)),
+            json!({ "by": "alice", "reason": "spam", "at": 1, "eventId": "e1" })
+        );
+        assert_eq!(hidden_row_json(None), Value::Null);
     }
 
     #[test]
