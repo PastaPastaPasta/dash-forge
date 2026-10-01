@@ -35,13 +35,16 @@ import { DOC, asIdentifierString, readMemberRepoIds, toRepoDoc, type RepoDoc } f
 import { starShape } from '../repo/star-shape'
 import {
   FUSED_READ_AHEAD,
+  OWNER_STAR_LOOKUP_LIMIT,
   fusedTrending,
+  ownerStarLookupOf,
   readMostForked,
   readMostStarred,
   readOwnerStars,
   readTrending,
   selfStarDecidable,
   trendingWindowOf,
+  type OwnerStarLookup,
   type TrendingWindow,
 } from '../repo/trending'
 import { MAX_TOPIC_CHARS, TOPIC_PATTERN } from '../repo/settings'
@@ -387,8 +390,10 @@ export interface RankedRepos {
  *
  * On a fused-star contract consensus no longer keeps private repos and owners' own stars out
  * of Trending, so the read takes {@link FUSED_READ_AHEAD} times the rows and filters them here
- * ({@link fusedTrending}): one more request per repo created inside the window, to see whether
- * its owner stars it.
+ * ({@link fusedTrending}). Whether an owner stars its own repo rides in the repos' composite
+ * (a lookup of the page owners' stars, `star.byOwner`), so Trending is still two requests; a
+ * lookup the node refused or cut short leaves the unsettled pairs to one read each
+ * ({@link readOwnerStars}).
  */
 export async function rankedRepos(
   sdk: EvoSDK,
@@ -409,12 +414,12 @@ export async function rankedRepos(
         : await readTrending(sdk, forge, kind, read)
   const ids = page.entries.map((e) => e.group).filter((id) => id !== '')
   if (ids.length === 0) return { repos: [], missing: 0, pushesComplete: true }
-  const { byId, pushesComplete } = await reposById(sdk, forge, network, ids)
+  const { byId, pushesComplete, ownerStars } = await reposById(sdk, forge, network, ids, { ownerStars: fused })
   const missing = ids.filter((id) => !byId.has(id)).length
   if (fused) {
     const window = trendingWindowOf(kind as TrendingWindow, Date.now())
     const young = [...byId.values()].filter((r) => selfStarDecidable(r, window))
-    const ownerStarred = await readOwnerStars(sdk, forge, young.map((r) => ({ repoId: r.key, ownerId: r.ownerId })))
+    const ownerStarred = await readOwnerStars(sdk, forge, young.map((r) => ({ repoId: r.key, ownerId: r.ownerId })), ownerStars)
     return { repos: fusedTrending(page.entries, byId, ownerStarred, limit), missing, pushesComplete }
   }
   const repos = page.entries.flatMap((e) => {
@@ -439,16 +444,32 @@ export async function discoverReposById(sdk: EvoSDK, ids: readonly string[], opt
 
 /**
  * Repos by id (at most {@link MAX_ROWS}) in one composite, with their star and issue counts,
- * owners' names and pushes; the plain proved read if the composite is refused.
+ * owners' names and pushes; the plain proved read if the composite is refused. With
+ * `ownerStars`, the composite also looks up the stars of the repos' owners (`star.byOwner`) for
+ * {@link readOwnerStars}; the result is null when that was not asked for or the composite was
+ * refused.
  */
 async function reposById(
   sdk: EvoSDK,
   forge: ForgeIds,
   network: Network,
   ids: readonly string[],
-): Promise<{ byId: Map<string, DiscoveredRepo>; pushesComplete: boolean }> {
+  opts: { ownerStars?: boolean } = {},
+): Promise<{ byId: Map<string, DiscoveredRepo>; pushesComplete: boolean; ownerStars: OwnerStarLookup | null }> {
   let rows: DiscoveredRepo[]
   let pushesComplete = true
+  let ownerStars: OwnerStarLookup | null = null
+  const subQueries = repoSubs(forge, network, 'page', Date.now() - PUSH_WINDOW_MS)
+  if (opts.ownerStars) {
+    subQueries.push({
+      dataContractId: forge.community,
+      documentType: DOC.star,
+      bind: { source: 'page', sourceProperty: '$ownerId', field: '$ownerId' },
+      // The page walks `$id` descending, and a bound lookup must walk the same way.
+      orderBy: [['$ownerId', 'desc']],
+      limit: OWNER_STAR_LOOKUP_LIMIT,
+    })
+  }
   try {
     const res = await queryComposite(
       sdk,
@@ -460,17 +481,18 @@ async function reposById(
         // direction is refused (and this would silently fall back to the plain read).
         orderBy: [['$id', 'desc']],
         limit: ids.length,
-        subQueries: repoSubs(forge, network, 'page', Date.now() - PUSH_WINDOW_MS),
+        subQueries,
       },
       { plainFallback: false },
     )
     ;({ repos: rows, pushesComplete } = reposOf(res, res.page, 0, network))
+    if (opts.ownerStars) ownerStars = ownerStarLookupOf(docsAt(res, subQueries.length - 1))
   } catch (e) {
     if (!isRefused(e)) throw e
     const plain = await queryDocumentsWithProof(sdk, { dataContractId: forge.core, documentTypeName: DOC.repo, where: [['$id', 'in', ids]], orderBy: [['$id', 'asc']], limit: ids.length })
     rows = plain.documents.map((d) => fromRepoDoc(toRepoDoc(d)))
   }
-  return { byId: new Map(rows.map((r) => [r.key, r])), pushesComplete }
+  return { byId: new Map(rows.map((r) => [r.key, r])), pushesComplete, ownerStars }
 }
 
 /** How many tagged repos a topic page shows (the newest tags). */

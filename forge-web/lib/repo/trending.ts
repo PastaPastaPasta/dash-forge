@@ -103,19 +103,55 @@ export function selfStarDecidable(repo: TrendingRepo, window: Window | null): bo
 const OWNER_STAR_PARALLEL = 6
 
 /**
+ * How many `star` rows the batched owner lookup asks for: the most one documents sub-query may
+ * return. Fewer rows back than this means the lookup saw every star of every owner it named.
+ */
+export const OWNER_STAR_LOOKUP_LIMIT = 100
+
+/**
+ * What one batched read of the stars of a set of owners saw (`star.byOwner`, `$ownerId in
+ * <owners>`, in the same composite as the repos: Explore's Trending costs no request for it).
+ */
+export interface OwnerStarLookup {
+  /** The `star` rows it returned (`$ownerId`, `repoId`). */
+  readonly stars: readonly { readonly $ownerId?: unknown; readonly repoId?: unknown }[]
+  /** Whether it returned every star of those owners; false when it hit {@link OWNER_STAR_LOOKUP_LIMIT}. */
+  readonly complete: boolean
+}
+
+/** Whether `rows` (a `star` lookup's documents) saw every star of the owners it named. */
+export function ownerStarLookupOf(rows: OwnerStarLookup['stars']): OwnerStarLookup {
+  return { stars: rows, complete: rows.length < OWNER_STAR_LOOKUP_LIMIT }
+}
+
+/**
  * The repos of `pairs` whose owner stars them now (`star.byOwner`, `$ownerId` then the terminal
- * `repoId`: one entry or none, v5 `book/src/drive/index-only-document-types.md:455-457`), a few
- * reads at a time. A pair whose read fails is left out, so its star counts as it was read.
+ * `repoId`: one entry or none, v5 `book/src/drive/index-only-document-types.md:455-457`).
+ *
+ * With `lookup` (the batched read of the owners' stars) nothing is requested here: a pair it
+ * shows is starred, and when it is `complete` any other is not. A pair it cannot settle (no
+ * lookup: the composite was refused; or it ran out of rows before the owner's stars ended) is
+ * read on its own, a few at a time, and one whose read fails is left out, so its star counts as
+ * it was read.
  */
 export async function readOwnerStars(
   sdk: EvoSDK,
   forge: ForgeIds,
   pairs: readonly { readonly repoId: string; readonly ownerId: string }[],
+  lookup: OwnerStarLookup | null = null,
 ): Promise<Set<string>> {
   const starred = new Set<string>()
-  for (let i = 0; i < pairs.length; i += OWNER_STAR_PARALLEL) {
+  const seen = new Set((lookup?.stars ?? []).map((s) => `${String(s.$ownerId)}/${String(s.repoId)}`))
+  const unsettled = pairs.filter(({ repoId, ownerId }) => {
+    if (seen.has(`${ownerId}/${repoId}`)) {
+      starred.add(repoId)
+      return false
+    }
+    return lookup === null || !lookup.complete
+  })
+  for (let i = 0; i < unsettled.length; i += OWNER_STAR_PARALLEL) {
     await Promise.all(
-      pairs.slice(i, i + OWNER_STAR_PARALLEL).map(({ repoId, ownerId }) =>
+      unsettled.slice(i, i + OWNER_STAR_PARALLEL).map(({ repoId, ownerId }) =>
         hasStar(sdk, forge, ownerId, repoId).then(
           (yes) => void (yes && starred.add(repoId)),
           // eslint-disable-next-line no-console
