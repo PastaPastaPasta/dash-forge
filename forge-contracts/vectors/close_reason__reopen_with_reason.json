@@ -1,0 +1,28 @@
+{
+  "name": "reopen_with_reason",
+  "description": "A reason on a reopen (kind 2) is ignored: the issue is open, so it has no close reason.",
+  "case": "close_reason",
+  "rules": "v2",
+  "input": {
+    "targetNumber": 7,
+    "transitions": [
+      {
+        "id": "a",
+        "kind": 1,
+        "actor": "m",
+        "asAuthor": 0,
+        "createdAt": 1,
+        "reason": 2
+      },
+      {
+        "id": "b",
+        "kind": 2,
+        "actor": "m",
+        "asAuthor": 0,
+        "createdAt": 2,
+        "reason": 2
+      }
+    ]
+  },
+  "expected": null
+}

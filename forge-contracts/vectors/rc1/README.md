@@ -12,7 +12,7 @@ Accept and refuse cases for the contracts (`forge-contracts/contracts/`: RC1, pl
  "expect": "refused", "why": "noPlain", "owner": 9, "doc": {…}}
 ```
 
-- **`item`** is the RC1 item the case covers: an id from `RULES-PROPOSAL.md` or `OPPORTUNITIES.md` (R-xx, O-xx, INV-11, CL-7, CL-8, COMM-9), `D-5`, `state` (the transition rules) or `base`.
+- **`item`** is the RC1 item the case covers: an id from `RULES-PROPOSAL.md` or `OPPORTUNITIES.md` (R-xx, O-xx, INV-11, CL-7, CL-8, COMM-9), `D-5`, `state` (the transition rules), `base`, or an RC2 item of `design/v5/PLAN.md` or `RIDERS.md` (M1, S1–S3, C1, QW-069, QW2-010).
 - **`expect`** is `ok` or `refused`. A document is judged as a create, in the order a node's structure validation runs the checks:
   - the JSON schema and `maxBytes`;
   - every `propertyConstraints` rule that reads no total, time or height;
@@ -28,7 +28,7 @@ Accept and refuse cases for the contracts (`forge-contracts/contracts/`: RC1, pl
 
 ## Replace vectors (`<contract>.replace.json`)
 
-These are replaces of a stored document, for the v5 `immutable` rules: checkRun's set-once fields (M1), and a completed run's frozen evidence (S1). A case has the fields above plus `stored`, the stored document's properties, and `doc` is the document the replace writes. It is judged in the order a v5 node judges a replace:
+These are replaces of a stored document, for the v5 `immutable` rules: checkRun's set-once fields (M1), a completed run's frozen evidence (S1), and a mirrored review comment's `diffHunk` (QW2-010). A case has the fields above plus `stored`, the stored document's properties, and `doc` is the document the replace writes. It is judged in the order a v5 node judges a replace:
 
 1. The document properties, as for a create.
 2. `immutable`. Each top-level property that differs from `stored` (changed, added or removed) is refused with `40128` when the type lists it by name, or lists it with a condition that holds. A condition reads the written document, with the stored one under `$old`.

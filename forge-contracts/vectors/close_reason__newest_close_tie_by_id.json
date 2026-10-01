@@ -1,0 +1,34 @@
+{
+  "name": "newest_close_tie_by_id",
+  "description": "Two transitions at the same time are ordered by $id: the reopen \"b\" is after the close \"a\", then \"c\" closes plainly.",
+  "case": "close_reason",
+  "rules": "v2",
+  "input": {
+    "targetNumber": 7,
+    "transitions": [
+      {
+        "id": "c",
+        "kind": 1,
+        "actor": "m",
+        "asAuthor": 0,
+        "createdAt": 5
+      },
+      {
+        "id": "a",
+        "kind": 1,
+        "actor": "m",
+        "asAuthor": 0,
+        "createdAt": 5,
+        "reason": 2
+      },
+      {
+        "id": "b",
+        "kind": 2,
+        "actor": "m",
+        "asAuthor": 0,
+        "createdAt": 5
+      }
+    ]
+  },
+  "expected": null
+}

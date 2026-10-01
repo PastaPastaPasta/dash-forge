@@ -13,8 +13,9 @@
  * - the repo's open / closed / merged / draft totals: the `issue` and `patch` totals
  *   (`perRepo`) and one count of `transition` by `kind` (`perRepoKind`), three proved requests.
  *
- * Writes: {@link writeTransition}, the move {@link nextTransition} picks from the current code;
- * {@link writeLock}, a member's lock or unlock.
+ * Writes: {@link writeTransition}, the move {@link nextTransition} picks from the current code
+ * (an issue close says why, QW-069: `reason` and a duplicate's `dupNumber`, where the registered
+ * contract has them); {@link writeLock}, a member's lock or unlock.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -23,15 +24,19 @@ import { hexToBytes } from '@noble/hashes/utils.js'
 import { decodeIdentifier } from '../auth/base58'
 import { compareKey } from '../rules/oid'
 import {
+  CLOSE_REASON_CODE,
+  ISSUE_CLOSE,
   LOCK_DELTA,
   PR_MERGE,
   TRANSITION_KINDS,
+  currentCloseReason,
   nextTransition,
   refusedRule,
   repoCounts,
   statusOfCode,
   threadStateOf,
   type Actor,
+  type ClosedAs,
   type RepoCounts,
   type StateAction,
   type ThreadState,
@@ -53,6 +58,7 @@ import {
   type WriteResult,
 } from '../sdk'
 import { DOC, asIdentifierString, byteFieldToHex, num, str, type RepoRef } from './contract'
+import { contractHasProperty } from './contract-shape'
 import { readTargetCounts } from './social'
 import { repoSource } from './source'
 
@@ -69,6 +75,10 @@ export interface TransitionView extends Transition {
 /** A `transition` document as a {@link TransitionView}. */
 export function transitionOf(d: PlainDocument): TransitionView {
   const oid = byteFieldToHex(d, 'oid')
+  // Integers may come back as bigint (as `num` reads them): absent stays absent.
+  const int = (f: string): number | undefined => (typeof d[f] === 'number' || typeof d[f] === 'bigint' ? num(d, f) : undefined)
+  const reason = int('reason')
+  const dupNumber = int('dupNumber')
   return {
     id: str(d, '$id'),
     targetId: asIdentifierString(d['targetId']),
@@ -77,6 +87,8 @@ export function transitionOf(d: PlainDocument): TransitionView {
     asAuthor: num(d, 'asAuthor'),
     createdAt: num(d, '$createdAt'),
     ...(oid !== '' ? { oid } : {}),
+    ...(reason !== undefined ? { reason } : {}),
+    ...(dupNumber !== undefined ? { dupNumber } : {}),
   }
 }
 
@@ -96,6 +108,32 @@ export async function readTransitions(sdk: EvoSDK, repo: RepoRef, targetId: stri
 
 /** The proved `in` clause limit: a sum query names at most this many targets. */
 const IN_MAX = 100
+
+/**
+ * Why each closed issue of a list page was closed (QW-069): its transitions, one `targetId in`
+ * read on `perTarget` (indexed by `targetId` alone, so at most {@link IN_MAX} issues: a larger
+ * page reads none and shows the plain closed icon). An issue whose close says nothing is absent.
+ */
+export async function readCloseReasons(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  issues: readonly { readonly id: string; readonly number: number }[],
+): Promise<Map<string, ClosedAs>> {
+  const out = new Map<string, ClosedAs>()
+  const ids = [...new Set(issues.map((i) => i.id).filter((id) => id !== ''))]
+  if (ids.length === 0 || ids.length > IN_MAX) return out
+  const docs = await queryAllDocuments(
+    sdk,
+    repoSource(repo).targetQuery(DOC.transition, { where: [['targetId', 'in', [...ids].sort()]], orderBy: [['targetId', 'asc']] }),
+  )
+  const byTarget = new Map<string, TransitionView[]>()
+  for (const t of docs.map(transitionOf)) byTarget.set(t.targetId, [...(byTarget.get(t.targetId) ?? []), t])
+  for (const issue of issues) {
+    const closed = currentCloseReason(byTarget.get(issue.id) ?? [], issue.number)
+    if (closed !== null) out.set(issue.id, closed)
+  }
+  return out
+}
 
 /** The tree key of an identifier group (its 32 bytes, hex). */
 function idKey(id: string): string {
@@ -243,8 +281,21 @@ function moveData(target: StateTarget, move: TransitionMove): Record<string, unk
 export type TransitionWriter = (documentType: string, data: Record<string, unknown>, intent?: string) => Promise<WriteResult>
 
 /**
+ * The `reason` / `dupNumber` of an issue close that says why (QW-069; no consensus rule reads
+ * them, `closeReasonOf` is the reading). A duplicate names a canonical other than itself.
+ */
+export function closeReasonData(closed: ClosedAs, targetNumber: number): Record<string, unknown> {
+  if (closed.duplicateOf !== null && (closed.reason !== 'duplicate' || closed.duplicateOf === targetNumber || closed.duplicateOf < 1)) {
+    throw new Error(closed.reason !== 'duplicate' ? 'only a close as a duplicate names the issue it duplicates' : `issue #${targetNumber} cannot be a duplicate of #${closed.duplicateOf}`)
+  }
+  return { reason: CLOSE_REASON_CODE[closed.reason], ...(closed.duplicateOf !== null ? { dupNumber: closed.duplicateOf } : {}) }
+}
+
+/**
  * Close, reopen, merge, draft or ready `target`: read its current state, write the one legal
  * move as `transition`, by a member (`asAuthor` 0) or by its author (`asAuthor` = its number).
+ * An issue close records `closed` (why) when the deployment's forge-collab has
+ * `transition.reason`; on one without it the close is written plain.
  *
  * - The intent is the action's (`<intent>:<action>`), not the state's: a retry of a write that
  *   timed out replays the same bytes, and a retry after it landed finds the target already in
@@ -259,12 +310,17 @@ export async function writeTransition(
   auth: WriteAuth,
   repo: RepoRef,
   write: TransitionWriter,
-  input: { target: StateTarget; action: StateAction; isMember: boolean; oidHex?: string; intent?: string },
+  input: { target: StateTarget; action: StateAction; isMember: boolean; oidHex?: string; intent?: string; closed?: ClosedAs },
 ): Promise<WriteResult> {
   const { target, action } = input
   const isAuthor = auth.identityId === target.author
   if (!input.isMember && !isAuthor) throw new Error('only the author or a maintainer or writer can do that')
   if (action === 'merge' && !input.isMember) throw new Error('only a maintainer or writer can merge')
+  // Why an issue closes: only where the registered contract records it.
+  const why =
+    input.closed !== undefined && action === 'close' && target.type === 'issue' && (await contractHasProperty(sdk, repo.forge.collab, DOC.transition, 'reason'))
+      ? closeReasonData(input.closed, target.number)
+      : null
   let actor: Actor = input.isMember ? 'member' : 'author'
   const codeNow = async (): Promise<number> => (await readStateCodes(sdk, repo, [target.id])).get(target.id) ?? 0
   let staleRetried = false
@@ -272,9 +328,12 @@ export async function writeTransition(
   for (let attempt = 0; attempt < 3; attempt++) {
     const code = await codeNow()
     if (alreadyDone(action, code)) return { documentId: '', confirmed: true, cost: previewCredits(0), actualCredits: 0 }
-    const intent = input.intent ? `${input.intent}:${action}:${actor === 'member' ? 'm' : 'a'}` : undefined
+    // The reason is in the intent: a retry replays the same bytes, never another reason's.
+    const reasonKey = why === null ? '' : `:${String(why['reason'])}${why['dupNumber'] !== undefined ? `-${String(why['dupNumber'])}` : ''}`
+    const intent = input.intent ? `${input.intent}:${action}:${actor === 'member' ? 'm' : 'a'}${reasonKey}` : undefined
     try {
-      return await write(DOC.transition, transitionData(target, code, action, actor, input.oidHex), intent)
+      const data = transitionData(target, code, action, actor, input.oidHex)
+      return await write(DOC.transition, why !== null && data['kind'] === ISSUE_CLOSE ? { ...data, ...why } : data, intent)
     } catch (e) {
       if (e instanceof ConsensusRefusal && e.code === GATE_REFUSED_CODE && actor === 'member' && isAuthor && action !== 'merge') {
         actor = 'author'

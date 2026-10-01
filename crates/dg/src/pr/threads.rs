@@ -70,6 +70,8 @@ pub struct Thread {
     pub resolved: bool,
     /// The root, then its replies, oldest first.
     pub comments: Vec<ThreadComment>,
+    /// A mirrored root's source diff hunk (QW2-010; shown as text, [`Comment::shown_hunk`]).
+    pub diff_hunk: Option<String>,
 }
 
 /// A PR's conversations.
@@ -116,7 +118,7 @@ pub fn threads(comments: &[Comment], head: &str, resolved: &[String]) -> Convers
         .collect();
     let resolved: BTreeSet<&str> = resolved.iter().map(String::as_str).collect();
     // By root id; the final sort orders the threads, so the map's order does not matter.
-    let mut open: BTreeMap<String, (Anchor, Vec<ThreadComment>)> = BTreeMap::new();
+    let mut open: BTreeMap<String, (Anchor, Option<String>, Vec<ThreadComment>)> = BTreeMap::new();
     let mut general = Vec::new();
     for c in comments {
         let root = root_of(c, &by_id);
@@ -125,14 +127,14 @@ pub fn threads(comments: &[Comment], head: &str, resolved: &[String]) -> Convers
             continue;
         };
         open.entry(root.document_id.clone())
-            .or_insert_with(|| (anchor, Vec::new()))
-            .1
+            .or_insert_with(|| (anchor, root.shown_hunk().map(str::to_string), Vec::new()))
+            .2
             .push(ThreadComment::of(c));
     }
     let head = head.to_ascii_lowercase();
     let mut threads: Vec<Thread> = open
         .into_iter()
-        .map(|(id, (anchor, mut comments))| {
+        .map(|(id, (anchor, diff_hunk, mut comments))| {
             // The root first, whatever order replies arrived in.
             comments.sort_by_key(|c| (c.id != id, c.created_at));
             Thread {
@@ -147,6 +149,7 @@ pub fn threads(comments: &[Comment], head: &str, resolved: &[String]) -> Convers
                 id,
                 anchor,
                 comments,
+                diff_hunk,
             }
         })
         .collect();
@@ -154,6 +157,17 @@ pub fn threads(comments: &[Comment], head: &str, resolved: &[String]) -> Convers
         (&a.anchor.path, a.anchor.line, &a.id).cmp(&(&b.anchor.path, b.anchor.line, &b.id))
     });
     Conversations { threads, general }
+}
+
+/// Drop the hunk of each thread whose root's signer `trusted` does not admit to mirror (QW2-010:
+/// the hunk is the source's text only when a mirror wrote it).
+pub fn drop_untrusted_hunks(conv: &mut Conversations, trusted: impl Fn(&str) -> bool) {
+    for t in &mut conv.threads {
+        let root_trusted = t.comments.first().is_some_and(|c| trusted(&c.author));
+        if !root_trusted {
+            t.diff_hunk = None;
+        }
+    }
 }
 
 /// A reviewer's standing on the PR.
@@ -391,6 +405,7 @@ mod tests {
             }),
             created_at: at,
             imported: None,
+            diff_hunk: None,
         }
     }
 
@@ -416,6 +431,27 @@ mod tests {
             dismissed_reviews: Vec::new(),
             milestone: None,
         }
+    }
+
+    /// QW2-010: a mirrored root's source hunk heads its thread; a native comment's never does.
+    #[test]
+    fn a_mirrored_thread_carries_its_hunk() {
+        let mut mirrored = comment("m", None, Some(("src/a.rs", 2, None, H1)), 1);
+        mirrored.diff_hunk = Some("@@ -1,2 +1,2 @@\n a\n+b".into());
+        mirrored.imported = Some(forge_core::collab::Imported::default());
+        let mut native = comment("n", None, Some(("src/b.rs", 2, None, H1)), 2);
+        native.diff_hunk = Some("@@ -1 +1 @@\n+forged".into());
+        let mut conv = threads(&[mirrored, native], H2, &[]);
+        let hunks = |c: &Conversations| -> Vec<Option<String>> {
+            c.threads.iter().map(|t| t.diff_hunk.clone()).collect()
+        };
+        assert_eq!(
+            hunks(&conv),
+            [Some("@@ -1,2 +1,2 @@\n a\n+b".to_string()), None]
+        );
+        // a signer who may not mirror shows none
+        drop_untrusted_hunks(&mut conv, |who| who != "rev");
+        assert_eq!(hunks(&conv), [None, None]);
     }
 
     #[test]

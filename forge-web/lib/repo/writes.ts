@@ -28,7 +28,7 @@ import type { ForgeIds } from '../deployments'
 import { base58Encode, decodeIdentifier } from '../auth/base58'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 import { isGitRefName, type EventKind } from '../rules'
-import { denseNumber, isAuthorKind, namesDenseRule, normalizeRepoName as normalizeV2RepoName, type Role, type StateAction, type Visibility } from '../rules/v2'
+import { denseNumber, isAuthorKind, namesDenseRule, normalizeRepoName as normalizeV2RepoName, type ClosedAs, type Role, type StateAction, type Visibility } from '../rules/v2'
 import { fetchIdentityKeys, usableEncryptionKey, type EncryptionOps } from '../auth/encryption-key'
 import {
   ConsensusRefusal,
@@ -649,7 +649,7 @@ export async function setTargetState(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { target: StateTarget; action: StateAction; isMember: boolean; oidHex?: string; intent?: string },
+  input: { target: StateTarget; action: StateAction; isMember: boolean; oidHex?: string; intent?: string; closed?: ClosedAs },
 ): Promise<WriteResult> {
   return writeTransition(sdk, auth, repo, (type, data, intent) => writeRepoDoc(sdk, auth, repo, type, data, intent), input)
 }

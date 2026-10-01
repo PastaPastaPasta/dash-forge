@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest'
 import type { Origin } from '../repo/provenance'
 import type { ReviewView } from '../repo'
 import type { CommentView, TimelineItem } from './issues-view'
-import { foldMirroredReviews, isEmptyMirroredReview, mirroredCommentText, PENDING_MAX_MS } from './mirror-review-fold'
+import { foldMirroredReviews, isEmptyMirroredReview, mirroredCommentText, nestThreadReplies, PENDING_MAX_MS } from './mirror-review-fold'
 
 const MIRROR = 'MirrorMirrorMirrorMirrorMirrorMirrorMirror1'
 const s = (sec: number): number => sec * 1000
@@ -96,5 +96,24 @@ describe('mirroredCommentText', () => {
     expect(mirroredCommentText(`${head}\`other.md\`\n\nX`, anchor)).toEqual({ text: '`other.md`\n\nX', file: null })
     // No anchor (the source line is gone): the file is lifted for the header.
     expect(mirroredCommentText(`${head}\`dip-ct.md\`\n\nsame`, null)).toEqual({ text: 'same', file: 'dip-ct.md' })
+  })
+})
+
+describe('nestThreadReplies (QW2-010)', () => {
+  const reply = (id: string, to: string, author: string, sec: number): CommentView => ({ ...comment(id, author, sec).comment, replyTo: to, anchor: null })
+  it("takes a reply out of its own review, and that review when it says nothing else", () => {
+    const root = comment('c1', 'udjin', 100).comment
+    const withRoot = { ...review('r1', 'udjin', 101, 'commented', 'notes'), comments: [root], expected: 1 }
+    // GitHub files a reply as a one-comment review of its own
+    const replyOnly = { ...review('r2', 'hush', 200), comments: [reply('c2', 'c1', 'hush', 199)], expected: 1 }
+    // an approval whose only comment was a reply keeps its card
+    const approved = { ...review('r3', 'pasta', 300, 'approved'), comments: [reply('c3', 'c1', 'pasta', 299)], expected: 1 }
+    const out = nestThreadReplies([withRoot, replyOnly, approved], new Set(['c1', 'c2', 'c3']))
+    expect(out.map((it) => (it.kind === 'review' ? [it.review.id, it.comments.map((c) => c.id), it.expected] : it.kind))).toEqual([
+      ['r1', ['c1'], 1],
+      ['r3', [], 0],
+    ])
+    // a reply outside an inline thread stays where it is
+    expect(nestThreadReplies([replyOnly], new Set())).toEqual([replyOnly])
   })
 })

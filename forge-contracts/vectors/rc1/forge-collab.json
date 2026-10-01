@@ -2343,5 +2343,334 @@
     ]
    }
   }
+ },
+ {
+  "item": "QW-069",
+  "name": "close as completed",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 1,
+   "delta": 1,
+   "asAuthor": 0,
+   "reason": 1
+  }
+ },
+ {
+  "item": "QW-069",
+  "name": "close as not planned",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 1,
+   "delta": 1,
+   "asAuthor": 0,
+   "reason": 2
+  }
+ },
+ {
+  "item": "QW-069",
+  "name": "close as a duplicate of #3",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 1,
+   "delta": 1,
+   "asAuthor": 0,
+   "reason": 3,
+   "dupNumber": 3
+  }
+ },
+ {
+  "item": "QW-069",
+  "name": "close as a duplicate with no canonical",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 1,
+   "delta": 1,
+   "asAuthor": 0,
+   "reason": 3
+  }
+ },
+ {
+  "item": "QW-069",
+  "name": "reason 0",
+  "type": "transition",
+  "expect": "refused",
+  "why": "minimum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 1,
+   "delta": 1,
+   "asAuthor": 0,
+   "reason": 0
+  }
+ },
+ {
+  "item": "QW-069",
+  "name": "reason 4",
+  "type": "transition",
+  "expect": "refused",
+  "why": "maximum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 1,
+   "delta": 1,
+   "asAuthor": 0,
+   "reason": 4
+  }
+ },
+ {
+  "item": "QW-069",
+  "name": "dupNumber 0",
+  "type": "transition",
+  "expect": "refused",
+  "why": "minimum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 1,
+   "delta": 1,
+   "asAuthor": 0,
+   "reason": 3,
+   "dupNumber": 0
+  }
+ },
+ {
+  "item": "QW-069",
+  "name": "dupNumber over u32",
+  "type": "transition",
+  "expect": "refused",
+  "why": "maximum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 1,
+   "delta": 1,
+   "asAuthor": 0,
+   "reason": 3,
+   "dupNumber": 4294967296
+  }
+ },
+ {
+  "item": "QW2-010",
+  "name": "imported review comment with a hunk",
+  "type": "comment",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public",
+   "diffHunk": "@@ -10,3 +10,4 @@\n a\n-b\n+c\n+d",
+   "imported": {
+    "author": "a",
+    "createdAt": 1,
+    "url": "https://github.com/x/y/pull/7#discussion_r1"
+   },
+   "asMember": {
+    "$id": 7
+   },
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "path": "src/a.rs",
+   "line": 13,
+   "side": 1
+  }
+ },
+ {
+  "item": "QW2-010",
+  "name": "a hunk of 1024 bytes",
+  "type": "comment",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public",
+   "diffHunk": "@@ -1 +1 @@\n+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "imported": {
+    "author": "a",
+    "createdAt": 1,
+    "url": "https://github.com/x/y/pull/7#discussion_r1"
+   },
+   "asMember": {
+    "$id": 7
+   },
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "path": "src/a.rs",
+   "line": 13,
+   "side": 1
+  }
+ },
+ {
+  "item": "QW2-010",
+  "name": "a hunk over 1024 bytes",
+  "type": "comment",
+  "expect": "refused",
+  "why": "maxBytes",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public",
+   "diffHunk": "@@ -1 +1 @@\n+éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+   "imported": {
+    "author": "a",
+    "createdAt": 1,
+    "url": "https://github.com/x/y/pull/7#discussion_r1"
+   },
+   "asMember": {
+    "$id": 7
+   },
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "path": "src/a.rs",
+   "line": 13,
+   "side": 1
+  }
+ },
+ {
+  "item": "QW2-010",
+  "name": "an empty hunk",
+  "type": "comment",
+  "expect": "refused",
+  "why": "minLength",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public",
+   "diffHunk": "",
+   "imported": {
+    "author": "a",
+    "createdAt": 1,
+    "url": "https://github.com/x/y/pull/7#discussion_r1"
+   },
+   "asMember": {
+    "$id": 7
+   },
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "path": "src/a.rs",
+   "line": 13,
+   "side": 1
+  }
+ },
+ {
+  "item": "QW2-010",
+  "name": "a sealed comment with a plaintext hunk",
+  "type": "comment",
+  "expect": "refused",
+  "why": "noPlain",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "vis": "private",
+   "diffHunk": "@@ -10,3 +10,4 @@\n a\n-b\n+c\n+d",
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
  }
 ]

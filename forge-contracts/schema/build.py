@@ -98,9 +98,15 @@ FLAGS = dict(
     review_to_author=True,       # S2: review index [patchId.$ownerId, $createdAt]: reviews on my PRs
     review_author=True,          # S3: review index [$ownerId, $createdAt]: the reviews I wrote
     fused_star=True,             # C1: star carries the trending window (byWeek, outlivesDelete); no starBeat
+    # ---- RC2 riders (design/v5/RIDERS.md): forge-collab only, each in RC2 if ready before registration
+    close_reason=True,           # QW-069: transition.reason / dupNumber, judged by readers (no rule)
+    review_hunk=True,            # QW2-010: comment.diffHunk for mirrored review comments (immutable, noPlain)
 )
 # The RC2 items with a flag: forge-contracts/schema/variants.py validates every combination.
 RC2_FLAGS = ('check_evidence_freeze', 'review_to_author', 'review_author', 'fused_star')
+# The riders: independent of the RC2 items (other types and properties), so variants.py turns
+# each off only with every RC2 item on, the largest build.
+RIDER_FLAGS = ('close_reason', 'review_hunk')
 TOPIC_CAP = 20
 
 ID = {"type": "array", "byteArray": True, "minItems": 32, "maxItems": 32,
@@ -577,6 +583,23 @@ def build(flags):
                               "timeRange": {"on": "$createdAt", "range": 604800, "step": 86400, "ttl": 604800},
                               "rangeCountable": True, "rankedCountable": True, "outlivesDelete": True})
         del md['starBeat']
+
+    # ======================= RC2 riders (design/v5/RIDERS.md) =======================
+    if f['close_reason']:
+        # QW-069. 1 completed, 2 not planned, 3 duplicate; dupNumber is the canonical issue's number
+        # in this repo. No rule: transition is immutable and already declares 15 of the 16 rules a
+        # type may have (v5 rs-platform-version system_limits/v4.rs:105), and every reader judges
+        # both from the same document (forge-core rules::transition::close_reason_of). dupNumber
+        # is inlined: `targetNumber` already takes the `num` def in this type.
+        tr = ld['transition']
+        add_prop(tr, 'reason', {"type": "integer", "minimum": 1, "maximum": 3})
+        add_prop(tr, 'dupNumber', {"type": "integer", "minimum": 1, "maximum": 4294967295})
+    if f['review_hunk']:
+        # QW2-010. The source's diff hunk of a mirrored review comment (the importer trims it to the
+        # commented lines), frozen, and never in plaintext beside a sealed body (noPlain).
+        cm = ld['comment']
+        add_prop(cm, 'diffHunk', {"type": "string", "minLength": 1, "maxLength": 1024, "maxBytes": 1024}, immutable=True)
+        cm['propertyConstraints']['noPlain']['anyOf'][1]['allOf'].append({"absent": "diffHunk"})
 
     core['description'] = "Dash Forge v2 core: repositories, refs, packs, members, releases, labels, topics"
     collab['description'] = "Dash Forge v2 collaboration: issues, pull requests, transitions, comments, reviews, repo keys"

@@ -1,0 +1,24 @@
+{
+  "name": "duplicate_of_itself",
+  "description": "Reason 3 naming the issue's own number: a duplicate with no canonical.",
+  "case": "close_reason",
+  "rules": "v2",
+  "input": {
+    "targetNumber": 7,
+    "transitions": [
+      {
+        "id": "a",
+        "kind": 1,
+        "actor": "m",
+        "asAuthor": 0,
+        "createdAt": 1,
+        "reason": 3,
+        "dupNumber": 7
+      }
+    ]
+  },
+  "expected": {
+    "reason": "duplicate",
+    "duplicateOf": null
+  }
+}

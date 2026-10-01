@@ -9,14 +9,17 @@ use serde_json::json;
 
 use forge_core::collab::v2::{Comment, IssueView, Target};
 use forge_core::create::default_journal_dir;
-use forge_core::rules::v2::{status_of_code, StateAction, Transition};
+use forge_core::rules::v2::{
+    close_reason_of, current_close_reason, status_of_code, CloseReason, ClosedAs, StateAction,
+    Transition,
+};
 use forge_core::rules::{Event, EventKind, IssueState};
 use forge_core::user_error::{codes, UserError};
 
 use crate::common::{number_arg, Reader, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, safe, transition_phrase, transition_route_text, with_name};
-use crate::{IssueCommand, IssueListArgs};
+use crate::{CloseReasonArg, IssueCommand, IssueListArgs};
 
 /// Dispatch an `issue` subcommand.
 pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
@@ -55,8 +58,16 @@ pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
         IssueCommand::DeleteComment { repo, comment_id } => {
             delete_comment(ctx, repo, comment_id).await
         }
-        IssueCommand::Close { repo, number } => set_open(ctx, repo, *number, true).await,
-        IssueCommand::Reopen { repo, number } => set_open(ctx, repo, *number, false).await,
+        IssueCommand::Close {
+            repo,
+            number,
+            reason,
+            duplicate_of,
+        } => {
+            let closed = closed_as(*number, *reason, *duplicate_of)?;
+            set_open(ctx, repo, *number, Some(closed)).await
+        }
+        IssueCommand::Reopen { repo, number } => set_open(ctx, repo, *number, None).await,
         IssueCommand::Label {
             repo,
             number,
@@ -402,6 +413,9 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let events: Vec<Event> = view.events().into_iter().cloned().collect();
     let transitions = view.log.transitions.clone();
     let timeline = timeline(&comments, &events, &transitions);
+    let issue_number = u32::try_from(number).unwrap_or(u32::MAX);
+    let closed = current_close_reason(&transitions, issue_number);
+    let (state_reason, duplicate_of) = close_reason_json(closed.as_ref());
     // Milestone and pin: the member events folded (kinds 17-20). Lock: the transitions'
     // sum (16 or more is locked).
     let meta = forge_core::rules::v2::fold_thread_meta_v2(&view.log.events);
@@ -432,6 +446,8 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             "documentId": id,
             "id": id,
             "state": { "open": state.open, "labels": state.labels, "assignees": state.assignees },
+            "stateReason": state_reason,
+            "duplicateOf": duplicate_of,
             "milestone": meta.milestone,
             "pinned": meta.pinned,
             "locked": locked,
@@ -443,19 +459,16 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
                 "value": e.value,
                 "createdAt": e.created_at,
             })).collect::<Vec<_>>(),
-            "transitions": transitions.iter().map(|t| json!({
-                "id": t.id,
-                "kind": t.kind,
-                "actor": t.actor,
-                "asAuthor": t.as_author,
-                "createdAt": t.created_at,
-            })).collect::<Vec<_>>(),
+            "transitions": transitions.iter().map(transition_json).collect::<Vec<_>>(),
             "hiddenComments": hidden,
             "hiddenEventValues": hidden_values,
             "plaintextEventValues": plaintext_values,
         }),
         || {
-            let mark = state_word(state.open);
+            let mark = match &closed {
+                Some(c) if !state.open => format!("closed as {}", closed_words(c)),
+                _ => state_word(state.open).to_string(),
+            };
             println!("#{number} [{mark}] {}", safe(&title));
             println!("author: {}", who(&author));
             let labels: Vec<&str> = state.labels.iter().map(String::as_str).collect();
@@ -474,7 +487,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
                     }
                     Item::Event(e) => println!("\n· {} {}", who(&e.actor), safe(&event_phrase(e))),
                     Item::Transition(t) => {
-                        println!("\n· {} {}", who(&t.actor), transition_phrase(t.kind));
+                        println!("\n· {} {}", who(&t.actor), transition_line(t, issue_number));
                     }
                 }
             }
@@ -487,6 +500,19 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// A transition in `dg issue view --json`.
+fn transition_json(t: &Transition) -> serde_json::Value {
+    json!({
+        "id": t.id,
+        "kind": t.kind,
+        "actor": t.actor,
+        "asAuthor": t.as_author,
+        "createdAt": t.created_at,
+        "reason": t.reason,
+        "dupNumber": t.dup_number,
+    })
 }
 
 /// One entry of an issue's timeline.
@@ -796,6 +822,78 @@ fn state_word(open: bool) -> &'static str {
     }
 }
 
+/// The close `--reason` / `--duplicate-of` ask for (QW-069): completed by default, as on
+/// GitHub; `--duplicate-of` implies a duplicate and names another issue.
+fn closed_as(
+    number: u64,
+    reason: Option<CloseReasonArg>,
+    duplicate_of: Option<u32>,
+) -> Result<ClosedAs> {
+    let reason = match (reason, duplicate_of) {
+        (None, Some(_)) | (Some(CloseReasonArg::Duplicate), _) => CloseReason::Duplicate,
+        (Some(_), Some(_)) => {
+            return Err(crate::errors::usage(
+                "--duplicate-of goes only with --reason duplicate (or no --reason)",
+            ))
+        }
+        (None | Some(CloseReasonArg::Completed), None) => CloseReason::Completed,
+        (Some(CloseReasonArg::NotPlanned), None) => CloseReason::NotPlanned,
+    };
+    if duplicate_of.is_some_and(|d| d == 0 || u64::from(d) == number) {
+        return Err(crate::errors::usage(format!(
+            "issue #{number} cannot be a duplicate of #{}",
+            duplicate_of.unwrap_or_default()
+        )));
+    }
+    Ok(ClosedAs {
+        reason,
+        duplicate_of,
+    })
+}
+
+/// A close reason in words: "completed", "not planned", "duplicate".
+fn close_reason_word(reason: CloseReason) -> &'static str {
+    match reason {
+        CloseReason::Completed => "completed",
+        CloseReason::NotPlanned => "not planned",
+        CloseReason::Duplicate => "duplicate",
+    }
+}
+
+/// How the timeline says why an issue was closed (the web's `closeReasonPhrase`).
+fn closed_phrase(closed: &ClosedAs) -> String {
+    match (closed.reason, closed.duplicate_of) {
+        (CloseReason::Duplicate, Some(n)) => format!("closed this as a duplicate of #{n}"),
+        (CloseReason::Duplicate, None) => "closed this as a duplicate".to_string(),
+        (r, _) => format!("closed this as {}", close_reason_word(r)),
+    }
+}
+
+/// A transition's line in an issue timeline: an issue close says why when it recorded it.
+fn transition_line(t: &Transition, number: u32) -> String {
+    close_reason_of(t, number).map_or_else(
+        || transition_phrase(t.kind).to_string(),
+        |c| closed_phrase(&c),
+    )
+}
+
+/// The `stateReason` / `duplicateOf` of `dg issue view --json` (GitHub's names).
+fn close_reason_json(closed: Option<&ClosedAs>) -> (serde_json::Value, serde_json::Value) {
+    (
+        json!(closed.map(|c| c.reason.as_str())),
+        json!(closed.and_then(|c| c.duplicate_of)),
+    )
+}
+
+/// "not planned", "a duplicate of #4": a close reason after "closed as".
+fn closed_words(c: &ClosedAs) -> String {
+    match (c.reason, c.duplicate_of) {
+        (CloseReason::Duplicate, Some(n)) => format!("a duplicate of #{n}"),
+        (CloseReason::Duplicate, None) => "a duplicate".to_string(),
+        (r, _) => close_reason_word(r).to_string(),
+    }
+}
+
 /// `(past tense, prompt verb)` of a close or a reopen ("reopend" was L-35).
 fn open_words(close: bool) -> (&'static str, &'static str) {
     if close {
@@ -805,7 +903,9 @@ fn open_words(close: bool) -> (&'static str, &'static str) {
     }
 }
 
-async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()> {
+/// Close (`closed`: why) or reopen (`None`) issue `number`.
+async fn set_open(ctx: &Ctx, repo: &str, number: u64, closed: Option<ClosedAs>) -> Result<()> {
+    let close = closed.is_some();
     let s = Session::open_for_write(ctx, repo, "state not changed").await?;
     let target = target(&s, repo, number).await?;
     let (done, prompt) = open_words(close);
@@ -823,13 +923,19 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()>
         );
         return Ok(());
     }
-    ctx.confirm_or_cancel(&format!("{prompt} issue #{number}? (one small document)"))?;
-    let action = if close {
-        StateAction::Close
-    } else {
-        StateAction::Reopen
+    let why = closed.map_or(String::new(), |c| format!(" as {}", closed_words(&c)));
+    ctx.confirm_or_cancel(&format!(
+        "{prompt} issue #{number}{why}? (one small document)"
+    ))?;
+    let change = match &closed {
+        Some(c) => collab.close_as(&s.repo, &target, c).await?,
+        None => {
+            collab
+                .set_state(&s.repo, &target, StateAction::Reopen, None)
+                .await?
+        }
     };
-    let change = collab.set_state(&s.repo, &target, action, None).await?;
+    let (state_reason, duplicate_of) = close_reason_json(change.closed_as.as_ref());
     let open_now = collab
         .issue_view(&s.repo, target.number)
         .await?
@@ -843,12 +949,22 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()>
             "kind": change.kind,
             "open": open_now,
             "state": open_now.map(state_word),
+            "stateReason": state_reason,
+            "duplicateOf": duplicate_of,
         }),
         || {
+            let why = change
+                .closed_as
+                .map_or(String::new(), |c| format!(" as {}", closed_words(&c)));
             println!(
-                "✓ {done} issue #{number} {}",
+                "✓ {done} issue #{number}{why} {}",
                 transition_route_text(change.route)
             );
+            if closed.is_some() && change.closed_as.is_none() {
+                println!(
+                    "  note: this repository's contract has no close reason (transition.reason): closed without one"
+                );
+            }
             if open_now == Some(close) {
                 println!(
                     "  note: it does not read as {} yet (the read may lag a block)",
@@ -1130,8 +1246,11 @@ async fn assign(ctx: &Ctx, repo: &str, number: u64, who: &[String], add: bool) -
 #[cfg(test)]
 mod tests {
     use super::{
-        changes, event_phrase, label_args, open_words, state_word, timeline, title_matches, Item,
+        changes, close_reason_json, closed_as, closed_words, event_phrase, label_args, open_words,
+        state_word, timeline, title_matches, transition_line, CloseReason, CloseReasonArg,
+        ClosedAs, Item,
     };
+    use serde_json::json;
 
     /// QW-081: an issue's JSON `"state"` uses the words `dg pr`'s does.
     #[test]
@@ -1247,7 +1366,63 @@ mod tests {
             anchor: forge_core::rules::v2::AnchorFields::default(),
             created_at: at,
             imported: None,
+            diff_hunk: None,
         }
+    }
+
+    /// QW-069: `--reason` / `--duplicate-of` as `gh issue close` takes them, and the timeline's
+    /// words for a close that says why.
+    #[test]
+    fn close_reasons_read_as_gh_and_the_web_say_them() {
+        let dup = |n| ClosedAs {
+            reason: CloseReason::Duplicate,
+            duplicate_of: n,
+        };
+        assert_eq!(
+            closed_as(3, None, None).unwrap(),
+            ClosedAs {
+                reason: CloseReason::Completed,
+                duplicate_of: None
+            }
+        );
+        assert_eq!(
+            closed_as(3, Some(CloseReasonArg::NotPlanned), None)
+                .unwrap()
+                .reason,
+            CloseReason::NotPlanned
+        );
+        assert_eq!(closed_as(3, None, Some(1)).unwrap(), dup(Some(1)));
+        assert_eq!(
+            closed_as(3, Some(CloseReasonArg::Duplicate), None).unwrap(),
+            dup(None)
+        );
+        assert!(closed_as(3, Some(CloseReasonArg::NotPlanned), Some(1)).is_err());
+        assert!(
+            closed_as(3, None, Some(3)).is_err(),
+            "not a duplicate of itself"
+        );
+        let t = |reason, dup| Transition {
+            id: "t".into(),
+            kind: 1,
+            actor: "M".into(),
+            oid: None,
+            as_author: 0,
+            created_at: 1,
+            reason,
+            dup_number: dup,
+        };
+        assert_eq!(
+            transition_line(&t(Some(3), Some(1)), 3),
+            "closed this as a duplicate of #1"
+        );
+        assert_eq!(
+            transition_line(&t(Some(2), None), 3),
+            "closed this as not planned"
+        );
+        assert_eq!(transition_line(&t(None, None), 3), "closed this");
+        assert_eq!(closed_words(&dup(Some(1))), "a duplicate of #1");
+        let (reason, of) = close_reason_json(Some(&dup(Some(1))));
+        assert_eq!((reason, of), (json!("duplicate"), json!(1)));
     }
 
     /// L-35: `dg issue view` shows label and close events among the comments, in time order,
@@ -1262,6 +1437,8 @@ mod tests {
             oid: None,
             as_author: 0,
             created_at: at,
+            reason: None,
+            dup_number: None,
         };
         let transitions = [transition("t3", 30, 1), transition("t4", 40, 2)];
         let comments = [comment("c2", 20)];

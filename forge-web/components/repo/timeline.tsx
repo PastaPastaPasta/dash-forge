@@ -10,7 +10,7 @@
 
 import { Byline } from '@/components/repo/byline'
 import { importedVerdictOf, searchableBody, trustedOrigin } from '@/lib/repo/provenance'
-import { Check, CheckCircle2, CircleDot, Eye, GitCommit, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, ShieldAlert, Tag, Trash2, UserPlus, X } from 'lucide-react'
+import { Check, CheckCircle2, CircleDot, CircleSlash, Eye, GitCommit, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, ShieldAlert, Tag, Trash2, UserPlus, X } from 'lucide-react'
 import type { CommentView, TimelineItem } from '@/lib/view'
 import { branchName, plural, timeAgo } from '@/lib/view'
 import { anchorLabel } from '@/lib/view/inline-threads'
@@ -22,6 +22,7 @@ import { Author } from '@/components/author'
 import Link from 'next/link'
 import { useState, type ReactNode } from 'react'
 import { isEmptyMirroredReview, mirroredCommentText } from '@/lib/view/mirror-review-fold'
+import type { CloseWhy } from '@/lib/view/close-reason'
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
 import { importedUrlOf } from '@/lib/view/ref-targets'
 import { EditedMarker } from '@/components/repo/issue-bits'
@@ -319,6 +320,7 @@ export function Timeline({
   anchorContext,
   trust = null,
   closedIn,
+  closeWhy,
   crossRefs = [],
 }: {
   items: readonly TimelineItem[]
@@ -337,6 +339,8 @@ export function Timeline({
   trust?: ReadonlySet<string> | null
   /** The pull request whose merge made a close ("closed this as completed in #3"), or null. */
   closedIn?: (t: TransitionView) => TimelineRef | null
+  /** Why an issue close happened (its `reason`, QW-069), or null for a plain close. */
+  closeWhy?: (t: TransitionView) => CloseWhy | null
   /** PRs that mention this issue, placed in time order among the items. */
   crossRefs?: readonly CrossRefItem[]
 }): JSX.Element {
@@ -481,10 +485,14 @@ export function Timeline({
         }
         if (item.kind === 'transition') {
           const t = item.transition
-          const cause = closedIn?.(t) ?? null
+          // A close that says it was not done (not planned, a duplicate) says so, whatever PR
+          // mentioned the issue; a completed one names the PR whose merge closed it.
+          const said = closeWhy?.(t) ?? null
+          const cause = said?.skipped ? null : closedIn?.(t) ?? null
+          const why = cause === null ? said : null
           return (
             <div key={`t-${t.id}-${i}`} className={EVENT_ROW} data-testid="timeline-event" data-kind={`transition-${t.kind}`}>
-              <span className={EVENT_ICON}>{transitionIcon(t.kind)}</span>
+              <span className={EVENT_ICON}>{why?.skipped ? <CircleSlash className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden data-icon="closed-skipped" /> : transitionIcon(t.kind)}</span>
               {/* One sentence that wraps as text (QW-070): the age never breaks onto a line of its own. */}
               <p className={EVENT_TEXT}>
                 <Author identityId={t.actor} link={false} className="align-middle" />{' '}
@@ -493,6 +501,13 @@ export function Timeline({
                     closed this as completed in <RefLink to={cause} />
                     <span className="whitespace-nowrap"> · {timeAgo(t.createdAt)}</span>
                   </>
+                ) : why?.duplicate ? (
+                  <>
+                    closed this as a duplicate of <RefLink to={why.duplicate} />
+                    <span className="whitespace-nowrap"> · {timeAgo(t.createdAt)}</span>
+                  </>
+                ) : why !== null ? (
+                  <WithAge text={why.phrase} age={timeAgo(t.createdAt)} />
                 ) : t.kind === PR_MERGE && t.oid ? (
                   <>
                     {transitionPhrase(t.kind)} at{' '}

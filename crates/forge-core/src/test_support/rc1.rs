@@ -597,6 +597,7 @@ mod builders {
             side: Some(1),
             start_line: Some(10),
             review_id: Some(ID.into()),
+            diff_hunk: None,
         };
         let reply = CommentAnchor {
             reply_to: Some(ID.into()),
@@ -621,6 +622,28 @@ mod builders {
     fn an_imported_comment_is_rc1_valid_from_a_member() {
         let p = comment_props(ID, "hi", None, Some(&imported())).unwrap();
         public("comment", p, By::Member);
+    }
+
+    /// QW2-010: a mirrored review comment keeps its source hunk; one too big or off a file is
+    /// refused before signing.
+    #[test]
+    fn an_imported_review_comment_with_a_hunk_is_rc1_valid() {
+        let mut a = CommentAnchor {
+            commit_oid: Some(vec![0xab; 20]),
+            path: Some("src/lib.rs".into()),
+            line: Some(12),
+            side: Some(1),
+            diff_hunk: Some("@@ -10,2 +10,3 @@\n a\n+b\n c".into()),
+            ..CommentAnchor::default()
+        };
+        let p = comment_props(ID, "nit", Some(&a), Some(&imported())).unwrap();
+        assert!(p.contains_key("diffHunk"));
+        public("comment", p, By::Member);
+        a.diff_hunk = Some(format!("@@ -1 +1 @@\n+{}", "é".repeat(600)));
+        assert!(comment_props(ID, "nit", Some(&a), Some(&imported())).is_err());
+        a.diff_hunk = Some("@@ -1 +1 @@".into());
+        a.path = None;
+        assert!(comment_props(ID, "nit", Some(&a), Some(&imported())).is_err());
     }
 
     #[test]

@@ -885,6 +885,18 @@
         "oid": {
           "$ref": "#/$defs/oid",
           "position": 7
+        },
+        "reason": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3,
+          "position": 8
+        },
+        "dupNumber": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295,
+          "position": 9
         }
       },
       "indices": [
@@ -1353,7 +1365,8 @@
         "startLine",
         "reviewId",
         "vis",
-        "imported"
+        "imported",
+        "diffHunk"
       ],
       "dependentRequired": {
         "enc": [
@@ -1486,6 +1499,13 @@
           "maxItems": 32,
           "contentMediaType": "application/x.dash.dpp.identifier",
           "position": 15
+        },
+        "diffHunk": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "maxBytes": 1024,
+          "position": 16
         }
       },
       "indices": [
@@ -1553,6 +1573,9 @@
                 },
                 {
                   "absent": "imported.url"
+                },
+                {
+                  "absent": "diffHunk"
                 }
               ]
             }

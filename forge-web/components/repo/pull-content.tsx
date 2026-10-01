@@ -103,7 +103,8 @@ import { WALK_COMMIT_CAP } from '@/lib/merge/objects'
 import { commentsShown, draftIsEmpty, draftWhereabouts, reviewShows, SUBMIT_WAIT } from '@/lib/view/pending-review'
 import { tipOidOf } from '@/lib/view/refs'
 import { importedReviewers, type ReviewerCardRow } from '@/lib/view/review-fold'
-import { foldMirroredReviews, mirroredCommentText } from '@/lib/view/mirror-review-fold'
+import { foldMirroredReviews, mirroredCommentText, nestThreadReplies } from '@/lib/view/mirror-review-fold'
+import { shownHunk } from '@/lib/view/diff-hunk'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
 import { readUntil, retryWhileMissing } from '@/lib/view/retry'
 import { useSdk } from '@/hooks/use-sdk'
@@ -491,6 +492,7 @@ function PullPage({
         outdated={!anchorOnHead(c.anchor, pull.headOid)}
         applied={applied.get(c.id) ?? null}
         label={label}
+        hunk={shownHunk(c, trust)}
       />
     )
   }
@@ -762,9 +764,12 @@ function PullPage({
   // A mirrored PR's review comments under the review they were submitted with (QW2-010).
   const conversation = useMemo(
     () =>
-      foldMirroredReviews(
-        timeline.filter((t) => !(t.kind === 'comment' && t.comment.replyTo !== null && inlineIds.has(t.comment.id))),
-        (it) => (it.kind === 'review' ? trustedOrigin(it.review.origin, it.review.reviewer, trust) : trustedOrigin(it.comment.origin, it.comment.author, trust)),
+      nestThreadReplies(
+        foldMirroredReviews(
+          timeline.filter((t) => !(t.kind === 'comment' && t.comment.replyTo !== null && inlineIds.has(t.comment.id))),
+          (it) => (it.kind === 'review' ? trustedOrigin(it.review.origin, it.review.reviewer, trust) : trustedOrigin(it.comment.origin, it.comment.author, trust)),
+        ),
+        inlineIds,
       ),
     [timeline, inlineIds, trust],
   )

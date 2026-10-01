@@ -20,12 +20,16 @@ import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
 import { useCallback, useRef, useState, type SetStateAction } from 'react'
-import { CheckCircle2, CircleDot, GitPullRequest, Milestone, Pencil, Pin, Tag, UserPlus } from 'lucide-react'
+import { CheckCircle2, CircleDot, CircleSlash, GitPullRequest, Milestone, Pencil, Pin, Tag, UserPlus } from 'lucide-react'
 import { LinkedPulls, useIssueBacklinks, type IssueBacklinks } from '@/components/repo/linked-pulls'
 import { closedIn } from '@/lib/view/cross-refs'
 import type { LinkingPulls, TransitionView } from '@/lib/repo'
 import type { RepoHome, IssueThread, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, issueWriteShows, loadIssueThread } from '@/lib/view'
+import { readDuplicateTargets } from '@/lib/view/issues-view'
+import { closeWhyOf, closedAsWords, closedSkipped } from '@/lib/view/close-reason'
+import type { ClosedAs } from '@/lib/rules/transition'
+import { CloseIssueButton } from '@/components/repo/close-issue-button'
 import { commentEditDrops } from '@/lib/view/issues-view'
 import { totalHidden } from '@/lib/repo/private-content'
 import { ISSUE_LOCK, ISSUE_UNLOCK } from '@/lib/rules/transition'
@@ -82,8 +86,11 @@ import { numberLabel, shownUpstreamNumber } from '@/lib/view/upstream'
 
 /** The write the confirm dialog is about to sign. */
 type Pending =
-  /** Close or reopen; with `comment`, the composer's text is posted first ("Close with comment", QW2-008). */
-  | { kind: 'state'; comment?: string }
+  /**
+   * Close or reopen; with `comment`, the composer's text is posted first ("Close with comment",
+   * QW2-008); a close says why (`closedAs`, QW-069: completed unless the menu said otherwise).
+   */
+  | { kind: 'state'; comment?: string; closedAs?: ClosedAs }
   /** The label picker's change, applied together behind one confirm (QW2-046). */
   | { kind: 'labels'; change: SetChange }
   | { kind: 'assignees'; change: SetChange }
@@ -198,6 +205,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const origin = trustedOrigin(issue.origin, issue.author, trust)
   const whileLocked = commentsWhileLocked(timeline, new Set(members.map((m) => m.identity)))
   const open = issue.state.open
+  // Closed as not planned or as a duplicate: GitHub's grey badge (QW-069).
+  const skipped = !open && closedSkipped(data.closedAs)
   const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
   const postContext = { isMember, locked: meta.locked }
   const isAuthor = identity !== null && identity === issue.author
@@ -269,7 +278,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           expectations.current.push((t) => issueWriteShows(t, { kind: 'comment', id: posted.documentId }))
         }
         try {
-          await setTargetState(sdk, signer, home.repo, { target: { ...target, type: 'issue', author: issue.author }, action: open ? 'close' : 'reopen', isMember, intent })
+          const closed = open ? pending.closedAs ?? { reason: 'completed' as const, duplicateOf: null } : undefined
+          await setTargetState(sdk, signer, home.repo, { target: { ...target, type: 'issue', author: issue.author }, action: open ? 'close' : 'reopen', isMember, intent, ...(closed ? { closed } : {}) })
         } catch (e) {
           // The comment is posted: show it while the close is retried.
           if (closeComment.current?.intent === intent) refresh()
@@ -412,9 +422,11 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           <div className="mt-2 flex flex-wrap items-center gap-2 text-dense">
             <span
               data-testid="issue-state"
-              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-medium text-white ${open ? 'bg-verify-700' : 'bg-forge-700'}`}
+              data-reason={open ? undefined : data.closedAs?.reason}
+              title={open || !data.closedAs ? undefined : closedTitle(data.closedAs)}
+              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-medium text-white ${open ? 'bg-verify-700' : skipped ? 'bg-anvil-600' : 'bg-forge-700'}`}
             >
-              {open ? <CircleDot className="h-3.5 w-3.5" aria-hidden /> : <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />}
+              {open ? <CircleDot className="h-3.5 w-3.5" aria-hidden /> : skipped ? <CircleSlash className="h-3.5 w-3.5" aria-hidden /> : <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />}
               {open ? 'Open' : 'Closed'}
             </span>
             <span className="inline-flex flex-wrap items-center gap-1.5 text-anvil-500 dark:text-anvil-400">
@@ -448,6 +460,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             links={links}
             trust={trust}
             closedIn={(t) => closedInRef(t, backlinks, addr)}
+            closeWhy={(t) => closeWhyOf(t, issue.number, data.duplicates ?? NO_DUPLICATES, (n) => (addr ? repoHref('/repo/issue', addr, { number: String(n) }) : ''))}
             crossRefs={crossRefsOf(backlinks.linking.data, addr)}
             renderComment={(item) => {
               const slots = commentSlots({
@@ -493,7 +506,16 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
             {lockedOutNow ? <span /> : <CostPreview cost={commentCost} />}
             <div className="flex items-center gap-2">
-              {canToggle ? (
+              {canToggle && open ? (
+                <CloseIssueButton
+                  number={issue.number}
+                  label={stateToggleLabel(open, withComment !== null, 'issue')}
+                  disabled={!signer || guard.disabledReason !== null || archived}
+                  {...(guard.disabledReason ? { title: guard.disabledReason } : {})}
+                  onClose={(closedAs) => setPending(withComment === null ? { kind: 'state', closedAs } : { kind: 'state', comment: withComment, closedAs })}
+                  checkDuplicate={async (n) => ((await readDuplicateTargets(sdk!, home.repo, [n])).has(n) ? null : `#${n} is not an issue of this repo`)}
+                />
+              ) : canToggle ? (
                 <Button
                   variant="outline"
                   onClick={() => setPending(withComment === null ? { kind: 'state' } : { kind: 'state', comment: withComment })}
@@ -501,7 +523,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   title={guard.disabledReason ?? undefined}
                   data-testid="issue-state-toggle"
                 >
-                  {open ? <CheckCircle2 className="h-3.5 w-3.5 text-forge-700 dark:text-forge-400" aria-hidden /> : <CircleDot className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden />}
+                  <CircleDot className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden />
                   {stateToggleLabel(open, withComment !== null, 'issue')}
                 </Button>
               ) : null}
@@ -593,6 +615,18 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   )
 }
 
+const NO_DUPLICATES: ReadonlyMap<number, { readonly number: number; readonly title: string }> = new Map()
+
+/** The header badge's tooltip: "Closed as not planned". */
+function closedTitle(c: ClosedAs): string {
+  return `Closed as ${closedAsWords(c)}`
+}
+
+/** " as not planned": a close's reason in the confirm dialog's title (completed says nothing). */
+function closeWords(c: ClosedAs | undefined): string {
+  return c === undefined || c.reason === 'completed' ? '' : ` as ${closedAsWords(c)}`
+}
+
 /** The confirm dialog's words for each pending write. */
 function confirmText(pending: Pending, number: number, open: boolean, isMember: boolean): { title: string; description: string; label: string } {
   switch (pending?.kind) {
@@ -628,8 +662,9 @@ function confirmText(pending: Pending, number: number, open: boolean, isMember: 
     default: {
       const state = isMember ? 'a state event, as a maintainer or writer of this repo' : 'an author event: you opened this issue, so you can close and reopen it'
       const withComment = pending?.kind === 'state' && pending.comment !== undefined
+      const why = open && pending?.kind === 'state' ? closeWords(pending.closedAs) : ''
       return {
-        title: withComment ? `${open ? 'Close' : 'Reopen'} issue #${number} with your comment` : open ? `Close issue #${number}` : `Reopen issue #${number}`,
+        title: withComment ? `${open ? 'Close' : 'Reopen'} issue #${number}${why} with your comment` : open ? `Close issue #${number}${why}` : `Reopen issue #${number}`,
         description: withComment ? `Two writes: your comment, then ${state}.` : `Appends ${state}.`,
         label: stateToggleLabel(open, withComment, 'issue'),
       }

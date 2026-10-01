@@ -1,0 +1,23 @@
+{
+  "name": "not_planned",
+  "description": "An issue close with reason 2 reads as not planned.",
+  "case": "close_reason",
+  "rules": "v2",
+  "input": {
+    "targetNumber": 7,
+    "transitions": [
+      {
+        "id": "a",
+        "kind": 1,
+        "actor": "m",
+        "asAuthor": 0,
+        "createdAt": 1,
+        "reason": 2
+      }
+    ]
+  },
+  "expected": {
+    "reason": "not_planned",
+    "duplicateOf": null
+  }
+}

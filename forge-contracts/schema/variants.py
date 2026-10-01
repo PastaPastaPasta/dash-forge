@@ -5,7 +5,9 @@
 
 S2, S3 and C1 are decided at registration by fee probes on the v5 network, and S1 could be
 dropped the same way, so any combination of build.RC2_FLAGS (the other flags at their FLAGS
-defaults) may be the one registered. For each, this builds the three contracts
+defaults) may be the one registered. The riders (build.RIDER_FLAGS: R1 = QW-069 close reasons,
+R2 = QW2-010 review-comment hunks) ride only if ready, and touch other properties, so each of
+their combinations is run once, with every RC2 item on. For each, this builds the three contracts
 (`build.py --off ... --out`), generates that variant's vectors (`vectors.py --off ... --out`) and
 runs tools/contract-validate on them: the full v5 parse, the registration reference checks,
 the create, replace and index vectors, and the create-transition size. It prints one row per
@@ -27,7 +29,18 @@ sys.path.insert(0, HERE)
 sys.dont_write_bytecode = True  # no __pycache__ beside the schemas
 import build  # noqa: E402
 
-SHORT = {'check_evidence_freeze': 'S1', 'review_to_author': 'S2', 'review_author': 'S3', 'fused_star': 'C1'}
+SHORT = {'check_evidence_freeze': 'S1', 'review_to_author': 'S2', 'review_author': 'S3', 'fused_star': 'C1',
+         'close_reason': 'R1', 'review_hunk': 'R2'}
+
+
+def combinations():
+    """(the flags turned off) for every combination of RC2_FLAGS with the riders on, then every
+    combination of RIDER_FLAGS with the RC2 items on (the riders touch other properties)."""
+    for on in itertools.product((True, False), repeat=len(build.RC2_FLAGS)):
+        yield [f for f, v in zip(build.RC2_FLAGS, on) if not v]
+    for on in itertools.product((True, False), repeat=len(build.RIDER_FLAGS)):
+        if not all(on):
+            yield [f for f, v in zip(build.RIDER_FLAGS, on) if not v]
 
 
 def main():
@@ -37,9 +50,9 @@ def main():
     validator = os.path.abspath(args[0])
     markdown = '--markdown' in sys.argv
     rows, failed = [], 0
-    for on in itertools.product((True, False), repeat=len(build.RC2_FLAGS)):
-        off = ','.join(f for f, v in zip(build.RC2_FLAGS, on) if not v)
-        label = '+'.join(['M1'] + [SHORT[f] for f, v in zip(build.RC2_FLAGS, on) if v])
+    for off_flags in combinations():
+        off = ','.join(off_flags)
+        label = '+'.join(['M1'] + [s for f, s in SHORT.items() if f not in off_flags])
         with tempfile.TemporaryDirectory() as tmp:
             vectors = os.path.join(tmp, 'vectors')
             gen = subprocess.run([sys.executable, os.path.join(HERE, 'vectors.py'), '--off', off, '--out', vectors],

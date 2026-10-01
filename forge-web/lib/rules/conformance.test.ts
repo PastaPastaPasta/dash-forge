@@ -256,6 +256,12 @@ function runCaseV2(v: Vector): void {
       expect((v.input as { readonly codes: readonly number[] }).codes.map(v2.statusOfCode)).toEqual(v.expected)
       break
     }
+    case 'close_reason': {
+      onlyKeys(v, ['targetNumber', 'transitions'], TRANSITION_NESTED)
+      const inp = v.input as { readonly targetNumber: number; readonly transitions: readonly v2.Transition[] }
+      expect(v2.currentCloseReason(inp.transitions, inp.targetNumber)).toEqual(v.expected)
+      break
+    }
     case 'transition_sum': {
       onlyKeys(v, ['transitions'], TRANSITION_NESTED)
       const { transitions } = v.input as { readonly transitions: readonly v2.Transition[] }
@@ -509,7 +515,7 @@ interface StateInput {
 
 const TRANSITION_NESTED: Readonly<Record<string, readonly string[]>> = {
   ...NESTED_KEYS,
-  transitions: ['id', 'kind', 'actor', 'oid', 'asAuthor', 'createdAt'],
+  transitions: ['id', 'kind', 'actor', 'oid', 'asAuthor', 'createdAt', 'reason', 'dupNumber'],
 }
 
 /** The state code and merge oid, from exactly one of `transitions` and `sum` (parity: Rust `state_of`). */

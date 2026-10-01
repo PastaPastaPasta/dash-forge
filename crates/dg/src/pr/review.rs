@@ -186,6 +186,7 @@ fn draft_anchor(spec: &InlineSpec, head: &[u8], review_id: Option<&str>) -> Comm
         side: spec.side.map(super::inline::SideArg::code),
         start_line: spec.start_line,
         review_id: review_id.map(str::to_string),
+        diff_hunk: None,
     }
 }
 

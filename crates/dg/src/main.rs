@@ -576,12 +576,18 @@ pub enum IssueCommand {
         /// The comment's document id (`id` in `dg issue view --json` / `dg pr view --comments --json`).
         comment_id: String,
     },
-    /// Close an issue.
+    /// Close an issue, saying why (`--reason`; completed by default, as on GitHub).
     Close {
         /// The repository (`owner/name`).
         repo: String,
         /// The issue number.
         number: u64,
+        /// Why: completed (the default), not-planned, or duplicate.
+        #[arg(long, value_enum)]
+        reason: Option<CloseReasonArg>,
+        /// The issue (of this repository) it duplicates; implies `--reason duplicate`.
+        #[arg(long, value_name = "NUMBER")]
+        duplicate_of: Option<u32>,
     },
     /// Reopen an issue.
     Reopen {
@@ -1396,6 +1402,18 @@ pub struct StorageAddArgs {
     /// local test or a LAN-only mirror. Pushes refuse such an address otherwise.
     #[arg(long)]
     pub allow_private_uri: bool,
+}
+
+/// Why an issue is closed (`dg issue close --reason`, as `gh issue close --reason`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum CloseReasonArg {
+    /// Done.
+    Completed,
+    /// Won't be done.
+    #[value(alias = "not_planned", alias = "not planned")]
+    NotPlanned,
+    /// A duplicate of another issue.
+    Duplicate,
 }
 
 /// A storage backend mode (`repo backend set`).

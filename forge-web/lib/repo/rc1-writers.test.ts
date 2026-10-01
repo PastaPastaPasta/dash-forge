@@ -110,7 +110,7 @@ const HEAD = 'ab'.repeat(20)
  */
 const sdk = {
   documents: { query: async () => new Map() },
-  contracts: { fetch: async () => ({ schemas: rc1Contracts()['forge-community'].documentSchemas }) },
+  contracts: { fetch: async (cid: string) => ({ schemas: rc1Contracts()[cid === FORGE.collab ? 'forge-collab' : 'forge-community'].documentSchemas }) },
 } as unknown as EvoSDK
 const FUSED_STAR = (
   (rc1Contracts()['forge-community'].documentSchemas as Record<string, { indices?: { timeRange?: unknown }[] }>)['star']?.indices ?? []
@@ -254,6 +254,17 @@ describe('forge-collab writers are RC1-valid', () => {
     await setLock(sdk, auth(ALICE), REPO, { target: { id: PR, number: 2, type: 'patch', author: BOB }, lock: true, isMember: true })
     const made = await judged()
     expect(made.map((c) => [c.data['kind'], c.data['delta'], c.data['asAuthor']])).toEqual([[1, 1, 1], [13, 2, 0], [3, 16, 0], [18, 16, 0]])
+  })
+
+  it('an issue closed as not planned and as a duplicate records why (QW-069)', async () => {
+    const issue = { id: ISSUE, number: 3, type: 'issue' as const, author: BOB }
+    await setTargetState(sdk, auth(ALICE), REPO, { target: issue, action: 'close', isMember: true, closed: { reason: 'not_planned', duplicateOf: null } })
+    await setTargetState(sdk, auth(BOB), REPO, { target: issue, action: 'close', isMember: false, closed: { reason: 'duplicate', duplicateOf: 1 } })
+    const made = await judged()
+    const hasRider = 'reason' in ((rc1Contracts()['forge-collab'].documentSchemas as Record<string, { properties: object }>)['transition']?.properties ?? {})
+    expect(made.map((c) => [c.data['kind'], c.data['reason'], c.data['dupNumber']])).toEqual(
+      hasRider ? [[1, 2, undefined], [1, 3, 1]] : [[1, undefined, undefined], [1, undefined, undefined]],
+    )
   })
 })
 

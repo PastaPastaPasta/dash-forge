@@ -1,0 +1,251 @@
+[
+ {
+  "item": "QW2-010",
+  "name": "an imported review comment's body edited",
+  "type": "comment",
+  "expect": "ok",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public",
+   "diffHunk": "@@ -10,3 +10,4 @@\n a\n-b\n+c\n+d",
+   "imported": {
+    "author": "a",
+    "createdAt": 1,
+    "url": "https://github.com/x/y/pull/7#discussion_r1"
+   },
+   "asMember": {
+    "$id": 7
+   },
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "path": "src/a.rs",
+   "line": 13,
+   "side": 1
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi (edited)",
+   "vis": "public",
+   "diffHunk": "@@ -10,3 +10,4 @@\n a\n-b\n+c\n+d",
+   "imported": {
+    "author": "a",
+    "createdAt": 1,
+    "url": "https://github.com/x/y/pull/7#discussion_r1"
+   },
+   "asMember": {
+    "$id": 7
+   },
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "path": "src/a.rs",
+   "line": 13,
+   "side": 1
+  }
+ },
+ {
+  "item": "QW2-010",
+  "name": "a hunk changed",
+  "type": "comment",
+  "expect": "refused",
+  "why": "40128",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public",
+   "diffHunk": "@@ -10,3 +10,4 @@\n a\n-b\n+c\n+d",
+   "imported": {
+    "author": "a",
+    "createdAt": 1,
+    "url": "https://github.com/x/y/pull/7#discussion_r1"
+   },
+   "asMember": {
+    "$id": 7
+   },
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "path": "src/a.rs",
+   "line": 13,
+   "side": 1
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public",
+   "diffHunk": "@@ -1 +1 @@\n+forged",
+   "imported": {
+    "author": "a",
+    "createdAt": 1,
+    "url": "https://github.com/x/y/pull/7#discussion_r1"
+   },
+   "asMember": {
+    "$id": 7
+   },
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "path": "src/a.rs",
+   "line": 13,
+   "side": 1
+  }
+ },
+ {
+  "item": "QW2-010",
+  "name": "a hunk removed",
+  "type": "comment",
+  "expect": "refused",
+  "why": "40128",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public",
+   "diffHunk": "@@ -10,3 +10,4 @@\n a\n-b\n+c\n+d",
+   "imported": {
+    "author": "a",
+    "createdAt": 1,
+    "url": "https://github.com/x/y/pull/7#discussion_r1"
+   },
+   "asMember": {
+    "$id": 7
+   },
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "path": "src/a.rs",
+   "line": 13,
+   "side": 1
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public",
+   "imported": {
+    "author": "a",
+    "createdAt": 1,
+    "url": "https://github.com/x/y/pull/7#discussion_r1"
+   },
+   "asMember": {
+    "$id": 7
+   },
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "path": "src/a.rs",
+   "line": 13,
+   "side": 1
+  }
+ },
+ {
+  "item": "QW2-010",
+  "name": "a hunk added to a stored comment",
+  "type": "comment",
+  "expect": "refused",
+  "why": "40128",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public",
+   "imported": {
+    "author": "a",
+    "createdAt": 1,
+    "url": "https://github.com/x/y/pull/7#discussion_r1"
+   },
+   "asMember": {
+    "$id": 7
+   },
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "path": "src/a.rs",
+   "line": 13,
+   "side": 1
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public",
+   "imported": {
+    "author": "a",
+    "createdAt": 1,
+    "url": "https://github.com/x/y/pull/7#discussion_r1"
+   },
+   "asMember": {
+    "$id": 7
+   },
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "path": "src/a.rs",
+   "line": 13,
+   "side": 1,
+   "diffHunk": "@@ -10,3 +10,4 @@\n a\n-b\n+c\n+d"
+  }
+ }
+]

@@ -779,6 +779,7 @@ mod tests {
             body: String::new(),
             imported: forge_core::collab::Imported::default(),
             closed: true,
+            close_reason: None,
             merged_without_sha: false,
             merged_oid: Some(vec![1; 20]),
             labels: std::collections::BTreeSet::new(),

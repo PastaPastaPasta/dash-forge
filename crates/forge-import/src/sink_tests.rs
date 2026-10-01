@@ -21,13 +21,13 @@ use forge_core::collab::v2::{
 use forge_core::collab::{CommentAnchor, Imported, Label, Release, ReleaseInput};
 use forge_core::history::Freshness;
 use forge_core::network::ForgeIds;
-use forge_core::rules::v2::{TransitionMove, Visibility};
+use forge_core::rules::v2::{CloseReason, ClosedAs, TransitionMove, Visibility};
 use forge_core::rules::{EventKind, MergeBaseTips};
 use forge_core::scope::RepoRef;
 
 use crate::budget::Budget;
 use crate::chain::{Chain, Current, Written};
-use crate::model::{SrcCollab, SrcComment, SrcPatch, SrcReview, SrcTarget};
+use crate::model::{SrcCloseReason, SrcCollab, SrcComment, SrcPatch, SrcReview, SrcTarget};
 use crate::pipeline::lock;
 use crate::sink::{Ledger, Sink};
 
@@ -68,6 +68,10 @@ struct State {
     /// written, in order.
     releases: Vec<Release>,
     release_inputs: Vec<ReleaseInput>,
+    /// Each comment's `replyTo` and `reviewId` as written (document ids), by source URL, and
+    /// each review's `commentCount`.
+    links: BTreeMap<String, (Option<String>, Option<String>)>,
+    counts: BTreeMap<String, Option<u16>>,
 }
 
 /// The recorded chain.
@@ -241,12 +245,12 @@ impl Chain for &Recorded {
 
     async fn comments(&self, _: &RepoRef, id: &str) -> forge_core::Result<Vec<Written>> {
         let mut st = self.st();
-        Ok(written(&Recorded::item(&mut st, id).log, "c "))
+        Ok(written(id, &Recorded::item(&mut st, id).log, "c "))
     }
 
     async fn reviews(&self, _: &RepoRef, id: &str) -> forge_core::Result<Vec<Written>> {
         let mut st = self.st();
-        Ok(written(&Recorded::item(&mut st, id).log, "r "))
+        Ok(written(id, &Recorded::item(&mut st, id).log, "r "))
     }
 
     async fn members(&self, _: &RepoRef) -> forge_core::Result<BTreeSet<String>> {
@@ -329,10 +333,15 @@ impl Chain for &Recorded {
         _: &RepoRef,
         target_id: &str,
         _: &str,
-        _: Option<&CommentAnchor>,
+        anchor: Option<&CommentAnchor>,
         imported: &Imported,
     ) -> forge_core::Result<String> {
-        self.append(target_id, format!("c {}", imported.url)).await
+        let links = anchor.map_or((None, None), |a| (a.reply_to.clone(), a.review_id.clone()));
+        let id = self
+            .append(target_id, format!("c {}", imported.url))
+            .await?;
+        self.st().links.insert(imported.url.clone(), links);
+        Ok(id)
     }
 
     async fn review(
@@ -341,9 +350,12 @@ impl Chain for &Recorded {
         patch_id: &str,
         _: &[u8],
         _: &str,
+        comment_count: Option<u16>,
         imported: &Imported,
     ) -> forge_core::Result<String> {
-        self.append(patch_id, format!("r {}", imported.url)).await
+        let id = self.append(patch_id, format!("r {}", imported.url)).await?;
+        self.st().counts.insert(imported.url.clone(), comment_count);
+        Ok(id)
     }
 
     async fn post_event(
@@ -376,8 +388,18 @@ impl Chain for &Recorded {
         target: &Target,
         mv: &TransitionMove,
         _: Option<&[u8]>,
+        closed: Option<&ClosedAs>,
     ) -> forge_core::Result<String> {
         let mv = *mv;
+        let why = closed.map_or(String::new(), |c| {
+            format!(
+                " as {}{}",
+                c.reason.as_str(),
+                c.duplicate_of
+                    .map(|n| format!(" of #{n}"))
+                    .unwrap_or_default()
+            )
+        });
         self.land(Some(&target.id), |st| {
             // c1–c6: a move from the state the target is in, and nowhere else.
             let code = Recorded::item(st, &target.id).code;
@@ -393,7 +415,7 @@ impl Chain for &Recorded {
             self.charge(st, price("doc"));
             let item = Recorded::item(st, &target.id);
             item.code = mv.after;
-            item.log.push(format!("t {}", mv.kind));
+            item.log.push(format!("t {}{why}", mv.kind));
             Ok(format!("t-{}", item.log.len()))
         })
         .await
@@ -454,16 +476,23 @@ impl Recorded {
             self.charge(st, price("doc"));
             let item = Recorded::item(st, target_id);
             item.log.push(entry);
-            Ok(format!("d-{}", item.log.len()))
+            Ok(doc_id(target_id, item.log.len() - 1))
         })
         .await
     }
 }
 
-fn written(log: &[String], prefix: &str) -> Vec<Written> {
+/// The `$id` of the `n`th document (from 0) logged on `target_id`.
+fn doc_id(target_id: &str, n: usize) -> String {
+    format!("{target_id}/d-{n}")
+}
+
+fn written(target_id: &str, log: &[String], prefix: &str) -> Vec<Written> {
     log.iter()
-        .filter_map(|e| e.strip_prefix(prefix))
-        .map(|url| Written {
+        .enumerate()
+        .filter_map(|(n, e)| Some((n, e.strip_prefix(prefix)?)))
+        .map(|(n, url)| Written {
+            id: doc_id(target_id, n),
             author: SIGNER.into(),
             url: Some(url.to_string()),
         })
@@ -500,6 +529,8 @@ fn source(n: u32) -> SrcCollab {
                     body: format!("comment {k}"),
                     imported: imported(&format!("{path}/{number}#issuecomment-{k}")),
                     anchor: None,
+                    reply_key: None,
+                    review_key: None,
                 })
                 .collect();
             let reviews = if pr {
@@ -526,6 +557,7 @@ fn source(n: u32) -> SrcCollab {
                 body: "b".into(),
                 imported: imported(&format!("{path}/{number}")),
                 closed: number % 2 == 0,
+                close_reason: None,
                 merged_oid: (pr && number % 4 == 0).then(|| vec![2; 20]),
                 merged_without_sha: false,
                 labels,
@@ -907,4 +939,120 @@ async fn a_public_release_whose_notes_were_emptied_is_written_again_without_them
     again.result.unwrap();
     assert_eq!(again.counts.releases, 0, "stable once empty on both sides");
     assert_eq!(chain.st().release_inputs.len(), 2);
+}
+
+/// A PR's mirrored review thread (QW2-010): each review lands just before its first comment
+/// and announces how many name it; a comment names its review (`reviewId`) and a reply its
+/// root (`replyTo`), by the ids they landed at, across runs too.
+#[tokio::test(start_paused = true)]
+async fn review_comments_name_their_review_and_their_root() {
+    let at = |path: &str, t: u64| Imported {
+        created_at: t,
+        ..imported(path)
+    };
+    let line = |k: &str, t: u64, review: &str, reply: Option<&str>| SrcComment {
+        body: format!("line comment {k}"),
+        imported: at(&format!("pull/1#discussion_r{k}"), t),
+        anchor: Some(CommentAnchor {
+            path: Some("a.rs".into()),
+            line: Some(3),
+            side: Some(1),
+            diff_hunk: Some("@@ -1,3 +1,3 @@\n a\n b\n+c".into()),
+            ..CommentAnchor::default()
+        }),
+        reply_key: reply.map(|r| format!("https://github.com/o/r/pull/1#discussion_r{r}")),
+        review_key: Some(format!(
+            "https://github.com/o/r/pull/1#pullrequestreview-{review}"
+        )),
+    };
+    let review = |k: &str, t: u64| SrcReview {
+        verdict: forge_core::collab::Verdict::Comment,
+        commit_oid: vec![1; 20],
+        body: format!("review {k}"),
+        imported: at(&format!("pull/1#pullrequestreview-{k}"), t),
+    };
+    let mut src = source(1);
+    let pr = &mut src.targets[0];
+    assert_eq!(pr.kind, TargetKind::Patch);
+    pr.comments = vec![line("10", 5, "100", None)];
+    // the review was submitted after its pending comment; a later one has none
+    pr.reviews = vec![review("100", 9), review("200", 20)];
+    let chain = Recorded::new();
+    import(&chain, &src, 4, None).await.result.unwrap();
+    // a later run brings a reply (in its own one-comment review, as GitHub files it)
+    let pr = &mut src.targets[0];
+    pr.comments.push(line("11", 30, "300", Some("10")));
+    pr.reviews.push(review("300", 31));
+    import(&chain, &src, 4, None).await.result.unwrap();
+
+    let (_, log) = chain.logs()[&1].clone();
+    let docs: Vec<&str> = log
+        .iter()
+        .map(String::as_str)
+        .filter(|e| e.starts_with("c ") || e.starts_with("r "))
+        .collect();
+    assert_eq!(
+        docs,
+        [
+            "r https://github.com/o/r/pull/1#pullrequestreview-100",
+            "c https://github.com/o/r/pull/1#discussion_r10",
+            "r https://github.com/o/r/pull/1#pullrequestreview-200",
+            "r https://github.com/o/r/pull/1#pullrequestreview-300",
+            "c https://github.com/o/r/pull/1#discussion_r11",
+        ]
+    );
+    let id = |n: usize| Some(doc_id("doc-1", n));
+    let st = chain.st();
+    let url = |k: &str| format!("https://github.com/o/r/pull/1#{k}");
+    assert_eq!(st.links[&url("discussion_r10")], (None, id(0)));
+    // the first run's thread, its label and draft transition, then the second run's
+    assert_eq!(log.len(), 7, "{log:?}");
+    assert_eq!(st.links[&url("discussion_r11")], (id(1), id(5)));
+    assert_eq!(st.counts[&url("pullrequestreview-100")], Some(1));
+    assert_eq!(st.counts[&url("pullrequestreview-200")], None);
+    assert!(st.violations.is_empty(), "{:?}", st.violations);
+}
+
+/// An issue closed as a duplicate (QW-069) names its canonical by the mirror's number, which
+/// may differ from the source's; one whose canonical is not mirrored is a duplicate of nothing.
+#[tokio::test(start_paused = true)]
+async fn a_duplicate_names_its_canonical_by_its_mirror_number() {
+    let mut src = source(6);
+    // #3 and #6 are issues (every third item); #6 duplicates #3, #3 duplicates #99 (unmirrored)
+    let dup = |n: u32| SrcCloseReason {
+        reason: CloseReason::Duplicate,
+        duplicate_of: Some((n, format!("https://github.com/o/r/issues/{n}"))),
+    };
+    for t in &mut src.targets {
+        match t.number {
+            3 => (t.closed, t.close_reason) = (true, Some(dup(99))),
+            6 => t.close_reason = Some(dup(3)),
+            _ => {}
+        }
+    }
+    // the mirror numbers from 2 on: #1 lands elsewhere first
+    let chain = Recorded::new();
+    chain.st().items.push(Item {
+        target: Target {
+            kind: TargetKind::Issue,
+            id: "squat".into(),
+            number: 1,
+            author: "someone".into(),
+        },
+        url: String::new(),
+        upstream: 0,
+        code: 0,
+        labels: BTreeSet::new(),
+        log: Vec::new(),
+    });
+    import(&chain, &src, 4, None).await.result.unwrap();
+    let mirrored = chain.logs();
+    let (n3, three) = &mirrored[&3];
+    let (n6, six) = &mirrored[&6];
+    assert_eq!(*n3, 4, "numbers moved up by one");
+    assert!(three.contains(&"t 1 as duplicate".to_string()), "{three:?}");
+    assert!(
+        six.contains(&format!("t 1 as duplicate of #{n3}")),
+        "{six:?} (#6 is #{n6})"
+    );
 }

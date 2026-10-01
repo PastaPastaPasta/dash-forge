@@ -1,0 +1,19 @@
+{
+  "name": "plain_close",
+  "description": "An issue close with no reason reads as a plain close (no reason).",
+  "case": "close_reason",
+  "rules": "v2",
+  "input": {
+    "targetNumber": 7,
+    "transitions": [
+      {
+        "id": "a",
+        "kind": 1,
+        "actor": "m",
+        "asAuthor": 0,
+        "createdAt": 1
+      }
+    ]
+  },
+  "expected": null
+}
