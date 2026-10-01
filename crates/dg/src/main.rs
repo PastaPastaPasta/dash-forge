@@ -302,11 +302,13 @@ pub enum RepoCommand {
         name: Option<String>,
     },
     /// Star a repo. A new star also counts toward Trending (one more small document, about
-    /// 0.00015 DASH) unless `--no-trending` or `trending = false` in config.toml.
+    /// 0.00015 DASH) unless `--no-trending` or `trending = false` in config.toml. Where the
+    /// contract counts every star itself (RC2's fused star), there is no extra document.
     Star {
         /// The repository (`owner/name`).
         repo: String,
-        /// Star without counting toward Trending (no `starBeat`).
+        /// Star without counting toward Trending (no `starBeat`; no effect where every star
+        /// counts).
         #[arg(long)]
         no_trending: bool,
     },

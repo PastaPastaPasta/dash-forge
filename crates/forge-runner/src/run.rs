@@ -833,6 +833,13 @@ fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Resul
 
 /// Report a job's result. A failed artifact upload must not leave the run in progress for good:
 /// if the report with artifacts fails, report the result again without them, and say so.
+///
+/// The first report may have landed anyway (a timeout that "may still land"). A retry that
+/// reads the run as completed continues it, and RC2 forge-community freezes a completed run's
+/// summary, log and artifacts (S1): `dg ci report` leaves them as stored
+/// (`forge_core::ci::EVIDENCE_FIELDS`), so the retry records nothing new instead of being
+/// refused with 40128. A retry that reads a node still a block behind is refused (40128, or a
+/// stale revision); the run then stands as the first report recorded it.
 fn report_completed(cfg: &Config, r: &Report<'_>) {
     if !report(cfg, r) && !r.artifacts.is_empty() {
         report(

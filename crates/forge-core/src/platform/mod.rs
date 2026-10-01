@@ -202,6 +202,25 @@ impl LoadedContract {
     pub fn has_document_type(&self, name: &str) -> bool {
         self.0.has_document_type_for_name(name)
     }
+
+    /// Whether `document_type` lists `property` in `immutable` with a condition (Platform v5;
+    /// `v5:packages/rs-dpp/src/data_contract/document_type/accessors/v2/mod.rs:136-143`): a
+    /// replace that changes it while the condition holds is refused with 40128. `false` for an
+    /// unknown type, and for an unconditionally immutable or a mutable property.
+    pub fn freezes_when(&self, document_type: &str, property: &str) -> bool {
+        use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV2Getters;
+        self.0
+            .document_type_for_name(document_type)
+            .is_ok_and(|t| t.immutable_field_conditions().contains_key(property))
+    }
+}
+
+#[cfg(test)]
+impl LoadedContract {
+    /// `contract` as a fetch would load it, for tests.
+    pub(crate) fn for_tests(contract: DataContract) -> Self {
+        Self(Arc::new(contract))
+    }
 }
 
 impl std::fmt::Debug for LoadedContract {
@@ -1988,7 +2007,7 @@ impl<'a> WriteEngine<'a> {
             // execution-proved outcomes too, so nothing weakens for the other types, and for a
             // sign-once write "the proven state holds it" is exactly the success condition — a
             // duplicate of the same signed bytes is rejected on its nonce, not proved again.
-            // Still needed on v4.2.0-beta.7: platform#5136 made the SDK's own document put and
+            // Still needed on v5.0.0-beta.1: platform#5136 made the SDK's own document put and
             // delete wait this way for an indexOnly type, but this engine broadcasts and waits
             // itself, and the strict `wait_for_response` still refuses such an outcome.
             || async {
@@ -3156,6 +3175,17 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
                         path: path.to_string(),
                         detail,
                     },
+                });
+            }
+            // 40128: the replace changes a property the type freezes, always or by a
+            // conditional `immutable` entry (v5:packages/rs-drive-abci/src/execution/
+            // validation/state_transition/state_transitions/batch/action_validation/document/
+            // document_replace_transition_action/state_v1/mod.rs:95-138). Nothing landed.
+            StateError::DocumentImmutablePropertyChangedError(err) => {
+                return WriteFailure::Fatal(Error::FrozenField {
+                    document_type: err.document_type_name().to_string(),
+                    property: err.property().to_string(),
+                    detail: format!("40128: {err}"),
                 });
             }
             _ => {}
