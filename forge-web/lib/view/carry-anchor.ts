@@ -5,53 +5,52 @@
  * head is carried to the current head the same way: the file at the anchor's commit is diffed
  * against the file at the head (git's line diff, `text-diff.ts`), and when every line the comment
  * covers is an unchanged line of that diff, the anchor names the head and the lines' new numbers.
- * Anything else (a changed or deleted line, an old-side comment, a file-level one, an unreadable
- * or too-large file) stays on its commit, and so outdated.
+ * Anything else (a changed or deleted line, an old-side comment, a file-level one, a renamed,
+ * unreadable or too-large file) stays on its commit, and so outdated. `dg pr view` still names
+ * the commit a comment was made on.
  *
  * A carried suggestion is then appliable on the head, at its lines there: the lines it replaces
  * are byte-for-byte the ones the reviewer commented on.
  */
 
 import type { Anchor } from '../rules/v2'
-import { diffTextLines } from './text-diff'
+import { diffTextLines, splitLines } from './text-diff'
 
-/** The lines `start..end` (1-based, inclusive) of `before` in `after`, when all are unchanged and still adjacent; else null. */
-export function carryLines(before: string, after: string, start: number, end: number): { readonly start: number; readonly end: number } | null {
-  if (start < 1 || end < start) return null
-  if (before === after) return { start, end }
+/** Old line → new line for every line `after` kept unchanged from `before`; null when the diff is too large to make. */
+export type LineMap = ReadonlyMap<number, number>
+
+export function lineMap(before: string, after: string): LineMap | null {
+  if (before === after) {
+    const n = splitLines(before).length
+    return new Map(Array.from({ length: n }, (_, i) => [i + 1, i + 1] as const))
+  }
   const lines = diffTextLines(before, after)
   if (lines === null) return null
-  const moved = new Map<number, number>()
-  for (const l of lines) if (l.kind === 'context' && l.oldLine !== null && l.newLine !== null) moved.set(l.oldLine, l.newLine)
-  const first = moved.get(start)
+  const out = new Map<number, number>()
+  for (const l of lines) if (l.kind === 'context' && l.oldLine !== null && l.newLine !== null) out.set(l.oldLine, l.newLine)
+  return out
+}
+
+/** The lines `start..end` (1-based, inclusive) through `map`, when all are kept and still adjacent; else null. */
+export function carryLines(map: LineMap, start: number, end: number): { readonly start: number; readonly end: number } | null {
+  if (start < 1 || end < start) return null
+  const first = map.get(start)
   if (first === undefined) return null
-  for (let n = start; n <= end; n++) {
-    // Every line kept, and nothing inserted between them (a range stays one range).
-    if (moved.get(n) !== first + (n - start)) return null
-  }
+  // Every line kept, and nothing inserted between them (a range stays one range).
+  for (let n = start + 1; n <= end; n++) if (map.get(n) !== first + (n - start)) return null
   return { start: first, end: first + (end - start) }
 }
 
-/** Which file texts {@link carryAnchor} needs for `a` on `head`: the anchor's commit's and the head's, at its path; null when it cannot be carried. */
-export function carrySources(a: Anchor, head: string): readonly { readonly commit: string; readonly path: string }[] | null {
+/** Where `a` would be carried from: its commit, when it is a new-side line comment on another commit than `head`; else null. */
+export function carryFrom(a: Anchor, head: string): string | null {
   const h = head.toLowerCase()
-  if (a.line === null || a.side !== 1 || a.commitOid === '' || h === '' || a.commitOid === h) return null
-  return [
-    { commit: a.commitOid, path: a.path },
-    { commit: h, path: a.path },
-  ]
+  return a.line === null || a.side !== 1 || a.commitOid === '' || h === '' || a.commitOid === h ? null : a.commitOid
 }
 
-/**
- * `a` carried to `head`, or null (it stays where it is). `texts(commit, path)` is the file's text
- * there: a string, null when it is not a readable text file, undefined while unread.
- */
-export function carryAnchor(a: Anchor, head: string, texts: (commit: string, path: string) => string | null | undefined): Anchor | null {
-  if (carrySources(a, head) === null || a.line === null) return null
-  const before = texts(a.commitOid, a.path)
-  const after = texts(head.toLowerCase(), a.path)
-  if (typeof before !== 'string' || typeof after !== 'string') return null
-  const at = carryLines(before, after, a.startLine ?? a.line, a.line)
+/** `a` carried to `head` through the line map of its file between its commit and the head (null: unread or too large), or null. */
+export function carryAnchor(a: Anchor, head: string, map: LineMap | null | undefined): Anchor | null {
+  if (a.line === null || carryFrom(a, head) === null || map == null) return null
+  const at = carryLines(map, a.startLine ?? a.line, a.line)
   if (at === null) return null
   return { ...a, commitOid: head.toLowerCase(), line: at.end, startLine: a.startLine === null ? null : at.start }
 }

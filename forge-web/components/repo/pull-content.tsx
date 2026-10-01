@@ -98,7 +98,7 @@ import { inlineCommentIds, lineKey, repliesByRoot } from '@/lib/view/inline-thre
 import { appliedSuggestions, prCommits, prHaveSet } from '@/lib/view/pr-commits'
 import { anchorOnHead } from '@/lib/view/inline-threads'
 import { snippetKey, snippetSource } from '@/lib/view/anchor-snippet'
-import { carryAnchor, carrySources } from '@/lib/view/carry-anchor'
+import { carryAnchor, carryFrom, lineMap, type LineMap } from '@/lib/view/carry-anchor'
 import type { Anchor } from '@/lib/rules/v2'
 import { AnchorContext, useSnippetTexts } from '@/components/repo/anchor-snippet'
 import { WALK_COMMIT_CAP } from '@/lib/merge/objects'
@@ -480,32 +480,64 @@ function PullPage({
   }, [])
   // Suggestions and "Update branch": commits to the PR's source branch (the fork).
   const applied = useMemo(() => appliedSuggestions(commits.data?.commits ?? []), [commits.data])
-  // The code each inline comment was left on, for Conversation (QW2-049): read on that tab only.
-  const snippetSources = useMemo(() => thread.comments.flatMap((c) => (c.anchor === null ? [] : [snippetSource(c.anchor)].filter((s) => s !== null))), [thread.comments])
-  const snippetTexts = useSnippetTexts(tab === 'conversation' ? headReader : null, snippetSources)
   // Comments left on an older head whose lines the head kept unchanged (QW3-015): carried to the
-  // head at those lines' new numbers, so they stay current in Files changed and their suggestions
-  // stay appliable, as on GitHub. Only the files those comments name are read.
-  const carrySrc = useMemo(() => thread.comments.flatMap((c) => (c.anchor === null ? [] : carrySources(c.anchor, pull.headOid) ?? [])), [thread.comments, pull.headOid])
-  const carryTexts = useSnippetTexts(carrySrc.length === 0 ? null : headReader, carrySrc)
+  // head at those lines' new numbers, so they stay current (inline in Files changed, not Outdated
+  // in Conversation) and their suggestions stay appliable, as on GitHub.
+  const carryPairs = useMemo(() => {
+    const out = new Map<string, { readonly from: string; readonly path: string }>()
+    for (const c of thread.comments) {
+      const from = c.anchor === null ? null : carryFrom(c.anchor, pull.headOid)
+      if (from !== null && c.anchor !== null) out.set(`${from}\0${c.anchor.path}`, { from, path: c.anchor.path })
+    }
+    return [...out.values()]
+  }, [thread.comments, pull.headOid])
+  // The code each inline comment was left on, for Conversation (QW2-049), and the files a carry
+  // compares: one cache, read on Conversation and (to carry) on Files changed.
+  const snippetSources = useMemo(
+    () => [
+      ...thread.comments.flatMap((c) => (c.anchor === null ? [] : [snippetSource(c.anchor)].filter((s) => s !== null))),
+      ...carryPairs.flatMap((p) => [
+        { commit: p.from, path: p.path },
+        { commit: pull.headOid.toLowerCase(), path: p.path },
+      ]),
+    ],
+    [thread.comments, carryPairs, pull.headOid],
+  )
+  const snippetTexts = useSnippetTexts(tab === 'conversation' || (tab === 'files' && carryPairs.length > 0) ? headReader : null, snippetSources)
+  // One line diff per file and older head, however many comments sit on it.
+  const lineMaps = useMemo(() => {
+    const out = new Map<string, LineMap | null>()
+    for (const p of carryPairs) {
+      const before = snippetTexts.get(snippetKey({ commit: p.from, path: p.path }))
+      const after = snippetTexts.get(snippetKey({ commit: pull.headOid.toLowerCase(), path: p.path }))
+      if (typeof before === 'string' && typeof after === 'string') out.set(`${p.from}\0${p.path}`, lineMap(before, after))
+    }
+    return out
+  }, [carryPairs, snippetTexts, pull.headOid])
   const carried = useMemo(() => {
     const out = new Map<string, Anchor>()
+    if (lineMaps.size === 0) return out
     for (const c of thread.comments) {
-      const a = c.anchor === null ? null : carryAnchor(c.anchor, pull.headOid, (commit, path) => carryTexts.get(snippetKey({ commit, path })))
+      const a = c.anchor === null ? null : carryAnchor(c.anchor, pull.headOid, lineMaps.get(`${c.anchor.commitOid}\0${c.anchor.path}`))
       if (a !== null) out.set(c.id, a)
     }
     return out
-  }, [thread.comments, pull.headOid, carryTexts])
-  const comments = useMemo(() => (carried.size === 0 ? thread.comments : thread.comments.map((c) => (carried.has(c.id) ? { ...c, anchor: carried.get(c.id) as Anchor } : c))), [thread.comments, carried])
+  }, [thread.comments, pull.headOid, lineMaps])
+  const withCarried = useCallback((c: CommentView): CommentView => {
+    const a = carried.get(c.id)
+    return a === undefined ? c : { ...c, anchor: a }
+  }, [carried])
+  const comments = useMemo(() => (carried.size === 0 ? thread.comments : thread.comments.map(withCarried)), [thread.comments, carried, withCarried])
   const anchorContext = (c: CommentView, label = true): JSX.Element | null => {
-    if (c.anchor === null) return null
-    // The code it was left on (its own commit's lines); current when carried to the head.
-    const source = snippetSource(c.anchor)
+    // A carried comment shows where it is on the head now.
+    const anchor = carried.get(c.id) ?? c.anchor
+    if (anchor === null) return null
+    const source = snippetSource(anchor)
     return (
       <AnchorContext
-        anchor={c.anchor}
+        anchor={anchor}
         text={source === null ? null : snippetTexts.get(snippetKey(source))}
-        outdated={!anchorOnHead(carried.get(c.id) ?? c.anchor, pull.headOid)}
+        outdated={!anchorOnHead(anchor, pull.headOid)}
         applied={applied.get(c.id) ?? null}
         label={label}
       />
@@ -780,10 +812,13 @@ function PullPage({
   const conversation = useMemo(
     () =>
       foldMirroredReviews(
-        timeline.filter((t) => !(t.kind === 'comment' && t.comment.replyTo !== null && inlineIds.has(t.comment.id))),
+        timeline
+          .filter((t) => !(t.kind === 'comment' && t.comment.replyTo !== null && inlineIds.has(t.comment.id)))
+          // A comment carried to the head (QW3-015) names its place there.
+          .map((t) => (t.kind === 'comment' && carried.has(t.comment.id) ? { ...t, comment: withCarried(t.comment) } : t)),
         (it) => (it.kind === 'review' ? trustedOrigin(it.review.origin, it.review.reviewer, trust) : trustedOrigin(it.comment.origin, it.comment.author, trust)),
       ),
-    [timeline, inlineIds, trust],
+    [timeline, inlineIds, trust, carried, withCarried],
   )
   const resolved = new Set(review.resolvedThreads)
   const eventText = (e: Event): string | null => (e.kind === 'headUpdate' && e.id ? phrases.data?.get(e.id) ?? null : null)
