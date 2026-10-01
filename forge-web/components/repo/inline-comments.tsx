@@ -19,6 +19,8 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
+import { shownHunk } from '@/lib/view/diff-hunk'
+import { DiffHunkLines } from '@/components/repo/diff-hunk-view'
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { CheckCircle2, FileDiff, MessageSquare, Pencil, Trash2 } from 'lucide-react'
 
@@ -334,9 +336,13 @@ interface ThreadProps {
   suggestions?: SuggestionActions
 }
 
-/** A thread shown away from its line, headed by where it points. */
+/**
+ * A thread shown away from its line, headed by where it points, and (a mirrored thread, QW2-010)
+ * by its source's diff hunk: the line it was left on is not in the current diff.
+ */
 function AnchoredThread({ thread, ...rest }: ThreadProps & { thread: InlineThread }): JSX.Element {
   const a = thread.root.anchor
+  const hunk = shownHunk(thread.root, useMirrorTrust(rest.repo))
   return (
     <div>
       <p className="mb-1 font-mono text-[12px] text-anvil-600 dark:text-anvil-400">
@@ -348,6 +354,11 @@ function AnchoredThread({ thread, ...rest }: ThreadProps & { thread: InlineThrea
           </>
         ) : null}
       </p>
+      {hunk !== null ? (
+        <div className="mb-1 overflow-hidden rounded-md border border-anvil-200 dark:border-anvil-800" data-testid="outdated-hunk">
+          <DiffHunkLines hunk={hunk} anchor={a} />
+        </div>
+      ) : null}
       <Thread thread={thread} {...rest} />
     </div>
   )

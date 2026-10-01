@@ -70,7 +70,7 @@ export function stateToggleLabel(open: boolean, withComment: boolean, noun: 'iss
 }
 
 /** Close a popover on Escape and on a pointer press outside `ref` while it is open. */
-function useDismiss(open: boolean, ref: RefObject<HTMLElement>, onDismiss: () => void): void {
+export function useDismiss(open: boolean, ref: RefObject<HTMLElement>, onDismiss: () => void): void {
   const dismiss = useRef(onDismiss)
   dismiss.current = onDismiss
   useEffect(() => {
