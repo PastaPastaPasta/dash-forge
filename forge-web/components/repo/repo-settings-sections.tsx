@@ -238,7 +238,7 @@ export function GeneralSettings({
             <div className="flex flex-wrap items-center gap-2">
               <select
                 id="default-branch"
-                className="rounded-md border border-anvil-300 bg-white px-2 py-1.5 font-mono text-dense coarse:h-11 coarse:text-base dark:border-anvil-700 dark:bg-anvil-950"
+                className="rounded-md border border-anvil-300 bg-white px-2 py-1.5 font-mono text-dense coarse:h-11 coarse:text-base dark:border-anvil-700 dark:bg-anvil-950 disabled:cursor-not-allowed disabled:border-anvil-200 disabled:bg-anvil-100 disabled:text-anvil-600 dark:disabled:border-anvil-800 dark:disabled:bg-anvil-900 dark:disabled:text-anvil-400"
                 value={shownBranch}
                 disabled={!maintainer || cfg.sealed}
                 onChange={(e) => setBranch(e.target.value)}
@@ -789,7 +789,7 @@ function SourcePicker({
       onChange={(e) => onPick(e.target.value)}
       aria-invalid={errorId !== undefined}
       aria-describedby={errorId}
-      className="h-9 min-w-0 rounded-md border border-anvil-300 bg-white px-2 text-dense text-anvil-900 coarse:h-11 coarse:text-base sm:w-64 dark:border-anvil-700 dark:bg-anvil-950 dark:text-anvil-100"
+      className="h-9 min-w-0 rounded-md border border-anvil-300 bg-white px-2 text-dense text-anvil-900 coarse:h-11 coarse:text-base sm:w-64 dark:border-anvil-700 dark:bg-anvil-950 dark:text-anvil-100 disabled:cursor-not-allowed disabled:border-anvil-200 disabled:bg-anvil-100 disabled:text-anvil-600 dark:disabled:border-anvil-800 dark:disabled:bg-anvil-900 dark:disabled:text-anvil-400"
       data-testid="required-check-source"
     >
       <option value="" disabled>

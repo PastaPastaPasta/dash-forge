@@ -24,7 +24,7 @@ import { useMemo } from 'react'
 import Link from 'next/link'
 import { GitMerge, GitPullRequest, GitPullRequestClosed, X } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { branchName } from '@/lib/view'
+import { ARCHIVED_REASON, branchName } from '@/lib/view'
 import {
   PULL_PAGE_SIZE,
   emptyPullsBody,
@@ -77,6 +77,7 @@ import { CheckDot, useCheckOutcomes } from '@/components/repo/check-dot'
 import { HiddenNote } from '@/components/repo/hidden-note'
 import { MirrorNote } from '@/components/repo/mirror-note'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
+import { Button } from '@/components/ui/button'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
 
@@ -151,12 +152,19 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <SearchBox id="pull-search" label="Search pull requests" search={search} placeholder="is:open label:bug author:@me" />
         <TriageNav addr={addr} />
-        <Link
-          href={repoHref('/repo/pulls/new', addr)}
-          className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md bg-forge-700 px-2.5 text-dense font-medium text-white hover:bg-forge-800 coarse:h-11"
-        >
-          <GitPullRequest className="h-3.5 w-3.5" aria-hidden /> New pull request
-        </Link>
+        {home.config?.archived === true ? (
+          // An archived repo takes no new pull request (QW3-017), as its New issue says.
+          <Button variant="primary" size="sm" disabled title={ARCHIVED_REASON} data-testid="new-pull-archived">
+            <GitPullRequest className="h-3.5 w-3.5" aria-hidden /> New pull request
+          </Button>
+        ) : (
+          <Link
+            href={repoHref('/repo/pulls/new', addr)}
+            className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md bg-forge-700 px-2.5 text-dense font-medium text-white hover:bg-forge-800 coarse:h-11"
+          >
+            <GitPullRequest className="h-3.5 w-3.5" aria-hidden /> New pull request
+          </Link>
+        )}
       </div>
       <DroppedNote search={search} reason={pullDroppedReason(search.dropped, search.notFound)} testId="pull-search-dropped" />
       <AuthorLoginNote login={query.authorLogin} notFound={search.notFound} />

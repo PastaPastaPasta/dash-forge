@@ -15,7 +15,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 
 import { DraftMarkError, createPatch, findForks, readRefs, repoKey, type ResolvedRef, type RepoRef } from '@/lib/repo'
-import { branchName, commitSubject, readCommit, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
+import { ARCHIVED_REASON, branchName, commitSubject, readCommit, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
 import { preferring, type PullComparison } from '@/lib/view/pull-diff'
 import { branchRefName, headKeyOf, sortBranches } from '@/lib/view/refs'
 import { dropPrDraft, loadPrDraft, savePrDraft } from '@/lib/view/pr-draft'
@@ -149,7 +149,8 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
       ? null
       : { title: title.trim(), body, baseRefName: base, sourceRepoId: head.repo.repoId, sourceRefName: head.refName, headOid: head.oid }
   const cost = composeCost(repo, 'patch', input ?? { title: title.trim(), body })
-  const composeBlock = privateComposeBlock(home)
+  // An archived repo is read-only (QW3-017): no pull request opens there, from any link.
+  const composeBlock = home.config?.archived === true ? ARCHIVED_REASON : privateComposeBlock(home)
   const tooLong = composeTooLong(repo, 'patch', input ?? { title: title.trim(), body })
   const blocked = input === null || title.trim() === '' || noBase || sameBranch || nothing || composeBlock !== null || tooLong
 

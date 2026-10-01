@@ -106,6 +106,7 @@ import { importedReviewers, type ReviewerCardRow } from '@/lib/view/review-fold'
 import { foldMirroredReviews, mirroredCommentText } from '@/lib/view/mirror-review-fold'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
 import { readUntil, retryWhileMissing } from '@/lib/view/retry'
+import { ownReviewScope, rememberOwnReview, unshownOwnReviews } from '@/lib/view/own-reviews'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useIntent } from '@/hooks/use-intent'
@@ -170,6 +171,9 @@ const VERDICT_RECORDS: Readonly<Record<VerdictInput, string>> = {
   requestChanges: 'a request for changes',
   comment: 'a comment-only review',
 }
+
+/** How the "your review is on Platform" note names a review this tab submitted. */
+const OWN_VERDICT: Readonly<Record<string, string>> = { approve: 'approval', requestChanges: 'request for changes', comment: 'review' }
 
 /** The write the confirm dialog is about to sign. */
 type Pending =
@@ -402,6 +406,10 @@ function PullPage({
   const arrivedAll = arriving !== null && reviewShows(thread, arriving)
   if (arrivedAll) setArriving(null)
   const stillArriving = arriving !== null && !arrivedAll && !refreshing ? { shown: commentsShown(thread, arriving.commentIds), total: arriving.commentIds.length } : null
+  // A review this tab submitted that the node read does not show yet, kept across a reload (QW3-047).
+  const ownScope = identity === null ? null : ownReviewScope(network, repo.repoId, pull.number, identity)
+  const ownPending = ownScope === null ? [] : unshownOwnReviews(ownScope, new Set(thread.reviews.map((r) => r.id)))
+  const ownWaiting = ownPending[0] ?? null
 
   // ---- controls ---------------------------------------------------------------------------------
   // `requireChecks`: the newest trusted run per name on the head passed, and at least one was
@@ -620,9 +628,11 @@ function PullPage({
         return
       case 'review': {
         const r = await createReview(sdk, signer, repo, { patchId: pull.id, verdict: p.verdict, commitOid: pull.headOid, body: p.body, intent, post: postContext })
+        // On Platform now; remembered until a read shows it, so a reload before then still says so.
+        if (ownScope !== null) rememberOwnReview(ownScope, { id: r.documentId, verdict: p.verdict, at: Date.now() })
         setComment('')
         commentIntent.renew()
-        refresh((t) => t.reviews.some((x) => x.id === r.documentId))
+        refresh((t) => t.reviews.some((x) => x.id === r.documentId), SUBMIT_WAIT)
         return
       }
       case 'draft':
@@ -982,6 +992,17 @@ function PullPage({
             Your review is on Platform; {stillArriving.total - stillArriving.shown} of {stillArriving.total} of its comments are still arriving at the node this page reads.
           </span>
           <Button size="sm" variant="outline" onClick={() => arriving !== null && refresh((t) => reviewShows(t, arriving), SUBMIT_WAIT)}>
+            Refresh
+          </Button>
+        </div>
+      ) : null}
+      {ownWaiting !== null && stillArriving === null && !refreshing ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-caution/40 bg-caution/5 px-4 py-2 text-dense" role="status" data-testid="own-review-pending">
+          <span className="min-w-0 flex-1">
+            Your {OWN_VERDICT[ownWaiting.verdict] ?? 'review'} is on Platform (submitted <Time ms={ownWaiting.at} />), but the node this page reads doesn&apos;t show it yet.
+            {isMember ? '' : ' It shows here, marked as not counted, once it does.'}
+          </span>
+          <Button size="sm" variant="outline" onClick={() => refresh((t) => t.reviews.some((x) => x.id === ownWaiting.id), SUBMIT_WAIT)}>
             Refresh
           </Button>
         </div>
