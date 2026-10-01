@@ -110,6 +110,13 @@ CONTRACT_OF.update({t: 'forge-community' for t in ('event', 'authorEvent', 'mile
 
 if F['fused_star']:
     del BASE['starBeat']   # C1: the star carries the trending window
+# RC2 member roles: a writer document carries its role, and every writer-gated type its claimed `r`
+# (1: the role a maintainer, an author, a runner or a role-1 writer sends)
+ROLE_GATED = ('refUpdate', 'packManifest', 'chunk', 'label', 'transition', 'event', 'milestone', 'checkRun')
+if F['member_roles']:
+    BASE['writer']['role'] = 1
+    for _t in ROLE_GATED:
+        BASE[_t]['r'] = 1
 
 CASES = []
 REPLACES = []   # (contract) <contract>.replace.json: a replace of `stored` by `doc`
@@ -674,6 +681,57 @@ if F['event_as_maintainer']:
 else:
     ok('MOD', 'a hide with no proof (readers judge it)', 'event', **dict(HIDE, asMaintainer=DROP))
     no('MOD', 'no asMaintainer property', 'event', 'additionalProperties', **HIDE)
+
+# ---------------- RC2 member roles (design/v5/RECUT-OR-NEVER.md §3) ----------------
+# Whether a writer document's role equals `r` is the writer leaf's `where` (40127 on chain:
+# forge-contracts/scripts/rc1-live.mjs, group roles); here, what one document can claim.
+if F['member_roles']:
+    ok('ROLES', 'a triage writer (role 2)', 'writer', role=2)
+    ok('ROLES', 'a reader (role 3)', 'writer', role=3)
+    no('ROLES', 'writer role 0', 'writer', 'minimum', role=0)
+    no('ROLES', 'writer role 4', 'writer', 'maximum', role=4)
+    no('ROLES', 'writer without a role', 'writer', 'required', role=DROP)
+    for t in ROLE_GATED:
+        no('ROLES', f'{t} without r', t, 'required', r=DROP)
+        no('ROLES', f'{t} claiming r 0', t, 'minimum', r=0)
+    # push class and check runs: role 1 only
+    for t in ('refUpdate', 'packManifest', 'chunk', 'checkRun'):
+        no('ROLES', f'{t} claiming triage (r 2)', t, 'maximum', r=2)
+    # labels and milestones: writer or triage, never a reader
+    for t in ('label', 'milestone'):
+        ok('ROLES', f'{t} by triage (r 2)', t, r=2)
+        no('ROLES', f'{t} claiming reader (r 3)', t, 'maximum', r=3)
+    # transitions: triage closes, reopens and locks; merge, draft and ready need r 1
+    for label, kw in (('issue close', {}), ('issue reopen', dict(kind=2, delta=-1)), ('issue lock', dict(kind=3, delta=16)),
+                      ('issue unlock', dict(kind=4, delta=-16)), ('PR close', dict(targetKind=1, kind=11)),
+                      ('PR reopen', dict(targetKind=1, kind=12, delta=-1)),
+                      ('draft PR close', dict(targetKind=1, kind=16)), ('draft PR reopen', dict(targetKind=1, kind=17, delta=-1)),
+                      ('PR lock', dict(targetKind=1, kind=18, delta=16)), ('PR unlock', dict(targetKind=1, kind=19, delta=-16))):
+        ok('ROLES', f'triage {label}', 'transition', r=2, **kw)
+    no('ROLES', 'triage merge', 'transition', 'e_mergeOid', r=2, targetKind=1, kind=13, delta=2, oid=b(170, 20))
+    no('ROLES', 'triage draft', 'transition', 'e_mergeOid', r=2, targetKind=1, kind=14, delta=8)
+    no('ROLES', 'triage ready', 'transition', 'e_mergeOid', r=2, targetKind=1, kind=15, delta=-8)
+    ok('ROLES', 'an author drafts as r 1 (the author operand proves no role)', 'transition',
+       targetKind=1, kind=14, delta=8, asAuthor=7)
+    no('ROLES', 'transition claiming reader (r 3)', 'transition', 'maximum', r=3)
+    # events: triage labels, assigns, requests reviews, resolves threads and sets milestones
+    for label, kw in (('label+', {}), ('label-', dict(kind=5)), ('assign', dict(kind=6, refId=i(9))),
+                      ('unassign', dict(kind=7, refId=i(9))), ('thread resolve', dict(kind=11, value=DROP, refId=i(5))),
+                      ('thread unresolve', dict(kind=12, value=DROP, refId=i(5))),
+                      ('review request', dict(kind=13, value=DROP, refId=i(9))),
+                      ('review request remove', dict(kind=14, value=DROP, refId=i(9))),
+                      ('milestone set', dict(kind=17, value='v1')), ('milestone clear', dict(kind=18, value='v1'))):
+        ok('ROLES', f'triage {label} event', 'event', r=2, **kw)
+    for label, kw in (('retarget', dict(kind=8, value='refs/heads/dev')),
+                      ('review dismiss', dict(kind=15, value='stale', refId=i(5))),
+                      ('head update', dict(kind=16, value=DROP, oid=b(2, 20))), ('pin', dict(kind=19, value=DROP)),
+                      ('unpin', dict(kind=20, value=DROP)), ('policy bypass', dict(kind=23, value='1 approval', oid=b(2, 20)))):
+        ok('ROLES', f'writer {label} event (r 1)', 'event', **kw)
+        no('ROLES', f'triage {label} event', 'event', 't_triageKinds', r=2, **kw)
+    no('ROLES', 'event claiming reader (r 3)', 'event', 'maximum', r=3)
+else:
+    no('ROLES', 'no role property', 'writer', 'additionalProperties', role=1)
+    no('ROLES', 'no r property', 'transition', 'additionalProperties', r=1)
 
 # Rules that read a total, a time or a height: judged on chain only (forge-contracts/scripts/rc1-live.mjs).
 LIVE_ONLY = {('issue', 'dense'), ('patch', 'dense'), ('transition', 'c1_closedAfter'), ('transition', 'c2_openAfter'),

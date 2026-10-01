@@ -105,9 +105,19 @@ FLAGS = dict(
     # registration by a fee probe like S2/S3 (<= +10 % per hide), and fixed once registered
     # (refersTo / findBy never change on an update).
     event_as_maintainer=True,    # MOD: a hide / unhide (event kinds 24/25) proves its writer a maintainer
+    # ---- RC2 member roles (design/v5/RECUT-OR-NEVER.md, owner decision 2026-10-01): writer.role
+    # 1 writer / 2 triage / 3 reader, and a claimed `r` the writer leaf proves on every gated type.
+    # Re-cut-or-never: a `where` added to a registered writer leaf is refused on update.
+    member_roles=True,           # ROLES: writer.role + r on refUpdate/packManifest/chunk/label/transition/event/milestone/checkRun
 )
 # The RC2 items with a flag: forge-contracts/schema/variants.py validates every combination.
-RC2_FLAGS = ('check_evidence_freeze', 'review_to_author', 'review_author', 'fused_star', 'event_as_maintainer')
+RC2_FLAGS = ('check_evidence_freeze', 'review_to_author', 'review_author', 'fused_star', 'event_as_maintainer',
+             'member_roles')
+# The event and transition kinds only a role-1 writer (or a maintainer) may write: retarget (8),
+# review dismiss (15), head update (16), pin / unpin (19, 20), policy bypass (23); merge (13),
+# draft (14), ready (15).
+WRITER_EVENT_KINDS = [8, 15, 16, 19, 20, 23]
+WRITER_TRANSITION_KINDS = [13, 14, 15]
 # The riders: independent of the RC2 items (other types and properties), so variants.py turns
 # each off only with every RC2 item on, the largest build.
 RIDER_FLAGS = ('close_reason', 'review_hunk')
@@ -621,6 +631,33 @@ def build(flags):
         add_prop(ev, 'asMaintainer', ident(refersTo=find_leaf("maintainer", CORE)))
         ev['propertyConstraints']['hideByMaint'] = {"ifThen": [{"in": ["kind", HIDE_KINDS]},
                                                                {"equal": ["asMaintainer", "$ownerId"]}]}
+
+    # ======================= RC2 member roles (design/v5/RECUT-OR-NEVER.md §3) =======================
+    if f['member_roles']:
+        # A writer document carries its role: 1 writer, 2 triage, 3 reader (private repos). Every
+        # writer-gated type claims a role `r`, and its writer leaf adds `where {"role": "r"}`, so
+        # the leaf proves the claim (40127 on a mismatch). The other operands (maintainer,
+        # author, runner) prove nothing about `r`; they send 1. A reader (3) matches no gate.
+        # `$defs.member` (asMember) and the repoKey recipient operands stay role-blind: a reader
+        # receives the repo key; readers count approvals and provenance only from maintainers
+        # and role-1 writers (forge-v2.md §3).
+        add_prop(cd['writer'], 'role', {"type": "integer", "minimum": 1, "maximum": 3}, required=True)
+
+        def writer_leaf(t):
+            return next(leaf for leaf in leaves(t['ownerRefersTo']) if leaf['documentType'] == 'writer')
+
+        for home, t, hi in ((cd, 'refUpdate', 1), (cd, 'packManifest', 1), (cd, 'chunk', 1), (ld, 'transition', 2),
+                            (ev_home, 'event', 2), (cd, 'label', 2), (ev_home, 'milestone', 2), (md, 'checkRun', 1)):
+            add_prop(home[t], 'r', {"type": "integer", "minimum": 1, "maximum": hi}, required=True)
+            writer_leaf(home[t]).setdefault('where', {})['role'] = 'r'
+        # Triage closes, reopens and locks; merge, draft and ready need role 1. transition keeps 15
+        # of its 16 rules: the role check joins e_mergeOid.
+        tr = ld['transition']
+        tr['propertyConstraints']['e_mergeOid'] = {"allOf": [
+            tr['propertyConstraints']['e_mergeOid'],
+            {"ifThen": [{"in": ["kind", WRITER_TRANSITION_KINDS]}, {"equal": ["r", 1]}]}]}
+        ev_home['event']['propertyConstraints']['t_triageKinds'] = {
+            "ifThen": [{"in": ["kind", WRITER_EVENT_KINDS]}, {"equal": ["r", 1]}]}
 
     core['description'] = "Dash Forge v2 core: repositories, refs, packs, members, releases, labels, topics"
     collab['description'] = "Dash Forge v2 collaboration: issues, pull requests, transitions, comments, reviews, repo keys"

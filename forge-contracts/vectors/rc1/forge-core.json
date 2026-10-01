@@ -45,7 +45,8 @@
    "vis": "public",
    "consentBy": {
     "$id": 9
-   }
+   },
+   "role": 1
   }
  },
  {
@@ -81,7 +82,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -160,7 +162,8 @@
      1,
      20
     ]
-   }
+   },
+   "r": 1
   }
  },
  {
@@ -181,7 +184,8 @@
      0,
      100
     ]
-   }
+   },
+   "r": 1
   }
  },
  {
@@ -212,7 +216,8 @@
    },
    "name": "good first issue",
    "color": "#00ff00",
-   "description": "d"
+   "description": "d",
+   "r": 1
   }
  },
  {
@@ -250,7 +255,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -275,7 +281,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -300,7 +307,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -325,7 +333,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -350,7 +359,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -375,7 +385,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -400,7 +411,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -425,7 +437,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -450,7 +463,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -475,7 +489,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -500,7 +515,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -525,7 +541,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -551,7 +568,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -577,7 +595,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -603,7 +622,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -629,7 +649,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -655,7 +676,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -681,7 +703,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -707,7 +730,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -733,7 +757,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -759,7 +784,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -785,7 +811,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -811,7 +838,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -837,7 +865,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -863,7 +892,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -889,7 +919,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -915,7 +946,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -941,7 +973,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -967,7 +1000,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -993,7 +1027,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -1019,7 +1054,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -1045,7 +1081,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -1071,7 +1108,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -1097,7 +1135,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -1123,7 +1162,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -1180,7 +1220,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -1206,6 +1247,7 @@
     ]
    },
    "vis": "public",
+   "r": 1,
    "prevOid": {
     "$b": [
      1,
@@ -1668,6 +1710,7 @@
     ]
    },
    "vis": "private",
+   "r": 1,
    "enc": {
     "$b": [
      5,
@@ -1700,7 +1743,8 @@
      20
     ]
    },
-   "vis": "private"
+   "vis": "private",
+   "r": 1
   }
  },
  {
@@ -1727,6 +1771,7 @@
     ]
    },
    "vis": "public",
+   "r": 1,
    "enc": {
     "$b": [
      5,
@@ -1758,7 +1803,8 @@
      1,
      20
     ]
-   }
+   },
+   "r": 1
   }
  },
  {
@@ -1784,7 +1830,8 @@
      20
     ]
    },
-   "vis": "internal"
+   "vis": "internal",
+   "r": 1
   }
  },
  {
@@ -2065,6 +2112,7 @@
    "objectCount": 0,
    "chunkCount": 0,
    "storage": 1,
+   "r": 1,
    "uris": [
     "https://bucket.example/o/4a3f5093cd8d639b3f998ec93e3ebb5628c53b819f12895a4a54c62f6e8746fa"
    ]
@@ -2131,7 +2179,8 @@
    },
    "name": "good first issue",
    "color": "#00ff00",
-   "description": "d"
+   "description": "d",
+   "r": 1
   }
  },
  {
@@ -2144,6 +2193,7 @@
     "$id": 1
    },
    "name": "good first issue",
+   "r": 1,
    "enc": {
     "$b": [
      5,
@@ -2201,7 +2251,8 @@
    "vis": "public",
    "consentBy": {
     "$id": 9
-   }
+   },
+   "role": 1
   }
  },
  {
@@ -2251,7 +2302,8 @@
    "memberId": {
     "$id": 9
    },
-   "vis": "public"
+   "vis": "public",
+   "role": 1
   }
  },
  {
@@ -2270,7 +2322,8 @@
    "vis": "public",
    "consentBy": {
     "$id": 8
-   }
+   },
+   "role": 1
   }
  },
  {
@@ -2308,7 +2361,8 @@
      1,
      20
     ]
-   }
+   },
+   "r": 1
   }
  },
  {
@@ -2333,7 +2387,8 @@
      1,
      20
     ]
-   }
+   },
+   "r": 1
   }
  },
  {
@@ -2358,7 +2413,8 @@
      1,
      20
     ]
-   }
+   },
+   "r": 1
   }
  },
  {
@@ -2384,7 +2440,8 @@
      1,
      20
     ]
-   }
+   },
+   "r": 1
   }
  },
  {
@@ -2410,7 +2467,8 @@
      1,
      20
     ]
-   }
+   },
+   "r": 1
   }
  },
  {
@@ -2437,6 +2495,7 @@
      20
     ]
    },
+   "r": 1,
    "offsetIndexParts": 0
   }
  },
@@ -2462,7 +2521,8 @@
      0,
      100
     ]
-   }
+   },
+   "r": 1
   }
  },
  {
@@ -2488,6 +2548,7 @@
     ]
    },
    "vis": "public",
+   "r": 1,
    "prevOid": {
     "$b": [
      2,
@@ -2519,6 +2580,7 @@
     ]
    },
    "vis": "public",
+   "r": 1,
    "prevOid": {
     "$b": [
      2,
@@ -2550,7 +2612,8 @@
      25
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -2577,6 +2640,7 @@
     ]
    },
    "vis": "public",
+   "r": 1,
    "prevOid": {
     "$b": [
      1,
@@ -2639,7 +2703,8 @@
      1,
      20
     ]
-   }
+   },
+   "r": 1
   }
  },
  {
@@ -2664,7 +2729,8 @@
      1,
      40
     ]
-   }
+   },
+   "r": 1
   }
  },
  {
@@ -2683,7 +2749,8 @@
    "sizeBytes": 14700,
    "objectCount": 10,
    "chunkCount": 1,
-   "storage": 0
+   "storage": 0,
+   "r": 1
   }
  },
  {
@@ -2709,6 +2776,7 @@
      320
     ]
    },
+   "r": 1,
    "supersedes": {
     "$b": [
      2,
@@ -2734,7 +2802,8 @@
    "sizeBytes": 14700,
    "objectCount": 10,
    "chunkCount": 1,
-   "storage": 0
+   "storage": 0,
+   "r": 1
   }
  },
  {
@@ -2760,7 +2829,8 @@
      1,
      60
     ]
-   }
+   },
+   "r": 1
   }
  },
  {
@@ -2787,6 +2857,7 @@
      20
     ]
    },
+   "r": 1,
    "supersedes": {
     "$b": [
      2,
@@ -3284,7 +3355,8 @@
      1,
      20
     ]
-   }
+   },
+   "r": 1
   }
  },
  {
@@ -3309,7 +3381,8 @@
      1,
      20
     ]
-   }
+   },
+   "r": 1
   }
  },
  {
@@ -3335,7 +3408,8 @@
      1,
      20
     ]
-   }
+   },
+   "r": 1
   }
  },
  {
@@ -3361,7 +3435,8 @@
      1,
      20
     ]
-   }
+   },
+   "r": 1
   }
  },
  {
@@ -3450,7 +3525,8 @@
    },
    "name": "bug",
    "color": "#00ff00",
-   "description": "d"
+   "description": "d",
+   "r": 1
   }
  },
  {
@@ -3464,7 +3540,8 @@
    },
    "name": "good first issue",
    "color": "#00ff00",
-   "description": "d"
+   "description": "d",
+   "r": 1
   }
  },
  {
@@ -3478,7 +3555,8 @@
    },
    "name": "área: web",
    "color": "#00ff00",
-   "description": "d"
+   "description": "d",
+   "r": 1
   }
  },
  {
@@ -3492,7 +3570,8 @@
    },
    "name": "a",
    "color": "#00ff00",
-   "description": "d"
+   "description": "d",
+   "r": 1
   }
  },
  {
@@ -3507,7 +3586,8 @@
    },
    "name": " bug",
    "color": "#00ff00",
-   "description": "d"
+   "description": "d",
+   "r": 1
   }
  },
  {
@@ -3522,7 +3602,8 @@
    },
    "name": "bug ",
    "color": "#00ff00",
-   "description": "d"
+   "description": "d",
+   "r": 1
   }
  },
  {
@@ -3537,7 +3618,8 @@
    },
    "name": "a\tb",
    "color": "#00ff00",
-   "description": "d"
+   "description": "d",
+   "r": 1
   }
  },
  {
@@ -3552,7 +3634,8 @@
    },
    "name": "a\nb",
    "color": "#00ff00",
-   "description": "d"
+   "description": "d",
+   "r": 1
   }
  },
  {
@@ -3567,7 +3650,8 @@
    },
    "name": " ",
    "color": "#00ff00",
-   "description": "d"
+   "description": "d",
+   "r": 1
   }
  },
  {
@@ -3592,7 +3676,8 @@
      20
     ]
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -3638,6 +3723,7 @@
    },
    "name": "good first issue",
    "color": "#00ff00",
+   "r": 1,
    "enc": {
     "$b": [
      5,
@@ -3677,7 +3763,8 @@
    "memberId": {
     "$id": 9
    },
-   "vis": "public"
+   "vis": "public",
+   "role": 1
   }
  },
  {
@@ -3699,7 +3786,8 @@
    "newOid": {
     "$hex": "abababababababababababababababababababab"
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -3722,7 +3810,8 @@
    "newOid": {
     "$hex": "ababababababababababababababababababababab"
    },
-   "vis": "public"
+   "vis": "public",
+   "r": 1
   }
  },
  {
@@ -3737,7 +3826,8 @@
    },
    "name": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
    "color": "#00ff00",
-   "description": "d"
+   "description": "d",
+   "r": 1
   }
  },
  {
@@ -3794,7 +3884,395 @@
      0,
      4901
     ]
+   },
+   "r": 1
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "a triage writer (role 2)",
+  "type": "writer",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 9
+   },
+   "vis": "public",
+   "consentBy": {
+    "$id": 9
+   },
+   "role": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "a reader (role 3)",
+  "type": "writer",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 9
+   },
+   "vis": "public",
+   "consentBy": {
+    "$id": 9
+   },
+   "role": 3
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "writer role 0",
+  "type": "writer",
+  "expect": "refused",
+  "why": "minimum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 9
+   },
+   "vis": "public",
+   "consentBy": {
+    "$id": 9
+   },
+   "role": 0
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "writer role 4",
+  "type": "writer",
+  "expect": "refused",
+  "why": "maximum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 9
+   },
+   "vis": "public",
+   "consentBy": {
+    "$id": 9
+   },
+   "role": 4
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "writer without a role",
+  "type": "writer",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 9
+   },
+   "vis": "public",
+   "consentBy": {
+    "$id": 9
    }
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "refUpdate without r",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/main",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "refUpdate claiming r 0",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "minimum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/main",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public",
+   "r": 0
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "packManifest without r",
+  "type": "packManifest",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 0,
+   "sizeBytes": 14700,
+   "objectCount": 10,
+   "chunkCount": 1,
+   "storage": 0,
+   "tips": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "packManifest claiming r 0",
+  "type": "packManifest",
+  "expect": "refused",
+  "why": "minimum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 0,
+   "sizeBytes": 14700,
+   "objectCount": 10,
+   "chunkCount": 1,
+   "storage": 0,
+   "tips": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "r": 0
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "chunk without r",
+  "type": "chunk",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "seq": 0,
+   "d0": {
+    "$b": [
+     0,
+     100
+    ]
+   }
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "chunk claiming r 0",
+  "type": "chunk",
+  "expect": "refused",
+  "why": "minimum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "seq": 0,
+   "d0": {
+    "$b": [
+     0,
+     100
+    ]
+   },
+   "r": 0
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "label without r",
+  "type": "label",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "good first issue",
+   "color": "#00ff00",
+   "description": "d"
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "label claiming r 0",
+  "type": "label",
+  "expect": "refused",
+  "why": "minimum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "good first issue",
+   "color": "#00ff00",
+   "description": "d",
+   "r": 0
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "refUpdate claiming triage (r 2)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "maximum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/main",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public",
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "packManifest claiming triage (r 2)",
+  "type": "packManifest",
+  "expect": "refused",
+  "why": "maximum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 0,
+   "sizeBytes": 14700,
+   "objectCount": 10,
+   "chunkCount": 1,
+   "storage": 0,
+   "tips": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "chunk claiming triage (r 2)",
+  "type": "chunk",
+  "expect": "refused",
+  "why": "maximum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "seq": 0,
+   "d0": {
+    "$b": [
+     0,
+     100
+    ]
+   },
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "label by triage (r 2)",
+  "type": "label",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "good first issue",
+   "color": "#00ff00",
+   "description": "d",
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "label claiming reader (r 3)",
+  "type": "label",
+  "expect": "refused",
+  "why": "maximum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "good first issue",
+   "color": "#00ff00",
+   "description": "d",
+   "r": 3
   }
  }
 ]

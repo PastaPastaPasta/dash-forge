@@ -555,6 +555,9 @@
             "findBy": {
               "repoId": "repoId",
               "memberId": "."
+            },
+            "where": {
+              "role": "r"
             }
           }
         ]
@@ -673,6 +676,12 @@
         "vis": {
           "$ref": "#/$defs/vis",
           "position": 14
+        },
+        "r": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1,
+          "position": 15
         }
       },
       "indices": [
@@ -736,7 +745,8 @@
         "name",
         "status",
         "outcome",
-        "vis"
+        "vis",
+        "r"
       ],
       "additionalProperties": false,
       "dependentRequired": {
@@ -1135,6 +1145,9 @@
             "findBy": {
               "repoId": "repoId",
               "memberId": "."
+            },
+            "where": {
+              "role": "r"
             }
           }
         ]
@@ -1227,6 +1240,12 @@
             }
           },
           "position": 9
+        },
+        "r": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2,
+          "position": 10
         }
       },
       "indices": [
@@ -1272,7 +1291,8 @@
         "repoId",
         "targetId",
         "targetNumber",
-        "kind"
+        "kind",
+        "r"
       ],
       "additionalProperties": false,
       "propertyConstraints": {
@@ -1413,6 +1433,29 @@
               "equal": [
                 "asMaintainer",
                 "$ownerId"
+              ]
+            }
+          ]
+        },
+        "t_triageKinds": {
+          "ifThen": [
+            {
+              "in": [
+                "kind",
+                [
+                  8,
+                  15,
+                  16,
+                  19,
+                  20,
+                  23
+                ]
+              ]
+            },
+            {
+              "equal": [
+                "r",
+                1
               ]
             }
           ]
@@ -1634,6 +1677,9 @@
             "findBy": {
               "repoId": "repoId",
               "memberId": "."
+            },
+            "where": {
+              "role": "r"
             }
           }
         ]
@@ -1678,6 +1724,12 @@
         "epoch": {
           "$ref": "#/$defs/u32",
           "position": 6
+        },
+        "r": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2,
+          "position": 7
         }
       },
       "indices": [
@@ -1718,7 +1770,8 @@
       "required": [
         "$createdAt",
         "repoId",
-        "title"
+        "title",
+        "r"
       ],
       "additionalProperties": false
     },
