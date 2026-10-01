@@ -17,6 +17,8 @@ import { snippetKey, snippetLines, type SnippetSource } from '@/lib/view/anchor-
 import { anchorLabel } from '@/lib/view/inline-threads'
 import { Oid } from '@/components/ui/oid'
 import { ScrollRegion } from '@/components/ui/scroll-region'
+import { GUTTER_TEXT } from '@/components/repo/diff-view'
+import { cn } from '@/lib/utils'
 
 const NO_TEXTS: ReadonlyMap<string, string | null> = new Map()
 
@@ -108,13 +110,14 @@ export function AnchorContext({
       </div>
       {lines !== null ? (
         // A long line scrolls: keyboard users reach it by Tab (QW3-020, axe scrollable-region-focusable).
-        <ScrollRegion className="overflow-x-auto" label={`Code at ${anchorLabel(anchor)}`} data-testid="conversation-snippet">
+        // Its card clips overflow, so its focus ring is drawn inside it.
+        <ScrollRegion className="overflow-x-auto focus-visible:ring-inset focus-visible:ring-offset-0" label={`Code at ${anchorLabel(anchor)}`} data-testid="conversation-snippet">
           <table className="w-full border-collapse font-mono text-[12px] leading-5">
             <tbody>
               {lines.map((l) => (
                 <tr key={l.n} className={l.commented ? 'bg-forge-500/10 dark:bg-forge-500/15' : ''}>
                   {/* The diff gutter's colours: anvil-500 was 3.3:1 on the dark page, 2.8:1 on the highlighted line (QW3-020). */}
-                  <td className="w-10 select-none px-2 text-right align-top text-anvil-600 dark:text-anvil-400">{l.n}</td>
+                  <td className={cn('w-10 select-none px-2 text-right align-top', GUTTER_TEXT)}>{l.n}</td>
                   <td className="whitespace-pre px-2 text-anvil-800 dark:text-anvil-100">{l.text === '' ? ' ' : l.text}</td>
                 </tr>
               ))}

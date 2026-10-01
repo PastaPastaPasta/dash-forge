@@ -934,7 +934,7 @@ function PullPage({
           <RefreshCw className="h-4 w-4 shrink-0 text-forge-700 dark:text-forge-400" aria-hidden />
           {/* At least 16rem: on a phone the text keeps the row and the cost and button wrap below it,
               instead of squeezing it into a narrow column beside them (QW3-054). */}
-          <span className="min-w-[min(16rem,100%)] flex-1">
+          <span className="min-w-[min(16rem,calc(100%-1.75rem))] flex-1">
             {isAuthor ? 'Your branch' : 'The source branch'} <span className="font-mono">{shortBranch(pull.sourceRefName ?? '')}</span> is at{' '}
             <Oid value={sync.tip} chars={7} copyable={false} />, but this PR is at <Oid value={pull.headOid} chars={7} copyable={false} />.
             {authorOrMember ? null : (

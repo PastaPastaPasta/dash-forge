@@ -73,8 +73,22 @@ describe('edgeFades (QW3-057)', () => {
     expect(f.right).toBe(MIN_FADE)
   })
 
-  it('never covers more than half the strip', () => {
-    expect(edgeFades(row([60, 300]), 0, 200).right).toBe(100)
+  it('never covers half the strip', () => {
+    // 300 px of a 400 px tab show: the fade would cover them all.
+    expect(edgeFades(row([60, 400]), 0, 200).right).toBe(99)
+  })
+
+  it('narrows smoothly to the minimum as a cut tab\'s last pixels come in', () => {
+    // "Pull requests 22" (188..348) with 4 px still hidden: 32 + 6 × 4, not all 156 px shown.
+    expect(edgeFades(repo, 0, 344).right).toBe(MIN_FADE + 24)
+    // Fully in: the minimum, and the next tab (Releases, 352..) is cut by 0 px.
+    expect(edgeFades(repo, 0, 350).right).toBe(MIN_FADE)
+  })
+
+  it('keeps the active tab readable: a cut active tab, or one cut at both edges, gets the minimum', () => {
+    expect(edgeFades(repo, 0, 328, 2).right).toBe(MIN_FADE)
+    const wide = row([60, 400, 60])
+    expect(edgeFades(wide, 100, 240)).toEqual({ left: MIN_FADE, right: MIN_FADE })
   })
 
   it('fades the leading edge over a tab scrolled partly out of view', () => {

@@ -361,7 +361,7 @@ function JumpBox({ compact = false, onDismiss, onJump }: { compact?: boolean; on
           request.current++
           setBusy(false)
         }}
-        placeholder={inRepo ? 'repo, @name or #42' : 'repo, owner/name or @name'}
+        placeholder={inRepo ? 'owner/name, @name or #42' : 'repo, owner/name or @name'}
         aria-describedby={note ? `${id}-note` : undefined}
         aria-busy={busy}
         onKeyDown={(e) => {
