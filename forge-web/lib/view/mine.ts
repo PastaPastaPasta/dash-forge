@@ -207,6 +207,39 @@ export async function listMyCommentTargets(sdk: EvoSDK, forge: ForgeIds, me: str
   return [...byTarget.values()]
 }
 
+const reviewTargetDoc = baseDoc.extend({ patchId: ident })
+
+/** A PR I reviewed, and my first review there (in the page). */
+export interface ReviewedTarget {
+  readonly targetId: string
+  readonly firstAt: number
+}
+
+/**
+ * The PRs I reviewed, newest reviews first (`limit` of them), each with my first review there in
+ * the page: through the RC2 S3 `review.author` index (`$ownerId`, `$createdAt`), so a review made
+ * on another device counts too (QW2-009). Only where the registered forge-collab has that index:
+ * the caller checks (`contractHasIndex`), and Drive refuses the query otherwise.
+ */
+export async function listMyReviewTargets(sdk: EvoSDK, forge: ForgeIds, me: string, limit = IN_MAX): Promise<ReviewedTarget[]> {
+  const docs = parseDocs(
+    reviewTargetDoc,
+    await read(sdk, {
+      dataContractId: forge.collab,
+      documentTypeName: DOC.review,
+      where: [['$ownerId', '==', me]],
+      orderBy: [['$createdAt', 'desc']],
+      limit,
+    }),
+  )
+  const byTarget = new Map<string, ReviewedTarget>()
+  for (const d of docs) {
+    const prev = byTarget.get(d.patchId)
+    if (prev === undefined || d.$createdAt < prev.firstAt) byTarget.set(d.patchId, { targetId: d.patchId, firstAt: d.$createdAt })
+  }
+  return [...byTarget.values()]
+}
+
 /** `issue` / `patch` rows by id, each tagged with the type it was found in. */
 export async function readTargetsByIds(sdk: EvoSDK, forge: ForgeIds, ids: readonly string[]): Promise<Map<string, TargetRow>> {
   const out = new Map<string, TargetRow>()

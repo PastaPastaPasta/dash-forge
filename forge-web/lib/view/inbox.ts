@@ -5,9 +5,10 @@
  * **Subscriptions** (recomputed every {@link SUBS_TTL_MS}): repos I own or belong to (`repo` by
  * `$ownerId`, `maintainer`/`writer` by `memberId`), repos I starred (opt-in, `star.byOwner`),
  * and the issues and PRs I opened (`issue`/`patch` `author`), commented on (`comment.author`
- * → `targetId`), was assigned to or asked to review (`event.addressee`, QW2-009), and those this
- * browser saw me review or be mentioned in (`./participation`: neither has an index). Both sets
- * are capped ({@link MAX_REPOS}, {@link MAX_THREADS}), newest first.
+ * → `targetId`), was assigned to or asked to review (`event.addressee`, QW2-009), reviewed (RC2 S3
+ * `review.author`, where the registered forge-collab has it), and those this browser saw me
+ * review or be mentioned in (`./participation`: a mention has no index, nor a review without S3).
+ * Both sets are capped ({@link MAX_REPOS}, {@link MAX_THREADS}), newest first.
  *
  * **Reasons** (QW2-056): each item says why it reached me when that is more than following the
  * thread (assigned me, requested my review, mentioned me), and each thread why I follow it, so
@@ -17,7 +18,9 @@
  *   - my repos: new issues and PRs (`issue`/`patch` `created`), pushes (opt-in, the reflogs);
  *   - repos holding my threads: what happened on those threads (`event` `feed`: labels, assignees)
  *     and their state changes (`transition` `feed`);
- *   - each thread: comments (`comment.target`); each PR I opened: reviews (`review.patch`).
+ *   - each thread: comments (`comment.target`); each PR I opened: reviews (`review.patch`), or,
+ *     where the registered forge-collab has the RC2 S2 `review.toAuthor` index, one feed of the
+ *     reviews on every PR I opened (`patchId.$ownerId`), past the thread cap too.
  * A poll runs at most {@link ROUND_BUDGET} feeds, round-robin, so a big watch list is spread
  * over several minutes instead of bursting DAPI. My own documents never become items.
  *
@@ -32,6 +35,7 @@ import type { Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import { idbBatch, idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 import { DOC } from '../repo/contract'
+import { contractHasIndex } from '../repo/contract-shape'
 import { contractOf } from '../repo/source'
 import { queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from '../sdk'
 import { listReposByOwner } from './discovery'
@@ -43,6 +47,7 @@ import {
   int,
   listAddressedTargets,
   listMyCommentTargets,
+  listMyReviewTargets,
   listMyTargets,
   listStarredRepoIds,
   listWatchedRepoIds,
@@ -104,6 +109,20 @@ export interface ThreadSub {
   readonly since: number
 }
 
+/**
+ * The RC2 review indexes the registered forge-collab has (`build.py` flags `review_to_author`
+ * S2 and `review_author` S3, kept or dropped by the fee probe): each is queried only where it
+ * exists, and the inbox falls back to its per-thread reads without it.
+ */
+export interface ReviewIndexes {
+  /** S2 `toAuthor` (`patchId.$ownerId`, `$createdAt`): the reviews on my PRs, one feed. */
+  readonly toAuthor: boolean
+  /** S3 `author` (`$ownerId`, `$createdAt`): the reviews I wrote, on any device. */
+  readonly author: boolean
+}
+
+export const NO_REVIEW_INDEXES: ReviewIndexes = { toAuthor: false, author: false }
+
 export interface Subscriptions {
   readonly at: number
   readonly repos: RepoSub[]
@@ -116,6 +135,8 @@ export interface Subscriptions {
    * What they would have added is not watched this time; the next recompute retries.
    */
   readonly incomplete?: readonly string[]
+  /** The review indexes the subscriptions were computed with (absent: an earlier build, neither). */
+  readonly reviewIndexes?: ReviewIndexes
 }
 
 export interface InboxPrefs {
@@ -158,6 +179,8 @@ export type Feed =
   | { readonly kind: 'state'; readonly type: 'event' | 'transition'; readonly repo: RepoLite; readonly threads: readonly ThreadSub[] }
   | { readonly kind: 'comments'; readonly thread: ThreadSub }
   | { readonly kind: 'reviews'; readonly thread: ThreadSub }
+  /** The reviews on every PR `owner` opened (S2 `toAuthor`); `threads` name the PRs already known. */
+  | { readonly kind: 'myReviews'; readonly owner: string; readonly threads: readonly ThreadSub[] }
 
 /** A feed's stable cursor key. */
 export function feedKey(f: Feed): string {
@@ -169,16 +192,23 @@ export function feedKey(f: Feed): string {
     case 'comments':
     case 'reviews':
       return `${f.kind}:${f.thread.id}`
+    case 'myReviews':
+      return 'myReviews'
   }
 }
 
-/** Every feed a subscription set implies, threads first (they are the most personal). */
-export function planFeeds(subs: Subscriptions, prefs: InboxPrefs): Feed[] {
+/**
+ * Every feed a subscription set implies, threads first (they are the most personal). The reviews
+ * on my PRs (`me`) are one feed where forge-collab has S2 `toAuthor`, else one per PR I opened.
+ */
+export function planFeeds(subs: Subscriptions, prefs: InboxPrefs, me?: string): Feed[] {
   const feeds: Feed[] = []
+  const reviewsOnMine = subs.reviewIndexes?.toAuthor === true && me !== undefined
   for (const t of subs.threads) {
     feeds.push({ kind: 'comments', thread: t })
-    if (t.kind === 'pull' && t.reason === 'author') feeds.push({ kind: 'reviews', thread: t })
+    if (!reviewsOnMine && t.kind === 'pull' && t.reason === 'author') feeds.push({ kind: 'reviews', thread: t })
   }
+  if (reviewsOnMine) feeds.push({ kind: 'myReviews', owner: me, threads: subs.threads.filter((t) => t.kind === 'pull') })
   const threadsByRepo = new Map<string, ThreadSub[]>()
   for (const t of subs.threads) threadsByRepo.set(t.repo.id, [...(threadsByRepo.get(t.repo.id) ?? []), t])
   for (const [, threads] of threadsByRepo) {
@@ -245,6 +275,11 @@ export function feedQuery(forge: ForgeIds, f: Feed, cursor: Cursor): DocumentQue
       return { dataContractId: forge.collab, documentTypeName: DOC.comment, where: [['targetId', '==', f.thread.id], after], ...shape }
     case 'reviews':
       return { dataContractId: forge.collab, documentTypeName: DOC.review, where: [['patchId', '==', f.thread.id], after], ...shape }
+    case 'myReviews':
+      // A derived index property (`patchId.$ownerId`, v5): Drive places a `startAfter` cursor only
+      // when the query fixes it with `==` (rs-drive `query/mod.rs` `cursor_with_derived_values`),
+      // as this one does, so the feed pages like any other.
+      return { dataContractId: forge.collab, documentTypeName: DOC.review, where: [['patchId.$ownerId', '==', f.owner], after], ...shape }
   }
 }
 
@@ -280,6 +315,16 @@ export function backfillWindow(thread: ThreadSub, cursor: Cursor, floor: number)
   return (at) => at > from && at <= cursor.at
 }
 
+/**
+ * Where the S2 feed starts when this browser read the reviews per PR before (an earlier build, or
+ * a contract without S2): at the oldest of those feeds' cursors, never before `start`, so the
+ * switch re-reads little and brings back no pruned notification older than every old feed's read.
+ */
+async function carriedReviewsCursor(prefix: string, start: Cursor): Promise<Cursor> {
+  const old = (await idbEntries<unknown>('inbox', `${prefix}cursor:reviews:`)).map(([, v]) => asCursor(v)?.at).filter((at): at is number => at !== undefined)
+  return old.length === 0 ? start : { at: Math.max(start.at, Math.min(...old)) }
+}
+
 /** Failed backfill attempts of one thread before it is given up (its future events still come). */
 export const BACKFILL_TRIES = 3
 /** Covered threads kept per state feed: the newest (a feed watches at most MAX_THREADS). */
@@ -310,6 +355,8 @@ function asCursor(v: unknown): Cursor | undefined {
 }
 
 const reviewDoc = baseDoc.extend({ verdict: int, body: z.string().optional().catch(undefined) })
+/** A review with the PR it is on (the S2 feed spans many). */
+const reviewOnDoc = reviewDoc.extend({ patchId: ident })
 /** A state event, with the identity it addresses (`refId`) when it names one. */
 const addressedEventDoc = eventDoc.extend({ refId: ident.optional().catch(undefined) })
 /** A comment, with its body (for a mention). */
@@ -431,6 +478,54 @@ export function toItems(f: Feed, docs: readonly PlainDocument[], me: string, nam
         .filter(notMine)
         .map((d) => item(d, { kind: 'review', repo: t.repo, what: VERDICT_WHAT[d.verdict] ?? 'reviewed', target, ...mentioned(t.repo, d.body) }))
     }
+    case 'myReviews': {
+      // A review on a PR the feed cannot name yet is left for the poll to resolve
+      // ({@link withReviewedThreads}); it never shows without its PR.
+      const threads = new Map(f.threads.map((t) => [t.id, t]))
+      return parseDocs(reviewOnDoc, docs)
+        .filter(notMine)
+        .flatMap((d) => {
+          const t = threads.get(d.patchId)
+          if (!t) return []
+          return [item(d, { kind: 'review', repo: t.repo, what: VERDICT_WHAT[d.verdict] ?? 'reviewed', target: { kind: t.kind, number: t.number, title: t.title }, ...mentioned(t.repo, d.body) })]
+        })
+    }
+  }
+}
+
+/**
+ * The S2 feed `f` naming every PR its page of reviews (`docs`) is on: the PRs past the thread cap
+ * are read by id, with their repos (one or two requests, only when the page names one).
+ */
+export async function withReviewedThreads(
+  sdk: EvoSDK,
+  forge: ForgeIds,
+  f: Extract<Feed, { kind: 'myReviews' }>,
+  docs: readonly PlainDocument[],
+): Promise<Extract<Feed, { kind: 'myReviews' }>> {
+  const known = new Set(f.threads.map((t) => t.id))
+  const missing = [...new Set(parseDocs(reviewOnDoc, docs).map((d) => d.patchId))].filter((id) => !known.has(id))
+  if (missing.length === 0) return f
+  const rows = [...(await readTargetsByIds(sdk, forge, missing)).values()].filter((r) => r.kind === 'pull')
+  const repoOf = new Map(f.threads.map((t) => [t.repo.id, t.repo] as const))
+  const read = await readReposByIds(sdk, forge, rows.map((r) => r.repoId).filter((id) => !repoOf.has(id)))
+  const extra = rows.flatMap((r) => {
+    const repo = repoOf.get(r.repoId) ?? read.get(r.repoId)
+    return repo ? [threadOf(r, repo, 'author', r.createdAt)] : []
+  })
+  return { ...f, threads: [...f.threads, ...extra] }
+}
+
+/** The review indexes the registered forge-collab has; neither when its contract cannot be read. */
+export async function reviewIndexes(sdk: EvoSDK, forge: ForgeIds): Promise<ReviewIndexes> {
+  try {
+    const [toAuthor, author] = await Promise.all([
+      contractHasIndex(sdk, forge.collab, DOC.review, 'toAuthor'),
+      contractHasIndex(sdk, forge.collab, DOC.review, 'author'),
+    ])
+    return { toAuthor, author }
+  } catch {
+    return NO_REVIEW_INDEXES
   }
 }
 
@@ -453,6 +548,7 @@ export async function computeSubscriptions(
   prefs: InboxPrefs,
   now = Date.now(),
 ): Promise<Subscriptions> {
+  const indexesRead = reviewIndexes(sdk, forge)
   const settled = await Promise.allSettled([
     listReposByOwner(sdk, me, { network }),
     prefs.stars ? listStarredRepoIds(sdk, forge, me) : Promise.resolve(EMPTY_PAGE),
@@ -462,12 +558,14 @@ export async function computeSubscriptions(
     listWatchedRepoIds(sdk, forge, me),
     listAddressedTargets(sdk, forge, me),
     listParticipation(network, me),
+    indexesRead.then((ix) => (ix.author ? listMyReviewTargets(sdk, forge, me) : [])),
   ] as const)
+  const indexes = await indexesRead
   // Only chain sources actually read count: stars are skipped (not read) when the preference is
-  // off, and this browser's own record is no read of the chain.
-  const read = settled.filter((_, i) => (i !== 1 || prefs.stars) && i !== 7)
+  // off, as are my reviews without S3, and this browser's own record is no read of the chain.
+  const read = settled.filter((_, i) => (i !== 1 || prefs.stars) && i !== 7 && (i !== 8 || indexes.author))
   if (read.every((r) => r.status === 'rejected')) throw (read[0] as PromiseRejectedResult).reason
-  const [owned, starred, issues, pulls, commented, watching, addressedRes, participatedRes] = settled
+  const [owned, starred, issues, pulls, commented, watching, addressedRes, participatedRes, reviewedRes] = settled
   const ok = <T>(r: PromiseSettledResult<T>, fallback: T): T => (r.status === 'fulfilled' ? r.value : fallback)
 
   const repoSubs: RepoSub[] = []
@@ -497,6 +595,7 @@ export async function computeSubscriptions(
     'the repos you watch',
     'your assignments and review requests',
     "this browser's record of your reviews and mentions",
+    'the reviews you wrote',
   ] as const
   settled.forEach((r, i) => {
     if (r.status === 'rejected') incomplete.push(labels[i] ?? 'a source')
@@ -505,7 +604,13 @@ export async function computeSubscriptions(
   if (myPulls.more) incomplete.push('pull requests you opened (more than the first 500)')
   const addressed = ok(addressedRes, [])
   const participated = ok(participatedRes, [])
-  const joinedIds = [...commentedTargets.map((c) => c.targetId), ...addressed.map((a) => a.targetId), ...participated.map((p) => p.targetId)]
+  const reviewed = ok(reviewedRes, [])
+  const joinedIds = [
+    ...commentedTargets.map((c) => c.targetId),
+    ...addressed.map((a) => a.targetId),
+    ...reviewed.map((r) => r.targetId),
+    ...participated.map((p) => p.targetId),
+  ]
   const commentedRows = await readTargetsByIds(sdk, forge, joinedIds.filter((id) => !authoredIds.has(id))).catch(() => {
     incomplete.push('the threads you commented on, were assigned or reviewed')
     return new Map<string, TargetRow>()
@@ -553,6 +658,11 @@ export async function computeSubscriptions(
     const t = rowOf(a.targetId)
     follow(t, t ? t.repo ?? repoById.get(t.repoId) : undefined, a.reason, a.firstAt - 1)
   }
+  // Reviewed (S3, QW2-009): on every device, as this browser's record only knew its own.
+  for (const r of reviewed) {
+    const t = rowOf(r.targetId)
+    follow(t, t ? t.repo ?? repoById.get(t.repoId) : undefined, 'reviewed', r.firstAt - 1)
+  }
   for (const p of participated) {
     const t = rowOf(p.targetId)
     follow(t, t ? t.repo ?? repoById.get(t.repoId) : undefined, p.reason, p.at - 1)
@@ -566,6 +676,7 @@ export async function computeSubscriptions(
     droppedRepos: Math.max(0, repoSubs.length - MAX_REPOS),
     droppedThreads: Math.max(0, threads.length - MAX_THREADS),
     ...(incomplete.length > 0 ? { incomplete } : {}),
+    reviewIndexes: indexes,
   }
 }
 
@@ -666,7 +777,7 @@ export async function pollOnce(
     if (stopped()) return { added: 0, feedsRead: 0, feedsTotal: 0, failed: 0, subs }
     await idbPut('inbox', `${p}subs`, subs)
   }
-  const feeds = planFeeds(subs, prefs)
+  const feeds = planFeeds(subs, prefs, me)
   // When each feed was first watched (planned, not first read: a round may reach it minutes
   // later). One record for all feeds; only feeds still watched are kept.
   const seenBefore = (await idbGet<Record<string, number>>('inbox', `${p}seen`)) ?? {}
@@ -703,7 +814,8 @@ export async function pollOnce(
     const fk = feedKey(f)
     const key = `${p}cursor:${fk}`
     const start = initialCursor(f, seen[fk] ?? now)
-    const cursor = asCursor(await idbGet<unknown>('inbox', key)) ?? start
+    const stored = asCursor(await idbGet<unknown>('inbox', key))
+    const cursor = stored ?? (f.kind === 'myReviews' ? await carriedReviewsCursor(p, start) : start)
     // A repo's state feed is shared by its threads: a thread that joined it after the cursor
     // moved past its events is read once from its own history (L-17).
     if (f.kind === 'state') {
@@ -744,14 +856,18 @@ export async function pollOnce(
       if (changed && !stopped()) await idbPut('inbox', coverKey, pruneCovered(covered, f.threads))
     }
     let docs: PlainDocument[]
+    let feed: Feed = f
     try {
       docs = (await queryDocumentsWithProof(sdk, feedQuery(forge, f, cursor))).documents
+      // The S2 feed's reviews on PRs past the thread cap: their PRs are read before the cursor
+      // moves (a failed read retries the page).
+      if (f.kind === 'myReviews') feed = await withReviewedThreads(sdk, forge, f, docs)
     } catch {
       failed++
       continue
     }
     if (stopped()) break
-    await store(toItems(f, docs, me, name))
+    await store(toItems(feed, docs, me, name))
     if (stopped()) break
     const page = parseDocs(baseDoc, docs).map((d) => ({ at: d.$createdAt, id: d.$id }))
     await idbPut('inbox', key, advanceCursor(cursor, page))
