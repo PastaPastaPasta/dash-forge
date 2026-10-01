@@ -17,7 +17,9 @@ import { useUiStore } from '@/hooks/use-ui-store'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
+import { keyBudgetWords } from '@/lib/view/funds'
 import { INSIGHT_OVERRIDE_KEY, coreEndpoints } from '@/lib/auth/asset-lock'
+import { topUpStays } from '@/components/top-up-stays'
 import { KeyTopUpDialog } from '@/components/key-top-up-dialog'
 import { KeyRevokeDialog } from '@/components/key-revoke-dialog'
 import { PendingRenewal } from '@/components/pending-renewal'
@@ -30,8 +32,16 @@ export const FORGET_CONFIRM: ConfirmActionOptions = {
   confirmLabel: 'Forget key',
 }
 
+/** {@link FORGET_CONFIRM}, saying what stays when the identity was topped up here. */
+export async function forgetConfirm(identityId: string): Promise<ConfirmActionOptions> {
+  const stays = await topUpStays(identityId)
+  return stays === null ? FORGET_CONFIRM : { ...FORGET_CONFIRM, body: `${FORGET_CONFIRM.body} ${stays}` }
+}
+
 export function KeysPanel(): JSX.Element {
-  const { identity, keyId, heldOnly, keyLimits, storage, funds, logout, forget, isLoading, grants, unlimitedKey, unboundedKey } = useAuth()
+  const { identity, keyId, heldOnly, keyLimits, storage, funds, balance, logout, forget, isLoading, grants, unlimitedKey, unboundedKey } = useAuth()
+  // What is left of the key's budget, and when the balance is lower, that it caps it (QW3-033).
+  const budget = keyBudgetWords(keyLimits, balance, creditsAsDash)
   // Revoke opens a dialog that explains it and takes the identity file or the recovery phrase
   // (QW2-017): a browser-created identity has no file.
   const [revokeOpen, setRevokeOpen] = useState(false)
@@ -69,8 +79,19 @@ export function KeysPanel(): JSX.Element {
             </>
           ) : null}
           <dt className="text-anvil-500 dark:text-anvil-400">Budget left</dt>
-          <dd data-testid="key-budget" className="font-mono">
-            {keyLimits.remaining === null ? '—' : `${creditsAsDash(Number(keyLimits.remaining))} of ${creditsAsDash(Number(keyLimits.total ?? 0n))} DASH`}
+          <dd data-testid="key-budget">
+            {budget === null ? (
+              <span className="font-mono">—</span>
+            ) : (
+              <>
+                <span className="font-mono">{budget.left}</span>
+                {budget.cap !== null ? (
+                  <span className="block text-[12px] text-caution-700 dark:text-caution-400" data-testid="key-budget-cap">
+                    {budget.cap}
+                  </span>
+                ) : null}
+              </>
+            )}
           </dd>
           <dt className="text-anvil-500 dark:text-anvil-400">Expires</dt>
           <dd data-testid="key-expiry">{keyLimits.expiresAt === null ? 'never' : formatDate(keyLimits.expiresAt)}</dd>
@@ -129,7 +150,7 @@ export function KeysPanel(): JSX.Element {
               variant="danger"
               size="sm"
               onClick={() => {
-                if (identity) void confirm(FORGET_CONFIRM).then((ok) => (ok ? forget(identity) : undefined))
+                if (identity) void forgetConfirm(identity).then(confirm).then((ok) => (ok ? forget(identity) : undefined))
               }}
             >
               <LogOut className="h-3.5 w-3.5" aria-hidden /> Sign out &amp; forget key

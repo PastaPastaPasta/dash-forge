@@ -20,7 +20,7 @@ import { AlertTriangle, Check, Loader2 } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
-import { Qr } from '@/components/ui/qr'
+import { PaymentAddress } from '@/components/ui/payment-address'
 import { ErrorBox, GroupNotice, useProtection } from '@/components/auth/protection-fields'
 import { StepFailed, Waiting } from '@/components/auth/step-status'
 import { faucetUrl } from '@/components/top-up-sheet'
@@ -54,6 +54,9 @@ const STAGE_TEXT: Readonly<Record<CreateStage, string>> = {
   registering: 'Registering your identity…',
   verifying: 'Checking your browser key on Platform…',
 }
+
+/** What the funding step suggests sending, and the amount its wallet link fills in (DASH). */
+const SUGGESTED_DEPOSIT_DASH = 0.05
 
 export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Element {
   const { controller, reloadVaults } = useAuth()
@@ -443,10 +446,11 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
   return (
     <div className="space-y-3" data-testid="fund-step">
       <p className="text-dense">
-        Send at least <span className="font-mono">0.02 DASH</span> (0.05 suggested) to this address from any Dash wallet. It becomes your
+        Send at least <span className="font-mono">{MIN_DEPOSIT_DUFFS / 1e8} DASH</span> ({SUGGESTED_DEPOSIT_DASH} suggested) to this address from any Dash wallet. It becomes your
         Platform credits: about {creditsAsDash(typicalIssueCredits())} DASH per issue, {pushCostPhrase()}.
       </p>
-      {address ? <Qr value={address} label={`Deposit address ${address}`} /> : null}
+      {/* Copy, and a wallet link for paying from this same phone (QW3-008). */}
+      {address ? <PaymentAddress address={address} amountDash={SUGGESTED_DEPOSIT_DASH} label="Deposit address" /> : null}
       {address ? <span data-testid="deposit-address" className="sr-only">{address}</span> : null}
       {faucet ? (
         <a href={faucet} target="_blank" rel="noreferrer noopener" className="block text-center text-dense text-forge-700 underline dark:text-forge-400">
