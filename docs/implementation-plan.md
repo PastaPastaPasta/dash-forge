@@ -1,6 +1,6 @@
 # Dash Forge — Implementation Plan
 
-> **Historical.** This is the original phase plan for forge-v1 (a global registry contract plus one contract per repository, with token access control). It is not the current plan. forge-v1 was removed on 2026-09-26 with no backwards compatibility; current planning lives in [roadmap.md](roadmap.md) and the current design is [forge-v2](contracts/forge-v2.md).
+> **Historical.** This is the original phase plan for forge-v1 (a global registry contract plus one contract per repository, with token access control). It is not the current plan. forge-v1 was removed on 2026-09-26 with no backwards compatibility; current planning lives in [roadmap.md](roadmap.md) and the current design is [forge-v2](contracts/forge-v2.md). The isomorphic-git and lightning-fs choices below were not used: the web app reads and writes git packs with its own code (`forge-web/lib/browse`, `forge-web/lib/merge`).
 
 Phasing per INIT.md's design path, with constraint-forced adjustments (reconciliation D1) folded in. Each phase ends with runnable, tested software.
 
