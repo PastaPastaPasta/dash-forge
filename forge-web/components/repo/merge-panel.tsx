@@ -293,6 +293,7 @@ export function MergePanel({
   const [failure, setFailure] = useState<{ step: MergeStepId; message: string } | null>(null)
   const [stopped, setStopped] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const starting = useRef(false)
   useEffect(() => {
     onRunning?.(busy)
     // Unmounted mid-run: the page must not keep the box pinned for a run that is gone.
@@ -338,20 +339,25 @@ export function MergePanel({
     if (storageNeedsUnlock) return
     // Signed out or a locked session: the guard opens sign-in / unlock (never a silent no-op).
     if (!guard.check(cost, 'core', 'merge this pull request') || !sdk || !signer) return
+    // One run at a time, from the first click on (the re-read below takes a moment).
+    if (starting.current) return
+    starting.current = true
+    setBusy(true)
+    setFailure(null)
+    setStopped(null)
     // The branch moved past the head since the page read it (QW3-013): merging now would leave
     // the newer commits out. Only a fresh run checks; a retry resumes the merge it started.
-    if (checkSourceBranch !== undefined && savedRun === null) {
+    if (checkSourceBranch !== undefined && run.done.length === 0) {
       const moved = await checkSourceBranch().catch(() => null)
       if (moved !== null) {
         setStopped(moved)
+        setBusy(false)
+        starting.current = false
         return
       }
     }
     // The run starts: its bypass (if any) is what its retries record.
     setBypassed(bypass)
-    setBusy(true)
-    setFailure(null)
-    setStopped(null)
     begin(preAgreedCredits)
     const intent = `merge:${repo.repoId}:${pull.number}:${pull.headOid}:${baseTipOid}${input.squash ? `:squash:${bytesToHex(sha256(new TextEncoder().encode(input.squash.message))).slice(0, 16)}` : input.noFastForward ? ':no-ff' : ''}`
     try {
@@ -424,8 +430,9 @@ export function MergePanel({
       }
     } finally {
       setBusy(false)
+      starting.current = false
     }
-  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, pull.author, baseRefName, input, run, savedRun, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete, closeIssues, closing, checkSourceBranch, onBranchDeleted])
+  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, pull.author, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete, closeIssues, closing, checkSourceBranch, onBranchDeleted])
   const onMergeClick = (): void => {
     // Locked: the click opens Unlock (the guard); merging is the next click, once unlocked.
     if (unlockFirst) {

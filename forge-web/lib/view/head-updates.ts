@@ -47,7 +47,8 @@ export async function headUpdatePhrases(
     try {
       if (prev === u.oid) phrase = { text: `re-posted the head ${u.oid.slice(0, 7)}` }
       else if (prev !== '') {
-        const added = await newCommits(reader, u.oid, base === '' ? [prev] : [prev, base], WALK_CAP)
+        // Without the base when its history is too long to walk past (the plain count then).
+        const added = await (base === '' ? newCommits(reader, u.oid, [prev], WALK_CAP) : newCommits(reader, u.oid, [prev, base], WALK_CAP).catch(() => newCommits(reader, u.oid, [prev], WALK_CAP)))
         // The old head is in the new one's history when walking it back from the new head
         // finds nothing new.
         const descends = (await newCommits(reader, prev, [u.oid], WALK_CAP)).length === 0

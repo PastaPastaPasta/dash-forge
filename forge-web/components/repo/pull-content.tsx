@@ -317,7 +317,7 @@ function PullPage({
   // Who the composer's lock banner speaks to (a member keeps the composer).
   const lockViewer = lockViewerOf(viewer, holdings)
   const open = pull.state.open
-  const { slot: mergeSlot, onRunning: setMergeRunning } = useMergeSlot(tab, open && pull.state.draft)
+  const { slot: mergeSlot, running: mergeBusy, onRunning: setMergeRunning } = useMergeSlot(tab, open && pull.state.draft)
   const merged = pull.state.merged
   const target = { id: pull.id, number: pull.number }
   const stateTarget = { ...target, type: 'patch' as const, author: pull.author }
@@ -330,9 +330,13 @@ function PullPage({
     if (!sdk || !signer) throw new Error('sign in to continue')
     // Read again now (the config may have changed since the page loaded); a failed read refuses.
     const defaultBranch = await readDefaultBranch(sdk, src).catch(() => null)
-    const tip = await readBranchTip(sdk, src, refName)
+    const state = await readBranchState(sdk, src, refName)
+    // Diverged: no single tip to delete from, and nothing is written (never reported as deleted).
+    if (state?.state === 'diverged') throw new Error(`${shortBranch(refName)} has diverged heads; delete it with git`)
+    const tip = state?.state === 'resolved' ? state.oid : null
     const problem = deleteBranchProblem({ refName, sameRepo: src.repoId === repo.repoId, baseRefName: pull.baseRefName, defaultBranch, headOid, tip })
     if (problem !== null) throw new Error(problem)
+    // Already gone (or never recorded): nothing to write, and it is deleted.
     if (tip === null) return
     await writeRefUpdate(sdk, signer, src, { refName, newOid: '0'.repeat(headOid.length), prevOid: headOid }, { intent: `delete-branch:${src.repoId}:${refName}:${headOid}` })
   }
@@ -423,6 +427,8 @@ function PullPage({
   // A branch this page just deleted or restored, until a read of it catches up (QW3-053: right
   // after "Delete … after merging" the node may still answer with the old tip).
   const [branchWrite, setBranchWrite] = useState<BranchWrite | null>(null)
+  // Once a read shows the write, the read alone speaks again (later changes by others included).
+  if (branchWrite !== null && readSync !== null && readSync.kind === (branchWrite.to === 'deleted' ? 'deleted' : 'in-sync')) setBranchWrite(null)
   const sync = branchShown(readSync, branchWrite, pull.sourceRefName, pull.headOid)
   // The PR's author or a maintainer/writer: who may move the head, mark draft/ready, resolve and request.
   const authorOrMember = identity !== null && (isAuthor || isMember)
@@ -885,7 +891,7 @@ function PullPage({
     return { label, restore: false, run: () => deleteSourceBranch(closedSource, name, head) }
   })()
   // A closed PR whose branch is gone reopens once the branch is restored, as on GitHub (QW3-052).
-  const reopenBlocked = !open && !merged && sync?.kind === 'deleted' ? `Restore the ${shortBranch(pull.sourceRefName ?? '')} branch first: a pull request reopens with its branch.` : null
+  const reopenBlocked = !open && !merged && closedBranch?.restore === true ? `Restore the ${shortBranch(pull.sourceRefName ?? '')} branch first: a pull request reopens with its branch.` : null
   // The repo holding the source branch, for the merge box's last-moment re-read (QW3-013).
   const branchRepo = sourceRef ?? (crossRepo ? null : repo)
   const checkSourceBranch = async (): Promise<string | null> => {
@@ -898,15 +904,7 @@ function PullPage({
     else reloadHome?.()
     return `${shortBranch(name)} moved to ${tip.slice(0, 7)} since this page read it, ahead of this PR's head ${pull.headOid.slice(0, 7)}. Update the PR head first, so the merge includes those commits.`
   }
-  // A merge running in the merge box (it deletes the branch last): no second "Delete branch" meanwhile.
-  const [mergeBusy, setMergeBusy] = useState(false)
-  const onMergeRunning = useCallback(
-    (running: boolean) => {
-      setMergeRunning(running)
-      setMergeBusy(running)
-    },
-    [setMergeRunning],
-  )
+
   const sourceAddr = sourceRef === null ? null : { owner: sourceRef.ownerId, name: sourceRef.name }
 
   return (
@@ -1245,7 +1243,7 @@ function PullPage({
                   reloadHome?.()
                 }}
                 extras={{
-                  onRunning: onMergeRunning,
+                  onRunning: setMergeRunning,
                   branchAhead: sync?.kind === 'ahead' ? { branch: shortBranch(pull.sourceRefName ?? ''), tip: sync.tip } : null,
                   checkSourceBranch,
                   onBranchDeleted: () => {
