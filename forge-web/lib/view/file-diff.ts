@@ -83,7 +83,7 @@ export interface PatchOptions {
  */
 async function readText(reader: ObjectReader, oid: string | null, options: PatchOptions): Promise<{ text: string; size: number }> {
   if (oid === null) return { text: '', size: 0 }
-  const min = options.ignoreSizeHint ? null : knownMinSize(reader, oid)
+  const min = options.ignoreSizeHint ? null : await knownMinSize(reader, oid)
   if (min !== null && min > COUNT_BLOB_MAX_BYTES) throw new TooLarge(min, 'hint')
   let object
   try {
@@ -91,7 +91,7 @@ async function readText(reader: ObjectReader, oid: string | null, options: Patch
   } catch (e) {
     if (!(e instanceof ObjectTooLargeError)) throw e
     // Refused on the entry's length alone: the index's claim, which nothing has checked.
-    if (e.size === reader.locate?.(oid)?.length) throw new TooLarge(e.size, 'stored')
+    if (e.size === (await reader.locate?.(oid))?.length) throw new TooLarge(e.size, 'stored')
     throw new TooLarge(null, 'refused')
   }
   if (object.type !== 'blob') throw new Error(`${oid.slice(0, 9)} is a ${object.type}, not a blob`)

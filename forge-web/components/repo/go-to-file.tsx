@@ -11,6 +11,8 @@
  * names every path at the tip, so the first results need no read at all. The tree walk the
  * language bar shares ({@link repoFilesWalk}, its reads in parallel) starts on first focus and,
  * once done, is the list: it is exact where an index a delta extends can still name a deleted file.
+ * A full index of the tip itself is exact already, and then no walk runs (QW3-001: on a large repo
+ * the walk reads the whole object index).
  */
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
@@ -21,7 +23,7 @@ import type { ObjectReader } from '@/lib/view/tree-nav'
 import { rootTreeOf, type PeeledTip } from '@/lib/view/tip'
 import { repoKey, type RepoRef } from '@/lib/repo'
 import { Dialog } from '@/components/ui/dialog'
-import { indexedFilePaths, repoFilesWalk } from '@/lib/view/repo-facts'
+import { indexedFilePaths, indexListsTip, repoFilesWalk } from '@/lib/view/repo-facts'
 import { fuzzyRank, type FuzzyHit } from '@/lib/view/fuzzy'
 import { plural } from '@/lib/view/format'
 import { isPageShortcut } from '@/lib/focus'
@@ -87,7 +89,10 @@ export function GoToFile({
   const router = useRouter()
   // The index's list (no read when the column already loaded it), then the walk's exact one.
   const indexed = useAsync(() => indexedFilePaths(reader, tipOid), [key, tipOid], { enabled: started })
-  const walk = useAsync(async () => repoFilesWalk(key, tipOid, reader, await rootTree()), [key, tipOid], { enabled: started })
+  // A full index of this very tip is already the exact list: no walk, which on a large repo reads
+  // its whole object index (QW3-001). Otherwise the walk starts once the index's answer is in.
+  const exact = indexed.data != null && indexListsTip(reader, tipOid)
+  const walk = useAsync(async () => repoFilesWalk(key, tipOid, reader, await rootTree()), [key, tipOid], { enabled: started && indexed.settled && !exact })
   // A walk that stopped at its file cap names fewer paths than a complete index: the index then
   // stays the list, and the walk's partial one answers only when there is no index.
   const walkPaths = useMemo(() => walk.data?.files.map((f) => f.path) ?? null, [walk.data])

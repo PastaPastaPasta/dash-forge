@@ -91,7 +91,7 @@ export class Store {
         const object = only === undefined || only.has(oid) ? this.objects.get(oid) : undefined
         return object ? Promise.resolve(object) : Promise.reject(new Error(`object not in locator: ${oid}`))
       },
-      ...(locate ? { locate } : {}),
+      ...(locate ? { locate: async (oid: string) => locate(oid) } : {}),
     }
   }
 

@@ -151,7 +151,7 @@ describe('loadFilePatch over a pack (the live read path)', () => {
       { name: 'old.cpp', bytes: enc.encode(before) },
       { name: 'new.cpp', delta: { base: enc.encode(chunk), size } },
     ])
-    expect(reader.locate(oids['new.cpp']!)?.deltaDepth).toBeGreaterThan(0)
+    expect((await reader.locate(oids["new.cpp"]!))?.deltaDepth).toBeGreaterThan(0)
     const live = await loadFilePatch({ base: reader, head: reader }, change({ baseOid: oids['old.cpp']!, headOid: oids['new.cpp']! }))
     const want = await offline(enc.encode(before), enc.encode(after))
     expect(want).toMatchObject({ kind: 'placeholder', reason: 'large', added: 1, deleted: 1 })
@@ -184,7 +184,7 @@ describe('loadFilePatch over a pack (the live read path)', () => {
     const small = s.blob('ok\n')
     const length = 20 * COUNT_BLOB_MAX_BYTES
     const lying = {
-      locate: () => ({ packRef: 0, offset: 0, length, deltaChainSpan: 0, deltaDepth: 1 }),
+      locate: async () => ({ packRef: 0, offset: 0, length, deltaChainSpan: 0, deltaDepth: 1 }),
       readObject: () => Promise.reject(new ObjectTooLargeError(length, COUNT_BLOB_MAX_BYTES)),
     }
     const patch = await loadFilePatch({ base: s.reader(), head: lying }, change({ baseOid: null, headOid: small }), { ignoreSizeHint: true })

@@ -14,11 +14,16 @@ import { commitSubject, MalformedObjectError, parseCommit, parseTag, parseTree, 
 /**
  * The slice of {@link BrowseReader} object reads need. `locate` is optional so a test double
  * or a combined reader can omit it; when present it lets a diff skip downloading a blob whose
- * stored size alone rules out showing it inline.
+ * stored size alone rules out showing it inline. It may read (a slice of the index, QW3-001).
  */
 export interface ObjectReader {
   readObject(oidHex: string, options?: ReadObjectOptions): Promise<GitObject>
-  locate?(oidHex: string): LocatorEntry | null
+  locate?(oidHex: string): Promise<LocatorEntry | null>
+  /**
+   * Read the reader's whole object index now ({@link BrowseReader.preloadIndex}): for a walk about
+   * to look up nearly every object, which would otherwise read it a slice at a time.
+   */
+  preloadIndex?(): Promise<void>
   /** An object's type from entry headers alone, or null when not indexed ({@link BrowseReader.objectType}). */
   objectType?(oidHex: string): Promise<GitObject['type'] | null>
 
@@ -168,8 +173,8 @@ export function findEntry(entries: readonly TreeEntry[], name: string): TreeEntr
  * slack and the object header is a safe bound — IF the locator is honest. Nothing verifies a
  * locator's lengths, so this only ever skips work early: a read must still check the real size.
  */
-export function knownMinSize(reader: ObjectReader, oid: string): number | null {
-  const entry = reader.locate?.(oid)
+export async function knownMinSize(reader: ObjectReader, oid: string): Promise<number | null> {
+  const entry = await reader.locate?.(oid)
   if (!entry || entry.deltaDepth !== 0) return null
   return Math.floor((entry.length - 64) / 1.01)
 }

@@ -19,13 +19,18 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
 import { ACTIVE_NETWORK, CHUNK_PAYLOAD_MAX, PACK_KIND } from '../constants'
-import { loadIndexArtifact } from './index-cache'
+import { keepIndexRange, loadIndexArtifact, storedIndexArtifact, storedIndexRanges } from './index-cache'
+import { endIndexProgress, noteIndexProgress } from './index-progress'
 import { attachHistory, chainHistory, historySource, type HistorySource } from './history-source'
 import {
   BrowseReader,
+  FANOUT_LEN,
   FlatIndex,
+  FragmentedIndex,
   MissingObjectError,
   ObjectLocator,
+  RangedLocator,
+  type ObjectIndex,
   type PackSource,
 } from '../browse'
 import {
@@ -58,7 +63,7 @@ import {
   resetGatewayHealth,
   resetRepoGateways,
 } from './storage-status'
-import { mapPooled } from './pool'
+import { mapPooled, trimOldest } from './pool'
 import { openPrivateArtifact, readPrivateRange } from './private-packs'
 import { onPrivateSessionEnded } from '../repo/private-session'
 
@@ -1318,7 +1323,8 @@ export interface UnavailablePack {
 
 /** The assembled browse context for a repo, or a reason it is unavailable. */
 export interface BrowseContext {
-  readonly locator: ObjectLocator
+  /** The index whole, or (a large published one, QW3-001) read a fanout slice at a time. */
+  readonly locator: ObjectLocator | ObjectIndex
   readonly packs: PackSource
   readonly reader: BrowseReader
   /**
@@ -1446,17 +1452,25 @@ export async function loadBrowseContext(
     manifests: ids,
   })
 
-  const own = await publishedLocator(sdk, repo, manifests, livePacks)
+  // A public repo's large fragments are read a fanout slice at a time (QW3-001). A private repo's
+  // are sealed, and read whole as before.
+  const own = await publishedLocator(sdk, repo, manifests, livePacks, { ranged: repo.session === undefined })
   if (own === 'behind') return behind('index-behind')
   // A fork's own fragments index only the packs it pushed itself; the packs it holds by
   // reference to its parent (and the parent's parent) are indexed by theirs (QW-023).
   const lineage: Ancestor[] = []
-  const locator = own !== null && coversSpace(own, livePacks) ? own : await withAncestors(sdk, repo, own, livePacks, lineage, 0)
-  if (locator === null) return behind('no-index')
-  // Coverage: every pack in the space that HOLDS anything must be indexed by some fragment.
-  // A gap means objects that exist on-chain are unreachable through the index — the honest
-  // answer is the fallback clone, not a reader that throws on the first uncovered object.
-  if (!coversSpace(locator, livePacks)) return behind('index-behind')
+  let locator: ObjectLocator | ObjectIndex | null
+  // A ranged index covers the space: `publishedLocator` returns one only when its rows do.
+  if (own !== null && !(own instanceof ObjectLocator)) locator = own
+  else {
+    const whole = own !== null && coversSpace(own, livePacks) ? own : await withAncestors(sdk, repo, own, livePacks, lineage, 0)
+    if (whole === null) return behind('no-index')
+    // Coverage: every pack in the space that HOLDS anything must be indexed by some fragment.
+    // A gap means objects that exist on-chain are unreachable through the index — the honest
+    // answer is the fallback clone, not a reader that throws on the first uncovered object.
+    if (!coversSpace(whole, livePacks)) return behind('index-behind')
+    locator = whole
+  }
 
   // The packRef space is the current live pack set: the fragments cover all of it, and each
   // was built over a prefix of it (a parent's remapped into it), so every row's packRef means
@@ -1482,16 +1496,168 @@ function coversSpace(locator: ObjectLocator, space: readonly PackManifest[]): bo
 }
 
 /**
+ * Index fragments at least this large are read a fanout slice at a time when `ranged`
+ * (QW3-001); smaller ones whole, which is one chunk query either way (a push's own fragment is
+ * 36 bytes per object it added: 26 KB for a 700-object push).
+ */
+export const RANGED_INDEX_MIN_BYTES = 256 * 1024
+
+/**
+ * Whether `parts` (fragments, oldest first, each held whole or read a range at a time) cover
+ * `space`, without reading the ranged ones' rows:
+ *  - `uncovered`: a whole part names a pack outside the space, or a pack that holds anything is
+ *    indexed by no whole part and was pushed after every ranged one was published (`reach`: the
+ *    length of the pack space as of each fragment; a fragment cannot index a later pack). The
+ *    D-920 case: a push whose own fragment never landed.
+ *  - `covered`: the ranged fragments' rows number exactly the objects of the packs left to them
+ *    (a fragment holds one row per object of each pack it indexes).
+ *  - `unknown`: they do not (an overlap, a count a writer misstated): settled the exact way, the
+ *    fragments read whole and checked row by row.
+ */
+function rangedCoverage(parts: readonly (ObjectLocator | RangedLocator)[], reach: readonly number[], space: readonly PackManifest[]): 'covered' | 'uncovered' | 'unknown' {
+  const covered = new Set<number>()
+  let rangedRows = 0
+  let rangedReach = 0
+  parts.forEach((p, i) => {
+    if (p instanceof ObjectLocator) for (const r of p.packRefsCovered()) covered.add(r)
+    else {
+      rangedRows += p.count
+      rangedReach = Math.max(rangedReach, reach[i] ?? 0)
+    }
+  })
+  for (const r of covered) if (r >= space.length) return 'uncovered'
+  let objects = 0
+  for (let i = 0; i < space.length; i++) {
+    const m = space[i] as PackManifest
+    if (m.objectCount === 0 || covered.has(i)) continue
+    if (i >= rangedReach) return 'uncovered'
+    objects += m.objectCount
+  }
+  return rangedRows === objects ? 'covered' : 'unknown'
+}
+
+/**
+ * Ranged fragments opened this session, per SDK (an artifact never changes): a revalidation, or
+ * the next resolve after a push, reads nothing of them again and keeps the slices already read.
+ */
+let openedFragments = new WeakMap<EvoSDK, Map<string, Promise<ObjectLocator | RangedLocator>>>()
+const OPENED_FRAGMENTS_KEPT = 8
+
+/**
+ * A whole index fragment: kept from an earlier visit, else downloaded and kept, its progress shown
+ * on the code pages of `progressKey` (the repo viewed: a fork reads its parent's index).
+ */
+async function wholeFragment(sdk: EvoSDK, repo: RepoRef, m: PackManifest, progressKey: string): Promise<ObjectLocator> {
+  const key = progressKey
+  try {
+    // Fragments are content-addressed: a verified copy from an earlier visit is reused
+    // instead of downloading the whole index on every page load (D-023).
+    const bytes = await loadIndexArtifact(ACTIVE_NETWORK.key, m.packHash, () =>
+      loadArtifactBytesProgress(sdk, repo, m, (fetched, total) => noteIndexProgress(key, m.packHash, fetched, total)),
+    )
+    return ObjectLocator.parse(bytes)
+  } finally {
+    endIndexProgress(key, m.packHash)
+  }
+}
+
+/**
+ * Ranges of one artifact read through browser storage: those asked for in one turn are looked up
+ * in one store read, and the ones it does not hold are then read together (`read`), so they share
+ * chunk queries ({@link queueChunkSeqs}). One store read per range would end each in its own turn,
+ * and so in its own query: a branch list's two dozen lookups were two dozen queries.
+ */
+function gatherRanges(
+  stored: (ranges: readonly (readonly [number, number])[]) => Promise<(Uint8Array | undefined)[]>,
+  read: (start: number, end: number) => Promise<Uint8Array>,
+  keep: (start: number, end: number, bytes: Uint8Array) => void,
+): (start: number, end: number) => Promise<Uint8Array> {
+  type Asked = { readonly range: readonly [number, number]; readonly resolve: (b: Uint8Array) => void; readonly reject: (e: unknown) => void }
+  let pending: Asked[] | null = null
+  const flush = async (batch: readonly Asked[]): Promise<void> => {
+    const hits = await stored(batch.map((a) => a.range)).catch(() => batch.map(() => undefined))
+    batch.forEach((a, i) => {
+      const hit = hits[i]
+      if (hit !== undefined) return a.resolve(hit)
+      const [start, end] = a.range
+      read(start, end).then((bytes) => {
+        keep(start, end, bytes)
+        a.resolve(bytes)
+      }, a.reject)
+    })
+  }
+  return (start, end) =>
+    new Promise<Uint8Array>((resolve, reject) => {
+      if (pending === null) {
+        const batch: Asked[] = []
+        pending = batch
+        nextMacrotask(() => {
+          pending = null
+          void flush(batch)
+        })
+      }
+      pending.push({ range: [start, end], resolve, reject })
+    })
+}
+
+/**
+ * A large index fragment, read a fanout slice at a time ({@link RangedLocator}): its fanout now,
+ * each slice when a lookup first needs it, every range kept in IndexedDB for the next visit. A
+ * whole copy already kept is used whole; a fanout that does not describe the fragment is read
+ * whole instead.
+ */
+function openFragment(sdk: EvoSDK, repo: RepoRef, m: PackManifest): Promise<ObjectLocator | RangedLocator> {
+  const progressKey = repoKey(repo)
+  const memo = `${ACTIVE_NETWORK.key}:${repoKey(repo)}:${m.packHash}`
+  let opened = openedFragments.get(sdk)
+  if (opened === undefined) {
+    opened = new Map()
+    openedFragments.set(sdk, opened)
+  }
+  const held = opened.get(memo)
+  if (held !== undefined) return held
+  const open = (async (): Promise<ObjectLocator | RangedLocator> => {
+    const scope = ACTIVE_NETWORK.key
+    const kept = await storedIndexArtifact(scope, m.packHash)
+    if (kept !== undefined) return ObjectLocator.parse(kept)
+    const readRange = gatherRanges(
+      (ranges) => storedIndexRanges(scope, m.packHash, ranges),
+      artifactRangeFetch(sdk, repo, m),
+      (start, end, bytes) => keepIndexRange(scope, m.packHash, start, end, bytes),
+    )
+    // A Platform copy is read a chunk at a time whatever the range: read the index in chunks too.
+    const granule = CHUNK_PAYLOAD_MAX
+    const loadWhole = async (): Promise<Uint8Array> => (await wholeFragment(sdk, repo, m, progressKey)).asBytes()
+    return RangedLocator.open(await readRange(0, FANOUT_LEN), { sizeBytes: m.sizeBytes, granule, readRange, loadWhole }) ?? ObjectLocator.parse(await loadWhole())
+  })()
+  const byKey = opened
+  byKey.set(memo, open)
+  open.catch(() => {
+    if (byKey.get(memo) === open) byKey.delete(memo)
+  })
+  trimOldest(byKey, OPENED_FRAGMENTS_KEPT)
+  return open
+}
+
+/**
  * The merged index `repo`'s published fragments make over `space` (its live pack space): null
  * when it published none, `behind` when they cannot be trusted over this space (or will not
  * load). Coverage is the caller's: a fragment may index only part of the space.
+ *
+ * `ranged`: a fragment stored on Platform of {@link RANGED_INDEX_MIN_BYTES} or more is not
+ * downloaded; the answer is then an {@link ObjectIndex} reading it a chunk at a time, and only when
+ * the fragments cover `space` ({@link rangedCoverage}), so the caller needs no coverage check
+ * of its own. Only Platform copies: their chunks come proof-checked from the fragment's uploader,
+ * where an external mirror's range is anyone's and only a whole artifact is checked (its sha256).
+ * `progressKey`: the repo whose code pages show a whole read's progress (a fork's, for its parent).
  */
 async function publishedLocator(
   sdk: EvoSDK,
   repo: RepoRef,
   manifests: readonly PackManifest[],
   space: readonly PackManifest[],
-): Promise<ObjectLocator | null | 'behind'> {
+  { ranged = false, progressKey = repoKey(repo) }: { readonly ranged?: boolean; readonly progressKey?: string } = {},
+): Promise<ObjectLocator | ObjectIndex | null | 'behind'> {
   const fragments = locatorFragments(manifests)
   if (fragments.length === 0) return null
 
@@ -1500,11 +1666,13 @@ async function publishedLocator(
   // only grows at the end, so this holds; a repack breaks it and supersedes the fragments it
   // consolidated, so the only way to fail is a fragment published concurrently with a
   // repack. Checked from the manifest list alone, before any bytes are fetched.
+  const reachOf = new Map<PackManifest, number>()
   for (const f of fragments) {
     // As of the fragment's first upload `(createdAt, id)`.
     const asOf = locatorPackSpace(manifests, { createdAt: f.createdAt, id: f.documentId })
     if (asOf.length > space.length) return 'behind'
     if (asOf.some((m, i) => m.packHash !== space[i]?.packHash)) return 'behind'
+    reachOf.set(f, asOf.length)
   }
 
   // Oldest-first for a stable row order. Rows are keyed by `(oid, packRef)`, so the merge
@@ -1520,14 +1688,20 @@ async function publishedLocator(
   // query failure is enough to reach this.
   let locator: ObjectLocator
   try {
-    // Fragments are content-addressed: a verified copy from an earlier visit is reused
-    // instead of downloading the whole index on every page load (D-023).
-    const parts = await Promise.all(
-      ordered.map(async (m) =>
-        ObjectLocator.parse(await loadIndexArtifact(ACTIVE_NETWORK.key, m.packHash, () => loadArtifactBytes(sdk, repo, m))),
+    let parts = await Promise.all(
+      ordered.map((m) =>
+        ranged && m.storage === 0 && m.sizeBytes >= RANGED_INDEX_MIN_BYTES ? openFragment(sdk, repo, m) : wholeFragment(sdk, repo, m, progressKey),
       ),
     )
-    locator = ObjectLocator.merge(parts)
+    if (parts.some((p) => p instanceof RangedLocator)) {
+      // Answered a chunk at a time. A ranged row naming a pack past the space fails its read
+      // (`buildPackSource`); the whole parts' bounds are checked by `rangedCoverage`.
+      const coverage = rangedCoverage(parts, ordered.map((f) => reachOf.get(f) ?? 0), space)
+      if (coverage === 'covered') return new FragmentedIndex(parts)
+      if (coverage === 'uncovered') return 'behind'
+      parts = await Promise.all(parts.map((p) => (p instanceof RangedLocator ? p.loadWhole() : p)))
+    }
+    locator = ObjectLocator.merge(parts as ObjectLocator[])
   } catch {
     return 'behind'
   }
@@ -1560,8 +1734,10 @@ async function withAncestors(
   space: readonly PackManifest[],
   lineage: Ancestor[],
   depth: number,
+  /** The repo viewed (the fork): its code pages show the ancestors' index reads. */
+  progressKey: string = repoKey(repo),
 ): Promise<ObjectLocator | null> {
-  const inherited = depth < MAX_FORK_DEPTH ? await inheritedIndex(sdk, repo, space, lineage, depth) : null
+  const inherited = depth < MAX_FORK_DEPTH ? await inheritedIndex(sdk, repo, space, lineage, depth, progressKey) : null
   if (inherited === null) return own
   return own === null ? inherited : ObjectLocator.merge([own, inherited])
 }
@@ -1584,6 +1760,7 @@ async function inheritedIndex(
   space: readonly PackManifest[],
   lineage: Ancestor[],
   depth: number,
+  progressKey: string,
 ): Promise<ObjectLocator | null> {
   if (repo.visibility !== 'public') return null
   try {
@@ -1592,9 +1769,11 @@ async function inheritedIndex(
     const manifests = await readBrowseManifests(sdk, parent, { network: ACTIVE_NETWORK.network })
     lineage.push({ repo: parent, manifests })
     const parentSpace = locatorPackSpace(manifests)
-    const published = await publishedLocator(sdk, parent, manifests, parentSpace)
-    if (published === 'behind') return null
-    const full = published !== null && coversSpace(published, parentSpace) ? published : await withAncestors(sdk, parent, published, parentSpace, lineage, depth + 1)
+    // Whole: a fork remaps every row of its parent's index into its own pack space.
+    const published = await publishedLocator(sdk, parent, manifests, parentSpace, { progressKey })
+    if (published === 'behind' || (published !== null && !(published instanceof ObjectLocator))) return null
+    const full =
+      published !== null && coversSpace(published, parentSpace) ? published : await withAncestors(sdk, parent, published, parentSpace, lineage, depth + 1, progressKey)
     if (full === null) return null
     const at = new Map(space.map((m, i) => [m.packHash.toLowerCase(), i]))
     const map = new Map<number, number>()
@@ -1672,7 +1851,7 @@ export function missingObjectError(
 export function repoReader(
   sdk: EvoSDK | null,
   repo: RepoRef,
-  locator: ObjectLocator,
+  locator: ObjectLocator | ObjectIndex,
   packs: PackSource,
   /** Each `packRef`'s pack (and its copies), so a read names the copy that served it (L-18). */
   space: readonly PackManifest[],
@@ -1900,11 +2079,14 @@ const missRefreshes = new WeakMap<BrowseReader, { readonly at: number; readonly 
  * holds a reader that has the object. A newer context found here is announced
  * ({@link browseGeneration}), so the repo's other views move to it too.
  */
-function readerAfterMiss(sdk: EvoSDK, repo: RepoRef, stale: BrowseReader, oidHex: string): Promise<BrowseReader | null> {
+async function readerAfterMiss(sdk: EvoSDK, repo: RepoRef, stale: BrowseReader, oidHex: string): Promise<BrowseReader | null> {
   const key = repoKey(repo)
   // The locator is immutable: a cached reader indexing the oid is not `stale`.
   const cached = peekBrowseState(key)
-  if (cached?.kind === 'ready' && cached.context.reader.locate(oidHex) !== null) return Promise.resolve(cached.context.reader)
+  if (cached?.kind === 'ready' && cached.context.reader !== stale) {
+    const reader = cached.context.reader
+    if ((await reader.locate(oidHex).catch(() => null)) !== null) return reader
+  }
   const held = missRefreshes.get(stale)
   if (held !== undefined && Date.now() - held.at < MISS_REFRESH_MS) return held.promise
   const before = peekBrowseState(key)
@@ -1935,4 +2117,5 @@ function readerAfterMiss(sdk: EvoSDK, repo: RepoRef, stale: BrowseReader, oidHex
 /** Test hook: forget every cached browse context. */
 export function resetBrowseCache(): void {
   browseCache.clear()
+  openedFragments = new WeakMap()
 }

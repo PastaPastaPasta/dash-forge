@@ -33,13 +33,19 @@ export interface TagPeeler {
   readonly settled: boolean
 }
 
-export function useTagPeeler(repo: RepoRef | null): TagPeeler {
+export function useTagPeeler(repo: RepoRef | null, { readAhead = true }: { readonly readAhead?: boolean } = {}): TagPeeler {
   const browse = useBrowse(repo)
   const view = useTrustView()
   const state = browse.data
   const shared = state?.kind === 'ready' ? state.context.reader : null
-  // One read-ahead walker for the list, reading for this page's view (the Verification card).
-  const walker = useMemo(() => (shared === null ? null : historyWalker(shared.forView(view))), [shared, view])
+  // One read-ahead walker for the list, reading for this page's view (the Verification card): a
+  // pack keeps its tag objects together. Branch tips are commits scattered through the pack, where
+  // a 256 KiB block per tip is mostly waste (QW3-001: 2.4 MB for dash's branch dates); without
+  // read-ahead, a row's tip costs its own bytes, and rows in view at once share their queries.
+  const walker = useMemo((): (ObjectReader & { flush?(): void }) | null => {
+    if (shared === null) return null
+    return readAhead ? historyWalker(shared.forView(view)) : shared.forView(view)
+  }, [shared, view, readAhead])
   useEffect(() => () => walker?.flush?.(), [walker])
   const settled = walker === null && (browse.error !== null || (state !== null && state.kind !== 'ready'))
   return { reader: walker, settled }

@@ -10,7 +10,7 @@
  */
 
 import { diffTreesWithRenames, type DiffSides, type TreeDiff } from './commit-log'
-import type { ReadObjectOptions } from '../browse'
+import type { LocatorEntry, ReadObjectOptions } from '../browse'
 import { readCommit, type ObjectReader } from './tree-nav'
 
 /**
@@ -95,7 +95,9 @@ export function preferring(primary: ObjectReader, fallback: ObjectReader): Objec
   if (primary === fallback) return primary
   return {
     async readObject(oid: string, options?: ReadObjectOptions) {
-      if (primary.locate?.(oid) === null && (fallback.locate?.(oid) ?? null) !== null) return fallback.readObject(oid, options)
+      // A lookup that cannot be made (an index range that did not load) decides nothing: the reads below try both.
+      const located = async (r: ObjectReader): Promise<LocatorEntry | null | undefined> => r.locate?.(oid).catch(() => undefined)
+      if ((await located(primary)) === null && ((await located(fallback)) ?? null) !== null) return fallback.readObject(oid, options)
       try {
         return await primary.readObject(oid, options)
       } catch (primaryError) {
@@ -106,8 +108,8 @@ export function preferring(primary: ObjectReader, fallback: ObjectReader): Objec
         }
       }
     },
-    locate(oid: string) {
-      return primary.locate?.(oid) ?? fallback.locate?.(oid) ?? null
+    async locate(oid: string) {
+      return (await primary.locate?.(oid)) ?? (await fallback.locate?.(oid)) ?? null
     },
   }
 }

@@ -135,6 +135,23 @@ const INFLATE_CHUNK = 64 * 1024
  * entries costs only the stream.
  */
 export function inflateZlib(buf: Uint8Array, from: number, expected: number, maxBytes = Infinity): Uint8Array {
+  return inflateStream(buf, from, expected, maxBytes).bytes
+}
+
+/**
+ * {@link inflateZlib}, also saying how many input bytes the stream took (`consumed`): where the
+ * next pack entry starts. Only a stream that ended counts: one cut short throws.
+ */
+export function inflateZlibMeasured(buf: Uint8Array, from: number, expected: number, maxBytes = Infinity): { readonly bytes: Uint8Array; readonly consumed: number } {
+  const { bytes, inflater } = inflateStream(buf, from, expected, maxBytes)
+  // pako keeps zlib's stream state; its typings leave it out.
+  const state = inflater as unknown as { readonly ended?: boolean; readonly strm?: { readonly total_in?: number } }
+  const consumed = state.strm?.total_in
+  if (state.ended !== true || consumed === undefined) throw new Error('inflate size mismatch')
+  return { bytes, consumed }
+}
+
+function inflateStream(buf: Uint8Array, from: number, expected: number, maxBytes: number): { readonly bytes: Uint8Array; readonly inflater: Inflate } {
   if (expected > maxBytes) throw new ObjectTooLargeError(expected, maxBytes)
   const input = buf.subarray(from)
   if (expected > input.length * DEFLATE_MAX_RATIO + 64) throw new Error('inflate size mismatch')
@@ -151,7 +168,7 @@ export function inflateZlib(buf: Uint8Array, from: number, expected: number, max
   inflater.onEnd = () => {}
   inflater.push(input, true)
   if (inflater.err !== 0 || got !== expected) throw new Error('inflate size mismatch')
-  return out
+  return { bytes: out, inflater }
 }
 
 /**

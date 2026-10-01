@@ -38,7 +38,7 @@ function readerOf(s: Store): PrefixReader & { memoScope: object } {
   return {
     ...s.reader(),
     memoScope: {},
-    findByPrefix: (prefix: string, limit = 2) => [...s.objects.keys()].filter((k) => k.startsWith(prefix)).slice(0, limit),
+    findByPrefix: async (prefix: string, limit = 2) => [...s.objects.keys()].filter((k) => k.startsWith(prefix)).slice(0, limit),
   }
 }
 

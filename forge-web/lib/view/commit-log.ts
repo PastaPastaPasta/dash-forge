@@ -217,7 +217,7 @@ const AMBIGUOUS_SHOWN = 5
 
 /** The slice of a reader short-id resolution needs (a `BrowseReader`). */
 export interface PrefixReader extends ObjectReader {
-  findByPrefix?(prefix: string, limit?: number): string[]
+  findByPrefix?(prefix: string, limit?: number): Promise<string[]>
   /** An object's type from entry headers alone (a delta's from its chain), or null when not indexed. */
   objectType?(oidHex: string): Promise<GitObject['type'] | null>
   /** Some of the repo's packs are missing (a partial clone): absent ids may still exist. */
@@ -238,7 +238,7 @@ export async function resolveCommitOid(reader: PrefixReader, input: string): Pro
   const id = input.trim().toLowerCase()
   if (!/^[0-9a-f]{4,40}$/.test(id)) throw new CommitIdError('invalid', input)
   if (id.length === 40) return id
-  const matches = reader.findByPrefix?.(id, PREFIX_SCAN) ?? []
+  const matches = (await reader.findByPrefix?.(id, PREFIX_SCAN)) ?? []
   if (matches.length === 0) throw notFound(reader, input)
   // Only entry headers are read per candidate (a delta's chain of them): a short id matching a
   // 40 MB blob must not download it just to learn it is not a commit.
@@ -285,7 +285,7 @@ export async function loadCommitChanges(reader: PrefixReader, id: string): Promi
     // reader's MissingObjectError, QW2-037). A partial clone's own error already names the
     // packs it could not load; keep it.
     if (e instanceof MissingObjectError && reader.incomplete) throw e
-    if (reader.locate?.(named) === null) throw notFound(reader, id)
+    if ((await reader.locate?.(named)) === null) throw notFound(reader, id)
     if (e instanceof MissingObjectError) throw e
     if (e instanceof ObjectTypeError) throw new CommitIdError('not-a-commit', id, [], e.actual, e.oid !== named)
     throw e
