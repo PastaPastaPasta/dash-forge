@@ -3,7 +3,7 @@
 //
 //   (cd forge-contracts/sdk-v2 && npm ci)           # the @dashevo/evo-sdk sdk-v2/package.json pins
 //   node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
-//        --network devnet --devnet-name bonsia [--addresses https://ip:1443,...] [--dry-run]
+//        --network devnet --devnet-name sakura [--addresses https://ip:1443,...] [--dry-run]
 //        [--only collab|community] [--force-new [--same-group]] [--update core]
 //   node forge-contracts/scripts/deploy-v2.mjs --self-test    # offline: ids, schemas, sizes of the group fields
 //
@@ -259,7 +259,7 @@ async function main() {
   if (args['self-test']) return;
 
   const network = args.network || 'devnet';
-  const devnetName = network === 'devnet' ? (args['devnet-name'] || 'bonsia') : undefined;
+  const devnetName = network === 'devnet' ? (args['devnet-name'] || 'sakura') : undefined;
   if (!['devnet', 'testnet', 'mainnet'].includes(network)) throw new Error(`unknown network ${network}`);
   if (!args.identity || args.identity === true) throw new Error('--identity <deployer.identity.json> required');
   const dryRun = Boolean(args['dry-run']);

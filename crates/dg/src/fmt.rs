@@ -632,7 +632,7 @@ mod tests {
     #[test]
     fn test_dash_has_no_usd_value() {
         let devnet = Network::Devnet {
-            name: "bonsia".into(),
+            name: "sakura".into(),
             dapi_addresses: Vec::new(),
             quorum_base_url: None,
         };

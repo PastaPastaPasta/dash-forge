@@ -3,10 +3,10 @@
 // the RC1 forge-core / forge-collab / forge-community deployed on a devnet.
 //
 //   node forge-contracts/scripts/verify-c1.mjs --owner <A.identity.json> --member <B.identity.json> \
-//        --third <C.identity.json> [--network devnet --devnet-name bonsia] [--deployment <file>]
+//        --third <C.identity.json> [--network devnet --devnet-name sakura] [--deployment <file>]
 //
 // Needs `npm ci` in forge-contracts/sdk-v2 (evo-sdk 5.0.0-beta.1). The network defaults to
-// DASH_FORGE_NETWORK / DASH_FORGE_DEVNET_NAME, else devnet bonsia.
+// DASH_FORGE_NETWORK / DASH_FORGE_DEVNET_NAME, else devnet sakura.
 //
 // Three identities minted for the run (never the shared fixtures): OWNER creates two scratch
 // repos; MEMBER is enrolled as a runner of the first, then revoked; MEMBER and THIRD beat it

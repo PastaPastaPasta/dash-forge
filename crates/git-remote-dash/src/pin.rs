@@ -9,7 +9,7 @@
 //! that repository's own git config, per network:
 //!
 //! ```text
-//! [dash "devnet-bonsia:dash://alice/project"]
+//! [dash "devnet-sakura:dash://alice/project"]
 //!     repoId = <base58 repo document id>
 //!     ownerId = <base58 owner identity id>
 //! ```
@@ -41,7 +41,7 @@ pub struct Pin {
     pub repo_id: String,
     /// The repository owner's identity id.
     pub owner_id: String,
-    /// The network key it was resolved on (`testnet`, `devnet-bonsia`, …).
+    /// The network key it was resolved on (`testnet`, `devnet-sakura`, …).
     pub network: String,
 }
 
@@ -72,7 +72,7 @@ pub enum Outcome {
 }
 
 /// The git config section of `url`'s pin on `network`
-/// (`dash.devnet-bonsia:dash://alice/project`), `None` for an id-addressed URL. A DPNS owner
+/// (`dash.devnet-sakura:dash://alice/project`), `None` for an id-addressed URL. A DPNS owner
 /// is keyed as DPNS compares it (case-insensitive, without `@` or `.dash`), and the repo name
 /// as the resolver does (lowercase), so the spellings that resolve alike share one pin.
 pub fn section(url: &DashUrl, network: &str) -> Option<String> {
@@ -271,13 +271,13 @@ mod tests {
 
     const OWNER_A: &str = "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB";
     const OWNER_B: &str = "5rrwgjjVUqMghnessfiXPXubpiM2QLNNXH142Hv4PDyX";
-    const SECTION: &str = "dash.devnet-bonsia:dash://alice/project";
+    const SECTION: &str = "dash.devnet-sakura:dash://alice/project";
 
     fn pin(repo: &str, owner: &str) -> Pin {
         Pin {
             repo_id: repo.into(),
             owner_id: owner.into(),
-            network: "devnet-bonsia".into(),
+            network: "devnet-sakura".into(),
         }
     }
 
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn spellings_that_resolve_alike_share_a_pin() {
-        let s = |u: &str| section(&url(u), "devnet-bonsia");
+        let s = |u: &str| section(&url(u), "devnet-sakura");
         let alice = Some(SECTION.to_string());
         assert_eq!(s("dash://alice/project"), alice);
         assert_eq!(s("dash://Alice.dash/Project.git"), alice);
@@ -331,7 +331,7 @@ mod tests {
         // An identity id keeps its case (base58 is case-sensitive).
         assert_eq!(
             s(&format!("dash://{OWNER_A}/project")),
-            Some(format!("dash.devnet-bonsia:dash://{OWNER_A}/project"))
+            Some(format!("dash.devnet-sakura:dash://{OWNER_A}/project"))
         );
         // An id-addressed URL is the repository already.
         assert_eq!(s(&format!("dash://{OWNER_B}")), None);

@@ -1,0 +1,21 @@
+{
+  "network": "devnet",
+  "devnetName": "sakura",
+  "chainId": "dash-devnet-sakura",
+  "quorumBaseUrl": "https://quorums.sakura.networks.dash.org",
+  "dapiAddresses": [
+    "https://68.67.122.86:1443",
+    "https://68.67.122.87:1443",
+    "https://68.67.122.88:1443",
+    "https://68.67.122.89:1443",
+    "https://68.67.122.90:1443",
+    "https://68.67.122.91:1443",
+    "https://68.67.122.92:1443",
+    "https://68.67.122.93:1443",
+    "https://68.67.122.94:1443",
+    "https://68.67.122.95:1443",
+    "https://68.67.122.232:1443",
+    "https://68.67.122.240:1443",
+    "https://68.67.122.241:1443"
+  ]
+}

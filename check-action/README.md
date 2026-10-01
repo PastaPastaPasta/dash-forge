@@ -38,7 +38,7 @@ jobs:
           repo: <owner identity id>/project     # or dash://<owner>/project
           job-status: ${{ job.status }}
           network: devnet                       # Forge's network today (the default)
-          devnet-name: bonsia
+          devnet-name: sakura
         env:
           DASH_FORGE_KEY: ${{ secrets.FORGE_RUNNER_KEY }}
 ```
@@ -64,7 +64,7 @@ Optionally, report `in_progress` at the start of a long job with an early step t
 | `log` | | A file to upload as the run's log. It needs `log-storage`. |
 | `log-storage` | | The storage profile the log goes to. The job must provide it: a `storage.toml` under `$XDG_CONFIG_HOME/dash-forge/` naming a bucket, with the bucket's credentials in the job's environment (see [Bring your own storage](../docs/guides/bring-your-own-storage.md)). |
 | `public-log` | `false` | No longer has any effect (it warns): a private repository's check run cannot carry a log. |
-| `network` / `devnet-name` | `devnet` / `bonsia` | Which network the Forge repository is on. The default is the devnet the hosted site uses; Forge has no mainnet or testnet deployment yet. `devnet-name` (lowercase letters, digits, `-`) is used only with `network: devnet`. |
+| `network` / `devnet-name` | `devnet` / `sakura` | Which network the Forge repository is on. The default is the devnet the hosted site uses; Forge has no mainnet or testnet deployment yet. `devnet-name` (lowercase letters, digits, `-`) is used only with `network: devnet`. |
 | `version` | *(empty)* | The Dash Forge release to install. Empty until the first release: `install: 'true'` then builds from source. |
 | `install` | `true` | `true`: install release `version` (the step warns, or fails with `fail-on-error`, if it is not published), or, with `version` empty, build `dg` from the action's own source. `source`: always build from source. `false`: use a `dg` already on `PATH`. A second use of the action in the same job reuses the installed `dg`. |
 | `build-cache` | `true` | A source build reuses its compiled dependencies from `actions/cache`, which is trusted like any other cache of your repository: a workflow there that can write the default branch's caches (one that runs a pull request's code, say) could plant one. `false`: compile everything on every run. |
@@ -84,13 +84,13 @@ Optionally, report `in_progress` at the start of a long job with an early step t
 ## Test it
 
 - `bash check-action/test.sh` runs offline against a fake `dg`. It checks the arguments built from each input and the environment, the refusals, the outputs, the step summary, warn-or-fail, and that the key stays off the command line.
-- The `Check Action` workflow (`.github/workflows/check-action.yml`) also reports its own job to a Forge repository on a devnet. That live job is **skipped** until the repository has a `FORGE_CI_RUNNER_KEY` secret and the `FORGE_CHECK_REPO` and `FORGE_CHECK_DEVNET` variables (for example `bonsia`). These need the owner's approval (`SECRETS-TODO.md`).
+- The `Check Action` workflow (`.github/workflows/check-action.yml`) also reports its own job to a Forge repository on a devnet. That live job is **skipped** until the repository has a `FORGE_CI_RUNNER_KEY` secret and the `FORGE_CHECK_REPO` and `FORGE_CHECK_DEVNET` variables (for example `sakura`). These need the owner's approval (`SECRETS-TODO.md`).
 - To run the same flow on your machine against a repository you own, set a simulated GitHub environment and run the two scripts. With a runner key in `DASH_FORGE_KEY`:
 
 ```sh
 export RUNNER_TEMP=$(mktemp -d) GITHUB_OUTPUT=/dev/stdout GITHUB_RUN_ID=1 GITHUB_JOB=local \
        GITHUB_SERVER_URL=https://github.com GITHUB_REPOSITORY=me/app GITHUB_SHA=<commit>
-INPUT_REPO=<owner>/<repo> INPUT_NAME=local-check INPUT_JOB_STATUS=success INPUT_NETWORK=devnet INPUT_DEVNET_NAME=bonsia \
+INPUT_REPO=<owner>/<repo> INPUT_NAME=local-check INPUT_JOB_STATUS=success INPUT_NETWORK=devnet INPUT_DEVNET_NAME=sakura \
   bash check-action/resolve.sh > /tmp/o && FORGE_ARGS_FILE=$(sed -n 's/^args-file=//p' /tmp/o) \
   bash check-action/report.sh
 ```

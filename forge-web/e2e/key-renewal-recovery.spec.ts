@@ -7,7 +7,7 @@ import { DEMO, E2E_DEVNET, PASSPHRASE, shot } from './helpers'
 /**
  * A key renewal interrupted after its identity update was broadcast, live on a devnet (D-016):
  *
- *   E2E_DEVNET=bonsia E2E_WRITE=1 E2E_RENEW_IDENTITY=/path/to/fresh.identity.json \
+ *   E2E_DEVNET=sakura E2E_WRITE=1 E2E_RENEW_IDENTITY=/path/to/fresh.identity.json \
  *     pnpm exec playwright test key-renewal-recovery.spec.ts
  *
  * Needs a freshly minted identity of its own (about 0.05 DASH: two key registrations and one

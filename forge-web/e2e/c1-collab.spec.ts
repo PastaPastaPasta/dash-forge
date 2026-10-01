@@ -6,7 +6,7 @@ import { collectPageErrors, expectLanded, idOrEmpty, repoUrl, shot, signedIn } f
  * a repo's topics, and on an issue the milestone, pin and lock.
  *
  *   E2E_WRITE=1 E2E_IDENTITY_DIR=<dir with OWNER.identity.json> E2E_C1_REPO=<name> \
- *   E2E_C1_MILESTONE=<title> E2E_DEVNET=bonsia pnpm exec playwright test c1-collab.spec.ts
+ *   E2E_C1_MILESTONE=<title> E2E_DEVNET=sakura pnpm exec playwright test c1-collab.spec.ts
  *
  * Writes only to `E2E_C1_REPO`, a repo OWNER (an identity minted for the run, never a shared
  * fixture) owns, with an open issue #1 and a milestone `E2E_C1_MILESTONE` defined (CLI scenario 27

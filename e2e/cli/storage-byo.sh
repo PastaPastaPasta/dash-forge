@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # storage-byo.sh — bring-your-own-storage end to end: a REAL `git push` / `git clone`
 # over dash:// whose pack bytes go to LOCAL RustFS (S3, SigV4-signed) + kubo, with only the
-# packManifest + refUpdate written to Platform (devnet bonsia by default, RC1 contracts —
+# packManifest + refUpdate written to Platform (devnet sakura by default, RC2 contracts —
 # config.sh).
 # Run via `make storage-e2e`.
 #

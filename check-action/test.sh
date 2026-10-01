@@ -57,13 +57,13 @@ has "--conclusion=failure"
 
 case="explicit sha wins, dash url, devnet"
 resolve INPUT_JOB_STATUS=success PR_HEAD_SHA=$HEAD INPUT_SHA=ABCDEF0123456789ABCDEF0123456789ABCDEF01 INPUT_REPO=dash://alice/project \
-  INPUT_NETWORK=devnet INPUT_DEVNET_NAME=bonsia || fail "exit $?"
+  INPUT_NETWORK=devnet INPUT_DEVNET_NAME=sakura || fail "exit $?"
 has "--sha=abcdef0123456789abcdef0123456789abcdef01"
 has "alice/project"
-has "--devnet-name=bonsia"
+has "--devnet-name=sakura"
 
 case="the default devnet-name is ignored on another network, and an empty version builds from source"
-resolve INPUT_JOB_STATUS=success INPUT_NETWORK=testnet INPUT_DEVNET_NAME=bonsia INPUT_INSTALL=true INPUT_VERSION= || fail "exit $?"
+resolve INPUT_JOB_STATUS=success INPUT_NETWORK=testnet INPUT_DEVNET_NAME=sakura INPUT_INSTALL=true INPUT_VERSION= || fail "exit $?"
 has "--network=testnet"
 lacks_prefix "--devnet-name"
 

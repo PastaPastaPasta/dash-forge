@@ -4,7 +4,7 @@ Keeps a [Dash Forge](../README.md) copy of a GitHub repository up to date: branc
 
 Each run is **idempotent** (running it again writes nothing and costs nothing) and **capped** (it will not spend more than `cost-cap` DASH).
 
-> **Status.** Forge runs on devnet **bonsia**, the network [forge.dashhq.org](https://forge.dashhq.org) uses, and that is the Action's default network. It is not deployed on mainnet or testnet yet. No Dash Forge release is published yet either, so this Action pins none (`version` is empty), and the default `install: 'true'` builds `dg`, `git-remote-dash` and `forge-import` from the Action's own source (the ref after `@` in `uses:`). It keeps doing so at that ref after a release is published: only an Action version that sets `version` downloads release binaries. The first run compiles for several minutes; later runs reuse a build cache. This Action has no release tag yet: use `@master`, or better, pin a commit you have reviewed (`@<40-character commit id>`).
+> **Status.** Forge runs on devnet **sakura** (RC2 on Platform v5.0.0-beta.1 — being registered), the network [forge.dashhq.org](https://forge.dashhq.org) moves to, and that is the Action's default network. It is not deployed on mainnet or testnet yet. No Dash Forge release is published yet either, so this Action pins none (`version` is empty), and the default `install: 'true'` builds `dg`, `git-remote-dash` and `forge-import` from the Action's own source (the ref after `@` in `uses:`). It keeps doing so at that ref after a release is published: only an Action version that sets `version` downloads release binaries. The first run compiles for several minutes; later runs reuse a build cache. This Action has no release tag yet: use `@master`, or better, pin a commit you have reviewed (`@<40-character commit id>`).
 
 ## Quick start
 
@@ -37,7 +37,7 @@ jobs:
         with:
           repo: dash://<owner identity id>/project
           network: devnet                # Forge's network today (the default)
-          devnet-name: bonsia
+          devnet-name: sakura
           sync: code,releases,issues,prs
           storage-kind: s3
           s3-endpoint: https://<account>.r2.cloudflarestorage.com
@@ -62,7 +62,7 @@ Run it once with `dry-run: 'true'` from the Actions tab (`workflow_dispatch`) to
 |---|---|---|
 | `repo` | *(required)* | Destination: `dash://<owner>/<name>`, `<owner>/<name>`, or a bare name (the signer's own). Created if missing when the signer is the owner. |
 | `network` | `devnet` | `mainnet`, `testnet` or `devnet`. The default is the network Forge is deployed on today; mainnet and testnet have no deployment yet. |
-| `devnet-name` | `bonsia` | The devnet's name. Used only when `network` is `devnet`. |
+| `devnet-name` | `sakura` | The devnet's name. Used only when `network` is `devnet`. |
 | `sync` | `code,releases` | Comma list of `code`, `issues`, `prs`, `releases`, `labels`. |
 | `storage-kind` | `platform` | Where pack bytes go: `platform`, `s3` or `ipfs-pinning`. Refs, manifests, issues and PRs are always on Platform. |
 | `s3-endpoint`, `s3-region`, `s3-bucket`, `s3-public-url`, `s3-prefix` | | S3-compatible bucket (R2, B2, S3, MinIO). `s3-public-url` is the origin browsers read packs from. See [Bring your own storage](../docs/guides/bring-your-own-storage.md). |

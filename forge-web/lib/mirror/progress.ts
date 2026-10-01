@@ -92,7 +92,7 @@ export function refsFingerprint(refs: readonly ResolvedRef[]): string {
     .join('\n')
 }
 
-/** `networkKey`: `devnet-bonsia`, not `devnet`, so a devnet reset does not resume old progress. */
+/** `networkKey`: `devnet-sakura`, not `devnet`, so a devnet reset does not resume old progress. */
 const key = (networkKey: string, identityId: string): string => `mirror-wizard:${networkKey}:${identityId}`
 
 /** The saved progress, or null. A record from an older shape is filled in with the defaults. */

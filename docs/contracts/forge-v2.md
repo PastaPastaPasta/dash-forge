@@ -23,7 +23,7 @@ Protocol 14 can express per-repository access control inside a shared contract:
 
 The per-repo "sovereign" tier is dropped. Anyone who wants different rules can register their own copy of these schemas (the deploy script works for any identity). Clients treat a copy as a different forge.
 
-**RC2 (Platform v5.0.0-beta.1).** Platform v5 (the 4.2 line renamed, still protocol 14) refuses `immutableAllowSetting` on every parse (rs-dpp `document_type/class_methods/try_from_schema/common/mod.rs:3106-3134`; book `contract-keywords/mutability.md:127`), so the RC1 forge-community does not load under it and bonsia is re-cut. The fresh RC2 registration (dash-forge-qa `design/v5/PLAN.md` §3; owner decisions of 2026-10-01) is RC1 plus:
+**RC2 (Platform v5.0.0-beta.1).** Platform v5 (the 4.2 line renamed, still protocol 14) refuses `immutableAllowSetting` on every parse (rs-dpp `document_type/class_methods/try_from_schema/common/mod.rs:3106-3134`; book `contract-keywords/mutability.md:127`), so the RC1 forge-community does not load under it. Bonsia was retired, and RC2 is registered on its replacement, devnet sakura (Platform v5.0.0-beta.1, chain id `dash-devnet-sakura`). The fresh RC2 registration (dash-forge-qa `design/v5/PLAN.md` §3; owner decisions of 2026-10-01) is RC1 plus:
 
 - **M1** (always): `checkRun`'s set-once fields become conditional `immutable` entries, `{"property": p, "when": {"present": "$old.p"}}`, with the same semantics (§2, forge-community).
 - **S1** `check_evidence_freeze`: a completed run's `summary`, `detailsUrl`, `logUrl`, `logSha256` and `artifacts` are frozen.
@@ -465,20 +465,20 @@ Registration:
 (cd forge-contracts/sdk-v2 && npm ci)
 node forge-contracts/scripts/deploy-v2.mjs --self-test
 node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
-     --network devnet --devnet-name bonsia --dry-run
+     --network devnet --devnet-name sakura --dry-run
 # re-register forge-collab (or forge-community) alone (new id) against the recorded forge-core
 # and group:
 node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
-     --network devnet --devnet-name bonsia --only collab --force-new --same-group [--dry-run]
+     --network devnet --devnet-name sakura --only collab --force-new --same-group [--dry-run]
 node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
-     --network devnet --devnet-name bonsia --only community --force-new --same-group [--dry-run]
+     --network devnet --devnet-name sakura --only community --force-new --same-group [--dry-run]
 # re-register all three (new forge-core, new group, new forge-collab and forge-community) after a
 # forge-core change the update rules refuse:
 node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
-     --network devnet --devnet-name bonsia --force-new [--dry-run]
+     --network devnet --devnet-name sakura --force-new [--dry-run]
 # update the recorded forge-core in place (DataContractUpdate, next version; same id and group):
 node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
-     --network devnet --devnet-name bonsia --update core [--dry-run]
+     --network devnet --devnet-name sakura --update core [--dry-run]
 # would an in-place DataContractUpdate from the registered schema be accepted instead?
 git show <commit it was registered from>:forge-contracts/contracts/forge-collab.json > /tmp/registered-forge-collab.json
 cargo +1.98.1 run -q --locked --manifest-path tools/contract-validate/Cargo.toml -- \
@@ -491,7 +491,8 @@ cargo +1.98.1 run -q --locked --manifest-path tools/contract-validate/Cargo.toml
 - `--force-new` without `--only` supersedes the set when the recorded forge-core was registered from a different schema: forge-core's record moves to `v2.forgeCoreSuperseded`, the group to `v2.contractGroupSuperseded`, forge-collab and forge-community (whose schemas name forge-core's id) to `v2.forgeCollabSuperseded` / `v2.forgeCommunitySuperseded`, and a new forge-core (registering a new group), forge-collab and forge-community are registered. A rerun after success registers nothing.
 - `--only collab` / `--only community` registers that contract alone, against the forge-core and group already recorded and found on chain; it never registers forge-core or the other one. With `--force-new --same-group` it registers a new one when the recorded one is registered from a different schema (its `schemaHash` differs, or it predates the field): the old record moves to `v2.forgeCollabSuperseded` (or `v2.forgeCommunitySuperseded`), and the new one takes the next nonce and so a new id. A recorded contract from the current schema, or one still `broadcasting` (an interrupted run, which is completed or retried instead), is never superseded, so rerunning the same command registers nothing. This is how a schema change the update rules refuse ships. Documents written under the old contract stay under its id.
 - The script refuses a CRITICAL key that is missing, different from the identity file, or disabled on chain.
-- **Devnet bonsia** (beta.7) registers RC1 as soon as the schema PR is green (D-13): forge-core, forge-collab and forge-community fresh, in that order, in one new group, then the key-exchange copy (`deploy-key-exchange.mjs`) and `snapshot-contracts.mjs`. The ids are recorded in `deployments/devnet-bonsia.json`. RC1 is re-registered freely (`--force-new`) until the demo repos exist, then frozen (tag `contracts-rc1-frozen`). Earlier registrations (moutai, in the pre-beta.7 spelling) are history in git.
+- **Devnet bonsia** (beta.7) registers RC1 as soon as the schema PR is green (D-13): forge-core, forge-collab and forge-community fresh, in that order, in one new group, then the key-exchange copy (`deploy-key-exchange.mjs`) and `snapshot-contracts.mjs`. The ids are recorded in `deployments/devnet-bonsia.json`. RC1 is re-registered freely (`--force-new`) until the demo repos exist, then frozen (tag `contracts-rc1-frozen`). Earlier registrations (moutai, in the pre-beta.7 spelling) are history in git. bonsia's file stays, marked `"retired": true` when bonsia was retired.
+- **Devnet sakura** (v5.0.0-beta.1) registers RC2 the same way, into `deployments/devnet-sakura.json`, which until then records the network fields only (`network`, `devnetName`, `chainId`, `quorumBaseUrl`, `dapiAddresses`).
 - For mainnet (roadmap D-D, D-J), decide on `config.readonly` before registering, since it cannot be added afterwards (§4), and read §9 first.
 
 What the offline validator cannot check, and registration will: that the contracts a schema refers to exist in state (the validator uses the in-memory ones), the deployer's identity and balance, and the contract-group state rules (the group is new; the signer owns the group a membership names). The registration reference checks (`where` typing, deletable and permanent targets, cross-contract `findBy`) it does run, and `wherecheck.py` mirrors them from the JSON.

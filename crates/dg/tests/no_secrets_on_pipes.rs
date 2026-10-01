@@ -10,7 +10,7 @@
 //! words and key are grepped for too.
 //!
 //! The offline cases need no network: the refusals come before dg connects to anything. The
-//! `#[ignore]`d live case drives `dg auth new` against devnet bonsia up to the deposit
+//! `#[ignore]`d live case drives `dg auth new` against devnet sakura up to the deposit
 //! request, with the words going only to a `--backup-file`:
 //!
 //! ```sh
@@ -261,7 +261,7 @@ fn auth_new_without_a_terminal_refuses_and_prints_no_words() {
             "--network",
             "devnet",
             "--devnet-name",
-            "bonsia",
+            "sakura",
         ][..],
         &[
             "--json",
@@ -270,7 +270,7 @@ fn auth_new_without_a_terminal_refuses_and_prints_no_words() {
             "--network",
             "devnet",
             "--devnet-name",
-            "bonsia",
+            "sakura",
         ],
     ] {
         let out = home.run(args);
@@ -287,7 +287,7 @@ fn auth_new_without_a_terminal_refuses_and_prints_no_words() {
         "--network",
         "devnet",
         "--devnet-name",
-        "bonsia",
+        "sakura",
         "--skip-backup-check",
     ]);
     let text = all_output(&out);
@@ -312,7 +312,7 @@ fn the_qa_repro_prints_no_words() {
             "--network",
             "devnet",
             "--devnet-name",
-            "bonsia",
+            "sakura",
             "--skip-backup-check",
             "--backup-file",
             backup.to_str().unwrap(),
@@ -338,7 +338,7 @@ fn auth_new_under_ci_refuses_without_a_backup_file() {
             "--network",
             "devnet",
             "--devnet-name",
-            "bonsia",
+            "sakura",
         ])
         .env("CI", "true")
         .output()
@@ -362,7 +362,7 @@ fn auth_new_refuses_a_backup_file_it_cannot_write_before_anything_else() {
         "--network",
         "devnet",
         "--devnet-name",
-        "bonsia",
+        "sakura",
         "--backup-file",
     ];
     // Already there: never overwritten.
@@ -509,11 +509,11 @@ fn webhook_add_refuses_an_existing_secret_file() {
     assert_eq!(std::fs::read_to_string(&existing).unwrap(), "keep me");
 }
 
-/// LIVE (devnet bonsia): `dg auth new --backup-file … --reveal-secrets --skip-backup-check`
+/// LIVE (devnet sakura): `dg auth new --backup-file … --reveal-secrets --skip-backup-check`
 /// with piped stdio runs to the deposit request; the words are in the backup file and in
 /// neither stream. The deposit is never sent: the run is stopped at the request.
 #[test]
-#[ignore = "live: needs devnet bonsia"]
+#[ignore = "live: needs devnet sakura"]
 fn live_auth_new_with_a_backup_file_prints_no_words() {
     let vocabulary = source_vocabulary();
     let home = Home::new();
@@ -527,7 +527,7 @@ fn live_auth_new_with_a_backup_file_prints_no_words() {
             "--devnet-name",
             std::env::var("DASH_FORGE_DEVNET")
                 .as_deref()
-                .unwrap_or("bonsia"),
+                .unwrap_or("sakura"),
             "--backup-file",
             backup.to_str().unwrap(),
             "--reveal-secrets",

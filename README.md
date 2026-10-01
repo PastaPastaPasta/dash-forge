@@ -9,16 +9,19 @@
 
 ## Status
 
+> **Forge moved to devnet sakura (Platform v5); bonsia was retired.** Everything on bonsia (repos, issues, stars, identities and keys) is gone, and Forge is being registered on sakura with new contracts. Your git clone and your storage bucket are untouched, and your own repos need a re-push from your clone once the registration lands. An installed `dg` built for Platform 4.2.0-beta.7 does not work on sakura. What is lost, what is kept and how to re-push: **[Dash Forge moved to devnet sakura](docs/guides/devnet-move.md)**.
+
 | Network | Platform protocol | Forge |
 |---|---|---|
-| **Devnet bonsia** | 14 | **Registered (RC1), live.** Forge's three contracts (forge-core, forge-collab, forge-community) were registered on 2026-09-29, on Platform v4.2.0-beta.7, and frozen (tag `contracts-rc1-frozen`). `dg` and `git-remote-dash` built from this source target bonsia, and the web app at [forge.dashhq.org](https://forge.dashhq.org) has been live on bonsia since 2026-09-30. |
+| **Devnet sakura** | 14 | **RC2 on Platform v5.0.0-beta.1 — being registered.** Sakura (chain id `dash-devnet-sakura`) replaced bonsia on 2026-10-01. `dg` and `git-remote-dash` built from this source target sakura; until Forge's three contracts (forge-core, forge-collab, forge-community) are registered there, they stop with "not deployed". The web app at [forge.dashhq.org](https://forge.dashhq.org) moves to sakura with the registration. |
+| **Devnet bonsia** | 14 | **Gone.** The RC1 contracts registered there on 2026-09-29 (Platform v4.2.0-beta.7, tag `contracts-rc1-frozen`) went with the devnet. The web app ran on bonsia from 2026-09-30. |
 | **Devnet moutai** | 14 | **Retired for Forge.** Moutai was upgraded in place to Platform v4.2.0-beta.7, which retired the forge-v2 contracts registered there. The public web app no longer targets moutai; it moved to bonsia on 2026-09-30. |
 | **Testnet** | 13 | **Not deployed yet.** forge-v2 is registered on testnet as soon as Platform protocol 14 reaches it, which is expected soon. |
 | **Mainnet** | 13 | **Not deployed yet.** After protocol 14 activates on mainnet, the project owner registers the forge-v2 contracts ([runbook](docs/mainnet-runbook.md)). |
 
 On a network with no forge-v2 deployment, `dg`, `git-remote-dash` and the web app stop with a "not deployed" error ([E702](docs/errors.md#e702)). The first version of Forge (forge-v1) was removed on 2026-09-26 with no backwards compatibility; see the [FAQ](docs/FAQ.md#when-is-it-on-mainnet).
 
-## Quick start (devnet bonsia)
+## Quick start (devnet sakura)
 
 You need Rust and `protoc` 25 or newer to build ([BUILDING.md](docs/BUILDING.md)). Prebuilt binaries and the one-line `install.sh` are **coming soon**: the release pipeline is merged, but no release has been tagged yet ([INSTALL.md](docs/INSTALL.md)).
 
@@ -29,9 +32,9 @@ You need Rust and `protoc` 25 or newer to build ([BUILDING.md](docs/BUILDING.md)
    ```
 2. **Get an identity:**
    ```sh
-   dg auth new --network devnet --devnet-name bonsia
+   dg auth new --network devnet --devnet-name sakura
    ```
-   It shows 12 words to write down and a deposit QR code; fund it from the [bonsia faucet](https://faucet.bonsia.networks.dash.org). It then registers the identity and keeps a **limited key** (0.25 DASH budget, 180 days, Forge only) in your OS keychain, which `dg` and `git push` both use. Already have an identity (a bridge key backup, or the 12 words)? `dg auth login <file>` or `dg auth login --mnemonic` instead.
+   It shows 12 words to write down and a deposit QR code; fund it from the [sakura faucet](https://faucet.sakura.networks.dash.org). It then registers the identity and keeps a **limited key** (0.25 DASH budget, 180 days, Forge only) in your OS keychain, which `dg` and `git push` both use. Already have an identity (a bridge key backup, or the 12 words)? `dg auth login <file>` or `dg auth login --mnemonic` instead.
 3. **Publish** any git repository:
    ```sh
    dg storage add                          # optional: your own bucket or IPFS node, tested as you go
@@ -65,6 +68,7 @@ You need Rust and `protoc` 25 or newer to build ([BUILDING.md](docs/BUILDING.md)
 | [Collaborating](docs/guides/collaborating.md) | members, issues, pull requests, reviews, merges, releases, webhooks |
 | [Identity and keys](docs/guides/identity-and-keys.md) | limited keys, the browser vault, backups, recovery, trust roots |
 | [What things cost](docs/guides/costs.md) | measured costs, deposits, refunds |
+| [Dash Forge moved to devnet sakura](docs/guides/devnet-move.md) | what the move from bonsia lost and kept, and how to re-push on sakura |
 | [Check that Forge isn't lying to you](docs/guides/verify-forge.md) | proofs, hashes, the Verification card, running your own web app |
 | [FAQ](docs/FAQ.md) · [Error codes](docs/errors.md) | |
 
@@ -96,8 +100,8 @@ the pinned Platform tag, and how to develop against a local Platform checkout.
 [docs/INSTALL.md](docs/INSTALL.md) covers the release pipeline, `install.sh`, checksums and
 attestations, `cargo binstall` and shell completions (`dg completions <shell>`).
 
-**Networks.** Testnet is the default network, but only devnet bonsia has a forge-v2
-deployment today, so pass `--network devnet --devnet-name bonsia` (`dg auth new` / `dg auth login` record
+**Networks.** Testnet is the default network, but Forge runs on devnet sakura (its forge-v2
+registration is in progress), so pass `--network devnet --devnet-name sakura` (`dg auth new` / `dg auth login` record
 it as your default; `--dapi-addresses` sets the devnet's nodes). The helper reads the same
 settings from `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME`, git config
 (`dash.network`, `dash.devnetName`, `dash.dapiAddresses`), or else the default `dg` recorded, and the web build reads them from
@@ -133,7 +137,7 @@ network's ids. See [BUILDING.md § Networks](docs/BUILDING.md#networks).
 
 ### Verification
 
-The web app at **https://forge.dashhq.org** (GitHub Pages) is live on devnet bonsia, running the frozen RC1 contracts (tag `contracts-rc1-frozen`). It moved from devnet moutai on 2026-09-30, after moutai was upgraded in place to Platform v4.2.0-beta.7 and its forge-v2 contracts were retired. The CLI end-to-end suite (`e2e/cli/`) and the Playwright specs (`forge-web/e2e/`) run nightly ("Devnet Nightly", from master's workflow file: against bonsia); see [e2e/README.md](e2e/README.md).
+The web app at **https://forge.dashhq.org** (GitHub Pages) ran on devnet bonsia with the frozen RC1 contracts (tag `contracts-rc1-frozen`) from 2026-09-30, after devnet moutai was upgraded in place to Platform v4.2.0-beta.7 and its forge-v2 contracts were retired. Bonsia is gone; the app moves to devnet sakura (Platform v5.0.0-beta.1) once the RC2 contracts are registered there. The CLI end-to-end suite (`e2e/cli/`) and the Playwright specs (`forge-web/e2e/`) run nightly ("Devnet Nightly", from master's workflow file); on this source they target sakura, and they fail until its contracts and read fixture exist. See [e2e/README.md](e2e/README.md).
 
 Proven end-to-end on bonsia: `git clone dash://…` / `git push` byte-identical round-trip; a revoked writer's push and a non-member's push rejected at consensus; third-party "no trust in any server" verification; issue and PR lifecycles, including a PR from a fork with a real merge; the browser app rendering proof-verified data with the Verification card; `dg init` publishing to a bucket; an import re-run costing 0; relay deliveries surviving a restart; CLI↔web parity via the shared conformance vectors. See [forge-v2.md](docs/contracts/forge-v2.md) for the contract design and [mainnet-runbook.md](docs/mainnet-runbook.md) for the (not-yet-executed) mainnet deployment.
 

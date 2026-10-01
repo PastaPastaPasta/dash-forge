@@ -31,7 +31,7 @@ You need:
   - GitLab.com plans to limit anonymous API use to 60 requests an hour. Use a token for anything but a quick look.
 - Optional but recommended: a storage profile for your own bucket ([Bring your own storage](bring-your-own-storage.md)), set with `dg storage use <profile> --global`, so pack bytes do not go on Platform.
 
-> **Network.** Forge runs on devnet bonsia today (`--network devnet --devnet-name bonsia`). See [Which network](README.md#which-network).
+> **Network.** Forge runs on devnet sakura (`--network devnet --devnet-name sakura`; RC2 on Platform v5.0.0-beta.1 — being registered). See [Which network](README.md#which-network).
 
 ---
 
@@ -41,7 +41,7 @@ Name the project as `gitlab.com/<group>/<project>` or by its URL. A project on y
 
 ```sh
 export GITLAB_TOKEN=glpat-…        # read_api
-export DASH_FORGE_NETWORK=devnet DASH_FORGE_DEVNET_NAME=bonsia   # forge-import does not read dg's saved network
+export DASH_FORGE_NETWORK=devnet DASH_FORGE_DEVNET_NAME=sakura   # forge-import does not read dg's saved network
 forge-import gitlab.com/acme/widget --dry-run
 forge-import team/app --gitlab-url https://git.example.org --dry-run
 forge-import team/app --gitlab-url https://example.org/gitlab --dry-run   # a relative URL root

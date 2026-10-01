@@ -39,7 +39,7 @@ ipfs dag import forge-web-<version>.car      # pins the site; prints its root CI
 
 The build works from any gateway: by subdomain (`https://<cid>.ipfs.<gateway>/`), by path (`https://<gateway>/ipfs/<cid>/`), or from an ordinary static host. It finds its own base path when it loads.
 
-The release build reads the network set in `forge-web/scripts/ipfs-release.sh` (`RELEASE_NETWORK`): devnet bonsia today, mainnet once Forge is registered there. The network is part of the build, so it is fixed per commit.
+The release build reads the network set in `forge-web/scripts/ipfs-release.sh` (`RELEASE_NETWORK`, `RELEASE_DEVNET_NAME`): devnet sakura today, mainnet once Forge is registered there. The network is part of the build, so it is fixed per commit.
 
 ---
 
@@ -74,7 +74,7 @@ Read the script before you run it: it is short, and it is what you are trusting.
 
 What makes the build reproducible, in `forge-web/next.config.js`: the Next.js build id is the commit (Next's default is random), module ids are hashed into a range wide enough that none collide (webpack's default settles collisions in an order that varies between runs), entry chunks are named by the hash of their final bytes (Next's default name hashes webpack's internal state, which varies under load), and nothing reads the clock. The release workflow builds every tag on an x86_64 and an arm64 runner and refuses to publish unless both give the same CID (`.github/workflows/web-ipfs.yml`), and every pull request that touches the web app runs the same check.
 
-**Without Docker.** In a checkout of the tag, `cd forge-web && pnpm install --frozen-lockfile && FORGE_BUILD_COMMIT=$(git rev-parse HEAD) NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia pnpm build:ipfs` builds the same site with your own Node. The result matches only if your Node and pnpm are the pinned versions and your environment adds nothing, so a mismatch there is not evidence of anything. Use the script for the real check. To get a CID for a directory you built, `forge-web/scripts/ipfs-release.sh cid forge-web/out` (still needs Docker, for the pinned kubo), or, on a kubo of the pinned version, a repository initialised with `ipfs init --profile=unixfs-v1-2025` and `ipfs add` with the flags in `IPFS_ADD_FLAGS`.
+**Without Docker.** In a checkout of the tag, `cd forge-web && pnpm install --frozen-lockfile && FORGE_BUILD_COMMIT=$(git rev-parse HEAD) NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=sakura pnpm build:ipfs` builds the same site with your own Node. The result matches only if your Node and pnpm are the pinned versions and your environment adds nothing, so a mismatch there is not evidence of anything. Use the script for the real check. To get a CID for a directory you built, `forge-web/scripts/ipfs-release.sh cid forge-web/out` (still needs Docker, for the pinned kubo), or, on a kubo of the pinned version, a repository initialised with `ipfs init --profile=unixfs-v1-2025` and `ipfs add` with the flags in `IPFS_ADD_FLAGS`.
 
 ---
 
@@ -100,14 +100,14 @@ cmp forge-web-<version>.car ipfs-build/forge-web.car  # your rebuild: byte-ident
 Forge's own repository is mirrored on Forge, and each release is recorded there too, as a Forge `release` document for the same tag. It lists `forge-web-<version>.car` and `forge-web-<version>.cid` among its assets, each with its SHA-256, and its notes name the CID. The document is written with the maintainer's Platform identity and read back with a Platform proof, so it does not depend on GitHub at all.
 
 ```sh
-dg --devnet-name bonsia --json release list <owner>/dash-forge   # each asset's sha256
-dg --devnet-name bonsia release download <owner>/dash-forge v<version> \
+dg --devnet-name sakura --json release list <owner>/dash-forge   # each asset's sha256
+dg --devnet-name sakura release download <owner>/dash-forge v<version> \
   --asset forge-web-<version>.cid --output forge-release.cid
 cat forge-release.cid
 sha256sum ipfs-build/forge-web.car                    # must equal the CAR's listed sha256
 ```
 
-`<owner>` is the maintainer identity that mirrors this repository on Forge (the README names it once the mirror is published). Use `--network mainnet` in place of `--devnet-name bonsia` once Forge is on mainnet.
+`<owner>` is the maintainer identity that mirrors this repository on Forge (the README names it once the mirror is published). Use `--network mainnet` in place of `--devnet-name sakura` once Forge is on mainnet.
 
 - `dg release download` accepts only bytes that hash to the SHA-256 in the proof-checked release document ([`E504`](../errors.md#e504) otherwise), so `forge-release.cid` is the CID the maintainer recorded.
 - The web app shows the same on the repository's **Releases** page: each asset with the start of its SHA-256 (the whole digest on hover), downloaded and checked in the browser.
@@ -123,7 +123,7 @@ sha256sum ipfs-build/forge-web.car                    # must equal the CAR's lis
 Also:
 
 - **Public gateways are not checked.** A gateway you do not run could serve different bytes under the right CID. Pin the CAR on your own node, or rebuild and serve `site.tar` yourself.
-- **The build's network is fixed.** A release built for devnet bonsia reads bonsia. Proofs from Platform are still checked in the browser against the quorum keys, whatever the build ([Check that Forge isn't lying to you](verify-forge.md)).
+- **The build's network is fixed.** A release built for devnet sakura reads sakura. Proofs from Platform are still checked in the browser against the quorum keys, whatever the build ([Check that Forge isn't lying to you](verify-forge.md)).
 - **A new release changes the CID.** Every release build embeds its commit (the footer), so no two commits share a CID.
 - **Short links are for ordinary hosts.** A short URL such as `/<owner>/<name>/issues/12` opens through the build's `404.html`, which IPFS gateways do not serve for a missing path. So the IPFS build's **Copy link** and permalinks give the canonical routes (`/repo/?owner=…&name=…`) instead, which open from any gateway.
 
@@ -140,7 +140,7 @@ sha256sum --check --ignore-missing SHA256SUMS
 forge-web/scripts/ipfs-release.sh reproduce "v$v" ipfs-build
 cmp "forge-web-$v.car" ipfs-build/forge-web.car            # never record a build you did not reproduce
 cid=$(cat "forge-web-$v.cid")
-dg --devnet-name bonsia release create <owner>/dash-forge --tag "v$v" --name "Dash Forge v$v" \
+dg --devnet-name sakura release create <owner>/dash-forge --tag "v$v" --name "Dash Forge v$v" \
   --notes "Web app on IPFS: $cid (forge-web-$v.car; verify: docs/guides/verify-the-app.md)" \
   --asset "forge-web-$v.car" --asset "forge-web-$v.cid" --storage <profile>
 ipfs dag import "forge-web-$v.car"                          # optional: pin the app on your own node

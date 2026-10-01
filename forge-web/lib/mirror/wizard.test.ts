@@ -151,7 +151,7 @@ describe('suggestForgeName and mirrorDescription', () => {
 
 describe('dfk1', () => {
   it('is the value forge-core parses', () => {
-    expect(dfk1('devnet-bonsia', ID, 7, 'cWIF')).toBe(`dfk1:devnet-bonsia:${ID}:7:cWIF`)
+    expect(dfk1('devnet-sakura', ID, 7, 'cWIF')).toBe(`dfk1:devnet-sakura:${ID}:7:cWIF`)
     expect(() => dfk1('devnet/x', ID, 7, 'cWIF')).toThrow()
     expect(() => dfk1('testnet', ID, -1, 'cWIF')).toThrow()
   })
@@ -224,7 +224,7 @@ const OPTIONS: WorkflowOptions = {
   github: { owner: 'alice', name: 'project' },
   forgeRepo: `dash://${ID}/project`,
   network: 'devnet',
-  devnetName: 'bonsia',
+  devnetName: 'sakura',
   storage: mirrorStorageOf(s3()) as UsableMirrorStorage,
   collab: true,
   costCap: '0.1',
@@ -240,7 +240,7 @@ describe('workflowYaml', () => {
     expect(y).toContain(`repo: 'dash://${ID}/project'`)
     // Written out though it is the Action's default today, so a later default cannot move it.
     expect(y).toContain("network: 'devnet'")
-    expect(y).toContain("devnet-name: 'bonsia'")
+    expect(y).toContain("devnet-name: 'sakura'")
     expect(y).toContain("sync: 'code,releases,labels,issues,prs'")
     expect(y).toContain("s3-endpoint: 'https://abc123.r2.cloudflarestorage.com'")
     expect(y).toContain("cost-cap: '0.1'")

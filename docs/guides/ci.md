@@ -62,7 +62,7 @@ dg ci report alice/project --sha "$SHA" --name build --status completed \
     --conclusion success --summary "412 tests passed" --log build.log --storage my-r2
 ```
 
-- **The network comes with the key.** A `dfk1:` key records its network (`dfk1:devnet-bonsia:…`), and `dg` uses it when nothing else names one, so a fresh CI machine needs no `--network` flags. In a checkout of a `dash://` clone, the network the clone pinned wins; `DASH_FORGE_NETWORK` takes the same `devnet-<name>` form `dg` prints.
+- **The network comes with the key.** A `dfk1:` key records its network (`dfk1:devnet-sakura:…`), and `dg` uses it when nothing else names one, so a fresh CI machine needs no `--network` flags. In a checkout of a `dash://` clone, the network the clone pinned wins; `DASH_FORGE_NETWORK` takes the same `devnet-<name>` form `dg` prints.
 - **The first report creates the run; the next ones update it in place.** An update is a replace of your own open run with that name on that commit. Once a run is `completed`, reporting the same name again starts a new run (a re-run).
 - **`--external-id <your CI's run id>`** ties reports to one run: a report always updates the run carrying that id, even after it completed, and never starts a second one for it. If no run carries the id yet, `dg` reads once more a few seconds later before it creates one, so a report sent right after the first does not split the run. Use it whenever your CI has a run id (the GitHub Action passes `gh:<run id>:<attempt>:<job>:<name>`).
 - **What an update keeps.** A field the report does not give keeps its stored value. The exceptions: `completedAt` is cleared unless the run is `completed`; a re-queued run (`--status queued`) also clears its start time and its log; and the start time, once set, does not move on a repeated `in_progress` report.
@@ -135,8 +135,8 @@ A repository mirrored from GitHub keeps its CI on GitHub. The [check action](../
         with:
           repo: <owner identity id>/project
           job-status: ${{ job.status }}
-          network: devnet           # Forge runs on devnet bonsia today (the default)
-          devnet-name: bonsia
+          network: devnet           # Forge runs on devnet sakura (the default)
+          devnet-name: sakura
         env:
           DASH_FORGE_KEY: ${{ secrets.FORGE_RUNNER_KEY }}      # from `dg ci runner new`
 ```

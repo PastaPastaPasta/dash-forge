@@ -14,7 +14,7 @@ test.beforeEach(quorumGuard)
  * clone box (zip + install sheet), the empty repo, short URLs through the 404 shim, the
  * Releases tab, axe, and a 390px phone.
  *
- *   E2E_DEVNET=bonsia E2E_PORT=4322 pnpm exec playwright test v2-home.spec.ts
+ *   E2E_DEVNET=sakura E2E_PORT=4322 pnpm exec playwright test v2-home.spec.ts
  */
 
 

@@ -8,7 +8,7 @@ import { DEMO, E2E_DEVNET, shot } from './helpers'
  * Refused writes, retries and the write flow's guards, live on a devnet (D-007, D-008, D-012,
  * D-042, D-048, D-049):
  *
- *   E2E_DEVNET=bonsia E2E_WRITE=1 E2E_REFUSAL_IDENTITY=/path/to/funded.identity.json \
+ *   E2E_DEVNET=sakura E2E_WRITE=1 E2E_REFUSAL_IDENTITY=/path/to/funded.identity.json \
  *     pnpm exec playwright test write-refusals.spec.ts
  *
  * Needs an identity of its own with about 0.02 DASH to spend: the spec registers limited keys

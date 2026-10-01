@@ -2321,7 +2321,18 @@ mod tests {
             &PUSH,
         );
         assert_eq!(u.code, "E702");
-        assert!(u.fix[0].contains("--devnet-name bonsia"), "{u:?}");
+        // The fix names the live network with forge-v2 (none between a devnet's bring-up and
+        // its registration: then a note says so).
+        match crate::network::suggested_v2_network() {
+            Some(there) => assert!(u.fix[0].contains(&there.dg_flags()), "{u:?}"),
+            None => assert!(
+                u.note
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("no network has a forge-v2 deployment"),
+                "{u:?}"
+            ),
+        }
     }
 
     /// Moutai after its reset to beta.6 (2026-09-28): the build's forge contracts are gone.
@@ -2395,14 +2406,29 @@ mod tests {
             &ctx,
         );
         assert_eq!(u.code, "E702");
-        assert_eq!(
-            u.fix[0],
-            "use a network where it is: `git config --global dash.network devnet && git config --global dash.devnetName bonsia`, then run the git command again"
-        );
-        assert!(
-            u.fix[1].contains("DASH_FORGE_DEVNET_NAME=bonsia git"),
-            "{u:?}"
-        );
+        match crate::network::suggested_v2_network() {
+            Some(there) => {
+                assert_eq!(
+                    u.fix[0],
+                    format!(
+                        "use a network where it is: `{}`, then run the git command again",
+                        there.git_config_command("--global ")
+                    )
+                );
+                assert!(
+                    u.fix[1].contains(&format!("{} git", there.env_assignments())),
+                    "{u:?}"
+                );
+            }
+            // Between a devnet's bring-up and its registration no network has forge-v2.
+            None => assert!(
+                u.note
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("no network has a forge-v2 deployment"),
+                "{u:?}"
+            ),
+        }
         assert!(u.fix.iter().all(|f| !f.contains("--network ")), "{u:?}");
     }
 
@@ -3028,7 +3054,7 @@ mod tests {
         let err = CoreError::IdentityNotFound {
             identity_id: "4UF1".into(),
             network: "testnet".into(),
-            key_network: Some("devnet-bonsia".into()),
+            key_network: Some("devnet-sakura".into()),
         };
         let ctx = ErrorContext {
             goal: Some("check run not reported"),
@@ -3044,9 +3070,9 @@ mod tests {
             .cause
             .as_deref()
             .unwrap()
-            .contains("your key is for devnet-bonsia"));
+            .contains("your key is for devnet-sakura"));
         assert!(
-            u.fix[0].contains("--network devnet --devnet-name bonsia"),
+            u.fix[0].contains("--network devnet --devnet-name sakura"),
             "{:?}",
             u.fix
         );
@@ -3068,8 +3094,8 @@ mod tests {
         // A key that records no network (or the same one): the generic network fix.
         let same = CoreError::IdentityNotFound {
             identity_id: "4UF1".into(),
-            network: "devnet-bonsia".into(),
-            key_network: Some("devnet-bonsia".into()),
+            network: "devnet-sakura".into(),
+            key_network: Some("devnet-sakura".into()),
         };
         let u = classify(
             [&same as &(dyn StdError + 'static)],
@@ -3079,7 +3105,7 @@ mod tests {
             .cause
             .as_deref()
             .unwrap()
-            .contains("Platform (devnet-bonsia) has no identity 4UF1"));
+            .contains("Platform (devnet-sakura) has no identity 4UF1"));
         assert!(u.fix[0].contains("--network"), "{:?}", u.fix);
     }
 

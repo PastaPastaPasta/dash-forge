@@ -108,11 +108,9 @@ pub enum Error {
 
     /// The selected network has no forge-v2 deployment (no fully registered `v2` record in
     /// its deployment file). Returned instead of falling back to another network's
-    /// contracts.
-    #[error(
-        "forge-v2 isn't deployed on {network} yet; use --network devnet --devnet-name bonsia \
-         (see docs/mainnet-runbook.md)"
-    )]
+    /// contracts. Names no other network: `user_error` and `dg doctor` add the one
+    /// [`crate::network::suggested_v2_network`] picks, if any.
+    #[error("forge-v2 isn't deployed on {network} yet (see docs/mainnet-runbook.md)")]
     V2NotDeployed {
         /// The network key (`testnet`, `mainnet`).
         network: String,
@@ -123,7 +121,7 @@ pub enum Error {
     /// (a proof of absence, or Drive's `contract not found` refusal); retrying cannot help.
     #[error("the forge contracts are not on {network}: {detail}")]
     ContractsMissing {
-        /// The network as a person reads it (`devnet bonsia`, `mainnet`); `user_error` tells a
+        /// The network as a person reads it (`devnet sakura`, `mainnet`); `user_error` tells a
         /// devnet by the `devnet ` prefix.
         network: String,
         /// What Platform answered: the missing contract, or Drive's refusal.

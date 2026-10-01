@@ -5,9 +5,9 @@ import { loadSeedPulls, PASSPHRASE, expectLanded, repoUrl, waitForRepoResolved }
 /**
  * Phones and tablets, on the forge-v2 read fixture (e2e/helpers.ts `DEMO`; read only).
  *
- *   E2E_DEVNET=bonsia pnpm exec playwright test --project=mobile                         # Chromium
- *   E2E_DEVNET=bonsia E2E_ALL_ENGINES=1 pnpm exec playwright test --project=mobile-webkit   # WebKit
- *   E2E_DEVNET=bonsia E2E_ALL_ENGINES=1 pnpm exec playwright test --project=mobile-firefox  # Firefox
+ *   E2E_DEVNET=sakura pnpm exec playwright test --project=mobile                         # Chromium
+ *   E2E_DEVNET=sakura E2E_ALL_ENGINES=1 pnpm exec playwright test --project=mobile-webkit   # WebKit
+ *   E2E_DEVNET=sakura E2E_ALL_ENGINES=1 pnpm exec playwright test --project=mobile-firefox  # Firefox
  *
  * On iPhone SE (375×667), Pixel 7 and iPad Mini, a representative set of routes, each checked
  * once its real content has landed: nothing wider than the screen, every visible control at

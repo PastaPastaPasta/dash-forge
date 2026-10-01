@@ -1,7 +1,7 @@
 /**
  * Seed for the live browser-merge e2e (`e2e/v2-pulls.spec.ts` c7) — SKIPPED by default.
  *
- *   FORGE_LIVE=1 E2E_C_SEED_OUT=/tmp/…/seed.json NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia \
+ *   FORGE_LIVE=1 E2E_C_SEED_OUT=/tmp/…/seed.json NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=sakura \
  *     pnpm exec vitest run lib/merge/merge-seed.live.test.ts
  *
  * As the devnet's OWNER fixture, through the same code a browser push runs: a new repo `e2e-c-merge-<t>`

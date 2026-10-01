@@ -149,9 +149,9 @@ good INPUT_GITHUB_REPO=https://github.com/alice/project.js
 good INPUT_NETWORK=devnet INPUT_DEVNET_NAME=moutai
 expect vout 'devnet-name=moutai'
 # devnet-name has a default, so it is ignored (and not passed on) for the other networks.
-good INPUT_NETWORK=testnet INPUT_DEVNET_NAME=bonsia
+good INPUT_NETWORK=testnet INPUT_DEVNET_NAME=sakura
 expect vout 'devnet-name='
-reject vout 'bonsia'
+reject vout 'sakura'
 good INPUT_INSTALL=source INPUT_VERSION=latest
 good INPUT_INSTALL=false INPUT_VERSION=''
 good INPUT_STORAGE_KIND=s3 INPUT_S3_ENDPOINT=https://x.r2.cloudflarestorage.com INPUT_S3_BUCKET=forge

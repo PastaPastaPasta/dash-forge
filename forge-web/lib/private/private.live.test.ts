@@ -1,9 +1,9 @@
 /**
- * Live private-repository write + read smoke on devnet bonsia — SKIPPED by default (network,
+ * Live private-repository write + read smoke on devnet sakura — SKIPPED by default (network,
  * WASM, a few cents of spend).
  *
  * Run with:
- *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia \
+ *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=sakura \
  *     pnpm exec vitest run lib/private/private.live.test.ts
  *
  * Creates a fresh private repo with the devnet's test identities in
@@ -52,7 +52,7 @@ interface IdentityRecord {
 
 type Evo = typeof import('@dashevo/evo-sdk')
 
-describe.skipIf(!LIVE)('live private repository (bonsia)', () => {
+describe.skipIf(!LIVE)('live private repository (sakura)', () => {
   it(
     'writes every §13 type with $createdAtBlockHeight required, and reads it back',
     async () => {

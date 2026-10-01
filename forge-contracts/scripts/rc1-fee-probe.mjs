@@ -2,7 +2,7 @@
 // check_outcome): what one index feature adds to a write, measured on chain as the difference
 // between two small probe contracts that differ in that feature alone.
 //
-//   node forge-contracts/scripts/rc1-fee-probe.mjs --devnet-name bonsia --identity <file> [--state <file.json>] [--n 3]
+//   node forge-contracts/scripts/rc1-fee-probe.mjs --devnet-name sakura --identity <file> [--state <file.json>] [--n 3]
 //
 // Probe A copies RC1's chunk, star and checkRun types; probe B is the same without
 //   - chunk:    `documentsCountable`                          (D-3: kill switch above +5 %)
@@ -25,7 +25,7 @@
 // (`turnOff`); the decision is then a FLAGS edit (build.py header). The state file keeps each
 // probe's id and schema hash: a rerun reuses a probe whose schema is unchanged.
 //
-//   node forge-contracts/scripts/rc1-fee-probe.mjs --rc2 --devnet-name bonsia --identity <file> [--n 4]
+//   node forge-contracts/scripts/rc1-fee-probe.mjs --rc2 --devnet-name sakura --identity <file> [--n 4]
 //   node forge-contracts/scripts/rc1-fee-probe.mjs --rc2 --emit <dir>   # offline: the probe contracts
 //        and vectors, for `contract-validate --vectors <dir>/vectors <dir>/contracts/rc2-*.json`
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -38,7 +38,7 @@ import { PROBES, RC2_DOCS, REVIEW_PROBES, bare, emitted, materialize, probeSchem
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, t, i, a) => (t.startsWith('--') ? [...acc, [t.slice(2), a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true]] : acc), []));
-const devnetName = args['devnet-name'] || 'bonsia';
+const devnetName = args['devnet-name'] || 'sakura';
 const N = Number(args.n ?? 4);
 const RC2 = Boolean(args.rc2);
 const statePath = String(args.state ?? join(homedir(), '.cache', 'dash-forge', `${RC2 ? 'rc2' : 'rc1'}-fee-probe-${devnetName}.json`));

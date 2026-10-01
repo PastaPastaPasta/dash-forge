@@ -9,7 +9,7 @@ test.beforeEach(quorumGuard)
 /**
  * FG-5 on the dashpay/dash showcase mirror, read-only, with request and time budgets:
  *
- *   E2E_DEVNET=bonsia pnpm exec playwright test fg5-dash.spec.ts
+ *   E2E_DEVNET=sakura pnpm exec playwright test fg5-dash.spec.ts
  *
  * - fg5-1: the 747-file merge f5979f7c5: whole-commit totals equal `git diff --shortstat`
  *   (+1,331 −1,906, L-25) once "Count lines" has read every file, and the Tree-SHA512 trailer wraps
@@ -44,7 +44,7 @@ async function settle(page: Page): Promise<void> {
 }
 
 test.describe('FG-5 on the dash mirror (read-only)', () => {
-  test.skip(E2E_DEVNET !== 'moutai' && E2E_DEVNET !== 'bonsia', 'the dash showcase mirror is imported on the live devnet')
+  test.skip(E2E_DEVNET !== 'sakura', 'the dash showcase mirror is imported on the live devnet')
   let DASH: { readonly owner: string; readonly name: string }
   test.beforeAll(async () => {
     let skipReason = ''

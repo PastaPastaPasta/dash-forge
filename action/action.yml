@@ -24,7 +24,7 @@ inputs:
     default: devnet
   devnet-name:
     description: "Devnet name, used only when network is devnet."
-    default: bonsia
+    default: sakura
   sync:
     description: "Comma list of code,issues,prs,releases,labels."
     default: code,releases

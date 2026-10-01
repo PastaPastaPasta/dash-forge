@@ -15,7 +15,7 @@ test.beforeEach(quorumGuard)
  *
  *   docker compose -f infra/docker-compose.yml up -d rustfs s3-init
  *   cloudflared tunnel --url http://127.0.0.1:9000          # prints https://<name>.trycloudflare.com
- *   E2E_DEVNET=bonsia E2E_WRITE=1 E2E_IDENTITY_DIR=<dir with OWNER, CONTRIB> \
+ *   E2E_DEVNET=sakura E2E_WRITE=1 E2E_IDENTITY_DIR=<dir with OWNER, CONTRIB> \
  *     E2E_BIN_DIR=<dir with dg + git-remote-dash> \
  *     E2E_PUBLIC_MINIO=https://<name>.trycloudflare.com/forge-byo \
  *     pnpm exec playwright test storage-trust-inbox.spec.ts
@@ -64,7 +64,7 @@ function env(who: string): NodeJS.ProcessEnv {
     DASH_FORGE_STORAGE_CONFIG: join(HOME, 'storage.toml'),
     DASH_FORGE_KEY: idFile(who),
     DASH_FORGE_NETWORK: 'devnet',
-    DASH_FORGE_DEVNET_NAME: process.env['E2E_DEVNET'] || 'bonsia',
+    DASH_FORGE_DEVNET_NAME: process.env['E2E_DEVNET'] || 'sakura',
     E2E_S3_SECRET: 'minioadmin',
     GIT_AUTHOR_NAME: `G5G18 ${who}`,
     GIT_AUTHOR_EMAIL: `${who.toLowerCase()}@g5g18.invalid`,

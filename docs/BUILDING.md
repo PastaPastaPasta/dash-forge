@@ -134,7 +134,7 @@ The patch stays active until you remove it. Confirm which source is in use with
 ### Protocol versions (SDK v4.2)
 
 The pinned SDK (`v5.0.0-beta.1` in Rust; `@dashevo/evo-sdk` and `@dashevo/wasm-sdk` `5.0.0-beta.1` from npm in forge-web; a tag missing from npm can be vendored: [dev/sdk-vendoring.md](dev/sdk-vendoring.md)) speaks
-protocol 13 (testnet, mainnet) and protocol 14 (devnets such as bonsia). Neither client pins
+protocol 13 (testnet, mainnet) and protocol 14 (devnets such as sakura). Neither client pins
 a version. The SDK starts at a per-network floor (13 for testnet and mainnet, 14 for a
 devnet) and raises it from the metadata of the first **proof-verified** response. So
 `Sdk::version()` / `sdk.version()` gives the network's version only after a proved query
@@ -176,23 +176,27 @@ complete readers (`query_all_documents` / `queryAllDocuments`):
 ## Networks
 
 Every binary and the web app target one of **testnet**, **mainnet**, or a **named devnet**
-such as `bonsia`. The CLI tools default to testnet, but forge-v2 is deployed only on devnet
-bonsia today (Platform protocol 14). Testnet and mainnet run protocol 13; forge-v2 is
+such as `sakura`. The CLI tools default to testnet, but Forge targets devnet sakura (Platform
+protocol 14, v5.0.0-beta.1), where its RC2 registration is in progress. Testnet and mainnet run protocol 13; forge-v2 is
 registered on testnet once protocol 14 reaches it, and on mainnet after protocol 14
 activates there ([mainnet-runbook.md](mainnet-runbook.md)). Until then, pass
-`--network devnet --devnet-name bonsia` (or just `--devnet-name bonsia`), or record it once
-with `dg auth login --network devnet --devnet-name bonsia`, which saves the network in
+`--network devnet --devnet-name sakura` (or just `--devnet-name sakura`), or record it once
+with `dg auth login --network devnet --devnet-name sakura`, which saves the network in
 `~/.config/dash-forge/config.toml`.
 
-**Devnet bonsia** (Platform 4.2.0-beta.7, chain id `dash-devnet-bonsia-g1`) replaced moutai: the
-RC1 contracts are registered there, and the defaults (Makefile `DEVNET`, `E2E_DEVNET`, the
-Pages and e2e workflows) target it. `devnet-bonsia.json` records its 13 DAPI addresses and
-quorum service (`https://quorums.bonsia.networks.dash.org`), so `--devnet-name bonsia` works
-for every tool. Devnet moutai was upgraded in place to beta.7, which retired the forge-v2
-contracts registered there; `devnet-moutai.json` stays in the tree as the record of them.
-(The beta.7 wasm SDK sends DAPI calls to `https://node:1443//org.dash…`; a gateway that does
-not merge slashes answers them 404, which the SDK reports as "malformed response". bonsia's
-merges them.)
+**Devnet sakura** (Platform 5.0.0-beta.1, chain id `dash-devnet-sakura`) replaced bonsia on
+2026-10-01, and the defaults (Makefile `DEVNET`, `E2E_DEVNET`, the Pages and e2e workflows,
+`ipfs-release.sh`) target it. `devnet-sakura.json` records its chain id, 13 DAPI addresses and
+quorum service (`https://quorums.sakura.networks.dash.org`), so `--devnet-name sakura` works
+for every tool; it has no `v2` record until the RC2 contracts are registered there, so until
+then sakura is "not deployed". A devnet's chain id is not derived from its name (bonsia's was
+`dash-devnet-bonsia-g1`, sakura's has no suffix): the deployment file records it.
+Devnet bonsia (Platform 4.2.0-beta.7, the RC1 contracts) is gone, and devnet moutai was
+upgraded in place to beta.7, which retired the forge-v2 contracts registered there.
+`devnet-bonsia.json` and `devnet-moutai.json` stay in the tree as the record of them, marked
+`"retired": true`: no "not deployed" message suggests them, a stale web build for them words its
+missing contracts as the move to sakura, and only such a build honours the `moving` devnet
+notice (`forge-web/lib/devnet-notice.ts`).
 
 Contract ids are never written into code: they come from the `v2` section of
 `forge-contracts/deployments/<key>.json`, where the key is `testnet`, `mainnet` or
@@ -209,7 +213,7 @@ prints the network, the forge-core, forge-collab and forge-community ids, and wh
 
 | Tool | Network | Devnet name | Devnet DAPI addresses |
 |---|---|---|---|
-| `dg` (flags) | `--network testnet\|mainnet\|devnet` | `--devnet-name bonsia` | `--dapi-addresses a,b` |
+| `dg` (flags) | `--network testnet\|mainnet\|devnet` | `--devnet-name sakura` | `--dapi-addresses a,b` |
 | `dg` (`~/.config/dash-forge/config.toml`) | `network` | `devnet_name` | `dapi_addresses` |
 | `git-remote-dash` (git config) | `dash.network` | `dash.devnetName` | `dash.dapiAddresses` |
 | `forge-relay` (flags / TOML) | `--network` / `network` | `--devnet-name` / `devnet-name` | `--dapi-addresses` / `dapi-addresses` |
@@ -233,7 +237,7 @@ when the default changes. Two more rules apply to every tool:
 
 - `--devnet-name` on its own implies `--network devnet`.
 - A network value may name the devnet itself, as the tools print it:
-  `DASH_FORGE_NETWORK=devnet-bonsia` is `devnet` plus the name `bonsia`.
+  `DASH_FORGE_NETWORK=devnet-sakura` is `devnet` plus the name `sakura`.
 - A layer that names a different network contributes nothing network-specific. For example,
   `dapi_addresses` saved for a devnet in `config.toml` are ignored under
   `--network mainnet`.
@@ -251,17 +255,18 @@ devnet's DAPI addresses are taken from the first of these that is set:
 Each address is `host`, `host:port` or `https://host:port`. The port defaults to 1443.
 
 ```sh
-dg --devnet-name bonsia doctor                       # bonsia, addresses from devnet-bonsia.json
-dg --network devnet --devnet-name bonsia --dapi-addresses 68.67.122.224,68.67.122.225 repo list
-git config dash.network devnet && git config dash.devnetName bonsia   # per repo
-git clone -c dash.network=devnet -c dash.devnetName=bonsia dash://<owner>/<repo>   # kept in the clone
+dg --devnet-name sakura doctor                       # sakura, addresses from devnet-sakura.json
+dg --network devnet --devnet-name sakura --dapi-addresses 68.67.122.86,68.67.122.87 repo list
+git config dash.network devnet && git config dash.devnetName sakura   # per repo
+git clone -c dash.network=devnet -c dash.devnetName=sakura dash://<owner>/<repo>   # kept in the clone
 dg repo clone <owner>/<repo>                            # the same, on dg's network
-NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia pnpm build  # forge-web
+NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=sakura pnpm build  # forge-web
 ```
 
 The web header shows a network badge on every network except mainnet (the production build
-at forge.dashhq.org is built from master by `pages.yml`, for devnet bonsia since the 2026-09-30
-cut-over, and shows "devnet"). On a network with no
+at forge.dashhq.org is built from master by `pages.yml`, for the devnet the `PAGES_DEVNET_NAME`
+repository variable names (default sakura; bonsia from 2026-09-30 until it was retired), and
+shows "devnet"). On a network with no
 forge-v2 deployment, the badge is amber and the pages that need the contracts show a "not
 deployed" state instead of querying.
 
@@ -273,7 +278,9 @@ To add a network, register forge-v2 there with `forge-contracts/scripts/deploy-v
 file, then add a matching import to `forge-web/lib/deployments.ts`. The script's SDK is
 pinned in `forge-contracts/sdk-v2` (`(cd forge-contracts/sdk-v2 && npm ci)` once). Deployment
 resolution exposes the ids (forge-core `NetworkTarget::v2`, forge-web `NETWORKS[n].v2`) once
-both contracts are `registered`. `devnet-bonsia.json` also records bonsia's DAPI addresses and quorum service.
+both contracts are `registered`. A fresh devnet's file starts with the network fields only
+(`network`, `devnetName`, `chainId`, `quorumBaseUrl`, `dapiAddresses`, as `devnet-sakura.json`
+does before its registration); `deploy-v2.mjs` adds the `v2` section to it.
 
 ## Checks
 
@@ -300,17 +307,17 @@ one.
   RustFS (`rustfs/rustfs`, pinned by digest), set up by a one-shot `amazon/aws-cli`
   container; the `minio/minio` and `minio/mc` images it replaced no longer pull.
 * `make storage-e2e`: a real `git push` / `git clone` over `dash://` with packs on the
-  local RustFS (S3) + kubo. Only the manifest and ref go to devnet bonsia, paid by the e2e OWNER
+  local RustFS (S3) + kubo. Only the manifest and ref go to devnet sakura, paid by the e2e OWNER
   identity. See `e2e/cli/storage-byo.sh`.
 
 ## End-to-end suites
 
-Both e2e suites run against **live devnet bonsia** (the RC1 contracts, protocol 14) and are not part
+Both e2e suites run against **live devnet sakura** (the RC2 contracts, protocol 14; they fail until those are registered and the read fixture is seeded) and are not part
 of the per-push gate:
 
 * `make e2e` — the CLI suite (`e2e/cli/run.sh`, 11 scenarios). Needs the funded fixture
   identities described in `e2e/cli/config.sh` under
-  `~/.config/dash-forge/test-identities/devnet-bonsia/` (OWNER, COLLAB, CONTRIB).
+  `~/.config/dash-forge/test-identities/devnet-sakura/` (OWNER, COLLAB, CONTRIB).
 * `cd forge-web && pnpm test:e2e` — the Playwright suite. `pnpm install` does not
   download browsers, so a fresh clone needs one extra step first:
 
@@ -321,12 +328,12 @@ of the per-push gate:
   pnpm test:e2e
   ```
 
-  The specs run against a bonsia build and read the forge-v2 read fixture that
+  The specs run against a sakura build and read the forge-v2 read fixture that
   `forge-contracts/scripts/seed-v2-fixture.mjs` seeds (idempotent); the write specs need a
   funded identity.
 
-The `Devnet Nightly` workflow seeds the v2 fixture, runs Playwright against a bonsia build,
-and runs the CLI suite on bonsia. The funded jobs run only when the fixture secrets are
+The `Devnet Nightly` workflow seeds the v2 fixture, runs Playwright against a sakura build,
+and runs the CLI suite on sakura. The funded jobs run only when the fixture secrets are
 configured, reporting a clear SKIP when they are not.
 
 ## Notes for sandboxed / offline environments

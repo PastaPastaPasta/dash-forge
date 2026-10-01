@@ -7,7 +7,7 @@ import { EMPTY, E2E_DEVNET, PASSPHRASE, fixtureWriteBlocked, idFile, runAxe, sho
  * `ux-dx-spec.md` §1(b)), live on a devnet build because the steps after the first need a
  * signed-in identity:
  *
- *   E2E_DEVNET=bonsia E2E_WRITE=1 pnpm exec playwright test mirror-wizard.spec.ts
+ *   E2E_DEVNET=sakura E2E_WRITE=1 pnpm exec playwright test mirror-wizard.spec.ts
  *
  * m1 needs no identity and runs in the read-only CI job too; m2 and m3 need `E2E_WRITE=1`.
  *

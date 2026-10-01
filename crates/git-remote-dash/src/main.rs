@@ -34,7 +34,7 @@
 //!
 //! The network comes from `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME` /
 //! `DASH_FORGE_DAPI_ADDRESSES`, else git config `dash.network` / `dash.devnetName` /
-//! `dash.dapiAddresses` (e.g. `git clone -c dash.network=devnet -c dash.devnetName=bonsia
+//! `dash.dapiAddresses` (e.g. `git clone -c dash.network=devnet -c dash.devnetName=sakura
 //! dash://…`), else the network `dg auth` saved in `config.toml`, else testnet. See
 //! `helper::network_target`.
 

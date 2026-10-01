@@ -1,5 +1,5 @@
 // Network parameters. TESTNET is ported from mainnet-bridge/src/config.ts; the
-// DEVNETS registry mirrors the bridge's DEVNET_MOUTAI entry, plus bonsia (not in
+// DEVNETS registry mirrors the bridge's DEVNET_MOUTAI entry, plus sakura (not in
 // dash-network-configs; probed from its quorum service and DAPI getStatus).
 //
 // Every network object carries the fields the rest of the tool reads:
@@ -30,29 +30,31 @@ export const TESTNET = {
 // with a ChainAssetLockProof once Platform's chain-locked Core height reaches
 // the asset-lock tx's block.
 export const DEVNETS = {
-  // bonsia: drive/dapi 4.2.0-beta.7 (protocol 14), the replacement for moutai. Its chain id carries
-  // a generation suffix; the SDK's devnet name is `bonsia` (quorums.bonsia.networks.dash.org).
-  bonsia: {
-    chainId: 'dash-devnet-bonsia-g1',
+  // sakura: drive/dapi 5.0.0-beta.1 (protocol 14), the replacement for bonsia (gone). Its chain
+  // id is `dash-devnet-sakura`, with no generation suffix (bonsia's was `dash-devnet-bonsia-g1`),
+  // so it is recorded here, never derived from the name.
+  sakura: {
+    chainId: 'dash-devnet-sakura',
     platformProtocolVersion: 14,
-    insightApiUrl: 'https://insight.bonsia.networks.dash.org/insight-api',
-    quorumUrl: 'https://quorums.bonsia.networks.dash.org',
-    webFaucetUrl: 'https://faucet.bonsia.networks.dash.org',
-    // The 13 ENABLED masternodes of quorums.bonsia.networks.dash.org/masternodes (DAPI grpc-web on 1443).
+    insightApiUrl: 'https://insight.sakura.networks.dash.org/insight-api',
+    quorumUrl: 'https://quorums.sakura.networks.dash.org',
+    webFaucetUrl: 'https://faucet.sakura.networks.dash.org',
+    // The 13 ENABLED masternodes of quorums.sakura.networks.dash.org/masternodes (DAPI grpc-web
+    // on 1443), as forge-contracts/deployments/devnet-sakura.json records them.
     dapiAddresses: [
-      'https://68.67.122.224:1443',
-      'https://68.67.122.225:1443',
-      'https://68.67.122.226:1443',
-      'https://68.67.122.227:1443',
-      'https://68.67.122.228:1443',
-      'https://68.67.122.229:1443',
-      'https://68.67.122.230:1443',
-      'https://68.67.122.242:1443',
-      'https://68.67.122.243:1443',
-      'https://68.67.122.244:1443',
-      'https://68.67.122.245:1443',
-      'https://68.67.122.246:1443',
-      'https://68.67.122.247:1443',
+      'https://68.67.122.86:1443',
+      'https://68.67.122.87:1443',
+      'https://68.67.122.88:1443',
+      'https://68.67.122.89:1443',
+      'https://68.67.122.90:1443',
+      'https://68.67.122.91:1443',
+      'https://68.67.122.92:1443',
+      'https://68.67.122.93:1443',
+      'https://68.67.122.94:1443',
+      'https://68.67.122.95:1443',
+      'https://68.67.122.232:1443',
+      'https://68.67.122.240:1443',
+      'https://68.67.122.241:1443',
     ],
   },
   moutai: {

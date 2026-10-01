@@ -1,6 +1,6 @@
 # Quick start
 
-This guide takes you from nothing to a repository on Dash Forge that you can clone, push to and browse on the web. It uses **devnet bonsia**, where Dash is free, so you can try everything without spending real money.
+This guide takes you from nothing to a repository on Dash Forge that you can clone, push to and browse on the web. It uses **devnet sakura**, where Dash is free, so you can try everything without spending real money.
 
 You will:
 
@@ -16,7 +16,7 @@ Replace every `<…>` placeholder in the commands with your own value before run
 
 Allow about 15 minutes. Most of it is the first build, or waiting for the network to confirm your identity.
 
-> **Which network?** This guide's commands target devnet **bonsia** (Platform protocol 14, v4.2.0-beta.7), where Forge's contracts were registered on 2026-09-29 and frozen (tag `contracts-rc1-frozen`). The web app at forge.dashhq.org is live on bonsia as of 2026-09-30. Moutai was upgraded in place to v4.2.0-beta.7, which retired its forge-v2 contracts, and it no longer has a Forge deployment. Check [the network status table](../../README.md#status) before you start. Testnet gets a deployment when protocol 14 reaches it, and mainnet after protocol 14 activates there and the contracts are registered. On a network without a deployment the tools stop with a "not deployed" error ([E702](../errors.md#e702)).
+> **Which network?** This guide's commands target devnet **sakura** (Platform protocol 14, v5.0.0-beta.1). Its status: RC2 on Platform v5.0.0-beta.1 — being registered (Forge's RC2 contracts); until they are, the commands stop with "not deployed", and the web app at forge.dashhq.org moves to sakura with the registration. Devnet bonsia, where the RC1 contracts ran, is gone, and moutai was upgraded in place to v4.2.0-beta.7, which retired its forge-v2 contracts. The fees below were measured on bonsia. Check [the network status table](../../README.md#status) before you start. Testnet gets a deployment when protocol 14 reaches it, and mainnet after protocol 14 activates there and the contracts are registered. On a network without a deployment the tools stop with a "not deployed" error ([E702](../errors.md#e702)).
 
 ---
 
@@ -67,17 +67,17 @@ A Dash Platform **identity** is your account on Forge. It holds your keys and yo
 **Forge never funds or creates identities for you.** Create one from the terminal:
 
 ```sh
-dg auth new --network devnet --devnet-name bonsia
+dg auth new --network devnet --devnet-name sakura
 ```
 
 1. `dg` shows **12 recovery words**. Write them down, in order, and keep them offline: they are the identity, and nobody can recover it without them. It asks you to type three of them back. The words are shown only in a terminal. Scripted, piped or in CI, `dg auth new` never prints them: pass `--backup-file <new file>` and they go only to that file (0600, sealed under a passphrase, `DASH_FORGE_PASSPHRASE` without a terminal or with `--json`). Without that flag it refuses before it creates anything.
-2. It shows a deposit address as a QR code and as text. Send 0.05 DASH to it from any Dash wallet; on devnet bonsia use the faucet at <https://faucet.bonsia.networks.dash.org>, which sends 10 test DASH, far more than you need. A repository costs about 0.0016 DASH.
+2. It shows a deposit address as a QR code and as text. Send 0.05 DASH to it from any Dash wallet; on devnet sakura use the faucet at <https://faucet.sakura.networks.dash.org>, which sends 10 test DASH, far more than you need. A repository costs about 0.0016 DASH.
 3. `dg` waits for the deposit, locks it, registers the identity, and stores a **limited key** for this computer in your OS keychain: it can spend at most 0.25 DASH, only on Forge, for 180 days. The master key is not stored anywhere.
 
 ```
-✓ identity 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB created on devnet-bonsia
+✓ identity 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB created on devnet-sakura
   key #5: limited, 0.25 DASH budget, only on Dash Forge, expires in 180 day(s)
-  stored in macOS Keychain (dash-forge/devnet-bonsia/8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB)
+  stored in macOS Keychain (dash-forge/devnet-sakura/8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB)
   balance 0.0499 DASH
 ```
 
@@ -88,7 +88,7 @@ On a devnet the deposit is proven with a chain lock, which takes a few minutes. 
 **Other ways in.** All of these derive the same keys from the same 12 words, so an identity made in one opens in the others:
 
 - **In the web app**: on [forge.dashhq.org](https://forge.dashhq.org), **Sign in → Create a new identity**. It shows 12 words, checks three of them, protects this browser's key with a passkey or a passphrase, and shows a deposit QR code. One registration creates the identity and a limited key for this browser.
-- **With the Dash bridge**: <https://bridge.thepasta.org/?network=devnet-bonsia>, then **Download Key Backup**, once the bridge offers devnet bonsia (it lists moutai today).
+- **With the Dash bridge**: <https://bridge.thepasta.org/?network=devnet-sakura>, then **Download Key Backup**, once the bridge offers devnet sakura (it lists moutai today).
 
 To sign the *browser* in with an identity you already have, the web app also offers **Use my Dash wallet** (scan a QR code with Dash Wallet and approve). With today's wallets that works only in Dash Wallet iOS on devnet; [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today) says which wallets and networks work, and the caveats.
 
@@ -99,19 +99,19 @@ To sign the *browser* in with an identity you already have, the web app also off
 `dg auth new` signs you in. With an identity you already have (a bridge `dash-identity-<id>.json`, or the 12 words), sign in once per computer:
 
 ```sh
-dg auth login --network devnet --devnet-name bonsia ~/Downloads/dash-identity-<id>.json
-# or: dg auth login --network devnet --devnet-name bonsia --mnemonic
+dg auth login --network devnet --devnet-name sakura ~/Downloads/dash-identity-<id>.json
+# or: dg auth login --network devnet --devnet-name sakura --mnemonic
 ```
 
 ```
-Registering a limited key for this computer on 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB (devnet-bonsia):
+Registering a limited key for this computer on 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB (devnet-sakura):
   it can spend at most 0.25 DASH, only on Dash Forge, until it expires in 180 day(s)
   one identity update, ~0.0005 DASH; the master key signs once and is not stored
 Register the key? [y/N] y
-✓ signed in as 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB on devnet-bonsia
+✓ signed in as 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB on devnet-sakura
   key #6: limited, 0.25 DASH budget, expires in 180 day(s)
   with encryption key #4: private repositories you are a member of open with it
-  stored in macOS Keychain (dash-forge/devnet-bonsia/8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB)
+  stored in macOS Keychain (dash-forge/devnet-sakura/8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB)
   balance 0.0496 DASH
   the identity file is no longer needed here; keep it (or the words) offline
 ```
@@ -174,14 +174,14 @@ dg init                   # = dg repo create --push, for this directory
 ```
 
 ```
-Creating 8hJm…/my-project on devnet-bonsia
+Creating 8hJm…/my-project on devnet-sakura
   repo + maintainer + config     ~0.002 DASH
   packs → r2-main (1 of 1 must confirm); Platform: manifest + refs only
   (storage: git config dash.storage)
 Proceed? [Y/n] y
 ✓ created  https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
 ✓ remote 'origin' → dash://8hJm…/my-project
-✓ git config dash.storage=r2-main, dash.network=devnet, dash.devnetName=bonsia
+✓ git config dash.storage=r2-main, dash.network=devnet, dash.devnetName=sakura
 dash: 8hJm…/my-project ← main (8f3e2a1, 312 objects, 1.2 MiB)
 dash: storage      → r2-main · Platform stores manifest + refs only, est 0.0066 DASH
 dash: r2-main      ████████████████ 1.2 MiB  verified   0.4 s
@@ -243,7 +243,7 @@ git push -u origin main
 Anyone can clone a public repository without an identity: `git clone dash://<owner>/<repo>` reads refs and packs anonymously (`<owner>` is the identity id or DPNS name). Pushing needs your key. On a computer where `dg` has recorded no network, name it in the clone, which keeps it in the clone's git config:
 
 ```sh
-git clone -c dash.network=devnet -c dash.devnetName=bonsia dash://<owner>/<repo>
+git clone -c dash.network=devnet -c dash.devnetName=sakura dash://<owner>/<repo>
 ```
 
 The repository page's **Clone** box shows this command, with the network filled in.

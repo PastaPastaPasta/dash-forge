@@ -47,7 +47,7 @@ inputs:
     default: devnet
   devnet-name:
     description: "Devnet name, used only when network is devnet: lowercase letters, digits and -."
-    default: bonsia
+    default: sakura
   version:
     description: "Dash Forge release to install. Empty (until the first release is pinned here): install 'true' builds dg from source."
     default: ""

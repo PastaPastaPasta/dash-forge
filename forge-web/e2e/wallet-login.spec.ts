@@ -9,7 +9,7 @@ import { E2E_DEVNET, PASSPHRASE, idFile, repoUrl, shot, unlock } from './helpers
  * Sign in with a mobile Dash wallet, live on a devnet (real spend), with a scripted wallet
  * (e2e/wallet-responder.mjs) that does what Dash Wallet does with the QR the page shows:
  *
- *   E2E_DEVNET=bonsia E2E_WRITE=1 pnpm exec playwright test wallet-login.spec.ts
+ *   E2E_DEVNET=sakura E2E_WRITE=1 pnpm exec playwright test wallet-login.spec.ts
  *
  * m1. Desktop: on a devnet the wallet tile comes after Create and Import, and the request says
  *     plainly that Dash Wallet answers on testnet only. The sheet shows a dash-key QR (its text is
@@ -25,7 +25,7 @@ import { E2E_DEVNET, PASSPHRASE, idFile, repoUrl, shot, unlock } from './helpers
  * RELAY's keys that this run adds are disabled at the end.
  */
 
-test.skip(E2E_DEVNET === '' || process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_DEVNET=bonsia E2E_WRITE=1')
+test.skip(E2E_DEVNET === '' || process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_DEVNET=sakura E2E_WRITE=1')
 test.skip(!existsSync(idFile('RELAY')), 'devnet test identities not found')
 test.describe.configure({ mode: 'serial', timeout: 15 * 60_000 })
 

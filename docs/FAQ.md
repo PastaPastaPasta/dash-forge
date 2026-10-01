@@ -44,13 +44,18 @@ You, directly, and only for what you write. Platform fees come from your identit
 
 Measured on devnet bonsia: creating a repository costs about **0.0016 DASH**. A push to your own bucket costs about **0.004–0.0055 DASH**. An issue costs about 0.0008–0.0012 DASH. Storing packs on Platform costs about 0.33 DASH per MiB. On devnet moutai, a fork of a small repository cost about 0.01 DASH, and a first GitHub mirror of a small repository about 0.08 DASH. On a devnet all of it is paid in free test Dash. The full table is in [Costs](guides/costs.md).
 
+## What happened to devnet bonsia?
+
+It was retired, and everything on it is gone. Forge moved to devnet sakura (Platform v5), where it is being registered with new contracts. An installed `dg` built for 4.2.0-beta.7 does not work on sakura. Your git clone and your storage bucket are untouched. See [Dash Forge moved to devnet sakura](guides/devnet-move.md) for what is lost and kept and how to re-push.
+
 ## When is it on mainnet?
 
 After **Dash Platform protocol 14** activates on mainnet and the project owner registers the forge-v2 contracts there. forge-v2 depends on protocol 14 for its shared contracts, membership checks and limited keys. Until then:
 
 | Network | Status |
 |---|---|
-| **Devnet bonsia** | **Registered (RC1), live.** Forge's contracts were registered on bonsia (Platform v4.2.0-beta.7) on 2026-09-29 and frozen (tag `contracts-rc1-frozen`). The CLI defaults to testnet, so select bonsia explicitly with `--network devnet --devnet-name bonsia`. forge.dashhq.org has been live on bonsia since 2026-09-30. See [the root README's status table](../README.md#status) for the current state. |
+| **Devnet sakura** | **RC2 on Platform v5.0.0-beta.1 — being registered.** Sakura (Platform v5.0.0-beta.1) replaced bonsia on 2026-10-01. The CLI defaults to testnet, so select sakura explicitly with `--network devnet --devnet-name sakura`; until the contracts are registered, it stops with "not deployed". forge.dashhq.org moves to sakura with the registration. See [the root README's status table](../README.md#status) for the current state. |
+| **Devnet bonsia** | **Gone.** The RC1 contracts registered there on 2026-09-29 (Platform v4.2.0-beta.7, tag `contracts-rc1-frozen`) went with the devnet. forge.dashhq.org ran on bonsia from 2026-09-30. |
 | **Devnet moutai** | **Retired for Forge.** Moutai was upgraded in place to Platform v4.2.0-beta.7, which retired its forge-v2 contracts. forge.dashhq.org moved off moutai to bonsia on 2026-09-30. |
 | **Testnet** | Not deployed yet. Testnet runs protocol 13; forge-v2 is registered there as soon as protocol 14 reaches it, expected soon. |
 | **Mainnet** | Not deployed yet. After protocol 14 activates, the owner registers the forge-v2 contracts ([runbook](mainnet-runbook.md)). |
@@ -61,7 +66,7 @@ An earlier version of Forge (forge-v1, one contract per repository) ran on testn
 
 ## Can I have private repositories?
 
-Yes, on devnet bonsia today: `dg repo create --private` (or `dg init --private`), and **New → Repository → Private** in the web app. Contents are encrypted in the client with a per-repository key that only members hold, and branch names, issues, PRs, comments and reviews are encrypted too. Anyone can still see that the repository exists, its name, its members, its size and when it changes. Forks and webhooks are refused on private repositories, because they would publish content unencrypted ([E207](errors.md#e207)). Releases are supported and sealed: a private repository's release notes and asset list are encrypted, and so is every asset file Forge seals, in the web app and in `dg release create`, `unpublish` and `download`. The one exception is an imported asset that could not be fetched and sealed: it stays an external link, whose URL is hidden but whose file is not encrypted, so anyone who can reach its source can read it. Label definitions are allowed but stay public. Removing a member rotates the key for future content, but cannot take back what they could already read. [Collaborating](guides/collaborating.md#private-repositories) lists exactly what is hidden and what is not; the design is in [private-repos.md](security/private-repos.md) and [forge-v2.md §5](contracts/forge-v2.md#5-private-repositories).
+Yes, on devnet sakura once its contracts are registered: `dg repo create --private` (or `dg init --private`), and **New → Repository → Private** in the web app. Contents are encrypted in the client with a per-repository key that only members hold, and branch names, issues, PRs, comments and reviews are encrypted too. Anyone can still see that the repository exists, its name, its members, its size and when it changes. Forks and webhooks are refused on private repositories, because they would publish content unencrypted ([E207](errors.md#e207)). Releases are supported and sealed: a private repository's release notes and asset list are encrypted, and so is every asset file Forge seals, in the web app and in `dg release create`, `unpublish` and `download`. The one exception is an imported asset that could not be fetched and sealed: it stays an external link, whose URL is hidden but whose file is not encrypted, so anyone who can reach its source can read it. Label definitions are allowed but stay public. Removing a member rotates the key for future content, but cannot take back what they could already read. [Collaborating](guides/collaborating.md#private-repositories) lists exactly what is hidden and what is not; the design is in [private-repos.md](security/private-repos.md) and [forge-v2.md §5](contracts/forge-v2.md#5-private-repositories).
 
 ## How does this relate to GitHub?
 

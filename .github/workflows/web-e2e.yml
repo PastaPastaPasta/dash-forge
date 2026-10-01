@@ -1,15 +1,15 @@
 name: Web e2e
 
 # The read-only Playwright suite on every PR that touches the web app or what it reads: the
-# app built for devnet bonsia, served locally, reading the public read fixture (e2e/README.md)
-# through bonsia's public DAPI. No secrets: every spec that signs or spends skips without
+# app built for devnet sakura, served locally, reading the public read fixture (e2e/README.md)
+# through sakura's public DAPI. No secrets: every spec that signs or spends skips without
 # E2E_WRITE. It is the regression gate for the UI — a spec that a deliberate UI change made
 # stale fails in the PR that changed it, not in a nightly days later. A read the devnet
 # rate-limits or drops is retried once (playwright.config.ts: `retries` under CI).
 #
-# It depends on bonsia being up and seeded. When bonsia is reset, this fails until the
+# It depends on sakura being up and seeded. When sakura is reset, this fails until the
 # fixture is redeployed (forge-contracts/scripts/seed-v2-fixture.mjs) and its summary
-# (forge-contracts/deployments/fixtures/devnet-bonsia.json) committed, which is the signal.
+# (forge-contracts/deployments/fixtures/devnet-sakura.json) committed, which is the signal.
 
 on:
   pull_request:
@@ -35,14 +35,14 @@ permissions:
 
 jobs:
   playwright:
-    name: playwright (read-only, devnet bonsia)
+    name: playwright (read-only, devnet sakura)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     defaults:
       run:
         working-directory: forge-web
     env:
-      E2E_DEVNET: bonsia
+      E2E_DEVNET: sakura
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -58,14 +58,14 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Playwright browsers
         run: pnpm exec playwright install --with-deps chromium webkit
-      - name: Build for devnet bonsia
+      - name: Build for devnet sakura
         env:
           NEXT_PUBLIC_NETWORK: devnet
-          NEXT_PUBLIC_DEVNET_NAME: bonsia
+          NEXT_PUBLIC_DEVNET_NAME: sakura
         run: pnpm build
       # E2E_SKIP_BUILD serves the `out/` just built instead of building a second time. Both
       # projects run: chromium (every spec) and webkit (sign-in resilience).
-      # The "showcase repos" specs read imported mirrors that are not yet re-created on bonsia:
+      # The "showcase repos" specs read imported mirrors that are not yet re-created on sakura:
       # excluded until the re-mirror is announced (then drop the --grep-invert).
       - name: Playwright
         env:

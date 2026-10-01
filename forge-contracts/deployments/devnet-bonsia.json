@@ -1,6 +1,7 @@
 {
   "network": "devnet",
   "devnetName": "bonsia",
+  "retired": true,
   "chainId": "dash-devnet-bonsia-g1",
   "quorumBaseUrl": "https://quorums.bonsia.networks.dash.org",
   "dapiAddresses": [
