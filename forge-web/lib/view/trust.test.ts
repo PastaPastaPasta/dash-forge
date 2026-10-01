@@ -175,14 +175,14 @@ describe('file contents row', () => {
     expect(pack.content.detail).toMatch(/1 pack did not match its manifest/)
   })
 
-  it('is Partly verified, never Verified, when a live pack could not be fetched (Couldn\'t verify when nothing was read)', () => {
+  it('is Partly verified, never Verified, when a live pack could not be fetched (Not checked yet while nothing was read)', () => {
     const read = deriveTrust(inputs({ checks: checks({ objectsVerified: 5, packsVerified: 3, unavailablePacks: ['ab'.repeat(32)] }) }))
     expect(read.content.state).toBe('partial')
     expect(read.content.detail).toMatch(/1 pack could not be fetched from its storage, so some files may be missing/)
-    // Nothing read at all: nothing checked, so Couldn't verify, not Partly verified (QW3-044).
+    // Nothing read yet: nothing checked, so Not checked yet, not Partly verified (QW3-044).
     const none = deriveTrust(inputs({ checks: checks({ unavailablePacks: ['ab'.repeat(32), 'cd'.repeat(32)] }) }))
-    expect(none.content.state).toBe('unverified')
-    expect(none.content.detail).toBe('2 packs could not be fetched from their storage, so no file contents could be read or checked.')
+    expect(none.content.state).toBe('pending')
+    expect(none.content.detail).toMatch(/^2 packs could not be fetched from their storage, so some files may be missing\. No file contents have been read yet\./)
     const bad = deriveTrust(inputs({ checks: checks({ objectsFailed: 1, unavailablePacks: ['ab'.repeat(32)] }) }))
     expect(bad.content.state).toBe('failed')
   })

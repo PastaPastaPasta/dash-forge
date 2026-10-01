@@ -320,11 +320,11 @@ function deriveContent(checks: ContentChecks): TrustLink {
       ? ` A mirror served bad data (bytes that fail the manifest sha256) for ${plural(corrupt, 'pack')}; it was refused.`
       : ''
   if (link.state === 'pending') {
-    // Nothing was read at all: nothing was checked either, so not even partly verified (QW3-044:
-    // "Partly verified" over "No file contents have been read yet").
+    // Nothing checked yet, so not even partly verified (QW3-044: "Partly verified" over "No file
+    // contents have been read yet"). The packs still reachable may verify what the page reads.
     return {
-      state: 'unverified',
-      detail: `${plural(missing, 'pack')} could not be fetched from ${missing === 1 ? 'its' : 'their'} storage, so no file contents could be read or checked.${bad}`,
+      state: 'pending',
+      detail: `${plural(missing, 'pack')} could not be fetched from ${missing === 1 ? 'its' : 'their'} storage, so some files may be missing.${bad} ${link.detail}`,
     }
   }
   return {

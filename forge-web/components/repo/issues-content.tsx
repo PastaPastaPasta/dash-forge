@@ -308,13 +308,16 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
       <HiddenNote hidden={data?.hidden ?? 0} what={data?.hidden === 1 ? 'issue' : 'issues'} home={home} by={data?.hiddenBy} />
 
       <ComposeIssueDialog
+        // A new prefill (another /issues/new?title=… link) starts the form afresh.
+        key={`${prefill.title}\0${prefill.body}`}
         open={composing && canCompose && !archived}
         prefill={prefill}
         onClose={() => setComposing(false)}
         home={home}
         onCreated={(n) => {
           leaving.current = true
-          router.push(repoHref('/repo/issue', addr, { number: String(n), created: '1' }))
+          // In place of the composer's entry: Back does not reopen it, prefilled, for a duplicate.
+          router.replace(repoHref('/repo/issue', addr, { number: String(n), created: '1' }))
         }}
         addr={addr}
       />

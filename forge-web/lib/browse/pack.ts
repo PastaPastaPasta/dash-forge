@@ -163,6 +163,8 @@ class PrefixDone extends Error {}
  * rest. `buf` may stop mid-stream. Nothing here is hash-checked: a caller only classifies.
  */
 export function inflatePrefix(buf: Uint8Array, from: number, want: number): Uint8Array {
+  // pako never returns from a push with a zero-byte output chunk.
+  if (!(want > 0)) return new Uint8Array(0)
   const out = new Uint8Array(want)
   let got = 0
   const inflater = new Inflate({ chunkSize: Math.min(INFLATE_CHUNK, want), windowBits: 15 })

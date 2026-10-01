@@ -17,6 +17,11 @@ describe('parseAncestry (QW3-046)', () => {
     expect(parseAncestry('HEAD', 'master')).toEqual({ rev: 'master', steps: [] })
   })
 
+  it('a bare suffix names no revision: kept whole, so it matches no ref', () => {
+    expect(parseAncestry('~3', 'main')).toEqual({ rev: '~3', steps: [] })
+    expect(parseAncestry('^', 'main')).toEqual({ rev: '^', steps: [] })
+  })
+
   it('leaves a plain name alone', () => {
     expect(parseAncestry('release/v2', 'main')).toEqual({ rev: 'release/v2', steps: [] })
     expect(parseAncestry('', 'main')).toEqual({ rev: '', steps: [] })

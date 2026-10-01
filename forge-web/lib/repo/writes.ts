@@ -1207,7 +1207,6 @@ export function discardRepoCreation(network: Network, ownerId: string, name: str
   return idbDelete('journal', journalKey(network, ownerId, name))
 }
 
-/** A valid forge-v2 repo name for `input` (ASCII lowercased), or an error saying why not. */
 /**
  * The name a typed repo name becomes, as GitHub converts one ("QA3 Bad Name!" → `qa3-bad-name`):
  * lowercased, each run of characters a name cannot hold made one `-`, then trimmed to start with
@@ -1230,6 +1229,7 @@ export function suggestRepoName(input: string): string | null {
 /** Sentence-case: why a repo name is refused (what a name can hold). */
 export const REPO_NAME_RULE = "A repository name uses a–z, 0–9, '.', '_' and '-' (up to 63 characters) and starts with a letter or digit."
 
+/** A valid forge-v2 repo name for `input` (ASCII lowercased), or an error saying why not. */
 export function normalizeRepoName(input: string): string {
   const name = normalizeV2RepoName(input.trim())
   if (name === null) {

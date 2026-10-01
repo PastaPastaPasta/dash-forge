@@ -22,6 +22,7 @@ import { followFirsts, followRelation, readFollowCounts, resolveOwner } from '@/
 import { firstWriteRead, previewCreate, previewDelete } from '@/lib/sdk'
 import { priceLabel, refundLabel } from '@/lib/view/format'
 import { UsernameHint } from '@/components/username-hint'
+import { useDpnsLookup } from '@/hooks/use-dpns-name'
 import { cn } from '@/lib/utils'
 import { NETWORKS } from '@/lib/constants'
 import { useSdk } from '@/hooks/use-sdk'
@@ -102,6 +103,8 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
   const canFollow = forge !== null
 
   const isSelf = identity === identityId
+  // Your own name, read so that a failed read is not taken for none (the hint below).
+  const ownName = useDpnsLookup(isSelf ? identityId : '')
   const follow = useRelationToggle({
     enabled: canFollow && ready && sdk !== null && identity !== null && identityId !== '' && !isSelf,
     key: `${network}:${identity ?? ''}:${identityId}`,
@@ -139,7 +142,7 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
       <div className="flex flex-wrap items-center gap-4 rounded-lg border border-anvil-200 bg-white p-5 dark:border-anvil-750 dark:bg-anvil-900">
         <IdentityPill identityId={identityId} name={data.name ?? undefined} className="text-prose" />
         {/* Your own profile, with no username: how to get one (QW3-035). */}
-        {isSelf && data.name === null ? <UsernameHint className="order-last w-full border-t border-anvil-100 pt-3 dark:border-anvil-850" /> : null}
+        {isSelf && data.name === null && ownName === null ? <UsernameHint className="order-last w-full border-t border-anvil-100 pt-3 dark:border-anvil-850" /> : null}
         <div className="flex items-center gap-4 text-dense text-anvil-500 dark:text-anvil-400">
           <Count
             value={data.followers === null ? null : Math.max(0, data.followers + follow.delta)}

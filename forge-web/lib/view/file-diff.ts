@@ -60,8 +60,12 @@ class TooLarge extends Error {
 }
 
 class Binary extends Error {
-  /** Told from its first bytes only: the file is too large to read whole here. */
-  constructor(readonly sniffed = false) {
+  constructor(
+    /** Told from its first bytes only: the file is too large to read whole here. */
+    readonly sniffed = false,
+    /** Too large by the browse index's claim alone: downloading it whole is still offered. */
+    readonly unverifiedSize = false,
+  ) {
     super('binary')
   }
 }
@@ -103,7 +107,9 @@ async function readText(reader: ObjectReader, oid: string | null, options: Patch
   if (oid === null) return { text: '', size: 0 }
   const min = options.ignoreSizeHint ? null : knownMinSize(reader, oid)
   if (min !== null && min > COUNT_BLOB_MAX_BYTES) {
-    if (await sniffedBinary(reader, oid)) throw new Binary(true)
+    // The size is the index's claim, and so is where the prefix was read: the reviewer can still
+    // download the file and check it (a false claim must not hide a small file's change).
+    if (await sniffedBinary(reader, oid)) throw new Binary(true, true)
     throw new TooLarge(min, 'hint')
   }
   let object
@@ -111,9 +117,10 @@ async function readText(reader: ObjectReader, oid: string | null, options: Patch
     object = await reader.readObject(oid, { maxBytes: COUNT_BLOB_MAX_BYTES })
   } catch (e) {
     if (!(e instanceof ObjectTooLargeError)) throw e
-    if (await sniffedBinary(reader, oid)) throw new Binary(true)
     // Refused on the entry's length alone: the index's claim, which nothing has checked.
-    if (e.size === reader.locate?.(oid)?.length) throw new TooLarge(e.size, 'stored')
+    const stored = e.size === reader.locate?.(oid)?.length
+    if (!stored && (await sniffedBinary(reader, oid))) throw new Binary(true)
+    if (stored) throw new TooLarge(e.size, 'stored')
     throw new TooLarge(null, 'refused')
   }
   if (object.type !== 'blob') throw new Error(`${oid.slice(0, 9)} is a ${object.type}, not a blob`)
@@ -210,7 +217,10 @@ export async function loadFilePatch(
     return { kind: 'placeholder', change, reason: 'large', note: largeNote(size), ...diffStat(lines) }
   } catch (e) {
     if (e instanceof Binary) {
-      return placeholder(change, 'binary', e.sniffed ? 'Binary file not shown (too large to read whole here; told binary by its first bytes, as git does).' : 'Binary file not shown.')
+      if (!e.sniffed) return placeholder(change, 'binary', 'Binary file not shown.')
+      const note = 'Binary file not shown (too large to read whole here; told binary by its first bytes, as git does).'
+      if (!e.unverifiedSize) return placeholder(change, 'binary', note)
+      return { kind: 'placeholder', change, reason: 'binary', note: `${note} Its size is the browse index's claim.`, unverifiedSize: true }
     }
     if (e instanceof TooLarge) return tooLarge(change, e)
     return placeholder(change, 'unreadable', e instanceof Error ? e.message : 'Could not read this file.')

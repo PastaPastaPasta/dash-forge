@@ -63,7 +63,7 @@ export function CompareContent({ home, addr }: { home: RepoHome; addr: RepoAddre
       {/* The page has no rail (the diff takes the width), so its Verification card sits here,
           collapsed to its one line, as on every other code page (QW2-042). It attests the
           compare side: the ref whose changes are shown. */}
-      {head !== null && missing === undefined ? <CompareVerification home={home} selected={head} /> : null}
+      {head !== null && missing === undefined && headAncestry.steps.length === 0 ? <CompareVerification home={home} selected={head} /> : null}
       {head === null ? null : missing !== undefined ? (
         <EmptyState icon={GitCompare} title="Nothing to compare" body={`No branch, tag or commit named ${missing.name} in ${home.repo.name}.`} />
       ) : (
