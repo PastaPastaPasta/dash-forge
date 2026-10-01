@@ -16,6 +16,7 @@ import type { Network } from '@/lib/constants'
 import type { LabelDef } from '@/lib/repo'
 import { plural, resolveDpnsId } from '@/lib/view'
 import { dpnsAuthorCandidates, Q_MAX, resolveSearchNames, withQuery } from '@/lib/view/issue-query'
+import { formatCount as grouped } from '@/lib/view/text-limits'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -576,11 +577,6 @@ export function AuthorLoginNote({ login, notFound }: { login: string | null; not
   )
 }
 
-/** A count as the rest of the UI writes it: digit-grouped ("3,741"). */
-export function grouped(n: number): string {
-  return n.toLocaleString('en-US')
-}
-
 /** What {@link SearchedNote} reads of a list page's `searchedOf`. */
 export interface SearchedOfLike {
   readonly searched: number
@@ -645,8 +641,9 @@ export function SearchedNote({
   }
   return (
     <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-      {searchedOf.kind === 'sort' ? `Sorted the newest ${n}${of} ${noun} by comments` : `Searched the newest ${n}${of} ${noun}`}; older ones were not read for
-      this {searchedOf.kind === 'sort' ? 'sort' : 'search'}.
+      {searchedOf.kind === 'scan'
+        ? `Checked about ${n}${of} ${noun} for this tab; the older ones could not be checked.`
+        : `${searchedOf.kind === 'sort' ? `Sorted the newest ${n}${of} ${noun} by comments` : `Searched the newest ${n}${of} ${noun}`}; older ones were not read for this ${searchedOf.kind === 'sort' ? 'sort' : 'search'}.`}
     </p>
   )
 }

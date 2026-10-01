@@ -6,7 +6,9 @@
 import { describe, expect, it } from 'vitest'
 
 import { ISSUE_CLOSE, ISSUE_LOCK, ISSUE_REOPEN, PR_CLOSE, PR_DRAFT, PR_DRAFT_CLOSE, PR_DRAFT_REOPEN, PR_LOCK, PR_MERGE, PR_READY, PR_REOPEN, deltaOf, threadStateOf } from '../rules/transition'
-import { SCAN_PAGE, codeAfter, newScan, recordScanPage, scanCodes, scanFloor, settledCode } from './state-scan'
+import type { RepoRef } from './contract'
+import { mockSdk, newSeen } from './drive-mock'
+import { SCAN_PAGE, codeAfter, newScan, readScanPage, recordScanPage, scanCodes, scanFloor, settledCode } from './state-scan'
 
 const T = (id: string, target: string, number: number, kind: number, at: number) => ({
   $id: id,
@@ -73,18 +75,43 @@ describe('state scan', () => {
     expect(settledCode(lockOnly, lockOnly.targets.get('i3')!)).toBeNull()
   })
 
-  it('a short page ends the scan; a full page that adds nothing stops it as incomplete', () => {
+  it('a short page ends the scan; a full page that adds nothing says it is stuck on its timestamp', () => {
     const scan = newScan()
-    recordScanPage(scan, filler('f', 500, 1000))
+    expect(recordScanPage(scan, filler('f', 500, 1000))).toBe(true)
     expect(scan.done).toBe(false)
     expect(scan.pages).toBe(1)
-    // The same page again (100+ changes on one timestamp would read so): nothing new.
+    expect(recordScanPage(scan, filler('g', 300, 10, 40))).toBe(true)
+    expect(scan.done).toBe(true)
+    // The same page again (100+ changes on one timestamp read so): nothing new, and not done.
     const tie = newScan()
     const same = Array.from({ length: SCAN_PAGE }, (_, k) => T(`s${k}`, `t${k}`, 1000 - k, PR_MERGE, 777))
-    recordScanPage(tie, same)
-    recordScanPage(tie, same)
-    expect(tie.done).toBe(true)
-    expect(tie.complete).toBe(false)
+    expect(recordScanPage(tie, same)).toBe(true)
+    expect(recordScanPage(tie, same)).toBe(false)
+    expect(tie.done).toBe(false)
+  })
+
+  it('a timestamp shared by 100+ changes is read whole, then the scan goes below it (a bulk import in one block)', async () => {
+    const repoId = 'C8XSf6R4shR1kqFKUZQnuaEZ5DkW7uoe9qtQYZpS5SRd'
+    const repo: RepoRef = { forge: { core: 'CORE', collab: 'COLLAB', community: 'COMMUNITY', group: 'GROUP' }, repoId, ownerId: 'o', name: 'n', visibility: 'public' }
+    const doc = (k: number, number: number, kind: number, at: number) => ({ $id: `x${String(k).padStart(4, '0')}`, $createdAt: at, repoId, targetId: `t${number}`, targetNumber: number, targetKind: 1, kind })
+    // 10 newer changes, 150 in one block at 500 (#42 among them closed; its reopen in the same
+    // block), and 30 older ones.
+    const docs = [
+      ...Array.from({ length: 10 }, (_, k) => doc(k, 1000 + k, PR_MERGE, 900 + k)),
+      ...Array.from({ length: 148 }, (_, k) => doc(100 + k, 600 + k, PR_MERGE, 500)),
+      doc(300, 42, PR_CLOSE, 500),
+      doc(301, 42, PR_REOPEN, 500),
+      ...Array.from({ length: 30 }, (_, k) => doc(400 + k, 100 + k, PR_MERGE, 100 + k)),
+    ]
+    const seen = newSeen()
+    const sdk = mockSdk({ COLLAB: { transition: docs } }, seen)
+    const scan = newScan()
+    for (let k = 0; k < 10 && !scan.done; k++) await readScanPage(sdk, repo, scan)
+    expect(scan.done && scan.complete).toBe(true)
+    expect(scan.seen.size).toBe(docs.length)
+    // Its two moves in one block: the scan leaves #42 to the proved sum.
+    expect(settledCode(scan, scan.targets.get('t42')!)).toBeNull()
+    expect(settledCode(scan, scan.targets.get('t600')!)).toBe(2)
   })
 
   it("the floor is the oldest page's middle number: a page of late closes of old rows does not drag it down", () => {

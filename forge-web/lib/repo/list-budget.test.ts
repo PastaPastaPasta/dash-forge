@@ -260,6 +260,31 @@ describe('list request budget on a dash-sized repo (QW2-002, QW3-003)', () => {
     expect(listReads(r.seen)).toBeLessThanOrEqual(3 + 2 + 12 + 3 + 1)
   })
 
+  it('a tab whose rows are the oldest: the scan reads to the start, proves page 1 by its count, and page 2 reads no further', async () => {
+    // 30 open PRs among the oldest 40 numbers of 1,500.
+    const r = fresh({ ...DASH, items: 1500, openPrDepths: Array.from({ length: 30 }, (_, k) => 1460 + k), reopenDeepest: false })
+    const { page } = await settledPulls(r, pulls)
+    expect(page.rows.map((x) => x.number)).toEqual(r.openPrs.slice(0, 25))
+    expect(page.matching).toBe(30)
+    expect(page.hasNext).toBe(true)
+    const reads = listReads(r.seen)
+    const p2 = await queryPulls(r.sdk, r.repo, { ...pulls, page: 2 }, r.prs, 'devnet')
+    expect(p2.rows.map((x) => x.number)).toEqual(r.openPrs.slice(25))
+    expect(p2.hasNext).toBe(false)
+    // The scan is done: page 2 only reads the rows it names.
+    expect(listReads(r.seen) - reads).toBeLessThanOrEqual(1)
+  })
+
+  it("after the Open tab's scan, a dense tab still reads its page from the rows it holds", async () => {
+    const r = fresh({ ...DASH, reopenDeepest: false })
+    await settledPulls(r, pulls)
+    const before = listReads(r.seen)
+    const all = await queryPulls(r.sdk, r.repo, { ...pulls, state: 'all' }, r.prs, 'devnet')
+    expect(all.rows).toHaveLength(25)
+    expect(all.searchedOf).toBeNull()
+    expect(listReads(r.seen)).toBe(before)
+  })
+
   it('the Open tab costs what the depth of its oldest open PR costs, not what the repo holds', async () => {
     const reads: number[] = []
     for (const items of [5615, 15_000, 30_000]) {
@@ -396,6 +421,17 @@ describe('list request budget on a dash-sized repo (QW2-002, QW3-003)', () => {
       }
     })
   }
+
+  it('a long feed is read for the pins once per index, not on every page-1 load', async () => {
+    const r = fresh(DASH)
+    await queryIssues(r.sdk, r.repo, issues, r.issues, 'devnet')
+    const feed = (): number => r.seen.queries.filter((q) => q.documentTypeName === 'event' && q.where?.[0]?.[0] === 'repoId').length
+    const once = feed()
+    expect(once).toBe(PIN_FEED_PAGES)
+    const again = await queryIssues(r.sdk, r.repo, { ...issues, state: 'closed' }, r.issues, 'devnet')
+    expect(again.pinsUnread).toBe(true)
+    expect(feed()).toBe(once)
+  })
 
   it('asked for, the pinned issues read the whole feed and show the pin', async () => {
     const r = fresh(DASH)

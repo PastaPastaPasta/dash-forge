@@ -26,7 +26,7 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { queryDocumentsWithProof, type PlainDocument } from '../sdk'
+import { IncompleteReadError, queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { ISSUE_CLOSE, ISSUE_REOPEN, PR_CLOSE, PR_DRAFT, PR_DRAFT_CLOSE, PR_DRAFT_REOPEN, PR_MERGE, PR_READY, PR_REOPEN } from '../rules/transition'
 import { DOC, asIdentifierString, num, str, type RepoRef } from './contract'
 import { repoSource } from './source'
@@ -81,9 +81,11 @@ export interface StateScan {
   readonly seen: Set<string>
   /** Every transition created after this is read; null before the first page. */
   watermark: number | null
+  /** Every transition created at the watermark is read too (its timestamp was read whole). */
+  through: boolean
   /** The scan reached the repo's first transition. */
   done: boolean
-  /** False when it stopped on a timestamp shared by 100 or more transitions. */
+  /** False when it stopped short of it (a timestamp shared by more transitions than it reads). */
   complete: boolean
   /** Requests made. */
   pages: number
@@ -92,7 +94,14 @@ export interface StateScan {
 }
 
 export function newScan(): StateScan {
-  return { targets: new Map(), byNumber: new Map(), seen: new Set(), watermark: null, done: false, complete: true, pages: 0, edge: [] }
+  return { targets: new Map(), byNumber: new Map(), seen: new Set(), watermark: null, through: false, done: false, complete: true, pages: 0, edge: [] }
+}
+
+/** Whether every transition created at `createdAt` (and after) is read. */
+export function scanReaches(scan: StateScan, createdAt: number): boolean {
+  if (scan.done && scan.complete) return true
+  if (scan.watermark === null) return false
+  return createdAt > scan.watermark || (scan.through && createdAt === scan.watermark)
 }
 
 /**
@@ -101,17 +110,20 @@ export function newScan(): StateScan {
  * may end inside a timestamp it shares with other transitions).
  */
 export function settledCode(scan: StateScan, t: ScanTarget): number | null {
-  if (t.code === null) return null
-  return scan.done || (scan.watermark !== null && t.newest > scan.watermark) ? t.code : null
+  return t.code !== null && scanReaches(scan, t.newest) ? t.code : null
 }
 
-/** Record one page of transitions, newest first. */
-export function recordScanPage(scan: StateScan, docs: readonly PlainDocument[]): void {
-  const before = scan.seen.size
+/**
+ * Record transitions read newest first (or, `tie`, every one of one timestamp, in any order).
+ * Returns how many were new.
+ */
+function record(scan: StateScan, docs: readonly PlainDocument[]): number {
+  let fresh = 0
   for (const d of docs) {
     const id = str(d, '$id')
     if (id === '' || scan.seen.has(id)) continue
     scan.seen.add(id)
+    fresh++
     const targetId = asIdentifierString(d['targetId'])
     if (targetId === '') continue
     const createdAt = num(d, '$createdAt')
@@ -131,49 +143,81 @@ export function recordScanPage(scan: StateScan, docs: readonly PlainDocument[]):
       t.code = null
     }
   }
+  return fresh
+}
+
+/**
+ * Record one page of transitions, newest first. Returns false when the page was full and added
+ * nothing: 100 or more transitions share the watermark's timestamp, and only a read of that
+ * timestamp whole moves the scan on ({@link readScanPage}).
+ */
+export function recordScanPage(scan: StateScan, docs: readonly PlainDocument[]): boolean {
+  const fresh = record(scan, docs)
   scan.pages++
   if (docs.length < SCAN_PAGE) {
     scan.done = true
-    return
+    return true
   }
   const last = docs[docs.length - 1]?.['$createdAt']
-  // A full page that added nothing sits on one timestamp shared by 100+ transitions: stop.
-  if (typeof last !== 'number' || (scan.seen.size === before && scan.watermark === last)) {
+  if (typeof last !== 'number') {
     scan.done = true
     scan.complete = false
-    return
+    return true
   }
+  if (fresh === 0 && scan.watermark === last) return false
+  scan.through = false
   scan.watermark = last
   scan.edge = docs.map((d) => num(d, 'targetNumber')).sort((a, b) => a - b)
+  return true
 }
 
-/** Read the scan's next page (newest first, `$createdAt <=` the watermark). */
+/** Transitions of one timestamp read before the scan gives up on it (a bulk write of thousands in one block). */
+const TIE_MAX_PAGES = 20
+
+/**
+ * Read the scan's next page: newest first, `$createdAt <=` the watermark (`<` once the
+ * watermark's timestamp is read whole). A page stuck on a timestamp shared by 100 or more
+ * transitions reads that timestamp whole (ascending by id, with a cursor), then goes below it.
+ */
 export async function readScanPage(sdk: EvoSDK, repo: RepoRef, scan: StateScan): Promise<void> {
   if (scan.done) return
-  const where: [string, '<=', number][] = scan.watermark === null ? [] : [['$createdAt', '<=', scan.watermark]]
-  const { documents } = await queryDocumentsWithProof(sdk, {
-    ...repoSource(repo).repoQuery(DOC.transition, { where, orderBy: [['$createdAt', 'desc']] }),
-    limit: SCAN_PAGE,
-  })
-  recordScanPage(scan, documents)
+  const source = repoSource(repo)
+  const mark = scan.watermark
+  const where: [string, '<=' | '<', number][] = mark === null ? [] : [['$createdAt', scan.through ? '<' : '<=', mark]]
+  const { documents } = await queryDocumentsWithProof(sdk, { ...source.repoQuery(DOC.transition, { where, orderBy: [['$createdAt', 'desc']] }), limit: SCAN_PAGE })
+  if (recordScanPage(scan, documents) || mark === null) return
+  try {
+    const tied = await queryAllDocuments(sdk, source.repoQuery(DOC.transition, { where: [['$createdAt', '==', mark]], orderBy: [['$createdAt', 'asc']] }), {
+      maxPages: TIE_MAX_PAGES,
+    })
+    scan.pages += Math.ceil((tied.length + 1) / SCAN_PAGE)
+    record(scan, tied)
+    scan.through = true
+    scan.edge = tied.map((d) => num(d, 'targetNumber')).sort((a, b) => a - b)
+  } catch (e) {
+    if (!(e instanceof IncompleteReadError)) throw e
+    scan.done = true
+    scan.complete = false
+  }
 }
 
 /**
  * About the lowest number the scan's coverage reaches: the middle target number of its oldest page
- * (closes of much older rows, read in that page, do not drag it down), or 1 once the scan is done.
- * Only a cost bound: a number named below the real coverage is read and its proved state decides.
+ * (closes of much older rows, read in that page, do not drag it down), or 1 once the scan has read
+ * every change. Only a cost bound: a number named below the real coverage is read and its proved
+ * state decides.
  */
 export function scanFloor(scan: StateScan): number {
-  if (scan.done) return 1
+  if (scan.done && scan.complete) return 1
   if (scan.edge.length === 0) return Infinity
   return scan.edge[Math.floor((scan.edge.length - 1) / 2)] ?? Infinity
 }
 
 /**
  * The state codes the scan proves for `docs` (issues or PRs read by id or number): a target whose
- * newest state change it has read ({@link settledCode}); and one no change names, created after
- * the watermark (every change of its would be read) or once the scan has read every change:
- * never moved, so open (0). Others are left out, for a proved sum to decide.
+ * newest state change it has read ({@link settledCode}); and one no change names, created when
+ * every change since is read ({@link scanReaches}: a change is written after its target): never
+ * moved, so open (0). Others are left out, for a proved sum to decide.
  */
 export function scanCodes(scan: StateScan, docs: readonly PlainDocument[]): Map<string, number> {
   const out = new Map<string, number>()
@@ -185,7 +229,7 @@ export function scanCodes(scan: StateScan, docs: readonly PlainDocument[]): Map<
       if (code !== null) out.set(id, code)
       continue
     }
-    if ((scan.done && scan.complete) || (scan.watermark !== null && num(d, '$createdAt') > scan.watermark)) out.set(id, 0)
+    if (scanReaches(scan, num(d, '$createdAt'))) out.set(id, 0)
   }
   return out
 }

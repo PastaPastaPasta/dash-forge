@@ -281,7 +281,7 @@ export async function queryPulls(
   const tab = tabBound(bound, index, q.state)
   // A sparse tab (a mirror's few open PRs among thousands merged, QW3-002) through the state scan,
   // when the proved counts say that is cheaper than walking (and include this browser's writes).
-  const byScan = !filtered && bound !== null && tab !== null && countsSettled(repo) && scanCheaper(index, walk, tab, bound, q.state !== 'merged')
+  const byScan = !filtered && bound !== null && tab !== null && countsSettled(repo) && scanCheaper(index, walk, tab, bound, q.state === 'open' || q.state === 'unmerged')
   const selected = byScan
     ? await scanSelect(sdk, index, {
         inTab: (code) => pullStateMatches({ state: statusOfCode(code) }, q.state),

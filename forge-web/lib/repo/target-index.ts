@@ -121,6 +121,8 @@ export interface ListIndex<Row extends RowExtras> {
   readonly epoch: number
   /** The feed read, once started. */
   feedRead?: Promise<Map<string, TargetLog> | null>
+  /** The feed ran past a bounded read (the issue list's pinned issues): not read again for them. */
+  feedLong?: boolean
   readonly labels: LabelDef[]
   readonly rows: Map<string, Row>
   /** What each row was built from. */
@@ -716,16 +718,20 @@ export function scanCheaper<Row extends RowExtras>(
   counts: RepoCounts,
   openTab: boolean,
 ): boolean {
-  if (index.repo.visibility === 'private' || walk.walkAll || index.all || tab <= 0 || (index.scan?.done ?? false)) return false
+  if (index.repo.visibility === 'private' || walk.walkAll || index.all || tab <= 0) return false
   const typeTotal = index.type === 'issue' ? counts.issues : counts.patches
   const transitions = counts.transitions
   if (transitions <= 0) return false
   const need = walk.direction === 'desc' ? Math.min(walk.want + 1, tab) : tab
   const walked = index.walks[walk.direction].ids.length
   const walkCost = 2 * Math.max(0, Math.ceil((need * typeTotal) / tab / CHUNK) - Math.floor(walked / CHUNK))
+  // A page the walk already holds costs nothing more: never scan for it.
+  if (walkCost === 0) return false
+  const scan = index.scan
+  // A scan that has read every change only names and reads the page's rows.
+  const pages = scan?.done && scan.complete ? 0 : Math.max(0, Math.ceil((need * transitions) / tab / CHUNK) - (scan?.pages ?? 0))
   const share = openTab ? openShare(counts, Math.min(tab, index.type === 'issue' ? counts.issuesOpen : counts.prsOpen)) : 1
-  const scanCost = Math.ceil((need * transitions) / tab / CHUNK) - (index.scan?.pages ?? 0) + 2 * Math.ceil(need / share / CHUNK)
-  return scanCost < walkCost
+  return pages + Math.ceil(need / share / CHUNK) < walkCost
 }
 
 /**
@@ -1004,7 +1010,7 @@ export async function scanSelect<Row extends RowExtras>(sdk: EvoSDK, index: List
   for (;;) {
     let rows = tabRows()
     if (index.all || rows.length >= tab.known) return done(rows, true)
-    const atEnd = scan.done || pages >= SCAN_PAGES_PER_LOAD || scan.pages >= SCAN_AUTO_PAGES
+    const atEnd = scan.done || pages >= SCAN_PAGES_PER_LOAD
     // Read the candidates when they are expected to fill the page, every few scan pages, or when
     // the scan can go no further this load: a read per scan page would double its cost.
     const named = nominate(gapFloor(), atEnd)
@@ -1016,10 +1022,12 @@ export async function scanSelect<Row extends RowExtras>(sdk: EvoSDK, index: List
       if (rows.length >= tab.known) return done(rows, true)
     }
     if (scan.done && scan.complete) {
-      // Every number is named or read: what remains unread is not this tab's.
+      // Every state change is read: every candidate the page needs is named; once they are read,
+      // the page is proved (the whole tab only when every row of it is held).
       const rest = nominate(1, true)
       if (rest.ids.length + rest.numbers.length > 0) await resolve(rest)
-      return done(tabRows(), true)
+      const held = tabRows()
+      return done(held, held.length >= tab.known)
     }
     // The page's last row created after the watermark: every number above it was too, so every
     // candidate above it is named; once they are read, the page is proved.

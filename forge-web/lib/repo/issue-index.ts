@@ -365,7 +365,7 @@ export async function queryIssues(
   const tab = tabBound(bound, index, q.state)
   // A sparse tab through the state scan when the proved counts say that is cheaper than walking
   // (QW3-002; the PR list's Open tab is the usual one).
-  const byScan = !filtered && bound !== null && tab !== null && countsSettled(repo) && scanCheaper(index, walk, tab, bound, q.state !== 'closed')
+  const byScan = !filtered && bound !== null && tab !== null && countsSettled(repo) && scanCheaper(index, walk, tab, bound, q.state === 'open')
   const byState = q.state === 'closed' && candidatesCheaper(index, walk, tabBound(bound, index, 'closed'), bound?.issues ?? null)
   const selected = byScan
     ? await scanSelect(sdk, index, {
@@ -449,8 +449,13 @@ async function candidatesFor(sdk: EvoSDK, index: IssueIndex, q: IssueSelection, 
  */
 async function pinnedRows(sdk: EvoSDK, index: IssueIndex, full: boolean): Promise<IssueRow[] | null> {
   if (!full && index.feedRead === undefined) {
+    // Known long already (a write drops the index; events are never deleted, so it stays long).
+    if (index.feedLong) return null
     const short = await readShortRepoFeed(sdk, index.repo, index.feedFirst, index.epoch, 1 + PIN_FEED_PAGES)
-    if (short === 'long') return null
+    if (short === 'long') {
+      index.feedLong = true
+      return null
+    }
   }
   // Shared by now (or asked for): no second read of a feed the short read just read.
   const feed = await feedOf(sdk, index)
