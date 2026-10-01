@@ -193,7 +193,9 @@ dg repo fork <owner>/project            # or --name <another name>
 ✓ forked <owner>/project → <you>/project
   packs:   36 recorded (36 by reference to the parent's Platform chunks), nothing re-uploaded
   refs:    1 copied
-  cost:    ~0.03 DASH ≈ $0.90
+  remote:  dash://<you>/project
+  cost:    ~0.03 DASH
+  next:    push a branch to dash://<you>/project, then `dg pr create <owner>/project`
 ```
 
 A fork is a new repository with `forkOf` set to the parent. It records the parent's packs **by reference**, so nothing is uploaded again. Packs on external storage keep their URLs, and packs on Platform are read from the parent's chunks, which are permanent. The fork's cost is its own documents: the repo, one small manifest per pack, and the refs. Re-running an interrupted fork finishes it without paying twice. It never moves a branch you have already pushed to the fork. In the web, the fork browses through the parent's published browse and history index, so no visitor rebuilds it in the browser; your own pushes to the fork index just the packs they add.
@@ -215,7 +217,7 @@ dg pr create <owner>/project --body "Fixes #12"
 
 ```text
 Open PR "Handle empty input" in <owner>/project: <you>/project refs/heads/fix-empty-input (8f3e2a1c9d0b) → refs/heads/main
-✓ opened PR #7 in <owner>/project · ~0.001 DASH ≈ $0.03
+✓ opened PR #7 in <owner>/project · ~0.0014 DASH
 ```
 
 `dg` fills in the rest:
@@ -337,7 +339,7 @@ dg label create <owner>/<repo> bug --color "#d73a4a" --description "Something is
 dg label list   <owner>/<repo> [--all]
 dg label retire <owner>/<repo> bug
 dg label delete <owner>/<repo> bug                 # deletes your definitions; retires it if others defined it too
-dg issue label  <owner>/<repo> 12 --add bug
+dg issue label  <owner>/<repo> 12 add bug
 ```
 
 On the web, **Issues → Labels** lists them and lets members create one, change its colour or description, and delete it (with the same retire-if-others-defined-it rule). A label keeps its name once defined: issues carry a label by its name, so a rename would leave them under the old one.
