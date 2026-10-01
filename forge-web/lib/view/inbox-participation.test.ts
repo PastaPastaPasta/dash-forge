@@ -165,20 +165,43 @@ describe('a review request from a PR author who is not a member (P1-1)', () => {
     expect(sdk.queries.filter((q) => q.documentTypeName === 'authorEvent')).toHaveLength(1)
   })
 
-  it('keeps the member events when the author events cannot be read, and says so', async () => {
+  /** `docs` plus an assignment of me (a member's `event`) and a comment of mine, with the addressee reads of `failing` types refused. */
+  const withFailing = (failing: readonly string[]): ReturnType<typeof chainSdk> => {
     const sdk = chainSdk([
       ...docs,
       { type: 'issue', $id: ISSUE_ID, $ownerId: OTHER, $createdAt: 100, repoId: REPO_ID, number: 1, title: 'Bug' },
       { type: 'event', $id: 'a1', $ownerId: MAINTAINER, $createdAt: 5000, targetId: ISSUE_ID, kind: 6, value: ME, refId: ME },
+      { type: 'patch', $id: REVIEWED_ID, $ownerId: OTHER, $createdAt: 300, repoId: REPO_ID, number: 3, title: 'Other fix' },
+      { type: 'comment', $id: 'c1', $ownerId: ME, $createdAt: 4000, repoId: REPO_ID, targetId: REVIEWED_ID },
     ])
     const query = sdk.documents.query.bind(sdk.documents) as (q: DocumentQuery) => Promise<unknown>
     ;(sdk.documents as unknown as { query: (q: DocumentQuery) => Promise<unknown> }).query = async (q) => {
-      if (q.documentTypeName === 'authorEvent') throw new Error('no such index')
+      if (failing.includes(q.documentTypeName) && isAddressee(q)) throw new Error('no such index')
       return query(q)
     }
-    const subs = await computeSubscriptions(sdk, 'devnet', FORGE, ME, DEFAULT_PREFS, 10_000)
-    expect(subs.threads).toEqual([expect.objectContaining({ id: ISSUE_ID, reason: 'assigned' })])
+    return sdk
+  }
+  const byId = (subs: Subscriptions): Map<string, ThreadSub> => new Map(subs.threads.map((t) => [t.id, t]))
+
+  it('keeps the member events when the author events cannot be read, and says so', async () => {
+    const subs = await computeSubscriptions(withFailing(['authorEvent']), 'devnet', FORGE, ME, DEFAULT_PREFS, 10_000)
+    expect(byId(subs).get(ISSUE_ID)).toMatchObject({ reason: 'assigned' })
+    expect(byId(subs).has(PR_ID)).toBe(false)
     expect(subs.incomplete).toEqual([expect.stringContaining('your assignments and review requests')])
+  })
+
+  it('keeps the author events when the member events cannot be read, and says so', async () => {
+    const subs = await computeSubscriptions(withFailing(['event']), 'devnet', FORGE, ME, DEFAULT_PREFS, 10_000)
+    expect(byId(subs).get(PR_ID)).toMatchObject({ reason: 'review-requested', viaAuthor: true })
+    expect(byId(subs).has(ISSUE_ID)).toBe(false)
+    expect(subs.incomplete).toEqual([expect.stringContaining('one of their two reads')])
+  })
+
+  it('with neither read, says so and keeps every other source', async () => {
+    const subs = await computeSubscriptions(withFailing(['event', 'authorEvent']), 'devnet', FORGE, ME, DEFAULT_PREFS, 10_000)
+    expect([...byId(subs).keys()]).toEqual([REVIEWED_ID])
+    expect(byId(subs).get(REVIEWED_ID)).toMatchObject({ reason: 'commented' })
+    expect(subs.incomplete).toEqual(['your assignments and review requests'])
   })
 
   it("ignores a 'review request' an issue's author wrote: only a PR has reviewers", async () => {
