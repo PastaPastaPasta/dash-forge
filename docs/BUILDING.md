@@ -133,7 +133,7 @@ The patch stays active until you remove it. Confirm which source is in use with
 
 ### Protocol versions (SDK v4.2)
 
-The pinned SDK (`v4.2.0-beta.7` in Rust; `@dashevo/evo-sdk` and `@dashevo/wasm-sdk` `4.2.0-beta.7` from npm in forge-web; a tag missing from npm can be vendored: [dev/sdk-vendoring.md](dev/sdk-vendoring.md)) speaks
+The pinned SDK (`v5.0.0-beta.1` in Rust; `@dashevo/evo-sdk` and `@dashevo/wasm-sdk` `4.2.0-beta.7` from npm in forge-web; a tag missing from npm can be vendored: [dev/sdk-vendoring.md](dev/sdk-vendoring.md)) speaks
 protocol 13 (testnet, mainnet) and protocol 14 (devnets such as bonsia). Neither client pins
 a version. The SDK starts at a per-network floor (13 for testnet and mainnet, 14 for a
 devnet) and raises it from the metadata of the first **proof-verified** response. So

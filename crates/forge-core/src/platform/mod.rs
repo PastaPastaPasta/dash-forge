@@ -202,6 +202,17 @@ impl LoadedContract {
     pub fn has_document_type(&self, name: &str) -> bool {
         self.0.has_document_type_for_name(name)
     }
+
+    /// Whether `document_type` lists `property` in `immutable` with a condition (Platform v5;
+    /// `v5:packages/rs-dpp/src/data_contract/document_type/accessors/v2/mod.rs:136-143`): a
+    /// replace that changes it while the condition holds is refused with 40128. `false` for an
+    /// unknown type, and for an unconditionally immutable or a mutable property.
+    pub fn freezes_when(&self, document_type: &str, property: &str) -> bool {
+        use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV2Getters;
+        self.0
+            .document_type_for_name(document_type)
+            .is_ok_and(|t| t.immutable_field_conditions().contains_key(property))
+    }
 }
 
 impl std::fmt::Debug for LoadedContract {

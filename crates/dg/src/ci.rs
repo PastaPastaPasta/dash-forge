@@ -770,7 +770,7 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
     // artifacts are final (RC2 S1) and stay as stored, so nothing is uploaded for them.
     let frozen = plan.evidence_frozen();
     if frozen {
-        left_out.extend(warn_frozen(&r, a, private));
+        left_out.extend(keep_frozen_evidence(&mut r, a, private));
     }
     let uploads = !private && !frozen;
     let verb = if plan.replaces() { "update" } else { "create" };
@@ -815,13 +815,14 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
 }
 
 /// The evidence `r` gives (with `a`'s log and artifacts, which a private repository drops) for
-/// a run that already completed: final (RC2 S1), so it stays as recorded. Warns, on stderr in
-/// JSON mode too (as [`warn_private`]), before the prompt and the payment, and returns the
-/// fields kept as stored.
-fn warn_frozen(r: &CheckReport, a: &ReportArgs, private: bool) -> Vec<&'static str> {
+/// a run that already completed: final (RC2 S1, `forge_core::ci::EVIDENCE_FIELDS`), so it
+/// stays as recorded. Drops it from `r` (the replace leaves it out too), so it is neither
+/// priced nor reported, warns (on stderr in JSON mode too, as [`warn_private`], before the
+/// prompt and the payment) and returns the fields kept as stored.
+fn keep_frozen_evidence(r: &mut CheckReport, a: &ReportArgs, private: bool) -> Vec<&'static str> {
     let kept_as_stored: Vec<&'static str> = [
-        ("summary", r.summary.is_some()),
-        ("detailsUrl", r.details_url.is_some()),
+        ("summary", r.summary.take().is_some()),
+        ("detailsUrl", r.details_url.take().is_some()),
         ("logUrl", a.log.is_some() && !private),
         ("artifacts", !a.artifacts.is_empty() && !private),
     ]

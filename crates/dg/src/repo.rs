@@ -366,20 +366,20 @@ async fn star(ctx: &Ctx, repo: &str, on: bool, trending: bool) -> Result<()> {
             .ok()
             .and_then(|c| c.trending)
             .unwrap_or(forge_core::collab::v2::TRENDING_DEFAULT);
-    // RC2's fused star (C1): the star itself counts toward Trending, with nothing to opt out of.
+    // RC2's fused star (C1): the star is the only document, and a public repository's star
+    // counts toward Trending by itself, with nothing to opt out of.
     let fused = on && collab.fused_star(handle).await?;
-    if fused && !trending {
+    if fused && !trending && handle.visibility == Visibility::Public {
         eprintln!(
             "warning: on this network a star counts toward Trending by itself, so --no-trending \
              (or `trending = false`) has no effect"
         );
     }
     let name = handle.display();
-    ctx.confirm_or_cancel(&match (on, trending, fused) {
-        (true, _, true) => format!("Star {name}? (one small document, which counts toward Trending)"),
-        (true, true, false) => format!("Star {name}? (two small documents: the star, and one that counts it toward Trending; --no-trending skips it)"),
-        (true, false, false) => format!("Star {name}? (one small document)"),
-        (false, ..) => format!("Unstar {name}? (one small document, refunded; a Trending count stays until its week ends)"),
+    ctx.confirm_or_cancel(&match (on, trending && !fused) {
+        (true, true) => format!("Star {name}? (two small documents: the star, and one that counts it toward Trending; --no-trending skips it)"),
+        (true, false) => format!("Star {name}? (one small document)"),
+        (false, _) => format!("Unstar {name}? (one small document, refunded; a Trending count stays until its week ends)"),
     })?;
     let before = collab.star_count(handle).await.ok();
     let changed = if on {

@@ -6,7 +6,7 @@
 //!   gate (`ownerRefersTo anyOf [runner, maintainer, writer]`) refuses its next create or
 //!   replace at consensus (40120).
 //! * **Check run** = a forge-community `checkRun` `{repoId, headOid, name, status, conclusion?, …}`,
-//!   mutable, with `[repoId, headOid, name]` immutable. The newest per `(headOid, name)` by
+//!   mutable, with `[repoId, headOid, name, vis]` immutable. The newest per `(headOid, name)` by
 //!   `($createdAt, $id)` is what readers show ([`crate::collab::v2::newest_check_runs`]), so a
 //!   run's progress (`queued → in_progress → completed`) is a **replace** of the reporter's own
 //!   document, and a re-run of the same check on the same commit is a new document. The
@@ -14,7 +14,10 @@
 //!   `externalId` once set and tie them to the status; [`check_run_write`] decides each write
 //!   so they hold: `startedAt` on the first report that is not `queued`, `completedAt` on the
 //!   first `completed` one, a stored time never changed, and a report that would move a run
-//!   backwards or change its conclusion is a new run.
+//!   backwards or change its conclusion is a new run. RC2 (S1, Platform v5's conditional
+//!   `immutable`) also freezes a completed run's evidence (`summary`, `detailsUrl`, `logUrl`,
+//!   `logSha256`, `artifacts`; [`EVIDENCE_FIELDS`]): a report that continues a completed run
+//!   leaves them as stored ([`ReportPlan::evidence_frozen`]).
 //! * **The runner's key** is AUTHENTICATION / HIGH bound to `(forge-community, checkRun)`
 //!   ([`ContractBounds::SingleContractDocumentType`], admitted on AUTHENTICATION keys from protocol
 //!   14), with a budget and an expiry: consensus refuses anything else it signs with 20014
@@ -104,10 +107,14 @@ pub const SET_ONCE_FIELDS: [&str; 4] = ["startedAt", "completedAt", "conclusion"
 pub const EVIDENCE_FIELDS: [&str; 5] =
     ["summary", "detailsUrl", "logUrl", "logSha256", "artifacts"];
 
-/// Whether `stored`'s [`EVIDENCE_FIELDS`] are final: it is a completed run.
+/// Whether `stored`'s [`EVIDENCE_FIELDS`] are final: it is a completed run, and `community`
+/// freezes them (S1 is a build flag: a contract without it leaves them editable).
 #[must_use]
-pub fn evidence_frozen(stored: &FetchedDocument) -> bool {
+pub fn evidence_frozen(community: &LoadedContract, stored: &FetchedDocument) -> bool {
     stored.field_str("status").as_deref() == Some("completed")
+        && EVIDENCE_FIELDS
+            .iter()
+            .any(|f| community.freezes_when(DOC_CHECK_RUN, f))
 }
 
 /// A `checkRun`'s `outcome` (`outcomeOf`): 0 while the run is not completed, 1 for a completed
@@ -541,17 +548,17 @@ impl CheckReport {
         c
     }
 
-    /// What a replace of `stored` with this report sets: [`Self::changes`], less the
-    /// [`EVIDENCE_FIELDS`] when `stored` already completed ([`evidence_frozen`]). Those stay as
-    /// stored, so the same completion reported again writes nothing new rather than being
-    /// refused at consensus.
+    /// What a replace sets: [`Self::changes`], less the [`EVIDENCE_FIELDS`] when `frozen` (the
+    /// stored run already completed, and the contract freezes them: [`evidence_frozen`]). Those
+    /// stay as stored, so the same completion reported again writes nothing new rather than
+    /// being refused at consensus.
     pub(crate) fn replace_changes(
         &self,
         w: &RunWrite,
-        stored: &FetchedDocument,
+        frozen: bool,
     ) -> BTreeMap<String, Option<FieldValue>> {
         let mut c = self.changes(w);
-        if evidence_frozen(stored) {
+        if frozen {
             for f in EVIDENCE_FIELDS {
                 c.remove(f);
             }
@@ -686,7 +693,7 @@ impl<'a> CheckRuns<'a> {
                     &plan.community,
                     DOC_CHECK_RUN,
                     &run.id,
-                    &report.replace_changes(&plan.write, run),
+                    &report.replace_changes(&plan.write, plan.evidence_frozen()),
                 )
                 .await?;
             return Ok(Reported {
@@ -736,7 +743,9 @@ impl ReportPlan {
     /// details link, log, artifacts) stays as stored ([`EVIDENCE_FIELDS`]): a caller need not
     /// upload a log or artifacts the write will not record.
     pub fn evidence_frozen(&self) -> bool {
-        self.target.as_ref().is_some_and(evidence_frozen)
+        self.target
+            .as_ref()
+            .is_some_and(|t| evidence_frozen(&self.community, t))
     }
 
     /// The report's fields left out because the repository is private (`privateNoText`), as
@@ -937,9 +946,11 @@ mod tests {
         now: u64,
     ) -> (RunWriteAction, BTreeMap<String, Option<FieldValue>>) {
         let w = r.write(stored, now).expect("a valid report");
-        let c = match (w.action, stored) {
-            (RunWriteAction::Replace, Some(s)) => r.replace_changes(&w, s),
-            _ => r.changes(&w),
+        // As on RC2 with S1: a completed run's evidence is frozen.
+        let frozen = stored.is_some_and(|s| s.field_str("status").as_deref() == Some("completed"));
+        let c = match w.action {
+            RunWriteAction::Replace => r.replace_changes(&w, frozen),
+            RunWriteAction::Create => r.changes(&w),
         };
         (w.action, c)
     }
