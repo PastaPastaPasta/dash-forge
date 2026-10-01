@@ -14,7 +14,7 @@ use forge_core::collab::v2::{
 use forge_core::collab::{CommentAnchor, Imported, Label, Release, ReleaseInput, Verdict};
 use forge_core::history::Freshness;
 use forge_core::platform::PlatformClient;
-use forge_core::rules::v2::{issue_state_v2, pr_state_v2, TransitionMove, Visibility};
+use forge_core::rules::v2::{issue_state_v2, pr_state_v2, ClosedAs, TransitionMove, Visibility};
 use forge_core::rules::{EventKind, MergeBaseTips};
 use forge_core::scope::RepoRef;
 use forge_core::Result;
@@ -35,6 +35,8 @@ pub struct Current {
 /// A comment or review already on a target: who wrote it and which source item it copies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Written {
+    /// Its document `$id` (what a reply's `replyTo` and a review comment's `reviewId` name).
+    pub id: String,
     /// Its author (a review's reviewer).
     pub author: String,
     /// Its `imported.url`, when it was imported.
@@ -102,13 +104,15 @@ pub trait Chain {
         anchor: Option<&CommentAnchor>,
         imported: &Imported,
     ) -> Result<String>;
-    /// Review `patch_id` (always a comment verdict: see [`crate::sink`]).
+    /// Review `patch_id` (always a comment verdict: see [`crate::sink`]), announcing the
+    /// `comment_count` comments that name it.
     async fn review(
         &self,
         repo: &RepoRef,
         patch_id: &str,
         commit_oid: &[u8],
         body: &str,
+        comment_count: Option<u16>,
         imported: &Imported,
     ) -> Result<String>;
     /// A member label event on `target`.
@@ -119,13 +123,14 @@ pub trait Chain {
         kind: EventKind,
         value: &str,
     ) -> Result<String>;
-    /// The state transition `mv` on `target`.
+    /// The state transition `mv` on `target`, with an issue close's reason (`closed`).
     async fn write_transition(
         &self,
         repo: &RepoRef,
         target: &Target,
         mv: &TransitionMove,
         merge_oid: Option<&[u8]>,
+        closed: Option<&ClosedAs>,
     ) -> Result<String>;
     /// Define a label.
     async fn create_label(
@@ -202,6 +207,7 @@ impl Chain for CollabChain<'_> {
             .await?
             .into_iter()
             .map(|c| Written {
+                id: c.document_id,
                 author: c.author,
                 url: c.imported.map(|i| i.url),
             })
@@ -215,6 +221,7 @@ impl Chain for CollabChain<'_> {
             .await?
             .into_iter()
             .map(|r| Written {
+                id: r.document_id,
                 author: r.reviewer,
                 url: r.imported.map(|i| i.url),
             })
@@ -297,6 +304,7 @@ impl Chain for CollabChain<'_> {
         patch_id: &str,
         commit_oid: &[u8],
         body: &str,
+        comment_count: Option<u16>,
         imported: &Imported,
     ) -> Result<String> {
         self.collab
@@ -306,7 +314,7 @@ impl Chain for CollabChain<'_> {
                 Verdict::Comment,
                 commit_oid,
                 body,
-                None,
+                comment_count,
                 Some(imported),
             )
             .await
@@ -330,9 +338,10 @@ impl Chain for CollabChain<'_> {
         target: &Target,
         mv: &TransitionMove,
         merge_oid: Option<&[u8]>,
+        closed: Option<&ClosedAs>,
     ) -> Result<String> {
         self.collab
-            .write_transition(repo, target, mv, merge_oid)
+            .write_transition(repo, target, mv, merge_oid, closed)
             .await
     }
 

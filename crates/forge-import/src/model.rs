@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use forge_core::collab::v2::TargetKind;
 use forge_core::collab::{CommentAnchor, Imported, ReleaseAsset, Verdict};
+use forge_core::rules::v2::CloseReason;
 
 /// An issue or pull request to mirror.
 #[derive(Debug, Clone)]
@@ -26,6 +27,9 @@ pub struct SrcTarget {
     pub imported: Imported,
     /// Closed in the source.
     pub closed: bool,
+    /// Why a closed issue was closed at the source (QW-069; GitHub's `state_reason`, GitLab's
+    /// close as a duplicate). `None`: no reason given (a PR, or a plain close).
+    pub close_reason: Option<SrcCloseReason>,
     /// The merge commit, when a pull request was merged.
     pub merged_oid: Option<Vec<u8>>,
     /// The source says merged but gives no merge commit (a GitHub PR with `merged_at` and no
@@ -42,6 +46,17 @@ pub struct SrcTarget {
     pub comments: Vec<SrcComment>,
     /// Reviews (pull requests), oldest first.
     pub reviews: Vec<SrcReview>,
+}
+
+/// Why an issue was closed at the source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SrcCloseReason {
+    /// Completed, not planned, or duplicate.
+    pub reason: CloseReason,
+    /// A duplicate's canonical issue in the same source repository: its source number and its
+    /// `imported.url` key. The mirror's number is found when the state is written (it may
+    /// differ); a canonical in another repository is not named.
+    pub duplicate_of: Option<(u32, String)>,
 }
 
 /// What a pull request points at.
@@ -62,8 +77,15 @@ pub struct SrcComment {
     pub body: String,
     /// Provenance (`url` is the key).
     pub imported: Imported,
-    /// A line anchor (review comments).
+    /// A line anchor (review comments). Its `reply_to` and `review_id` are left empty: the
+    /// sink fills them from `reply_key` / `review_key` once those are on chain.
     pub anchor: Option<CommentAnchor>,
+    /// The key (`imported.url`) of the comment this one replies to (QW2-010; GitHub's
+    /// `in_reply_to_id`, a GitLab discussion's first note).
+    pub reply_key: Option<String>,
+    /// The key (`imported.url`) of the review this comment belongs to (QW2-010; GitHub's
+    /// `pull_request_review_id`).
+    pub review_key: Option<String>,
 }
 
 /// A review to mirror.

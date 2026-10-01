@@ -25,10 +25,12 @@ use anyhow::Result;
 
 use forge_core::collab::v2::TargetKind;
 use forge_core::collab::{CommentAnchor, ReleaseAsset, Verdict};
+use forge_core::rules::v2::CloseReason;
 
 use crate::github::{iso8601_to_unix, GhComment, GhIssue, GithubClient, GithubRepoRef};
 use crate::model::{
-    self, SrcCollab, SrcComment, SrcLabel, SrcPatch, SrcRelease, SrcReview, SrcTarget,
+    self, SrcCloseReason, SrcCollab, SrcComment, SrcLabel, SrcPatch, SrcRelease, SrcReview,
+    SrcTarget,
 };
 use crate::source::{Classes, Source, SourceMeta};
 
@@ -302,6 +304,12 @@ fn targets(
             continue;
         };
         let mut t = target(src, i, number);
+        if t.close_reason
+            .as_ref()
+            .is_some_and(|r| r.reason == CloseReason::Duplicate)
+        {
+            t.close_reason = Some(duplicate_reason(gh, src, i, gaps));
+        }
         let mut thread = threads.remove(&i.number).unwrap_or_default();
         let pull = if i.is_pull_request() {
             Some(match pulls.remove(&i.number) {
@@ -460,6 +468,56 @@ fn full_thread(
     Ok(thread)
 }
 
+/// A duplicate-closed issue's reason, with its canonical when GitHub names one in this
+/// repository (one GraphQL read). A failed read keeps the reason without a canonical, and says
+/// so.
+fn duplicate_reason(
+    gh: &GithubClient,
+    src: &GithubRepoRef,
+    i: &GhIssue,
+    gaps: &mut SrcCollab,
+) -> SrcCloseReason {
+    let duplicate_of = match gh.duplicate_of(i.number) {
+        Ok(n) => n.and_then(|n| u32::try_from(n).ok()),
+        Err(e) => {
+            gaps.warnings.push(format!(
+                "#{} was closed as a duplicate; which issue it duplicates could not be read ({e:#}), so it is mirrored without",
+                i.number
+            ));
+            None
+        }
+    };
+    SrcCloseReason {
+        reason: CloseReason::Duplicate,
+        duplicate_of: duplicate_of
+            .map(|n| (n, format!("https://github.com/{}/issues/{n}", src.slug()))),
+    }
+}
+
+/// GitHub's `state_reason` of a closed issue as a close reason (`reopened` and `null` are none).
+fn close_reason(i: &GhIssue) -> Option<SrcCloseReason> {
+    if i.is_pull_request() || !i.is_closed() {
+        return None;
+    }
+    let reason = match i.state_reason.as_deref()? {
+        "completed" => CloseReason::Completed,
+        "not_planned" => CloseReason::NotPlanned,
+        "duplicate" => CloseReason::Duplicate,
+        _ => return None,
+    };
+    Some(SrcCloseReason {
+        reason,
+        duplicate_of: None,
+    })
+}
+
+/// `url` with its `#…` fragment replaced by `fragment`: a review comment's URL is its PR's with
+/// `#discussion_r<id>`, a review's with `#pullrequestreview-<id>`.
+fn sibling_url(url: &str, fragment: &str) -> String {
+    let base = url.split_once('#').map_or(url, |(b, _)| b);
+    format!("{base}#{fragment}")
+}
+
 fn header(src: &GithubRepoRef, number: u32, login: &str, created: u64, kind: &str) -> String {
     format!(
         "> Mirrored from github.com/{}#{number} by @{login} ({kind}, {})\n\n",
@@ -486,6 +544,7 @@ fn target(src: &GithubRepoRef, i: &GhIssue, number: u32) -> SrcTarget {
         ),
         imported: model::imported(&i.user.login, created, &i.html_url),
         closed: i.is_closed(),
+        close_reason: close_reason(i),
         merged_oid: None,
         merged_without_sha: false,
         labels: i
@@ -508,13 +567,16 @@ fn comment(src: &GithubRepoRef, number: u32, c: &GhComment) -> SrcComment {
     } else {
         "comment"
     };
+    let anchor = c.path.as_ref().map(|p| review_anchor(c, p));
     let mut text = c.body.clone().unwrap_or_default();
     if let Some(path) = &c.path {
+        let line = anchor.as_ref().and_then(|a| a.line);
         text = format!(
             "`{path}`{}\n\n{text}",
-            c.line.map(|l| format!(" line {l}")).unwrap_or_default()
+            line.map(|l| format!(" line {l}")).unwrap_or_default()
         );
     }
+    let in_review = c.path.is_some();
     SrcComment {
         body: model::body(
             &header(src, number, &c.user.login, created, kind),
@@ -522,15 +584,49 @@ fn comment(src: &GithubRepoRef, number: u32, c: &GhComment) -> SrcComment {
             &c.html_url,
         ),
         imported: model::imported(&c.user.login, created, &c.html_url),
-        anchor: c.path.as_ref().map(|p| CommentAnchor {
-            reply_to: None,
-            commit_oid: c.commit_id.as_deref().and_then(model::oid),
-            path: Some(model::clip(p, 500, 1000)),
-            line: c.line,
-            side: c.side.as_deref().map(|s| u64::from(s != "LEFT")),
-            start_line: None,
-            review_id: None,
-        }),
+        anchor,
+        reply_key: c
+            .in_reply_to_id
+            .filter(|_| in_review)
+            .map(|id| sibling_url(&c.html_url, &format!("discussion_r{id}"))),
+        review_key: c
+            .pull_request_review_id
+            .filter(|_| in_review)
+            .map(|id| sibling_url(&c.html_url, &format!("pullrequestreview-{id}"))),
+    }
+}
+
+/// Where a review comment on `path` sits (QW2-010): on the current diff while GitHub still has
+/// its line (`line`, `commit_id`), else where it was made (`original_line`,
+/// `original_commit_id`: an outdated comment); a comment on a whole file (`subject_type`
+/// `file`) names its path only. The hunk is the source's, trimmed to the original line
+/// ([`crate::hunk::trim`]).
+fn review_anchor(c: &GhComment, path: &str) -> CommentAnchor {
+    let right = c.side.as_deref() != Some("LEFT");
+    let file = c.subject_type.as_deref() == Some("file");
+    let (commit, line, start) = match c.line {
+        Some(l) => (c.commit_id.as_deref(), Some(l), c.start_line),
+        None => (
+            c.original_commit_id.as_deref().or(c.commit_id.as_deref()),
+            c.original_line,
+            c.original_start_line,
+        ),
+    };
+    let line = line.filter(|_| !file);
+    let diff_hunk = match (c.diff_hunk.as_deref(), c.original_line) {
+        (Some(h), Some(l)) if !file => crate::hunk::trim(h, right, l, c.original_start_line),
+        _ => None,
+    };
+    CommentAnchor {
+        reply_to: None,
+        commit_oid: commit.and_then(model::oid),
+        path: Some(model::clip(path, 500, 1000)),
+        line,
+        // A side goes with a line: an anchor with a side and no line reads as malformed.
+        side: line.map(|_| u64::from(right)),
+        start_line: start.filter(|&s| line.is_some_and(|l| s < l)),
+        review_id: None,
+        diff_hunk,
     }
 }
 
@@ -605,6 +701,97 @@ mod tests {
 
     fn src() -> GithubRepoRef {
         GithubRepoRef::parse("o/r").unwrap()
+    }
+
+    /// QW2-010: a review comment keeps its place (the current line, or where it was made once
+    /// outdated, or just its file), its source hunk trimmed, and the keys of its review and
+    /// of the root it replies to.
+    #[test]
+    fn review_comments_keep_their_anchor_hunk_review_and_parent() {
+        let c = |v: serde_json::Value| -> GhComment {
+            let mut base = serde_json::json!({
+                "id": 11, "body": "nit", "user": {"login": "bob"},
+                "html_url": "https://github.com/o/r/pull/2#discussion_r11",
+                "created_at": "2020-01-02T03:04:05Z",
+                "pull_request_url": "https://api.github.com/repos/o/r/pulls/2",
+                "path": "a.rs", "side": "RIGHT", "subject_type": "line",
+                "commit_id": "ab".repeat(20), "original_commit_id": "cd".repeat(20),
+                "pull_request_review_id": 7, "in_reply_to_id": 10,
+                "diff_hunk": "@@ -1,2 +1,3 @@\n a\n+b\n c",
+                "line": 3, "original_line": 3,
+            });
+            for (k, x) in v.as_object().unwrap() {
+                base[k] = x.clone();
+            }
+            serde_json::from_value(base).unwrap()
+        };
+        // on the current diff
+        let now = comment(&src(), 2, &c(serde_json::json!({})));
+        let a = now.anchor.as_ref().unwrap();
+        assert_eq!(
+            (a.line, a.side, a.commit_oid.clone()),
+            (Some(3), Some(1), model::oid(&"ab".repeat(20)))
+        );
+        assert_eq!(a.diff_hunk.as_deref(), Some("@@ -1,2 +1,3 @@\n a\n+b\n c"));
+        assert_eq!(
+            now.review_key.as_deref(),
+            Some("https://github.com/o/r/pull/2#pullrequestreview-7")
+        );
+        assert_eq!(
+            now.reply_key.as_deref(),
+            Some("https://github.com/o/r/pull/2#discussion_r10")
+        );
+        // outdated: GitHub drops `line`; it keeps the original line and commit (it had no
+        // anchor at all before: a side without a line reads as malformed)
+        let old = comment(
+            &src(),
+            2,
+            &c(serde_json::json!({"line": null, "original_line": 2, "original_start_line": 1})),
+        );
+        let a = old.anchor.as_ref().unwrap();
+        assert_eq!((a.line, a.start_line, a.side), (Some(2), Some(1), Some(1)));
+        assert_eq!(a.commit_oid, model::oid(&"cd".repeat(20)));
+        assert_eq!(a.diff_hunk.as_deref(), Some("@@ -1,1 +1,2 @@\n a\n+b"));
+        // a comment on the whole file: its path only
+        let file = comment(
+            &src(),
+            2,
+            &c(serde_json::json!({"subject_type": "file", "line": null, "original_line": null})),
+        );
+        let a = file.anchor.as_ref().unwrap();
+        assert_eq!((a.line, a.side, a.diff_hunk.as_deref()), (None, None, None));
+        // a conversation comment has neither key
+        let talk = comment(&src(), 2, &serde_json::from_value(comment_json(2)).unwrap());
+        assert!(talk.anchor.is_none() && talk.review_key.is_none() && talk.reply_key.is_none());
+    }
+
+    /// QW-069: GitHub's `state_reason` of a closed issue; a PR or an open issue has none.
+    #[test]
+    fn a_closed_issue_keeps_its_state_reason() {
+        let issue = |state: &str, reason: serde_json::Value| -> GhIssue {
+            let mut v = issue_json(1);
+            v["state"] = state.into();
+            v["state_reason"] = reason;
+            serde_json::from_value(v).unwrap()
+        };
+        let reason = |i: &GhIssue| close_reason(i).map(|r| r.reason);
+        assert_eq!(
+            reason(&issue("closed", "not_planned".into())),
+            Some(CloseReason::NotPlanned)
+        );
+        assert_eq!(
+            reason(&issue("closed", "completed".into())),
+            Some(CloseReason::Completed)
+        );
+        assert_eq!(
+            reason(&issue("closed", "duplicate".into())),
+            Some(CloseReason::Duplicate)
+        );
+        assert_eq!(reason(&issue("closed", serde_json::Value::Null)), None);
+        assert_eq!(reason(&issue("open", "reopened".into())), None);
+        let mut pr = issue("closed", "completed".into());
+        pr.pull_request = Some(serde_json::json!({}));
+        assert_eq!(reason(&pr), None);
     }
 
     /// A large repository served from memory: 250 issues and PRs (every third a PR), each

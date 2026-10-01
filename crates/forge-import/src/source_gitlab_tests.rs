@@ -261,6 +261,30 @@ fn diff_discussions_become_anchored_comments_in_order() {
     );
     assert_eq!(removed.imported.author, crate::github::GHOST);
     assert_eq!(mr.comments.iter().filter(|c| c.anchor.is_none()).count(), 3);
+    // QW2-010: a discussion's later notes reply to its first one
+    let replies: Vec<(&str, Option<&str>)> = mr
+        .comments
+        .iter()
+        .map(|c| {
+            let key = c
+                .reply_key
+                .as_deref()
+                .and_then(|k| k.rsplit_once('#'))
+                .map(|(_, f)| f);
+            (c.body.lines().last().unwrap(), key)
+        })
+        .collect();
+    assert_eq!(
+        replies,
+        [
+            ("discussion text", None),
+            ("a single comment", None),
+            ("diff comment", None),
+            ("on a removed line", Some("note_1130")),
+            ("on the whole file", None),
+            ("reply to the discussion", Some("note_1126")),
+        ]
+    );
 }
 
 #[test]
