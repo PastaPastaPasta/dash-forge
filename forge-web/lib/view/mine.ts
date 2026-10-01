@@ -240,11 +240,16 @@ export async function listMyReviewTargets(sdk: EvoSDK, forge: ForgeIds, me: stri
   return [...byTarget.values()]
 }
 
-/** `issue` / `patch` rows by id, each tagged with the type it was found in. */
-export async function readTargetsByIds(sdk: EvoSDK, forge: ForgeIds, ids: readonly string[]): Promise<Map<string, TargetRow>> {
+/** `issue` / `patch` rows by id, each tagged with the type it was found in (`kinds`: the types read). */
+export async function readTargetsByIds(
+  sdk: EvoSDK,
+  forge: ForgeIds,
+  ids: readonly string[],
+  kinds: readonly ('issue' | 'pull')[] = ['issue', 'pull'],
+): Promise<Map<string, TargetRow>> {
   const out = new Map<string, TargetRow>()
   const unique = [...new Set(ids)]
-  for (const kind of ['issue', 'pull'] as const) {
+  for (const kind of kinds) {
     for (const batch of chunks(unique.filter((id) => !out.has(id)), IN_MAX)) {
       const docs = parseDocs(
         targetDoc,

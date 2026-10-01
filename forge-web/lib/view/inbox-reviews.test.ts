@@ -91,8 +91,8 @@ describe('reviewIndexes', () => {
     expect(await reviewIndexes(chainSdk([], ['patch', 'verdicts', 'author']), FORGE)).toEqual({ toAuthor: false, author: true })
   })
 
-  it('falls back to neither when the contract cannot be read', async () => {
-    expect(await reviewIndexes(chainSdk([], null), FORGE)).toEqual(NO_REVIEW_INDEXES)
+  it('says so when the contract cannot be read', async () => {
+    expect(await reviewIndexes(chainSdk([], null), FORGE)).toBeNull()
   })
 })
 
@@ -148,7 +148,8 @@ describe('the S2 feed', () => {
   it('names the reviews on PRs it knows, never my own, and leaves the others to be resolved', () => {
     const f: Feed = { kind: 'myReviews', owner: ME, threads: [myPr()] }
     const items = toItems(f, [review('v1', PR_ID, 900), review('v2', OLD_PR_ID, 901), review('v3', PR_ID, 902, ME)] as never, ME)
-    expect(items.map((i) => [i.id, i.what, i.target?.number])).toEqual([['v1', 'approved', 2]])
+    // On a PR I opened: filed under it even past the thread cap, where no subscription says so.
+    expect(items.map((i) => [i.id, i.what, i.target?.number, i.reason])).toEqual([['v1', 'approved', 2, 'author']])
   })
 
   it('reads a PR past the thread cap, and its repo, only when a review names it', async () => {
@@ -175,7 +176,7 @@ describe('the S2 feed', () => {
     ])
     const r = await pollOnce(sdk, 'devnet', FORGE, ME, { now: 2000 })
     expect(r.failed).toBe(0)
-    expect(sdk.queries.filter(isReviewQuery)).toHaveLength(1)
+    expect(sdk.queries.filter(isReviewQuery)).toEqual([expect.objectContaining({ limit: 100 })])
     expect((await loadItems('devnet', ME)).map((i) => [i.id, i.target?.number]).sort()).toEqual([
       ['v1', 2],
       ['v2', 7],
@@ -189,8 +190,15 @@ describe('the S2 feed', () => {
     await idbPut('inbox', `devnet:${ME}:cursor:reviews:${OLD_PR_ID}`, { at: 1700 })
     const sdk = chainSdk([review('v1', PR_ID, 1500), review('v2', PR_ID, 1600)])
     await pollOnce(sdk, 'devnet', FORGE, ME, { now: 2000 })
-    // Read from the oldest old cursor: v1 was read before, and is not brought back.
+    // v1 was within what #2's own feed read: not stored again (a pruned one stays gone).
     expect((await loadItems('devnet', ME)).map((i) => i.id)).toEqual(['v2'])
+    // The old cursors stay until the S2 feed is past them all (1700), then go.
+    expect(await idbGet('inbox', `devnet:${ME}:cursor:reviews:${PR_ID}`)).toEqual({ at: 1550 })
+    const later = chainSdk([review('v1', PR_ID, 1500), review('v2', PR_ID, 1600), review('v3', PR_ID, 1800)])
+    await pollOnce(later, 'devnet', FORGE, ME, { now: 3000 })
+    expect((await loadItems('devnet', ME)).map((i) => i.id).sort()).toEqual(['v2', 'v3'])
+    expect(await idbGet('inbox', `devnet:${ME}:cursor:reviews:${PR_ID}`)).toBeUndefined()
+    expect(await idbGet('inbox', `devnet:${ME}:cursor:reviews:${OLD_PR_ID}`)).toBeUndefined()
   })
 })
 
@@ -208,6 +216,21 @@ describe('computeSubscriptions with S3 (QW2-009)', () => {
     expect(subs.threads).toEqual([expect.objectContaining({ id: PR_ID, kind: 'pull', reason: 'reviewed', since: 2999 })])
     expect(subs.reviewIndexes).toEqual({ toAuthor: false, author: true })
     expect(subs.incomplete ?? []).toEqual([])
+  })
+
+  it('keeps the last known indexes when the contract cannot be read, and says so', async () => {
+    const sdk = chainSdk(docs, null)
+    const subs = await computeSubscriptions(sdk, 'devnet', FORGE, ME, DEFAULT_PREFS, 10_000, { toAuthor: true, author: true })
+    expect(subs.reviewIndexes).toEqual({ toAuthor: true, author: true })
+    expect(subs.threads).toEqual([expect.objectContaining({ id: PR_ID, reason: 'reviewed' })])
+    expect(subs.incomplete).toEqual([expect.stringContaining('review indexes')])
+  })
+
+  it("recomputes subscriptions made against another deployment's forge-collab", async () => {
+    await idbPut('inbox', `devnet:${ME}:subs`, { ...subsWith([], { toAuthor: true, author: true }), at: 9_000, collab: 'OLD-COLLAB' })
+    const sdk = chainSdk(docs, ['patch'])
+    const r = await pollOnce(sdk, 'devnet', FORGE, ME, { now: 10_000 })
+    expect(r.subs).toMatchObject({ collab: 'COLLAB', reviewIndexes: NO_REVIEW_INDEXES })
   })
 
   it('without S3 reads no reviews by author (Drive would refuse), and keeps the browser record', async () => {
