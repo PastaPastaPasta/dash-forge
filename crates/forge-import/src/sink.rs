@@ -289,6 +289,21 @@ struct Caches {
     /// The first source item stored at a number other than its own ([`Sink::create`]):
     /// numbers diverge from there on, said once.
     diverged: bool,
+    /// Closes held back for the end of the run ([`Sink::sync_deferred`]): duplicates whose
+    /// canonical was not on chain yet when their state came up.
+    deferred: Vec<Deferred>,
+}
+
+/// An issue's close held back until every item of the run is placed (QW-069): it closes as a
+/// duplicate of an issue that was not on chain yet (on a first import, one numbered after it),
+/// and a transition is immutable, so it is written once its canonical's mirror number can be
+/// known. The issue stays open until then (RIDERS §1.8).
+struct Deferred {
+    /// The item's place in the run's targets.
+    index: usize,
+    target: Target,
+    /// The moves still to write: an issue's close (no merge, so no oid).
+    moves: Vec<TransitionMove>,
 }
 
 /// An item placed on chain (created, or found) whose other writes are still to do: a lane's
@@ -918,12 +933,39 @@ impl<'a, C: Chain> Sink<'a, C> {
             },
         )
         .await;
+        // Only after a complete pass: a run that stopped early leaves those issues open and
+        // its state unadvanced, so the next run reads them again and closes them then.
+        let result = match result {
+            Ok(()) => self.sync_deferred(targets).await,
+            stopped => stopped,
+        };
         if self.lanes > 1 && !self.dry_run {
             // What the lanes wrote since their last read.
             self.measure(true).await;
         }
         self.say(progress, true);
         result
+    }
+
+    /// The closes [`Sink::sync_state`] held back, once every item of the run is placed, in
+    /// source order: each names its canonical's mirror number when it now has one, else it is
+    /// a duplicate of nothing (and the run says so). Each is written once, here only.
+    async fn sync_deferred(&self, targets: &[SrcTarget]) -> Result<()> {
+        let mut deferred = std::mem::take(&mut self.caches().deferred);
+        deferred.sort_by_key(|d| d.index);
+        for d in deferred {
+            let t = &targets[d.index];
+            let close = async {
+                let reason = match &t.close_reason {
+                    Some(r) => self.closed_as(t, &d.target, r, true).await?,
+                    None => None,
+                };
+                self.write_moves(t, &d.target, &d.moves, None, reason.as_ref())
+                    .await
+            };
+            close.await.or_else(|e| self.item_skipped(t, e))?;
+        }
+        Ok(())
     }
 
     /// Log the write phase's progress when a line is due.
@@ -1275,7 +1317,10 @@ impl<'a, C: Chain> Sink<'a, C> {
 
     async fn finish_target_inner(&self, job: &Job<'_>) -> Result<()> {
         let Job {
-            t, target, fresh, ..
+            index,
+            t,
+            target,
+            fresh,
         } = job;
         let current = if *fresh {
             Current::default()
@@ -1289,7 +1334,7 @@ impl<'a, C: Chain> Sink<'a, C> {
         // leave the item open.
         let thread = self.sync_thread(t, target, *fresh).await;
         if state_after(&thread) {
-            self.sync_state(t, target, &current).await?;
+            self.sync_state(*index, t, target, &current).await?;
         }
         thread
     }
@@ -1560,7 +1605,15 @@ impl<'a, C: Chain> Sink<'a, C> {
     /// Bring `target` to `t`'s state: label events for the labels that differ, then the
     /// transitions ([`state_path`]) from its state code to the source's ([`wanted_code`]).
     /// Idempotent: a target already in that state takes nothing, and a merged one is final.
-    async fn sync_state(&self, t: &SrcTarget, target: &Target, current: &Current) -> Result<()> {
+    /// An issue closed as a duplicate of one not on chain yet keeps its close for the end of
+    /// the run ([`Deferred`]); `index` is `t`'s place in the run.
+    async fn sync_state(
+        &self,
+        index: usize,
+        t: &SrcTarget,
+        target: &Target,
+        current: &Current,
+    ) -> Result<()> {
         let moves = state_path(
             t.kind.transition_target(),
             current.code,
@@ -1596,16 +1649,39 @@ impl<'a, C: Chain> Sink<'a, C> {
             .iter()
             .any(|m| m.kind == forge_core::rules::transition::ISSUE_CLOSE);
         let reason = match &t.close_reason {
-            Some(r) if has_close => Some(self.closed_as(t, target, r).await?),
+            Some(r) if has_close => {
+                let Some(reason) = self.closed_as(t, target, r, false).await? else {
+                    self.caches().deferred.push(Deferred {
+                        index,
+                        target: target.clone(),
+                        moves,
+                    });
+                    return Ok(());
+                };
+                Some(reason)
+            }
             _ => None,
         };
-        for mv in moves {
+        self.write_moves(t, target, &moves, merge_oid.as_deref(), reason.as_ref())
+            .await
+    }
+
+    /// Write `moves` on `target` in order: a merge names `merge_oid`, an issue's close carries
+    /// `reason`.
+    async fn write_moves(
+        &self,
+        t: &SrcTarget,
+        target: &Target,
+        moves: &[TransitionMove],
+        merge_oid: Option<&[u8]>,
+        reason: Option<&ClosedAs>,
+    ) -> Result<()> {
+        let (chain, repo) = (&self.chain, self.repo.as_ref());
+        for &mv in moves {
             let oid = (mv.kind == forge_core::rules::transition::PR_MERGE)
-                .then_some(merge_oid.as_deref())
+                .then_some(merge_oid)
                 .flatten();
-            let closed = reason
-                .as_ref()
-                .filter(|_| mv.kind == forge_core::rules::transition::ISSUE_CLOSE);
+            let closed = reason.filter(|_| mv.kind == forge_core::rules::transition::ISSUE_CLOSE);
             let reason_bytes =
                 closed.map_or(0, |c| 2 + if c.duplicate_of.is_some() { 5 } else { 0 });
             let credits = collab_doc_credits(
@@ -1629,22 +1705,24 @@ impl<'a, C: Chain> Sink<'a, C> {
     }
 
     /// `t`'s close reason as the mirror records it: a duplicate's canonical as its number in
-    /// the destination, when its copy is there (this run's, or an earlier one's); otherwise a
-    /// duplicate without one, and the run says so. Items are created in source order, so a
-    /// canonical numbered after its duplicate is not there yet on a first import, and the
-    /// close (immutable) never names it: a rare shape (a duplicate usually names an older issue)
-    /// kept over leaving the item open until a later run.
+    /// the destination, when its copy is there (this run's, or an earlier one's). `None` while
+    /// a same-repository canonical has no copy yet and this is not the `last` look: on a first
+    /// import a canonical numbered after its duplicate is placed later in the run, so the close
+    /// (immutable) waits for the end of the run ([`Sink::sync_deferred`]). On the last look, a
+    /// canonical still missing (or one of another repository) gives a duplicate without one,
+    /// and the run says so.
     async fn closed_as(
         &self,
         t: &SrcTarget,
         target: &Target,
         r: &SrcCloseReason,
-    ) -> Result<ClosedAs> {
+        last: bool,
+    ) -> Result<Option<ClosedAs>> {
         let Some((upstream, url)) = &r.duplicate_of else {
-            return Ok(ClosedAs {
+            return Ok(Some(ClosedAs {
                 reason: r.reason,
                 duplicate_of: None,
-            });
+            }));
         };
         let key = (TargetKind::Issue.transition_target().code(), *upstream);
         let known = self.caches().known.get(&key).cloned().flatten();
@@ -1653,20 +1731,23 @@ impl<'a, C: Chain> Sink<'a, C> {
             None if self.repo.is_some() => self.lookup(&canonical_stub(*upstream, url)).await?,
             None => None,
         };
+        if canonical.is_none() && !last {
+            return Ok(None);
+        }
         let duplicate_of = canonical
             .filter(|c| c.kind == TargetKind::Issue && c.number != target.number)
             .map(|c| c.number);
         if duplicate_of.is_none() && !self.dry_run {
             self.warn(format!(
-                "{} was closed as a duplicate of {url}, which is not mirrored (yet): it is \
-                 recorded as a duplicate without naming it",
+                "{} was closed as a duplicate of {url}, which is not mirrored: it is recorded \
+                 as a duplicate without naming it",
                 t.imported.url
             ));
         }
-        Ok(ClosedAs {
+        Ok(Some(ClosedAs {
             reason: r.reason,
             duplicate_of,
-        })
+        }))
     }
 
     /// The documents already on a thread written by the signer: `(source URL, $id)`.
