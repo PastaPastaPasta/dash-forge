@@ -39,6 +39,35 @@ enum Preset {
     Other,
 }
 
+/// QW3-072: a public URL `git push` refuses to record (one only this machine or its network
+/// reaches, like `http://127.0.0.1:9000`; plain http; a quick tunnel) unless the profile allows
+/// it. Ask now, for local testing, rather than save a profile every push refuses; the answer
+/// is in the saved profile and in the `Equivalent:` command.
+fn ask_private_uri(p: &mut dyn Prompter, args: &mut StorageAddArgs) -> Result<()> {
+    use forge_core::storage::publish::profile_problems;
+    let Ok(profile) = crate::storage::profile_from_args(args) else {
+        return Ok(());
+    };
+    let refused: Vec<_> = profile_problems(&profile)
+        .into_iter()
+        .filter(|x| x.problem.refused())
+        .collect();
+    if refused.is_empty() || args.allow_private_uri {
+        return Ok(());
+    }
+    for x in &refused {
+        p.say(&format!("  {}: {}", x.field, x.describe()));
+    }
+    args.allow_private_uri = p.confirm(
+        "Allow this address anyway, for local testing? (`git push` records it on chain, where others may not reach it)",
+        false,
+    )?;
+    if !args.allow_private_uri {
+        p.say("  `git push` will refuse to record it: give a public https URL (run `dg storage add` again), or pass `-o allow-private-uri` for one push");
+    }
+    Ok(())
+}
+
 /// Ask for a storage profile. `existing` are the profile names already in storage.toml;
 /// `keychain_ok` is whether the OS keychain can store a pasted secret on this machine.
 pub fn collect(p: &mut dyn Prompter, existing: &[String], keychain_ok: bool) -> Result<Answers> {
@@ -94,6 +123,7 @@ pub fn collect(p: &mut dyn Prompter, existing: &[String], keychain_ok: bool) -> 
         }
         ProfileKindArg::Platform => {}
     }
+    ask_private_uri(p, &mut args)?;
     Ok(Answers { args, pasted })
 }
 
@@ -637,11 +667,13 @@ mod tests {
                 "minioadmin",
                 "2", // env var
                 "FORGE_E2E_MINIO_SECRET",
+                "", // QW3-072: allow the loopback address? default no
             ],
             true,
         );
         assert!(a.pasted.is_none());
         let args = &a.args;
+        assert!(!args.allow_private_uri);
         assert_eq!(args.name.as_deref(), Some("minio"));
         assert_eq!(args.endpoint.as_deref(), Some("http://127.0.0.1:9000"));
         assert_eq!(args.region.as_deref(), Some("us-east-1"));
@@ -654,6 +686,46 @@ mod tests {
             Some("env:FORGE_E2E_MINIO_SECRET")
         );
         assert!(crate::storage::profile_from_args(args).is_ok());
+    }
+
+    /// QW3-072: a loopback public URL is allowed only when asked, and the printed command
+    /// says so.
+    #[test]
+    fn a_loopback_public_url_asks_before_it_is_allowed() {
+        let a = run_script(
+            &[
+                "minio",
+                "1",
+                "4",
+                "http://127.0.0.1:9000/",
+                "",
+                "forge-byo",
+                "",
+                "minioadmin",
+                "2",
+                "FORGE_E2E_MINIO_SECRET",
+                "y",
+            ],
+            true,
+        );
+        assert!(a.args.allow_private_uri);
+        assert!(equivalent_command(&a.args).ends_with("--allow-private-uri"));
+        // A public https URL is not asked about.
+        let r2 = run_script(
+            &[
+                "r2",
+                "1",
+                "1",
+                "7C1ABC",
+                "forge",
+                "https://pub-9a1.r2.dev",
+                "AKID",
+                "1",
+                "x",
+            ],
+            true,
+        );
+        assert!(!r2.args.allow_private_uri);
     }
 
     #[test]
@@ -786,6 +858,7 @@ mod tests {
                 "2",
                 "s3cr3tValue",
                 "",
+                "", // http://h is not https: allow it anyway? no
             ],
             true,
         );
@@ -793,6 +866,7 @@ mod tests {
             a.args.secret_access_key.as_deref(),
             Some("env:S3_SECRET_ACCESS_KEY")
         );
+        assert!(!a.args.allow_private_uri);
     }
 
     #[test]

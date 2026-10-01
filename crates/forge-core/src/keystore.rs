@@ -686,26 +686,33 @@ pub fn create_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
 /// E303 for the sealed key file `shown` that did not open with the passphrase given (from the
 /// variable `via`, or typed), naming the file (QW2-022: it was an E204 that named neither of
 /// two sealed files). A malformed file keeps `err`'s own message.
-fn wrong_passphrase(shown: &str, via: Option<&str>, err: Error) -> Error {
+fn wrong_passphrase(shown: &str, via: Option<&str>, runner: bool, err: Error) -> Error {
     match &err {
         Error::Config(msg) if msg.contains("wrong passphrase") => {}
         Error::Config(msg) => return Error::Config(format!("{shown}: {msg}")),
         _ => return err,
     }
     let given = via.map_or_else(|| "the passphrase typed".to_string(), str::to_string);
-    crate::user_error::UserError::new(
+    let u = crate::user_error::UserError::new(
         crate::user_error::codes::IDENTITY_UNREADABLE,
         format!("wrong passphrase for {shown}"),
     )
     .cause(format!(
         "{given} does not open this sealed file (or the file was modified)"
-    ))
-    .fix("each sealed file keeps its own passphrase: in a terminal each is asked for")
-    .fix(
-        "in scripts, DASH_FORGE_PASSPHRASE opens your key and DASH_FORGE_RUNNER_PASSPHRASE \
-         the --runner file of `dg ci runner new`",
-    )
-    .into()
+    ));
+    // The runner's variable only where a runner file is read (QW3-070: your own key's wrong
+    // passphrase suggested it).
+    if runner {
+        u.fix("each sealed file keeps its own passphrase: in a terminal each is asked for")
+            .fix(
+                "in scripts, DASH_FORGE_PASSPHRASE opens your key and \
+                 DASH_FORGE_RUNNER_PASSPHRASE the --runner file of `dg ci runner new`",
+            )
+            .into()
+    } else {
+        u.fix("type it again in a terminal, or correct DASH_FORGE_PASSPHRASE")
+            .into()
+    }
 }
 
 /// Security levels acceptable for signing a document create/delete, in preference
@@ -787,8 +794,10 @@ impl BridgeIdentity {
         if crate::sealed::is_sealed(&raw) {
             let pass = crate::sealed::passphrase_from(passphrase_envs, &shown, false)?;
             let via = crate::sealed::passphrase_env_in_use(passphrase_envs);
-            let plain = crate::sealed::open(&raw, pass.expose())
-                .map_err(|e| wrong_passphrase(&shown, via, e))?;
+            let plain = crate::sealed::open(&raw, pass.expose()).map_err(|e| {
+                let runner = passphrase_envs.contains(&crate::sealed::RUNNER_PASSPHRASE_ENV);
+                wrong_passphrase(&shown, via, runner, e)
+            })?;
             let text = std::str::from_utf8(&plain)
                 .map_err(|_| Error::Io("the sealed identity file does not hold text".into()))?;
             return Ok(Secret::new(text));
@@ -912,6 +921,9 @@ impl BridgeIdentity {
         let id: u32 = key_id
             .parse()
             .map_err(|_| bad("the key id is not a number"))?;
+        if !crate::platform::identity::is_wif(wif) {
+            return Err(bad("the key is not a private key in WIF form"));
+        }
         Ok(Self {
             network: network.to_string(),
             identity_id: identity_id.to_string(),
@@ -1032,7 +1044,8 @@ mod tests {
     #[test]
     fn a_wrong_passphrase_names_the_file_and_the_variable() {
         const ENV: &str = "DASH_FORGE_TEST_QW2_022_PASSPHRASE";
-        const OTHER: &str = "DASH_FORGE_TEST_QW2_022_UNSET";
+        // Unset in tests: the runner file's own variable, read first (QW2-022).
+        const OTHER: &str = crate::sealed::RUNNER_PASSPHRASE_ENV;
         let t = tempfile::tempdir().unwrap();
         let p = t.path().join("runner.json");
         std::fs::write(
@@ -1040,8 +1053,11 @@ mod tests {
             crate::sealed::seal(FIXTURE.as_bytes(), "correct horse battery").unwrap(),
         )
         .unwrap();
+        std::env::remove_var(OTHER);
         std::env::set_var(ENV, "not the passphrase");
         let err = BridgeIdentity::unlock_source_with(&p, &[OTHER, ENV]).unwrap_err();
+        // QW3-070: your own key's wrong passphrase does not send you to the runner's variable.
+        let own = BridgeIdentity::unlock_source_with(&p, &[ENV]).unwrap_err();
         std::env::set_var(ENV, "correct horse battery");
         let opened = BridgeIdentity::load_from_file_with(&p, &[OTHER, ENV]);
         std::env::remove_var(ENV);
@@ -1059,6 +1075,14 @@ mod tests {
             .fix
             .iter()
             .any(|f| f.contains("DASH_FORGE_RUNNER_PASSPHRASE")));
+        let crate::Error::User(own) = own else {
+            panic!("expected a phrased error, got {own}")
+        };
+        assert!(
+            !own.fix.iter().any(|f| f.contains("RUNNER")),
+            "{:?}",
+            own.fix
+        );
         assert_eq!(opened.unwrap().network, "testnet");
     }
 
@@ -1133,7 +1157,9 @@ mod tests {
 
     #[test]
     fn an_inline_dfk1_key_loads_as_one_high_auth_key() {
-        let v = "dfk1:devnet-moutai:FAKEid1111111111111111111111111111111111111:5:cFAKEwifDONOTUSE";
+        // A well-formed testnet WIF (of the key 0x11…11): a dfk1 key is checked when read.
+        const WIF: &str = "cN9spWsvaxA8taS7DFMxnk1yJD2gaF2PX1npuTpy3vuZFJdwavaw";
+        let v = &format!("dfk1:devnet-moutai:FAKEid1111111111111111111111111111111111111:5:{WIF}");
         let id = BridgeIdentity::load_from_file(v).unwrap();
         assert_eq!(id.network, "devnet-moutai");
         assert_eq!(
@@ -1142,20 +1168,20 @@ mod tests {
         );
         let key = id.doc_op_key().unwrap();
         assert_eq!(key.id, 5);
-        assert_eq!(key.private_key_wif.expose(), "cFAKEwifDONOTUSE");
+        assert_eq!(key.private_key_wif.expose(), WIF);
         assert!(
             id.auth_key("CRITICAL").is_none(),
             "a limited key is never CRITICAL"
         );
         assert!(id.mnemonic.expose().is_empty());
         // Nothing prints the WIF.
-        assert!(!format!("{id:?}").contains("cFAKEwif"));
-        let shown = super::describe_key_source(std::path::Path::new(v));
+        assert!(!format!("{id:?}").contains(WIF));
+        let shown = super::describe_key_source(std::path::Path::new(v.as_str()));
         assert_eq!(
             shown,
             "dfk1:devnet-moutai:FAKEid1111111111111111111111111111111111111:5:[redacted]"
         );
-        assert!(super::is_inline_key(std::path::Path::new(v)));
+        assert!(super::is_inline_key(std::path::Path::new(v.as_str())));
         assert!(!super::is_inline_key(std::path::Path::new("/tmp/id.json")));
     }
 
@@ -1251,6 +1277,8 @@ mod tests {
             // names and keychain accounts).
             "dfk1:testnet:../../etc/passwd:5:cWIFsecret",
             "dfk1:test/net:FAKEid1111111111111111111111111111111111111:5:cWIFsecret",
+            // QW3-024: a garbled key is refused when it is read, not when it first signs.
+            "dfk1:devnet-bonsia:FAKEid1111111111111111111111111111111111111:7:cWIFsecret",
         ] {
             let err = BridgeIdentity::from_dfk1(bad).unwrap_err().to_string();
             assert!(err.contains("dfk1:<network>"), "{err}");

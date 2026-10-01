@@ -9,9 +9,12 @@
  *     `platform://<core>/<parentRepoId>/<uploader>/<packHashHex>` (in reader order: current
  *     maintainers' copies first), then every URI the parent's copies record, trimmed to 8
  *     URIs of ≤ 300 bytes with `s3://` dropped first; pack facts from the representative copy;
- *  3. a `refUpdate` for every parent ref the fork does not have. A ref the fork already has is
- *     the fork owner's from then on and is never moved. No refs at all when some pack has no
- *     copy a fork could name (they could point at objects the fork cannot serve).
+ *  3. a `refUpdate` for every parent branch and tag the fork does not have (or, with
+ *     `defaultBranchOnly`, its default branch alone), as a GitHub fork copies them: a mirror's
+ *     PR heads (`refs/mirror/pull/<n>/head`) and any other namespace stay the parent's (QW3-009).
+ *     A ref the fork already has is the fork owner's from then on and is never moved. No refs at
+ *     all when some pack has no copy a fork could name (they could point at objects the fork
+ *     cannot serve).
  *
  * Each by-reference manifest is external-only (`storage` 1, no chunks: RC1 `storageShape`) and
  * keeps the parent's `sizeBytes`, which the parent's own manifest already held to 0–1 TiB.
@@ -125,17 +128,30 @@ export function refTip(ref: Pick<ResolvedRef, 'state'>): string | null {
 }
 
 /**
- * The refs a fork still needs: every parent ref with a tip that the fork does not have at all.
- * Parity: forge-core `fork::plan_refs`.
+ * Whether a fork copies a parent ref: its branches and tags, as on GitHub. A mirror's PR heads
+ * (`refs/mirror/pull/<n>/head`, QW3-009: 22 of dips' 27 refs and most of a fork's cost) and any
+ * other namespace are the parent's own. Parity: forge-core `fork::forkable_ref`.
+ */
+export function forkableRef(refName: string): boolean {
+  return refName.startsWith('refs/heads/') || refName.startsWith('refs/tags/')
+}
+
+/**
+ * The refs a fork still needs: every parent branch and tag ({@link forkableRef}) with a tip that
+ * the fork does not have at all, or only `onlyBranch` (the default branch, GitHub's "Copy the
+ * main branch only"; QW3-010). Parity: forge-core `fork::plan_refs` (which copies every branch
+ * and tag: `dg repo fork` has no default-branch-only mode).
  */
 export function planRefs(
   parent: readonly Pick<ResolvedRef, 'refName' | 'state'>[],
   fork: readonly Pick<ResolvedRef, 'refName' | 'state'>[],
+  onlyBranch?: string,
 ): { refName: string; oid: string }[] {
   const has = new Set(fork.filter((r) => refTip(r) !== null).map((r) => r.refName))
+  const only = onlyBranch === undefined ? null : `refs/heads/${onlyBranch}`
   const out: { refName: string; oid: string }[] = []
   for (const r of parent) {
-    if (has.has(r.refName)) continue
+    if (has.has(r.refName) || !forkableRef(r.refName) || (only !== null && r.refName !== only)) continue
     const oid = refTip(r)
     if (oid !== null) out.push({ refName: r.refName, oid })
   }
@@ -201,7 +217,10 @@ export interface ForkResult {
   readonly refsWritten: readonly string[]
 }
 
-/** What a fork of `parent` will write (for the cost preview): packs to record and refs to copy. */
+/**
+ * What a fork of `parent` will write (for the cost preview): packs to record and the branches and
+ * tags it may copy (all of them: the dialog narrows them to the default branch when asked).
+ */
 export async function planFork(
   sdk: EvoSDK,
   parent: RepoRef,
@@ -227,7 +246,13 @@ export async function forkRepoV2(
   sdk: EvoSDK,
   auth: WriteAuth,
   parent: RepoRef,
-  input: { readonly name: string; readonly description?: string; readonly defaultBranch?: string },
+  input: {
+    readonly name: string
+    readonly description?: string
+    readonly defaultBranch?: string
+    /** Copy the default branch alone (GitHub's default), not every branch and tag (QW3-010). */
+    readonly defaultBranchOnly?: boolean
+  },
   onProgress?: (p: ForkProgress) => void,
 ): Promise<ForkResult> {
   // A fork is public: forking a private repo would publish its decrypted names and code.
@@ -276,7 +301,7 @@ export async function forkRepoV2(
   const refsWritten: string[] = []
   if (unreferenceable.length === 0) {
     const [parentRefs, forkRefs] = await Promise.all([readRefs(sdk, parent), readRefs(sdk, fork)])
-    const todo = planRefs(parentRefs, forkRefs)
+    const todo = planRefs(parentRefs, forkRefs, input.defaultBranchOnly === true ? input.defaultBranch || 'main' : undefined)
     for (const { refName, oid } of todo) {
       await writeRefUpdate(sdk, auth, fork, { refName, newOid: oid }, { intent: `fork:${fork.repoId}:ref:${refName}:${oid}` })
       refsWritten.push(refName)

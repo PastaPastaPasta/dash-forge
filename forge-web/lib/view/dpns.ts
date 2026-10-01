@@ -72,6 +72,27 @@ export async function resolveDpnsName(
   }
 }
 
+/**
+ * {@link resolveDpnsName} for a page that acts on "no name" (offering a way to get one): a failed
+ * read throws instead of reading as none, and a cached "none" is read again (it may have been a
+ * failure). A name found is cached for every caller.
+ */
+export async function lookupDpnsName(sdk: EvoSDK, identityId: string, network: Network): Promise<string | null> {
+  const key = keyOf(network, identityId)
+  await pending.get(key)
+  const cached = cache.get(key)
+  if (typeof cached === 'string') return cached
+  const docs = await queryDocuments(sdk, {
+    dataContractId: NETWORKS[network].dpnsContractId,
+    documentTypeName: 'domain',
+    where: [['records.identity', '==', identityId]],
+    limit: 1,
+  })
+  const name = docs[0] ? nameOf(docs[0]) : null
+  cache.set(key, name)
+  return name
+}
+
 /** The primary name of each identity among DPNS `domain` documents (`records.identity`). */
 export function namesFromDomains(docs: readonly Record<string, unknown>[]): Map<string, string> {
   const out = new Map<string, string>()

@@ -29,7 +29,7 @@ import { ErrorBox, GroupNotice, useProtection } from '@/components/auth/protecti
 import { CreateIdentityFlow } from '@/components/auth/create-identity-flow'
 import { WalletConnectFlow } from '@/components/auth/wallet-connect-flow'
 import { StepFailed } from '@/components/auth/step-status'
-import { FORGET_CONFIRM } from '@/components/keys-panel'
+import { forgetConfirm } from '@/components/keys-panel'
 import { otherIdentityFileMessage } from '@/lib/auth/controller'
 import { useConfirmAction } from '@/components/ui/confirm-action'
 import { ACTIVE_NETWORK } from '@/lib/constants'
@@ -459,9 +459,11 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
         <button
           type="button"
           onClick={() => {
-            void confirm(FORGET_CONFIRM).then((ok) => {
-              if (ok) forget(v.identityId).then(() => setPick(0), (e: unknown) => setError(errorMessage(e)))
-            })
+            void forgetConfirm(v.identityId)
+              .then(confirm)
+              .then((ok) => {
+                if (ok) forget(v.identityId).then(() => setPick(0), (e: unknown) => setError(errorMessage(e)))
+              })
           }}
           className="hit-area text-danger-700 dark:text-danger-400 underline"
         >

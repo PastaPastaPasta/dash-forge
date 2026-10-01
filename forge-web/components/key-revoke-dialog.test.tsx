@@ -14,6 +14,8 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { UnlockNeededError } from '@/lib/auth/controller'
+import { idbPut, resetMemoryStores } from '@/lib/idb'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 import { WrongMasterKeyError } from '@/lib/auth/limited-key'
 
 const ID = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
@@ -132,6 +134,17 @@ describe('KeyRevokeDialog', () => {
     await act(async () => button(/Sign once & revoke/).click())
     expect(host.querySelector('[role="alert"]')!.textContent).toMatch(/timeout/)
     expect(host.querySelector('textarea')!.value).toBe('')
+  })
+
+  it('QW3-034: says what stays when the identity was topped up in this browser', async () => {
+    auth.scope = 'full'
+    await idbPut('journal', `top-up-next:${ACTIVE_NETWORK.network}:${ID}`, { index: 2 })
+    render()
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(host.querySelector('[data-testid="revoke-top-up-stays"]')!.textContent).toMatch(/where its next top-up starts/)
+    resetMemoryStores()
   })
 
   it('QW3-030: prices the update before it is signed', () => {

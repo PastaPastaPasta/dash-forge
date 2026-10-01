@@ -352,7 +352,9 @@ fn apply_fixes(sections: &mut [Section]) -> Vec<Value> {
         match auto.apply() {
             Ok(()) => {
                 c.status = Status::Ok;
-                c.detail = format!("{} (fixed: {what})", c.detail);
+                // The row said what was wrong; now it says what was done (QW3-070: "✓ … is
+                // unset … (fixed: …)").
+                c.detail = format!("fixed: {what} (it was: {})", c.detail);
                 c.fix = None;
                 applied.push(json!({ "fix": what, "ok": true }));
             }
@@ -484,6 +486,31 @@ async fn check_identity(ctx: &Ctx) -> Vec<Check> {
     };
     let bridge = match ctx.load_bridge() {
         Ok(b) => b,
+        // A sealed key with no terminal to ask on and no DASH_FORGE_PASSPHRASE is not broken
+        // (QW3-025): say how to check it, and read the balance by the recorded id. Signing in
+        // again would register (and pay for) another key.
+        Err(e) if crate::auth::passphrase_unavailable(&e).is_some() => {
+            let why = if ctx.json {
+                "--json does not ask for it"
+            } else {
+                "no terminal to ask on"
+            };
+            out.push(Check::warn(
+                "identity",
+                format!(
+                    "{}: passphrase-sealed, not opened ({why})",
+                    forge_core::keystore::describe_key_source(&path)
+                ),
+                "set DASH_FORGE_PASSPHRASE, or run `dg doctor` (without --json) in a terminal, to check the key",
+            ));
+            if forge_core::keystore::is_file_source(&path) {
+                out.push(file_mode_check(&path));
+            }
+            if let Some(id) = ctx.identity_id_hint() {
+                out.push(balance_row(ctx, &id).await);
+            }
+            return out;
+        }
         Err(e) => {
             out.push(Check::fail(
                 "identity",
@@ -535,21 +562,44 @@ async fn check_identity(ctx: &Ctx) -> Vec<Check> {
             ),
         });
     }
-    out.push(match (client, identity) {
-        (Err(_), _) | (_, None) => Check::warn(
+    out.push(balance_of(
+        ctx,
+        &bridge.identity_id,
+        client.is_ok(),
+        identity,
+    ));
+    out
+}
+
+/// The `balance` row for identity `id`, read on its own (the key was not opened).
+async fn balance_row(ctx: &Ctx, id: &str) -> Check {
+    let client = ctx.connect().await;
+    let identity = match &client {
+        Ok(c) => Some(c.fetch_identity(id).await),
+        Err(_) => None,
+    };
+    balance_of(ctx, id, client.is_ok(), identity)
+}
+
+/// The `balance` row: what reading identity `id` gave (`None`: not read, Platform was not
+/// reached).
+fn balance_of(
+    ctx: &Ctx,
+    id: &str,
+    reached: bool,
+    identity: Option<forge_core::Result<forge_core::platform::LoadedIdentity>>,
+) -> Check {
+    match (reached, identity) {
+        (false, _) | (_, None) => Check::warn(
             "balance",
             "not checked: Platform unreachable (see network)",
             "run `dg doctor` again when the network row passes",
         ),
-        (Ok(_), Some(fetched)) => match fetched.map(|i| i.balance()) {
+        (true, Some(fetched)) => match fetched.map(|i| i.balance()) {
             Ok(credits) => balance_check(credits),
             Err(forge_core::Error::NotFound) => Check::fail(
                 "balance",
-                format!(
-                    "identity {} does not exist on {}",
-                    bridge.identity_id,
-                    ctx.network_label()
-                ),
+                format!("identity {id} does not exist on {}", ctx.network_label()),
                 "select the network it was created on: `--network testnet|mainnet` or `--network devnet --devnet-name <name>`",
             ),
             Err(e) => Check::warn(
@@ -558,8 +608,7 @@ async fn check_identity(ctx: &Ctx) -> Vec<Check> {
                 "run `dg doctor` again in a minute",
             ),
         },
-    });
-    out
+    }
 }
 
 /// The `keys` row: what the key in use can sign, as the chain says (QW2-005: a CI runner key
@@ -572,9 +621,13 @@ fn keys_check(
     now_ms: u64,
 ) -> Check {
     let Some(key_id) = report.key_id else {
+        let what = match report.disabled_id {
+            Some(id) => format!("the key in use (#{id}) is disabled: it can no longer sign"),
+            None => "the key in use is not a key of this identity (never registered, or another identity's)".into(),
+        };
         return Check::fail(
             "keys",
-            "the key in use is not a live key of this identity (disabled, or never registered)",
+            what,
             "sign in again: `dg auth login <file>` or `dg auth login --mnemonic`",
         );
     };

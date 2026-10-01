@@ -1457,7 +1457,9 @@ export class AuthController {
   /**
    * Delete the stored key of `identityId` from this device (ending its session if open), and
    * what this browser recorded for the identity: its spend ledger, its notifications inbox and
-   * the last-used marker (QW2-028). Write journals stay: they finish an interrupted write.
+   * the last-used marker (QW2-028). Write journals stay: they finish an interrupted write. So do
+   * the top-up records (`topUpRecords`, QW3-034: an unfinished top-up, and where the next one
+   * starts), which the forget and revoke confirmations name.
    */
   async forget(identityId: string): Promise<void> {
     if (this.state.session?.identityId === identityId) this.logout()

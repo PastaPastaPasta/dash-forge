@@ -18,7 +18,19 @@ vi.mock('../sdk', async (orig) => ({
   queryDocumentsWithProof: vi.fn(async () => ({ documents: [] })),
 }))
 vi.mock('./packs', async (orig) => ({ ...(await orig<typeof import('./packs')>()), readRepoPackManifests: vi.fn(async () => []) }))
-vi.mock('./refs', async (orig) => ({ ...(await orig<typeof import('./refs')>()), readRefs: vi.fn(async () => []) }))
+const parentRefs: { refName: string; state: unknown }[] = []
+vi.mock('./refs', async (orig) => ({
+  ...(await orig<typeof import('./refs')>()),
+  // The parent's refs (the fork's own read comes back empty: it is new).
+  readRefs: vi.fn(async (_sdk: unknown, repo: { repoId: string }) => (repo.repoId === 'P'.repeat(44) ? parentRefs : [])),
+}))
+const refWrites: string[] = []
+vi.mock('./push', async (orig) => ({
+  ...(await orig<typeof import('./push')>()),
+  writeRefUpdate: vi.fn(async (_sdk: unknown, _auth: unknown, _repo: unknown, input: { refName: string }) => {
+    refWrites.push(input.refName)
+  }),
+}))
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { WriteAuth } from '../sdk'
@@ -31,6 +43,8 @@ const sdk = {} as EvoSDK
 
 beforeEach(() => {
   created.length = 0
+  refWrites.length = 0
+  parentRefs.length = 0
 })
 
 describe('forkRepoV2 defaults', () => {
@@ -44,5 +58,21 @@ describe('forkRepoV2 defaults', () => {
     const input = created[0] as Record<string, unknown>
     expect(input['description']).toBeUndefined()
     expect(JSON.stringify(input)).not.toContain('fork of')
+  })
+
+  it('copies the default branch alone when asked, and never a mirror PR head (QW3-009, QW3-010)', async () => {
+    const at = (oid: string) => ({ state: 'resolved', oid, author: 'a', createdAt: 1 })
+    parentRefs.push(
+      { refName: 'refs/heads/develop', state: at('aa') },
+      { refName: 'refs/heads/master', state: at('bb') },
+      { refName: 'refs/tags/v1', state: at('cc') },
+      { refName: 'refs/mirror/pull/7/head', state: at('dd') },
+    )
+    const only = await forkRepoV2(sdk, auth, parent, { name: 'proj', defaultBranch: 'develop', defaultBranchOnly: true })
+    expect(only.refsWritten).toEqual(['refs/heads/develop'])
+    refWrites.length = 0
+    const all = await forkRepoV2(sdk, auth, parent, { name: 'proj', defaultBranch: 'develop' })
+    expect(all.refsWritten).toEqual(['refs/heads/develop', 'refs/heads/master', 'refs/tags/v1'])
+    expect(refWrites).not.toContain('refs/mirror/pull/7/head')
   })
 })

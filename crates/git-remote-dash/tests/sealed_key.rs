@@ -14,8 +14,9 @@ use std::process::{Command, Output, Stdio};
 use forge_core::keystore::Secret;
 
 const ID: &str = "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB";
-/// A throwaway testnet WIF (never funded): only its format matters to `--check-key`.
-const WIF: &str = "cRbtWPbNzw4WRWqQZNeSwAhzGrSyftXhsNgshEWjDcW4AkKrSfCK";
+/// A throwaway testnet WIF (of the key 0x11…11, never funded): only its format matters to
+/// `--check-key`, and a dfk1 key must hold a well-formed one.
+const WIF: &str = "cN9spWsvaxA8taS7DFMxnk1yJD2gaF2PX1npuTpy3vuZFJdwavaw";
 const PASS: &str = "correct horse battery staple";
 
 fn dfk1() -> String {

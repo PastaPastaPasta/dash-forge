@@ -43,7 +43,19 @@ pub async fn run(ctx: &Ctx, cmd: &ReleaseCommand) -> Result<()> {
             tag,
             asset,
             output,
-        } => download(ctx, repo, tag, asset.as_deref(), output.clone()).await,
+            dir,
+        } => {
+            // `-D/--dir` is always a directory, made when missing, as gh's is (QW3-069).
+            let output = match dir {
+                Some(d) => {
+                    std::fs::create_dir_all(d)
+                        .with_context(|| format!("creating {}", d.display()))?;
+                    Some(d.clone())
+                }
+                None => output.clone(),
+            };
+            download(ctx, repo, tag, asset.as_deref(), output).await
+        }
         ReleaseCommand::Unpublish { repo, tag } => unpublish(ctx, repo, tag).await,
     }
 }
@@ -1187,18 +1199,13 @@ async fn assets_to_download(
     asset_name: Option<&str>,
 ) -> Result<Vec<Wanted>> {
     let collab = s.collab();
-    let release = collab
-        .releases(&s.repo)
-        .await?
+    let list = collab.releases(&s.repo).await?;
+    let unpublished = unpublished_tags(&list).iter().any(|r| r.tag_name == tag);
+    let release = list
         .current
         .into_iter()
         .find(|r| r.tag_name == tag)
-        .ok_or_else(|| {
-            crate::errors::not_found(
-                format!("release {tag:?} not found in {repo}"),
-                format!("`dg release list {repo}` lists its releases"),
-            )
-        })?;
+        .ok_or_else(|| no_release_to_download(repo, tag, unpublished))?;
     // A sealed release lists its assets in its sealed kind-4 manifest (§16.5).
     let mut assets: Vec<Wanted> = match release.sealed.as_ref() {
         Some(sealed) if sealed.fields.asset_manifest.is_some() => collab
@@ -1228,6 +1235,25 @@ async fn assets_to_download(
         ));
     }
     Ok(assets)
+}
+
+/// E102 for a download of `tag`, which has no live release: it was `unpublished` (it has
+/// revisions, none live: QW3-073 said "not found" while `dg release list` showed it), or
+/// there never was one.
+fn no_release_to_download(repo: &str, tag: &str, unpublished: bool) -> anyhow::Error {
+    if unpublished {
+        crate::errors::not_found(
+            format!("release {tag:?} of {repo} was unpublished: it has no assets to download"),
+            format!(
+                "a maintainer publishes it again with `dg release create {repo} --tag {tag}`; `dg release list {repo}` shows its revisions"
+            ),
+        )
+    } else {
+        crate::errors::not_found(
+            format!("release {tag:?} not found in {repo}"),
+            format!("`dg release list {repo}` lists its releases"),
+        )
+    }
 }
 
 /// One asset to download: its plaintext name, `sha256`, size and URIs, and for a sealed
@@ -1436,6 +1462,22 @@ mod tag_tests {
 #[cfg(test)]
 mod download_tests {
     use super::*;
+
+    /// QW3-073: an unpublished tag says so (and how to publish it again), not "not found".
+    #[test]
+    fn an_unpublished_release_says_it_was_unpublished() {
+        let e = no_release_to_download("o/r", "v0.1.0", true);
+        let u = e.downcast_ref::<UserError>().unwrap();
+        assert_eq!(u.code, "E102");
+        assert!(u.message.contains("was unpublished"), "{u:?}");
+        assert!(
+            u.fix[0].contains("dg release create o/r --tag v0.1.0"),
+            "{u:?}"
+        );
+        let e = no_release_to_download("o/r", "v9", false);
+        let u = e.downcast_ref::<UserError>().unwrap();
+        assert_eq!(u.message, "release \"v9\" not found in o/r");
+    }
 
     /// Assets named `names`, whose sha256 nothing on disk matches.
     fn plan(names: &[&str], output: Option<&Path>) -> Result<Vec<Dest>> {

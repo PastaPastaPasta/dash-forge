@@ -15,9 +15,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Check, Loader2 } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
-import { CopyRow } from '@/components/ui/copy-row'
+import { PaymentAddress } from '@/components/ui/payment-address'
 import { Field, Textarea } from '@/components/ui/input'
-import { Qr } from '@/components/ui/qr'
 import { ErrorBox } from '@/components/auth/protection-fields'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { PHASE_TEXT, connectPlatform, type ConnectPhase } from '@/lib/auth/connect'
@@ -178,10 +177,7 @@ export function IdentityTopUpFlow({ faucet }: { faucet: string | null }): JSX.El
               Send at least <span className="font-mono">{(MIN_TOP_UP_DUFFS / 1e8).toFixed(2)} DASH</span> to this address from any Dash wallet. It
               becomes credits on your identity, less a small network fee.
             </p>
-            <div className="flex justify-center">
-              <Qr value={address} label={`Top-up address ${address}`} />
-            </div>
-            <CopyRow text={address} label="Copy the top-up address" />
+            <PaymentAddress address={address} amountDash={MIN_TOP_UP_DUFFS / 1e8} label="Top-up address" />
             {faucet ? (
               <a href={faucet} target="_blank" rel="noreferrer noopener" className="block text-center text-dense text-forge-700 underline dark:text-forge-400">
                 Get test DASH from the {ACTIVE_NETWORK.key} faucet (paste the address above)

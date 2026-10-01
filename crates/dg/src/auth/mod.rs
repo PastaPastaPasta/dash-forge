@@ -1026,6 +1026,9 @@ pub fn explain_new_key(
 /// Which key a source signs with, and what the chain says about it.
 pub(crate) struct KeyReport {
     pub key_id: Option<u32>,
+    /// The key the source holds when the identity has it only disabled: it can no longer
+    /// sign (QW3-024; `key_id` is `None` then).
+    pub disabled_id: Option<u32>,
     limited: bool,
     /// The one document type the key is bound to (a CI runner key: `checkRun`).
     pub doc_type: Option<String>,
@@ -1035,6 +1038,12 @@ pub(crate) struct KeyReport {
 }
 
 impl KeyReport {
+    /// Whether the key can spend only so much (or only until a date): a Forge limited key,
+    /// or a CI runner key with its own budget.
+    pub(crate) fn is_capped(&self) -> bool {
+        self.limited || self.total.is_some() || self.expires_at.is_some()
+    }
+
     /// Why the key signs nothing any more, when it does not: its budget is spent, or it has
     /// expired (at `now_ms`).
     pub(crate) fn spent_or_expired(&self, now_ms: u64) -> Option<&'static str> {
@@ -1064,8 +1073,15 @@ pub(crate) async fn key_report(
             .flatten(),
         _ => None,
     };
+    let disabled_id = match key_id {
+        Some(_) => None,
+        None => identity
+            .signing_key_standing(bridge, ctx.network())
+            .and_then(|(id, disabled)| disabled.then_some(id)),
+    };
     KeyReport {
         key_id,
+        disabled_id,
         limited: key_id.is_some_and(|id| identity.is_limited_key(id)),
         doc_type: key_id
             .and_then(|id| identity.key_doc_type(id))
@@ -1126,8 +1142,12 @@ async fn status(ctx: &Ctx) -> Result<()> {
             "authenticated": true,
             "identityId": identity_id,
             "names": names,
-            "keyId": report.as_ref().and_then(|r| r.key_id),
+            "keyId": report.as_ref().and_then(|r| r.key_id.or(r.disabled_id)),
+            "keyDisabled": report.as_ref().map(|r| r.disabled_id.is_some()),
             "limited": report.as_ref().map(|r| r.limited),
+            // Spend-capped: a Forge limited key, or a runner key with its own budget (QW3-070:
+            // a 0.05-capped runner key read as `"limited": false` and nothing else).
+            "capped": report.as_ref().map(KeyReport::is_capped),
             "boundDocumentType": report.as_ref().and_then(|r| r.doc_type.clone()),
             "encryptionKeyIds": access.as_ref().map(|a| a.held.clone()),
             "budgetCredits": report.as_ref().and_then(|r| r.total),
@@ -1196,6 +1216,12 @@ pub(crate) fn key_line(
     reached: bool,
 ) -> String {
     match (report, unopened) {
+        (Some(r), _) if r.key_id.is_none() => match r.disabled_id {
+            Some(id) => format!(
+                "#{id} DISABLED: it can no longer sign; `dg auth login <identity file>` registers a new key"
+            ),
+            None => "not a key of this identity: it can sign nothing for it (`dg auth keys list` shows the identity's keys)".into(),
+        },
         (Some(r), _) => {
             let id = r.key_id.map_or("?".to_string(), |i| format!("#{i}"));
             let limits = || {
@@ -1233,7 +1259,7 @@ pub(crate) fn key_line(
 
 /// When `e` is a sealed key whose passphrase could not be asked for (no terminal, `--json`,
 /// no DASH_FORGE_PASSPHRASE), why, in one line (the E303 cause); `None` for any other failure.
-fn passphrase_unavailable(e: &anyhow::Error) -> Option<String> {
+pub(crate) fn passphrase_unavailable(e: &anyhow::Error) -> Option<String> {
     let u = forge_core::user_error::classify(
         e.chain(),
         &forge_core::user_error::ErrorContext::default(),
@@ -1250,10 +1276,19 @@ async fn balance(ctx: &Ctx) -> Result<()> {
         None => ctx.load_bridge()?.identity_id,
     };
     let client = ctx.connect().await?;
-    let credits = client
-        .get_balance(&identity_id)
-        .await
-        .context("fetching balance")?;
+    let credits = match client.get_balance(&identity_id).await {
+        // QW3-073: E304 naming the network searched and the key's own, not an E102 "check
+        // the name or number you passed".
+        Err(forge_core::Error::NotFound) => {
+            return Err(forge_core::Error::IdentityNotFound {
+                identity_id,
+                network: client.network().key(),
+                key_network: ctx.key_network_hint(),
+            }
+            .into())
+        }
+        r => r.context("fetching balance")?,
+    };
     let network = ctx.network_label();
     ctx.emit(balance_json(&identity_id, credits, &network), || {
         println!("Identity: {identity_id}");
@@ -1328,10 +1363,24 @@ async fn name_register(ctx: &Ctx, label: &str, master: Option<&std::path::Path>)
         );
     }
     ctx.confirm_or_cancel(&format!("Register {label}.dash?"))?;
+    let before = client.get_balance(&full.identity_id).await.unwrap_or(0);
     let name = client.register_dpns_name(&full, label).await?;
+    // Every paid write ends with its charge (QW3-070).
+    let spent = crate::common::spent_since(&client, &full.identity_id, before).await;
     ctx.emit(
-        json!({ "status": "registered", "name": name, "identityId": full.identity_id }),
-        || println!("✓ {name} → {}", full.identity_id),
+        json!({
+            "status": "registered",
+            "name": name,
+            "identityId": full.identity_id,
+            "cost": crate::fmt::cost_json(spent, price),
+        }),
+        || {
+            println!(
+                "✓ {name} → {} · {}",
+                full.identity_id,
+                crate::fmt::cost_line(spent, price)
+            );
+        },
     );
     Ok(())
 }
@@ -1715,7 +1764,9 @@ mod tests {
     #[test]
     fn a_limited_key_is_stored_with_its_encryption_keys() {
         const ID: &str = "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB";
-        let dfk1 = keystore::dfk1("devnet-bonsia", ID, 5, "FAKE-wif");
+        // A well-formed testnet WIF (of the key 0x11…11): a dfk1 key is checked when read.
+        const TEST_WIF: &str = "cN9spWsvaxA8taS7DFMxnk1yJD2gaF2PX1npuTpy3vuZFJdwavaw";
+        let dfk1 = keystore::dfk1("devnet-bonsia", ID, 5, TEST_WIF);
         assert_eq!(
             with_encryption_keys(&dfk1, &[]).unwrap().expose(),
             dfk1.expose()
@@ -1747,6 +1798,7 @@ mod tests {
     fn a_runner_key_is_described_as_bound_to_its_document_type() {
         let report = |limited, doc_type: Option<&str>| KeyReport {
             key_id: Some(6),
+            disabled_id: None,
             limited,
             doc_type: doc_type.map(str::to_string),
             total: Some(50_000_000_000),
@@ -1773,6 +1825,20 @@ mod tests {
             key_line(Some(&report(false, None)), None, true),
             "#6 unlimited (not a Forge limited key)"
         );
+        // QW3-070: a runner key with a budget is spend-capped in --json too.
+        assert!(report(false, Some("checkRun")).is_capped());
+        // QW3-024: a disabled key, or one the identity does not have, is not "unlimited".
+        let mut gone = report(true, None);
+        gone.key_id = None;
+        gone.disabled_id = Some(7);
+        let line = key_line(Some(&gone), None, true);
+        assert!(
+            line.starts_with("#7 DISABLED: it can no longer sign"),
+            "{line}"
+        );
+        gone.disabled_id = None;
+        let line = key_line(Some(&gone), None, true);
+        assert!(line.starts_with("not a key of this identity"), "{line}");
     }
 
     #[test]
