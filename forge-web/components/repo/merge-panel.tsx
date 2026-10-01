@@ -31,7 +31,7 @@ import { GitMerge, Loader2 } from 'lucide-react'
 
 import { readConfigHistory, refNameHash, resolveRefByHash, type PullView, type RepoRef } from '@/lib/repo'
 import { matchesProtected } from '@/lib/rules'
-import { bytesToBase64, previewCreate, sumPreviews } from '@/lib/sdk'
+import { EXISTING, bytesToBase64, previewCreate, sumPreviews } from '@/lib/sdk'
 import { mergeReaders, missingFromClosure } from '@/lib/merge/verify'
 import { mergeSourceLabel, squashDraft, type MergeCheck, type MergeInput, type SquashAuthors } from '@/lib/merge/engine'
 import { checkMergeInWorker, runMergeInWorker } from '@/lib/merge/client'
@@ -57,6 +57,7 @@ import { Oid } from '@/components/ui/oid'
 import { Textarea } from '@/components/ui/input'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
+import { spendAction } from '@/lib/spend-toast'
 
 /** "Delete the branch after merging": runnable, or shown disabled with why. */
 export type DeleteBranchOption = { readonly label: string; readonly run: () => Promise<void> } | { readonly label: string; readonly disabled: string }
@@ -300,10 +301,12 @@ export function MergePanel({
   const deletable = deleteBranch !== null && 'run' in deleteBranch ? deleteBranch : null
   const deleting = deletable !== null && alsoDelete
   const cost = sumPreviews([
-    previewCreate('packManifest'),
-    previewCreate(baseProtected ? 'protectedRefUpdate' : 'refUpdate'),
+    // The repo has packs and the base branch has updates: neither builds a subtree (QW3-037).
+    previewCreate('packManifest', {}, EXISTING),
+    // A base only lately protected may hold no protectedRefUpdate yet: its subtrees stay unknown.
+    baseProtected ? previewCreate('protectedRefUpdate') : previewCreate('refUpdate', {}, EXISTING),
     previewCreate('event'),
-    ...(deleting ? [previewCreate('refUpdate')] : []),
+    ...(deleting ? [previewCreate('refUpdate', {}, EXISTING)] : []),
     ...closing.map(() => previewCreate('transition')),
     ...(gate.bypassing || bypassed !== null ? [previewCreate('event', { value: bypassValue(bypassed ?? unmetRules) })] : []),
   ])
@@ -330,64 +333,69 @@ export function MergePanel({
     begin(preAgreedCredits)
     const intent = `merge:${repo.repoId}:${pull.number}:${pull.headOid}:${baseTipOid}${input.squash ? `:squash:${bytesToHex(sha256(new TextEncoder().encode(input.squash.message))).slice(0, 16)}` : input.noFastForward ? ':no-ff' : ''}`
     try {
-      const done = await runMergeSteps(
-        {
-          sdk,
-          auth: signer,
-          repo,
-          pull: { id: pull.id, number: pull.number, author: pull.author, baseRefName, openedBaseRefName: pull.baseRefName },
-          input,
-          merge: (i, onPhase) => runMergeInWorker(reader, i, (p) => onPhase(p.phase)),
-          upload,
-          publishIndex: upload === null ? null : async (pack, packHash) => {
-            const r = await publishMergeIndex(sdk, signer, repo, pack, packHash, upload, `${intent}:index`)
-            return r.kind === 'published' ? `fragment at packRef ${r.packRef}` : `skipped: ${r.reason}`
+      // The merge's writes are one action: one toast with their total (QW3-039). The merge panel is
+      // not modal, so its own signer marks them; a branch delete or issue close after it is its own.
+      await spendAction({ running: `Merging #${pull.number}…`, done: `Merged #${pull.number}`, failed: `Merge of #${pull.number} stopped part-way` }, async (tag) => {
+        const auth = tag(signer)
+        const done = await runMergeSteps(
+          {
+            sdk,
+            auth,
+            repo,
+            pull: { id: pull.id, number: pull.number, author: pull.author, baseRefName, openedBaseRefName: pull.baseRefName },
+            input,
+            merge: (i, onPhase) => runMergeInWorker(reader, i, (p) => onPhase(p.phase)),
+            upload,
+            publishIndex: upload === null ? null : async (pack, packHash) => {
+              const r = await publishMergeIndex(sdk, auth, repo, pack, packHash, upload, `${intent}:index`)
+              return r.kind === 'published' ? `fragment at packRef ${r.packRef}` : `skipped: ${r.reason}`
+            },
+            verifyPack: (pack, tip) => missingFromClosure(pack, tip, input.baseTip, (readers ?? { base: baseOnly }).base),
+            readBaseTip: async () => {
+              // The same rule the page's tip came from (resolveRef, then the provisional tip).
+              const ref = await resolveRefByHash(sdk, repo, bytesToBase64(refNameHash(baseRefName)), await readConfigHistory(sdk, repo))
+              return tipOidOf(ref ?? undefined) ?? ''
+            },
+            intent,
+            ...(bypass !== null && bypass.length > 0
+              ? {
+                  recordBypass: async (tip: string, eventIntent: string) =>
+                    (await recordPolicyBypass(sdk, auth, repo, { target: { id: pull.id, number: pull.number }, rules: bypass, mergeOid: tip, intent: eventIntent })).documentId,
+                }
+              : {}),
           },
-          verifyPack: (pack, tip) => missingFromClosure(pack, tip, input.baseTip, (readers ?? { base: baseOnly }).base),
-          readBaseTip: async () => {
-            // The same rule the page's tip came from (resolveRef, then the provisional tip).
-            const ref = await resolveRefByHash(sdk, repo, bytesToBase64(refNameHash(baseRefName)), await readConfigHistory(sdk, repo))
-            return tipOidOf(ref ?? undefined) ?? ''
+          run,
+          (e) => {
+            setSteps((s) => ({ ...s, [e.step]: e.state }))
+            if (e.detail) setDetails((d) => ({ ...d, [e.step]: e.detail }))
           },
-          intent,
-          ...(bypass !== null && bypass.length > 0
-            ? {
-                recordBypass: async (tip: string, eventIntent: string) =>
-                  (await recordPolicyBypass(sdk, signer, repo, { target: { id: pull.id, number: pull.number }, rules: bypass, mergeOid: tip, intent: eventIntent })).documentId,
-              }
-            : {}),
-        },
-        run,
-        (e) => {
-          setSteps((s) => ({ ...s, [e.step]: e.state }))
-          if (e.detail) setDetails((d) => ({ ...d, [e.step]: e.detail }))
-        },
-      )
-      setRun(done)
-      setMergedHere(true)
-      setNewTip(done.result?.newTip ?? null)
-      onMerged()
-      if (deletable !== null && alsoDelete) {
-        try {
-          await deletable.run()
-          setDeleted({ label: deletable.label, error: null })
-        } catch (e) {
-          setDeleted({ label: deletable.label, error: e instanceof Error ? e.message : String(e) })
-        }
-      }
-      if (closeIssues !== null && closing.length > 0) {
-        // One at a time (each is a transition from this identity): a failure is reported and the rest still close.
-        const outcome: { number: number; error: string | null }[] = []
-        for (const n of closing) {
+        )
+        setRun(done)
+        setMergedHere(true)
+        setNewTip(done.result?.newTip ?? null)
+        onMerged()
+        if (deletable !== null && alsoDelete) {
           try {
-            await closeIssues.close(n)
-            outcome.push({ number: n, error: null })
+            await deletable.run()
+            setDeleted({ label: deletable.label, error: null })
           } catch (e) {
-            outcome.push({ number: n, error: e instanceof Error ? e.message : String(e) })
+            setDeleted({ label: deletable.label, error: e instanceof Error ? e.message : String(e) })
           }
         }
-        setClosed(outcome)
-      }
+        if (closeIssues !== null && closing.length > 0) {
+          // One at a time (each is a transition from this identity): a failure is reported and the rest still close.
+          const outcome: { number: number; error: string | null }[] = []
+          for (const n of closing) {
+            try {
+              await closeIssues.close(n)
+              outcome.push({ number: n, error: null })
+            } catch (e) {
+              outcome.push({ number: n, error: e instanceof Error ? e.message : String(e) })
+            }
+          }
+          setClosed(outcome)
+        }
+      })
     } catch (e) {
       if (e instanceof MergeStepError) {
         setRun(e.run)

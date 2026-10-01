@@ -6,6 +6,7 @@
 
 import type { CostPreview as Cost } from '@/lib/sdk'
 import { dashToUsd, formatDash } from '@/lib/view'
+import { creditsAsDash } from '@/lib/view/format'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { cn } from '@/lib/utils'
 
@@ -21,6 +22,8 @@ export function CostPreview({
 }): JSX.Element {
   const isRefund = refund || cost.credits < 0
   const dash = Math.abs(cost.dash)
+  // An edit's charge ranges far below its bound: show the range Settings → Spend records (QW3-037).
+  const min = !isRefund && cost.minCredits !== undefined && cost.minCredits < cost.credits ? cost.minCredits : null
   const usd = dashToUsd(dash, ACTIVE_NETWORK.network)
   return (
     <div
@@ -34,7 +37,8 @@ export function CostPreview({
     >
       <span className="text-anvil-500 dark:text-anvil-400">{isRefund ? 'Refund est.' : 'Cost'}</span>
       <span className={cn('font-mono font-medium', isRefund ? 'text-verify-700 dark:text-verify-400' : 'text-dash-600 dark:text-dash-400')}>
-        {isRefund ? '+' : '~'}
+        {isRefund ? '+' : min !== null ? '' : '~'}
+        {min !== null ? `${creditsAsDash(min)}–` : ''}
         {formatDash(dash)} DASH
       </span>
       {usd !== null ? <span className="font-mono text-anvil-500 dark:text-anvil-400">≈ {usd}</span> : null}
