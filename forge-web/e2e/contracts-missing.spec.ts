@@ -6,7 +6,9 @@ import { collectPageErrors, E2E_DEVNET, repoUrl, shot } from './helpers'
  * v4.2.0-beta.7, 2026-09-29, which retired the old contracts): one clear app-wide state instead
  * of every view's "That read did not land" with a raw gRPC string and a Try again that can never
  * succeed. On moutai specifically this is worded as a move to devnet bonsia, not a generic reset;
- * on any other devnet (the build under test: E2E_DEVNET) as a generic reset.
+ * on any other devnet (the build under test: E2E_DEVNET) as a generic reset. A build that carries
+ * NEXT_PUBLIC_DEVNET_NOTICE words bonsia's missing contracts as its re-cut onto Platform v5
+ * instead (unit-tested in components/ui/contracts-missing.test.tsx); this spec builds without it.
  *
  * Hermetic: nothing reaches the chain. The quorum service answers with empty quorum lists (an
  * error reply carries no proof, so no key is needed), and every DAPI call gets the refusal a

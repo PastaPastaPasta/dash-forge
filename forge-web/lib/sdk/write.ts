@@ -34,6 +34,7 @@ import { NETWORKS, type Network } from '../constants'
 import { rc1WriteProblem } from '../layout'
 import { base58Encode } from '../auth/base58'
 import { controlsKey } from '../auth/wif'
+import { writesPausedReason } from '../devnet-notice'
 import { previewCreate, previewCredits, previewDelete, previewReplace, STEADY, type CostPreview } from './cost'
 import { base64ToBytes, bytesToBase64, followSdkVersion, noteSdkWrite } from './query'
 import { currentSpendAction } from './spend-scope'
@@ -1024,6 +1025,25 @@ const writeLocks = new Map<string, Promise<unknown>>()
  */
 export const WRITER_WAIT_MS = 10 * 60_000
 
+/** The devnet is being re-cut (`NEXT_PUBLIC_DEVNET_NOTICE=moving`): nothing is signed or sent now. */
+export class WritesPausedError extends Error {
+  constructor(reason: string) {
+    super(reason)
+    this.name = 'WritesPausedError'
+  }
+}
+
+/**
+ * Refuse, before anything is signed or paid, while the devnet is moving. Called at each point
+ * that broadcasts (document writes, paid identity updates, identity creation and top-up); the
+ * buttons are already off, this stops whatever slips past them. Local-only work that shares the
+ * writer queue (storing a wallet's keys) is not a broadcast and is never refused.
+ */
+export function assertWritesAllowed(): void {
+  const paused = writesPausedReason()
+  if (paused !== null) throw new WritesPausedError(paused)
+}
+
 /** Another write for this identity (in this tab or another) held the writer lock too long. */
 export class WriterBusyError extends Error {
   constructor() {
@@ -1177,6 +1197,11 @@ function reportSpend(
  * passes on, so the next write waits for that measurement (not for the report itself).
  */
 function serializedWrite<T>(sdk: EvoSDK, auth: WriteAuth, write: () => Promise<{ result: T; spend: Spend | null }>): Promise<T> {
+  try {
+    assertWritesAllowed()
+  } catch (e) {
+    return Promise.reject(e)
+  }
   return serialized(auth.identityId, async () => {
     const r = await wrote(sdk, write())
     if (r.spend) reportSpend(sdk, auth, r.spend)

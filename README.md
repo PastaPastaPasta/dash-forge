@@ -9,6 +9,8 @@
 
 ## Status
 
+> **Devnet bonsia will be re-cut onto Platform v5 soon.** The re-cut wipes everything on bonsia (repos, issues, stars, identities and keys), and Forge is registered again there with new contracts. Your git clone and your storage bucket are untouched, and your own repos need a re-push from your clone. An installed `dg` built for Platform 4.2.0-beta.7 stops working on the new bonsia. [forge.dashhq.org](https://forge.dashhq.org) shows a notice before and during the move. What is lost, what is kept and how to re-push: **[Devnet bonsia is moving](docs/guides/devnet-move.md)**.
+
 | Network | Platform protocol | Forge |
 |---|---|---|
 | **Devnet bonsia** | 14 | **Registered (RC1), live.** Forge's three contracts (forge-core, forge-collab, forge-community) were registered on 2026-09-29, on Platform v4.2.0-beta.7, and frozen (tag `contracts-rc1-frozen`). `dg` and `git-remote-dash` built from this source target bonsia, and the web app at [forge.dashhq.org](https://forge.dashhq.org) has been live on bonsia since 2026-09-30. |
@@ -65,6 +67,7 @@ You need Rust and `protoc` 25 or newer to build ([BUILDING.md](docs/BUILDING.md)
 | [Collaborating](docs/guides/collaborating.md) | members, issues, pull requests, reviews, merges, releases, webhooks |
 | [Identity and keys](docs/guides/identity-and-keys.md) | limited keys, the browser vault, backups, recovery, trust roots |
 | [What things cost](docs/guides/costs.md) | measured costs, deposits, refunds |
+| [Devnet bonsia is moving](docs/guides/devnet-move.md) | what a devnet re-cut wipes and keeps, and how to re-push afterwards |
 | [Check that Forge isn't lying to you](docs/guides/verify-forge.md) | proofs, hashes, the Verification card, running your own web app |
 | [FAQ](docs/FAQ.md) · [Error codes](docs/errors.md) | |
 

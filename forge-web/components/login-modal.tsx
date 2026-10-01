@@ -46,6 +46,7 @@ import { readCreationJournal } from '@/lib/auth/create-identity'
 import { PLATFORM_READ_MS, connectPlatform } from '@/lib/auth/connect'
 import { withTimeout } from '@/lib/timeout'
 import { KEY_ADD_FLOOR_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS, pushCostPhrase, typicalIssueCredits } from '@/lib/sdk'
+import { writesPausedReason } from '@/lib/devnet-notice'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { cn, errorMessage } from '@/lib/utils'
 
@@ -173,6 +174,7 @@ function Tile({
   testId,
   muted = false,
   highlight = false,
+  pausedReason = null,
 }: {
   icon: typeof Wallet
   title: string
@@ -183,14 +185,18 @@ function Tile({
   muted?: boolean
   /** Something this browser has in progress: outlined in the accent colour. */
   highlight?: boolean
+  /** Why this option cannot be used now (the devnet is moving): disabled, with the reason as its text. */
+  pausedReason?: string | null
 }): JSX.Element {
   return (
     <button
       type="button"
       data-testid={testId}
       data-muted={muted || undefined}
+      disabled={pausedReason !== null}
       onClick={onClick}
       className={cn(
+        'disabled:pointer-events-none disabled:opacity-60',
         'flex w-full items-start gap-3 rounded-lg border border-anvil-200 px-3 py-3 text-left transition-colors hover:border-forge-400 hover:bg-anvil-50 dark:border-anvil-750 dark:hover:bg-anvil-850',
         muted && 'border-dashed opacity-75',
         highlight && 'border-forge-500/60 bg-forge-500/5 dark:border-forge-500/50',
@@ -199,7 +205,7 @@ function Tile({
       <Icon className={cn('mt-0.5 h-5 w-5 shrink-0', muted ? 'text-anvil-500 dark:text-anvil-400' : 'text-forge-500')} aria-hidden />
       <span>
         <span className="block text-dense font-medium text-anvil-900 dark:text-anvil-50">{title}</span>
-        <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">{body}</span>
+        <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">{pausedReason ?? body}</span>
       </span>
     </button>
   )
@@ -211,6 +217,8 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
   const walletAvailable = useWalletAvailability(limitedKeys)
   const [advanced, setAdvanced] = useState(false)
   const creating = useCreationInProgress()
+  // While the devnet is moving, creating or importing an identity would be wiped with it.
+  const pausedReason = writesPausedReason()
   // No forge-v2 here means no contract group to bind a key to: nothing to sign in to.
   if (!limitedKeys) return <NotDeployedState />
   // First only where Dash Wallet can answer (testnet); elsewhere last, saying why.
@@ -245,16 +253,18 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
           }
           onClick={() => onPick('create')}
           highlight
+          pausedReason={pausedReason}
         />
       ) : null}
       {walletFirst ? walletTile : null}
-      <Tile testId="tile-create" icon={Plus} title="Create a new identity" body={`12 words you write down, then fund it from any Dash wallet. About ${creditsAsDash(typicalIssueCredits())} DASH per issue, ${pushCostPhrase()}.`} onClick={() => onPick('create')} />
+      <Tile testId="tile-create" icon={Plus} title="Create a new identity" body={`12 words you write down, then fund it from any Dash wallet. About ${creditsAsDash(typicalIssueCredits())} DASH per issue, ${pushCostPhrase()}.`} onClick={() => onPick('create')} pausedReason={pausedReason} />
       <Tile
         testId="tile-import"
         icon={Upload}
         title="Import an identity file or recovery phrase"
         body="Your master key is used once, right now, to create a limited key for this browser. It is not stored."
         onClick={() => onPick('import')}
+        pausedReason={pausedReason}
       />
       {walletFirst ? null : walletTile}
       <div className="pt-2">
