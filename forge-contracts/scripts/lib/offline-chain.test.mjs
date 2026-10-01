@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
 import { OfflineChain } from './offline-chain.mjs';
-import { FUSED_STAR, TRANSITION, VIS, b58encode, documentReader, documentWriter, idBytes, membership, transition } from './seed-io.mjs';
+import { CONTRACTS, FUSED_STAR, TRANSITION, VIS, b58encode, documentReader, documentWriter, idBytes, membership, transition } from './seed-io.mjs';
 
 const person = (name) => ({ name, id: b58encode(createHash('sha256').update(name).digest()) });
 const OWNER = person('owner');
@@ -65,6 +65,30 @@ test('a non-member cannot write an event; the repo owner cannot beat its own rep
   await write(OTHER, 'starBeat', { repoId: R, vis: VIS, repoOwner: idBytes(OWNER.id) });
   // The repo is found, but its owner is not the beat's repoOwner: a `where` mismatch.
   await assert.rejects(write(OTHER, 'starBeat', { repoId: R, vis: VIS, repoOwner: idBytes(person('third').id) }), refusedWith(40127, 'starBeat.repoId'));
+});
+
+// RC2 MOD (design/v5/MODERATION.md): a hide names the writer's maintainer document of the repo.
+// The hideByMaint rule (asMaintainer = the writer) is rs-dpp's (rc1 vectors); the lookup is this.
+test('a hide proves its writer a maintainer of the repo now', { skip: !('asMaintainer' in (CONTRACTS.community.documentSchemas.event.properties ?? {})) }, async () => {
+  const { chain, write, R } = await repoChain();
+  const sdk = new (chain.evo().EvoSDK)();
+  const i1 = (await write(OWNER, 'issue', issue(R, 1))).id.toBase58();
+  const hide = (who) => ({ repoId: R, targetId: idBytes(i1), targetNumber: 1, kind: 24, refId: Buffer.alloc(32, 5), asMaintainer: idBytes(who.id) });
+  await write(OWNER, 'event', hide(OWNER));
+  // A writer passes the event gate (ownerRefersTo) but holds no maintainer document
+  await write(OTHER, 'consent', { repoId: R });
+  await write(OWNER, 'writer', membership(R, OWNER.id, OTHER.id));
+  await assert.rejects(write(OTHER, 'event', hide(OTHER)), refusedWith(40120, 'event.asMaintainer'));
+  // A maintainer of another repo is no maintainer of this one
+  const theirs = idBytes((await write(OTHER, 'repo', { name: 'theirs', visibility: VIS })).id.toBase58());
+  await write(OTHER, 'maintainer', membership(theirs, OTHER.id, OTHER.id));
+  await assert.rejects(write(OTHER, 'event', hide(OTHER)), refusedWith(40120, 'event.asMaintainer'));
+  // Promoted, then removed: the hide written meanwhile stands, the next one is refused
+  const promoted = await write(OWNER, 'maintainer', membership(R, OWNER.id, OTHER.id));
+  await write(OTHER, 'event', hide(OTHER));
+  await sdk.documents.delete({ document: promoted });
+  await assert.rejects(write(OTHER, 'event', hide(OTHER)), refusedWith(40120, 'event.asMaintainer'));
+  assert.equal(chain.live('event').filter((e) => e.view.kind === 24).length, 2);
 });
 
 test('transitions move only from the state their rules name', async () => {
