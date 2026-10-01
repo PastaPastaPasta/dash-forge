@@ -367,7 +367,9 @@ async fn star(ctx: &Ctx, repo: &str, on: bool, trending: bool) -> Result<()> {
             .and_then(|c| c.trending)
             .unwrap_or(forge_core::collab::v2::TRENDING_DEFAULT);
     // RC2's fused star (C1): the star is the only document, and a public repository's star
-    // counts toward Trending by itself, with nothing to opt out of.
+    // counts toward Trending by itself, with nothing to opt out of. (Readers leave out private
+    // repositories, and an owner's star only where they can tell it is in the window: on a
+    // repository created inside it. Elsewhere an owner's star counts too, so the warning stands.)
     let fused = on && collab.fused_star(handle).await?;
     if fused && !trending && handle.visibility == Visibility::Public {
         eprintln!(
