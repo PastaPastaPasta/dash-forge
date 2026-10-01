@@ -1108,6 +1108,30 @@ mod tests {
         assert_eq!(c.get("startedAt"), Some(&Some(FieldValue::integer(99))));
     }
 
+    #[test]
+    fn the_generated_community_freezes_what_a_report_leaves_as_stored() {
+        let community = crate::test_support::rc1::loaded(crate::layout::ForgeContract::Community);
+        // M1: each set-once field is a conditional `immutable` entry (`check_run_write` never
+        // changes one).
+        for f in SET_ONCE_FIELDS {
+            assert!(community.freezes_when(DOC_CHECK_RUN, f), "{f}");
+        }
+        // S1 is a build flag: all of the evidence freezes, or none of it.
+        let frozen: Vec<bool> = EVIDENCE_FIELDS
+            .iter()
+            .map(|f| community.freezes_when(DOC_CHECK_RUN, f))
+            .collect();
+        assert!(frozen.iter().all(|f| *f == frozen[0]), "{frozen:?}");
+        let done = stored(&[("status", FieldValue::text("completed"))]);
+        assert_eq!(evidence_frozen(&community, &done), frozen[0]);
+        let running = stored(&[("status", FieldValue::text("in_progress"))]);
+        assert!(!evidence_frozen(&community, &running));
+        // Only a conditional entry counts: `name` is always immutable, `status` mutable.
+        assert!(!community.freezes_when(DOC_CHECK_RUN, "name"));
+        assert!(!community.freezes_when(DOC_CHECK_RUN, "status"));
+        assert!(!community.freezes_when("noSuchType", "summary"));
+    }
+
     /// The RC1 accept/refuse vectors of one document type (`forge-contracts/vectors/rc1`).
     pub(crate) fn rc1_vectors(doc_type: &str) -> Vec<serde_json::Value> {
         let all: Vec<serde_json::Value> = serde_json::from_str(include_str!(

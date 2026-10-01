@@ -105,6 +105,17 @@ fn contracts() -> &'static [DataContract; 3] {
     })
 }
 
+/// A generated contract as the client loads it: for tests of what the client reads off a
+/// contract's shape (the RC2 build flags).
+#[cfg(test)]
+pub(crate) fn loaded(c: ForgeContract) -> crate::platform::LoadedContract {
+    let i = CONTRACTS
+        .iter()
+        .position(|x| *x == c)
+        .expect("a forge contract");
+    crate::platform::LoadedContract::for_tests(contracts()[i].clone())
+}
+
 /// A refusal's reason as the vectors name it: the JSON Schema keyword, the broken
 /// `propertyConstraints` rule, `maxBytes`, or else the consensus error code (b7gate's and
 /// contract-validate's `reason`).

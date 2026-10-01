@@ -6347,6 +6347,46 @@ fn create_journal_path(
 }
 
 #[cfg(test)]
+mod fused_star_tests {
+    use super::*;
+
+    /// RC2's fused star (C1) is read off the contract. Where it is on, every `star` index over
+    /// `$createdAt` outlives a delete, so an unstar carries no `$createdAt`
+    /// ([`Collab::unstar`] sends none): v5 commits an indexOnly row to it only when some index
+    /// over it does not (`v5:packages/rs-dpp/src/data_contract/document_type/index/
+    /// outlives_delete.rs:21-26`).
+    #[test]
+    fn a_fused_star_contract_counts_the_star_itself() {
+        let community = crate::test_support::rc1::loaded(crate::layout::ForgeContract::Community);
+        let json: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../forge-contracts/contracts/forge-community.json"
+        ))
+        .unwrap();
+        let types = &json["documentSchemas"];
+        assert_eq!(fused_star(&community), types.get(DOC_STAR_BEAT).is_none());
+        let star = &types[DOC_STAR];
+        let over_created_at: Vec<&serde_json::Value> = star["indices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|i| {
+                i["properties"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|p| p.get("$createdAt").is_some())
+            })
+            .collect();
+        if fused_star(&community) {
+            assert!(!over_created_at.is_empty(), "the star's byWeek index");
+            assert!(over_created_at.iter().all(|i| i["outlivesDelete"] == true));
+        } else {
+            assert!(over_created_at.is_empty());
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

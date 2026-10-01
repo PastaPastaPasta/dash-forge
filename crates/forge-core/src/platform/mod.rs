@@ -215,6 +215,14 @@ impl LoadedContract {
     }
 }
 
+#[cfg(test)]
+impl LoadedContract {
+    /// `contract` as a fetch would load it, for tests.
+    pub(crate) fn for_tests(contract: DataContract) -> Self {
+        Self(Arc::new(contract))
+    }
+}
+
 impl std::fmt::Debug for LoadedContract {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LoadedContract")
