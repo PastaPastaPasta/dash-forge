@@ -207,6 +207,16 @@ describe('PullsContent (L-44)', () => {
     expect(el.querySelector('[data-testid="list-read-budget"]')).toBeNull()
   })
 
+  it('an oldest-first page that stopped at its read budget says it read the oldest, and offers the newer', async () => {
+    search = 'owner=o&name=n&sort=oldest'
+    answer = { ...answer, rows: [], matching: 30, hasNext: false, counts: { open: 30, merged: 1400, closed: 336 }, searchedOf: { searched: 397, total: 1766, more: true } }
+    await render()
+    expect(el.textContent).toContain('None among the oldest 397 pull requests')
+    expect(el.textContent).toContain('Newer ones are not read yet.')
+    expect(el.querySelector('[data-testid="list-read-budget"]')?.textContent).toContain('Read the oldest 397 of 1,766 pull requests; newer ones are not read yet.')
+    expect(button('Look through newer pull requests')).toBeDefined()
+  })
+
   it('digit-groups the tab counts as the rest of the UI does (QW3-058)', async () => {
     answer = { ...answer, counts: { open: 8, merged: 4309, closed: 594 } }
     await render()

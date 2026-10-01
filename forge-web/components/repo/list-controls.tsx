@@ -597,15 +597,19 @@ export function SearchedNote({
   noun,
   onMore,
   reading,
+  oldest = false,
 }: {
   searchedOf: SearchedOfLike | null | undefined
   noun: string
+  /** The list reads oldest first: it has read the oldest rows, and the newer ones are unread. */
+  oldest?: boolean
   /** Read on from where the list stopped (offered when it stopped at its read budget). */
   onMore?: () => void
   /** The list is reading on now: how many it has read so far, or null. */
   reading?: number | null
 }): JSX.Element | null {
   if (!searchedOf) return null
+  const [edge, beyond] = oldest ? ['oldest', 'newer'] : ['newest', 'older']
   const n = grouped(reading ?? searchedOf.searched)
   const of = searchedOf.total !== null ? ` of ${grouped(searchedOf.total)}` : ''
   if (searchedOf.kind === 'scan' && (searchedOf.auto || reading != null)) {
@@ -623,18 +627,18 @@ export function SearchedNote({
   if (searchedOf.more && onMore) {
     const what =
       searchedOf.kind === 'sort'
-        ? `Sorted the newest ${n}${of} ${noun} by comments`
+        ? `Sorted the ${edge} ${n}${of} ${noun} by comments`
         : searchedOf.kind === 'scan'
           ? `Checked about ${n}${of} ${noun} for this tab`
-          : `Read the newest ${n}${of} ${noun}`
+          : `Read the ${edge} ${n}${of} ${noun}`
     return (
       <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="list-read-budget">
         <span>
           {what}
-          {reading != null ? '…' : '; older ones are not read yet.'}
+          {reading != null ? '…' : `; ${beyond} ones are not read yet.`}
         </span>
         <Button variant="outline" size="sm" onClick={onMore} disabled={reading != null}>
-          {reading != null ? 'Reading…' : `Look through older ${noun}`}
+          {reading != null ? 'Reading…' : `Look through ${beyond} ${noun}`}
         </Button>
       </p>
     )
@@ -643,7 +647,7 @@ export function SearchedNote({
     <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
       {searchedOf.kind === 'scan'
         ? `Checked about ${n}${of} ${noun} for this tab; the older ones could not be checked.`
-        : `${searchedOf.kind === 'sort' ? `Sorted the newest ${n}${of} ${noun} by comments` : `Searched the newest ${n}${of} ${noun}`}; older ones were not read for this ${searchedOf.kind === 'sort' ? 'sort' : 'search'}.`}
+        : `${searchedOf.kind === 'sort' ? `Sorted the ${edge} ${n}${of} ${noun} by comments` : `Searched the ${edge} ${n}${of} ${noun}`}; ${beyond} ones were not read for this ${searchedOf.kind === 'sort' ? 'sort' : 'search'}.`}
     </p>
   )
 }
@@ -682,8 +686,9 @@ export function useReadProgress(): {
 }
 
 /** The empty list's title when a page stopped reading before it found a row for `page`: there are older ones to read. */
-export function budgetEmptyTitle(page: number, searched: number, noun: string): string {
-  return page === 1 ? `None among the newest ${grouped(searched)} ${noun}` : `Nothing for page ${page} among the newest ${grouped(searched)} ${noun}`
+export function budgetEmptyTitle(page: number, searched: number, noun: string, oldest = false): string {
+  const edge = oldest ? 'oldest' : 'newest'
+  return page === 1 ? `None among the ${edge} ${grouped(searched)} ${noun}` : `Nothing for page ${page} among the ${edge} ${grouped(searched)} ${noun}`
 }
 
 /** A list's loading line: what it reads, and (a walk under way) how many rows it has read. */

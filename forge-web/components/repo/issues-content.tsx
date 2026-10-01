@@ -293,7 +293,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
           <PastLastPage page={query.page} last={lastPage} onPage={(page) => change({ page })} />
         ) : empty && data?.searchedOf?.more ? (
           // The page stopped at its read budget before reaching any: there are older ones to read.
-          <EmptyState icon={CircleDot} title={budgetEmptyTitle(query.page, data.searchedOf.searched, 'issues')} body="Older ones are not read yet." />
+          <EmptyState icon={CircleDot} title={budgetEmptyTitle(query.page, data.searchedOf.searched, 'issues', query.sort === 'oldest')} body={query.sort === 'oldest' ? 'Newer ones are not read yet.' : 'Older ones are not read yet.'} />
         ) : empty ? (
           <EmptyState
             icon={CircleDot}
@@ -343,7 +343,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         )}
       </div>
 
-      <SearchedNote searchedOf={data?.searchedOf} noun="issues" onMore={reload} reading={loading ? progress ?? data?.searchedOf?.searched ?? 0 : null} />
+      <SearchedNote searchedOf={data?.searchedOf} noun="issues" onMore={reload} oldest={query.sort === 'oldest'} reading={loading ? progress ?? data?.searchedOf?.searched ?? 0 : null} />
 
       <Pager label="Issue pages" page={query.page} hasNext={data?.hasNext ?? false} matching={data?.matching ?? null} pageSize={ISSUE_PAGE_SIZE} onPage={(page) => change({ page })} />
 
