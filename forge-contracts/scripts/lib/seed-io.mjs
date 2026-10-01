@@ -31,8 +31,10 @@ export const CONTRACTS = Object.fromEntries(
  * RC2 C1 (schema/build.py `fused_star`): the star itself sits in the trending window (its
  * `byWeek` index outlives an unstar), and starBeat is gone. Read from the committed schema, the
  * one deploy-v2.mjs registers; a fee probe that fails turns the flag off and brings starBeat back.
+ * The same test as forge-web's `lib/repo/star-shape.ts` and `e2e/trending.spec.ts`: the star has
+ * a time-window index.
  */
-export const FUSED_STAR = !('starBeat' in CONTRACTS.community.documentSchemas);
+export const FUSED_STAR = (CONTRACTS.community.documentSchemas.star?.indices ?? []).some((index) => index.timeRange !== undefined);
 
 /** The contract (`core`, `collab`, `community`) that holds each document type. */
 export const CONTRACT_OF = Object.fromEntries(
@@ -91,7 +93,7 @@ export function resolveNetwork(a, env = process.env) {
 /**
  * The network the arguments name (`resolveNetwork`) and a connected SDK for it, with a writer
  * and a reader bound to it. `injected` is the SDK module to use (the offline chain), else the
- * pinned evo-sdk (4.2.0-beta.7, protocol 14). The reader waits `pace` ms between pages.
+ * pinned evo-sdk (5.0.0-beta.1, protocol 14). The reader waits `pace` ms between pages.
  *
  * The connection is not fixed: a quorum rotation the trusted connection's prefetched keys have
  * gone stale against, or a node-banning storm that leaves the SDK with none left, cannot be

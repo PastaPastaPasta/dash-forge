@@ -360,7 +360,8 @@ export interface RankedRepos {
 }
 
 /**
- * Trending (new stargazers in the week or today, `starBeat`), Most starred (all time,
+ * Trending (new stargazers in the week or today: `starBeat`, or the star itself on a fused-star
+ * contract, `lib/repo/star-shape.ts`), Most starred (all time,
  * `star.byRepo`) or Most forked (`repo.forkOf`, its non-fork null group dropped): one proved ranked read, then the ranked repos by id in one composite with
  * their star and issue counts, owners' names and pushes. Two requests, whatever the star count
  * (this replaces the bounded 100-star read that ranked only the repos those stars named).

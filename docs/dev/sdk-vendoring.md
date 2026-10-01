@@ -1,6 +1,6 @@
 # The Platform JS SDK: npm pins, and vendoring as a fallback
 
-forge-web, `tools/mint-identity` and `forge-contracts/sdk-v2` run on `@dashevo/evo-sdk` and `@dashevo/wasm-sdk` **4.2.0-beta.7 from npm**, pinned exactly; forge-web's `pnpm-workspace.yaml` exempts the pair from pnpm's minimum release age while it is new. 4.2.0-beta.7 is the first tag since beta.5 whose release reached npm (dashpay/platform#5077 moved the NPM release to disposable runners).
+forge-web, `tools/mint-identity` and `forge-contracts/sdk-v2` run on `@dashevo/evo-sdk` and `@dashevo/wasm-sdk` **5.0.0-beta.1 from npm** (Platform v5, still protocol 14), pinned exactly; forge-web's `pnpm-workspace.yaml` exempts the pair from pnpm's minimum release age while it is new. Its first release run failed to publish on a transient protoc download; the rerun reached npm (dist-tag `5.0-beta`), so no vendoring was needed.
 
 **Vendoring is fallback tooling.** 4.2.0-beta.6 was never published: its release job asked for a runner group that no longer exists. For such a tag this repository can build the two packages itself and serve them as release assets, with no Rust or LLVM toolchain on any developer's machine or CI job. It was built for beta.6 as [`vendor-sdk-v4.2.0-beta.6`](https://github.com/PastaPastaPasta/dash-forge/releases/tag/vendor-sdk-v4.2.0-beta.6), which proved the pipeline; **nothing depends on that release**, since the move went straight to npm beta.7. Use it again only when a Platform tag the app needs is missing from npm.
 
@@ -66,7 +66,7 @@ Only when a Platform tag the app needs is unpublished on npm (check `npm view @d
 3. In tools/mint-identity and forge-contracts/sdk-v2, set `"@dashevo/evo-sdk"` to the version, drop the `@dashevo/wasm-sdk` dependency and the `overrides` block, then `npm install`.
 4. Run the checks from step 5 above. Leave the pre-release in place (older commits' lockfiles still name it) and note in its description that npm now has the version.
 
-## API notes for the contract rework (4.2.0-beta.6 and beta.7)
+## API notes for the contract rework (4.2.0-beta.6, beta.7 and 5.0.0-beta.1)
 
 ### From beta.5 to beta.6
 
@@ -128,3 +128,16 @@ documentCreateCost(contract: DataContract, documentTypeName: string, options: Do
 
 The measured `Admission` side (what Drive requires the key budget and the balance to cover) stays measured: `documentCreateCost` prices the charge, not the admission check.
 
+### From beta.7 to 5.0.0-beta.1
+
+Platform v5.0.0-beta.1 is the 4.2 line renamed; the protocol is still 14. Paths below are in `dashpay/platform` at the tag.
+
+**Breaking for today's contracts: `immutableAllowSetting` is gone.** Every parse refuses it (`packages/rs-dpp/src/data_contract/document_type/class_methods/try_from_schema/common/mod.rs:3106-3134`). Each set-once property becomes a conditional `immutable` entry, `{ "property": "p", "when": { "present": "$old.p" } }` (Platform book, `contract-keywords/mutability.md`). forge-community's checkRun used it, so its RC1 bytes cannot be parsed by this SDK (no snapshot, no fetch), and beta.7 refuses the new form. The SDK bump therefore ships with the forge-community re-registration and its snapshot, never before. The bonsia snapshot is dropped until then (`forge-web/lib/sdk/contract-seed.ts`).
+
+**JS API: additive, except one field.**
+- `DataContract.documentTypeImmutableProperties` returns `immutableWhen: Record<string, unknown>` in place of `immutableAllowSetting: string[]` (`packages/wasm-dpp2/src/data_contract/document_type_immutability.rs:45-52`). forge-web does not read it.
+- New moderation calls on `contracts`: `moderatorDeleteSettledDocument`, `moderatorApproveTeamAction`, `teamActions`, `teamActionSigners`, `moderationActionCounts` (`packages/js-evo-sdk/src/contracts/facade.ts:194, 210, 314, 331, 351`). Forge contracts declare no moderation.
+- A composite sub-result gains `removed: JoinedDocumentRemoval[]` (`packages/wasm-sdk/src/queries/composite_document.rs:149`), only ever filled for `moderatedDocument` joins. `lib/sdk/composite.ts` maps only the fields it reads.
+- The facade calls forge-web uses (`documents.*`, `contracts.{fetch,getLatestVersions,addKnown}`, `identities.*`, `stateTransitions.*`, `dpns.resolveName`, `system.*`, `epoch.current`) are unchanged, and `tsc --noEmit` is clean on the bump.
+
+**An immutable-property refusal names the property.** Code 40128 renders `property 'p' of document <id> (type 't') is immutable and cannot be changed by a replace` (`packages/rs-dpp/src/errors/consensus/state/document/document_immutable_property_changed_error.rs:27`); a replace that breaks a `when` condition is refused with the same code (`document_type_immutability.rs:45-49`). `lib/sdk/write.ts` reads the property and type out of the text, and `lib/view/write-errors.ts` names the frozen field (a completed check run's evidence, a set-once field, or any other).

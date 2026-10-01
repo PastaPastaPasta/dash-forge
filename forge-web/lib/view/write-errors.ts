@@ -56,6 +56,26 @@ const KEY_BLOCKER: Readonly<Record<KeyUnusableReason, TopUpReason['blocker']>> =
 const EXPIRY_CODES: ReadonlySet<number> = new Set([20016, 40219])
 const DISABLED_CODES: ReadonlySet<number> = new Set([20006, 40208])
 
+/**
+ * A completed check run's evidence (S1) and its set-once fields (D-5): forge-community's
+ * conditional `immutable` entries on checkRun (`forge-contracts/schema/build.py`, Platform v5
+ * `when` conditions).
+ */
+const CHECK_EVIDENCE: ReadonlySet<string> = new Set(['summary', 'detailsUrl', 'logUrl', 'logSha256', 'artifacts'])
+const CHECK_SET_ONCE: ReadonlySet<string> = new Set(['startedAt', 'completedAt', 'conclusion', 'externalId'])
+
+/** Why a replace was refused as changing an immutable property (40128), naming it when Platform did. */
+function frozenField({ property, documentType }: ConsensusRefusal['figures']): string {
+  if (!property) return 'that field cannot be changed once written.'
+  if (documentType === 'checkRun' && CHECK_EVIDENCE.has(property)) {
+    return `this check run has completed, so its evidence is frozen: "${property}" can no longer be changed.`
+  }
+  if (documentType === 'checkRun' && CHECK_SET_ONCE.has(property)) {
+    return `this check run's "${property}" is already set, and it cannot be changed once set.`
+  }
+  return `its "${property}" field cannot be changed once written.`
+}
+
 /** A plain sentence for a consensus refusal that no sheet fixes. */
 function refusalSentence(r: ConsensusRefusal): string {
   const charged =
@@ -72,7 +92,7 @@ function refusalSentence(r: ConsensusRefusal): string {
     case 40127:
       return `Platform refused it: it points at a document from another repo or author. ${charged}`
     case 40128:
-      return `Platform refused it: that field cannot be changed once written. ${charged}`
+      return `Platform refused it: ${frozenField(r.figures)} ${charged}`
     case 10417:
     case 10421:
       return `Platform refused it: a field is longer than the contract allows. Shorten it and try again. ${charged}`

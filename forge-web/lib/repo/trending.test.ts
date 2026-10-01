@@ -4,12 +4,15 @@
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import type { ForgeIds } from '../deployments'
+import { resetStarShapes } from './star-shape'
 import { TRENDING_DEFAULT, TRENDING_PREF_KEY, readMostFollowed, readMostStarred, readTrending, setTrendingPref, trendingPref } from './trending'
 
 const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', community: 'COMMUNITY', group: 'G' }
+/** C1's star schema, as far as the shape reads it: `byWeek` with its time window. */
+const FUSED_STAR = { indices: [{ name: 'byWeek', timeRange: { on: '$createdAt', range: 604800, step: 86400, ttl: 604800 } }] }
 
 function memoryStore(): Pick<Storage, 'getItem' | 'setItem'> & { data: Map<string, string> } {
   const data = new Map<string, string>()
@@ -35,8 +38,12 @@ describe('the "count my stars toward Trending" preference', () => {
 })
 
 describe('ranked reads', () => {
-  function rankedSdk(seen: unknown[]): EvoSDK {
+  beforeEach(() => resetStarShapes())
+
+  /** `schemas`: forge-community's document types (a fused star carries a time-window index, `star-shape.ts`). */
+  function rankedSdk(seen: unknown[], schemas: Record<string, object> = { star: {}, starBeat: {} }): EvoSDK {
     return {
+      contracts: { fetch: () => Promise.resolve({ schemas }) },
       documents: {
         ranked: (q: unknown) => {
           seen.push(q)
@@ -64,6 +71,26 @@ describe('ranked reads', () => {
       { group: 'RepoB', keyHex: 'b2'.repeat(32), count: 3, rank: 0 },
       { group: 'RepoA', keyHex: 'a1'.repeat(32), count: 3, rank: 1 },
     ])
+  })
+
+  it('on a fused-star contract (RC2 C1) trending ranks the star itself, with the same windows', async () => {
+    const seen: unknown[] = []
+    await readTrending(rankedSdk(seen, { star: FUSED_STAR }), FORGE, 'week', 25)
+    expect(seen).toEqual([
+      { dataContractId: 'COMMUNITY', documentTypeName: 'star', groupBy: 'repoId', aggregate: { type: 'count' }, limit: 25, direction: 'desc', timeRange: [{ field: '$createdAt', selector: 'oldest' }] },
+    ])
+  })
+
+  it('reads the shape once per contract, and again after a failed read', async () => {
+    let fetches = 0
+    const flaky = {
+      contracts: { fetch: () => (++fetches === 1 ? Promise.reject(new Error('offline')) : Promise.resolve({ schemas: { star: FUSED_STAR } })) },
+      documents: { ranked: () => Promise.resolve({ startingRank: 0n, entries: [] }) },
+    } as unknown as EvoSDK
+    await expect(readTrending(flaky, FORGE, 'week')).rejects.toThrow('offline')
+    await readTrending(flaky, FORGE, 'week')
+    await readTrending(flaky, FORGE, 'today')
+    expect(fetches).toBe(2)
   })
 
   it('most starred ranks star.byRepo and most followed follow.byTarget, all time', async () => {

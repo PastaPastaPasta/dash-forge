@@ -6,7 +6,7 @@
 //        [--identities <dir>] [--state <file>] [--summary <file>] [--deployment <file>]
 //
 // Writes the RC1 documents (contracts/forge-{core,collab,community}.json; the rules are in
-// docs/contracts/forge-v2.md). Needs `npm ci` in forge-contracts/sdk-v2 (evo-sdk 4.2.0-beta.7),
+// docs/contracts/forge-v2.md). Needs `npm ci` in forge-contracts/sdk-v2 (evo-sdk 5.0.0-beta.1),
 // the three-contract deployment in deployments/<network>.json, and the test identities OWNER,
 // MAINTAINER, COLLAB and CONTRIB in --identities (default
 // ~/.config/dash-forge/test-identities/<network>/). The network defaults to

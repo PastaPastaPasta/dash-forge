@@ -28,10 +28,14 @@ export type ContractSnapshots = Readonly<Record<string, ContractSnapshot>>
  * devnet moutai has none: its beta.6 registration's `lookup` / `propertyAgreement` bytes are
  * refused by beta.7 on every parse (platform#5197), so a moutai build fetches its contracts
  * (one request each, cached).
+ *
+ * devnet bonsia has none until its RC2 registration on Platform v5: the RC1 (beta.7) bytes of
+ * forge-community carry checkRun's `immutableAllowSetting`, which v5 refuses on every parse
+ * (rs-dpp 5.0.0-beta.1 `document_type/class_methods/try_from_schema/common/mod.rs:3106-3134`), and
+ * the re-cut retires every RC1 id anyway. After the registration, `snapshot-contracts.mjs` writes
+ * `devnet-bonsia.json` again; add its entry back here (`contract-seed.test.ts` fails until then).
  */
-const SNAPSHOTS: Readonly<Record<string, () => Promise<{ default: ContractSnapshots }>>> = {
-  'devnet-bonsia': () => import('../../../forge-contracts/deployments/contracts/devnet-bonsia.json'),
-}
+const SNAPSHOTS: Readonly<Record<string, () => Promise<{ default: ContractSnapshots }>>> = {}
 
 /** The deployment keys that have a snapshot. */
 export const SNAPSHOT_KEYS: readonly string[] = Object.keys(SNAPSHOTS)

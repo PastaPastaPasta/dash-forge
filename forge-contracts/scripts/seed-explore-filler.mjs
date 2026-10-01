@@ -5,7 +5,7 @@
 //   node forge-contracts/scripts/seed-explore-filler.mjs --identity <explore-filler.identity.json> \
 //        [--count 25] [--network devnet --devnet-name bonsia] [--deployment <file>] [--pace-ms 700]
 //
-// Writes RC1 documents; needs `npm ci` in forge-contracts/sdk-v2 (evo-sdk 4.2.0-beta.7). The
+// Writes RC1 documents; needs `npm ci` in forge-contracts/sdk-v2 (evo-sdk 5.0.0-beta.1). The
 // network defaults to DASH_FORGE_NETWORK / DASH_FORGE_DEVNET_NAME, else devnet bonsia. Each repo
 // is what `dg repo create <name> --storage platform` writes for a public repo with nothing
 // pushed: the repo and its owner's own maintainer enrolment.

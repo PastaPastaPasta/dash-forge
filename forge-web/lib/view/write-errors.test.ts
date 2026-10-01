@@ -244,3 +244,37 @@ describe('an unusable key opens renew, not a raw error (D-042)', () => {
     expect(writeFailure(new KeyUnusableError('level')).message).not.toMatch(/disabled/)
   })
 })
+
+describe('an immutable-property refusal (40128) names the frozen field', () => {
+  // Drive's text, rs-dpp 5.0.0-beta.1 `document_immutable_property_changed_error.rs:27`.
+  const immutable = (property: string, type: string) =>
+    `Protocol error: property '${property}' of document 7Yx2Lq3VhVdmMdhyJHZZ5BdLW5YsZQpYUBSBH6nvKw8B (type '${type}') is immutable and cannot be changed by a replace`
+
+  it('reads the property and document type from the text', () => {
+    const r = asConsensusRefusal(wasm(immutable('logUrl', 'checkRun'), 40128))
+    expect(r?.code).toBe(40128)
+    expect(r?.figures).toEqual({ property: 'logUrl', documentType: 'checkRun' })
+  })
+  it('a completed run: its evidence is frozen', () => {
+    const f = writeFailure(asConsensusRefusal(wasm(immutable('logUrl', 'checkRun'), 40128)))
+    expect(f.sheet).toBeNull()
+    expect(f.message).toMatch(/check run has completed, so its evidence is frozen: "logUrl"/)
+    expect(f.message).toMatch(/fee was charged/)
+  })
+  it('a set-once check-run field', () => {
+    expect(writeFailure(asConsensusRefusal(checkTx(immutable('conclusion', 'checkRun'), 40128))).message).toMatch(
+      /check run's "conclusion" is already set.*Nothing was charged/,
+    )
+  })
+  it('any other type names the field, not the schema type', () => {
+    const { message } = writeFailure(asConsensusRefusal(wasm(immutable('headOid', 'patch'), 40128)))
+    expect(message).toMatch(/its "headOid" field cannot be changed once written/)
+    expect(message).not.toMatch(/patch/)
+  })
+  it('an older text without the property still reads as 40128 with the generic sentence', () => {
+    const r = asConsensusRefusal(wasm('Protocol error: Document field is immutable and cannot be changed by a replace'))
+    expect(r?.code).toBe(40128)
+    expect(r?.figures).toEqual({})
+    expect(writeFailure(r).message).toMatch(/that field cannot be changed once written/)
+  })
+})

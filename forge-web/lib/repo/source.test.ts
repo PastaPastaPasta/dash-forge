@@ -48,7 +48,9 @@ describe('which contract holds a type', () => {
     ['forge-community', COMMUNITY_TYPES],
   ] as const)('names the types the %s schema declares, and no other', (name, types) => {
     const schema = JSON.parse(readFileSync(resolve(process.cwd(), '..', 'forge-contracts', 'contracts', `${name}.json`), 'utf8')) as { documentSchemas: Record<string, unknown> }
-    expect([...types].sort()).toEqual(Object.keys(schema.documentSchemas).sort())
+    // A fused-star forge-community (RC2 C1) has no starBeat; the layout keeps it for the beat shape.
+    const declared = [...types].filter((t) => t !== 'starBeat' || t in schema.documentSchemas)
+    expect(declared.sort()).toEqual(Object.keys(schema.documentSchemas).sort())
   })
 })
 

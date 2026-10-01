@@ -5,7 +5,7 @@
 //   node forge-contracts/scripts/verify-c1.mjs --owner <A.identity.json> --member <B.identity.json> \
 //        --third <C.identity.json> [--network devnet --devnet-name bonsia] [--deployment <file>]
 //
-// Needs `npm ci` in forge-contracts/sdk-v2 (evo-sdk 4.2.0-beta.7). The network defaults to
+// Needs `npm ci` in forge-contracts/sdk-v2 (evo-sdk 5.0.0-beta.1). The network defaults to
 // DASH_FORGE_NETWORK / DASH_FORGE_DEVNET_NAME, else devnet bonsia.
 //
 // Three identities minted for the run (never the shared fixtures): OWNER creates two scratch
