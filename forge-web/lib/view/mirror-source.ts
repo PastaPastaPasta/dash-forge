@@ -82,7 +82,8 @@ export function mirrorSourceOfDescription(description: string, kind: MirrorKind)
 export function withoutMirrorMarker(description: string): string {
   const d = description.trim()
   const m = DESCRIPTION.exec(d)
-  if (m === null) return d
+  // Only a marker this module reads as a mirror source: other text stays as written.
+  if (m === null || mirrorSourceOfDescription(d, 'issue') === null) return d
   return d.slice(0, m.index).trimEnd()
 }
 

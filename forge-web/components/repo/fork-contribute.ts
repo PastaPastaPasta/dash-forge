@@ -20,6 +20,15 @@ export function contributeHref(parent: Pick<RepoRef, 'ownerId' | 'name'>, fork: 
 }
 
 /**
+ * The branch of a fork to propose by default: its default branch when it has it, else its first
+ * branch (a fork made with "Copy the default branch only" from a parent without that branch).
+ */
+export function forkHeadBranch(home: Pick<RepoHome, 'defaultBranch' | 'branches'>): string {
+  const names = home.branches.map((b) => b.refName.slice('refs/heads/'.length))
+  return names.includes(home.defaultBranch) || names.length === 0 ? home.defaultBranch : (names[0] as string)
+}
+
+/**
  * The public repository `home` was forked from, or null (not a fork, not public, or still being
  * read). One cached read per repo (`readForkParent`).
  */

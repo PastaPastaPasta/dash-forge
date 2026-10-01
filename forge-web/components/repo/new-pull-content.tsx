@@ -18,6 +18,7 @@ import { useRouter } from 'next/navigation'
 
 import { DraftMarkError, createPatch, findForks, readRefs, repoKey, type ResolvedRef, type RepoRef } from '@/lib/repo'
 import { branchName, commitSubject, readCommit, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
+import { shortIdentity } from '@/lib/view/format'
 import { preferring, type PullComparison } from '@/lib/view/pull-diff'
 import { branchRefName, headKeyOf, sortBranches } from '@/lib/view/refs'
 import { dropPrDraft, loadPrDraft, savePrDraft } from '@/lib/view/pr-draft'
@@ -35,7 +36,7 @@ import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { PushBranchHint } from '@/components/repo/push-branch-hint'
-import { contributeHref, useForkParent } from '@/components/repo/fork-contribute'
+import { contributeHref, forkHeadBranch, useForkParent } from '@/components/repo/fork-contribute'
 import { cn } from '@/lib/utils'
 
 /** A branch a PR can come from: this repo's, or one of the viewer's forks'. */
@@ -65,8 +66,10 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   const [body, setBody] = useState(saved?.body ?? '')
   const [preview, setPreview] = useState(false)
   // `?base=master&head=develop` as GitHub writes them, or full ref names and `repo:branch` keys (L-30).
-  const [base, setBase] = useState(saved?.base || branchRefName(baseParam) || `refs/heads/${home.defaultBranch}`)
-  const [headKey, setHeadKey] = useState(saved?.head || headKeyOf(headParam, repo.repoId))
+  // A link's own base and head win over a kept draft's: a Contribute link or a Base repository
+  // switch names the head to propose (QW3-012).
+  const [base, setBase] = useState(branchRefName(baseParam) || saved?.base || `refs/heads/${home.defaultBranch}`)
+  const [headKey, setHeadKey] = useState(headParam.trim() !== '' ? headKeyOf(headParam, repo.repoId) : (saved?.head ?? ''))
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
@@ -82,9 +85,12 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   )
 
   const branches = useMemo(() => sortBranches(home.branches.filter((b) => tipOidOf(b) !== null), home.defaultBranch), [home.branches, home.defaultBranch])
-  // A fork the head names (a fork's Contribute link): listed even when it is not the viewer's.
-  const colon = headKey.indexOf(':')
-  const namedFork = colon > 0 && headKey.slice(0, colon) !== repo.repoId ? headKey.slice(0, colon) : null
+  // A fork the link's (or the kept draft's) head names, e.g. a fork's Contribute link: listed even
+  // when it is not the viewer's, for as long as this form is open.
+  const [namedFork] = useState(() => {
+    const colon = headKey.indexOf(':')
+    return colon > 0 && headKey.slice(0, colon) !== repo.repoId ? headKey.slice(0, colon) : null
+  })
   const forks = useAsync(
     async () => {
       // Every fork of this repo (one `forkOf` index read), kept: the viewer's and the named one.
@@ -121,6 +127,30 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   // No head until one is picked (L-47): guessing one started a merge-base walk over a branch
   // nobody asked about, and prefilled its title.
   const head = options.find((o) => o.key === headKey) ?? null
+
+  // "Base repository" (QW3-012), as on GitHub's compare page: a fork's form offers its parent; a
+  // parent's form proposing a fork's branch offers that fork. Switching opens the other repo's
+  // form with the same head, title and description.
+  const baseRepos: { readonly repo: RepoRef; readonly label: string }[] =
+    forkParent !== null
+      ? [
+          { repo: forkParent, label: `${shortIdentity(forkParent.ownerId)}/${forkParent.name} (forked from)` },
+          { repo, label: `${shortIdentity(repo.ownerId)}/${repo.name} (this fork)` },
+        ]
+      : head !== null && head.repo.repoId !== repo.repoId
+        ? [
+            { repo, label: `${shortIdentity(repo.ownerId)}/${repo.name} (this repo)` },
+            { repo: head.repo, label: `${shortIdentity(head.repo.ownerId)}/${head.repo.name} (the fork)` },
+          ]
+        : []
+  const switchBase = (to: RepoRef): void => {
+    // Into the parent, this fork's branch is the head; into the fork, the head is its own branch.
+    const intoParent = forkParent !== null && to.repoId === forkParent.repoId
+    const branch = head === null ? forkHeadBranch(home) : branchName(head.refName)
+    const href = intoParent ? contributeHref(to, repo, branch) : repoHref('/repo/pulls/new', { owner: to.ownerId, name: to.name }, { head: branch })
+    savePrDraft(to, { title: titleTouched ? title : '', body, head: intoParent ? `${repo.repoId}:refs/heads/${branch}` : `${to.repoId}:refs/heads/${branch}`, base: '' })
+    router.push(href)
+  }
   const baseRef = branches.find((b) => b.refName === base)
   const baseTip = tipOidOf(baseRef) ?? ''
   // The base must be a branch of this repo now (D-501): a `?base=` link or a kept draft can
@@ -210,20 +240,23 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
 
       {/* Each field may shrink below its select's widest option, so a long branch name never pushes the pickers past a phone's edge. */}
       <div className="flex flex-wrap items-end gap-3 rounded-lg border border-anvil-200 p-3 dark:border-anvil-800 [&>*]:min-w-0 [&>*]:max-w-full">
-        {forkParent !== null ? (
+        {baseRepos.length > 1 ? (
           <Field label="Base repository" htmlFor="pr-base-repo">
             <select
               id="pr-base-repo"
-              value="fork"
+              value={repo.repoId}
               data-testid="pr-base-repo"
               onChange={(e) => {
-                // The parent's form, with the branch picked here (else this fork's default) as the head.
-                if (e.target.value === 'parent') router.push(contributeHref(forkParent, repo, head !== null && head.repo.repoId === repo.repoId ? branchName(head.refName) : home.defaultBranch))
+                const to = baseRepos.find((b) => b.repo.repoId === e.target.value)
+                if (to !== undefined && to.repo.repoId !== repo.repoId) switchBase(to.repo)
               }}
               className="h-9 min-w-0 max-w-full rounded-md border border-anvil-300 bg-white px-2 font-mono text-dense coarse:h-11 coarse:text-base text-anvil-900 dark:border-anvil-700 dark:bg-anvil-950 dark:text-anvil-100"
             >
-              <option value="parent">{forkParent.name} (forked from)</option>
-              <option value="fork">{repo.name} (this fork)</option>
+              {baseRepos.map((b) => (
+                <option key={b.repo.repoId} value={b.repo.repoId}>
+                  {b.label}
+                </option>
+              ))}
             </select>
           </Field>
         ) : null}

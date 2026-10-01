@@ -126,6 +126,43 @@ pub fn forkable_ref(name: &str) -> bool {
     name.starts_with("refs/heads/") || name.starts_with("refs/tags/")
 }
 
+/// `description` without forge-import's mirror marker (`Mirror of github.com/o/r`, or a
+/// trailing ` (mirror of github.com/o/r)`), which a fork would otherwise copy and then read as
+/// a mirror. Only a marker the web reads as one is dropped (a `host[:port]/path` with no
+/// spaces, two segments on github.com); anything else is kept as written.
+pub fn without_mirror_marker(description: &str) -> String {
+    let d = description.trim();
+    let is_source = |src: &str| {
+        let Some((host, path)) = src.split_once('/') else {
+            return false;
+        };
+        let (name, port) = host.split_once(':').unwrap_or((host, ""));
+        !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-')
+            && port.chars().all(|c| c.is_ascii_digit())
+            && host.contains(':') != port.is_empty()
+            && !path.is_empty()
+            && !path.contains(|c: char| c.is_whitespace() || c == '(' || c == ')')
+            && (name != "github.com" || path.split('/').count() == 2)
+    };
+    if let Some(src) = d.strip_prefix("Mirror of ") {
+        if is_source(src) {
+            return String::new();
+        }
+    }
+    if let Some(at) = d.rfind("(mirror of ") {
+        let inner = &d[at + "(mirror of ".len()..];
+        if let Some(src) = inner.strip_suffix(')') {
+            if is_source(src) {
+                return d[..at].trim_end().to_string();
+            }
+        }
+    }
+    d.to_string()
+}
+
 /// The refs a fork still needs: every branch and tag of the parent ([`forkable_ref`]) that
 /// resolves to a tip (a diverged ref at its provisional tip) and that the fork does not have
 /// at all. A ref the fork already has is the fork owner's own from then on and is never
@@ -408,6 +445,32 @@ mod tests {
             vec![("refs/heads/new".to_string(), "cc".to_string())]
         );
         assert_eq!(plan_refs(&parent, &[]).len(), 3);
+    }
+
+    #[test]
+    fn a_fork_of_a_mirror_drops_the_mirror_marker_from_its_description() {
+        assert_eq!(
+            without_mirror_marker("Dash Improvement Proposals (mirror of github.com/dashpay/dips)"),
+            "Dash Improvement Proposals"
+        );
+        assert_eq!(
+            without_mirror_marker("Mirror of github.com/dashpay/dash"),
+            ""
+        );
+        assert_eq!(
+            without_mirror_marker("Mirror of gitlab.example.com:8443/g/sub/p"),
+            ""
+        );
+        // Not a marker the web reads: kept as written.
+        assert_eq!(
+            without_mirror_marker("Tools (mirror of github.com/a/b/c)"),
+            "Tools (mirror of github.com/a/b/c)"
+        );
+        assert_eq!(
+            without_mirror_marker("Tools (mirror of github.com/a/b"),
+            "Tools (mirror of github.com/a/b"
+        );
+        assert_eq!(without_mirror_marker("  Plain  "), "Plain");
     }
 
     #[test]

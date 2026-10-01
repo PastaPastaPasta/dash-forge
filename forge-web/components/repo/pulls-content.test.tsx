@@ -120,6 +120,7 @@ const HOME = {
   v2: { forkOf: null },
   description: '',
   defaultBranch: 'main',
+  branches: [],
 } as unknown as RepoHome
 const addr = { owner: 'o', name: 'n' }
 

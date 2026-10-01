@@ -80,7 +80,7 @@ import { MirrorNote } from '@/components/repo/mirror-note'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
-import { contributeHref, useForkParent } from '@/components/repo/fork-contribute'
+import { contributeHref, forkHeadBranch, useForkParent } from '@/components/repo/fork-contribute'
 
 /** The PR list's search grammar (`lib/view/pull-query`): a submit keeps the state tab. */
 const PULL_GRAMMAR: ListGrammar<PullListQuery> = {
@@ -156,7 +156,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
         <TriageNav addr={addr} />
         <Link
           // A fork proposes to its parent, as on GitHub (QW3-012); the form there offers this fork's branches.
-          href={forkParent !== null ? contributeHref(forkParent, home.repo, home.defaultBranch) : repoHref('/repo/pulls/new', addr)}
+          href={forkParent !== null ? contributeHref(forkParent, home.repo, forkHeadBranch(home)) : repoHref('/repo/pulls/new', addr)}
           className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md bg-forge-700 px-2.5 text-dense font-medium text-white hover:bg-forge-800 coarse:h-11"
         >
           <GitPullRequest className="h-3.5 w-3.5" aria-hidden /> New pull request

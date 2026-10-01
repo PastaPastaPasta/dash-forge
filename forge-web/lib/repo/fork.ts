@@ -139,7 +139,8 @@ export function forkableRef(refName: string): boolean {
 /**
  * The refs a fork still needs: every parent branch and tag ({@link forkableRef}) with a tip that
  * the fork does not have at all, or only `onlyBranch` (the default branch, GitHub's "Copy the
- * main branch only"; QW3-010). Parity: forge-core `fork::plan_refs`.
+ * main branch only"; QW3-010). Parity: forge-core `fork::plan_refs` (which copies every branch
+ * and tag: `dg repo fork` has no default-branch-only mode).
  */
 export function planRefs(
   parent: readonly Pick<ResolvedRef, 'refName' | 'state'>[],
@@ -300,7 +301,7 @@ export async function forkRepoV2(
   const refsWritten: string[] = []
   if (unreferenceable.length === 0) {
     const [parentRefs, forkRefs] = await Promise.all([readRefs(sdk, parent), readRefs(sdk, fork)])
-    const todo = planRefs(parentRefs, forkRefs, input.defaultBranchOnly === true ? (input.defaultBranch ?? 'main') : undefined)
+    const todo = planRefs(parentRefs, forkRefs, input.defaultBranchOnly === true ? input.defaultBranch || 'main' : undefined)
     for (const { refName, oid } of todo) {
       await writeRefUpdate(sdk, auth, fork, { refName, newOid: oid }, { intent: `fork:${fork.repoId}:ref:${refName}:${oid}` })
       refsWritten.push(refName)

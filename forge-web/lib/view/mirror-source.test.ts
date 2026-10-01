@@ -59,6 +59,8 @@ describe('a fork of a mirror is no mirror (QW3-011)', () => {
     expect(withoutMirrorMarker('Mirror of github.com/dashpay/dash')).toBe('')
     expect(withoutMirrorMarker('  A plain description  ')).toBe('A plain description')
     expect(withoutMirrorMarker('Mirror of the moon (mirror of github.com/o/r)')).toBe('Mirror of the moon')
+    // Not a marker it reads as a source: kept as written.
+    expect(withoutMirrorMarker('Tools (mirror of github.com/a/b/c)')).toBe('Tools (mirror of github.com/a/b/c)')
   })
 
   it("never reads a fork's copied description as provenance", () => {
