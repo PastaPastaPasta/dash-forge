@@ -1,0 +1,35 @@
+{
+  "network": "devnet-sakura",
+  "forgeCore": "EfLLbzVBngukybqgraA7VXtLZ5PpU54eiaB9Dcxqbkkz",
+  "forgeCollab": "6scu1j9FQkt3EYr9yoAfEL1SUaYX7F7mnaUFYiRLgjgb",
+  "forgeCommunity": "6fVegRiRdQtLitWjSugTjYcV8CWnAMv6QxH5r8ezTRur",
+  "demo": {
+    "owner": "G6D3ejKxgcc4yRSRyuLoPg9RGa7XWPwB9kBzU29hgEQH",
+    "name": "forge-v2-demo",
+    "repoId": "8KBVQ41HTueY1nuGhpAGNUEy9BQSAgCHV9Z34VUw9ZuP",
+    "reviewParityPull": 7
+  },
+  "pulls": {
+    "approved": 5,
+    "merged": 6,
+    "reviewParity": 7
+  },
+  "empty": {
+    "owner": "CpH7XH6Xh19mGX3hKZrU8XARHcGJHWo61L8YHfw1ijuS",
+    "name": "forge-v2-empty",
+    "repoId": "9PabT2eBoRm1whJunweE61tghv85cw3vpEhqenguHr4D"
+  },
+  "check": {
+    "name": "fixture-ci",
+    "sha": "3a1300eb2441ef94fd927dbfc7548d34fbb8edc5",
+    "reporter": "FkxLvDU3eZfUoJdsorAHvcvuJ9RjnaHwaWvuZk7rwWGv"
+  },
+  "release": "v0.1.0",
+  "commits": {
+    "c1": "4a9c68802813c69452e1c46fba8d2acd67bec3a9",
+    "c2": "b35c50122cd51b2cc0345760721e6398fa0c31f5",
+    "c3": "3a1300eb2441ef94fd927dbfc7548d34fbb8edc5"
+  },
+  "packHash": "ef20a234d4e9be5a57515245d200c947222f98dbeea79dbc0643d948f6d89674",
+  "locatorHash": "3c34f7292c7092a4535af857f0e870571b53e416cd82bb3dd4094798a52f4453"
+}
