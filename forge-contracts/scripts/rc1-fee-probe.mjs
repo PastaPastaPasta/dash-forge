@@ -15,10 +15,15 @@
 // --state keeps the probe contracts' ids, so a rerun measures again without registering again.
 //
 // --rc2 runs the RC2 registration gates instead (design/v5/PLAN.md §4.2 step 2; lib/rc2-probe.mjs):
-// four probe contracts cut from the build.py variants (ALL, S2, S3, NONE), and per probe pair
-//   - review:  S2 toAuthor alone, S3 author alone, and both, against neither   (ship each <= +10 %)
-//   - star:    the fused star (C1) against star + starBeat                      (ship C1 when <=)
-// It prints the build.py flags to turn off; the decision is then a FLAGS edit (build.py header).
+// six probe contracts cut from the build.py variants, written with the same documents
+//   - review (ALL, S2, S3, NONE): S2 toAuthor alone, S3 author alone, and both, against neither
+//     (ship S2, S3 each at <= +10 %)
+//   - star (FUSED, SPLIT): the fused star (C1) against star + starBeat (ship C1 when it costs no
+//     more than the pair, and no more than 54.9 M)
+// Each probe contract gets one unpriced warm-up write per type first (a type's first write costs
+// more), then n priced rounds in a rotated order. It prints the build.py flags to turn off
+// (`turnOff`); the decision is then a FLAGS edit (build.py header). The state file keeps each
+// probe's id and schema hash: a rerun reuses a probe whose schema is unchanged.
 //
 //   node forge-contracts/scripts/rc1-fee-probe.mjs --rc2 --devnet-name bonsia --identity <file> [--n 4]
 //   node forge-contracts/scripts/rc1-fee-probe.mjs --rc2 --emit <dir>   # offline: the probe contracts
@@ -28,8 +33,8 @@ import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { contractId, loadEvoSdk } from './deploy-v2.mjs';
-import { PROBES, RC2_DOCS, emitted, materialize, probeSchemas } from './lib/rc2-probe.mjs';
+import { PROTOCOL_VERSION, contractId, loadEvoSdk } from './deploy-v2.mjs';
+import { PROBES, RC2_DOCS, REVIEW_PROBES, bare, emitted, materialize, probeSchemas, schemaHash } from './lib/rc2-probe.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, t, i, a) => (t.startsWith('--') ? [...acc, [t.slice(2), a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true]] : acc), []));
@@ -38,8 +43,16 @@ const N = Number(args.n ?? 4);
 const RC2 = Boolean(args.rc2);
 const statePath = String(args.state ?? join(homedir(), '.cache', 'dash-forge', `${RC2 ? 'rc2' : 'rc1'}-fee-probe-${devnetName}.json`));
 const log = (m) => console.error(`${new Date().toISOString().slice(11, 19)} ${m}`);
+const usage = (m) => {
+  console.error(`${m}\nusage: rc1-fee-probe.mjs [--rc2] --devnet-name <name> --identity <file> [--state <file>] [--n 4]\n       rc1-fee-probe.mjs --rc2 --emit <dir>`);
+  process.exit(2);
+};
+const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+const median = (a) => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)];
 
-if (RC2 && args.emit) {
+if (args.emit !== undefined) {
+  if (!RC2) usage('--emit needs --rc2');
+  if (args.emit === true) usage('--emit needs a directory');
   const dir = resolve(String(args.emit));
   for (const sub of ['contracts', 'vectors']) mkdirSync(join(dir, sub), { recursive: true });
   for (const [probe, schema] of Object.entries(probeSchemas())) {
@@ -50,24 +63,16 @@ if (RC2 && args.emit) {
   log(`wrote contracts/rc2-{${PROBES.join(',')}}.json and their vectors/ to ${dir}`);
   process.exit(0);
 }
+if (typeof args.identity !== 'string') usage('--identity <file> is required');
+if (!(N >= 1)) usage('--n must be at least 1');
 const dep = JSON.parse(readFileSync(join(ROOT, 'deployments', `devnet-${devnetName}.json`), 'utf8'));
 
 const load = (name) => JSON.parse(readFileSync(join(ROOT, 'contracts', `${name}.json`), 'utf8'));
-const core = load('forge-core');
-const comm = load('forge-community');
 
-/** A copy of an RC1 type with every reference and gate removed. */
-function bare(schema) {
-  const s = JSON.parse(JSON.stringify(schema));
-  delete s.ownerRefersTo;
-  for (const p of Object.values(s.properties)) delete p.refersTo;
-  if (s.propertyConstraints) {
-    // only the rules that read nothing else (none of these three reads a total or a reference)
-    for (const [k, v] of Object.entries(s.propertyConstraints)) if (JSON.stringify(v).match(/countOf|sumOf/)) delete s.propertyConstraints[k];
-  }
-  return s;
-}
+/** RC1 probe A (with the features) or B (without): chunk, star and checkRun, bare. */
 function probe(withFeatures) {
+  const core = load('forge-core');
+  const comm = load('forge-community');
   const chunk = bare(core.documentSchemas.chunk);
   const star = bare(comm.documentSchemas.star);
   const checkRun = bare(comm.documentSchemas.checkRun);
@@ -119,81 +124,88 @@ async function priced(fn) {
 
 mkdirSync(dirname(statePath), { recursive: true });
 const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : {};
+const saveState = () => writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
+
+/**
+ * Register probe `key` from `json` unless the state file has it on chain from the same schema
+ * (an RC1 record without a hash is reused as before). Returns true when it registered.
+ */
+async function register(key, json) {
+  const hash = schemaHash(json);
+  const recorded = state[`${key}SchemaHash`];
+  if (state[key] && (recorded === undefined || recorded === hash) && (await sdk.contracts.fetch(state[key]))) return false;
+  const nonce = (BigInt((await sdk.identities.nonce(owner)) ?? 0n) & 0xFFFFFFFFFFn) + 1n;
+  const id = contractId(owner, nonce);
+  const dataContract = DataContract.fromJSON({ $formatVersion: '1', id, ownerId: owner, version: 1, ...json }, true, PROTOCOL_VERSION);
+  const cost = await priced(() => sdk.contracts.publish({ dataContract, ...critical }));
+  Object.assign(state, { [key]: id, [`${key}RegistrationCredits`]: cost, [`${key}SchemaHash`]: hash });
+  saveState();
+  log(`probe ${key}: ${id} registered (${cost} credits)`);
+  return true;
+}
+
+async function create(contract, type, data) {
+  const base = new Document({ properties: {}, documentTypeName: type, dataContractId: contract, ownerId: owner });
+  const document = Document.fromObject({ ...base.toObject(), ...data }, version);
+  return sdk.documents.create({ document, ...high });
+}
+const write = (contract, type, data) => priced(() => create(contract, type, data));
+
 if (RC2) {
-  // Register the four probes (each once: --state keeps their ids), then one patch per probe for
-  // its reviews to name (review.patchId's `where` reads repoId and vis, so every review shares R)
   const schemas = probeSchemas();
-  const R = randomBytes(32);
-  for (const probe of PROBES) {
-    if (state[probe] && (await sdk.contracts.fetch(state[probe]))) continue;
-    const nonce = (BigInt((await sdk.identities.nonce(owner)) ?? 0n) & 0xFFFFFFFFFFn) + 1n;
-    const id = contractId(owner, nonce);
-    const dataContract = DataContract.fromJSON({ $formatVersion: '1', id, ownerId: owner, version: 1, ...schemas[probe] }, true, 14);
-    state[probe] = id;
-    state[`${probe}RegistrationCredits`] = await priced(() => sdk.contracts.publish({ dataContract, ...critical }));
-    delete state.patches;
-    writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
-    log(`probe ${probe}: ${id} registered (${state[`${probe}RegistrationCredits`]} credits)`);
-  }
-  const patches = {};
-  for (const probe of PROBES) {
-    const document = Document.fromObject({ ...new Document({ properties: {}, documentTypeName: 'patch', dataContractId: state[probe], ownerId: owner }).toObject(), ...materialize(RC2_DOCS.patch, { repoId: R }, randomBytes) }, version);
-    const created = await sdk.documents.create({ document, ...high });
-    patches[probe] = Buffer.from(created.id.toBytes());
-  }
-  const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
-  const costs = { review: Object.fromEntries(PROBES.map((p) => [p, []])), star: { ALL: [], NONE: [] } };
-  for (let i = 0; i < N; i++) {
-    // the same review on every probe, in an order rotated each round so a drift over the run cancels out
-    const review = materialize(RC2_DOCS.review, { repoId: R }, randomBytes);
-    const order = PROBES.map((_, j) => PROBES[(i + j) % PROBES.length]);
-    for (const probe of order) costs.review[probe].push(await write(state[probe], 'review', { ...review, patchId: patches[probe] }));
+  state.patches ??= {};
+  for (const p of PROBES) if (await register(p, schemas[p])) delete state.patches[p];
+  // One patch per review probe for its reviews to name (review.patchId's `where` reads repoId and
+  // vis, so every review of a probe shares that patch's repoId), kept in the state file
+  for (const p of REVIEW_PROBES) {
+    if (state.patches[p]) continue;
     const repoId = randomBytes(32);
-    const beat = materialize(RC2_DOCS.starBeat, { repoId }, randomBytes);
-    for (const probe of i % 2 === 0 ? ['ALL', 'NONE'] : ['NONE', 'ALL']) {
-      let credits = await write(state[probe], 'star', { repoId });
-      if (probe === 'NONE') credits += await write(state.NONE, 'starBeat', beat);
-      costs.star[probe].push(credits);
-    }
+    const created = await create(state[p], 'patch', materialize(RC2_DOCS.patch, { repoId }, randomBytes));
+    state.patches[p] = { id: Buffer.from(created.id.toBytes()).toString('hex'), repoId: repoId.toString('hex') };
+    saveState();
+  }
+  const reviewOn = (p) => materialize(RC2_DOCS.review, { repoId: Buffer.from(state.patches[p].repoId, 'hex'), patchId: Buffer.from(state.patches[p].id, 'hex') }, randomBytes);
+  /** The credits of a star on FUSED, or of a star and its beat on SPLIT (the same repo id for both). */
+  const star = async (p) => {
+    const repoId = randomBytes(32);
+    const credits = await write(state[p], 'star', { repoId });
+    return p === 'SPLIT' ? credits + (await write(state.SPLIT, 'starBeat', materialize(RC2_DOCS.starBeat, { repoId }, randomBytes))) : credits;
+  };
+  // The first write of a type costs more (its trees are created): one unmeasured write per probe first
+  for (const p of REVIEW_PROBES) await create(state[p], 'review', reviewOn(p));
+  for (const p of ['FUSED', 'SPLIT']) await star(p);
+  const costs = { review: Object.fromEntries(REVIEW_PROBES.map((p) => [p, []])), star: { FUSED: [], SPLIT: [] } };
+  for (let i = 0; i < N; i++) {
+    // a rotated order each round, so a drift over the run cancels out
+    for (const p of REVIEW_PROBES.map((_, j) => REVIEW_PROBES[(i + j) % REVIEW_PROBES.length])) costs.review[p].push(await write(state[p], 'review', reviewOn(p)));
+    for (const p of i % 2 === 0 ? ['FUSED', 'SPLIT'] : ['SPLIT', 'FUSED']) costs.star[p].push(await star(p, true));
   }
   const none = mean(costs.review.NONE);
-  const added = (probe) => Number((100 * (mean(costs.review[probe]) / none - 1)).toFixed(2));
+  const added = (p) => Number((100 * (mean(costs.review[p]) / none - 1)).toFixed(2));
+  const pairedMedian = (p) => median(costs.review[p].map((c, i) => c - costs.review.NONE[i]));
+  const STAR_BEAT_BETA7 = 54_900_000; // star + starBeat on bonsia beta.7 (WIPE-DECISIONS D-17)
   const fees = {
-    review: Object.fromEntries(PROBES.map((p) => [p, Math.round(mean(costs.review[p]))])),
+    review: Object.fromEntries(REVIEW_PROBES.map((p) => [p, Math.round(mean(costs.review[p]))])),
     reviewAddedPercent: { S2: added('S2'), S3: added('S3'), both: added('ALL') },
-    star: { fused: Math.round(mean(costs.star.ALL)), starPlusBeat: Math.round(mean(costs.star.NONE)) },
+    reviewPairedMedianCredits: { S2: pairedMedian('S2'), S3: pairedMedian('S3'), both: pairedMedian('ALL') },
+    star: { fused: Math.round(mean(costs.star.FUSED)), starPlusBeat: Math.round(mean(costs.star.SPLIT)), beta7StarPlusBeat: STAR_BEAT_BETA7 },
     samples: costs,
   };
   const gates = {
     review_to_author: fees.reviewAddedPercent.S2 <= 10,
     review_author: fees.reviewAddedPercent.S3 <= 10,
-    fused_star: fees.star.fused <= fees.star.starPlusBeat,
+    fused_star: fees.star.fused <= fees.star.starPlusBeat && fees.star.fused <= STAR_BEAT_BETA7,
   };
-  const off = Object.entries(gates).filter(([, pass]) => !pass).map(([flag]) => flag);
+  const turnOff = Object.entries(gates).filter(([, pass]) => !pass).map(([flag]) => flag);
   log(`review: S2 +${fees.reviewAddedPercent.S2} %, S3 +${fees.reviewAddedPercent.S3} %, both +${fees.reviewAddedPercent.both} % (on ${fees.review.NONE} credits)`);
-  log(`star: fused ${fees.star.fused} against star + starBeat ${fees.star.starPlusBeat} credits`);
-  log(off.length ? `turn off in build.py FLAGS: ${off.join(', ')}` : 'every RC2 fee gate passes: keep the FLAGS defaults');
-  console.log(JSON.stringify({ probes: Object.fromEntries(PROBES.map((p) => [p, state[p]])), fees, gates, turnOff: off }, null, 2));
+  log(`star: fused ${fees.star.fused} against star + starBeat ${fees.star.starPlusBeat} credits (beta.7: ${STAR_BEAT_BETA7})`);
+  log(turnOff.length ? `turn off in build.py FLAGS: ${turnOff.join(', ')}` : 'every RC2 fee gate passes: keep the FLAGS defaults');
+  console.log(JSON.stringify({ probes: Object.fromEntries(PROBES.map((p) => [p, state[p]])), fees, gates, turnOff }, null, 2));
   process.exit(0);
 }
-for (const [key, withFeatures] of [['A', true], ['B', false]]) {
-  if (state[key] && (await sdk.contracts.fetch(state[key]))) continue;
-  const json = probe(withFeatures);
-  const nonce = (BigInt((await sdk.identities.nonce(owner)) ?? 0n) & 0xFFFFFFFFFFn) + 1n;
-  const id = contractId(owner, nonce);
-  const dataContract = DataContract.fromJSON({ $formatVersion: '1', id, ownerId: owner, version: 1, ...json }, true, 14);
-  const cost = await priced(() => sdk.contracts.publish({ dataContract, ...critical }));
-  state[key] = id;
-  state[`${key}RegistrationCredits`] = cost;
-  writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
-  log(`probe ${key}: ${id} registered (${cost} credits)`);
-}
 
-async function write(contract, type, data) {
-  const base = new Document({ properties: {}, documentTypeName: type, dataContractId: contract, ownerId: owner });
-  const document = Document.fromObject({ ...base.toObject(), ...data }, version);
-  return priced(() => sdk.documents.create({ document, ...high }));
-}
+for (const [key, withFeatures] of [['A', true], ['B', false]]) await register(key, probe(withFeatures));
+
 const docs = {
   chunk: () => ({ repoId: randomBytes(32), packHash: randomBytes(32), seq: 0, d0: randomBytes(4900), d1: randomBytes(4900), d2: randomBytes(4900) }),
   star: () => ({ repoId: randomBytes(32) }),
@@ -207,18 +219,16 @@ for (const type of Object.keys(docs)) {
     // ABBA: alternate which contract is written first, so a drift over the run cancels out
     for (const key of i % 2 === 0 ? ['A', 'B'] : ['B', 'A']) costs[key].push(await write(state[key], type, d));
   }
-  const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
-  const paired = costs.A.map((a, i) => a - costs.B[i]).sort((x, y) => x - y);
-  const median = paired[Math.floor(paired.length / 2)];
+  const paired = median(costs.A.map((a, i) => a - costs.B[i]));
   out[type] = {
     with: Math.round(mean(costs.A)),
     without: Math.round(mean(costs.B)),
     addedPercent: Number((100 * (mean(costs.A) / mean(costs.B) - 1)).toFixed(2)),
-    pairedMedianCredits: median,
-    pairedMedianPercent: Number((100 * median / mean(costs.B)).toFixed(2)),
+    pairedMedianCredits: paired,
+    pairedMedianPercent: Number((100 * paired / mean(costs.B)).toFixed(2)),
     samples: costs,
   };
-  log(`${type}: with ${out[type].with}, without ${out[type].without} credits (+${out[type].addedPercent} %; paired median +${median}, ${out[type].pairedMedianPercent} %)`);
+  log(`${type}: with ${out[type].with}, without ${out[type].without} credits (+${out[type].addedPercent} %; paired median +${paired}, ${out[type].pairedMedianPercent} %)`);
 }
 const gates = {
   'D-3 chunk documentsCountable <= +5 %': out.chunk.addedPercent <= 5,

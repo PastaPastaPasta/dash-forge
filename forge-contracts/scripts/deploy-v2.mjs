@@ -90,7 +90,7 @@ export async function loadEvoSdk() {
   await evo.EvoSDK.getLatestVersionNumber();
   return evo;
 }
-const PROTOCOL_VERSION = 14;
+export const PROTOCOL_VERSION = 14;
 const MAX_STATE_TRANSITION_SIZE = 20480;
 /** `forge-core` -> `FORGE_CORE_CONTRACT_ID`: the placeholder a later schema names a contract by. */
 export const placeholderFor = (schemaName) => `${schemaName.toUpperCase().replace(/-/g, '_')}_CONTRACT_ID`;

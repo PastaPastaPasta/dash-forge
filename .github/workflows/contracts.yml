@@ -84,7 +84,7 @@ jobs:
       # combination of the rider flags (QW-069, QW2-010) with every RC2 item on
       - name: Every RC2 flag combination validates
         run: python3 forge-contracts/schema/variants.py "$CARGO_TARGET_DIR/debug/contract-validate"
-      # The RC2 registration fee probes (rc1-fee-probe.mjs --rc2): their four throwaway contracts,
+      # The RC2 registration fee probes (rc1-fee-probe.mjs --rc2): their six throwaway contracts,
       # cut from the build.py variants, differ in the gated item alone and parse under v5, and the
       # documents the live run writes are accepted
       - name: RC2 fee-probe contracts validate
