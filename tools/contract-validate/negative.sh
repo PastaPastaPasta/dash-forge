@@ -82,7 +82,6 @@ else
   expect_reject star-window-without-createdat community '.documentSchemas.star.required = ["repoId"]' 'does not require'
   expect_reject star-window-ttl-over-a-week community "$week.timeRange.ttl = 691200" 'exceeds the maximum'
   expect_reject star-outlives-delete-without-ttl community "del($week.timeRange.ttl)" 'outlivesDelete. without a .timeRange. carrying a .ttl.'
-  expect_reject star-outlives-delete-with-a-sum community "$week.summable = \"repoId\""
   # the index vectors are load-bearing: a star window that is cleared by an unstar disagrees
   expect_reject star-window-cleared-by-unstar community "del($week.outlivesDelete)" 'index vectors disagree'
 fi

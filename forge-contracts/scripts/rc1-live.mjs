@@ -39,6 +39,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEvoSdk } from './deploy-v2.mjs';
+import { CONTRACTS, FUSED_STAR } from './lib/seed-io.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, t, i, a) => (t.startsWith('--') ? [...acc, [t.slice(2), a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true]] : acc), []));
@@ -52,11 +53,9 @@ const COLLAB = dep.v2?.forgeCollab?.contractId;
 const COMM = dep.v2?.forgeCommunity?.contractId;
 if (!CORE || !COLLAB || !COMM) throw new Error(`devnet-${devnetName}.json records no RC1 forge-v2 contracts (core, collab and community)`);
 // The RC2 items (schema/build.py flags) the registered schemas carry: the committed JSONs, which
-// are what deploy-v2.mjs registered
-const SCHEMAS = Object.fromEntries(['collab', 'community'].map((c) => [c, JSON.parse(readFileSync(join(ROOT, 'contracts', `forge-${c}.json`), 'utf8')).documentSchemas]));
-const FUSED_STAR = !SCHEMAS.community.starBeat;
-const EVIDENCE_FROZEN = SCHEMAS.community.checkRun.immutable.some((e) => typeof e === 'object' && e.property === 'logUrl');
-const REVIEW_INDEXES = new Set(SCHEMAS.collab.review.indices.map((i) => i.name));
+// are what deploy-v2.mjs registered (FUSED_STAR too)
+const EVIDENCE_FROZEN = CONTRACTS.community.documentSchemas.checkRun.immutable.some((e) => typeof e === 'object' && e.property === 'logUrl');
+const REVIEW_INDEXES = new Set(CONTRACTS.collab.documentSchemas.review.indices.map((i) => i.name));
 
 const evo = await loadEvoSdk();
 const { EvoSDK, Document, IdentityPublicKey, IdentitySigner, PrivateKey, Identifier } = evo;
@@ -344,10 +343,12 @@ if (want('state') && I1 && I2 && PR3) {
   // RC2 S2 / S3: the proved review feeds. PR #3 is the member's; the owner and the stranger
   // reviewed it above. A derived property is queried like any index property (v5 book
   // contract-keywords/derived-index-properties.md:96).
+  // The identities are reused across runs, so each feed is read from this run's start on
+  const runStart = Number.parseInt(tag, 36);
   const feed = async (item, label, index, where, want) => {
     try {
       const got = await eventually(async () => {
-        const q = await sdk.documents.queryWithProof({ dataContractId: COLLAB, documentTypeName: 'review', where, orderBy: [[where[0][0], 'asc'], ['$createdAt', 'asc']], limit: 100 });
+        const q = await sdk.documents.queryWithProof({ dataContractId: COLLAB, documentTypeName: 'review', where: [...where, ['$createdAt', '>=', runStart]], orderBy: [[where[0][0], 'asc'], ['$createdAt', 'asc']], limit: 100 });
         return [...(q.data ?? q).values()].filter(Boolean).map((d) => d.toObject()).filter(want).length;
       }, (n) => n > 0);
       record({ item, label: `${label} (${index})`, expect: 'at least one', got: String(got), pass: got > 0 });

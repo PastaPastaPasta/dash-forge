@@ -42,9 +42,12 @@ def main():
         label = '+'.join(['M1'] + [SHORT[f] for f, v in zip(build.RC2_FLAGS, on) if v])
         with tempfile.TemporaryDirectory() as tmp:
             vectors = os.path.join(tmp, 'vectors')
-            subprocess.run([sys.executable, os.path.join(HERE, 'vectors.py'), '--off', off, '--out', vectors],
-                           check=True, capture_output=True, text=True)
-            code, out, sizes = build.validate(validator, build.build(build.flags_from(off)), vectors)
+            gen = subprocess.run([sys.executable, os.path.join(HERE, 'vectors.py'), '--off', off, '--out', vectors],
+                                 capture_output=True, text=True)
+            if gen.returncode == 0:
+                code, out, sizes = build.validate(validator, build.build(build.flags_from(off)), vectors)
+            else:
+                code, out, sizes = gen.returncode, f'vectors.py --off {off!r} failed:\n{gen.stdout}{gen.stderr}', {}
         bad = code != 0 or len(sizes) != len(build.NAMES) or any(n > build.CEILING for n, _ in sizes.values())
         failed += bad
         rows.append((label, sizes, 'FAIL' if bad else 'ok'))

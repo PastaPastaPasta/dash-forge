@@ -30,7 +30,7 @@ The per-repo "sovereign" tier is dropped. Anyone who wants different rules can r
 - **S2** `review_to_author` and **S3** `review_author`: the review indexes `toAuthor (patchId.$ownerId, $createdAt)` and `author ($ownerId, $createdAt)`.
 - **C1** `fused_star`: the star itself carries the trending window, and `starBeat` is gone.
 
-Each is a `build.py` flag, on by default. S2 and S3 ship only if a fee probe on the v5 network shows at most +10 % per review write, and C1 only if a fused star costs at most 54.9 M credits (a star plus a beat today). A probe that fails turns its flag off in `build.py`, and the contracts are regenerated before registration (§8). Clients read both star shapes until then.
+Each is a `build.py` flag, on by default. S2 and S3 ship only if a fee probe on the v5 network shows at most +10 % per review write, and C1 only if a fused star costs at most 54.9 M credits (a star plus a beat today). A probe that fails turns its flag off in `build.py`, and the contracts are regenerated before registration (§8). Until the C1 probe decides, the clients (`dg`, forge-core, forge-web) must handle both star shapes: a star that carries the trending window, or a star plus a `starBeat`. The seed and verify scripts already do (`FUSED_STAR` in `forge-contracts/scripts/lib/seed-io.mjs`).
 
 ## 2. Types and who can write them
 

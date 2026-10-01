@@ -111,8 +111,10 @@ SYSTEM_KINDS = {'$ownerId': 'identifier', '$creatorId': 'identifier', '$id': 'id
                 '$createdAtCoreBlockHeight': 'u32', '$updatedAtCoreBlockHeight': 'u32', '$transferredAtCoreBlockHeight': 'u32'}
 # Fixed once a document is written, whatever the type says (a findBy key must not move)
 SYSTEM_FIXED = {'$ownerId', '$id', '$createdAt', '$createdAtBlockHeight', '$createdAtCoreBlockHeight'}
-# Declaration features this mirror does not port: it refuses them rather than pass them unchecked
-UNPORTED = ('inList', 'creatorRefersTo', 'revealed', 'consume', 'minimumAgeBlocks')
+# Declaration features this mirror does not port: it refuses them rather than pass them unchecked.
+# v5's third reference kind (`moderatedDocument`, and the moderator deletes that decide which kind
+# a type admits: 40143/40144) is among them; tools/contract-validate judges it.
+UNPORTED = ('inList', 'creatorRefersTo', 'revealed', 'consume', 'minimumAgeBlocks', 'moderatedDocument', 'moderatorAbilities')
 
 
 def leaves(decl):
