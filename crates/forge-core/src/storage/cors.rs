@@ -144,10 +144,24 @@ pub async fn probe_cors(client: &Client, url: &str) -> CorsReport {
                 && allows_probe_origin(h).0
                 && header_list_contains(h, "access-control-allow-headers", "range");
             if !r.preflight_allows_range {
+                // QW3-072: "refused (status 200 OK)" read as a contradiction; say what the
+                // answer lacked.
+                let why = if !resp.status().is_success() {
+                    format!("answered {}", resp.status())
+                } else if !allows_probe_origin(h).0 {
+                    format!(
+                        "answered {} with no Access-Control-Allow-Origin for {PROBE_ORIGIN}",
+                        resp.status()
+                    )
+                } else {
+                    format!(
+                        "answered {} without `Range` in Access-Control-Allow-Headers",
+                        resp.status()
+                    )
+                };
                 r.problems.push(format!(
-                    "the CORS preflight for a Range request was refused (status {}) — allow the \
-                     `Range` request header",
-                    resp.status()
+                    "the CORS preflight for a Range request {why} — allow the `Range` request \
+                     header for the web app's origin"
                 ));
             }
         }
