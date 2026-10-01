@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
 import { OfflineChain } from './offline-chain.mjs';
-import { CONTRACTS, FUSED_STAR, TRANSITION, VIS, b58encode, documentReader, documentWriter, idBytes, membership, transition } from './seed-io.mjs';
+import { CONTRACTS, FUSED_STAR, MEMBER_ROLES, TRANSITION, VIS, b58encode, documentReader, documentWriter, idBytes, membership, transition } from './seed-io.mjs';
 
 const person = (name) => ({ name, id: b58encode(createHash('sha256').update(name).digest()) });
 const OWNER = person('owner');
@@ -176,4 +176,32 @@ test('a document goes to the contract that holds its type', async () => {
   const sdk = new evo.EvoSDK();
   const wrong = documentWriter({ sdk }, evo, { ids: { ...chain.ids, community: chain.ids.collab } }, noReconnect);
   await assert.rejects(wrong(OWNER, 'star', { repoId: Buffer.alloc(32, 1) }), /star is in forge-community, not forge-collab/);
+});
+
+test('member roles: the writer gate proves the claimed r against writer.role', { skip: !MEMBER_ROLES }, async () => {
+  const { write, R } = await repoChain();
+  await write(OTHER, 'consent', { repoId: R });
+  await write(OWNER, 'writer', { ...membership(R, OWNER.id, OTHER.id), role: 2 });
+  const i1 = (await write(OWNER, 'issue', issue(R, 1))).id.toBase58();
+  const ref = { repoId: R, refNameHash: Buffer.alloc(32, 1), refName: 'refs/heads/main', newOid: Buffer.alloc(20, 1), vis: VIS };
+  // triage cannot push: r 1 is not its role (the writer operand, the last, reports 40127)
+  await assert.rejects(write(OTHER, 'refUpdate', ref), refusedWith(40127, 'refUpdate.ownerRefersTo'));
+  await write(OWNER, 'refUpdate', ref);
+  // triage labels and closes with r 2, and a claim of r 1 is refused
+  const label = { repoId: R, targetId: idBytes(i1), targetNumber: 1, kind: 4, value: 'bug' };
+  await assert.rejects(write(OTHER, 'event', label), refusedWith(40127, 'event.ownerRefersTo'));
+  await write(OTHER, 'event', { ...label, r: 2 });
+  await write(OTHER, 'label', { repoId: R, name: 'bug', r: 2 });
+  await write(OTHER, 'transition', { ...transition(R, { id: i1, number: 1 }, TRANSITION.issueClose), r: 2 });
+});
+
+test('member roles: a reader matches no gate', { skip: !MEMBER_ROLES }, async () => {
+  const { write, R } = await repoChain();
+  await write(OTHER, 'consent', { repoId: R });
+  await write(OWNER, 'writer', { ...membership(R, OWNER.id, OTHER.id), role: 3 });
+  const i1 = (await write(OWNER, 'issue', issue(R, 1))).id.toBase58();
+  for (const r of [1, 2]) {
+    await assert.rejects(write(OTHER, 'label', { repoId: R, name: 'x', r }), refusedWith(40127, 'label.ownerRefersTo'));
+    await assert.rejects(write(OTHER, 'event', { repoId: R, targetId: idBytes(i1), targetNumber: 1, kind: 4, value: 'bug', r }), refusedWith(40127, 'event.ownerRefersTo'));
+  }
 });
