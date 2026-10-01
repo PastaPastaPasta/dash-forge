@@ -89,7 +89,7 @@ describe('release asset fallback (D-056)', () => {
 })
 
 describe('an asset list uploaded under an old key (private-repos.md §16.5)', () => {
-  it('is late when its first copy is past the next anchor plus GRACE_BLOCKS for its header epoch, or under a burned epoch', async () => {
+  it('is late when its first copy is past stated(next epoch) plus GRACE_BLOCKS for its header epoch, or under a burned epoch', async () => {
     const k0 = await EpochKeys.import(new Uint8Array(32).fill(0x11), 0, new Uint8Array(32).fill(1))
     const sealed = await sealPack(k0, new TextEncoder().encode('{"v":1}'))
     const standing = {

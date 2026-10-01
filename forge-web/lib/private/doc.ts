@@ -11,7 +11,7 @@ import { bytesEqual, type PrivateId } from './ids'
 import { hedgeNonce, refNameHash, type EpochKeyring, type EpochKeys } from './keys'
 import { MalformedError, buildTlv, parseTlv, type DocFields, type PrivateDocType } from './tlv'
 
-/** Blocks after the next epoch's anchor during which late content is still shown (§8.2). */
+/** Blocks after the next epoch's key was first stated (stated(e), §5.3) during which late content is still shown (§8.2). */
 export const GRACE_BLOCKS = 240
 
 const V1 = 0x01

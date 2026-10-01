@@ -806,7 +806,8 @@ impl Keyring {
     }
 
     /// The `$createdAt` of stated(e): the earliest config of `epoch` at the block height where
-    /// its key was first stated on chain (§5.3).
+    /// its key was first stated on chain (§5.3). A config without `enc` states no key and is
+    /// not counted (as in the web's `statedAtOf`).
     fn stated_at(&self, epoch: u32) -> Option<u64> {
         let height = self.resolution.anchors.get(&epoch)?.stated_height;
         self.configs
@@ -814,6 +815,7 @@ impl Keyring {
             .filter(|c| {
                 c.created_at_block_height == Some(height)
                     && c.field_u64("epoch") == Some(u64::from(epoch))
+                    && c.field_bytes("enc").is_some_and(|e| !e.is_empty())
             })
             .filter_map(|c| c.created_at)
             .min()
@@ -2837,11 +2839,12 @@ mod tests {
     }
 
     /// §16.5: a sealed release's asset list is "uploaded under an old key" when its first copy
-    /// was recorded after the next epoch's anchor plus GRACE_BLOCKS, whoever uploaded it.
+    /// was recorded after stated(next epoch) plus GRACE_BLOCKS, whoever uploaded it.
     #[test]
     fn an_asset_list_uploaded_after_the_grace_period_is_late() {
         let kr = three_epochs(&[(ALICE, Role::Maintainer)]).keyring(ALICE);
-        // epoch 2's anchor is at height 30: epoch 1's cut-off is 30 + GRACE_BLOCKS
+        // epoch 2's key was first stated (by its anchor) at height 30: epoch 1's cut-off is
+        // 30 + GRACE_BLOCKS
         let cutoff = 30 + crate::private::GRACE_BLOCKS;
         assert!(!kr.uploaded_late(1, cutoff));
         assert!(kr.uploaded_late(1, cutoff + 1));
@@ -2849,7 +2852,7 @@ mod tests {
             !kr.uploaded_late(2, u64::MAX),
             "the current epoch has no cut-off"
         );
-        // nothing to fetch before the earliest cut-off (epoch 0's: epoch 1's anchor + grace)
+        // nothing to fetch before the earliest cut-off (epoch 0's: stated(1) + grace)
         assert!(kr.may_be_late(cutoff + 1));
         assert!(!kr.may_be_late(0));
     }
@@ -2863,7 +2866,10 @@ mod tests {
             .wrap(ALICE, ALICE, 0, 10);
         let mut kr = f.keyring(ALICE);
         // stated(0) is the config at height 10, created at t = 50
-        let mut stated = doc(vec![("epoch", FieldValue::integer(0))]);
+        let mut stated = doc(vec![
+            ("epoch", FieldValue::integer(0)),
+            ("enc", FieldValue::bytes(vec![2; 61])),
+        ]);
         (stated.created_at, stated.created_at_block_height) = (Some(50), Some(10));
         kr.configs = vec![stated];
         let keys = EpochKeys::derive(&f.repo_id, 0, &k(10));
