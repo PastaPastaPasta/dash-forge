@@ -148,8 +148,10 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     // Into the parent, this fork's branch is the head; into the fork, the head is its own branch.
     const intoParent = forkParent !== null && to.repoId === forkParent.repoId
     const branch = head === null ? forkHeadBranch(home) : branchName(head.refName)
-    const href = intoParent ? contributeHref(to, repo, branch) : repoHref('/repo/pulls/new', { owner: to.ownerId, name: to.name }, { head: branch })
-    savePrDraft(to, { title: titleTouched ? title : '', body, head: intoParent ? `${repo.repoId}:refs/heads/${branch}` : `${to.repoId}:refs/heads/${branch}`, base: '' })
+    // The head picked keeps its repo (this fork, or a fork of it), never silently swapped.
+    const headRepo = intoParent ? (head?.repo ?? repo) : to
+    const href = intoParent ? contributeHref(to, headRepo, branch) : repoHref('/repo/pulls/new', { owner: to.ownerId, name: to.name }, { head: branch })
+    savePrDraft(to, { title: titleTouched ? title : '', body, head: `${headRepo.repoId}:refs/heads/${branch}`, base: '' })
     router.push(href)
   }
   const baseRef = branches.find((b) => b.refName === base)
