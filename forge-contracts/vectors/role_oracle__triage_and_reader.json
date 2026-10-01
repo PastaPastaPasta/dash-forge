@@ -1,0 +1,69 @@
+{
+  "name": "triage_and_reader",
+  "description": "RC2 member roles: a triage writer document (role 2) and a reader (role 3) are members (asMember admits every writer document) but never approvers; a role-1 writer and a maintainer are both.",
+  "case": "role_oracle",
+  "rules": "v2",
+  "input": {
+    "memberships": [
+      {
+        "identity": "tri",
+        "role": "triage",
+        "createdAt": 10
+      },
+      {
+        "identity": "rdr",
+        "role": "reader",
+        "createdAt": 10
+      },
+      {
+        "identity": "wri",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "queries": [
+      {
+        "identity": "tri",
+        "at": 5
+      },
+      {
+        "identity": "tri",
+        "at": 10
+      },
+      {
+        "identity": "rdr",
+        "at": 10
+      },
+      {
+        "identity": "wri",
+        "at": 10
+      }
+    ]
+  },
+  "expected": [
+    {
+      "roleAt": null,
+      "memberAt": false,
+      "currentRole": "triage",
+      "approverAt": false
+    },
+    {
+      "roleAt": "triage",
+      "memberAt": true,
+      "currentRole": "triage",
+      "approverAt": false
+    },
+    {
+      "roleAt": "reader",
+      "memberAt": true,
+      "currentRole": "reader",
+      "approverAt": false
+    },
+    {
+      "roleAt": "writer",
+      "memberAt": true,
+      "currentRole": "writer",
+      "approverAt": true
+    }
+  ]
+}

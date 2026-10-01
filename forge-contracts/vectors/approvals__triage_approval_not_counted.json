@@ -1,0 +1,43 @@
+{
+  "name": "triage_approval_not_counted",
+  "description": "RC2 member roles: consensus admits a triage member's member approval (asMember), but approvals count only from maintainers and role-1 writers.",
+  "case": "approvals",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "tri",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 100
+      },
+      {
+        "id": "r2",
+        "reviewer": "dev",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 110
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "tri",
+        "role": "triage",
+        "createdAt": 50
+      },
+      {
+        "identity": "dev",
+        "role": "writer",
+        "createdAt": 60
+      }
+    ],
+    "headOid": "head0000"
+  },
+  "expected": {
+    "approvers": [
+      "dev"
+    ],
+    "changesRequested": []
+  }
+}

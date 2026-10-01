@@ -1205,6 +1205,17 @@ def epoch_vectors():
     ev("missing_wrap_repaired_without_rotation", "a member with no wrap for the current epoch is wrapped, no rotation.",
        team + [member(FRANK, "writer")], [c0, c1], [wrap("w1a", ALICE, ALICE, 1), wrap("w1b", ALICE, BOB, 1)],
        dict(currentEpoch=1, anchors={"0": "c0", "1": "c1"}, repair=repair(missing=[FRANK])), reader=ALICE)
+    # RC2 member roles: a reader is a writer document (role 3), so it is a key recipient like any member
+    ev("missing_reader_wrap_repaired", "a reader (a writer document with role 3) is a member for the key: its missing "
+       "wrap for the current epoch is written, no rotation.",
+       team + [member(FRANK, "reader")], [c0, c1], [wrap("w1a", ALICE, ALICE, 1), wrap("w1b", ALICE, BOB, 1)],
+       dict(currentEpoch=1, anchors={"0": "c0", "1": "c1"}, repair=repair(missing=[FRANK])), reader=ALICE)
+    ev("wrap_to_reader_no_rotation", "a wrap to a reader is a wrap to a member: no rotation, and the reader opens "
+       "every epoch.",
+       team + [member(FRANK, "reader")], [c0, c1],
+       [wrap("w1a", ALICE, ALICE, 1), wrap("w1b", ALICE, BOB, 1), wrap("w1f", ALICE, FRANK, 1, K1)],
+       dict(currentEpoch=1, anchors={"0": "c0", "1": "c1"}, readable=[0, 1], writeEpoch=1, repair=ok_repair),
+       reader=FRANK)
     ev("wrap_to_disabled_key_requires_repair", "a member whose only wrap is to a since-disabled key needs a new wrap.",
        team, [c0, c1], [wrap("w1a", ALICE, ALICE, 1), wrap("w1b", ALICE, BOB, 1, K1, enabled=False)],
        dict(currentEpoch=1, anchors={"0": "c0", "1": "c1"}, readable=[0, 1], writeEpoch=1,

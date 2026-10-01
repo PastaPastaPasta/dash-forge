@@ -1,13 +1,13 @@
 {
-  "name": "maintainer_outranks_writer",
-  "description": "Writer from 10, maintainer from 20: before 10 nothing, from 10 writer, from 20 maintainer; now maintainer.",
+  "name": "maintainer_outranks_triage",
+  "description": "A triage writer document from 10 and a maintainer document from 20: from 20 the identity is a maintainer and an approver.",
   "case": "role_oracle",
   "rules": "v2",
   "input": {
     "memberships": [
       {
         "identity": "x",
-        "role": "writer",
+        "role": "triage",
         "createdAt": 10
       },
       {
@@ -17,14 +17,6 @@
       }
     ],
     "queries": [
-      {
-        "identity": "x",
-        "at": 5
-      },
-      {
-        "identity": "x",
-        "at": 10
-      },
       {
         "identity": "x",
         "at": 15
@@ -37,22 +29,10 @@
   },
   "expected": [
     {
-      "roleAt": null,
-      "memberAt": false,
+      "roleAt": "triage",
+      "memberAt": true,
       "currentRole": "maintainer",
       "approverAt": false
-    },
-    {
-      "roleAt": "writer",
-      "memberAt": true,
-      "currentRole": "maintainer",
-      "approverAt": true
-    },
-    {
-      "roleAt": "writer",
-      "memberAt": true,
-      "currentRole": "maintainer",
-      "approverAt": true
     },
     {
       "roleAt": "maintainer",

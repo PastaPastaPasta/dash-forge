@@ -1,0 +1,43 @@
+{
+  "name": "triage_request_changes_ignored",
+  "description": "RC2 member roles: a triage member's request for changes does not block, as a non-member's would not.",
+  "case": "approvals",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "tri",
+        "verdict": 2,
+        "commitOid": "head0000",
+        "createdAt": 100
+      },
+      {
+        "id": "r2",
+        "reviewer": "dev",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 110
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "tri",
+        "role": "triage",
+        "createdAt": 50
+      },
+      {
+        "identity": "dev",
+        "role": "writer",
+        "createdAt": 60
+      }
+    ],
+    "headOid": "head0000"
+  },
+  "expected": {
+    "approvers": [
+      "dev"
+    ],
+    "changesRequested": []
+  }
+}

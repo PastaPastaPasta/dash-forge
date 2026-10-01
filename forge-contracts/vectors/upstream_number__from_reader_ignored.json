@@ -1,0 +1,29 @@
+{
+  "name": "from_reader_ignored",
+  "description": "RC2 member roles: a current reader member wrote it: not trusted (imported provenance counts only from the repo owner, maintainers and role-1 writers).",
+  "case": "upstream_number",
+  "rules": "v2",
+  "input": {
+    "upstreamNumber": 42,
+    "author": "tri",
+    "repoOwner": "owner",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "tri",
+        "role": "reader",
+        "createdAt": 10
+      }
+    ]
+  },
+  "expected": null
+}

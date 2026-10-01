@@ -27,7 +27,8 @@
     {
       "roleAt": "maintainer",
       "memberAt": true,
-      "currentRole": "maintainer"
+      "currentRole": "maintainer",
+      "approverAt": true
     }
   ]
 }
