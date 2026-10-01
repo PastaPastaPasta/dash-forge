@@ -270,7 +270,7 @@ Consequence to note in the UI: if every wrap a member ever received came from si
 
 **Add member.** Requires the member to have an enabled `ENCRYPTION` key. Write the `maintainer`/`writer` document, then one `repoKey` for the **current** epoch (two transitions). Past epochs come from the chain.
 
-**Remove member** (writer or maintainer, the owner included). Delete the membership document, then rotate:
+**Remove member** (maintainer, or a writer document of any role: writer, triage or reader; the owner included). Delete the membership document, then rotate:
 
 1. Re-read the anchors; let `n` be the current epoch (burned or not: a burned `n` still chains). Draw `K_{n+1}`, or reuse the key of this maintainer's own standing self-wrap for `n+1` (the journal, below).
 2. Post `repoKey` wraps for `n+1` to every **remaining** member's highest enabled encryption key, **self first**.
@@ -298,7 +298,7 @@ A crash after (1) leaves a burned current epoch, which the repair check rotates 
 After loading a private repo's membership, `repoKey` and `config` documents, a client whose identity is a current maintainer computes, for the current epoch `n`:
 
 - `wrapped(n)` = the set of `memberId`s with an accepted-shape wrap for `n` from a current maintainer (checks 2–3 of §5.4, no decryption needed; for other members the client cannot open the wrap, and does not need to);
-- `members` = current `maintainer` ∪ `writer` holders;
+- `members` = current `maintainer` ∪ `writer` holders (a `writer` document of any role: writer, triage or reader, forge-v2.md §2.1);
 - `enabledKeyOf(m)` = whether the `recipientKeyId` used for `m`'s wrap is still an enabled key on `m`'s identity.
 
 The check passes iff `n` is not burned, `wrapped(n) ⊆ members`, **and** every `m ∈ members` has a wrap for `n` to an enabled key. A burned `n` raises `RotationRequired` with an empty member list. While `wrapped(n) ⊄ members`, `writeEpoch` is null for every reader: nothing is written under a key a non-member holds until the rotation lands (vector `private_epoch__rotation_required_when_wrapped_non_member`). Otherwise:
@@ -317,6 +317,7 @@ The check passes iff `n` is not burned, `wrapped(n) ⊆ members`, **and** every 
 | Removed member (writer) | every key up to their removal epoch; all sealed bytes | everything written before rotation, forever; `refNameHash` dictionary for old epochs; sizes/timing after; can still write plaintext-namespace documents (un-gated types) under their own `$ownerId` | new epoch per removal; per-epoch ref keys; late-content rule (§8.2); stated plainly in the UI |
 | Removed maintainer | all of the above, plus pre-posted `repoKey`/`config` for future epochs | tries to define `n+1` before the real rotation, or to hand the old key to outsiders | anchors and wraps count only from **current** maintainers (§5.3, §5.4); a removed maintainer's pre-posts are inert; late-content rule |
 | Current malicious maintainer | the key; may write anchors and wraps | can wrap to anyone (consensus cannot stop it); can attempt a split view (different keys to different members) | out of scope for content: a current maintainer is trusted with it by definition; split views are detected (key-committing anchors, `KeyMismatch`/`ChainBroken` alerts name the author) and every wrap is attributable |
+| Reader (a `writer` document with role 3) | the key | can read and leak everything from its grant on; can write only un-gated types (issues, PRs, comments, reviews), sealed; its approvals do not count | revoke + rotate, like any member |
 | Malicious writer (member with `writer`) | the key; can write refs/packs/manifests | can push garbage packs or malformed `enc`; cannot wrap or rotate | pack verification; malformed documents skipped and counted; revoke + rotate |
 | Compromised encryption key (browser vault, laptop) | the identity's encryption private key | reads every wrap that identity received **and sent** (§5.2), until the key is disabled and every affected repo rotated | vault encryption (passkey PRF / Argon2id), auto-lock; the rekey flow of §5.2; the repair check |
 | Outsider posting into the namespace | nothing | can post plaintext or ciphertext under their own `$ownerId` to `issue`/`patch`/`comment`/`review` | AD binds `$ownerId`, so their bytes never decrypt as a member's; clients show only documents that decrypt (§8) |
