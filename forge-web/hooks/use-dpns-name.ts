@@ -11,6 +11,14 @@ import { isIdentityId } from '@/lib/utils'
  * caller on the page); undefined until then, or when it has none or `identityId` is not an id.
  */
 export function useDpnsName(identityId: string): string | undefined {
+  return useDpnsLookup(identityId) ?? undefined
+}
+
+/**
+ * {@link useDpnsName}, telling "no name" (null) from "not known yet" (undefined): what a page
+ * needs to offer a way to get one (QW3-035). A failed lookup stays undefined.
+ */
+export function useDpnsLookup(identityId: string): string | null | undefined {
   const { sdk, ready, network } = useSdk()
   const [resolved, setResolved] = useState<{ id: string; name: string | null } | null>(null)
   useEffect(() => {
@@ -23,5 +31,5 @@ export function useDpnsName(identityId: string): string | undefined {
       live = false
     }
   }, [sdk, ready, identityId, network])
-  return resolved?.id === identityId ? resolved.name ?? undefined : undefined
+  return resolved?.id === identityId ? resolved.name : undefined
 }

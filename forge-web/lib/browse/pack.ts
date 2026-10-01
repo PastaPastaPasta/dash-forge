@@ -154,6 +154,33 @@ export function inflateZlib(buf: Uint8Array, from: number, expected: number, max
   return out
 }
 
+/** Stops a prefix inflate once it has what it wants. */
+class PrefixDone extends Error {}
+
+/**
+ * The first `want` bytes a zlib stream at `buf[from..]` inflates to (fewer when the stream, or
+ * `buf`, ends first): enough to sniff an object too large to read whole, without inflating the
+ * rest. `buf` may stop mid-stream. Nothing here is hash-checked: a caller only classifies.
+ */
+export function inflatePrefix(buf: Uint8Array, from: number, want: number): Uint8Array {
+  const out = new Uint8Array(want)
+  let got = 0
+  const inflater = new Inflate({ chunkSize: Math.min(INFLATE_CHUNK, want), windowBits: 15 })
+  inflater.onData = (chunk: Uint8Array) => {
+    const take = Math.min(chunk.length, want - got)
+    out.set(chunk.subarray(0, take), got)
+    got += take
+    if (got >= want) throw new PrefixDone()
+  }
+  inflater.onEnd = () => {}
+  try {
+    inflater.push(buf.subarray(from), false)
+  } catch (e) {
+    if (!(e instanceof PrefixDone)) throw e
+  }
+  return out.subarray(0, got)
+}
+
 /**
  * The most bytes a delta producing at most `maxBytes` can hold: a copy instruction is at most
  * 8 bytes (opcode, 4 offset bytes, 3 size bytes) and yields at least one, plus the size varints.

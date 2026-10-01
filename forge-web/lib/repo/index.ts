@@ -211,6 +211,8 @@ export {
   lockedOut,
   nextNumber,
   normalizeRepoName,
+  REPO_NAME_RULE,
+  suggestRepoName,
   pendingRepoCreations,
   type ReleaseInput,
   readConsents,

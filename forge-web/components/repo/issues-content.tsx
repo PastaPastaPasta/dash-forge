@@ -17,9 +17,9 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { CheckCircle2, CircleDot, MessageSquarePlus, Pin, X } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { ARCHIVED_REASON, resolveDpnsName } from '@/lib/view'
@@ -90,7 +90,7 @@ import { useMilestones } from '@/components/repo/use-milestones'
 import { TriageNav } from '@/components/repo/triage-nav'
 import { BodyCounter, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import type { RepoAddress } from '@/hooks/use-query-param'
-import { repoHref } from '@/hooks/use-query-param'
+import { repoHref, useParam, withTrailingSlash } from '@/hooks/use-query-param'
 import type { IssueTemplate } from '@/lib/view/issue-templates'
 
 /** The Issues list's search grammar (`lib/view/issue-query`). */
@@ -99,8 +99,23 @@ const ISSUE_GRAMMAR: ListGrammar<IssueListQuery> = { text: searchText, parse: pa
 export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   const { identity } = useAuth()
-  const [composing, setComposing] = useState(false)
   const router = useRouter()
+  // The composer has a URL, as GitHub's /issues/new (QW3-063): `?new=1` opens it, prefilled from
+  // `title` and `body` as GitHub's are; opening and closing it change the URL.
+  const composing = useParam('new') === '1'
+  const prefill = { title: useParam('title'), body: useParam('body') }
+  const searchParams = useSearchParams()
+  // Set once a created issue opens: the composer's close must not replace that navigation.
+  const leaving = useRef(false)
+  const setComposing = (open: boolean): void => {
+    if (leaving.current) return
+    const q = new URLSearchParams(searchParams.toString())
+    if (open) q.set('new', '1')
+    else for (const k of ['new', 'title', 'body']) q.delete(k)
+    const href = `${withTrailingSlash('/repo/issues')}?${q.toString()}`
+    if (open) router.push(href, { scroll: false })
+    else router.replace(href, { scroll: false })
+  }
   const generation = useRepoWriteGeneration(home.repo)
   const trust = useMirrorTrust(home.repo)
   const totals = useRepoTotals(home.repo)
@@ -293,10 +308,14 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
       <HiddenNote hidden={data?.hidden ?? 0} what={data?.hidden === 1 ? 'issue' : 'issues'} home={home} by={data?.hiddenBy} />
 
       <ComposeIssueDialog
-        open={composing}
+        open={composing && canCompose && !archived}
+        prefill={prefill}
         onClose={() => setComposing(false)}
         home={home}
-        onCreated={(n) => router.push(repoHref('/repo/issue', addr, { number: String(n), created: '1' }))}
+        onCreated={(n) => {
+          leaving.current = true
+          router.push(repoHref('/repo/issue', addr, { number: String(n), created: '1' }))
+        }}
         addr={addr}
       />
     </div>
@@ -305,12 +324,15 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
 
 function ComposeIssueDialog({
   open,
+  prefill,
   onClose,
   home,
   onCreated,
   addr,
 }: {
   open: boolean
+  /** A title and body the URL gave (`?title=&body=`, as GitHub's /issues/new takes). */
+  prefill: { readonly title: string; readonly body: string }
   onClose: () => void
   home: RepoHome
   onCreated: (number: number) => void
@@ -320,8 +342,8 @@ function ComposeIssueDialog({
   const { sdk } = useSdk(repoContractIds(repo))
   const { identity, signer, locked } = useAuth()
   const guard = useWriteGuard()
-  const [title, setTitle] = useState('')
-  const [body, setBody] = useState('')
+  const [title, setTitle] = useState(prefill.title)
+  const [body, setBody] = useState(prefill.body)
   const [template, setTemplate] = useState<IssueTemplate | null>(null)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)

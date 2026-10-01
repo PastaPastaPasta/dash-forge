@@ -36,7 +36,8 @@ import {
   checkRepoInput,
   createRepo,
   discardRepoCreation,
-  normalizeRepoName,
+  REPO_NAME_RULE,
+  suggestRepoName,
   pendingRepoCreations,
   previewRepoCreate,
   type CreateRepoInput,
@@ -126,27 +127,30 @@ export default function NewRepoPage(): JSX.Element {
   }, [identity])
   useEffect(reloadPending, [reloadPending])
 
+  // What the typed name becomes, as GitHub converts it (QW3-036): `QA3 Bad Name!` → `qa3-bad-name`.
+  const repoName = useMemo(() => (name.trim() === '' ? null : suggestRepoName(name)), [name])
+  const converted = repoName !== null && repoName !== name.trim().toLowerCase()
   const nameError = useMemo(() => {
     if (name.trim() === '') return null
+    if (repoName === null) return REPO_NAME_RULE
     try {
-      checkRepoInput({ name: normalizeRepoName(name), description })
+      checkRepoInput({ name: repoName, description })
       return null
     } catch (e) {
       return errorMessage(e, 'invalid name')
     }
-  }, [name, description])
+  }, [name, repoName, description])
   // An unfinished creation of this name resumes with the values it started with.
   const resuming = useMemo(() => {
-    if (nameError !== null || name.trim() === '') return null
-    const n = normalizeRepoName(name)
-    return pending.find((j) => j.input.name === n) ?? null
-  }, [name, nameError, pending])
+    if (nameError !== null || repoName === null) return null
+    return pending.find((j) => j.input.name === repoName) ?? null
+  }, [repoName, nameError, pending])
   const differs =
     resuming !== null &&
     ((resuming.input.description ?? '') !== description.trim() || (resuming.input.defaultBranch ?? 'main') !== (defaultBranch.trim() || 'main'))
 
   const input = (): CreateRepoInput => ({
-    name: normalizeRepoName(name),
+    name: repoName ?? '',
     ...(description.trim() ? { description: description.trim() } : {}),
     ...(defaultBranch.trim() && defaultBranch.trim() !== 'main' ? { defaultBranch: defaultBranch.trim() } : {}),
     ...(isPrivate ? { visibility: 'private' as const } : {}),
@@ -244,7 +248,13 @@ export default function NewRepoPage(): JSX.Element {
           <Field label="Repository name" htmlFor="repo-name" hint="Lowercase; letters, digits, and . _ - (max 63). The name is permanent.">
             <Input id="repo-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="forge-core" className="font-mono" spellCheck={false} autoFocus />
           </Field>
-          {nameError ? <p className="-mt-2 text-[12px] text-danger-700 dark:text-danger-400">{nameError}</p> : null}
+          {nameError ? (
+            <p className="-mt-2 text-[12px] text-danger-700 dark:text-danger-400">{nameError}</p>
+          ) : converted ? (
+            <p className="-mt-2 text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="repo-name-converted">
+              Your new repository will be created as <span className="font-mono font-medium text-anvil-900 dark:text-anvil-50">{repoName}</span>.
+            </p>
+          ) : null}
 
           <Field label="Description" htmlFor="repo-desc" hint="Shown in discovery. Optional; editable later.">
             <Textarea id="repo-desc" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What is this repo for?" className="min-h-[72px]" maxLength={500} />
