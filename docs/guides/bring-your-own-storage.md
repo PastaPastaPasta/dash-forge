@@ -102,7 +102,7 @@ Keychain entries you created by hand (`security add-generic-password -s dash-for
 
 ### In the browser: the storage wizard
 
-The web app has the same setup at **Settings → Storage** (`/settings/storage`) on forge.dashhq.org. It is what the browser uses when it uploads to your storage itself, for example a release's assets; `git push` keeps using `dg`'s profiles.
+The web app has the same setup at **Settings → Storage** (`/settings/storage`) on forge.dashhq.org. It is what the browser uses when it uploads to your storage itself: a merge's pack, a commit to a pull request's branch (applying suggestions, "Update branch"), and a release's assets. `git push` keeps using `dg`'s profiles.
 
 - **Providers:** Cloudflare R2 (recommended: free egress), Backblaze B2, AWS S3, Garage / RustFS / other S3, IPFS (your kubo node), an IPFS pinning service, and Dash Platform last (permanent, about 0.33 DASH/MiB; see [Costs](costs.md)). Each field has a "where to find this" hint.
 - **A live test from the page**, so it checks exactly what the browser will do, CORS included. S3: signed PUT, signed GET, anonymous GET through the public URL, a ranged read, a CORS preflight for PUT, then the probe is deleted. IPFS: the kubo API, add with a CID check and pin, the gateway re-read, the public gateway, the pinning service, then unpin. A failing CORS row shows a copy-paste fix for your provider, filled in with your bucket and this app's origin; the browser needs PUT allowed from the app's origin, where the CLI needs no CORS at all.
@@ -111,11 +111,13 @@ The web app has the same setup at **Settings → Storage** (`/settings/storage`)
 - **Only public https addresses are recorded on chain.** The wizard can reach a MinIO or kubo on `localhost` for testing, but it refuses to record a loopback, private or plain-http URL, and readers skip such URLs even if a manifest names one.
 - **kubo's RPC API is its admin interface.** The fix block creates a Forge token limited to add, pin and version calls (after an owner token, so you do not lock yourself out) rather than opening the whole API to the page.
 
-**macOS asks once per program.** macOS lets the program that created a keychain item read it silently. The first time `git-remote-dash` reads a secret that `dg` stored, macOS asks whether to allow it. Choose **Always Allow**. A rebuilt or reinstalled binary can ask again. Over SSH nobody can answer, so the read fails: use an `env:` reference on machines you only reach that way. `DASH_FORGE_NO_KEYCHAIN=1` stops `dg` from offering or writing the keychain; `keychain:` references you wrote yourself are still read.
+**macOS: no dialog for what Forge stored.** `dg` writes the keychain, and `dg`, `git-remote-dash` and `forge-import` all read it, through Apple's `/usr/bin/security` tool, so they read what `dg` stored with no dialog, also after an upgrade or a rebuild. Entries you add with `security add-generic-password`, as in this guide, work the same way. An entry another program created (Keychain Access, say) can make macOS show an access dialog: the read prints a notice after a few seconds and waits up to 120 s for an answer. Over SSH no dialog can be answered, so the read fails: use an `env:` reference on machines you only reach that way. `DASH_FORGE_NO_KEYCHAIN=1` stops `dg` from offering or writing the keychain; `keychain:` references you wrote yourself are still read.
 
 ---
 
 ## Cloudflare R2
+
+> **Not yet verified live.** This section follows Cloudflare's documentation. It has not been run end to end with an R2 account: Forge's S3 storage has been tested only against self-hosted stores (RustFS, MinIO and Garage).
 
 R2 has no egress fees, which makes it the cheapest way to serve clones.
 
@@ -162,6 +164,8 @@ R2 wants `region = auto` and path-style addressing (the default).
 
 ## Backblaze B2
 
+> **Not yet verified live.** This section follows Backblaze's documentation. It has not been run end to end with a B2 account: Forge's S3 storage has been tested only against self-hosted stores (RustFS, MinIO and Garage).
+
 1. **Create the bucket** with Files in bucket set to **Public**, or later run `b2 bucket update <bucket> allPublic`.
 2. **Create an application key** under App Keys → Add a New Application Key, restricted to the bucket with Read and Write. The *keyID* is the access key id and the *applicationKey* is the secret.
 3. **Find the S3 endpoint.** The bucket page shows it, for example `https://s3.us-west-004.backblazeb2.com`, and the region is the middle part (`us-west-004`).
@@ -199,6 +203,8 @@ R2 wants `region = auto` and path-style addressing (the default).
    ```
 
 ## AWS S3
+
+> **Not yet verified live.** This section follows AWS's documentation. It has not been run end to end with an AWS account: Forge's S3 storage has been tested only against self-hosted stores (RustFS, MinIO and Garage).
 
 1. **Create the bucket**, for example `my-forge-packs` in `us-east-1`.
 2. **Allow public reads** of the objects. Either turn off Block Public Access for this bucket and add a bucket policy like the one below, or put CloudFront in front and use the CloudFront URL as `--public-url`:
@@ -258,6 +264,8 @@ R2 wants `region = auto` and path-style addressing (the default).
    A bucket name that contains dots cannot use virtual-hosted addressing over TLS, and `dg` will say so.
 
 ## Self-hosted S3: Garage, RustFS, MinIO
+
+> **Tested in Docker on a developer Mac only.** On 2026-09-28 RustFS, Garage and the last MinIO community image passed `dg storage test`, and RustFS and Garage also stored real packs that a clone then read. Nothing was run on NAS hardware; [Storage on your home NAS](home-nas-storage.md) says which of its steps were run.
 
 [Storage on your home NAS](home-nas-storage.md) walks through all of this on a Synology, a TrueNAS SCALE or a Linux box: Docker Compose, a Cloudflare Tunnel for a public https address, a key limited to one bucket, and a second copy for when the NAS is off.
 
@@ -338,18 +346,33 @@ A pin on a laptop that is usually offline makes a poor replica. Pair it with a b
 
 ## IPFS: kubo + a pinning service
 
+> **Not yet verified live.** The pinning client has been tested only against a scripted local server, not a real service ([PRD 04](../prd/04-storage-adapters.md)). The services below are listed from their own documentation.
+
 This kind adds the content through your kubo node, then asks any [IPFS Pinning Service API](https://ipfs.github.io/pinning-services-api-spec/) endpoint to pin the CID, passing your node's addresses as `origins`. The copy counts only once the service reports `pinned`. If the service already has a pin for that CID, the helper reuses it.
 
+These services document a Pinning Service API endpoint:
+
+| Service | `--pinning-endpoint` | `--pinning-token` | `--public-gateway` |
+|---|---|---|---|
+| [Pinata](https://docs.pinata.cloud/api-reference/pinning-service-api) | `https://api.pinata.cloud/psa` | the JWT shown once when you create an API key | your dedicated gateway, `https://<name>.mypinata.cloud`. By default it serves only CIDs pinned to your account ([Pinata: dedicated gateways](https://docs.pinata.cloud/gateways/dedicated-ipfs-gateways)) |
+| [Filebase](https://filebase.com/docs/ipfs/pinning-service-api) | `https://api.filebase.io/v1/ipfs` | a token for one bucket, from **Access Keys** in the console; pins go to that bucket | a dedicated gateway, `https://<name>.myfilebase.com`, public (any CID) or private (your pins only) ([Filebase: dedicated gateways](https://filebase.com/docs/ipfs/gateways/managing-dedicated-gateways)) |
+| [4EVERLAND](https://docs.4everland.org/storage/4ever-pin/pinning-services-api) | `https://api.4everland.dev` | the access token on the **4EVER Pin** page | the public gateway `https://4everland.io`, limited to 300 requests a minute ([4EVERLAND: IPFS gateway](https://docs.4everland.org/gateways/ipfs-gateway)) |
+
+Store the token in your keychain (macOS shown) and add the profile:
+
 ```sh
+security add-generic-password -s dash-forge -a pins -w   # prompts for the token
 dg storage add pins --kind ipfs-pinning-service \
   --api http://127.0.0.1:5001 --gateway http://127.0.0.1:8080 \
-  --pinning-endpoint https://<service>/psa \
+  --pinning-endpoint https://api.pinata.cloud/psa \
   --pinning-token keychain:dash-forge/pins \
-  --pin-timeout-secs 300
+  --public-gateway https://<name>.mypinata.cloud
 dg storage test pins
 ```
 
-The service must be able to fetch the content from your node, so the node needs to be publicly dialable while the pin completes. Otherwise the push times out on that target and says so. (This PR tested the pinning client only against a scripted local server, not a real service. See PRD 04's as-built notes.)
+- **Use the service's own gateway as `--public-gateway`.** The manifest then records `https://<gateway>/ipfs/<cid>`, and every reader tries it first. The service holds the pin, so its gateway can serve the pack when your own node is off. The shared public gateways may not find it at all.
+- **The service fetches the content from your node**, so the node needs to be publicly dialable while the pin completes.
+- **The pin timeout is 120 s** by default: the helper asks the service every 2 s whether the pin is `pinned`. A large pack, or a busy service, can take longer: raise it with `--pin-timeout-secs 600`. When it runs out, that copy counts as failed, and the push says so.
 
 ---
 

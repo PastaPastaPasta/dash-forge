@@ -9,6 +9,8 @@ Two facts decide most of the choices below:
 
 Readers never trust the NAS: a clone accepts only bytes that hash to the SHA-256 on chain, so a broken NAS costs availability, never integrity.
 
+> **What was tested.** On 2026-09-28 this guide was run with Docker on a developer Mac: RustFS behind a Cloudflare quick tunnel (standing in for a named one) with real pushes and clones; Garage, an existing MinIO and kubo, which passed `dg storage test`; and a clone from the Garage copy while the RustFS "NAS" was stopped. **Not yet verified live:** the Synology and TrueNAS SCALE steps, the Cloudflare dashboard steps for a named tunnel, Tailscale Funnel and the reverse-proxy setup. They follow the vendors' documentation, linked in each step.
+
 1. [What you will build](#what-you-will-build)
 2. [Choose a store](#choose-a-store)
 3. [Create the tunnel](#create-the-tunnel)
@@ -170,6 +172,8 @@ docker compose exec garage /garage layout apply --version 1
 
 ### On a Synology
 
+> **Not yet verified live.** These steps follow Synology's documentation. They have not been run on a Synology.
+
 DSM 7.2 and later, with **Container Manager** installed from Package Center.
 
 1. In File Station, create `docker/forge-storage` on your data volume (for example `/volume1/docker/forge-storage`), and put the files from above in it.
@@ -177,6 +181,8 @@ DSM 7.2 and later, with **Container Manager** installed from Package Center.
 3. **Container Manager → Project → Create**. Name it `forge-storage`, set the path to `/volume1/docker/forge-storage`, choose "Use existing docker-compose.yml", and finish. The project starts both containers ([Synology: Project](https://kb.synology.com/en-global/DSM/help/ContainerManager/docker_project?version=7)). If a container complains that a variable is not set, the project did not read `.env`: write the values into `compose.yaml` directly, and keep the file readable only by administrators.
 
 ### On TrueNAS SCALE
+
+> **Not yet verified live.** These steps follow the TrueNAS documentation. They have not been run on TrueNAS.
 
 TrueNAS SCALE 24.10 and later run apps on Docker.
 
@@ -368,7 +374,7 @@ dash: platform     manifest 2 · refUpdate 1     est 0.0032 DASH
 dash: done · Platform charged ≈0.0028 DASH · remaining 0.9938 DASH · https://forge.dashhq.org/repo?owner=5NGj…&name=nas-demo
 ```
 
-**The same profile also takes CI logs.** `dg ci report --log build.log --storage nas` (see [CI and check runs](ci.md)) uploads a run's log to this bucket and records its `https://s3.example.org/forge/...` URL on chain. Nothing extra to set up: the tunnel or reverse-proxy TLS you put in front of the store for pushes is exactly what a self-hosted CI runner needs too, since the web app (served over https) refuses to fetch a plain-http log.
+**The same profile also takes CI logs.** `dg ci report <owner>/<repo> --sha <commit> --name build --status completed --conclusion success --log build.log --storage nas` (see [CI and check runs](ci.md)) uploads a run's log to this bucket and records its `https://s3.example.org/forge/...` URL on chain. Nothing extra to set up: the tunnel or reverse-proxy TLS you put in front of the store for pushes is exactly what a self-hosted CI runner needs too, since the web app (served over https) refuses to fetch a plain-http log.
 
 ### Pushing from home
 
