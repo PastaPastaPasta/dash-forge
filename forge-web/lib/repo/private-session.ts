@@ -157,19 +157,23 @@ export function parseWrapDoc(doc: PlainDocument): Omit<WrapDoc, 'row'> & { row: 
   }
 }
 
-/** A `config` document as a {@link ConfigRow}; null for one with no `epoch` or block height (never an anchor). */
+/**
+ * A `config` document as a {@link ConfigRow}; null for one with no `epoch`, block height or `enc`
+ * (never an anchor: it states no key, §5.3; forge-core `config_row`).
+ */
 export function parseConfigRow(doc: PlainDocument): ConfigRow | null {
   const id = idField(doc, '$id')
   const owner = idField(doc, '$ownerId')
   const height = blockHeightOf(doc)
-  if (id === undefined || owner === undefined || height === undefined || doc['epoch'] == null) return null
+  const enc = bytesField(doc, 'enc')
+  if (id === undefined || owner === undefined || height === undefined || doc['epoch'] == null || enc === undefined || enc.length === 0) return null
   const createdAt = doc['$createdAt']
   return {
     id,
     owner,
     epoch: num(doc, 'epoch'),
     createdAtBlockHeight: height,
-    enc: bytesField(doc, 'enc') ?? new Uint8Array(0),
+    enc,
     ...(typeof createdAt === 'number' ? { createdAt } : {}),
   }
 }

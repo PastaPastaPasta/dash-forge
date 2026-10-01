@@ -353,6 +353,7 @@ mod tests {
                 AnchorRef {
                     id: [9; 32],
                     height: 1,
+                    stated_height: 1,
                 },
             )]
             .into(),

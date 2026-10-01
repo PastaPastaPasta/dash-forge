@@ -11,7 +11,7 @@ import { bytesEqual, type PrivateId } from './ids'
 import { hedgeNonce, refNameHash, type EpochKeyring, type EpochKeys } from './keys'
 import { MalformedError, buildTlv, parseTlv, type DocFields, type PrivateDocType } from './tlv'
 
-/** Blocks after the next epoch's anchor during which late content is still shown (§8.2). */
+/** Blocks after the next epoch's key was first stated (stated(e), §5.3) during which late content is still shown (§8.2). */
 export const GRACE_BLOCKS = 240
 
 const V1 = 0x01
@@ -254,6 +254,13 @@ export interface AnchorRef {
   /** The anchor's `$createdAtBlockHeight`. */
   readonly height: number
   /**
+   * The block height of stated(e) (§5.3): the first config, by anyone, carrying this anchor's
+   * commitment, i.e. when the epoch's key was first stated on chain. Never above `height`, and a
+   * re-anchor (same commitment, later height) does not move it. The late-content cut-off of the
+   * epoch below counts from it (§8.2), never from `height`.
+   */
+  readonly statedHeight: number
+  /**
    * The `$createdAt` (ms) of stated(e), when the epoch's current key was first stated on chain
    * (§5.3; a re-anchor does not move it), when known. A sealed release has no block height, so a
    * `badTag` revision created before it is an earlier use of the epoch number (§16.3).
@@ -336,8 +343,10 @@ function nextAnchor(anchors: ReadonlyMap<number, AnchorRef>, epoch: number): Anc
 
 /**
  * The late-content rule (§8.2): content under `epoch` written at `height` by `owner` is late
- * when the next existing epoch's anchor is more than {@link GRACE_BLOCKS} blocks older and
- * `owner` is not a current member.
+ * when the next existing epoch's key was first stated on chain (its anchor's
+ * {@link AnchorRef.statedHeight}) more than {@link GRACE_BLOCKS} blocks earlier and `owner` is
+ * not a current member. Never the selected anchor's own height: a re-anchor of that epoch after
+ * its first anchor's author left repeats the commitment later, and must not reopen the window.
  */
 export function isLate(
   anchors: ReadonlyMap<number, AnchorRef>,
@@ -351,7 +360,7 @@ export function isLate(
   // Nothing is ever sealed under a burned epoch (§5.3): whatever is, whenever, is late.
   if (burned?.has(epoch) === true) return true
   const next = nextAnchor(anchors, epoch)
-  return next !== undefined && height > next.height + GRACE_BLOCKS
+  return next !== undefined && height > next.statedHeight + GRACE_BLOCKS
 }
 
 function isHeight(h: number | undefined): h is number {
