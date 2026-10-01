@@ -288,7 +288,7 @@ The functions of §5 exist in both ports with the signatures below; the vectors 
 - The webhook's `head.sha` and the check-run watch use the current head.
 - A head move is a `pull_request` `synchronize`.
 
-**Timeline.** The web timeline has labels for the review kinds: "pushed new commits", "resolved a conversation", "requested a review from …", "dismissed a review: …", "set the milestone to …", and draft/ready.
+**Timeline.** The web timeline has labels for the review kinds: "pushed n commits (a → b)" (or "updated the head with n commits … pushed by …" when someone else pushed them), "resolved a conversation", "requested a review from …", "dismissed a review: …", "set the milestone to …", and draft/ready.
 
 **Not in PR 2** (the web and CLI PRs):
 

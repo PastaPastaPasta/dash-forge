@@ -20,7 +20,7 @@ import { GitCommit } from 'lucide-react'
 import { holdingsOfRole, readConfigBundle, readRoleOracle, repoKey, type PullView, type RepoRef } from '@/lib/repo'
 import { readBranchTip } from '@/lib/repo/source-branch'
 import { matchesProtected } from '@/lib/rules'
-import { previewCreate, sumPreviews } from '@/lib/sdk'
+import { EXISTING, previewCreate, sumPreviews } from '@/lib/sdk'
 import { unapplicable, applySuggestionCommit, planSuggestion, readTextFile, SuggestionRefused, updateBranchCommit, type BranchCommit, type SuggestionComment } from '@/lib/merge/branch-commit'
 import { parseSuggestions } from '@/lib/rules/v2'
 import { parseCommit } from '@/lib/view/git-objects'
@@ -45,6 +45,7 @@ import { Button } from '@/components/ui/button'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { Input } from '@/components/ui/input'
+import { spendAction } from '@/lib/spend-toast'
 
 
 /**
@@ -69,7 +70,8 @@ export function useSourceWrite(source: RepoRef | null, refName: string | null): 
 
 /** What a branch commit costs up front (the pack's storage comes on top). */
 export function branchCommitCost(isMember: boolean): ReturnType<typeof sumPreviews> {
-  return sumPreviews([previewCreate('packManifest'), previewCreate('refUpdate'), previewCreate(isMember ? 'event' : 'authorEvent')])
+  // The repo has packs and the PR's branch has updates: neither builds a subtree (QW3-037).
+  return sumPreviews([previewCreate('packManifest', {}, EXISTING), previewCreate('refUpdate', {}, EXISTING), previewCreate(isMember ? 'event' : 'authorEvent')])
 }
 
 /**
@@ -188,43 +190,46 @@ export function useBranchCommit({
       begin()
       const refName = pull.sourceRefName
       try {
-        const commit = await runKeyedBranchCommit(
-          saved.current,
-          key,
-          async () => {
-            // Runs only when the runner builds (not on a resume).
-            setSteps({ build: 'running' })
-            setDetails({})
-            return build()
-          },
-          (built) => {
-            const intent = `branch:${source.repoId}:${pull.number}:${built.commit}`
-            return {
-              sdk,
-              auth: signer,
-              repo,
-              source,
-              pull: { id: pull.id, number: pull.number, author: pull.author, headOid: pull.headOid, sourceRefName: refName },
-              isMember,
-              built,
-              upload,
-              publishIndex: async (pack, packHash) => {
-                const r = await publishMergeIndex(sdk, signer, source, pack, packHash, upload, `${intent}:index`)
-                return r.kind === 'published' ? `fragment at packRef ${r.packRef}` : `skipped: ${r.reason}`
-              },
-              readBranchTip: () => readBranchTip(sdk, source, refName),
-              verifyPack: (pack, tip, have) => missingFromClosure(pack, tip, have, verifyReader),
-              intent,
-            }
-          },
-          (built) => {
-            setSteps({ build: 'done' })
-            setDetails({ build: `${built.commit.slice(0, 9)}${built.files.length ? ` · ${built.files.join(', ')}` : ''}` })
-          },
-          (e) => {
-            setSteps((s) => ({ ...s, [e.step]: e.state }))
-            if (e.detail) setDetails((d) => ({ ...d, [e.step]: e.detail }))
-          },
+        // The commit's pack, ref and event are one action: one toast with their total (QW3-039).
+        const commit = await spendAction({ running: `Committing to ${refName}…`, done: `Committed to ${refName}`, failed: `Commit to ${refName} stopped part-way` }, (tag) =>
+          runKeyedBranchCommit(
+            saved.current,
+            key,
+            async () => {
+              // Runs only when the runner builds (not on a resume).
+              setSteps({ build: 'running' })
+              setDetails({})
+              return build()
+            },
+            (built) => {
+              const intent = `branch:${source.repoId}:${pull.number}:${built.commit}`
+              return {
+                sdk,
+                auth: tag(signer),
+                repo,
+                source,
+                pull: { id: pull.id, number: pull.number, author: pull.author, headOid: pull.headOid, sourceRefName: refName },
+                isMember,
+                built,
+                upload,
+                publishIndex: async (pack, packHash) => {
+                  const r = await publishMergeIndex(sdk, tag(signer), source, pack, packHash, upload, `${intent}:index`)
+                  return r.kind === 'published' ? `fragment at packRef ${r.packRef}` : `skipped: ${r.reason}`
+                },
+                readBranchTip: () => readBranchTip(sdk, source, refName),
+                verifyPack: (pack, tip, have) => missingFromClosure(pack, tip, have, verifyReader),
+                intent,
+              }
+            },
+            (built) => {
+              setSteps({ build: 'done' })
+              setDetails({ build: `${built.commit.slice(0, 9)}${built.files.length ? ` · ${built.files.join(', ')}` : ''}` })
+            },
+            (e) => {
+              setSteps((s) => ({ ...s, [e.step]: e.state }))
+              if (e.detail) setDetails((d) => ({ ...d, [e.step]: e.detail }))
+            },
+          ),
         )
         setDone(commit.commit)
         onDone(commit.commit)
@@ -442,7 +447,8 @@ export async function buildUpdateBranch(reader: ObjectReader, pull: PullView, ba
     case 'up-to-date':
       throw new BranchStopped('The PR branch already contains the base branch; nothing to update.')
     case 'conflict':
-      throw new BranchStopped(`Both sides changed the same files${out.plan.paths.length ? ` (${out.plan.paths.slice(0, 5).join(', ')})` : ''}: merge the base with the CLI (\`dg pr checkout\`, merge, push, \`dg pr sync\`).`)
+      // The browser never merges a file's contents: no conflict verdict, git may merge it cleanly (QW3-016).
+      throw new BranchStopped(`Both sides changed ${out.plan.paths.length ? `the same files (${out.plan.paths.slice(0, 5).join(', ')})` : 'history with more than one merge base'}, which the browser can't merge; git may still merge it cleanly. Update it with the CLI (\`dg pr checkout\`, merge, push, \`dg pr sync\`).`)
     case 'fast-forward':
       throw new BranchStopped('The PR branch has nothing the base lacks; nothing to update.')
     case 'unrelated':

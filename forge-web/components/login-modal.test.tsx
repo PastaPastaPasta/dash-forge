@@ -29,6 +29,11 @@ const ID = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
 const OTHER = 'BTJPjCLCnRaJQkqakpcdLYFsaHgFf5XSEBNxFCyYBteH'
 
 const auth = {
+  /** The signed-in session (a renewal from Settings), or null. */
+  identity: null as string | null,
+  keyId: null as number | null,
+  unlockScope: null as 'full' | 'signing' | null,
+  storage: null as 'vault' | 'session' | null,
   vaults: [] as VaultInfo[],
   lastIdentity: null as string | null,
   importIdentity: vi.fn(),
@@ -65,9 +70,10 @@ vi.mock('@/contexts/auth-context', () => ({
     forget: auth.forget,
     isLoading: false,
     step: null,
-    identity: null,
-    unlockScope: null,
-    storage: null,
+    identity: auth.identity,
+    keyId: auth.keyId,
+    unlockScope: auth.unlockScope,
+    storage: auth.storage,
     controller: {
       supportsLimitedKeys: () => false,
       checkGroup: async () => ({ notice: null }),
@@ -124,6 +130,10 @@ async function openImportWithWords(): Promise<void> {
 beforeEach(() => {
   auth.vaults = [{ identityId: ID, keyId: 6, createdAt: 1_700_000_000_000, methods: ['passphrase'] }]
   auth.lastIdentity = null
+  auth.identity = null
+  auth.keyId = null
+  auth.unlockScope = null
+  auth.storage = null
   journal = undefined
   auth.importIdentity.mockReset()
   auth.forget.mockClear()
@@ -313,5 +323,51 @@ describe('QA wave 2 (bonsia): sign-in intent and polish', () => {
     await flush()
     expect(q('[role="alert"]')!.textContent).toMatch(/for devnet-moutai, but this site is on devnet-bonsia/)
     expect(byText(/Create this browser's key/)!.hasAttribute('disabled')).toBe(true)
+  })
+})
+
+describe('QA wave 3 (bonsia): the import form', () => {
+  it('QW3-027: Enter in the passphrase fields signs in, as the Unlock sheet does', async () => {
+    auth.vaults = []
+    auth.importIdentity.mockResolvedValueOnce({})
+    await openImportWithWords()
+    await act(async () => {
+      q<HTMLInputElement>('#vault-passphrase-2')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    await flush()
+    expect(auth.importIdentity).toHaveBeenCalledTimes(1)
+  })
+
+  it('QW3-031: Renew key opens a renewal of the signed-in identity, not the generic sign-in', async () => {
+    auth.identity = ID
+    auth.keyId = 6
+    auth.storage = 'vault'
+    auth.unlockScope = 'full'
+    auth.vaults = [{ identityId: ID, keyId: 6, createdAt: 1, methods: ['passphrase'], encryptionKey: true }]
+    act(() => useUiStore.getState().openLogin('renew'))
+    await flush()
+    const body = host.ownerDocument.body.textContent ?? ''
+    expect(body).toMatch(/Renew this browser's key/)
+    expect(body).not.toMatch(/Sign in to Dash Forge/)
+    expect(byText(/All options/)).toBeNull()
+    expect(body).toMatch(/Disables key #6 and registers/)
+    // The encryption key this tab holds moves with the renewal: no unticked box saying otherwise.
+    expect(q('[data-testid="enable-private-repos"]')).toBeNull()
+    expect(q('[data-testid="import-carries-encryption"]')!.textContent).toMatch(/Private repos stay enabled/)
+    await click(byText('Recovery phrase'))
+    expect(q<HTMLInputElement>('#import-id')!.value).toBe(ID)
+    expect(q<HTMLInputElement>('#import-id')!.readOnly).toBe(true)
+    expect(byText("Renew this browser's key")).not.toBeNull()
+  })
+
+  it("QW3-007: a key that only got staged is no key to replace: no false renewal copy", async () => {
+    auth.vaults = [{ identityId: ID, keyId: 11, createdAt: 1, methods: ['passphrase'], staged: true }]
+    await openImportWithWords()
+    act(() => type(q<HTMLInputElement>('#import-id')!, ID))
+    await flush()
+    expect(q('[data-testid="import-already-stored"]')).toBeNull()
+    expect(q('[data-testid="import-unfinished"]')!.textContent).toMatch(/did not finish/)
+    expect(host.ownerDocument.body.textContent).not.toMatch(/old key is disabled in the same update/)
+    expect(byText("Create this browser's key")).not.toBeNull()
   })
 })

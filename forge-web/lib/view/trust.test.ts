@@ -175,12 +175,14 @@ describe('file contents row', () => {
     expect(pack.content.detail).toMatch(/1 pack did not match its manifest/)
   })
 
-  it('is Partly verified, never Verified, when a live pack could not be fetched', () => {
+  it('is Partly verified, never Verified, when a live pack could not be fetched (Not checked yet while nothing was read)', () => {
     const read = deriveTrust(inputs({ checks: checks({ objectsVerified: 5, packsVerified: 3, unavailablePacks: ['ab'.repeat(32)] }) }))
     expect(read.content.state).toBe('partial')
     expect(read.content.detail).toMatch(/1 pack could not be fetched from its storage, so some files may be missing/)
+    // Nothing read yet: nothing checked, so Not checked yet, not Partly verified (QW3-044).
     const none = deriveTrust(inputs({ checks: checks({ unavailablePacks: ['ab'.repeat(32), 'cd'.repeat(32)] }) }))
-    expect(none.content.state).toBe('partial')
+    expect(none.content.state).toBe('pending')
+    expect(none.content.detail).toMatch(/^2 packs could not be fetched from their storage, so some files may be missing\. No file contents have been read yet\./)
     const bad = deriveTrust(inputs({ checks: checks({ objectsFailed: 1, unavailablePacks: ['ab'.repeat(32)] }) }))
     expect(bad.content.state).toBe('failed')
   })
@@ -352,6 +354,28 @@ describe('a quorum-key mismatch leaves nothing verified that relied on it (QW-00
 
   it('agreed keys leave the tip Verified', () => {
     expect(deriveTrust(inputs()).tip.state).toBe('verified')
+  })
+})
+
+describe('a permalink to a ref\'s proven tip (QW3-043)', () => {
+  const oid = (RESOLVED as { oid: string }).oid
+  const MISMATCH: QuorumCrossCheck = { state: 'mismatch', primary: 'q', secondary: 'd', quorums: ['5e5397c17bb1'.padEnd(64, '0')] }
+
+  it('is Verified as that ref, not "partly verified"', () => {
+    const r = deriveTrust(inputs({ tip: { pinned: oid, at: { name: 'master', state: RESOLVED } } }))
+    expect(r.tip.state).toBe('verified')
+    expect(r.tip.name).toBe('8f3e2a1')
+    expect(r.tip.detail).toContain('is the tip of `master`')
+    expect(r.overall).not.toBe('partial')
+  })
+
+  it('a commit no ref points at stays partly verified', () => {
+    expect(deriveTrust(inputs({ tip: { pinned: 'ab'.repeat(20) } })).tip.state).toBe('partial')
+  })
+
+  it('relies on the ref\'s proof, so disputed quorum keys unverify it like the ref', () => {
+    const r = deriveTrust(inputs({ quorum: MISMATCH, tip: { pinned: oid, at: { name: 'master', state: RESOLVED } } }))
+    expect(r.tip.state).toBe('unverified')
   })
 })
 

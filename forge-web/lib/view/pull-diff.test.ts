@@ -218,6 +218,34 @@ describe('loadPullComparison', () => {
     expect(summary(result.changes)).toEqual(['M lib.ts', 'A new.ts'])
   })
 
+  it('shows a merged PR updated from its base against the tip before the merge, not the tip at open (QW3-014)', async () => {
+    const { s, c1, p2 } = forkedPull()
+    // Another PR lands on the base after this one was opened…
+    const other = s.commit(s.files({ 'readme.md': 'hello world\n', 'lib.ts': 'one\ntwo\n', 'other.ts': 'o\n' }), [c1])
+    // …"Update branch" merges it into this PR's branch, and the PR then fast-forwards the base.
+    const updated = s.commit(s.files({ 'readme.md': 'hello world\n', 'lib.ts': 'one\nsecond\n', 'new.ts': 'n\n', 'other.ts': 'o\n' }), [p2, other])
+    const r = s.reader()
+    const result = await loadPullComparison(
+      { base: r, head: r },
+      { baseTipOid: updated, baseOidAtOpen: c1, baseOidAtMerge: other, headOid: updated, merged: true, imported: false },
+    )
+    expect(result.comparedBaseOid).toBe(other)
+    expect(result.comparisonNote).toBeNull()
+    // Only the PR's own changes: not other.ts, nor the readme edit, both already on the base.
+    expect(summary(result.changes)).toEqual(['M lib.ts', 'A new.ts'])
+  })
+
+  it('falls back to the tip at open when the tip before the merge is not readable', async () => {
+    const { s, c0, c1, p2 } = forkedPull()
+    const r = s.reader()
+    const result = await loadPullComparison(
+      { base: r, head: r },
+      { baseTipOid: p2, baseOidAtOpen: c1, baseOidAtMerge: 'f'.repeat(40), headOid: p2, merged: true, imported: false },
+    )
+    expect(result.comparedBaseOid).toBe(c0)
+    expect(result.comparisonNote).toMatch(/when this PR was opened.*tip before the merge/)
+  })
+
   it('does not walk the merged tip first for a merged PR', async () => {
     const { s, c1, p2 } = forkedPull()
     let tip = s.commit(s.files({ x: '1' }), [c1, p2])

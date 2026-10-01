@@ -682,7 +682,7 @@ export async function pollOnce(
   let failed = 0
   let backfills = 0
   let backfillsFailed = 0
-  let joined = false
+  const joined: InboxItem[] = []
   const name = opts.name ?? null
   const store = async (items: readonly InboxItem[]): Promise<void> => {
     for (const it of items) {
@@ -695,7 +695,7 @@ export async function pollOnce(
       // mentioned user (its id is the item's: the issue or patch document).
       if (it.reason === 'mention' && (it.kind === 'issue' || it.kind === 'pull')) {
         await noteParticipation(network, me, it.id, 'mentioned', it.at)
-        joined = true
+        joined.push(it)
       }
     }
   }
@@ -759,9 +759,51 @@ export async function pollOnce(
   if (added > 0 && !stopped()) {
     for (const id of itemsToDrop(await loadItems(network, me))) await idbDelete('inbox', `${p}item:${id}`)
   }
-  // A thread joined by a mention: the next poll recomputes the subscriptions to follow it.
-  if (joined && !stopped()) await idbDelete('inbox', `${p}subs`)
+  // A thread joined by a mention is followed at once (QW3-050): the stored subscriptions say so
+  // now, as the Mentioned filter does, instead of after the next recompute.
+  if (joined.length > 0 && !stopped()) {
+    subs = followMentions(subs, joined)
+    await idbPut('inbox', `${p}subs`, subs)
+  }
   return { added, feedsRead: round.length - failed, feedsTotal: feeds.length, failed: failed + backfillsFailed, subs }
+}
+
+/**
+ * `subs` following the issues and PRs that mentioned me (`items`, each the issue or patch
+ * document): a thread already followed gains the reason, a new one is added from the item, as
+ * {@link computeSubscriptions} would add it from this browser's participation record.
+ */
+export function followMentions(subs: Subscriptions, items: readonly InboxItem[]): Subscriptions {
+  const threads = [...subs.threads]
+  for (const it of items) {
+    if (it.target === undefined) continue
+    const i = threads.findIndex((t) => t.id === it.id)
+    const prev = threads[i]
+    if (prev !== undefined) {
+      const reasons = prev.reasons ?? [prev.reason]
+      threads[i] = { ...prev, since: Math.min(prev.since, it.at - 1), reasons: reasons.includes('mentioned') ? reasons : [...reasons, 'mentioned'] }
+    } else {
+      threads.push({ id: it.id, kind: it.target.kind, number: it.target.number, title: it.target.title, repo: it.repo, reason: 'mentioned', reasons: ['mentioned'], since: it.at - 1 })
+    }
+  }
+  threads.sort((a, b) => b.since - a.since)
+  return { ...subs, threads: threads.slice(0, MAX_THREADS), droppedThreads: subs.droppedThreads + Math.max(0, threads.length - MAX_THREADS) }
+}
+
+/**
+ * The "What this browser watches" counts (QW3-050): each thread counted under every reason it is
+ * followed for, as the inbox's reason filters match it, not only its strongest one.
+ */
+export function watchCounts(subs: Subscriptions): { readonly member: number; readonly watched: number; readonly starred: number; readonly joined: number; readonly addressed: number; readonly seen: number } {
+  const has = (t: ThreadSub, ...rs: ThreadReason[]): boolean => (t.reasons ?? [t.reason]).some((r) => rs.includes(r))
+  return {
+    member: subs.repos.filter((r) => r.reason !== 'starred' && r.reason !== 'watched').length,
+    watched: subs.repos.filter((r) => r.reason === 'watched').length,
+    starred: subs.repos.filter((r) => r.reason === 'starred').length,
+    joined: subs.threads.filter((t) => has(t, 'author', 'commented')).length,
+    addressed: subs.threads.filter((t) => has(t, 'assigned', 'review-requested')).length,
+    seen: subs.threads.filter((t) => has(t, 'reviewed', 'mentioned')).length,
+  }
 }
 
 // ---------------------------------------------------------------------------

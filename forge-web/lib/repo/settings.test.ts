@@ -215,10 +215,12 @@ describe('repo document edits', () => {
     // A removal refunds part of the replace.
     expect(previewRepoEdit({ topics: [] }, ['rust']).credits).toBeLessThan(replace)
     // Priced against the topic documents held, not the list: a pre-C-1 repo holds none, so all
-    // three are created; unknown (null) prices that worst case too.
+    // three are created; unknown (null) prices that worst case too, each as possibly the repo's
+    // first topic (QW3-037: only the first builds the repo's topic subtree).
     const three = previewRepoEdit({ topics: ['rust', 'cli', 'git'] }, []).credits
     expect(three).toBeGreaterThan(previewRepoEdit({ topics: ['rust', 'cli', 'git'] }, ['rust', 'cli']).credits)
-    expect(previewRepoEdit({ topics: ['rust', 'cli', 'git'] }, null).credits).toBe(three)
+    expect(previewRepoEdit({ topics: ['rust', 'cli', 'git'] }, null).credits).toBeGreaterThan(three)
+    expect(three).toBeGreaterThan(previewRepoEdit({ topics: ['rust', 'cli', 'git'] }, ['x']).credits)
     expect(previewRepoEdit({}, ['rust']).credits).toBe(0)
     // A private repo has no topic documents (RC1 `topic.vis` is public-only): the replace alone.
     expect(previewRepoEdit({ topics: ['rust', 'git'] }, [], 'private').credits).toBe(previewRepoEdit({ topics: ['rust', 'git'] }, ['rust', 'git']).credits)

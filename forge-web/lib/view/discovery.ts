@@ -238,7 +238,11 @@ async function readRepoPage<T extends string | number>(
   const requested = Math.min(MAX_ROWS, limit + (from?.seen.length ?? 0))
   const pageWhere = where(after, strict)
   const orderBy = [[order.field, order.direction]] as const
-  const pushesSince = order.direction === 'desc' ? Date.now() - PUSH_WINDOW_MS : null
+  // Every page reads its repos' recent pushes, name-ordered ones (search, a profile) too, so a
+  // card says "pushed" or "created" by the same rule wherever it shows (QW3-041: search and
+  // profile cards said "created 17h ago" where Explore's said "pushed 16h ago"). The lookup's
+  // outer order follows the page's walk ({@link pageWalk}), which the node requires.
+  const pushesSince = Date.now() - PUSH_WINDOW_MS
   let rows: PlainDocument[]
   let res: CompositeResult | null = null
   try {

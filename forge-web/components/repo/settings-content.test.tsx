@@ -24,7 +24,8 @@ vi.mock('@/contexts/auth-context', () => ({
 }))
 vi.mock('@/hooks/use-sdk', () => ({ useSdk: () => ({ sdk: {}, ready: true, network: 'devnet' }) }))
 vi.mock('@/hooks/use-write-guard', () => ({ useWriteGuard: () => ({ disabledReason: null, check: () => true }) }))
-vi.mock('@/hooks/use-repo-chrome', () => ({ useViewerRole: () => ({ role: 'maintainer' }) }))
+const role: { value: 'maintainer' | 'writer' | null } = { value: 'maintainer' }
+vi.mock('@/hooks/use-repo-chrome', () => ({ useViewerRole: () => ({ role: role.value, known: true }) }))
 vi.mock('@/lib/repo', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/repo')>()),
   readMembershipsCached: async () => [{ identity: 'owner', role: 'maintainer' }],
@@ -64,6 +65,7 @@ let root: Root
 beforeEach(() => {
   unlockMore.mockClear()
   viewer.id = 'owner'
+  role.value = 'maintainer'
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -150,5 +152,28 @@ describe('one unlock per Settings page', () => {
       await render(home)
       expect(unlockAbove()).toBe('false')
     }
+  })
+})
+
+describe('a non-maintainer on Settings (QW3-055)', () => {
+  it('says the page is read-only and never asks an outsider to unlock storage for a repo they cannot push to', async () => {
+    viewer.id = 'outsider'
+    role.value = null
+    await render(repoHome('public'))
+    expect(host.querySelector('[data-testid="settings-read-only"]')?.textContent).toMatch(/read-only: only its maintainers can change them/)
+    expect(host.querySelector('[data-testid="storage-policy"]')).toBeNull()
+  })
+
+  it('tells a writer the same, and keeps their own push storage', async () => {
+    viewer.id = 'writer'
+    role.value = 'writer'
+    await render(repoHome('public'))
+    expect(host.querySelector('[data-testid="settings-read-only"]')?.textContent).toMatch(/You're a writer here/)
+    expect(host.querySelector('[data-testid="storage-policy"]')).not.toBeNull()
+  })
+
+  it('a maintainer gets no read-only note', async () => {
+    await render(repoHome('public'))
+    expect(host.querySelector('[data-testid="settings-read-only"]')).toBeNull()
   })
 })

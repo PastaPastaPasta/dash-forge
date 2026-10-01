@@ -11,6 +11,8 @@ import { IdentityPill } from '@/components/ui/identity-pill'
 import { Oid } from '@/components/ui/oid'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
+import { useDpnsLookup } from '@/hooks/use-dpns-name'
+import { UsernameHint } from '@/components/username-hint'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { SpendPanel } from '@/components/spend-panel'
 import { KeysPanel } from '@/components/keys-panel'
@@ -26,6 +28,8 @@ import { ACTIVE_NETWORK } from '@/lib/constants'
 export default function SettingsPage(): JSX.Element {
   const { identity, balance, locked } = useAuth()
   const openTopUp = useUiStore((s) => s.openTopUp)
+  // Known to have no DPNS name: say how to get one (QW3-035).
+  const username = useDpnsLookup(identity ?? '')
 
   const gateways = (
     <section aria-labelledby="gateways-title" className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
@@ -73,6 +77,7 @@ export default function SettingsPage(): JSX.Element {
             <span className="text-dense text-anvil-500 dark:text-anvil-400">Identity ID</span>
             <span data-testid="settings-identity" data-identity={identity}><Oid value={identity} chars={12} label="identity id" /></span>
           </div>
+          {username === null ? <UsernameHint className="mt-3 border-t border-anvil-100 pt-3 dark:border-anvil-850" /> : null}
         </section>
 
         <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">

@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { idbGet, idbPut, resetMemoryStores } from '../idb'
 import type { DocumentQuery } from '../sdk'
-import { computeSubscriptions, DEFAULT_PREFS, groupThreads, matchesFilter, pollOnce, stateWhat, subsByThread, threadReasons, toItems, type Feed, type InboxItem, type Subscriptions, type ThreadSub } from './inbox'
+import { computeSubscriptions, DEFAULT_PREFS, followMentions, groupThreads, matchesFilter, pollOnce, stateWhat, subsByThread, threadReasons, toItems, watchCounts, type Feed, type InboxItem, type Subscriptions, type ThreadSub } from './inbox'
 import { listParticipation, MAX_PARTICIPATION, noteParticipation } from './participation'
 
 const ME = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
@@ -132,13 +132,36 @@ describe('participation record', () => {
     expect(kept.at(-1)?.targetId).toBe('t3')
   })
 
-  it('a new issue that mentions me is followed from then on (the next poll recomputes)', async () => {
+  it('a new issue that mentions me is followed from then on, at once (QW3-050)', async () => {
     const subs: Subscriptions = { at: 1000, repos: [{ repo: REPO, reason: 'watched' }], threads: [], droppedRepos: 0, droppedThreads: 0 }
     await idbPut('inbox', `devnet:${ME}:subs`, subs)
     const sdk = chainSdk([{ type: 'issue', $id: ISSUE_ID, $ownerId: OTHER, $createdAt: 1500, repoId: REPO_ID, number: 1, title: 'Help', body: 'What do you think, @alice?' }])
     await pollOnce(sdk, 'devnet', FORGE, ME, { now: 2000, name: 'alice.dash' })
     expect(await listParticipation('devnet', ME)).toEqual([{ targetId: ISSUE_ID, reason: 'mentioned', at: 1500 }])
-    expect(await idbGet('inbox', `devnet:${ME}:subs`)).toBeUndefined()
+    // The stored subscriptions follow it now (the watch summary and the Mentioned filter agree).
+    const after = (await idbGet('inbox', `devnet:${ME}:subs`)) as Subscriptions
+    expect(after.threads).toEqual([expect.objectContaining({ id: ISSUE_ID, kind: 'issue', number: 1, reason: 'mentioned', reasons: ['mentioned'], since: 1499 })])
+    expect(watchCounts(after).seen).toBe(1)
+  })
+})
+
+describe('watch summary (QW3-050)', () => {
+  it('counts a thread under every reason it is followed for, not only its strongest', () => {
+    const s: Subscriptions = {
+      at: 0,
+      repos: [{ repo: REPO, reason: 'watched' }],
+      threads: [thread({ reason: 'assigned', reasons: ['assigned', 'mentioned'] }), thread({ id: 'old', reason: 'commented' })],
+      droppedRepos: 0,
+      droppedThreads: 0,
+    }
+    expect(watchCounts(s)).toEqual({ member: 0, watched: 1, starred: 0, joined: 1, addressed: 1, seen: 1 })
+  })
+
+  it('followMentions adds the reason to a thread already followed, keeping its earliest time', () => {
+    const s: Subscriptions = { at: 0, repos: [], threads: [thread({ reason: 'assigned', since: 50 })], droppedRepos: 0, droppedThreads: 0 }
+    const id = s.threads[0]!.id
+    const out = followMentions(s, [{ id, kind: 'issue', repo: REPO, target: { kind: 'issue', number: 1, title: 'Bug' }, what: 'opened an issue', actor: OTHER, at: 400, read: false, reason: 'mention' }])
+    expect(out.threads).toEqual([expect.objectContaining({ id, reason: 'assigned', reasons: ['assigned', 'mentioned'], since: 50 })])
   })
 })
 

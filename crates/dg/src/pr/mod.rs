@@ -694,7 +694,7 @@ fn same_head_and_base(v: &PatchView, source_id: &str, head_ref: &str, base: &str
 // list / view
 // ---------------------------------------------------------------------------
 
-async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Result<()> {
+async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::PrStateArg) -> Result<()> {
     let s = Reader::open(ctx, repo).await?;
     let handle = &s.repo;
     let collab = s.collab();
@@ -705,7 +705,7 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
     let rows: Vec<_> = page
         .rows
         .into_iter()
-        .filter(|(v, _)| state.matches(v.state.open))
+        .filter(|(v, _)| state.matches(v.state.open, v.state.merged))
         .collect();
     // The PRs the state filter left out, for the empty list's hint.
     let others = read - rows.len();
@@ -741,12 +741,7 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
                     String::new()
                 };
                 println!("{}{among}", state.empty("pull requests"));
-                let other = match state {
-                    crate::StateArg::Open => "closed or merged",
-                    crate::StateArg::Closed => "open",
-                    crate::StateArg::All => "",
-                };
-                if others > 0 && !other.is_empty() {
+                if let (true, Some(other)) = (others > 0, state.others()) {
                     println!(
                         "({others} {other}: `--state all` lists {})",
                         if others == 1 { "it" } else { "them" }
@@ -973,6 +968,21 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
     if let (Some(o), serde_json::Value::Object(extra)) = (out.as_object_mut(), standing) {
         o.extend(extra);
     }
+    // DPNS names for the human view, as `dg issue view` shows them (QW3-070), read together;
+    // a failed read shows the bare id.
+    let names = if ctx.json {
+        std::collections::BTreeMap::default()
+    } else {
+        let ids = std::iter::once(v.patch.author.as_str())
+            .chain(v.state.assignees.iter().map(String::as_str))
+            .chain(approvals.approvers.iter().map(String::as_str))
+            .chain(approvals.changes_requested.iter().map(String::as_str))
+            .chain(rows.iter().map(|r| r.identity.as_str()))
+            .chain(reviews.iter().map(|r| r.reviewer.as_str()))
+            .chain(bypasses.iter().map(|b| b.actor.as_str()));
+        client.dpns_first_names(ids).await
+    };
+    let who = |id: &str| crate::fmt::with_name(id, &names);
     ctx.emit(
         out,
         || {
@@ -982,7 +992,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
                 state_label(&v),
                 safe(&v.patch.title)
             );
-            println!("author: {}", v.patch.author);
+            println!("author: {}", who(&v.patch.author));
             println!(
                 "{} {} ({}) → {}",
                 source,
@@ -991,7 +1001,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
                 safe(&v.patch.base_ref_name)
             );
             let labels: Vec<&str> = v.state.labels.iter().map(String::as_str).collect();
-            let assignees: Vec<String> = v.state.assignees.iter().cloned().collect();
+            let assignees: Vec<String> = v.state.assignees.iter().map(|a| who(a)).collect();
             let milestone = review_state.milestone.as_deref();
             for line in crate::fmt::triage_lines(&labels, &assignees, milestone) {
                 println!("{line}");
@@ -1006,17 +1016,17 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
                 );
             }
             if !approvals.approvers.is_empty() {
-                let who: Vec<_> = approvals.approvers.iter().cloned().collect();
+                let by: Vec<_> = approvals.approvers.iter().map(|a| who(a)).collect();
                 println!(
                     "approved by {} on {}: {}",
-                    who.len(),
+                    by.len(),
                     short(&v.head),
-                    who.join(", ")
+                    by.join(", ")
                 );
             }
             if !approvals.changes_requested.is_empty() {
-                let who: Vec<_> = approvals.changes_requested.iter().cloned().collect();
-                println!("changes requested by {}", who.join(", "));
+                let by: Vec<_> = approvals.changes_requested.iter().map(|a| who(a)).collect();
+                println!("changes requested by {}", by.join(", "));
             }
             if let (Some(p), Some(st)) = (&policy, &policy_status) {
                 let approvals = format!(
@@ -1044,7 +1054,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
                 if merged_at(&v, oid) {
                     println!(
                         "! merged by bypassing the branch rules ({rules}), by {} at {}",
-                        b.actor,
+                        who(&b.actor),
                         short(oid)
                     );
                 } else {
@@ -1052,7 +1062,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
                     // records a claim, not a merge.
                     println!(
                         "! {} recorded a branch-rules bypass ({rules}) naming {}, which is not this PR's merge",
-                        b.actor,
+                        who(&b.actor),
                         short(oid)
                     );
                 }
@@ -1068,7 +1078,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
                         }
                         _ => String::new(),
                     };
-                    println!("  {}  {}{extra}", r.identity, r.state.label());
+                    println!("  {}  {}{extra}", who(&r.identity), r.state.label());
                 }
             }
             if !v.patch.body.is_empty() {
@@ -1085,7 +1095,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
                 println!(
                     "\n{} — {} on {}{tag}  [{}]",
                     r.verdict.label(),
-                    r.reviewer,
+                    who(&r.reviewer),
                     short(&r.commit_oid),
                     short(&r.document_id)
                 );
@@ -1362,9 +1372,33 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         Some(crate::quote::MergePush {
             history_index: default.is_none_or(|d| git::full_ref(&d) == view.patch.base_ref_name),
             platform_bytes: merge_stores_on_platform(),
+            // A pull request from a fork: its commits go into the base as a new pack.
+            uploads_head: view.patch.source_repo_id != handle.id(),
         })
     };
-    let merge_quote = crate::quote::merge(push, delete.is_some());
+    // QW3-021: the open issues the description closes ("Fixes #12"), closed after the merge as
+    // the web's merge box does (`--keep-linked-open` leaves them).
+    let Linked {
+        open: linked,
+        omitted,
+        imported,
+    } = if a.keep_linked_open {
+        Linked::default()
+    } else {
+        linked_open_issues(&collab, handle, &view).await
+    };
+    if !ctx.json && omitted > 0 {
+        eprintln!(
+            "note: the description closes {omitted} more issue(s) than a merge closes ({LINKED_ISSUES_MAX}); close them from their pages"
+        );
+    }
+    if !ctx.json && imported {
+        eprintln!(
+            "note: this PR was imported: its `Fixes #n` are the source forge's numbers, so no issue here is closed by the merge (the web's merge box maps them)"
+        );
+    }
+    let merge_quote = crate::quote::merge(push, delete.is_some())
+        + crate::quote::TRANSITION * linked.len() as u64;
     let mut steps = Steps::new(ctx.json);
     if !ctx.json && !not_passing.is_empty() {
         eprintln!(
@@ -1385,7 +1419,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         );
     }
     ctx.confirm_or_cancel(&format!(
-        "Merge PR #{number}{}? ({}{}; {}, plus Platform storage for any new objects)",
+        "Merge PR #{number}{}? ({}{}{}; {}, plus Platform storage for any new objects)",
         if not_passing.is_empty() {
             String::new()
         } else {
@@ -1401,6 +1435,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         } else {
             ""
         },
+        closes_phrase(&linked),
         cost_line(merge_quote, ctx.usd_price())
     ))?;
 
@@ -1496,6 +1531,28 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         }
     }
 
+    // The linked issues, once the merge is recorded. The merge stands if one fails; say so.
+    let mut closed_issues = Vec::new();
+    for (n, target) in &linked {
+        match collab
+            .set_state(handle, target, StateAction::Close, None)
+            .await
+        {
+            Ok(_) => {
+                closed_issues.push(*n);
+                steps.ok("close", format!("issue #{n}"));
+            }
+            Err(e) => {
+                if !ctx.json {
+                    eprintln!("  ✗ close     the merge stands; closing issue #{n} failed: {e:#}");
+                }
+                steps.done.push(
+                    json!({ "step": "close", "issue": n, "ok": false, "detail": format!("{e:#}") }),
+                );
+            }
+        }
+    }
+
     // Re-read: "merged" is the chain fact (the transition landed); whether its commit is on
     // the base is what readers label. The push above moved the base branch, so the ref
     // history is read again.
@@ -1520,6 +1577,9 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
             "branchDeleted": branch_deleted,
             "bypassedRules": bypassed,
             "checksNotPassing": not_passing,
+            "closedIssues": closed_issues,
+            "linkedIssuesOmitted": omitted,
+            "linkedIssuesImported": imported,
             "cost": cost_json(spent, price),
             "steps": steps.done,
         }),
@@ -1545,6 +1605,74 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// The most linked issues a merge closes, as the web's merge box offers (`LINKED_ISSUES_MAX`).
+const LINKED_ISSUES_MAX: usize = 10;
+
+/// What a merge does to the issues its description closes ([`linked_open_issues`]).
+#[derive(Default)]
+struct Linked {
+    /// The open ones it closes, with their targets.
+    open: Vec<(u32, forge_core::collab::v2::Target)>,
+    /// Numbers past [`LINKED_ISSUES_MAX`], left alone (and said).
+    omitted: usize,
+    /// The PR was imported: its `#n` are the source forge's numbers, so none is closed.
+    imported: bool,
+}
+
+/// The open issues `view`'s description closes ("Fixes #12", [`linked_issues`]), never the PR
+/// itself (issues and PRs share one numbering), at most [`LINKED_ISSUES_MAX`], read together.
+/// An imported PR's `#n` are the source forge's numbers, not this repository's: none (the web's
+/// merge box maps them through the mirror). One that cannot be read is left out (the merge does
+/// not wait on it).
+async fn linked_open_issues(collab: &Collab<'_>, handle: &Repo, view: &PatchView) -> Linked {
+    let numbers: Vec<u32> = forge_core::rules::review::linked_issues(&view.patch.body)
+        .into_iter()
+        .filter(|n| *n != view.patch.number)
+        .collect();
+    if view.patch.imported.is_some() {
+        return Linked {
+            imported: !numbers.is_empty(),
+            ..Linked::default()
+        };
+    }
+    let omitted = numbers.len().saturating_sub(LINKED_ISSUES_MAX);
+    let reads = numbers
+        .into_iter()
+        .take(LINKED_ISSUES_MAX)
+        .map(|n| async move {
+            let issue = collab.issue(handle, n).await.ok().flatten()?;
+            let target = issue.target();
+            let code = collab.state_sum(handle, &target.id).await.ok()?;
+            forge_core::rules::v2::status_of_code(code)
+                .open
+                .then_some((n, target))
+        });
+    Linked {
+        open: futures::future::join_all(reads)
+            .await
+            .into_iter()
+            .flatten()
+            .collect(),
+        omitted,
+        imported: false,
+    }
+}
+
+/// `, then closes issues #1, #3` for the merge prompt (empty when none).
+fn closes_phrase(linked: &[(u32, forge_core::collab::v2::Target)]) -> String {
+    match linked {
+        [] => String::new(),
+        [(n, _)] => format!(", then closes issue #{n}"),
+        many => format!(
+            ", then closes issues {}",
+            many.iter()
+                .map(|(n, _)| format!("#{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 
 /// "1 check is" / "2 checks are".
@@ -2964,6 +3092,25 @@ mod tests {
             "refs/heads/f",
             "refs/heads/main"
         ));
+    }
+
+    /// QW3-021: the merge prompt names the linked issues it closes.
+    #[test]
+    fn the_merge_prompt_names_the_issues_it_closes() {
+        let t = |n: u32| {
+            (
+                n,
+                forge_core::collab::v2::Target {
+                    kind: forge_core::collab::v2::TargetKind::Issue,
+                    id: format!("issue-{n}"),
+                    number: n,
+                    author: String::new(),
+                },
+            )
+        };
+        assert_eq!(closes_phrase(&[]), "");
+        assert_eq!(closes_phrase(&[t(1)]), ", then closes issue #1");
+        assert_eq!(closes_phrase(&[t(1), t(3)]), ", then closes issues #1, #3");
     }
 
     /// `dg pr list` / `dg pr view` show an open draft (state code 8) as `draft`, not `open`

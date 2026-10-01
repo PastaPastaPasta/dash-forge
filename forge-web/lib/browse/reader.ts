@@ -31,6 +31,7 @@ import {
   baseMaxBytes,
   deltaMaxBytes,
   inflateDelta,
+  inflatePrefix,
   inflateZlib,
   ObjectTooLargeError,
   objTypeFromCode,
@@ -558,6 +559,26 @@ export class BrowseReader {
       }
     }
     throw new Error(`delta chain of ${oidHex} is over ${DELTA_WALK_MAX} deep`)
+  }
+
+  /**
+   * The first `bytes` bytes of a blob stored whole (not as a delta) in its pack, from a short
+   * range read: how git tells a binary file (a NUL in its first 8,000 bytes) for one too large to
+   * read whole here (QW3-045). Null for a delta, an object of another type, or one not indexed.
+   * Not hash-checked (only the whole object can be): use it to classify, never to show.
+   */
+  async blobPrefix(oidHex: string, bytes: number): Promise<Uint8Array | null> {
+    const entry = await this.locate(oidHex)
+    if (entry === null) return null
+    const cached = this.objectsByOid.get(oidHex.toLowerCase())
+    if (cached !== undefined) return cached.type === 'blob' ? cached.bytes.subarray(0, bytes) : null
+    const copy = this.copyOf.get(entry.packRef)
+    const head = await this.fetchRange(entry.packRef, entry.offset, entry.offset + Math.min(ENTRY_HEAD_BYTES, entry.length), copy)
+    const h = parseObjHeader(head, 0)
+    if (h.type !== PACK_TYPE.BLOB) return null
+    // Deflate rarely grows data by more than a few bytes per 16 KiB block: twice `bytes` is ample.
+    const span = await this.fetchRange(entry.packRef, entry.offset, entry.offset + Math.min(entry.length, h.after + 2 * bytes + 64), copy)
+    return inflatePrefix(span, h.after, Math.min(bytes, h.size))
   }
 
   /** The error for an object this reader does not index ({@link ReadFailure} `other`). */

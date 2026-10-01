@@ -208,15 +208,7 @@ impl Session {
     /// landed can be read from a node a block behind, which still shows the old balance, so
     /// the balance is read a few times until it moves.
     pub async fn spent_since(&self, before: u64) -> u64 {
-        for attempt in 0..4 {
-            if let Ok(after) = self.client.get_balance(&self.identity.id()).await {
-                if after < before || attempt == 3 {
-                    return before.saturating_sub(after);
-                }
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-        }
-        0
+        spent_since(&self.client, &self.identity.id(), before).await
     }
 
     /// The signer's balance now (0 when unreadable), for [`Self::spent_since`].
@@ -312,6 +304,20 @@ impl Reader {
             None => Ok(ctx.load_bridge()?.identity_id),
         }
     }
+}
+
+/// What `identity_id` has paid since its balance was `before`: the balance read again, a few
+/// times while it has not moved yet (a node a block behind still shows the old one).
+pub async fn spent_since(client: &PlatformClient, identity_id: &str, before: u64) -> u64 {
+    for attempt in 0..4 {
+        if let Ok(after) = client.get_balance(identity_id).await {
+            if after < before || attempt == 3 {
+                return before.saturating_sub(after);
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    }
+    0
 }
 
 /// An issue / PR number as the contract stores it (1..=2^32-1), or a usage error.

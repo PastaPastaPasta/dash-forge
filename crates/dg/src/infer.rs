@@ -6,7 +6,7 @@
 //! (`dg issue label <REPO> 3 add bug`), so inside a clone a line clap cannot parse, whose
 //! command's first positional is `repo`, is tried again with the clone's repository (its
 //! `dash://` remote, `origin` first) in that slot. It is used only when the new line parses:
-//! `dg issue label 3 add bug`, `dg ci status <sha>`, `dg release download v1.0` and
+//! `dg issue label 3 add bug`, `dg ci report --sha <sha>`, `dg release download v1.0` and
 //! `dg label create docs` all read as the clone's.
 //!
 //! What the user did type keeps its meaning where it clearly names a repository: a line
@@ -55,11 +55,29 @@ pub fn parse(
     match crate::Cli::try_parse_from(&args) {
         Ok(cli) => Ok((cli, false)),
         Err(e) if explicit || is_help_or_version(&e) => Err(e),
-        Err(e) => with_repo(&args, clone)
-            .and_then(|a| crate::Cli::try_parse_from(a).ok())
-            .map(|cli| (cli, true))
-            .ok_or(e),
+        Err(e) => match with_repo(&args, clone).map(crate::Cli::try_parse_from) {
+            Some(Ok(cli)) => Ok((cli, true)),
+            // `dg issue view abc` in a clone: as typed, `abc` was the repository and the
+            // number was missing; with the clone's repository, `abc` is a bad number. That
+            // is the error to show (QW3-069), not "<NUMBER> was not provided".
+            Some(Err(retried)) if is_missing_argument(&e) && is_bad_value(&retried) => Err(retried),
+            _ => Err(e),
+        },
     }
+}
+
+/// Whether clap refused the line for a required argument it did not get.
+fn is_missing_argument(e: &clap::Error) -> bool {
+    e.kind() == clap::error::ErrorKind::MissingRequiredArgument
+}
+
+/// Whether clap refused a value it did get (`abc` for a number).
+fn is_bad_value(e: &clap::Error) -> bool {
+    use clap::error::ErrorKind;
+    matches!(
+        e.kind(),
+        ErrorKind::ValueValidation | ErrorKind::InvalidValue
+    )
 }
 
 /// Whether clap's "error" is a `--help` / `--version` page (or the help a bare `dg issue`
@@ -159,7 +177,7 @@ fn is_number(arg: &str) -> bool {
 /// `owner/name` whose owner is an identity id, `@name` or `name.dash`. A number never is
 /// (`dg issue view 3`); `docs`, `feat/x` or `release/*` are what the next argument holds (a
 /// label, a branch, a pattern).
-fn names_a_repo(given: &str, here: &str) -> bool {
+pub(crate) fn names_a_repo(given: &str, here: &str) -> bool {
     if is_number(given) {
         return false;
     }
@@ -350,10 +368,6 @@ mod tests {
                 &format!("dg collab add {ID} --role writer"),
                 &format!("{ID} --role writer"),
             ),
-            (
-                "dg ci status 556ec1132b8e0e216276d9154edb0d267f390e1d",
-                "556ec1132b8e0e216276d9154edb0d267f390e1d",
-            ),
             ("dg ci runner add @alice", "@alice"),
             ("dg release unpublish v0.1.0", "v0.1.0"),
             ("dg release download v0.1.0", "v0.1.0"),
@@ -404,6 +418,17 @@ mod tests {
         }
         // outside a clone: nothing to put there
         assert_eq!(with_repo(&split("dg issue list"), || None), None);
+    }
+
+    /// QW3-069: `dg issue view abc` in a clone is a bad number, not a missing one.
+    #[test]
+    fn a_bad_number_in_a_clone_is_reported_as_one() {
+        let e = parse(split("dg issue view abc"), || Some(HERE.into())).unwrap_err();
+        assert_eq!(e.kind(), clap::error::ErrorKind::ValueValidation, "{e}");
+        assert!(e.to_string().contains("'abc' for '<NUMBER>'"), "{e}");
+        // outside a clone, the line as typed is what is wrong
+        let e = parse(split("dg issue view abc"), || None).unwrap_err();
+        assert_eq!(e.kind(), clap::error::ErrorKind::MissingRequiredArgument);
     }
 
     #[test]

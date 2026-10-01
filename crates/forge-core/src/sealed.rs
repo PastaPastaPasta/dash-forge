@@ -142,7 +142,8 @@ fn derive_key(
 
 fn check_len(passphrase: &str) -> Result<()> {
     if passphrase.chars().count() < MIN_PASSPHRASE_LEN {
-        return Err(Error::Config(format!(
+        // What the user typed, not a configuration problem (QW2-076: E201, not E204).
+        return Err(Error::InvalidInput(format!(
             "the passphrase must be at least {MIN_PASSPHRASE_LEN} characters"
         )));
     }
@@ -250,11 +251,11 @@ pub fn passphrase_from(envs: &[&str], what: &str, confirm: bool) -> Result<Secre
             "{what} needs a passphrase and this command does not prompt; set {first}"
         )));
     }
+    // The OS error ("Device not configured (os error 6)") says nothing the sentence does not.
     let prompt = |label: &str| {
-        rpassword::prompt_password(label).map_err(|e| {
+        rpassword::prompt_password(label).map_err(|_| {
             Error::Config(format!(
-                "{what} needs a passphrase and there is no terminal to ask on ({e}); set \
-                 {first}"
+                "{what} needs a passphrase and there is no terminal to ask on; set {first}"
             ))
         })
     };

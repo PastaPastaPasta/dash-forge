@@ -186,10 +186,14 @@ describe('BlameBody rows', () => {
 })
 
 describe('blameProgressText (QW2-039)', () => {
-  const base = { versions: 3, versionLimit: 200, pending: 10, total: 40, indexed: 0 }
+  const base = { versions: 3, versionLimit: 200, pending: 10, total: 40, indexed: 0, searching: false }
   it('counts commits only while they are walked', () => {
     expect(blameProgressText({ ...base, examined: 0, indexed: 3 })).toBe('Compared 3 versions of up to 200 · 30 lines of 40 attributed')
-    expect(blameProgressText({ ...base, examined: 12 })).toBe('Compared 3 versions of up to 200 · 30 lines of 40 attributed · 12 commits examined')
+    expect(blameProgressText({ ...base, examined: 12 })).toBe('Compared 3 versions of up to 200 · 30 lines of 40 attributed · after examining 12 commits')
+    // Searching for older versions: the commit count is what moves, so it leads.
+    expect(blameProgressText({ ...base, examined: 88, searching: true })).toBe(
+      'Looking for older versions · 88 commits examined · compared 3 versions of up to 200 · 30 lines of 40 attributed so far',
+    )
     expect(blameProgressText({ ...base, versions: 0, examined: 0 })).toBe('Looking for the file’s versions')
     expect(blameProgressText({ ...base, versions: 0, examined: 1 })).toBe('Looking for the file’s versions · 1 commit examined')
     expect(blameProgressText(null)).toBe('Reading the file’s history…')

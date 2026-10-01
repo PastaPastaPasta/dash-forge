@@ -180,7 +180,26 @@ export interface MergeGate {
  * tab must unlock its storage settings first (a click would do nothing). Never an enabled button
  * that silently does nothing.
  */
-export function mergeGate(i: { readonly unmet: readonly string[]; readonly canBypass: boolean; readonly bypassTicked: boolean; readonly storageLocked: boolean }): MergeGate {
+export function mergeGate(i: {
+  readonly unmet: readonly string[]
+  readonly canBypass: boolean
+  readonly bypassTicked: boolean
+  readonly storageLocked: boolean
+  /**
+   * The PR's source branch is past its head (QW3-013): the branch and its tip. A merge would
+   * merge the older head and silently leave the newer commits out, so it waits for "Update PR
+   * head" (no bypass: it is not a branch rule).
+   */
+  readonly branchAhead?: { readonly branch: string; readonly tip: string; readonly head: string } | null
+}): MergeGate {
+  const ahead = i.branchAhead ?? null
+  if (ahead !== null) {
+    return {
+      enabled: false,
+      bypassing: false,
+      reason: `${ahead.branch} is at ${ahead.tip.slice(0, 7)}, ahead of this PR's head ${ahead.head.slice(0, 7)}. Update the PR head first, so the merge includes those commits.`,
+    }
+  }
   const blocked = i.unmet.length > 0
   if (blocked && !(i.canBypass && i.bypassTicked)) {
     return {
@@ -205,7 +224,7 @@ export type MergeButton =
   | { readonly kind: 'checking' }
   | { readonly kind: 'fast-forward'; readonly label: 'Merge (fast-forward)' }
   | { readonly kind: 'merge-commit'; readonly label: 'Create merge commit and merge' }
-  | { readonly kind: 'conflicts'; readonly label: 'Conflicts or overlapping changes — merge with `dg pr merge`'; readonly checkout: string }
+  | { readonly kind: 'conflicts'; readonly label: "Can't merge in the browser — merge with `dg pr merge`"; readonly checkout: string }
   | { readonly kind: 'protected'; readonly label: 'Protected branch — maintainers only' }
   | { readonly kind: 'mobile'; readonly label: 'Use a desktop browser for this step' }
   | { readonly kind: 'unavailable'; readonly reason: string }
@@ -247,8 +266,9 @@ export function mergeButton(i: MergeButtonInputs): MergeButton {
     case 'merge':
       return { kind: 'merge-commit', label: 'Create merge commit and merge' }
     case 'conflict':
-      // The browser merges only disjoint changes; anything both sides touched is the CLI's.
-      return { kind: 'conflicts', label: 'Conflicts or overlapping changes — merge with `dg pr merge`', checkout: i.checkout }
+      // The browser merges only disjoint changes; anything both sides touched is the CLI's. It
+      // never merges a file's contents, so this is no conflict verdict: git may merge it cleanly (QW3-016).
+      return { kind: 'conflicts', label: "Can't merge in the browser — merge with `dg pr merge`", checkout: i.checkout }
     case 'malformed':
       return {
         kind: 'unavailable',

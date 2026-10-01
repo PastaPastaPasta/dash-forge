@@ -206,7 +206,12 @@ export function ReviewersCard({
                     key={m.identity}
                     type="button"
                     aria-pressed={on}
-                    onClick={() => onRequest(m.identity, on)}
+                    // The picker closes on a choice (QW3-049): the request then shows in the list above.
+                    onClick={() => {
+                      setPicking(false)
+                      onRequest(m.identity, on)
+                    }}
+                    title={on ? 'Remove the review request' : 'Request a review'}
                     className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-anvil-100 dark:hover:bg-anvil-850 coarse:min-h-11"
                     data-testid="reviewer-option"
                     data-identity={m.identity}
@@ -214,12 +219,22 @@ export function ReviewersCard({
                     <CheckMark on={on} />
                     <Author identityId={m.identity} link={false} />
                     <span className="text-[11px] text-anvil-500 dark:text-anvil-400">{m.role}</span>
+                    {on ? <span className="ml-auto text-[11px] text-anvil-500 dark:text-anvil-400">Requested</span> : null}
                   </button>
                 )
               })}
               <div className="flex gap-1 pt-1">
                 <Input aria-label="Request identity id" value={other} onChange={(e) => setOther(e.target.value)} placeholder="identity id" className="h-7 py-0 font-mono text-[12px]" />
-                <Button variant="outline" size="sm" disabled={!isIdentityId(other.trim()) || other.trim() === author} onClick={() => onRequest(other.trim(), false)}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!isIdentityId(other.trim()) || other.trim() === author || listed.has(other.trim())}
+                  onClick={() => {
+                    const who = other.trim()
+                    setPicking(false)
+                    onRequest(who, false)
+                  }}
+                >
                   Request
                 </Button>
               </div>

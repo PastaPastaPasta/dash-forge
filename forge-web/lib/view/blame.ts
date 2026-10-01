@@ -142,6 +142,11 @@ export interface BlameProgress {
   /** Lines still without a commit. */
   readonly pending: number
   readonly total: number
+  /**
+   * Whether the walk is searching the history for the file's next versions now (commits being
+   * examined), not comparing versions it found: which of the counts is moving (QW2-039).
+   */
+  readonly searching: boolean
 }
 
 type RefusedReason = 'too-large' | 'binary' | 'not-a-file'
@@ -266,8 +271,8 @@ export async function blameFile(
   let examined = 0
   let indexed = 0
   const examinedBefore = resume?.examined ?? 0
-  const report = (searched: number): void =>
-    onProgress?.({ examined: examinedBefore + examined + searched, indexed, versions, versionLimit, pending: state.pending, total: state.lines.length })
+  const report = (searched: number, searching = searched > 0): void =>
+    onProgress?.({ examined: examinedBefore + examined + searched, indexed, versions, versionLimit, pending: state.pending, total: state.lines.length, searching })
   // The tip as the oldest version reached, when no version was found (every line unresolved there).
   const standInTip = async (): Promise<Version> => {
     seen.set(tipOid, logEntryOf(tipOid, await commitVia(reader, walker, tipOid)))
@@ -293,6 +298,8 @@ export async function blameFile(
         stop = 'commits'
         break
       }
+      // A new page: the search is what moves now, before its first commit is counted.
+      report(0, true)
       const page = await pathVersions(reader, start, at, {
         walker,
         signal,
@@ -389,7 +396,7 @@ export async function blameFile(
   // The walk reached the commit that added the file (or its first version as a file): what is still
   // open was added there, exactly git's answer. Stopped short of that, it stays unresolved.
   if (stop === null) state.finish(current.oid)
-  onProgress?.({ examined: examinedBefore + examined, indexed, versions, versionLimit, pending: state.pending, total: state.lines.length })
+  onProgress?.({ examined: examinedBefore + examined, indexed, versions, versionLimit, pending: state.pending, total: state.lines.length, searching: false })
   return resultOf(stop)
 }
 

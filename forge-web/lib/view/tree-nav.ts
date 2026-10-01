@@ -26,6 +26,8 @@ export interface ObjectReader {
   preloadIndex?(): Promise<void>
   /** An object's type from entry headers alone, or null when not indexed ({@link BrowseReader.objectType}). */
   objectType?(oidHex: string): Promise<GitObject['type'] | null>
+  /** A whole-stored blob's first bytes, unverified, to classify it ({@link BrowseReader.blobPrefix}). */
+  blobPrefix?(oidHex: string, bytes: number): Promise<Uint8Array | null>
 
   /**
    * A new reader of the same objects with block read-ahead, for one walk over many commits

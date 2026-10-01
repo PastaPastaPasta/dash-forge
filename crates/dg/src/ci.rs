@@ -96,8 +96,10 @@ pub enum CiCommand {
     Status {
         /// The repository (`owner/name`).
         repo: String,
-        /// The commit (40 or 64 hex digits); `--sha` works too, as in `dg ci report`.
-        #[arg(required_unless_present = "sha_flag", conflicts_with = "sha_flag")]
+        /// The commit: a full id, or inside a clone anything `git rev-parse` takes (`HEAD`, a
+        /// branch, an abbreviated id). Default: the clone's `HEAD`. `--sha` works too, as in
+        /// `dg ci report`.
+        #[arg(conflicts_with = "sha_flag")]
         sha: Option<String>,
         /// The commit, as `dg ci report` takes it.
         #[arg(long = "sha", alias = "head", value_name = "SHA")]
@@ -138,7 +140,9 @@ pub struct RunnerNewArgs {
     pub repo: String,
     /// The runner identity's file, with its master key (e.g. from `dg auth new --backup-file`).
     /// The key is registered on it and it is enrolled as a runner. Without it the key goes on
-    /// your own identity (no enrolment needed: the owner is a maintainer).
+    /// your own identity (no enrolment needed: the owner is a maintainer). A sealed file's
+    /// passphrase is read from DASH_FORGE_RUNNER_PASSPHRASE (then DASH_FORGE_PASSPHRASE), or
+    /// asked for in a terminal.
     #[arg(long, value_name = "FILE")]
     pub runner: Option<PathBuf>,
     /// Without --runner: your identity file with the master key (else you are asked for the
@@ -161,7 +165,8 @@ pub struct RunnerNewArgs {
 pub struct ReportArgs {
     /// The repository (`owner/name`).
     pub repo: String,
-    /// The commit the check ran on (40 or 64 hex digits).
+    /// The commit the check ran on: a full id (40 or 64 hex digits), or inside a clone
+    /// anything `git rev-parse` takes (`HEAD`, a branch, an abbreviated id).
     #[arg(long, alias = "head")]
     pub sha: String,
     /// The check's name (`build`, `test`); the newest run per name is what readers show.
@@ -247,9 +252,11 @@ pub async fn run(ctx: &Ctx, cmd: &CiCommand) -> Result<()> {
             sha,
             sha_flag,
         } => {
-            // clap requires exactly one of them
-            let sha = sha.as_deref().or(sha_flag.as_deref()).unwrap_or_default();
-            status(ctx, repo, sha).await
+            // `dg ci status HEAD` (or `61a02cb`) inside a clone: the one positional is the
+            // commit, not a repository called HEAD (QW3-026).
+            let given = sha.as_deref().or(sha_flag.as_deref());
+            let (repo, given) = status_target(repo, given, crate::storage::clone_repo())?;
+            status(ctx, &repo, &resolve_commit(&repo, given.as_deref())?).await
         }
     }
 }
@@ -715,7 +722,7 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
     // report skipped (a run that jumps straight to completed gets both), and a stored time is
     // never moved.
     let mut r = CheckReport {
-        head_oid: a.sha.to_ascii_lowercase(),
+        head_oid: resolve_commit(&a.repo, Some(&a.sha))?,
         name: a.name.clone(),
         status: a.status.clone(),
         conclusion: a.conclusion.clone(),
@@ -981,6 +988,104 @@ fn fit_artifacts(assets: Vec<ReleaseAsset>) -> (Vec<ReleaseAsset>, Vec<String>) 
     (kept, dropped)
 }
 
+/// Whether `repo` (as typed, or filled in from the clone) is the repository of the clone
+/// `here` names: the same reference, or its bare name.
+fn is_this_clone(repo: &str, here: &str) -> bool {
+    let name = here.rsplit('/').next().unwrap_or(here);
+    repo == here || (!repo.contains('/') && repo.eq_ignore_ascii_case(name))
+}
+
+/// The repository and commit `dg ci status <positional> [<sha>]` means (QW3-026); a commit
+/// of `None` is the clone's `HEAD`.
+///
+/// * Both given: as typed.
+/// * The clone's own repository (`dg ci status` alone fills it in): that repository, at its
+///   `HEAD`.
+/// * In a clone of `here`, a lone positional that does not name a repository is a commit of
+///   the clone's repository: `dg ci status HEAD`, `dg ci status 61a02cb`, `dg ci status
+///   feat/login`. One the clone does not have is named as such when it is resolved.
+/// * Outside a clone, a lone commit id: E201 asking for the repository.
+fn status_target(
+    positional: &str,
+    sha: Option<&str>,
+    here: Option<String>,
+) -> Result<(String, Option<String>)> {
+    if let Some(sha) = sha {
+        return Ok((positional.to_string(), Some(sha.to_string())));
+    }
+    match here {
+        Some(here) if is_this_clone(positional, &here) => Ok((here, None)),
+        Some(here) if !crate::infer::names_a_repo(positional, &here) => {
+            Ok((here, Some(positional.to_string())))
+        }
+        None if crate::git::is_oid(positional) => Err(UserError::new(
+            codes::USAGE,
+            "which repository? outside a clone `dg ci status` needs it",
+        )
+        .fix(format!("`dg ci status <owner>/<name> {positional}`"))
+        .into()),
+        _ => Ok((positional.to_string(), None)),
+    }
+}
+
+/// The current directory, where a clone's revisions resolve.
+fn here() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// The commit of `repo` that `given` names, as a full lower-case id (QW3-026); `None` is
+/// `HEAD`. A full id is taken as it is. Anything else (`HEAD`, a branch, an abbreviated id)
+/// is resolved by `git rev-parse` in the current directory, as `gh` and git do, but only when
+/// that is a clone of `repo`: another repository's `HEAD` is not a commit of `repo`. Otherwise
+/// an E201 says what to pass.
+fn resolve_commit(repo: &str, given: Option<&str>) -> Result<String> {
+    resolve_commit_in(
+        &here(),
+        crate::storage::clone_repo().as_deref(),
+        repo,
+        given,
+    )
+}
+
+/// [`resolve_commit`] with the clone at `dir`, of the repository `here` (`None`: no clone).
+fn resolve_commit_in(
+    dir: &Path,
+    here: Option<&str>,
+    repo: &str,
+    given: Option<&str>,
+) -> Result<String> {
+    let rev = given.map_or("HEAD", str::trim);
+    if crate::git::is_oid(rev) {
+        return Ok(rev.to_ascii_lowercase());
+    }
+    if !here.is_some_and(|h| is_this_clone(repo, h)) {
+        let what = match given {
+            None => format!("which commit of {repo}? none was given"),
+            Some(_) => format!(
+                "{rev:?} is not a full commit id, and this directory is not a clone of {repo}"
+            ),
+        };
+        return Err(UserError::new(codes::USAGE, what)
+            .fix(format!(
+                "pass the commit's full id (40 hex digits), or run it inside a clone of {repo}: `HEAD`, a branch or an abbreviated id work there"
+            ))
+            .into());
+    }
+    let spec = format!("{rev}^{{commit}}");
+    crate::git::git(dir, &["rev-parse", "--verify", "--quiet", &spec], &[])
+        .ok()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| crate::git::is_oid(s))
+        .ok_or_else(|| {
+            UserError::new(
+                codes::USAGE,
+                format!("{rev:?} is not a commit this clone has"),
+            )
+            .fix("pass the commit's full id (40 hex digits), or fetch it into this clone first")
+            .into()
+        })
+}
+
 async fn status(ctx: &Ctx, repo: &str, sha: &str) -> Result<()> {
     let r = Reader::open(ctx, repo).await?;
     let sha = sha.to_ascii_lowercase();
@@ -1049,7 +1154,108 @@ async fn status(ctx: &Ctx, repo: &str, sha: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// QW2-077: `--log` on a Platform-only repository names the flag and the fix, not the
+    fn fixture_git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.org"])
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    }
+
+    /// QW3-026: in a clone, `dg ci status HEAD` / `<short id>` / `<branch>` read the clone's
+    /// repository at that commit; the clone's own repository alone is its HEAD; another
+    /// repository stays a repository.
+    #[test]
+    fn a_lone_commit_in_a_clone_is_the_commit_of_the_clones_repository() {
+        const HERE: &str = "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB/project";
+        let here = || Some(HERE.to_string());
+        let full = "556ec1132b8e0e216276d9154edb0d267f390e1d";
+        for rev in ["HEAD", "61a02cb", "main", "feat/login", full, "nosuchrev"] {
+            assert_eq!(
+                status_target(rev, None, here()).unwrap(),
+                (HERE.to_string(), Some(rev.to_string())),
+                "{rev}"
+            );
+        }
+        // the clone's own repository, however it is named: the clone's, at HEAD
+        for repo in [HERE, "project", "Project"] {
+            assert_eq!(
+                status_target(repo, None, here()).unwrap(),
+                (HERE.to_string(), None),
+                "{repo}"
+            );
+        }
+        // another repository: as typed (its commit is asked for when it is resolved)
+        let other = "DYXPkp8gdKUjUzMUtGGjWGP2tP1dtrBPyDq3vLgu5Cx6/other";
+        assert_eq!(
+            status_target(other, None, here()).unwrap(),
+            (other.to_string(), None)
+        );
+        // outside a clone, a lone commit id is not a repository
+        let e = status_target(full, None, None).unwrap_err();
+        let u = e.downcast_ref::<UserError>().unwrap();
+        assert!(u.message.starts_with("which repository?"), "{u:?}");
+        // both given: as typed
+        assert_eq!(
+            status_target(other, Some("HEAD"), here()).unwrap(),
+            (other.to_string(), Some("HEAD".to_string()))
+        );
+    }
+
+    /// QW3-026: `HEAD`, a branch and an abbreviated id resolve through the clone (as git and
+    /// `gh` do), a full id is taken as it is, and anything else is an E201 saying what to pass;
+    /// another repository's commit is never taken from this clone.
+    #[test]
+    fn a_commit_resolves_through_the_clone() {
+        const HERE: &str = "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB/project";
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        fixture_git(d, &["init", "-q"]);
+        fixture_git(d, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        let head = fixture_git(d, &["rev-parse", "HEAD"]);
+        let at = |given: Option<&str>| resolve_commit_in(d, Some(HERE), HERE, given);
+        assert_eq!(at(None).unwrap(), head);
+        assert_eq!(at(Some("HEAD")).unwrap(), head);
+        assert_eq!(at(Some("main")).unwrap(), head);
+        assert_eq!(at(Some(&head[..7])).unwrap(), head);
+        let full = "61A02CB35170F0FAFCF5EE60C8E2606848EB85E2";
+        assert_eq!(at(Some(full)).unwrap(), full.to_ascii_lowercase());
+        for bad in ["nosuchbranch", "61a02cb"] {
+            let e = at(Some(bad)).unwrap_err();
+            let u = e.downcast_ref::<UserError>().unwrap();
+            assert_eq!(u.code, "E201", "{u:?}");
+            assert!(
+                u.message.contains("is not a commit this clone has"),
+                "{u:?}"
+            );
+        }
+        // another repository, or no clone: only a full id
+        for (here, given) in [
+            (Some(HERE), Some("HEAD")),
+            (None, None),
+            (None, Some("main")),
+        ] {
+            let e = resolve_commit_in(d, here, "alice/other", given).unwrap_err();
+            let u = e.downcast_ref::<UserError>().unwrap();
+            assert_eq!(u.code, "E201", "{u:?}");
+            assert!(u.fix[0].contains("full id"), "{u:?}");
+        }
+        assert_eq!(
+            resolve_commit_in(d, None, "alice/other", Some(full)).unwrap(),
+            full.to_ascii_lowercase()
+        );
+    }
+
+    /// QW2-077:`--log` on a Platform-only repository names the flag and the fix, not the
     /// release command's "release not created".
     #[test]
     fn a_log_without_storage_says_it_needs_storage() {
