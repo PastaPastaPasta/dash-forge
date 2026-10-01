@@ -49,6 +49,24 @@ export function fundsState(balance: bigint, key: KeyLimits | null = null, now = 
 }
 
 /**
+ * This browser's key budget in words, the same everywhere it shows (QW3-033: the account menu
+ * said the balance caps it, while Settings and the funds pill said "0.05 of 0.05 DASH" to an
+ * identity holding 0.005121): what is left of the budget, and, when the identity's balance is
+ * below that, that the balance caps it. Null for a key without a budget.
+ */
+export function keyBudgetWords(
+  key: Pick<KeyLimits, 'remaining' | 'total'>,
+  balance: bigint | null,
+  dash: (credits: number) => string,
+): { readonly left: string; readonly cap: string | null } | null {
+  if (key.remaining === null || key.total === null) return null
+  return {
+    left: `${dash(Number(key.remaining))} of ${dash(Number(key.total))} DASH`,
+    cap: balance !== null && balance < key.remaining ? `capped by your ${dash(Number(balance < 0n ? 0n : balance))} DASH balance` : null,
+  }
+}
+
+/**
  * The top-up sheet's coverage line: what an issue costs, and how many the funds a write can use
  * cover now (`spendable`: the balance, capped by this browser's key budget). QW2-035: it said
  * "0.05 DASH covers about 40", the key's budget, to an identity with 0.0054 DASH.

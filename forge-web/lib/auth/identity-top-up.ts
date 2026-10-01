@@ -73,6 +73,17 @@ function nextKey(network: Network, identityId: string): string {
   return `top-up-next:${network}:${identityId}`
 }
 
+/**
+ * Whether this browser keeps the note of where `identityId`'s next top-up starts (its index, and
+ * the height to watch from when an address still holds a deposit). Signing out and forgetting the
+ * key, or revoking it, leaves it (QW3-034): without it the next top-up would reuse an address
+ * already paid into, or miss a deposit left there. It holds no keys and no words; the forget and
+ * revoke confirmations say so.
+ */
+export async function hasTopUpNote(network: Network, identityId: string): Promise<boolean> {
+  return (await idbGet<NextTopUp>('journal', nextKey(network, identityId)).catch(() => undefined)) !== undefined
+}
+
 export function readTopUpJournal(network: Network, identityId: string): Promise<TopUpJournal | undefined> {
   return idbGet<TopUpJournal>('journal', journalKey(network, identityId))
 }

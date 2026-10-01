@@ -15,6 +15,7 @@ import { Wallet } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { balanceToDash, creditsAsDash, formatDate } from '@/lib/view/format'
+import { keyBudgetWords } from '@/lib/view/funds'
 import { cn } from '@/lib/utils'
 
 export function FundsPill(): JSX.Element | null {
@@ -26,11 +27,11 @@ export function FundsPill(): JSX.Element | null {
     keyLimits?.total != null && keyLimits.total > 0n && keyLimits.remaining !== null
       ? Math.max(0, Math.min(1, Number(keyLimits.remaining) / Number(keyLimits.total)))
       : null
+  // The key's budget as Settings and the account menu word it, the balance cap included (QW3-033).
+  const keyBudget = keyLimits === null ? null : keyBudgetWords(keyLimits, BigInt(balance), creditsAsDash)
   const tooltip = [
     `Balance ${balanceToDash(balance)} DASH`,
-    keyLimits?.remaining != null && keyLimits.total != null
-      ? `This browser's key: ${creditsAsDash(Number(keyLimits.remaining))} of ${creditsAsDash(Number(keyLimits.total))} DASH left`
-      : null,
+    keyBudget !== null ? `This browser's key: ${keyBudget.left} left${keyBudget.cap !== null ? ` (${keyBudget.cap})` : ''}` : null,
     keyLimits?.expiresAt != null ? `expires ${formatDate(keyLimits.expiresAt)}` : null,
   ]
     .filter(Boolean)

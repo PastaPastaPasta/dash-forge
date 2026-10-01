@@ -207,7 +207,7 @@ The header shows your balance and the key's remaining budget. It turns amber whe
 - **Top up key budget** adds budget to the same key (0.05 DASH by default) and can push its expiry out, up to 365 days. It is a protocol-14 `IdentityKeyLimitsUpdate`, signed once by your master key from the identity file or recovery phrase, and costs about 0.00002 DASH.
 - **Renew key** registers a fresh key and disables the previous one in the same update.
 - **Lock** drops the unlocked key in every open tab and ends the kept session; unlock again with the passkey or passphrase.
-- **Settings → Security → Stay signed in for public repos (12 h)** (on by default): reloads and new tabs keep only the spend-capped signing key. Private repos, storage credentials and wallet grants still ask you to unlock, once per tab. Turn it off and every reload or new tab starts locked.
+- **Settings → Security → Stay signed in for public repos (up to 12 h)** (on by default): reloads and new tabs keep only the spend-capped signing key, for up to 12 hours after the unlock and until 4 hours pass without use. Private repos, storage credentials and wallet grants still ask you to unlock, once per tab. Turn it off and every reload or new tab starts locked.
 - **Revoke on chain** disables this browser's key. It needs your identity file once.
 - **Sign out & forget key** deletes the key from this device. Forgetting is **not** revoking: a forgotten key stays valid on chain until it expires.
 

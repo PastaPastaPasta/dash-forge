@@ -20,7 +20,7 @@ import { AlertTriangle, Check, Loader2 } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
-import { Qr } from '@/components/ui/qr'
+import { PaymentAddress } from '@/components/ui/payment-address'
 import { ErrorBox, GroupNotice, useProtection } from '@/components/auth/protection-fields'
 import { StepFailed, Waiting } from '@/components/auth/step-status'
 import { faucetUrl } from '@/components/top-up-sheet'
@@ -446,7 +446,8 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         Send at least <span className="font-mono">0.02 DASH</span> (0.05 suggested) to this address from any Dash wallet. It becomes your
         Platform credits: about {creditsAsDash(typicalIssueCredits())} DASH per issue, {pushCostPhrase()}.
       </p>
-      {address ? <Qr value={address} label={`Deposit address ${address}`} /> : null}
+      {/* Copy, and a wallet link for paying from this same phone (QW3-008). */}
+      {address ? <PaymentAddress address={address} amountDash={0.05} label="Deposit address" /> : null}
       {address ? <span data-testid="deposit-address" className="sr-only">{address}</span> : null}
       {faucet ? (
         <a href={faucet} target="_blank" rel="noreferrer noopener" className="block text-center text-dense text-forge-700 underline dark:text-forge-400">

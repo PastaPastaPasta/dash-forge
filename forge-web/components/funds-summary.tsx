@@ -10,18 +10,19 @@
 import { KeyRound } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
+import { keyBudgetWords } from '@/lib/view/funds'
 import { cn } from '@/lib/utils'
 
 export function KeyFundsLine({ className }: { className?: string }): JSX.Element | null {
-  const { keyLimits, funds } = useAuth()
+  const { keyLimits, funds, balance } = useAuth()
   if (keyLimits === null || (keyLimits.total === null && keyLimits.expiresAt === null)) return null
   const warn = funds?.reason === 'key-budget' || funds?.reason === 'key-expiry'
   // A budget above the balance is not all spendable (QW2-035: "0.05 of 0.05 DASH left" beside a
-  // 0.0054 DASH balance): say the balance caps it.
-  const capped = funds != null && keyLimits.remaining !== null && funds.spendable < keyLimits.remaining
+  // 0.0054 DASH balance): say the balance caps it, in the words Settings and the pill use.
+  const budget = keyBudgetWords(keyLimits, balance === null ? null : BigInt(balance), creditsAsDash)
   const parts = [
-    keyLimits.remaining !== null && keyLimits.total !== null ? `${creditsAsDash(Number(keyLimits.remaining))} of ${creditsAsDash(Number(keyLimits.total))} DASH budget left` : null,
-    capped ? `capped by your ${creditsAsDash(Number(funds.spendable))} DASH balance` : null,
+    budget !== null ? `${budget.left} budget left` : null,
+    budget?.cap ?? null,
     keyLimits.expiresAt !== null ? `expires ${formatDate(keyLimits.expiresAt)}` : null,
   ].filter((p): p is string => p !== null)
   return (
