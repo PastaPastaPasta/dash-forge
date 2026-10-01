@@ -4457,8 +4457,30 @@ impl<'a> Collab<'a> {
         input: &ReleaseInput,
         store: Option<&ReleaseStore<'_>>,
     ) -> Result<ReleaseWritten> {
+        self.create_release_stored_from(repo, input, store, None)
+            .await
+    }
+
+    /// [`Self::create_release_stored`] from a view of the repository's releases the caller
+    /// already holds (`known`: what it read, or [`ReleaseWritten::releases`] of its previous
+    /// write), so a sealed write lists them once (after the write, for the newest-revision
+    /// check) instead of twice. A caller writing many releases in a row reads the list once and
+    /// hands each write the last one's.
+    ///
+    /// `known` may have gone stale (another maintainer wrote meanwhile). A sealed write is
+    /// never refused for that (`delta` 0: there is no ledger to retry against, §16.3), and its
+    /// carried fields (a yank, the flags, the notes) would silently replace the other
+    /// revision's, so the post-write read says when a revision of the tag sits between the one
+    /// this carried from and this one ([`ReleaseWritten::warnings`]).
+    pub async fn create_release_stored_from(
+        &self,
+        repo: &RepoRef,
+        input: &ReleaseInput,
+        store: Option<&ReleaseStore<'_>>,
+        known: Option<ReleaseList>,
+    ) -> Result<ReleaseWritten> {
         if repo.visibility == Visibility::Private {
-            return self.create_sealed_release(repo, input, store).await;
+            return self.create_sealed_release(repo, input, store, known).await;
         }
         Ok(ReleaseWritten {
             document_id: self.create_public_release(repo, input).await?,
@@ -4551,6 +4573,7 @@ impl<'a> Collab<'a> {
         repo: &RepoRef,
         input: &ReleaseInput,
         store: Option<&ReleaseStore<'_>>,
+        known: Option<ReleaseList>,
     ) -> Result<ReleaseWritten> {
         use crate::private::release::{self, ReleaseFields};
         let tag = &input.tag_name;
@@ -4560,7 +4583,10 @@ impl<'a> Collab<'a> {
         let owner = platform::decode_identifier(&self.signer_id()?)?;
         // Every revision of the tag, read now from the `created` listing (§16.3): what this
         // one does not change is carried forward from the newest readable one.
-        let before = self.releases(repo).await?;
+        let before = match known {
+            Some(list) => list,
+            None => self.releases(repo).await?,
+        };
         let carried_from = newest_revision(&before, tag);
         let carried = carried_from
             .and_then(|r| r.sealed.as_ref())
@@ -4600,6 +4626,7 @@ impl<'a> Collab<'a> {
         let rebuild = !input.files.is_empty()
             || !input.assets.is_empty()
             || !input.notes.is_empty()
+            || input.clear_notes
             || (input.imported.is_some() && carried.asset_manifest.is_some())
             || release::writer_tlv(&fields).is_err();
         let links: Vec<_> = input.assets.iter().map(external_link).collect();
@@ -4610,6 +4637,8 @@ impl<'a> Collab<'a> {
         // the full notes, as the new revision states them
         let full_notes = match (non_empty(&input.notes), &prev_manifest) {
             (Some(n), _) => n,
+            // stated empty: nothing carries forward, not the preview and not the list's notes
+            (None, _) if input.clear_notes => String::new(),
             (None, Some(m)) if carried.notes_continue => m.notes.clone().unwrap_or_default(),
             (None, _) => carried.notes.clone().unwrap_or_default(),
         };
@@ -4673,11 +4702,20 @@ impl<'a> Collab<'a> {
             .await?;
         let after = self.releases(repo).await?;
         Ok(ReleaseWritten {
-            warnings: sealed_write_warnings(repo, tag, &before, &after, &document_id, &orphaned),
+            warnings: sealed_write_warnings(
+                repo,
+                tag,
+                &before,
+                carried_from.map(|r| r.document_id.as_str()),
+                &after,
+                &document_id,
+                &orphaned,
+            ),
             document_id,
             sealed_assets,
             asset_list_kept: !rebuild,
             asset_list_reused,
+            releases: Some(after),
         })
     }
 
@@ -5864,6 +5902,11 @@ fn check_sealed_input(input: &ReleaseInput) -> Result<()> {
     check_tag_name(&input.tag_name)?;
     check_text("release name", &input.name, 120, 480)?;
     check_text("release notes", &input.notes, 5120, 5120)?;
+    if input.clear_notes && !input.notes.is_empty() {
+        return Err(Error::Config(
+            "a release cannot both clear its notes and state new ones".into(),
+        ));
+    }
     if let Some(i) = &input.imported {
         if i.url.is_empty() || i.url.len() > 300 {
             return Err(Error::Config(
@@ -5954,6 +5997,7 @@ fn sealed_write_warnings(
     repo: &RepoRef,
     tag: &str,
     before: &ReleaseList,
+    carried: Option<&str>,
     after: &ReleaseList,
     ours: &str,
     orphaned: &[String],
@@ -5967,6 +6011,7 @@ fn sealed_write_warnings(
         ));
     }
     warnings.extend(not_newest_warning(after, tag, ours));
+    warnings.extend(missed_revision_warning(after, tag, carried, ours));
     if !orphaned.is_empty() {
         warnings.push(format!(
             "the key epoch moved during the upload, so this release was sealed again; the first \
@@ -5988,6 +6033,42 @@ struct Rebuilt {
     stored: Vec<String>,
     /// The list is an earlier attempt's, named again ([`Collab::stored_asset_list`]).
     reused: bool,
+}
+
+/// The warning for a revision `ours` of `tag` that follows a different revision than the one it
+/// was carried forward from (`carried`: none for the tag's first): another writer's revision
+/// landed after the view `before` was read, so what ours carried (a yank, the flags, the notes,
+/// the provenance) is not what that revision stated. Silent when ours is not visible yet
+/// ([`not_newest_warning`] says so).
+fn missed_revision_warning(
+    after: &ReleaseList,
+    tag: &str,
+    carried: Option<&str>,
+    ours: &str,
+) -> Option<String> {
+    // the tag's revisions, newest first
+    let revisions: Vec<&Release> = after
+        .current
+        .iter()
+        .chain(&after.previous)
+        .filter(|r| r.tag_name == tag)
+        .collect();
+    let at = revisions.iter().position(|r| r.document_id == ours)?;
+    let before_ours = revisions.get(at + 1).copied();
+    if before_ours.map(|r| r.document_id.as_str()) == carried {
+        return None;
+    }
+    let between = match before_ours {
+        Some(r) => format!("{}'s revision {}", r.publisher, r.document_id),
+        None => "no revision".to_string(),
+    };
+    Some(format!(
+        "your revision of release {tag} was carried forward from {}, but it follows {between}: \
+         another maintainer wrote one after the releases you had read, and what it changed (a \
+         yank, the flags, the notes) is not carried into yours; check it with `dg release \
+         list` and write the release again",
+        carried.unwrap_or("no earlier revision")
+    ))
 }
 
 /// The newest readable revision of `tag`: its release when live, else the newest of its
@@ -7429,6 +7510,78 @@ mod tests {
         ] {
             assert!(check_sealed_input(&bad).is_err(), "{bad:?}");
         }
+    }
+
+    /// A sealed revision may state empty notes (`clear_notes`), but not clear and state at once.
+    #[test]
+    fn a_sealed_input_clears_notes_or_states_them_not_both() {
+        let input = |notes: &str, clear_notes: bool| ReleaseInput {
+            tag_name: "v1".into(),
+            notes: notes.into(),
+            clear_notes,
+            ..ReleaseInput::default()
+        };
+        assert!(check_sealed_input(&input("", true)).is_ok());
+        assert!(check_sealed_input(&input("new", false)).is_ok());
+        assert!(check_sealed_input(&input("new", true)).is_err());
+    }
+
+    /// A sealed write carried forward from an older view than the tag's newest revision is
+    /// warned about (its carried fields replace the newer revision's); one that follows the
+    /// revision it carried from, the first of a tag, and one not visible yet are not.
+    #[test]
+    fn a_sealed_writer_is_warned_when_it_carried_from_an_older_view() {
+        let rel = |id: &str, tag: &str, at: u64| Release {
+            document_id: id.into(),
+            tag_name: tag.into(),
+            name: String::new(),
+            notes: String::new(),
+            yanked: false,
+            assets: Vec::new(),
+            publisher: "bob".into(),
+            created_at: at,
+            delta: 0,
+            sealed: None,
+        };
+        // r1 (carried from), then bob's r2 landed meanwhile, then ours (newest)
+        let after = ReleaseList {
+            current: vec![rel("ours", "v1", 3), rel("other-tag", "v2", 9)],
+            previous: vec![rel("r2", "v1", 2), rel("r1", "v1", 1)],
+            ..ReleaseList::default()
+        };
+        let w = missed_revision_warning(&after, "v1", Some("r1"), "ours").unwrap();
+        assert!(
+            w.contains("bob") && w.contains("r2") && w.contains("r1"),
+            "{w}"
+        );
+        assert!(!w.contains("  "), "no runs of spaces: {w}");
+        // it follows what it carried from: nothing missed (another tag's revision is no matter)
+        assert_eq!(
+            missed_revision_warning(&after, "v1", Some("r2"), "ours"),
+            None
+        );
+        // the tag's first revision, carried from nothing, is alone
+        let first = ReleaseList {
+            current: vec![rel("ours", "v1", 1)],
+            ..ReleaseList::default()
+        };
+        assert_eq!(missed_revision_warning(&first, "v1", None, "ours"), None);
+        // …unless someone else's came first
+        let raced = ReleaseList {
+            current: vec![rel("ours", "v1", 2)],
+            previous: vec![rel("theirs", "v1", 1)],
+            ..ReleaseList::default()
+        };
+        let w = missed_revision_warning(&raced, "v1", None, "ours").unwrap();
+        assert!(
+            w.contains("no earlier revision") && w.contains("theirs"),
+            "{w}"
+        );
+        // not visible yet: `not_newest_warning` says so, this stays silent
+        assert_eq!(
+            missed_revision_warning(&after, "v1", Some("r1"), "unseen"),
+            None
+        );
     }
 
     /// §16.3 over stored documents: a sealed revision opens to its tag, a later yank is the

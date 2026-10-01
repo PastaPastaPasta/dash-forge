@@ -230,6 +230,11 @@ pub struct ReleaseInput {
     pub name: String,
     /// Release notes.
     pub notes: String,
+    /// A private repository: state empty notes, replacing the carried revision's (an empty
+    /// [`Self::notes`] otherwise carries them forward). An import sets it when the source's
+    /// notes were emptied. `notes` must be empty with it. A public revision states its notes
+    /// afresh, so it has no use for it.
+    pub clear_notes: bool,
     /// Whether this release is yanked. A public revision states it afresh (`None` is not
     /// yanked); a private one carries the tag's last revision's when `None` (§16.3).
     pub yanked: Option<bool>,
@@ -299,6 +304,11 @@ pub struct ReleaseWritten {
     /// or that could not be checked; it carried forward from a view missing a newer revision;
     /// or a rotation during the upload left copies under the old key in storage.
     pub warnings: Vec<String>,
+    /// A sealed write's view of the repository's releases as it read them after the write: the
+    /// caller's next write takes it as `known`
+    /// ([`v2::Collab::create_release_stored_from`]) instead of listing them all again. `None`
+    /// on a public release.
+    pub releases: Option<ReleaseList>,
 }
 
 /// A release document, flattened (newest per `tagName`).

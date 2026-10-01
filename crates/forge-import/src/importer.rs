@@ -368,7 +368,17 @@ async fn run_inner<'a>(
         release_storage,
         lanes: cfg.concurrency,
     };
-    dest::write_collab(client, signer, role, repo, source, definitions, outcome).await?;
+    // boxed: the write phase's future is large (the clippy `large_futures` limit)
+    Box::pin(dest::write_collab(
+        client,
+        signer,
+        role,
+        repo,
+        source,
+        definitions,
+        outcome,
+    ))
+    .await?;
 
     // 4. The open PRs' heads, last: optional, so they may only use what the required writes
     //    left (a stranger's huge or unfetchable PR must never stop the mirror).
@@ -381,11 +391,14 @@ async fn run_inner<'a>(
     }
     // Advance the incremental state only when every item was read and mirrored, or refused
     // for its content: items past `--limit`, or skipped for another reason, are retried by
-    // the next run.
-    let (skipped, refused) = outcome.ledger.as_ref().map_or((0, BTreeSet::new()), |l| {
-        (l.counts.skipped, l.refused.clone())
-    });
-    if !state_advances(&collab_src, skipped, &refused) {
+    // the next run, and so is a release mirrored without an asset it could not seal or list.
+    let (skipped, refused, left_out) = outcome
+        .ledger
+        .as_ref()
+        .map_or((0, BTreeSet::new(), false), |l| {
+            (l.counts.skipped, l.refused.clone(), l.incomplete)
+        });
+    if !state_advances(&collab_src, skipped, &refused, left_out) {
         return Ok(());
     }
     sync_state.set_refused(&collab_src.refused.union(&refused).copied().collect());
@@ -395,11 +408,17 @@ async fn run_inner<'a>(
 }
 
 /// Whether a run's incremental state may advance: every item was read (no `--limit` cut, no
-/// unreadable listing), and every skip was an item the destination refused for its content
+/// unreadable listing), every skip was an item the destination refused for its content
 /// (`refused`), which the next run leaves out of the order check and retries only once it
-/// changes at the source.
-fn state_advances(src: &SrcCollab, skipped: u64, refused: &BTreeSet<(u8, u32)>) -> bool {
-    !src.truncated && !src.incomplete && skipped <= refused.len() as u64
+/// changes at the source, and nothing was mirrored without a part it could not seal or list
+/// (`left_out`: [`crate::sink::Ledger::incomplete`]).
+fn state_advances(
+    src: &SrcCollab,
+    skipped: u64,
+    refused: &BTreeSet<(u8, u32)>,
+    left_out: bool,
+) -> bool {
+    !src.truncated && !src.incomplete && !left_out && skipped <= refused.len() as u64
 }
 
 /// After the code push, when it did not publish one itself: publish the default branch's history
@@ -618,6 +637,24 @@ impl Drop for TempDir {
 mod tests {
     use super::*;
 
+    /// A release mirrored without an asset it could not seal or list ends the run partial and
+    /// holds the incremental state, like a listing the source refused; skips the destination
+    /// refused for their content do not.
+    #[test]
+    fn the_state_is_held_while_a_release_is_missing_an_asset() {
+        let src = SrcCollab::default();
+        let none = BTreeSet::new();
+        assert!(state_advances(&src, 0, &none, false));
+        assert!(!state_advances(&src, 0, &none, true), "left out");
+        assert!(!state_advances(&src, 1, &none, false), "skipped");
+        assert!(state_advances(&src, 1, &BTreeSet::from([(0, 5)]), false));
+        let cut = SrcCollab {
+            incomplete: true,
+            ..SrcCollab::default()
+        };
+        assert!(!state_advances(&cut, 0, &none, false));
+    }
+
     /// A source served from a local repository (`file://`), for the proof fetch.
     struct Local(PathBuf);
 
@@ -789,9 +826,9 @@ mod tests {
         let mut state = SyncState::load(Some(&path), "src", "R");
         let run1 = SrcCollab::default();
         let refused: BTreeSet<(u8, u32)> = [(0, 5)].into();
-        assert!(state_advances(&run1, 1, &refused));
+        assert!(state_advances(&run1, 1, &refused, false));
         assert!(
-            !state_advances(&run1, 2, &refused),
+            !state_advances(&run1, 2, &refused, false),
             "another skip holds the state"
         );
         assert!(!state_advances(
@@ -800,7 +837,8 @@ mod tests {
                 ..SrcCollab::default()
             },
             0,
-            &BTreeSet::new()
+            &BTreeSet::new(),
+            false
         ));
         state.set_refused(&refused);
         state.save(1_000_000, Vec::new()).unwrap();

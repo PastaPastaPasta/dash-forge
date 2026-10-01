@@ -729,11 +729,25 @@ fn asset_json(a: &ReleaseAsset) -> serde_json::Value {
 type SealedLists =
     std::collections::BTreeMap<String, std::result::Result<Vec<ReleaseAsset>, String>>;
 
-/// The releases of `repo` (newest per tag, newest first) and the superseded revisions. A
-/// private repository's are opened with the identity's keys and folded (§16.3); for a
-/// maintainer, also the live releases whose asset list was uploaded under an old key (§16.5);
-/// and the current releases' sealed asset lists, opened (QW2-086: `assets` was `[]` for them).
-async fn read_releases(ctx: &Ctx, repo: &str) -> Result<(ReleaseList, Vec<String>, SealedLists)> {
+/// What `dg release list` reads.
+struct Read {
+    /// The releases (newest per tag, newest first) and the superseded revisions.
+    list: ReleaseList,
+    /// For a maintainer, the live releases (`$id`s) whose asset list was uploaded under an old
+    /// key (§16.5).
+    late: Vec<String>,
+    /// Why that could not be checked (a maintainer's only): the lists are then not judged, and
+    /// the output says so rather than staying silent.
+    late_error: Option<String>,
+    /// The current releases' sealed asset lists, opened.
+    sealed: SealedLists,
+}
+
+/// The releases of `repo`. A private repository's are opened with the identity's keys and
+/// folded (§16.3); for a maintainer, also the live releases whose asset list was uploaded under
+/// an old key (§16.5); and the current releases' sealed asset lists, opened (QW2-086: `assets`
+/// was `[]` for them).
+async fn read_releases(ctx: &Ctx, repo: &str) -> Result<Read> {
     // No key is opened to read them for a public repository (L-12).
     let s = Reader::open(ctx, repo).await?;
     let collab = s.collab();
@@ -743,14 +757,14 @@ async fn read_releases(ctx: &Ctx, repo: &str) -> Result<(ReleaseList, Vec<String
             collab.signer_role(&s.repo).await,
             Ok(Some(Role::Maintainer))
         );
-    // A warning, never a failure: a list that cannot be judged is not reported.
-    let late = if maintainer {
-        collab
-            .late_asset_lists(&s.repo, &list)
-            .await
-            .unwrap_or_default()
+    // A warning, never a failure: a check that could not be made is said, not skipped.
+    let (late, late_error) = if maintainer {
+        match collab.late_asset_lists(&s.repo, &list).await {
+            Ok(late) => (late, None),
+            Err(e) => (Vec::new(), Some(e.to_string())),
+        }
     } else {
-        Vec::new()
+        (Vec::new(), None)
     };
     // Each list is a Platform read and a storage fetch: opened side by side, so one slow copy
     // does not hold up the others.
@@ -779,7 +793,30 @@ async fn read_releases(ctx: &Ctx, repo: &str) -> Result<(ReleaseList, Vec<String
         .await
         .into_iter()
         .collect();
-    Ok((list, late, sealed))
+    Ok(Read {
+        list,
+        late,
+        late_error,
+        sealed,
+    })
+}
+
+/// The line under a release whose sealed asset list did not open: the list's assets are not
+/// shown (the JSON has `assets: null`), and why.
+fn asset_list_not_opened(why: &str) -> String {
+    format!(
+        "the asset list could not be opened, so its assets are not shown: {}",
+        crate::fmt::safe(&why.chars().take(200).collect::<String>())
+    )
+}
+
+/// What a maintainer is told when `dg release list` could not check the asset lists for an
+/// upload under an old key: none is judged, which is not the same as none being late.
+fn late_check_failed(why: &str) -> String {
+    format!(
+        "could not check whether any asset list was uploaded under an old key (none is judged): {}",
+        crate::fmt::safe(&why.chars().take(200).collect::<String>())
+    )
 }
 
 /// The warning `dg release list` gives a maintainer for release `tag`, whose asset list was
@@ -874,16 +911,32 @@ fn asset_count(r: &Release, sealed: &SealedLists) -> String {
     match (has_sealed_asset_list(r), sealed.get(&r.document_id)) {
         (false, _) => format!("{} asset(s)", r.assets.len()),
         (true, Some(Ok(a))) => format!("{} asset(s), sealed list", a.len()),
-        (true, Some(Err(e))) => format!(
-            "sealed asset list (not opened: {})",
-            crate::fmt::safe(&e.chars().take(120).collect::<String>())
-        ),
-        (true, None) => "sealed asset list".to_string(),
+        // the reason is [`asset_list_error`]'s, on a line of its own
+        (true, _) => "sealed asset list (not opened)".to_string(),
+    }
+}
+
+/// Why `r`'s sealed asset list is not listed (`assets` is `null`), for the JSON
+/// (`assetListError`) and the line under the release: the reason it did not open, or that it was
+/// never read (a superseded revision's list is not). `None` for a list that is listed.
+fn asset_list_error(r: &Release, sealed: &SealedLists) -> Option<String> {
+    if !has_sealed_asset_list(r) {
+        return None;
+    }
+    match sealed.get(&r.document_id) {
+        Some(Ok(_)) => None,
+        Some(Err(e)) => Some(e.clone()),
+        None => Some("not opened: only a current release's list is read".to_string()),
     }
 }
 
 async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
-    let (list, late, sealed) = read_releases(ctx, repo).await?;
+    let Read {
+        list,
+        late,
+        late_error,
+        sealed,
+    } = read_releases(ctx, repo).await?;
     let row = |r: &Release| {
         json!({
             "tag": r.tag_name,
@@ -905,7 +958,7 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
             // `null`: a sealed list that was not opened (`assetListError` says why).
             "assets": listed_assets(r, &sealed).map(|a| a.iter().map(asset_json).collect::<Vec<_>>()),
             "assetList": if has_sealed_asset_list(r) { "sealed" } else { "plain" },
-            "assetListError": sealed.get(&r.document_id).and_then(|o| o.as_ref().err()),
+            "assetListError": asset_list_error(r, &sealed),
         })
     };
     ctx.emit(
@@ -916,6 +969,8 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
             "hidden": list.hidden,
             "earlierUse": list.earlier_use,
             "stale": list.stale,
+            // a maintainer's check for lists uploaded under an old key that could not be made
+            "assetListLateCheckError": late_error,
         }),
         || {
             let unpublished = unpublished_tags(&list);
@@ -944,6 +999,9 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
                 if late.contains(&r.document_id) {
                     println!("  warning: {}", late_list_note(&r.tag_name));
                 }
+                if let Some(why) = asset_list_error(r, &sealed) {
+                    println!("  {}", asset_list_not_opened(&why));
+                }
             }
             for r in &unpublished {
                 // A stale list may have it back already (a newer revision under a key not held).
@@ -959,6 +1017,9 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
             }
             for note in incomplete_notes(&list) {
                 println!("note: {note}");
+            }
+            if let Some(why) = &late_error {
+                println!("note: {}", late_check_failed(why));
             }
         },
     );
@@ -1638,15 +1699,35 @@ mod tests {
             names(listed_assets(&sealed_release, &lists).unwrap()),
             [("app.txt".to_string(), 'c')]
         );
+        assert_eq!(asset_list_error(&sealed_release, &lists), None);
         lists.insert("d1".into(), Err("no copy answered".into()));
         assert_eq!(
             asset_count(&sealed_release, &lists),
-            "sealed asset list (not opened: no copy answered)"
+            "sealed asset list (not opened)"
         );
         assert!(listed_assets(&sealed_release, &lists).is_none());
+        // the reason is given, for the JSON and as a line under the release
+        let why = asset_list_error(&sealed_release, &lists).unwrap();
+        assert_eq!(why, "no copy answered");
+        assert_eq!(
+            asset_list_not_opened(&why),
+            "the asset list could not be opened, so its assets are not shown: no copy answered"
+        );
+        // a list nobody read (a superseded revision's) is `null` with a reason too, never silent
+        let unread = SealedLists::new();
+        assert!(listed_assets(&sealed_release, &unread).is_none());
+        assert_eq!(
+            asset_count(&sealed_release, &unread),
+            "sealed asset list (not opened)"
+        );
+        assert!(asset_list_error(&sealed_release, &unread)
+            .unwrap()
+            .contains("not opened"));
         // a public release lists what it stores
         let public = current();
         assert_eq!(asset_count(&public, &lists), "2 asset(s)");
+        assert_eq!(asset_list_error(&public, &lists), None);
+        assert!(late_check_failed("node down").contains("none is judged): node down"));
         assert_eq!(listed_assets(&public, &lists).map(<[_]>::len), Some(2));
     }
 

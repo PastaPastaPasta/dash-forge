@@ -12,12 +12,19 @@
 //!   newest releases first, [`crate::assets::admit`]) is downloaded, checked against the
 //!   source's size and digest, and handed to the writer to seal and store. The others are
 //!   external links (§16.5): the source URL, inside the sealed list, with no sealed hash. A
-//!   later run seals them.
+//!   later run seals them. A release with no source page has nowhere to list a link to: those
+//!   assets are left out, each warned about, and the run is partial (its state held), so a later
+//!   run tries them again.
 //! * **Idempotency**: a release is written again only when its current revision, opened and
 //!   folded, differs from the source: its name, notes or provenance, or a source asset it does
 //!   not hold (sealed with the same name, size and digest, or as the same link). An asset
 //!   already held sealed is never downloaded again. An asset removed at the source stays
 //!   listed: a revision carries its list forward.
+//! * **Reads**: the destination's releases are listed once, before anything is written, and
+//!   each write hands the list it read after itself to the next one, which would otherwise list
+//!   them all again first. A sealed write is never refused for a stale view (§16.3: no ledger),
+//!   so the writer's post-write read warns when another maintainer's revision of the tag landed
+//!   after the view; a write that failed hands on no view, and the next one reads afresh.
 //! * **Cost**: one `release` document and, when the asset list changes, one kind-4
 //!   `packManifest` ([`sealed_release_credits`]). The files and the list go to your own
 //!   storage, which Platform does not charge for.
@@ -29,7 +36,7 @@ use anyhow::{Context, Result};
 
 use forge_core::collab::v2::{check_tag_name, external_link, sealed_provenance, Collab};
 use forge_core::collab::{
-    Imported, Release, ReleaseAsset, ReleaseFile, ReleaseInput, ReleaseStore, ReleaseWritten,
+    Imported, ReleaseAsset, ReleaseFile, ReleaseInput, ReleaseList, ReleaseStore, ReleaseWritten,
 };
 use forge_core::private::release::{fit_notes, ManifestAsset, ReleaseFields, ReleaseManifest};
 use forge_core::scope::RepoRef;
@@ -88,12 +95,18 @@ impl ReleaseTargets {
 /// What the sealed sync reads from and writes to the destination (a trait so the unit tests
 /// run without a network).
 pub(crate) trait SealedDest {
-    /// The live releases, opened and folded (§16.3).
-    async fn current(&self) -> forge_core::Result<Vec<Release>>;
+    /// The releases, opened and folded (§16.3).
+    async fn current(&self) -> forge_core::Result<ReleaseList>;
     /// The asset list a revision names (§16.5).
     async fn manifest(&self, fields: &ReleaseFields) -> forge_core::Result<ReleaseManifest>;
-    /// Write one revision: seal it, and seal and store its new files and list.
-    async fn write(&self, input: &ReleaseInput) -> forge_core::Result<ReleaseWritten>;
+    /// Write one revision: seal it, and seal and store its new files and list. `known` is the
+    /// list of releases the caller holds (`None`: read them now); the written revision carries
+    /// the list as read after the write ([`ReleaseWritten::releases`]).
+    async fn write(
+        &self,
+        input: &ReleaseInput,
+        known: Option<ReleaseList>,
+    ) -> forge_core::Result<ReleaseWritten>;
     /// How many storage targets the files and lists go to (`None`: no storage of your own).
     fn targets(&self) -> Option<u64>;
 }
@@ -109,17 +122,21 @@ pub(crate) struct CollabDest<'c, 'a> {
 }
 
 impl SealedDest for CollabDest<'_, '_> {
-    async fn current(&self) -> forge_core::Result<Vec<Release>> {
-        Ok(self.collab.releases(self.repo).await?.current)
+    async fn current(&self) -> forge_core::Result<ReleaseList> {
+        self.collab.releases(self.repo).await
     }
 
     async fn manifest(&self, fields: &ReleaseFields) -> forge_core::Result<ReleaseManifest> {
         self.collab.release_manifest(self.repo, fields).await
     }
 
-    async fn write(&self, input: &ReleaseInput) -> forge_core::Result<ReleaseWritten> {
+    async fn write(
+        &self,
+        input: &ReleaseInput,
+        known: Option<ReleaseList>,
+    ) -> forge_core::Result<ReleaseWritten> {
         self.collab
-            .create_release_stored(self.repo, input, self.store.as_ref())
+            .create_release_stored_from(self.repo, input, self.store.as_ref(), known)
             .await
     }
 
@@ -194,7 +211,7 @@ pub(crate) async fn sync(
     releases: &[SrcRelease],
     fetch: &impl Fetch,
 ) -> Result<()> {
-    let current = dest
+    let list = dest
         .current()
         .await
         .context("reading the destination's releases")?;
@@ -206,7 +223,8 @@ pub(crate) async fn sync(
             ledger.skip(format!("release not mirrored: {e}"));
             continue;
         }
-        let fields = current
+        let fields = list
+            .current
             .iter()
             .find(|c| c.tag_name == r.tag_name)
             .and_then(|c| c.sealed.as_ref())
@@ -228,8 +246,10 @@ pub(crate) async fn sync(
         let assets = plan_assets(r, held.as_ref(), &mut budget);
         planned.push(Planned { r, held, assets });
     }
+    // the one read, handed from write to write ([`write_one`])
+    let mut view = Some(list);
     for p in planned.into_iter().rev() {
-        write_one(ledger, dest, p, fetch).await?;
+        write_one(ledger, dest, p, fetch, &mut view).await?;
     }
     Ok(())
 }
@@ -328,12 +348,13 @@ fn sealed_notes(r: &SrcRelease, sealed: bool) -> &str {
         .unwrap_or(&r.notes)
 }
 
-/// Whether `held` states what `r` would: its name, `notes` and its provenance. An empty
-/// field is not stated (the writer carries the held one forward).
+/// Whether `held` states what `r` would: its name, `notes` and its provenance. An empty name
+/// or provenance is not stated (the writer carries the held one forward), but empty notes are:
+/// notes emptied at the source clear the destination's ([`ReleaseInput::clear_notes`]).
 fn same_statement(held: &Held, r: &SrcRelease, notes: &str, imported: Option<&Imported>) -> bool {
     let f = &held.fields;
     (r.name.is_empty() || f.name.as_deref() == Some(r.name.as_str()))
-        && (notes.is_empty() || held.notes == notes)
+        && held.notes == notes
         && imported.is_none_or(|i| {
             sealed_provenance(i)
                 == (
@@ -347,8 +368,14 @@ fn same_statement(held: &Held, r: &SrcRelease, notes: &str, imported: Option<&Im
 /// Whether the revision stores a new asset list (priced, and needing storage), as the writer
 /// decides it: `changes` (new files or links), or notes that do not fit `enc` beside the
 /// revision's other fields (carried from `held`), or a held list whose notes or `source` the
-/// revision changes.
-fn new_list(p: &Planned<'_>, notes: &str, imported: Option<&Imported>, changes: bool) -> bool {
+/// revision changes. `clear`: the revision states empty notes over the held ones.
+fn new_list(
+    p: &Planned<'_>,
+    notes: &str,
+    imported: Option<&Imported>,
+    changes: bool,
+    clear: bool,
+) -> bool {
     let held = p.held.as_ref();
     let mut fields = held.map(|h| h.fields.clone()).unwrap_or_default();
     fields.tag.clone_from(&p.r.tag_name);
@@ -362,9 +389,15 @@ fn new_list(p: &Planned<'_>, notes: &str, imported: Option<&Imported>, changes: 
             fields.imported_created_at,
         ) = sealed_provenance(i);
     }
-    let listed = !p.assets.is_empty() || held.is_some_and(|h| !h.assets.is_empty());
+    // an asset that cannot be sealed is a list entry only as a link, and a release with no
+    // provenance lists none
+    let listed = p
+        .assets
+        .iter()
+        .any(|a| imported.is_some() || !matches!(a.take, Take::Link(_)))
+        || held.is_some_and(|h| !h.assets.is_empty());
     fields.asset_manifest = listed.then(|| "00".repeat(32));
-    let notes = if notes.is_empty() {
+    let notes = if notes.is_empty() && !clear {
         held.map_or("", |h| h.notes.as_str())
     } else {
         notes
@@ -375,7 +408,10 @@ fn new_list(p: &Planned<'_>, notes: &str, imported: Option<&Imported>, changes: 
             h.fields.asset_manifest.is_some() && h.source.as_deref() != Some(i.url.as_str())
         })
     });
-    changes || notes_continue || held.is_some_and(|h| h.fields.notes_continue) || source_moves
+    // held notes that continue in the list move out of it when it is rebuilt (or cleared, and
+    // nothing else is listed: the writer then stores no list at all)
+    let held_continue = held.is_some_and(|h| h.fields.notes_continue) && (!clear || listed);
+    changes || notes_continue || held_continue || source_moves
 }
 
 /// Errors that concern the whole repository or the run, not one release: the repository's
@@ -459,13 +495,32 @@ async fn gather<'r>(assets: &[Plan<'r>], dry: bool, fetch: &impl Fetch) -> Gathe
     out
 }
 
+/// The assets of `tag` that cannot be recorded this run: not sealed (`why`), and the release has
+/// no source page to list them as links to (links are an import's, recorded with its provenance).
+/// The release is written without them: each is warned about, and the run is incomplete, so it
+/// ends partial and `--state` does not advance (the next run tries again, and lists or seals
+/// what it can by then).
+fn leave_out(ledger: &mut Ledger<'_>, tag: &str, assets: &[(&ReleaseAsset, String)]) {
+    for (a, why) in assets {
+        ledger.warn(format!(
+            "release {tag} asset {:?}: not sealed ({why}), and the release has no source page to \
+             list it as a link to; left out of the release. The run is partial, so the next run \
+             tries it again",
+            a.name
+        ));
+    }
+    ledger.incomplete |= !assets.is_empty();
+}
+
 /// Write `p`'s revision unless the destination states it already: download what it seals
-/// (a failed download becomes a link), then write through the ledger.
+/// (a failed download becomes a link, or, with no source page to link to, is left out:
+/// [`leave_out`]), then write through the ledger ([`publish`], which reuses `view`).
 async fn write_one(
     ledger: &mut Ledger<'_>,
     dest: &impl SealedDest,
     p: Planned<'_>,
     fetch: &impl Fetch,
+    view: &mut Option<ReleaseList>,
 ) -> Result<()> {
     let r = p.r;
     let tag = &r.tag_name;
@@ -476,25 +531,41 @@ async fn write_one(
         .held
         .as_ref()
         .is_some_and(|h| same_statement(h, r, notes, imported.as_ref()));
+    // Notes emptied at the source clear the destination's (the writer carries them otherwise).
+    let clear_notes = notes.is_empty() && p.held.as_ref().is_some_and(|h| !h.notes.is_empty());
+    // A link is recorded with the import's provenance: with no source page there is nowhere to
+    // list one, so an asset that cannot be sealed is left out, not a change.
+    let listable = imported.is_some();
     // What may change: a download (a dry run does not count the retry of an asset listed as
     // this link: it most likely fails again), or a new link.
     let changes = p.assets.iter().any(|a| match a.take {
         Take::Held => false,
         Take::Fetch { .. } => !(dry && a.held_link),
-        Take::Link(_) => !a.held_link,
+        Take::Link(_) => listable && !a.held_link,
     });
     if stated && !changes {
+        // nothing to write, but what cannot be sealed is still not mirrored: say so every run
+        let unsealed: Vec<_> = p
+            .assets
+            .iter()
+            .filter(|a| !a.held_link)
+            .filter_map(|a| match &a.take {
+                Take::Link(why) if !listable => Some((a.asset, why.clone())),
+                _ => None,
+            })
+            .collect();
+        leave_out(ledger, tag, &unsealed);
         return Ok(());
     }
     let what = format!("release {tag}");
     let targets = dest.targets();
     let price = |changes| {
         sealed_release_credits(
-            new_list(&p, notes, imported.as_ref(), changes),
+            new_list(&p, notes, imported.as_ref(), changes, clear_notes),
             targets.unwrap_or(0),
         )
     };
-    if targets.is_none() && new_list(&p, notes, imported.as_ref(), changes) {
+    if targets.is_none() && new_list(&p, notes, imported.as_ref(), changes, clear_notes) {
         ledger.skip(format!(
             "release {tag} not mirrored: a private release's files and asset list (and notes \
              past its 1507 bytes) are stored on your own storage, and the storage policy names \
@@ -509,21 +580,19 @@ async fn write_one(
     }
     let Gathered {
         files,
-        new_links,
+        mut new_links,
         linked,
     } = gather(&p.assets, dry, fetch).await;
+    let unlisted = if listable {
+        Vec::new()
+    } else {
+        std::mem::take(&mut new_links)
+    };
     // only downloads (a real run) can take changes back: each one that fails for an asset
     // listed as this link changes nothing
     let changes = changes && (dry || !files.is_empty() || !new_links.is_empty());
+    leave_out(ledger, tag, &unlisted);
     if stated && !changes {
-        return Ok(());
-    }
-    // links are an import's, recorded with its provenance (a source page of ≤ 300 bytes)
-    if imported.is_none() && !new_links.is_empty() {
-        ledger.skip(format!(
-            "release {tag} not mirrored: some of its assets could not be sealed, and with no \
-             source page to record they cannot be listed as links to it"
-        ));
         return Ok(());
     }
     for (a, why) in &new_links {
@@ -538,21 +607,55 @@ async fn write_one(
         tag_name: tag.clone(),
         name: r.name.clone(),
         notes: notes.to_string(),
+        clear_notes,
         assets: new_links.into_iter().map(|(a, _)| a.clone()).collect(),
         files,
         imported,
         ..ReleaseInput::default()
     };
-    let input = &input;
+    publish(
+        ledger,
+        dest,
+        &input,
+        credits,
+        linked.saturating_sub(unlisted.len() as u64),
+        view,
+    )
+    .await
+}
+
+/// Write `input` through the ledger (`credits` charged first). `view` is the destination's
+/// releases as the last read found them: the write takes it (one read fewer) and leaves the
+/// list it read after itself; a failed write leaves none, so the next one reads afresh.
+/// `linked`: the assets the revision lists as links.
+async fn publish(
+    ledger: &mut Ledger<'_>,
+    dest: &impl SealedDest,
+    input: &ReleaseInput,
+    credits: u64,
+    linked: u64,
+    view: &mut Option<ReleaseList>,
+) -> Result<()> {
+    let tag = &input.tag_name;
+    let known = view.take();
     let written = ledger
-        .write(what, credits, |c| c.releases += 1, || dest.write(input))
+        .write(
+            format!("release {tag}"),
+            credits,
+            |c| c.releases += 1,
+            || dest.write(input, known),
+        )
         .await;
     match written {
         Ok(w) => {
             ledger.counts.assets_linked += linked;
-            // each names the release already (none in a dry run)
-            for msg in w.map(|w| w.warnings).unwrap_or_default() {
-                ledger.warn(msg);
+            // none in a dry run
+            if let Some(w) = w {
+                // each names the release already
+                for msg in w.warnings {
+                    ledger.warn(msg);
+                }
+                *view = w.releases;
             }
             Ok(())
         }
@@ -566,12 +669,12 @@ async fn write_one(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::collections::BTreeMap;
 
     use sha2::{Digest as _, Sha256};
 
-    use forge_core::collab::SealedRelease;
+    use forge_core::collab::{Release, SealedRelease};
 
     /// forge-core's sealed writer, in memory ([`Collab::create_release_stored`]): a revision
     /// carries the tag's last one forward (name, notes, provenance, the list's other entries
@@ -585,6 +688,13 @@ mod tests {
         no_storage: bool,
         /// Each write fails with this.
         fail: Option<fn() -> forge_core::Error>,
+        /// How many times the whole list of releases was read: by `current`, and by a write
+        /// (the writer of forge-core lists them before, unless handed a view, and after).
+        reads: Cell<usize>,
+        /// The first write fails (concerning that release only), and hands on no list.
+        fail_once: Cell<bool>,
+        /// Every write's `known` (was it handed a view?).
+        handed: RefCell<Vec<bool>>,
     }
 
     fn hex_sha(b: &[u8]) -> String {
@@ -604,37 +714,32 @@ mod tests {
 
     #[allow(clippy::unused_async_trait_impl)] // a test double: nothing to await
     impl SealedDest for Fake {
-        async fn current(&self) -> forge_core::Result<Vec<Release>> {
-            Ok(self
-                .held
-                .borrow()
-                .values()
-                .map(|(f, _)| Release {
-                    document_id: "doc".into(),
-                    tag_name: f.tag.clone(),
-                    name: f.name.clone().unwrap_or_default(),
-                    notes: f.notes.clone().unwrap_or_default(),
-                    yanked: false,
-                    assets: Vec::new(),
-                    publisher: "me".into(),
-                    created_at: 1,
-                    delta: 0,
-                    sealed: Some(SealedRelease {
-                        epoch: 0,
-                        fields: f.clone(),
-                    }),
-                })
-                .collect())
+        async fn current(&self) -> forge_core::Result<ReleaseList> {
+            self.reads.set(self.reads.get() + 1);
+            Ok(self.list())
         }
 
         async fn manifest(&self, fields: &ReleaseFields) -> forge_core::Result<ReleaseManifest> {
             Ok(self.held.borrow()[&fields.tag].1.clone())
         }
 
-        async fn write(&self, input: &ReleaseInput) -> forge_core::Result<ReleaseWritten> {
+        async fn write(
+            &self,
+            input: &ReleaseInput,
+            known: Option<ReleaseList>,
+        ) -> forge_core::Result<ReleaseWritten> {
             if let Some(fail) = self.fail {
                 return Err(fail());
             }
+            if self.fail_once.replace(false) {
+                return Err(forge_core::Error::Config(
+                    "release not written: its asset list was refused".into(),
+                ));
+            }
+            self.handed.borrow_mut().push(known.is_some());
+            // the list before the write, unless handed one; and the one after it
+            self.reads
+                .set(self.reads.get() + 1 + usize::from(known.is_none()));
             self.writes.borrow_mut().push(input.clone());
             let tag = &input.tag_name;
             let mut held = self.held.borrow_mut();
@@ -642,6 +747,7 @@ mod tests {
                 .remove(tag)
                 .unwrap_or_else(|| (ReleaseFields::default(), empty_list(tag)));
             let notes = match input.notes.as_str() {
+                "" if input.clear_notes => String::new(),
                 "" if prev.notes_continue => list.notes.clone().unwrap_or_default(),
                 "" => prev.notes.clone().unwrap_or_default(),
                 n => n.to_string(),
@@ -703,11 +809,44 @@ mod tests {
                 ..empty_list(tag)
             };
             held.insert(tag.clone(), (fields, list));
-            Ok(ReleaseWritten::default())
+            drop(held);
+            Ok(ReleaseWritten {
+                releases: Some(self.list()),
+                ..ReleaseWritten::default()
+            })
         }
 
         fn targets(&self) -> Option<u64> {
             (!self.no_storage).then_some(1)
+        }
+    }
+
+    impl Fake {
+        /// The releases as forge-core lists them.
+        fn list(&self) -> ReleaseList {
+            ReleaseList {
+                current: self
+                    .held
+                    .borrow()
+                    .values()
+                    .map(|(f, _)| Release {
+                        document_id: "doc".into(),
+                        tag_name: f.tag.clone(),
+                        name: f.name.clone().unwrap_or_default(),
+                        notes: f.notes.clone().unwrap_or_default(),
+                        yanked: false,
+                        assets: Vec::new(),
+                        publisher: "me".into(),
+                        created_at: 1,
+                        delta: 0,
+                        sealed: Some(SealedRelease {
+                            epoch: 0,
+                            fields: f.clone(),
+                        }),
+                    })
+                    .collect(),
+                ..ReleaseList::default()
+            }
         }
     }
 
@@ -985,23 +1124,177 @@ mod tests {
         }
     }
 
-    /// Links are recorded with the import's provenance: without a source page to record, a
-    /// release with assets it could not seal is skipped rather than written without them.
+    /// Links are recorded with the import's provenance. With no source page to record, the
+    /// release is mirrored without the assets it could not seal (not skipped whole): each is
+    /// warned about by name, the run is partial (state held), and a later run, finding the rest
+    /// held, tries only what is missing.
     #[tokio::test]
-    async fn links_need_the_source_page() {
-        let (dest, src) = (Fake::default(), source());
+    async fn a_release_without_a_source_page_is_mirrored_without_its_unsealed_assets() {
+        let (dest, mut src) = (Fake::default(), source());
         let r = SrcRelease {
             source_url: String::new(),
             ..release("n")
         };
-        let ledger = run(&dest, &[r], &src).await;
-        assert!(dest.writes.borrow().is_empty());
-        assert_eq!(ledger.counts.skipped, 1);
-        assert!(
-            ledger.warnings[0].contains("no source page"),
-            "{:?}",
-            ledger.warnings
+        let ledger = run(&dest, std::slice::from_ref(&r), &src).await;
+        {
+            let writes = dest.writes.borrow();
+            assert_eq!(writes.len(), 1, "written, not skipped");
+            // the file it could seal, and no link: there is no page to list one to
+            assert_eq!(writes[0].files.len(), 1);
+            assert_eq!(writes[0].files[0].name, "fd.tar.gz");
+            assert!(writes[0].assets.is_empty() && writes[0].imported.is_none());
+            let held = dest.held.borrow();
+            let names: Vec<_> = held["v1.0.0"]
+                .1
+                .assets
+                .iter()
+                .map(|a| &a.name[..])
+                .collect();
+            assert_eq!(names, ["fd.tar.gz"]);
+        }
+        assert_eq!((ledger.counts.releases, ledger.counts.skipped), (1, 0));
+        assert_eq!(ledger.counts.assets_linked, 0);
+        assert!(ledger.incomplete, "partial: the state does not advance");
+        for asset in ["gone.bin", "big.iso"] {
+            assert!(
+                ledger.warnings.iter().any(|w| w.contains("release v1.0.0")
+                    && w.contains(&format!("{asset:?}"))
+                    && w.contains("left out of the release")),
+                "{asset}: {:?}",
+                ledger.warnings
+            );
+        }
+
+        // a rerun: the release is stated, the sealed file held and not downloaded again; only
+        // the refused asset is tried, and the run says so again instead of staying quiet
+        src.seen.borrow_mut().clear();
+        let again = run(&dest, std::slice::from_ref(&r), &src).await;
+        assert_eq!(dest.writes.borrow().len(), 1, "nothing to write again");
+        assert_eq!(*src.seen.borrow(), [GONE]);
+        assert!(again.incomplete);
+        assert_eq!(again.counts.skipped, 0);
+        assert!(again.warnings.iter().any(|w| w.contains("\"gone.bin\"")));
+
+        // the host serves it now: the next run seals it alone
+        src.files.insert(GONE.into(), Some(b"12345".to_vec()));
+        let later = run(&dest, &[r], &src).await;
+        let writes = dest.writes.borrow();
+        assert_eq!(writes.len(), 2);
+        assert_eq!(
+            writes[1]
+                .files
+                .iter()
+                .map(|f| &f.name[..])
+                .collect::<Vec<_>>(),
+            ["gone.bin"]
         );
+        // big.iso is still out (past the size cap), so the run is still partial
+        assert!(later.incomplete);
+        assert!(!later.warnings.iter().any(|w| w.contains("\"gone.bin\"")));
+    }
+
+    /// The same release with nothing it could fetch and nothing else to write: a release
+    /// already stating its name and notes is not written again, yet its missing asset is still
+    /// reported (and the run partial) on every run.
+    #[tokio::test]
+    async fn a_release_with_only_unlistable_assets_keeps_reporting_them() {
+        let (dest, src) = (Fake::default(), source());
+        let r = SrcRelease {
+            source_url: String::new(),
+            assets: Vec::new(),
+            omitted: vec![asset("big.iso", ISO, 3 << 30, "")],
+            ..release("n")
+        };
+        let first = run(&dest, std::slice::from_ref(&r), &src).await;
+        assert_eq!(
+            dest.writes.borrow().len(),
+            1,
+            "the release itself is written"
+        );
+        assert!(dest.writes.borrow()[0].files.is_empty());
+        assert!(first.incomplete);
+        let again = run(&dest, &[r], &src).await;
+        assert_eq!(
+            dest.writes.borrow().len(),
+            1,
+            "unchanged: not written again"
+        );
+        assert!(again.incomplete && again.counts.skipped == 0);
+        assert!(
+            again.warnings.iter().any(|w| w.contains("\"big.iso\"")),
+            "{:?}",
+            again.warnings
+        );
+    }
+
+    /// The destination's releases are listed once per run, and each write hands the list it
+    /// read after itself to the next: a write lists them once, not twice.
+    #[tokio::test]
+    async fn the_releases_are_listed_once_and_each_write_reuses_the_last_list() {
+        let (dest, src) = (Fake::default(), source());
+        let newer = SrcRelease {
+            tag_name: "v2.0.0".into(),
+            ..release("n")
+        };
+        run(&dest, &[newer, release("n")], &src).await;
+        assert_eq!(dest.writes.borrow().len(), 2);
+        assert_eq!(
+            *dest.handed.borrow(),
+            [true, true],
+            "every write had a view"
+        );
+        // the run's one read, and the one each write makes after itself
+        assert_eq!(dest.reads.get(), 1 + 2);
+    }
+
+    /// A write that failed hands on no list, so the next write reads afresh (and is not carried
+    /// forward from a view that may be older than what that release's failure left).
+    #[tokio::test]
+    async fn a_failed_write_leaves_no_list_for_the_next_one() {
+        let (dest, src) = (Fake::default(), source());
+        dest.fail_once.set(true);
+        let newer = SrcRelease {
+            tag_name: "v2.0.0".into(),
+            ..release("n")
+        };
+        // oldest first: v1.0.0 fails and is skipped, v2.0.0 reads the list itself
+        let ledger = run(&dest, &[newer, release("n")], &src).await;
+        assert_eq!((ledger.counts.releases, ledger.counts.skipped), (1, 1));
+        assert_eq!(*dest.handed.borrow(), [false]);
+        // the run's read, and the second write's own two
+        assert_eq!(dest.reads.get(), 1 + 2);
+    }
+
+    /// Notes emptied at the source clear the destination's, whole or continued in the list.
+    #[tokio::test]
+    async fn notes_emptied_at_the_source_are_cleared() {
+        for notes in ["first notes".to_string(), "é".repeat(2000)] {
+            let (dest, src) = (Fake::default(), source());
+            run(&dest, &[release(&notes)], &src).await;
+            assert_eq!(dest.writes.borrow().len(), 1);
+            let (fields, list) = dest.held.borrow()["v1.0.0"].clone();
+            assert!(fields.notes.is_some());
+            assert_eq!(fields.notes_continue, list.notes.is_some());
+
+            // the source's notes are now empty: only the "Published on" line remains
+            let emptied = run(&dest, &[release("")], &src).await;
+            {
+                let writes = dest.writes.borrow();
+                assert_eq!(writes.len(), 2, "a new revision");
+                assert!(writes[1].clear_notes && writes[1].notes.is_empty());
+                // the first revision stated its notes, it did not clear any
+                assert!(!writes[0].clear_notes);
+            }
+            assert_eq!(emptied.counts.releases, 1);
+            let (fields, list) = dest.held.borrow()["v1.0.0"].clone();
+            assert_eq!(fields.notes, None, "the preview is gone");
+            assert!(!fields.notes_continue && list.notes.is_none());
+
+            // and it is stable: empty on both sides is stated, nothing is written again
+            let again = run(&dest, &[release("")], &src).await;
+            assert_eq!(dest.writes.borrow().len(), 2);
+            assert_eq!(again.counts.releases, 0);
+        }
     }
 
     #[tokio::test]
@@ -1077,11 +1370,18 @@ mod tests {
             held: Some(held(source)),
             assets: Vec::new(),
         };
-        assert!(!new_list(&planned(PAGE), "n", imported.as_ref(), false));
+        assert!(!new_list(
+            &planned(PAGE),
+            "n",
+            imported.as_ref(),
+            false,
+            false
+        ));
         assert!(new_list(
             &planned("https://github.com/old/name/releases/tag/v1.0.0"),
             "n",
             imported.as_ref(),
+            false,
             false
         ));
     }

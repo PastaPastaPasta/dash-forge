@@ -64,6 +64,10 @@ struct State {
     /// A comment or review on a thread written while another of the same thread was in
     /// flight, or a transition refused: must never happen.
     violations: Vec<String>,
+    /// The destination's live releases (a public repository's), and every release input
+    /// written, in order.
+    releases: Vec<Release>,
+    release_inputs: Vec<ReleaseInput>,
 }
 
 /// The recorded chain.
@@ -254,7 +258,7 @@ impl Chain for &Recorded {
     }
 
     async fn releases(&self, _: &RepoRef) -> forge_core::Result<Vec<Release>> {
-        Ok(Vec::new())
+        Ok(self.st().releases.clone())
     }
 
     async fn merge_base(
@@ -405,8 +409,29 @@ impl Chain for &Recorded {
         unreachable!("no label definitions in these tests")
     }
 
-    async fn create_release(&self, _: &RepoRef, _: &ReleaseInput) -> forge_core::Result<String> {
-        unreachable!("no releases in these tests")
+    /// A public release: the newest revision of a tag replaces the last, as readers fold them.
+    async fn create_release(
+        &self,
+        _: &RepoRef,
+        input: &ReleaseInput,
+    ) -> forge_core::Result<String> {
+        let mut st = self.st();
+        st.release_inputs.push(input.clone());
+        st.releases.retain(|r| r.tag_name != input.tag_name);
+        let document_id = format!("release-{}", st.release_inputs.len());
+        st.releases.push(Release {
+            document_id: document_id.clone(),
+            tag_name: input.tag_name.clone(),
+            name: input.name.clone(),
+            notes: input.notes.clone(),
+            yanked: false,
+            assets: input.assets.clone(),
+            publisher: SIGNER.into(),
+            created_at: 1,
+            delta: 0,
+            sealed: None,
+        });
+        Ok(document_id)
     }
 
     async fn sync_sealed_releases(
@@ -846,4 +871,40 @@ async fn refused_items_are_skipped_and_the_run_carries_on() {
         results.push(logs);
     }
     assert_eq!(results[0], results[1]);
+}
+
+/// A public release whose notes were emptied at the source is written again with no notes (a
+/// public revision states its notes afresh), and a release with no notes on either side is
+/// left alone.
+#[tokio::test(start_paused = true)]
+async fn a_public_release_whose_notes_were_emptied_is_written_again_without_them() {
+    let release = |notes: &str| crate::model::SrcRelease {
+        tag_name: "v1".into(),
+        name: "One".into(),
+        notes: notes.into(),
+        assets: Vec::new(),
+        omitted: Vec::new(),
+        source_url: String::new(),
+        published: None,
+    };
+    let with = |notes: &str| SrcCollab {
+        releases: Some(vec![release(notes)]),
+        ..SrcCollab::default()
+    };
+    let chain = Recorded::new();
+    import(&chain, &with("the notes"), 1, None)
+        .await
+        .result
+        .unwrap();
+    assert_eq!(chain.st().releases[0].notes, "the notes");
+
+    let emptied = import(&chain, &with(""), 1, None).await;
+    emptied.result.unwrap();
+    assert_eq!(emptied.counts.releases, 1, "a new revision");
+    assert_eq!(chain.st().releases[0].notes, "", "cleared");
+
+    let again = import(&chain, &with(""), 1, None).await;
+    again.result.unwrap();
+    assert_eq!(again.counts.releases, 0, "stable once empty on both sides");
+    assert_eq!(chain.st().release_inputs.len(), 2);
 }
