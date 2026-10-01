@@ -57,6 +57,7 @@ import { invalidateRepoFeed } from './issues'
 import { createSealedRelease, sealedReleaseEnv, type SealedReleaseOptions, type SealedReleaseWritten } from './sealed-release'
 import { noteTargetCreated } from './social'
 import { repoSource } from './source'
+import { starShape } from './star-shape'
 import { writeLock, writeTransition, type StateTarget } from './transitions'
 import { LAG_RETRY_MS, retryAfterLag } from './lag-retry'
 import { sleep } from '../sdk/facade'
@@ -892,7 +893,9 @@ export async function writeStarBeat(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef)
 
 /**
  * The viewer's star on a repo (forge-community `star`). With `trending` (the viewer's "Count my
- * stars toward Trending", on by default), a new star also writes its `starBeat`.
+ * stars toward Trending", on by default), a new star also writes its `starBeat`. On a fused-star
+ * contract ({@link starShape}, RC2 C1) the star is its own Trending entry: no beat, whatever
+ * `trending` says.
  */
 export function starRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string, repo: RepoRef, trending = false): Relation {
   return {
@@ -902,8 +905,11 @@ export function starRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string
       const confirmed = (await createIndexOnly(sdk, a, repo.forge, 'star', repo.repoId)).confirmed
       if (confirmed && trending) {
         // Best effort: the star stands without its beat, which only feeds a ranking.
+        const beat = async (): Promise<void> => {
+          if ((await starShape(sdk, repo.forge)) === 'beat') await writeStarBeat(sdk, a, repo)
+        }
         // eslint-disable-next-line no-console
-        await writeStarBeat(sdk, a, repo).catch((e: unknown) => console.warn('the star landed; its Trending beat did not', e))
+        await beat().catch((e: unknown) => console.warn('the star landed; its Trending beat did not', e))
       }
       return confirmed
     },

@@ -4,6 +4,10 @@
  * separate from the star so an unstar always works (the star keeps no `$createdAt`), and it is
  * optional: "Count my stars toward Trending" in Settings, on by default.
  *
+ * On a fused-star contract (RC2 C1, `star-shape.ts`) the star carries the window index itself
+ * (`outlivesDelete`, so an unstar still works and leaves its window entry), there is no beat and
+ * no opt-out, and everything below about beats does not apply.
+ *
  * A beat is non-deletable and one per identity and repo, ever (its `byOwner` proof index); its
  * window entries expire through the index's own `ttl`. An unstar does not remove it, and a
  * later star of the same repo writes none.
@@ -16,6 +20,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { ForgeIds } from '../deployments'
 import { rankedDocuments, type RankedPage } from '../sdk'
 import { DOC } from './contract'
+import { starShape } from './star-shape'
 
 /**
  * Whether a star counts toward Trending unless the user turned it off. The owner's default
@@ -46,11 +51,15 @@ export function setTrendingPref(on: boolean, storage: Store | null = browserStor
 /** Which window a trending read selects: the trailing week (`oldest`) or today (`newest`). */
 export type TrendingWindow = 'week' | 'today'
 
-/** The top repos by new stargazers in the window: `starBeat.byWeek`, proved. */
-export function readTrending(sdk: EvoSDK, forge: ForgeIds, span: TrendingWindow, limit = 25): Promise<RankedPage> {
+/**
+ * The top repos by new stargazers in the window, proved: `starBeat.byWeek`, or `star.byWeek` on
+ * a fused-star contract ({@link starShape}, RC2 C1; same window, same ranking).
+ */
+export async function readTrending(sdk: EvoSDK, forge: ForgeIds, span: TrendingWindow, limit = 25): Promise<RankedPage> {
+  const shape = await starShape(sdk, forge)
   return rankedDocuments(sdk, {
     dataContractId: forge.community,
-    documentTypeName: DOC.starBeat,
+    documentTypeName: shape === 'fused' ? DOC.star : DOC.starBeat,
     groupBy: 'repoId',
     limit,
     timeRange: { field: '$createdAt', selector: span === 'week' ? 'oldest' : 'newest' },

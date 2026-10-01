@@ -4,10 +4,15 @@
  * Settings → Stars: "Count my stars toward Trending" (platform-parity-spec §4.3). On (the
  * default), a new star also writes a small `starBeat` document that the Explore page's Trending
  * ranks by; off, a star is just the star. Stored in this browser.
+ *
+ * On a fused-star contract (RC2 C1, `lib/repo/star-shape.ts`) there is no choice to make: every
+ * star is its own Trending entry, so the panel says so instead of offering the toggle.
  */
 
 import { useState } from 'react'
 
+import { useStarShape } from '@/hooks/use-star-shape'
+import { ACTIVE_NETWORK } from '@/lib/constants'
 import { previewCreate } from '@/lib/sdk'
 import { setTrendingPref, trendingPref } from '@/lib/repo/trending'
 import { creditsAsDash } from '@/lib/view/format'
@@ -15,6 +20,14 @@ import { creditsAsDash } from '@/lib/view/format'
 export function TrendingPrefPanel(): JSX.Element {
   const [on, setOn] = useState(() => trendingPref())
   const beat = previewCreate('starBeat', {})
+  if (useStarShape(ACTIVE_NETWORK.v2) === 'fused') {
+    return (
+      <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="trending-pref">
+        Every star counts toward Trending on Explore for the week it was made. On this network a star carries that week itself, so there is
+        nothing to turn off; unstarring takes the star away, but not the week it already counted in.
+      </p>
+    )
+  }
   return (
     <div className="space-y-2" data-testid="trending-pref">
       <label className="flex items-center gap-2 text-dense coarse:min-h-11">

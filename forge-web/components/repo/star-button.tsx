@@ -10,6 +10,10 @@
  * A new star also counts toward Trending (a `starBeat`, platform-parity-spec §4.3) when the
  * viewer's "Count my stars toward Trending" is on, the default: the price then includes it and
  * says so. An unstar leaves the beat (it cannot be deleted; its week ends on its own).
+ *
+ * On a fused-star contract (RC2 C1, `lib/repo/star-shape.ts`) the star is its own Trending
+ * entry: every star counts, with no opt-out and no beat. Until that shape is re-measured, its
+ * price is the star plus a beat, which the C1 fee gate keeps it under, shown as an upper bound.
  */
 
 import { useState } from 'react'
@@ -17,6 +21,7 @@ import { Star } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
 import { useFirstWrite } from '@/hooks/use-first-write'
+import { useStarShape } from '@/hooks/use-star-shape'
 import { useRelationToggle } from '@/hooks/use-relation-toggle'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Button } from '@/components/ui/button'
@@ -38,6 +43,8 @@ export function StarButton({
   const guard = useWriteGuard()
   // Read once per mount: Settings changes it, and the next page picks it up.
   const [trending] = useState(() => trendingPref())
+  // null while it is read: priced and labelled as a beat-shaped star with its beat (the upper bound).
+  const fused = useStarShape(repo.forge) === 'fused'
 
   const star = useRelationToggle({
     enabled: ready && sdk !== null && identity !== null,
@@ -52,15 +59,15 @@ export function StarButton({
   const [interested, setInterested] = useState(false)
   const pricing = interested && ready && sdk !== null && identity !== null && !starred
   const first = useFirstWrite(() => starFirsts(sdk!, repo, identity!, count), [repo.repoId, identity ?? '', count], pricing)
-  // No beat on a private repo or on your own (RC1: consensus refuses both).
-  const beats = trending && beatAllowed(repo, identity ?? '')
+  // No beat on a private repo or on your own (RC1: consensus refuses both), nor on a fused star.
+  const beats = !fused && trending && beatAllowed(repo, identity ?? '')
   const beatFirst = useFirstWrite(() => starBeatFirsts(sdk!, repo, identity!), [repo.repoId, identity ?? ''], beats && pricing)
   // An upper bound: a beat is skipped when an earlier star of this repo already wrote one.
   const starCost = previewCreate('star', {}, first)
-  const cost = beats ? sumPreviews([starCost, previewCreate('starBeat', {}, beatFirst)]) : starCost
+  const cost = beats || fused ? sumPreviews([starCost, previewCreate('starBeat', {}, beatFirst)]) : starCost
   const refund = previewDelete('star')
   // Until the first-write reads answer, the price is the upper bound, and says so (QW-043).
-  const upperBound = !firstWriteRead(first) || (beats && !firstWriteRead(beatFirst))
+  const upperBound = fused || !firstWriteRead(first) || (beats && !firstWriteRead(beatFirst))
   const onClick = (): void => {
     if (!starred && !guard.check(cost, 'community', 'star this repo')) return
     if (!identity || !signer) return
@@ -72,7 +79,7 @@ export function StarButton({
   const unknown = signedIn && star.on === null
   const price = starred
     ? `Unstar · refunds at least ${creditsAsDash(-refund.credits)} DASH`
-    : `Star · ${priceLabel(cost.credits, upperBound)} DASH${beats ? ' · counts toward Trending (turn off in Settings)' : ''}`
+    : `Star · ${priceLabel(cost.credits, upperBound)} DASH${fused ? ' · counts toward Trending' : beats ? ' · counts toward Trending (turn off in Settings)' : ''}`
 
   return (
     <span className="inline-flex items-center gap-2">

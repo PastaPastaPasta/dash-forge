@@ -67,6 +67,7 @@ import { putPlatformChunks, writePackManifest, writeRefUpdate } from './push'
 import { postTargetEvent, setAssignee, setLabel, setMilestone, setPolicy, setThreadFlag, submitReviewDraft, type ReviewDraft } from './review-writes'
 import { syncTopicDocs, updateConfig } from './settings'
 import { contractOf } from './source'
+import { resetStarShapes } from './star-shape'
 import { repoKeyData } from './private-members'
 import { decodeIdentifier } from '../auth/base58'
 import { EpochKeys } from '../private/keys'
@@ -103,8 +104,15 @@ const REPO: RepoRef = { forge: FORGE, repoId: '8H5JaQm8Z765UunuttoUuVsVMCmDoy2EB
 const PR = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'
 const ISSUE = 'EA8HsynH63cw1i8xQLoARwk43sDf74HrKut1D4RV3L35'
 const HEAD = 'ab'.repeat(20)
-/** The raw documents facade the index-only reads use: nothing held yet. */
-const sdk = { documents: { query: async () => new Map() } } as unknown as EvoSDK
+/**
+ * The raw documents facade the index-only reads use (nothing held yet), and the committed
+ * forge-community for the star shape (`star-shape.ts`: a fused star when it has no `starBeat`).
+ */
+const sdk = {
+  documents: { query: async () => new Map() },
+  contracts: { fetch: async () => ({ schemas: rc1Contracts()['forge-community'].documentSchemas }) },
+} as unknown as EvoSDK
+const FUSED_STAR = !('starBeat' in (rc1Contracts()['forge-community'].documentSchemas as object))
 const auth = (identityId: string): WriteAuth => ({ identityId, network: 'devnet', getSigningKeyWif: () => 'x' })
 
 /** Every create since the last call: routed by the RC1 layout and RC1-valid as its signer made it. */
@@ -128,6 +136,7 @@ beforeEach(() => {
   refuseNext = null
   consentLag = 0
   resetMemoryStores()
+  resetStarShapes()
 })
 
 describe('forge-core writers are RC1-valid', () => {
@@ -273,13 +282,21 @@ describe('forge-community writers are RC1-valid', () => {
     expect(creates).toHaveLength(0)
   })
 
-  it('a star with its trending beat (repoOwner, vis public), a watch and a follow', async () => {
+  it.skipIf(FUSED_STAR)('a star with its trending beat (repoOwner, vis public), a watch and a follow', async () => {
     await starRelation(sdk, auth(BOB), BOB, REPO, true).add()
     await watchRelation(sdk, auth(BOB), BOB, REPO).add()
     await followRelation(sdk, auth(BOB), BOB, FORGE, ALICE).add()
     const made = await judged()
     expect(types(made)).toEqual(['star', 'starBeat', 'watch', 'follow'])
     expect(made[1]?.data).toMatchObject({ vis: 'public' })
+  })
+
+  it.runIf(FUSED_STAR)('a fused star (RC2 C1) is its own Trending entry: no beat, whatever the preference; a watch and a follow', async () => {
+    await starRelation(sdk, auth(BOB), BOB, REPO, true).add()
+    await starRelation(sdk, auth(BOB), BOB, REPO, false).add()
+    await watchRelation(sdk, auth(BOB), BOB, REPO).add()
+    await followRelation(sdk, auth(BOB), BOB, FORGE, ALICE).add()
+    expect(types(await judged())).toEqual(['star', 'star', 'watch', 'follow'])
   })
 
   it('no trending beat on your own repo or a private one (consensus refuses both)', async () => {
