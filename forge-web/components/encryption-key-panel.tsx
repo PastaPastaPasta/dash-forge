@@ -22,10 +22,12 @@ import { NETWORKS } from '@/lib/constants'
 import {
   ENCRYPTION_KEY_BLAST_RADIUS,
   adoptEncryptionKey,
+  fetchIdentityKeys,
   encryptionMaterialFromFile,
   importEncryptionKey,
   parseEncryptionKeyInput,
   registerEncryptionKey,
+  usableEncryptionKey,
   wipeMaterial,
 } from '@/lib/auth/encryption-key'
 import { onEncryptionKeyChange, removeEncryptionKey, storedEncryptionKeyId } from '@/lib/auth/vault'
@@ -120,9 +122,18 @@ export function EncryptionKeyPanel(): JSX.Element | null {
   }
 
   // The identity's existing encryption key, derived from its words: nothing is signed or paid.
+  // Words that open none of its keys are named as such, not as a missing key to register.
   const fromPhrase = (): void => {
     const mnemonic = phrase.current?.value ?? ''
-    void run(() => importEncryptionKey(sdk!, network, identity, core, { mnemonic }))
+    void run(async () => {
+      const id = await importEncryptionKey(sdk!, network, identity, core, { mnemonic })
+      if (id !== null) return id
+      const existing = usableEncryptionKey((await fetchIdentityKeys(sdk!, identity)) ?? [], core)
+      if (existing !== null) {
+        throw new Error(`These recovery words don't open this identity's encryption key (key ${existing.keyId}). Check the words, or use your identity file.`)
+      }
+      return null
+    })
   }
 
   const fromPaste = (): void => {

@@ -692,7 +692,7 @@ function ImportView({ onDone, onStored, renew = false }: { onDone: () => void; o
           <button type="button" className="text-forge-700 underline dark:text-forge-400" onClick={() => onStored(who)}>
             Unlock it
           </button>{' '}
-          with the passphrase you chose then to finish it, or carry on: this creates a new key for this browser.
+          with the passphrase you chose then to finish it, or carry on to register a new key (a key that did reach Platform asks you to unlock first).
         </div>
       ) : null}
       {alreadyStored ? (

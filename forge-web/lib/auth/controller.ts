@@ -834,13 +834,17 @@ export class AuthController {
       if (!masterWif) throw new Error('no master key found')
       this.requireFullUnlock(identityId)
       this.step("Checking this browser's stored keys")
-      const previous = (await listVaults(this.network)).find((v) => v.identityId === identityId)
+      const stored = (await listVaults(this.network)).find((v) => v.identityId === identityId)
+      // A key that only got staged (a sign-in that did not finish) is no key to replace or
+      // disable: this is a first registration, priced as one (QW3-007). Its stage stays, and
+      // one that may have landed refuses to be overwritten (PendingRenewalError: unlock first).
+      const previous = stored?.staged === true ? undefined : stored
       // Found from the words, and this browser already holds a key for it: the user never saw
       // the "Unlock it instead" choice, so don't turn signing back in into a paid renewal.
       // `renew` is a renewal of the signed-in identity only: words that found another identity
       // this browser holds still get the choice.
       const renewing = options.renew === true && this.state.session?.identityId === identityId
-      if (foundByWords && previous && !renewing) throw new AlreadyStoredError(identityId)
+      if (foundByWords && stored && !renewing) throw new AlreadyStoredError(identityId)
       this.step('Connecting to Dash Platform')
       const sdk = await this.getSdk()
       // Renewing also disables the wallet keys this browser holds for the identity (a shipped
@@ -858,7 +862,7 @@ export class AuthController {
       // browser cannot keep the key, nothing changes on chain. A failure after the stage keeps
       // it: the next unlock asks Platform whether it was registered, and adopts it or keeps
       // waiting (it is only dropped on proof it never was).
-      const { key, committed } = await this.wordedMasterError(identityId, 'mnemonic' in input && !foundByWords ? input.mnemonic : null, 'import', () => this.charged(identityId, previous ? 'key:renew' : 'key:register', (r) => r?.key.keyId ?? null, async () => {
+      const { key, committed } = await this.wordedMasterError(identityId, 'mnemonic' in input && !foundByWords ? input.mnemonic : null, renewing ? 'signed-in' : 'import', () => this.charged(identityId, previous ? 'key:renew' : 'key:register', (r) => r?.key.keyId ?? null, async () => {
         const registered = await registerLimitedKey(sdk, {
           network: this.network,
           identityId,
@@ -1427,7 +1431,7 @@ export class AuthController {
       const theirs = await deriveMasterKey(words, this.network)
         .then(async (m) => identityOfMasterKey(await this.getSdk(), m.publicKeyHex, this.network))
         .catch(() => null)
-      throw new Error(wrongWordsMessage(identityId, theirs, who))
+      throw new WrongMasterKeyError(identityId, wrongWordsMessage(identityId, theirs, who))
     }
   }
 
@@ -1439,7 +1443,7 @@ export class AuthController {
     let masterWif: string | null
     if ('fileText' in input) {
       const m = masterMaterialFromFile(input.fileText)
-      if (m.identityId !== identityId) throw new Error(otherIdentityFileMessage(m.identityId, identityId))
+      if (m.identityId !== identityId) throw new WrongMasterKeyError(identityId, otherIdentityFileMessage(m.identityId, identityId))
       this.checkFileNetwork(m.networkKey)
       masterWif = m.masterWif ?? (m.mnemonic ? (await deriveMasterKey(m.mnemonic, this.network)).wif : null)
     } else {

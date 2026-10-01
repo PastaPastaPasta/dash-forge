@@ -25,7 +25,7 @@ import { authSdk, type WasmKey } from '../sdk/facade'
 import { isQuorumMiss } from '../sdk/unreachable'
 import type { KeyLimits } from '../view/funds'
 import { retryWhileMissing } from '../view/retry'
-import { errorMessage } from '../utils'
+import { abbreviate, errorMessage } from '../utils'
 import { assertGroupHolds } from './group-trust'
 import { controlsKey } from './wif'
 
@@ -48,9 +48,9 @@ export function defaultLimits(now = Date.now()): LimitedKeyRequest {
   }
 }
 
-/** An identity id as the key-mismatch copy names it: `DhRR5hs…`. */
+/** An identity id as the key-mismatch copy names it: `DhRR5hs…` ({@link abbreviate}'s 7 characters). */
 export function shortId(id: string): string {
-  return id.length > 8 ? `${id.slice(0, 7)}…` : id
+  return id.length > 8 ? `${abbreviate(id)}…` : id
 }
 
 /**
@@ -60,8 +60,11 @@ export function shortId(id: string): string {
  * anything is signed; the caller words it for what was given (a file, the words).
  */
 export class WrongMasterKeyError extends Error {
-  constructor(readonly identityId: string) {
-    super(`That master key doesn't belong to identity ${shortId(identityId)}. Use this identity's own identity file or recovery phrase.`)
+  constructor(
+    readonly identityId: string,
+    message = `That master key doesn't belong to identity ${shortId(identityId)}. Use this identity's own identity file or recovery phrase.`,
+  ) {
+    super(message)
     this.name = 'WrongMasterKeyError'
   }
 }
@@ -285,9 +288,9 @@ export async function disableHeldKeys(
 ): Promise<boolean> {
   const identity = await authSdk(sdk).identities.fetch(params.identityId)
   if (!identity) throw new Error(`identity ${params.identityId} not found`)
-  await assertMasterKeyOf(identity, params.identityId, params.masterWif, params.network)
   const ids = heldToDisable(identity.publicKeys, params.keys, params.network)
   if (ids.length === 0) return false
+  await assertMasterKeyOf(identity, params.identityId, params.masterWif, params.network)
   await withMasterSigner(params.masterWif, (signer) =>
     sendIdentityUpdate(sdk, params.identityId, () => authSdk(sdk).identities.update({ identity, disablePublicKeys: ids, signer })),
   )
@@ -490,6 +493,15 @@ export async function topUpLimitedKey(
   const addBudget = params.request.addCredits !== null && params.request.addCredits > 0n ? params.request.addCredits : null
   assertTopUp({ addCredits: addBudget, expiresAt })
 
+  await assertMasterKeyOf(identity, params.identityId, params.masterWif, params.network)
+  // The SDK's limits update reads the nonce itself, and its failures cannot be told apart from a
+  // broadcast's (so any is "may have been sent"). A proved read of the same nonce first waits
+  // out a quorum rotation like any read (QW3-007) and leaves the connection with current keys.
+  try {
+    await authSdk(sdk).identities.nonce(params.identityId)
+  } catch (e) {
+    throw new IdentityUpdateNotSentError(e)
+  }
   let master: ReturnType<typeof PrivateKey.fromWIF> | null = null
   let signer: InstanceType<typeof IdentitySigner> | null = null
   let sent = false
@@ -497,12 +509,6 @@ export async function topUpLimitedKey(
   try {
     master = PrivateKey.fromWIF(params.masterWif)
     signer = new IdentitySigner()
-    const bytes = master.toBytes()
-    const isMaster = identity.publicKeys.some(
-      (x) => x.securityLevelNumber === 0 && x.disabledAt === undefined && safeValidate(x, bytes, params.network),
-    )
-    bytes.fill(0)
-    if (!isMaster) throw new WrongMasterKeyError(params.identityId)
     signer.addKey(master)
     sent = true
     const updated = await authSdk(sdk).identities.updateKeyLimits({

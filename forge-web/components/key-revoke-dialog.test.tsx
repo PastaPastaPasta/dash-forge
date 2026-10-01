@@ -14,6 +14,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { UnlockNeededError } from '@/lib/auth/controller'
+import { WrongMasterKeyError } from '@/lib/auth/limited-key'
 
 const ID = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
 const WORDS = Array(12).fill('abandon').join(' ')
@@ -114,13 +115,23 @@ describe('KeyRevokeDialog', () => {
 
   it("QW3-028: another identity's words stay in the field beside a plain error", async () => {
     auth.scope = 'full'
-    auth.revokeStored.mockRejectedValueOnce(new Error('These recovery words belong to identity 9CVMSjk…, not 9r27eDs… (the identity signed in here).'))
+    auth.revokeStored.mockRejectedValueOnce(new WrongMasterKeyError(ID, 'These recovery words belong to identity 9CVMSjk…, not 9r27eDs… (the identity signed in here).'))
     render()
     await giveWords()
     await act(async () => button(/Sign once & revoke/).click())
     expect(host.querySelector('[role="alert"]')!.textContent).toMatch(/belong to identity 9CVMSjk…, not 9r27eDs…/)
     expect(host.querySelector('textarea')!.value).toBe(WORDS)
     expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('any other failure does not keep the master key on the page', async () => {
+    auth.scope = 'full'
+    auth.revokeStored.mockRejectedValueOnce(new Error('Failed to broadcast update: timeout'))
+    render()
+    await giveWords()
+    await act(async () => button(/Sign once & revoke/).click())
+    expect(host.querySelector('[role="alert"]')!.textContent).toMatch(/timeout/)
+    expect(host.querySelector('textarea')!.value).toBe('')
   })
 
   it('QW3-030: prices the update before it is signed', () => {

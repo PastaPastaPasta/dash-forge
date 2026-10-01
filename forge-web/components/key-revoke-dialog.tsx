@@ -6,7 +6,8 @@
  * created in this browser has no file), then forget it here. The dialog says what happens and
  * what it costs before anything is picked, as Top up and Renew do (QW3-030). The master key signs
  * this one update and is not stored (`useMasterKeyInput`: a ref and an uncontrolled field,
- * cleared once the revoke is done; words that open another identity stay to be corrected).
+ * cleared once used; kept only to correct or retry: words or a file of another identity
+ * (QW3-028), an unlock asked first, or an update Platform never got).
  *
  * A reloaded tab holds only its spend-capped key, and a revoke must see every key this browser
  * holds: such a tab unlocks first, inline (QW3-006). The unlock sits outside the revoke's form:
@@ -24,6 +25,7 @@ import { ErrorBox } from '@/components/auth/protection-fields'
 import { useMasterKeyInput } from '@/components/auth/master-key-input'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { UnlockNeededError } from '@/lib/auth/controller'
+import { IdentityUpdateNotSentError, WrongMasterKeyError } from '@/lib/auth/limited-key'
 import { KEY_DISABLE_CREDITS, previewCredits } from '@/lib/sdk'
 import { errorMessage } from '@/lib/utils'
 
@@ -46,6 +48,8 @@ export function KeyRevokeDialog({ unlimited, onClose }: { unlimited: boolean; on
       master.clear()
       onClose()
     } catch (e) {
+      const retry = e instanceof UnlockNeededError || e instanceof WrongMasterKeyError || e instanceof IdentityUpdateNotSentError
+      if (!retry) master.clear()
       if (e instanceof UnlockNeededError) setUnlockAsked(true)
       else setError(errorMessage(e))
     }

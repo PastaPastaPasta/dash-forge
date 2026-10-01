@@ -48,7 +48,7 @@ export function useMasterKeyInput(identityId: string | null, { id, fileLabel }: 
     const text = await f.text()
     try {
       const m = masterMaterialFromFile(text)
-      if (identityId !== null && m.identityId !== identityId) throw new Error(otherIdentityFileMessage(m.identityId, identityId, f.name))
+      if (m.identityId !== identityId) throw new Error(identityId === null ? 'Sign in first.' : otherIdentityFileMessage(m.identityId, identityId, f.name))
       fileRef.current = text
       setFileName(f.name)
     } catch (e) {
