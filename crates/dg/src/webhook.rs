@@ -307,7 +307,11 @@ async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
     ctx.emit(
         json!({ "repo": handle.display(), "count": rows.len(), "webhooks": rows }),
         || {
-            println!("{} webhook(s) on {}:", hooks.len(), handle.display());
+            if hooks.is_empty() {
+                println!("no webhooks on {}", handle.display());
+            } else {
+                println!("{} webhook(s) on {}:", hooks.len(), handle.display());
+            }
             for h in &hooks {
                 let events = if h.events.is_empty() {
                     "all events".to_string()

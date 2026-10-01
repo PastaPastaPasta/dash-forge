@@ -310,7 +310,7 @@ git tag v1.0.0 && git push dash://<owner>/<repo> v1.0.0
 dg release create <owner>/<repo> --tag v1.0.0 --name "1.0.0" --notes "First stable release" \
   --asset ./dist/app-linux.tar.gz --asset ./dist/app-macos.tar.gz [--storage <profiles>]
 dg release list   <owner>/<repo>
-dg release download <owner>/<repo> v1.0.0 [--asset <name>] [--output <dir | file>]
+dg release download <owner>/<repo> v1.0.0 [--asset <name>] [-O/--output <dir | file>]
 dg release unpublish <owner>/<repo> v1.0.0
 ```
 
@@ -318,7 +318,7 @@ The tag must exist in the repository first (push it, as above): a release cannot
 
 `--asset` uploads each file to your own storage and records its SHA-256, size and URLs in the release. The storage is the repository's `dash.storage` profiles, or `--storage`, and each copy is read back and verified. Platform stores packs, not arbitrary files, so publishing an asset needs an S3 or IPFS profile ([bring your own storage](bring-your-own-storage.md)).
 
-`dg release download` fetches every asset of the release, or only `--asset <name>`, and saves each under its own name in the current directory or in the `--output` directory. `--output <file>` names the file for a single asset. It never replaces a file of the same name that is already there. It accepts only bytes that hash to the recorded SHA-256. It needs no identity, and no credentials when the storage has a public URL.
+`dg release download` fetches every asset of the release, or only `--asset <name>`, and saves each under its own name in the current directory or in the `--output` directory (`-O`, `-o`, and `gh`'s `-D`/`--dir` work too). `--output <file>` names the file for a single asset. It never replaces a file of the same name that is already there. It accepts only bytes that hash to the recorded SHA-256. It needs no identity, and no credentials when the storage has a public URL.
 
 `dg release list` always names who published each release. Every publish, edit or unpublish is a fresh revision that needs a *current* maintainer to sign it, so a maintainer who is later removed can no longer touch the releases they published — not edit them, and not unpublish them either. Only a maintainer still on the repo can do that.
 

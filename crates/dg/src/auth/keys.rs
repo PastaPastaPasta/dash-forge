@@ -91,7 +91,10 @@ async fn list(ctx: &Ctx) -> Result<()> {
         .fetch_signer(&bridge)
         .await
         .context("fetching the signing identity")?;
-    let mine = identity.signing_key_id(&bridge, ctx.network());
+    // A disabled key this computer still holds is marked too (QW3-024).
+    let mine = identity
+        .signing_key_standing(&bridge, ctx.network())
+        .map(|(id, _)| id);
     let group = ctx.target.v2.as_ref().map(|f| f.group.clone());
     let mut rows = Vec::new();
     for k in identity.public_keys() {
@@ -106,6 +109,7 @@ async fn list(ctx: &Ctx) -> Result<()> {
             None
         };
         let key_group = identity.key_group(k.id);
+        let doc_type = identity.key_doc_type(k.id).map(|(_, t)| t);
         rows.push(json!({
             "id": k.id,
             "purpose": k.purpose,
@@ -114,6 +118,7 @@ async fn list(ctx: &Ctx) -> Result<()> {
             "disabled": k.disabled,
             "boundTo": key_group.clone().or(k.bound_to.clone()),
             "forgeGroup": key_group.is_some() && key_group == group,
+            "boundDocumentType": doc_type,
             "budgetCredits": limits.and_then(|l| l.total_budget),
             "budgetRemainingCredits": remaining,
             "expiresAt": limits.and_then(|l| l.expires_at),
@@ -140,11 +145,7 @@ async fn list(ctx: &Ctx) -> Result<()> {
                 r["id"],
                 r["purpose"].as_str().unwrap_or(""),
                 r["securityLevel"].as_str().unwrap_or(""),
-                if r["forgeGroup"].as_bool() == Some(true) {
-                    "dash-forge "
-                } else {
-                    ""
-                },
+                key_label(r),
                 if r["disabled"].as_bool() == Some(true) {
                     "DISABLED"
                 } else {
@@ -160,6 +161,20 @@ async fn list(ctx: &Ctx) -> Result<()> {
         }
     });
     Ok(())
+}
+
+/// What a key is for, in `dg auth keys list`: `dash-forge ` for a Forge limited key, and
+/// `checkRun only (CI runner) ` for a key bound to one document type (QW3-070: runner keys
+/// had a blank label).
+fn key_label(r: &serde_json::Value) -> String {
+    if r["forgeGroup"].as_bool() == Some(true) {
+        return "dash-forge ".into();
+    }
+    match r["boundDocumentType"].as_str() {
+        Some("checkRun") => "checkRun only (CI runner) ".into(),
+        Some(t) => format!("{t} only "),
+        None => String::new(),
+    }
 }
 
 /// Register an ENCRYPTION key for an identity that has none (`docs/security/private-repos.md`
@@ -341,9 +356,23 @@ async fn disable(ctx: &Ctx, id: u32, master: Option<&std::path::Path>, force: bo
         "Disable key #{id} of {}? (one identity update)",
         current.identity_id
     ))?;
+    let before = client.get_balance(&full.identity_id).await.unwrap_or(0);
     super::disable_key(&client, &full, id).await?;
-    ctx.emit(json!({ "status": "disabled", "keyId": id }), || {
-        println!("✓ key #{id} disabled; it can no longer sign");
-    });
+    // Every paid write ends with its charge (QW3-070).
+    let spent = crate::common::spent_since(&client, &full.identity_id, before).await;
+    let price = ctx.usd_price();
+    ctx.emit(
+        json!({
+            "status": "disabled",
+            "keyId": id,
+            "cost": crate::fmt::cost_json(spent, price),
+        }),
+        || {
+            println!(
+                "✓ key #{id} disabled; it can no longer sign · {}",
+                crate::fmt::cost_line(spent, price)
+            );
+        },
+    );
     Ok(())
 }

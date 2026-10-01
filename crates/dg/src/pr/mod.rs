@@ -694,7 +694,7 @@ fn same_head_and_base(v: &PatchView, source_id: &str, head_ref: &str, base: &str
 // list / view
 // ---------------------------------------------------------------------------
 
-async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Result<()> {
+async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::PrStateArg) -> Result<()> {
     let s = Reader::open(ctx, repo).await?;
     let handle = &s.repo;
     let collab = s.collab();
@@ -705,7 +705,7 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
     let rows: Vec<_> = page
         .rows
         .into_iter()
-        .filter(|(v, _)| state.matches(v.state.open))
+        .filter(|(v, _)| state.matches(v.state.open, v.state.merged))
         .collect();
     // The PRs the state filter left out, for the empty list's hint.
     let others = read - rows.len();
@@ -741,12 +741,7 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
                     String::new()
                 };
                 println!("{}{among}", state.empty("pull requests"));
-                let other = match state {
-                    crate::StateArg::Open => "closed or merged",
-                    crate::StateArg::Closed => "open",
-                    crate::StateArg::All => "",
-                };
-                if others > 0 && !other.is_empty() {
+                if let (true, Some(other)) = (others > 0, state.others()) {
                     println!(
                         "({others} {other}: `--state all` lists {})",
                         if others == 1 { "it" } else { "them" }
@@ -973,6 +968,21 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
     if let (Some(o), serde_json::Value::Object(extra)) = (out.as_object_mut(), standing) {
         o.extend(extra);
     }
+    // DPNS names for the human view, as `dg issue view` shows them (QW3-070), read together;
+    // a failed read shows the bare id.
+    let names = if ctx.json {
+        std::collections::BTreeMap::default()
+    } else {
+        let ids = std::iter::once(v.patch.author.as_str())
+            .chain(v.state.assignees.iter().map(String::as_str))
+            .chain(approvals.approvers.iter().map(String::as_str))
+            .chain(approvals.changes_requested.iter().map(String::as_str))
+            .chain(rows.iter().map(|r| r.identity.as_str()))
+            .chain(reviews.iter().map(|r| r.reviewer.as_str()))
+            .chain(bypasses.iter().map(|b| b.actor.as_str()));
+        client.dpns_first_names(ids).await
+    };
+    let who = |id: &str| crate::fmt::with_name(id, &names);
     ctx.emit(
         out,
         || {
@@ -982,7 +992,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
                 state_label(&v),
                 safe(&v.patch.title)
             );
-            println!("author: {}", v.patch.author);
+            println!("author: {}", who(&v.patch.author));
             println!(
                 "{} {} ({}) → {}",
                 source,
@@ -991,7 +1001,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
                 safe(&v.patch.base_ref_name)
             );
             let labels: Vec<&str> = v.state.labels.iter().map(String::as_str).collect();
-            let assignees: Vec<String> = v.state.assignees.iter().cloned().collect();
+            let assignees: Vec<String> = v.state.assignees.iter().map(|a| who(a)).collect();
             let milestone = review_state.milestone.as_deref();
             for line in crate::fmt::triage_lines(&labels, &assignees, milestone) {
                 println!("{line}");
@@ -1006,17 +1016,17 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
                 );
             }
             if !approvals.approvers.is_empty() {
-                let who: Vec<_> = approvals.approvers.iter().cloned().collect();
+                let by: Vec<_> = approvals.approvers.iter().map(|a| who(a)).collect();
                 println!(
                     "approved by {} on {}: {}",
-                    who.len(),
+                    by.len(),
                     short(&v.head),
-                    who.join(", ")
+                    by.join(", ")
                 );
             }
             if !approvals.changes_requested.is_empty() {
-                let who: Vec<_> = approvals.changes_requested.iter().cloned().collect();
-                println!("changes requested by {}", who.join(", "));
+                let by: Vec<_> = approvals.changes_requested.iter().map(|a| who(a)).collect();
+                println!("changes requested by {}", by.join(", "));
             }
             if let (Some(p), Some(st)) = (&policy, &policy_status) {
                 let approvals = format!(
@@ -1044,7 +1054,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
                 if merged_at(&v, oid) {
                     println!(
                         "! merged by bypassing the branch rules ({rules}), by {} at {}",
-                        b.actor,
+                        who(&b.actor),
                         short(oid)
                     );
                 } else {
@@ -1052,7 +1062,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
                     // records a claim, not a merge.
                     println!(
                         "! {} recorded a branch-rules bypass ({rules}) naming {}, which is not this PR's merge",
-                        b.actor,
+                        who(&b.actor),
                         short(oid)
                     );
                 }
@@ -1068,7 +1078,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
                         }
                         _ => String::new(),
                     };
-                    println!("  {}  {}{extra}", r.identity, r.state.label());
+                    println!("  {}  {}{extra}", who(&r.identity), r.state.label());
                 }
             }
             if !v.patch.body.is_empty() {
@@ -1085,7 +1095,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
                 println!(
                     "\n{} — {} on {}{tag}  [{}]",
                     r.verdict.label(),
-                    r.reviewer,
+                    who(&r.reviewer),
                     short(&r.commit_oid),
                     short(&r.document_id)
                 );

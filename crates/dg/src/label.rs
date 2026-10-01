@@ -7,6 +7,7 @@ use serde_json::json;
 
 use crate::common::{Reader, Session};
 use crate::context::Ctx;
+use crate::fmt::{cost_json, cost_line};
 use crate::LabelCommand;
 use forge_core::rules::v2::Visibility;
 
@@ -124,18 +125,29 @@ async fn define(
         "{verb} label {name:?} in {}? (one small document; members only{plaintext})",
         s.repo.display()
     ))?;
+    let before = s.balance().await;
     let id = s
         .collab()
         .create_label(&s.repo, name, color, description, retired)
         .await?;
+    // Every paid write ends with its charge (QW3-070).
+    let spent = s.spent_since(before).await;
+    let price = ctx.usd_price();
     ctx.emit(
         json!({
             "status": if retired { "retired" } else { "defined" },
             "name": name,
             "documentId": id,
             "id": id,
+            "cost": cost_json(spent, price),
         }),
-        || println!("✓ {}d label {name}", verb.to_lowercase()),
+        || {
+            println!(
+                "✓ {}d label {name} · {}",
+                verb.to_lowercase(),
+                cost_line(spent, price)
+            );
+        },
     );
     Ok(())
 }
