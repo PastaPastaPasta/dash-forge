@@ -33,6 +33,7 @@ export {
   staleRepoTimelines,
   TIMELINE_TYPES,
   TIMELINES_FRESH_MS,
+  type ChromeTimelines,
   type RepoChrome,
   type RepoTimelines,
   type TimelineType,
@@ -101,6 +102,7 @@ export {
 export {
   branchesOf,
   hasMissingParent,
+  publicRefKey,
   readAllRefUpdates,
   readRefUpdates,
   readRefs,

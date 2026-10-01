@@ -7,7 +7,7 @@ import { useRepoAddress } from '@/hooks/use-query-param'
 export function PullsClient(): JSX.Element {
   const addr = useRepoAddress()
   return (
-    <RepoScaffold addr={addr} rail={false}>
+    <RepoScaffold addr={addr} rail={false} refs="default">
       {(home) => <PullsContent home={home} addr={addr} />}
     </RepoScaffold>
   )

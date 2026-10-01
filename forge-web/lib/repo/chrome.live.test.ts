@@ -33,7 +33,7 @@ describe.skipIf(!LIVE)('live repo chrome composite (bonsia fixture)', () => {
 
       const first = await readRepoChrome(sdk, forge, OWNER, NAME, 'devnet')
       expect(first).not.toBeNull()
-      const t1 = await first!.timelines!
+      const t1 = await first!.read!.all()
       const plainRefs = await readRefs(sdk, first!.repo)
       const fromRows = refsFromRows(first!.repo, t1.refUpdate, t1.protectedRefUpdate, configBundleOf(first!.repo, t1.config).history)
       const tips = (refs: readonly { refName: string; state: unknown }[]) => Object.fromEntries(refs.map((r) => [r.refName, JSON.stringify(r.state)]))
@@ -43,7 +43,7 @@ describe.skipIf(!LIVE)('live repo chrome composite (bonsia fixture)', () => {
 
       // The delta read: every timeline bound `$createdAt >=` the newest held.
       const second = await readRepoChrome(sdk, forge, OWNER, NAME, 'devnet')
-      const t2 = await second!.timelines!
+      const t2 = await second!.read!.all()
       expect(chromeFallbacks()).toBe(0)
       for (const type of ['config', 'refUpdate', 'protectedRefUpdate', 'packManifest'] as const) {
         expect(t2[type].map((d) => d['$id'])).toEqual(t1[type].map((d) => d['$id']))

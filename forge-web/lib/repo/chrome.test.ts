@@ -197,7 +197,7 @@ describe('repo chrome: one composite for the whole chrome', () => {
     const chrome = await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet')
     expect(chrome?.repo.repoId).toBe(REPO)
     expect(chrome?.starCount).toBe(2)
-    const t = await chrome!.timelines!
+    const t = await chrome!.read!.all()
     expect(t.refUpdate).toHaveLength(4)
     expect(t.config).toHaveLength(1)
     expect(t.packManifest).toHaveLength(1)
@@ -215,7 +215,7 @@ describe('repo chrome: one composite for the whole chrome', () => {
 
   it('a ref timeline past one page is read on as key ranges side by side (QW-087)', async () => {
     const { sdk, calls } = fakeSdk(fixture(250))
-    const t = await (await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet'))!.timelines!
+    const t = await (await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet'))!.read!.all()
     expect(t.refUpdate).toHaveLength(251)
     expect(new Set(t.refUpdate.map((d) => d['$id'])).size).toBe(251)
     // Oldest first, as the `$createdAt` pages were.
@@ -228,7 +228,7 @@ describe('repo chrome: one composite for the whole chrome', () => {
 
   it('a node that does not honor the key ranges: read on to the end with plain pages', async () => {
     const { sdk, calls } = fakeSdk(fixture(250), { keyset: false })
-    const t = await (await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet'))!.timelines!
+    const t = await (await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet'))!.read!.all()
     expect(t.refUpdate).toHaveLength(251)
     expect(new Set(t.refUpdate.map((d) => d['$id'])).size).toBe(251)
     // The ranges were refused, then ⌈251/100⌉ − 1 = 2 continuation pages.
@@ -261,7 +261,7 @@ describe('repo chrome: one composite for the whole chrome', () => {
     // A creation the composite's first page does not hold, so only the ranges could have read it.
     const lost = creations[100]!['$id']
     const { sdk, calls } = fakeSdk(store, { rangeAnswer: (_q, rows) => rows.filter((d) => d['$id'] !== lost) })
-    const t = await (await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet'))!.timelines!
+    const t = await (await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet'))!.read!.all()
     expect(t.refUpdate).toHaveLength(241)
     expect(t.refUpdate.map((d) => d['$id'])).toContain(lost)
     // The ranges, then the `$createdAt` continuation of the composite's page: ⌈241/100⌉ − 1 = 2.
@@ -279,7 +279,7 @@ describe('repo chrome: one composite for the whole chrome', () => {
         return rows
       },
     })
-    const t = await (await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet'))!.timelines!
+    const t = await (await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet'))!.read!.all()
     expect(t.refUpdate).toHaveLength(251)
     expect(new Set(t.refUpdate.map((d) => d['$id'])).size).toBe(251)
     expect(calls).toEqual(['composite:repo', ...Array<string>(CHROME_KEYSET_SPLITS + 2).fill('query:refUpdate')])
@@ -289,7 +289,7 @@ describe('repo chrome: one composite for the whole chrome', () => {
     // Both types past a page, both read as ranges; checked per type, every move would lack its parent.
     const { store } = movedTags(120, true)
     const { sdk, calls } = fakeSdk(store)
-    const t = await (await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet'))!.timelines!
+    const t = await (await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet'))!.read!.all()
     expect(t.refUpdate).toHaveLength(121)
     expect(t.protectedRefUpdate).toHaveLength(120)
     expect([...calls].sort()).toEqual(
@@ -300,10 +300,10 @@ describe('repo chrome: one composite for the whole chrome', () => {
   it('a later read asks only for what is new, and keeps what it held', async () => {
     const store = fixture(250)
     const { sdk, calls } = fakeSdk(store)
-    await (await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet'))!.timelines!
+    await (await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet'))!.read!.all()
     calls.length = 0
     store.CORE!.refUpdate!.push(doc({ $ownerId: OWNER, repoId: REPO, refName: 'refs/heads/main', refNameHash: mainHash, newOid: hexToBase64('ef'.repeat(20)) }))
-    const t = await (await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet'))!.timelines!
+    const t = await (await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet'))!.read!.all()
     expect(t.refUpdate).toHaveLength(252)
     // One request, whatever the history's size: the delta fits the composite's page.
     expect(calls).toEqual(['composite:repo'])
@@ -392,7 +392,126 @@ describe('repo chrome store: the pack list and base refs come from the same read
     store.CORE!.repo = [{ $id: NEW, $ownerId: OWNER, $createdAt: 2, name: 'demo', visibility: 'public' }]
     const chrome = await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet')
     expect(chrome?.repo.repoId).toBe(NEW)
-    expect((await chrome!.timelines!).refUpdate).toEqual([])
+    expect((await chrome!.read!.all()).refUpdate).toEqual([])
+  })
+})
+
+describe('an issue or PR list reads the default branch alone, not every ref', () => {
+  const devHash = bytesToBase64(sha256(new TextEncoder().encode('refs/heads/dev')))
+  const branch = (name: string): Doc =>
+    doc({ $ownerId: OWNER, repoId: REPO, refName: name, refNameHash: bytesToBase64(sha256(new TextEncoder().encode(name))), newOid: hexToBase64('fe'.repeat(20)) })
+  const listHome = (sdk: EvoSDK) => loadRepoHome(sdk, { network: 'devnet', owner: OWNER, name: 'demo' }, undefined, { refs: 'default' })
+
+  it("a ref timeline past one page: the home folds the default branch from that ref's own read (1 request, not 8)", async () => {
+    const { sdk, calls } = fakeSdk(fixture(250))
+    const home = await listHome(sdk)
+    // `main`'s own history (the protected page came back short, so it is whole): no key ranges.
+    expect(calls).toEqual(['composite:repo', 'query:refUpdate'])
+    expect(home?.defaultBranch).toBe('main')
+    expect(home?.branches.map((b) => b.refName)).toEqual(['refs/heads/main'])
+    expect(home?.tags).toEqual([])
+    expect(home?.refsPartial).toBe(true)
+    // The same fold the full home makes of it.
+    const full = await loadRepoHome(sdk, { network: 'devnet', owner: OWNER, name: 'demo' })
+    expect(home?.branches[0]?.state).toEqual(full?.branches.find((b) => b.refName === 'refs/heads/main')?.state)
+  })
+
+  it("the PR list's base refs: the default branch costs nothing more, another base one read, each once", async () => {
+    const store = fixture(250)
+    store.CORE!.refUpdate!.push(branch('refs/heads/dev'))
+    const { sdk, calls } = fakeSdk(store)
+    await listHome(sdk)
+    calls.length = 0
+    const base = baseRefReaders(sdk, REF)
+    expect(await base.refUpdates(mainHash)).toHaveLength(1)
+    expect(await base.configHistory()).toHaveLength(1)
+    expect(calls).toEqual([])
+    expect(await base.refUpdates(devHash)).toHaveLength(1)
+    expect(await baseRefReaders(sdk, REF).refUpdates(devHash)).toHaveLength(1)
+    expect(calls).toEqual(['query:refUpdate'])
+  })
+
+  it('a PR list with many base branches reads four alone, then the whole timelines once', async () => {
+    const store = fixture(250)
+    const devs = [0, 1, 2, 3, 4].map((i) => `refs/heads/dev${i}`)
+    for (const name of devs) store.CORE!.refUpdate!.push(branch(name))
+    const { sdk, calls } = fakeSdk(store)
+    await listHome(sdk) // `main`, read alone: the first of four
+    calls.length = 0
+    const base = baseRefReaders(sdk, REF)
+    for (const name of devs) {
+      expect(await base.refUpdates(bytesToBase64(sha256(new TextEncoder().encode(name))))).toHaveLength(1)
+    }
+    // dev0..dev2 alone; dev3 is the fifth: the key ranges, which dev4 then reads from too.
+    expect(calls).toEqual(Array<string>(3 + CHROME_KEYSET_SPLITS).fill('query:refUpdate'))
+  })
+
+  it('a full page after the list: its home reads the whole timelines then (the cost moves, it is not saved)', async () => {
+    const { sdk, calls } = fakeSdk(fixture(250))
+    await listHome(sdk)
+    calls.length = 0
+    const home = await loadRepoHome(sdk, { network: 'devnet', owner: OWNER, name: 'demo' })
+    expect(home?.tags).toHaveLength(250)
+    expect(calls).toEqual(['composite:repo', ...Array<string>(CHROME_KEYSET_SPLITS).fill('query:refUpdate')])
+  })
+
+  it('a long pack list but short ref timelines: every ref from the composite, the pack list not read on', async () => {
+    const store = fixture(3)
+    for (let i = 0; i < 120; i++) store.CORE!.packManifest!.push(newPack((i % 200).toString(16).padStart(2, '0')))
+    const { sdk, calls } = fakeSdk(store)
+    const home = await listHome(sdk)
+    expect(home?.refsPartial).toBeUndefined()
+    expect(home?.tags).toHaveLength(3)
+    expect(calls).toEqual(['composite:repo'])
+  })
+
+  it('a short ref timeline: the full home, which costs no request either', async () => {
+    const { sdk, calls } = fakeSdk(fixture(3))
+    const home = await listHome(sdk)
+    expect(home?.refsPartial).toBeUndefined()
+    expect(home?.tags).toHaveLength(3)
+    expect(calls).toEqual(['composite:repo'])
+  })
+
+  it('a default branch that does not resolve: the full home decides', async () => {
+    const store = fixture(250)
+    store.CORE!.config = [doc({ $ownerId: OWNER, repoId: REPO, defaultBranch: 'trunk', protectedPatterns: [] })]
+    const { sdk, calls } = fakeSdk(store)
+    const home = await listHome(sdk)
+    expect(home?.refsPartial).toBeUndefined()
+    expect(home?.tags).toHaveLength(250)
+    expect(calls).toEqual(['composite:repo', ...Array<string>(1 + CHROME_KEYSET_SPLITS).fill('query:refUpdate')])
+  })
+
+  it('a code page after the list reads the rest on from the stored pages, with no second composite', async () => {
+    const { sdk, calls } = fakeSdk(fixture(250))
+    await listHome(sdk)
+    calls.length = 0
+    const t = await repoTimelines(sdk, REF, { network: 'devnet' })
+    expect(t?.refUpdate).toHaveLength(251)
+    expect(calls).toEqual(Array<string>(CHROME_KEYSET_SPLITS).fill('query:refUpdate'))
+    // Once read on, a ref comes from the whole timelines.
+    calls.length = 0
+    expect((await (await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet'))!.read!.ref(mainHash)).refUpdate).toHaveLength(1)
+    expect(calls).toEqual(['composite:repo'])
+  })
+
+  it('a failed ref read is not kept: the next reader reads again', async () => {
+    const { sdk, calls } = fakeSdk(fixture(250))
+    const chrome = (await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet'))!
+    const query = (sdk.documents.query as unknown as (q: DocumentQuery) => Promise<unknown>).bind(sdk.documents)
+    let fail = true
+    ;(sdk as unknown as { documents: { query: unknown } }).documents.query = async (q: DocumentQuery) => {
+      if (fail) {
+        fail = false
+        calls.push('query:failed')
+        throw new Error('node down')
+      }
+      return query(q)
+    }
+    await expect(chrome.read!.ref(mainHash)).rejects.toThrow('node down')
+    expect((await chrome.read!.ref(mainHash)).refUpdate).toHaveLength(1)
+    expect(calls).toEqual(['composite:repo', 'query:failed', 'query:refUpdate'])
   })
 })
 
@@ -526,7 +645,7 @@ describe('the store stays bounded, and refusals are counted', () => {
     const store = fixture(0)
     for (let i = 0; i < 25; i++) store.CORE!.repo!.push({ $id: `R${String(i).padStart(43, '1')}`, $ownerId: OWNER, $createdAt: 1, name: `r${i}`, visibility: 'public' })
     const fake = fakeSdk(store)
-    for (let i = 0; i < 25; i++) await (await readRepoChrome(fake.sdk, FORGE, OWNER, `r${i}`, 'devnet'))!.timelines
+    for (let i = 0; i < 25; i++) await (await readRepoChrome(fake.sdk, FORGE, OWNER, `r${i}`, 'devnet'))!.read!.all()
     const oldest: RepoRef = { forge: FORGE, repoId: `R${'0'.padStart(43, '1')}`, ownerId: OWNER, name: 'r0', visibility: 'public' }
     const newest: RepoRef = { ...oldest, repoId: `R${'24'.padStart(43, '1')}`, name: 'r24' }
     expect(await repoTimelines(fake.sdk, oldest, { network: 'devnet' })).toBeNull()
@@ -540,7 +659,7 @@ describe('the store stays bounded, and refusals are counted', () => {
     }
     const chrome = await readRepoChrome(fake.sdk, FORGE, OWNER, 'demo', 'devnet')
     expect(chrome?.repo.repoId).toBe(REPO)
-    expect((await chrome!.timelines!).refUpdate).toHaveLength(4)
+    expect((await chrome!.read!.all()).refUpdate).toHaveLength(4)
     expect(chromeFallbacks()).toBe(1)
   })
 })
