@@ -510,7 +510,7 @@ The command looks for the pack's exact bytes in two places:
 
 It verifies the SHA-256, uploads to the targets (at least `dash.replicas` must confirm), and reports which recorded copies are readable again. Copies it stored at **new** locations can't be added to the immutable manifest, and the forge-v2 contracts have no document type to announce them yet, so they are only printed. Re-upload through the pack's original profile to make the recorded copy readable again.
 
-Plain `dg reseed --profile <name>` (without `--from-local`) re-uploads packs that are still readable to an additional target. It downloads them first, so it can't restore a pack whose copies are all gone.
+Plain `dg reseed --profile <name>` (without `--from-local`) re-uploads packs that are still readable to an additional target. It downloads them first, so it can't restore a pack whose copies are all gone. It is for maintainers and writers only, because the new copy is recorded as your own pack manifest, and it refuses anyone else before uploading. For a pack you already recorded, it reports whether the upload re-created an address a recorded copy names; if not, the copy is not recorded, and `dg repack --profile <name>` is the way to record your packs at a new address.
 
 ## Troubleshooting
 
