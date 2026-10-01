@@ -274,7 +274,8 @@ function searchBody(body: string): string {
  * source repo and author on every row. A word that is all digits (with or without a leading
  * `#`) also matches the issue number directly (L-43: a title substring check alone missed a bare
  * `7512`, even though `#7512` matched by number — a word checks both, so neither form of the
- * same search regresses the other).
+ * same search regresses the other). A term with a leading `-` (`-word`, `-"a phrase"`) is one the
+ * row must not hold (QW3-018).
  */
 export function matchesText(text: string, row: { readonly title: string; readonly number: number; readonly body?: string }, scope: TextScope = 'any'): boolean {
   const terms = searchTerms(text)
@@ -282,7 +283,7 @@ export function matchesText(text: string, row: { readonly title: string; readonl
   const fields: string[] = []
   if (scope !== 'body') fields.push(row.title.toLowerCase())
   if (scope !== 'title' && row.body) fields.push(searchBody(row.body))
-  return terms.every((w) => {
+  const holds = (w: string): boolean => {
     // `#n` (review L-43) is a number-only match: it never falls back to a text substring, even
     // when the digits happen to appear in the title of a different-numbered row.
     const hash = /^#(\d+)$/.exec(w)
@@ -291,7 +292,9 @@ export function matchesText(text: string, row: { readonly title: string; readonl
     const bare = /^(\d+)$/.exec(w)
     if (bare && Number(bare[1]) === row.number) return true
     return fields.some((f) => f.includes(w))
-  })
+  }
+  // `-word` and `-"a phrase"` exclude (QW3-018, GitHub's NOT); a lone `-` is a word.
+  return terms.every((w) => (w.length > 1 && w.startsWith('-') ? !holds(w.slice(1)) : holds(w)))
 }
 
 /** The sort order of the list. */

@@ -253,10 +253,18 @@ export function commentRange(v: string | null): CountRange | null {
 /**
  * The empty issue list's line. "Open the first issue" only when the repo has none at all: when
  * the open list is empty but issues were closed (or the closed count is unknown), it says so
- * rather than inviting the first issue (L-37).
+ * rather than inviting the first issue (L-37). A search that matches none in its tab says how
+ * many match in the other, when that is proved, or that every state can be searched (QW3-051).
  */
-export function emptyIssuesBody(filtered: boolean, state: IssueStateFilter, closedCount: number | null): string {
-  if (filtered) return 'Try fewer filters.'
+export function emptyIssuesBody(filtered: boolean, state: IssueStateFilter, closedCount: number | null, openCount: number | null = null): string {
+  if (filtered) {
+    const other = state === 'open' ? closedCount : state === 'closed' ? openCount : null
+    if (other !== null && other > 0) {
+      const there = state === 'open' ? 'closed' : 'open'
+      return `None ${state === 'open' ? 'is open' : 'is closed'}; ${plural(other, `${there} issue`)} ${other === 1 ? 'matches' : 'match'}.`
+    }
+    return state === 'all' ? 'Try fewer filters.' : 'Try fewer filters, or search every state.'
+  }
   if (state === 'closed') return 'Nothing has been closed yet.'
   if (state === 'all' || closedCount === 0) return 'Everything is quiet. Open the first issue to start the conversation.'
   if (closedCount === null) return 'No issue is open right now.'
@@ -580,12 +588,14 @@ export function searchText(q: IssueListQuery): string {
 
 /**
  * The free text's search terms (QW-021): a `"quoted phrase"` is one term, spaces and all, and
- * any other word is one term; lowercased, quotes never part of a term.
+ * any other word is one term; lowercased, quotes never part of a term. A negated phrase
+ * (`-"a phrase"`, QW3-018) keeps its `-`.
  */
 export function searchTerms(text: string): string[] {
   const out: string[] = []
-  for (const m of text.toLowerCase().matchAll(/"([^"]*)"|(\S+)/g)) {
-    const term = (m[1] ?? m[2] ?? '').replace(/"/g, '').trim()
+  for (const m of text.toLowerCase().matchAll(/(-?)"([^"]*)"|(\S+)/g)) {
+    const phrase = m[2]?.trim()
+    const term = phrase !== undefined ? (phrase === '' ? '' : `${m[1]}${phrase}`) : (m[3] ?? '').replace(/"/g, '').trim()
     if (term !== '') out.push(term)
   }
   return out
