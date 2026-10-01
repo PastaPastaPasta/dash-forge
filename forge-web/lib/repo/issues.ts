@@ -152,6 +152,13 @@ export interface PullView {
    */
   readonly baseOidAtOpen: string
   /**
+   * A merged PR's base tip just before its merge (the tip the merge moved the base from), when
+   * the merge's commit is a valid tip of the base's history; else `''` or absent. The diff of a
+   * merged PR starts from here, as GitHub's diffs against the merge base at merge time: the tip
+   * at open would count base commits a later "Update branch" merged in as the PR's own (QW3-014).
+   */
+  readonly baseOidAtMerge?: string
+  /**
    * The PR's CURRENT head, hex: the newest `headUpdate` (author or member), else
    * {@link initialHeadOid}. Approvals, staleness, the diff and merges use this.
    */
@@ -665,6 +672,17 @@ export function baseRefTips(
 }
 
 /**
+ * The base tip a merge moved the base branch from: the valid tip recorded just before `mergeOid`
+ * first became one (`historical` is oldest first, each tip once), or `''` when the merge's commit
+ * was never a tip of the base (a mark recorded for a commit only an ancestor of a tip) or was its
+ * first tip.
+ */
+export function tipBeforeMerge(historical: readonly string[], mergeOid: string): string {
+  const at = historical.indexOf(mergeOid.toLowerCase())
+  return at > 0 ? (historical[at - 1] as string) : ''
+}
+
+/**
  * Read one PR (patch) and its state. `transitions`, when given, are the PR's own (a detail
  * view: the merge oid is then known and labelled against the base's VALID history through the
  * historical-tips predicate); else `code` is its state code from a list page's sum query.
@@ -733,6 +751,7 @@ export async function readPull(
     baseRefName: str(patchDoc, 'baseRefName'),
     baseTipOid: baseTip ?? '',
     baseOidAtOpen: tips.atOpen ?? baseTip ?? '',
+    baseOidAtMerge: mergeOid === null ? '' : tipBeforeMerge(tips.historical, mergeOid),
     headOid,
     initialHeadOid,
     review,

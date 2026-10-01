@@ -6,8 +6,9 @@
  * The button says what it will do, decided in the merge worker before anything is offered:
  * `Merge (fast-forward)`, `Create merge commit and merge` (only when the two sides changed
  * disjoint paths; file contents are never merged in the browser), or a disabled
- * `Conflicts or overlapping changes — merge with \`dg pr merge\`` with the `dg pr checkout`
- * line. A writer on a
+ * `Can't merge in the browser — merge with \`dg pr merge\`` with the paths both sides changed
+ * (the browser never merges a file's contents, so git may still merge them cleanly) and the
+ * `dg pr checkout` line. A writer on a
  * protected base branch sees `Protected branch — maintainers only`; a narrow screen, "Use a
  * desktop browser for this step". The click runs the step list (fetch → merge → build and
  * verify the pack → upload → packManifest → browse index → ref update → merge event), and a
@@ -104,6 +105,9 @@ export function MergePanel({
   active = true,
   unmetRules = [],
   canBypass = false,
+  branchAhead = null,
+  checkSourceBranch,
+  onBranchDeleted,
 }: {
   repo: RepoRef
   pull: PullView
@@ -136,6 +140,18 @@ export function MergePanel({
   unmetRules?: readonly string[]
   /** The merger is a maintainer and may bypass {@link unmetRules} (explicit, confirmed, recorded). */
   canBypass?: boolean
+  /**
+   * The PR's source branch is past its head (the head-sync banner's "ahead"): the merge waits for
+   * "Update PR head" (QW3-013), or it would merge the older head and leave the newer commits out.
+   */
+  branchAhead?: { readonly branch: string; readonly tip: string } | null
+  /**
+   * Re-read the source branch just before merging: why not to merge (it moved past the head since
+   * the page read it), or null. A failed read does not stop the merge.
+   */
+  checkSourceBranch?: () => Promise<string | null>
+  /** Told once "Delete the branch after merging" deleted it (the page shows it deleted at once). */
+  onBranchDeleted?: () => void
 }): JSX.Element | null {
   const { sdk } = useSdk()
   const { signer, locked: sessionLocked } = useAuth()
@@ -290,7 +306,7 @@ export function MergePanel({
   const [bypassTicked, setBypassTicked] = useState(false)
   const [confirmingBypass, setConfirmingBypass] = useState(false)
   const [bypassed, setBypassed] = useState<readonly string[] | null>(null)
-  const gate = mergeGate({ unmet: unmetRules, canBypass, bypassTicked, storageLocked: storageNeedsUnlock })
+  const gate = mergeGate({ unmet: unmetRules, canBypass, bypassTicked, storageLocked: storageNeedsUnlock, branchAhead: branchAhead === null ? null : { ...branchAhead, head: pull.headOid } })
   // The branch deletion's outcome, with the label it was run for: the page stops offering the
   // option once the PR reads merged, which is exactly when this is shown.
   const [deleted, setDeleted] = useState<{ label: string; error: string | null } | null>(null)
@@ -322,6 +338,15 @@ export function MergePanel({
     if (storageNeedsUnlock) return
     // Signed out or a locked session: the guard opens sign-in / unlock (never a silent no-op).
     if (!guard.check(cost, 'core', 'merge this pull request') || !sdk || !signer) return
+    // The branch moved past the head since the page read it (QW3-013): merging now would leave
+    // the newer commits out. Only a fresh run checks; a retry resumes the merge it started.
+    if (checkSourceBranch !== undefined && savedRun === null) {
+      const moved = await checkSourceBranch().catch(() => null)
+      if (moved !== null) {
+        setStopped(moved)
+        return
+      }
+    }
     // The run starts: its bypass (if any) is what its retries record.
     setBypassed(bypass)
     setBusy(true)
@@ -371,6 +396,7 @@ export function MergePanel({
         try {
           await deletable.run()
           setDeleted({ label: deletable.label, error: null })
+          onBranchDeleted?.()
         } catch (e) {
           setDeleted({ label: deletable.label, error: e instanceof Error ? e.message : String(e) })
         }
@@ -399,7 +425,7 @@ export function MergePanel({
     } finally {
       setBusy(false)
     }
-  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, pull.author, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete, closeIssues, closing])
+  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, pull.author, baseRefName, input, run, savedRun, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete, closeIssues, closing, checkSourceBranch, onBranchDeleted])
   const onMergeClick = (): void => {
     // Locked: the click opens Unlock (the guard); merging is the next click, once unlocked.
     if (unlockFirst) {
@@ -517,7 +543,11 @@ export function MergePanel({
       ) : null}
       {button.kind === 'conflicts' && !mergedHere ? (
         <div className="mt-3">
-          <p className="mb-1.5 text-[12px] text-anvil-600 dark:text-anvil-400">Both sides changed the same files or folders. Check the PR out, merge it with the CLI, and push:</p>
+          <p className="mb-1.5 text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="browser-merge-limit">
+            {conflictPaths.length > 0
+              ? 'Both sides changed these files since the PR branched. The browser merges only changes to different files and never merges the contents of one, so this is not necessarily a conflict: git may merge it cleanly. Check the PR out, merge it with the CLI, and push:'
+              : 'The two histories have more than one merge base, which only git merges. Check the PR out, merge it with the CLI, and push:'}
+          </p>
           {conflictPaths.length > 0 ? (
             <ul className="mb-2 list-disc pl-5 font-mono text-[12px] text-anvil-700 dark:text-anvil-200" aria-label="Conflicting paths" data-testid="conflict-paths">
               {conflictPaths.slice(0, 20).map((p) => (

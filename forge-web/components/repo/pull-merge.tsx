@@ -74,6 +74,12 @@ export interface MergeExtras {
   readonly unmetRules?: readonly string[]
   /** The merger may bypass them (a maintainer). */
   readonly canBypass?: boolean
+  /** The source branch is past the PR head: the merge waits for "Update PR head" (QW3-013). */
+  readonly branchAhead?: { readonly branch: string; readonly tip: string } | null
+  /** Re-read the source branch right before merging: why not to, or null. */
+  readonly checkSourceBranch?: () => Promise<string | null>
+  /** "Delete the branch after merging" deleted it. */
+  readonly onBranchDeleted?: () => void
 }
 
 function MergeReaders({
@@ -119,6 +125,9 @@ function MergeReaders({
       {...(extras.active !== undefined ? { active: extras.active } : {})}
       {...(extras.unmetRules !== undefined ? { unmetRules: extras.unmetRules } : {})}
       {...(extras.canBypass !== undefined ? { canBypass: extras.canBypass } : {})}
+      {...(extras.branchAhead !== undefined ? { branchAhead: extras.branchAhead } : {})}
+      {...(extras.checkSourceBranch !== undefined ? { checkSourceBranch: extras.checkSourceBranch } : {})}
+      {...(extras.onBranchDeleted !== undefined ? { onBranchDeleted: extras.onBranchDeleted } : {})}
     />
   )
 }
