@@ -13,8 +13,10 @@ import { shot, waitForRepoResolved } from './helpers'
  *   - the head it names (the folded head after two head updates);
  *   - the head-update timeline items ("pushed n commits", "updated the head");
  *   - the review verdicts, and which is stale;
- *   - the three inline threads, every one outdated on the final head ("on an older version"),
- *     each resolved ("resolved a conversation" ×3).
+ *   - the three inline threads dg reports on older heads: each listed "on an older version",
+ *     or, where the final head kept its lines unchanged, carried onto them (QW3-015: the web
+ *     follows GitHub there, `dg pr view` names the commit the comment was made on); each
+ *     resolved ("resolved a conversation" ×3).
  *
  *   E2E_S21_STATE=/path/s21-state.json E2E_DEVNET=bonsia pnpm exec playwright test review-round-trip
  *
@@ -70,11 +72,12 @@ test('the web shows the fold dg read', async ({ page }) => {
   const outdated = fold.threads.filter((t) => t.outdated)
   const outdatedComments = outdated.reduce((n, t) => n + t.comments, 0)
   if (outdated.length > 0) {
-    await expect(page.getByTestId('outdated-comments')).toContainText(`${outdatedComments} comment${outdatedComments === 1 ? '' : 's'} on an older version`, { timeout: 120_000 })
-    await page.getByTestId('outdated-comments').locator('summary').click()
-    for (const t of outdated) {
-      const range = t.startLine !== null && t.startLine !== t.line ? `lines ${t.startLine}–${t.line}` : `line ${t.line}`
-      await expect(page.getByTestId('outdated-comments')).toContainText(`${t.path} ${range} (${t.side === 1 ? 'new' : 'old'})`)
+    // Each one is on the page: under "on an older version", or carried onto the head's lines.
+    for (const t of outdated) await expect(page.locator(`[data-root="${t.id}"]`).first()).toBeAttached({ timeout: 120_000 })
+    const listed = page.getByTestId('outdated-comments')
+    if ((await listed.count()) > 0) {
+      const shown = Number(/(\d+) comments? on an older version/.exec(await listed.innerText())?.[1] ?? '0')
+      expect(shown).toBeLessThanOrEqual(outdatedComments)
     }
   }
   await shot(page, 'review-round-trip-web')
