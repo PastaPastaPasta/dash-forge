@@ -199,7 +199,7 @@ describe("the owner's pending invitations while Settings is open", () => {
     delete (document as { visibilityState?: unknown }).visibilityState
   })
   async function renderInvitations(memberIds: string[] | null = []): Promise<void> {
-    act(() => root.render(<Invitations repo={ownerRepo} members={memberIds} awaiting={null} disabled={false} onPick={() => undefined} />))
+    act(() => root.render(<Invitations repo={ownerRepo} members={memberIds} awaiting={null} disabled={false} role="writer" onPick={() => undefined} />))
     await flush()
   }
 

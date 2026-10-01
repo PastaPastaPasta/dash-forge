@@ -154,7 +154,7 @@ export function foldPrReviewV2(
 /** A `policy` document, flattened (the newest by `(createdAt, id)` is in force). */
 export interface Policy {
   readonly requiredApprovals: number
-  /** 0 any member, 1 maintainers only. */
+  /** 0 any approver (a maintainer or role-1 writer), 1 maintainers only. */
   readonly approverRole?: number
   readonly requireChecks?: boolean
   /** 1 ff, 2 merge commit, 4 squash, 8 rebase; 0 any. */
@@ -173,7 +173,8 @@ export interface PolicyStatus {
 
 /**
  * Whether `approvals` (from `countApprovals` on the current head, dismissed reviews and the PR
- * author's own reviews excluded) meet `policy`: approvers whose current role satisfies `approverRole` (1: maintainers only).
+ * author's own reviews excluded) meet `policy`: approvers whose current role satisfies `approverRole`
+ * (0: a maintainer or role-1 writer, never triage or reader; 1: maintainers only).
  */
 export function meetsPolicy(approvals: Approvals, oracle: RoleOracle, policy: Policy): PolicyStatus {
   const counts = (role: Role | null): boolean => role === 'maintainer' || (role === 'writer' && (policy.approverRole ?? 0) === 0)

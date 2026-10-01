@@ -94,7 +94,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
     { key: 'releases', label: 'Releases', path: '/repo/releases', icon: Tag, refAware: false, count: null },
     ...(role === 'maintainer'
       ? [{ key: 'settings', label: 'Settings', path: '/repo/settings', icon: Settings, refAware: false, count: null }]
-      : role === 'writer'
+      : role !== null
         ? [{ key: 'settings', label: 'Members', path: '/repo/settings', icon: Users, refAware: false, count: null }]
         : []),
   ]

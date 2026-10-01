@@ -7,11 +7,13 @@
  *  - "stale — new commits since": a member's newest verdict was on an older head;
  *  - "doesn't count (not a maintainer or writer)": the reviewer was not a member when they
  *    reviewed, or is not one now;
+ *  - "not counted (triage)" / "(reader)": a member who is not an approver (RC2 roles: consensus
+ *    records their member verdict; only maintainers and role-1 writers count);
  *  - the PR author's own verdict never counts (GitHub: authors can't approve their own PR) and
  *    is labelled "author, not counted".
  */
 
-import { countApprovals, type Review, type Role, type RoleOracle } from '../rules/v2'
+import { countApprovals, isApprover, type Review, type Role, type RoleOracle } from '../rules/v2'
 
 import { compareKey } from '../rules'
 import { importedVerdictOf, trustedOrigin, type ImportedVerdict, type Origin } from '../repo/provenance'
@@ -32,6 +34,8 @@ export type ReviewerStanding =
   | { readonly kind: 'author'; readonly verdict: 'approve' | 'changes' }
   | { readonly kind: 'stale'; readonly verdict: 'approve' | 'changes'; readonly commitOid: string }
   | { readonly kind: 'not-member'; readonly verdict: 'approve' | 'changes' }
+  /** A member who was not an approver (triage or reader) when they reviewed, or is not one now. */
+  | { readonly kind: 'not-approver'; readonly verdict: 'approve' | 'changes'; readonly role: Role }
 
 export interface ReviewerRow {
   readonly reviewer: string
@@ -79,11 +83,13 @@ export function summarizeReviews(
       rows.push({ reviewer, standing: { kind: 'author', verdict } })
     } else if (role === null || !oracle.memberAt(reviewer, r.createdAt)) {
       rows.push({ reviewer, standing: { kind: 'not-member', verdict } })
+    } else if (!isApprover(role) || !oracle.approverAt(reviewer, r.createdAt)) {
+      rows.push({ reviewer, standing: { kind: 'not-approver', verdict, role } })
     } else {
       rows.push({ reviewer, standing: { kind: 'stale', verdict, commitOid: r.commitOid } })
     }
   }
-  const rank = (s: ReviewerStanding): number => ({ approved: 0, changes: 1, author: 2, stale: 3, 'not-member': 4 })[s.kind]
+  const rank = (s: ReviewerStanding): number => ({ approved: 0, changes: 1, author: 2, stale: 3, 'not-approver': 4, 'not-member': 5 })[s.kind]
   rows.sort((a, b) => rank(a.standing) - rank(b.standing))
   return { rows, approvedBy: { maintainers, writers }, changesRequestedBy: [...changes] }
 }
@@ -99,7 +105,7 @@ export function approverPhrase({ maintainers, writers }: ReviewSummary['approved
 // ---------------------------------------------------------------------------
 
 /** A reviewer's standing on the PR. Parity: `dg`'s `threads::Standing`. */
-export type Standing = 'approved' | 'changesRequested' | 'commented' | 'awaiting' | 'stale' | 'dismissed' | 'notMember' | 'author'
+export type Standing = 'approved' | 'changesRequested' | 'commented' | 'awaiting' | 'stale' | 'dismissed' | 'notMember' | 'notApprover' | 'author'
 
 /** Human wording, as `dg pr view` prints it. */
 export const STANDING_LABEL: Readonly<Record<Standing, string>> = {
@@ -110,6 +116,7 @@ export const STANDING_LABEL: Readonly<Record<Standing, string>> = {
   stale: 'Stale — new commits since',
   dismissed: 'Dismissed',
   notMember: "Doesn't count (not a maintainer or writer)",
+  notApprover: 'Not counted (triage or reader)',
   author: 'Author, not counted',
 }
 
@@ -166,7 +173,7 @@ export function reviewerRows(
   const reasons = new Map(dismissed.map((d) => [d.reviewId, d.reason]))
   // The review each counted reviewer's standing rests on (countApprovals' own filter, newest wins).
   const counting = newestPerReviewer(
-    reviews.filter((r) => (r.verdict === 1 || r.verdict === 2) && r.reviewer !== author && !reasons.has(r.id) && r.commitOid === head && oracle.memberAt(r.reviewer, r.createdAt)),
+    reviews.filter((r) => (r.verdict === 1 || r.verdict === 2) && r.reviewer !== author && !reasons.has(r.id) && r.commitOid === head && oracle.approverAt(r.reviewer, r.createdAt)),
   )
   const counted = new Set([...approvals.approvers, ...approvals.changesRequested])
   const who = [...new Set([...newest.keys(), ...req.keys()])]
@@ -184,6 +191,7 @@ export function reviewerRows(
     else if (review !== undefined && (review.verdict === 4 || review.verdict === 5)) state = 'notMember'
     else if (review !== undefined && (review.verdict === 1 || review.verdict === 2)) {
       if (!oracle.memberAt(id, review.createdAt) || oracle.currentRole(id) === null) state = 'notMember'
+      else if (!oracle.approverAt(id, review.createdAt) || !oracle.currentApprover(id)) state = 'notApprover'
       else if (review.commitOid !== head) state = 'stale'
       else state = 'commented'
     } else state = 'commented'

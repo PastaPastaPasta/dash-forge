@@ -24,6 +24,8 @@ import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useAuth } from '@/contexts/auth-context'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
+import { capabilitiesOf } from '@/lib/rules/roles'
+import { RoleLimitNote } from '@/components/repo/role-limit-note'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
@@ -163,7 +165,8 @@ export function LabelsContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const { signer } = useAuth()
   const { role } = useViewerRole(repo)
-  const canEdit = role !== null && home.config?.archived !== true
+  // Writers and triage define labels (consensus: `label` r 1..2); a reader cannot.
+  const canEdit = capabilitiesOf(role).canLabel && home.config?.archived !== true
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
   const [restoring, setRestoring] = useState<string | null>(null)
@@ -269,6 +272,7 @@ export function LabelsContent({ home, addr }: { home: RepoHome; addr: RepoAddres
           </Button>
         ) : null}
       </div>
+      {home.config?.archived !== true ? <RoleLimitNote role={role} what="create or edit labels" /> : null}
 
       {creating ? (
         <LabelForm
@@ -293,7 +297,7 @@ export function LabelsContent({ home, addr }: { home: RepoHome; addr: RepoAddres
           <EmptyState
             icon={Tag}
             title={q !== '' ? 'No labels match' : 'No labels yet'}
-            body={q !== '' ? 'Try another search.' : canEdit ? 'Create one to sort issues and pull requests.' : 'A maintainer or writer creates labels.'}
+            body={q !== '' ? 'Try another search.' : canEdit ? 'Create one to sort issues and pull requests.' : 'A maintainer, writer or triage member creates labels.'}
           />
         ) : (
           <ul aria-label="Labels">

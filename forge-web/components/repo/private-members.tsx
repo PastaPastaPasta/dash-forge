@@ -24,6 +24,8 @@ import { Invitations } from '@/components/repo/invite-banner'
 import { decodeIdentifier } from '@/lib/auth'
 import { noEncryptionKeyMessage } from '@/lib/auth/encryption-key'
 import type { Role } from '@/lib/rules/v2'
+import { memberDocOf } from '@/lib/repo'
+import { RoleBadge, RolePicker, RoleSummary } from '@/components/repo/role-picker'
 import {
   addMemberCost,
   addPrivateMember,
@@ -52,10 +54,10 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 
 /** The spec's removal warning, verbatim, with the member's name. */
 /** What the remove dialog says, for what the removal will do. */
-function removalText(effect: RemovalEffect, name: string, role: Role): string {
+function removalText(effect: RemovalEffect, name: string, role: Role, kept: Role | null): string {
   if (effect === 'none') return `Removes ${name}'s ${role} role. They stay a maintainer, so the repo key does not change.`
   if (effect === 'rotate-keep') {
-    return `Removes ${name}'s ${role} role; they stay a writer. The repo key rotates, because keys they handed out as a maintainer stop counting, and ${name} gets the new key too.`
+    return `Removes ${name}'s ${role} role; they stay a ${kept ?? 'member'}. The repo key rotates, because keys they handed out as a maintainer stop counting, and ${name} gets the new key too.`
   }
   return removeWarning(name)
 }
@@ -176,9 +178,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
         {session.members.map((m) => (
           <div key={`${m.role}:${m.identity}`} className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850">
             <Author identityId={m.identity} link={false} />
-            <span className="rounded bg-forge-500/15 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-forge-800 dark:text-forge-400">
-              {m.role}
-            </span>
+            <RoleBadge role={m.role} />
             {m.identity === repo.ownerId ? (
               <span className="text-[12px] text-anvil-500 dark:text-anvil-400">owner</span>
             ) : isOwner ? (
@@ -202,25 +202,16 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
       {isOwner ? (
         <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
           <h4 className="mb-2 text-dense font-medium">Add a member</h4>
+          <p className="mb-2 text-[12px] text-anvil-500 dark:text-anvil-400">
+            To change a member&apos;s role here, remove them and add them again with the new role: a removal rotates the key.
+          </p>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
             <div className="flex-1">
               <Field label="Identity ID" htmlFor="member-id">
                 <Input id="member-id" value={memberId} onChange={(e) => setMemberId(e.target.value)} placeholder="base58 identity id" className="font-mono" spellCheck={false} />
               </Field>
             </div>
-            <div role="radiogroup" aria-label="Role" className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
-              {(['writer', 'maintainer'] as Role[]).map((r) => (
-                <button
-                  key={r}
-                  role="radio"
-                  aria-checked={role === r}
-                  onClick={() => setRole(r)}
-                  className={'rounded px-3 py-1.5 text-dense font-medium ' + (role === r ? 'bg-forge-500/15 text-forge-800 dark:text-forge-400' : 'text-anvil-500 dark:text-anvil-400')}
-                >
-                  {r}
-                </button>
-              ))}
-            </div>
+            <RolePicker value={role} onChange={setRole} visibility="private" />
             <Button
               variant="primary"
               disabled={trimmed === '' || idError !== null || keyCheck.data !== true || guard.disabledReason !== null || locked || cannotRead}
@@ -231,6 +222,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
               Add
             </Button>
           </div>
+          <RoleSummary role={role} />
           {idError ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">{idError}</p> : null}
           {noKey ? (
             <p className="mt-2 text-[12px] text-caution-700 dark:text-caution-400" data-testid="member-no-key">
@@ -246,6 +238,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
             members={session.members.map((m) => m.identity)}
             awaiting={awaiting}
             disabled={locked}
+            role={role}
             onPick={(id, r) => {
               // The add runs through the form: it checks their encryption key and hands them the key.
               setMemberId(id)
@@ -262,7 +255,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
         open={adding}
         onClose={() => setAdding(false)}
         title={`Add ${role}`}
-        description={`Creates a ${role} document for ${shortId(trimmed)} and hands them the current key (epoch ${current ?? 0}): two transitions.`}
+        description={`Creates a ${memberDocOf(role)} document${memberDocOf(role) === 'writer' ? ` with the ${role} role` : ''} for ${shortId(trimmed)} and hands them the current key (epoch ${current ?? 0}): two transitions.${role === 'reader' ? ' A reader reads the repo and its history but changes nothing as a member.' : ''}`}
         cost={addMemberCost(role)}
         confirmLabel="Sign & add"
         onConfirm={async (intent) => {
@@ -285,12 +278,21 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
         open={removing !== null}
         onClose={() => setRemoving(null)}
         title={`Remove ${removing?.role ?? 'member'}`}
-        description={removing === null ? '' : removalText(removalEffect(session.members, removing.member, removing.role), shortId(removing.member), removing.role)}
+        description={
+          removing === null
+            ? ''
+            : removalText(
+                removalEffect(session.members, removing.member, removing.role),
+                shortId(removing.member),
+                removing.role,
+                session.members.find((m) => m.identity === removing.member && m.role !== removing.role)?.role ?? null,
+              )
+        }
         cost={
           removing === null
             ? null
-            : removalPlan.plan === null && removing.role === 'writer'
-              ? previewDelete(removing.role)
+            : removalPlan.plan === null && memberDocOf(removing.role) === 'writer'
+              ? previewDelete(memberDocOf(removing.role))
               : removalCost(session, identity ?? '', removing.member, removing.role, removalPlan.plan)
         }
         confirmLabel="Sign & remove"

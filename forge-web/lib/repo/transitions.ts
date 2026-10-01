@@ -23,6 +23,7 @@ import { hexToBytes } from '@noble/hashes/utils.js'
 
 import { decodeIdentifier } from '../auth/base58'
 import { compareKey } from '../rules/oid'
+import { RoleRefusedError } from '../rules/roles'
 import {
   CLOSE_REASON_CODE,
   ISSUE_CLOSE,
@@ -305,8 +306,9 @@ export function closeReasonData(closed: ClosedAs, targetNumber: number): Record<
  * - The intent is the action's (`<intent>:<action>`), not the state's: a retry of a write that
  *   timed out replays the same bytes, and a retry after it landed finds the target already in
  *   the action's end state and returns without writing (an empty `documentId`, nothing spent).
- * - When the gate refuses a member write (the membership read was stale) and the viewer is the
- *   author, it is written again as the author.
+ * - When the gate refuses a member write (the membership read was stale), or the signer's role
+ *   cannot make the move as a member ({@link RoleRefusedError}), and the viewer is the author, it
+ *   is written again as the author.
  * - When a state rule refuses it (someone moved the target meanwhile), the state is read again
  *   and the move retried once, or refused plainly.
  */
@@ -340,7 +342,10 @@ export async function writeTransition(
       const data = transitionData(target, code, action, actor, input.oidHex)
       return await write(DOC.transition, why !== null && data['kind'] === ISSUE_CLOSE ? { ...data, ...why } : data, intent)
     } catch (e) {
-      if (e instanceof ConsensusRefusal && e.code === GATE_REFUSED_CODE && actor === 'member' && isAuthor && action !== 'merge') {
+      // A stale membership read (the gate refused), or a role that cannot make this move as a
+      // member (triage: draft and ready; a reader: anything): the author writes it as the author.
+      const memberRefused = (e instanceof ConsensusRefusal && e.code === GATE_REFUSED_CODE) || e instanceof RoleRefusedError
+      if (memberRefused && actor === 'member' && isAuthor && action !== 'merge') {
         actor = 'author'
         continue
       }

@@ -55,6 +55,8 @@ import {
   updateTarget,
 } from '@/lib/repo'
 import type { Holdings } from '@/lib/rules'
+import { capabilitiesOf } from '@/lib/rules/roles'
+import { RoleLimitNote } from '@/components/repo/role-limit-note'
 import { SupersededWriteError, UnconfirmedWriteError, previewCreate, previewDelete, previewReplace, sumPreviews, type CostPreview as Cost } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -165,8 +167,11 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     { enabled: ready && sdk !== null && identity !== null && data !== null },
   )
 
-  // The repo's milestones, for the picker: read for members only (only they can set one).
-  const canSetMilestone = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
+  // What this viewer may do as a member (RC2 roles: a triage member labels, assigns, closes and
+  // locks; a reader none of it). An author keeps the author's own abilities whatever the role.
+  const caps = capabilitiesOf(holdings.data?.role ?? null)
+  // The repo's milestones, for the picker: read for those who can set one.
+  const canSetMilestone = caps.canMilestone
   const milestones = useAsync(
     () => readMilestones(sdk!, home.repo),
     [ready, repoKey(home.repo), canSetMilestone ? 1 : 0],
@@ -202,7 +207,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   // previews are upper bounds meanwhile, and a page view costs no reads.
   const issueId = data?.issue.id ?? ''
   const hasComments = data ? data.timeline.some((t) => t.kind === 'comment') : undefined
-  const viewerMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
+  const viewerMember = caps.canLabel || caps.canAssign || caps.canPin
   const firstsReady = (comment !== '' || pending !== null) && ready && sdk !== null && identity !== null && issueId !== ''
   const commentFirst = useFirstWrite(() => commentFirsts(sdk!, home.repo, issueId, identity!, hasComments), [issueId, identity ?? '', hasComments ?? ''], firstsReady)
   const stateFirst = useFirstWrite(() => eventFirsts(sdk!, home.repo, 'transition', issueId, identity!), [issueId, identity ?? ''], firstsReady)
@@ -219,7 +224,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const open = issue.state.open
   // Closed as not planned or as a duplicate: GitHub's grey badge (QW-069).
   const skipped = !open && closedSkipped(data.closedAs)
-  const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
+  // Any membership document (a reader's too) proves membership on comments and edits.
+  const isMember = holdings.data?.member === true
   // RC2 MOD: only a maintainer hides (consensus refuses a writer where the contract proves it).
   const isMaintainer = holdings.data !== null && holdings.data.maintain
   const moderation = data.moderation
@@ -227,7 +233,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const threadCollapsed = threadHidden !== null && !threadRevealed
   const postContext = { isMember, locked: meta.locked }
   const isAuthor = identity !== null && identity === issue.author
-  const canToggle = identity !== null && (isAuthor || isMember)
+  const canToggle = identity !== null && (isAuthor || caps.canCloseReopen)
   // A private repo is written sealed (issues, comments and edits: `private-writes.ts`); only a
   // member holding the current key can, so everyone else sees why not instead of a composer.
   // An archived repo takes no writes (client-side gate: consensus cannot enforce it).
@@ -296,7 +302,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         }
         try {
           const closed = open ? pending.closedAs ?? { reason: 'completed' as const, duplicateOf: null } : undefined
-          await setTargetState(sdk, signer, home.repo, { target: { ...target, type: 'issue', author: issue.author }, action: open ? 'close' : 'reopen', isMember, intent, ...(closed ? { closed } : {}) })
+          await setTargetState(sdk, signer, home.repo, { target: { ...target, type: 'issue', author: issue.author }, action: open ? 'close' : 'reopen', isMember: caps.canCloseReopen, intent, ...(closed ? { closed } : {}) })
         } catch (e) {
           // The comment is posted: show it while the close is retried.
           if (closeComment.current?.intent === intent) refresh()
@@ -313,7 +319,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         break
       case 'flag':
         // A lock is a member transition since RC1 (consensus then refuses non-members' comments).
-        if (pending.flag === 'lock') await setLock(sdk, signer, home.repo, { target: { ...target, type: 'issue', author: issue.author }, lock: pending.on, isMember, intent })
+        if (pending.flag === 'lock') await setLock(sdk, signer, home.repo, { target: { ...target, type: 'issue', author: issue.author }, lock: pending.on, isMember: caps.canLock, intent })
         else await setThreadFlag(sdk, signer, home.repo, { target, on: pending.on, intent })
         break
       case 'milestone':
@@ -355,8 +361,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         await setHidden(sdk, signer, home.repo, { target, item: pending.item, reason: pending.reason, hide: pending.hide, intent })
         if (pending.closeAndLock) {
           // Separate writes (a batch holds one transition): close, then lock, each skipped when done.
-          if (open) await setTargetState(sdk, signer, home.repo, { target: { ...target, type: 'issue', author: issue.author }, action: 'close', isMember, intent: `${intent}:close`, closed: { reason: 'not_planned', duplicateOf: null } })
-          if (!meta.locked) await setLock(sdk, signer, home.repo, { target: { ...target, type: 'issue', author: issue.author }, lock: true, isMember, intent: `${intent}:lock` })
+          if (open) await setTargetState(sdk, signer, home.repo, { target: { ...target, type: 'issue', author: issue.author }, action: 'close', isMember: caps.canCloseReopen, intent: `${intent}:close`, closed: { reason: 'not_planned', duplicateOf: null } })
+          if (!meta.locked) await setLock(sdk, signer, home.repo, { target: { ...target, type: 'issue', author: issue.author }, lock: true, isMember: caps.canLock, intent: `${intent}:lock` })
         }
         break
     }
@@ -410,7 +416,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     }
   })()
 
-  const confirm = confirmText(pending, issue.number, open, isMember)
+  const confirm = confirmText(pending, issue.number, open, caps.canCloseReopen)
   const canModerate = isMaintainer && !archived && guard.disabledReason === null
 
   return (
@@ -607,7 +613,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           <AssigneePicker
             assignees={issue.state.assignees}
             members={members.map((m) => m.identity)}
-            canEdit={isMember && !archived && guard.disabledReason === null}
+            canEdit={caps.canAssign && !archived && guard.disabledReason === null}
             onApply={(change) => setPending({ kind: 'assignees', change })}
           />
         </SidebarSection>
@@ -617,7 +623,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             choices={milestones.data ?? []}
             loading={milestones.data === null && milestones.error === null}
             canDefine={!isPrivate}
-            canEdit={isMember && !archived && guard.disabledReason === null}
+            canEdit={caps.canMilestone && !archived && guard.disabledReason === null}
             onChoose={(title) => setPending({ kind: 'milestone', title })}
             {...(addr ? { manageHref: repoHref('/repo/milestones', addr) } : {})}
           />
@@ -627,14 +633,17 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             <p className="text-anvil-600 dark:text-anvil-300" data-testid="thread-flags">
               {meta.pinned ? 'Pinned' : 'Not pinned'} · {lockStateText(meta.locked)}
             </p>
-            {isMember && !archived && guard.disabledReason === null ? (
+            {(caps.canPin || caps.canLock) && !archived && guard.disabledReason === null ? (
               <div className="mt-2 flex flex-wrap gap-2">
-                <Button size="sm" variant="outline" onClick={() => setPending({ kind: 'flag', flag: 'pin', on: !meta.pinned })} data-testid="pin-toggle">
-                  {meta.pinned ? 'Unpin' : 'Pin'}
-                </Button>
-                <LockToggle locked={meta.locked} onToggle={(on) => setPending({ kind: 'flag', flag: 'lock', on })} />
+                {caps.canPin ? (
+                  <Button size="sm" variant="outline" onClick={() => setPending({ kind: 'flag', flag: 'pin', on: !meta.pinned })} data-testid="pin-toggle">
+                    {meta.pinned ? 'Unpin' : 'Pin'}
+                  </Button>
+                ) : null}
+                {caps.canLock ? <LockToggle locked={meta.locked} onToggle={(on) => setPending({ kind: 'flag', flag: 'lock', on })} /> : null}
               </div>
             ) : null}
+            {!archived ? <RoleLimitNote role={holdings.data?.role} what={caps.canLock ? 'pin conversations' : 'pin, lock, label, assign or set milestones as a member'} className="mt-2" /> : null}
             {canModerate ? (
               <div className="mt-2">
                 <HideThreadControl
@@ -655,7 +664,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             applied={issue.state.labels}
             defs={labels}
             byName={labelDefs}
-            canEdit={isMember && !archived && guard.disabledReason === null}
+            canEdit={caps.canLabel && !archived && guard.disabledReason === null}
             onApply={(change) => setPending({ kind: 'labels', change })}
             onDefine={(name, color, description) => setPending({ kind: 'defineLabel', name, color, description, apply: true })}
             {...(addr ? { manageHref: repoHref('/repo/labels', addr) } : {})}
@@ -727,7 +736,7 @@ function confirmText(pending: Pending, number: number, open: boolean, isMember: 
         label: 'Sign & delete',
       }
     default: {
-      const state = isMember ? 'a state event, as a maintainer or writer of this repo' : 'an author event: you opened this issue, so you can close and reopen it'
+      const state = isMember ? 'a state event, as a member of this repo' : 'an author event: you opened this issue, so you can close and reopen it'
       const withComment = pending?.kind === 'state' && pending.comment !== undefined
       const why = open && pending?.kind === 'state' ? closeWords(pending.closedAs) : ''
       return {

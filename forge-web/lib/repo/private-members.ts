@@ -50,7 +50,7 @@ import {
 } from '../sdk'
 import { sleep } from '../sdk/facade'
 import { DOC, withVis, type RepoRef } from './contract'
-import { invalidateMembers, readMemberships } from './members'
+import { invalidateMembers, memberDocOf, readMemberships } from './members'
 import {
   isMaintainer,
   loadPrivateSessionUncached,
@@ -242,7 +242,7 @@ export function rotationCost(plan: RotationPlan): CostPreview {
 
 /** The cost shown before adding a member: the membership document and one wrap (~0.0006 DASH). */
 export function addMemberCost(role: Role): CostPreview {
-  return sumPreviews([previewCreate(role), previewCreate('repoKey')])
+  return sumPreviews([previewCreate(memberDocOf(role)), previewCreate('repoKey')])
 }
 
 /** What a maintainer's client should do on this visit (§5.6), or null when nothing. */

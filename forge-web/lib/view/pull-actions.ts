@@ -29,6 +29,7 @@
  */
 
 import { isOidHex, isPlainBranchRef, matchesProtected, type Holdings } from '../rules'
+import { capabilitiesOf, roleLimit } from '../rules/roles'
 import { linkedIssues, type Approvals, type ChecksState, type Policy, type PolicyStatus } from '../rules/v2'
 import type { PullView } from '../repo'
 import type { ProvedVerdicts } from '../repo/verdicts'
@@ -390,7 +391,9 @@ export function verdictSummary(
 export function pullActions({ pull, viewer, holdings, protectedPatterns = [], policy = null, maintainersOnly = false, checks = null }: PullActionInputs): PullActions {
   const known = holdings !== null && holdings !== 'loading'
   const maintainer = known && holdings.maintain
-  const holder = known && (holdings.write || holdings.maintain)
+  // Merge is role 1's (a maintainer or writer); close and reopen also a triage member's.
+  const caps = capabilitiesOf(known ? holdings.role : null)
+  const holder = known && caps.canMerge
   const isAuthor = viewer !== null && viewer === pull.author
   const { merged, open } = pull.state
   // A PR whose event log was not read completely has no trustworthy state to act on.
@@ -405,7 +408,7 @@ export function pullActions({ pull, viewer, holdings, protectedPatterns = [], po
   // A writer can neither move a protected base nor bypass the policy.
   const writerBlocked = !maintainer && (baseProtected || policyUnmet)
   const canMerge = eligible && !writerBlocked
-  const canCloseReopen = actionable && viewer !== null && (holder || isAuthor)
+  const canCloseReopen = actionable && viewer !== null && (caps.canCloseReopen || isAuthor)
 
   let mergeHint: string | null = null
   if (!canMerge && actionable && open && viewer !== null && holdings !== 'loading') {
@@ -414,7 +417,7 @@ export function pullActions({ pull, viewer, holdings, protectedPatterns = [], po
     } else if (pull.headOid === '') {
       mergeHint = 'This PR records no head commit to mark as merged.'
     } else if (!holder) {
-      mergeHint = "Only this repo's maintainers and writers can mark a PR as merged."
+      mergeHint = roleLimit(holdings.role, 'merge pull requests') ?? "Only this repo's maintainers and writers can mark a PR as merged."
     } else if (baseProtected) {
       mergeHint = `${branchName(base)} is a protected branch: only maintainers can merge into it.`
     } else if (policyUnknown) {

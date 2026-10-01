@@ -36,7 +36,7 @@ test('ci. the commit page lists its check runs, trusts runners and verifies a lo
   // A current runner's run counts: no "not counted" note on it.
   await expect(run(RUNNER_CHECK)).not.toContainText('not counted')
   if (REVOKED_CHECK !== '') {
-    await expect(run(REVOKED_CHECK)).toContainText('reporter is no longer a member or runner: not counted')
+    await expect(run(REVOKED_CHECK)).toContainText('reporter is not a maintainer, writer or runner: not counted')
     await expect(run(REVOKED_CHECK)).toHaveAttribute('data-outcome', /passed|failing|pending/)
   }
   if (LOG_CHECK !== '') {

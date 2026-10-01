@@ -18,6 +18,7 @@ import { useSearchParams } from 'next/navigation'
 import { UserPlus } from 'lucide-react'
 import { acceptInvite, findConsent, readConsents, readMembershipsCached, repoContractIds, type RepoRef } from '@/lib/repo'
 import type { Role } from '@/lib/rules/v2'
+import { ROLE_LABEL, ROLE_SUMMARY } from '@/lib/rules/roles'
 import { repoHref } from '@/hooks/use-query-param'
 import { CopyRow } from '@/components/ui/copy-row'
 import { previewCreate } from '@/lib/sdk'
@@ -31,8 +32,19 @@ import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 
-/** The query parameter an invite link carries. */
+/** The query parameter an invite link carries: the role the owner means to add them as (`1`: unstated). */
 export const INVITE_PARAM = 'invite'
+
+/** The role an invite link names (`&invite=triage`), or null (`&invite=1`, or anything else). */
+export function invitedRole(param: string | null): Role | null {
+  return param === 'maintainer' || param === 'writer' || param === 'triage' || param === 'reader' ? param : null
+}
+
+/** "as a triage member": how the banner names the offered role (empty when the link names none). */
+export function asRoleWords(role: Role | null): string {
+  if (role === null) return ''
+  return ` as ${role === 'triage' ? 'a triage member' : `a ${role}`}`
+}
 
 /** How soon the owner's Settings re-reads the pending invitations while the page is visible. */
 export const INVITES_POLL_MS = 10_000
@@ -44,6 +56,9 @@ type Standing = 'member' | 'accepted' | 'invited'
 export function InviteBanner({ repo }: { repo: RepoRef }): JSX.Element | null {
   const params = useSearchParams()
   const invited = params.get(INVITE_PARAM) !== null
+  // The role the owner picked for the link: what the banner says they will be added as.
+  const offered = invitedRole(params.get(INVITE_PARAM))
+  const asRole = asRoleWords(offered)
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const { identity, signer, locked, resuming, vaultsLoaded, vaultsError, lockedIdentity } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
@@ -77,7 +92,7 @@ export function InviteBanner({ repo }: { repo: RepoRef }): JSX.Element | null {
         <UserPlus className="mt-0.5 h-4 w-4 shrink-0 text-forge-700 dark:text-forge-400" aria-hidden />
         <div className="min-w-0 flex-1">
           <p>
-            <Author identityId={repo.ownerId} link={false} /> invited you to collaborate on this repo. {locked ? 'Unlock' : 'Sign in'} to accept
+            <Author identityId={repo.ownerId} link={false} /> invited you to collaborate on this repo{asRole}. {locked ? 'Unlock' : 'Sign in'} to accept
             the invitation.
           </p>
           <Button
@@ -115,14 +130,17 @@ export function InviteBanner({ repo }: { repo: RepoRef }): JSX.Element | null {
       <div className="min-w-0 flex-1">
         {shown === 'accepted' ? (
           <p data-testid="invite-accepted">
-            You accepted the invitation to collaborate on this repo. <Author identityId={repo.ownerId} link={false} /> can now add you as a maintainer or writer.
+            You accepted the invitation to collaborate on this repo. <Author identityId={repo.ownerId} link={false} /> can now add you
+            {offered !== null ? asRole : ' as a member'}; they choose the role.
+            {offered !== null ? <RoleWhat role={offered} /> : null}
           </p>
         ) : (
           <>
             <p>
-              <Author identityId={repo.ownerId} link={false} /> invited you to collaborate on this repo. Accepting lets them add you as a maintainer or
-              writer; nobody can be made a member without it.
+              <Author identityId={repo.ownerId} link={false} /> invited you to collaborate on this repo{asRole}. Accepting lets them add you as a member
+              (they choose the role: maintainer, writer, triage{repo.visibility === 'private' ? ' or reader' : ''}); nobody can be made a member without it.
             </p>
+            {offered !== null ? <RoleWhat role={offered} /> : null}
             <Button
               size="sm"
               variant="primary"
@@ -167,6 +185,7 @@ export function Invitations({
   members,
   awaiting,
   disabled,
+  role,
   onPick,
 }: {
   repo: RepoRef
@@ -178,6 +197,8 @@ export function Invitations({
   /** The identity an add was refused for because they had not accepted, or null. */
   awaiting: string | null
   disabled: boolean
+  /** The role picked on the page: the invite link names it, and a pending invitation is added as it. */
+  role: Role
   onPick: (identity: string, role: Role) => void
 }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
@@ -239,7 +260,7 @@ export function Invitations({
     }
   }, [polling, reload, known])
   const pending = members === null ? [] : (consents.data ?? []).filter((id) => id !== repo.ownerId && !members.includes(id))
-  const link = typeof window === 'undefined' ? '' : new URL(repoHref('/repo', { owner: repo.ownerId, name: repo.name }, { [INVITE_PARAM]: '1' }), window.location.origin).toString()
+  const link = typeof window === 'undefined' ? '' : new URL(repoHref('/repo', { owner: repo.ownerId, name: repo.name }, { [INVITE_PARAM]: role }), window.location.origin).toString()
   return (
     <>
       {awaiting !== null ? (
@@ -250,7 +271,7 @@ export function Invitations({
       ) : null}
       {link !== '' ? (
         <div className="mt-3 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="invite-link">
-          <p className="mb-1">Invite link: the member opens it and accepts before you add them.</p>
+          <p className="mb-1">Invite link{asRoleWords(role)}: the member opens it and accepts before you add them. It names the role picked above.</p>
           <CopyRow text={link} label="Copy the invite link" />
         </div>
       ) : null}
@@ -260,16 +281,23 @@ export function Invitations({
           {pending.map((id) => (
             <div key={id} className="flex items-center gap-2 py-1">
               <Author identityId={id} link={false} />
-              {(['writer', 'maintainer'] as Role[]).map((r) => (
-                <Button key={r} size="sm" variant="outline" className={r === 'writer' ? 'ml-auto' : ''} disabled={disabled} onClick={() => onPick(id, r)}>
-                  Add as {r}
-                </Button>
-              ))}
+              <Button size="sm" variant="outline" className="ml-auto" disabled={disabled} onClick={() => onPick(id, role)}>
+                Add as {ROLE_LABEL[role].toLowerCase()}
+              </Button>
             </div>
           ))}
         </div>
       ) : null}
       {consents.error ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">Couldn&apos;t read the invitations: {consents.error}</p> : null}
     </>
+  )
+}
+
+/** What the offered role may do, under the invitation. */
+function RoleWhat({ role }: { role: Role }): JSX.Element {
+  return (
+    <p className="mt-1 text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="invite-role">
+      {ROLE_LABEL[role]}: {ROLE_SUMMARY[role]}
+    </p>
   )
 }

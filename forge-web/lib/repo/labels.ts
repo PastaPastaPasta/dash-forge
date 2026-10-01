@@ -13,6 +13,7 @@ import { decodeIdentifier } from '../auth/base58'
 import { createDocumentIdempotent, deleteDocumentIdempotent, queryAllDocuments, type PlainDocument, type WriteAuth, type WriteResult } from '../sdk'
 import { compareStrings } from '../rules/oid'
 import { DOC, num, str, type RepoRef } from './contract'
+import { roleClaim } from './role-claim'
 import { repoSource } from './source'
 import { utf8Length } from '../view/issue-query'
 import { luminance } from '../design/avatar'
@@ -84,7 +85,7 @@ export function checkLabelInput(input: { name: string; color?: string; descripti
  * Define (or redefine, or retire) a label: a new `label` document (members only at
  * consensus; the newest per name wins). Parity: forge-core `Collab::create_label`.
  */
-export function defineLabel(
+export async function defineLabel(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
@@ -94,6 +95,8 @@ export function defineLabel(
   const data: Record<string, unknown> = { repoId: decodeIdentifier(repo.repoId), name: input.name.trim(), retired: input.retired ?? false }
   if (input.color) data['color'] = input.color.toLowerCase()
   if (input.description) data['description'] = input.description
+  // Writer or triage (`r`), refused before signing for a reader.
+  Object.assign(data, await roleClaim(sdk, auth, repo, DOC.label, data))
   return createDocumentIdempotent(sdk, auth, {
     contractId: repo.forge.core,
     documentType: DOC.label,

@@ -49,6 +49,7 @@ import { DOC, withVis, type RepoRef } from './contract'
 import { packHashOperand } from './pack-hash'
 import { refusedAtBroadcast, retryAfterLag } from './lag-retry'
 import { privateWriter, sealForRepo, sealedIntent } from './private-writes'
+import { roleClaim } from './role-claim'
 import { repoSource } from './source'
 import { assertNoPlaintext } from './writes'
 
@@ -196,9 +197,12 @@ export async function writePackManifest(
 ): Promise<WriteResult> {
   const problem = manifestUrisProblem(input.uris) ?? manifestShapeProblem(input)
   if (problem) throw new Error(problem)
+  // Refused before anything is read or signed when the signer's role cannot push.
+  const claim = await roleClaim(sdk, auth, repo, DOC.packManifest, {})
   const existing = await findOwnManifest(sdk, repo, auth.identityId, input.packHash)
   if (existing !== null) return alreadyRecorded(existing)
   const data: Record<string, unknown> = {
+    ...claim,
     repoId: decodeIdentifier(repo.repoId),
     // An identifier: its 32 raw bytes, as `decodeIdentifier` gives `repoId`'s.
     packHash: hexToBytes(input.packHash),
@@ -282,6 +286,8 @@ export async function putPlatformChunks(
   /** `written`: chunks this call itself created (0 on the first report, before any write). */
   onProgress?: (done: number, total: number, written: number) => void,
 ): Promise<{ locator: string; chunkCount: number }> {
+  // Refused before anything is signed when the signer's role cannot push.
+  const claim = await roleClaim(sdk, auth, repo, DOC.chunk, {})
   const chunks = splitChunks(bytes)
   const have = await storedSeqs(sdk, repo, auth.identityId, packHashHex, chunks.length)
   const R = decodeIdentifier(repo.repoId)
@@ -291,7 +297,7 @@ export async function putPlatformChunks(
   onProgress?.(done, chunks.length, written)
   for (const chunk of chunks) {
     if (have.has(chunk.seq)) continue
-    const data: Record<string, unknown> = { repoId: R, packHash: hash, seq: chunk.seq }
+    const data: Record<string, unknown> = { repoId: R, packHash: hash, seq: chunk.seq, ...claim }
     chunk.fields.forEach((f, i) => {
       data[`d${i}`] = new Uint8Array(f)
     })
@@ -387,6 +393,8 @@ export async function writeRefUpdate(
     documentType = refUpdateType(input.refName, patterns)
   }
   assertNoPlaintext(repo, documentType, data)
+  // A plain `refUpdate` claims role 1 (a protected one is maintainer-gated and carries none).
+  data = { ...data, ...(await roleClaim(sdk, auth, repo, documentType, data)) }
   let moved: MovedRef | undefined
   try {
     const r = await createDocumentIdempotent(sdk, auth, {

@@ -152,7 +152,7 @@ export interface ChecksSummary {
   readonly pending: number
   /** Runs that count: a trusted reporter, and for a pinned check its source. */
   readonly total: number
-  /** Runs listed but not counted (their reporter is no longer a member or runner). */
+  /** Runs listed but not counted (their reporter is not a current maintainer, writer or runner). */
   readonly untrusted: number
   /** Runs listed but not counted: a trusted reporter, but not the source the policy pins the check to. */
   readonly offSource: number
@@ -172,7 +172,7 @@ export function summarizeChecks(runs: readonly CheckRun[], membersKnown: boolean
 export function checksPhrase(s: ChecksSummary): string {
   if (!s.membersKnown) return "Couldn't read the members, so which checks count is unknown"
   const notCounted = [
-    s.untrusted > 0 ? `${s.untrusted} not counted: reporter no longer a member or runner` : '',
+    s.untrusted > 0 ? `${s.untrusted} not counted: reporter not a maintainer, writer or runner` : '',
     s.offSource > 0 ? `${s.offSource} not from the required source` : '',
   ].filter((p) => p !== '')
   const extra = notCounted.length > 0 ? ` (${notCounted.join('; ')})` : ''
@@ -230,7 +230,8 @@ export interface HeadChecks {
 }
 
 /**
- * The check runs on `headOid`, trusted when the reporter is in `members` or a current runner; a
+ * The check runs on `headOid`, trusted when the reporter is in `members` (the current approvers:
+ * maintainers and role-1 writers, never triage or readers) or a current runner; a
  * check `pins` pins ({@link requiredSources}) counts its source's runs only.
  */
 export async function readCheckRuns(sdk: EvoSDK, repo: RepoRef, headOid: string, members: ReadonlySet<string>, pins: ReadonlyMap<string, string> = new Map()): Promise<HeadChecks> {
@@ -353,5 +354,5 @@ export function safeDetailsUrl(url: string): string | null {
  * not be read) it cannot be told whether they are, which is not the same claim.
  */
 export function untrustedWords(summary: Pick<ChecksSummary, 'membersKnown'>): string {
-  return summary.membersKnown ? 'reporter is no longer a member or runner: not counted' : 'members could not be read: not counted until they are'
+  return summary.membersKnown ? 'reporter is not a maintainer, writer or runner: not counted' : 'members could not be read: not counted until they are'
 }

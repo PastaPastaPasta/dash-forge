@@ -13,8 +13,11 @@ import type { DocFields } from './tlv'
 import { IdSet, bytesEqual, compareBytes, type PrivateId } from './ids'
 import { EpochKeys, importEpochKeyAndWipe } from './keys'
 
-/** A membership role; maintainer outranks writer. */
-export type Role = 'maintainer' | 'writer'
+/**
+ * A membership role; maintainer outranks the `writer` document's roles (writer, triage, reader).
+ * Every `writer` document, a reader's included, is a member and a key-wrap recipient.
+ */
+export type Role = 'maintainer' | 'writer' | 'triage' | 'reader'
 
 /** One current `maintainer` or `writer` document of the repo. */
 export interface PrivateMembership {

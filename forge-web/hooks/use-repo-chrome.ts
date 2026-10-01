@@ -31,8 +31,10 @@ import {
   type TargetTotals,
 } from '@/lib/repo'
 import { sessionCached } from '@/lib/view/session-cache'
+import type { Role } from '@/lib/rules/v2'
 
-export type ViewerRole = 'maintainer' | 'writer' | null
+/** The viewer's best role on the repo (`rules/v2` Role), null when not a member. */
+export type ViewerRole = Role | null
 
 const MINUTE = 60_000
 
@@ -53,7 +55,7 @@ export function useViewerRole(repo: RepoRef): {
       sessionCached(`role:${network}:${repoKey(repo)}:${identity}`, 5 * MINUTE, async () => {
         const holdings = await readViewerPermissions(sdk!, repo, identity!, network)
         if (holdings === null) throw new Error("couldn't read this repo's members")
-        return holdings.maintain ? 'maintainer' : holdings.write ? 'writer' : null
+        return holdings.role
       }),
     [ready, repoKey(repo), identity ?? '', network],
     { enabled: ready && sdk !== null && identity !== null },

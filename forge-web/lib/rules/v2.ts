@@ -38,8 +38,11 @@ export const FORGE_RULES_V2 = 'FORGE_RULES_V2' as const
 // Membership
 // ---------------------------------------------------------------------------
 
-/** A membership role: which forge-core document type grants it. Maintainer ranks first. */
-export type Role = 'maintainer' | 'writer'
+/**
+ * A membership role: a `maintainer` document, or a `writer` document's `role` (RC2 member roles:
+ * 1 writer, 2 triage, 3 reader). Ranked best first: maintainer, writer, triage, reader.
+ */
+export type Role = 'maintainer' | 'writer' | 'triage' | 'reader'
 
 /** One current `maintainer` or `writer` document of a repository, flattened. */
 export interface Membership {
@@ -50,8 +53,15 @@ export interface Membership {
   readonly createdAt: number
 }
 
+const ROLE_RANK: Readonly<Record<Role, number>> = { maintainer: 0, writer: 1, triage: 2, reader: 3 }
+
 function betterRole(a: Role | null, b: Role): Role {
-  return a === 'maintainer' || b === 'maintainer' ? 'maintainer' : 'writer'
+  return a !== null && ROLE_RANK[a] <= ROLE_RANK[b] ? a : b
+}
+
+/** Whether `role` counts as an approver: a maintainer or a role-1 writer (never triage or reader). */
+export function isApprover(role: Role | null | undefined): boolean {
+  return role === 'maintainer' || role === 'writer'
 }
 
 /**
@@ -71,9 +81,25 @@ export class RoleOracle {
     return role
   }
 
-  /** Whether `identity` was a maintainer or writer at `at`. */
+  /**
+   * Whether `identity` held any membership document at `at` (consensus `asMember` admits every
+   * `writer` document, triage and reader included).
+   */
   memberAt(identity: string, at: number): boolean {
     return this.roleAt(identity, at) !== null
+  }
+
+  /**
+   * Whether `identity` was an approver at `at`: a maintainer or a role-1 writer. Approvals,
+   * `approverRole 0` policies, requested changes and imported provenance count only approvers.
+   */
+  approverAt(identity: string, at: number): boolean {
+    return isApprover(this.roleAt(identity, at))
+  }
+
+  /** Whether `identity` is an approver now (any current document). */
+  currentApprover(identity: string): boolean {
+    return this.approverAt(identity, Number.POSITIVE_INFINITY)
   }
 
   /** The best role `identity` holds now (any current document). */
@@ -131,8 +157,8 @@ export function prStateV2(
 
 /**
  * The upstream number to show and resolve through (`#12 · upstream #7761`): trusted only from
- * the repo owner (the mirror signer) or a current member. Parity: forge-core
- * `trusted_upstream_number`.
+ * the repo owner (the mirror signer) or a current approver (a maintainer or role-1 writer; triage
+ * and readers are not trusted). Parity: forge-core `trusted_upstream_number`.
  */
 export function trustedUpstreamNumber(
   upstreamNumber: number | null | undefined,
@@ -141,7 +167,7 @@ export function trustedUpstreamNumber(
   oracle: RoleOracle,
 ): number | null {
   if (upstreamNumber == null || upstreamNumber <= 0) return null
-  return author === repoOwner || oracle.currentRole(author) !== null ? upstreamNumber : null
+  return author === repoOwner || oracle.currentApprover(author) ? upstreamNumber : null
 }
 
 // ---------------------------------------------------------------------------
@@ -159,8 +185,9 @@ export interface PackCopy {
   readonly supersedes?: readonly string[]
 }
 
+/** Maintainers' copies, then other current members' (any `writer` document), then everyone else's. */
 function roleRank(role: Role | null | undefined): number {
-  return role === 'maintainer' ? 0 : role === 'writer' ? 1 : 2
+  return role === 'maintainer' ? 0 : role == null ? 2 : 1
 }
 
 function compareCopies(a: PackCopy, b: PackCopy): number {
@@ -342,7 +369,8 @@ export interface Approvals {
 
 /**
  * Count a PR's approvals, `forge-v2.md` §6: only reviews on `headOid` (the folded head) by a
- * reviewer who was a member at the review's `createdAt`; a reviewer's newest approve /
+ * reviewer who was an approver (a maintainer or role-1 writer) at the review's `createdAt`
+ * (consensus admits a triage member's or reader's member verdict; it is shown, never counted); a reviewer's newest approve /
  * request-changes review by `(createdAt, id)` stands; comment and unknown verdicts, and
  * reviews in `dismissed` (the ids a `reviewDismiss` names), are ignored.
  *
@@ -367,7 +395,7 @@ export function countApprovals(
         r.reviewer !== prAuthor &&
         !dismissed.has(r.id) &&
         r.commitOid === headOid &&
-        oracle.memberAt(r.reviewer, r.createdAt),
+        oracle.approverAt(r.reviewer, r.createdAt),
     )
     .sort(compareKey)
   for (const r of counting) {

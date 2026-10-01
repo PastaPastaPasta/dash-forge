@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button'
 import { CopyRow } from '@/components/ui/copy-row'
 import { GatewaysField } from '@/components/gateways-field'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
+import { capabilitiesOf } from '@/lib/rules/roles'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { repoKey, type RepoRef } from '@/lib/repo'
 import {
@@ -117,7 +118,7 @@ export function StorageUnreachableCard({
               <GatewaysField />
             </div>
           ) : null}
-          {role !== null ? (
+          {capabilitiesOf(role).canPush ? (
             <div className="mt-4">
               <p className="mb-1 text-dense text-anvil-600 dark:text-anvil-300">Have a clone? This restores it:</p>
               <CopyRow text={`dg reseed ${slug} --from-local`} label="Copy the reseed command" />

@@ -38,6 +38,8 @@ function nextId(): string {
 }
 const stored = (v: unknown): unknown => (v instanceof Uint8Array ? (v.length === 32 ? b58(v) : bytesToBase64(v)) : v)
 
+// RC2 member roles: the claimed role (`r`) is role-claim.test.ts's and rc1-writers.test.ts's.
+vi.mock('./role-claim', () => ({ roleClaim: async () => ({}) }))
 vi.mock('../sdk/write', async (orig) => {
   const real = await orig<typeof import('../sdk/write')>()
   return {

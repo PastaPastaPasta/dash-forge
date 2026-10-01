@@ -18,6 +18,7 @@ import { hexToBytes } from '@noble/hashes/utils.js'
 import { decodeIdentifier } from '../auth/base58'
 import { idbDelete, idbGet, idbPut } from '../idb'
 import { isLegalRefName, isRc1OidHex } from '../rules'
+import { RoleRefusedError } from '../rules/roles'
 import { anchorOf, groupReviewComments, isAuthorKind, type AnchorFields, type Policy } from '../rules/v2'
 import type { EventKind } from '../rules'
 import {
@@ -141,8 +142,10 @@ export async function postTargetEvent(
   try {
     return { ...(await write(sdk, auth, repo, DOC.event, data, input.intent)), route }
   } catch (e) {
-    const gateRefused = e instanceof ConsensusRefusal && e.code === GATE_REFUSED_CODE
-    if (gateRefused && auth.identityId === input.author && isAuthorKind(input.kind)) {
+    // A stale membership read (the gate refused), or a role that cannot write this kind as a
+    // member (triage: a head update), falls back to the author's route.
+    const memberRefused = (e instanceof ConsensusRefusal && e.code === GATE_REFUSED_CODE) || e instanceof RoleRefusedError
+    if (memberRefused && auth.identityId === input.author && isAuthorKind(input.kind)) {
       const intent = input.intent ? `${input.intent}:author` : undefined
       return { ...(await write(sdk, auth, repo, DOC.authorEvent, data, intent)), route: 'authorEvent' }
     }
