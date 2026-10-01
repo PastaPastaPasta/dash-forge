@@ -408,7 +408,7 @@ install_forge plan
 key_all=$(sed -n 's/^cache-key=//p' "$tmp/iout")
 install_forge plan FORGE_BINARIES=dg
 key_dg=$(sed -n 's/^cache-key=//p' "$tmp/iout")
-if [ -z "$key_all" ] || [ "$key_all" = "$key_dg" ]; then fail "the same key for different binaries"; fi
+if [ -z "$key_all" ] || [ -z "$key_dg" ] || [ "$key_all" = "$key_dg" ]; then fail "the same key for different binaries"; fi
 case="install build without cargo"
 mv "$ib/cargo" "$ib/cargo.off"
 if install_forge build; then fail "succeeded"; fi
