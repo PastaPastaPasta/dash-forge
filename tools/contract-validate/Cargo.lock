@@ -575,8 +575,8 @@ dependencies = [
 
 [[package]]
 name = "dpp"
-version = "4.2.0-beta.7"
-source = "git+https://github.com/dashpay/platform.git?tag=v4.2.0-beta.7#50d120372788985d9ee97ba04ae6b1e6603dfa0b"
+version = "5.0.0-beta.1"
+source = "git+https://github.com/dashpay/platform.git?tag=v5.0.0-beta.1#b95849a1767aa26fa794cf69a44d4fc107ee6528"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -620,8 +620,8 @@ dependencies = [
 
 [[package]]
 name = "dpp-json-convertible-derive"
-version = "4.2.0-beta.7"
-source = "git+https://github.com/dashpay/platform.git?tag=v4.2.0-beta.7#50d120372788985d9ee97ba04ae6b1e6603dfa0b"
+version = "5.0.0-beta.1"
+source = "git+https://github.com/dashpay/platform.git?tag=v5.0.0-beta.1#b95849a1767aa26fa794cf69a44d4fc107ee6528"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1132,8 +1132,8 @@ dependencies = [
 
 [[package]]
 name = "json-schema-compatibility-validator"
-version = "4.2.0-beta.7"
-source = "git+https://github.com/dashpay/platform.git?tag=v4.2.0-beta.7#50d120372788985d9ee97ba04ae6b1e6603dfa0b"
+version = "5.0.0-beta.1"
+source = "git+https://github.com/dashpay/platform.git?tag=v5.0.0-beta.1#b95849a1767aa26fa794cf69a44d4fc107ee6528"
 dependencies = [
  "json-patch",
  "once_cell",
@@ -1399,8 +1399,8 @@ dependencies = [
 
 [[package]]
 name = "platform-serialization"
-version = "4.2.0-beta.7"
-source = "git+https://github.com/dashpay/platform.git?tag=v4.2.0-beta.7#50d120372788985d9ee97ba04ae6b1e6603dfa0b"
+version = "5.0.0-beta.1"
+source = "git+https://github.com/dashpay/platform.git?tag=v5.0.0-beta.1#b95849a1767aa26fa794cf69a44d4fc107ee6528"
 dependencies = [
  "grovedb-bincode",
  "platform-version",
@@ -1408,8 +1408,8 @@ dependencies = [
 
 [[package]]
 name = "platform-serialization-derive"
-version = "4.2.0-beta.7"
-source = "git+https://github.com/dashpay/platform.git?tag=v4.2.0-beta.7#50d120372788985d9ee97ba04ae6b1e6603dfa0b"
+version = "5.0.0-beta.1"
+source = "git+https://github.com/dashpay/platform.git?tag=v5.0.0-beta.1#b95849a1767aa26fa794cf69a44d4fc107ee6528"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1419,8 +1419,8 @@ dependencies = [
 
 [[package]]
 name = "platform-value"
-version = "4.2.0-beta.7"
-source = "git+https://github.com/dashpay/platform.git?tag=v4.2.0-beta.7#50d120372788985d9ee97ba04ae6b1e6603dfa0b"
+version = "5.0.0-beta.1"
+source = "git+https://github.com/dashpay/platform.git?tag=v5.0.0-beta.1#b95849a1767aa26fa794cf69a44d4fc107ee6528"
 dependencies = [
  "base64",
  "bs58",
@@ -1438,8 +1438,8 @@ dependencies = [
 
 [[package]]
 name = "platform-version"
-version = "4.2.0-beta.7"
-source = "git+https://github.com/dashpay/platform.git?tag=v4.2.0-beta.7#50d120372788985d9ee97ba04ae6b1e6603dfa0b"
+version = "5.0.0-beta.1"
+source = "git+https://github.com/dashpay/platform.git?tag=v5.0.0-beta.1#b95849a1767aa26fa794cf69a44d4fc107ee6528"
 dependencies = [
  "grovedb-bincode",
  "grovedb-version",
@@ -1449,8 +1449,8 @@ dependencies = [
 
 [[package]]
 name = "platform-versioning"
-version = "4.2.0-beta.7"
-source = "git+https://github.com/dashpay/platform.git?tag=v4.2.0-beta.7#50d120372788985d9ee97ba04ae6b1e6603dfa0b"
+version = "5.0.0-beta.1"
+source = "git+https://github.com/dashpay/platform.git?tag=v5.0.0-beta.1#b95849a1767aa26fa794cf69a44d4fc107ee6528"
 dependencies = [
  "proc-macro2",
  "quote",

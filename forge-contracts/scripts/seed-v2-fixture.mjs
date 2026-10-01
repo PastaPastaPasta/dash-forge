@@ -505,7 +505,7 @@ export async function main(argv, injected) {
   // CONTRIB's star counts toward Trending through its beat. The beat names the repo's owner, who
   // may not beat its own repo. CONTRIB also watches the repo.
   await createIndexOnly('star:contrib', CONTRIB, 'star', { repoId: R });
-  // A fused star (RC2 C1) is its own Trending entry: no beat to write.
+  // (with RC2's fused star the star itself is the trending entry, and there is no starBeat)
   if (!FUSED_STAR) await createIndexOnly('starBeat:contrib', CONTRIB, 'starBeat', { repoId: R, vis: VIS, repoOwner: idBytes(OWNER.id) });
   await createIndexOnly('watch:contrib', CONTRIB, 'watch', { repoId: R });
   // Topics (forge-core, the repo owner's): Explore by topic counts `fixture` and `forge-v2`.

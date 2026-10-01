@@ -194,21 +194,6 @@
   }
  },
  {
-  "item": "base",
-  "name": "starBeat ok",
-  "type": "starBeat",
-  "expect": "ok",
-  "doc": {
-   "repoId": {
-    "$id": 1
-   },
-   "vis": "public",
-   "repoOwner": {
-    "$id": 8
-   }
-  }
- },
- {
   "item": "R-10",
   "name": "event headUpdate oid 31",
   "type": "event",
@@ -2441,62 +2426,6 @@
   }
  },
  {
-  "item": "O-08",
-  "name": "private beat",
-  "type": "starBeat",
-  "expect": "refused",
-  "why": "enum",
-  "doc": {
-   "repoId": {
-    "$id": 1
-   },
-   "vis": "private",
-   "repoOwner": {
-    "$id": 8
-   }
-  }
- },
- {
-  "item": "O-08",
-  "name": "beat without repoOwner",
-  "type": "starBeat",
-  "expect": "refused",
-  "why": "required",
-  "doc": {
-   "repoId": {
-    "$id": 1
-   },
-   "vis": "public"
-  }
- },
- {
-  "item": "O-08",
-  "name": "beat without vis",
-  "type": "starBeat",
-  "expect": "refused",
-  "why": "required",
-  "doc": {
-   "repoId": {
-    "$id": 1
-   },
-   "repoOwner": {
-    "$id": 8
-   }
-  }
- },
- {
-  "item": "O-08",
-  "name": "the old {repoId} beat",
-  "type": "starBeat",
-  "expect": "refused",
-  "why": "required",
-  "doc": {
-   "repoId": {
-    "$id": 1
-   }
-  }
- },
- {
   "item": "COMM-9",
   "name": "star with an extra field",
   "type": "star",
@@ -2788,22 +2717,6 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
    "externalId": "gh-1"
-  }
- },
- {
-  "item": "O-08",
-  "name": "a beat on the signer's own repo (distinctFrom)",
-  "type": "starBeat",
-  "expect": "refused",
-  "why": "10419",
-  "doc": {
-   "repoId": {
-    "$id": 1
-   },
-   "vis": "public",
-   "repoOwner": {
-    "$id": 7
-   }
   }
  },
  {

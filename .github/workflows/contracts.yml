@@ -5,7 +5,8 @@ name: Contracts
 # protocol 14): the full parse a node runs at registration, the registration reference checks
 # (collab and community refer across to forge-core), sample documents against every
 # propertyConstraints rule (the accept/refuse vectors of forge-contracts/vectors/rc1), the
-# create-transition size against the 20,480-byte limit, and — for
+# create-transition size against the 20,480-byte limit, the replace and index vectors of the RC2
+# items, every combination of the RC2 flags (forge-contracts/schema/variants.py), and — for
 # forge-core, which only ever changes by an in-place DataContractUpdate (platform-parity-spec
 # §6) — that the update from the registered schema is accepted. negative.sh then proves the
 # validator refuses each broken rule the design relies on. Last, every seed and verify script
@@ -55,7 +56,7 @@ jobs:
         run: |
           python3 forge-contracts/schema/wherecheck.py
           python3 forge-contracts/schema/wherecheck.py --self-test
-      # The toolchain platform v4.2.0-beta.7 pins (its rust-toolchain.toml)
+      # The toolchain platform v5.0.0-beta.1 pins (its rust-toolchain.toml)
       - name: Install Rust 1.98.1
         run: rustup toolchain install 1.98.1 --profile minimal
       - uses: actions/cache@v4
@@ -78,6 +79,10 @@ jobs:
             forge-contracts/contracts/forge-community.json
       - name: Negative mutations are refused
         run: tools/contract-validate/negative.sh
+      # RC2: S1, S2, S3 and C1 are build.py flags decided at registration (fee probes), so every
+      # combination of them must validate (with its own vectors) and fit the budget
+      - name: Every RC2 flag combination validates
+        run: python3 forge-contracts/schema/variants.py "$CARGO_TARGET_DIR/debug/contract-validate"
       # The seed and verify scripts, run against an in-memory chain: the rules that need chain
       # state (references, dense numbers, transitions, totals) are judged in JS, then rs-dpp
       # judges every document they write as an rc1 vector
