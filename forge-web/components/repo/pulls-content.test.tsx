@@ -370,3 +370,20 @@ describe('PullsContent (L-44)', () => {
     expect(newPull()).toBe('/repo/pulls/new/?owner=up&name=dips&head=r%3Amaster')
   })
 })
+
+describe('an archived repo (QW3-017)', () => {
+  it('offers no New pull request link, only a disabled button saying why', async () => {
+    act(() => root.render(<PullsContent home={{ ...HOME, config: { archived: true } } as unknown as RepoHome} addr={addr} />))
+    await settle()
+    expect([...el.querySelectorAll('a')].some((a) => a.textContent?.includes('New pull request'))).toBe(false)
+    const b = el.querySelector('[data-testid="new-pull-archived"]') as HTMLButtonElement
+    expect(b.disabled).toBe(true)
+    expect(b.title).toMatch(/archived/)
+  })
+
+  it('links New pull request in a live repo', async () => {
+    await render()
+    expect([...el.querySelectorAll('a')].some((a) => a.textContent?.includes('New pull request'))).toBe(true)
+    expect(el.querySelector('[data-testid="new-pull-archived"]')).toBeNull()
+  })
+})
