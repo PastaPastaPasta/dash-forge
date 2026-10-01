@@ -65,7 +65,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import {
-  CONTRACT_OF, EVENT, ROOT, TRANSITION, VIS, checkOutcome, idBytes, loadIdentity, log, membership, openSession, parseArgs,
+  CONTRACT_OF, EVENT, FUSED_STAR, ROOT, TRANSITION, VIS, checkOutcome, idBytes, loadIdentity, log, membership, openSession, parseArgs,
   runIfMain, transition, until,
 } from './lib/seed-io.mjs';
 
@@ -505,7 +505,8 @@ export async function main(argv, injected) {
   // CONTRIB's star counts toward Trending through its beat. The beat names the repo's owner, who
   // may not beat its own repo. CONTRIB also watches the repo.
   await createIndexOnly('star:contrib', CONTRIB, 'star', { repoId: R });
-  await createIndexOnly('starBeat:contrib', CONTRIB, 'starBeat', { repoId: R, vis: VIS, repoOwner: idBytes(OWNER.id) });
+  // (with RC2's fused star the star itself is the trending entry, and there is no starBeat)
+  if (!FUSED_STAR) await createIndexOnly('starBeat:contrib', CONTRIB, 'starBeat', { repoId: R, vis: VIS, repoOwner: idBytes(OWNER.id) });
   await createIndexOnly('watch:contrib', CONTRIB, 'watch', { repoId: R });
   // Topics (forge-core, the repo owner's): Explore by topic counts `fixture` and `forge-v2`.
   await create('topic:fixture', OWNER, 'topic', { repoId: R, name: 'fixture', vis: VIS });

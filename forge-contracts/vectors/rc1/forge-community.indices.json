@@ -1,0 +1,40 @@
+[
+ {
+  "item": "C1",
+  "name": "the star carries the trending window",
+  "type": "star",
+  "index": "byWeek",
+  "expect": "present",
+  "properties": [
+   "$createdAt",
+   "repoId"
+  ],
+  "has": {
+   "timeRange": true,
+   "rangeCountable": true,
+   "rankedCountable": true,
+   "outlivesDelete": true
+  }
+ },
+ {
+  "item": "C1",
+  "name": "the all-time star count is cleared by an unstar",
+  "type": "star",
+  "index": "byRepo",
+  "expect": "present",
+  "properties": [
+   "repoId"
+  ],
+  "has": {
+   "rangeCountable": true,
+   "rankedCountable": true,
+   "outlivesDelete": false
+  }
+ },
+ {
+  "item": "C1",
+  "name": "no starBeat type",
+  "type": "starBeat",
+  "expect": "absent"
+ }
+]

@@ -1,4 +1,5 @@
-//! Offline validation of the forge-v2 data contracts against Dash Platform protocol 14.
+//! Offline validation of the forge-v2 data contracts against Dash Platform protocol 14
+//! (rs-dpp v5.0.0-beta.1, the tag Cargo.toml pins).
 //!
 //!   cargo run --manifest-path tools/contract-validate/Cargo.toml -- \
 //!       --vectors forge-contracts/vectors/rc1 \
@@ -29,7 +30,10 @@
 //!      `propertyConstraints` rule that reads no total, time or height: the document-property
 //!      validation every create and replace runs), then, as a node does on a create, the
 //!      `distinctFrom` and `encryptedFor` shape checks: each accepted case must pass and each
-//!      refused one must fail for the reason it names;
+//!      refused one must fail for the reason it names. `<dir>/<name>.replace.json` holds replaces
+//!      of a stored document, judged by the same property validation and then v5's `immutable`
+//!      check (a changed property listed by name, or under a condition that holds, is 40128);
+//!      `<dir>/<name>.indices.json` says which indexes the parsed contract must (not) have;
 //!   6. serializes the contract and a signed-shape `DataContractCreateTransition` v1 and reports
 //!      both sizes against `max_state_transition_size` and the registration fee.
 //!
@@ -291,58 +295,65 @@ fn validate_one(
     // (5) the document vectors: every accepted case passes, every refused one fails for the
     // reason it names. Judged as a client pre-check judges them: the owner is the deployer, and a
     // rule reading a time, a height or a total is not judged (it needs the block or state).
+    // `<name>.json` holds creates, `<name>.replace.json` (when present) replaces of a stored
+    // document, and `<name>.indices.json` (when present) what the parsed indexes must be.
     if let Some(dir) = vectors {
-        let cases = read_cases(&dir.join(format!("{name}.json")))?;
-        let mut wrong = Vec::new();
-        for case in &cases {
-            let signer = case.owner.unwrap_or(owner);
-            let system = DocumentSystemValues::owned_by(signer);
-            let data = case_value(&case.doc)?;
-            let mut errors = contract
-                .validate_document_properties(&case.doc_type, data.clone(), &system, pv)
-                .map_err(|e| anyhow!("{} ({}): {e}", case.name, case.doc_type))?
-                .errors;
-            if errors.is_empty() {
-                errors = create_structure_errors(&contract, &case.doc_type, data, signer, pv)
+        for (file, replaces) in [
+            (format!("{name}.json"), false),
+            (format!("{name}.replace.json"), true),
+        ] {
+            let path = dir.join(&file);
+            if replaces && !path.exists() {
+                continue;
+            }
+            let cases = read_cases(&path, replaces)?;
+            let mut wrong = Vec::new();
+            for case in &cases {
+                let refusal = judge(&contract, case, owner, pv)
                     .map_err(|e| anyhow!("{} ({}): {e}", case.name, case.doc_type))?;
+                let fine = match (case.expect.as_str(), &refusal) {
+                    ("ok", None) => true,
+                    ("refused", Some((why, _))) => case.why.as_deref() == Some(why.as_str()),
+                    _ => false,
+                };
+                if !fine {
+                    wrong.push(format!(
+                        "[{}] {} ({}): expected {}{}, got {}",
+                        case.item,
+                        case.name,
+                        case.doc_type,
+                        case.expect,
+                        case.why
+                            .as_deref()
+                            .map(|w| format!(" by {w}"))
+                            .unwrap_or_default(),
+                        match &refusal {
+                            Some((why, message)) => format!("refused by {why}: {message}"),
+                            None => "accepted".to_string(),
+                        }
+                    ));
+                }
             }
-            let first = errors.first();
-            let fine = match (case.expect.as_str(), first) {
-                ("ok", None) => true,
-                ("refused", Some(e)) => case.why.as_deref() == Some(refusal_reason(e).as_str()),
-                _ => false,
-            };
-            if !fine {
-                wrong.push(format!(
-                    "[{}] {} ({}): expected {}{}, got {}",
-                    case.item,
-                    case.name,
-                    case.doc_type,
-                    case.expect,
-                    case.why
-                        .as_deref()
-                        .map(|w| format!(" by {w}"))
-                        .unwrap_or_default(),
-                    match first {
-                        Some(e) => format!("refused by {}: {e}", refusal_reason(e)),
-                        None => "accepted".to_string(),
-                    }
-                ));
+            if !wrong.is_empty() {
+                bail!(
+                    "{} of {} {file} vectors disagree:\n     {}",
+                    wrong.len(),
+                    cases.len(),
+                    wrong.join("\n     ")
+                );
             }
-        }
-        if !wrong.is_empty() {
-            bail!(
-                "{} of {} document vectors disagree:\n     {}",
-                wrong.len(),
-                cases.len(),
-                wrong.join("\n     ")
+            let accepted = cases.iter().filter(|c| c.expect == "ok").count();
+            println!(
+                "   {} vectors: {accepted} accepted, {} refused for the named reason",
+                if replaces { "replace" } else { "document" },
+                cases.len() - accepted
             );
         }
-        let accepted = cases.iter().filter(|c| c.expect == "ok").count();
-        println!(
-            "   document vectors: {accepted} accepted, {} refused for the named reason",
-            cases.len() - accepted
-        );
+        let path = dir.join(format!("{name}.indices.json"));
+        if path.exists() {
+            let n = check_indices(&contract, &path)?;
+            println!("   index vectors: {n} index shapes as expected");
+        }
     }
 
     let contract_bytes = {
@@ -648,18 +659,24 @@ fn check_leaf(
     at: &str,
     pv: &PlatformVersion,
 ) -> Result<()> {
-    let deletable = referenced.documents_can_be_deleted()
-        || referenced.documents_can_be_deleted_by_moderators();
-    if decl.permanent && deletable {
+    // The three reference kinds are disjoint (v5: drive-abci
+    // state_transition/common/document_reference_kind.rs:29-58): the declaration must name the
+    // one kind the referenced type admits.
+    use dpp::data_contract::document_type::DocumentReferenceKind as Kind;
+    let admitted = referenced.document_reference_kind();
+    let code = match (decl.kind, admitted) {
+        (declared, admitted) if declared == admitted => None,
+        (Kind::Permanent, _) => Some(40122),
+        (Kind::Deletable, Kind::Permanent) => Some(40131),
+        (Kind::Deletable, _) => Some(40144),
+        (Kind::Moderated, _) => Some(40143),
+    };
+    if let Some(code) = code {
         bail!(
-            "{at}: permanentDocument names deletable type {} (40122)",
-            decl.document_type_name
-        );
-    }
-    if !decl.permanent && !deletable {
-        bail!(
-            "{at}: deletableDocument names non-deletable type {} (40131)",
-            decl.document_type_name
+            "{at}: {} names type {}, which admits only {} references ({code})",
+            decl.kind.wire_name(),
+            decl.document_type_name,
+            admitted.wire_name()
         );
     }
     // the parse already ran the referenced side of same-contract lookups and lists
@@ -757,7 +774,8 @@ fn check_leaf(
 /// The accept/refuse document vectors of one contract (`forge-contracts/vectors/rc1/<name>.json`,
 /// written by `forge-contracts/schema/vectors.py`): `{item, name, type, expect, why?, owner?, doc}`,
 /// where `doc` writes an identifier as `{"$id": n}` (32 bytes of n) or `{"$id": "<base58>"}`, and
-/// a byte array as `{"$b": [fill, len]}` or `{"$hex": "..."}`.
+/// a byte array as `{"$b": [fill, len]}` or `{"$hex": "..."}`. A replace case
+/// (`<name>.replace.json`) also has `stored`, the document the replace finds in state.
 struct Case {
     item: String,
     name: String,
@@ -767,9 +785,13 @@ struct Case {
     /// The signer (`"owner"`: a byte or base58), 0x07 * 32 when absent.
     owner: Option<Identifier>,
     doc: Json,
+    /// For a replace: the stored document's properties.
+    stored: Option<Json>,
 }
 
-fn read_cases(path: &std::path::Path) -> Result<Vec<Case>> {
+/// The cases of one vector file: creates, or (`replaces`) replaces, each of which names the
+/// document it replaces.
+fn read_cases(path: &std::path::Path, replaces: bool) -> Result<Vec<Case>> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let list: Vec<Json> =
@@ -789,6 +811,14 @@ fn read_cases(path: &std::path::Path) -> Result<Vec<Case>> {
                 ("refused", Some(_)) | ("ok", None) => {}
                 _ => bail!("{}: case {:?} expects {expect:?}: a refused case names its `why`, an accepted one none", path.display(), c["name"]),
             }
+            let stored = c.get("stored").cloned();
+            if stored.is_some() != replaces {
+                bail!(
+                    "{}: case {:?}: a replace case (only in a .replace.json file) names its `stored` document, a create none",
+                    path.display(),
+                    c["name"]
+                );
+            }
             Ok(Case {
                 item: field("item")?,
                 name: field("name")?,
@@ -797,6 +827,7 @@ fn read_cases(path: &std::path::Path) -> Result<Vec<Case>> {
                 why,
                 owner: c.get("owner").map(case_identifier).transpose()?,
                 doc: c["doc"].clone(),
+                stored,
             })
         })
         .collect()
@@ -845,6 +876,204 @@ fn case_value(j: &Json) -> Result<dpp::platform_value::Value> {
         Json::Array(a) => Value::Array(a.iter().map(case_value).collect::<Result<_>>()?),
         other => other.clone().into(),
     })
+}
+
+/// Judge one vector case: `None` when a node would accept it, else the reason it names (see
+/// [`refusal_reason`]) and the error. First the document-property validation every create and
+/// replace runs; then, for a create, the create structure checks, and for a replace, the
+/// `immutable` check of [`immutable_refusal`].
+fn judge(
+    contract: &DataContract,
+    case: &Case,
+    owner: Identifier,
+    pv: &PlatformVersion,
+) -> Result<Option<(String, String)>> {
+    let signer = case.owner.unwrap_or(owner);
+    let system = DocumentSystemValues::owned_by(signer);
+    let data = case_value(&case.doc)?;
+    let mut errors = contract
+        .validate_document_properties(&case.doc_type, data.clone(), &system, pv)
+        .map_err(|e| anyhow!("{e}"))?
+        .errors;
+    if errors.is_empty() {
+        match &case.stored {
+            None => errors = create_structure_errors(contract, &case.doc_type, data, signer, pv)?,
+            Some(stored) => {
+                let stored = case_value(stored)?;
+                return immutable_refusal(contract, &case.doc_type, stored, data, signer).map(
+                    |p| {
+                        p.map(|p| {
+                            (
+                                "40128".to_string(),
+                                format!("immutable property {p} changed"),
+                            )
+                        })
+                    },
+                );
+            }
+        }
+    }
+    Ok(errors.first().map(|e| (refusal_reason(e), e.to_string())))
+}
+
+/// The property a replace of `stored` by `written` may not change, if any: a port of the v5
+/// immutability check (drive-abci `document_replace_transition_action/state_v1/mod.rs:58-140`,
+/// its inputs at :168-227). The changed properties are the top-level ones whose value differs by
+/// data, or that one side lacks (drive `document_replace_transition_action/v0/transformer.rs:
+/// 147-173`), in name order; a property listed by name is refused, one listed with a condition
+/// only when the condition holds on the written properties with the stored ones under `$old`
+/// (a fault counts as holding). Not ported: a replace clearing a `deletableDocument` reference
+/// whose target is gone, which needs state; no forge type freezes one.
+fn immutable_refusal(
+    contract: &DataContract,
+    doc_type: &str,
+    stored: dpp::platform_value::Value,
+    written: dpp::platform_value::Value,
+    signer: Identifier,
+) -> Result<Option<String>> {
+    use dpp::data_contract::document_type::property_constraints::STORED_DOCUMENT_KEY;
+    use dpp::platform_value::Value;
+    let dt = contract
+        .document_type_for_name(doc_type)
+        .map_err(|e| anyhow!("{e}"))?;
+    let stored = stored.into_btree_string_map().map_err(|e| anyhow!("{e}"))?;
+    let written = written
+        .into_btree_string_map()
+        .map_err(|e| anyhow!("{e}"))?;
+    let changed: std::collections::BTreeSet<&String> = written
+        .iter()
+        .filter(|(k, v)| {
+            !stored
+                .get(*k)
+                .is_some_and(|old| old.equal_underlying_data(v))
+        })
+        .map(|(k, _)| k)
+        .chain(stored.keys().filter(|k| !written.contains_key(*k)))
+        .collect();
+    let mut old = written.clone();
+    for property in &changed {
+        match stored.get(*property) {
+            Some(value) => {
+                old.insert((*property).clone(), value.clone());
+            }
+            None => {
+                old.remove(*property);
+            }
+        }
+    }
+    let mut data: Vec<(Value, Value)> = written
+        .iter()
+        .map(|(k, v)| (Value::Text(k.clone()), v.clone()))
+        .collect();
+    data.push((
+        Value::Text(STORED_DOCUMENT_KEY.to_string()),
+        Value::Map(old.into_iter().map(|(k, v)| (Value::Text(k), v)).collect()),
+    ));
+    let data = Value::Map(data);
+    // A condition is judged as a rule judges a replace; no forge condition reads the block, so
+    // the writer is the one system value given
+    let system = DocumentSystemValues::owned_by(signer);
+    for property in changed {
+        let frozen = match dt.immutable_field_conditions().get(property) {
+            Some(condition) => condition.holds(&data, &system).unwrap_or(true),
+            None => dt.immutable_fields().contains(property),
+        };
+        if frozen {
+            return Ok(Some(property.clone()));
+        }
+    }
+    Ok(None)
+}
+
+/// The index vectors of one contract (`<name>.indices.json`): `{item, name, type, index?, expect,
+/// properties?, has?}`. `expect` is `present` or `absent`; without `index` it is about the
+/// document type itself. `properties` lists the index's property names in order, and `has` the
+/// index flags it must have (`true`) or lack (`false`): `unique`, `rangeCountable`,
+/// `rankedCountable`, `outlivesDelete`, `timeRange`, and `derived` (every property the parse
+/// reads through a reference, v5's derived index properties). Judged on the parsed contract, so a
+/// keyword the parser drops or reads differently fails here.
+fn check_indices(contract: &DataContract, path: &std::path::Path) -> Result<usize> {
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let list: Vec<Json> =
+        serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    let mut wrong = Vec::new();
+    for c in &list {
+        let label = format!(
+            "[{}] {}",
+            c["item"].as_str().unwrap_or("?"),
+            c["name"].as_str().unwrap_or("?")
+        );
+        let doc_type = c["type"].as_str().context("an index vector without type")?;
+        let present = match c["expect"].as_str() {
+            Some("present") => true,
+            Some("absent") => false,
+            other => bail!("{label}: expect is present or absent, not {other:?}"),
+        };
+        let dt = contract.document_type_optional_for_name(doc_type);
+        let Some(index_name) = c["index"].as_str() else {
+            if dt.is_some() != present {
+                wrong.push(format!(
+                    "{label}: type {doc_type} is {}",
+                    if present { "absent" } else { "present" }
+                ));
+            }
+            continue;
+        };
+        let Some(dt) = dt else {
+            wrong.push(format!("{label}: no type {doc_type}"));
+            continue;
+        };
+        let Some(index) = dt.indexes().get(index_name) else {
+            if present {
+                wrong.push(format!("{label}: {doc_type} has no index {index_name}"));
+            }
+            continue;
+        };
+        if !present {
+            wrong.push(format!("{label}: {doc_type} has index {index_name}"));
+            continue;
+        }
+        let names: Vec<&str> = index.properties.iter().map(|p| p.name.as_str()).collect();
+        if let Some(want) = c.get("properties") {
+            let want: Vec<&str> = want
+                .as_array()
+                .context("properties is a list")?
+                .iter()
+                .filter_map(Json::as_str)
+                .collect();
+            if names != want {
+                wrong.push(format!(
+                    "{label}: {doc_type}.{index_name} is over {names:?}, not {want:?}"
+                ));
+            }
+        }
+        for (flag, want) in c.get("has").and_then(Json::as_object).into_iter().flatten() {
+            let got = match flag.as_str() {
+                "unique" => index.unique,
+                "rangeCountable" => index.range_countable,
+                "rankedCountable" => index.ranked_countable,
+                "outlivesDelete" => index.outlives_delete,
+                "timeRange" => index.time_range.is_some(),
+                "derived" => names
+                    .iter()
+                    .any(|n| dt.derived_index_properties().contains_key(*n)),
+                other => bail!("{label}: unknown index flag {other}"),
+            };
+            if Some(got) != want.as_bool() {
+                wrong.push(format!("{label}: {doc_type}.{index_name} {flag} is {got}"));
+            }
+        }
+    }
+    if !wrong.is_empty() {
+        bail!(
+            "{} of {} index vectors disagree:\n     {}",
+            wrong.len(),
+            list.len(),
+            wrong.join("\n     ")
+        );
+    }
+    Ok(list.len())
 }
 
 /// The document-only checks a node runs on a create right after the document schema

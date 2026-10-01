@@ -19,11 +19,11 @@
 //   4. a `policy` whose `requiredChecks` are pinned to `requiredCheckSources` is accepted;
 //   5. a `watch` is created and deleted by its values;
 //   6. `count` on `topic.byName` counts the scratch repo's topic;
-//   7. `documents.ranked` on `starBeat` with `oldest` returns the seeded order: MEMBER and THIRD
-//      beat the first repo, MEMBER the second.
+//   7. `documents.ranked` on `starBeat` (on `star` with RC2's fused star) with `oldest` returns
+//      the seeded order: MEMBER and THIRD beat the first repo, MEMBER the second.
 // Writes only to repos it creates (`c1-verify-<run>`), about 0.02 DASH per identity.
 import {
-  VIS, checkOutcome, expectRefused, idBytes, loadIdentity, log, membership, openSession, parseArgs, refusalOf, runIfMain, until,
+  FUSED_STAR, VIS, checkOutcome, expectRefused, idBytes, loadIdentity, log, membership, openSession, parseArgs, refusalOf, runIfMain, until,
 } from './lib/seed-io.mjs';
 
 const MOVED = {
@@ -117,19 +117,20 @@ export async function main(argv, injected) {
   check('count on topic.byName counts the tagged repo', counted);
 
   // 7. ranked trending with `oldest`: two beats on the first repo, one on the second
+  const beatType = FUSED_STAR ? 'star' : 'starBeat';
   for (const [w, id] of [[MEMBER, R], [THIRD, R], [MEMBER, idBytes(repo2Id)]]) {
-    await create(w, 'starBeat', { repoId: id, vis: VIS, repoOwner: idBytes(OWNER.id) });
+    await create(w, beatType, FUSED_STAR ? { repoId: id } : { repoId: id, vis: VIS, repoOwner: idBytes(OWNER.id) });
   }
   // The scratch repos' rows of the ranking, in ranked order: [repoId, count].
   let mine = [];
   await until(async () => {
     const ranked = await retry((sdk) =>
-      sdk.documents.ranked({ dataContractId: ids.community, documentTypeName: 'starBeat', groupBy: 'repoId', aggregate: { type: 'count' }, limit: 100, timeRange: [{ field: '$createdAt', selector: 'oldest' }] }),
+      sdk.documents.ranked({ dataContractId: ids.community, documentTypeName: beatType, groupBy: 'repoId', aggregate: { type: 'count' }, limit: 100, timeRange: [{ field: '$createdAt', selector: 'oldest' }] }),
     );
     mine = ranked.entries.filter((e) => e.groupValue === repoId || e.groupValue === repo2Id).map((e) => [e.groupValue, Number(e.value)]);
     return mine.length === 2;
   });
-  check('ranked(starBeat, oldest) returns the seeded order', JSON.stringify(mine) === JSON.stringify([[repoId, 2], [repo2Id, 1]]), JSON.stringify(mine));
+  check(`ranked(${beatType}, oldest) returns the seeded order`, JSON.stringify(mine) === JSON.stringify([[repoId, 2], [repo2Id, 1]]), JSON.stringify(mine));
 
   const failed = results.filter((r) => !r.ok).length;
   console.log(JSON.stringify({ run, repoId, repo2Id, passed: results.length - failed, failed }));

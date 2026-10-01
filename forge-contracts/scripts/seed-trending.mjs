@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // seed-trending.mjs — the data forge-web/e2e/trending.spec.ts ranks: three new repos starred by
 // three identities so that Trending has a known shape (3, 2 and 1 new stargazers). Each star
-// comes with its trending beat, and the exact `$createdAt` of every beat is read back from the
-// chain.
+// comes with its trending beat (with RC2's fused star, FUSED_STAR, the star is the beat), and
+// the `$createdAt` of every beat is bracketed by the clock around its write.
 //
 //   node forge-contracts/scripts/seed-trending.mjs --out <seed.json> --owner <D.identity.json> \
 //        --identity <A.identity.json> --identity <B.identity.json> --identity <C.identity.json> \
@@ -22,7 +22,7 @@
 // per identity and repo, ever).
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
-import { VIS, idBytes, loadIdentity, log, membership, openSession, parseArgs, runIfMain, until } from './lib/seed-io.mjs';
+import { FUSED_STAR, VIS, idBytes, loadIdentity, log, membership, openSession, parseArgs, runIfMain, until } from './lib/seed-io.mjs';
 
 export async function main(argv, injected) {
   const opt = parseArgs(argv, ['identity']);
@@ -47,10 +47,12 @@ export async function main(argv, injected) {
     if (state.beats.some((b) => b.repoId === repoId && b.owner === w.id)) return;
     const own = (type) => read.owns(w, type, repoId);
     const before = Date.now();
-    if (!(await own('star'))) await write(w, 'star', { repoId: idBytes(repoId) });
-    if (await own('starBeat')) log(`the beat of ${w.id.slice(0, 6)} on ${repoId.slice(0, 6)} landed in an earlier run: its time is taken as now`);
+    const beatType = FUSED_STAR ? 'star' : 'starBeat';
+    if (!FUSED_STAR && !(await own('star'))) await write(w, 'star', { repoId: idBytes(repoId) });
+    if (await own(beatType)) log(`the beat of ${w.id.slice(0, 6)} on ${repoId.slice(0, 6)} landed in an earlier run: its time is taken as now`);
+    else if (FUSED_STAR) await write(w, 'star', { repoId: idBytes(repoId) });
     else await write(w, 'starBeat', { repoId: idBytes(repoId), vis: VIS, repoOwner: idBytes(D.id) });
-    if (!(await until(() => own('starBeat')))) throw new Error(`the beat of ${w.id} on ${repoId} did not land`);
+    if (!(await until(() => own(beatType)))) throw new Error(`the beat of ${w.id} on ${repoId} did not land`);
     const after = Date.now();
     const day = 86_400_000;
     if (Math.floor(before / day) !== Math.floor(after / day)) throw new Error('the beat straddled 00:00 UTC; rerun (the window test needs its day)');
