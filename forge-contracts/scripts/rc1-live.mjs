@@ -17,9 +17,11 @@
 //   state     dense numbering (issues and PRs), transitions c1..c5 (mod 16; kinds 1, 2, 11..17),
 //             the lock bit c6 and lockGate on comments and reviews (R-15), a stranger's transition
 //             (40120), an author's close, member verdicts (R-16), the grouped count / sum keying
-//             (§3.1 1-2), set-once check-run fields (D-5 / RC2 M1, 40128), and with RC2 S2/S3 the
-//             proved review feeds (toAuthor, author)
-//   threads   reply roots (R-14): a reply to a reply and a reply across threads are refused
+//             (§3.1 1-2), set-once check-run fields (D-5 / RC2 M1, 40128), with RC2 S2/S3 the
+//             proved review feeds (toAuthor, author), and with the QW-069 rider closes that say
+//             why (not planned, a duplicate of #2)
+//   threads   reply roots (R-14): a reply to a reply and a reply across threads are refused; with
+//             the QW2-010 rider a mirrored review comment's hunk, which no replace changes (40128)
 //   packs     platformChunks (R-09) incl. a missing and a stray seq, i64 sizeBytes (O-05), and a
 //             raw push -> clone round trip of a real git pack under its identifier packHash
 //   releases  oneLive (O-04): one live release per tag, unpublish, a sealed publish, no delete
@@ -56,6 +58,9 @@ if (!CORE || !COLLAB || !COMM) throw new Error(`devnet-${devnetName}.json record
 // are what deploy-v2.mjs registered (FUSED_STAR too)
 const EVIDENCE_FROZEN = CONTRACTS.community.documentSchemas.checkRun.immutable.some((e) => typeof e === 'object' && e.property === 'logUrl');
 const REVIEW_INDEXES = new Set(CONTRACTS.collab.documentSchemas.review.indices.map((i) => i.name));
+// The RC2 riders (design/v5/RIDERS.md): QW-069 close reasons, QW2-010 review-comment hunks
+const CLOSE_REASON = 'reason' in CONTRACTS.collab.documentSchemas.transition.properties;
+const REVIEW_HUNK = 'diffHunk' in CONTRACTS.collab.documentSchemas.comment.properties;
 
 const evo = await loadEvoSdk();
 const { EvoSDK, Document, IdentityPublicKey, IdentitySigner, PrivateKey, Identifier } = evo;
@@ -328,6 +333,13 @@ if (want('state') && I1 && I2 && PR3) {
   await no('R-15', 'unlock an unlocked issue (c6)', M, COLLAB, 'transition', T(I1, 1, 0, 4, -16), [10422], 'c6_lockedAfter');
   await sleep(A_BLOCK);
   await ok('R-15', "stranger's comment after the unlock", S, COLLAB, 'comment', { repoId: R, targetId: id(docId(I1)), body: 'thanks', vis: 'public' }, 'comment');
+  if (CLOSE_REASON) {
+    // QW-069: a close says why (no rule reads it; its bounds are the offline vectors'), and a reopen clears it
+    await ok('QW-069', 'close as not planned', M, COLLAB, 'transition', T(I1, 1, 0, 1, 1, { reason: 2 }), 'transition: close with a reason');
+    await ok('QW-069', 'reopen', M, COLLAB, 'transition', T(I1, 1, 0, 2, -1));
+    await ok('QW-069', 'close as a duplicate of #2', M, COLLAB, 'transition', T(I1, 1, 0, 1, 1, { reason: 3, dupNumber: 2 }), 'transition: close as a duplicate');
+    await ok('QW-069', 'reopen after the duplicate close', M, COLLAB, 'transition', T(I1, 1, 0, 2, -1));
+  }
   // PR: draft, ready, lock, review gate, merge, and the terminal merged state
   await ok('state', 'draft', M, COLLAB, 'transition', T(PR3, 3, 1, 14, 8), 'transition: member draft (first on the PR)');
   await no('state', 'merge a draft (c3)', M, COLLAB, 'transition', T(PR3, 3, 1, 13, 2, { oid: bytes(20, 3) }), [10422], 'c3_mergedAfter');
@@ -402,6 +414,15 @@ if (want('threads') && I1 && I2) {
   if (reply) await no('R-14', 'reply to a reply', S, COLLAB, 'comment', { repoId: R, targetId: id(docId(I2)), body: 're re', vis: 'public', replyTo: id(docId(reply)) }, [40127]);
   if (root) await no('R-14', "reply naming another issue's comment", S, COLLAB, 'comment', { repoId: R, targetId: id(docId(I1)), body: 'x', vis: 'public', replyTo: id(docId(root)) }, [40127]);
   await no('R-14', 'reply to a comment that does not exist', S, COLLAB, 'comment', { repoId: R, targetId: id(docId(I2)), body: 'x', vis: 'public', replyTo: bytes(32, 9) }, [40120]);
+  if (REVIEW_HUNK) {
+    // QW2-010: a mirrored review comment keeps its source hunk, which no replace may change
+    const imported = { author: 'octocat', createdAt: 1700000000000, url: 'https://github.com/o/r/pull/1#discussion_r1' };
+    const mirrored = await ok('QW2-010', 'imported review comment with a hunk', M, COLLAB, 'comment', {
+      repoId: R, targetId: id(docId(I2)), body: 'nit', vis: 'public', path: 'src/a.rs', line: 3, side: 1,
+      diffHunk: '@@ -1,2 +1,3 @@\n a\n+b\n c', imported, asMember: id(M.id),
+    }, 'comment: with a diff hunk');
+    if (mirrored) await refusedOp('QW2-010', 'a replace that changes the hunk (immutable)', () => sdk.documents.replace({ document: revised(mirrored, { diffHunk: '@@ -1 +1 @@\n+forged' }), ...ownOps(M) }), [40128]);
+  }
 }
 
 // ---------------- packs: completeness, bytes, a raw push -> clone ----------------
