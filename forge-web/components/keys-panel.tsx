@@ -112,7 +112,8 @@ export function KeysPanel(): JSX.Element {
             <BatteryCharging className="h-3.5 w-3.5" aria-hidden /> Top up key budget
           </Button>
         ) : null}
-        <Button variant={unlimitedKey || pasted ? 'primary' : 'outline'} size="sm" onClick={() => openLogin('import')}>
+        {/* A pasted key is not Forge's to renew: that is a first import. */}
+        <Button variant={unlimitedKey || pasted ? 'primary' : 'outline'} size="sm" onClick={() => openLogin(pasted ? 'import' : 'renew')}>
           <RefreshCw className="h-3.5 w-3.5" aria-hidden /> {pasted ? 'Use a limited key instead' : unlimitedKey ? 'Replace with a limited key' : 'Renew key'}
         </Button>
         {pasted ? (

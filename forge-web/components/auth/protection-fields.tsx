@@ -19,8 +19,10 @@ import { clockSkewErrorCopy } from '@/lib/sdk/clock-skew'
  * `preferPasskey`: the key has no budget or expiry (a shipped wallet's key), so a passkey is the
  * default choice (the primary button, with a caution against a passphrase alone). A passphrase
  * is still accepted: not every authenticator supports PRF, and that is only known after trying.
+ * `onSubmit`: what Enter in a passphrase field does (QW3-027: the sheet's button sits outside
+ * this form, and a form of two password fields with no submit button ignores Enter).
  */
-export function useProtection(opts: { readonly preferPasskey?: boolean } = {}): {
+export function useProtection(opts: { readonly preferPasskey?: boolean; readonly onSubmit?: () => void } = {}): {
   readonly fields: JSX.Element
   /** The protection, or null with `problem` set when not ready. */
   readonly protection: Protection | null
@@ -83,8 +85,20 @@ export function useProtection(opts: { readonly preferPasskey?: boolean } = {}): 
     setPassphrase('')
     setConfirm('')
   }, [])
+  const submitRef = useRef(opts.onSubmit)
+  submitRef.current = opts.onSubmit
   const fields = (
-    <form ref={onFormMount} className="space-y-3 rounded-md border border-anvil-200 p-3 dark:border-anvil-800" onSubmit={(e) => e.preventDefault()}>
+    <form
+      ref={onFormMount}
+      className="space-y-3 rounded-md border border-anvil-200 p-3 dark:border-anvil-800"
+      onSubmit={(e) => e.preventDefault()}
+      onKeyDown={(e) => {
+        // Enter in a passphrase field submits the sheet (an IME composing a character is not done).
+        if (e.key !== 'Enter' || e.nativeEvent.isComposing || !(e.target instanceof HTMLInputElement) || e.target.type !== 'password') return
+        e.preventDefault()
+        submitRef.current?.()
+      }}
+    >
       <p className="text-dense font-medium">Protect this browser&apos;s key</p>
       {preferPasskey && !passkey ? (
         <p className="text-[12px] text-caution-700 dark:text-caution-400" data-testid="prefer-passkey">

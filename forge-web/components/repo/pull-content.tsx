@@ -86,18 +86,20 @@ import {
   type VerdictInput,
 } from '@/lib/repo'
 import { checksPhrase, expectedChecks, readCheckRuns, requiredSources, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
-import { headSync, readBranchState, readBranchTip } from '@/lib/repo/source-branch'
+import { branchShown, headSync, readBranchState, readBranchTip, readBranchUpdates, type BranchWrite } from '@/lib/repo/source-branch'
 import type { Event, EventKind, Holdings, RefState } from '@/lib/rules'
 import { linkedIssues, RoleOracle, type ChecksState, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { checksState } from '@/lib/rules/parity'
 import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, sumPreviews, type CostPreview as Cost } from '@/lib/sdk'
 import { commentEditDrops, pullSinceYourReview } from '@/lib/view/issues-view'
 import { totalHidden } from '@/lib/repo/private-content'
-import { headUpdatePhrases } from '@/lib/view/head-updates'
+import { firstPushers, headUpdatePhrases, type HeadUpdatePhrase } from '@/lib/view/head-updates'
 import { inlineCommentIds, lineKey, repliesByRoot } from '@/lib/view/inline-threads'
 import { appliedSuggestions, prCommits, prHaveSet } from '@/lib/view/pr-commits'
 import { anchorOnHead } from '@/lib/view/inline-threads'
 import { snippetKey, snippetSource } from '@/lib/view/anchor-snippet'
+import { carryAnchor, carryFrom, lineMap, type LineMap } from '@/lib/view/carry-anchor'
+import type { Anchor } from '@/lib/rules/v2'
 import { AnchorContext, useSnippetTexts } from '@/components/repo/anchor-snippet'
 import { WALK_COMMIT_CAP } from '@/lib/merge/objects'
 import { commentsShown, draftIsEmpty, draftWhereabouts, reviewShows, SUBMIT_WAIT } from '@/lib/view/pending-review'
@@ -191,6 +193,8 @@ type Pending =
   | { kind: 'milestone'; title: string | null }
   /** Delete the source branch of a closed PR (QW2-057). */
   | { kind: 'delete-branch'; label: string; run: () => Promise<void> }
+  /** Point a closed PR's deleted source branch at its head again (QW3-052). */
+  | { kind: 'restore-branch'; label: string; run: () => Promise<void> }
   | { kind: 'define-label'; name: string; color: string; description: string }
   | { kind: 'edit-pull'; title: string; body: string }
   | { kind: 'edit-comment'; id: string; body: string }
@@ -319,7 +323,7 @@ function PullPage({
   // Who the composer's lock banner speaks to (a member keeps the composer).
   const lockViewer = lockViewerOf(viewer, holdings)
   const open = pull.state.open
-  const { slot: mergeSlot, onRunning: setMergeRunning } = useMergeSlot(tab, open && pull.state.draft)
+  const { slot: mergeSlot, running: mergeBusy, onRunning: setMergeRunning } = useMergeSlot(tab, open && pull.state.draft)
   const merged = pull.state.merged
   const target = { id: pull.id, number: pull.number }
   const stateTarget = { ...target, type: 'patch' as const, author: pull.author }
@@ -332,11 +336,26 @@ function PullPage({
     if (!sdk || !signer) throw new Error('sign in to continue')
     // Read again now (the config may have changed since the page loaded); a failed read refuses.
     const defaultBranch = await readDefaultBranch(sdk, src).catch(() => null)
-    const tip = await readBranchTip(sdk, src, refName)
+    const state = await readBranchState(sdk, src, refName)
+    // Diverged: no single tip to delete from, and nothing is written (never reported as deleted).
+    if (state?.state === 'diverged') throw new Error(`${shortBranch(refName)} has diverged heads; delete it with git`)
+    const tip = state?.state === 'resolved' ? state.oid : null
     const problem = deleteBranchProblem({ refName, sameRepo: src.repoId === repo.repoId, baseRefName: pull.baseRefName, defaultBranch, headOid, tip })
     if (problem !== null) throw new Error(problem)
+    // Already gone (or never recorded): nothing to write, and it is deleted.
     if (tip === null) return
     await writeRefUpdate(sdk, signer, src, { refName, newOid: '0'.repeat(headOid.length), prevOid: headOid }, { intent: `delete-branch:${src.repoId}:${refName}:${headOid}` })
+  }
+  /**
+   * Restore a deleted source branch at the PR's head (GitHub's "Restore branch", QW3-052): a ref
+   * update naming the head, read again first so a branch pushed meanwhile is never overwritten.
+   * The head's objects are still stored in the source repo: deleting a branch deletes no pack.
+   */
+  const restoreSourceBranch = async (src: RepoRef, refName: string, headOid: string): Promise<void> => {
+    if (!sdk || !signer) throw new Error('sign in to continue')
+    const now = await readBranchState(sdk, src, refName)
+    if (now !== null && now.state !== 'unborn') throw new Error(`${shortBranch(refName)} exists again; reload to see where it points`)
+    await writeRefUpdate(sdk, signer, src, { refName, newOid: headOid }, { intent: `restore-branch:${src.repoId}:${refName}:${headOid}` })
   }
 
   // ---- the comparison (Files changed, the tab counts, the commit list) -----------------------
@@ -350,10 +369,24 @@ function PullPage({
     [cmp === null ? '' : `${cmp.comparedBaseOid}:${comparison.sidesKey}`, pull.headOid, baseTipOid],
     { enabled: headReader !== null && cmp !== null },
   )
+  // The repo holding the PR's source branch: this one for a same-repo PR, else the fork once read.
+  const sourceRefOf = (): RepoRef | null =>
+    pull.sourceId === '' || pull.sourceId === repo.repoId ? repo : comparison.source.kind === 'found' ? comparison.source.repo : null
+  // Who pushed each head (QW3-048): the source branch's ref updates (one read, both update
+  // types), on the Conversation tab only, where the timeline words each head update.
+  const wantPhrases = tab === 'conversation' && review.headUpdates.length > 0
+  const pushers = useAsync(
+    async () => firstPushers(await readBranchUpdates(sdk!, sourceRefOf()!, pull.sourceRefName!)),
+    [ready, pull.sourceId, pull.sourceRefName ?? '', review.headUpdates.length, comparison.source.kind],
+    { enabled: ready && sdk !== null && wantPhrases && pull.sourceRefName !== null && sourceRefOf() !== null },
+  )
+  const pushersSettled = pull.sourceRefName === null || sourceRefOf() === null || pushers.settled
+  // Commits the base already had (an "Update branch" merge brings them in) are not counted as pushed.
+  const comparedBase = cmp === null || cmp.fellBack === true ? '' : cmp.comparedBaseOid
   const phrases = useAsync(
-    () => headUpdatePhrases(headReader!, pull.initialHeadOid, review.headUpdates),
-    [comparison.sidesKey, review.headUpdates.map((u) => u.id).join(','), headReader === null],
-    { enabled: headReader !== null && review.headUpdates.length > 0 },
+    () => headUpdatePhrases(headReader!, pull.initialHeadOid, review.headUpdates, pushers.data ?? undefined, comparedBase),
+    [comparison.sidesKey, review.headUpdates.map((u) => u.id).join(','), headReader === null, pushers.data === null ? 0 : pushers.data.size, comparedBase],
+    { enabled: headReader !== null && wantPhrases && pushersSettled && cmp !== null },
   )
 
   // ---- checks on the head ---------------------------------------------------------------------
@@ -396,7 +429,13 @@ function PullPage({
     // Read for a merged or closed PR too: its sidebar says whether the branch still exists (QW2-053).
     { enabled: ready && sdk !== null && pull.sourceRefName !== null && (!crossRepo || sourceRef !== null) },
   )
-  const sync = sourceState.settled && !sourceState.error && pull.sourceRefName !== null ? headSync(pull.headOid, sourceState.data) : null
+  const readSync = sourceState.settled && !sourceState.error && pull.sourceRefName !== null ? headSync(pull.headOid, sourceState.data) : null
+  // A branch this page just deleted or restored, until a read of it catches up (QW3-053: right
+  // after "Delete … after merging" the node may still answer with the old tip).
+  const [branchWrite, setBranchWrite] = useState<BranchWrite | null>(null)
+  // Once a read shows the write, the read alone speaks again (later changes by others included).
+  if (branchWrite !== null && readSync !== null && readSync.kind === (branchWrite.to === 'deleted' ? 'deleted' : 'in-sync')) setBranchWrite(null)
+  const sync = branchShown(readSync, branchWrite, pull.sourceRefName, pull.headOid)
   // The PR's author or a maintainer/writer: who may move the head, mark draft/ready, resolve and request.
   const authorOrMember = identity !== null && (isAuthor || isMember)
   const canMoveHead = authorOrMember && open && !writeBlocked
@@ -497,17 +536,64 @@ function PullPage({
   }, [])
   // Suggestions and "Update branch": commits to the PR's source branch (the fork).
   const applied = useMemo(() => appliedSuggestions(commits.data?.commits ?? []), [commits.data])
-  // The code each inline comment was left on, for Conversation (QW2-049): read on that tab only.
-  const snippetSources = useMemo(() => thread.comments.flatMap((c) => (c.anchor === null ? [] : [snippetSource(c.anchor)].filter((s) => s !== null))), [thread.comments])
-  const snippetTexts = useSnippetTexts(tab === 'conversation' ? headReader : null, snippetSources)
+  // Comments left on an older head whose lines the head kept unchanged (QW3-015): carried to the
+  // head at those lines' new numbers, so they stay current (inline in Files changed, not Outdated
+  // in Conversation) and their suggestions stay appliable, as on GitHub.
+  const carryPairs = useMemo(() => {
+    const out = new Map<string, { readonly from: string; readonly path: string }>()
+    for (const c of thread.comments) {
+      const from = c.anchor === null ? null : carryFrom(c.anchor, pull.headOid)
+      if (from !== null && c.anchor !== null) out.set(`${from}\0${c.anchor.path}`, { from, path: c.anchor.path })
+    }
+    return [...out.values()]
+  }, [thread.comments, pull.headOid])
+  // The code each inline comment was left on, for Conversation (QW2-049), and the files a carry
+  // compares: one cache, read on Conversation and (to carry) on Files changed.
+  const snippetSources = useMemo(
+    () => [
+      ...thread.comments.flatMap((c) => (c.anchor === null ? [] : [snippetSource(c.anchor)].filter((s) => s !== null))),
+      ...carryPairs.flatMap((p) => [
+        { commit: p.from, path: p.path },
+        { commit: pull.headOid.toLowerCase(), path: p.path },
+      ]),
+    ],
+    [thread.comments, carryPairs, pull.headOid],
+  )
+  const snippetTexts = useSnippetTexts(tab === 'conversation' || (tab === 'files' && carryPairs.length > 0) ? headReader : null, snippetSources)
+  // One line diff per file and older head, however many comments sit on it.
+  const lineMaps = useMemo(() => {
+    const out = new Map<string, LineMap | null>()
+    for (const p of carryPairs) {
+      const before = snippetTexts.get(snippetKey({ commit: p.from, path: p.path }))
+      const after = snippetTexts.get(snippetKey({ commit: pull.headOid.toLowerCase(), path: p.path }))
+      if (typeof before === 'string' && typeof after === 'string') out.set(`${p.from}\0${p.path}`, lineMap(before, after))
+    }
+    return out
+  }, [carryPairs, snippetTexts, pull.headOid])
+  const carried = useMemo(() => {
+    const out = new Map<string, Anchor>()
+    if (lineMaps.size === 0) return out
+    for (const c of thread.comments) {
+      const a = c.anchor === null ? null : carryAnchor(c.anchor, pull.headOid, lineMaps.get(`${c.anchor.commitOid}\0${c.anchor.path}`))
+      if (a !== null) out.set(c.id, a)
+    }
+    return out
+  }, [thread.comments, pull.headOid, lineMaps])
+  const withCarried = useCallback((c: CommentView): CommentView => {
+    const a = carried.get(c.id)
+    return a === undefined ? c : { ...c, anchor: a }
+  }, [carried])
+  const comments = useMemo(() => (carried.size === 0 ? thread.comments : thread.comments.map(withCarried)), [thread.comments, carried, withCarried])
   const anchorContext = (c: CommentView, label = true): JSX.Element | null => {
-    if (c.anchor === null) return null
-    const source = snippetSource(c.anchor)
+    // A carried comment shows where it is on the head now.
+    const anchor = carried.get(c.id) ?? c.anchor
+    if (anchor === null) return null
+    const source = snippetSource(anchor)
     return (
       <AnchorContext
-        anchor={c.anchor}
+        anchor={anchor}
         text={source === null ? null : snippetTexts.get(snippetKey(source))}
-        outdated={!anchorOnHead(c.anchor, pull.headOid)}
+        outdated={!anchorOnHead(anchor, pull.headOid)}
         applied={applied.get(c.id) ?? null}
         label={label}
       />
@@ -517,7 +603,7 @@ function PullPage({
     repo,
     source: sourceRef,
     pull,
-    comments: thread.comments,
+    comments,
     drafts: reviewDraft.draft?.comments ?? NO_DRAFTS,
     headReader,
     headOnly: comparison.headOnly,
@@ -678,7 +764,9 @@ function PullPage({
         refresh((t) => t.review.milestone === p.title)
         return
       case 'delete-branch':
+      case 'restore-branch':
         await p.run()
+        if (pull.sourceRefName !== null) setBranchWrite({ ref: pull.sourceRefName, head: pull.headOid, to: p.kind === 'delete-branch' ? 'deleted' : 'restored' })
         sourceState.reload()
         // The branch list moved (a same-repo branch is read from the repo home).
         reloadHome?.()
@@ -757,6 +845,7 @@ function PullPage({
       case 'milestone':
         return previewCreate('event', pending.title === null ? {} : { value: pending.title })
       case 'delete-branch':
+      case 'restore-branch':
         return previewCreate('refUpdate')
       case 'dismiss':
         return previewCreate('event', { value: pending.reason })
@@ -785,13 +874,16 @@ function PullPage({
   const conversation = useMemo(
     () =>
       foldMirroredReviews(
-        timeline.filter((t) => !(t.kind === 'comment' && t.comment.replyTo !== null && inlineIds.has(t.comment.id))),
+        timeline
+          .filter((t) => !(t.kind === 'comment' && t.comment.replyTo !== null && inlineIds.has(t.comment.id)))
+          // A comment carried to the head (QW3-015) names its place there.
+          .map((t) => (t.kind === 'comment' && carried.has(t.comment.id) ? { ...t, comment: withCarried(t.comment) } : t)),
         (it) => (it.kind === 'review' ? trustedOrigin(it.review.origin, it.review.reviewer, trust) : trustedOrigin(it.comment.origin, it.comment.author, trust)),
       ),
-    [timeline, inlineIds, trust],
+    [timeline, inlineIds, trust, carried, withCarried],
   )
   const resolved = new Set(review.resolvedThreads)
-  const eventText = (e: Event): string | null => (e.kind === 'headUpdate' && e.id ? phrases.data?.get(e.id) ?? null : null)
+  const eventText = (e: Event): HeadUpdatePhrase | null => (e.kind === 'headUpdate' && e.id ? phrases.data?.get(e.id) ?? null : null)
 
   const counts = {
     conversation: thread.comments.length + thread.reviews.length,
@@ -847,10 +939,19 @@ function PullPage({
   // first-parent fallback).
   const mergedLead = counts.commits === null || cmp?.fellBack === true ? 'Merged' : `${plural(counts.commits, 'commit')} merged`
   const checkout = checkoutCommand(repo, pull.number)
-  // A closed or merged PR's source branch, still at its head, and the viewer may delete it (QW2-057).
-  const closedBranch = ((): { label: string; run: () => Promise<void> } | null => {
+  // A closed or merged PR's source branch, still at its head, and the viewer may delete it (QW2-057);
+  // or deleted, and the viewer may restore it at the head (QW3-052).
+  const closedBranch = ((): { label: string; restore: boolean; run: () => Promise<void> } | null => {
     const name = pull.sourceRefName
-    if (open || closedSource === null || name === null || sync?.kind !== 'in-sync') return null
+    if (open || closedSource === null || name === null || (sync?.kind !== 'in-sync' && sync?.kind !== 'deleted')) return null
+    const label = `${crossRepo ? `${closedSource.name}:` : ''}${shortBranch(name)}`
+    if (sync.kind === 'deleted') {
+      // Who could delete it may restore it: the head is still stored there (only the ref moved).
+      const restorable = closedWrite.known && closedWrite.can && closedSource.visibility === 'public' && pull.headOid !== '' && !(closedSource.repoId === repo.repoId && name === pull.baseRefName)
+      if (!restorable) return null
+      const head = pull.headOid
+      return { label, restore: true, run: () => restoreSourceBranch(closedSource, name, head) }
+    }
     const offer = deleteBranchOffer({
       refName: name,
       source: { visibility: closedSource.visibility, sameRepo: closedSource.repoId === repo.repoId },
@@ -861,8 +962,23 @@ function PullPage({
     })
     if (offer.kind !== 'offer') return null
     const head = pull.headOid
-    return { label: `${crossRepo ? `${closedSource.name}:` : ''}${shortBranch(name)}`, run: () => deleteSourceBranch(closedSource, name, head) }
+    return { label, restore: false, run: () => deleteSourceBranch(closedSource, name, head) }
   })()
+  // A closed PR whose branch is gone reopens once the branch is restored, as on GitHub (QW3-052).
+  const reopenBlocked = !open && !merged && closedBranch?.restore === true ? `Restore the ${shortBranch(pull.sourceRefName ?? '')} branch first: a pull request reopens with its branch.` : null
+  // The repo holding the source branch, for the merge box's last-moment re-read (QW3-013).
+  const branchRepo = sourceRef ?? (crossRepo ? null : repo)
+  const checkSourceBranch = async (): Promise<string | null> => {
+    const name = pull.sourceRefName
+    if (!sdk || name === null || branchRepo === null) return null
+    const tip = await readBranchTip(sdk, branchRepo, name)
+    if (tip === null || tip.toLowerCase() === pull.headOid.toLowerCase()) return null
+    // Show the banner with its "Update PR head" (a same-repo branch is read from the repo home).
+    if (crossRepo) sourceState.reload()
+    else reloadHome?.()
+    return `${shortBranch(name)} moved to ${tip.slice(0, 7)} since this page read it, ahead of this PR's head ${pull.headOid.slice(0, 7)}. Update the PR head first, so the merge includes those commits.`
+  }
+
   const sourceAddr = sourceRef === null ? null : { owner: sourceRef.ownerId, name: sourceRef.name }
 
   return (
@@ -953,8 +1069,10 @@ function PullPage({
         // Every reader is told the PR shows an older head than its branch (QW2-007: an
         // interrupted browser commit, or a push with auto-sync off); who can move it gets the button.
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-forge-500/40 bg-forge-500/5 px-4 py-3 text-dense" data-testid="head-sync-banner">
-          <RefreshCw className="h-4 w-4 text-forge-700 dark:text-forge-400" aria-hidden />
-          <span className="min-w-0 flex-1">
+          <RefreshCw className="h-4 w-4 shrink-0 text-forge-700 dark:text-forge-400" aria-hidden />
+          {/* At least 16rem: on a phone the text keeps the row and the cost and button wrap below it,
+              instead of squeezing it into a narrow column beside them (QW3-054). */}
+          <span className="min-w-[min(16rem,calc(100%-1.75rem))] flex-1">
             {isAuthor ? 'Your branch' : 'The source branch'} <span className="font-mono">{shortBranch(pull.sourceRefName ?? '')}</span> is at{' '}
             <Oid value={sync.tip} chars={7} copyable={false} />, but this PR is at <Oid value={pull.headOid} chars={7} copyable={false} />.
             {authorOrMember ? null : (
@@ -1050,7 +1168,7 @@ function PullPage({
             <>
               {/* Description */}
               <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
-                <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
                   <Byline author={pull.author} createdAt={pull.createdAt} origin={origin} verb="opened this" />
                   <EditedMarker createdAt={pull.createdAt} updatedAt={pull.updatedAt} />
                 </div>
@@ -1096,20 +1214,34 @@ function PullPage({
               <HiddenNote hidden={0} what="comments and reviews" home={home} by={thread.hidden} />
               <EventValuesNote counts={thread.eventValues} />
 
-              {closedBranch !== null && guard.disabledReason === null && !archived ? (
+              {closedBranch !== null && guard.disabledReason === null && !archived && !mergeBusy ? (
                 <section aria-label="Source branch" className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-200 px-4 py-3 dark:border-anvil-800" data-testid="closed-branch-box">
                   {merged ? <GitMerge className="h-5 w-5 shrink-0 text-dash" aria-hidden /> : <GitPullRequestClosed className="h-5 w-5 shrink-0 text-danger-700 dark:text-danger-400" aria-hidden />}
                   <div className="min-w-0 flex-1 text-dense">
-                    <p className="font-medium">{merged ? 'Pull request merged and closed' : 'Closed with unmerged commits'}</p>
+                    <p className="font-medium">{merged ? 'Pull request merged and closed' : closedBranch.restore ? 'Closed, and its branch was deleted' : 'Closed with unmerged commits'}</p>
                     <p className="break-words text-anvil-500 dark:text-anvil-400">
-                      {merged ? 'The ' : 'This pull request is closed, but the '}
-                      <span className="font-mono">{closedBranch.label}</span>
-                      {merged ? ' branch can be deleted.' : ' branch still has its commits.'}
+                      {closedBranch.restore ? (
+                        <>
+                          The <span className="font-mono">{closedBranch.label}</span> branch was deleted.{merged ? '' : ' Restore it to reopen this pull request.'}
+                        </>
+                      ) : (
+                        <>
+                          {merged ? 'The ' : 'This pull request is closed, but the '}
+                          <span className="font-mono">{closedBranch.label}</span>
+                          {merged ? ' branch can be deleted.' : ' branch still has its commits.'}
+                        </>
+                      )}
                     </p>
                   </div>
-                  <Button variant="outline" size="sm" onClick={() => setPending({ kind: 'delete-branch', label: closedBranch.label, run: closedBranch.run })} data-testid="delete-branch">
-                    Delete branch
-                  </Button>
+                  {closedBranch.restore ? (
+                    <Button variant="outline" size="sm" onClick={() => setPending({ kind: 'restore-branch', label: closedBranch.label, run: closedBranch.run })} data-testid="restore-branch">
+                      Restore branch
+                    </Button>
+                  ) : (
+                    <Button variant="outline" size="sm" onClick={() => setPending({ kind: 'delete-branch', label: closedBranch.label, run: closedBranch.run })} data-testid="delete-branch">
+                      Delete branch
+                    </Button>
+                  )}
                 </section>
               ) : null}
 
@@ -1199,6 +1331,12 @@ function PullPage({
                 }}
                 extras={{
                   onRunning: setMergeRunning,
+                  branchAhead: sync?.kind === 'ahead' ? { branch: shortBranch(pull.sourceRefName ?? ''), tip: sync.tip } : null,
+                  checkSourceBranch,
+                  onBranchDeleted: () => {
+                    if (pull.sourceRefName !== null) setBranchWrite({ ref: pull.sourceRefName, head: pull.headOid, to: 'deleted' })
+                    sourceState.reload()
+                  },
                   active: mergeSlot === 'shown',
                   unmetRules: actions.unmetRules,
                   canBypass: actions.canBypass,
@@ -1259,7 +1397,8 @@ function PullPage({
                       <Button
                         variant="outline"
                         onClick={() => setPending(withComment === null ? { kind: 'state', to: open ? 'close' : 'reopen' } : { kind: 'state', to: open ? 'close' : 'reopen', comment: withComment })}
-                        disabled={!signer || guard.disabledReason !== null || archived}
+                        disabled={!signer || guard.disabledReason !== null || archived || reopenBlocked !== null}
+                        title={reopenBlocked ?? undefined}
                         data-testid="pull-state-toggle"
                       >
                         {open ? <GitPullRequestClosed className="h-3.5 w-3.5 text-danger-700 dark:text-danger-400" aria-hidden /> : <GitPullRequest className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden />}
@@ -1324,6 +1463,11 @@ function PullPage({
                   </p>
                 ) : actions.mergeHint !== null ? (
                   <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{actions.mergeHint}</p>
+                ) : null}
+                {reopenBlocked !== null && actions.canCloseReopen ? (
+                  <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="reopen-blocked">
+                    {reopenBlocked}
+                  </p>
                 ) : null}
                 {commentError ? (
                   <div role="alert" className="mt-2 break-words rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400">
@@ -1395,7 +1539,7 @@ function PullPage({
                   writeBlock={composeBlock}
                   pullId={pull.id}
                   headOid={pull.headOid}
-                  comments={thread.comments}
+                  comments={comments}
                   changedPaths={new Set(c.changes.flatMap((x) => (x.oldPath !== undefined ? [x.path, x.oldPath] : [x.path])))}
                   onPosted={onInlinePosted}
                   actions={threadActions}
@@ -1690,6 +1834,12 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
       return pending.title === null
         ? { title: 'Clear the milestone', description: 'Appends a milestone-clear event.', label: 'Sign & clear' }
         : { title: `Set milestone "${pending.title}"`, description: 'Appends a milestone event naming it.', label: 'Sign & set' }
+    case 'restore-branch':
+      return {
+        title: `Restore branch ${pending.label}`,
+        description: `Records a ref update that points the branch at this PR's head, ${head.slice(0, 9)}, again. Its commits are still stored in the repo.`,
+        label: 'Sign & restore branch',
+      }
     case 'delete-branch':
       return {
         title: `Delete branch ${pending.label}`,
