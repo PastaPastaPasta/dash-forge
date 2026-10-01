@@ -69,6 +69,7 @@ import {
   budgetEmptyTitle,
   readingLabel,
   tabCount,
+  useAutoReadOn,
   useListQuery,
   useReadProgress,
   type ListGrammar,
@@ -136,9 +137,14 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
       }
       return track(signal, (options) => queryPulls(sdk!, home.repo, selection, total, network, options))
     },
-    [ready, repoKey(home.repo), generation, JSON.stringify(query), identity ?? '', total ?? -1, query.authorLogin !== null && trust !== null ? [...trust].sort().join(',') : null],
+    // Not `total`: it arrives while page 1 reads, and the same query again reads on a load (a sort or
+    // search would read two loads cold). The page's own proved count fills in for it.
+    [ready, repoKey(home.repo), generation, JSON.stringify(query), identity ?? '', query.authorLogin !== null && trust !== null ? [...trust].sort().join(',') : null],
     { enabled: ready && sdk !== null && (!needsViewer || identity !== null) && !awaitingTrust },
   )
+
+  // A sparse tab finding its older rows through the state scan reads on by itself (QW3-002).
+  useAutoReadOn(data?.searchedOf, loading, reload)
 
   const labelDefs = useMemo(() => new Map((data?.labels ?? []).map((l) => [l.name, l])), [data])
   // The page's heads, for the status dots, read once the rows are shown. A row's head is the one
@@ -212,20 +218,21 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
 
         {needsViewer && identity === null ? (
           <p className="px-4 py-6 text-dense text-anvil-500 dark:text-anvil-400">Sign in to filter by your own pull requests, assignments and review requests.</p>
-        ) : (loading || awaitingTrust) && !data ? (
-          <LoadingBlock label={readingLabel('pull requests', progress, total)} />
+        ) : ((loading || awaitingTrust) && !data) || (data !== null && data.rows.length === 0 && data.searchedOf?.auto) ? (
+          <LoadingBlock label={readingLabel('pull requests', progress ?? data?.searchedOf?.searched ?? null, total)} />
         ) : error ? (
           <div className="p-4"><ErrorState message={error} onRetry={reload} /></div>
         ) : lastPage !== null ? (
           <PastLastPage page={query.page} last={lastPage} onPage={(page) => change({ page })} />
         ) : data !== null && data.rows.length === 0 && data.searchedOf?.more ? (
           // The page stopped at its read budget before reaching any: there are older ones to read.
-          <EmptyState icon={GitPullRequest} title={budgetEmptyTitle(query.page, data.searchedOf.searched, 'pull requests')} body="Older ones are not read yet." />
+          <EmptyState icon={GitPullRequest} title={budgetEmptyTitle(query.page, data.searchedOf.searched, 'pull requests', query.sort === 'oldest')} body={query.sort === 'oldest' ? 'Newer ones are not read yet.' : 'Older ones are not read yet.'} />
         ) : data !== null && data.rows.length === 0 ? (
           <EmptyState
             icon={GitPullRequest}
             title={filtered ? 'No pull requests match' : query.state === 'all' ? 'No pull requests yet' : `No ${query.state} pull requests`}
             body={emptyPullsBody(filtered, query.state, settled)}
+            action={filtered && query.state !== 'all' ? <Button onClick={() => change({ state: 'all' })} data-testid="pulls-search-all">Search all pull requests</Button> : undefined}
           />
         ) : (
           <ul aria-label="Pull requests" aria-busy={loading}>
@@ -259,7 +266,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
         )}
       </div>
 
-      <SearchedNote searchedOf={data?.searchedOf} noun="pull requests" onMore={reload} reading={loading ? progress ?? data?.searchedOf?.searched ?? 0 : null} />
+      <SearchedNote searchedOf={data?.searchedOf} noun="pull requests" onMore={reload} oldest={query.sort === 'oldest'} reading={loading ? progress ?? data?.searchedOf?.searched ?? 0 : null} />
       {data !== null && !data.stateComplete ? (
         <p className="mt-2 text-[12px] text-danger-700 dark:text-danger-400">
           Some of these pull requests have too many events to read completely, so their labels and assignees are unverified.

@@ -153,12 +153,17 @@ export async function readKindCounts(sdk: EvoSDK, repo: RepoRef): Promise<Map<nu
  * The repo's open / closed / merged / draft totals: the issue and PR totals (`perRepo`) and the
  * transition counts by kind, three proved requests in parallel (`STATE-COUNTS.md` §4).
  */
-export async function readRepoCounts(sdk: EvoSDK, repo: RepoRef): Promise<RepoCounts & { readonly issues: number; readonly patches: number }> {
+export async function readRepoCounts(
+  sdk: EvoSDK,
+  repo: RepoRef,
+): Promise<RepoCounts & { readonly issues: number; readonly patches: number; readonly transitions: number }> {
   // The totals through `readTargetCounts`: after this browser created an issue or PR it re-reads
   // a node that is a block behind (L-37), so a new issue never shows as a missing open one.
   const [totals, kinds] = await Promise.all([readTargetCounts(sdk, repo.forge, repo.repoId), readKindCounts(sdk, repo)])
   if (totals.issues === null || totals.pulls === null) throw new Error("couldn't read this repo's issue and PR totals")
-  return { ...repoCounts(totals.issues, totals.pulls, kinds), issues: totals.issues, patches: totals.pulls }
+  // `transitions`: the state-moving ones (what a state scan mostly reads; locks are few).
+  const transitions = [...kinds.values()].reduce((a, b) => a + b, 0)
+  return { ...repoCounts(totals.issues, totals.pulls, kinds), issues: totals.issues, patches: totals.pulls, transitions }
 }
 
 /** The target of a state change. */

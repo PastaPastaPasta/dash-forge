@@ -203,9 +203,9 @@ export function hasPullFilters(q: PullListQuery): boolean {
   return hasFilters(toIssue(q)) || q.draft !== null || q.reviewRequested !== null
 }
 
-/** The empty PR list's line: never "open the first one" while some are merged or closed. */
+/** The empty PR list's line: never "open the first one" while some are merged or closed; a search names every state (QW3-051). */
 export function emptyPullsBody(filtered: boolean, state: PullStateFilter, settled: number | null): string {
-  if (filtered) return 'Try fewer filters.'
+  if (filtered) return state === 'all' ? 'Try fewer filters.' : 'Try fewer filters, or search every state.'
   if (state === 'merged') return 'Nothing has been merged yet.'
   if (state === 'closed') return 'Nothing has been closed without merging.'
   const open = 'Push a branch with the git-remote-dash helper (to this repo, or to your fork), then open a PR here or with dg pr create.'
