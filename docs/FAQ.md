@@ -46,6 +46,8 @@ Measured on devnet bonsia: creating a repository costs about **0.0016 DASH**. A 
 
 ## When is it on mainnet?
 
+> **Devnet bonsia will be re-cut onto Platform v5 soon.** That wipes everything on it, and an installed `dg` built for 4.2.0-beta.7 stops working there. Your git clone and your storage bucket are untouched. See [Devnet bonsia is moving](guides/devnet-move.md) for what is lost and kept and how to re-push.
+
 After **Dash Platform protocol 14** activates on mainnet and the project owner registers the forge-v2 contracts there. forge-v2 depends on protocol 14 for its shared contracts, membership checks and limited keys. Until then:
 
 | Network | Status |

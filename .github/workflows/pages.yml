@@ -5,6 +5,12 @@ name: Deploy forge-web to Pages
 # (NEXT_PUBLIC_NETWORK / NEXT_PUBLIC_DEVNET_NAME); override it with the repository variables
 # PAGES_NETWORK / PAGES_DEVNET_NAME (e.g. PAGES_NETWORK=testnet once forge-v2 is deployed
 # there) without editing this file. The header badge names the network the build reads.
+#
+# The "devnet is moving" notice (docs/guides/devnet-move.md) is switched the same way, with the
+# repository variable PAGES_DEVNET_NOTICE: unset (no banner), `upcoming` (a dismissible banner on
+# every page) or `moving` (a banner that stays, and writes are paused: the window between the wipe
+# and the build for the new devnet). Changing the variable takes effect on the next deploy
+# (re-run this workflow, or push to master); any other value fails the build.
 
 on:
   push:
@@ -46,6 +52,8 @@ jobs:
         env:
           NEXT_PUBLIC_NETWORK: ${{ vars.PAGES_NETWORK || 'devnet' }}
           NEXT_PUBLIC_DEVNET_NAME: ${{ (vars.PAGES_NETWORK || 'devnet') == 'devnet' && (vars.PAGES_DEVNET_NAME || 'bonsia') || '' }}
+          # Empty when the variable is unset: no notice.
+          NEXT_PUBLIC_DEVNET_NOTICE: ${{ vars.PAGES_DEVNET_NOTICE }}
           # The /mirror wizard pins the Mirror Action and its binaries to the commit deployed.
           FORGE_BUILD_COMMIT: ${{ github.sha }}
         run: pnpm build

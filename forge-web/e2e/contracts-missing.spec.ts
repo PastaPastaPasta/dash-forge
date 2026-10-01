@@ -72,6 +72,9 @@ async function expectContractsMissing(page: Page): Promise<void> {
   if (E2E_DEVNET === 'moutai') {
     await expect(STATE(page).getByRole('heading')).toHaveText('Dash Forge is moving to a new devnet')
     await expect(STATE(page)).toContainText('devnet bonsia')
+  } else if (E2E_DEVNET === 'bonsia') {
+    await expect(STATE(page).getByRole('heading')).toHaveText('Dash Forge is moving to a new devnet')
+    await expect(STATE(page)).toContainText('Platform v5')
   } else {
     await expect(STATE(page).getByRole('heading')).toHaveText(`Dash Forge isn't deployed on devnet ${E2E_DEVNET} right now`)
     await expect(STATE(page)).toContainText('devnets are reset from time to time')

@@ -26,7 +26,8 @@ const MOUTAI: NetworkConfig = {
   v2: forge,
 }
 const MAINNET: NetworkConfig = { ...MOUTAI, network: 'mainnet', devnetName: null, key: 'mainnet' }
-const OTHER_DEVNET: NetworkConfig = { ...MOUTAI, devnetName: 'bonsia', key: 'devnet-bonsia' }
+const BONSIA: NetworkConfig = { ...MOUTAI, devnetName: 'bonsia', key: 'devnet-bonsia' }
+const OTHER_DEVNET: NetworkConfig = { ...MOUTAI, devnetName: 'tango', key: 'devnet-tango' }
 
 let root: Root
 let el: HTMLDivElement
@@ -60,9 +61,20 @@ describe('ContractsMissingState', () => {
     expect(body).not.toMatch(/reset/i)
   })
 
+  it('on devnet bonsia: says it is being re-cut onto Platform v5, what is wiped, and links the guide', () => {
+    const { title, body } = render(BONSIA)
+    expect(title).toBe('Dash Forge is moving to a new devnet')
+    expect(body).toContain('Platform v5')
+    expect(body).toContain('wipes the repos, issues, stars and keys')
+    expect(body).toContain('re-push from your clone')
+    expect(body).not.toMatch(/most likely reset/i)
+    const hrefs = [...el.querySelectorAll('a')].map((a) => a.getAttribute('href'))
+    expect(hrefs).toContain('https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/guides/devnet-move.md')
+  })
+
   it('on another devnet: names it, says devnets are reset and it is being redeployed', () => {
     const { title, body } = render(OTHER_DEVNET)
-    expect(title).toBe("Dash Forge isn't deployed on devnet bonsia right now")
+    expect(title).toBe("Dash Forge isn't deployed on devnet tango right now")
     expect(body).toContain('devnets are reset from time to time')
     expect(body).toContain('redeployed')
   })

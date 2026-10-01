@@ -15,12 +15,18 @@
  * devnet (bonsia) rather than being redeployed on moutai. This is gated on the same detected
  * condition — devnet moutai's contracts missing — not a hard-coded date, so it stops matching on
  * its own once bonsia becomes the default network.
+ *
+ * devnet bonsia is the same kind of case (D-16): it is being re-cut onto Platform v5 and wiped, so
+ * its missing contracts mean "moving", not a generic reset. The wording is gated on that detected
+ * condition, not on a date, so it shows once the chain is wiped and stops once the build with the
+ * new contract ids is live. `lib/devnet-notice.ts` has the banner that warns beforehand.
  */
 
 import { Unplug } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { ACTIVE_NETWORK, type NetworkConfig } from '@/lib/constants'
+import { DEVNET_MOVE_DOC } from '@/lib/devnet-notice'
 
 /** The network as a person reads it: `devnet moutai`, `testnet`, `mainnet`. */
 function networkName(config: NetworkConfig): string {
@@ -38,6 +44,10 @@ export function ContractsMissingState({
   const devnet = config.network === 'devnet'
   const where = networkName(config)
   const movingToBonsia = devnet && config.devnetName === 'moutai'
+  // Devnet bonsia is being re-cut onto Platform v5 (D-16): its chain is wiped, and the forge is
+  // registered again with new contracts that only a new build names.
+  const bonsiaRecut = devnet && config.devnetName === 'bonsia'
+  const moving = movingToBonsia || bonsiaRecut
   return (
     <div
       role="alert"
@@ -48,18 +58,20 @@ export function ContractsMissingState({
         <Unplug className="h-5 w-5" aria-hidden />
       </span>
       <h2 className="text-prose font-medium text-anvil-900 dark:text-anvil-50">
-        {movingToBonsia
+        {moving
           ? 'Dash Forge is moving to a new devnet'
           : devnet
             ? `Dash Forge isn't deployed on ${where} right now`
             : `This build's contracts were not found on ${where}`}
       </h2>
       <p className="mt-1.5 max-w-md text-dense text-anvil-600 dark:text-anvil-300">
-        {movingToBonsia
-          ? 'Devnet moutai was upgraded to Platform v4.2.0-beta.7, which retired the old contracts. The forge is being re-registered on devnet bonsia with a new contract design; repos will be back shortly.'
-          : devnet
-            ? `${where} is a development network, and devnets are reset from time to time. This one was most likely reset, so the contracts Dash Forge reads are gone until it is redeployed. This page works again once a build with the new contracts is published.`
-            : `${where} has no contracts with the ids this build reads, so nothing can be read here. The build may be misconfigured or made for another network.`}
+        {bonsiaRecut
+          ? 'Devnet bonsia is being re-cut onto Platform v5, which wipes the repos, issues, stars and keys on it, and Dash Forge is registered again there with new contracts. Mirrors will be re-imported; your own repos need a re-push from your clone. This page works again once the build for the new devnet is published.'
+          : movingToBonsia
+            ? 'Devnet moutai was upgraded to Platform v4.2.0-beta.7, which retired the old contracts. The forge is being re-registered on devnet bonsia with a new contract design; repos will be back shortly.'
+            : devnet
+              ? `${where} is a development network, and devnets are reset from time to time. This one was most likely reset, so the contracts Dash Forge reads are gone until it is redeployed. This page works again once a build with the new contracts is published.`
+              : `${where} has no contracts with the ids this build reads, so nothing can be read here. The build may be misconfigured or made for another network.`}
       </p>
       <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
         <Button variant="outline" size="sm" onClick={() => window.location.reload()}>
@@ -71,6 +83,11 @@ export function ContractsMissingState({
         >
           Dash Forge on GitHub
         </a>
+        {bonsiaRecut ? (
+          <a href={DEVNET_MOVE_DOC} className="text-dense text-forge-700 underline dark:text-forge-400">
+            What is lost and kept
+          </a>
+        ) : null}
       </div>
       <details className="mt-4 w-full max-w-md text-left text-dense text-anvil-600 dark:text-anvil-300">
         <summary className="w-fit cursor-pointer coarse:-mx-2 coarse:flex coarse:min-h-11 coarse:min-w-11 coarse:items-center coarse:px-2">

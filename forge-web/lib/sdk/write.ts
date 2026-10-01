@@ -34,6 +34,7 @@ import { NETWORKS, type Network } from '../constants'
 import { rc1WriteProblem } from '../layout'
 import { base58Encode } from '../auth/base58'
 import { controlsKey } from '../auth/wif'
+import { writesPausedReason } from '../devnet-notice'
 import { previewCreate, previewCredits, previewDelete, previewReplace, STEADY, type CostPreview } from './cost'
 import { base64ToBytes, bytesToBase64, followSdkVersion, noteSdkWrite } from './query'
 import { currentSpendAction } from './spend-scope'
@@ -1064,6 +1065,10 @@ export function setWriteHold(hold: WriteHold): void {
  * broadcast must finish or settle), and its own steps are bounded.
  */
 export function serialized<T>(identityId: string, run: () => Promise<T>, waitMs = WRITER_WAIT_MS): Promise<T> {
+  // The devnet is being re-cut (`NEXT_PUBLIC_DEVNET_NOTICE=moving`): the buttons are already off,
+  // this refuses whatever slips past them, before anything is signed.
+  const paused = writesPausedReason()
+  if (paused !== null) return Promise.reject(new Error(paused))
   const waiting = new AbortController()
   let timer: ReturnType<typeof setTimeout> | undefined
   // Rejects only while still waiting: getting the turn clears the timer.
