@@ -12,7 +12,7 @@ Accept and refuse cases for the contracts (`forge-contracts/contracts/`: RC1, pl
  "expect": "refused", "why": "noPlain", "owner": 9, "doc": {…}}
 ```
 
-- **`item`** is the RC1 item the case covers: an id from `RULES-PROPOSAL.md` or `OPPORTUNITIES.md` (R-xx, O-xx, INV-11, CL-7, CL-8, COMM-9), `D-5`, `state` (the transition rules), `base`, or an RC2 item of `design/v5/PLAN.md`, `RIDERS.md` or `MODERATION.md` (M1, S1–S3, C1, QW-069, QW2-010, MOD).
+- **`item`** is the RC1 item the case covers: an id from `RULES-PROPOSAL.md` or `OPPORTUNITIES.md` (R-xx, O-xx, INV-11, CL-7, CL-8, COMM-9), `D-5`, `state` (the transition rules), `base`, or an RC2 item of `design/v5/PLAN.md`, `RIDERS.md`, `MODERATION.md` or `RECUT-OR-NEVER.md` (M1, S1–S3, C1, QW-069, QW2-010, MOD, ROLES).
 - **`expect`** is `ok` or `refused`. A document is judged as a create, in the order a node's structure validation runs the checks:
   - the JSON schema and `maxBytes`;
   - every `propertyConstraints` rule that reads no total, time or height;

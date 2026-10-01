@@ -269,6 +269,11 @@ def self_test(d):
         ('40126', 'where on an element reference', lambda cs: cs['forge-community']['documentSchemas']['policy']['properties']['requiredCheckSources']['items']['refersTo']['anyOf'][1].update({"where": {"vis": "requiredApprovals"}})),
         ('40121', 'a collab-placeholder leaf naming a missing type', lambda cs: cs['forge-community']['documentSchemas']['event']['properties']['targetId']['refersTo']['anyOf'][0].update({"documentType": "nope"})),
         ('40121', 'a reference to a contract registered later', lambda cs: cs['forge-core']['documentSchemas']['repo']['properties']['forkOf']['refersTo'].update({"contractId": "FORGE_COLLAB_CONTRACT_ID", "documentType": "issue"})),
+        # RC2 member roles: a writer leaf's `where {"role": "r"}` (forge-collab and forge-community
+        # read forge-core's writer across contracts)
+        ('40126', 'role compared with a u32 (cross-contract writer leaf)', lambda cs: cs['forge-collab']['documentSchemas']['transition']['ownerRefersTo']['anyOf'][1]['where'].update({"role": "targetNumber"})),
+        ('40126', 'role compared with a string', lambda cs: cs['forge-core']['documentSchemas']['refUpdate']['ownerRefersTo']['anyOf'][1]['where'].update({"role": "refName"})),
+        ('40126', 'a claim the writer leaf cannot read', lambda cs: cs['forge-community']['documentSchemas']['checkRun']['ownerRefersTo']['anyOf'][2].update({"where": {"rank": "r"}})),
         ('unported', 'an inList reference', lambda cs: cs['forge-community']['documentSchemas']['star']['properties']['repoId'].update({"refersTo": {"type": "permanentDocument", "documentType": "event", "inList": "x"}})),
     ]
     bad = 0
