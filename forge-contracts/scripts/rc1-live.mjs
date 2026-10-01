@@ -407,7 +407,9 @@ if (want('state') && I1 && I2 && PR3) {
   try {
     // I1: close(author), reopen, lock, close, reopen, unlock; PR3: draft, ready, lock, unlock, merge;
     // PR4: draft, close-while-draft, reopen-while-draft, ready, close. Keys: 0x80 | kind, hex.
-    const want = { '81': 2, '82': 2, '83': 1, '84': 1, '8b': 1, '8d': 1, '8e': 2, '8f': 2, '90': 1, '91': 1, '92': 1, '93': 1 };
+    // With the QW-069 rider, I1 also gets two closes with a reason and two reopens.
+    const closes = CLOSE_REASON ? 4 : 2;
+    const want = { '81': closes, '82': closes, '83': 1, '84': 1, '8b': 1, '8d': 1, '8e': 2, '8f': 2, '90': 1, '91': 1, '92': 1, '93': 1 };
     const same = (a, b) => JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort());
     const c = await eventually(async () => {
       const counts = await sdk.documents.countWithProof({ dataContractId: COLLAB, documentTypeName: 'transition', where: [['repoId', '==', docId(repo)], ['kind', 'in', [1, 2, 3, 4, 11, 12, 13, 14, 15, 16, 17, 18, 19]]], groupBy: ['kind'] });

@@ -1,6 +1,6 @@
 # Dash Forge moved from devnet bonsia to devnet sakura
 
-Devnets are development networks, and their operators replace them from time to time. Devnet bonsia (Platform 4.2.0-beta.7) was retired, and **everything on it is gone**. Dash Forge moved to a new devnet, **sakura** (Platform v5.0.0-beta.1), where it is registered with new contracts (RC2, being registered now). This page says what that costs you, what you keep, and what to do.
+Devnets are development networks, and their operators replace them from time to time. Devnet bonsia (Platform 4.2.0-beta.7) was retired, and **everything on it is gone**. Dash Forge moved to a new devnet, **sakura** (Platform v5.0.0-beta.1), where it is registered with new contracts (RC2, registered 2026-10-01). This page says what that costs you, what you keep, and what to do.
 
 It only concerns **devnet bonsia**, which forge.dashhq.org and the guides used until the move. Nothing on testnet or mainnet is affected, because Forge is not deployed on either yet ([network status](../../README.md#status)).
 

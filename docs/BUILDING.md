@@ -188,8 +188,7 @@ with `dg auth login --network devnet --devnet-name sakura`, which saves the netw
 2026-10-01, and the defaults (Makefile `DEVNET`, `E2E_DEVNET`, the Pages and e2e workflows,
 `ipfs-release.sh`) target it. `devnet-sakura.json` records its chain id, 13 DAPI addresses and
 quorum service (`https://quorums.sakura.networks.dash.org`), so `--devnet-name sakura` works
-for every tool; it has no `v2` record until the RC2 contracts are registered there, so until
-then sakura is "not deployed". A devnet's chain id is not derived from its name (bonsia's was
+for every tool, and its `v2` record holds the RC2 contracts registered there on 2026-10-01. A devnet's chain id is not derived from its name (bonsia's was
 `dash-devnet-bonsia-g1`, sakura's has no suffix): the deployment file records it.
 Devnet bonsia (Platform 4.2.0-beta.7, the RC1 contracts) is gone, and devnet moutai was
 upgraded in place to beta.7, which retired the forge-v2 contracts registered there.
@@ -312,7 +311,7 @@ one.
 
 ## End-to-end suites
 
-Both e2e suites run against **live devnet sakura** (the RC2 contracts, protocol 14; they fail until those are registered and the read fixture is seeded) and are not part
+Both e2e suites run against **live devnet sakura** (the RC2 contracts, protocol 14, and the seeded read fixture `deployments/fixtures/devnet-sakura.json`) and are not part
 of the per-push gate:
 
 * `make e2e` — the CLI suite (`e2e/cli/run.sh`, 11 scenarios). Needs the funded fixture

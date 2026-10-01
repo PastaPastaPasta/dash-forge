@@ -30,7 +30,7 @@ The rest of this guide covers the command-line path: private repositories, GitLa
 9. [What it costs](#9-what-it-costs)
 10. [GitHub features with no Forge equivalent](#10-github-features-with-no-forge-equivalent)
 
-Replace every `<…>` placeholder with your own value. Forge runs on **devnet sakura** (RC2 on Platform v5.0.0-beta.1 — being registered), where Dash is free ([Which network](README.md#which-network)).
+Replace every `<…>` placeholder with your own value. Forge runs on **devnet sakura** (RC2 registered on Platform v5.0.0-beta.1), where Dash is free ([Which network](README.md#which-network)).
 
 ---
 

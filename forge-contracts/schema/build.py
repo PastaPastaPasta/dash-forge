@@ -95,9 +95,12 @@ FLAGS = dict(
     # that fails turns its flag off here (python3 build.py --off <flag> --out <dir> builds the
     # probe variants).
     check_evidence_freeze=True,  # S1: a completed run's summary, links, log and artifacts are frozen
-    review_to_author=True,       # S2: review index [patchId.$ownerId, $createdAt]: reviews on my PRs
-    review_author=True,          # S3: review index [$ownerId, $createdAt]: the reviews I wrote
+    # S2 and S3 OFF: the sakura v5 probe (2026-10-01, n=4) priced a review at 53.94 M credits
+    # without either index, +26.73 % with S2 and +26.70 % with S3, against the <= +10 % gate.
+    review_to_author=False,      # S2: review index [patchId.$ownerId, $createdAt]: reviews on my PRs
+    review_author=False,         # S3: review index [$ownerId, $createdAt]: the reviews I wrote
     fused_star=True,             # C1: star carries the trending window (byWeek, outlivesDelete); no starBeat
+                                 # (sakura probe: 45.49 M per star, under star + starBeat 55.09 M and 54.9 M)
     # ---- RC2 riders (design/v5/RIDERS.md): forge-collab only, each in RC2 if ready before registration
     close_reason=True,           # QW-069: transition.reason / dupNumber, judged by readers (no rule)
     review_hunk=True,            # QW2-010: comment.diffHunk for mirrored review comments (immutable, noPlain)

@@ -102,7 +102,7 @@ expect_reject runner-gate-permanent-on-deletable community '.documentSchemas.che
 expect_reject rule-reads-unknown-property community '.documentSchemas.checkRun.propertyConstraints.conclusionIfDone.anyOf[1].present = "nope"'
 # a string constant must be one of the property's enum values
 expect_reject rule-const-outside-enum community '.documentSchemas.checkRun.propertyConstraints.conclusionIfDone.anyOf[0].notEqual[1].const = "done"'
-# The fresh registration (beta.7; docs/contracts/forge-v2.md §3.1, §6.2): the rules that read totals need their
+# The fresh registration (v5 on sakura; docs/contracts/forge-v2.md §3.1, §6.2): the rules that read totals need their
 # answering index, a summed property is a required integer, and a skip property is optional
 expect_reject dense-without-countable-patch-index collab '.documentSchemas.patch.indices |= map(if .name == "perRepo" then del(.countable) else . end)'
 # Each rule is load-bearing: without it, a vector that breaks only that rule is accepted. One
@@ -175,7 +175,7 @@ if jq -e '.documentSchemas.writer.properties.role' "$contracts/forge-core.json" 
 fi
 
 # A later forge-core change ships as an in-place update of the registered schema
-# (registered/forge-core.v1.json, registered fresh at the beta.7 wipe): a change the
+# (registered/forge-core.v1.json, registered fresh at the v5 re-cut): a change the
 # update rules refuse (here an index flag or a rule of a registered type) must fail
 # --expect-update against it.
 expect_update_refused() {
