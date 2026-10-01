@@ -7,6 +7,7 @@
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { renderToString } from 'react-dom/server'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import type { NetworkConfig } from '@/lib/constants'
@@ -60,7 +61,7 @@ describe('DevnetNoticeBanner', () => {
     const b = banner()!
     expect(b.getAttribute('role')).toBe('status')
     expect(b.textContent).toContain(
-      'bonsia is moving to a new devnet soon. Repos, issues, stars and keys on this devnet will be wiped. Mirrors will be re-imported; your own repos will need a re-push from your clone.',
+      'bonsia is moving to a new devnet soon. Repos, issues, stars and keys on this devnet will be wiped. Mirrors need setting up again with the /mirror wizard, and your own repos will need a re-push from your clone.',
     )
     const link = b.querySelector('a')!
     expect(link.getAttribute('href')).toBe(DEVNET_MOVE_DOC)
@@ -93,6 +94,13 @@ describe('DevnetNoticeBanner', () => {
     expect(b.textContent).toContain('Writing is paused')
     expect(dismissButton()).toBeNull()
     expect(b.querySelector('a')!.getAttribute('href')).toBe(DEVNET_MOVE_DOC)
+  })
+
+  it('moving: is in the server-rendered HTML (it cannot be dismissed, so nothing waits for storage)', () => {
+    const html = renderToString(<DevnetNoticeBanner notice="moving" config={BONSIA} />)
+    expect(html).toContain('data-testid="devnet-notice-banner"')
+    expect(html).toContain('Writing is paused')
+    expect(renderToString(<DevnetNoticeBanner notice="upcoming" config={BONSIA} />)).toBe('')
   })
 
   it('moving: still shows for someone who dismissed the upcoming notice', () => {

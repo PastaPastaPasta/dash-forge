@@ -46,7 +46,7 @@ import { idbDelete, idbGet, idbPut } from '../idb'
 import { authSdk, isAbort, sleep } from '../sdk/facade'
 import { evoSdkService } from '../sdk/service'
 import { isStaleConnectionError } from '../sdk/unreachable'
-import { serialized } from '../sdk/write'
+import { assertWritesAllowed, serialized } from '../sdk/write'
 import { errorMessage } from '../utils'
 import {
   broadcastTx,
@@ -347,6 +347,9 @@ export async function createIdentityFromMnemonic(
   },
 ): Promise<{ identityId: string; key: LimitedKey }> {
   const { network, group } = params
+  // Before a deposit address is shown or a Core lock is spent: nothing is created while the
+  // devnet is moving (the identity would be wiped with it).
+  assertWritesAllowed()
   await assertGroupHolds(sdk, group, params.trust)
   const mnemonic = normalizeMnemonic(params.mnemonic)
   const ep = params.endpoints ?? coreEndpoints(network)
@@ -419,6 +422,7 @@ export async function createIdentityFromMnemonic(
     // is not swapped under the update's nonce). The new key is stored before the update that
     // registers it and disables the old one (D-016): a browser that cannot keep it changes
     // nothing on chain.
+    assertWritesAllowed()
     const key = await serialized(identityId, () =>
       registerLimitedKey(sdk, {
         network,

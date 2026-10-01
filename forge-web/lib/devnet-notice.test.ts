@@ -52,7 +52,7 @@ describe('copy and dismissal', () => {
     const c = devnetNoticeCopy('upcoming', 'bonsia')
     expect(c.lead).toBe('bonsia is moving to a new devnet soon.')
     expect(c.body).toBe(
-      'Repos, issues, stars and keys on this devnet will be wiped. Mirrors will be re-imported; your own repos will need a re-push from your clone.',
+      'Repos, issues, stars and keys on this devnet will be wiped. Mirrors need setting up again with the /mirror wizard, and your own repos will need a re-push from your clone.',
     )
   })
 

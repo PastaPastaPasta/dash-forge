@@ -1025,6 +1025,25 @@ const writeLocks = new Map<string, Promise<unknown>>()
  */
 export const WRITER_WAIT_MS = 10 * 60_000
 
+/** The devnet is being re-cut (`NEXT_PUBLIC_DEVNET_NOTICE=moving`): nothing is signed or sent now. */
+export class WritesPausedError extends Error {
+  constructor(reason: string) {
+    super(reason)
+    this.name = 'WritesPausedError'
+  }
+}
+
+/**
+ * Refuse, before anything is signed or paid, while the devnet is moving. Called at each point
+ * that broadcasts (document writes, paid identity updates, identity creation and top-up); the
+ * buttons are already off, this stops whatever slips past them. Local-only work that shares the
+ * writer queue (storing a wallet's keys) is not a broadcast and is never refused.
+ */
+export function assertWritesAllowed(): void {
+  const paused = writesPausedReason()
+  if (paused !== null) throw new WritesPausedError(paused)
+}
+
 /** Another write for this identity (in this tab or another) held the writer lock too long. */
 export class WriterBusyError extends Error {
   constructor() {
@@ -1065,10 +1084,6 @@ export function setWriteHold(hold: WriteHold): void {
  * broadcast must finish or settle), and its own steps are bounded.
  */
 export function serialized<T>(identityId: string, run: () => Promise<T>, waitMs = WRITER_WAIT_MS): Promise<T> {
-  // The devnet is being re-cut (`NEXT_PUBLIC_DEVNET_NOTICE=moving`): the buttons are already off,
-  // this refuses whatever slips past them, before anything is signed.
-  const paused = writesPausedReason()
-  if (paused !== null) return Promise.reject(new Error(paused))
   const waiting = new AbortController()
   let timer: ReturnType<typeof setTimeout> | undefined
   // Rejects only while still waiting: getting the turn clears the timer.
@@ -1182,6 +1197,11 @@ function reportSpend(
  * passes on, so the next write waits for that measurement (not for the report itself).
  */
 function serializedWrite<T>(sdk: EvoSDK, auth: WriteAuth, write: () => Promise<{ result: T; spend: Spend | null }>): Promise<T> {
+  try {
+    assertWritesAllowed()
+  } catch (e) {
+    return Promise.reject(e)
+  }
   return serialized(auth.identityId, async () => {
     const r = await wrote(sdk, write())
     if (r.spend) reportSpend(sdk, auth, r.spend)

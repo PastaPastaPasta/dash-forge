@@ -1,7 +1,7 @@
 'use client'
 
 /**
- * The "this devnet is moving" banner (D-16): one strip under the header, on every page, while the
+ * The "this devnet is moving" banner (WIPE D-16): one strip under the header, on every page, while the
  * build carries `NEXT_PUBLIC_DEVNET_NOTICE` (`lib/devnet-notice.ts`).
  *
  * - `upcoming`: a heads-up that can be dismissed. The dismissal is remembered in localStorage per
@@ -56,12 +56,13 @@ export function DevnetNoticeBanner({
   notice?: DevnetNotice | null
   config?: NetworkConfig
 }): JSX.Element | null {
-  // Browser-only storage: until mounted nothing shows (the server snapshot says "dismissed"), so
-  // neither a flash for people who closed it nor a mismatch with the static HTML.
+  // Browser-only storage: until mounted `upcoming` does not show (the server snapshot says
+  // "dismissed"), so neither a flash for people who closed it nor a mismatch with the static
+  // HTML. `moving` cannot be dismissed, so it is already in the static HTML.
   const dismissed = useSyncExternalStore(
     subscribe,
     () => (notice === null ? true : notice === 'upcoming' && isDismissed(notice)),
-    () => true,
+    () => notice !== 'moving',
   )
   const dismiss = useCallback(() => {
     if (notice === null) return

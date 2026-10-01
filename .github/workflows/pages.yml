@@ -10,7 +10,8 @@ name: Deploy forge-web to Pages
 # repository variable PAGES_DEVNET_NOTICE: unset (no banner), `upcoming` (a dismissible banner on
 # every page) or `moving` (a banner that stays, and writes are paused: the window between the wipe
 # and the build for the new devnet). Changing the variable takes effect on the next deploy
-# (re-run this workflow, or push to master); any other value fails the build.
+# (re-run this workflow, or push to master); any other value fails the build. A tab opened before
+# the deploy keeps running the old build until it is reloaded, so it will not show the notice yet.
 
 on:
   push:

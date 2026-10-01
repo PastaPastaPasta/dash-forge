@@ -1,5 +1,5 @@
 /**
- * The "this devnet is moving" notice (D-16): a build-time switch for the banner that warns users
+ * The "this devnet is moving" notice (WIPE D-16): a build-time switch for the banner that warns users
  * before a devnet is re-cut, and for the window between the wipe and the new build.
  *
  * `NEXT_PUBLIC_DEVNET_NOTICE` (the Pages variable `PAGES_DEVNET_NOTICE`):
@@ -45,7 +45,7 @@ export function devnetNoticeCopy(notice: DevnetNotice, name: string): { readonly
   return notice === 'upcoming'
     ? {
         lead: `${name} is moving to a new devnet soon.`,
-        body: 'Repos, issues, stars and keys on this devnet will be wiped. Mirrors will be re-imported; your own repos will need a re-push from your clone.',
+        body: 'Repos, issues, stars and keys on this devnet will be wiped. Mirrors need setting up again with the /mirror wizard, and your own repos will need a re-push from your clone.',
       }
     : {
         lead: `${name} is moving to a new devnet.`,

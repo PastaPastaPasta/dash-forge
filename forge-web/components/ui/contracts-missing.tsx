@@ -16,17 +16,19 @@
  * condition — devnet moutai's contracts missing — not a hard-coded date, so it stops matching on
  * its own once bonsia becomes the default network.
  *
- * devnet bonsia is the same kind of case (D-16): it is being re-cut onto Platform v5 and wiped, so
- * its missing contracts mean "moving", not a generic reset. The wording is gated on that detected
- * condition, not on a date, so it shows once the chain is wiped and stops once the build with the
- * new contract ids is live. `lib/devnet-notice.ts` has the banner that warns beforehand.
+ * devnet bonsia is the same kind of case (WIPE D-16): while its re-cut onto Platform v5 is under
+ * way, its missing contracts mean "moving", not a generic reset. The wording needs both the
+ * detected condition (bonsia's contracts missing, not a date) and this build's devnet notice
+ * (`NEXT_PUBLIC_DEVNET_NOTICE`, `lib/devnet-notice.ts`, which also has the banner that warns
+ * beforehand): clearing the variable returns the generic wording, and the new build with the new
+ * contract ids does not reach this state at all.
  */
 
 import { Unplug } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { ACTIVE_NETWORK, type NetworkConfig } from '@/lib/constants'
-import { DEVNET_MOVE_DOC } from '@/lib/devnet-notice'
+import { DEVNET_MOVE_DOC, DEVNET_NOTICE, type DevnetNotice } from '@/lib/devnet-notice'
 
 /** The network as a person reads it: `devnet moutai`, `testnet`, `mainnet`. */
 function networkName(config: NetworkConfig): string {
@@ -36,17 +38,20 @@ function networkName(config: NetworkConfig): string {
 export function ContractsMissingState({
   detail,
   config = ACTIVE_NETWORK,
+  notice = DEVNET_NOTICE,
 }: {
   /** The raw error, shown only under Details. */
   detail: string
   config?: NetworkConfig
+  /** This build's devnet-move notice (`NEXT_PUBLIC_DEVNET_NOTICE`): bonsia's re-cut wording needs it. */
+  notice?: DevnetNotice | null
 }): JSX.Element {
   const devnet = config.network === 'devnet'
   const where = networkName(config)
   const movingToBonsia = devnet && config.devnetName === 'moutai'
-  // Devnet bonsia is being re-cut onto Platform v5 (D-16): its chain is wiped, and the forge is
+  // Devnet bonsia is being re-cut onto Platform v5 (WIPE D-16): its chain is wiped, and the forge is
   // registered again with new contracts that only a new build names.
-  const bonsiaRecut = devnet && config.devnetName === 'bonsia'
+  const bonsiaRecut = devnet && config.devnetName === 'bonsia' && notice !== null
   const moving = movingToBonsia || bonsiaRecut
   return (
     <div
@@ -66,7 +71,7 @@ export function ContractsMissingState({
       </h2>
       <p className="mt-1.5 max-w-md text-dense text-anvil-600 dark:text-anvil-300">
         {bonsiaRecut
-          ? 'Devnet bonsia is being re-cut onto Platform v5, which wipes the repos, issues, stars and keys on it, and Dash Forge is registered again there with new contracts. Mirrors will be re-imported; your own repos need a re-push from your clone. This page works again once the build for the new devnet is published.'
+          ? 'Devnet bonsia is being re-cut onto Platform v5, which wipes the repos, issues, stars and keys on it, and Dash Forge is registered again there with new contracts. Mirrors need setting up again with the /mirror wizard, and your own repos need a re-push from your clone. This page works again once the build for the new devnet is published.'
           : movingToBonsia
             ? 'Devnet moutai was upgraded to Platform v4.2.0-beta.7, which retired the old contracts. The forge is being re-registered on devnet bonsia with a new contract design; repos will be back shortly.'
             : devnet

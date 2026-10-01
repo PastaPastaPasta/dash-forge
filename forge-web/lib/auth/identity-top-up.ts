@@ -29,7 +29,7 @@ import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import type { Network } from '../constants'
 import { idbDelete, idbGet, idbPut } from '../idb'
 import { authSdk, isAbort } from '../sdk/facade'
-import { balanceBeforeWrite } from '../sdk/write'
+import { assertWritesAllowed, balanceBeforeWrite } from '../sdk/write'
 import { evoSdkService } from '../sdk/service'
 import { errorMessage } from '../utils'
 import { broadcastTx, buildAssetLock, coreEndpoints, currentHeight, depositHeld, obtainLockProof, waitForDeposit, wifBytes, type CoreEndpoints } from './asset-lock'
@@ -141,6 +141,8 @@ export async function topUpIdentity(
   },
 ): Promise<TopUpResult> {
   const { network, identityId } = params
+  // Locks Core funds and pays an identity top-up: nothing is started while the devnet is moving.
+  assertWritesAllowed()
   return exclusive(network, identityId, () => runTopUp(sdk, params))
 }
 

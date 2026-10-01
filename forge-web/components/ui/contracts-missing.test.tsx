@@ -10,6 +10,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import type { NetworkConfig } from '@/lib/constants'
+import type { DevnetNotice } from '@/lib/devnet-notice'
 import { ContractsMissingState } from './contracts-missing'
 
 const RAW =
@@ -42,8 +43,8 @@ afterEach(() => {
   el.remove()
 })
 
-function render(config: NetworkConfig): { title: string; body: string; details: HTMLDetailsElement } {
-  act(() => root.render(<ContractsMissingState detail={RAW} config={config} />))
+function render(config: NetworkConfig, notice: DevnetNotice | null = null): { title: string; body: string; details: HTMLDetailsElement } {
+  act(() => root.render(<ContractsMissingState detail={RAW} config={config} notice={notice} />))
   const details = el.querySelector('details')!
   return {
     title: el.querySelector('h2')!.textContent ?? '',
@@ -61,15 +62,23 @@ describe('ContractsMissingState', () => {
     expect(body).not.toMatch(/reset/i)
   })
 
-  it('on devnet bonsia: says it is being re-cut onto Platform v5, what is wiped, and links the guide', () => {
-    const { title, body } = render(BONSIA)
+  it('on devnet bonsia with a devnet notice: says it is being re-cut onto Platform v5, what is wiped, and links the guide', () => {
+    const { title, body } = render(BONSIA, 'moving')
     expect(title).toBe('Dash Forge is moving to a new devnet')
     expect(body).toContain('Platform v5')
     expect(body).toContain('wipes the repos, issues, stars and keys')
     expect(body).toContain('re-push from your clone')
+    expect(body).toContain('/mirror wizard')
     expect(body).not.toMatch(/most likely reset/i)
     const hrefs = [...el.querySelectorAll('a')].map((a) => a.getAttribute('href'))
     expect(hrefs).toContain('https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/guides/devnet-move.md')
+  })
+
+  it('on devnet bonsia without a devnet notice (the variable cleared): the generic wording again', () => {
+    const { title, body } = render(BONSIA, null)
+    expect(title).toBe("Dash Forge isn't deployed on devnet bonsia right now")
+    expect(body).toContain('devnets are reset from time to time')
+    expect(el.querySelector('a[href$="devnet-move.md"]')).toBeNull()
   })
 
   it('on another devnet: names it, says devnets are reset and it is being redeployed', () => {
@@ -98,7 +107,7 @@ describe('ContractsMissingState', () => {
   })
 
   it('on moutai: still links to the GitHub repo for status', () => {
-    act(() => root.render(<ContractsMissingState detail={RAW} config={MOUTAI} />))
+    act(() => root.render(<ContractsMissingState detail={RAW} config={MOUTAI} notice={null} />))
     const link = el.querySelector('a')
     expect(link?.getAttribute('href')).toBe('https://github.com/PastaPastaPasta/dash-forge#readme')
     expect(link?.textContent).toBe('Dash Forge on GitHub')
