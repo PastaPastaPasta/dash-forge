@@ -664,6 +664,11 @@ pub struct Reseeded {
     /// Whether the caller's own manifest now records it (`false`: the caller already had
     /// one for this pack, and manifests are immutable).
     pub announced: bool,
+    /// Not announced, but the upload re-created a URI the caller's existing manifest
+    /// records (keys are content-addressed, so reseeding through the profile the pack was
+    /// pushed with restores that copy). `false` when announced, or when the new copy is
+    /// recorded nowhere and readers will not find it.
+    pub restores_recorded: bool,
 }
 
 /// The result of [`RepoService::reseed_from_local`].
@@ -1897,17 +1902,23 @@ impl<'a> RepoService<'a> {
     /// Re-upload each live pack to `target` and announce the new location (`dg reseed`).
     ///
     /// Every pack is read from its best verifying copy and stored on `target`. On forge-v2
-    /// each uploader may record its own manifest for a pack (the unique index includes
-    /// `$ownerId`), so the new location is announced by writing the caller's own copy —
-    /// `storage` 1, the new URIs — when the caller has none yet for that pack; readers
-    /// verify it by hash like any other copy. Packs the caller already holds a manifest for
-    /// are uploaded but not re-announced (a manifest is immutable).
+    /// each member may record its own manifest for a pack (the unique index is
+    /// `(repoId, $ownerId, packHash)`), so a member adds a URI for an existing pack by
+    /// writing the caller's own copy — `storage` 1, the new URIs — when the caller has none
+    /// yet for that pack; readers verify it by hash like any other copy. Packs the caller
+    /// already holds a manifest for are uploaded but cannot be re-announced (a manifest is
+    /// immutable, and that index admits one per uploader): the report says whether the
+    /// upload re-created a URI that manifest records ([`Reseeded::restores_recorded`]).
+    ///
+    /// Members only: `packManifest` is gated on a maintainer or writer document, so a
+    /// non-member's copy could never be recorded. That is refused before anything uploads.
     pub async fn reseed(&self, repo: &RepoRef, target: &dyn PackBackend) -> Result<ReseedReport> {
         let (_, contract) = self.writable(repo).await?;
         let me = self.identity_id()?;
+        let roles = self.copy_roles(repo).await?;
+        require_reseed_member(&roles, &me, repo)?;
         let manifests = self.read_pack_manifests(repo).await?;
         let git = git_pack_manifests(&manifests);
-        let roles = self.copy_roles(repo).await?;
         let reader = self.repo_reader(repo, &manifests, &roles).await;
         let mut report = ReseedReport::default();
         for (hash, copies) in group_by_hash(&git) {
@@ -1925,7 +1936,8 @@ impl<'a> RepoService<'a> {
             };
             let meta = PackMeta::for_bytes(&bytes);
             let uris = uri_strings(target.put(&bytes, &meta).await?);
-            let announced = if copies.iter().any(|m| m.owner_id == me) {
+            let mine = copies.iter().find(|m| m.owner_id == me);
+            let announced = if mine.is_some() {
                 false
             } else {
                 self.write_pack_manifest(
@@ -1947,6 +1959,7 @@ impl<'a> RepoService<'a> {
             };
             report.reseeded.push(Reseeded {
                 pack_hash: hash,
+                restores_recorded: restores_recorded(mine.copied(), &uris),
                 uris,
                 announced,
             });
@@ -3545,6 +3558,31 @@ pub fn group_by_hash(manifests: &[PackManifestInfo]) -> Vec<([u8; 32], Vec<&Pack
     groups.into_iter().collect()
 }
 
+/// Refuse a reseed by anyone who could not record its copy: `packManifest` is gated on the
+/// writer's `maintainer` or `writer` document, and a copy no manifest records is one no
+/// reader looks for.
+fn require_reseed_member(roles: &RoleMap, me: &str, repo: &RepoRef) -> Result<()> {
+    if matches!(roles.get(me), Some(Role::Maintainer | Role::Writer)) {
+        return Ok(());
+    }
+    Err(Error::NotPermitted {
+        action: format!("reseed {}", repo.display()),
+        reason: format!(
+            "you are not a maintainer or writer of {}, so no packManifest of yours could \
+             record the new copy and readers would never look for it (ask a member to run \
+             `dg reseed`)",
+            repo.display()
+        ),
+        needs: "writer".into(),
+    })
+}
+
+/// Whether a reseed upload to `uris` re-created a URI the caller's own existing manifest
+/// (`mine`) records: then readers find the copy again although nothing new was written.
+fn restores_recorded(mine: Option<&PackManifestInfo>, uris: &[String]) -> bool {
+    mine.is_some_and(|m| uris.iter().any(|u| m.uris.contains(u)))
+}
+
 /// `copies` of one pack in the order the forge-v2 reader rule tries them
 /// ([`crate::rules::v2::order_pack_copies`]): uploaders who are currently maintainers,
 /// then writers, then anyone else, each by `($createdAt, $id)`.
@@ -4128,6 +4166,49 @@ mod tests {
                  publishes it"
             ))
             .to_string()
+        );
+    }
+
+    /// `dg reseed` records the new copy as the caller's own `packManifest`, which consensus
+    /// admits only from a maintainer or writer: anyone else is refused before an upload.
+    #[test]
+    fn reseed_is_refused_to_a_non_member_before_anything_uploads() {
+        let repo = crate::scope::RepoRef {
+            forge: crate::network::ForgeIds::test_forge(),
+            repo_id: "repo".into(),
+            owner_id: "owner".into(),
+            name: "proj".into(),
+            visibility: crate::rules::v2::Visibility::Public,
+        };
+        let roles: RoleMap = [
+            ("owner".to_string(), Role::Maintainer),
+            ("w".to_string(), Role::Writer),
+        ]
+        .into();
+        assert!(super::require_reseed_member(&roles, "owner", &repo).is_ok());
+        assert!(super::require_reseed_member(&roles, "w", &repo).is_ok());
+        let Err(Error::NotPermitted { action, reason, .. }) =
+            super::require_reseed_member(&roles, "stranger", &repo)
+        else {
+            panic!("a stranger may not reseed");
+        };
+        assert!(action.starts_with("reseed "), "{action}");
+        assert!(reason.contains("not a maintainer or writer"), "{reason}");
+    }
+
+    /// A caller who already recorded a pack cannot record it again; the upload only helps
+    /// when it re-created a URI that manifest records (same profile, content-addressed key).
+    #[test]
+    fn a_reseed_upload_restores_a_recorded_copy_only_at_a_recorded_uri() {
+        let mut mine = manifest("m", 1, 0, 7);
+        mine.uris = vec!["s3://b/packs/07.pack".into()];
+        let same = vec!["https://cdn/x".to_string(), "s3://b/packs/07.pack".into()];
+        let other = vec!["ipfs://bafy".to_string()];
+        assert!(super::restores_recorded(Some(&mine), &same));
+        assert!(!super::restores_recorded(Some(&mine), &other));
+        assert!(
+            !super::restores_recorded(None, &same),
+            "nothing recorded yet"
         );
     }
 

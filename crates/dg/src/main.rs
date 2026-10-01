@@ -155,7 +155,8 @@ pub enum Command {
         #[arg(long)]
         profile: Option<String>,
     },
-    /// Re-upload packs and append mirror URIs.
+    /// Re-upload packs and record the new copies (maintainers and writers; --from-local
+    /// writes nothing on chain).
     Reseed {
         /// The repository (`owner/name`).
         repo: Option<String>,

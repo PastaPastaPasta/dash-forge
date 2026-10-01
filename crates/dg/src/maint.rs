@@ -711,7 +711,13 @@ fn emit_repack_report(
 }
 
 /// `dg reseed <repo> [--to ipfs|s3|https]` — re-upload packs to another backend and
-/// announce the new availability URIs. Availability-only; anyone with a clone can reseed.
+/// announce the new availability URIs. Availability-only, and members only: the new copy is
+/// recorded as the caller's own `packManifest`, which the contract admits only from a
+/// maintainer or writer, once per pack per identity ([`RepoService::reseed`]). A pack the
+/// caller already recorded is uploaded but not re-recorded. A non-member's copy could not be
+/// recorded at all, so it is refused before anything uploads (packMirror, a later contract
+/// type, would let anyone record one). `--from-local` writes nothing on chain: it restores
+/// a recorded copy through the storage it was pushed to.
 pub async fn reseed(
     ctx: &Ctx,
     repo: Option<&str>,
@@ -762,6 +768,7 @@ pub async fn reseed(
                 "packHash": hex::encode(r.pack_hash),
                 "uris": r.uris,
                 "announced": r.announced,
+                "restoresRecorded": r.restores_recorded,
             })
         })
         .collect();
@@ -788,8 +795,12 @@ pub async fn reseed(
             for r in &report.reseeded {
                 let note = if r.announced {
                     "recorded as your copy"
+                } else if r.restores_recorded {
+                    "uploaded; it restores a URL your manifest for this pack records"
                 } else {
-                    "uploaded (you already hold a manifest for this pack)"
+                    "uploaded, but NOT recorded: you already hold a manifest for this pack \
+                     (manifests are immutable), so readers will not look here. Reseed through \
+                     the profile you pushed it with, or have another member reseed it"
                 };
                 println!("  {} — {note}", hex::encode(r.pack_hash));
                 for u in &r.uris {
