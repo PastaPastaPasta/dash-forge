@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ConfigDoc, RefUpdate } from '../rules'
-import { baseRefTips } from './issues'
+import { baseRefTips, tipBeforeMerge } from './issues'
 
 const NULL = '0'.repeat(40)
 const A = 'a'.repeat(40)
@@ -62,5 +62,18 @@ describe('baseRefTips', () => {
     expect(tips.historical).toEqual([A])
     expect(tips.tip).toBe(A)
     expect(tips.atOpen).toBe(A)
+  })
+})
+
+describe('tipBeforeMerge (QW3-014)', () => {
+  const [a, b, c] = ['a'.repeat(40), 'b'.repeat(40), 'c'.repeat(40)]
+  it('is the tip the merge moved the base from', () => {
+    expect(tipBeforeMerge([a, b, c], c)).toBe(b)
+    expect(tipBeforeMerge([a, b, c], c.toUpperCase())).toBe(b)
+  })
+  it('is empty when the merge commit was never a tip, or was the first one', () => {
+    expect(tipBeforeMerge([a, b], c)).toBe('')
+    expect(tipBeforeMerge([a, b], a)).toBe('')
+    expect(tipBeforeMerge([], a)).toBe('')
   })
 })

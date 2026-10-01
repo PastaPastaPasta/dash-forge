@@ -11,7 +11,7 @@ import { shot, waitForRepoResolved } from './helpers'
  *
  *   - title, and the merged pill;
  *   - the head it names (the folded head after two head updates);
- *   - the head-update timeline items ("pushed new commits");
+ *   - the head-update timeline items ("pushed n commits", "updated the head");
  *   - the review verdicts, and which is stale;
  *   - the three inline threads, every one outdated on the final head ("on an older version"),
  *     each resolved ("resolved a conversation" ×3).
@@ -50,7 +50,7 @@ test('the web shows the fold dg read', async ({ page }) => {
   await expect(page.getByTitle(fold.headOid).first()).toBeVisible()
 
   // One head-update line per head update, as the fold counted ("pushed n commits (a → b)" once
-  // the commits are read, "pushed new commits" / "force-pushed" / "moved the head" otherwise).
+  // the commits are read, "updated the head" / "force-pushed" / "moved the head" otherwise).
   await expect(page.locator('[data-testid=timeline-event][data-kind=headUpdate]')).toHaveCount(fold.headUpdates)
 
   // Every review, with the commit it was on.
