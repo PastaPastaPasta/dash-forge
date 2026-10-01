@@ -286,13 +286,16 @@ pub fn hidden_row_mark(h: &forge_core::rules::v2::Hidden, who: &dyn Fn(&str) -> 
     format!("  [{}]", hidden_by(h, who))
 }
 
-/// `dg issue list` / `dg pr list --json`: a row's whole-thread hide (null when it has none).
+/// `dg issue list` / `dg pr list --json`: `row` with its `hiddenBy`, the row's whole-thread hide
+/// (`{by, reason, at, eventId}`, or null when it has none). Not `hidden`: the list's top-level
+/// `hidden` counts malformed documents.
 #[must_use]
-pub fn hidden_row_json(h: Option<&forge_core::rules::v2::Hidden>) -> Value {
-    h.map_or(
+pub fn with_hidden_by(mut row: Value, h: Option<&forge_core::rules::v2::Hidden>) -> Value {
+    row["hiddenBy"] = h.map_or(
         Value::Null,
         |h| json!({ "by": h.by, "reason": h.reason, "at": h.at, "eventId": h.event_id }),
-    )
+    );
+    row
 }
 
 /// A list page's rows with each one's whole-thread hide (`hides`, by `$id` as `id` gives it),
@@ -539,10 +542,16 @@ mod tests {
             format!("  [hidden by {} as spam]", with_name("alice", &names))
         );
         assert_eq!(
-            hidden_row_json(Some(a)),
-            json!({ "by": "alice", "reason": "spam", "at": 1, "eventId": "e1" })
+            with_hidden_by(json!({ "number": 1 }), Some(a)),
+            json!({
+                "number": 1,
+                "hiddenBy": { "by": "alice", "reason": "spam", "at": 1, "eventId": "e1" }
+            })
         );
-        assert_eq!(hidden_row_json(None), Value::Null);
+        assert_eq!(
+            with_hidden_by(json!({ "number": 4 }), None),
+            json!({ "number": 4, "hiddenBy": null })
+        );
     }
 
     #[test]

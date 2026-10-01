@@ -763,23 +763,25 @@ async fn list(
     let json_rows: Vec<_> = rows
         .iter()
         .map(|((v, a), h)| {
-            json!({
-                "number": v.patch.number,
-                "title": v.patch.title,
-                "author": v.patch.author,
-                "state": state_field(v),
-                "baseRef": v.patch.base_ref_name,
-                "baseTip": v.base_tip,
-                "retargetedTo": v.state.base_ref,
-                "headOid": v.head,
-                "repoId": v.patch.repo_id,
-                "sourceRepoId": v.patch.source_repo_id,
-                "sourceRefName": v.patch.source_ref_name,
-                "draft": v.state.draft,
-                "approvals": a.approvers.len(),
-                "changesRequested": a.changes_requested.len(),
-                "hidden": crate::fmt::hidden_row_json(*h),
-            })
+            crate::fmt::with_hidden_by(
+                json!({
+                    "number": v.patch.number,
+                    "title": v.patch.title,
+                    "author": v.patch.author,
+                    "state": state_field(v),
+                    "baseRef": v.patch.base_ref_name,
+                    "baseTip": v.base_tip,
+                    "retargetedTo": v.state.base_ref,
+                    "headOid": v.head,
+                    "repoId": v.patch.repo_id,
+                    "sourceRepoId": v.patch.source_repo_id,
+                    "sourceRefName": v.patch.source_ref_name,
+                    "draft": v.state.draft,
+                    "approvals": a.approvers.len(),
+                    "changesRequested": a.changes_requested.len(),
+                }),
+                *h,
+            )
         })
         .collect();
     ctx.emit(

@@ -365,20 +365,7 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
 
     let json_rows: Vec<_> = rows
         .iter()
-        .map(|((v, pinned), h)| {
-            let st = &v.state;
-            json!({
-                "number": v.issue.number,
-                "title": v.issue.title,
-                "author": v.issue.author,
-                "open": st.open,
-                "state": state_word(st.open),
-                "labels": st.labels,
-                "assignees": st.assignees,
-                "pinned": pinned,
-                "hidden": crate::fmt::hidden_row_json(*h),
-            })
-        })
+        .map(|((v, pinned), h)| issue_row_json(v, *pinned, *h))
         .collect();
     ctx.emit(
         json!({
@@ -415,6 +402,28 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// One `dg issue list --json` row, with its `hiddenBy`.
+fn issue_row_json(
+    v: &IssueView,
+    pinned: bool,
+    h: Option<&forge_core::rules::v2::Hidden>,
+) -> serde_json::Value {
+    let st = &v.state;
+    crate::fmt::with_hidden_by(
+        json!({
+            "number": v.issue.number,
+            "title": v.issue.title,
+            "author": v.issue.author,
+            "open": st.open,
+            "state": state_word(st.open),
+            "labels": st.labels,
+            "assignees": st.assignees,
+            "pinned": pinned,
+        }),
+        h,
+    )
 }
 
 /// One `dg issue list` row: number, state (pinned), title, labels, how many are assigned, and
