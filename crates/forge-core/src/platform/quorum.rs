@@ -272,7 +272,7 @@ pub(super) async fn wait_for_quorum(label: &str, waits: &[Duration], n: usize) -
         pause.as_secs(),
         waited.as_secs()
     );
-    tracing::warn!(
+    tracing::debug!(
         op = label,
         retry = n + 1,
         wait_ms = pause.as_millis(),

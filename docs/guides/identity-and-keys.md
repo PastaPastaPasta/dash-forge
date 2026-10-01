@@ -205,11 +205,11 @@ Ways to get one in the web app (**Sign in**):
 The header shows your balance and the key's remaining budget. It turns amber when the budget drops under 20 % or expiry is less than 7 days away, and red when the key is spent or expired. A write that would overrun either is refused before it is signed, and the sheet that opens says which one blocks. **Settings → This browser's key** shows the budget and expiry and has these actions:
 
 - **Top up key budget** adds budget to the same key (0.05 DASH by default) and can push its expiry out, up to 365 days. It is a protocol-14 `IdentityKeyLimitsUpdate`, signed once by your master key from the identity file or recovery phrase, and costs about 0.00002 DASH.
-- **Renew key** registers a fresh key and disables the previous one in the same update.
+- **Renew key** opens **Renew this browser's key**: your identity file or recovery phrase registers a fresh key and disables the previous one in the same update (about 0.00028 DASH). An encryption key this browser holds moves to the new key.
 - **Lock** drops the unlocked key in every open tab and ends the kept session; unlock again with the passkey or passphrase.
 - **Settings → Security → Stay signed in for public repos (up to 12 h)** (on by default): reloads and new tabs keep only the spend-capped signing key, for up to 12 hours after the unlock and until 4 hours pass without use. Private repos, storage credentials and wallet grants still ask you to unlock, once per tab. Turn it off and every reload or new tab starts locked.
-- **Revoke on chain** disables this browser's key. It needs your identity file once.
-- **Sign out & forget key** deletes the key from this device. Forgetting is **not** revoking: a forgotten key stays valid on chain until it expires.
+- **Revoke on chain** disables this browser's key (about 0.00002 DASH). It needs your identity file or recovery phrase once. After a reload it first asks you to unlock this tab, so it can disable every key the browser holds.
+- **Sign out & forget key** deletes the key from this device. Forgetting is **not** revoking: a forgotten key stays valid on chain until it expires. If you topped the identity up in this browser, a note of where its next top-up starts (or an unfinished top-up) stays, with no keys or words in it; Forget and Revoke say so before you confirm.
 
 For a key a wallet granted without limits, **Renew key** reads **Replace with a limited key**, **Revoke on chain** reads **Disable key on chain**, and **Top up key budget** is not offered (Platform cannot add limits to such a key).
 

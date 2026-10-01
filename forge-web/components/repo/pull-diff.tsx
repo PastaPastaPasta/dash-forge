@@ -163,7 +163,7 @@ function Unavailable({
 }
 
 /** The base-branch tips a PR's diff (and merge) start from, honoring a `retarget`. */
-export function pullBase(pull: PullView, home: RepoHome): { baseRefName: string; baseTipOid: string; baseOidAtOpen: string } {
+export function pullBase(pull: PullView, home: RepoHome): { baseRefName: string; baseTipOid: string; baseOidAtOpen: string; baseOidAtMerge: string } {
   // Diff against the branch the PR targets now: an authorized `retarget` moves it off the
   // patch's original `baseRefName`. `baseTipOid` / `baseOidAtOpen` were read from the
   // original ref's history, so they only apply while the PR still targets that ref.
@@ -176,6 +176,7 @@ export function pullBase(pull: PullView, home: RepoHome): { baseRefName: string;
     baseRefName,
     baseTipOid: tipOidOf(resolvedBase) ?? (retargeted ? '' : pull.baseTipOid),
     baseOidAtOpen: retargeted ? '' : pull.baseOidAtOpen,
+    baseOidAtMerge: retargeted ? '' : pull.baseOidAtMerge ?? '',
   }
 }
 
@@ -267,6 +268,8 @@ export function useComparisonSides(baseRepo: RepoRef, sourceId: string): Compari
 export interface ComparisonSpec {
   readonly baseTipOid: string
   readonly baseOidAtOpen: string
+  /** See `PullComparisonInput.baseOidAtMerge`. */
+  readonly baseOidAtMerge?: string
   readonly headOid: string
   readonly merged: boolean
   readonly imported: boolean
@@ -318,11 +321,11 @@ export function usePullComparison(baseRepo: RepoRef, sourceId: string, spec: Com
       setCommitsRead(0)
       return loadPullComparison(
         sides as DiffSides,
-        { baseTipOid, baseOidAtOpen, headOid: spec.headOid, merged: spec.merged, imported: spec.imported, sourceBaseOid: spec.sourceBaseOid },
+        { baseTipOid, baseOidAtOpen, baseOidAtMerge: spec.baseOidAtMerge ?? '', headOid: spec.headOid, merged: spec.merged, imported: spec.imported, sourceBaseOid: spec.sourceBaseOid },
         { signal: controller.signal, onProgress: (n) => controller.signal.aborted || setCommitsRead(n) },
       )
     },
-    [baseRepo.repoId, repoKey(baseRepo), sourceId, crossRepo, sidesKey, baseTipOid, baseOidAtOpen, spec.headOid, spec.merged, spec.imported, spec.sourceBaseOid],
+    [baseRepo.repoId, repoKey(baseRepo), sourceId, crossRepo, sidesKey, baseTipOid, baseOidAtOpen, spec.baseOidAtMerge ?? '', spec.headOid, spec.merged, spec.imported, spec.sourceBaseOid],
     { enabled: waiting === null && sides !== null && spec.headOid !== '' },
   )
   // A disabled comparison (a side reloading) must not keep walking history in the background.
@@ -342,9 +345,9 @@ export function usePullComparison(baseRepo: RepoRef, sourceId: string, spec: Com
 
 /** The base, head and flags of a PR's comparison. */
 export function pullSpec(pull: PullView, home: RepoHome, sourceBaseOid = ''): ComparisonSpec {
-  const { baseTipOid, baseOidAtOpen } = pullBase(pull, home)
+  const { baseTipOid, baseOidAtOpen, baseOidAtMerge } = pullBase(pull, home)
   // `sourceBaseOid`: only from a trusted mirror's record (the caller checks): anyone can write that text.
-  return { baseTipOid, baseOidAtOpen, headOid: pull.headOid, merged: pull.state.merged, imported: pull.imported, importedUrl: pull.importedUrl, sourceBaseOid }
+  return { baseTipOid, baseOidAtOpen, baseOidAtMerge, headOid: pull.headOid, merged: pull.state.merged, imported: pull.imported, importedUrl: pull.importedUrl, sourceBaseOid }
 }
 
 /** A head compared with its merge base against a base branch, across two repos. */
