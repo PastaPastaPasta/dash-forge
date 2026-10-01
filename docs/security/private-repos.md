@@ -484,7 +484,7 @@ The `webhook.secret` `encryptedFor` field, and both contracts' `readonly` decisi
 - **Events skip the late-content rule** (§8.1 step 7) on the strength of the forge-collab `event` schema: immutable, non-deletable and `ownerRefersTo`-gated to current maintainers and writers, so a removed member cannot write one under an old key. A contract change that relaxed any of the three would need the rule back; `forge-web/lib/private/event-contract.test.ts` and the Rust `event_schema_is_member_gated_and_append_only` test pin them.
 - **Encryption-key custody in the browser** widens the vault's blast radius to "read every private repo, and every key handed out as a maintainer". Passkey PRF must be the default where available.
 - **Sealed releases skip the height clause of the late-content rule** (§16.4; the burned clause still applies) on the strength of the forge-core `release` schema: immutable, non-deletable and `ownerRefersTo`-gated to a current maintainer. The same caveat as for events applies: relaxing any of the three needs the rule back, and the rule would then need `$createdAtBlockHeight` in `release.required`.
-- **Un-encrypted label definitions** may surprise users; the UI must say so. (Event values, including the labels put on issues, are sealed; releases are sealed once §16 is implemented, and refused on private repositories until then.)
+- **Un-encrypted label definitions** may surprise users; the UI must say so. (Event values, including the labels put on issues, are sealed; releases are sealed as §16 specifies.)
 
 ## 16. Sealed releases
 

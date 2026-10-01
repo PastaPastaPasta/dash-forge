@@ -13,8 +13,9 @@ import { useRouter } from 'next/navigation'
 import { Check, GitFork, Loader2 } from 'lucide-react'
 
 import { checkForkName, descriptionProblem, forkRepoV2, normalizeRepoName, planFork, type ForkNameCheck, type ForkStep, type RepoRef } from '@/lib/repo'
-import { previewCreate, sumPreviews } from '@/lib/sdk'
+import { previewCreate, sumPreviews, type FirstWrite } from '@/lib/sdk'
 import { errorMessage } from '@/lib/utils'
+import { spendAction } from '@/lib/spend-toast'
 import { plural } from '@/lib/view/format'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
@@ -34,6 +35,13 @@ const STEPS: readonly { step: ForkStep; label: string }[] = [
 ]
 
 type Progress = Partial<Record<ForkStep, { state: 'running' | 'done'; count?: string }>>
+
+/** A fork whose repo landed but that could copy no branches: some parent packs have no copy to point at. */
+class IncompleteFork extends Error {
+  constructor(readonly packs: number) {
+    super('fork incomplete')
+  }
+}
 
 /** What a fork takes from its parent, as on GitHub: its default branch and (editable) description. */
 export interface ForkDefaults {
@@ -116,12 +124,16 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
   const cost = useMemo(() => {
     const p = plan.data
     const manifests = p?.manifests ?? []
+    // After the fork's repo document, the owner has written to forge-core, and the new repo has
+    // no config, pack or ref yet: its first of each builds the repo's subtrees, and each ref name
+    // is new to it (QW3-037: the plan priced every write as a steady one).
+    const after: FirstWrite = { contract: false }
     return sumPreviews([
       previewCreate('repo', { name: normalized || parent.name, description: description.trim(), defaultBranch: defaults.defaultBranch, visibility: 'public' }),
-      previewCreate('maintainer'),
-      previewCreate('config', { defaultBranch: defaults.defaultBranch }),
-      ...manifests.map((m) => previewCreate('packManifest', { uris: m.uris })),
-      ...(p?.refs ?? []).map((r) => previewCreate('refUpdate', { refName: r.refName })),
+      previewCreate('maintainer', {}, after),
+      previewCreate('config', { defaultBranch: defaults.defaultBranch }, { ...after, repo: true }),
+      ...manifests.map((m, i) => previewCreate('packManifest', { uris: m.uris }, { ...after, repo: i === 0 })),
+      ...(p?.refs ?? []).map((r, i) => previewCreate('refUpdate', { refName: r.refName }, { ...after, repo: i === 0, target: true })),
     ])
   }, [plan.data, normalized, parent.name, description, defaults.defaultBranch])
 
@@ -132,22 +144,28 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
     setError(null)
     setProgress({})
     try {
-      const result = await forkRepoV2(sdk, signer, parent, { name: normalized, description: description.trim(), defaultBranch: defaults.defaultBranch }, (p) =>
-        setProgress((prev) => ({
-          ...(prev ?? {}),
-          [p.step]: { state: p.state === 'start' ? 'running' : 'done', ...(p.total ? { count: `${p.done ?? 0} of ${p.total}` } : {}) },
-        })),
+      // Every document of the fork shows in one toast, with their total (QW3-039). A fork that
+      // could copy no branches did not finish: its toast says so.
+      const result = await spendAction(
+        { running: `Forking ${parent.name}…`, done: `Forked ${parent.name} as ${normalized}`, failed: `Fork of ${parent.name} stopped part-way` },
+        async (tag) => {
+          const r = await forkRepoV2(sdk, tag(signer), parent, { name: normalized, description: description.trim(), defaultBranch: defaults.defaultBranch }, (p) =>
+            setProgress((prev) => ({
+              ...(prev ?? {}),
+              [p.step]: { state: p.state === 'start' ? 'running' : 'done', ...(p.total ? { count: `${p.done ?? 0} of ${p.total}` } : {}) },
+            })),
+          )
+          if (r.unreferenceable.length > 0) throw new IncompleteFork(r.unreferenceable.length)
+          return r
+        },
       )
-      if (result.unreferenceable.length > 0) {
-        setError(
-          `Forked, but ${result.unreferenceable.length} of the parent's packs have no copy a fork can point at, so no branches were copied. Push your branches to the fork.`,
-        )
-        setPending(false)
-        return
-      }
       router.push(`/repo/?owner=${encodeURIComponent(owner)}&name=${encodeURIComponent(result.name)}&created=1`)
     } catch (e) {
-      setError(guard.failed(e))
+      setError(
+        e instanceof IncompleteFork
+          ? `Forked, but ${e.packs} of the parent's packs have no copy a fork can point at, so no branches were copied. Push your branches to the fork.`
+          : guard.failed(e),
+      )
       setPending(false)
     }
   }

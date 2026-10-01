@@ -77,6 +77,23 @@ If a future host sets headers, set these on every response:
 
 `next.config.js` `headers()` does the same in development.
 
+### 6. Cloudflare Web Analytics stays off
+
+A zone proxied by Cloudflare gets Web Analytics' JavaScript beacon injected into every HTML response while automatic setup is on, which is the default. The app's CSP (`script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'`) refuses it, so on every page the console logs `Loading the script 'https://static.cloudflareinsights.com/beacon.min.js/…' violates the following Content Security Policy directive`, and Playwright sees a failed `(csp)` request (QW3-040). Nothing loads, so nothing is collected. But a third-party script the site never asked for is against the point of the site (no server to trust, nothing in the page that phones home), and it keeps the console from being clean.
+
+Do not add `static.cloudflareinsights.com` to the CSP. Turn the injection off instead:
+
+- Cloudflare dashboard → **Web Analytics** → the site `forge.dashhq.org` → **Manage site** → set automatic setup to **Disable**. (Or delete the site there.)
+- Not a substitute: a `Cache-Control: no-transform` response header also stops the injection, but only as a side effect that Cloudflare does not support as the way to turn it off, and GitHub Pages sets no such header.
+
+Verify it:
+
+```sh
+curl -s -H 'Accept: text/html' -H 'User-Agent: Mozilla/5.0' https://forge.dashhq.org/ | grep -c -i -E 'cloudflareinsights|data-cf-beacon'
+```
+
+Expect `0`. `pages.yml` runs the same check after each deploy and prints a warning (it does not fail the deploy) when the beacon is back, so a zone setting that drifts shows up in the workflow run.
+
 ## Other static hosts (IPFS gateways, S3, nginx)
 
 The same rules apply:

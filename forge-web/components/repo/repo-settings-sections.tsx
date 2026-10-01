@@ -67,7 +67,7 @@ import {
   type SourceOption,
 } from '@/lib/view/required-checks'
 import type { Policy } from '@/lib/rules/v2'
-import { previewCreate, type CostPreview as Cost } from '@/lib/sdk'
+import { previewCreate, type CostPreview as Cost, type FirstWrite } from '@/lib/sdk'
 import { retryWhileMissing } from '@/lib/view/retry'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync, type AsyncState } from '@/hooks/use-async'
@@ -172,11 +172,17 @@ interface PendingConfig {
  */
 function useConfigWrite(home: RepoHome, onSaved: () => void) {
   const { sdk } = useSdk(repoContractIds(home.repo))
-  const { signer } = useAuth()
+  const { signer, identity } = useAuth()
   const guard = useWriteGuard()
   const [pending, setPending] = useState<PendingConfig | null>(null)
   const current = home.config ?? DEFAULT_CONFIG
-  const cost = (change: ConfigChange): Cost => previewConfig(applyConfigChange(current, change))
+  // A repo with a config holds the config subtree already, and its owner has written to forge-core
+  // (its repo document): a later config costs about three quarters of the first (QW3-037).
+  const first: FirstWrite = {
+    ...(home.config !== null ? { repo: false } : {}),
+    ...(identity !== null && identity === home.repo.ownerId ? { contract: false } : {}),
+  }
+  const cost = (change: ConfigChange): Cost => previewConfig(applyConfigChange(current, change), first)
   const ask = (p: PendingConfig): void => {
     if (guard.check(cost(p.change))) setPending(p)
   }
@@ -390,6 +396,7 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
         }
         cost={pending ? previewRepoEdit(pending, held.data, home.repo.visibility) : null}
         confirmLabel="Sign & save"
+        toast={{ running: 'Saving the repo details…', done: 'Repository details saved' }}
         onConfirm={run}
       />
     </div>
