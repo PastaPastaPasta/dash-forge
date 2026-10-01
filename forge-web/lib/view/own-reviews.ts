@@ -29,22 +29,29 @@ function storage(): Storage | null {
   }
 }
 
+/** This page's copy of every scope written: what `load` falls back to when session storage is unavailable or refused the write. */
+const memory = new Map<string, readonly OwnReview[]>()
+
 function load(scope: string): OwnReview[] {
   try {
-    const raw = storage()?.getItem(key(scope))
-    const parsed: unknown = raw ? JSON.parse(raw) : []
+    const store = storage()
+    const raw = store?.getItem(key(scope)) ?? null
+    if (raw === null) return [...(memory.get(scope) ?? [])]
+    const parsed: unknown = JSON.parse(raw)
     return Array.isArray(parsed) ? parsed.filter((r): r is OwnReview => typeof r?.id === 'string' && typeof r?.verdict === 'string' && typeof r?.at === 'number') : []
   } catch {
-    return []
+    return [...(memory.get(scope) ?? [])]
   }
 }
 
 function save(scope: string, rows: readonly OwnReview[]): void {
+  if (rows.length === 0) memory.delete(scope)
+  else memory.set(scope, rows)
   try {
     if (rows.length === 0) storage()?.removeItem(key(scope))
     else storage()?.setItem(key(scope), JSON.stringify(rows))
   } catch {
-    // No storage: the note shows until this page view ends.
+    // No storage: the in-memory copy keeps the note for this page view.
   }
 }
 
