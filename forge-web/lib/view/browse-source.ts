@@ -1609,11 +1609,8 @@ function gatherRanges(
 function openFragment(sdk: EvoSDK, repo: RepoRef, m: PackManifest): Promise<ObjectLocator | RangedLocator> {
   const progressKey = repoKey(repo)
   const memo = `${ACTIVE_NETWORK.key}:${repoKey(repo)}:${m.packHash}`
-  let opened = openedFragments.get(sdk)
-  if (opened === undefined) {
-    opened = new Map()
-    openedFragments.set(sdk, opened)
-  }
+  const opened = openedFragments.get(sdk) ?? new Map<string, Promise<ObjectLocator | RangedLocator>>()
+  openedFragments.set(sdk, opened)
   const held = opened.get(memo)
   if (held !== undefined) return held
   const open = (async (): Promise<ObjectLocator | RangedLocator> => {
@@ -1630,12 +1627,11 @@ function openFragment(sdk: EvoSDK, repo: RepoRef, m: PackManifest): Promise<Obje
     const loadWhole = async (): Promise<Uint8Array> => (await wholeFragment(sdk, repo, m, progressKey)).asBytes()
     return RangedLocator.open(await readRange(0, FANOUT_LEN), { sizeBytes: m.sizeBytes, granule, readRange, loadWhole }) ?? ObjectLocator.parse(await loadWhole())
   })()
-  const byKey = opened
-  byKey.set(memo, open)
+  opened.set(memo, open)
   open.catch(() => {
-    if (byKey.get(memo) === open) byKey.delete(memo)
+    if (opened.get(memo) === open) opened.delete(memo)
   })
-  trimOldest(byKey, OPENED_FRAGMENTS_KEPT)
+  trimOldest(opened, OPENED_FRAGMENTS_KEPT)
   return open
 }
 
