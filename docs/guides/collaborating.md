@@ -30,7 +30,7 @@ The repository owner alone adds and removes members, and edits the description a
 
 Anyone, member or not, can open issues and PRs, comment and review. Approvals count toward a branch policy only from maintainers and writers: a triage member's or reader's approval is shown as **not counted**, and their request for changes does not block. Imported issues and comments (a mirror's provenance and upstream numbers) are trusted from the same people.
 
-A public repository has no readers: everyone can read it already. To change a member's role, remove them and add them again with the new one; their acceptance stands, so they need not accept again. On a private repository the removal rotates the key, as every removal does.
+A public repository has no readers: everyone can read it already. A member holds one writer document, so changing between writer, triage and reader replaces it: `dg collab add` with the new `--role` deletes the old document and writes the new one (their acceptance stands, so they need not accept again), and the web app's Settings → Collaborators has **Change role** on public repositories. On a private repository `dg collab add` changes the role the same way without rotating the key, since the member stays a member; in the web app, remove the member and add them again, which rotates it as every removal does.
 
 Adding a collaborator is two steps: the owner adds them, and the collaborator accepts. Consensus admits a `writer`/`maintainer` document only when it names the member's own `consent` document for the repo (`member_consent`), so nobody can be made a member, or spammed with an invitation, without agreeing first.
 
@@ -41,7 +41,7 @@ dg collab add    <owner>/<repo> <identity id or DPNS name> --role writer   # or 
 dg collab remove <owner>/<repo> <identity id or DPNS name> --role writer
 ```
 
-`dg collab list` shows each member's role.
+`dg collab list` shows each member's role. `dg collab remove --role writer` (or `triage`, `reader`) removes the member's writer document, whichever of the three it grants.
 
 If the owner runs `dg collab add` before the invitee has accepted, it is refused before anything is signed: *"`<identity>` has not accepted membership of `<repo>` yet"*, with the fix to ask them to run `dg collab accept`, then add them again. `dg collab add <owner>/<repo> <identity id> --wait 300` instead waits (printing that it is waiting) up to that many seconds for the acceptance to land, then adds them; with no `--wait` it checks once. `dg collab accept --withdraw` withdraws an earlier acceptance (a membership already granted stands until the owner removes it).
 
