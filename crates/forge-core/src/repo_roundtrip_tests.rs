@@ -35,7 +35,18 @@ pub(super) struct Recorded {
 
 impl Recorded {
     /// Record one create by [`OWNER`], `$createdAt` in write order.
-    pub(super) fn create(&mut self, doc_type: &'static str, fields: BTreeMap<String, FieldValue>) {
+    pub(super) fn create(
+        &mut self,
+        doc_type: &'static str,
+        mut fields: BTreeMap<String, FieldValue>,
+    ) {
+        // The push path stamps a push-class document's `r` (RC2 member roles) at the write
+        // (`members::stamp_claimed_role`): 1.
+        if crate::members::ROLE_GATED_TYPES.contains(&doc_type) {
+            fields
+                .entry(crate::members::CLAIMED_ROLE.to_string())
+                .or_insert(FieldValue::integer(1));
+        }
         // Every document the push writes must be one the RC1 contract accepts.
         if let Err(e) = crate::test_support::rc1::validate_props(doc_type, &fields, OWNER) {
             panic!("RC1 refuses this {doc_type}: {e}\n  properties: {fields:?}");

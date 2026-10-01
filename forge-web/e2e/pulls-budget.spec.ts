@@ -10,7 +10,7 @@ test.beforeEach(quorumGuard)
  * every kind counted at the network, in a fresh browser context), on the read fixture and on the
  * dashpay/dash mirror (the largest PR list on the chain, 100+ PRs):
  *
- *   E2E_DEVNET=bonsia pnpm exec playwright test pulls-budget.spec.ts
+ *   E2E_DEVNET=sakura pnpm exec playwright test pulls-budget.spec.ts
  *
  * Each test annotates its count and a per-type breakdown, so a regression names its reads
  * (`E2E_TRACE=1` adds the request order).

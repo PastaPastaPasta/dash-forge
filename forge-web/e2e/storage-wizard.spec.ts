@@ -8,7 +8,7 @@ import { EMPTY, fixtureWriteBlocked, idFile, runAxe, shot, signedIn, stateFile, 
  * build because a vault needs a signed-in identity:
  *
  *   docker compose -f infra/docker-compose.yml up -d rustfs s3-init static-http
- *   E2E_DEVNET=bonsia E2E_WRITE=1 pnpm exec playwright test storage-wizard.spec.ts
+ *   E2E_DEVNET=sakura E2E_WRITE=1 pnpm exec playwright test storage-wizard.spec.ts
  *
  * s1. on the local S3 store (RustFS, entered through the wizard's MinIO tile) every write,
  *     read, range and CORS row passes, and the public-read row fails with the reason a

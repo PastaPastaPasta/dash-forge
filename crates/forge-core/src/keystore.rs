@@ -1278,7 +1278,7 @@ mod tests {
             "dfk1:testnet:../../etc/passwd:5:cWIFsecret",
             "dfk1:test/net:FAKEid1111111111111111111111111111111111111:5:cWIFsecret",
             // QW3-024: a garbled key is refused when it is read, not when it first signs.
-            "dfk1:devnet-bonsia:FAKEid1111111111111111111111111111111111111:7:cWIFsecret",
+            "dfk1:devnet-sakura:FAKEid1111111111111111111111111111111111111:7:cWIFsecret",
         ] {
             let err = BridgeIdentity::from_dfk1(bad).unwrap_err().to_string();
             assert!(err.contains("dfk1:<network>"), "{err}");

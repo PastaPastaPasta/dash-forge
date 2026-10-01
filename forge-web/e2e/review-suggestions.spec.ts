@@ -9,7 +9,7 @@ import { answerStorageQuestion, idFile, idOf, shot, signedIn, unlock, waitForRep
  * Suggestions and "Update branch" from the browser (review-parity spec §7 PR 5), live on a devnet
  * with the spec's own identities (about 0.01 DASH plus a few KiB of Platform storage):
  *
- *   E2E_DEVNET=bonsia E2E_WRITE=1 E2E_IDENTITY_DIR=<dir with OWNER, CONTRIB, COLLAB> \
+ *   E2E_DEVNET=sakura E2E_WRITE=1 E2E_IDENTITY_DIR=<dir with OWNER, CONTRIB, COLLAB> \
  *     E2E_BIN_DIR=<dir with dg + git-remote-dash> pnpm exec playwright test review-suggestions.spec.ts
  *
  *   s1. OWNER (maintainer) comments two suggestions on CONTRIB's PR from the web, the first with
@@ -49,7 +49,7 @@ function env(who: string): NodeJS.ProcessEnv {
     ...process.env,
     DASH_FORGE_KEY: idFile(who),
     DASH_FORGE_NETWORK: 'devnet',
-    DASH_FORGE_DEVNET_NAME: process.env['E2E_DEVNET'] || 'bonsia',
+    DASH_FORGE_DEVNET_NAME: process.env['E2E_DEVNET'] || 'sakura',
     RUST_LOG: 'error',
     NO_COLOR: '1',
     PATH: `${BIN}:${process.env['PATH'] ?? ''}`,

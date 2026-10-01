@@ -8,6 +8,11 @@
  * 9 closed draft; bit 0 closed, bit 1 merged, bit 3 draft), and the thread is **locked** when the
  * sum is 16 or more (RC1 R-15: lock and unlock are kinds 3/4 on an issue and 18/19 on a PR, delta
  * ±16, members only). The `transition__*` vectors hold the two ports in parity.
+ *
+ * An issue close may say why (RC2 rider QW-069): `transition.reason` 1 completed, 2 not planned,
+ * 3 duplicate, and `dupNumber`, the canonical issue's number in the same repo. No consensus rule
+ * reads them, so every reader judges them alike here (`closeReasonOf`, `currentCloseReason`;
+ * the `close_reason__*` vectors).
  */
 
 import type { Oid } from './types'
@@ -157,6 +162,70 @@ export interface Transition {
   readonly oid?: Oid | null
   readonly asAuthor?: number
   readonly createdAt?: number
+  /** `transition.reason` (QW-069): read only on an issue close. */
+  readonly reason?: number | null
+  /** `transition.dupNumber` (QW-069): the canonical issue's number in the same repo. */
+  readonly dupNumber?: number | null
+}
+
+/** Why an issue was closed, as `gh` and GitHub's REST `state_reason` spell it. */
+export type CloseReason = 'completed' | 'not_planned' | 'duplicate'
+
+/** The stored `transition.reason` of each close reason. */
+export const CLOSE_REASON_CODE: Readonly<Record<CloseReason, number>> = { completed: 1, not_planned: 2, duplicate: 3 }
+
+const REASON_OF_CODE: Readonly<Record<number, CloseReason>> = { 1: 'completed', 2: 'not_planned', 3: 'duplicate' }
+
+/**
+ * An issue's close, read: its reason and, for a duplicate, the canonical issue's number when the
+ * transition names one other than the issue itself. A reader links `duplicateOf` only when it
+ * resolves (the `number` index) to an issue of the same repo.
+ */
+export interface ClosedAs {
+  readonly reason: CloseReason
+  readonly duplicateOf: number | null
+}
+
+/**
+ * The close reason one transition records: only an issue close (kind 1) has one, with a reason
+ * in 1..3 (absent or out of range: a plain close, null). A PR close's reason is reserved and
+ * ignored. `dupNumber` counts only with reason 3 and when it is not the target's own number.
+ */
+export function closeReasonOf(t: Transition, targetNumber: number): ClosedAs | null {
+  if (t.kind !== ISSUE_CLOSE || t.reason == null) return null
+  const reason = REASON_OF_CODE[t.reason]
+  if (reason === undefined) return null
+  const dup = t.dupNumber
+  const duplicateOf = reason === 'duplicate' && dup != null && dup !== targetNumber && dup !== 0 ? dup : null
+  return { reason, duplicateOf }
+}
+
+/**
+ * An issue's current close reason: the reason of its newest close or reopen (kinds 1 / 2, by
+ * `($createdAt, $id)`; locks are skipped), and only while its state code is 1 (closed).
+ */
+export function currentCloseReason(transitions: readonly Transition[], targetNumber: number): ClosedAs | null {
+  if (stateCode(transitions) !== 1) return null
+  let newest: Transition | null = null
+  for (const t of transitions) {
+    if (t.kind !== ISSUE_CLOSE && t.kind !== ISSUE_REOPEN) continue
+    if (newest === null || compareTransitions(t, newest) > 0) newest = t
+  }
+  return newest ? closeReasonOf(newest, targetNumber) : null
+}
+
+/** `($createdAt, $id)` order (ids are base58, so code-unit order is byte order). */
+function compareTransitions(a: Transition, b: Transition): number {
+  const at = (a.createdAt ?? 0) - (b.createdAt ?? 0)
+  if (at !== 0) return at
+  const [ai, bi] = [a.id ?? '', b.id ?? '']
+  return ai < bi ? -1 : ai > bi ? 1 : 0
+}
+
+/** How a timeline says why an issue was closed: "closed this as not planned" (dg's `closed_phrase`). */
+export function closeReasonPhrase(closed: ClosedAs): string {
+  if (closed.reason === 'duplicate') return closed.duplicateOf != null ? `closed this as a duplicate of #${closed.duplicateOf}` : 'closed this as a duplicate'
+  return closed.reason === 'not_planned' ? 'closed this as not planned' : 'closed this as completed'
 }
 
 /** The raw delta sum of a target's transitions (unknown kinds count 0). */

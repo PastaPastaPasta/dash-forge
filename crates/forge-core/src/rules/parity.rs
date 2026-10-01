@@ -124,9 +124,10 @@ fn check_state_of(run: &CheckRunRow) -> CheckState {
 
 /// Whether the check runs on `head_oid` meet `policy` (platform-parity-spec §2.6).
 ///
-/// * A run counts only when its reporter is a **current** maintainer or writer (`oracle`) or a
-///   current runner (`runners`); consensus admitted it from one of them, and revoking the
-///   membership withdraws the trust (the approvals rule). Runs on another head are ignored.
+/// * A run counts only when its reporter is a **current** maintainer or role-1 writer
+///   (`oracle`, never a triage member or reader) or a current runner (`runners`); consensus
+///   admitted it from one of them, and revoking the membership (or a demotion) withdraws the
+///   trust (the approvals rule). Runs on another head are ignored.
 /// * The newest counting run per name by `($createdAt, $id)` decides that name. An untrusted
 ///   run never shadows a trusted one.
 /// * `requiredChecks` set: each named check must be decided by a passing run; a missing one is
@@ -148,7 +149,9 @@ pub fn checks_state(
     runners: &BTreeSet<String>,
     policy: &ChecksPolicy,
 ) -> ChecksState {
-    let trusted = |who: &str| oracle.current_role(who).is_some() || runners.contains(who);
+    // RC2 member roles: a check run is trusted from an approver (maintainer or role-1 writer)
+    // or a runner, never a triage member or reader (one demoted after posting it).
+    let trusted = |who: &str| oracle.current_approver(who) || runners.contains(who);
     let pins = pinned_sources(policy);
     let pinned_out = |run: &CheckRunRow| {
         pins.get(run.name.as_str())
@@ -613,8 +616,10 @@ pub enum RunWriteAction {
 
 /// The write a report makes: create or replace, and the immutable-once-set fields it carries.
 /// On a replace, only a field the stored run does not have yet is set (`None` keeps the stored
-/// value: `startedAt`, `completedAt`, `conclusion` and `externalId` are `immutableAllowSetting`,
-/// so a set value never changes).
+/// value: `startedAt`, `completedAt`, `conclusion` and `externalId` are set once, each a
+/// conditional `immutable` entry frozen while the stored run holds it, so a set value never
+/// changes). With RC2's S1, a completed run's `summary`, `detailsUrl`, `logUrl`, `logSha256` and
+/// `artifacts` are frozen too.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunWrite {

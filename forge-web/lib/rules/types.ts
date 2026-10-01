@@ -8,6 +8,8 @@
  * and hand them in as plain objects; the only clock is the consensus `createdAt`.
  */
 
+import type { Role } from './v2'
+
 /** A git object id, hex-encoded. All-zero (any length) or empty string = the null oid. */
 export type Oid = string
 
@@ -79,17 +81,20 @@ export type RefState =
   | { readonly state: 'diverged'; readonly heads: readonly RefHead[] }
 
 /**
- * What an identity may do on a repo now, from its forge-v2 membership: `write` for a writer
- * or maintainer (push, act on issues and PRs), `maintain` for a maintainer only (protected
- * refs, config, releases).
+ * What an identity may do on a repo now, from its forge-v2 membership: `member` for any
+ * membership document (a maintainer, or a writer document of any role: it proves membership on
+ * comments and reviews), `maintain` for a maintainer only (protected refs, config, releases),
+ * and `role`, the best role held, whose `capabilitiesOf` (`rules/roles.ts`) gates every member
+ * write (push, merge, triage).
  */
 export interface Holdings {
-  readonly write: boolean
+  readonly member: boolean
   readonly maintain: boolean
+  readonly role: Role | null
 }
 
 /**
- * A collaboration `event` kind (forge-v2.md §3, numeric kinds 1–22, string-tagged in vectors).
+ * A collaboration `event` kind (forge-v2.md §3, numeric kinds 1–25, string-tagged in vectors).
  * 1–10 change the issue/PR state; 11–18 are the review state (`foldPrReviewV2`); 17–22 are a
  * thread's milestone, pin and lock (`foldThreadMetaV2`).
  */
@@ -118,6 +123,10 @@ export type EventKind =
   | 'unlock'
   /** 23: a maintainer merged by bypassing the branch rules (`value` the rules, `oid` the merge commit). No fold reads it. */
   | 'policyBypass'
+  /** 24: a maintainer hides a comment or review (`refId`) or, without one, the thread (`value` an optional reason). Display only (`hiddenItems`). */
+  | 'hide'
+  /** 25: a maintainer unhides what 24 hid. */
+  | 'unhide'
 
 /** A single `event` document (§2.3), flattened for the fold. */
 export interface Event {

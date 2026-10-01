@@ -6,7 +6,7 @@ You don't have to move everything at once. Most projects start as a **mirror**, 
 
 ## Start here: the mirror wizard
 
-For a public GitHub repository, the quickest path needs no install. Open **[forge.dashhq.org/mirror](https://forge.dashhq.org/mirror/)** (or **New → Mirror a GitHub repo**). It works through six steps in your browser. The hosted site moves to bonsia when the web app cuts over ([Which network](README.md#which-network)); until then, use `/mirror` on a build of `forge-web` for bonsia.
+For a public GitHub repository, the quickest path needs no install. Open **[forge.dashhq.org/mirror](https://forge.dashhq.org/mirror/)** (or **New → Mirror a GitHub repo**). It works through six steps in your browser. The hosted site moves to sakura when its contracts are registered and the web app cuts over ([Which network](README.md#which-network)); until then, use `/mirror` on a build of `forge-web` for sakura that records them.
 
 1. **The GitHub repository.** Type `owner/name` or paste its URL. Your browser asks GitHub's public API, without signing in, whether the repository exists and is public. There is no GitHub OAuth app, because Forge runs no server.
 2. **The Forge repository.** The name comes from GitHub and the price is shown before you sign. Creating it writes three documents, for about 0.002 DASH. If you already own a Forge repository with that name, the mirror writes into it at no cost.
@@ -30,7 +30,7 @@ The rest of this guide covers the command-line path: private repositories, GitLa
 9. [What it costs](#9-what-it-costs)
 10. [GitHub features with no Forge equivalent](#10-github-features-with-no-forge-equivalent)
 
-Replace every `<…>` placeholder with your own value. Forge runs on **devnet bonsia** today, where Dash is free ([Which network](README.md#which-network)).
+Replace every `<…>` placeholder with your own value. Forge runs on **devnet sakura** (RC2 registered on Platform v5.0.0-beta.1), where Dash is free ([Which network](README.md#which-network)).
 
 ---
 
@@ -78,10 +78,10 @@ dg storage use <profile> --global       # two places for anything you care about
 A Dash identity is your account. You create it yourself by locking some Dash. Nobody issues it, and Forge never creates or funds one for you.
 
 ```sh
-dg auth new --network devnet --devnet-name bonsia
+dg auth new --network devnet --devnet-name sakura
 ```
 
-`dg` shows 12 recovery words (write them down), then a deposit address. Fund it from any Dash wallet; on bonsia, use the [faucet](https://faucet.bonsia.networks.dash.org). How much you need depends on the repository: `forge-import --dry-run` in the next step tells you. [Quick start §2–3](quick-start.md#2-get-an-identity) has the details, and [Identity and keys](identity-and-keys.md) covers backups and top-ups.
+`dg` shows 12 recovery words (write them down), then a deposit address. Fund it from any Dash wallet; on sakura, use the [faucet](https://faucet.sakura.networks.dash.org). How much you need depends on the repository: `forge-import --dry-run` in the next step tells you. [Quick start §2–3](quick-start.md#2-get-an-identity) has the details, and [Identity and keys](identity-and-keys.md) covers backups and top-ups.
 
 ## 4. Import the repository
 
@@ -95,19 +95,19 @@ gh auth login
 The standalone `forge-import` does not read `dg`'s saved identity or network, so give it both. `dg import <owner>/<repo>` is the same engine with `dg`'s defaults, if you prefer.
 
 ```sh
-export DASH_FORGE_KEY=keychain:dash-forge/devnet-bonsia/<your identity id>   # the key dg auth stored
+export DASH_FORGE_KEY=keychain:dash-forge/devnet-sakura/<your identity id>   # the key dg auth stored
 ```
 
-(If `dg auth status` says the key is in a passphrase-encrypted file, use that file's path instead, with `DASH_FORGE_PASSPHRASE` set or a terminal to ask on.)
+(If `dg auth status` says the key is in a passphrase-encrypted file, use that file's path instead, and set `DASH_FORGE_PASSPHRASE`. `forge-import` is built to run unattended, so it never asks for the passphrase, even in a terminal.)
 
 **Price it first.** A dry run reads everything and writes nothing:
 
 ```sh
-forge-import alice/project --network devnet --devnet-name bonsia --dry-run
+forge-import alice/project --network devnet --devnet-name sakura --dry-run
 ```
 
 ```
-github.com/alice/project → dash://5NGj…/project (devnet-bonsia)
+github.com/alice/project → dash://5NGj…/project (devnet-sakura)
   would write: 26 ref updates · 2 packs (794.4 KiB) · 1 issues · 36 PRs · 205 comments · 81 reviews · 32 events · 0 releases · 9 labels
   estimate: 0.436514 DASH (dry run: nothing written)
 ```
@@ -115,13 +115,13 @@ github.com/alice/project → dash://5NGj…/project (devnet-bonsia)
 **Try a few items**, then look at the result on the web:
 
 ```sh
-forge-import alice/project --network devnet --devnet-name bonsia --limit 5 --max-spend 0.1 --yes
+forge-import alice/project --network devnet --devnet-name sakura --limit 5 --max-spend 0.1 --yes
 ```
 
 **Then import everything**, with a cap a little above the estimate and a state file for later runs:
 
 ```sh
-forge-import alice/project --network devnet --devnet-name bonsia \
+forge-import alice/project --network devnet --devnet-name sakura \
   --max-spend 0.5 --state ./project.sync.json --yes --summary-json ./import.json
 ```
 
@@ -225,13 +225,13 @@ What exists today, and what doesn't:
 
 - **Webhooks: yes.** GitHub-shaped webhooks, delivered by a relay you run, so a CI system that takes GitHub webhooks can build from Forge ([Webhooks and CI](collaborating.md#webhooks-and-ci)).
 - **Showing check results: yes.** A `checkRun` document records a named check on a commit (queued, in progress, completed; success or failure). `dg pr checks` and the web's PR page show them, the relay delivers them as `check_run` webhooks, and a branch policy can require them (`dg repo policy set … --require-checks true`).
-- **Writing check results: a reference example, not a shipped tool.** `dg`, the relay daemon and the web app write no `checkRun`. The relay's example consumer, [`ci_consumer`](../../crates/forge-relay/examples/ci_consumer.rs), shows the loop. It verifies a webhook against Platform and posts a `checkRun` signed by a runner identity that is a writer or maintainer of the repository: `CI_IDENTITY=<runner identity file> cargo run -p forge-relay --example ci_consumer`. The file's header lists the other variables it needs. Your CI system would do the same with its own Platform client.
-- **A runner: no.** Forge runs no CI and has no equivalent of GitHub Actions. `.github/workflows` files in your repository do nothing on Forge. A `dg ci` command, runner identities with keys that can only post check runs, and a first-party runner are designed ([platform-parity spec §2](../design/platform-parity-spec.md#2-ci--actions-design)) but not built.
+- **Writing check results: yes, with `dg ci`.** `dg ci runner new` gives a runner identity a key that can only post check runs and enrols it in the repository. `dg ci report <owner>/<repo> --sha <commit> --name build --status completed --conclusion success` writes a check run from any CI, with an optional log and artifacts stored in your own storage. See [CI and check runs](ci.md).
+- **A runner: one you run yourself.** Forge hosts no CI. [`forge-runner`](self-host-runner.md) runs a repository's `.forge/workflows/*.yml` (GitHub Actions syntax) with nektos/act in Docker, on `push` and `pull_request`, and reports each job as a check run. Your `.github/workflows` files do nothing on Forge until you copy them to `.forge/workflows`. It has no `schedule` or `workflow_dispatch` triggers ([what it does not do](self-host-runner.md#what-it-does-not-do-yet)).
 
 What people do today:
 
-- **Keep CI on GitHub while dual-homed** ([§6](#stay-on-both-dual-home)). Nothing changes.
-- **After a cut-over**, point a CI system that takes webhooks (Jenkins, Buildkite, Woodpecker, your own) at a relay, and have it clone with `git clone dash://…`. Results stay in that CI system for now.
+- **Keep CI on GitHub while dual-homed** ([§6](#stay-on-both-dual-home)). The [check action](ci.md#report-from-github-actions) reports each GitHub Actions job as a Forge check run on the same commit.
+- **After a cut-over**, run [`forge-runner`](self-host-runner.md), or point a CI system that takes webhooks (Jenkins, Buildkite, Woodpecker, your own) at a relay, have it clone with `git clone dash://…`, and report back with `dg ci report`.
 
 ## 9. What it costs
 
@@ -247,13 +247,13 @@ For example, the dry run of a repository with about 800 KiB of packs, 36 PRs, 20
 
 | GitHub | On Forge | What to do instead |
 |---|---|---|
-| **Actions** (CI/CD runners) | No runner | See [§8](#8-ci) |
+| **Actions** (CI/CD runners) | No hosted runners; a runner you host yourself (`forge-runner`) | See [§8](#8-ci) |
 | **Discussions** | None | Issues with a `discussion` label |
 | **Wiki** | None | A `docs/` folder in the repository; the web app renders Markdown |
 | **GitHub Pages** | None: Forge serves no user content | Serve the site from your own bucket and domain (R2 and S3 host static sites) |
 | **Packages** (npm, containers) | None | Publish to the usual registries, or attach build outputs to a release (`dg release create --asset`) |
 | **Projects / boards** | None | Labels, and `dg issue list --label … --assignee …` filters |
-| **Milestones** | Not imported | Labels such as `v1.2` |
+| **Milestones** | Supported (`dg milestone`, and **Issues → Milestones** on the web), but the importer does not bring them over | Re-create the ones you need ([Milestones](collaborating.md#milestones)) and set them with `dg issue milestone` |
 | **Reactions** | None: each one would be a paid document | A comment, or a review approval |
 | **Assignees** | Not imported; you can assign on Forge (`dg issue assign`) | Re-assign open items after the import |
 | **Organizations and teams** | Repositories belong to one identity; members are per repository | A shared maintainer identity, or add each person to each repository |

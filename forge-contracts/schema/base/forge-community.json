@@ -437,10 +437,30 @@
         "repoId",
         "headOid",
         "name",
-        "startedAt",
-        "completedAt",
-        "conclusion",
-        "externalId"
+        {
+          "property": "startedAt",
+          "when": {
+            "present": "$old.startedAt"
+          }
+        },
+        {
+          "property": "completedAt",
+          "when": {
+            "present": "$old.completedAt"
+          }
+        },
+        {
+          "property": "conclusion",
+          "when": {
+            "present": "$old.conclusion"
+          }
+        },
+        {
+          "property": "externalId",
+          "when": {
+            "present": "$old.externalId"
+          }
+        }
       ],
       "ownerRefersTo": {
         "anyOf": [
@@ -711,13 +731,7 @@
             }
           ]
         }
-      },
-      "immutableAllowSetting": [
-        "startedAt",
-        "completedAt",
-        "conclusion",
-        "externalId"
-      ]
+      }
     },
     "policy": {
       "type": "object",

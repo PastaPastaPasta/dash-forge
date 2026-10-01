@@ -1,10 +1,10 @@
 /**
- * Live writes on devnet bonsia through the web engine, on the pinned wasm-sdk (4.2.0-beta.7)
- * — SKIPPED by default (network, WASM, ~0.01 DASH). Needs a devnet on beta.7 with the contracts
- * registered in the findBy/where grammar (beta.7 cannot parse the earlier ones).
+ * Live writes on devnet sakura through the web engine, on the pinned wasm-sdk (5.0.0-beta.1; first
+ * written for 4.2.0-beta.7 on bonsia, hence the name) — SKIPPED by default (network, WASM,
+ * ~0.01 DASH). Needs a devnet whose deployment file records the registered contracts.
  *
  * Run with two identities minted for the run (never the shared fixtures):
- *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia \
+ *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=sakura \
  *     E2E_SDK_WRITER=<identity.json> E2E_SDK_OTHER=<identity.json> \
  *     pnpm exec vitest run lib/repo/sdk-beta7.live.test.ts
  *
@@ -64,7 +64,7 @@ function authOf(file: string): WriteAuth {
   return { identityId: parsed.identityId, network: 'devnet', getSigningKeyWif: () => parsed.signingKeyWif }
 }
 
-describe.skipIf(!LIVE)('live writes on wasm-sdk 4.2.0-beta.7 (bonsia)', () => {
+describe.skipIf(!LIVE)('live writes on the pinned wasm-sdk (devnet)', () => {
   it(
     'creates a repo, an issue and a comment, and reads a gate refusal with its code',
     async () => {

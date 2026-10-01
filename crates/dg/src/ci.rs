@@ -773,8 +773,15 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
     // run may have been created a moment ago.
     let plan = runs.plan(&s.repo, &r).await?;
     r = kept;
+    // The same completion of a run that already completed: its summary, links, log and
+    // artifacts are final (RC2 S1) and stay as stored, so nothing is uploaded for them.
+    let frozen = plan.evidence_frozen();
+    if frozen {
+        left_out.extend(keep_frozen_evidence(&mut r, a, private));
+    }
+    let uploads = !private && !frozen;
     let verb = if plan.replaces() { "update" } else { "create" };
-    let estimate = report_estimate(&r, plan.replaces(), a.log.is_some() && !private);
+    let estimate = report_estimate(&r, plan.replaces(), a.log.is_some() && uploads);
     ctx.confirm_or_cancel(&format!(
         "Report {} = {} on {} in {}? ({verb} a check run, {})",
         r.name,
@@ -783,11 +790,11 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
         s.repo.display(),
         cost_line(estimate, ctx.usd_price())
     ))?;
-    if let Some(p) = a.log.as_ref().filter(|_| !private) {
+    if let Some(p) = a.log.as_ref().filter(|_| uploads) {
         r.log = Some(upload_log(p, a.storage.as_deref()).await?);
     }
     let mut artifacts_left_out = Vec::new();
-    if !private && !a.artifacts.is_empty() {
+    if uploads && !a.artifacts.is_empty() {
         (r.artifacts, artifacts_left_out) =
             upload_artifacts(&a.artifacts, a.storage.as_deref()).await?;
     }
@@ -812,6 +819,32 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// The evidence `r` gives (with `a`'s log and artifacts, which a private repository drops) for
+/// a run that already completed: final (RC2 S1, `forge_core::ci::EVIDENCE_FIELDS`), so it
+/// stays as recorded. Drops it from `r` (the replace leaves it out too), so it is neither
+/// priced nor reported, warns (on stderr in JSON mode too, as [`warn_private`], before the
+/// prompt and the payment) and returns the fields kept as stored.
+fn keep_frozen_evidence(r: &mut CheckReport, a: &ReportArgs, private: bool) -> Vec<&'static str> {
+    let kept_as_stored: Vec<&'static str> = [
+        ("summary", r.summary.take().is_some()),
+        ("detailsUrl", r.details_url.take().is_some()),
+        ("logUrl", a.log.is_some() && !private),
+        ("artifacts", !a.artifacts.is_empty() && !private),
+    ]
+    .into_iter()
+    .filter_map(|(f, given)| given.then_some(f))
+    .collect();
+    if !kept_as_stored.is_empty() {
+        eprintln!(
+            "warning: {} already completed on this commit, and a completed run's {} can't \
+             change, so they stay as recorded (a re-run needs a new --external-id)",
+            r.name,
+            kept_as_stored.join(", ")
+        );
+    }
+    kept_as_stored
 }
 
 /// Why a run of check `name` reported by this signer will not count toward the branch policy:
@@ -876,7 +909,8 @@ fn emit_report(ctx: &Ctx, r: &CheckReport, done: &Reported, o: &Outcome<'_>) {
             "logSha256": r.log.as_ref().map(|(_, h)| hex::encode(h)),
             "artifacts": artifacts,
             "artifactsLeftOut": artifacts_left_out,
-            // What a private repository's run left out (forge-community `privateNoText`).
+            // What the run left out: a private repository's text (forge-community
+            // `privateNoText`), or a completed run's evidence, which stays as recorded (RC2 S1).
             "leftOut": left_out,
             "url": url,
             "cost": cost_json(spent, ctx.usd_price()),
@@ -1128,7 +1162,8 @@ async fn status(ctx: &Ctx, repo: &str, sha: &str) -> Result<()> {
                     c.status.as_str()
                 };
                 let note = if !c.trusted {
-                    "  (reporter is no longer a member or runner: not counted)".to_string()
+                    "  (reporter is not a maintainer, writer or runner now: not counted)"
+                        .to_string()
                 } else if let Some(to) = pinned_to(c) {
                     format!("  (not counted: the branch policy counts only runs by {to})")
                 } else {

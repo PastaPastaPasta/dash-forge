@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NETWORKS } from '../constants'
 import type { DocumentQuery } from '../sdk'
 import type { CompositeQuery } from '../sdk/composite'
+import { resetStarShapes } from '../repo/star-shape'
 import { cachedDpnsName, clearDpnsCache } from './dpns'
 import {
   keysetPage,
@@ -85,7 +86,7 @@ interface Seen {
   ranked: Record<string, unknown>[]
 }
 
-function mockSdk(store: Record<string, Record<string, Doc[]>>, seen: Seen, opts: { noComposite?: boolean } = {}): EvoSDK {
+function mockSdk(store: Record<string, Record<string, Doc[]>>, seen: Seen, opts: { noComposite?: boolean; fused?: boolean; failQuery?: string } = {}): EvoSDK {
   const rows = (c: string, t: string): Doc[] => store[c]?.[t] ?? []
   const composite = async (q: CompositeQuery) => {
     seen.composites.push(q)
@@ -132,6 +133,7 @@ function mockSdk(store: Record<string, Record<string, Doc[]>>, seen: Seen, opts:
     documents: {
       query: async (q: DocumentQuery) => {
         seen.queries.push(q)
+        if (q.documentTypeName === opts.failQuery) throw new Error('mock: the node did not answer')
         const out = run(rows(q.dataContractId, q.documentTypeName), (q.where ?? []) as never, (q.orderBy ?? []) as never, q.limit ?? 100)
         return new Map(out.map((d) => [String(d['$id']), d]))
       },
@@ -154,6 +156,13 @@ function mockSdk(store: Record<string, Record<string, Doc[]>>, seen: Seen, opts:
       ...(opts.noComposite ? {} : { composite }),
     },
     dpns: { resolveName: async () => undefined },
+    // forge-community as RC1 shapes its star (`star-shape.ts`): a separate starBeat ranks Trending;
+    // or, `fused`, RC2 C1's star carrying the window itself.
+    contracts: {
+      fetch: async () => ({
+        schemas: opts.fused ? { star: { indices: [{ name: 'byRepo' }, { name: 'byWeek', timeRange: { on: '$createdAt', range: 604800, step: 86400 } }] } } : { star: { indices: [{ name: 'byRepo' }] }, starBeat: {} },
+      }),
+    },
   } as unknown as EvoSDK
 }
 
@@ -192,7 +201,10 @@ const fresh = (): Seen => ({ composites: [], queries: [], counts: [], ranked: []
 const names = (rs: readonly DiscoveredRepo[]): string[] => rs.map((r) => r.slug)
 const requests = (s: Seen): number => s.composites.length + s.queries.length + s.counts.length + s.ranked.length
 
-beforeEach(() => clearDpnsCache())
+beforeEach(() => {
+  clearDpnsCache()
+  resetStarShapes()
+})
 
 describe('searchPrefix / prefixUpperBound', () => {
   it('reads a repo-name prefix, lowercased, the name part of owner/name', () => {
@@ -439,6 +451,68 @@ describe('rankedRepos (C-1: proved ranked reads)', () => {
     const r = await rankedRepos(mockSdk(s, seen), 'week', { network: NET })
     expect(r.repos).toEqual([])
     expect(requests(seen)).toBe(1)
+  })
+})
+
+describe('rankedRepos on a fused-star contract (RC2 C1: O-08 applied on read)', () => {
+  /**
+   * ripgrep (OwnerB, old): X1, X2 and its owner. hot (OwnerA, new): X1, X2 and its owner.
+   * secret (OwnerB, private, new): four. solo (OwnerA, new): its owner only.
+   */
+  function fusedStore(): Record<string, Record<string, Doc[]>> {
+    const s = store()
+    s[FORGE.core]!['repo'] = [
+      ...s[FORGE.core]!['repo']!,
+      repo('hot', NOW - 60_000),
+      repo('secret', NOW - 60_000, OWNER_B, { visibility: 'private' }),
+      repo('solo', NOW - 60_000),
+    ]
+    const star = (owner: string, target: string): Doc => ({ $id: id(`S${owner}${target}`), $ownerId: owner, repoId: id(target) })
+    s[FORGE.community]!['star'] = [
+      ...['X1', 'X2', OWNER_B].map((o) => star(o, 'RripgrepB')),
+      ...['X1', 'X2', OWNER_A].map((o) => star(o, 'Rhot')),
+      ...['X1', 'X2', 'X3', 'X4'].map((o) => star(o, 'RsecretB')),
+      star(OWNER_A, 'Rsolo'),
+    ]
+    return s
+  }
+
+  it('drops the private repo and owners\' stars on new repos, reading ahead, one owner check per new public repo', async () => {
+    const seen = fresh()
+    const r = await rankedRepos(mockSdk(fusedStore(), seen, { fused: true }), 'week', { network: NET })
+    // ripgrep keeps its owner's star (an old repo: when it was made is not known); hot loses its
+    // owner's (3 → 2); solo's only star was its owner's; secret is private.
+    expect(names(r.repos)).toEqual(['ripgrep', 'hot'])
+    expect(r.repos.map((x) => x.rankCount)).toEqual([3, 2])
+    expect(r.missing).toBe(0)
+    expect(seen.ranked[0]).toMatchObject({ documentTypeName: 'star', limit: 24, timeRange: [{ field: '$createdAt', selector: 'oldest' }] })
+    expect(seen.queries.map((q) => q.where)).toEqual(
+      expect.arrayContaining([
+        [['$ownerId', '==', OWNER_A], ['repoId', '==', id('Rhot')]],
+        [['$ownerId', '==', OWNER_A], ['repoId', '==', id('Rsolo')]],
+      ]),
+    )
+    expect(seen.queries).toHaveLength(2)
+    expect(requests(seen)).toBe(4)
+  })
+
+  it('shows at most the limit after re-ranking', async () => {
+    const r = await rankedRepos(mockSdk(fusedStore(), fresh(), { fused: true }), 'today', { network: NET, limit: 1 })
+    expect(names(r.repos)).toEqual(['ripgrep'])
+  })
+
+  it('counts a star as read when its owner check fails', async () => {
+    const r = await rankedRepos(mockSdk(fusedStore(), fresh(), { fused: true, failQuery: 'star' }), 'week', { network: NET })
+    expect(names(r.repos)).toEqual(['ripgrep', 'hot', 'solo'])
+    expect(r.repos.map((x) => x.rankCount)).toEqual([3, 3, 1])
+  })
+
+  it('leaves Most starred as it was: no read-ahead, no owner checks', async () => {
+    const seen = fresh()
+    await rankedRepos(mockSdk(fusedStore(), seen, { fused: true }), 'most-starred', { network: NET })
+    expect(seen.ranked[0]).toMatchObject({ documentTypeName: 'star', limit: 12 })
+    expect(seen.ranked[0]).not.toHaveProperty('timeRange')
+    expect(seen.queries).toHaveLength(0)
   })
 })
 

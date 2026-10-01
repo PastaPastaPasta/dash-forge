@@ -32,10 +32,11 @@ use anyhow::Result;
 
 use forge_core::collab::v2::TargetKind;
 use forge_core::collab::{CommentAnchor, ReleaseAsset};
+use forge_core::rules::v2::CloseReason;
 
 use crate::github::iso8601_to_unix;
 use crate::gitlab::{GitlabClient, GitlabRepoRef, GlItem, GlNote, GlProject, GlRelease, Readable};
-use crate::model::{self, SrcCollab, SrcComment, SrcPatch, SrcRelease, SrcTarget};
+use crate::model::{self, SrcCloseReason, SrcCollab, SrcComment, SrcPatch, SrcRelease, SrcTarget};
 use crate::source::{Classes, Source, SourceMeta};
 
 /// A GitLab project as a [`Source`].
@@ -269,12 +270,7 @@ pub fn collect(
             && heads.as_ref().is_some_and(|h| !h.contains(&item.gl.iid));
         let mut t = target(&canonical, item, number, &url, head_gone);
         if threads_readable && item.gl.user_notes_count > 0 {
-            let notes = match item.kind {
-                TargetKind::Issue => gl.issue_notes(item.gl.iid)?,
-                TargetKind::Patch => gl
-                    .mr_discussions(item.gl.iid)?
-                    .map(|ds| ds.into_iter().flat_map(|d| d.notes).collect()),
-            };
+            let notes = thread_notes(gl, item)?;
             // A 401 means this token reads no thread at all: stop asking. A 403 may concern
             // one item only (a members-only merge request), so the others are still read.
             if matches!(notes, Err(crate::gitlab::Denied::Unauthorized)) {
@@ -283,11 +279,17 @@ pub fn collect(
             if let Some(mut notes) =
                 out.readable(notes, "the comments on issues and merge requests", repo)
             {
-                notes.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+                notes.sort_by(|(a, _), (b, _)| {
+                    a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id))
+                });
                 t.comments = notes
                     .iter()
-                    .filter(|n| n.is_public_comment())
-                    .map(|n| comment(&canonical, item, number, &url, n))
+                    .filter(|(n, _)| n.is_public_comment())
+                    .map(|(n, parent)| {
+                        let mut c = comment(&canonical, item, number, &url, n);
+                        c.reply_key = parent.map(|p| format!("{url}#note_{p}"));
+                        c
+                    })
                     .collect();
             }
         }
@@ -408,6 +410,30 @@ fn items(
     Ok(all)
 }
 
+/// A note and the id of the note it replies to.
+type NoteInThread = (GlNote, Option<u64>);
+
+/// An item's notes, each with the note it replies to: an issue's notes are flat; a merge
+/// request discussion's later notes reply to its first public one (QW2-010).
+fn thread_notes(gl: &GitlabClient, item: &Item) -> Result<Readable<Vec<NoteInThread>>> {
+    Ok(match item.kind {
+        TargetKind::Issue => gl
+            .issue_notes(item.gl.iid)?
+            .map(|ns| ns.into_iter().map(|n| (n, None)).collect()),
+        TargetKind::Patch => gl.mr_discussions(item.gl.iid)?.map(|ds| {
+            ds.into_iter()
+                .flat_map(|d| {
+                    let root = d.notes.iter().find(|n| n.is_public_comment()).map(|n| n.id);
+                    d.notes.into_iter().map(move |n| {
+                        let parent = root.filter(|&r| r != n.id);
+                        (n, parent)
+                    })
+                })
+                .collect()
+        }),
+    })
+}
+
 /// The canonical web URL of an issue or merge request (the idempotency key).
 fn item_url(repo: &GitlabRepoRef, kind: TargetKind, iid: u64) -> String {
     let what = match kind {
@@ -463,6 +489,16 @@ fn target(repo: &GitlabRepoRef, item: &Item, number: u32, url: &str, head_gone: 
         body: model::body(&head, i.description.as_deref().unwrap_or(""), url),
         imported: model::imported(i.author.login(), created, url),
         closed: i.is_closed(),
+        // GitLab has no "not planned": an issue closed as a duplicate is the one reason it gives.
+        close_reason: (item.kind == TargetKind::Issue
+            && i.is_closed()
+            && i.links.closed_as_duplicate_of.is_some())
+        .then(|| SrcCloseReason {
+            reason: CloseReason::Duplicate,
+            duplicate_of: i
+                .duplicate_of()
+                .and_then(|n| Some((u32::try_from(n).ok()?, item_url(repo, TargetKind::Issue, n)))),
+        }),
         merged_oid: merged_oid.clone(),
         merged_without_sha: i.is_merged() && merged_oid.is_none(),
         labels: i
@@ -505,6 +541,7 @@ fn comment(repo: &GitlabRepoRef, item: &Item, number: u32, url: &str, n: &GlNote
     // A diff note keeps its place: a text note its line (the new side, or the old side for
     // a removed line), a file or image note its file.
     let anchor = n.position.as_ref().and_then(|p| {
+        let start = p.line_range.as_ref().map(|r| &r.start);
         let (path, line, side) = match (p.new_line, p.old_line) {
             (Some(l), _) => (p.new_path.as_ref()?, Some(l), Some(1)),
             (None, Some(l)) => (
@@ -520,9 +557,19 @@ fn comment(repo: &GitlabRepoRef, item: &Item, number: u32, url: &str, n: &GlNote
             path: Some(model::clip(path, 500, 1000)),
             line,
             side,
-            // As on the GitHub path: single-line anchors, no review batch.
-            start_line: None,
+            // A multi-line note's first line, on the note's side. GitLab has no review batch
+            // and no diff hunk.
+            start_line: start
+                .and_then(|s| {
+                    if side == Some(1) {
+                        s.new_line
+                    } else {
+                        s.old_line
+                    }
+                })
+                .filter(|&s| line.is_some_and(|l| s < l)),
             review_id: None,
+            diff_hunk: None,
         })
     });
     let (kind, text) = match &anchor {
@@ -545,6 +592,8 @@ fn comment(repo: &GitlabRepoRef, item: &Item, number: u32, url: &str, n: &GlNote
         ),
         imported: model::imported(n.author.login(), created, &note_url),
         anchor,
+        reply_key: None,
+        review_key: None,
     }
 }
 

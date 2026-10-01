@@ -195,7 +195,7 @@ jobs:
       - name: Build the static app (the IPFS variant the releases publish)
         env:
           NEXT_PUBLIC_NETWORK: devnet
-          NEXT_PUBLIC_DEVNET_NAME: bonsia
+          NEXT_PUBLIC_DEVNET_NAME: sakura
         run: pnpm build:ipfs
 
       - name: Playwright browser

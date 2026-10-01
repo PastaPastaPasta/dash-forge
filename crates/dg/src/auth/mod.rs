@@ -1766,7 +1766,7 @@ mod tests {
         const ID: &str = "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB";
         // A well-formed testnet WIF (of the key 0x11…11): a dfk1 key is checked when read.
         const TEST_WIF: &str = "cN9spWsvaxA8taS7DFMxnk1yJD2gaF2PX1npuTpy3vuZFJdwavaw";
-        let dfk1 = keystore::dfk1("devnet-bonsia", ID, 5, TEST_WIF);
+        let dfk1 = keystore::dfk1("devnet-sakura", ID, 5, TEST_WIF);
         assert_eq!(
             with_encryption_keys(&dfk1, &[]).unwrap().expose(),
             dfk1.expose()
@@ -1785,7 +1785,7 @@ mod tests {
         let text = with_encryption_keys(&dfk1, std::slice::from_ref(&enc)).unwrap();
         let b = BridgeIdentity::from_source_text(text.expose()).unwrap();
         assert_eq!(b.identity_id, ID);
-        assert_eq!(b.network, "devnet-bonsia");
+        assert_eq!(b.network, "devnet-sakura");
         assert!(b.master_key().is_none());
         assert!(b.mnemonic.expose().is_empty());
         assert_eq!(b.doc_op_key().unwrap().id, 5);

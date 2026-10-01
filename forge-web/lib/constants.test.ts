@@ -80,20 +80,16 @@ describe('resolveNetworks', () => {
     expect(networks.testnet.v2).toBeNull()
   })
 
-  it('resolves devnet bonsia: its 13 DAPI nodes, quorum service and RC1 contracts', () => {
-    const { active, networks } = resolveNetworks({ network: 'devnet', devnetName: 'bonsia' }, DEPLOYMENTS)
+  it('resolves devnet sakura: its 13 DAPI nodes and quorum service, with no contracts until its registration', () => {
+    const { active, networks } = resolveNetworks({ network: 'devnet', devnetName: 'sakura' }, DEPLOYMENTS)
     expect(active).toBe('devnet')
-    expect(networks.devnet.key).toBe('devnet-bonsia')
+    expect(networks.devnet.key).toBe('devnet-sakura')
     expect(networks.devnet.dapiAddresses).toHaveLength(13)
-    expect(networks.devnet.dapiAddresses).toContain('https://68.67.122.224:1443')
-    expect(quorumEndpoint(networks.devnet)).toBe('https://quorums.bonsia.networks.dash.org')
-    // The RC1 registration (with forge-core network.rs)
-    expect(networks.devnet.v2).toMatchObject({
-      core: '6SbihK14KP8RhUpSH4Tc6WNvWKziWEoAbkNZmi7RadwJ',
-      collab: 'H1H5VfTt2KWy1NhwEHoHuwYZGJm8eoetUCUt5xGNuZUp',
-      // its own forge-community (a pre-split record would fall back to collab's id)
-      community: '6ktYsH3cpxC7FbazwtVWGiNuVb4TNE5YrHD1hNY8XqNx',
-    })
+    expect(networks.devnet.dapiAddresses).toContain('https://68.67.122.86:1443')
+    expect(networks.devnet.dapiAddresses).toContain('https://68.67.122.241:1443')
+    expect(quorumEndpoint(networks.devnet)).toBe('https://quorums.sakura.networks.dash.org')
+    // The RC2 registration adds the `v2` record (with forge-core network.rs); until then, none.
+    expect(networks.devnet.v2).toEqual(forgeV2Ids(DEPLOYMENTS['devnet-sakura']))
   })
 
   it('treats a devnet name alone as devnet', () => {

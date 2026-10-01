@@ -34,19 +34,13 @@ async fn route_for(
     }
     // `post_target_event` refuses the same way; asking here keeps the confirmation prompt
     // from offering a write that cannot land.
-    let author_kind = forge_core::rules::v2::is_author_kind(kind);
-    Err(forge_core::Error::NotPermitted {
-        action: format!("{} pull request #{}", verb(kind), view.patch.number),
-        reason: if author_kind {
-            format!(
-                "you are neither a member of {} nor the pull request's author",
-                repo.display()
-            )
-        } else {
-            format!("you are not a member of {}", repo.display())
-        },
-        needs: "writer".into(),
-    }
+    Err(forge_core::collab::v2::kind_refusal(
+        role,
+        repo,
+        &view.patch.target(),
+        kind,
+        format!("{} pull request #{}", verb(kind), view.patch.number),
+    )
     .into())
 }
 
@@ -340,6 +334,60 @@ pub async fn set_locked(ctx: &Ctx, repo: &str, number: u64, lock: bool) -> Resul
     ctx.emit(
         json!({ "status": done, "pr": number, "locked": lock, "transitionId": id }),
         || println!("✓ {done} PR #{number}"),
+    );
+    Ok(())
+}
+
+/// `dg pr hide`: hide (`on`) or unhide a comment or review (`item`: its kind and id) of PR
+/// `number`, or with none the PR itself (RC2 MOD: one member event, kind 24 or 25).
+/// Maintainers only, refused before signing for anyone else; nothing is deleted.
+pub async fn hide(
+    ctx: &Ctx,
+    repo: &str,
+    number: u64,
+    item: Option<(&str, &str)>,
+    reason: Option<&str>,
+    on: bool,
+) -> Result<()> {
+    if let Some((what, id)) = item {
+        crate::common::document_id_arg(
+            id,
+            &format!("{what} id"),
+            "`dg pr view <repo> <n> --comments --json`",
+        )?;
+    }
+    let pr = open_pr(ctx, repo, number, "nothing hidden").await?;
+    let what = item.map_or_else(
+        || format!("PR #{number}"),
+        |(kind, id)| format!("{kind} {id} on PR #{number}"),
+    );
+    let (verb, done) = if on {
+        ("Hide", "hid")
+    } else {
+        ("Unhide", "unhid")
+    };
+    let review_note = if on && item.is_some_and(|(k, _)| k == "review") {
+        "; its verdict still counts unless dismissed"
+    } else {
+        ""
+    };
+    ctx.confirm_or_cancel(&format!(
+        "{verb} {what}? (one small event; maintainers only; nothing is deleted{review_note})"
+    ))?;
+    let target = pr.view.patch.target();
+    let id =
+        pr.s.collab()
+            .set_hidden(&pr.s.repo, &target, item.map(|(_, id)| id), reason, on)
+            .await?;
+    ctx.emit(
+        json!({
+            "status": if on { "hidden" } else { "unhidden" },
+            "pr": number,
+            "item": item.map(|(_, id)| id),
+            "reason": reason,
+            "eventId": id,
+        }),
+        || println!("✓ {done} {what}"),
     );
     Ok(())
 }

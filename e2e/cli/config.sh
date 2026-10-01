@@ -3,16 +3,16 @@
 #
 # Sourced by lib.sh. Everything here is data: no side effects beyond exports.
 #
-# The CLI suite runs against devnet BONSIA, where the RC1 contracts are deployed (Platform
-# 4.2.0-beta.7; the forge-v2 contracts once on devnet moutai are gone, and this build cannot
-# read them anyway). DASH_FORGE_DEVNET_NAME picks another devnet. A v2 repo costs ~0.001 DASH,
+# The CLI suite runs against devnet SAKURA, where the RC2 contracts are registered (2026-10-01)
+# (Platform 5.0.0-beta.1; the forge-v2 contracts once on devnets moutai and bonsia are gone, and
+# this build cannot read them anyway). DASH_FORGE_DEVNET_NAME picks another devnet. A v2 repo costs ~0.001 DASH,
 # so the suite's repo is created on the first run (by `harness_ensure_repo`, resumably)
 # rather than hard-coded. Testnet runs resume once testnet runs protocol 14 and forge-v2 is
 # deployed there.
 
 # --- network -----------------------------------------------------------------
 : "${DASH_FORGE_NETWORK:=devnet}"
-: "${DASH_FORGE_DEVNET_NAME:=bonsia}"
+: "${DASH_FORGE_DEVNET_NAME:=sakura}"
 export DASH_FORGE_NETWORK DASH_FORGE_DEVNET_NAME
 
 # --- minting run-only identities (scenarios 19, 24, 25, 26, 33, 36) -------------
@@ -31,7 +31,7 @@ export E2E_MINT_FUNDING E2E_MINT_LOCK
 
 # --- fixture identity files --------------------------------------------------
 # Per-network directory (`make devnet-identities` provisions devnet-<name>, e.g.
-# devnet-bonsia). The testnet pool lives directly under test-identities/.
+# devnet-sakura). The testnet pool lives directly under test-identities/.
 if [[ "$DASH_FORGE_NETWORK" == devnet ]]; then
   : "${E2E_IDENTITY_DIR:=${HOME}/.config/dash-forge/test-identities/devnet-${DASH_FORGE_DEVNET_NAME}}"
 else

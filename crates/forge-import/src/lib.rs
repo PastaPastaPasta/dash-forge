@@ -20,6 +20,7 @@ pub mod dest;
 pub mod github;
 pub mod gitlab;
 pub mod gitsync;
+pub mod hunk;
 pub mod importer;
 pub mod model;
 pub mod pipeline;

@@ -22,6 +22,7 @@ const BONSIA: NetworkConfig = {
   quorumBaseUrl: null,
   dpnsContractId: 'dpns',
   v2: null,
+  retired: true,
 }
 const TESTNET: NetworkConfig = { ...BONSIA, network: 'testnet', devnetName: null, key: 'testnet' }
 
@@ -90,7 +91,7 @@ describe('DevnetNoticeBanner', () => {
     const b = banner()!
     expect(b.getAttribute('role')).toBe('status')
     expect(b.getAttribute('data-notice')).toBe('moving')
-    expect(b.textContent).toContain('bonsia is moving to a new devnet.')
+    expect(b.textContent).toContain('Dash Forge moved to devnet sakura (Platform v5); bonsia was retired.')
     expect(b.textContent).toContain('Writing is paused')
     expect(dismissButton()).toBeNull()
     expect(b.querySelector('a')!.getAttribute('href')).toBe(DEVNET_MOVE_DOC)

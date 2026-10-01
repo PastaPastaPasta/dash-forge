@@ -1,6 +1,7 @@
 {
   "network": "devnet",
   "devnetName": "moutai",
+  "retired": true,
   "dapiAddresses": [
     "https://68.67.122.254:1443",
     "https://68.67.122.207:1443",

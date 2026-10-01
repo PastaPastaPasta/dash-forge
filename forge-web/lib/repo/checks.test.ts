@@ -19,7 +19,7 @@ describe('check runs on a head', () => {
     ])
     const s = summarizeChecks(runs, true)
     expect(s).toEqual({ passed: 1, failing: 0, pending: 0, total: 1, untrusted: 1, offSource: 0, membersKnown: true })
-    expect(checksPhrase(s)).toBe('1 passed (1 not counted: reporter no longer a member or runner)')
+    expect(checksPhrase(s)).toBe('1 passed (1 not counted: reporter not a maintainer, writer or runner)')
   })
 
   it("reads a run's artifacts in the release-asset shape dg records", () => {
@@ -86,7 +86,7 @@ describe('required check sources (RC1 R-08)', () => {
 
 describe('an uncounted run says why', () => {
   it('a revoked reporter only when the members are known; otherwise that they could not be read', () => {
-    expect(untrustedWords({ membersKnown: true })).toBe('reporter is no longer a member or runner: not counted')
+    expect(untrustedWords({ membersKnown: true })).toBe('reporter is not a maintainer, writer or runner: not counted')
     expect(untrustedWords({ membersKnown: false })).toBe('members could not be read: not counted until they are')
   })
 })

@@ -4,12 +4,30 @@
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import type { ForgeIds } from '../deployments'
-import { TRENDING_DEFAULT, TRENDING_PREF_KEY, readMostFollowed, readMostStarred, readTrending, setTrendingPref, trendingPref } from './trending'
+import { resetStarShapes } from './star-shape'
+import { STAR_BEAT_GRID } from '../rules/parity'
+import { rc1Contracts } from '../sdk/rc1-validate'
+import {
+  SELF_STAR_CLOCK_MARGIN_MS,
+  TRENDING_DEFAULT,
+  TRENDING_PREF_KEY,
+  fusedTrending,
+  readMostFollowed,
+  readMostStarred,
+  readTrending,
+  selfStarDecidable,
+  setTrendingPref,
+  trendingPref,
+  trendingWindowOf,
+  type TrendingRepo,
+} from './trending'
 
 const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', community: 'COMMUNITY', group: 'G' }
+/** C1's star schema, as far as the shape reads it: `byWeek` with its time window. */
+const FUSED_STAR = { indices: [{ name: 'byWeek', timeRange: { on: '$createdAt', range: 604800, step: 86400, ttl: 604800 } }] }
 
 function memoryStore(): Pick<Storage, 'getItem' | 'setItem'> & { data: Map<string, string> } {
   const data = new Map<string, string>()
@@ -35,8 +53,12 @@ describe('the "count my stars toward Trending" preference', () => {
 })
 
 describe('ranked reads', () => {
-  function rankedSdk(seen: unknown[]): EvoSDK {
+  beforeEach(() => resetStarShapes())
+
+  /** `schemas`: forge-community's document types (a fused star carries a time-window index, `star-shape.ts`). */
+  function rankedSdk(seen: unknown[], schemas: Record<string, object> = { star: {}, starBeat: {} }): EvoSDK {
     return {
+      contracts: { fetch: () => Promise.resolve({ schemas }) },
       documents: {
         ranked: (q: unknown) => {
           seen.push(q)
@@ -66,6 +88,26 @@ describe('ranked reads', () => {
     ])
   })
 
+  it('on a fused-star contract (RC2 C1) trending ranks the star itself, with the same windows', async () => {
+    const seen: unknown[] = []
+    await readTrending(rankedSdk(seen, { star: FUSED_STAR }), FORGE, 'week', 25)
+    expect(seen).toEqual([
+      { dataContractId: 'COMMUNITY', documentTypeName: 'star', groupBy: 'repoId', aggregate: { type: 'count' }, limit: 25, direction: 'desc', timeRange: [{ field: '$createdAt', selector: 'oldest' }] },
+    ])
+  })
+
+  it('reads the shape once per contract, and again after a failed read', async () => {
+    let fetches = 0
+    const flaky = {
+      contracts: { fetch: () => (++fetches === 1 ? Promise.reject(new Error('offline')) : Promise.resolve({ schemas: { star: FUSED_STAR } })) },
+      documents: { ranked: () => Promise.resolve({ startingRank: 0n, entries: [] }) },
+    } as unknown as EvoSDK
+    await expect(readTrending(flaky, FORGE, 'week')).rejects.toThrow('offline')
+    await readTrending(flaky, FORGE, 'week')
+    await readTrending(flaky, FORGE, 'today')
+    expect(fetches).toBe(2)
+  })
+
   it('most starred ranks star.byRepo and most followed follow.byTarget, all time', async () => {
     const seen: unknown[] = []
     await readMostStarred(rankedSdk(seen), FORGE)
@@ -74,5 +116,59 @@ describe('ranked reads', () => {
       { dataContractId: 'COMMUNITY', documentTypeName: 'star', groupBy: 'repoId', aggregate: { type: 'count' }, limit: 25, direction: 'desc' },
       { dataContractId: 'COMMUNITY', documentTypeName: 'follow', groupBy: 'identityId', aggregate: { type: 'count' }, limit: 25, direction: 'desc' },
     ])
+  })
+})
+
+describe('fused-star Trending, filtered on read (RC2 C1: O-08 moves to readers)', () => {
+  const DAY = 86_400_000
+  // 2026-10-01 12:00 UTC: today's window starts at 00:00, the week's six days earlier.
+  const NOW = Date.UTC(2026, 9, 1, 12)
+  const TODAY = Date.UTC(2026, 9, 1)
+
+  it('reads the windows the ranked read selects, on the grid the committed star (or starBeat) declares', () => {
+    expect(trendingWindowOf('today', NOW)).toEqual({ start: TODAY, end: TODAY + 7 * DAY })
+    expect(trendingWindowOf('week', NOW)).toEqual({ start: TODAY - 6 * DAY, end: TODAY + DAY })
+    const schemas = rc1Contracts()['forge-community'].documentSchemas as Record<string, { indices?: { name: string; timeRange?: { range: number; step: number; phase?: number } }[] }>
+    const byWeek = [...(schemas['star']?.indices ?? []), ...(schemas['starBeat']?.indices ?? [])].filter((i) => i.timeRange !== undefined)
+    expect(byWeek).toHaveLength(1)
+    expect({ phase: 0, ...byWeek[0]?.timeRange }).toMatchObject(STAR_BEAT_GRID)
+  })
+
+  it('checks the owner of a public repo created inside the window only', () => {
+    const week = trendingWindowOf('week', NOW)
+    const at = (createdAt: number, visibility: 'public' | 'private' = 'public'): TrendingRepo => ({ ownerId: 'O', visibility, createdAt })
+    // A clock margin inside the window's start: a device clock a little behind cannot pull an
+    // owner's star from before the window into it.
+    expect(selfStarDecidable(at(TODAY - 6 * DAY + SELF_STAR_CLOCK_MARGIN_MS), week)).toBe(true)
+    expect(selfStarDecidable(at(TODAY - 6 * DAY + SELF_STAR_CLOCK_MARGIN_MS - 1), week)).toBe(false)
+    expect(selfStarDecidable(at(NOW, 'private'), week)).toBe(false)
+    expect(selfStarDecidable(at(NOW), null)).toBe(false)
+  })
+
+  const entry = (group: string, count: number, keyHex: string) => ({ group, keyHex, count, rank: 0 })
+  const repo = (ownerId: string, visibility: 'public' | 'private' = 'public'): TrendingRepo & { name: string } => ({ ownerId, visibility, createdAt: NOW, name: ownerId })
+
+  it('drops private repos, takes owners out of their own counts, drops emptied rows and re-ranks', () => {
+    const repos = new Map([
+      ['A', repo('a')],
+      ['B', repo('b')],
+      ['C', repo('c', 'private')],
+      ['D', repo('d')],
+      ['E', repo('e')],
+    ])
+    const rows = fusedTrending(
+      [entry('C', 9, 'cc'), entry('A', 3, 'aa'), entry('B', 3, 'bb'), entry('D', 2, 'dd'), entry('E', 1, 'ee'), entry('X', 1, '99')],
+      repos,
+      new Set(['B', 'E']),
+      10,
+    )
+    // C is private; B 3 → 2 ties D at 2, the larger key (dd) first; E's only star was its owner's;
+    // X has no repo row (counted as missing by the caller).
+    expect(rows.map((r) => [r.name, r.rankCount])).toEqual([
+      ['a', 3],
+      ['d', 2],
+      ['b', 2],
+    ])
+    expect(fusedTrending([entry('A', 3, 'aa'), entry('D', 2, 'dd')], repos, new Set(), 1).map((r) => r.name)).toEqual(['a'])
   })
 })

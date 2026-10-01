@@ -29,12 +29,15 @@ export function awaitingOwnRefMoves(): boolean {
 
 /**
  * Whether `refs` of `repo` show every ref move this tab made there (a deleted ref: absent).
- * Moves shown, or lapsed, are forgotten.
+ * Moves shown, or lapsed, are forgotten. `only`: the refs a read covers (a home of the default
+ * branch alone); moves of other refs are left waiting, neither judged nor forgotten.
  */
-export function showsOwnRefMoves(repo: RepoRef, refs: readonly ResolvedRef[]): boolean {
+export function showsOwnRefMoves(repo: RepoRef, refs: readonly ResolvedRef[], only?: ReadonlySet<string>): boolean {
   const tips = expected.get(repo.repoId)
   if (tips === undefined) return true
+  let waiting = false
   for (const [refName, { oid, until }] of tips) {
+    if (only !== undefined && !only.has(refName)) continue
     const ref = refs.find((r) => r.refName === refName)
     // A deleted ref is absent or unborn; a diverged one names more than one head, so any read of
     // it that knows the move is as good as this tab can expect.
@@ -45,9 +48,10 @@ export function showsOwnRefMoves(repo: RepoRef, refs: readonly ResolvedRef[]): b
           ? ref.state.heads.some((h) => h.oid === oid)
           : tipOidOf(ref) === oid
     if (shown || Date.now() > until) tips.delete(refName)
+    else waiting = true
   }
   if (tips.size === 0) expected.delete(repo.repoId)
-  return tips.size === 0
+  return !waiting
 }
 
 /** Stop waiting for `repo`'s ref moves (a full run of re-reads did not see them). */

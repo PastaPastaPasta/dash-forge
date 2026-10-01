@@ -27,6 +27,15 @@ export const CONTRACTS = Object.fromEntries(
   ['core', 'collab', 'community'].map((c) => [c, JSON.parse(readFileSync(join(ROOT, 'contracts', `forge-${c}.json`), 'utf8'))]),
 );
 
+/**
+ * RC2 C1 (schema/build.py `fused_star`): the star itself sits in the trending window (its
+ * `byWeek` index outlives an unstar), and starBeat is gone. Read from the committed schema, the
+ * one deploy-v2.mjs registers; a fee probe that fails turns the flag off and brings starBeat back.
+ * The same test as forge-web's `lib/repo/star-shape.ts` and `e2e/trending.spec.ts`: the star has
+ * a time-window index.
+ */
+export const FUSED_STAR = (CONTRACTS.community.documentSchemas.star?.indices ?? []).some((index) => index.timeRange !== undefined);
+
 /** The contract (`core`, `collab`, `community`) that holds each document type. */
 export const CONTRACT_OF = Object.fromEntries(
   Object.entries(CONTRACTS).flatMap(([c, json]) => Object.keys(json.documentSchemas).map((t) => [t, c])),
@@ -57,16 +66,16 @@ export function parseArgs(argv, multi = []) {
 
 /**
  * The network to write to: `--network` / `--devnet-name`, else `DASH_FORGE_NETWORK` /
- * `DASH_FORGE_DEVNET_NAME`, else devnet bonsia. Its contract ids come from
+ * `DASH_FORGE_DEVNET_NAME`, else devnet sakura. Its contract ids come from
  * `deployments/<network>.json` (or `--deployment <file>`), which must record all three RC1
  * contracts. moutai is refused: it runs the beta.6 contracts, which refuse every RC1 document.
  */
 export function resolveNetwork(a, env = process.env) {
   const network = a.network ?? env.DASH_FORGE_NETWORK ?? 'devnet';
-  const devnetName = network === 'devnet' ? (a['devnet-name'] ?? env.DASH_FORGE_DEVNET_NAME ?? 'bonsia') : null;
+  const devnetName = network === 'devnet' ? (a['devnet-name'] ?? env.DASH_FORGE_DEVNET_NAME ?? 'sakura') : null;
   const key = devnetName ? `devnet-${devnetName}` : network;
   if (devnetName === 'moutai') {
-    throw new Error('devnet moutai runs the beta.6 contracts, which refuse the RC1 documents these scripts write; use --devnet-name bonsia (DASH_FORGE_DEVNET_NAME may still say moutai until the cut-over)');
+    throw new Error('devnet moutai runs the beta.6 contracts, which refuse the RC1 documents these scripts write; use --devnet-name sakura (DASH_FORGE_DEVNET_NAME may still say moutai until the cut-over)');
   }
   const file = a.deployment ?? join(ROOT, 'deployments', `${key}.json`);
   const dep = JSON.parse(readFileSync(file, 'utf8'));
@@ -84,7 +93,7 @@ export function resolveNetwork(a, env = process.env) {
 /**
  * The network the arguments name (`resolveNetwork`) and a connected SDK for it, with a writer
  * and a reader bound to it. `injected` is the SDK module to use (the offline chain), else the
- * pinned evo-sdk (4.2.0-beta.7, protocol 14). The reader waits `pace` ms between pages.
+ * pinned evo-sdk (5.0.0-beta.1, protocol 14). The reader waits `pace` ms between pages.
  *
  * The connection is not fixed: a quorum rotation the trusted connection's prefetched keys have
  * gone stale against, or a node-banning storm that leaves the SDK with none left, cannot be
@@ -270,7 +279,7 @@ export function documentWriter(box, evo, net, reconnect, { retries = 3, pauseMs 
   return async (who, type, data) => {
     const version = box.sdk.version();
     const base = new evo.Document({ properties: {}, documentTypeName: type, dataContractId: contractIdOf(net, type), ownerId: who.id });
-    const document = evo.Document.fromObject({ ...base.toObject(), ...data }, version);
+    const document = evo.Document.fromObject({ ...base.toObject(), ...withRole(type, data) }, version);
     for (let attempt = 0; ; attempt++) {
       try {
         return await box.sdk.documents.create({ document, identityKey: who.identityKey, signer: who.signer });
@@ -423,6 +432,25 @@ export function transition(repoId, target, kind, { byAuthor = false, oid } = {})
 export const EVENT = {
   labelAdd: 4, assign: 6, threadResolve: 11, reviewRequest: 13, reviewDismiss: 15, headUpdate: 16, milestoneSet: 17, pin: 19,
 };
+
+/** RC2 member roles (forge-v2.md §2.1): the committed contracts carry `writer.role` and a claimed `r`. */
+export const MEMBER_ROLES = 'role' in CONTRACTS.core.documentSchemas.writer.properties;
+/** The role-gated types: every type that claims a role `r`. */
+export const ROLE_GATED = new Set(
+  Object.values(CONTRACTS).flatMap((c) => Object.entries(c.documentSchemas).filter(([, s]) => s.properties?.r).map(([t]) => t)),
+);
+
+/**
+ * `data` with the role fields the contracts require and it leaves out: a `writer` enrolment is
+ * role 1 (writer), and a role-gated write claims `r` 1, what a maintainer, an author, a runner or
+ * a role-1 writer sends (every seed identity is one of those). A value `data` names is kept.
+ */
+export function withRole(type, data) {
+  if (!MEMBER_ROLES) return data;
+  if (type === 'writer' && data.role === undefined) return { ...data, role: 1 };
+  if (ROLE_GATED.has(type) && data.r === undefined) return { ...data, r: 1 };
+  return data;
+}
 
 /**
  * A `maintainer` / `writer` enrolment written by the repo owner. Anyone but the owner must have

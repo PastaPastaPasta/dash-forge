@@ -111,8 +111,10 @@ SYSTEM_KINDS = {'$ownerId': 'identifier', '$creatorId': 'identifier', '$id': 'id
                 '$createdAtCoreBlockHeight': 'u32', '$updatedAtCoreBlockHeight': 'u32', '$transferredAtCoreBlockHeight': 'u32'}
 # Fixed once a document is written, whatever the type says (a findBy key must not move)
 SYSTEM_FIXED = {'$ownerId', '$id', '$createdAt', '$createdAtBlockHeight', '$createdAtCoreBlockHeight'}
-# Declaration features this mirror does not port: it refuses them rather than pass them unchecked
-UNPORTED = ('inList', 'creatorRefersTo', 'revealed', 'consume', 'minimumAgeBlocks')
+# Declaration features this mirror does not port: it refuses them rather than pass them unchecked.
+# v5's third reference kind (`moderatedDocument`, and the moderator deletes that decide which kind
+# a type admits: 40143/40144) is among them; tools/contract-validate judges it.
+UNPORTED = ('inList', 'creatorRefersTo', 'revealed', 'consume', 'minimumAgeBlocks', 'moderatedDocument', 'moderatorAbilities')
 
 
 def leaves(decl):
@@ -189,7 +191,10 @@ def check(contracts):
                             problems.append(f'40137 {at}: no unique index of {target_name}.{rt} over exactly {sorted(keys)}')
                         if td.get('indexOnly'):
                             problems.append(f'40137 {at}: {rt} is indexOnly, which findBy cannot reference')
-                        fixed = SYSTEM_FIXED | set(td.get('immutable', []))
+                        # Only a name listed outright is fixed: a property frozen under a v5
+                        # condition is "not fixed once written", so a findBy key may not rely
+                        # on it (book contract-keywords/mutability.md:131)
+                        fixed = SYSTEM_FIXED | {e for e in td.get('immutable', []) if isinstance(e, str)}
                         for k, src in keys.items():
                             dk = SYSTEM_KINDS.get(k) if k.startswith('$') else (kind(tc, target_props[k]) if k in target_props else None)
                             sk = source_kind(src)
@@ -259,9 +264,16 @@ def self_test(d):
         ('40121', 'unknown type', lambda cs: cs['forge-community']['documentSchemas']['checkRun']['properties']['repoId']['refersTo'].update({"documentType": "nope"})),
         ('40137', 'findBy with no unique index', lambda cs: cs['forge-community']['documentSchemas']['webhook']['ownerRefersTo']['findBy'].update({"repoId": "repoId", "memberId": ".", "vis": "vis"})),
         ('40137', 'findBy into a type whose key can move', lambda cs: cs['forge-core']['documentSchemas']['maintainer'].update({"documentsMutable": True})),
+        ('40137', 'findBy into a type whose key is frozen only under a condition', lambda cs: cs['forge-core']['documentSchemas']['maintainer'].update({
+            "documentsMutable": True, "immutable": [{"property": p, "when": {"present": f"$old.{p}"}} for p in ('repoId', 'memberId')]})),
         ('40126', 'where on an element reference', lambda cs: cs['forge-community']['documentSchemas']['policy']['properties']['requiredCheckSources']['items']['refersTo']['anyOf'][1].update({"where": {"vis": "requiredApprovals"}})),
         ('40121', 'a collab-placeholder leaf naming a missing type', lambda cs: cs['forge-community']['documentSchemas']['event']['properties']['targetId']['refersTo']['anyOf'][0].update({"documentType": "nope"})),
         ('40121', 'a reference to a contract registered later', lambda cs: cs['forge-core']['documentSchemas']['repo']['properties']['forkOf']['refersTo'].update({"contractId": "FORGE_COLLAB_CONTRACT_ID", "documentType": "issue"})),
+        # RC2 member roles: a writer leaf's `where {"role": "r"}` (forge-collab and forge-community
+        # read forge-core's writer across contracts)
+        ('40126', 'role compared with a u32 (cross-contract writer leaf)', lambda cs: cs['forge-collab']['documentSchemas']['transition']['ownerRefersTo']['anyOf'][1]['where'].update({"role": "targetNumber"})),
+        ('40126', 'role compared with a string', lambda cs: cs['forge-core']['documentSchemas']['refUpdate']['ownerRefersTo']['anyOf'][1]['where'].update({"role": "refName"})),
+        ('40126', 'a claim the writer leaf cannot read', lambda cs: cs['forge-community']['documentSchemas']['checkRun']['ownerRefersTo']['anyOf'][2].update({"where": {"rank": "r"}})),
         ('unported', 'an inList reference', lambda cs: cs['forge-community']['documentSchemas']['star']['properties']['repoId'].update({"refersTo": {"type": "permanentDocument", "documentType": "event", "inList": "x"}})),
     ]
     bad = 0

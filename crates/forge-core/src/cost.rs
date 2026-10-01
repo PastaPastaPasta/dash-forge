@@ -111,7 +111,9 @@ pub mod push_fees {
     /// under the charge.
     pub const CHUNK_FLAT: u64 = CHUNK_FLAT_BASE + CHUNK_PER_LEVEL * CHUNK_TREE_LEVELS;
     /// Bytes a chunk document's transition carries beyond its payload (ids, the pack hash,
-    /// `seq`, field headers, the signature). Measured 116-128.
+    /// `seq`, field headers, the signature). Measured 116-128, before RC2's claimed role `r`
+    /// (one more stored byte, `members::CLAIMED_ROLE`), which the margin covers; forge-web's
+    /// `estimateChunkCredits` pins the same figure.
     pub const CHUNK_OVERHEAD_BYTES: u64 = 130;
     /// A `packManifest`, the first of a push into a repository or ref that has none of its
     /// kind yet (its index subtrees are created). Measured 109.3-110.2M.

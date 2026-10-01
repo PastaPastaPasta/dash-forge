@@ -52,6 +52,7 @@ use crate::rules::v2::{
     Review as RuleReview, Role, RoleOracle, StateAction, Transition, TransitionMove,
     TransitionTarget, Visibility, TRANSITION_KINDS,
 };
+use crate::rules::v2::{CloseReason, ClosedAs};
 use crate::rules::{self, Event, EventKind, IssueState, PrState};
 use crate::scope::RepoRef;
 use crate::user_error::{codes, UserError};
@@ -79,7 +80,8 @@ pub const DOC_CHECK_RUN: &str = "checkRun";
 /// forge-community: a star (`indexOnly`).
 pub const DOC_STAR: &str = "star";
 /// forge-community: a trending beat (`indexOnly`, non-deletable): written beside a star when the starrer counts
-/// toward Trending (platform-parity-spec §4.3).
+/// toward Trending (platform-parity-spec §4.3). RC2's fused star (C1) drops the type: the star's
+/// own `byWeek` index counts it ([`Collab::fused_star`]).
 pub const DOC_STAR_BEAT: &str = "starBeat";
 /// forge-community: a watch (`indexOnly`): cross-device "watching this repo".
 pub const DOC_WATCH: &str = "watch";
@@ -364,6 +366,19 @@ pub struct Comment {
     pub created_at: u64,
     /// Importer provenance.
     pub imported: Option<Imported>,
+    /// A mirrored review comment's source diff hunk (QW2-010, `diffHunk`): text a reader shows
+    /// as text, and only on an imported comment with a path ([`Comment::shown_hunk`]).
+    pub diff_hunk: Option<String>,
+}
+
+impl Comment {
+    /// The diff hunk a reader shows: a mirrored (`imported`) comment's, on a file (`path`).
+    #[must_use]
+    pub fn shown_hunk(&self) -> Option<&str> {
+        self.diff_hunk
+            .as_deref()
+            .filter(|_| self.imported.is_some() && self.anchor.path.is_some())
+    }
 }
 
 /// A `review`, flattened.
@@ -750,6 +765,9 @@ pub struct StateChange {
     pub kind: u8,
     /// The state code after it.
     pub after: i64,
+    /// The close reason it records (QW-069): `None` when none was asked for, or the registered
+    /// contract has no `transition.reason` (an RC1 contract, or RC2 with the rider off).
+    pub closed_as: Option<ClosedAs>,
 }
 
 // ===========================================================================
@@ -845,6 +863,8 @@ pub fn transition_from_doc(d: &FetchedDocument) -> Option<Transition> {
             .and_then(|n| u32::try_from(n).ok())
             .unwrap_or(0),
         created_at: d.created_at.unwrap_or_default(),
+        reason: d.field_u64("reason").and_then(|n| u8::try_from(n).ok()),
+        dup_number: d.field_u64("dupNumber").and_then(|n| u32::try_from(n).ok()),
     })
 }
 
@@ -873,6 +893,7 @@ fn comment_from_doc(d: &FetchedDocument) -> Comment {
         },
         created_at: d.created_at.unwrap_or_default(),
         imported: imported_of(d),
+        diff_hunk: d.field_str(COMMENT_DIFF_HUNK),
     }
 }
 
@@ -1289,6 +1310,17 @@ pub fn event_payload_props(
         EventKind::MilestoneSet if value.is_none() => {
             return missing("a milestone name");
         }
+        // RC2 MOD: a hide's reason is one of the reader's list (any other reads as none, so it
+        // is refused rather than written to no effect); an unhide carries none.
+        EventKind::Hide if value.is_some_and(|v| !rules::v2::is_hide_reason(v)) => {
+            return Err(Error::Config(format!(
+                "a hide reason is one of {}",
+                rules::v2::HIDE_REASONS.join(", ")
+            )));
+        }
+        EventKind::Unhide if value.is_some() => {
+            return Err(Error::Config("an unhide carries no reason".to_string()));
+        }
         EventKind::PolicyBypass
             if value.is_none() || !oid.is_some_and(|o| matches!(o.len(), 20 | 32)) =>
         {
@@ -1382,6 +1414,47 @@ pub fn transition_props(
     Ok(p)
 }
 
+/// The `transition` property that records a close reason (QW-069; a `build.py` rider flag, so a
+/// writer feature-detects it on the registered contract).
+pub const TRANSITION_REASON: &str = "reason";
+
+/// Add an issue close's reason (QW-069) to the properties of its transition: `reason`, and for a
+/// duplicate of another issue of the repo `dupNumber`. Only an issue close (kind 1) records one,
+/// and only a duplicate names a canonical, never the issue itself (the reading of
+/// [`crate::rules::v2::close_reason_of`]; no consensus rule checks it).
+pub fn insert_close_reason(
+    p: &mut BTreeMap<String, FieldValue>,
+    target: &Target,
+    mv: &TransitionMove,
+    closed: &ClosedAs,
+) -> Result<()> {
+    if mv.kind != crate::rules::transition::ISSUE_CLOSE {
+        return Err(Error::Config(format!(
+            "only an issue close records a reason; a kind-{} transition does not",
+            mv.kind
+        )));
+    }
+    if let Some(n) = closed.duplicate_of {
+        if closed.reason != CloseReason::Duplicate {
+            return Err(Error::Config(
+                "only a close as a duplicate names the issue it duplicates".into(),
+            ));
+        }
+        if n == 0 || n == target.number {
+            return Err(Error::Config(format!(
+                "issue #{} cannot be a duplicate of #{n}",
+                target.number
+            )));
+        }
+        p.insert("dupNumber".to_string(), FieldValue::integer(u64::from(n)));
+    }
+    p.insert(
+        TRANSITION_REASON.to_string(),
+        FieldValue::integer(u64::from(closed.reason.code())),
+    );
+    Ok(())
+}
+
 /// The request a state change is: its [`StateAction`], and the verb the messages use.
 fn action_verb(action: StateAction) -> &'static str {
     match action {
@@ -1465,8 +1538,10 @@ fn no_move(target: &Target, code: i64, action: StateAction, actor: Actor) -> Err
         if actor == Actor::Author {
             return Error::NotPermitted {
                 action: what,
-                reason: "only a maintainer or writer can lock or unlock a conversation".into(),
-                needs: "writer".into(),
+                reason: "only a maintainer, writer or triage member can lock or unlock a \
+                         conversation"
+                    .into(),
+                needs: "triage".into(),
             };
         }
         let state = if status_of_code(code).locked {
@@ -1622,10 +1697,23 @@ pub fn comment_props(
                 FieldValue::identifier(platform::decode_identifier(r)?),
             );
         }
+        if let Some(h) = &a.diff_hunk {
+            if h.is_empty() || a.path.is_none() {
+                return Err(Error::Config(
+                    "a diff hunk goes on a comment on a file, and is not empty".into(),
+                ));
+            }
+            check_text("diff hunk", h, 1024, 1024)?;
+            p.insert(COMMENT_DIFF_HUNK.to_string(), FieldValue::text(h));
+        }
     }
     insert_imported(&mut p, imported)?;
     Ok(p)
 }
+
+/// The `comment` property of a mirrored review comment's diff hunk (QW2-010; a `build.py` rider
+/// flag, so a writer feature-detects it on the registered contract).
+pub const COMMENT_DIFF_HUNK: &str = "diffHunk";
 
 /// The properties of a `review` (without `repoId`): `verdict` on `commit_oid`, with the number
 /// of `reviewId` comments its submit will write.
@@ -1662,6 +1750,35 @@ pub fn review_props(
     }
     insert_imported(&mut p, imported)?;
     Ok(p)
+}
+
+/// [`insert_close_reason`] when `closed` is asked for and `collab` has `transition.reason`;
+/// returns what was recorded. A contract without it (RC1, or RC2 with the rider off) gets the
+/// plain close, with a warning.
+fn with_close_reason(
+    p: &mut BTreeMap<String, FieldValue>,
+    collab: &LoadedContract,
+    target: &Target,
+    mv: &TransitionMove,
+    closed: Option<&ClosedAs>,
+) -> Result<Option<ClosedAs>> {
+    let Some(closed) = closed else {
+        return Ok(None);
+    };
+    if !collab.has_property(DOC_TRANSITION, TRANSITION_REASON) {
+        tracing::warn!(
+            reason = closed.reason.as_str(),
+            "this forge-collab has no transition.reason: the close is written without its reason"
+        );
+        return Ok(None);
+    }
+    insert_close_reason(p, target, mv, closed)?;
+    Ok(Some(*closed))
+}
+
+/// Whether `community` is a fused-star forge-community (RC2 C1): it has no `starBeat` type.
+fn fused_star(community: &LoadedContract) -> bool {
+    !community.has_document_type(DOC_STAR_BEAT)
 }
 
 /// Whether a star of `repo` by `signer` also beats for Trending: RC1's `starBeat` names a public
@@ -1708,11 +1825,130 @@ fn target_props(target: &Target) -> Result<BTreeMap<String, FieldValue>> {
     Ok(p)
 }
 
+/// RC2 member roles: the least member role a `doc_type` write with `props` needs, and whether
+/// it is written through the author operand instead of the writer leaf (a transition with
+/// `asAuthor` > 0, which claims `r` 1). `None` for a type without `r` among those
+/// [`Collab::write`] writes (`checkRun` and the push types are written elsewhere and claim 1).
+#[must_use]
+pub fn gated_write(doc_type: &str, props: &BTreeMap<String, FieldValue>) -> Option<(Role, bool)> {
+    let kind = props.get("kind").and_then(FieldValue::as_u64);
+    match doc_type {
+        DOC_TRANSITION => {
+            let as_author = props
+                .get("asAuthor")
+                .and_then(FieldValue::as_u64)
+                .is_some_and(|n| n > 0);
+            let kind = kind.and_then(|k| u8::try_from(k).ok()).unwrap_or(0);
+            Some((members::transition_needs(kind), as_author))
+        }
+        // `t_triageKinds` is a deny-list: an unknown kind (or none) is open to triage.
+        DOC_EVENT => Some((kind.map_or(Role::Triage, members::event_code_needs), false)),
+        DOC_LABEL | DOC_MILESTONE => Some((Role::Triage, false)),
+        _ => None,
+    }
+}
+
+/// The `r` a `doc_type` write with `props` by a signer of `role` claims (RC2 member roles,
+/// [`members::claimed_role`]): `None` for a type without it ([`members::ROLE_GATED_TYPES`]).
+/// The push types and `checkRun` always claim 1; an author's transition (`asAuthor` > 0)
+/// claims 1, whatever the signer's role. [`Collab::write`] stamps the same value; the tests
+/// build documents with it.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn claimed_role_for(
+    doc_type: &str,
+    props: &BTreeMap<String, FieldValue>,
+    role: Option<Role>,
+) -> Option<u64> {
+    if !members::ROLE_GATED_TYPES.contains(&doc_type) {
+        return None;
+    }
+    Some(match gated_write(doc_type, props) {
+        Some((_, as_author)) => members::claimed_role(role, as_author),
+        None => 1,
+    })
+}
+
+/// Why `role` (the signer's best, `None` for a non-member) cannot make a write that needs
+/// `needs`: the refusal, or `None` when it can. A triage member or reader is told what their
+/// role allows ([`members::role_limits`]).
+pub fn role_refusal(
+    role: Option<Role>,
+    needs: Role,
+    repo: &RepoRef,
+    action: &str,
+) -> Option<Error> {
+    if role.is_some_and(|r| r <= needs) {
+        return None;
+    }
+    let need = needs.as_str();
+    Some(Error::NotPermitted {
+        action: action.to_string(),
+        reason: match role {
+            Some(r) => match members::role_limits(r, repo) {
+                // A maintainer-only action: what the role allows, and what it needs.
+                Some(limits) if needs == Role::Maintainer => {
+                    format!("{limits}; this needs a maintainer")
+                }
+                Some(limits) => limits,
+                None => format!("you are a {r} of {}; this needs a {need}", repo.display()),
+            },
+            None => format!("you are not a member of {}", repo.display()),
+        },
+        needs: need.to_string(),
+    })
+}
+
+/// [`role_refusal`] for a member only: `None` for a non-member (whose refusal, if any, is
+/// another one: not a member, or not the author).
+pub fn member_role_refusal(
+    role: Option<Role>,
+    needs: Role,
+    repo: &RepoRef,
+    action: &str,
+) -> Option<Error> {
+    role?;
+    role_refusal(role, needs, repo, action)
+}
+
+/// Why no gate admits an event of `kind` on `target` from a signer of `role` ([`kind_route`]
+/// is `None`): a member whose role does not admit the kind (triage: retarget, dismiss, head
+/// update, pin, policy bypass; a reader: any) is told what the role allows, anyone else that
+/// they are neither a member nor (for an author kind) the author.
+pub fn kind_refusal(
+    role: Option<Role>,
+    repo: &RepoRef,
+    target: &Target,
+    kind: EventKind,
+    action: String,
+) -> Error {
+    if let Some(e) = member_role_refusal(role, members::event_needs(kind), repo, &action) {
+        return e;
+    }
+    Error::NotPermitted {
+        action,
+        reason: if is_author_kind(kind) {
+            format!(
+                "you are neither a member of {} nor the {}'s author",
+                repo.display(),
+                target.kind.noun()
+            )
+        } else {
+            format!("you are not a member of {}", repo.display())
+        },
+        needs: "writer".into(),
+    }
+}
+
 /// Who `signer` is to a state change of `target` (§3): a member (`asAuthor` 0), else the
 /// target's author (`asAuthor` = its number), else no one the contract admits. A member who is
 /// also the author writes as a member, which admits every kind (a merge too).
+///
+/// RC2 member roles: a reader never writes as a member (its `writer` document admits no
+/// transition), so a reader who is the author writes as the author; [`state_actor_for`] also
+/// routes a triage author's draft or ready through the author.
 pub fn state_actor(signer_role: Option<Role>, signer: &str, target: &Target) -> Actor {
-    if signer_role.is_some() {
+    if signer_role.is_some_and(|r| r <= Role::Triage) {
         Actor::Member
     } else if signer == target.author {
         Actor::Author
@@ -1721,10 +1957,30 @@ pub fn state_actor(signer_role: Option<Role>, signer: &str, target: &Target) -> 
     }
 }
 
-/// How an event of `kind` by `signer` is written: a member's `event`, else — for an author
-/// kind ([`is_author_kind`]) — the author's `authorEvent`. `None`: consensus admits neither.
-/// A state kind (close, reopen, merge, draft, ready) is never an event: it is `None` here
-/// ([`state_actor`] routes it).
+/// Who `signer` is to `action` on `target`, by role (RC2 member roles): a member whose role
+/// admits the action ([`members::state_action_needs`]) writes as a member; else the author
+/// writes as the author (`r` 1: a triage author marks its own PR draft or ready, a reader
+/// author closes its own issue); else [`state_actor`]'s answer stands, and the role pre-check
+/// refuses it.
+pub fn state_actor_for(
+    signer_role: Option<Role>,
+    signer: &str,
+    target: &Target,
+    action: StateAction,
+) -> Actor {
+    let member_may = signer_role.is_some_and(|r| r <= members::state_action_needs(action));
+    if !member_may && signer == target.author {
+        Actor::Author
+    } else {
+        state_actor(signer_role, signer, target)
+    }
+}
+
+/// How an event of `kind` by `signer` is written: a member's `event` when the signer's role
+/// admits the kind ([`members::event_needs`]), else — for an author kind ([`is_author_kind`])
+/// — the author's `authorEvent` (so a triage author or a reader author still updates its own
+/// PR's head). `None`: consensus admits neither. A state kind (close, reopen, merge, draft,
+/// ready) is never an event: it is `None` here ([`state_actor`] routes it).
 pub fn kind_route(
     signer_role: Option<Role>,
     signer: &str,
@@ -1733,7 +1989,7 @@ pub fn kind_route(
 ) -> Option<StateRoute> {
     if is_state_kind(kind) {
         None
-    } else if signer_role.is_some() {
+    } else if signer_role.is_some_and(|r| r <= members::event_needs(kind)) {
         Some(StateRoute::Member)
     } else if signer == target.author && is_author_kind(kind) {
         Some(StateRoute::Author)
@@ -2027,10 +2283,11 @@ pub struct Collab<'a> {
     /// row's base against them), keyed by repository id. Dropped by
     /// [`Collab::refs_changed`] after a push this command made.
     private_updates: std::sync::Mutex<Option<([u8; 32], Arc<crate::refs::PrivateUpdates>)>>,
-    /// Whether the signer holds a maintainer or writer document of the repository (by id),
-    /// read once per `Collab`: what `asMember` proves on every issue, PR, comment and review
-    /// the command writes ([`Self::stamp`]).
-    member: std::sync::Mutex<Option<(String, bool)>>,
+    /// The signer's best role in the repository (by id; `None`: no membership document), read
+    /// once per `Collab`: what `asMember` proves on every issue, PR, comment and review the
+    /// command writes ([`Self::stamp`]), and the `r` its role-gated writes claim
+    /// ([`Self::write`]).
+    member: std::sync::Mutex<Option<(String, Option<Role>)>>,
 }
 
 impl<'a> Collab<'a> {
@@ -2266,6 +2523,20 @@ impl<'a> Collab<'a> {
         props: BTreeMap<String, FieldValue>,
     ) -> Result<String> {
         check_layout(repo, contract, doc_type)?;
+        // RC2 member roles: a role-gated write claims the signer's role in `r` (the writer
+        // leaf proves it), and one the role cannot make is refused here before signing.
+        let mut props = props;
+        if let Some((needs, as_author)) = gated_write(doc_type, &props) {
+            let role = self.cached_role(repo).await?;
+            if !as_author && precheck_enabled() {
+                let action = format!("write this {doc_type}");
+                if let Some(e) = member_role_refusal(role, needs, repo, &action) {
+                    return Err(e);
+                }
+            }
+            let r = members::claimed_role(role, as_author);
+            members::stamp_claimed_role(contract, doc_type, &mut props, r);
+        }
         // A private repo's member `event` carries its `value` (label or milestone name, dismiss
         // reason, assignee, retarget base) sealed (§7): every event write passes here.
         let props = if doc_type == DOC_EVENT && props.contains_key("value") {
@@ -2311,21 +2582,29 @@ impl<'a> Collab<'a> {
         let refused =
             matches!(e, Error::NotAMember { detail, .. } if detail.ends_with("for path asMember"));
         if refused {
-            *crate::history::lock(&self.member) = Some((repo.id().to_string(), false));
+            *crate::history::lock(&self.member) = Some((repo.id().to_string(), None));
         }
         refused
     }
 
-    /// Whether the signer holds a maintainer or writer document of `repo` now (read once per
-    /// `Collab` and repository).
+    /// Whether the signer holds any membership document of `repo` now (`asMember` admits
+    /// every `writer` document, triage and reader included; read once per `Collab` and
+    /// repository).
     pub async fn is_member(&self, repo: &RepoRef) -> Result<bool> {
+        Ok(self.cached_role(repo).await?.is_some())
+    }
+
+    /// The signer's best current role in `repo`, read once per `Collab` and repository. A
+    /// long-lived `Collab` (an import run) keeps claiming the role it read: a role change
+    /// while it runs is met by consensus refusing the write, and the next run reads anew.
+    async fn cached_role(&self, repo: &RepoRef) -> Result<Option<Role>> {
         if let Some((_, m)) = crate::history::lock(&self.member)
             .as_ref()
             .filter(|(id, _)| id == repo.id())
         {
             return Ok(*m);
         }
-        let m = self.signer_role(repo).await?.is_some();
+        let m = self.signer_role(repo).await?;
         *crate::history::lock(&self.member) = Some((repo.id().to_string(), m));
         Ok(m)
     }
@@ -2430,37 +2709,18 @@ impl<'a> Collab<'a> {
     /// The signer's best current role in `repo`, if any.
     pub async fn signer_role(&self, repo: &RepoRef) -> Result<Option<Role>> {
         let me = self.signer_id()?;
-        Ok(MemberReader::new(self.client)
-            .roles_of(repo, &me)
-            .await?
-            .iter()
-            .map(|m| m.role)
-            .min())
+        MemberReader::new(self.client).best_role(repo, &me).await
     }
 
     /// Refuse, before signing, a write the signer's role cannot make. `needs` is the least
-    /// role that can (maintainer or writer). Off when [`SKIP_PRECHECK_ENV`] is set.
+    /// role that can (maintainer, writer or triage: [`members::event_needs`],
+    /// [`members::transition_needs`]). Off when [`SKIP_PRECHECK_ENV`] is set.
     pub async fn require_role(&self, repo: &RepoRef, needs: Role, action: &str) -> Result<()> {
         if !precheck_enabled() {
             return Ok(());
         }
         let role = self.signer_role(repo).await?;
-        if role.is_some_and(|r| r <= needs) {
-            return Ok(());
-        }
-        let need = members::doc_type(needs);
-        Err(Error::NotPermitted {
-            action: action.to_string(),
-            reason: match role {
-                Some(r) => format!(
-                    "you are a {} of {}; this needs a {need}",
-                    members::doc_type(r),
-                    repo.display()
-                ),
-                None => format!("you are not a member of {}", repo.display()),
-            },
-            needs: need.to_string(),
-        })
+        role_refusal(role, needs, repo, action).map_or(Ok(()), Err)
     }
 
     // --- reads: issues / patches ------------------------------------------------
@@ -3286,7 +3546,7 @@ impl<'a> Collab<'a> {
 
     /// The check runs reported on `head_oid` in `repo` (the `checkRun` `head` index): the
     /// newest per `name`, each marked trusted when its reporter is a current maintainer,
-    /// writer or runner ([`newest_check_runs`]).
+    /// role-1 writer or runner ([`newest_check_runs`]; never a triage member or reader).
     pub async fn check_runs(&self, repo: &RepoRef, head_oid: &str) -> Result<Vec<CheckRun>> {
         let docs = self.check_run_docs(repo, head_oid).await?;
         if docs.is_empty() {
@@ -3295,7 +3555,7 @@ impl<'a> Collab<'a> {
         let oracle = self.member_oracle(repo).await?;
         let runners = self.runner_ids(repo).await?;
         Ok(newest_check_runs(&docs, |who| {
-            oracle.current_role(who).is_some() || runners.contains(who)
+            oracle.current_approver(who) || runners.contains(who)
         }))
     }
 
@@ -3517,7 +3777,7 @@ impl<'a> Collab<'a> {
             return Ok(None);
         }
         let e = match self
-            .set_state_from(repo, &target, StateAction::Draft, None, Some(code))
+            .set_state_from(repo, &target, StateAction::Draft, None, Some(code), None)
             .await
         {
             Ok(c) => return Ok(Some(c.transition_id)),
@@ -4085,7 +4345,8 @@ impl<'a> Collab<'a> {
 
     // --- writes: comments, reviews ----------------------------------------------------------
 
-    /// Comment on an issue or PR. Un-gated.
+    /// Comment on an issue or PR. Un-gated. A reply is written to its thread's root
+    /// ([`Self::thread_root`]: one or two reads).
     pub async fn comment(
         &self,
         repo: &RepoRef,
@@ -4094,12 +4355,48 @@ impl<'a> Collab<'a> {
         anchor: Option<&CommentAnchor>,
         imported: Option<&Imported>,
     ) -> Result<String> {
+        self.comment_with(repo, target_id, body, anchor, imported, true)
+            .await
+    }
+
+    /// [`Self::comment`] for a writer whose `replyTo` already names the thread's root (the
+    /// importer: it replies to the root comment it mirrored, which a node a block behind may not
+    /// show yet). Nothing is read for it; consensus refuses a reply that names no live root
+    /// (`replyTo … where replyTo = noParent`, 40127).
+    pub async fn comment_on_root(
+        &self,
+        repo: &RepoRef,
+        target_id: &str,
+        body: &str,
+        anchor: Option<&CommentAnchor>,
+        imported: Option<&Imported>,
+    ) -> Result<String> {
+        self.comment_with(repo, target_id, body, anchor, imported, false)
+            .await
+    }
+
+    async fn comment_with(
+        &self,
+        repo: &RepoRef,
+        target_id: &str,
+        body: &str,
+        anchor: Option<&CommentAnchor>,
+        imported: Option<&Imported>,
+        find_root: bool,
+    ) -> Result<String> {
         let collab = self.collab_contract(repo).await?;
-        // A reply names its thread's root ([`Self::thread_root`]).
         let mut anchor = anchor.cloned();
         if let Some(a) = &mut anchor {
-            if let Some(parent) = &a.reply_to {
+            if let Some(parent) = a.reply_to.as_ref().filter(|_| find_root) {
                 a.reply_to = Some(self.thread_root(repo, &collab, target_id, parent).await?);
+            }
+            // A hunk is public text: a private repo's sealed comment has no room for it, and a
+            // contract without the rider has no property for it.
+            if a.diff_hunk.is_some()
+                && (repo.visibility == Visibility::Private
+                    || !collab.has_property(DOC_COMMENT, COMMENT_DIFF_HUNK))
+            {
+                a.diff_hunk = None;
             }
         }
         let p = comment_props(target_id, body, anchor.as_ref(), imported)?;
@@ -4242,7 +4539,7 @@ impl<'a> Collab<'a> {
         let props = event_props(target, kind, value, oid)?;
         self.require_role(
             repo,
-            Role::Writer,
+            members::event_needs(kind),
             &format!(
                 "{} {} #{}",
                 kind_verb(kind),
@@ -4272,13 +4569,28 @@ impl<'a> Collab<'a> {
         action: StateAction,
         merge_oid: Option<&[u8]>,
     ) -> Result<StateChange> {
-        self.set_state_from(repo, target, action, merge_oid, None)
+        self.set_state_from(repo, target, action, merge_oid, None, None)
+            .await
+    }
+
+    /// Close the issue `target` saying why (QW-069): [`Self::set_state`]'s close, whose
+    /// transition also records `closed` (`reason`, and a duplicate's `dupNumber`). On a contract
+    /// without `transition.reason` the close is written without it
+    /// ([`StateChange::closed_as`] is then `None`).
+    pub async fn close_as(
+        &self,
+        repo: &RepoRef,
+        target: &Target,
+        closed: &ClosedAs,
+    ) -> Result<StateChange> {
+        self.set_state_from(repo, target, StateAction::Close, None, None, Some(closed))
             .await
     }
 
     /// Write the transition `mv` on `target` as it is (the importer's primitive: it computed
-    /// the move from the state code it read, as a member). No pre-check: consensus judges it,
-    /// and a move the target's state no longer allows is refused before execution
+    /// the move from the state code it read, as a member), with an issue close's reason
+    /// (`closed`; dropped on a contract without `transition.reason`). No pre-check: consensus
+    /// judges it, and a move the target's state no longer allows is refused before execution
     /// ([`Error::RuleRefused`] naming a `c*` rule).
     pub async fn write_transition(
         &self,
@@ -4286,9 +4598,11 @@ impl<'a> Collab<'a> {
         target: &Target,
         mv: &TransitionMove,
         merge_oid: Option<&[u8]>,
+        closed: Option<&ClosedAs>,
     ) -> Result<String> {
-        let props = transition_props(target, mv, merge_oid)?;
+        let mut props = transition_props(target, mv, merge_oid)?;
         let collab = self.collab_contract(repo).await?;
+        with_close_reason(&mut props, &collab, target, mv, closed)?;
         self.write(repo, &collab, DOC_TRANSITION, props).await
     }
 
@@ -4300,10 +4614,26 @@ impl<'a> Collab<'a> {
         action: StateAction,
         merge_oid: Option<&[u8]>,
         known_code: Option<i64>,
+        closed: Option<&ClosedAs>,
     ) -> Result<StateChange> {
         let me = self.signer_id()?;
         let role = self.signer_role(repo).await?;
-        let mut actor = state_actor(role, &me, target);
+        let mut actor = state_actor_for(role, &me, target, action);
+        // A triage member's merge, draft or ready of another's PR, or a reader's state change
+        // of another's target: refused with what the role allows (consensus: `e_mergeOid`, the
+        // writer leaf's `role == r`).
+        if actor != Actor::Author && precheck_enabled() {
+            let what = format!(
+                "{} {} #{}",
+                action_verb(action),
+                target.kind.noun(),
+                target.number
+            );
+            let needs = members::state_action_needs(action);
+            if let Some(e) = member_role_refusal(role, needs, repo, &what) {
+                return Err(e);
+            }
+        }
         if actor == Actor::Other && !precheck_enabled() {
             // judged by consensus (the e2e suite proves the gate this way)
             actor = Actor::Member;
@@ -4329,14 +4659,16 @@ impl<'a> Collab<'a> {
             ),
             None => return Err(no_move(target, code, action, actor)),
         };
-        let props = transition_props(target, &mv, merge_oid)?;
+        let mut props = transition_props(target, &mv, merge_oid)?;
         let collab = self.collab_contract(repo).await?;
+        let closed_as = with_close_reason(&mut props, &collab, target, &mv, closed)?;
         match self.write(repo, &collab, DOC_TRANSITION, props).await {
             Ok(transition_id) => Ok(StateChange {
                 route,
                 transition_id,
                 kind: mv.kind,
                 after: mv.after,
+                closed_as,
             }),
             Err(e) if is_state_rule_refusal(&e) => {
                 let now = self.state_sum(repo, &target.id).await.unwrap_or(code);
@@ -4386,24 +4718,13 @@ impl<'a> Collab<'a> {
             Some(r) => r,
             None if !precheck_enabled() => StateRoute::Member,
             None => {
-                return Err(Error::NotPermitted {
-                    action: format!(
-                        "{} {} #{}",
-                        kind_verb(kind),
-                        target.kind.noun(),
-                        target.number
-                    ),
-                    reason: if is_author_kind(kind) {
-                        format!(
-                            "you are neither a member of {} nor the {}'s author",
-                            repo.display(),
-                            target.kind.noun()
-                        )
-                    } else {
-                        format!("you are not a member of {}", repo.display())
-                    },
-                    needs: "writer".into(),
-                })
+                let what = format!(
+                    "{} {} #{}",
+                    kind_verb(kind),
+                    target.kind.noun(),
+                    target.number
+                );
+                return Err(kind_refusal(role, repo, target, kind, what));
             }
         };
         let doc_type = match route {
@@ -5247,7 +5568,7 @@ impl<'a> Collab<'a> {
             p.insert("description".to_string(), FieldValue::text(description));
         }
         p.insert("retired".to_string(), FieldValue::boolean(retired));
-        self.require_role(repo, Role::Writer, &format!("define label {name}"))
+        self.require_role(repo, Role::Triage, &format!("define label {name}"))
             .await?;
         let core = self.core_contract(repo).await?;
         self.write(repo, &core, DOC_LABEL, p).await
@@ -5322,7 +5643,7 @@ impl<'a> Collab<'a> {
         )?;
         self.require_role(
             repo,
-            Role::Writer,
+            members::event_needs(kind),
             &format!(
                 "{} {} #{}",
                 kind_verb(kind),
@@ -5437,15 +5758,24 @@ impl<'a> Collab<'a> {
         Ok(self.own_star(&community, repo).await?.is_some())
     }
 
+    /// Whether `repo`'s forge-community counts a star toward Trending by itself: the RC2 fused
+    /// star (C1: `star.byWeek` on `[$createdAt, repoId]`, `outlivesDelete`, and no `starBeat`
+    /// type). Then there is no beat to write or to opt out of. RC1 (and RC2 with C1 off) has a
+    /// `starBeat` type, written beside a star ([`Self::star`]).
+    pub async fn fused_star(&self, repo: &RepoRef) -> Result<bool> {
+        Ok(fused_star(&self.community_contract(repo).await?))
+    }
+
     /// Star `repo`; with `trending`, a new star also counts toward Trending (a `starBeat`,
     /// once per identity and repo, platform-parity-spec §4.3). Returns `false` when it was
-    /// already starred (nothing written, no beat either).
+    /// already starred (nothing written, no beat either). On a fused-star contract
+    /// ([`Self::fused_star`]) the star is all there is, whatever `trending` says.
     pub async fn star(&self, repo: &RepoRef, trending: bool) -> Result<bool> {
         let community = self.community_contract(repo).await?;
         let starred = self
             .create_own_index_only(&community, repo, DOC_STAR, BTreeMap::new())
             .await?;
-        if starred && trending && beats(repo, &self.signer_id()?) {
+        if starred && trending && !fused_star(&community) && beats(repo, &self.signer_id()?) {
             // The star stands whatever happens to the beat, which only feeds a ranking. A beat
             // from an earlier star of this repo makes this a no-op (one per identity and repo,
             // ever: it cannot be deleted).
@@ -5531,6 +5861,8 @@ fn kind_verb(kind: EventKind) -> &'static str {
         EventKind::Lock => "lock",
         EventKind::Unlock => "unlock",
         EventKind::PolicyBypass => "record a rules bypass on",
+        EventKind::Hide => "hide content on",
+        EventKind::Unhide => "unhide content on",
     }
 }
 
@@ -6332,6 +6664,46 @@ fn create_journal_path(
 }
 
 #[cfg(test)]
+mod fused_star_tests {
+    use super::*;
+
+    /// RC2's fused star (C1) is read off the contract. Where it is on, every `star` index over
+    /// `$createdAt` outlives a delete, so an unstar carries no `$createdAt`
+    /// ([`Collab::unstar`] sends none): v5 commits an indexOnly row to it only when some index
+    /// over it does not (`v5:packages/rs-dpp/src/data_contract/document_type/index/
+    /// outlives_delete.rs:21-26`).
+    #[test]
+    fn a_fused_star_contract_counts_the_star_itself() {
+        let community = crate::test_support::rc1::loaded(crate::layout::ForgeContract::Community);
+        let json: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../forge-contracts/contracts/forge-community.json"
+        ))
+        .unwrap();
+        let types = &json["documentSchemas"];
+        assert_eq!(fused_star(&community), types.get(DOC_STAR_BEAT).is_none());
+        let star = &types[DOC_STAR];
+        let over_created_at: Vec<&serde_json::Value> = star["indices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|i| {
+                i["properties"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|p| p.get("$createdAt").is_some())
+            })
+            .collect();
+        if fused_star(&community) {
+            assert!(!over_created_at.is_empty(), "the star's byWeek index");
+            assert!(over_created_at.iter().all(|i| i["outlivesDelete"] == true));
+        } else {
+            assert!(over_created_at.is_empty());
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -6619,6 +6991,198 @@ mod tests {
         }
     }
 
+    /// RC2 member roles: a triage member closes, reopens and locks as a member (`r` 2), but
+    /// merges, drafts and readies only its own PR, as the author (`r` 1); a reader acts only
+    /// as the author.
+    #[test]
+    fn a_state_change_routes_by_role() {
+        use StateAction::{Close, Draft, Lock, Merge, Ready, Reopen};
+        let theirs = pr("alice");
+        let mine = pr("tri");
+        for action in [Close, Reopen, Lock] {
+            assert_eq!(
+                state_actor_for(Some(Role::Triage), "tri", &theirs, action),
+                Actor::Member,
+                "{action:?}"
+            );
+        }
+        for action in [Merge, Draft, Ready] {
+            // Not the author: still a member, so the role pre-check refuses it.
+            assert_eq!(
+                state_actor_for(Some(Role::Triage), "tri", &theirs, action),
+                Actor::Member
+            );
+            // The author: the author operand (r 1).
+            assert_eq!(
+                state_actor_for(Some(Role::Triage), "tri", &mine, action),
+                Actor::Author,
+                "{action:?}"
+            );
+            // A writer is a member either way.
+            assert_eq!(
+                state_actor_for(Some(Role::Writer), "tri", &mine, action),
+                Actor::Member
+            );
+        }
+        // A reader: the author of its own target, no one on another's.
+        assert_eq!(
+            state_actor_for(Some(Role::Reader), "tri", &mine, Close),
+            Actor::Author
+        );
+        assert_eq!(
+            state_actor_for(Some(Role::Reader), "tri", &theirs, Close),
+            Actor::Other
+        );
+    }
+
+    #[test]
+    fn an_event_routes_by_role() {
+        let theirs = pr("alice");
+        let mine = pr("tri");
+        let t = Some(Role::Triage);
+        assert_eq!(
+            kind_route(t, "tri", &theirs, EventKind::LabelAdd),
+            Some(StateRoute::Member)
+        );
+        assert_eq!(
+            kind_route(t, "tri", &theirs, EventKind::ReviewRequest),
+            Some(StateRoute::Member)
+        );
+        // A head update is a writer's, or the author's (`authorEvent`, which carries no `r`).
+        assert_eq!(kind_route(t, "tri", &theirs, EventKind::HeadUpdate), None);
+        assert_eq!(
+            kind_route(t, "tri", &mine, EventKind::HeadUpdate),
+            Some(StateRoute::Author)
+        );
+        for kind in [
+            EventKind::Retarget,
+            EventKind::ReviewDismiss,
+            EventKind::Pin,
+            EventKind::Unpin,
+            EventKind::PolicyBypass,
+        ] {
+            assert_eq!(kind_route(t, "tri", &mine, kind), None, "{kind:?}");
+            assert_eq!(
+                kind_route(Some(Role::Writer), "w", &theirs, kind),
+                Some(StateRoute::Member)
+            );
+        }
+        // A reader writes no member event; its own PR's author kinds stay.
+        let r = Some(Role::Reader);
+        assert_eq!(kind_route(r, "tri", &theirs, EventKind::LabelAdd), None);
+        assert_eq!(
+            kind_route(r, "tri", &mine, EventKind::ThreadResolve),
+            Some(StateRoute::Author)
+        );
+    }
+
+    #[test]
+    fn triage_and_reader_refusals_say_what_the_role_allows() {
+        let repo = repo_ref(Visibility::Private);
+        let refused = |role, needs| {
+            role_refusal(Some(role), needs, &repo, "merge pull request #9").map(|e| e.to_string())
+        };
+        // Triage: close and label pass; merge, push and check runs are refused.
+        assert!(refused(Role::Triage, Role::Triage).is_none());
+        let merge = refused(Role::Triage, Role::Writer).unwrap();
+        assert!(
+            merge.contains("you are a triage member of") && merge.contains("cannot push, merge"),
+            "{merge}"
+        );
+        // A reader is refused even what triage may do.
+        let label = refused(Role::Reader, Role::Triage).unwrap();
+        assert!(
+            label.contains("you are a reader of") && label.contains("cannot change state"),
+            "{label}"
+        );
+        // Writers and maintainers pass; a maintainer-only write names the role it needs.
+        assert!(refused(Role::Writer, Role::Writer).is_none());
+        assert!(refused(Role::Maintainer, Role::Triage).is_none());
+        let policy = refused(Role::Writer, Role::Maintainer).unwrap();
+        assert!(policy.contains("this needs a maintainer"), "{policy}");
+        for role in [Role::Triage, Role::Reader] {
+            let policy = refused(role, Role::Maintainer).unwrap();
+            assert!(
+                policy.contains("cannot") && policy.ends_with("; this needs a maintainer"),
+                "{policy}"
+            );
+        }
+        let none = role_refusal(None, Role::Triage, &repo, "x")
+            .unwrap()
+            .to_string();
+        assert!(none.contains("you are not a member"), "{none}");
+        // A triage member's head update on another's PR names the role, not "not a member".
+        let head = kind_refusal(
+            Some(Role::Triage),
+            &repo,
+            &pr("alice"),
+            EventKind::HeadUpdate,
+            "move the head of pull request #9".into(),
+        )
+        .to_string();
+        assert!(head.contains("triage member"), "{head}");
+    }
+
+    #[test]
+    fn role_gated_writes_claim_the_signers_role() {
+        let props = |kind: u64, as_author: u64| {
+            let mut p = BTreeMap::new();
+            p.insert("kind".to_string(), FieldValue::integer(kind));
+            p.insert("asAuthor".to_string(), FieldValue::integer(as_author));
+            p
+        };
+        let t = Some(Role::Triage);
+        // A triage member's close claims 2, its own PR's draft as the author 1.
+        assert_eq!(claimed_role_for(DOC_TRANSITION, &props(11, 0), t), Some(2));
+        assert_eq!(claimed_role_for(DOC_TRANSITION, &props(14, 9), t), Some(1));
+        assert_eq!(
+            gated_write(DOC_TRANSITION, &props(13, 0)),
+            Some((Role::Writer, false))
+        );
+        assert_eq!(
+            gated_write(DOC_TRANSITION, &props(1, 0)),
+            Some((Role::Triage, false))
+        );
+        assert_eq!(
+            gated_write(DOC_EVENT, &props(16, 0)),
+            Some((Role::Writer, false))
+        );
+        assert_eq!(
+            gated_write(DOC_EVENT, &props(4, 0)),
+            Some((Role::Triage, false))
+        );
+        // A deny-list, as the contract: an unknown or future kind is open to triage.
+        assert_eq!(
+            gated_write(DOC_EVENT, &props(99, 0)),
+            Some((Role::Triage, false))
+        );
+        assert_eq!(
+            gated_write(DOC_EVENT, &props(23, 0)),
+            Some((Role::Writer, false))
+        );
+        assert_eq!(
+            gated_write(DOC_LABEL, &BTreeMap::new()),
+            Some((Role::Triage, false))
+        );
+        // Maintainers claim 1; un-gated types claim nothing.
+        assert_eq!(
+            claimed_role_for(DOC_EVENT, &props(4, 0), Some(Role::Maintainer)),
+            Some(1)
+        );
+        assert_eq!(
+            claimed_role_for(DOC_MILESTONE, &BTreeMap::new(), t),
+            Some(2)
+        );
+        // Push types and check runs always claim 1 (a triage member's is refused first).
+        assert_eq!(
+            claimed_role_for(DOC_CHECK_RUN, &BTreeMap::new(), t),
+            Some(1)
+        );
+        assert_eq!(claimed_role_for("refUpdate", &BTreeMap::new(), t), Some(1));
+        assert_eq!(claimed_role_for(DOC_AUTHOR_EVENT, &props(16, 0), t), None);
+        assert_eq!(claimed_role_for(DOC_COMMENT, &BTreeMap::new(), t), None);
+    }
+
     fn pr(author: &str) -> Target {
         Target {
             kind: TargetKind::Patch,
@@ -6711,6 +7275,42 @@ mod tests {
         assert!(transition_props(&pr, &close, Some(&[7; 20])).is_err());
         // A PR move never names an issue (a_kindOfTarget / the tk agreement).
         assert!(transition_props(&issue, &close, None).is_err());
+    }
+
+    /// QW-069: an issue close records its reason (and a duplicate its canonical); nothing
+    /// else does, and an issue is never a duplicate of itself.
+    #[test]
+    fn a_close_reason_goes_on_an_issue_close_only() {
+        let (issue, pr) = (target("alice"), pr("alice"));
+        let closed = |reason, duplicate_of| ClosedAs {
+            reason,
+            duplicate_of,
+        };
+        let props = |t: &Target, m: &TransitionMove, c: &ClosedAs| {
+            let mut p = transition_props(t, m, None).unwrap();
+            insert_close_reason(&mut p, t, m, c).map(|()| {
+                (
+                    p.get("reason").and_then(FieldValue::as_u64),
+                    p.get("dupNumber").and_then(FieldValue::as_u64),
+                )
+            })
+        };
+        let close = mv(&issue, 0, StateAction::Close, Actor::Member);
+        assert_eq!(
+            props(&issue, &close, &closed(CloseReason::NotPlanned, None)).unwrap(),
+            (Some(2), None)
+        );
+        assert_eq!(
+            props(&issue, &close, &closed(CloseReason::Duplicate, Some(1))).unwrap(),
+            (Some(3), Some(1))
+        );
+        // its own number, a canonical beside another reason, a reopen, a PR close
+        assert!(props(&issue, &close, &closed(CloseReason::Duplicate, Some(3))).is_err());
+        assert!(props(&issue, &close, &closed(CloseReason::Completed, Some(1))).is_err());
+        let reopen = mv(&issue, 1, StateAction::Reopen, Actor::Member);
+        assert!(props(&issue, &reopen, &closed(CloseReason::Completed, None)).is_err());
+        let pr_close = mv(&pr, 0, StateAction::Close, Actor::Member);
+        assert!(props(&pr, &pr_close, &closed(CloseReason::NotPlanned, None)).is_err());
     }
 
     /// No legal move: a clear refusal before anything is signed.
@@ -7735,7 +8335,10 @@ mod tests {
         };
         let input = release_manifest_input(sha256(&sealed), &sealed, stored);
         assert_eq!((input.object_count, input.tips.len()), (0, 0));
-        rc1::assert_valid("packManifest", &input.props(&scope).unwrap());
+        // `r` (RC2 member roles) is stamped at the write (`write_pack_manifest`): 1.
+        let mut props = input.props(&scope).unwrap();
+        props.insert(members::CLAIMED_ROLE.to_string(), FieldValue::integer(1));
+        rc1::assert_valid("packManifest", &props);
     }
 
     /// §16.5: a retry after a failed release write finds the list its earlier attempt stored:

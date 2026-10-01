@@ -13,7 +13,8 @@
    },
    "targetNumber": 7,
    "kind": 4,
-   "value": "bug"
+   "value": "bug",
+   "r": 1
   }
  },
  {
@@ -44,7 +45,8 @@
    "repoId": {
     "$id": 1
    },
-   "title": "v1"
+   "title": "v1",
+   "r": 1
   }
  },
  {
@@ -85,7 +87,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -194,21 +197,6 @@
   }
  },
  {
-  "item": "base",
-  "name": "starBeat ok",
-  "type": "starBeat",
-  "expect": "ok",
-  "doc": {
-   "repoId": {
-    "$id": 1
-   },
-   "vis": "public",
-   "repoOwner": {
-    "$id": 8
-   }
-  }
- },
- {
   "item": "R-10",
   "name": "event headUpdate oid 31",
   "type": "event",
@@ -223,6 +211,7 @@
    },
    "targetNumber": 7,
    "kind": 16,
+   "r": 1,
    "oid": {
     "$b": [
      1,
@@ -279,7 +268,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -306,7 +296,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -323,7 +314,8 @@
     "$id": 2
    },
    "targetNumber": 7,
-   "kind": 21
+   "kind": 21,
+   "r": 1
   }
  },
  {
@@ -340,7 +332,8 @@
     "$id": 2
    },
    "targetNumber": 7,
-   "kind": 22
+   "kind": 22,
+   "r": 1
   }
  },
  {
@@ -357,7 +350,8 @@
     "$id": 2
    },
    "targetNumber": 7,
-   "kind": 1
+   "kind": 1,
+   "r": 1
   }
  },
  {
@@ -374,7 +368,8 @@
     "$id": 2
    },
    "targetNumber": 7,
-   "kind": 9
+   "kind": 9,
+   "r": 1
   }
  },
  {
@@ -391,6 +386,7 @@
    },
    "targetNumber": 7,
    "kind": 16,
+   "r": 1,
    "oid": {
     "$b": [
      2,
@@ -440,7 +436,8 @@
    "vis": "public",
    "detailsUrl": "https://github.com/o/r/actions/runs/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -467,7 +464,8 @@
    "vis": "public",
    "detailsUrl": "https://10.0.0.5:8443/job/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -494,7 +492,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -522,7 +521,8 @@
    "vis": "public",
    "detailsUrl": "javascript:alert(1)",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -550,7 +550,8 @@
    "vis": "public",
    "detailsUrl": "http://ci.example.com/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -578,7 +579,8 @@
    "vis": "public",
    "detailsUrl": "https://github.com@evil.example/x",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -606,7 +608,8 @@
    "vis": "public",
    "detailsUrl": "https://a b",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -634,7 +637,8 @@
    "vis": "public",
    "detailsUrl": "https://a\n",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -662,7 +666,8 @@
    "vis": "public",
    "detailsUrl": "HTTPS://a.b",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -690,7 +695,8 @@
    "vis": "public",
    "detailsUrl": "https:///x",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -718,6 +724,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
    "externalId": "gh-1",
+   "r": 1,
    "logUrl": "ipfs://bafy123",
    "logSha256": {
     "$b": [
@@ -752,6 +759,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
    "externalId": "gh-1",
+   "r": 1,
    "logUrl": "https://logs.example.com/1.txt",
    "logSha256": {
     "$b": [
@@ -787,6 +795,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
    "externalId": "gh-1",
+   "r": 1,
    "logUrl": "http://logs.example.com/1",
    "logSha256": {
     "$b": [
@@ -822,6 +831,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
    "externalId": "gh-1",
+   "r": 1,
    "logUrl": "s3://bucket/1",
    "logSha256": {
     "$b": [
@@ -1484,7 +1494,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -1511,7 +1522,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -1535,7 +1547,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -1563,7 +1576,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -1591,7 +1605,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -1617,7 +1632,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -1642,7 +1658,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -1668,7 +1685,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -1695,7 +1713,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -1722,7 +1741,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -1749,7 +1769,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -1778,6 +1799,7 @@
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
    "externalId": "gh-1",
+   "r": 1,
    "logUrl": "https://logs.example.com/1"
   }
  },
@@ -1803,7 +1825,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -1830,7 +1853,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -1857,7 +1881,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -1884,7 +1909,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -1911,7 +1937,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -1938,7 +1965,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -1965,7 +1993,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -1992,7 +2021,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -2019,7 +2049,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -2047,7 +2078,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -2075,7 +2107,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -2100,7 +2133,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -2128,7 +2162,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -2155,7 +2190,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -2179,7 +2215,8 @@
    "startedAt": 1760000000000,
    "completedAt": 1760000060000,
    "outcome": 1,
-   "vis": "private"
+   "vis": "private",
+   "r": 1
   }
  },
  {
@@ -2205,7 +2242,8 @@
    "completedAt": 1760000060000,
    "outcome": 1,
    "vis": "private",
-   "summary": "ok"
+   "summary": "ok",
+   "r": 1
   }
  },
  {
@@ -2231,7 +2269,8 @@
    "completedAt": 1760000060000,
    "outcome": 1,
    "vis": "private",
-   "detailsUrl": "https://ci.example.com/1"
+   "detailsUrl": "https://ci.example.com/1",
+   "r": 1
   }
  },
  {
@@ -2257,7 +2296,8 @@
    "completedAt": 1760000060000,
    "outcome": 1,
    "vis": "private",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -2283,6 +2323,7 @@
    "completedAt": 1760000060000,
    "outcome": 1,
    "vis": "private",
+   "r": 1,
    "artifacts": "[]"
   }
  },
@@ -2309,6 +2350,7 @@
    "completedAt": 1760000060000,
    "outcome": 1,
    "vis": "private",
+   "r": 1,
    "logUrl": "https://logs.example.com/1",
    "logSha256": {
     "$b": [
@@ -2342,7 +2384,8 @@
    "outcome": 1,
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -2370,7 +2413,8 @@
    "vis": "internal",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -2441,62 +2485,6 @@
   }
  },
  {
-  "item": "O-08",
-  "name": "private beat",
-  "type": "starBeat",
-  "expect": "refused",
-  "why": "enum",
-  "doc": {
-   "repoId": {
-    "$id": 1
-   },
-   "vis": "private",
-   "repoOwner": {
-    "$id": 8
-   }
-  }
- },
- {
-  "item": "O-08",
-  "name": "beat without repoOwner",
-  "type": "starBeat",
-  "expect": "refused",
-  "why": "required",
-  "doc": {
-   "repoId": {
-    "$id": 1
-   },
-   "vis": "public"
-  }
- },
- {
-  "item": "O-08",
-  "name": "beat without vis",
-  "type": "starBeat",
-  "expect": "refused",
-  "why": "required",
-  "doc": {
-   "repoId": {
-    "$id": 1
-   },
-   "repoOwner": {
-    "$id": 8
-   }
-  }
- },
- {
-  "item": "O-08",
-  "name": "the old {repoId} beat",
-  "type": "starBeat",
-  "expect": "refused",
-  "why": "required",
-  "doc": {
-   "repoId": {
-    "$id": 1
-   }
-  }
- },
- {
   "item": "COMM-9",
   "name": "star with an extra field",
   "type": "star",
@@ -2519,6 +2507,7 @@
     "$id": 1
    },
    "title": "v1",
+   "r": 1,
    "description": "d",
    "dueOn": 1760000000
   }
@@ -2534,6 +2523,7 @@
     "$id": 1
    },
    "title": "v1",
+   "r": 1,
    "description": "d",
    "enc": {
     "$b": [
@@ -2595,6 +2585,7 @@
    "targetNumber": 7,
    "kind": 4,
    "value": "bug",
+   "r": 1,
    "enc": {
     "$b": [
      5,
@@ -2618,7 +2609,8 @@
     "$id": 2
    },
    "targetNumber": 7,
-   "kind": 4
+   "kind": 4,
+   "r": 1
   }
  },
  {
@@ -2636,7 +2628,8 @@
    },
    "targetNumber": 7,
    "kind": 6,
-   "value": "bug"
+   "value": "bug",
+   "r": 1
   }
  },
  {
@@ -2653,7 +2646,8 @@
     "$id": 2
    },
    "targetNumber": 7,
-   "kind": 11
+   "kind": 11,
+   "r": 1
   }
  },
  {
@@ -2670,7 +2664,8 @@
     "$id": 2
    },
    "targetNumber": 7,
-   "kind": 16
+   "kind": 16,
+   "r": 1
   }
  },
  {
@@ -2731,7 +2726,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -2759,7 +2755,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -2787,23 +2784,8 @@
    "vis": "public",
    "detailsUrl": "https://ci.example.com/run/1",
    "summary": "ok",
-   "externalId": "gh-1"
-  }
- },
- {
-  "item": "O-08",
-  "name": "a beat on the signer's own repo (distinctFrom)",
-  "type": "starBeat",
-  "expect": "refused",
-  "why": "10419",
-  "doc": {
-   "repoId": {
-    "$id": 1
-   },
-   "vis": "public",
-   "repoOwner": {
-    "$id": 7
-   }
+   "externalId": "gh-1",
+   "r": 1
   }
  },
  {
@@ -2850,6 +2832,960 @@
     ]
    },
    "vis": "public"
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "a maintainer hides a comment",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 24,
+   "r": 1,
+   "refId": {
+    "$id": 5
+   },
+   "asMaintainer": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "a maintainer hides a comment as spam",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 24,
+   "value": "spam",
+   "r": 1,
+   "refId": {
+    "$id": 5
+   },
+   "asMaintainer": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "a maintainer hides a whole thread",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 24,
+   "r": 1,
+   "asMaintainer": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "a maintainer unhides a comment",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 25,
+   "r": 1,
+   "refId": {
+    "$id": 5
+   },
+   "asMaintainer": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "another maintainer (signer 9) hides as itself",
+  "type": "event",
+  "expect": "ok",
+  "owner": 9,
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 24,
+   "r": 1,
+   "refId": {
+    "$id": 5
+   },
+   "asMaintainer": {
+    "$id": 9
+   }
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "a sealed hide reason",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 24,
+   "r": 1,
+   "refId": {
+    "$id": 5
+   },
+   "asMaintainer": {
+    "$id": 7
+   },
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "a hide without asMaintainer",
+  "type": "event",
+  "expect": "refused",
+  "why": "hideByMaint",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 24,
+   "r": 1,
+   "refId": {
+    "$id": 5
+   }
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "an unhide without asMaintainer",
+  "type": "event",
+  "expect": "refused",
+  "why": "hideByMaint",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 25,
+   "r": 1,
+   "refId": {
+    "$id": 5
+   }
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "a hide naming another maintainer",
+  "type": "event",
+  "expect": "refused",
+  "why": "hideByMaint",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 24,
+   "r": 1,
+   "refId": {
+    "$id": 5
+   },
+   "asMaintainer": {
+    "$id": 9
+   }
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "a hide by signer 9 naming the signer 7",
+  "type": "event",
+  "expect": "refused",
+  "why": "hideByMaint",
+  "owner": 9,
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 24,
+   "r": 1,
+   "refId": {
+    "$id": 5
+   },
+   "asMaintainer": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "a label event without asMaintainer",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 4,
+   "value": "bug",
+   "r": 1
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "a label event with asMaintainer (readers ignore it)",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 4,
+   "value": "bug",
+   "r": 1,
+   "asMaintainer": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "asMaintainer of 31 bytes",
+  "type": "event",
+  "expect": "refused",
+  "why": "minItems",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 24,
+   "r": 1,
+   "refId": {
+    "$id": 5
+   },
+   "asMaintainer": {
+    "$b": [
+     7,
+     31
+    ]
+   }
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "event without r",
+  "type": "event",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 4,
+   "value": "bug"
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "event claiming r 0",
+  "type": "event",
+  "expect": "refused",
+  "why": "minimum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 4,
+   "value": "bug",
+   "r": 0
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "milestone without r",
+  "type": "milestone",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "title": "v1"
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "milestone claiming r 0",
+  "type": "milestone",
+  "expect": "refused",
+  "why": "minimum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "title": "v1",
+   "r": 0
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "checkRun without r",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "checkRun claiming r 0",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "minimum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 0
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "checkRun claiming triage (r 2)",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "maximum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "milestone by triage (r 2)",
+  "type": "milestone",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "title": "v1",
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "milestone claiming reader (r 3)",
+  "type": "milestone",
+  "expect": "refused",
+  "why": "maximum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "title": "v1",
+   "r": 3
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage label+ event",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 4,
+   "value": "bug",
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage label- event",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 5,
+   "value": "bug",
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage assign event",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 6,
+   "value": "bug",
+   "r": 2,
+   "refId": {
+    "$id": 9
+   }
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage unassign event",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 7,
+   "value": "bug",
+   "r": 2,
+   "refId": {
+    "$id": 9
+   }
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage thread resolve event",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 11,
+   "r": 2,
+   "refId": {
+    "$id": 5
+   }
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage thread unresolve event",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 12,
+   "r": 2,
+   "refId": {
+    "$id": 5
+   }
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage review request event",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 13,
+   "r": 2,
+   "refId": {
+    "$id": 9
+   }
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage review request remove event",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 14,
+   "r": 2,
+   "refId": {
+    "$id": 9
+   }
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage milestone set event",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 17,
+   "value": "v1",
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage milestone clear event",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 18,
+   "value": "v1",
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "writer retarget event (r 1)",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 8,
+   "value": "refs/heads/dev",
+   "r": 1
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage retarget event",
+  "type": "event",
+  "expect": "refused",
+  "why": "t_triageKinds",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 8,
+   "value": "refs/heads/dev",
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "writer review dismiss event (r 1)",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 15,
+   "value": "stale",
+   "r": 1,
+   "refId": {
+    "$id": 5
+   }
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage review dismiss event",
+  "type": "event",
+  "expect": "refused",
+  "why": "t_triageKinds",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 15,
+   "value": "stale",
+   "r": 2,
+   "refId": {
+    "$id": 5
+   }
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "writer head update event (r 1)",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 16,
+   "r": 1,
+   "oid": {
+    "$b": [
+     2,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage head update event",
+  "type": "event",
+  "expect": "refused",
+  "why": "t_triageKinds",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 16,
+   "r": 2,
+   "oid": {
+    "$b": [
+     2,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "writer pin event (r 1)",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 19,
+   "r": 1
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage pin event",
+  "type": "event",
+  "expect": "refused",
+  "why": "t_triageKinds",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 19,
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "writer unpin event (r 1)",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 20,
+   "r": 1
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage unpin event",
+  "type": "event",
+  "expect": "refused",
+  "why": "t_triageKinds",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 20,
+   "r": 2
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "writer policy bypass event (r 1)",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 23,
+   "value": "1 approval",
+   "r": 1,
+   "oid": {
+    "$b": [
+     2,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage policy bypass event",
+  "type": "event",
+  "expect": "refused",
+  "why": "t_triageKinds",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 23,
+   "value": "1 approval",
+   "r": 2,
+   "oid": {
+    "$b": [
+     2,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "event claiming reader (r 3)",
+  "type": "event",
+  "expect": "refused",
+  "why": "maximum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 4,
+   "value": "bug",
+   "r": 3
+  }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage event of an unassigned convention kind (30)",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 30,
+   "r": 2
   }
  }
 ]

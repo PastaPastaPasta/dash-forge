@@ -7,7 +7,7 @@ import { collectPageErrors, repoUrl, shot } from './helpers'
  * read from the reporter's storage and verified against the SHA-256 on chain.
  *
  *   E2E_CI_OWNER=<id> E2E_CI_REPO=<name> E2E_CI_SHA=<commit> E2E_CI_RUNNER_CHECK=<name> \
- *   [E2E_CI_LOG_CHECK=<name>] [E2E_CI_REVOKED_CHECK=<name>] E2E_DEVNET=bonsia \
+ *   [E2E_CI_LOG_CHECK=<name>] [E2E_CI_REVOKED_CHECK=<name>] E2E_DEVNET=sakura \
  *   pnpm exec playwright test ci-checks.spec.ts
  *
  * Read-only. The runs are made by the CLI first (e2e/cli/scenarios/35-ci-runner-report.sh, or
@@ -36,7 +36,7 @@ test('ci. the commit page lists its check runs, trusts runners and verifies a lo
   // A current runner's run counts: no "not counted" note on it.
   await expect(run(RUNNER_CHECK)).not.toContainText('not counted')
   if (REVOKED_CHECK !== '') {
-    await expect(run(REVOKED_CHECK)).toContainText('reporter is no longer a member or runner: not counted')
+    await expect(run(REVOKED_CHECK)).toContainText('reporter is not a maintainer, writer or runner: not counted')
     await expect(run(REVOKED_CHECK)).toHaveAttribute('data-outcome', /passed|failing|pending/)
   }
   if (LOG_CHECK !== '') {

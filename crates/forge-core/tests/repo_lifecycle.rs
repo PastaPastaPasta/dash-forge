@@ -1,6 +1,6 @@
-//! Live forge-v2 repo lifecycle on devnet bonsia (gated `#[ignore]`).
+//! Live forge-v2 repo lifecycle on devnet sakura (gated `#[ignore]`).
 //!
-//! With the bonsia OWNER / COLLAB / CONTRIB fixtures:
+//! With the sakura OWNER / COLLAB / CONTRIB fixtures:
 //!
 //! 1. create a repo (the `repo` + owner `maintainer` + `config` session) and check the cost
 //!    is under 0.01 DASH; re-running the create costs nothing and writes nothing;
@@ -13,7 +13,7 @@
 //! ```text
 //! cargo test -p forge-core --test repo_lifecycle -- --ignored --nocapture
 //! ```
-//! Identities: `$E2E_IDENTITY_DIR` (default `~/.config/dash-forge/test-identities/devnet-bonsia`).
+//! Identities: `$E2E_IDENTITY_DIR` (default `~/.config/dash-forge/test-identities/devnet-sakura`).
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -35,7 +35,7 @@ fn fixture(role: &str) -> BridgeIdentity {
     let dir = std::env::var_os("E2E_IDENTITY_DIR").map_or_else(
         || {
             PathBuf::from(std::env::var_os("HOME").expect("HOME"))
-                .join(".config/dash-forge/test-identities/devnet-bonsia")
+                .join(".config/dash-forge/test-identities/devnet-sakura")
         },
         PathBuf::from,
     );
@@ -66,18 +66,18 @@ async fn ref_tip(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "live devnet bonsia; spends ~0.01 DASH; run manually"]
+#[ignore = "live devnet sakura; spends ~0.01 DASH; run manually"]
 #[allow(clippy::too_many_lines)]
-async fn forge_v2_repo_lifecycle_on_bonsia() {
+async fn forge_v2_repo_lifecycle_on_sakura() {
     let target = NetworkSettings {
-        devnet_name: Some("bonsia".into()),
+        devnet_name: Some("sakura".into()),
         ..Default::default()
     }
     .resolve()
     .unwrap();
     let client = PlatformClient::connect(target)
         .await
-        .expect("connect bonsia");
+        .expect("connect sakura");
     let owner_b = fixture("OWNER");
     let collab_b = fixture("COLLAB");
     let contrib_b = fixture("CONTRIB");
@@ -207,10 +207,13 @@ async fn forge_v2_repo_lifecycle_on_bonsia() {
         .write_ref_update(&repo, "refs/heads/collab", &[0x22; 20], None, false)
         .await
         .expect("writer can push");
-    assert!(members
-        .revoke(&repo, &collab.id(), Role::Writer)
-        .await
-        .unwrap());
+    assert_eq!(
+        members
+            .revoke(&repo, &collab.id(), Role::Writer)
+            .await
+            .unwrap(),
+        Some(Role::Writer)
+    );
     let err = collab_svc
         .write_ref_update(&repo, "refs/heads/collab", &[0x33; 20], None, false)
         .await
@@ -226,7 +229,7 @@ async fn forge_v2_repo_lifecycle_on_bonsia() {
     let core = client
         .fetch_contract(
             &forge_core::network::NetworkSettings {
-                devnet_name: Some("bonsia".into()),
+                devnet_name: Some("sakura".into()),
                 ..Default::default()
             }
             .resolve()
@@ -279,10 +282,13 @@ async fn forge_v2_repo_lifecycle_on_bonsia() {
         .write_ref_update(&repo, "refs/heads/feature", &[0x66; 20], None, false)
         .await
         .expect("a writer can update an unprotected ref");
-    assert!(members
-        .revoke(&repo, &collab.id(), Role::Writer)
-        .await
-        .unwrap());
+    assert_eq!(
+        members
+            .revoke(&repo, &collab.id(), Role::Writer)
+            .await
+            .unwrap(),
+        Some(Role::Writer)
+    );
 
     // --- 5. never a member ---
     let err = RepoService::new(&client, &contrib, &contrib_b)

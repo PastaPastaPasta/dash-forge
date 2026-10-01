@@ -186,6 +186,7 @@ fn draft_anchor(spec: &InlineSpec, head: &[u8], review_id: Option<&str>) -> Comm
         side: spec.side.map(super::inline::SideArg::code),
         start_line: spec.start_line,
         review_id: review_id.map(str::to_string),
+        diff_hunk: None,
     }
 }
 
@@ -601,9 +602,12 @@ async fn submit(
         ));
     }
     let _ = std::fs::remove_file(path);
-    let member = collab.is_member(&s.repo).await.unwrap_or(false);
+    // Approvals count only from approvers (maintainers and role-1 writers): a triage member's
+    // or reader's verdict is recorded, not counted (RC2 member roles).
+    let role = collab.signer_role(&s.repo).await.unwrap_or(None);
+    let counts = role.is_some_and(forge_core::rules::v2::Role::is_approver);
     let mut body = body;
-    body["counts"] = json!(member);
+    body["counts"] = json!(counts);
     ctx.emit(body, || {
         println!(
             "✓ {} PR #{} at {}{} · {n} inline comment(s) · {}",
@@ -620,11 +624,14 @@ async fn submit(
                 c.landed_id.as_deref().map_or("", short)
             );
         }
-        if !member && v != Verdict::Comment {
-            println!(
-                "  note: you are not a member of {}, so this review does not count toward approvals",
-                s.repo.display()
-            );
+        if !counts && v != Verdict::Comment {
+            match role {
+                Some(r) => println!("  note: your role here is {r}: recorded, not counted"),
+                None => println!(
+                    "  note: you are not a member of {}, so this review does not count toward approvals",
+                    s.repo.display()
+                ),
+            }
         }
     });
     Ok(())

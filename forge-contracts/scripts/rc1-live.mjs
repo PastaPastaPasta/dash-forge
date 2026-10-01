@@ -4,9 +4,9 @@
 // prints (and with --report writes) one line per case.
 //
 //   (cd forge-contracts/sdk-v2 && npm ci)
-//   node forge-contracts/scripts/rc1-live.mjs --devnet-name bonsia --identities <dir> [--report <file.json>] [--only <group,...>]
+//   node forge-contracts/scripts/rc1-live.mjs --devnet-name sakura --identities <dir> [--report <file.json>] [--only <group,...>]
 //
-// <dir> holds owner/member/stranger/runner.identity.json (`QA_NETWORK=bonsia qa mint rc1 <name>`).
+// <dir> holds owner/member/stranger/runner.identity.json (`QA_NETWORK=sakura qa mint rc1 <name>`).
 // Roles: `owner` owns the repos; `member` is a writer (after consenting), and for a moment a writer
 // of the private repo; `stranger` is never a member; `runner` is a CI runner of the owner's repo.
 //
@@ -17,15 +17,33 @@
 //   state     dense numbering (issues and PRs), transitions c1..c5 (mod 16; kinds 1, 2, 11..17),
 //             the lock bit c6 and lockGate on comments and reviews (R-15), a stranger's transition
 //             (40120), an author's close, member verdicts (R-16), the grouped count / sum keying
-//             (§3.1 1-2), set-once check-run fields (D-5, 40128)
-//   threads   reply roots (R-14): a reply to a reply and a reply across threads are refused
+//             (§3.1 1-2), set-once check-run fields (D-5 / RC2 M1, 40128), with RC2 S2/S3 the
+//             proved review feeds (toAuthor, author), and with the QW-069 rider closes that say
+//             why (not planned, a duplicate of #2)
+//   threads   reply roots (R-14): a reply to a reply and a reply across threads are refused; with
+//             the QW2-010 rider a mirrored review comment's hunk, which no replace changes (40128)
 //   packs     platformChunks (R-09) incl. a missing and a stray seq, i64 sizeBytes (O-05), and a
 //             raw push -> clone round trip of a real git pack under its identifier packHash
 //   releases  oneLive (O-04): one live release per tag, unpublish, a sealed publish, no delete
 //   topics    atMost20 (R-20) and public-only topics
-//   ci        runner (O-02) and check sources (R-08), notFuture (R-17), private CI (R-18), outcome
-//   social    starBeat where + distinctFrom (O-08), public-only webhooks (R-19), repoKey wraps
+//   ci        runner (O-02) and check sources (R-08), notFuture (R-17), private CI (R-18), outcome,
+//             and with RC2 S1 a completed run's frozen evidence (40128)
+//   social    starBeat where + distinctFrom (O-08), or with RC2 C1 the fused star (unstar and
+//             star again inside the window), public-only webhooks (R-19), repoKey wraps
 //             to members only (R-13), events and author events across contracts (O-01)
+//   moderation with RC2 MOD (design/v5/MODERATION.md) a maintainer's hide / unhide (event kinds
+//             24/25 naming its own maintainer document, asMaintainer), and the refusals: a
+//             writer's hide (40120), a maintainer of another repo, a removed maintainer, and a
+//             hide naming another maintainer (hideByMaint); the fees of a hide and of a plain
+//             event (the fee gate: <= +10 % per hide)
+//   roles     with RC2 member roles (design/v5/RECUT-OR-NEVER.md) the member as triage (writer role
+//             2) of a second public repo: close, reopen, lock, label, milestone and the triage
+//             event kinds land; merge, draft, the writer-only event kinds (t_triageKinds, e_mergeOid)
+//             and a push or check run (40127) are refused; a claimed r above the role (40127); and
+//             the member as reader (role 3) of a second private repo: a key wrap to it lands, every
+//             role-gated write is refused (40127); the fees of a triage and a reader enrolment, a
+//             refUpdate and a merge with r (r is one stored byte, about 27.4 k credits: the +1 %
+//             gate is computed; these confirm it against forge-v2.md §7's per-write table)
 //
 // Every refusal is matched on the node's numeric code (and, for a rule, its name in the
 // message), never on the decoded cause (IMPL-RULES: codes shifted between SDK builds).
@@ -36,10 +54,11 @@ import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEvoSdk } from './deploy-v2.mjs';
+import { CONTRACTS, FUSED_STAR, MEMBER_ROLES, withRole } from './lib/seed-io.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, t, i, a) => (t.startsWith('--') ? [...acc, [t.slice(2), a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true]] : acc), []));
-const devnetName = args['devnet-name'] || 'bonsia';
+const devnetName = args['devnet-name'] || 'sakura';
 const only = args.only ? new Set(String(args.only).split(',')) : null;
 const log = (m) => console.error(`${new Date().toISOString().slice(11, 19)} ${m}`);
 
@@ -48,6 +67,18 @@ const CORE = dep.v2?.forgeCore?.contractId;
 const COLLAB = dep.v2?.forgeCollab?.contractId;
 const COMM = dep.v2?.forgeCommunity?.contractId;
 if (!CORE || !COLLAB || !COMM) throw new Error(`devnet-${devnetName}.json records no RC1 forge-v2 contracts (core, collab and community)`);
+// The RC2 items (schema/build.py flags) the registered schemas carry: the committed JSONs, which
+// are what deploy-v2.mjs registered (FUSED_STAR too)
+const EVIDENCE_FROZEN = CONTRACTS.community.documentSchemas.checkRun.immutable.some((e) => typeof e === 'object' && e.property === 'logUrl');
+const REVIEW_INDEXES = new Set(CONTRACTS.collab.documentSchemas.review.indices.map((i) => i.name));
+// The RC2 riders (design/v5/RIDERS.md): QW-069 close reasons, QW2-010 review-comment hunks
+const CLOSE_REASON = 'reason' in CONTRACTS.collab.documentSchemas.transition.properties;
+const REVIEW_HUNK = 'diffHunk' in CONTRACTS.collab.documentSchemas.comment.properties;
+// RC2 moderation (design/v5/MODERATION.md): a hide proves its writer a maintainer
+const HIDE_PROOF = 'asMaintainer' in CONTRACTS.community.documentSchemas.event.properties;
+// RC2 member roles (design/v5/RECUT-OR-NEVER.md): writer.role, and a claimed `r` on every
+// role-gated type. A case that names no `r` (or no writer `role`) writes 1, what a maintainer, an
+// author, a runner or a role-1 writer sends.
 
 const evo = await loadEvoSdk();
 const { EvoSDK, Document, IdentityPublicKey, IdentitySigner, PrivateKey, Identifier } = evo;
@@ -139,6 +170,7 @@ const TOTALS = new Set(['issue', 'patch', 'transition', 'comment', 'review', 'pa
 
 async function create(who, contract, type, data) {
   if (TOTALS.has(type)) await sleep(A_BLOCK);
+  data = withRole(type, data);
   const base = new Document({ properties: {}, documentTypeName: type, dataContractId: contract, ownerId: who.id });
   const document = Document.fromObject({ ...base.toObject(), ...data }, version);
   try {
@@ -293,7 +325,7 @@ if (want('refs')) {
 
 // ---------------- issues, PRs, transitions, locks (state) ----------------
 let I1; let I2; let PR3;
-if (want('state') || want('threads')) {
+if (want('state') || want('threads') || want('moderation')) {
   await no('state', 'issue at the wrong number (dense)', S, COLLAB, 'issue', { repoId: R, number: 2, tk: 0, title: 'skip', vis: 'public' }, [10422], 'dense');
   I1 = await ok('state', 'issue #1 (stranger)', S, COLLAB, 'issue', { repoId: R, number: 1, tk: 0, title: 'first', body: 'b', vis: 'public' }, 'issue');
   await no('R-03', 'issue stamped private on a public repo', S, COLLAB, 'issue', { repoId: R, number: 2, tk: 0, vis: 'private', enc: bytes(61), epoch: 0 }, [40127]);
@@ -320,6 +352,13 @@ if (want('state') && I1 && I2 && PR3) {
   await no('R-15', 'unlock an unlocked issue (c6)', M, COLLAB, 'transition', T(I1, 1, 0, 4, -16), [10422], 'c6_lockedAfter');
   await sleep(A_BLOCK);
   await ok('R-15', "stranger's comment after the unlock", S, COLLAB, 'comment', { repoId: R, targetId: id(docId(I1)), body: 'thanks', vis: 'public' }, 'comment');
+  if (CLOSE_REASON) {
+    // QW-069: a close says why (no rule reads it; its bounds are the offline vectors'), and a reopen clears it
+    await ok('QW-069', 'close as not planned', M, COLLAB, 'transition', T(I1, 1, 0, 1, 1, { reason: 2 }), 'transition: close with a reason');
+    await ok('QW-069', 'reopen', M, COLLAB, 'transition', T(I1, 1, 0, 2, -1));
+    await ok('QW-069', 'close as a duplicate of #2', M, COLLAB, 'transition', T(I1, 1, 0, 1, 1, { reason: 3, dupNumber: 2 }), 'transition: close as a duplicate');
+    await ok('QW-069', 'reopen after the duplicate close', M, COLLAB, 'transition', T(I1, 1, 0, 2, -1));
+  }
   // PR: draft, ready, lock, review gate, merge, and the terminal merged state
   await ok('state', 'draft', M, COLLAB, 'transition', T(PR3, 3, 1, 14, 8), 'transition: member draft (first on the PR)');
   await no('state', 'merge a draft (c3)', M, COLLAB, 'transition', T(PR3, 3, 1, 13, 2, { oid: bytes(20, 3) }), [10422], 'c3_mergedAfter');
@@ -332,6 +371,25 @@ if (want('state') && I1 && I2 && PR3) {
   await sleep(A_BLOCK);
   await ok('R-16', "a stranger's approve (verdict 4)", S, COLLAB, 'review', { repoId: R, patchId: id(docId(PR3)), verdict: 4, commitOid: bytes(20, 2), vis: 'public' });
   await no('R-03', 'review stamped private on a public PR', S, COLLAB, 'review', { repoId: R, patchId: id(docId(PR3)), verdict: 3, commitOid: bytes(20, 2), vis: 'private' }, [40127]);
+  // RC2 S2 / S3: the proved review feeds. PR #3 is the member's; the owner and the stranger
+  // reviewed it above. A derived property is queried like any index property (v5 book
+  // contract-keywords/derived-index-properties.md:96).
+  // The identities are reused across runs, so each feed is read from this run's start on
+  const runStart = Number.parseInt(tag, 36);
+  const feed = async (item, label, index, where, want) => {
+    try {
+      const got = await eventually(async () => {
+        const q = await sdk.documents.queryWithProof({ dataContractId: COLLAB, documentTypeName: 'review', where: [...where, ['$createdAt', '>=', runStart]], orderBy: [[where[0][0], 'asc'], ['$createdAt', 'asc']], limit: 100 });
+        return [...(q.data ?? q).values()].filter(Boolean).map((d) => d.toObject()).filter(want).length;
+      }, (n) => n > 0);
+      record({ item, label: `${label} (${index})`, expect: 'at least one', got: String(got), pass: got > 0 });
+    } catch (e) {
+      record({ item, label: `${label} (${index})`, expect: 'at least one', got: `error ${codeOf(e)}`, note: String(e?.message ?? e).slice(0, 300), pass: false });
+    }
+  };
+  const onPr3 = (r) => Buffer.from(r.patchId).equals(id(docId(PR3)));
+  if (REVIEW_INDEXES.has('toAuthor')) await feed('S2', "reviews on the member's PRs", 'toAuthor', [['patchId.$ownerId', '==', M.id]], onPr3);
+  if (REVIEW_INDEXES.has('author')) await feed('S3', "the stranger's reviews", 'author', [['$ownerId', '==', S.id]], onPr3);
   await ok('state', 'merge', M, COLLAB, 'transition', T(PR3, 3, 1, 13, 2, { oid: bytes(20, 3) }), 'transition: member merge');
   await no('state', 'reopen a merged PR (c2)', M, COLLAB, 'transition', T(PR3, 3, 1, 12, -1), [10422], 'c2_openAfter');
   await no('state', 'draft a merged PR (c4)', M, COLLAB, 'transition', T(PR3, 3, 1, 14, 8), [10422], 'c4_draftAfter');
@@ -349,7 +407,9 @@ if (want('state') && I1 && I2 && PR3) {
   try {
     // I1: close(author), reopen, lock, close, reopen, unlock; PR3: draft, ready, lock, unlock, merge;
     // PR4: draft, close-while-draft, reopen-while-draft, ready, close. Keys: 0x80 | kind, hex.
-    const want = { '81': 2, '82': 2, '83': 1, '84': 1, '8b': 1, '8d': 1, '8e': 2, '8f': 2, '90': 1, '91': 1, '92': 1, '93': 1 };
+    // With the QW-069 rider, I1 also gets two closes with a reason and two reopens.
+    const closes = CLOSE_REASON ? 4 : 2;
+    const want = { '81': closes, '82': closes, '83': 1, '84': 1, '8b': 1, '8d': 1, '8e': 2, '8f': 2, '90': 1, '91': 1, '92': 1, '93': 1 };
     const same = (a, b) => JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort());
     const c = await eventually(async () => {
       const counts = await sdk.documents.countWithProof({ dataContractId: COLLAB, documentTypeName: 'transition', where: [['repoId', '==', docId(repo)], ['kind', 'in', [1, 2, 3, 4, 11, 12, 13, 14, 15, 16, 17, 18, 19]]], groupBy: ['kind'] });
@@ -375,6 +435,15 @@ if (want('threads') && I1 && I2) {
   if (reply) await no('R-14', 'reply to a reply', S, COLLAB, 'comment', { repoId: R, targetId: id(docId(I2)), body: 're re', vis: 'public', replyTo: id(docId(reply)) }, [40127]);
   if (root) await no('R-14', "reply naming another issue's comment", S, COLLAB, 'comment', { repoId: R, targetId: id(docId(I1)), body: 'x', vis: 'public', replyTo: id(docId(root)) }, [40127]);
   await no('R-14', 'reply to a comment that does not exist', S, COLLAB, 'comment', { repoId: R, targetId: id(docId(I2)), body: 'x', vis: 'public', replyTo: bytes(32, 9) }, [40120]);
+  if (REVIEW_HUNK) {
+    // QW2-010: a mirrored review comment keeps its source hunk, which no replace may change
+    const imported = { author: 'octocat', createdAt: 1700000000000, url: 'https://github.com/o/r/pull/1#discussion_r1' };
+    const mirrored = await ok('QW2-010', 'imported review comment with a hunk', M, COLLAB, 'comment', {
+      repoId: R, targetId: id(docId(I2)), body: 'nit', vis: 'public', path: 'src/a.rs', line: 3, side: 1,
+      diffHunk: '@@ -1,2 +1,3 @@\n a\n+b\n c', imported, asMember: id(M.id),
+    }, 'comment: with a diff hunk');
+    if (mirrored) await refusedOp('QW2-010', 'a replace that changes the hunk (immutable)', () => sdk.documents.replace({ document: revised(mirrored, { diffHunk: '@@ -1 +1 @@\n+forged' }), ...ownOps(M) }), [40128]);
+  }
 }
 
 // ---------------- packs: completeness, bytes, a raw push -> clone ----------------
@@ -487,7 +556,8 @@ if (want('ci')) {
   await no('R-17', 'completedAt far in the future (notFuture)', RN, COMM, 'checkRun', run({ startedAt: now, completedAt: 9_000_000_000_000_000 }), [10422], 'notFuture');
   await no('R-18', 'check run stamped private on a public repo', RN, COMM, 'checkRun', run({ vis: 'private' }), [40127]);
   const q0 = await ok('O-07', 'queued run (outcome 0)', RN, COMM, 'checkRun', { repoId: R, headOid: bytes(20, 2), name: 'lint', status: 'queued', outcome: 0, vis: 'public' });
-  // D-5: startedAt, completedAt, conclusion and externalId are set once (immutableAllowSetting)
+  // D-5 / RC2 M1: startedAt, completedAt, conclusion and externalId are set once (conditional
+  // `immutable` entries, `{"present": "$old.<p>"}`)
   const d5 = await ok('D-5', 'queued run to advance', RN, COMM, 'checkRun', { repoId: R, headOid: bytes(20, 9), name: 'd5', status: 'queued', outcome: 0, vis: 'public' });
   if (d5) {
     let started = null;
@@ -502,6 +572,21 @@ if (want('ci')) {
     if (started) {
       await sleep(A_BLOCK);
       await refusedOp('D-5', 'a replace that moves startedAt (set once)', () => sdk.documents.replace({ document: revised(started, { startedAt: now - 500 }), ...ownOps(RN) }), [40128]);
+      // RC2 S1: the replace that completes the run writes its evidence; after it, the log stands
+      const done = revised(started, { status: 'completed', completedAt: now, conclusion: 'success', outcome: 1, logUrl: 'https://logs.example.com/rc2.txt', logSha256: bytes(32, 6) });
+      let completed = null;
+      await sleep(A_BLOCK);
+      try {
+        await sdk.documents.replace({ document: done, ...ownOps(RN) });
+        completed = done;
+        record({ item: 'S1', label: 'in progress -> completed with its log', expect: 'ok', got: 'ok', pass: true });
+      } catch (e) {
+        record({ item: 'S1', label: 'in progress -> completed with its log', expect: 'ok', got: `refused ${codeOf(e)}`, note: String(e?.message ?? e).slice(0, 300), pass: false });
+      }
+      if (completed && EVIDENCE_FROZEN) {
+        await sleep(A_BLOCK);
+        await refusedOp('S1', "a completed run's logUrl replaced", () => sdk.documents.replace({ document: revised(completed, { logUrl: 'https://logs.example.com/forged.txt' }), ...ownOps(RN) }), [40128]);
+      }
     }
   }
   await ok('R-08', 'policy pinning the runner and a maintainer', O, COMM, 'policy', { repoId: R, requiredApprovals: 1, requiredChecks: ['build', 'lint'], requiredCheckSources: [id(RN.id), id(O.id)], mergeMethods: 15 }, 'policy');
@@ -520,11 +605,27 @@ if (want('ci')) {
 
 // ---------------- social, hooks, keys, events across contracts ----------------
 if (want('social')) {
-  await ok('O-08', "a stranger's beat on the owner's repo", S, COMM, 'starBeat', { repoId: R, vis: 'public', repoOwner: id(O.id) }, 'starBeat');
-  await no('O-08', "the owner's beat on its own repo (distinctFrom)", O, COMM, 'starBeat', { repoId: R, vis: 'public', repoOwner: id(O.id) }, [10419]);
-  await no('O-08', 'a beat naming the wrong repo owner', M, COMM, 'starBeat', { repoId: R, vis: 'public', repoOwner: id(S.id) }, [40127]);
-  await no('O-08', 'a beat on a private repo', S, COMM, 'starBeat', { repoId: P, vis: 'public', repoOwner: id(O.id) }, [40127]);
-  await ok('COMM-9', 'star', S, COMM, 'star', { repoId: R }, 'star');
+  if (!FUSED_STAR) {
+    await ok('O-08', "a stranger's beat on the owner's repo", S, COMM, 'starBeat', { repoId: R, vis: 'public', repoOwner: id(O.id) }, 'starBeat');
+    await no('O-08', "the owner's beat on its own repo (distinctFrom)", O, COMM, 'starBeat', { repoId: R, vis: 'public', repoOwner: id(O.id) }, [10419]);
+    await no('O-08', 'a beat naming the wrong repo owner', M, COMM, 'starBeat', { repoId: R, vis: 'public', repoOwner: id(S.id) }, [40127]);
+    await no('O-08', 'a beat on a private repo', S, COMM, 'starBeat', { repoId: P, vis: 'public', repoOwner: id(O.id) }, [40127]);
+  }
+  const star = await ok(FUSED_STAR ? 'C1' : 'COMM-9', FUSED_STAR ? 'star (the trending entry too)' : 'star', S, COMM, 'star', { repoId: R }, 'star');
+  if (FUSED_STAR && star) {
+    // RC2 C1: an unstar leaves the window entry (outlivesDelete), and a star again inside the
+    // window writes over it instead of being refused as a duplicate (v5 book
+    // contract-keywords/index-only.md:220-221)
+    await sleep(A_BLOCK);
+    try {
+      await sdk.documents.delete({ document: star, ...ownOps(S) });
+      record({ item: 'C1', label: 'unstar (a delete with no $createdAt)', expect: 'ok', got: 'ok', pass: true });
+      await sleep(A_BLOCK);
+      await ok('C1', 'star again inside the window', S, COMM, 'star', { repoId: R });
+    } catch (e) {
+      record({ item: 'C1', label: 'unstar (a delete with no $createdAt)', expect: 'ok', got: `refused ${codeOf(e)}`, note: String(e?.message ?? e).slice(0, 300), pass: false });
+    }
+  }
   await ok('COMM-9', 'watch', S, COMM, 'watch', { repoId: R }, 'watch');
   const hook = { repoId: R, hookId: bytes(32), url: 'https://hooks.example.com/rc1', events: ['push'], relayIdentityId: id(M.id), relayKeyId: M.encKeyId, senderKeyId: O.encKeyId, secret: bytes(48), vis: 'public' };
   await ok('R-19', 'webhook on a public repo', O, COMM, 'webhook', hook);
@@ -538,6 +639,107 @@ if (want('social')) {
     await ok('O-01', "author's resolve (authorEvent across contracts)", S, COMM, 'authorEvent', { repoId: R, targetId: id(docId(I1)), targetNumber: 1, kind: 11, refId: bytes(32, 4) });
     await no('O-01', "non-author's authorEvent", M, COMM, 'authorEvent', { repoId: R, targetId: id(docId(I1)), targetNumber: 1, kind: 11, refId: bytes(32, 4) }, [40120]);
     await ok('O-01', 'milestone in community', M, COMM, 'milestone', { repoId: R, title: 'v1' });
+  }
+}
+
+// ---------------- moderation: hide / unhide (RC2 MOD) ----------------
+if (want('moderation') && !I1) record({ item: 'MOD', label: 'moderation group', expect: 'run', got: 'SKIPPED: issue #1 was not written', pass: false });
+if (want('moderation') && I1 && HIDE_PROOF) {
+  // `extra` overrides a field, and undefined leaves it out
+  const hide = (who, extra = {}) => Object.fromEntries(Object.entries({ repoId: R, targetId: id(docId(I1)), targetNumber: 1, kind: 24, refId: bytes(32, 5), asMaintainer: id(who.id), ...extra }).filter(([, v]) => v !== undefined));
+  // The fee gate: a hide (its maintainer lookup, rule and 32 bytes) against the same event
+  // without asMaintainer (kind 19 with a refId, which no reader reads there: what a hide costs
+  // with the flag off)
+  await ok('MOD', 'a member event with a refId (fee baseline)', O, COMM, 'event', { repoId: R, targetId: id(docId(I1)), targetNumber: 1, kind: 19, refId: bytes(32, 5) }, 'event: no asMaintainer (fee baseline)');
+  await ok('MOD', "the owner hides a comment as spam", O, COMM, 'event', hide(O, { value: 'spam' }));
+  await ok('MOD', 'the owner hides a comment', O, COMM, 'event', hide(O), 'event: hide (asMaintainer)');
+  await ok('MOD', 'the owner unhides it', O, COMM, 'event', hide(O, { kind: 25 }));
+  await ok('MOD', 'the owner hides the whole thread', O, COMM, 'event', hide(O, { refId: undefined }));
+  await no('MOD', 'a hide without asMaintainer', O, COMM, 'event', hide(O, { asMaintainer: undefined }), [10422], 'hideByMaint');
+  await no('MOD', "a writer's hide", M, COMM, 'event', hide(M), [40120]);
+  await no('MOD', "a writer's hide naming the owner", M, COMM, 'event', hide(O), [10422], 'hideByMaint');
+  await no('MOD', "a stranger's hide", S, COMM, 'event', hide(S), [40120]);
+  const theirs = await ok('MOD', "the member's own repo", M, CORE, 'repo', { name: `rc1m-${tag}`, visibility: 'public' });
+  if (theirs) {
+    await ok('MOD', 'the member self-enrols as its maintainer', M, CORE, 'maintainer', { repoId: id(docId(theirs)), memberId: id(M.id), vis: 'public' });
+    await sleep(A_BLOCK);
+    await no('MOD', 'a maintainer of another repo hides here', M, COMM, 'event', hide(M), [40120]);
+  }
+  const promoted = await ok('MOD', 'the owner makes the member a maintainer', O, CORE, 'maintainer', { repoId: R, memberId: id(M.id), vis: 'public', consentBy: id(M.id) });
+  if (promoted) {
+    await sleep(A_BLOCK);
+    await ok('MOD', 'the new maintainer hides a comment', M, COMM, 'event', hide(M));
+    await no('MOD', 'a maintainer hide naming another maintainer', M, COMM, 'event', hide(O), [10422], 'hideByMaint');
+    try {
+      await sdk.documents.delete({ document: promoted, ...ownOps(O) });
+      record({ item: 'MOD', label: "the owner removes the member's maintainer document", expect: 'ok', got: 'ok', pass: true });
+      await sleep(A_BLOCK);
+      await no('MOD', 'the removed maintainer hides', M, COMM, 'event', hide(M), [40120]);
+    } catch (e) {
+      record({ item: 'MOD', label: "the owner removes the member's maintainer document", expect: 'ok', got: `refused ${codeOf(e)}`, note: String(e?.message ?? e).slice(0, 300), pass: false });
+    }
+  }
+}
+
+// ---------------- roles: triage and reader (RC2 member roles) ----------------
+if (want('roles') && MEMBER_ROLES) {
+  // The member is triage (role 2) of a second public repo, and reader (role 3) of a second
+  // private repo; the owner opens issue #1 and PR #2 in the public one
+  const r2 = need(await ok('ROLES', 'second public repo', O, CORE, 'repo', { name: `rc1r-${tag}`, visibility: 'public' }), 'the roles repo');
+  const R2 = id(docId(r2));
+  await ok('ROLES', 'owner self-enrols as maintainer', O, CORE, 'maintainer', { repoId: R2, memberId: id(O.id), vis: 'public' });
+  await ok('ROLES', 'member consents', M, CORE, 'consent', { repoId: R2 });
+  need(await ok('ROLES', 'the owner enrols the member as triage (role 2)', O, CORE, 'writer', { repoId: R2, memberId: id(M.id), vis: 'public', consentBy: id(M.id), role: 2 }, 'writer: triage'), "the member's triage document");
+  const ri = need(await ok('ROLES', 'issue #1 (owner)', O, COLLAB, 'issue', { repoId: R2, number: 1, tk: 0, title: 'triage me', vis: 'public' }), 'roles issue #1');
+  const rp = need(await ok('ROLES', 'PR #2 (owner)', O, COLLAB, 'patch', { repoId: R2, number: 2, tk: 1, title: 'pr', vis: 'public', baseRefNameHash: sha256(Buffer.from('refs/heads/main')), baseRefName: 'refs/heads/main', sourceRepoId: R2, sourceRefNameHash: sha256(Buffer.from('refs/heads/f')), sourceRefName: 'refs/heads/f', headOid: bytes(20, 2) }), 'roles PR #2');
+  const T2 = (target, n, targetKind, kind, delta, extra = {}) => ({ repoId: R2, targetId: id(docId(target)), targetNumber: n, targetKind, kind, delta, asAuthor: 0, r: 2, ...extra });
+  const E2 = (target, n, kind, extra = {}) => ({ repoId: R2, targetId: id(docId(target)), targetNumber: n, kind, r: 2, ...extra });
+  // what triage may do
+  await ok('ROLES', 'triage closes an issue (r 2)', M, COLLAB, 'transition', T2(ri, 1, 0, 1, 1), 'transition: triage close');
+  await no('ROLES', 'triage claiming r 1 (role mismatch)', M, COLLAB, 'transition', T2(ri, 1, 0, 2, -1, { r: 1 }), WHERE_ANYOF);
+  await ok('ROLES', 'triage reopens', M, COLLAB, 'transition', T2(ri, 1, 0, 2, -1));
+  await ok('ROLES', 'triage locks', M, COLLAB, 'transition', T2(ri, 1, 0, 3, 16));
+  await ok('ROLES', 'triage unlocks', M, COLLAB, 'transition', T2(ri, 1, 0, 4, -16));
+  await ok('ROLES', 'triage labels', M, COMM, 'event', E2(ri, 1, 4, { value: 'bug' }), 'event: triage label');
+  await ok('ROLES', 'triage assigns', M, COMM, 'event', E2(ri, 1, 6, { value: 'x', refId: id(M.id) }));
+  await ok('ROLES', 'triage requests a review', M, COMM, 'event', E2(rp, 2, 13, { refId: id(O.id) }));
+  await ok('ROLES', 'triage sets a milestone', M, COMM, 'event', E2(ri, 1, 17, { value: 'v1' }));
+  await ok('ROLES', 'triage creates a label', M, CORE, 'label', { repoId: R2, name: 'triaged', color: '#00ff00', r: 2 });
+  await ok('ROLES', 'triage creates a milestone', M, COMM, 'milestone', { repoId: R2, title: 'v1', r: 2 });
+  await ok('ROLES', 'triage closes the PR', M, COLLAB, 'transition', T2(rp, 2, 1, 11, 1));
+  await ok('ROLES', 'triage reopens the PR', M, COLLAB, 'transition', T2(rp, 2, 1, 12, -1));
+  // what triage may not do
+  await no('ROLES', 'triage merges (e_mergeOid)', M, COLLAB, 'transition', T2(rp, 2, 1, 13, 2, { oid: bytes(20, 3) }), [10422], 'e_mergeOid');
+  await no('ROLES', 'triage merges claiming r 1 (role mismatch)', M, COLLAB, 'transition', T2(rp, 2, 1, 13, 2, { oid: bytes(20, 3), r: 1 }), WHERE_ANYOF);
+  await no('ROLES', 'triage drafts (e_mergeOid)', M, COLLAB, 'transition', T2(rp, 2, 1, 14, 8), [10422], 'e_mergeOid');
+  await no('ROLES', 'triage head update (t_triageKinds)', M, COMM, 'event', E2(rp, 2, 16, { oid: bytes(20, 4) }), [10422], 't_triageKinds');
+  await no('ROLES', 'triage retarget (t_triageKinds)', M, COMM, 'event', E2(rp, 2, 8, { value: 'refs/heads/dev' }), [10422], 't_triageKinds');
+  await no('ROLES', 'triage pin (t_triageKinds)', M, COMM, 'event', E2(ri, 1, 19), [10422], 't_triageKinds');
+  await no('ROLES', 'triage head update claiming r 1 (role mismatch)', M, COMM, 'event', E2(rp, 2, 16, { oid: bytes(20, 4), r: 1 }), WHERE_ANYOF);
+  await no('ROLES', 'triage pushes (refUpdate r 1, role mismatch)', M, CORE, 'refUpdate', { repoId: R2, refNameHash: sha256(Buffer.from('refs/heads/main')), refName: 'refs/heads/main', newOid: bytes(20, 1), vis: 'public', r: 1 }, WHERE_ANYOF);
+  await no('ROLES', 'triage uploads a chunk (role mismatch)', M, CORE, 'chunk', { repoId: R2, packHash: bytes(32), seq: 0, d0: bytes(100), r: 1 }, WHERE_ANYOF);
+  const now = Date.now();
+  await no('ROLES', 'triage posts a check run (role mismatch)', M, COMM, 'checkRun', { repoId: R2, headOid: bytes(20, 2), name: 'build', status: 'completed', conclusion: 'success', startedAt: now - 60000, completedAt: now, outcome: 1, vis: 'public', r: 1 }, WHERE_ANYOF);
+  // the owner (a maintainer) still merges with r 1; the fee gate's role-1 baseline
+  await ok('ROLES', 'the owner pushes (r 1)', O, CORE, 'refUpdate', { repoId: R2, refNameHash: sha256(Buffer.from('refs/heads/main')), refName: 'refs/heads/main', newOid: bytes(20, 3), vis: 'public' }, 'refUpdate: with r');
+  await ok('ROLES', 'the owner merges (r 1)', O, COLLAB, 'transition', T2(rp, 2, 1, 13, 2, { oid: bytes(20, 3), r: 1 }), 'transition: merge with r');
+
+  // the reader: a private repo's member that receives the key and changes nothing
+  const p2 = need(await ok('ROLES', 'second private repo', O, CORE, 'repo', { name: `rc1rp-${tag}`, visibility: 'private' }), 'the reader repo');
+  const P2 = id(docId(p2));
+  await ok('ROLES', 'owner self-enrols in it', O, CORE, 'maintainer', { repoId: P2, memberId: id(O.id), vis: 'private' });
+  await ok('ROLES', 'member consents to it', M, CORE, 'consent', { repoId: P2 });
+  need(await ok('ROLES', 'the owner enrols the member as reader (role 3)', O, CORE, 'writer', { repoId: P2, memberId: id(M.id), vis: 'private', consentBy: id(M.id), role: 3 }, 'writer: reader'), "the member's reader document");
+  await sleep(A_BLOCK);
+  await ok('ROLES', 'a key wrap to the reader', O, COLLAB, 'repoKey', { repoId: P2, memberId: id(M.id), epoch: 0, recipientKeyId: M.encKeyId, senderKeyId: O.encKeyId, wrapped: bytes(48) });
+  await no('ROLES', 'the reader pushes (r 1)', M, CORE, 'refUpdate', { repoId: P2, refNameHash: bytes(32, 5), newOid: bytes(20, 5), vis: 'private', enc: bytes(61), epoch: 0, r: 1 }, WHERE_ANYOF);
+  await no('ROLES', 'the reader creates a label (r 2)', M, CORE, 'label', { repoId: P2, name: 'x', enc: bytes(61), epoch: 0, r: 2 }, WHERE_ANYOF);
+  await no('ROLES', 'the reader creates a milestone (r 2)', M, COMM, 'milestone', { repoId: P2, title: 'x', enc: bytes(61), epoch: 0, r: 2 }, WHERE_ANYOF);
+  const pi = await ok('ROLES', 'the reader opens an issue (anyone may)', M, COLLAB, 'issue', { repoId: P2, number: 1, tk: 0, vis: 'private', enc: bytes(61), epoch: 0 });
+  if (pi) {
+    await no('ROLES', 'the reader closes its own issue as a member (r 2)', M, COLLAB, 'transition', { repoId: P2, targetId: id(docId(pi)), targetNumber: 1, targetKind: 0, kind: 1, delta: 1, asAuthor: 0, r: 2 }, WHERE_ANYOF);
+    await ok('ROLES', 'the reader closes its own issue as the author (r 1)', M, COLLAB, 'transition', { repoId: P2, targetId: id(docId(pi)), targetNumber: 1, targetKind: 0, kind: 1, delta: 1, asAuthor: 1, r: 1 });
+    await no('ROLES', 'the reader labels its issue (r 2)', M, COMM, 'event', { repoId: P2, targetId: id(docId(pi)), targetNumber: 1, kind: 4, enc: bytes(61), epoch: 0, r: 2 }, WHERE_ANYOF);
   }
 }
 

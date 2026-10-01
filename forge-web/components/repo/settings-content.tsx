@@ -12,11 +12,14 @@ import { useState } from 'react'
 import { Fingerprint, HardDrive, Lock, ShieldPlus, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { RepoRef } from '@/lib/repo'
-import { ConsentMissingError, grantMember, invalidateMembers, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
+import { ConsentMissingError, changeMemberRole, grantDescription, grantMember, invalidateMembers, memberDocOf, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
+import { roleChangeCost } from '@/lib/repo/private-members'
 import { Invitations } from '@/components/repo/invite-banner'
 import type { Membership, Role as MemberRole } from '@/lib/rules/v2'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { previewCreate, previewDelete } from '@/lib/sdk'
+import { ROLE_LABEL, ROLE_NOUN, grantableRoles } from '@/lib/rules/roles'
+import { RoleBadge, RolePicker, RoleSummary } from '@/components/repo/role-picker'
 import { decodeIdentifier } from '@/lib/auth'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useSdk } from '@/hooks/use-sdk'
@@ -37,6 +40,11 @@ import { WebhookSettings } from '@/components/repo/webhook-settings'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { BranchSettings, DangerZone, GeneralSettings, Section, SettingsNav } from '@/components/repo/repo-settings-sections'
+
+/** A Collaborators write awaiting its confirm; `change` (public repos) deletes `role`'s document, then adds `to`. */
+type MemberAction =
+  | { readonly kind: 'grant' | 'revoke'; readonly member: string; readonly role: MemberRole }
+  | { readonly kind: 'change'; readonly member: string; readonly role: MemberRole; readonly to: MemberRole }
 
 export function SettingsContent({ home, reload }: { home: RepoHome; reload: () => void }): JSX.Element {
   // QW-079: a private repo's settings are its members' (GitHub answers anyone else with a 404).
@@ -77,7 +85,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   const [awaiting, setAwaiting] = useState<string | null>(null)
   const [memberId, setMemberId] = useState('')
   const [role, setRole] = useState<MemberRole>('writer')
-  const [action, setAction] = useState<{ kind: 'grant' | 'revoke'; member: string; role: MemberRole } | null>(null)
+  const [action, setAction] = useState<MemberAction | null>(null)
+  // The member row whose role picker is open (`role:identity`).
+  const [changing, setChanging] = useState<string | null>(null)
   const idError = (() => {
     if (memberId.trim() === '') return null
     try {
@@ -89,7 +99,18 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   })()
   const runAction = async (intent: string): Promise<void> => {
     if (!sdk || !signer || !action) throw new Error('sign in to continue')
-    if (action.kind === 'grant') {
+    if (action.kind === 'change') {
+      try {
+        await changeMemberRole(sdk, signer, repo, action.member, action.role, action.to, intent)
+      } catch (e) {
+        if (!(e instanceof ConsentMissingError)) throw e
+        // Nothing was signed: their consent is gone, so the change waits on them accepting again.
+        setAwaiting(action.member)
+        setAction(null)
+        return
+      }
+      setChanging(null)
+    } else if (action.kind === 'grant') {
       try {
         await grantMember(sdk, signer, repo, action.member, action.role, intent)
       } catch (e) {
@@ -106,9 +127,11 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
     }
     // The write landed, but the node the next read hits may be a block behind: re-read until
     // the change shows (then it is what the cache holds), else keep the last answer.
-    const { kind, member, role: r } = action
+    const done = action
     const shows = (rows: Membership[]): boolean =>
-      rows.some((m) => m.identity === member && m.role === r) === (kind === 'grant')
+      done.kind === 'change'
+        ? rows.some((m) => m.identity === done.member && m.role === done.to)
+        : rows.some((m) => m.identity === done.member && m.role === done.role) === (done.kind === 'grant')
     await retryWhileMissing(async () => {
       invalidateMembers(repo, network)
       return shows(await readMembershipsCached(sdk, repo, network)) ? true : null
@@ -128,7 +151,9 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
               ? "You're viewing this repo's settings read-only. Sign in as one of its maintainers to change them."
               : viewerRole === 'writer'
                 ? "You're a writer here: only maintainers can change the repo's settings. Where your own browser stores what you push (Storage) is yours to set."
-                : "You're viewing this repo's settings read-only: only its maintainers can change them."}
+                : viewerRole === 'triage' || viewerRole === 'reader'
+                  ? `You're ${ROLE_NOUN[viewerRole]} here: only maintainers can change the repo's settings.`
+                  : "You're viewing this repo's settings read-only: only its maintainers can change them."}
           </span>
         </p>
       ) : null}
@@ -150,31 +175,52 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
           <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
             {memberRows.length === 0 ? (
               <div className="px-4 py-6 text-center text-dense text-anvil-500 dark:text-anvil-400">
-                No maintainers or writers. Nobody can push to this repo.
+                No members. Nobody can push to this repo.
               </div>
             ) : (
-              memberRows.map((m) => (
-                <div
-                  key={`${m.role}:${m.identity}`}
-                  className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850"
-                >
-                  <Author identityId={m.identity} link={false} />
-                  <RoleTag role={m.role === 'maintainer' ? 'MAINTAINER' : 'WRITER'} />
-                  {m.identity === repo.ownerId ? (
-                    <span className="text-[12px] text-anvil-500 dark:text-anvil-400">owner</span>
-                  ) : isOwner && repo.visibility !== 'private' ? (
-                    <Button
-                      size="sm"
-                      variant="danger"
-                      className="ml-auto"
-                      disabled={guard.disabledReason !== null}
-                      onClick={() => setAction({ kind: 'revoke', member: m.identity, role: m.role })}
-                    >
-                      Remove
-                    </Button>
-                  ) : null}
-                </div>
-              ))
+              memberRows.map((m) => {
+                const rowKey = `${m.role}:${m.identity}`
+                return (
+                  <div key={rowKey} className="border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850" data-testid="member-row">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <Author identityId={m.identity} link={false} />
+                      <RoleBadge role={m.role} />
+                      {m.identity === repo.ownerId ? (
+                        <span className="text-[12px] text-anvil-500 dark:text-anvil-400">owner</span>
+                      ) : isOwner && repo.visibility !== 'private' ? (
+                        <div className="ml-auto flex gap-2">
+                          <Button size="sm" variant="outline" disabled={guard.disabledReason !== null} aria-expanded={changing === rowKey} onClick={() => setChanging((c) => (c === rowKey ? null : rowKey))}>
+                            Change role
+                          </Button>
+                          <Button size="sm" variant="danger" disabled={guard.disabledReason !== null} onClick={() => setAction({ kind: 'revoke', member: m.identity, role: m.role })}>
+                            Remove
+                          </Button>
+                        </div>
+                      ) : null}
+                    </div>
+                    {changing === rowKey ? (
+                      <div className="mt-2">
+                        <RolePicker
+                          value={m.role}
+                          visibility={repo.visibility}
+                          // Not the current role, nor a role whose document type they already hold in
+                          // another row (a maintainer who is also a writer): the add would refuse it.
+                          exclude={grantableRoles(repo.visibility).filter(
+                            (r) => r === m.role || memberRows.some((o) => o.identity === m.identity && o.role !== m.role && memberDocOf(o.role) === memberDocOf(r)),
+                          )}
+                          disabled={guard.disabledReason !== null}
+                          onChange={(to) => {
+                            if (guard.check(roleChangeCost(m.role, to))) setAction({ kind: 'change', member: m.identity, role: m.role, to })
+                          }}
+                        />
+                        <p className="mt-1 text-[12px] text-anvil-500 dark:text-anvil-400">
+                          A role change removes their {m.role} document and adds the new one (two transitions); their acceptance still stands.
+                        </p>
+                      </div>
+                    ) : null}
+                  </div>
+                )
+              })
             )}
           </div>
         )}
@@ -196,65 +242,70 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                   <Input id="member-id" value={memberId} onChange={(e) => setMemberId(e.target.value)} placeholder="base58 identity id" className="font-mono" spellCheck={false} />
                 </Field>
               </div>
-              <div role="radiogroup" aria-label="Role" className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
-                {(['writer', 'maintainer'] as MemberRole[]).map((r) => (
-                  <button
-                    key={r}
-                    role="radio"
-                    aria-checked={role === r}
-                    onClick={() => setRole(r)}
-                    className={
-                      'rounded px-3 py-1.5 text-dense font-medium coarse:min-h-11 ' +
-                      (role === r ? 'bg-forge-500/15 text-forge-800 dark:text-forge-400' : 'text-anvil-500 dark:text-anvil-400')
-                    }
-                  >
-                    {r}
-                  </button>
-                ))}
-              </div>
+              <RolePicker value={role} onChange={setRole} visibility={repo.visibility} />
               <Button
                 variant="primary"
                 disabled={memberId.trim() === '' || idError !== null || guard.disabledReason !== null}
                 onClick={() => {
-                  if (guard.check(previewCreate(role))) setAction({ kind: 'grant', member: memberId.trim(), role })
+                  if (guard.check(previewCreate(memberDocOf(role)))) setAction({ kind: 'grant', member: memberId.trim(), role })
                 }}
               >
                 Add
               </Button>
             </div>
+            <RoleSummary role={role} />
             {idError ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">{idError}</p> : null}
             <Invitations
               repo={repo}
               members={members.data === null ? null : memberRows.map((m) => m.identity)}
               awaiting={awaiting}
               disabled={guard.disabledReason !== null}
+              role={role}
               onPick={(id, r) => {
-                if (guard.check(previewCreate(r))) setAction({ kind: 'grant', member: id, role: r })
+                if (guard.check(previewCreate(memberDocOf(r)))) setAction({ kind: 'grant', member: id, role: r })
               }}
             />
             <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-              Writers can push, open refs and act on issues and PRs; maintainers can also update
-              protected branches, config and releases. Nobody becomes a member without accepting
-              your invitation first.
+              Writers can push, merge and act on issues and PRs; triage members close, label, assign
+              and lock but cannot push or merge; maintainers can also update protected branches,
+              config and releases. Only maintainers&apos; and writers&apos; approvals count. Nobody
+              becomes a member without accepting your invitation first.
             </p>
           </div>
         ) : null}
         <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-          Members are the repo&apos;s maintainer and writer documents. Consensus checks them on
-          every push, ref update and state event; removing one revokes it.
+          Members are the repo&apos;s maintainer and writer documents (a writer document carries its
+          role: writer, triage or reader). Consensus checks them on every push, ref update and
+          state event; removing one revokes it.
           {!isOwner ? ' Only the owner can add or remove members.' : ''}
         </p>
         <ConfirmDialog
           open={action !== null}
           onClose={() => setAction(null)}
-          title={action?.kind === 'grant' ? `Add ${action.role}` : `Remove ${action?.role ?? 'member'}`}
+          title={
+            action?.kind === 'grant'
+              ? `Add ${action.role}`
+              : action?.kind === 'change'
+                ? `Change role to ${ROLE_LABEL[action.to]}`
+                : `Remove ${action?.role ?? 'member'}`
+          }
           description={
             action?.kind === 'grant'
-              ? `Creates a ${action.role} document for ${action.member.slice(0, 8)}… on this repo.`
-              : 'Deletes their membership document. Their past pushes and events stay valid; new ones are refused.'
+              ? `Creates ${grantDescription(action.role)} for ${action.member.slice(0, 8)}… on this repo.`
+              : action?.kind === 'change'
+                ? `Deletes ${action.member.slice(0, 8)}…'s ${action.role} document, then adds them as ${action.to} (their acceptance still stands). Two transitions.`
+                : 'Deletes their membership document. Their past pushes and events stay valid; new ones are refused.'
           }
-          cost={action?.kind === 'revoke' ? previewDelete(action.role) : previewCreate(action?.role ?? 'writer')}
-          confirmLabel={action?.kind === 'grant' ? 'Sign & add' : 'Sign & remove'}
+          cost={
+            action === null
+              ? previewCreate('writer')
+              : action.kind === 'revoke'
+                ? previewDelete(memberDocOf(action.role))
+                : action.kind === 'change'
+                  ? roleChangeCost(action.role, action.to)
+                  : previewCreate(memberDocOf(action.role))
+          }
+          confirmLabel={action?.kind === 'grant' ? 'Sign & add' : action?.kind === 'change' ? 'Sign & change' : 'Sign & remove'}
           onConfirm={runAction}
         />
         </>
@@ -333,13 +384,5 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
       <dt className="shrink-0 text-dense text-anvil-500 dark:text-anvil-400">{label}</dt>
       <dd className="min-w-0">{children}</dd>
     </div>
-  )
-}
-
-function RoleTag({ role }: { role: string }): JSX.Element {
-  return (
-    <span className="rounded bg-forge-500/15 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-forge-800 dark:text-forge-400">
-      {role}
-    </span>
   )
 }

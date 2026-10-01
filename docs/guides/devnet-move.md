@@ -1,18 +1,18 @@
-# Devnet bonsia is moving to a new devnet
+# Dash Forge moved from devnet bonsia to devnet sakura
 
-Devnet bonsia is a development network, and its operators re-cut it from time to time. Bonsia is about to be re-cut onto Platform v5, which **wipes everything on it**. Dash Forge is then registered again on the new bonsia, with new contracts. This page says what that costs you, what you keep, and what to do afterwards.
+Devnets are development networks, and their operators replace them from time to time. Devnet bonsia (Platform 4.2.0-beta.7) was retired, and **everything on it is gone**. Dash Forge moved to a new devnet, **sakura** (Platform v5.0.0-beta.1), where it is registered with new contracts (RC2, registered 2026-10-01). This page says what that costs you, what you keep, and what to do.
 
-It only concerns **devnet bonsia**, which forge.dashhq.org and the guides use today. Nothing on testnet or mainnet is affected, because Forge is not deployed on either yet ([network status](../../README.md#status)).
+It only concerns **devnet bonsia**, which forge.dashhq.org and the guides used until the move. Nothing on testnet or mainnet is affected, because Forge is not deployed on either yet ([network status](../../README.md#status)).
 
 ## When
 
-- **Before the move**: forge.dashhq.org shows a notice on every page ("bonsia is moving to a new devnet soon"). Everything still works, but anything you write now will be wiped.
-- **During the move**: from the wipe until the web app is rebuilt for the new devnet, forge.dashhq.org says so, and writing is paused: buttons that write, including creating or importing an identity, are off and say why. Once the chain is wiped, the app shows "Dash Forge is moving to a new devnet" instead of the repository pages. This lasts until a new build is published; reload the page to pick it up. A tab that was opened before the notice went up keeps running the old page until it is reloaded, so reload it if you are told writing is paused.
-- **After the move**: the web app and `dg` target the new devnet. The notice is gone.
+- **Before the move**: forge.dashhq.org showed a notice on every page ("bonsia is moving to a new devnet soon").
+- **During the move**: until the web app is rebuilt for sakura, a bonsia build says "Dash Forge moved to devnet sakura (Platform v5); bonsia was retired", and writing is paused: buttons that write, including creating or importing an identity, are off and say why. Once bonsia's contracts are gone, the app shows "Dash Forge moved to a new devnet" instead of the repository pages. This lasts until the sakura build is published; reload the page to pick it up. A tab that was opened before keeps running the old page until it is reloaded.
+- **After the move**: the web app and `dg` target sakura, and the notice is gone. A build for sakura never shows the "moved" notice or pauses writes, even if the notice variable is still set: that mode only applies to a devnet Forge has left (marked `retired` in its deployment file).
 
 ## What is lost
 
-Everything that lived on the old devnet's chain:
+Everything that lived on bonsia's chain:
 
 - **Repositories**: refs, branches, tags, commits' metadata, releases and members.
 - **Issues, pull requests, reviews and comments.**
@@ -20,7 +20,7 @@ Everything that lived on the old devnet's chain:
 - **Your identity and its keys**, and its balance. The test Dash on it was never worth anything, but the identity itself is gone, and so is the limited key `dg` or your browser stored for it.
 - **Usernames** (DPNS names) registered on the old chain.
 
-Nothing on the old devnet can be recovered afterwards: the new chain starts empty. If a pull request or issue discussion matters to you, copy it somewhere else now.
+Nothing on bonsia can be recovered: sakura starts empty. If a pull request or issue discussion matters to you, copy it somewhere else now.
 
 ## What is kept
 
@@ -31,13 +31,13 @@ Nothing on the old devnet can be recovered afterwards: the new chain starts empt
 
 ## What happens to mirrors
 
-Mirrors of public GitHub and GitLab repositories are wiped with everything else, and they do not come back by themselves. A mirror's workflow is pinned to the old repository (`dash://<old identity id>/<name>`) and to a build made for Platform 4.2.0-beta.7, and signs with the old identity's key (`DASH_FORGE_KEY`), so its next run fails after the move. To mirror again, create a new identity and run the **/mirror wizard** once more ([Mirror a GitHub repository](mirror-a-github-repo.md#the-setup-wizard)). Replace the old workflow file with the one it produces and put the new identity's key in `DASH_FORGE_KEY`. A GitLab mirror has no wizard: set its CI job up again from [Mirror a GitLab project](mirror-a-gitlab-project.md#2-keep-it-in-sync-from-gitlab-ci) with the new identity. The first run imports the project again from scratch.
+Mirrors of public GitHub and GitLab repositories are wiped with everything else, and they do not come back by themselves. A mirror's workflow is pinned to the old repository (`dash://<old identity id>/<name>`), to devnet bonsia and to a build made for Platform 4.2.0-beta.7, and signs with the old identity's key (`DASH_FORGE_KEY`), so its next run fails after the move. To mirror again, create a new identity on sakura and run the **/mirror wizard** once more ([Mirror a GitHub repository](mirror-a-github-repo.md#the-setup-wizard)). Replace the old workflow file with the one it produces and put the new identity's key in `DASH_FORGE_KEY`. A GitLab mirror has no wizard: set its CI job up again from [Mirror a GitLab project](mirror-a-gitlab-project.md#2-keep-it-in-sync-from-gitlab-ci) with the new identity. The first run imports the project again from scratch.
 
 ## After the move: re-push your repository
 
-Wait until forge.dashhq.org no longer shows the notice, and make sure `dg` is current. A `dg` built for the old devnet (Platform 4.2.0-beta.7) stops working on the new one, so reinstall it from the current source ([Quick start](quick-start.md#1-install); the `dg` and `git-remote-dash` you build must be the ones from the current `master`).
+Wait until Forge's contracts are registered on sakura ([network status](../../README.md#status)) and forge.dashhq.org no longer shows the notice, and make sure `dg` is current. A `dg` built for bonsia (Platform 4.2.0-beta.7) does not work on sakura, so reinstall it from the current source ([Quick start](quick-start.md#1-install); the `dg` and `git-remote-dash` you build must be the ones from the current `master`).
 
-1. **Create a new identity on the new devnet.** It is a different account: its id is different, so repository addresses (`dash://<identity id>/<name>`) change with it. Follow [Get an identity](quick-start.md#2-get-an-identity), from the terminal (`dg auth new --network devnet --devnet-name bonsia`) or from the web app (**Sign in → Create a new identity**). Fund it from the faucet, as before. The old identity cannot be brought over.
+1. **Create a new identity on sakura.** It is a different account: its id is different, so repository addresses (`dash://<identity id>/<name>`) change with it. Follow [Get an identity](quick-start.md#2-get-an-identity), from the terminal (`dg auth new --network devnet --devnet-name sakura`) or from the web app (**Sign in → Create a new identity**). Fund it from the [sakura faucet](https://faucet.sakura.networks.dash.org). The old identity cannot be brought over.
 2. **Sign in and set up storage** ([Sign in](quick-start.md#3-sign-in)). Your storage profiles are kept; run `dg storage test <profile>` to check that the bucket still answers.
 3. **Keep every branch, then point your clone at the new repository.** A clone often holds some branches only as remote-tracking refs (`origin/feature`), and removing `origin` deletes those. Make a local branch for each one that has none (this never overwrites a local branch):
    ```sh
@@ -50,9 +50,9 @@ Wait until forge.dashhq.org no longer shows the notice, and make sure `dg` is cu
    The clone's `origin` still names the old address, and `dg init` stops rather than change a remote that points somewhere else. Remove it, then publish:
    ```sh
    git remote remove origin    # the old dash://<old identity>/my-project
-   dg init                     # creates the repository on the new devnet and pushes the current branch
+   dg init                     # creates the repository on sakura and pushes the current branch
    ```
-   **A repository that was private needs `dg init --private`.** `dg init` creates a *public* repository unless you pass `--private`, and visibility cannot be changed afterwards, so a plain `dg init` would publish your private code in the clear. The new identity from `dg auth new` already carries the encryption key a private repository needs ([Private repositories](collaborating.md#private-repositories)). Its members were wiped too: invite each of them again, by the id of the identity they create on the new devnet.
+   **A repository that was private needs `dg init --private`.** `dg init` creates a *public* repository unless you pass `--private`, and visibility cannot be changed afterwards, so a plain `dg init` would publish your private code in the clear. The new identity from `dg auth new` already carries the encryption key a private repository needs ([Private repositories](collaborating.md#private-repositories)). Its members were wiped too: invite each of them again, by the id of the identity they create on sakura.
 
    A different remote name works too (`dg init --remote forge`), which leaves `origin` alone; use that name instead of `origin` in the next step. `dg init` writes the new remote and the storage setting into the clone's git config, and a plain `git push` goes there afterwards.
 4. **Push the rest.** `dg init` pushes the current branch. Push the other branches and the tags to the new remote (`origin` if you removed the old one, or the name you gave `--remote`):

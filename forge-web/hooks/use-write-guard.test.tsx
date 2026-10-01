@@ -64,7 +64,7 @@ describe('useWriteGuard while the devnet is moving', () => {
   })
 
   it('refuses the write with a toast naming the reason, and shows it on every disabled button', () => {
-    state.paused = 'Writing is paused while this devnet moves to a new one — reading still works.'
+    state.paused = 'Writing is paused: this devnet was retired and Dash Forge moved to devnet sakura.'
     act(() => root.render(<Probe />))
     expect(guard.check(1000)).toBe(false)
     expect(toast).toHaveBeenCalledWith({ title: 'Writing is paused', detail: state.paused })

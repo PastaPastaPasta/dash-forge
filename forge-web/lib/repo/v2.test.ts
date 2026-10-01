@@ -165,8 +165,9 @@ function repoDoc(repoId: string, ownerId: string, name: string, extra: Doc = {})
 
 /** A small public repo with members, an issue per fold case, and a PR. */
 function fixture(): Store {
-  const member = (role: string, id: string, at: number): Doc =>
-    doc({ $ownerId: OWNER, repoId: REPO, memberId: id, $createdAt: at, role })
+  // A writer document carries its RC2 `role` integer (1 writer); a maintainer document has none.
+  const member = (type: 'maintainer' | 'writer', id: string, at: number): Doc =>
+    doc({ $ownerId: OWNER, repoId: REPO, memberId: id, $createdAt: at, ...(type === 'writer' ? { role: 1 } : {}) })
   const issue = (n: number, author: string, extra: Doc = {}): Doc =>
     doc({ $id: ID(`issue${n}`), $ownerId: author, repoId: REPO, number: n, title: `Issue ${n}`, ...extra })
   const ev = (targetId: string, n: number, actor: string, kind: number, extra: Doc = {}): Doc =>
@@ -447,10 +448,13 @@ describe('forge-v2 permissions', () => {
   it('derives the viewer’s controls from membership documents', async () => {
     const sdk = mockSdk(fixture())
     invalidateMembers(DEMO)
-    expect(await readViewerPermissions(sdk, DEMO, MAINT)).toEqual({ write: true, maintain: true })
-    expect(await readViewerPermissions(sdk, DEMO, WRITER)).toEqual({ write: true, maintain: false })
-    expect(await readViewerPermissions(sdk, DEMO, STRANGER)).toEqual({ write: false, maintain: false })
-    expect(holdingsOfRole(null)).toEqual({ write: false, maintain: false })
+    expect(await readViewerPermissions(sdk, DEMO, MAINT)).toEqual({ member: true, maintain: true, role: 'maintainer' })
+    expect(await readViewerPermissions(sdk, DEMO, WRITER)).toEqual({ member: true, maintain: false, role: 'writer' })
+    expect(await readViewerPermissions(sdk, DEMO, STRANGER)).toEqual({ member: false, maintain: false, role: null })
+    expect(holdingsOfRole(null)).toEqual({ member: false, maintain: false, role: null })
+    // RC2 roles: a triage member or reader is a member (comments, reviews) with its own role.
+    expect(holdingsOfRole('triage')).toEqual({ member: true, maintain: false, role: 'triage' })
+    expect(holdingsOfRole('reader')).toEqual({ member: true, maintain: false, role: 'reader' })
   })
 
   it('reports unknown (null), not "no access", when the members cannot be read', async () => {

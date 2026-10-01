@@ -682,6 +682,12 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
             rule,
             detail,
         } => rule_refused(ctx, document_type, rule, detail),
+        // 40128: a replace changed a property the type freezes.
+        CoreError::FrozenField {
+            document_type,
+            property,
+            detail,
+        } => frozen_field(ctx, Some(document_type), property, detail),
         CoreError::V2NotDeployed { network } => not_deployed(ctx, network),
         CoreError::ContractsMissing { network, detail } => contracts_missing(ctx, network, detail),
         CoreError::Timeout { retryable } => timed_out(ctx, *retryable),
@@ -763,7 +769,12 @@ fn not_permitted(ctx: &ErrorContext<'_>, action: &str, reason: &str, needs: &str
     } else if needs == "owner" {
         // An edit: consensus admits a document replace from its owner only, members included.
         u.fix("only the author can edit it; comment instead, or ask them to make the change")
-    } else if matches!(needs, "writer" | "maintainer") {
+    } else if matches!(needs, "writer" | "triage") && reason.starts_with("you are a ") {
+        // A triage member or reader (RC2 member roles) is a member already: a role change.
+        u.fix(format!(
+            "ask the owner to change your role: `dg collab add {repo} <your identity id> --role {needs}`"
+        ))
+    } else if matches!(needs, "writer" | "triage" | "maintainer") {
         u.fix(join_fix(&repo, "<your identity id>", needs))
     } else {
         // Not a role a member can be given (the repository's owner, …).
@@ -927,6 +938,15 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
             None,
             path,
             &format!("40120: {}", one_line(msg)),
+        ));
+    }
+    // 40128 DocumentImmutablePropertyChanged, as text: the same rendering as the typed error.
+    if let Some((document_type, property)) = frozen_property(msg) {
+        return Some(frozen_field(
+            ctx,
+            document_type.as_deref(),
+            &property,
+            &format!("40128: {}", one_line(msg)),
         ));
     }
     // 10422 DocumentPropertyConstraintViolated, as text: the same rendering as the typed error.
@@ -1123,6 +1143,51 @@ fn missing_reference(
     .fix("check the id you passed for that field; the cause names the missing entity")
 }
 
+/// E604 for a 40128: a replace changed `property`, which the document type freezes: always,
+/// once set, or (a check run's evidence, RC2 S1) once the run completed.
+fn frozen_field(
+    ctx: &ErrorContext<'_>,
+    document_type: Option<&str>,
+    property: &str,
+    detail: &str,
+) -> UserError {
+    use crate::ci::{EVIDENCE_FIELDS, SET_ONCE_FIELDS};
+    let check_run = document_type == Some(crate::collab::v2::DOC_CHECK_RUN);
+    let once_completed = check_run && EVIDENCE_FIELDS.contains(&property);
+    let when = if once_completed {
+        "once the run completed"
+    } else {
+        "once set"
+    };
+    let fix = if once_completed || (check_run && SET_ONCE_FIELDS.contains(&property)) {
+        "report a re-run as a new check run: give it a new --external-id"
+    } else {
+        "leave it as it is: a different value takes a new document, not an edit"
+    };
+    UserError::new(
+        codes::REJECTED,
+        ctx.rejected_headline(&format!("this field ({property}) can't change {when}")),
+    )
+    .cause(detail)
+    .fix(fix)
+    .note("refused at consensus: nothing was written")
+}
+
+/// `(document type, property)` of a 40128 message: `property 'logUrl' of document … (type
+/// 'checkRun') is immutable and cannot be changed by a replace` (quotes plain or escaped).
+fn frozen_property(msg: &str) -> Option<(Option<String>, String)> {
+    let msg = msg.replace("\\'", "'");
+    let at = msg.find("is immutable and cannot be changed by a replace")?;
+    let head = &msg[..at];
+    let rest = &head[head.rfind("property '")? + "property '".len()..];
+    let property = rest[..rest.find('\'')?].to_string();
+    let document_type = rest
+        .find("(type '")
+        .map(|i| &rest[i + "(type '".len()..])
+        .and_then(|t| t.find('\'').map(|j| t[..j].to_string()));
+    Some((document_type, property))
+}
+
 /// E604 for a 10422: the document breaks `rule` of its type's `propertyConstraints`. The
 /// headline names the rule; the cause says what it asks for when the rule does not hold and
 /// this build knows it. A fault evaluating the rule (an overflow, a division by zero, a value
@@ -1197,11 +1262,11 @@ const RULE_EXPLANATIONS: &[(&str, &str)] = &[
     ("c3_mergedAfter", "the pull request was not open and ready when the merge landed (another state change came first); re-read it and run the command again"),
     ("c4_draftAfter", "the pull request was not in the state this moves from when it landed (another state change came first); re-read it and run the command again"),
     ("c5_draftClosedAfter", "the pull request was not an open draft when the close landed (another state change came first); re-read it and run the command again"),
-    ("e_mergeOid", "a merge names its merge commit (oid)"),
+    ("e_mergeOid", "a merge names its merge commit (oid), and a merge, draft or ready needs a maintainer or writer (r 1): triage members cannot make it"),
     ("f_authorNoMerge", "a pull request's author cannot merge it unless they are a maintainer or writer"),
     ("b4_lockDelta", "a lock carries delta +16 and an unlock -16"),
     ("c6_lockedAfter", "the thread was already locked (or already unlocked) when this landed; re-read it and run the command again"),
-    ("g_memberLock", "only a maintainer or writer can lock or unlock a thread"),
+    ("g_memberLock", "only a maintainer, writer or triage member can lock or unlock a thread"),
     ("hasBody", "a comment needs a body (sealed in a private repository)"),
     ("noParentSet", "noParent is reserved and is never set"),
     ("rangeOrder", "a range comment needs a line, and its start line may not follow it"),
@@ -1226,6 +1291,11 @@ const RULE_EXPLANATIONS: &[(&str, &str)] = &[
     ("needRefId", "this event needs refId (a thread, a reviewer or a review)"),
     ("needOid", "a head update names the new head commit (oid)"),
     ("noState", "a state change (draft, ready, lock, unlock) is a transition, not an event"),
+    ("t_triageKinds", "a retarget, review dismissal, head update, pin, unpin or policy bypass needs a maintainer or writer (r 1): triage members cannot make it"),
+    (
+        "hideByMaint",
+        "a hide or unhide must name your own maintainer document (asMaintainer): only a maintainer of the repository can hide content",
+    ),
 ];
 
 /// The rules whose meaning on one document type differs from [`RULE_EXPLANATIONS`]' entry.
@@ -2257,7 +2327,18 @@ mod tests {
             &PUSH,
         );
         assert_eq!(u.code, "E702");
-        assert!(u.fix[0].contains("--devnet-name bonsia"), "{u:?}");
+        // The fix names the live network with forge-v2 (none between a devnet's bring-up and
+        // its registration: then a note says so).
+        match crate::network::suggested_v2_network() {
+            Some(there) => assert!(u.fix[0].contains(&there.dg_flags()), "{u:?}"),
+            None => assert!(
+                u.note
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("no network has a forge-v2 deployment"),
+                "{u:?}"
+            ),
+        }
     }
 
     /// Moutai after its reset to beta.6 (2026-09-28): the build's forge contracts are gone.
@@ -2331,15 +2412,87 @@ mod tests {
             &ctx,
         );
         assert_eq!(u.code, "E702");
-        assert_eq!(
-            u.fix[0],
-            "use a network where it is: `git config --global dash.network devnet && git config --global dash.devnetName bonsia`, then run the git command again"
-        );
-        assert!(
-            u.fix[1].contains("DASH_FORGE_DEVNET_NAME=bonsia git"),
-            "{u:?}"
-        );
+        match crate::network::suggested_v2_network() {
+            Some(there) => {
+                assert_eq!(
+                    u.fix[0],
+                    format!(
+                        "use a network where it is: `{}`, then run the git command again",
+                        there.git_config_command("--global ")
+                    )
+                );
+                assert!(
+                    u.fix[1].contains(&format!("{} git", there.env_assignments())),
+                    "{u:?}"
+                );
+            }
+            // Between a devnet's bring-up and its registration no network has forge-v2.
+            None => assert!(
+                u.note
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("no network has a forge-v2 deployment"),
+                "{u:?}"
+            ),
+        }
         assert!(u.fix.iter().all(|f| !f.contains("--network ")), "{u:?}");
+    }
+
+    /// `DocumentImmutablePropertyChangedError`'s Display (code 40128) inside the broadcast error:
+    /// a replace of a completed run's log (RC2 S1).
+    const FROZEN_40128: &str = "state transition broadcast error: property 'logUrl' of document 5DtbWjpyYyNtMd3FBwyXGr3NTZzGUBGHnPHM3gs6ndmQ (type 'checkRun') is immutable and cannot be changed by a replace";
+
+    #[test]
+    fn a_frozen_field_40128_says_it_cannot_change() {
+        let ci = ErrorContext {
+            goal: Some("check run not reported"),
+            repo: Some("alice/project"),
+            ..Default::default()
+        };
+        // Typed, and as the node's text: the same rendering.
+        let typed = core_chain(
+            CoreError::FrozenField {
+                document_type: "checkRun".into(),
+                property: "logUrl".into(),
+                detail: "40128: property 'logUrl' of document 5Dtb (type 'checkRun') is immutable and cannot be changed by a replace".into(),
+            },
+            &ci,
+        );
+        let text = core_chain(CoreError::Platform(FROZEN_40128.into()), &ci);
+        for u in [&typed, &text] {
+            assert_eq!((u.code, u.exit_code()), ("E604", 6));
+            assert_eq!(
+                u.message,
+                "check run not reported: this field (logUrl) can't change once the run completed"
+            );
+            assert!(u.cause.as_deref().unwrap().starts_with("40128: "), "{u:?}");
+            assert!(u.fix[0].contains("--external-id"), "{u:?}");
+        }
+        // A check run's set-once field: once set.
+        let u = core_chain(
+            CoreError::Platform(FROZEN_40128.replace("'logUrl'", "'conclusion'")),
+            &ci,
+        );
+        assert_eq!(
+            u.message,
+            "check run not reported: this field (conclusion) can't change once set"
+        );
+        assert!(u.fix[0].contains("--external-id"), "{u:?}");
+        // Any other type's frozen field (a Debug-printed error escapes its quotes).
+        let u = core_chain(
+            CoreError::Platform(
+                FROZEN_40128
+                    .replace("'logUrl'", "'name'")
+                    .replace("'checkRun'", "'repo'")
+                    .replace('\'', "\\'"),
+            ),
+            &ci,
+        );
+        assert_eq!(
+            u.message,
+            "check run not reported: this field (name) can't change once set"
+        );
+        assert!(u.fix[0].contains("new document"), "{u:?}");
     }
 
     #[test]
@@ -2907,7 +3060,7 @@ mod tests {
         let err = CoreError::IdentityNotFound {
             identity_id: "4UF1".into(),
             network: "testnet".into(),
-            key_network: Some("devnet-bonsia".into()),
+            key_network: Some("devnet-sakura".into()),
         };
         let ctx = ErrorContext {
             goal: Some("check run not reported"),
@@ -2923,9 +3076,9 @@ mod tests {
             .cause
             .as_deref()
             .unwrap()
-            .contains("your key is for devnet-bonsia"));
+            .contains("your key is for devnet-sakura"));
         assert!(
-            u.fix[0].contains("--network devnet --devnet-name bonsia"),
+            u.fix[0].contains("--network devnet --devnet-name sakura"),
             "{:?}",
             u.fix
         );
@@ -2947,8 +3100,8 @@ mod tests {
         // A key that records no network (or the same one): the generic network fix.
         let same = CoreError::IdentityNotFound {
             identity_id: "4UF1".into(),
-            network: "devnet-bonsia".into(),
-            key_network: Some("devnet-bonsia".into()),
+            network: "devnet-sakura".into(),
+            key_network: Some("devnet-sakura".into()),
         };
         let u = classify(
             [&same as &(dyn StdError + 'static)],
@@ -2958,7 +3111,7 @@ mod tests {
             .cause
             .as_deref()
             .unwrap()
-            .contains("Platform (devnet-bonsia) has no identity 4UF1"));
+            .contains("Platform (devnet-sakura) has no identity 4UF1"));
         assert!(u.fix[0].contains("--network"), "{:?}", u.fix);
     }
 

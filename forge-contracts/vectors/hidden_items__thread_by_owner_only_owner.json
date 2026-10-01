@@ -1,0 +1,50 @@
+{
+  "name": "thread_by_owner_only_owner",
+  "description": "A maintainer's hide of the owner's own issue does not count.",
+  "case": "hidden_items",
+  "rules": "v2",
+  "input": {
+    "threadId": "T",
+    "threadAuthor": "own",
+    "owner": "own",
+    "maintainers": [
+      "alice",
+      "carol"
+    ],
+    "proved": true,
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "hide",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 10
+      }
+    ],
+    "comments": [
+      {
+        "id": "c1",
+        "author": "bob"
+      },
+      {
+        "id": "c2",
+        "author": "dave"
+      }
+    ],
+    "reviews": [
+      {
+        "id": "r1",
+        "author": "bob"
+      }
+    ]
+  },
+  "expected": {
+    "thread": null,
+    "items": {},
+    "counted": [
+      "e1"
+    ]
+  }
+}

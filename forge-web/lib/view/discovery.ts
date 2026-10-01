@@ -32,7 +32,18 @@ import type { Role } from '../rules/v2'
 import { queryDocumentsWithProof, RANGE_OPERATORS, type PlainDocument, type WhereClause } from '../sdk'
 import { countsAt, docsAt, queryComposite, type CompositeSub, type CompositeResult } from '../sdk/composite'
 import { DOC, asIdentifierString, readMemberRepoIds, toRepoDoc, type RepoDoc } from '../repo'
-import { readMostForked, readMostStarred, readTrending, type TrendingWindow } from '../repo/trending'
+import { starShape } from '../repo/star-shape'
+import {
+  FUSED_READ_AHEAD,
+  fusedTrending,
+  readMostForked,
+  readMostStarred,
+  readOwnerStars,
+  readTrending,
+  selfStarDecidable,
+  trendingWindowOf,
+  type TrendingWindow,
+} from '../repo/trending'
 import { MAX_TOPIC_CHARS, TOPIC_PATTERN } from '../repo/settings'
 import { seedFromDomains } from './dpns'
 
@@ -355,7 +366,10 @@ export async function reposNamed(sdk: EvoSDK, name: string, opts: { network?: Ne
 
 /** A proved ranking of repos: the ranked read's order and counts, with each repo's row. */
 export interface RankedRepos {
-  /** Highest first, as the ranked index proved it (ties by repo id, descending). */
+  /**
+   * Highest first, as the ranked index proved it (ties by repo id, descending); on a fused-star
+   * Trending, as filtered on read (`fusedTrending`: private repos and owners' stars left out).
+   */
   readonly repos: readonly (DiscoveredRepo & { readonly rankCount: number })[]
   /** Ranked groups whose `repo` document could not be read (should not happen: repos are permanent). */
   readonly missing: number
@@ -364,10 +378,17 @@ export interface RankedRepos {
 }
 
 /**
- * Trending (new stargazers in the week or today, `starBeat`), Most starred (all time,
- * `star.byRepo`) or Most forked (`repo.forkOf`, its non-fork null group dropped): one proved ranked read, then the ranked repos by id in one composite with
- * their star and issue counts, owners' names and pushes. Two requests, whatever the star count
- * (this replaces the bounded 100-star read that ranked only the repos those stars named).
+ * Trending (new stargazers in the week or today: `starBeat`, or the star itself on a fused-star
+ * contract, `lib/repo/star-shape.ts`), Most starred (all time, `star.byRepo`) or Most forked
+ * (`repo.forkOf`, its non-fork null group dropped): one proved ranked read, then the ranked
+ * repos by id in one composite with their star and issue counts, owners' names and pushes. Two
+ * requests, whatever the star count (this replaces the bounded 100-star read that ranked only
+ * the repos those stars named).
+ *
+ * On a fused-star contract consensus no longer keeps private repos and owners' own stars out
+ * of Trending, so the read takes {@link FUSED_READ_AHEAD} times the rows and filters them here
+ * ({@link fusedTrending}): one more request per repo created inside the window, to see whether
+ * its owner stars it.
  */
 export async function rankedRepos(
   sdk: EvoSDK,
@@ -378,20 +399,29 @@ export async function rankedRepos(
   const forge = forgeOf(network)
   if (forge === null) return { repos: [], missing: 0, pushesComplete: true }
   const limit = Math.min(opts.limit ?? 12, MAX_ROWS)
+  const fused = kind !== 'most-starred' && kind !== 'most-forked' && (await starShape(sdk, forge)) === 'fused'
+  const read = fused ? Math.min(limit * FUSED_READ_AHEAD, MAX_ROWS) : limit
   const page =
     kind === 'most-starred'
       ? await readMostStarred(sdk, forge, limit)
       : kind === 'most-forked'
         ? await readMostForked(sdk, forge, limit)
-        : await readTrending(sdk, forge, kind, limit)
+        : await readTrending(sdk, forge, kind, read)
   const ids = page.entries.map((e) => e.group).filter((id) => id !== '')
   if (ids.length === 0) return { repos: [], missing: 0, pushesComplete: true }
   const { byId, pushesComplete } = await reposById(sdk, forge, network, ids)
+  const missing = ids.filter((id) => !byId.has(id)).length
+  if (fused) {
+    const window = trendingWindowOf(kind as TrendingWindow, Date.now())
+    const young = [...byId.values()].filter((r) => selfStarDecidable(r, window))
+    const ownerStarred = await readOwnerStars(sdk, forge, young.map((r) => ({ repoId: r.key, ownerId: r.ownerId })))
+    return { repos: fusedTrending(page.entries, byId, ownerStarred, limit), missing, pushesComplete }
+  }
   const repos = page.entries.flatMap((e) => {
     const r = byId.get(e.group)
     return r === undefined ? [] : [{ ...r, rankCount: e.count }]
   })
-  return { repos, missing: ids.length - repos.length, pushesComplete }
+  return { repos, missing, pushesComplete }
 }
 
 /**

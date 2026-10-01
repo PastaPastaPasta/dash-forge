@@ -105,6 +105,17 @@ fn contracts() -> &'static [DataContract; 3] {
     })
 }
 
+/// A generated contract as the client loads it: for tests of what the client reads off a
+/// contract's shape (the RC2 build flags).
+#[cfg(test)]
+pub(crate) fn loaded(c: ForgeContract) -> crate::platform::LoadedContract {
+    let i = CONTRACTS
+        .iter()
+        .position(|x| *x == c)
+        .expect("a forge contract");
+    crate::platform::LoadedContract::for_tests(contracts()[i].clone())
+}
+
 /// A refusal's reason as the vectors name it: the JSON Schema keyword, the broken
 /// `propertyConstraints` rule, `maxBytes`, or else the consensus error code (b7gate's and
 /// contract-validate's `reason`).
@@ -239,11 +250,12 @@ mod vectors {
     /// cases each holds: the sets only grow, so a smaller one means a file went missing or was
     /// cut. Every case is judged here: `vectors.py` keeps the checks that read a total, the block
     /// or another document (its `LIVE_ONLY` list) out of the sets, for
-    /// `forge-contracts/scripts/rc1-live.mjs`.
+    /// `forge-contracts/scripts/rc1-live.mjs`. RC2's fused star (build.py `fused_star`) drops
+    /// starBeat and its 6 community cases.
     const SETS: [(&str, usize); 3] = [
         ("forge-core", 171),
         ("forge-collab", 101),
-        ("forge-community", 117),
+        ("forge-community", 111),
     ];
 
     /// An identifier written as a byte `n` (32 bytes of n) or a base58 string.
@@ -403,7 +415,7 @@ mod builders {
     use crate::collab::{CommentAnchor, Imported};
     use crate::layout::{stamp_vis_for, AS_MEMBER, MEMBER_PROOF_TYPES};
     use crate::private::{DocKind, EpochKey, EpochKeys};
-    use crate::rules::v2::{next_transition, Actor, Policy, StateAction, Visibility};
+    use crate::rules::v2::{next_transition, Actor, Policy, Role, StateAction, Visibility};
     use crate::rules::{EventKind, Verdict};
 
     const REPO: [u8; 32] = [1; 32];
@@ -445,6 +457,23 @@ mod builders {
             });
         if by == By::Member && MEMBER_PROOF_TYPES.contains(&doc_type) && !non_member_verdict {
             props.insert(AS_MEMBER.to_string(), FieldValue::identifier(OWNER));
+        }
+        // RC2 member roles: the `r` the write claims (`Collab::write`), as a role-1 writer.
+        claimed(doc_type, props, (by == By::Member).then_some(Role::Writer))
+    }
+
+    /// `props` with the `r` a signer of `role` claims on a `doc_type` write
+    /// ([`crate::collab::v2::claimed_role_for`]); unchanged for a type without it.
+    fn claimed(
+        doc_type: &str,
+        mut props: BTreeMap<String, FieldValue>,
+        role: Option<crate::rules::v2::Role>,
+    ) -> BTreeMap<String, FieldValue> {
+        if let Some(r) = crate::collab::v2::claimed_role_for(doc_type, &props, role) {
+            props.insert(
+                crate::members::CLAIMED_ROLE.to_string(),
+                FieldValue::integer(r),
+            );
         }
         props
     }
@@ -585,6 +614,7 @@ mod builders {
             side: Some(1),
             start_line: Some(10),
             review_id: Some(ID.into()),
+            diff_hunk: None,
         };
         let reply = CommentAnchor {
             reply_to: Some(ID.into()),
@@ -609,6 +639,28 @@ mod builders {
     fn an_imported_comment_is_rc1_valid_from_a_member() {
         let p = comment_props(ID, "hi", None, Some(&imported())).unwrap();
         public("comment", p, By::Member);
+    }
+
+    /// QW2-010: a mirrored review comment keeps its source hunk; one too big or off a file is
+    /// refused before signing.
+    #[test]
+    fn an_imported_review_comment_with_a_hunk_is_rc1_valid() {
+        let mut a = CommentAnchor {
+            commit_oid: Some(vec![0xab; 20]),
+            path: Some("src/lib.rs".into()),
+            line: Some(12),
+            side: Some(1),
+            diff_hunk: Some("@@ -10,2 +10,3 @@\n a\n+b\n c".into()),
+            ..CommentAnchor::default()
+        };
+        let p = comment_props(ID, "nit", Some(&a), Some(&imported())).unwrap();
+        assert!(p.contains_key("diffHunk"));
+        public("comment", p, By::Member);
+        a.diff_hunk = Some(format!("@@ -1 +1 @@\n+{}", "é".repeat(600)));
+        assert!(comment_props(ID, "nit", Some(&a), Some(&imported())).is_err());
+        a.diff_hunk = Some("@@ -1 +1 @@".into());
+        a.path = None;
+        assert!(comment_props(ID, "nit", Some(&a), Some(&imported())).is_err());
     }
 
     #[test]
@@ -673,10 +725,21 @@ mod builders {
                     continue;
                 };
                 let oid = (action == Merge).then_some(&[0xaa; 20][..]);
+                let p = scoped(transition_props(&t, &mv, oid).unwrap());
                 assert_valid(
                     "transition",
-                    &scoped(transition_props(&t, &mv, oid).unwrap()),
+                    &claimed("transition", p.clone(), Some(Role::Writer)),
                 );
+                // RC2 member roles: a triage member's own move claims 2, which `e_mergeOid`
+                // refuses for merge, draft and ready; an author's move claims 1 whatever the
+                // signer's role.
+                let triage = claimed("transition", p, Some(Role::Triage));
+                if actor == Actor::Member && matches!(action, Merge | Draft | Ready) {
+                    assert_eq!(triage.get("r"), Some(&FieldValue::integer(2)));
+                    assert_refused("transition", &triage, "e_mergeOid");
+                } else {
+                    assert_valid("transition", &triage);
+                }
                 written += 1;
             }
             // Only a member merges, locks and unlocks; the author may make every other move.
@@ -731,9 +794,20 @@ mod builders {
         ];
         for (t, kind, payload) in cases {
             let p = scoped(event_payload_props(t, kind, payload).unwrap());
-            assert_valid("event", &p);
+            assert_valid("event", &claimed("event", p.clone(), Some(Role::Writer)));
+            // RC2 member roles: a triage member claims 2, which `t_triageKinds` refuses for
+            // retarget, review dismiss, head update, pin and unpin (and policy bypass).
+            let triage = claimed("event", p.clone(), Some(Role::Triage));
+            if crate::members::event_needs(kind) == Role::Writer {
+                assert_refused("event", &triage, "t_triageKinds");
+            } else {
+                assert_valid("event", &triage);
+            }
             if crate::rules::v2::is_author_kind(kind) {
-                assert_valid("authorEvent", &p);
+                assert_valid(
+                    "authorEvent",
+                    &claimed("authorEvent", p, Some(Role::Writer)),
+                );
             }
         }
         // Lock and unlock are transitions in RC1 (the event kinds 21/22 break `noState`).
@@ -743,6 +817,63 @@ mod builders {
                 "{kind:?}"
             );
         }
+    }
+
+    /// RC2 MOD: a hide or unhide as `Collab::set_hidden` writes it (the writer's own
+    /// `asMaintainer` where the contract has it) is accepted; without the proof, or naming
+    /// someone else, `hideByMaint` refuses it. A reason off the list, or one on an unhide, is
+    /// refused before signing.
+    #[test]
+    fn hides_are_rc1_valid_with_the_writers_maintainer_proof() {
+        use crate::collab::moderation::EVENT_AS_MAINTAINER;
+        let issue = target(TargetKind::Issue);
+        let pr = target(TargetKind::Patch);
+        let proved = super::loaded(crate::layout::ForgeContract::Community)
+            .has_property("event", EVENT_AS_MAINTAINER);
+        assert!(proved, "the committed forge-community carries RC2 MOD");
+        let hide = |t: &Target, kind: EventKind, item: Option<&str>, reason: Option<&str>| {
+            let p = scoped(
+                event_payload_props(
+                    t,
+                    kind,
+                    &EventPayload {
+                        value: reason,
+                        ref_id: item,
+                        ..EventPayload::default()
+                    },
+                )
+                .unwrap(),
+            );
+            // A hide is a maintainer's: it claims `r` 1.
+            claimed("event", p, Some(Role::Maintainer))
+        };
+        for (t, kind, item, reason) in [
+            (&issue, EventKind::Hide, Some(ID), Some("spam")),
+            (&issue, EventKind::Hide, None, Some("off-topic")),
+            (&pr, EventKind::Hide, Some(ID), None),
+            (&pr, EventKind::Unhide, Some(ID), None),
+        ] {
+            let mut p = hide(t, kind, item, reason);
+            if proved {
+                assert_refused("event", &p, "hideByMaint");
+                p.insert(EVENT_AS_MAINTAINER.into(), FieldValue::identifier([9; 32]));
+                assert_refused("event", &p, "hideByMaint");
+                p.insert(EVENT_AS_MAINTAINER.into(), FieldValue::identifier(OWNER));
+            }
+            assert_valid("event", &p);
+        }
+        let none = EventPayload::default();
+        let rude = EventPayload {
+            value: Some("rude"),
+            ..EventPayload::default()
+        };
+        assert!(event_payload_props(&issue, EventKind::Hide, &rude).is_err());
+        let spam = EventPayload {
+            value: Some("spam"),
+            ..EventPayload::default()
+        };
+        assert!(event_payload_props(&issue, EventKind::Unhide, &spam).is_err());
+        assert!(event_payload_props(&issue, EventKind::Unhide, &none).is_ok());
     }
 
     #[test]
@@ -804,7 +935,8 @@ mod builders {
                 let oid = report.validate().unwrap();
                 let w = report.write(None, 1_760_000_000_000).unwrap();
                 let p = report.create_props(oid, &w, visibility);
-                let doc = scoped(p.clone());
+                let doc = claimed("checkRun", scoped(p.clone()), None);
+                assert_eq!(doc.get("r"), Some(&FieldValue::integer(1)));
                 assert_valid("checkRun", &doc);
                 // The builder stamps vis itself.
                 assert_eq!(stamped("checkRun", p, visibility, By::Other), doc);
@@ -814,7 +946,11 @@ mod builders {
         let report = check_report("completed", Some("success"));
         let oid = report.validate().unwrap();
         let w = report.write(None, 1_760_000_000_000).unwrap();
-        let p = scoped(report.create_props(oid, &w, Visibility::Private));
+        let p = claimed(
+            "checkRun",
+            scoped(report.create_props(oid, &w, Visibility::Private)),
+            None,
+        );
         assert_refused("checkRun", &p, "privateNoText");
     }
 
@@ -835,8 +971,11 @@ mod builders {
             let now = 1_760_000_000_000 + i as u64 * 1000;
             let w = report.write(stored.as_ref(), now).unwrap();
             if stored.is_none() {
-                doc =
-                    scoped(report.create_props(report.validate().unwrap(), &w, Visibility::Public));
+                doc = claimed(
+                    "checkRun",
+                    scoped(report.create_props(report.validate().unwrap(), &w, Visibility::Public)),
+                    None,
+                );
             } else {
                 for (k, v) in report.changes(&w) {
                     if let Some(v) = v {

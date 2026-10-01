@@ -11,7 +11,9 @@ const BONSIA: NetworkConfig = {
   quorumBaseUrl: null,
   dpnsContractId: 'dpns',
   v2: null,
+  retired: true,
 }
+const SAKURA: NetworkConfig = { ...BONSIA, devnetName: 'sakura', key: 'devnet-sakura', retired: false }
 
 describe('parseDevnetNotice', () => {
   it('is off when unset or empty (the Pages variable passes an empty string when it is not set)', () => {
@@ -37,13 +39,20 @@ describe('devnetNoticeFor', () => {
     expect(devnetNoticeFor({ ...BONSIA, network: 'mainnet', devnetName: null, key: 'mainnet' }, 'upcoming')).toBeNull()
     expect(devnetNoticeFor(BONSIA, null)).toBeNull()
   })
+
+  it('honours `moving` only on a retired devnet, so a stale variable never freezes the devnet Forge moved to', () => {
+    expect(devnetNoticeFor(BONSIA, 'moving')).toBe('moving')
+    expect(devnetNoticeFor(SAKURA, 'moving')).toBeNull()
+    expect(devnetNoticeFor({ ...SAKURA, retired: undefined }, 'moving')).toBeNull()
+    expect(devnetNoticeFor(SAKURA, 'upcoming')).toBe('upcoming')
+  })
 })
 
 describe('writesPausedReason', () => {
   it('pauses writes only while moving, and says why', () => {
     expect(writesPausedReason(null)).toBeNull()
     expect(writesPausedReason('upcoming')).toBeNull()
-    expect(writesPausedReason('moving')).toMatch(/Writing is paused .* reading still works/)
+    expect(writesPausedReason('moving')).toBe('Writing is paused: this devnet was retired and Dash Forge moved to devnet sakura.')
   })
 })
 
@@ -54,6 +63,13 @@ describe('copy and dismissal', () => {
     expect(c.body).toBe(
       'Repos, issues, stars and keys on this devnet will be wiped. Mirrors need setting up again with the /mirror wizard, and your own repos will need a re-push from your clone.',
     )
+  })
+
+  it('moving says where Forge went and what is gone', () => {
+    const c = devnetNoticeCopy('moving', 'bonsia')
+    expect(c.lead).toBe('Dash Forge moved to devnet sakura (Platform v5); bonsia was retired.')
+    expect(c.body).toContain('Writing is paused here')
+    expect(c.body).toContain('re-push from your clone')
   })
 
   it('keeps a dismissal per mode', () => {

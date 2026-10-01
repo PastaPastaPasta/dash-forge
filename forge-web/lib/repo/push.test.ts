@@ -13,6 +13,8 @@ import type { RepoRef } from './contract'
 import type { PrivateSession } from './private-session'
 
 const write = vi.fn()
+// RC2 member roles: the claimed role (`r`) is role-claim.test.ts's and rc1-writers.test.ts's.
+vi.mock('./role-claim', async (orig) => ({ ...(await orig<typeof import('./role-claim')>()), roleClaim: async () => ({}) }))
 vi.mock('../sdk', async (orig) => ({
   ...(await orig<typeof import('../sdk')>()),
   createDocumentIdempotent: (...a: unknown[]) => write(...a),

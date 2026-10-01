@@ -1,0 +1,60 @@
+{
+  "name": "any_member_excludes_triage_and_reader",
+  "description": "Policy: 2 approvals, any member (approverRole 0). A writer, a triage member and a reader approve: only the writer counts, 1 of 2.",
+  "case": "policy",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "writ",
+        "verdict": 1,
+        "commitOid": "H",
+        "createdAt": 100
+      },
+      {
+        "id": "r2",
+        "reviewer": "tri",
+        "verdict": 1,
+        "commitOid": "H",
+        "createdAt": 110
+      },
+      {
+        "id": "r3",
+        "reviewer": "rdr",
+        "verdict": 1,
+        "commitOid": "H",
+        "createdAt": 120
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "tri",
+        "role": "triage",
+        "createdAt": 10
+      },
+      {
+        "identity": "rdr",
+        "role": "reader",
+        "createdAt": 10
+      }
+    ],
+    "headOid": "H",
+    "policy": {
+      "requiredApprovals": 2,
+      "approverRole": 0,
+      "requireChecks": false,
+      "mergeMethods": 0
+    }
+  },
+  "expected": {
+    "met": false,
+    "have": 1,
+    "need": 2
+  }
+}

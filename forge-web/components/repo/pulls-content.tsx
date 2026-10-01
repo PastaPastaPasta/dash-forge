@@ -21,7 +21,8 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
+import { HiddenThreadsToggle, useHiddenThreads } from '@/components/repo/moderation'
 import Link from 'next/link'
 import { GitMerge, GitPullRequest, GitPullRequestClosed, X } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
@@ -151,6 +152,11 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
   // the list knows (the member feed's): a newer head the author pushed shows on the PR's page.
   const heads = useMemo(() => (data?.rows ?? []).map((p) => p.headOid), [data])
   const outcomes = useCheckOutcomes(home.repo, heads)
+  // RC2 MOD: PRs a maintainer hid are left out of the list behind a toggle (counts stay as proved).
+  const [showHidden, setShowHidden] = useState(false)
+  const hiddenIds = useHiddenThreads(sdk, ready, home.repo, network, data?.rows)
+  const rows = (data?.rows ?? []).filter((r) => showHidden || !hiddenIds.has(r.id))
+  const hiddenOnPage = (data?.rows ?? []).filter((r) => hiddenIds.has(r.id)).length
   const filtered = hasPullFilters(query)
   const lastPage = data !== null && data.rows.length === 0 ? pastLastPage(query.page, data.matching, PULL_PAGE_SIZE) : null
   const counts = data?.counts
@@ -235,8 +241,10 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
             action={filtered && query.state !== 'all' ? <Button onClick={() => change({ state: 'all' })} data-testid="pulls-search-all">Search all pull requests</Button> : undefined}
           />
         ) : (
+          <>
+          <HiddenThreadsToggle count={hiddenOnPage} shown={showHidden} onToggle={() => setShowHidden((s) => !s)} noun="pull request" />
           <ul aria-label="Pull requests" aria-busy={loading}>
-            {data?.rows.map((p) => {
+            {rows.map((p) => {
               const st = pullStatus(p)
               return (
                 <li key={p.id} className="flex items-start gap-3 border-b border-anvil-100 px-4 py-3 last:border-b-0 hover:bg-anvil-50 dark:border-anvil-850 dark:hover:bg-anvil-900" data-testid="pull-row" data-number={p.number}>
@@ -263,6 +271,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
               )
             })}
           </ul>
+          </>
         )}
       </div>
 

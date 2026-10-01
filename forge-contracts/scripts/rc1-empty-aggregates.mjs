@@ -4,7 +4,7 @@
 // suspect shape (grovedb verify_v1_leaf_chain); the `in [x]` + groupBy "carrier" form returns an
 // empty map instead. Nothing is written.
 //
-//   node forge-contracts/scripts/rc1-empty-aggregates.mjs [--devnet-name bonsia] [--report <file.json>]
+//   node forge-contracts/scripts/rc1-empty-aggregates.mjs [--devnet-name sakura] [--report <file.json>]
 import { randomBytes } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
@@ -13,7 +13,7 @@ import { loadEvoSdk } from './deploy-v2.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = Object.fromEntries(process.argv.slice(2).reduce((acc, t, i, a) => (t.startsWith('--') ? [...acc, [t.slice(2), a[i + 1] && !a[i + 1].startsWith('--') ? a[i + 1] : true]] : acc), []));
-const devnetName = args['devnet-name'] || 'bonsia';
+const devnetName = args['devnet-name'] || 'sakura';
 const dep = JSON.parse(readFileSync(join(ROOT, 'deployments', `devnet-${devnetName}.json`), 'utf8'));
 const CORE = dep.v2.forgeCore.contractId;
 const COLLAB = dep.v2.forgeCollab.contractId;

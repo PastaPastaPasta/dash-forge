@@ -1,0 +1,1052 @@
+[
+ {
+  "item": "M1",
+  "name": "queued -> in progress sets startedAt",
+  "type": "checkRun",
+  "expect": "ok",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "queued",
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "r": 1
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "in_progress",
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "r": 1,
+   "startedAt": 1760000000000
+  }
+ },
+ {
+  "item": "M1",
+  "name": "externalId set once on a queued run",
+  "type": "checkRun",
+  "expect": "ok",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "queued",
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "r": 1
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "queued",
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "r": 1,
+   "externalId": "gh-9"
+  }
+ },
+ {
+  "item": "M1",
+  "name": "in progress -> completed sets completedAt and conclusion",
+  "type": "checkRun",
+  "expect": "ok",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "in_progress",
+   "startedAt": 1760000000000,
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "startedAt": 1760000000000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1,
+   "completedAt": 1760000060000,
+   "conclusion": "success"
+  }
+ },
+ {
+  "item": "M1",
+  "name": "startedAt moved",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "40128",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "in_progress",
+   "startedAt": 1760000000000,
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "in_progress",
+   "startedAt": 1760000000001,
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1
+  }
+ },
+ {
+  "item": "M1",
+  "name": "externalId changed",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "40128",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "in_progress",
+   "startedAt": 1760000000000,
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "in_progress",
+   "startedAt": 1760000000000,
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-2",
+   "r": 1
+  }
+ },
+ {
+  "item": "M1",
+  "name": "externalId removed",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "40128",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "in_progress",
+   "startedAt": 1760000000000,
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "in_progress",
+   "startedAt": 1760000000000,
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "r": 1
+  }
+ },
+ {
+  "item": "M1",
+  "name": "conclusion flipped after completion",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "40128",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1,
+   "logUrl": "https://logs.example.com/1.txt",
+   "logSha256": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "artifacts": "[]"
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "failure",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 2,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1,
+   "logUrl": "https://logs.example.com/1.txt",
+   "logSha256": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "artifacts": "[]"
+  }
+ },
+ {
+  "item": "M1",
+  "name": "a completed run reopened without its conclusion",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "40128",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1,
+   "logUrl": "https://logs.example.com/1.txt",
+   "logSha256": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "artifacts": "[]"
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "in_progress",
+   "startedAt": 1760000000000,
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1,
+   "logUrl": "https://logs.example.com/1.txt",
+   "logSha256": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "artifacts": "[]"
+  }
+ },
+ {
+  "item": "M1",
+  "name": "a completed run reopened keeping its conclusion",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "doneIfConclusion",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1,
+   "logUrl": "https://logs.example.com/1.txt",
+   "logSha256": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "artifacts": "[]"
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "in_progress",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1,
+   "logUrl": "https://logs.example.com/1.txt",
+   "logSha256": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "artifacts": "[]"
+  }
+ },
+ {
+  "item": "M1",
+  "name": "name changed (frozen outright)",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "40128",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "queued",
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "r": 1
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build2",
+   "status": "queued",
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "r": 1
+  }
+ },
+ {
+  "item": "M1",
+  "name": "vis changed (frozen outright)",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "40128",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "queued",
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "r": 1
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "queued",
+   "outcome": 0,
+   "vis": "private",
+   "r": 1
+  }
+ },
+ {
+  "item": "S1",
+  "name": "summary edited while running",
+  "type": "checkRun",
+  "expect": "ok",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "in_progress",
+   "startedAt": 1760000000000,
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "in_progress",
+   "startedAt": 1760000000000,
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "half way",
+   "externalId": "gh-1",
+   "r": 1
+  }
+ },
+ {
+  "item": "S1",
+  "name": "evidence written by the replace that completes the run",
+  "type": "checkRun",
+  "expect": "ok",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "in_progress",
+   "startedAt": 1760000000000,
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "startedAt": 1760000000000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "all green",
+   "externalId": "gh-1",
+   "r": 1,
+   "completedAt": 1760000060000,
+   "conclusion": "success",
+   "logUrl": "https://logs.example.com/2.txt",
+   "logSha256": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "artifacts": "[]"
+  }
+ },
+ {
+  "item": "S1",
+  "name": "a completed run's logUrl replaced",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "40128",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1,
+   "logUrl": "https://logs.example.com/1.txt",
+   "logSha256": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "artifacts": "[]"
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1,
+   "logUrl": "https://logs.example.com/forged.txt",
+   "logSha256": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "artifacts": "[]"
+  }
+ },
+ {
+  "item": "S1",
+  "name": "a completed run's log replaced with its hash",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "40128",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1,
+   "logUrl": "https://logs.example.com/1.txt",
+   "logSha256": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "artifacts": "[]"
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1,
+   "logUrl": "ipfs://bafyforged",
+   "logSha256": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "artifacts": "[]"
+  }
+ },
+ {
+  "item": "S1",
+  "name": "a completed run's summary edited",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "40128",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1,
+   "logUrl": "https://logs.example.com/1.txt",
+   "logSha256": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "artifacts": "[]"
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "all green (edited)",
+   "externalId": "gh-1",
+   "r": 1,
+   "logUrl": "https://logs.example.com/1.txt",
+   "logSha256": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "artifacts": "[]"
+  }
+ },
+ {
+  "item": "S1",
+  "name": "a completed run's detailsUrl removed",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "40128",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1,
+   "logUrl": "https://logs.example.com/1.txt",
+   "logSha256": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "artifacts": "[]"
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1,
+   "logUrl": "https://logs.example.com/1.txt",
+   "logSha256": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "artifacts": "[]"
+  }
+ },
+ {
+  "item": "S1",
+  "name": "a completed run's artifacts replaced",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "40128",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1,
+   "logUrl": "https://logs.example.com/1.txt",
+   "logSha256": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "artifacts": "[]"
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1,
+   "logUrl": "https://logs.example.com/1.txt",
+   "logSha256": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "artifacts": "[{\"name\":\"other\"}]"
+  }
+ },
+ {
+  "item": "S1",
+  "name": "a log added to a completed run",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "40128",
+  "stored": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1
+  },
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "r": 1,
+   "logUrl": "https://logs.example.com/late.txt",
+   "logSha256": {
+    "$b": [
+     4,
+     32
+    ]
+   }
+  }
+ }
+]

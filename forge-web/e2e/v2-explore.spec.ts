@@ -10,7 +10,7 @@ const DEMO_OWNER = DEMO.owner
 /**
  * Explore, the header and the notifications page, signed out, on a devnet (reads only):
  *
- *   E2E_DEVNET=bonsia E2E_PORT=4323 pnpm exec playwright test v2-explore.spec.ts
+ *   E2E_DEVNET=sakura E2E_PORT=4323 pnpm exec playwright test v2-explore.spec.ts
  *
  * The signed-in halves (my repos, the inbox, the key top-up) are in v2-inbox-topup.spec.ts,
  * gated on E2E_WRITE because signing in registers a key.

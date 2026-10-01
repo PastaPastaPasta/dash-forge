@@ -1,0 +1,55 @@
+{
+  "name": "reader_verdicts_not_counted",
+  "description": "RC2 member roles: a reader's (role 3) approval and request for changes are neither counted nor blocking.",
+  "case": "approvals",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "rdr",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 100
+      },
+      {
+        "id": "r2",
+        "reviewer": "rdr2",
+        "verdict": 2,
+        "commitOid": "head0000",
+        "createdAt": 110
+      },
+      {
+        "id": "r3",
+        "reviewer": "maint",
+        "verdict": 1,
+        "commitOid": "head0000",
+        "createdAt": 120
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "rdr",
+        "role": "reader",
+        "createdAt": 50
+      },
+      {
+        "identity": "rdr2",
+        "role": "reader",
+        "createdAt": 50
+      },
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      }
+    ],
+    "headOid": "head0000"
+  },
+  "expected": {
+    "approvers": [
+      "maint"
+    ],
+    "changesRequested": []
+  }
+}

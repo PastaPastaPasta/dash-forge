@@ -116,8 +116,8 @@ describe('the lock bit is in the thread read (no request of its own)', () => {
       // The viewer's role (member or not: the banner's two texts) comes from the members the
       // composite seeded: no request.
       const before = requests(seen)
-      expect(await readViewerPermissions(sdk, repo, STRANGER, 'devnet')).toEqual({ write: false, maintain: false })
-      expect(await readViewerPermissions(sdk, repo, MAINT, 'devnet')).toEqual({ write: true, maintain: true })
+      expect(await readViewerPermissions(sdk, repo, STRANGER, 'devnet')).toEqual({ member: false, maintain: false, role: null })
+      expect(await readViewerPermissions(sdk, repo, MAINT, 'devnet')).toEqual({ member: true, maintain: true, role: 'maintainer' })
       expect(requests(seen)).toBe(before)
     }
     const [open, locked] = runs as [(typeof runs)[0], (typeof runs)[0]]
@@ -244,7 +244,8 @@ describe('lockViewerOf', () => {
     expect(lockViewerOf(null, { settled: false, data: null })).toBe('signedOut')
     expect(lockViewerOf(MAINT, { settled: false, data: null })).toBe('checking')
     expect(lockViewerOf(MAINT, { settled: true, data: null })).toBe('unknown')
-    expect(lockViewerOf(MAINT, { settled: true, data: { write: true, maintain: false } })).toBe('member')
-    expect(lockViewerOf(STRANGER, { settled: true, data: { write: false, maintain: false } })).toBe('outsider')
+    expect(lockViewerOf(MAINT, { settled: true, data: { member: true, maintain: false, role: 'writer' } })).toBe('member')
+    expect(lockViewerOf(MAINT, { settled: true, data: { member: true, maintain: false, role: 'reader' } })).toBe('member')
+    expect(lockViewerOf(STRANGER, { settled: true, data: { member: false, maintain: false, role: null } })).toBe('outsider')
   })
 })

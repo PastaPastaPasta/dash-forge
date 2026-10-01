@@ -7,7 +7,7 @@ import { EMPTY, E2E_DEVNET, PASSPHRASE, fixtureWriteBlocked, idFile, runAxe, sho
  * `ux-dx-spec.md` §1(b)), live on a devnet build because the steps after the first need a
  * signed-in identity:
  *
- *   E2E_DEVNET=bonsia E2E_WRITE=1 pnpm exec playwright test mirror-wizard.spec.ts
+ *   E2E_DEVNET=sakura E2E_WRITE=1 pnpm exec playwright test mirror-wizard.spec.ts
  *
  * m1 needs no identity and runs in the read-only CI job too; m2 and m3 need `E2E_WRITE=1`.
  *
@@ -240,8 +240,8 @@ test('m2. signed in: repo, storage, runner key and workflow, with no write reach
     `s3-bucket: '${R2.bucket}'`,
     `s3-public-url: '${R2.publicUrl}'`,
     "sync: 'code,releases,labels,issues,prs'",
-    `ref: ${commit}`,
-    'uses: ./.dash-forge/action',
+    `uses: PastaPastaPasta/dash-forge/action@${commit}`,
+    "install: 'source'",
     'S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}',
   ]) {
     expect(yaml, line).toContain(line)

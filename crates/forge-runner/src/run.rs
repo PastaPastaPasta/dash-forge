@@ -327,19 +327,24 @@ fn dg_read(cfg: &Config, args: &[&str]) -> Result<serde_json::Value> {
 
 /// The repository's pull requests (`dg pr list --state all`, the newest `limit`).
 pub fn list_pulls(cfg: &Config, repo: &RepoConfig, limit: u32) -> Result<Vec<PullRow>> {
-    let v = dg_read(
-        cfg,
-        &[
-            "pr",
-            "list",
-            &repo.repo,
-            "--state",
-            "all",
-            "--limit",
-            &limit.to_string(),
-        ],
-    )?;
+    let limit = limit.to_string();
+    let v = dg_read(cfg, &list_pulls_args(&repo.repo, &limit))?;
     serde_json::from_value(v["prs"].clone()).context("dg pr list: unexpected rows")
+}
+
+/// `dg pr list`'s arguments for [`list_pulls`]. `--include-hidden`: a maintainer's hide is display
+/// only, and CI must see every PR (a hidden PR still merges, and a required check still gates it).
+fn list_pulls_args<'a>(repo: &'a str, limit: &'a str) -> [&'a str; 8] {
+    [
+        "pr",
+        "list",
+        repo,
+        "--state",
+        "all",
+        "--include-hidden",
+        "--limit",
+        limit,
+    ]
 }
 
 /// One pull request, read by number (`dg pr view`), whatever its age.
@@ -359,10 +364,20 @@ pub type Members = std::collections::BTreeMap<String, Author>;
 
 /// [`list_members`]' reading of `dg collab list --json`. The owner counts as a maintainer
 /// whether or not it holds a maintainer document.
+///
+/// A list without `"roles": true` comes from a dg older than RC2 member roles, which lists
+/// triage members and readers as "writer": it is refused, so their PRs never get a writer's
+/// trusted-runner treatment.
 pub fn members_of(v: &serde_json::Value) -> Result<Members> {
     let rows = v["members"]
         .as_array()
         .context("dg collab list: no members")?;
+    if v["roles"].as_bool() != Some(true) {
+        bail!(
+            "dg collab list: no member roles (dg too old for this runner: it lists triage \
+             members and readers as writers); upgrade dg"
+        );
+    }
     let mut m = Members::new();
     for r in rows {
         let (Some(id), Some(role)) = (r["identityId"].as_str(), r["role"].as_str()) else {
@@ -371,7 +386,8 @@ pub fn members_of(v: &serde_json::Value) -> Result<Members> {
         let role = match role {
             "maintainer" => Author::Maintainer,
             "writer" => Author::Writer,
-            // A role this runner does not know is not a member's.
+            // A role this runner does not know is not a member's; triage members and readers
+            // (RC2 member roles) cannot push, so they are strangers here too.
             _ => continue,
         };
         let held = m.entry(id.to_string()).or_insert(role);
@@ -833,6 +849,13 @@ fn run_workflow(c: &RunCtx<'_>, wf: &workflow::Workflow, ran: &mut Ran) -> Resul
 
 /// Report a job's result. A failed artifact upload must not leave the run in progress for good:
 /// if the report with artifacts fails, report the result again without them, and say so.
+///
+/// The first report may have landed anyway (a timeout that "may still land"). A retry that
+/// reads the run as completed continues it, and RC2 forge-community freezes a completed run's
+/// summary, log and artifacts (S1): `dg ci report` leaves them as stored
+/// (`forge_core::ci::EVIDENCE_FIELDS`), so the retry records nothing new instead of being
+/// refused with 40128. A retry that reads a node still a block behind is refused (40128, or a
+/// stale revision); the run then stands as the first report recorded it.
 fn report_completed(cfg: &Config, r: &Report<'_>) {
     if !report(cfg, r) && !r.artifacts.is_empty() {
         report(
@@ -1119,6 +1142,15 @@ mod tests {
         }
     }
 
+    /// Hiding is display only: the runner lists every PR, hidden ones too, so a hidden PR still
+    /// gets its required checks.
+    #[test]
+    fn the_runner_lists_hidden_pull_requests_too() {
+        let args = list_pulls_args("a/b", "50");
+        assert!(args.contains(&"--include-hidden"), "{args:?}");
+        assert_eq!(&args[..3], ["pr", "list", "a/b"]);
+    }
+
     #[test]
     fn a_completed_report_carries_the_log_only_with_a_storage_profile() {
         let r = Report {
@@ -1282,10 +1314,17 @@ mod tests {
                 {"identityId": "W", "role": "writer"},
                 {"identityId": "B", "role": "writer"},
                 {"identityId": "B", "role": "maintainer"},
+                {"identityId": "T", "role": "triage"},
+                {"identityId": "R", "role": "reader"},
             ],
             "ownerId": "O",
+            "roles": true,
         });
         let m = members_of(&v).unwrap();
+        // RC2 member roles: triage members and readers cannot push, so a PR of theirs is a
+        // stranger's to the runner (no trusted-branch run, no secrets).
+        assert_eq!(author_of(&m, "T"), Author::Stranger);
+        assert_eq!(author_of(&m, "R"), Author::Stranger);
         assert_eq!(author_of(&m, "M"), Author::Maintainer);
         assert_eq!(author_of(&m, "W"), Author::Writer);
         assert_eq!(
@@ -1300,9 +1339,17 @@ mod tests {
         );
         assert_eq!(author_of(&m, "X"), Author::Stranger);
         assert!(
-            members_of(&serde_json::json!({"members": []})).is_err(),
+            members_of(&serde_json::json!({"members": [], "roles": true})).is_err(),
             "a dg without ownerId is refused, not read as 'no owner'"
         );
+        // A dg older than member roles lists triage members and readers as "writer": its list
+        // is refused rather than trusted.
+        let old = serde_json::json!({
+            "members": [{"identityId": "T", "role": "writer"}],
+            "ownerId": "O",
+        });
+        let e = members_of(&old).unwrap_err().to_string();
+        assert!(e.contains("upgrade dg"), "{e}");
     }
 
     #[test]

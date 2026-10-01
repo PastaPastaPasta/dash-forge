@@ -13,6 +13,7 @@ import { GitBranch } from 'lucide-react'
 import type { RepoRef } from '@/lib/repo'
 import { shellWord } from '@/lib/view/repo-commands'
 import { useViewerRole, type ViewerRole } from '@/hooks/use-repo-chrome'
+import { capabilitiesOf } from '@/lib/rules/roles'
 import { useAuth } from '@/contexts/auth-context'
 import { CopyRow } from '@/components/ui/copy-row'
 import { ForkButton, type ForkDefaults } from '@/components/repo/fork-button'
@@ -55,7 +56,7 @@ export function pushHintOf({
   const canFork = repo.visibility === 'public'
   const command = pushCommand(repo.ownerId, repo.name)
   if (identity === null) return { kind: 'either', command, canFork }
-  if (role.known && role.role !== null) return { kind: 'member', command }
+  if (role.known && capabilitiesOf(role.role).canPush) return { kind: 'member', command }
   // A fork of the viewer's is a remote they can push to whatever the role read says.
   if (Array.isArray(forks) && forks.length > 0) {
     return { kind: 'fork', forks: forks.map((f) => ({ name: f.name, command: pushCommand(f.ownerId, f.name) })) }

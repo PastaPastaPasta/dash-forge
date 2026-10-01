@@ -1,0 +1,16 @@
+[
+ {
+  "item": "S2",
+  "name": "reviews filed under the reviewed patch's owner",
+  "type": "review",
+  "index": "toAuthor",
+  "expect": "absent"
+ },
+ {
+  "item": "S3",
+  "name": "reviews filed under their writer",
+  "type": "review",
+  "index": "author",
+  "expect": "absent"
+ }
+]

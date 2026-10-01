@@ -17,29 +17,35 @@ Reading a public repository needs no identity: `dg repo view`, `dg repo list --o
 
 ## Collaborators
 
-There are two roles:
+There are four roles. Consensus enforces what each role can write: a write the role does not allow is refused by Platform, and Forge's clients refuse it before you pay for it. Counting approvals and offering readers only on private repositories are client rules, which every Forge client applies alike.
 
-| Role | `--role` | Can |
-|---|---|---|
-| Writer | `writer` (default) | Push to unprotected branches; label, close and reopen any issue or PR; record merges. |
-| Maintainer | `maintainer` | Everything a writer can, plus protected branches, releases, repository settings (`config`) and webhooks. |
+| Role | `--role` | Can | Closest GitHub role |
+|---|---|---|---|
+| Reader | `reader` (alias `read`); **private repositories only** | Read the repository (it receives the key). Otherwise what anyone can do: open issues and PRs, comment and review, and as an author close or reopen their own issues and PRs, mark their own PRs draft or ready, request reviews on them and resolve their threads. | Read |
+| Triage | `triage` | Close, reopen and lock any issue or PR; label, assign, set milestones, request reviews and resolve review threads; create labels and milestones. **Not**: push, merge, mark a PR draft or ready, change a PR's base, dismiss reviews, pin, or post check runs. | Triage |
+| Writer | `writer` (default) | Everything triage can, plus push to unprotected branches, merge, mark draft or ready, change a PR's base, dismiss reviews, pin, and post check runs. | Write |
+| Maintainer | `maintainer` | Everything a writer can, plus protected branches, releases, repository settings (`config`, branch policy), webhooks and hiding comments. | Maintain, and most of Admin |
 
-`--role write` and `--role maintain` are accepted as aliases.
+The repository owner alone adds and removes members, and edits the description and topics (GitHub's Admin). `--role write` and `--role maintain` are accepted as aliases.
 
-Anyone, member or not, can open issues and PRs, comment and review.
+Anyone, member or not, can open issues and PRs, comment and review. Approvals count toward a branch policy only from maintainers and writers: a triage member's or reader's approval is shown as **not counted**, and their request for changes does not block. Imported issues and comments (a mirror's provenance and upstream numbers) are trusted from the same people.
+
+A public repository has no readers: everyone can read it already. A member holds one writer document, so changing between writer, triage and reader replaces it: `dg collab add` with the new `--role` deletes the old document and writes the new one (their acceptance stands, so they need not accept again), and the web app's Settings → Collaborators has **Change role** on public repositories. On a private repository `dg collab add` changes the role the same way without rotating the key, since the member stays a member; in the web app, remove the member and add them again, which rotates it as every removal does.
 
 Adding a collaborator is two steps: the owner adds them, and the collaborator accepts. Consensus admits a `writer`/`maintainer` document only when it names the member's own `consent` document for the repo (`member_consent`), so nobody can be made a member, or spammed with an invitation, without agreeing first.
 
 ```sh
 dg collab accept <owner>/<repo>              # the collaborator, first: records their consent
 dg collab list   <owner>/<repo>
-dg collab add    <owner>/<repo> <identity id or DPNS name> --role writer
+dg collab add    <owner>/<repo> <identity id or DPNS name> --role writer   # or triage, reader, maintainer
 dg collab remove <owner>/<repo> <identity id or DPNS name> --role writer
 ```
 
+`dg collab list` shows each member's role. `dg collab remove --role writer` (or `triage`, `reader`) removes the member's writer document, whichever of the three it grants.
+
 If the owner runs `dg collab add` before the invitee has accepted, it is refused before anything is signed: *"`<identity>` has not accepted membership of `<repo>` yet"*, with the fix to ask them to run `dg collab accept`, then add them again. `dg collab add <owner>/<repo> <identity id> --wait 300` instead waits (printing that it is waiting) up to that many seconds for the acceptance to land, then adds them; with no `--wait` it checks once. `dg collab accept --withdraw` withdraws an earlier acceptance (a membership already granted stands until the owner removes it).
 
-From the web app, the invitee opens the repository's **invite link** (Settings → Collaborators, on public and private repos alike) and clicks **Accept invitation**; the owner's Settings → Collaborators lists **Pending invitations** (accepted, not added yet) with an **Add as writer / maintainer** button for each, and shows who is still waiting to accept after a refused add.
+From the web app, the invitee opens the repository's **invite link** (Settings → Collaborators, on public and private repos alike) and clicks **Accept invitation**; the owner's Settings → Collaborators lists **Pending invitations** (accepted, not added yet) with a role picker (writer, triage, maintainer, and on a private repository reader) and an **Add** button for each, and shows who is still waiting to accept after a refused add.
 
 Adding or removing a collaborator is a write by the repository owner, signed with the owner's HIGH key.
 
@@ -73,7 +79,7 @@ The description and topics live on the repository document, which only its owner
 
 ### How access works
 
-A collaborator is a `writer` or `maintainer` document in Forge's shared forge-core contract, keyed by (repository, member). Only the repository owner can create one, and consensus enforces that. Every write-path document type (ref updates, packs, releases, config, events) names its gate, and consensus refuses a write whose author has no current membership document ([`E601`](../errors.md#e601), Platform code 40120).
+A collaborator is a `writer` or `maintainer` document in Forge's shared forge-core contract, keyed by (repository, member). A `writer` document carries the role (writer, triage or reader), and every role-gated write claims a role that consensus checks against it. Only the repository owner can create one, and consensus enforces that. Every write-path document type (ref updates, packs, releases, config, events) names its gate, and consensus refuses a write whose author has no current membership document ([`E601`](../errors.md#e601), Platform code 40120).
 
 - **Add** creates the membership document, naming the member's `consent`. **Remove** deletes it. The member's next write is refused.
 - **Consent stands on its own.** A `consent` document is not deleted when the owner removes the member, so adding them again later needs no new acceptance.
@@ -81,7 +87,24 @@ A collaborator is a `writer` or `maintainer` document in Forge's shared forge-co
 - **Past work stays valid.** A document's existence proves its writer was a member at the time it was written. Removing a maintainer later does not undo their past merges or ref updates.
 - The owner is enrolled as a maintainer when the repository is created.
 
-[forge-v2.md](../contracts/forge-v2.md) §2 lists which role each document type needs.
+[forge-v2.md](../contracts/forge-v2.md) §2 lists which role each document type needs, and §2.1 how roles are proved.
+
+### Organizations
+
+Forge has no organization accounts, and membership is never delegated: only a repository's owner can add or remove its members. A team that wants one shared owner uses an **organization identity**:
+
+1. Create an identity for the organization (`dg auth new`, or the web app's sign-up) and keep its identity file or recovery words offline. It owns the organization's repositories (`dg repo create`), so their URLs are `<org>/<repo>`; register a DPNS name for it.
+2. Add each admin's **personal** identity as a maintainer of each repository (`dg collab add <org>/<repo> <admin> --role maintainer`). Pushes, merges, reviews and releases stay signed by the person who made them.
+3. Give each admin a **limited key of the organization identity** for the owner-only writes: adding and removing members, the description and topics. The key can do everything the organization can on Forge (it is the owner and a maintainer of every organization repository: protected pushes, settings, policy, webhooks, new repositories), but never spend more than its budget, never outlive its expiry, and never touch another contract. The organization's master key registers it:
+
+   ```sh
+   # as the organization (its identity file); one key per admin
+   dg auth export --new-key --budget 0.5 --expires 90d --format dfk1 --reveal-secrets -o alice-admin.dfk1
+   ```
+
+   Hand the file to the admin over a private channel; they use it as `DASH_FORGE_KEY` (or `dg --identity`) for the organization's commands. `dg auth keys list` (as the organization) shows every admin's key, and `dg auth keys disable <id>`, run with the organization's identity file, revokes one at once.
+
+What this does not give you: the key does not say which admin used it (Platform records the organization as the writer of membership changes), and a limited key holds no encryption key, so on a **private** repository adding a member (which wraps the key to them) and removing one (which rotates it) is done by whoever keeps the organization's identity file, on that machine. Don't copy the identity file to admins' machines: that gives them the master key, which the limited keys exist to avoid.
 
 ---
 
@@ -94,6 +117,7 @@ dg auth keys add --encryption                   # once per identity (see Identit
 dg repo create secret --private                 # or `dg init --private`
 git push dash://<you>/secret main               # packs are sealed, ref names encrypted
 dg collab add    <you>/secret <identity id>     # membership + the key, wrapped to them
+dg collab add    <you>/secret <identity id> --role reader   # read-only: the key, and no member writes
 dg collab remove <you>/secret <identity id>     # delete + key rotation
 dg repo keys status <you>/secret                # epochs, who holds a key, pending repairs
 ```
@@ -103,7 +127,7 @@ dg repo keys status <you>/secret                # epochs, who holds a key, pendi
 | Encrypted (members only) | Visible to everyone |
 |---|---|
 | Code: every pack, index and browse artifact | That the repository exists; its name, owner, description, display name and topics |
-| Branch and tag names | Members and their roles; when each joined; key epochs and who rotated them |
+| Branch and tag names | Members and their roles (writer, triage or reader included); when each joined; key epochs and who rotated them |
 | Default branch and protected-branch patterns | When pushes, issues, PRs, comments and reviews happen, and who wrote each |
 | Issue and PR titles and bodies, comment and review text, an inline comment's file path; the labels and milestones set on them, and a dismissal's reason | Commit ids (`newOid`, PR heads): anyone who already knows a commit id can confirm the repo contains it |
 | A release's tag, name, notes, draft, pre-release, yanked and unpublished flags, and its asset list; each asset file | That a release revision was written, when and by whom; revisions of one tag within a key epoch share a keyed tag name; each asset file's size |
@@ -114,6 +138,8 @@ dg repo keys status <you>/secret                # epochs, who holds a key, pendi
 Leave the description empty if the project's purpose is itself sensitive.
 
 **Every member needs an encryption key.** Private repositories wrap the key to each member's identity `ENCRYPTION` key. `dg collab add` checks the member has one and stops before writing anything if not ([`E306`](../errors.md#e306)); they add one with `dg auth keys add --encryption`, or Settings → Keys → **Enable private repos** in the web app.
+
+**Readers.** A reader (`--role reader`) holds the key like any member and can read everything, and can write only what anyone can (issues, PRs, comments and reviews, all sealed). Their approvals do not count. Like any member, a reader could copy what they read.
 
 **Removing a member rotates the key.** New pushes, issues and comments will be unreadable to the removed member. Everything they could already read stays readable to them: encryption can't take back what was shared. The rotation is one key wrap per remaining member plus one anchor document, so `dg collab remove` shows the cost first. You are wrapped first, so an interruption never locks you out; running `dg repo keys repair` finishes an interrupted rotation (the key is recovered from your own wrap on chain, never from a local file).
 
@@ -138,6 +164,7 @@ Anyone with an identity and some credits can file an issue. Fees are the spam fl
 ```sh
 dg issue list   <owner>/<repo> [--state open|closed|all] [--label bug]... [--author me|<id|name>]
                 [--assignee me|<id|name>|none] [--search "crash #12"] [--limit 30] [--page 2]
+                [--include-hidden]
 dg issue view   <owner>/<repo> 12
 dg issue create <owner>/<repo> --title "Crash on empty input" --body "Steps: …"
 dg issue edit   <owner>/<repo> 12 --title "Crash on empty config" [--body … | --body-file notes.md]
@@ -174,6 +201,35 @@ dg issue lock   <owner>/<repo> 12 --off    # unlock
 ```
 
 Locking and unlocking are transitions members write, folded the same way for issues and PRs. `dg issue view --json` shows the fold as `"locked": true|false`; `dg pr view` does not print it today. On the web, an issue's sidebar shows "Locked to members" or "Open to everyone" and has a **Lock** / **Unlock** button for members; a PR enforces the same lock (a non-member sees the compose box disabled, "This conversation is locked: only maintainers and writers can comment") but shows no status label and no button yet — it locks and unlocks from `dg pr lock` only. Once locked, a non-member's comment or review is refused at the CLI before anything is signed (*"comment not posted: issue #12 is locked to members"*); a member's still goes through. Locking does not require re-running a close or reopen — it is independent of the issue or PR's open/closed state.
+
+### Moderation: lock and hide
+
+A repository's maintainers moderate its conversations with two tools. Neither deletes anything: on Dash Platform nobody but a comment's author can delete it, and the network's own moderation applies to every repository at once, so it cannot be scoped to yours.
+
+| | Lock | Hide |
+|---|---|---|
+| Who | writers and maintainers | **maintainers** only |
+| What it does | from then on only members can comment or review | readers see a comment, a review or a whole issue or PR collapsed, and can expand it |
+| Enforced by | the network (consensus refuses a non-member's post) | every Forge client; the network checks that the hider is a maintainer |
+| Use it for | a thread under attack, or a finished discussion | spam, abuse, off-topic or outdated posts that are already there |
+
+```sh
+dg issue hide <owner>/<repo> 12 --comment <comment id> --reason spam   # hide one comment
+dg issue hide <owner>/<repo> 12 --reason off-topic                       # hide the whole issue
+dg issue hide <owner>/<repo> 12 --comment <comment id> --off             # unhide
+dg pr hide    <owner>/<repo> 7 --review <review id> --reason outdated    # or --comment <id>
+dg issue view <owner>/<repo> 12 --show-hidden                            # read what was hidden
+```
+
+Reasons are GitHub's: `spam`, `abuse`, `off-topic`, `outdated`, `resolved`, `duplicate`, or none. The ids come from `dg issue view --json` and `dg pr view --comments --json`. `dg` refuses a hide from someone who is not a maintainer before anything is signed.
+
+**What readers see.** On the web a hidden comment or review is one line, "A comment by bob was hidden by alice as spam · Show", in the timeline and in Files changed. A hidden issue or PR keeps its number; the web's Issues and Pull requests lists leave it out behind "N on this page hidden by maintainers · Show" (the Open and Closed counts do not change), and its page opens behind a banner with "Show it anyway". `dg issue list` and `dg pr list` leave it out the same way, after paging (a page may show fewer rows than `--limit`), and say "(2 hidden by maintainers on this page; --include-hidden shows them)"; `--include-hidden` lists it with "[hidden by alice as spam]" at the end of its row, and `--json` gives each row a `hiddenBy` field (`null`, or `by`, `reason`, `at`, `eventId`) and the page's `hiddenOmitted` count. In `--json`, `count` is the rows shown and `count + hiddenOmitted` the page's size, so use `truncated`, not `count < --limit`, to tell the last page (the top-level `hidden` still counts malformed documents). The flag is meant for maintainers checking what was hidden, but anyone can use it: the hides are public. `dg issue view` and `dg pr view` print the same one line unless you pass `--show-hidden`. The timeline records every hide and unhide that counts ("alice hid a comment by bob · spam"): they cannot be edited or deleted, so they are the record of who hid what.
+
+**Who wins.** Any maintainer can hide or unhide. If the repository's owner hid or unhid something, the owner's latest decision stands whatever a maintainer does later, and only the owner can hide what the owner wrote; `dg` and the web refuse such a write before signing rather than spend credits on it. An inline comment hidden with its review shows again when the review is unhidden. A hide stays after its maintainer is removed (the network proved them a maintainer when they wrote it); unhide it to undo it.
+
+**A hidden review still counts.** Hiding is display only: an approval or a request for changes still counts toward the merge until a member dismisses it (`dg pr dismiss-review`, or **Dismiss** on the Reviewers card). Hiding an issue or PR does not close it either; the web's **Hide issue…** offers "Also close and lock it", which writes the close and the lock after the hide.
+
+**Limits.** A hidden post is still on Platform: anyone can read it with **Show**, `--show-hidden`, `--include-hidden`, or any client that predates hiding. In a private repository the reason is encrypted like other event values; which item was hidden is not. Each hide costs about as much as a label (one small event). To stop a flood, lock the thread first, then hide what was already posted.
 
 ---
 
@@ -233,7 +289,7 @@ PR numbers follow the same rule as issue numbers.
 **4. Review.** Reviewers fetch your commit straight from your repository:
 
 ```sh
-dg pr list     <owner>/project [--state open|closed|all]
+dg pr list     <owner>/project [--state open|closed|all] [--include-hidden]
 dg pr view     <owner>/project 7          # state, reviewers, approvals, reviews
 dg pr view     <owner>/project 7 --comments   # + threads under their file and line
 dg pr diff     <owner>/project 7          # fetches head and base, then git diff base...head

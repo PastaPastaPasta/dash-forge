@@ -109,7 +109,7 @@ function refHashHexOf(doc: PlainDocument, documentTypeName: string): string {
 }
 
 /** One ref's updates of one type (an equality read — single-branch, so cursor-safe). */
-function readOneRef(
+export function readOneRef(
   sdk: EvoSDK,
   repo: RepoRef,
   documentTypeName: string,
@@ -122,6 +122,22 @@ function readOneRef(
       orderBy: [['$createdAt', 'asc']],
     }),
   )
+}
+
+/**
+ * The rows of `rows` filed under the ref `refNameHashHex` (a row whose `refNameHash` is not 32
+ * bytes is no ref's). A reader that holds a type's whole timeline takes one ref's history from it.
+ */
+export function rowsOfRef(rows: readonly PlainDocument[], refNameHashHex: string): PlainDocument[] {
+  // A row whose hash does not parse is no row of this ref: skipped here, where the whole-timeline
+  // read (`groupByRef`) refuses it, since there it would be some ref's.
+  return rows.filter((d) => {
+    try {
+      return refHashHexOf(d, '') === refNameHashHex
+    } catch {
+      return false
+    }
+  })
 }
 
 /** Drop repeated `$id`s, keeping the first occurrence. */

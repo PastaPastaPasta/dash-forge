@@ -212,16 +212,25 @@ export default function NotificationsPage(): JSX.Element {
               </li>
               <li>
                 {plural(counts.joined, 'issue or pull request', 'issues and pull requests')} you
-                opened or commented on: comments, state changes, and reviews on your pull requests.
+                opened or commented on: comments, state changes, and reviews on your pull requests
+                {subs.reviewIndexes?.toAuthor ? ' (on every pull request you opened)' : ''}.
               </li>
               <li>
                 {plural(counts.addressed, 'issue or pull request', 'issues and pull requests')} you
                 were assigned or asked to review (on every device): the assignment, comments and state changes.
               </li>
-              <li>
-                {plural(counts.seen, 'pull request or issue', 'pull requests and issues')} you
-                reviewed or were mentioned in, as this browser saw it: comments and state changes. Other devices do not know about these.
-              </li>
+              {subs.reviewIndexes?.author ? (
+                <li>
+                  {plural(counts.seen, 'pull request or issue', 'pull requests and issues')} you
+                  reviewed (on every device) or were mentioned in (as this browser saw it): comments and state changes. Other devices
+                  do not know about the mentions.
+                </li>
+              ) : (
+                <li>
+                  {plural(counts.seen, 'pull request or issue', 'pull requests and issues')} you
+                  reviewed or were mentioned in, as this browser saw it: comments and state changes. Other devices do not know about these.
+                </li>
+              )}
               {prefs?.stars ? <li>{plural(counts.starred, 'starred repo')}: new issues and pull requests.</li> : null}
               {subs.droppedRepos > 0 ? (
                 <li>

@@ -102,7 +102,8 @@ function checkStateOf(run: CheckRunRow): CheckState {
 
 /**
  * Whether the check runs on `headOid` meet `policy`. A run counts only when its reporter is a
- * current maintainer or writer (`oracle`) or a current runner (`runners`); the newest counting
+ * current approver (a maintainer or role-1 writer, `oracle`; never a triage member or reader) or a
+ * current runner (`runners`); the newest counting
  * run per name by `($createdAt, $id)` decides it. `requiredChecks` names what must pass;
  * otherwise `requireChecks` means every counting name must pass and at least one exist. A
  * required check with a pinned source (`requiredCheckSources`, by position) counts only that
@@ -115,7 +116,7 @@ export function checksState(
   runners: ReadonlySet<string>,
   policy: ChecksPolicy,
 ): ChecksState {
-  const trusted = (who: string) => oracle.currentRole(who) !== null || runners.has(who)
+  const trusted = (who: string) => oracle.currentApprover(who) || runners.has(who)
   const pinned = pinnedSources(policy)
   const newest = new Map<string, CheckRunRow>()
   let untrusted = 0

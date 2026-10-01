@@ -63,7 +63,7 @@ vi.mock('@/lib/repo', async (orig) => ({
 let consentLists: (string[] | 'throw' | { after: number; ids: string[] })[] = []
 let consentListCalls = 0
 
-import { INVITES_POLL_MAX_MS, INVITES_POLL_MS, InviteBanner, Invitations } from './invite-banner'
+import { INVITES_POLL_MAX_MS, INVITES_POLL_MS, InviteBanner, Invitations, invitedRole } from './invite-banner'
 import { useUiStore } from '@/hooks/use-ui-store'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -199,7 +199,7 @@ describe("the owner's pending invitations while Settings is open", () => {
     delete (document as { visibilityState?: unknown }).visibilityState
   })
   async function renderInvitations(memberIds: string[] | null = []): Promise<void> {
-    act(() => root.render(<Invitations repo={ownerRepo} members={memberIds} awaiting={null} disabled={false} onPick={() => undefined} />))
+    act(() => root.render(<Invitations repo={ownerRepo} members={memberIds} awaiting={null} disabled={false} role="writer" onPick={() => undefined} />))
     await flush()
   }
 
@@ -297,5 +297,15 @@ describe("the owner's pending invitations while Settings is open", () => {
     act(() => root.render(<></>))
     await flush(INVITES_POLL_MAX_MS * 3)
     expect(consentListCalls).toBe(1)
+  })
+})
+
+describe('invitedRole: the role an invite link suggests', () => {
+  it('names a role the owner could grant here, never a reader on a public repo', () => {
+    expect(invitedRole('triage', 'public')).toBe('triage')
+    expect(invitedRole('reader', 'public')).toBeNull()
+    expect(invitedRole('reader', 'private')).toBe('reader')
+    expect(invitedRole('1', 'private')).toBeNull()
+    expect(invitedRole(null, 'public')).toBeNull()
   })
 })

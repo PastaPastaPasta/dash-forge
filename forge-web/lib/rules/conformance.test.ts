@@ -256,6 +256,12 @@ function runCaseV2(v: Vector): void {
       expect((v.input as { readonly codes: readonly number[] }).codes.map(v2.statusOfCode)).toEqual(v.expected)
       break
     }
+    case 'close_reason': {
+      onlyKeys(v, ['targetNumber', 'transitions'], TRANSITION_NESTED)
+      const inp = v.input as { readonly targetNumber: number; readonly transitions: readonly v2.Transition[] }
+      expect(v2.currentCloseReason(inp.transitions, inp.targetNumber)).toEqual(v.expected)
+      break
+    }
     case 'transition_sum': {
       onlyKeys(v, ['transitions'], TRANSITION_NESTED)
       const { transitions } = v.input as { readonly transitions: readonly v2.Transition[] }
@@ -414,6 +420,20 @@ function runCaseV2(v: Vector): void {
       expect(v.case === 'pinned' ? v2.pinnedTargets(events) : v2.foldThreadMetaV2(events)).toEqual(v.expected)
       break
     }
+    case 'hidden_items': {
+      onlyKeys(v, ['threadId', 'threadAuthor', 'owner', 'maintainers', 'proved', 'events', 'comments', 'reviews'], {
+        events: EVENT_KEYS,
+        comments: ['id', 'author', 'reviewId'],
+        reviews: ['id', 'author'],
+      })
+      const inp = v.input as v2.HideScope & {
+        readonly events: readonly Event[]
+        readonly comments?: readonly v2.ThreadItem[]
+        readonly reviews?: readonly v2.ThreadItem[]
+      }
+      expect(v2.hiddenItems(inp.events, inp, inp.comments ?? [], inp.reviews ?? [])).toEqual(v.expected)
+      break
+    }
     case 'milestones': {
       onlyKeys(v, ['docs', 'items'], {
         docs: ['id', 'title', 'description', 'dueOn', 'closed', 'createdAt'],
@@ -477,6 +497,7 @@ function runCaseV2(v: Vector): void {
         roleAt: oracle.roleAt(q.identity, q.at),
         memberAt: oracle.memberAt(q.identity, q.at),
         currentRole: oracle.currentRole(q.identity),
+        approverAt: oracle.approverAt(q.identity, q.at),
       }))
       expect(got).toEqual(v.expected)
       break
@@ -509,7 +530,7 @@ interface StateInput {
 
 const TRANSITION_NESTED: Readonly<Record<string, readonly string[]>> = {
   ...NESTED_KEYS,
-  transitions: ['id', 'kind', 'actor', 'oid', 'asAuthor', 'createdAt'],
+  transitions: ['id', 'kind', 'actor', 'oid', 'asAuthor', 'createdAt', 'reason', 'dupNumber'],
 }
 
 /** The state code and merge oid, from exactly one of `transitions` and `sum` (parity: Rust `state_of`). */

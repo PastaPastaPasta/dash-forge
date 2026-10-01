@@ -33,17 +33,19 @@ match github-repo "${INPUT_GITHUB_REPO:-}" \
     '^((https://)?github\.com/)?[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$' \
     "must be owner/repo, github.com/owner/repo or https://github.com/owner/repo"
 
+# devnet-name has a default (the hosted site's devnet), so it is used, and checked, only for
+# network devnet; for the others it is ignored. The step's `devnet-name` output is the value in
+# effect ('' unless devnet), for the cache keys and mirror.sh.
+devnet_name=''
 case "${INPUT_NETWORK:-}" in
     mainnet | testnet) ;;
     devnet)
-        match devnet-name "${INPUT_DEVNET_NAME:-}" '^[a-z0-9][a-z0-9-]{0,62}$' \
+        devnet_name=${INPUT_DEVNET_NAME:-}
+        match devnet-name "$devnet_name" '^[a-z0-9][a-z0-9-]{0,62}$' \
             "is required for network 'devnet' (lowercase letters, digits, '-')"
         ;;
     *) fail network "must be mainnet, testnet or devnet" ;;
 esac
-if [ "${INPUT_NETWORK:-}" != devnet ] && [ -n "${INPUT_DEVNET_NAME:-}" ]; then
-    fail devnet-name "applies only to network 'devnet'; leave it empty"
-fi
 
 item='(code|issues|prs|releases|labels)'
 match sync "${INPUT_SYNC:-}" "^${item}(,${item})*\$" \
@@ -55,16 +57,17 @@ if [[ ${INPUT_COST_CAP:-} =~ ^[0-9.]+$ ]] && ! awk -v c="$INPUT_COST_CAP" 'BEGIN
 fi
 match replicas "${INPUT_REPLICAS:-}" '^[1-9]$' "must be a whole number from 1 to 9"
 bool dry-run "${INPUT_DRY_RUN:-}"
-bool install "${INPUT_INSTALL:-}"
+case "${INPUT_INSTALL:-}" in true | source | false) ;; *) fail install "must be 'true', 'source' or 'false'" ;; esac
+bool build-cache "${INPUT_BUILD_CACHE:-true}"
 bool state-cache "${INPUT_STATE_CACHE:-}"
 bool fail-on-partial "${INPUT_FAIL_ON_PARTIAL:-false}"
 bool s3-virtual-hosted "${INPUT_S3_VIRTUAL_HOSTED:-false}"
 if [ "${INPUT_S3_VIRTUAL_HOSTED:-false}" = true ] && [ "${INPUT_STORAGE_KIND:-}" != s3 ]; then
     fail s3-virtual-hosted "applies only to storage-kind s3"
 fi
-if [ "${INPUT_INSTALL:-}" = true ]; then
+if [ "${INPUT_INSTALL:-}" = true ] && [ -n "${INPUT_VERSION:-}" ]; then
     match version "${INPUT_VERSION:-}" '^v?[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$' \
-        "must be a release version like 0.1.0"
+        "must be a release version like 0.1.0, or empty to build from source"
 fi
 
 case "${INPUT_STORAGE_KIND:-}" in
@@ -87,3 +90,4 @@ if [ "$errors" -ne 0 ]; then
     echo "The Forge mirror action stopped before doing anything: $errors invalid input(s)." >&2
     exit 1
 fi
+[ -z "${GITHUB_OUTPUT:-}" ] || echo "devnet-name=$devnet_name" >>"$GITHUB_OUTPUT"

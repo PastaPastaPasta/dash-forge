@@ -73,17 +73,24 @@ fn check_id_args(cmd: &PrCommand) -> Result<()> {
 }
 
 /// Dispatch a `pr` subcommand.
+#[allow(clippy::too_many_lines)] // one arm per subcommand
 pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
     use crate::PrSuggestionCommand as Sg;
     check_id_args(cmd)?;
     match cmd {
         PrCommand::Create(args) => create(ctx, args).await,
-        PrCommand::List { repo, limit, state } => list(ctx, repo, *limit, *state).await,
+        PrCommand::List {
+            repo,
+            limit,
+            state,
+            include_hidden,
+        } => list(ctx, repo, *limit, *state, *include_hidden).await,
         PrCommand::View {
             repo,
             number,
             comments,
-        } => view(ctx, repo, *number, *comments).await,
+            show_hidden,
+        } => view(ctx, repo, *number, *comments, *show_hidden).await,
         PrCommand::Checkout { repo, number } => checkout(ctx, repo, *number).await,
         PrCommand::Review(a) => review::review(ctx, a).await,
         PrCommand::Comment(a) => review::comment(ctx, a).await,
@@ -110,6 +117,29 @@ pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
         PrCommand::Ready { repo, number } => state::set_draft(ctx, repo, *number, false).await,
         PrCommand::Draft { repo, number } => state::set_draft(ctx, repo, *number, true).await,
         PrCommand::Lock { repo, number, off } => state::set_locked(ctx, repo, *number, !off).await,
+        PrCommand::Hide {
+            repo,
+            number,
+            comment,
+            review,
+            reason,
+            off,
+        } => {
+            let item = match (comment, review) {
+                (Some(c), _) => Some(("comment", c.as_str())),
+                (None, Some(r)) => Some(("review", r.as_str())),
+                (None, None) => None,
+            };
+            state::hide(
+                ctx,
+                repo,
+                *number,
+                item,
+                reason.map(crate::HideReasonArg::as_str),
+                !off,
+            )
+            .await
+        }
         PrCommand::Resolve {
             repo,
             number,
@@ -694,7 +724,13 @@ fn same_head_and_base(v: &PatchView, source_id: &str, head_ref: &str, base: &str
 // list / view
 // ---------------------------------------------------------------------------
 
-async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::PrStateArg) -> Result<()> {
+async fn list(
+    ctx: &Ctx,
+    repo: &str,
+    limit: u32,
+    state: crate::PrStateArg,
+    include_hidden: bool,
+) -> Result<()> {
     let s = Reader::open(ctx, repo).await?;
     let handle = &s.repo;
     let collab = s.collab();
@@ -709,31 +745,56 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::PrStateArg) -> Re
         .collect();
     // The PRs the state filter left out, for the empty list's hint.
     let others = read - rows.len();
+    // RC2 MOD: the PRs a maintainer hid, from the events already read (the feed).
+    let threads: Vec<(forge_core::collab::v2::Target, &[forge_core::rules::Event])> = rows
+        .iter()
+        .map(|(v, _)| (v.patch.target(), v.log.events.as_slice()))
+        .collect();
+    let hides = collab.hidden_threads(handle, &threads).await;
+    let (rows, omitted) = crate::fmt::split_hidden(
+        rows,
+        &hides,
+        |(v, _)| v.patch.document_id.as_str(),
+        include_hidden,
+    );
+    let names =
+        crate::common::hider_names(ctx, &s.client, rows.iter().filter_map(|(_, h)| *h)).await;
+    let who = |id: &str| crate::fmt::with_name(id, &names);
     let json_rows: Vec<_> = rows
         .iter()
-        .map(|(v, a)| {
-            json!({
-                "number": v.patch.number,
-                "title": v.patch.title,
-                "author": v.patch.author,
-                "state": state_field(v),
-                "baseRef": v.patch.base_ref_name,
-                "baseTip": v.base_tip,
-                "retargetedTo": v.state.base_ref,
-                "headOid": v.head,
-                "repoId": v.patch.repo_id,
-                "sourceRepoId": v.patch.source_repo_id,
-                "sourceRefName": v.patch.source_ref_name,
-                "draft": v.state.draft,
-                "approvals": a.approvers.len(),
-                "changesRequested": a.changes_requested.len(),
-            })
+        .map(|((v, a), h)| {
+            crate::fmt::with_hidden_by(
+                json!({
+                    "number": v.patch.number,
+                    "title": v.patch.title,
+                    "author": v.patch.author,
+                    "state": state_field(v),
+                    "baseRef": v.patch.base_ref_name,
+                    "baseTip": v.base_tip,
+                    "retargetedTo": v.state.base_ref,
+                    "headOid": v.head,
+                    "repoId": v.patch.repo_id,
+                    "sourceRepoId": v.patch.source_repo_id,
+                    "sourceRefName": v.patch.source_ref_name,
+                    "draft": v.state.draft,
+                    "approvals": a.approvers.len(),
+                    "changesRequested": a.changes_requested.len(),
+                }),
+                *h,
+            )
         })
         .collect();
     ctx.emit(
-        json!({ "count": rows.len(), "prs": json_rows, "hidden": hidden, "truncated": more, "otherStates": others }),
+        json!({
+            "count": rows.len(),
+            "prs": json_rows,
+            "hidden": hidden,
+            "hiddenOmitted": omitted,
+            "truncated": more,
+            "otherStates": others,
+        }),
         || {
-            if rows.is_empty() {
+            if rows.is_empty() && omitted == 0 {
                 // Only the newest `--limit` were read: say so rather than "none".
                 let among = if more {
                     format!(" among the newest {read}")
@@ -748,22 +809,12 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::PrStateArg) -> Re
                     );
                 }
             }
-            for (v, a) in &rows {
-                let count = |mark: &str, n: usize| {
-                    if n == 0 {
-                        String::new()
-                    } else {
-                        format!("  {mark}{n}")
-                    }
-                };
-                let extra = count("✓", a.approvers.len()) + &count("✗", a.changes_requested.len());
-                println!(
-                    "#{:<4} {:<6} {}  ({}){extra}",
-                    v.patch.number,
-                    state_label(v),
-                    safe(&v.patch.title),
-                    short(&v.head)
-                );
+            for ((v, a), h) in &rows {
+                let hid = h.map(|h| crate::fmt::hidden_row_mark(h, &who));
+                println!("{}", pr_line(v, a, &hid.unwrap_or_default()));
+            }
+            if let Some(note) = crate::fmt::hidden_rows_note(omitted) {
+                println!("{note}");
             }
             if hidden > 0 {
                 println!("{}", crate::fmt::hidden_note(handle, hidden));
@@ -776,6 +827,27 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::PrStateArg) -> Re
         },
     );
     Ok(())
+}
+
+/// One `dg pr list` row: number, state, title, head, approvals and change requests, and `hid`,
+/// a hidden PR's mark (`--include-hidden`).
+fn pr_line(v: &PatchView, a: &forge_core::rules::v2::Approvals, hid: &str) -> String {
+    let count = |mark: &str, n: usize| {
+        if n == 0 {
+            String::new()
+        } else {
+            format!("  {mark}{n}")
+        }
+    };
+    let extra = count("✓", a.approvers.len()) + &count("✗", a.changes_requested.len());
+    format!(
+        "#{:<4} {:<6} {}  ({}){extra}{}",
+        v.patch.number,
+        state_label(v),
+        safe(&v.patch.title),
+        short(&v.head),
+        safe(hid)
+    )
 }
 
 /// A PR's reviews for `dg pr view --json`: stale when not on the current head, dismissed when
@@ -846,7 +918,13 @@ fn comments_json(comments: &[forge_core::collab::v2::Comment]) -> Vec<serde_json
 /// always in `--json`) its conversations. Works signed out for a public repo; with an identity
 /// it adds "new commits since your review", and opens a private repo's sealed documents.
 #[allow(clippy::too_many_lines)]
-async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result<()> {
+async fn view(
+    ctx: &Ctx,
+    repo: &str,
+    number: u64,
+    show_comments: bool,
+    show_hidden: bool,
+) -> Result<()> {
     // A public PR is read without opening any key (a sealed one would ask for its
     // passphrase); a private repo's sealed documents open with the identity's keys. The
     // viewer ("new commits since your review") is named when the key source says who it is.
@@ -860,7 +938,37 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
     let approvals = approvals_over(&reviews, &v, &oracle);
     let (comments, hidden_comments) = collab.comments_counted(handle, doc_id).await?;
     let review_state = v.review_with_threads(&comments);
-    let conv = threads::threads(&comments, &v.head, &review_state.resolved_threads);
+    // RC2 MOD: what maintainers hid. Collapsed in the human view unless --show-hidden; a hidden
+    // review's verdict still counts (only a dismissal stops it), so approvals are unchanged.
+    let moderation = collab
+        .hidden_items(handle, &v.patch.target(), &v.log, &comments, &reviews)
+        .await?;
+    let trusted = |who: &str| {
+        who == handle.owner_id()
+            || oracle.current_role(who) == Some(forge_core::rules::v2::Role::Maintainer)
+    };
+    let mut conv = threads::threads(&comments, &v.head, &review_state.resolved_threads);
+    // A mirrored hunk shows only from a signer who may mirror (the web's trust set: the owner
+    // and the current maintainers), as the web shows it.
+    threads::drop_untrusted_hunks(&mut conv, trusted);
+    // The conversations as printed: a hidden comment's body is its one "hidden by" line.
+    let printed_conv = if show_hidden || moderation.items.is_empty() {
+        None
+    } else {
+        let shown: Vec<_> = comments
+            .iter()
+            .map(|c| match moderation.item(&c.document_id) {
+                Some(h) => forge_core::collab::v2::Comment {
+                    body: crate::fmt::hidden_line("comment", h, &|id: &str| id.to_string(), false),
+                    ..c.clone()
+                },
+                None => c.clone(),
+            })
+            .collect();
+        let mut printed = threads::threads(&shown, &v.head, &review_state.resolved_threads);
+        threads::drop_untrusted_hunks(&mut printed, trusted);
+        Some(printed)
+    };
     let rows = threads::reviewer_rows(
         &reviews,
         &review_state,
@@ -962,6 +1070,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
             "comments": comments_json(&comments),
             "hiddenComments": hidden_comments,
             "hiddenReviews": hidden_reviews,
+            "moderation": moderation,
             "hiddenEventValues": v.log.hidden_values,
             "plaintextEventValues": v.log.plaintext_values,
     });
@@ -979,7 +1088,10 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
             .chain(approvals.changes_requested.iter().map(String::as_str))
             .chain(rows.iter().map(|r| r.identity.as_str()))
             .chain(reviews.iter().map(|r| r.reviewer.as_str()))
-            .chain(bypasses.iter().map(|b| b.actor.as_str()));
+            .chain(bypasses.iter().map(|b| b.actor.as_str()))
+            // who hid the thread or a review, for its "hidden by" line
+            .chain(moderation.thread.iter().map(|h| h.by.as_str()))
+            .chain(moderation.items.values().map(|h| h.by.as_str()));
         client.dpns_first_names(ids).await
     };
     let who = |id: &str| crate::fmt::with_name(id, &names);
@@ -993,6 +1105,12 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
                 safe(&v.patch.title)
             );
             println!("author: {}", who(&v.patch.author));
+            if let Some(h) = &moderation.thread {
+                println!("{}", crate::fmt::hidden_line("this pull request", h, &who, show_hidden));
+                if !show_hidden {
+                    return;
+                }
+            }
             println!(
                 "{} {} ({}) → {}",
                 source,
@@ -1099,12 +1217,22 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
                     short(&r.commit_oid),
                     short(&r.document_id)
                 );
+                if let Some(h) = moderation.item(&r.document_id) {
+                    // Still counted: hiding is display only (dismiss to stop it counting).
+                    println!(
+                        "  {} (its verdict still counts unless dismissed)",
+                        crate::fmt::hidden_line("review", h, &who, show_hidden)
+                    );
+                    if !show_hidden {
+                        continue;
+                    }
+                }
                 if !r.body.is_empty() {
                     println!("  {}", safe(&r.body));
                 }
             }
             if show_comments {
-                print_conversations(&conv);
+                print_conversations(printed_conv.as_ref().unwrap_or(&conv));
             } else if !comments.is_empty() {
                 println!(
                     "\n{} comment(s) in {} thread(s) ({unresolved} unresolved) — `--comments` shows them",
@@ -1204,6 +1332,11 @@ fn print_conversations(conv: &threads::Conversations) {
             format!(" [{}]", tags.join(", "))
         };
         println!("  ▸ {}{tags}  (thread {})", safe(&t.location), short(&t.id));
+        if let Some(h) = &t.diff_hunk {
+            for line in safe(h).lines() {
+                println!("    │ {line}");
+            }
+        }
         for c in &t.comments {
             println!("    — {} [{}]:", c.author, short(&c.id));
             for line in safe(&c.body).lines() {

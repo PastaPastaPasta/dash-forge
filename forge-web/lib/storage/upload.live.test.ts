@@ -2,7 +2,7 @@
  * Live browser-upload path — SKIPPED by default (devnet writes + the local S3 store, RustFS).
  *
  *   docker compose -f infra/docker-compose.yml up -d rustfs s3-init
- *   FORGE_LIVE=1 FORGE_LIVE_PUBLIC_URL=https://…/forge-byo NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia \
+ *   FORGE_LIVE=1 FORGE_LIVE_PUBLIC_URL=https://…/forge-byo NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=sakura \
  *     pnpm exec vitest run lib/storage/upload.live.test.ts
  *
  * As the devnet's MAINTAINER fixture (a maintainer of its own `forge-v2-empty`, the fixture no push has
@@ -61,7 +61,7 @@ const MINIO: StorageProfile = {
   secrets: { accessKeyId: 'minioadmin', secretAccessKey: 'minioadmin' },
 }
 
-describe.skipIf(!LIVE)('live browser upload to MinIO + manifest on bonsia', () => {
+describe.skipIf(!LIVE)('live browser upload to MinIO + manifest on sakura', () => {
   it(
     'stores, verifies, records, and reads back through the web reader',
     async () => {

@@ -76,7 +76,8 @@ pub async fn writable_source(
         let ok = match role {
             Some(Role::Maintainer) => true,
             Some(Role::Writer) => !protected,
-            None => false,
+            // RC2 member roles: triage and readers cannot push (`r` 1 only).
+            Some(Role::Triage | Role::Reader) | None => false,
         };
         if !ok {
             return Err(UserError::new(
@@ -86,10 +87,16 @@ pub async fn writable_source(
                     if protected { "maintainer" } else { "writer" }
                 ),
             )
-            .cause(format!(
-                "the PR's branch {} lives in {repo_display}; only its writers and maintainers can push to it",
-                safe(&ref_name)
-            ))
+            .cause(
+                role.and_then(|r| forge_core::members::role_limits(r, &repo))
+                    .unwrap_or_else(|| {
+                        format!(
+                            "the PR's branch {} lives in {repo_display}; only its writers and \
+                             maintainers can push to it",
+                            safe(&ref_name)
+                        )
+                    }),
+            )
             .fix("ask the PR's author to do it (the branch is usually in their fork)")
             .fix(forge_core::user_error::join_fix(
                 &repo_display,
@@ -119,10 +126,19 @@ async fn head_route(s: &Session, view: &PatchView, action: &str) -> Result<State
         EventKind::HeadUpdate,
     )
     .ok_or_else(|| {
+        // A triage member or reader who is not the author is told what the role allows.
+        if let Some(e) = forge_core::collab::v2::member_role_refusal(
+            role,
+            forge_core::members::event_needs(EventKind::HeadUpdate),
+            &s.repo,
+            action,
+        ) {
+            return e.into();
+        }
         forge_core::Error::NotPermitted {
             action: action.to_string(),
             reason: format!(
-                "moving the PR head needs its author or a member of {}",
+                "moving the PR head needs its author or a maintainer or writer of {}",
                 s.repo.display()
             ),
             needs: "author".into(),
@@ -437,12 +453,13 @@ pub async fn apply_suggestions(
     let applied = applied_ids(&git::git(dir, &["log", "--format=%B", &range, "--"], &[])?);
 
     let chosen: Vec<&Comment> = if all {
-        // `--all` takes suggestions from the PR's author and the repo's members only (anyone
-        // can comment); name a stranger's comment to apply it. A suggestion in a resolved
+        // `--all` takes suggestions from the PR's author and the repo's maintainers and writers
+        // only (anyone can comment, and triage members and readers cannot push); name another
+        // comment to apply it. A suggestion in a resolved
         // thread (the root or a reply) is skipped.
         let resolved: BTreeSet<&str> = state.resolved_threads.iter().map(String::as_str).collect();
         let oracle = collab.member_oracle(&s.repo).await?;
-        let trusted = |who: &str| who == view.patch.author || oracle.current_role(who).is_some();
+        let trusted = |who: &str| who == view.patch.author || oracle.current_approver(who);
         comments
             .iter()
             .filter(|c| {
@@ -757,6 +774,7 @@ mod tests {
             },
             created_at: 1,
             imported: None,
+            diff_hunk: None,
         }
     }
 

@@ -39,22 +39,26 @@
     {
       "roleAt": null,
       "memberAt": false,
-      "currentRole": "maintainer"
+      "currentRole": "maintainer",
+      "approverAt": false
     },
     {
       "roleAt": "writer",
       "memberAt": true,
-      "currentRole": "maintainer"
+      "currentRole": "maintainer",
+      "approverAt": true
     },
     {
       "roleAt": "writer",
       "memberAt": true,
-      "currentRole": "maintainer"
+      "currentRole": "maintainer",
+      "approverAt": true
     },
     {
       "roleAt": "maintainer",
       "memberAt": true,
-      "currentRole": "maintainer"
+      "currentRole": "maintainer",
+      "approverAt": true
     }
   ]
 }

@@ -1,14 +1,15 @@
 /**
- * Live, read-only smoke of forge-web's RC1 reads against the RC1 contracts registered on devnet
- * bonsia: each contract holds exactly the types the layout (`lib/layout.ts`) routes to it, every
- * stamped type requires `vis`, and every new or changed query the web makes is one the registered
- * indexes answer (on a repo id nothing uses, so each answers empty). Nothing is written.
+ * Live, read-only smoke of forge-web's reads against the contracts registered on devnet sakura
+ * (RC2, Platform v5; first written for RC1 on devnet bonsia): each contract holds exactly the
+ * types the layout (`lib/layout.ts`) routes to it, every stamped type requires `vis`, and every
+ * new or changed query the web makes is one the registered indexes answer (on a repo id nothing
+ * uses, so each answers empty). Nothing is written.
  *
- * The ids come from the environment until they are committed to devnet-bonsia.json:
+ * The ids are devnet-sakura.json's once committed; before that they come from the environment:
  *
- *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia \
- *   FORGE_RC1_CORE=… FORGE_RC1_COLLAB=… FORGE_RC1_COMMUNITY=… FORGE_RC1_GROUP=… \
- *   pnpm vitest run lib/repo/rc1-bonsia.live.test.ts
+ *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=sakura \
+ *   [FORGE_RC1_CORE=… FORGE_RC1_COLLAB=… FORGE_RC1_COMMUNITY=… FORGE_RC1_GROUP=…] \
+ *   pnpm vitest run lib/repo/rc-sakura.live.test.ts
  */
 
 import { sha256 } from '@noble/hashes/sha2.js'
@@ -30,15 +31,16 @@ import { readKindCounts, readThreadStates } from './transitions'
 import { findConsent, readConsents, readTagLive } from './writes'
 
 const env = (k: string): string => process.env[k] ?? ''
-const forge = { core: env('FORGE_RC1_CORE'), collab: env('FORGE_RC1_COLLAB'), community: env('FORGE_RC1_COMMUNITY'), group: env('FORGE_RC1_GROUP') }
-const live = process.env['FORGE_LIVE'] === '1' && NETWORKS.devnet.devnetName === 'bonsia' && Object.values(forge).every((v) => v !== '')
+const fromEnv = { core: env('FORGE_RC1_CORE'), collab: env('FORGE_RC1_COLLAB'), community: env('FORGE_RC1_COMMUNITY'), group: env('FORGE_RC1_GROUP') }
+const forge = Object.values(fromEnv).every((v) => v !== '') ? fromEnv : NETWORKS.devnet.v2 ?? fromEnv
+const live = process.env['FORGE_LIVE'] === '1' && NETWORKS.devnet.devnetName === 'sakura' && Object.values(forge).every((v) => v !== '')
 
 const id = (name: string): string => base58Encode(sha256(new TextEncoder().encode(`rc1-smoke:${name}`)))
 const REPO: RepoRef = { forge, repoId: id('repo'), ownerId: id('owner'), name: 'rc1-smoke', visibility: 'public' }
 
 type ContractJson = { documentSchemas: Record<string, { required?: string[] }> }
 
-describe.skipIf(!live)('RC1 on devnet bonsia (live, read-only)', () => {
+describe.skipIf(!live)('the registered contracts on devnet sakura (live, read-only)', () => {
   it('each contract holds the types the layout routes to it, and the stamped types require vis', async () => {
     const sdk = await ensureSdk('devnet')
     for (const [contractId, types] of [

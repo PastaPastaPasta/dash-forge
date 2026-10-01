@@ -12,7 +12,7 @@ vi.mock('../devnet-notice', () => ({ writesPausedReason: () => state.paused }))
 
 import { WritesPausedError, assertWritesAllowed, createDocumentIdempotent, serialized, type WriteAuth } from './write'
 
-const REASON = 'Writing is paused while this devnet moves to a new one — reading still works.'
+const REASON = 'Writing is paused: this devnet was retired and Dash Forge moved to devnet sakura.'
 
 describe('assertWritesAllowed', () => {
   it('passes when nothing is paused', () => {

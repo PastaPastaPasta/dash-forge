@@ -302,9 +302,33 @@ pub struct GlItem {
     /// Issue: confidential (members only; never mirrored).
     #[serde(default)]
     pub confidential: bool,
+    /// The project it belongs to.
+    #[serde(default)]
+    pub project_id: Option<u64>,
+    /// Issue: API links; `closed_as_duplicate_of` names the issue it was closed as a duplicate
+    /// of (`…/api/v4/projects/<id>/issues/<iid>`).
+    #[serde(default, rename = "_links", deserialize_with = "null_default")]
+    pub links: GlItemLinks,
+}
+
+/// An issue's `_links`, as far as the importer reads them.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GlItemLinks {
+    /// The canonical issue's API URL, for an issue closed as a duplicate.
+    #[serde(default)]
+    pub closed_as_duplicate_of: Option<String>,
 }
 
 impl GlItem {
+    /// The `iid` of the issue this one was closed as a duplicate of, when it is in the same
+    /// project (`None`: not a duplicate, or one of another project).
+    pub fn duplicate_of(&self) -> Option<u64> {
+        let url = self.links.closed_as_duplicate_of.as_deref()?;
+        let (project, iid) = url.trim_end_matches('/').rsplit_once("/issues/")?;
+        let project = project.rsplit_once("/projects/")?.1.parse::<u64>().ok()?;
+        (Some(project) == self.project_id).then(|| iid.parse().ok())?
+    }
+
     /// Closed, or merged. `locked` is open: GitLab uses it for a merge request being
     /// merged ("short-lived and transitional", docs.gitlab.com/api/merge_requests/), and
     /// for an open issue whose discussion is locked.
@@ -337,6 +361,28 @@ pub struct GlPosition {
     #[serde(default)]
     pub old_line: Option<u64>,
     /// Line after the change (`null` on a removed line).
+    #[serde(default)]
+    pub new_line: Option<u64>,
+    /// A multi-line note's range (`start` / `end`, each with `old_line` / `new_line`).
+    #[serde(default)]
+    pub line_range: Option<GlLineRange>,
+}
+
+/// A multi-line diff note's lines.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GlLineRange {
+    /// Its first line.
+    #[serde(default)]
+    pub start: GlLinePoint,
+}
+
+/// One end of a [`GlLineRange`].
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GlLinePoint {
+    /// The line before the change.
+    #[serde(default)]
+    pub old_line: Option<u64>,
+    /// The line after the change.
     #[serde(default)]
     pub new_line: Option<u64>,
 }
@@ -1142,6 +1188,27 @@ fn run(mut cmd: Command) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// QW-069: the issue an issue was closed as a duplicate of, when it is in the same project.
+    #[test]
+    fn a_duplicate_names_its_canonical_in_the_same_project() {
+        let item = |link: Option<&str>| GlItem {
+            project_id: Some(7),
+            links: GlItemLinks {
+                closed_as_duplicate_of: link.map(str::to_string),
+            },
+            ..GlItem::default()
+        };
+        let same = "https://gitlab.example.com/api/v4/projects/7/issues/75";
+        assert_eq!(item(Some(same)).duplicate_of(), Some(75));
+        let other = "https://gitlab.example.com/api/v4/projects/8/issues/75";
+        assert_eq!(item(Some(other)).duplicate_of(), None);
+        assert_eq!(item(None).duplicate_of(), None);
+        let parsed: GlItem = serde_json::from_str(r#"{"iid": 3, "project_id": 7, "_links": {"closed_as_duplicate_of": "https://gitlab.example.com/api/v4/projects/7/issues/2"}}"#).unwrap();
+        assert_eq!(parsed.duplicate_of(), Some(2));
+        let none: GlItem = serde_json::from_str(r#"{"iid": 3, "_links": null}"#).unwrap();
+        assert_eq!(none.duplicate_of(), None);
+    }
 
     fn parse(s: &str, base: Option<&str>) -> Result<GitlabRepoRef> {
         GitlabRepoRef::parse(s, base, BaseOptions::default())

@@ -1,9 +1,9 @@
 /**
- * Live review-parity writes and folds on devnet bonsia — SKIPPED by default (network, WASM,
+ * Live review-parity writes and folds on devnet sakura — SKIPPED by default (network, WASM,
  * about 0.01 DASH of spend).
  *
  * Run with:
- *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia \
+ *   FORGE_LIVE=1 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=sakura \
  *     pnpm exec vitest run lib/repo/review-parity.live.test.ts
  *
  * Through the web's own writers (`review-writes.ts`, `replaceDocumentIdempotent`) and readers
@@ -59,7 +59,7 @@ function authOf(name: string): WriteAuth {
   return { identityId: parsed.identityId, network: 'devnet', getSigningKeyWif: () => parsed.signingKeyWif }
 }
 
-describe.skipIf(!LIVE)('live review parity (bonsia)', () => {
+describe.skipIf(!LIVE)('live review parity (sakura)', () => {
   it(
     'writes every review-parity document through the web writers and folds it back',
     async () => {

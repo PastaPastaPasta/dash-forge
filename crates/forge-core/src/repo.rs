@@ -664,6 +664,11 @@ pub struct Reseeded {
     /// Whether the caller's own manifest now records it (`false`: the caller already had
     /// one for this pack, and manifests are immutable).
     pub announced: bool,
+    /// The upload re-created a URI a recorded copy of the pack already names (keys are
+    /// content-addressed: the profile it was pushed with, a shared bucket, the same IPFS
+    /// CID), so readers find it and no manifest was written. `false` when announced, or when
+    /// the new copy is recorded nowhere and readers will not find it.
+    pub restores_recorded: bool,
 }
 
 /// The result of [`RepoService::reseed_from_local`].
@@ -1000,7 +1005,8 @@ impl<'a> RepoService<'a> {
         // The config in force now: this write is routed by it.
         let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
         let doc_type = ref_doc_type(ref_name, &current_protected_patterns(&configs));
-        let props = public_ref_props(&scope, ref_name, new_oid, prev_oid, force)?;
+        let mut props = public_ref_props(&scope, ref_name, new_oid, prev_oid, force)?;
+        crate::members::stamp_claimed_role(&contract, doc_type, &mut props, 1);
         self.doc_engine()?
             .create_document(&contract, doc_type, props)
             .await
@@ -1054,16 +1060,16 @@ impl<'a> RepoService<'a> {
         let engine = self.doc_engine()?;
         let (scope, contract, patterns, engine) = (&scope, &contract, &patterns, &engine);
         let mut landed = futures::stream::iter(updates.iter().map(|u| async move {
-            let props = public_ref_props(
+            let mut props = public_ref_props(
                 scope,
                 &u.ref_name,
                 &u.new_oid,
                 u.prev_oid.as_deref(),
                 u.force,
             )?;
-            engine
-                .create_document(contract, ref_doc_type(&u.ref_name, patterns), props)
-                .await
+            let doc_type = ref_doc_type(&u.ref_name, patterns);
+            crate::members::stamp_claimed_role(contract, doc_type, &mut props, 1);
+            engine.create_document(contract, doc_type, props).await
         }))
         .buffered(crate::backends::platform::pipeline_window());
         while let Some(r) = landed.next().await {
@@ -1122,6 +1128,7 @@ impl<'a> RepoService<'a> {
             props.insert("prevOid".into(), FieldValue::bytes(prev.to_vec()));
         }
         layout::stamp_vis(&mut props, repo.visibility);
+        crate::members::stamp_claimed_role(contract, doc_type, &mut props, 1);
         self.doc_engine()?
             .create_document(contract, doc_type, props)
             .await
@@ -1358,7 +1365,8 @@ impl<'a> RepoService<'a> {
         manifest: &PackManifestInput,
     ) -> Result<String> {
         let (scope, contract) = self.writable(repo).await?;
-        let props = manifest.props(&scope)?;
+        let mut props = manifest.props(&scope)?;
+        crate::members::stamp_claimed_role(&contract, DOC_PACK_MANIFEST, &mut props, 1);
         match self
             .doc_engine()?
             .create_document(&contract, DOC_PACK_MANIFEST, props)
@@ -1506,8 +1514,10 @@ impl<'a> RepoService<'a> {
         }
         let (engine, contract, scope) = (&engine, &contract, &scope);
         let mut landed = futures::stream::iter(todo.into_iter().map(|(seq, props)| async move {
+            let mut props = scope.scoped(props);
+            crate::members::stamp_claimed_role(contract, CHUNK_DOC_TYPE, &mut props, 1);
             engine
-                .create_landed(contract, CHUNK_DOC_TYPE, scope.scoped(props))
+                .create_landed(contract, CHUNK_DOC_TYPE, props)
                 .await
                 .map(|prepared| (seq, prepared))
         }))
@@ -1897,17 +1907,24 @@ impl<'a> RepoService<'a> {
     /// Re-upload each live pack to `target` and announce the new location (`dg reseed`).
     ///
     /// Every pack is read from its best verifying copy and stored on `target`. On forge-v2
-    /// each uploader may record its own manifest for a pack (the unique index includes
-    /// `$ownerId`), so the new location is announced by writing the caller's own copy —
-    /// `storage` 1, the new URIs — when the caller has none yet for that pack; readers
-    /// verify it by hash like any other copy. Packs the caller already holds a manifest for
-    /// are uploaded but not re-announced (a manifest is immutable).
+    /// each member may record its own manifest for a pack (the unique index is
+    /// `(repoId, $ownerId, packHash)`), so a member adds a URI for an existing pack by
+    /// writing the caller's own copy — `storage` 1, the new URIs — when the caller has none
+    /// yet for that pack; readers verify it by hash like any other copy. Packs the caller
+    /// already holds a manifest for are uploaded but cannot be re-announced (a manifest is
+    /// immutable, and that index admits one per uploader). An upload that re-created a URI
+    /// some recorded copy already names is found by readers as it is, so nothing is written
+    /// for it ([`Reseeded::restores_recorded`]).
+    ///
+    /// Members only: `packManifest` is gated on a maintainer or writer document, so a
+    /// non-member's copy could never be recorded. That is refused before anything uploads.
     pub async fn reseed(&self, repo: &RepoRef, target: &dyn PackBackend) -> Result<ReseedReport> {
         let (_, contract) = self.writable(repo).await?;
         let me = self.identity_id()?;
+        let roles = self.copy_roles(repo).await?;
+        require_reseed_member(&roles, &me, repo)?;
         let manifests = self.read_pack_manifests(repo).await?;
         let git = git_pack_manifests(&manifests);
-        let roles = self.copy_roles(repo).await?;
         let reader = self.repo_reader(repo, &manifests, &roles).await;
         let mut report = ReseedReport::default();
         for (hash, copies) in group_by_hash(&git) {
@@ -1925,7 +1942,10 @@ impl<'a> RepoService<'a> {
             };
             let meta = PackMeta::for_bytes(&bytes);
             let uris = uri_strings(target.put(&bytes, &meta).await?);
-            let announced = if copies.iter().any(|m| m.owner_id == me) {
+            // Readers try every copy of a pack, so an upload that re-created a URI any copy
+            // records (a shared bucket, the same IPFS CID) is already found: nothing to pay for.
+            let restores_recorded = restores_recorded(&copies, &uris);
+            let announced = if restores_recorded || copies.iter().any(|m| m.owner_id == me) {
                 false
             } else {
                 self.write_pack_manifest(
@@ -1947,6 +1967,7 @@ impl<'a> RepoService<'a> {
             };
             report.reseeded.push(Reseeded {
                 pack_hash: hash,
+                restores_recorded,
                 uris,
                 announced,
             });
@@ -3545,6 +3566,33 @@ pub fn group_by_hash(manifests: &[PackManifestInfo]) -> Vec<([u8; 32], Vec<&Pack
     groups.into_iter().collect()
 }
 
+/// Refuse a reseed by anyone who could not record its copy: `packManifest` is gated on the
+/// writer's `maintainer` or `writer` document, and a copy no manifest records is one no
+/// reader looks for.
+fn require_reseed_member(roles: &RoleMap, me: &str, repo: &RepoRef) -> Result<()> {
+    if matches!(roles.get(me), Some(Role::Maintainer | Role::Writer)) {
+        return Ok(());
+    }
+    Err(Error::NotPermitted {
+        action: format!("reseed {}", repo.display()),
+        reason: format!(
+            "you are not a maintainer or writer of {}, so no packManifest of yours could \
+             record the new copy and readers would never look for it (ask a member to run \
+             `dg reseed`)",
+            repo.display()
+        ),
+        needs: "writer".into(),
+    })
+}
+
+/// Whether a reseed upload to `uris` re-created a URI one of the pack's recorded `copies`
+/// names: readers try every copy, so they find it again although nothing new is written.
+fn restores_recorded(copies: &[&PackManifestInfo], uris: &[String]) -> bool {
+    copies
+        .iter()
+        .any(|m| uris.iter().any(|u| m.uris.contains(u)))
+}
+
 /// `copies` of one pack in the order the forge-v2 reader rule tries them
 /// ([`crate::rules::v2::order_pack_copies`]): uploaders who are currently maintainers,
 /// then writers, then anyone else, each by `($createdAt, $id)`.
@@ -4129,6 +4177,52 @@ mod tests {
             ))
             .to_string()
         );
+    }
+
+    /// `dg reseed` records the new copy as the caller's own `packManifest`, which consensus
+    /// admits only from a maintainer or writer: anyone else is refused before an upload.
+    #[test]
+    fn reseed_is_refused_to_a_non_member_before_anything_uploads() {
+        let repo = crate::scope::RepoRef {
+            forge: crate::network::ForgeIds::test_forge(),
+            repo_id: "repo".into(),
+            owner_id: "owner".into(),
+            name: "proj".into(),
+            visibility: crate::rules::v2::Visibility::Public,
+        };
+        let roles: RoleMap = [
+            ("owner".to_string(), Role::Maintainer),
+            ("w".to_string(), Role::Writer),
+        ]
+        .into();
+        assert!(super::require_reseed_member(&roles, "owner", &repo).is_ok());
+        assert!(super::require_reseed_member(&roles, "w", &repo).is_ok());
+        let Err(Error::NotPermitted { action, reason, .. }) =
+            super::require_reseed_member(&roles, "stranger", &repo)
+        else {
+            panic!("a stranger may not reseed");
+        };
+        assert!(action.starts_with("reseed "), "{action}");
+        assert!(reason.contains("not a maintainer or writer"), "{reason}");
+    }
+
+    /// An upload restores a copy readers find only at a URI some recorded copy of the pack
+    /// names (content-addressed keys: the same profile, a shared bucket, the same CID), the
+    /// caller's or another member's.
+    #[test]
+    fn a_reseed_upload_restores_a_recorded_copy_only_at_a_recorded_uri() {
+        let mut mine = manifest("m", 1, 0, 7);
+        mine.uris = vec!["s3://b/packs/07.pack".into()];
+        let mut theirs = manifest("t", 2, 0, 7);
+        theirs.owner_id = "writer".into();
+        theirs.uris = vec!["ipfs://bafy".into()];
+        let same = vec!["https://cdn/x".to_string(), "s3://b/packs/07.pack".into()];
+        let cid = vec!["ipfs://bafy".to_string()];
+        let other = vec!["https://elsewhere/07.pack".to_string()];
+        assert!(super::restores_recorded(&[&mine], &same));
+        assert!(super::restores_recorded(&[&mine, &theirs], &cid));
+        assert!(!super::restores_recorded(&[&mine, &theirs], &other));
+        assert!(!super::restores_recorded(&[], &same), "nothing recorded");
     }
 
     /// A manifest stub carrying only what the packRef space is derived from.
@@ -5615,7 +5709,9 @@ mod rc1_tests {
             let Some(size) = d["sizeBytes"].as_u64() else {
                 continue;
             };
-            if supersedes.len() % 32 != 0 || c.why == "additionalProperties" {
+            // `r` (RC2 member roles) is stamped at the write, not checked by the builder.
+            let claims_one = d.get("r").and_then(Value::as_u64) == Some(1);
+            if supersedes.len() % 32 != 0 || c.why == "additionalProperties" || !claims_one {
                 continue;
             }
             let input = PackManifestInput {
@@ -5697,6 +5793,12 @@ mod rc1_tests {
             }
             .props(&scope)
             .unwrap();
+            let mut props = props;
+            // `r` (RC2 member roles) is stamped at the write (`write_pack_manifest`): 1.
+            props.insert(
+                crate::members::CLAIMED_ROLE.to_string(),
+                FieldValue::integer(1),
+            );
             crate::test_support::rc1::assert_valid("packManifest", &props);
         }
     }

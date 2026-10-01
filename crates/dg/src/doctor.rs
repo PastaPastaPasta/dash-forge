@@ -1223,17 +1223,8 @@ fn check_git_config(ctx: &Ctx) -> Vec<Check> {
             DEFAULT_COST_WARN_THRESHOLD.into(),
         )),
     });
-    if let Some(v) = get("dash.confirm") {
-        if !matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "" | "auto" | "always" | "never" | "true" | "false" | "yes" | "no"
-        ) {
-            out.push(Check::fail(
-                "dash.confirm",
-                format!("{v:?} is not auto, always or never: every push fails"),
-                "git config dash.confirm auto",
-            ));
-        }
+    if let Some(c) = get("dash.confirm").as_deref().and_then(confirm_check) {
+        out.push(c);
     }
 
     // This repository's storage policy (only meaningful inside a git repository).
@@ -1266,6 +1257,23 @@ fn check_git_config(ctx: &Ctx) -> Vec<Check> {
         },
     });
     out
+}
+
+/// The `dash.confirm` row, only for a value the remote helper rejects. Keep in step with
+/// git-remote-dash's `ConfirmMode::parse`: `auto`, `always`, `never` and `refuse`, plus the
+/// boolean aliases.
+fn confirm_check(v: &str) -> Option<Check> {
+    let valid = matches!(
+        v.trim().to_ascii_lowercase().as_str(),
+        "" | "auto" | "always" | "never" | "refuse" | "true" | "false" | "yes" | "no"
+    );
+    (!valid).then(|| {
+        Check::fail(
+            "dash.confirm",
+            format!("{v:?} is not auto, always, never or refuse: every push fails"),
+            "git config dash.confirm auto",
+        )
+    })
 }
 
 /// The `dash.storage` row's detail for a Platform-only policy: the value as set (`platform`),
@@ -1432,6 +1440,20 @@ mod tests {
             platform_only_detail(Some("  ")),
             "unset: pushes store packs on Platform"
         );
+    }
+
+    /// Every `dash.confirm` value the remote helper accepts passes, `refuse` included (the
+    /// mode forge-import and the Mirror Action set, and `costs.md` documents).
+    #[test]
+    fn dash_confirm_accepts_every_mode_the_helper_does() {
+        for v in [
+            "", "auto", "always", "never", "refuse", "REFUSE", " refuse ", "true", "false", "yes",
+            "no",
+        ] {
+            assert!(confirm_check(v).is_none(), "{v:?} was flagged");
+        }
+        let c = confirm_check("sometimes").expect("an unknown mode fails");
+        assert!(c.detail.contains("refuse"), "{}", c.detail);
     }
 
     /// The guard `dg doctor --fix` sets lets a small push through without asking, packs on
@@ -1682,8 +1704,8 @@ mod tests {
             c.fix
                 .as_deref()
                 .unwrap()
-                // the first devnet by name with forge-v2 (bonsia, since the RC1 registration)
-                .contains("dg auth new --network devnet --devnet-name bonsia"),
+                // the live network with forge-v2, or a placeholder before any is registered
+                .contains(&format!("dg auth new {}", deployed_network_flags())),
             "{:?}",
             c.fix
         );

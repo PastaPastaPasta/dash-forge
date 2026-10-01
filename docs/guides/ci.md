@@ -62,7 +62,7 @@ dg ci report alice/project --sha "$SHA" --name build --status completed \
     --conclusion success --summary "412 tests passed" --log build.log --storage my-r2
 ```
 
-- **The network comes with the key.** A `dfk1:` key records its network (`dfk1:devnet-bonsia:…`), and `dg` uses it when nothing else names one, so a fresh CI machine needs no `--network` flags. In a checkout of a `dash://` clone, the network the clone pinned wins; `DASH_FORGE_NETWORK` takes the same `devnet-<name>` form `dg` prints.
+- **The network comes with the key.** A `dfk1:` key records its network (`dfk1:devnet-sakura:…`), and `dg` uses it when nothing else names one, so a fresh CI machine needs no `--network` flags. In a checkout of a `dash://` clone, the network the clone pinned wins; `DASH_FORGE_NETWORK` takes the same `devnet-<name>` form `dg` prints.
 - **The first report creates the run; the next ones update it in place.** An update is a replace of your own open run with that name on that commit. Once a run is `completed`, reporting the same name again starts a new run (a re-run).
 - **`--external-id <your CI's run id>`** ties reports to one run: a report always updates the run carrying that id, even after it completed, and never starts a second one for it. If no run carries the id yet, `dg` reads once more a few seconds later before it creates one, so a report sent right after the first does not split the run. Use it whenever your CI has a run id (the GitHub Action passes `gh:<run id>:<attempt>:<job>:<name>`).
 - **What an update keeps.** A field the report does not give keeps its stored value. The exceptions: `completedAt` is cleared unless the run is `completed`; a re-queued run (`--status queued`) also clears its start time and its log; and the start time, once set, does not move on a repeated `in_progress` report.
@@ -135,11 +135,10 @@ A repository mirrored from GitHub keeps its CI on GitHub. The [check action](../
         with:
           repo: <owner identity id>/project
           job-status: ${{ job.status }}
-          network: devnet           # Forge runs on a devnet today
-          devnet-name: <devnet name>
-          install: 'false'          # until a release exists; build dg in an earlier step
+          network: devnet           # Forge runs on devnet sakura (the default)
+          devnet-name: sakura
         env:
           DASH_FORGE_KEY: ${{ secrets.FORGE_RUNNER_KEY }}      # from `dg ci runner new`
 ```
 
-No Dash Forge release is published yet, so the step needs `dg` built earlier in the job: the [check action's README](../../check-action/README.md#quick-start) has the build steps. The check is named `<workflow> / <job>`, and each matrix leg is its own check. The check run's details link goes back to the GitHub run. A failed report warns and passes by default, so a Forge outage never fails your CI. A pull request from a fork has no access to the secret and does not report: do not use `pull_request_target` to give it one.
+No Dash Forge release is published yet, so the action builds `dg` from its own source, the ref after `@` in `uses:` (pin a commit you have reviewed). That works on Linux runners only, and takes a few minutes in every job that reports, even with a warm build cache: report from one Linux leg, or from one summary job that `needs:` the others. The [check action's README](../../check-action/README.md#quick-start) has the details. The check is named `<workflow> / <job>`, and each matrix leg is its own check. The check run's details link goes back to the GitHub run. A failed report warns and passes by default, so a Forge outage never fails your CI. A pull request from a fork has no access to the secret and does not report: do not use `pull_request_target` to give it one.

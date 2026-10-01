@@ -17,7 +17,7 @@
 //! different delete on protocol 14 (it carries the document's values, not just its id), which
 //! `WriteEngine::prepare_delete` does not build yet.
 //!
-//! Network: `DASH_FORGE_DEVNET` (default `bonsia`), resolved from its deployment file.
+//! Network: `DASH_FORGE_DEVNET` (default `sakura`), resolved from its deployment file.
 //! Identity: `DASH_FORGE_TEST_IDENTITY`, else the devnet DEPLOYER fixture.
 
 use std::collections::BTreeMap;
@@ -33,13 +33,13 @@ const DOC_TYPE: &str = "profile";
 
 fn default_identity() -> String {
     let home = std::env::var("HOME").expect("HOME");
-    format!("{home}/.config/dash-forge/test-identities/devnet-bonsia/DEPLOYER.identity.json")
+    format!("{home}/.config/dash-forge/test-identities/devnet-sakura/DEPLOYER.identity.json")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "live devnet write; run with --ignored"]
 async fn protocol_14_create_reports_the_landed_id_and_is_idempotent() {
-    let devnet = std::env::var("DASH_FORGE_DEVNET").unwrap_or_else(|_| "bonsia".to_string());
+    let devnet = std::env::var("DASH_FORGE_DEVNET").unwrap_or_else(|_| "sakura".to_string());
     let target = NetworkSettings {
         network: Some("devnet".into()),
         devnet_name: Some(devnet),

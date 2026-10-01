@@ -5,9 +5,11 @@
  * **Subscriptions** (recomputed every {@link SUBS_TTL_MS}): repos I own or belong to (`repo` by
  * `$ownerId`, `maintainer`/`writer` by `memberId`), repos I starred (opt-in, `star.byOwner`),
  * and the issues and PRs I opened (`issue`/`patch` `author`), commented on (`comment.author`
- * → `targetId`), was assigned to or asked to review (`event.addressee`, QW2-009), and those this
- * browser saw me review or be mentioned in (`./participation`: neither has an index). Both sets
- * are capped ({@link MAX_REPOS}, {@link MAX_THREADS}), newest first.
+ * → `targetId`), was assigned to or asked to review (`event.addressee` and `authorEvent.addressee`,
+ * QW2-009: a PR author who is not a member asks with an `authorEvent`), reviewed (RC2 S3
+ * `review.author`, where the registered forge-collab has it), and those this browser saw me
+ * review or be mentioned in (`./participation`: a mention has no index, nor a review without S3).
+ * Both sets are capped ({@link MAX_REPOS}, {@link MAX_THREADS}), newest first.
  *
  * **Reasons** (QW2-056): each item says why it reached me when that is more than following the
  * thread (assigned me, requested my review, mentioned me), and each thread why I follow it, so
@@ -16,8 +18,11 @@
  * **Feeds**, one proof-checked query each, `$createdAt > cursor` ascending, {@link PAGE} rows:
  *   - my repos: new issues and PRs (`issue`/`patch` `created`), pushes (opt-in, the reflogs);
  *   - repos holding my threads: what happened on those threads (`event` `feed`: labels, assignees)
- *     and their state changes (`transition` `feed`);
- *   - each thread: comments (`comment.target`); each PR I opened: reviews (`review.patch`).
+ *     and their state changes (`transition` `feed`); where I was asked for a review, the PR
+ *     author's own requests too (`authorEvent` `feed`: a non-member author's review request);
+ *   - each thread: comments (`comment.target`); each PR I opened: reviews (`review.patch`), or,
+ *     where the registered forge-collab has the RC2 S2 `review.toAuthor` index, one feed of the
+ *     reviews on every PR I opened (`patchId.$ownerId`), past the thread cap too.
  * A poll runs at most {@link ROUND_BUDGET} feeds, round-robin, so a big watch list is spread
  * over several minutes instead of bursting DAPI. My own documents never become items.
  *
@@ -32,6 +37,7 @@ import type { Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import { idbBatch, idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 import { DOC } from '../repo/contract'
+import { contractHasIndex } from '../repo/contract-shape'
 import { contractOf } from '../repo/source'
 import { queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from '../sdk'
 import { listReposByOwner } from './discovery'
@@ -43,6 +49,7 @@ import {
   int,
   listAddressedTargets,
   listMyCommentTargets,
+  listMyReviewTargets,
   listMyTargets,
   listStarredRepoIds,
   listWatchedRepoIds,
@@ -80,7 +87,7 @@ export const BACKFILL_MS = 7 * 24 * 60 * 60_000
 /** Items kept; the oldest read ones go first. */
 export const MAX_ITEMS = 300
 
-export type RepoReason = 'owner' | 'maintainer' | 'writer' | 'watched' | 'starred'
+export type RepoReason = 'owner' | 'maintainer' | 'writer' | 'triage' | 'reader' | 'watched' | 'starred'
 
 export interface RepoSub {
   readonly repo: RepoLite
@@ -102,7 +109,28 @@ export interface ThreadSub {
   readonly reasons?: readonly ThreadReason[]
   /** When I joined the thread (the earliest reason): activity before it is not news to me. */
   readonly since: number
+  /** The PR's author, not a member, asked me for a review (an `authorEvent`): its author events are read. */
+  readonly viaAuthor?: boolean
 }
+
+/** Whether I follow `t` for any of `rs` (a thread an earlier build stored has only `reason`). */
+function has(t: ThreadSub, ...rs: ThreadReason[]): boolean {
+  return (t.reasons ?? [t.reason]).some((r) => rs.includes(r))
+}
+
+/**
+ * The RC2 review indexes the registered forge-collab has (`build.py` flags `review_to_author`
+ * S2 and `review_author` S3, kept or dropped by the fee probe): each is queried only where it
+ * exists, and the inbox falls back to its per-thread reads without it.
+ */
+export interface ReviewIndexes {
+  /** S2 `toAuthor` (`patchId.$ownerId`, `$createdAt`): the reviews on my PRs, one feed. */
+  readonly toAuthor: boolean
+  /** S3 `author` (`$ownerId`, `$createdAt`): the reviews I wrote, on any device. */
+  readonly author: boolean
+}
+
+export const NO_REVIEW_INDEXES: ReviewIndexes = { toAuthor: false, author: false }
 
 export interface Subscriptions {
   readonly at: number
@@ -116,6 +144,10 @@ export interface Subscriptions {
    * What they would have added is not watched this time; the next recompute retries.
    */
   readonly incomplete?: readonly string[]
+  /** The review indexes the subscriptions were computed with (absent: an earlier build, neither). */
+  readonly reviewIndexes?: ReviewIndexes
+  /** The forge-collab id they were computed against: another deployment's are recomputed. */
+  readonly collab?: string
 }
 
 export interface InboxPrefs {
@@ -129,8 +161,11 @@ export const DEFAULT_PREFS: InboxPrefs = { stars: false, pushes: false }
 
 export type ItemKind = 'issue' | 'pull' | 'comment' | 'state' | 'review' | 'push'
 
-/** Why an item reached me beyond following its thread or repo (QW2-056). */
-export type ItemReason = 'assign' | 'review_requested' | 'mention'
+/**
+ * Why an item reached me beyond following its thread or repo (QW2-056); `author`: a review on a
+ * PR I opened that the S2 feed found past the thread cap (it has no subscription to say so).
+ */
+export type ItemReason = 'assign' | 'review_requested' | 'mention' | 'author'
 
 /** One notification. `id` is the document it came from, so a re-read never duplicates it. */
 export interface InboxItem {
@@ -155,9 +190,11 @@ export interface InboxItem {
 export type Feed =
   | { readonly kind: 'new'; readonly type: 'issue' | 'patch'; readonly repo: RepoLite }
   | { readonly kind: 'push'; readonly type: 'refUpdate' | 'protectedRefUpdate'; readonly repo: RepoLite }
-  | { readonly kind: 'state'; readonly type: 'event' | 'transition'; readonly repo: RepoLite; readonly threads: readonly ThreadSub[] }
+  | { readonly kind: 'state'; readonly type: 'event' | 'authorEvent' | 'transition'; readonly repo: RepoLite; readonly threads: readonly ThreadSub[] }
   | { readonly kind: 'comments'; readonly thread: ThreadSub }
   | { readonly kind: 'reviews'; readonly thread: ThreadSub }
+  /** The reviews on every PR `owner` opened (S2 `toAuthor`); `threads` name the PRs already known. */
+  | { readonly kind: 'myReviews'; readonly owner: string; readonly threads: readonly ThreadSub[] }
 
 /** A feed's stable cursor key. */
 export function feedKey(f: Feed): string {
@@ -169,21 +206,33 @@ export function feedKey(f: Feed): string {
     case 'comments':
     case 'reviews':
       return `${f.kind}:${f.thread.id}`
+    case 'myReviews':
+      return 'myReviews'
   }
 }
 
-/** Every feed a subscription set implies, threads first (they are the most personal). */
-export function planFeeds(subs: Subscriptions, prefs: InboxPrefs): Feed[] {
+/**
+ * Every feed a subscription set implies, threads first (they are the most personal). The reviews
+ * on my PRs (`me`) are one feed where forge-collab has S2 `toAuthor`, else one per PR I opened.
+ */
+export function planFeeds(subs: Subscriptions, prefs: InboxPrefs, me?: string): Feed[] {
   const feeds: Feed[] = []
+  const reviewsOnMine = subs.reviewIndexes?.toAuthor === true && me !== undefined
   for (const t of subs.threads) {
     feeds.push({ kind: 'comments', thread: t })
-    if (t.kind === 'pull' && t.reason === 'author') feeds.push({ kind: 'reviews', thread: t })
+    if (!reviewsOnMine && t.kind === 'pull' && t.reason === 'author') feeds.push({ kind: 'reviews', thread: t })
   }
+  if (reviewsOnMine) feeds.push({ kind: 'myReviews', owner: me, threads: subs.threads.filter((t) => t.kind === 'pull') })
   const threadsByRepo = new Map<string, ThreadSub[]>()
   for (const t of subs.threads) threadsByRepo.set(t.repo.id, [...(threadsByRepo.get(t.repo.id) ?? []), t])
   for (const [, threads] of threadsByRepo) {
     const repo = threads[0]!.repo
     feeds.push({ kind: 'state', type: 'event', repo, threads }, { kind: 'state', type: 'transition', repo, threads })
+    // A PR author who is not a member asks for a review with an `authorEvent`. Of its kinds only
+    // a review request naming me is news ({@link stateWhat}), and the addressee index has already
+    // marked the PRs such a request reached: read the feed for those threads only.
+    const asked = threads.filter((t) => t.viaAuthor === true && t.kind === 'pull')
+    if (asked.length > 0) feeds.push({ kind: 'state', type: 'authorEvent', repo, threads: asked })
   }
   for (const { repo, reason } of subs.repos) {
     if (reason === 'starred' && !prefs.stars) continue
@@ -232,10 +281,18 @@ export function advanceCursor(prev: Cursor, page: readonly { at: number; id: str
   return page.length < limit ? { at: last.at } : { at: last.at, afterId: last.id }
 }
 
+/**
+ * Rows a feed reads per query: {@link PAGE}, but the S2 feed stands for every PR I opened (it
+ * replaces one feed per PR, each reading a page), so it reads Platform's full page.
+ */
+export function feedLimit(f: Feed): number {
+  return f.kind === 'myReviews' ? 100 : PAGE
+}
+
 /** The query for a feed after `cursor`. */
 export function feedQuery(forge: ForgeIds, f: Feed, cursor: Cursor): DocumentQuery {
   const after = cursor.afterId === undefined ? (['$createdAt', '>', cursor.at] as const) : (['$createdAt', '>=', cursor.at] as const)
-  const shape = { orderBy: [['$createdAt', 'asc'] as const], limit: PAGE, ...(cursor.afterId === undefined ? {} : { startAfter: cursor.afterId }) }
+  const shape = { orderBy: [['$createdAt', 'asc'] as const], limit: feedLimit(f), ...(cursor.afterId === undefined ? {} : { startAfter: cursor.afterId }) }
   switch (f.kind) {
     case 'new':
     case 'state':
@@ -245,6 +302,11 @@ export function feedQuery(forge: ForgeIds, f: Feed, cursor: Cursor): DocumentQue
       return { dataContractId: forge.collab, documentTypeName: DOC.comment, where: [['targetId', '==', f.thread.id], after], ...shape }
     case 'reviews':
       return { dataContractId: forge.collab, documentTypeName: DOC.review, where: [['patchId', '==', f.thread.id], after], ...shape }
+    case 'myReviews':
+      // A derived index property (`patchId.$ownerId`, v5): Drive places a `startAfter` cursor only
+      // when the query fixes it with `==` (rs-drive `query/mod.rs` `cursor_with_derived_values`),
+      // as this one does, so the feed pages like any other.
+      return { dataContractId: forge.collab, documentTypeName: DOC.review, where: [['patchId.$ownerId', '==', f.owner], after], ...shape }
   }
 }
 
@@ -280,6 +342,29 @@ export function backfillWindow(thread: ThreadSub, cursor: Cursor, floor: number)
   return (at) => at > from && at <= cursor.at
 }
 
+/** What the per-PR review feeds read before the S2 feed took over: PR id → its cursor. */
+async function oldReviewCursors(prefix: string): Promise<Map<string, Cursor>> {
+  const out = new Map<string, Cursor>()
+  const head = `${prefix}cursor:reviews:`
+  for (const [k, v] of await idbEntries<unknown>('inbox', head)) {
+    const c = asCursor(v)
+    if (c !== undefined) out.set(k.slice(head.length), c)
+  }
+  return out
+}
+
+/**
+ * Whether a review was within what its PR's own feed had read (`old`, {@link oldReviewCursors}).
+ * A cursor that stopped inside a block (`afterId`) read only part of its last timestamp: those
+ * reviews count as unread (one may be stored twice, by id never; none is lost).
+ */
+function readByOldFeed(d: PlainDocument, old: ReadonlyMap<string, Cursor>): boolean {
+  const [r] = parseDocs(reviewOnDoc, [d])
+  const c = r === undefined ? undefined : old.get(r.patchId)
+  if (r === undefined || c === undefined) return false
+  return c.afterId === undefined ? r.$createdAt <= c.at : r.$createdAt < c.at
+}
+
 /** Failed backfill attempts of one thread before it is given up (its future events still come). */
 export const BACKFILL_TRIES = 3
 /** Covered threads kept per state feed: the newest (a feed watches at most MAX_THREADS). */
@@ -310,6 +395,8 @@ function asCursor(v: unknown): Cursor | undefined {
 }
 
 const reviewDoc = baseDoc.extend({ verdict: int, body: z.string().optional().catch(undefined) })
+/** A review with the PR it is on (the S2 feed spans many). */
+const reviewOnDoc = reviewDoc.extend({ patchId: ident })
 /** A state event, with the identity it addresses (`refId`) when it names one. */
 const addressedEventDoc = eventDoc.extend({ refId: ident.optional().catch(undefined) })
 /** A comment, with its body (for a mention). */
@@ -338,9 +425,14 @@ export function transitionWhat(kind: number): string | null {
   }
 }
 
+/** A review request: the `event` / `authorEvent` kind (not the `transition` 13, merged). */
+const REVIEW_REQUEST_KIND = 13
+
 /**
- * What an `event` kind means to a reader of the inbox (state kinds are transitions). `refId`: the
- * identity an assign names (also in `value`, which a private repo seals) or a review request asks.
+ * What an `event` or `authorEvent` kind means to a reader of the inbox (state kinds are
+ * transitions; the kinds share their codes, and of an author's only the review request is news).
+ * `refId`: the identity an assign names (also in `value`, which a private repo seals) or a review
+ * request asks.
  */
 export function stateWhat(kind: number, value: string | undefined, me: string, refId?: string): string | null {
   const who = refId ?? value
@@ -414,6 +506,8 @@ export function toItems(f: Feed, docs: readonly PlainDocument[], me: string, nam
         const value = f.repo.private ? undefined : d.value
         const what = f.type === 'transition' ? transitionWhat(d.kind) : stateWhat(d.kind, value, me, d.refId)
         if (!t || what === null || !notMine(d) || d.$createdAt <= t.since) return []
+        // A review request is a PR's (an issue's author can write the kind; it means nothing there).
+        if (f.type !== 'transition' && d.kind === REVIEW_REQUEST_KIND && t.kind !== 'pull') return []
         const reason = f.type === 'transition' ? undefined : stateReason(d.kind, value, me, d.refId)
         return [item(d, { kind: 'state', repo: t.repo, what, target: { kind: t.kind, number: t.number, title: t.title }, ...(reason ? { reason } : {}) })]
       })
@@ -431,6 +525,57 @@ export function toItems(f: Feed, docs: readonly PlainDocument[], me: string, nam
         .filter(notMine)
         .map((d) => item(d, { kind: 'review', repo: t.repo, what: VERDICT_WHAT[d.verdict] ?? 'reviewed', target, ...mentioned(t.repo, d.body) }))
     }
+    case 'myReviews': {
+      // A review on a PR the feed cannot name yet is left for the poll to resolve
+      // ({@link withReviewedThreads}); it never shows without its PR.
+      const threads = new Map(f.threads.map((t) => [t.id, t]))
+      return parseDocs(reviewOnDoc, docs)
+        .filter(notMine)
+        .flatMap((d) => {
+          const t = threads.get(d.patchId)
+          if (!t) return []
+          // On a PR I opened, whether or not a subscription follows it (past the cap none does).
+          const why: Pick<InboxItem, 'reason'> = { reason: 'author', ...mentioned(t.repo, d.body) }
+          return [item(d, { kind: 'review', repo: t.repo, what: VERDICT_WHAT[d.verdict] ?? 'reviewed', target: { kind: t.kind, number: t.number, title: t.title }, ...why })]
+        })
+    }
+  }
+}
+
+/**
+ * The S2 feed `f` naming every PR its page of reviews (`docs`) is on: the PRs past the thread cap
+ * are read by id (`patch` only), with the repos it does not know (one or two requests, only when
+ * the page names such a PR).
+ */
+export async function withReviewedThreads(
+  sdk: EvoSDK,
+  forge: ForgeIds,
+  f: Extract<Feed, { kind: 'myReviews' }>,
+  docs: readonly PlainDocument[],
+): Promise<Extract<Feed, { kind: 'myReviews' }>> {
+  const known = new Set(f.threads.map((t) => t.id))
+  const missing = [...new Set(parseDocs(reviewOnDoc, docs).map((d) => d.patchId))].filter((id) => !known.has(id))
+  if (missing.length === 0) return f
+  const rows = [...(await readTargetsByIds(sdk, forge, missing, ['pull'])).values()]
+  const repoOf = new Map(f.threads.map((t) => [t.repo.id, t.repo] as const))
+  const read = await readReposByIds(sdk, forge, rows.map((r) => r.repoId).filter((id) => !repoOf.has(id)))
+  const extra = rows.flatMap((r) => {
+    const repo = repoOf.get(r.repoId) ?? read.get(r.repoId)
+    return repo ? [threadOf(r, repo, 'author', r.createdAt)] : []
+  })
+  return { ...f, threads: [...f.threads, ...extra] }
+}
+
+/** The review indexes the registered forge-collab has; null when its contract cannot be read. */
+export async function reviewIndexes(sdk: EvoSDK, forge: ForgeIds): Promise<ReviewIndexes | null> {
+  try {
+    const [toAuthor, author] = await Promise.all([
+      contractHasIndex(sdk, forge.collab, DOC.review, 'toAuthor'),
+      contractHasIndex(sdk, forge.collab, DOC.review, 'author'),
+    ])
+    return { toAuthor, author }
+  } catch {
+    return null
   }
 }
 
@@ -444,7 +589,11 @@ function threadOf(t: TargetRow, repo: RepoLite, reason: ThreadSub['reason'], sin
   return { id: t.id, kind: t.kind, number: t.number, title: t.title, repo, reason, since }
 }
 
-/** Read what `me` is subscribed to. Each source fails alone; all failing is an error. */
+/**
+ * Read what `me` is subscribed to. Each source fails alone; all failing is an error. `prior`: the
+ * review indexes the last computation found, kept when the contract cannot be read this time (so
+ * one failed read does not switch the inbox between its review paths).
+ */
 export async function computeSubscriptions(
   sdk: EvoSDK,
   network: Network,
@@ -452,7 +601,9 @@ export async function computeSubscriptions(
   me: string,
   prefs: InboxPrefs,
   now = Date.now(),
+  prior?: ReviewIndexes,
 ): Promise<Subscriptions> {
+  const indexesRead = reviewIndexes(sdk, forge).then((ix) => ({ read: ix !== null, ...(ix ?? prior ?? NO_REVIEW_INDEXES) }))
   const settled = await Promise.allSettled([
     listReposByOwner(sdk, me, { network }),
     prefs.stars ? listStarredRepoIds(sdk, forge, me) : Promise.resolve(EMPTY_PAGE),
@@ -462,12 +613,14 @@ export async function computeSubscriptions(
     listWatchedRepoIds(sdk, forge, me),
     listAddressedTargets(sdk, forge, me),
     listParticipation(network, me),
+    indexesRead.then((ix) => (ix.author ? listMyReviewTargets(sdk, forge, me) : [])),
   ] as const)
+  const indexes = await indexesRead
   // Only chain sources actually read count: stars are skipped (not read) when the preference is
-  // off, and this browser's own record is no read of the chain.
-  const read = settled.filter((_, i) => (i !== 1 || prefs.stars) && i !== 7)
+  // off, as are my reviews without S3, and this browser's own record is no read of the chain.
+  const read = settled.filter((_, i) => (i !== 1 || prefs.stars) && i !== 7 && (i !== 8 || indexes.author))
   if (read.every((r) => r.status === 'rejected')) throw (read[0] as PromiseRejectedResult).reason
-  const [owned, starred, issues, pulls, commented, watching, addressedRes, participatedRes] = settled
+  const [owned, starred, issues, pulls, commented, watching, addressedRes, participatedRes, reviewedRes] = settled
   const ok = <T>(r: PromiseSettledResult<T>, fallback: T): T => (r.status === 'fulfilled' ? r.value : fallback)
 
   const repoSubs: RepoSub[] = []
@@ -497,15 +650,25 @@ export async function computeSubscriptions(
     'the repos you watch',
     'your assignments and review requests',
     "this browser's record of your reviews and mentions",
+    'the reviews you wrote',
   ] as const
   settled.forEach((r, i) => {
     if (r.status === 'rejected') incomplete.push(labels[i] ?? 'a source')
   })
+  if (!indexes.read) incomplete.push("this forge's review indexes (the last ones known are used)")
   if (myIssues.more) incomplete.push('issues you opened (more than the first 500)')
   if (myPulls.more) incomplete.push('pull requests you opened (more than the first 500)')
-  const addressed = ok(addressedRes, [])
+  const addressedRead = ok(addressedRes, { targets: [], partial: false })
+  const addressed = addressedRead.targets
+  if (addressedRead.partial) incomplete.push('your assignments and review requests (one of their two reads)')
   const participated = ok(participatedRes, [])
-  const joinedIds = [...commentedTargets.map((c) => c.targetId), ...addressed.map((a) => a.targetId), ...participated.map((p) => p.targetId)]
+  const reviewed = ok(reviewedRes, [])
+  const joinedIds = [
+    ...commentedTargets.map((c) => c.targetId),
+    ...addressed.map((a) => a.targetId),
+    ...reviewed.map((r) => r.targetId),
+    ...participated.map((p) => p.targetId),
+  ]
   const commentedRows = await readTargetsByIds(sdk, forge, joinedIds.filter((id) => !authoredIds.has(id))).catch(() => {
     incomplete.push('the threads you commented on, were assigned or reviewed')
     return new Map<string, TargetRow>()
@@ -531,15 +694,16 @@ export async function computeSubscriptions(
   // One sub per thread: the strongest reason (the first source that names it, in the order
   // below), every reason, and the earliest time any of them began.
   const byThread = new Map<string, ThreadSub>()
-  const follow = (t: TargetRow | undefined, repo: RepoLite | null | undefined, reason: ThreadReason, since: number): void => {
+  const follow = (t: TargetRow | undefined, repo: RepoLite | null | undefined, reason: ThreadReason, since: number, viaAuthor = false): void => {
     if (!t || !repo) return
     const prev = byThread.get(t.id)
+    const via = viaAuthor || prev?.viaAuthor === true ? { viaAuthor: true } : {}
     if (prev === undefined) {
-      byThread.set(t.id, { ...threadOf(t, repo, reason, since), reasons: [reason] })
+      byThread.set(t.id, { ...threadOf(t, repo, reason, since), reasons: [reason], ...via })
       return
     }
     const reasons = prev.reasons ?? [prev.reason]
-    byThread.set(t.id, { ...prev, since: Math.min(prev.since, since), reasons: reasons.includes(reason) ? reasons : [...reasons, reason] })
+    byThread.set(t.id, { ...prev, since: Math.min(prev.since, since), reasons: reasons.includes(reason) ? reasons : [...reasons, reason], ...via })
   }
   for (const t of authored) follow(t, t.repo ?? repoById.get(t.repoId), 'author', t.createdAt)
   for (const c of commentedTargets) {
@@ -551,7 +715,14 @@ export async function computeSubscriptions(
   const rowOf = (id: string): TargetRow | undefined => commentedRows.get(id) ?? authored.find((t) => t.id === id)
   for (const a of addressed) {
     const t = rowOf(a.targetId)
-    follow(t, t ? t.repo ?? repoById.get(t.repoId) : undefined, a.reason, a.firstAt - 1)
+    // A review request is a PR's: an issue's author can write the kind, but it asks nothing.
+    if (a.reason === 'review-requested' && t?.kind !== 'pull') continue
+    follow(t, t ? t.repo ?? repoById.get(t.repoId) : undefined, a.reason, a.firstAt - 1, a.viaAuthor)
+  }
+  // Reviewed (S3, QW2-009): on every device, as this browser's record only knew its own.
+  for (const r of reviewed) {
+    const t = rowOf(r.targetId)
+    follow(t, t ? t.repo ?? repoById.get(t.repoId) : undefined, 'reviewed', r.firstAt - 1)
   }
   for (const p of participated) {
     const t = rowOf(p.targetId)
@@ -566,6 +737,8 @@ export async function computeSubscriptions(
     droppedRepos: Math.max(0, repoSubs.length - MAX_REPOS),
     droppedThreads: Math.max(0, threads.length - MAX_THREADS),
     ...(incomplete.length > 0 ? { incomplete } : {}),
+    reviewIndexes: { toAuthor: indexes.toAuthor, author: indexes.author },
+    collab: forge.collab,
   }
 }
 
@@ -661,12 +834,13 @@ export async function pollOnce(
   const stopped = (): boolean => opts.stop?.() === true || (clears.get(p) ?? 0) !== epoch
   const prefs = await loadPrefs(network, me)
   let subs = await loadSubs(network, me)
-  if (subs === undefined || opts.refreshSubs || now - subs.at > SUBS_TTL_MS) {
-    subs = await computeSubscriptions(sdk, network, forge, me, prefs, now)
+  const otherCollab = subs?.collab !== undefined && subs.collab !== forge.collab
+  if (subs === undefined || opts.refreshSubs || otherCollab || now - subs.at > SUBS_TTL_MS) {
+    subs = await computeSubscriptions(sdk, network, forge, me, prefs, now, otherCollab ? undefined : subs?.reviewIndexes)
     if (stopped()) return { added: 0, feedsRead: 0, feedsTotal: 0, failed: 0, subs }
     await idbPut('inbox', `${p}subs`, subs)
   }
-  const feeds = planFeeds(subs, prefs)
+  const feeds = planFeeds(subs, prefs, me)
   // When each feed was first watched (planned, not first read: a round may reach it minutes
   // later). One record for all feeds; only feeds still watched are kept.
   const seenBefore = (await idbGet<Record<string, number>>('inbox', `${p}seen`)) ?? {}
@@ -704,6 +878,9 @@ export async function pollOnce(
     const key = `${p}cursor:${fk}`
     const start = initialCursor(f, seen[fk] ?? now)
     const cursor = asCursor(await idbGet<unknown>('inbox', key)) ?? start
+    // The S2 feed after per-PR review feeds (an earlier build, or a contract without S2): what
+    // each PR's feed already read is not stored again, so a pruned notification stays gone.
+    const oldReviews = f.kind === 'myReviews' ? await oldReviewCursors(p) : new Map<string, Cursor>()
     // A repo's state feed is shared by its threads: a thread that joined it after the cursor
     // moved past its events is read once from its own history (L-17).
     if (f.kind === 'state') {
@@ -744,17 +921,29 @@ export async function pollOnce(
       if (changed && !stopped()) await idbPut('inbox', coverKey, pruneCovered(covered, f.threads))
     }
     let docs: PlainDocument[]
+    let feed: Feed = f
     try {
       docs = (await queryDocumentsWithProof(sdk, feedQuery(forge, f, cursor))).documents
+      // The S2 feed's reviews on PRs past the thread cap: their PRs are read before the cursor
+      // moves (a failed read retries the page).
+      if (f.kind === 'myReviews') feed = await withReviewedThreads(sdk, forge, f, docs)
     } catch {
       failed++
       continue
     }
     if (stopped()) break
-    await store(toItems(f, docs, me, name))
+    const unread = oldReviews.size === 0 ? docs : docs.filter((d) => !readByOldFeed(d, oldReviews))
+    await store(toItems(feed, unread, me, name))
     if (stopped()) break
     const page = parseDocs(baseDoc, docs).map((d) => ({ at: d.$createdAt, id: d.$id }))
-    await idbPut('inbox', key, advanceCursor(cursor, page))
+    const next = advanceCursor(cursor, page, feedLimit(f))
+    await idbPut('inbox', key, next)
+    // The per-PR review cursors an earlier read left: dropped once the S2 feed is wholly past
+    // them all (not inside the block of the last one).
+    const lastOld = Math.max(...[...oldReviews.values()].map((c) => c.at))
+    if (oldReviews.size > 0 && (next.at > lastOld || (next.at === lastOld && next.afterId === undefined)) && !stopped()) {
+      await idbBatch('inbox', [...oldReviews.keys()].map((id) => [`${p}cursor:reviews:${id}`, undefined] as const))
+    }
   }
   if (added > 0 && !stopped()) {
     for (const id of itemsToDrop(await loadItems(network, me))) await idbDelete('inbox', `${p}item:${id}`)
@@ -795,7 +984,6 @@ export function followMentions(subs: Subscriptions, items: readonly InboxItem[])
  * followed for, as the inbox's reason filters match it, not only its strongest one.
  */
 export function watchCounts(subs: Subscriptions): { readonly member: number; readonly watched: number; readonly starred: number; readonly joined: number; readonly addressed: number; readonly seen: number } {
-  const has = (t: ThreadSub, ...rs: ThreadReason[]): boolean => (t.reasons ?? [t.reason]).some((r) => rs.includes(r))
   return {
     member: subs.repos.filter((r) => r.reason !== 'starred' && r.reason !== 'watched').length,
     watched: subs.repos.filter((r) => r.reason === 'watched').length,
@@ -871,7 +1059,7 @@ export const INBOX_FILTERS: readonly { readonly id: InboxFilter; readonly label:
   { id: 'review-requested', label: 'Review requested', none: 'No review requests' },
 ]
 
-const ITEM_REASON: Readonly<Record<ItemReason, ThreadReason>> = { assign: 'assigned', review_requested: 'review-requested', mention: 'mentioned' }
+const ITEM_REASON: Readonly<Record<ItemReason, ThreadReason>> = { assign: 'assigned', review_requested: 'review-requested', mention: 'mentioned', author: 'author' }
 
 /** The subscribed threads by {@link threadKey}, for {@link threadReasons}. */
 export function subsByThread(subs: Subscriptions | null): Map<string, ThreadSub> {

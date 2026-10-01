@@ -135,6 +135,7 @@ function Row({ row }: { row: ReviewerRow }): JSX.Element {
         </Tag>
       ) : null}
       {s.kind === 'not-member' ? <Tag>doesn&apos;t count (not a maintainer or writer)</Tag> : null}
+      {s.kind === 'not-approver' ? <Tag>{s.role}, not counted</Tag> : null}
     </li>
   )
 }

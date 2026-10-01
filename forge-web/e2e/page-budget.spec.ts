@@ -227,7 +227,7 @@ test.describe('page request budget (S-1)', () => {
  * documents in all, the branch list 42 (most of them its tips' commits). The budgets are a few
  * times that, so a resent query passes and a return of the whole-index read (657 and up) fails.
  *
- * Run where the dash mirror is: bonsia, or elsewhere with its owner in `E2E_SHOWCASE_DASHPAY`.
+ * Run where the dash mirror is: sakura (once it is imported there), or elsewhere with its owner in `E2E_SHOWCASE_DASHPAY`.
  */
 const DASH_HOME_CHUNK_DOCS = 60
 const DASH_BRANCHES_CHUNK_DOCS = 120
@@ -289,7 +289,7 @@ test.describe('the browse index on the dash mirror (QW3-001)', () => {
  * the newest chunks until the page is full or the tab's proved count is reached, at most three
  * per load, and a row's labels from its own events. The page-count indicator is the proved count.
  *
- * Run where the dash mirror is: bonsia, or elsewhere with its owner in `E2E_SHOWCASE_DASHPAY`.
+ * Run where the dash mirror is: sakura (once it is imported there), or elsewhere with its owner in `E2E_SHOWCASE_DASHPAY`.
  */
 test.describe('list budgets on the dash mirror (QW2-002)', () => {
   test.describe.configure({ timeout: 240_000 })
@@ -332,7 +332,7 @@ test.describe('list budgets on the dash mirror (QW2-002)', () => {
  *   1,287 requests and still partial).
  *
  * Run where the dash mirror is: `E2E_DEVNET=moutai`, or elsewhere with its owner in
- * `E2E_SHOWCASE_DASHPAY` (on bonsia: 7A1MEuLjzcHZq8bLBzGYSUkpb2VM9dv7gtNuNYrPxKt3).
+ * `E2E_SHOWCASE_DASHPAY` (on bonsia it was 7A1MEuLjzcHZq8bLBzGYSUkpb2VM9dv7gtNuNYrPxKt3).
  */
 /** `CHROME_KEYSET_SPLITS` (lib/repo/refs.ts): the key ranges the chrome reads a long ref timeline as. */
 const DASH_HOME_REF_READS_MAX = 8 + DAPI_RESEND_SLACK

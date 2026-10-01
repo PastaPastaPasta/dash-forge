@@ -2,15 +2,15 @@
 // seed-v2-fixture.mjs — seed the forge-v2 read fixture that forge-web's devnet Playwright
 // specs and live tests read.
 //
-//   node forge-contracts/scripts/seed-v2-fixture.mjs [--network devnet --devnet-name bonsia]
+//   node forge-contracts/scripts/seed-v2-fixture.mjs [--network devnet --devnet-name sakura]
 //        [--identities <dir>] [--state <file>] [--summary <file>] [--deployment <file>]
 //
 // Writes the RC1 documents (contracts/forge-{core,collab,community}.json; the rules are in
-// docs/contracts/forge-v2.md). Needs `npm ci` in forge-contracts/sdk-v2 (evo-sdk 4.2.0-beta.7),
+// docs/contracts/forge-v2.md). Needs `npm ci` in forge-contracts/sdk-v2 (evo-sdk 5.0.0-beta.1),
 // the three-contract deployment in deployments/<network>.json, and the test identities OWNER,
 // MAINTAINER, COLLAB and CONTRIB in --identities (default
 // ~/.config/dash-forge/test-identities/<network>/). The network defaults to
-// DASH_FORGE_NETWORK / DASH_FORGE_DEVNET_NAME, else devnet bonsia.
+// DASH_FORGE_NETWORK / DASH_FORGE_DEVNET_NAME, else devnet sakura.
 //
 // It writes:
 //   * repo `forge-v2-demo` owned by OWNER, OWNER and MAINTAINER as maintainers and COLLAB as a
@@ -65,7 +65,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import {
-  CONTRACT_OF, EVENT, ROOT, TRANSITION, VIS, checkOutcome, idBytes, loadIdentity, log, membership, openSession, parseArgs,
+  CONTRACT_OF, EVENT, FUSED_STAR, ROOT, TRANSITION, VIS, checkOutcome, idBytes, loadIdentity, log, membership, openSession, parseArgs,
   runIfMain, transition, until,
 } from './lib/seed-io.mjs';
 
@@ -505,7 +505,8 @@ export async function main(argv, injected) {
   // CONTRIB's star counts toward Trending through its beat. The beat names the repo's owner, who
   // may not beat its own repo. CONTRIB also watches the repo.
   await createIndexOnly('star:contrib', CONTRIB, 'star', { repoId: R });
-  await createIndexOnly('starBeat:contrib', CONTRIB, 'starBeat', { repoId: R, vis: VIS, repoOwner: idBytes(OWNER.id) });
+  // (with RC2's fused star the star itself is the trending entry, and there is no starBeat)
+  if (!FUSED_STAR) await createIndexOnly('starBeat:contrib', CONTRIB, 'starBeat', { repoId: R, vis: VIS, repoOwner: idBytes(OWNER.id) });
   await createIndexOnly('watch:contrib', CONTRIB, 'watch', { repoId: R });
   // Topics (forge-core, the repo owner's): Explore by topic counts `fixture` and `forge-v2`.
   await create('topic:fixture', OWNER, 'topic', { repoId: R, name: 'fixture', vis: VIS });

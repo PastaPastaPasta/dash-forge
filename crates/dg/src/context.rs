@@ -95,7 +95,7 @@ fn confirmation_required(cause: String) -> UserError {
 }
 
 /// The fields a key source states about itself without being opened: its network key
-/// (`testnet`, `devnet-bonsia`, …, or a bare `devnet`) and its identity id.
+/// (`testnet`, `devnet-sakura`, …, or a bare `devnet`) and its identity id.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct SourceFacts {
     network: Option<String>,
@@ -147,7 +147,7 @@ fn source_facts(source: &std::path::Path) -> SourceFacts {
 }
 
 /// The network a stored key file's name records: `dg auth login` stores a key as
-/// `<network>-<identityId>.key` (`devnet-bonsia-ErxF….key`). Any other name says nothing.
+/// `<network>-<identityId>.key` (`devnet-sakura-ErxF….key`). Any other name says nothing.
 /// Only for messages (QW3-073: `dg auth balance --network mainnet` names the key's network);
 /// it does not select the network.
 fn stored_key_network(source: &std::path::Path) -> Option<String> {
@@ -634,9 +634,9 @@ mod tests {
     fn a_stored_key_file_name_says_its_network() {
         let p = |s: &str| super::stored_key_network(std::path::Path::new(s));
         assert_eq!(
-            p("/h/.config/dash-forge/identities/devnet-bonsia-7TTVrxb6vzggNDmerQnSERAiJJpxDgKdsa31yLVj9cH3.key")
+            p("/h/.config/dash-forge/identities/devnet-sakura-7TTVrxb6vzggNDmerQnSERAiJJpxDgKdsa31yLVj9cH3.key")
                 .as_deref(),
-            Some("devnet-bonsia")
+            Some("devnet-sakura")
         );
         assert_eq!(
             p("testnet-7TTVrxb6vzggNDmerQnSERAiJJpxDgKdsa31yLVj9cH3.key").as_deref(),
@@ -674,24 +674,24 @@ mod tests {
             env,
             key,
         };
-        let (s, src) = super::stack(layers(net("devnet-bonsia"), net("testnet"), none(), none()));
+        let (s, src) = super::stack(layers(net("devnet-sakura"), net("testnet"), none(), none()));
         assert_eq!(src, NetworkSource::Repository);
-        assert_eq!(s.resolve().unwrap().network.key(), "devnet-bonsia");
+        assert_eq!(s.resolve().unwrap().network.key(), "devnet-sakura");
         // a flag still wins
         let (s, src) = super::stack(Layers {
             flags: net("mainnet"),
-            ..layers(net("devnet-bonsia"), none(), none(), none())
+            ..layers(net("devnet-sakura"), none(), none(), none())
         });
         assert_eq!(
             (src, s.resolve().unwrap().network.key()),
             (NetworkSource::Flags, "mainnet".into())
         );
         // fresh HOME in CI: only the key names a network
-        let (s, src) = super::stack(layers(none(), none(), none(), net("devnet-bonsia")));
+        let (s, src) = super::stack(layers(none(), none(), none(), net("devnet-sakura")));
         assert_eq!(src, NetworkSource::Key);
-        assert_eq!(s.resolve().unwrap().network.key(), "devnet-bonsia");
+        assert_eq!(s.resolve().unwrap().network.key(), "devnet-sakura");
         // the environment beats the key
-        let (_, src) = super::stack(layers(none(), none(), net("mainnet"), net("devnet-bonsia")));
+        let (_, src) = super::stack(layers(none(), none(), net("mainnet"), net("devnet-sakura")));
         assert_eq!(src, NetworkSource::Environment);
         // nothing: the default
         let (s, src) = super::stack(layers(none(), none(), none(), none()));
@@ -703,16 +703,16 @@ mod tests {
     fn only_the_repositorys_own_git_config_pins_its_network() {
         let text = "global\tdash.network testnet\n\
                     local\tdash.network devnet\n\
-                    local\tdash.devnetname bonsia\n\
+                    local\tdash.devnetname sakura\n\
                     system\tdash.devnetname moutai\n";
         let s = parse_repo_network(text);
-        assert_eq!(s.resolve().unwrap().network.key(), "devnet-bonsia");
+        assert_eq!(s.resolve().unwrap().network.key(), "devnet-sakura");
         // a worktree value beats a local one
-        let s = parse_repo_network("worktree\tdash.devnetname paloma\nlocal\tdash.network devnet\nlocal\tdash.devnetname bonsia\n");
+        let s = parse_repo_network("worktree\tdash.devnetname paloma\nlocal\tdash.network devnet\nlocal\tdash.devnetname sakura\n");
         assert_eq!(s.devnet_name.as_deref(), Some("paloma"));
         // global only: nothing pinned here
         assert!(parse_repo_network(
-            "global\tdash.network devnet\nglobal\tdash.devnetname bonsia\n"
+            "global\tdash.network devnet\nglobal\tdash.devnetname sakura\n"
         )
         .is_unset());
     }
@@ -721,22 +721,22 @@ mod tests {
     fn a_key_source_names_its_network_without_being_opened() {
         const ID: &str = "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB";
         let facts = source_facts(std::path::Path::new(&format!(
-            "dfk1:devnet-bonsia:{ID}:6:cWIFWIFWIF"
+            "dfk1:devnet-sakura:{ID}:6:cWIFWIFWIF"
         )));
-        assert_eq!(facts.network.as_deref(), Some("devnet-bonsia"));
+        assert_eq!(facts.network.as_deref(), Some("devnet-sakura"));
         assert_eq!(facts.identity_id.as_deref(), Some(ID));
         let kc = source_facts(std::path::Path::new(&format!(
-            "keychain:dash-forge/devnet-bonsia/{ID}"
+            "keychain:dash-forge/devnet-sakura/{ID}"
         )));
-        assert_eq!(kc.network.as_deref(), Some("devnet-bonsia"));
+        assert_eq!(kc.network.as_deref(), Some("devnet-sakura"));
         assert_eq!(
-            full_network_key("devnet-bonsia").as_deref(),
-            Some("devnet-bonsia")
+            full_network_key("devnet-sakura").as_deref(),
+            Some("devnet-sakura")
         );
         assert_eq!(full_network_key("Testnet").as_deref(), Some("testnet"));
         assert_eq!(
-            full_network_key("DEVNET-bonsia").as_deref(),
-            Some("devnet-bonsia")
+            full_network_key("DEVNET-sakura").as_deref(),
+            Some("devnet-sakura")
         );
         assert_eq!(full_network_key("testnet").as_deref(), Some("testnet"));
         // an older identity file's bare `devnet` names no devnet

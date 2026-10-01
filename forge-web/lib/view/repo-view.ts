@@ -10,9 +10,11 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { NETWORKS, type Network } from '../constants'
+import { hexToBase64 } from '../sdk'
 import {
   branchesOf,
   configBundleOf,
+  publicRefKey,
   readConfigBundle,
   readRefs,
   readRepoChrome,
@@ -22,6 +24,7 @@ import {
   resolveOwner,
   repoKey,
   tagsOf,
+  type ChromeTimelines,
   type RepoAddressParams,
   type RepoChrome,
   type RepoConfig,
@@ -79,7 +82,20 @@ export interface RepoHome {
   readonly backend: BackendInfo
   /** A private repo: how this viewer reads it (set by the repo scaffold). */
   readonly private?: PrivateAccess
+  /**
+   * `branches` holds only the default branch and `tags` nothing: a home read for a page that
+   * shows no other ref (an issue or PR list, {@link RepoHomeRefs}). A page that lists refs reads
+   * its own home.
+   */
+  readonly refsPartial?: true
 }
+
+/**
+ * Which refs a home resolves: `all` (every branch and tag), or `default` (the default branch
+ * alone, when the repo's ref updates are past one page: the issue and PR lists, which show no
+ * other ref, then skip reading the whole history, 8 requests on the dash mirror).
+ */
+export type RepoHomeRefs = 'all' | 'default'
 
 /**
  * How the viewer reads a private repo: `signed-out` and `outsider` see only what is public
@@ -121,6 +137,7 @@ export async function loadRepoHome(
   sdk: EvoSDK,
   params: RepoAddressParams & { readonly network: Network },
   onResolved?: (repo: RepoRef) => void,
+  { refs = 'all' }: { readonly refs?: RepoHomeRefs } = {},
 ): Promise<RepoHome | null> {
   // A repo addressed by `(owner, name)`: one composite resolves it and reads its chrome.
   const forge = NETWORKS[params.network].v2
@@ -131,9 +148,10 @@ export async function loadRepoHome(
     const chrome = await readRepoChrome(sdk, forge, ownerId, name, params.network)
     if (chrome === null) return null
     seedFromDomains(params.network, [ownerId], chrome.ownerDomains)
-    if (chrome.timelines !== null) {
+    if (chrome.read !== null) {
       onResolved?.(chrome.repo)
-      return homeFromTimelines(chrome, await chrome.timelines)
+      const listed = refs === 'default' && !chrome.read.whole ? await listHome(chrome, chrome.read) : null
+      return listed ?? homeFromTimelines(chrome, await chrome.read.all())
     }
     return composeHome(sdk, chrome.repo, chrome.doc, onResolved, chrome.starCount)
   }
@@ -144,10 +162,34 @@ export async function loadRepoHome(
 
 /** A public repo's home from its chrome read and complete timelines (no further request). */
 function homeFromTimelines(chrome: RepoChrome, timelines: RepoTimelines): RepoHome {
+  const { config, history } = configBundleOf(chrome.repo, timelines.config)
+  return homeOf(chrome, config, refsFromRows(chrome.repo, timelines.refUpdate, timelines.protectedRefUpdate, history))
+}
+
+/**
+ * A public repo's home for a page that shows no ref but the default branch ({@link RepoHomeRefs}
+ * `default`), without reading on the timelines it does not need (the pack list): the config, and
+ * every ref when the composite held them whole, else the default branch alone, from that one ref's
+ * history (one equality read per ref-update type whose page came back full), not every ref's. Null
+ * when the default branch does not resolve (an empty repo, a fork whose default was never pushed):
+ * the full home decides what to show then.
+ */
+async function listHome(chrome: RepoChrome, read: ChromeTimelines): Promise<RepoHome | null> {
+  const { config, history } = configBundleOf(chrome.repo, await read.config())
+  if (read.refsWhole) {
+    const rows = await read.refs()
+    return homeOf(chrome, config, refsFromRows(chrome.repo, rows.refUpdate, rows.protectedRefUpdate, history))
+  }
+  const refName = `refs/heads/${config?.defaultBranch ?? chrome.doc.defaultBranch ?? 'main'}`
+  const rows = await read.ref(hexToBase64(publicRefKey(refName)))
+  const branch = refsFromRows(chrome.repo, rows.refUpdate, rows.protectedRefUpdate, history).find((r) => r.refName === refName)
+  if (branch === undefined || branch.state.state === 'unborn') return null
+  return { ...homeOf(chrome, config, [branch]), refsPartial: true }
+}
+
+function homeOf(chrome: RepoChrome, config: RepoConfig | null, refs: readonly ResolvedRef[]): RepoHome {
   const { repo, doc: v2 } = chrome
-  const { config, history } = configBundleOf(repo, timelines.config)
   noteRepoGateways(repoKey(repo), 'config', config?.backendUris ?? [])
-  const refs = refsFromRows(repo, timelines.refUpdate, timelines.protectedRefUpdate, history)
   return {
     repo,
     v2,

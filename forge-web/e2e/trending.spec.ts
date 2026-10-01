@@ -12,7 +12,7 @@ test.beforeEach(quorumGuard)
  * recount of the stars themselves (platform-parity-spec §4.3, C-1):
  *
  *   E2E_TRENDING_SEED=<file written by forge-contracts/scripts/seed-trending.mjs> \
- *   E2E_DEVNET=bonsia pnpm exec playwright test trending.spec.ts
+ *   E2E_DEVNET=sakura pnpm exec playwright test trending.spec.ts
  *
  * The seed script mints nothing and writes as identities minted for the run (never the shared
  * fixtures): it creates repos, stars them from several identities (each star writing its
@@ -25,7 +25,7 @@ test.beforeEach(quorumGuard)
  *      those counts (other repos on the devnet may interleave: only the relative order and the
  *      counts of the seeded ones are asserted);
  *   3. reads the same ranking in Node, independently of the app, and checks the page matches it;
- *   4. asserts the section's request budget: one ranked `starBeat` read per window;
+ *   4. asserts the section's request budget: one ranked `starBeat` read per window (beat shape);
  *   5. checks Most starred's cards carry the star counts the repos' composite read (a refused
  *      composite falls back to a plain read that has none).
  */
@@ -36,6 +36,16 @@ interface Seed {
 }
 
 const SEED = process.env['E2E_TRENDING_SEED'] ?? ''
+
+/**
+ * Whether the committed forge-community fuses the star (RC2 C1, `lib/repo/star-shape.ts`): the
+ * star carries the time window and Trending ranks it; there is no `starBeat`.
+ */
+const COMMUNITY = JSON.parse(readFileSync(join(__dirname, '..', '..', 'forge-contracts', 'contracts', 'forge-community.json'), 'utf8')) as {
+  documentSchemas: Record<string, { indices?: { timeRange?: unknown }[] }>
+}
+const FUSED_STAR = (COMMUNITY.documentSchemas['star']?.indices ?? []).some((index) => index.timeRange !== undefined)
+const TREND_TYPE = FUSED_STAR ? 'star' : 'starBeat'
 
 /**
  * The recount, as FORGE_RULES_V2 `trendingWindow` / `trendingRecount` define it (vectors
@@ -69,7 +79,7 @@ test('t1. Trending this week matches a recount of the seeded stars in the window
   const ranked = await sdk.documents.ranked({
     // starBeat is forge-community's since the RC1 split (a pre-split record has only forge-collab).
     dataContractId: (dep.v2.forgeCommunity ?? dep.v2.forgeCollab).contractId,
-    documentTypeName: 'starBeat',
+    documentTypeName: TREND_TYPE,
     groupBy: 'repoId',
     aggregate: { type: 'count' },
     limit: 100,
@@ -112,8 +122,9 @@ test('t1. Trending this week matches a recount of the seeded stars in the window
   await shot(page, 't1-trending-today')
 
   // Budget: Trending is ONE proved ranked read per window (`getDocuments` carries it), whatever
-  // the number of stars: this week, then today.
-  expect(beatReads.count()).toBe(2)
+  // the number of stars: this week, then today. A fused star's ranked read cannot be told from
+  // the page's other star reads by type, so the count is asserted on the beat shape only.
+  if (!FUSED_STAR) expect(beatReads.count()).toBe(2)
 
   // Most starred: each card's star count came from the ranked repos' composite, so it is there
   // and equals the ranked count (the same `star.byRepo` tree).

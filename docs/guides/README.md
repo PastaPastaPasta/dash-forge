@@ -16,7 +16,7 @@ Task-oriented guides for using Dash Forge. For how it is built, see the [documen
 | [Identity and keys](identity-and-keys.md) | understand your identity and limited keys, back it up, recover it, and keep keys safe |
 | [What things cost](costs.md) | know what each action costs (measured), what comes back, and how to see it before you pay |
 | [Check that Forge isn't lying to you](verify-forge.md) | read the Verification card, verify proofs and hashes yourself, and run your own copy of the web app |
-| [Devnet bonsia is moving](devnet-move.md) | know what a devnet re-cut wipes (repos, issues, stars, identities, keys) and keeps (your clone, your bucket), and how to re-push with `dg` afterwards |
+| [Dash Forge moved to devnet sakura](devnet-move.md) | know what the move from bonsia lost (repos, issues, stars, identities, keys) and kept (your clone, your bucket), and how to re-push on sakura with `dg` |
 | [Verify the app you loaded](verify-the-app.md) | pin a release's IPFS build of the web app, rebuild its CID from the tag, and compare it with the GitHub release and the Forge release on chain |
 
 Also:
@@ -33,10 +33,10 @@ These guides describe what is on `master` today. Features that are specified but
 - prebuilt release binaries and `install.sh` (the pipeline is merged; no release is tagged yet);
 - editing files in the browser, and browser merges for private repositories (the CLI has them).
 
-Dash Wallet sign-in is built. With today's wallets it works only in the iOS app pointed at bonsia's key-exchange contract (not yet tried on a real device), and on testnet once Forge is deployed there: see [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today).
+Dash Wallet sign-in is built. With today's wallets it works only in the iOS app pointed at Forge's key-exchange contract on sakura (deployed with the RC2 registration) (not yet tried on a real device), and on testnet once Forge is deployed there: see [Identity and keys](identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today).
 
 ## Which network
 
-The guides use **devnet bonsia** (Platform protocol 14, v4.2.0-beta.7) throughout, where Forge's RC1 contracts were registered on 2026-09-29 and frozen (tag `contracts-rc1-frozen`). [forge.dashhq.org](https://forge.dashhq.org) is live on bonsia as of 2026-09-30. Moutai was upgraded in place to v4.2.0-beta.7, which retired its forge-v2 contracts; moutai commands stop with a "not deployed" error. Testnet and mainnet run protocol 13 and have no Forge deployment: forge-v2 is registered on testnet when protocol 14 reaches it, and on mainnet after protocol 14 activates there and the owner registers the contracts. See [the network status table](../../README.md#status).
+The guides use **devnet sakura** (Platform protocol 14, v5.0.0-beta.1) throughout. Its status: RC2 registered on Platform v5.0.0-beta.1 (2026-10-01), and [forge.dashhq.org](https://forge.dashhq.org) runs on sakura. Devnet bonsia, where the RC1 contracts were registered on 2026-09-29 (tag `contracts-rc1-frozen`), is gone. Moutai was upgraded in place to v4.2.0-beta.7, which retired its forge-v2 contracts; moutai commands stop with a "not deployed" error. Fees quoted as measured on bonsia or moutai are from those devnets. Testnet and mainnet run protocol 13 and have no Forge deployment: forge-v2 is registered on testnet when protocol 14 reaches it, and on mainnet after protocol 14 activates there and the owner registers the contracts. See [the network status table](../../README.md#status).
 
 The product specification the planned features come from is [`docs/design/ux-dx-spec.md`](../design/ux-dx-spec.md) and [`docs/roadmap.md`](../roadmap.md).

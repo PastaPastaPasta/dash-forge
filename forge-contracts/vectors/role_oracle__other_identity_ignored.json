@@ -22,7 +22,8 @@
     {
       "roleAt": null,
       "memberAt": false,
-      "currentRole": null
+      "currentRole": null,
+      "approverAt": false
     }
   ]
 }

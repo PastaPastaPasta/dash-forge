@@ -43,6 +43,7 @@ import {
   GATE_REFUSED_CODE,
   createDocumentIdempotent,
   previewCreate,
+  previewDelete,
   queryDocumentsWithProof,
   sumPreviews,
   type CostPreview,
@@ -50,7 +51,7 @@ import {
 } from '../sdk'
 import { sleep } from '../sdk/facade'
 import { DOC, withVis, type RepoRef } from './contract'
-import { invalidateMembers, readMemberships } from './members'
+import { invalidateMembers, memberDocOf, readMemberships } from './members'
 import {
   isMaintainer,
   loadPrivateSessionUncached,
@@ -231,6 +232,11 @@ function mustBurn(
   })
 }
 
+/** The cost shown before a public repo's role change `from` → `to`: the old document's delete, then the new one. */
+export function roleChangeCost(from: Role, to: Role): CostPreview {
+  return sumPreviews([previewDelete(memberDocOf(from)), previewCreate(memberDocOf(to))])
+}
+
 /** The cost shown before a rotation: its wraps plus the anchor (§5.5: members + 1). */
 export function rotationCost(plan: RotationPlan): CostPreview {
   // A burn: the burned key to every remaining member without one (so anyone can finish it), the
@@ -242,7 +248,7 @@ export function rotationCost(plan: RotationPlan): CostPreview {
 
 /** The cost shown before adding a member: the membership document and one wrap (~0.0006 DASH). */
 export function addMemberCost(role: Role): CostPreview {
-  return sumPreviews([previewCreate(role), previewCreate('repoKey')])
+  return sumPreviews([previewCreate(memberDocOf(role)), previewCreate('repoKey')])
 }
 
 /** What a maintainer's client should do on this visit (§5.6), or null when nothing. */

@@ -102,3 +102,23 @@ export function mirroredCommentText(body: string, anchor: Anchor | null): { text
 export function isEmptyMirroredReview(item: ReviewItem): boolean {
   return item.comments.length === 0 && item.expected === 0 && importedVerdictOf(item.review.body) === 'commented' && searchableBody(item.review.body).trim() === ''
 }
+
+/**
+ * `items` with each reply to an inline thread taken out of the review it was submitted with: it
+ * shows under its thread's root instead (the Conversation's replies slot), as on GitHub, where a
+ * reply is filed as a one-comment review of its own (QW2-010: mirrored replies now carry their
+ * `reviewId` and `replyTo`). A review left with no comment, no text and no verdict of its own (a
+ * comment-only review whose comments were all replies) goes too. `inline` are the ids of the
+ * comments in inline threads.
+ */
+export function nestThreadReplies(items: readonly TimelineItem[], inline: ReadonlySet<string>): TimelineItem[] {
+  return items.flatMap((it): TimelineItem[] => {
+    if (it.kind !== 'review') return [it]
+    const kept = it.comments.filter((c) => c.replyTo === null || !inline.has(c.id))
+    if (kept.length === it.comments.length) return [it]
+    // No verdict of its own: a comment one, and (mirrored) "commented" at the source too.
+    const commentOnly = it.review.verdict === 'comment' && (importedVerdictOf(it.review.body) ?? 'commented') === 'commented'
+    const empty = kept.length === 0 && commentOnly && searchableBody(it.review.body).trim() === ''
+    return empty ? [] : [{ ...it, comments: kept, expected: Math.max(0, it.expected - (it.comments.length - kept.length)) }]
+  })
+}

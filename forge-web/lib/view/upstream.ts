@@ -64,7 +64,7 @@ export async function resolveUpstreamNumber(
 
 /**
  * Whether `#N` in a body means the source forge's `#N`: text copied from the source (it carries
- * `imported` provenance) by the repo owner (the mirror signer) or a current member. Anyone
+ * `imported` provenance) by the repo owner (the mirror signer) or a current approver. Anyone
  * else's text, and anything written here, uses this repo's own numbers.
  */
 export function bodyRefsUpstream(
@@ -73,5 +73,6 @@ export function bodyRefsUpstream(
   members: readonly Membership[],
 ): boolean {
   if (!item.imported) return false
-  return item.author === repo.ownerId || new RoleOracle([...members]).currentRole(item.author) !== null
+  // Imported provenance is trusted from approvers only (RC2 roles: never a triage member or reader).
+  return item.author === repo.ownerId || new RoleOracle([...members]).currentApprover(item.author)
 }

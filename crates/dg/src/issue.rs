@@ -9,20 +9,28 @@ use serde_json::json;
 
 use forge_core::collab::v2::{Comment, IssueView, Target};
 use forge_core::create::default_journal_dir;
-use forge_core::rules::v2::{status_of_code, StateAction, Transition};
+use forge_core::rules::v2::{
+    close_reason_of, current_close_reason, status_of_code, CloseReason, ClosedAs, StateAction,
+    Transition,
+};
 use forge_core::rules::{Event, EventKind, IssueState};
 use forge_core::user_error::{codes, UserError};
 
 use crate::common::{number_arg, Reader, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, safe, transition_phrase, transition_route_text, with_name};
-use crate::{IssueCommand, IssueListArgs};
+use crate::{CloseReasonArg, HideReasonArg, IssueCommand, IssueListArgs};
 
 /// Dispatch an `issue` subcommand.
+#[allow(clippy::too_many_lines)] // one arm per subcommand
 pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
     match cmd {
         IssueCommand::List(args) => list(ctx, args).await,
-        IssueCommand::View { repo, number } => view(ctx, repo, *number).await,
+        IssueCommand::View {
+            repo,
+            number,
+            show_hidden,
+        } => view(ctx, repo, *number, *show_hidden).await,
         IssueCommand::Create { repo, title, body } => create(ctx, repo, title, body).await,
         IssueCommand::Edit {
             repo,
@@ -55,8 +63,16 @@ pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
         IssueCommand::DeleteComment { repo, comment_id } => {
             delete_comment(ctx, repo, comment_id).await
         }
-        IssueCommand::Close { repo, number } => set_open(ctx, repo, *number, true).await,
-        IssueCommand::Reopen { repo, number } => set_open(ctx, repo, *number, false).await,
+        IssueCommand::Close {
+            repo,
+            number,
+            reason,
+            duplicate_of,
+        } => {
+            let closed = closed_as(*number, *reason, *duplicate_of)?;
+            set_open(ctx, repo, *number, Some(closed)).await
+        }
+        IssueCommand::Reopen { repo, number } => set_open(ctx, repo, *number, None).await,
         IssueCommand::Label {
             repo,
             number,
@@ -91,6 +107,23 @@ pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
         IssueCommand::Lock { repo, number, off } => {
             thread_flag(ctx, repo, *number, Flag::Lock, !off).await
         }
+        IssueCommand::Hide {
+            repo,
+            number,
+            comment,
+            reason,
+            off,
+        } => {
+            hide(
+                ctx,
+                repo,
+                *number,
+                comment.as_deref(),
+                reason.map(HideReasonArg::as_str),
+                !off,
+            )
+            .await
+        }
     }
 }
 
@@ -101,11 +134,12 @@ async fn milestone(ctx: &Ctx, repo: &str, number: u64, title: Option<&str>) -> R
     // Only an open milestone the repo defines: the fold would otherwise show a title that
     // exists nowhere (the web picker offers the same list).
     if let Some(t) = title {
-        // Members only (E601 first, as for a clear): then the title must name an open one.
+        // Members only, triage included (E601 first, as for a clear): then the title must
+        // name an open one.
         s.collab()
             .require_role(
                 &s.repo,
-                forge_core::rules::v2::Role::Writer,
+                forge_core::rules::v2::Role::Triage,
                 &format!("put issue #{number} in a milestone"),
             )
             .await?;
@@ -225,9 +259,6 @@ fn not_found(repo: &str, number: u64) -> anyhow::Error {
     )
 }
 
-/// One listed issue: number, title, author, state.
-type Row = (u64, String, String, IssueState, bool);
-
 fn labels_of(state: &IssueState) -> String {
     state.labels.iter().cloned().collect::<Vec<_>>().join(", ")
 }
@@ -301,42 +332,41 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
     // newest page (SR-04), and there is no per-row read. A private repo's issues open with
     // the reader's keys.
     let (all, hidden) = s.collab().issues_with_state(&s.repo).await?;
-    let mut matching: Vec<Row> = all
+    let mut matching: Vec<(IssueView, bool)> = all
         .into_iter()
         .filter(|v| issue_matches(args, author.as_deref(), assignee.as_ref(), v))
         .map(|v| {
             let pinned = forge_core::rules::v2::fold_thread_meta_v2(&v.log.events).pinned;
-            (
-                u64::from(v.issue.number),
-                v.issue.title,
-                v.issue.author,
-                v.state,
-                pinned,
-            )
+            (v, pinned)
         })
         .collect();
     // Pinned issues first (a member's pin, kinds 19/20), each group newest first as read.
-    matching.sort_by_key(|r| !r.4);
+    matching.sort_by_key(|r| !r.1);
     let total = matching.len();
     let per = args.limit as usize;
     let pages = total.div_ceil(per).max(1);
     let start = (args.page as usize - 1) * per;
-    let rows: Vec<&Row> = matching.iter().skip(start).take(per).collect();
+    let page: Vec<&(IssueView, bool)> = matching.iter().skip(start).take(per).collect();
+    // RC2 MOD: the page's issues a maintainer hid, from the events already read (the feed).
+    // Paged first, as on the web: the totals stay the consensus ones.
+    let threads: Vec<(Target, &[Event])> = page
+        .iter()
+        .map(|(v, _)| (v.issue.target(), v.log.events.as_slice()))
+        .collect();
+    let hides = s.collab().hidden_threads(&s.repo, &threads).await;
+    let (rows, omitted) = crate::fmt::split_hidden(
+        page,
+        &hides,
+        |(v, _)| v.issue.document_id.as_str(),
+        args.include_hidden,
+    );
+    let names =
+        crate::common::hider_names(ctx, &s.client, rows.iter().filter_map(|(_, h)| *h)).await;
+    let who = |id: &str| with_name(id, &names);
 
     let json_rows: Vec<_> = rows
         .iter()
-        .map(|(n, title, author, st, pinned)| {
-            json!({
-                "number": n,
-                "title": title,
-                "author": author,
-                "open": st.open,
-                "state": state_word(st.open),
-                "labels": st.labels,
-                "assignees": st.assignees,
-                "pinned": pinned,
-            })
-        })
+        .map(|((v, pinned), h)| issue_row_json(v, *pinned, *h))
         .collect();
     ctx.emit(
         json!({
@@ -346,30 +376,19 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
             "pages": pages,
             "issues": json_rows,
             "hidden": hidden,
+            "hiddenOmitted": omitted,
             "truncated": args.page as usize * per < total,
         }),
         || {
-            if rows.is_empty() {
+            if rows.is_empty() && omitted == 0 {
                 println!("{}", empty_issues_line(args, total, pages));
             }
-            for (n, title, _, st, pinned) in &rows {
-                let mark = state_word(st.open);
-                let mark = if *pinned {
-                    format!("{mark}, pinned")
-                } else {
-                    mark.to_string()
-                };
-                let labels = if st.labels.is_empty() {
-                    String::new()
-                } else {
-                    format!("  [{}]", labels_of(st))
-                };
-                let who = if st.assignees.is_empty() {
-                    String::new()
-                } else {
-                    format!("  ({} assigned)", st.assignees.len())
-                };
-                println!("#{n:<4} {mark:<6} {}{}{who}", safe(title), safe(&labels));
+            for ((v, pinned), h) in &rows {
+                let hid = h.map(|h| crate::fmt::hidden_row_mark(h, &who));
+                println!("{}", issue_line(v, *pinned, &hid.unwrap_or_default()));
+            }
+            if let Some(note) = crate::fmt::hidden_rows_note(omitted) {
+                println!("{note}");
             }
             if pages > 1 {
                 println!(
@@ -386,8 +405,59 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
     Ok(())
 }
 
+/// One `dg issue list --json` row, with its `hiddenBy`.
+fn issue_row_json(
+    v: &IssueView,
+    pinned: bool,
+    h: Option<&forge_core::rules::v2::Hidden>,
+) -> serde_json::Value {
+    let st = &v.state;
+    crate::fmt::with_hidden_by(
+        json!({
+            "number": v.issue.number,
+            "title": v.issue.title,
+            "author": v.issue.author,
+            "open": st.open,
+            "state": state_word(st.open),
+            "labels": st.labels,
+            "assignees": st.assignees,
+            "pinned": pinned,
+        }),
+        h,
+    )
+}
+
+/// One `dg issue list` row: number, state (pinned), title, labels, how many are assigned, and
+/// `hid`, a hidden issue's mark (`--include-hidden`).
+fn issue_line(v: &IssueView, pinned: bool, hid: &str) -> String {
+    let st = &v.state;
+    let mark = state_word(st.open);
+    let mark = if pinned {
+        format!("{mark}, pinned")
+    } else {
+        mark.to_string()
+    };
+    let labels = if st.labels.is_empty() {
+        String::new()
+    } else {
+        format!("  [{}]", labels_of(st))
+    };
+    let assigned = if st.assignees.is_empty() {
+        String::new()
+    } else {
+        format!("  ({} assigned)", st.assignees.len())
+    };
+    format!(
+        "#{:<4} {mark:<6} {}{}{assigned}{}",
+        v.issue.number,
+        safe(&v.issue.title),
+        safe(&labels),
+        safe(hid)
+    )
+}
+
 #[allow(clippy::too_many_lines)] // one view: the reads, then its JSON and its human rendering
-async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
+async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<()> {
     let s = Reader::open(ctx, repo).await?;
 
     let collab = s.collab();
@@ -398,11 +468,28 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let (comments, hidden) = collab
         .comments_counted(&s.repo, &view.issue.document_id)
         .await?;
+    // RC2 MOD: what maintainers hid (collapsed below unless --show-hidden)
+    let moderation = collab
+        .hidden_items(&s.repo, &view.issue.target(), &view.log, &comments, &[])
+        .await?;
     let values_note = crate::fmt::event_values_note(view.hidden_values, view.plaintext_values);
     let (hidden_values, plaintext_values) = (view.hidden_values, view.plaintext_values);
-    let events: Vec<Event> = view.events().into_iter().cloned().collect();
+    // A hide or unhide readers ignore (a writer's without the contract's proof, a refId of
+    // another thread) is noise, not the record: only the counted ones show.
+    let events: Vec<Event> = view
+        .events()
+        .into_iter()
+        .filter(|e| {
+            !matches!(e.kind, EventKind::Hide | EventKind::Unhide)
+                || moderation.counted.contains(&e.id)
+        })
+        .cloned()
+        .collect();
     let transitions = view.log.transitions.clone();
     let timeline = timeline(&comments, &events, &transitions);
+    let issue_number = u32::try_from(number).unwrap_or(u32::MAX);
+    let closed = current_close_reason(&transitions, issue_number);
+    let (state_reason, duplicate_of) = close_reason_json(closed.as_ref());
     // Milestone and pin: the member events folded (kinds 17-20). Lock: the transitions'
     // sum (16 or more is locked).
     let meta = forge_core::rules::v2::fold_thread_meta_v2(&view.log.events);
@@ -440,6 +527,8 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             "documentId": id,
             "id": id,
             "state": { "open": state.open, "labels": state.labels, "assignees": state.assignees },
+            "stateReason": state_reason,
+            "duplicateOf": duplicate_of,
             "milestone": meta.milestone,
             "pinned": meta.pinned,
             "locked": locked,
@@ -451,25 +540,29 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
                 "value": e.value,
                 "createdAt": e.created_at,
             })).collect::<Vec<_>>(),
-            "transitions": transitions.iter().map(|t| json!({
-                "id": t.id,
-                "kind": t.kind,
-                "actor": t.actor,
-                "asAuthor": t.as_author,
-                "createdAt": t.created_at,
-            })).collect::<Vec<_>>(),
+            "transitions": transitions.iter().map(transition_json).collect::<Vec<_>>(),
             "hiddenComments": hidden,
+            "moderation": moderation,
             "hiddenEventValues": hidden_values,
             "plaintextEventValues": plaintext_values,
         }),
         || {
-            let mark = state_word(state.open);
+            let mark = match &closed {
+                Some(c) if !state.open => format!("closed as {}", closed_words(c)),
+                _ => state_word(state.open).to_string(),
+            };
             println!("#{number} [{mark}] {}", safe(&title));
             println!("author: {}", who(&author));
             let labels: Vec<&str> = state.labels.iter().map(String::as_str).collect();
             let assignees: Vec<String> = state.assignees.iter().map(|a| who(a)).collect();
             for line in crate::fmt::triage_lines(&labels, &assignees, meta.milestone.as_deref()) {
                 println!("{line}");
+            }
+            if let Some(h) = &moderation.thread {
+                println!("{}", crate::fmt::hidden_line("this issue", h, &who, show_hidden));
+                if !show_hidden {
+                    return;
+                }
             }
             if !body.is_empty() {
                 println!("\n{}", safe(&body));
@@ -478,7 +571,20 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
                 match item {
                     Item::Comment(c) => {
                         let author = who(&c.author);
-                        println!("\n— {author} ({}):\n{}", c.document_id, safe(&c.body));
+                        match moderation.item(&c.document_id) {
+                            Some(h) if !show_hidden => println!(
+                                "\n— {author} ({}): {}",
+                                c.document_id,
+                                crate::fmt::hidden_line("comment", h, &who, false)
+                            ),
+                            h => {
+                                println!("\n— {author} ({}):", c.document_id);
+                                if let Some(h) = h {
+                                    println!("{}", crate::fmt::hidden_line("comment", h, &who, true));
+                                }
+                                println!("{}", safe(&c.body));
+                            }
+                        }
                     }
                     Item::Event(e) => println!(
                         "\n· {} {}",
@@ -486,7 +592,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
                         safe(&event_phrase_with(e, &who))
                     ),
                     Item::Transition(t) => {
-                        println!("\n· {} {}", who(&t.actor), transition_phrase(t.kind));
+                        println!("\n· {} {}", who(&t.actor), transition_line(t, issue_number));
                     }
                 }
             }
@@ -499,6 +605,19 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// A transition in `dg issue view --json`.
+fn transition_json(t: &Transition) -> serde_json::Value {
+    json!({
+        "id": t.id,
+        "kind": t.kind,
+        "actor": t.actor,
+        "asAuthor": t.as_author,
+        "createdAt": t.created_at,
+        "reason": t.reason,
+        "dupNumber": t.dup_number,
+    })
 }
 
 /// One entry of an issue's timeline.
@@ -580,6 +699,7 @@ fn event_phrase_with(e: &Event, who: &dyn Fn(&str) -> String) -> String {
         EventKind::Unpin => "unpinned this".into(),
         EventKind::Lock => "locked the conversation".into(),
         EventKind::Unlock => "unlocked the conversation".into(),
+        EventKind::Hide | EventKind::Unhide => crate::fmt::moderation_phrase(e),
         // PR-only kinds do nothing to an issue; name them as the contract does.
         other => serde_json::to_value(other)
             .ok()
@@ -706,6 +826,51 @@ async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str) -> Result<()> {
     Ok(())
 }
 
+/// Hide (`on`) or unhide comment `comment` of issue `number`, or with none the issue itself
+/// (RC2 MOD: one member event, kind 24 or 25). Maintainers only, refused before signing for
+/// anyone else; nothing is deleted.
+async fn hide(
+    ctx: &Ctx,
+    repo: &str,
+    number: u64,
+    comment: Option<&str>,
+    reason: Option<&str>,
+    on: bool,
+) -> Result<()> {
+    if let Some(id) = comment {
+        crate::common::document_id_arg(id, "comment id", COMMENT_IDS)?;
+    }
+    let s = Session::open_for_write(ctx, repo, "nothing hidden").await?;
+    let target = target(&s, repo, number).await?;
+    let what = comment.map_or_else(
+        || format!("issue #{number}"),
+        |id| format!("comment {id} on issue #{number}"),
+    );
+    let (verb, done) = if on {
+        ("Hide", "hid")
+    } else {
+        ("Unhide", "unhid")
+    };
+    ctx.confirm_or_cancel(&format!(
+        "{verb} {what}? (one small event; maintainers only; nothing is deleted, and readers can still expand it)"
+    ))?;
+    let id = s
+        .collab()
+        .set_hidden(&s.repo, &target, comment, reason, on)
+        .await?;
+    ctx.emit(
+        json!({
+            "status": if on { "hidden" } else { "unhidden" },
+            "issue": number,
+            "comment": comment,
+            "reason": reason,
+            "eventId": id,
+        }),
+        || println!("✓ {done} {what}"),
+    );
+    Ok(())
+}
+
 /// Resolve a v2 issue as an event target.
 async fn target(s: &Session, repo: &str, number: u64) -> Result<Target> {
     Ok(s.collab()
@@ -815,6 +980,78 @@ fn state_word(open: bool) -> &'static str {
     }
 }
 
+/// The close `--reason` / `--duplicate-of` ask for (QW-069): completed by default, as on
+/// GitHub; `--duplicate-of` implies a duplicate and names another issue.
+fn closed_as(
+    number: u64,
+    reason: Option<CloseReasonArg>,
+    duplicate_of: Option<u32>,
+) -> Result<ClosedAs> {
+    let reason = match (reason, duplicate_of) {
+        (None, Some(_)) | (Some(CloseReasonArg::Duplicate), _) => CloseReason::Duplicate,
+        (Some(_), Some(_)) => {
+            return Err(crate::errors::usage(
+                "--duplicate-of goes only with --reason duplicate (or no --reason)",
+            ))
+        }
+        (None | Some(CloseReasonArg::Completed), None) => CloseReason::Completed,
+        (Some(CloseReasonArg::NotPlanned), None) => CloseReason::NotPlanned,
+    };
+    if duplicate_of.is_some_and(|d| d == 0 || u64::from(d) == number) {
+        return Err(crate::errors::usage(format!(
+            "issue #{number} cannot be a duplicate of #{}",
+            duplicate_of.unwrap_or_default()
+        )));
+    }
+    Ok(ClosedAs {
+        reason,
+        duplicate_of,
+    })
+}
+
+/// A close reason in words: "completed", "not planned", "duplicate".
+fn close_reason_word(reason: CloseReason) -> &'static str {
+    match reason {
+        CloseReason::Completed => "completed",
+        CloseReason::NotPlanned => "not planned",
+        CloseReason::Duplicate => "duplicate",
+    }
+}
+
+/// How the timeline says why an issue was closed (the web's `closeReasonPhrase`).
+fn closed_phrase(closed: &ClosedAs) -> String {
+    match (closed.reason, closed.duplicate_of) {
+        (CloseReason::Duplicate, Some(n)) => format!("closed this as a duplicate of #{n}"),
+        (CloseReason::Duplicate, None) => "closed this as a duplicate".to_string(),
+        (r, _) => format!("closed this as {}", close_reason_word(r)),
+    }
+}
+
+/// A transition's line in an issue timeline: an issue close says why when it recorded it.
+fn transition_line(t: &Transition, number: u32) -> String {
+    close_reason_of(t, number).map_or_else(
+        || transition_phrase(t.kind).to_string(),
+        |c| closed_phrase(&c),
+    )
+}
+
+/// The `stateReason` / `duplicateOf` of `dg issue view --json` (GitHub's names).
+fn close_reason_json(closed: Option<&ClosedAs>) -> (serde_json::Value, serde_json::Value) {
+    (
+        json!(closed.map(|c| c.reason.as_str())),
+        json!(closed.and_then(|c| c.duplicate_of)),
+    )
+}
+
+/// "not planned", "a duplicate of #4": a close reason after "closed as".
+fn closed_words(c: &ClosedAs) -> String {
+    match (c.reason, c.duplicate_of) {
+        (CloseReason::Duplicate, Some(n)) => format!("a duplicate of #{n}"),
+        (CloseReason::Duplicate, None) => "a duplicate".to_string(),
+        (r, _) => close_reason_word(r).to_string(),
+    }
+}
+
 /// `(past tense, prompt verb)` of a close or a reopen ("reopend" was L-35).
 fn open_words(close: bool) -> (&'static str, &'static str) {
     if close {
@@ -824,7 +1061,9 @@ fn open_words(close: bool) -> (&'static str, &'static str) {
     }
 }
 
-async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()> {
+/// Close (`closed`: why) or reopen (`None`) issue `number`.
+async fn set_open(ctx: &Ctx, repo: &str, number: u64, closed: Option<ClosedAs>) -> Result<()> {
+    let close = closed.is_some();
     let s = Session::open_for_write(ctx, repo, "state not changed").await?;
     let target = target(&s, repo, number).await?;
     let (done, prompt) = open_words(close);
@@ -842,13 +1081,19 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()>
         );
         return Ok(());
     }
-    ctx.confirm_or_cancel(&format!("{prompt} issue #{number}? (one small document)"))?;
-    let action = if close {
-        StateAction::Close
-    } else {
-        StateAction::Reopen
+    let why = closed.map_or(String::new(), |c| format!(" as {}", closed_words(&c)));
+    ctx.confirm_or_cancel(&format!(
+        "{prompt} issue #{number}{why}? (one small document)"
+    ))?;
+    let change = match &closed {
+        Some(c) => collab.close_as(&s.repo, &target, c).await?,
+        None => {
+            collab
+                .set_state(&s.repo, &target, StateAction::Reopen, None)
+                .await?
+        }
     };
-    let change = collab.set_state(&s.repo, &target, action, None).await?;
+    let (state_reason, duplicate_of) = close_reason_json(change.closed_as.as_ref());
     let open_now = collab
         .issue_view(&s.repo, target.number)
         .await?
@@ -862,12 +1107,22 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()>
             "kind": change.kind,
             "open": open_now,
             "state": open_now.map(state_word),
+            "stateReason": state_reason,
+            "duplicateOf": duplicate_of,
         }),
         || {
+            let why = change
+                .closed_as
+                .map_or(String::new(), |c| format!(" as {}", closed_words(&c)));
             println!(
-                "✓ {done} issue #{number} {}",
+                "✓ {done} issue #{number}{why} {}",
                 transition_route_text(change.route)
             );
+            if closed.is_some() && change.closed_as.is_none() {
+                println!(
+                    "  note: this repository's contract has no close reason (transition.reason): closed without one"
+                );
+            }
             if open_now == Some(close) {
                 println!(
                     "  note: it does not read as {} yet (the read may lag a block)",
@@ -1162,8 +1417,11 @@ async fn assign(ctx: &Ctx, repo: &str, number: u64, who: &[String], add: bool) -
 #[cfg(test)]
 mod tests {
     use super::{
-        changes, event_phrase, label_args, open_words, state_word, timeline, title_matches, Item,
+        changes, close_reason_json, closed_as, closed_words, event_phrase, label_args, open_words,
+        state_word, timeline, title_matches, transition_line, CloseReason, CloseReasonArg,
+        ClosedAs, Item,
     };
+    use serde_json::json;
 
     /// QW-081: an issue's JSON `"state"` uses the words `dg pr`'s does.
     #[test]
@@ -1279,7 +1537,63 @@ mod tests {
             anchor: forge_core::rules::v2::AnchorFields::default(),
             created_at: at,
             imported: None,
+            diff_hunk: None,
         }
+    }
+
+    /// QW-069: `--reason` / `--duplicate-of` as `gh issue close` takes them, and the timeline's
+    /// words for a close that says why.
+    #[test]
+    fn close_reasons_read_as_gh_and_the_web_say_them() {
+        let dup = |n| ClosedAs {
+            reason: CloseReason::Duplicate,
+            duplicate_of: n,
+        };
+        assert_eq!(
+            closed_as(3, None, None).unwrap(),
+            ClosedAs {
+                reason: CloseReason::Completed,
+                duplicate_of: None
+            }
+        );
+        assert_eq!(
+            closed_as(3, Some(CloseReasonArg::NotPlanned), None)
+                .unwrap()
+                .reason,
+            CloseReason::NotPlanned
+        );
+        assert_eq!(closed_as(3, None, Some(1)).unwrap(), dup(Some(1)));
+        assert_eq!(
+            closed_as(3, Some(CloseReasonArg::Duplicate), None).unwrap(),
+            dup(None)
+        );
+        assert!(closed_as(3, Some(CloseReasonArg::NotPlanned), Some(1)).is_err());
+        assert!(
+            closed_as(3, None, Some(3)).is_err(),
+            "not a duplicate of itself"
+        );
+        let t = |reason, dup| Transition {
+            id: "t".into(),
+            kind: 1,
+            actor: "M".into(),
+            oid: None,
+            as_author: 0,
+            created_at: 1,
+            reason,
+            dup_number: dup,
+        };
+        assert_eq!(
+            transition_line(&t(Some(3), Some(1)), 3),
+            "closed this as a duplicate of #1"
+        );
+        assert_eq!(
+            transition_line(&t(Some(2), None), 3),
+            "closed this as not planned"
+        );
+        assert_eq!(transition_line(&t(None, None), 3), "closed this");
+        assert_eq!(closed_words(&dup(Some(1))), "a duplicate of #1");
+        let (reason, of) = close_reason_json(Some(&dup(Some(1))));
+        assert_eq!((reason, of), (json!("duplicate"), json!(1)));
     }
 
     /// L-35: `dg issue view` shows label and close events among the comments, in time order,
@@ -1294,6 +1608,8 @@ mod tests {
             oid: None,
             as_author: 0,
             created_at: at,
+            reason: None,
+            dup_number: None,
         };
         let transitions = [transition("t3", 30, 1), transition("t4", 40, 2)];
         let comments = [comment("c2", 20)];

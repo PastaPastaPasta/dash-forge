@@ -405,7 +405,7 @@ demo_pull_number() { # demo_pull_number approved|merged|reviewParity
     *) echo "demo_pull_number: unknown key '$key'" >&2; return 1 ;;
   esac
   local netkey="${DASH_FORGE_NETWORK:-devnet}"
-  [[ "$netkey" == devnet ]] && netkey="devnet-${DASH_FORGE_DEVNET_NAME:-bonsia}"
+  [[ "$netkey" == devnet ]] && netkey="devnet-${DASH_FORGE_DEVNET_NAME:-sakura}"
   # The first summary that exists, as forge-web/e2e/seed-summary.ts tries them.
   local f summary=""
   for f in "${FORGE_SEED_SUMMARY:-}" "${E2E_V2_SEED_SUMMARY:-}" "${E2E_REPO_ROOT}/forge-contracts/deployments/fixtures/${netkey}.json"; do

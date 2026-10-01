@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""The RC1 accept/refuse document vectors, one set per contract, written to
-forge-contracts/vectors/rc1/<contract>.json (see its README for the format).
+"""The RC1/RC2 accept/refuse document vectors, one set per contract, written to
+forge-contracts/vectors/rc1/<contract>.json, with the replace vectors in <contract>.replace.json
+and the index vectors in <contract>.indices.json (see its README for the format).
 
-  python3 forge-contracts/schema/vectors.py [--check] [--gate <b7gate>]
+  python3 forge-contracts/schema/vectors.py [--check] [--off flag,flag] [--on flag,flag] [--out <dir>]
+                                            [--gate <b7gate>]
 
---check  write nothing; exit 1 when the committed vectors differ from a fresh generation.
---gate   also judge every case with b7gate --cases (rs-dpp v4.2.0-beta.7) against the committed
-         contracts and fail on any mismatch.
+--check     write nothing; exit 1 when the committed vectors differ from a fresh generation.
+--off/--on  the vectors of a build.py variant (the same flags): written only to --out.
+--out       write the files to this directory instead of forge-contracts/vectors/rc1.
+--gate      also judge every create case with b7gate --cases (rs-dpp v4.2.0-beta.7) against the
+            committed contracts and fail on any mismatch (RC1 only: beta.7 refuses RC2's
+            forge-community).
 
 Every case is a document create judged the way a node's structure validation judges it: the JSON
 schema, maxBytes, every `propertyConstraints` rule that reads no total, time or height, then the
@@ -25,6 +30,18 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.dont_write_bytecode = True  # no __pycache__ beside the schemas
+import build  # noqa: E402  (FLAGS: the cases follow the build's flags)
+
+AP = argparse.ArgumentParser()
+AP.add_argument('--check', action='store_true')
+AP.add_argument('--gate')
+AP.add_argument('--off', default='')
+AP.add_argument('--on', default='')
+AP.add_argument('--out')
+ARGS = AP.parse_args() if __name__ == '__main__' else AP.parse_args([])
+F = build.flags_from(ARGS.off, ARGS.on)
 REPO = os.path.dirname(os.path.dirname(HERE))
 CONTRACTS = os.path.join(REPO, 'forge-contracts', 'contracts')
 OUT = os.path.join(REPO, 'forge-contracts', 'vectors', 'rc1')
@@ -91,7 +108,19 @@ CONTRACT_OF.update({t: 'forge-collab' for t in ('issue', 'patch', 'transition', 
 CONTRACT_OF.update({t: 'forge-community' for t in ('event', 'authorEvent', 'milestone', 'runner', 'checkRun', 'policy', 'webhook',
                                                     'profile', 'star', 'watch', 'follow', 'starBeat')})
 
+if F['fused_star']:
+    del BASE['starBeat']   # C1: the star carries the trending window
+# RC2 member roles: a writer document carries its role, and every writer-gated type its claimed `r`
+# (1: the role a maintainer, an author, a runner or a role-1 writer sends)
+ROLE_GATED = build.ROLE_GATED
+if F['member_roles']:
+    BASE['writer']['role'] = 1
+    for _t in ROLE_GATED:
+        BASE[_t]['r'] = 1
+
 CASES = []
+REPLACES = []   # (contract) <contract>.replace.json: a replace of `stored` by `doc`
+INDICES = []    # (contract) <contract>.indices.json: what the parsed indexes must be
 
 
 def doc(t, /, **kw):
@@ -121,6 +150,36 @@ def ok(item, label, t, /, **kw):
 
 def no(item, label, t, why, /, **kw):
     case(item, label, t, "refused", why, **kw)
+
+
+def replace(item, label, t, stored, why, /, **kw):
+    """A replace of `stored` (a `doc(t, ...)`) by it with the changes `kw`; `why` None = accepted."""
+    c = {"item": item, "name": label, "type": t, "expect": "refused" if why else "ok"}
+    if why:
+        c["why"] = why
+    c["stored"] = stored
+    written = json.loads(json.dumps(stored))
+    for k, v in kw.items():
+        if v is DROP:
+            written.pop(k, None)
+        else:
+            written[k] = v
+    c["doc"] = written
+    REPLACES.append(c)
+
+
+def index(item, label, t, name, present, /, properties=None, **has):
+    """The parsed type `t` has (or lacks) index `name` (or, with `name` None, is itself present or
+    absent); `has` names index flags it must have (True) or lack (False)."""
+    c = {"item": item, "name": label, "type": t}
+    if name:
+        c["index"] = name
+    c["expect"] = "present" if present else "absent"
+    if properties:
+        c["properties"] = properties
+    if has:
+        c["has"] = has
+    INDICES.append(c)
 
 
 SEALED = dict(enc=b(5, 61), epoch=0)
@@ -454,11 +513,12 @@ no('R-18', 'run vis internal', 'checkRun', 'enum', vis='internal')
 no('R-19', 'webhook on a private repo', 'webhook', 'publicOnly', vis='private')
 no('R-19', 'webhook without vis', 'webhook', 'required', vis=DROP)
 
-# ---------------- O-08 trending public ----------------
-no('O-08', 'private beat', 'starBeat', 'enum', vis='private')
-no('O-08', 'beat without repoOwner', 'starBeat', 'required', repoOwner=DROP)
-no('O-08', 'beat without vis', 'starBeat', 'required', vis=DROP)
-no('O-08', 'the old {repoId} beat', 'starBeat', 'required', vis=DROP, repoOwner=DROP)
+# ---------------- O-08 trending public (gone with C1's fused star) ----------------
+if not F['fused_star']:
+    no('O-08', 'private beat', 'starBeat', 'enum', vis='private')
+    no('O-08', 'beat without repoOwner', 'starBeat', 'required', repoOwner=DROP)
+    no('O-08', 'beat without vis', 'starBeat', 'required', vis=DROP)
+    no('O-08', 'the old {repoId} beat', 'starBeat', 'required', vis=DROP, repoOwner=DROP)
 
 # ---------------- COMM-9 social counters (index-only shapes unchanged) ----------------
 no('COMM-9', 'star with an extra field', 'star', 'additionalProperties', note='x')
@@ -510,10 +570,173 @@ no('base', 'checkRun conclusion outside its enum', 'checkRun', 'enum', conclusio
 
 
 # ---------------- a node's create structure checks after the schema: distinctFrom, encryptedFor ----------------
-no('O-08', "a beat on the signer's own repo (distinctFrom)", 'starBeat', '10419', repoOwner=i(OWNER))
+if not F['fused_star']:
+    no('O-08', "a beat on the signer's own repo (distinctFrom)", 'starBeat', '10419', repoOwner=i(OWNER))
 no('base', 'following yourself (distinctFrom)', 'follow', '10419', identityId=i(OWNER))
 no('R-13', 'a 40-byte wrap (not a multiple of 16)', 'repoKey', '10420', wrapped=b(9, 40))
 no('R-19', 'a 33-byte webhook secret (not a multiple of 16)', 'webhook', '10420', secret=b(9, 33))
+
+# ---------------- RC2 (design/v5/PLAN.md §3): replaces of a stored check run ----------------
+# A replace is judged as a v5 node judges it: the document properties, then `immutable`, where a
+# changed property listed by name is refused (40128), and one listed with a condition only while
+# its condition holds on the written document with the stored one under `$old`.
+QUEUED = doc('checkRun', status='queued', conclusion=DROP, startedAt=DROP, completedAt=DROP, outcome=0, externalId=DROP)
+RUNNING = doc('checkRun', status='in_progress', conclusion=DROP, completedAt=DROP, outcome=0)
+DONE = doc('checkRun', logUrl='https://logs.example.com/1.txt', logSha256=b(1, 32), artifacts='[]')
+# M1: startedAt, completedAt, conclusion and externalId are set once (immutableAllowSetting's semantics)
+replace('M1', 'queued -> in progress sets startedAt', 'checkRun', QUEUED, None, status='in_progress', startedAt=1760000000000)
+replace('M1', 'externalId set once on a queued run', 'checkRun', QUEUED, None, externalId='gh-9')
+replace('M1', 'in progress -> completed sets completedAt and conclusion', 'checkRun', RUNNING, None,
+        status='completed', completedAt=1760000060000, conclusion='success', outcome=1)
+replace('M1', 'startedAt moved', 'checkRun', RUNNING, '40128', startedAt=1760000000001)
+replace('M1', 'externalId changed', 'checkRun', RUNNING, '40128', externalId='gh-2')
+replace('M1', 'externalId removed', 'checkRun', RUNNING, '40128', externalId=DROP)
+replace('M1', 'conclusion flipped after completion', 'checkRun', DONE, '40128', conclusion='failure', outcome=2)
+replace('M1', 'a completed run reopened without its conclusion', 'checkRun', DONE, '40128',
+        status='in_progress', conclusion=DROP, completedAt=DROP, outcome=0)
+replace('M1', 'a completed run reopened keeping its conclusion', 'checkRun', DONE, 'doneIfConclusion',
+        status='in_progress', completedAt=DROP, outcome=0)
+replace('M1', 'name changed (frozen outright)', 'checkRun', QUEUED, '40128', name='build2')
+replace('M1', 'vis changed (frozen outright)', 'checkRun', QUEUED, '40128', vis='private', detailsUrl=DROP, summary=DROP)
+# S1: once the stored run is completed, its evidence stands; it is free until then
+replace('S1', 'summary edited while running', 'checkRun', RUNNING, None, summary='half way')
+replace('S1', 'evidence written by the replace that completes the run', 'checkRun', RUNNING, None,
+        status='completed', completedAt=1760000060000, conclusion='success', outcome=1, summary='all green',
+        logUrl='https://logs.example.com/2.txt', logSha256=b(2, 32), artifacts='[]')
+S1 = '40128' if F['check_evidence_freeze'] else None
+replace('S1', 'a completed run\'s logUrl replaced', 'checkRun', DONE, S1, logUrl='https://logs.example.com/forged.txt')
+replace('S1', 'a completed run\'s log replaced with its hash', 'checkRun', DONE, S1, logUrl='ipfs://bafyforged', logSha256=b(3, 32))
+replace('S1', 'a completed run\'s summary edited', 'checkRun', DONE, S1, summary='all green (edited)')
+replace('S1', 'a completed run\'s detailsUrl removed', 'checkRun', DONE, S1, detailsUrl=DROP)
+replace('S1', 'a completed run\'s artifacts replaced', 'checkRun', DONE, S1, artifacts='[{"name":"other"}]')
+replace('S1', 'a log added to a completed run', 'checkRun', doc('checkRun'), S1, logUrl='https://logs.example.com/late.txt', logSha256=b(4, 32))
+
+# ---------------- RC2: the parsed indexes ----------------
+index('S2', 'reviews filed under the reviewed patch\'s owner', 'review', 'toAuthor', F['review_to_author'],
+      **(dict(properties=['patchId.$ownerId', '$createdAt'], derived=True) if F['review_to_author'] else {}))
+index('S3', 'reviews filed under their writer', 'review', 'author', F['review_author'],
+      **(dict(properties=['$ownerId', '$createdAt'], derived=False) if F['review_author'] else {}))
+if F['fused_star']:
+    index('C1', 'the star carries the trending window', 'star', 'byWeek', True, properties=['$createdAt', 'repoId'],
+          timeRange=True, rangeCountable=True, rankedCountable=True, outlivesDelete=True)
+    index('C1', 'the all-time star count is cleared by an unstar', 'star', 'byRepo', True, properties=['repoId'],
+          rangeCountable=True, rankedCountable=True, outlivesDelete=False)
+    index('C1', 'no starBeat type', 'starBeat', None, False)
+else:
+    index('C1', 'no window on the star', 'star', 'byWeek', False)
+    index('C1', 'starBeat carries the trending window', 'starBeat', 'byWeek', True, properties=['$createdAt', 'repoId'],
+          timeRange=True, outlivesDelete=False)
+
+# ---------------- RC2 riders (design/v5/RIDERS.md) ----------------
+# QW-069: reason and dupNumber carry no rule (readers judge them), so only their bounds refuse.
+if F['close_reason']:
+    ok('QW-069', 'close as completed', 'transition', reason=1)
+    ok('QW-069', 'close as not planned', 'transition', reason=2)
+    ok('QW-069', 'close as a duplicate of #3', 'transition', reason=3, dupNumber=3)
+    ok('QW-069', 'close as a duplicate with no canonical', 'transition', reason=3)
+    no('QW-069', 'reason 0', 'transition', 'minimum', reason=0)
+    no('QW-069', 'reason 4', 'transition', 'maximum', reason=4)
+    no('QW-069', 'dupNumber 0', 'transition', 'minimum', reason=3, dupNumber=0)
+    no('QW-069', 'dupNumber over u32', 'transition', 'maximum', reason=3, dupNumber=4294967296)
+else:
+    no('QW-069', 'no close reason property', 'transition', 'additionalProperties', reason=2)
+# QW2-010: a mirrored review comment's diff hunk
+HUNK = '@@ -10,3 +10,4 @@\n a\n-b\n+c\n+d'
+REVIEW_COMMENT = dict(imported=dict(IMP, url='https://github.com/x/y/pull/7#discussion_r1'), asMember=i(OWNER),
+                      commitOid=b(1, 20), path='src/a.rs', line=13, side=1)
+if F['review_hunk']:
+    ok('QW2-010', 'imported review comment with a hunk', 'comment', diffHunk=HUNK, **REVIEW_COMMENT)
+    ok('QW2-010', 'a hunk of 1024 bytes', 'comment', diffHunk='@@ -1 +1 @@\n+' + 'x' * 1011, **REVIEW_COMMENT)
+    no('QW2-010', 'a hunk over 1024 bytes', 'comment', 'maxBytes', diffHunk='@@ -1 +1 @@\n+' + '\u00e9' * 600, **REVIEW_COMMENT)
+    no('QW2-010', 'an empty hunk', 'comment', 'minLength', diffHunk='', **REVIEW_COMMENT)
+    no('QW2-010', 'a sealed comment with a plaintext hunk', 'comment', 'noPlain', body=DROP, vis='private', diffHunk=HUNK, **SEALED)
+    STORED_RC = doc('comment', diffHunk=HUNK, **REVIEW_COMMENT)
+    replace('QW2-010', 'an imported review comment\'s body edited', 'comment', STORED_RC, None, body='hi (edited)')
+    replace('QW2-010', 'a hunk changed', 'comment', STORED_RC, '40128', diffHunk='@@ -1 +1 @@\n+forged')
+    replace('QW2-010', 'a hunk removed', 'comment', STORED_RC, '40128', diffHunk=DROP)
+    replace('QW2-010', 'a hunk added to a stored comment', 'comment', doc('comment', **REVIEW_COMMENT), '40128', diffHunk=HUNK)
+else:
+    no('QW2-010', 'no diffHunk property', 'comment', 'additionalProperties', diffHunk=HUNK, **REVIEW_COMMENT)
+
+# ---------------- RC2 moderation (design/v5/MODERATION.md) ----------------
+# A hide (24) or unhide (25) names the writer's own maintainer document (asMaintainer = $ownerId).
+# Whether that document exists (a writer, a maintainer of another repo, a removed maintainer:
+# 40120) is a reference, judged by the live suite and the offline chain
+# (forge-contracts/scripts/rc1-live.mjs `moderation`, lib/offline-chain.test.mjs).
+HIDE = dict(kind=24, value=DROP, refId=i(5), asMaintainer=i(OWNER))
+if F['event_as_maintainer']:
+    ok('MOD', 'a maintainer hides a comment', 'event', **HIDE)
+    ok('MOD', 'a maintainer hides a comment as spam', 'event', **dict(HIDE, value='spam'))
+    ok('MOD', 'a maintainer hides a whole thread', 'event', **dict(HIDE, refId=DROP))
+    ok('MOD', 'a maintainer unhides a comment', 'event', **dict(HIDE, kind=25))
+    ok('MOD', 'another maintainer (signer 9) hides as itself', 'event', signer=9, **dict(HIDE, asMaintainer=i(9)))
+    ok('MOD', 'a sealed hide reason', 'event', **dict(HIDE, **SEALED))
+    no('MOD', 'a hide without asMaintainer', 'event', 'hideByMaint', **dict(HIDE, asMaintainer=DROP))
+    no('MOD', 'an unhide without asMaintainer', 'event', 'hideByMaint', **dict(HIDE, kind=25, asMaintainer=DROP))
+    no('MOD', 'a hide naming another maintainer', 'event', 'hideByMaint', **dict(HIDE, asMaintainer=i(9)))
+    no('MOD', 'a hide by signer 9 naming the signer 7', 'event', 'hideByMaint', signer=9, **HIDE)
+    ok('MOD', 'a label event without asMaintainer', 'event')
+    ok('MOD', 'a label event with asMaintainer (readers ignore it)', 'event', asMaintainer=i(OWNER))
+    no('MOD', 'asMaintainer of 31 bytes', 'event', 'minItems', **dict(HIDE, asMaintainer=b(7, 31)))
+else:
+    ok('MOD', 'a hide with no proof (readers judge it)', 'event', **dict(HIDE, asMaintainer=DROP))
+    no('MOD', 'no asMaintainer property', 'event', 'additionalProperties', **HIDE)
+
+# ---------------- RC2 member roles (design/v5/RECUT-OR-NEVER.md §3) ----------------
+# Whether a writer document's role equals `r` is the writer leaf's `where` (40127 on chain:
+# forge-contracts/scripts/rc1-live.mjs, group roles); here, what one document can claim.
+if F['member_roles']:
+    ok('ROLES', 'a triage writer (role 2)', 'writer', role=2)
+    ok('ROLES', 'a reader (role 3)', 'writer', role=3)
+    no('ROLES', 'writer role 0', 'writer', 'minimum', role=0)
+    no('ROLES', 'writer role 4', 'writer', 'maximum', role=4)
+    no('ROLES', 'writer without a role', 'writer', 'required', role=DROP)
+    for t in ROLE_GATED:
+        no('ROLES', f'{t} without r', t, 'required', r=DROP)
+        no('ROLES', f'{t} claiming r 0', t, 'minimum', r=0)
+    # push class and check runs: role 1 only
+    for t in (t for t, hi in ROLE_GATED.items() if hi == 1):
+        no('ROLES', f'{t} claiming triage (r 2)', t, 'maximum', r=2)
+    # labels and milestones: writer or triage, never a reader
+    for t in ('label', 'milestone'):
+        ok('ROLES', f'{t} by triage (r 2)', t, r=2)
+        no('ROLES', f'{t} claiming reader (r 3)', t, 'maximum', r=3)
+    # transitions: triage closes, reopens and locks; merge, draft and ready need r 1
+    for label, kw in (('issue close', {}), ('issue reopen', dict(kind=2, delta=-1)), ('issue lock', dict(kind=3, delta=16)),
+                      ('issue unlock', dict(kind=4, delta=-16)), ('PR close', dict(targetKind=1, kind=11)),
+                      ('PR reopen', dict(targetKind=1, kind=12, delta=-1)),
+                      ('draft PR close', dict(targetKind=1, kind=16)), ('draft PR reopen', dict(targetKind=1, kind=17, delta=-1)),
+                      ('PR lock', dict(targetKind=1, kind=18, delta=16)), ('PR unlock', dict(targetKind=1, kind=19, delta=-16))):
+        ok('ROLES', f'triage {label}', 'transition', r=2, **kw)
+    no('ROLES', 'triage merge', 'transition', 'e_mergeOid', r=2, targetKind=1, kind=13, delta=2, oid=b(170, 20))
+    no('ROLES', 'triage draft', 'transition', 'e_mergeOid', r=2, targetKind=1, kind=14, delta=8)
+    no('ROLES', 'triage ready', 'transition', 'e_mergeOid', r=2, targetKind=1, kind=15, delta=-8)
+    ok('ROLES', 'an author drafts as r 1 (the author operand proves no role)', 'transition',
+       targetKind=1, kind=14, delta=8, asAuthor=7)
+    no('ROLES', 'transition claiming reader (r 3)', 'transition', 'maximum', r=3)
+    no('ROLES', 'an author drafting with r 2 (merge, draft and ready claim r 1 on every operand)', 'transition',
+       'e_mergeOid', r=2, targetKind=1, kind=14, delta=8, asAuthor=7)
+    # events: triage labels, assigns, requests reviews, resolves threads and sets milestones
+    for label, kw in (('label+', {}), ('label-', dict(kind=5)), ('assign', dict(kind=6, refId=i(9))),
+                      ('unassign', dict(kind=7, refId=i(9))), ('thread resolve', dict(kind=11, value=DROP, refId=i(5))),
+                      ('thread unresolve', dict(kind=12, value=DROP, refId=i(5))),
+                      ('review request', dict(kind=13, value=DROP, refId=i(9))),
+                      ('review request remove', dict(kind=14, value=DROP, refId=i(9))),
+                      ('milestone set', dict(kind=17, value='v1')), ('milestone clear', dict(kind=18, value='v1'))):
+        ok('ROLES', f'triage {label} event', 'event', r=2, **kw)
+    for label, kw in (('retarget', dict(kind=8, value='refs/heads/dev')),
+                      ('review dismiss', dict(kind=15, value='stale', refId=i(5))),
+                      ('head update', dict(kind=16, value=DROP, oid=b(2, 20))), ('pin', dict(kind=19, value=DROP)),
+                      ('unpin', dict(kind=20, value=DROP)), ('policy bypass', dict(kind=23, value='1 approval', oid=b(2, 20)))):
+        ok('ROLES', f'writer {label} event (r 1)', 'event', **kw)
+        no('ROLES', f'triage {label} event', 'event', 't_triageKinds', r=2, **kw)
+    no('ROLES', 'event claiming reader (r 3)', 'event', 'maximum', r=3)
+    # t_triageKinds names the kinds triage may not write: a later client-convention kind (kind is
+    # 4..255) stays open to triage, as kind 23 would have been without the rule
+    ok('ROLES', 'triage event of an unassigned convention kind (30)', 'event', r=2, kind=30, value=DROP)
+else:
+    no('ROLES', 'no role property', 'writer', 'additionalProperties', role=1)
+    no('ROLES', 'no r property', 'transition', 'additionalProperties', r=1)
 
 # Rules that read a total, a time or a height: judged on chain only (forge-contracts/scripts/rc1-live.mjs).
 LIVE_ONLY = {('issue', 'dense'), ('patch', 'dense'), ('transition', 'c1_closedAfter'), ('transition', 'c2_openAfter'),
@@ -526,22 +749,40 @@ def uncovered():
     """(contract, type, rule) with no refusing vector and not judged on chain only."""
     refused = {(c['type'], c['why']) for c in CASES if c['expect'] == 'refused'}
     out = []
-    for name in NAMES:
-        for t, d in json.load(open(os.path.join(CONTRACTS, f'{name}.json')))['documentSchemas'].items():
+    for name, contract in build.build(F).items():
+        for t, d in contract['documentSchemas'].items():
             for rule in d.get('propertyConstraints', {}):
                 if (t, rule) not in refused and (t, rule) not in LIVE_ONLY:
                     out.append((name, t, rule))
     return out
 
 
+def unproved_roles():
+    """(contract, type) whose `r` no writer leaf of its ownerRefersTo proves (`where {"role": "r"}`):
+    the offline validator accepts such a contract, and only the live suite would notice."""
+    out = []
+    for name, contract in build.build(F).items():
+        for t, d in contract['documentSchemas'].items():
+            if 'r' not in d.get('properties', {}):
+                continue
+            gate = d.get('ownerRefersTo', {})
+            leaves = gate.get('anyOf', [gate])
+            if not any(leaf.get('documentType') == 'writer' and leaf.get('where', {}).get('role') == 'r' for leaf in leaves):
+                out.append((name, t))
+    return out
+
+
 def split():
-    out = {n: [] for n in NAMES}
-    seen = set()
-    for c in CASES:
-        key = (c['type'], c['name'])
-        assert key not in seen, key
-        seen.add(key)
-        out[CONTRACT_OF[c['type']]].append(c)
+    """{file name: its cases}: `<contract>.json` for every contract, and `<contract>.replace.json`
+    and `<contract>.indices.json` for those with such cases."""
+    out = {f'{n}.json': [] for n in NAMES}
+    for suffix, cases in (('', CASES), ('.replace', REPLACES), ('.indices', INDICES)):
+        seen = set()
+        for c in cases:
+            key = (c['type'], c['name'])
+            assert key not in seen, key
+            seen.add(key)
+            out.setdefault(f"{CONTRACT_OF[c['type']]}{suffix}.json", []).append(c)
     return out
 
 
@@ -579,25 +820,35 @@ def gate(gate_bin, sets):
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--check', action='store_true')
-    ap.add_argument('--gate')
-    a = ap.parse_args()
+    if ARGS.check and (ARGS.off or ARGS.on):
+        sys.exit('--check compares the default build: use it without --off/--on')
+    if (ARGS.off or ARGS.on) and not ARGS.out:
+        sys.exit('a variant (--off/--on) is written only to --out')
     sets = split()
-    paths = {n: os.path.join(OUT, f'{n}.json') for n in NAMES}
+    out = ARGS.out or OUT
+    paths = {f: os.path.join(out, f) for f in sets}
     missing = uncovered()
     for m in missing:
         print('no refusing vector for rule %s.%s.%s' % m)
-    if a.check:
-        stale = [p for n, p in paths.items() if not os.path.exists(p) or open(p).read() != dumps(sets[n])]
+    for m in unproved_roles():
+        print('role claim r of %s.%s is proved by no writer leaf' % m)
+        missing.append(m)
+    if ARGS.check:
+        stale = [p for f, p in paths.items() if not os.path.exists(p) or open(p).read() != dumps(sets[f])]
+        stale += [os.path.join(OUT, f) for f in os.listdir(OUT) if f.endswith('.json') and f not in sets]
         for p in stale:
             print(f'stale: {os.path.relpath(p, REPO)} (re-run forge-contracts/schema/vectors.py)')
         sys.exit(1 if stale or missing else 0)
-    os.makedirs(OUT, exist_ok=True)
-    for n, p in paths.items():
-        open(p, 'w').write(dumps(sets[n]))
-    print(f'{len(CASES)} cases written to {os.path.relpath(OUT, REPO)}')
-    sys.exit(1 if missing or (a.gate and gate(a.gate, sets)) else 0)
+    os.makedirs(out, exist_ok=True)
+    for f, p in paths.items():
+        open(p, 'w').write(dumps(sets[f]))
+    if not ARGS.out:
+        for f in os.listdir(OUT):
+            if f.endswith('.json') and f not in sets:
+                os.remove(os.path.join(OUT, f))
+    print(f'{len(CASES)} create, {len(REPLACES)} replace and {len(INDICES)} index cases written to {os.path.relpath(out, REPO)}')
+    sys.exit(1 if missing or (ARGS.gate and gate(ARGS.gate, {n: sets[f'{n}.json'] for n in NAMES})) else 0)
+
 
 if __name__ == '__main__':
     main()

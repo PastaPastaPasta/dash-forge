@@ -69,7 +69,7 @@ pub struct Cli {
     #[arg(long, global = true, value_enum)]
     pub network: Option<NetworkArg>,
 
-    /// Devnet name (e.g. `bonsia`); implies `--network devnet`.
+    /// Devnet name (e.g. `sakura`); implies `--network devnet`.
     #[arg(long, global = true, value_name = "NAME")]
     pub devnet_name: Option<String>,
 
@@ -155,7 +155,8 @@ pub enum Command {
         #[arg(long)]
         profile: Option<String>,
     },
-    /// Re-upload packs and append mirror URIs.
+    /// Re-upload packs and record the new copies (maintainers and writers; --from-local
+    /// writes nothing on chain).
     Reseed {
         /// The repository (`owner/name`).
         repo: Option<String>,
@@ -190,8 +191,9 @@ pub enum Command {
     Import(Box<import::ImportArgs>),
     /// Diagnose the identity, network, contracts, storage, git config and toolchain.
     Doctor {
-        /// Apply the safe automatic fixes (create config directories with 0700, set missing
-        /// git config keys in this repository). Never anything that spends credits.
+        /// Apply the safe automatic fixes (create config directories with 0700, tighten an
+        /// identity file to 0600, set missing git config keys with `git config --global`).
+        /// Never overwrites a value you set, never anything that spends credits.
         #[arg(long)]
         fix: bool,
     },
@@ -302,11 +304,15 @@ pub enum RepoCommand {
         name: Option<String>,
     },
     /// Star a repo. A new star also counts toward Trending (one more small document, about
-    /// 0.00015 DASH) unless `--no-trending` or `trending = false` in config.toml.
+    /// 0.00015 DASH) unless `--no-trending` or `trending = false` in config.toml. Where the
+    /// contract counts every star itself (RC2's fused star), there is no extra document, and
+    /// Trending leaves out stars on private repositories and an owner's star on a repository
+    /// less than a week old.
     Star {
         /// The repository (`owner/name`).
         repo: String,
-        /// Star without counting toward Trending (no `starBeat`).
+        /// Star without counting toward Trending (no `starBeat`; no effect where every star
+        /// counts).
         #[arg(long)]
         no_trending: bool,
     },
@@ -521,6 +527,9 @@ pub enum IssueCommand {
         repo: String,
         /// The issue number.
         number: u64,
+        /// Show what maintainers hid (collapsed to one line by default).
+        #[arg(long)]
+        show_hidden: bool,
     },
     /// Create an issue.
     Create {
@@ -585,12 +594,18 @@ pub enum IssueCommand {
         /// The comment's document id (`id` in `dg issue view --json` / `dg pr view --comments --json`).
         comment_id: String,
     },
-    /// Close an issue.
+    /// Close an issue, saying why (`--reason`; completed by default, as on GitHub).
     Close {
         /// The repository (`owner/name`).
         repo: String,
         /// The issue number.
         number: u64,
+        /// Why: completed (the default), not-planned, or duplicate.
+        #[arg(long, value_enum)]
+        reason: Option<CloseReasonArg>,
+        /// The issue (of this repository) it duplicates; implies `--reason duplicate`.
+        #[arg(long, value_name = "NUMBER")]
+        duplicate_of: Option<u32>,
     },
     /// Reopen an issue.
     Reopen {
@@ -669,6 +684,24 @@ pub enum IssueCommand {
         #[arg(long)]
         off: bool,
     },
+    /// Hide a comment (`--comment`), or the whole issue, from readers (unhide with `--off`).
+    /// Maintainers only. Nothing is deleted: readers see a collapsed "hidden by" row they can
+    /// expand, and the hide stays in the timeline as the record of who hid what.
+    Hide {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The issue number.
+        number: u64,
+        /// The comment's document id (`id` in `dg issue view --json`); omit to hide the issue.
+        #[arg(long, value_name = "ID")]
+        comment: Option<String>,
+        /// Why, as GitHub's "hide comment" says it.
+        #[arg(long, value_enum, conflicts_with = "off")]
+        reason: Option<HideReasonArg>,
+        /// Unhide.
+        #[arg(long)]
+        off: bool,
+    },
 }
 
 /// `dg milestone` subcommands.
@@ -730,6 +763,12 @@ pub struct IssueListArgs {
     /// Page number, 1-based.
     #[arg(long, default_value_t = 1)]
     pub page: u32,
+    /// Also list the issues maintainers hid, marked with who hid them and why (left out by
+    /// default, as on the web). Meant for maintainers reviewing hides; reading them is public.
+    /// In `--json`, `count` (rows shown) plus `hiddenOmitted` (rows left out) is the page's size;
+    /// `truncated` says whether more pages follow.
+    #[arg(long)]
+    pub include_hidden: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -746,6 +785,12 @@ pub enum PrCommand {
         /// State filter (`closed` includes merged ones, as on GitHub).
         #[arg(long, value_enum, default_value = "open")]
         state: PrStateArg,
+        /// Also list the pull requests maintainers hid, marked with who hid them and why (left
+        /// out by default, as on the web). Meant for maintainers reviewing hides; reading them
+        /// is public. In `--json`, `count` (rows shown) plus `hiddenOmitted` (rows left out) is
+        /// the rows read in the state asked for; `truncated` says whether older PRs exist.
+        #[arg(long)]
+        include_hidden: bool,
     },
     /// View a pull request: state, reviewers, approvals, reviews, threads.
     View {
@@ -757,6 +802,9 @@ pub enum PrCommand {
         /// resolved marked), replies, suggestions, and general comments.
         #[arg(long)]
         comments: bool,
+        /// Show what maintainers hid (collapsed to one line by default).
+        #[arg(long)]
+        show_hidden: bool,
     },
     /// Check out a pull request as branch `pr/<n>`, fetching its head from the source repo,
     /// and switch to it (left for `git switch` when there are uncommitted changes).
@@ -822,6 +870,27 @@ pub enum PrCommand {
         /// The PR number.
         number: u64,
         /// Unlock.
+        #[arg(long)]
+        off: bool,
+    },
+    /// Hide a comment (`--comment`), a review (`--review`), or the whole pull request, from
+    /// readers (unhide with `--off`). Maintainers only. Nothing is deleted, and a hidden
+    /// review's verdict still counts: dismiss it (`dg pr dismiss-review`) to stop it counting.
+    Hide {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The PR number.
+        number: u64,
+        /// The comment's document id (`dg pr view --comments --json`).
+        #[arg(long, value_name = "ID", conflicts_with = "review")]
+        comment: Option<String>,
+        /// The review's document id (`dg pr view --json`).
+        #[arg(long, value_name = "ID")]
+        review: Option<String>,
+        /// Why, as GitHub's "hide comment" says it.
+        #[arg(long, value_enum, conflicts_with = "off")]
+        reason: Option<HideReasonArg>,
+        /// Unhide.
         #[arg(long)]
         off: bool,
     },
@@ -1198,14 +1267,15 @@ pub enum LabelCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum CollabCommand {
-    /// Add a member (the repo owner creates a writer/maintainer document). The member must
-    /// have run `dg collab accept <repo>` first.
+    /// Add a member, or change a member's role (the repo owner creates a writer/maintainer
+    /// document; a writer document's role is writer, triage or reader, and a role change
+    /// replaces it). The member must have run `dg collab accept <repo>` first.
     Add {
         /// The repository (`owner/name`).
         repo: String,
         /// The collaborator (identity id or DPNS name, e.g. `alice` or `alice.dash`).
         member: String,
-        /// The role to grant.
+        /// The role to grant: writer, triage, reader (private repositories only) or maintainer.
         #[arg(long, value_enum, default_value = "writer")]
         role: RoleArg,
         /// Wait up to this many seconds for the member to accept (`dg collab accept`) before
@@ -1228,7 +1298,8 @@ pub enum CollabCommand {
         repo: String,
         /// The collaborator (identity id or DPNS name, e.g. `alice` or `alice.dash`).
         member: String,
-        /// The role to revoke.
+        /// The role to revoke: maintainer, or the writer document (writer, triage and reader
+        /// are one document: any of them removes it).
         #[arg(long, value_enum, default_value = "writer")]
         role: RoleArg,
     },
@@ -1414,6 +1485,51 @@ pub struct StorageAddArgs {
     pub allow_private_uri: bool,
 }
 
+/// Why an issue is closed (`dg issue close --reason`, as `gh issue close --reason`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum CloseReasonArg {
+    /// Done.
+    Completed,
+    /// Won't be done.
+    #[value(alias = "not_planned", alias = "not planned")]
+    NotPlanned,
+    /// A duplicate of another issue.
+    Duplicate,
+}
+
+/// Why a maintainer hid something (`dg issue hide --reason`, `dg pr hide --reason`): GitHub's
+/// "hide comment" reasons, as `event.value` (forge-core `HIDE_REASONS`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum HideReasonArg {
+    /// Spam.
+    Spam,
+    /// Abusive.
+    Abuse,
+    /// Off-topic.
+    #[value(alias = "off_topic")]
+    OffTopic,
+    /// Outdated.
+    Outdated,
+    /// Resolved.
+    Resolved,
+    /// A duplicate.
+    Duplicate,
+}
+
+impl HideReasonArg {
+    /// The stored reason (`event.value`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HideReasonArg::Spam => "spam",
+            HideReasonArg::Abuse => "abuse",
+            HideReasonArg::OffTopic => "off-topic",
+            HideReasonArg::Outdated => "outdated",
+            HideReasonArg::Resolved => "resolved",
+            HideReasonArg::Duplicate => "duplicate",
+        }
+    }
+}
+
 /// A storage backend mode (`repo backend set`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Backend {
@@ -1540,11 +1656,19 @@ impl VerdictArg {
 }
 
 /// A member role.
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum RoleArg {
-    /// Push, upload (a `writer` document).
+    /// Push, merge, label, close, post check runs (a `writer` document, role 1).
     #[value(alias = "write")]
     Writer,
+    /// Close, reopen and lock, label, assign, set milestones, request reviews and resolve
+    /// threads; no push, merge, draft or ready, retarget, review dismiss, head update, pin or
+    /// check runs (a `writer` document, role 2).
+    Triage,
+    /// Private repositories only: read, comment, review and open issues and PRs; no state
+    /// changes (a `writer` document, role 3).
+    #[value(alias = "read")]
+    Reader,
     /// Also protected refs, config, releases (a `maintainer` document).
     #[value(alias = "maintain")]
     Maintainer,
@@ -1555,6 +1679,8 @@ impl RoleArg {
     pub fn to_core(self) -> forge_core::rules::v2::Role {
         match self {
             RoleArg::Writer => forge_core::rules::v2::Role::Writer,
+            RoleArg::Triage => forge_core::rules::v2::Role::Triage,
+            RoleArg::Reader => forge_core::rules::v2::Role::Reader,
             RoleArg::Maintainer => forge_core::rules::v2::Role::Maintainer,
         }
     }
@@ -1811,6 +1937,18 @@ mod tests {
                 ..
             })
         ));
+        let cli = Cli::parse_from(["dg", "pr", "list", "o/r", "--include-hidden"]);
+        assert!(matches!(
+            cli.command,
+            Command::Pr(PrCommand::List {
+                include_hidden: true,
+                ..
+            })
+        ));
+        let cli = Cli::parse_from(["dg", "issue", "list", "o/r", "--include-hidden"]);
+        assert!(
+            matches!(cli.command, Command::Issue(IssueCommand::List(ref a)) if a.include_hidden)
+        );
         assert!(PrStateArg::Merged.matches(false, true));
         assert!(!PrStateArg::Merged.matches(false, false));
         assert!(PrStateArg::Closed.matches(false, true));
@@ -2044,6 +2182,33 @@ mod tests {
             }
             _ => panic!("expected collab add"),
         }
+    }
+
+    #[test]
+    fn parses_collab_add_member_roles() {
+        let role_of = |args: &[&str]| {
+            let mut argv = vec!["dg", "collab", "add", "o/r", "m"];
+            argv.extend_from_slice(args);
+            match Cli::parse_from(argv).command {
+                Command::Collab(CollabCommand::Add { role, .. }) => role,
+                _ => panic!("expected collab add"),
+            }
+        };
+        assert_eq!(role_of(&[]), RoleArg::Writer);
+        assert_eq!(role_of(&["--role", "triage"]), RoleArg::Triage);
+        assert_eq!(role_of(&["--role", "reader"]), RoleArg::Reader);
+        assert_eq!(role_of(&["--role", "read"]), RoleArg::Reader);
+        assert_eq!(
+            RoleArg::Triage.to_core(),
+            forge_core::rules::v2::Role::Triage
+        );
+        assert_eq!(
+            RoleArg::Reader.to_core(),
+            forge_core::rules::v2::Role::Reader
+        );
+        assert!(
+            Cli::try_parse_from(["dg", "collab", "add", "o/r", "m", "--role", "owner"]).is_err()
+        );
     }
 
     #[test]

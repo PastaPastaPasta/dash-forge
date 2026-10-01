@@ -16,6 +16,7 @@ export {
   contentHash,
   DUPLICATE_UNIQUE_CODE,
   GATE_REFUSED_CODE,
+  WHERE_MISMATCH_CODE,
   RULE_REFUSED_CODE,
   KEY_LIMIT_CODES,
   UnconfirmedWriteError,

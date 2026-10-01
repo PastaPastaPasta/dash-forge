@@ -16,6 +16,7 @@ import { parseCommit } from '@/lib/view/git-objects'
 import { snippetKey, snippetLines, type SnippetSource } from '@/lib/view/anchor-snippet'
 import { anchorLabel } from '@/lib/view/inline-threads'
 import { Oid } from '@/components/ui/oid'
+import { DiffHunkLines } from '@/components/repo/diff-hunk-view'
 import { ScrollRegion } from '@/components/ui/scroll-region'
 import { GUTTER_TEXT } from '@/components/repo/diff-view'
 import { cn } from '@/lib/utils'
@@ -83,7 +84,9 @@ export function AnchorMarkers({ outdated, applied }: { outdated: boolean; applie
 
 /**
  * An inline comment's heading in Conversation: where it points, its markers, and the lines it
- * was left on (none while they are read, or when the file cannot be read at that commit).
+ * was left on (none while they are read, or when the file cannot be read at that commit). A
+ * mirrored comment with its source's diff hunk (QW2-010; trusted provenance only) shows the hunk
+ * instead: the commit it was made on is often gone from the mirror.
  */
 export function AnchorContext({
   anchor,
@@ -91,6 +94,7 @@ export function AnchorContext({
   outdated,
   applied,
   label = true,
+  hunk = null,
 }: {
   anchor: Anchor
   /** The file at the anchor's side (`useSnippetTexts`); undefined while unread. */
@@ -99,15 +103,18 @@ export function AnchorContext({
   applied: string | null
   /** Name where it points (a standalone comment's header already does). */
   label?: boolean
+  /** A mirrored comment's source hunk, shown in place of the file's lines. */
+  hunk?: string | null
 }): JSX.Element | null {
-  const lines = snippetLines(text, anchor)
-  if (!label && lines === null && !outdated && applied === null) return null
+  const lines = hunk === null ? snippetLines(text, anchor) : null
+  if (!label && lines === null && hunk === null && !outdated && applied === null) return null
   return (
     <div className="mb-2 overflow-hidden rounded-md border border-anvil-200 dark:border-anvil-800" data-testid="conversation-anchor">
       <div className="flex flex-wrap items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-3 py-1.5 dark:border-anvil-800 dark:bg-anvil-900">
         {label ? <span className="min-w-0 break-all font-mono text-[12px] text-anvil-700 dark:text-anvil-300">{anchorLabel(anchor)}</span> : null}
         <AnchorMarkers outdated={outdated} applied={applied} />
       </div>
+      {hunk !== null ? <DiffHunkLines hunk={hunk} anchor={anchor} /> : null}
       {lines !== null ? (
         // A long line scrolls: keyboard users reach it by Tab (QW3-020, axe scrollable-region-focusable).
         // Its card clips overflow, so its focus ring is drawn inside it.

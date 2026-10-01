@@ -22,7 +22,7 @@ Reports a GitHub Actions job's result as a [Dash Forge](../README.md) check run 
 
 2. **Report each job.** Add the action as the last step, with `if: always()` so failures are reported too.
 
-> **No Dash Forge release is published yet**, so the action's default `install: 'true'` has nothing to download: the step warns that `dg` could not be installed and passes. Until the first release, build `dg` in the job and set `install: 'false'`, as below. Once a release exists, drop the two build steps and `install: 'false'`.
+> **No Dash Forge release is published yet**, so this action pins none (`version` is empty), and the default `install: 'true'` builds `dg` from the action's own source: the ref after `@` in `uses:`. This works on **Linux runners only** (it needs Rust and jq, which GitHub's ubuntu runners have; protoc is installed if missing on x86_64 and arm64): on macOS or Windows the step warns and reports nothing, or fails with `fail-on-error`. It also costs time in every job that reports: the first build takes several minutes, and even with a warm build cache each job recompiles Dash Forge's own crates, a few minutes more. So report from one Linux leg of a matrix, or from one summary job that `needs:` the others, rather than from every job. A pinned commit keeps building from source after a release is published: only an action version that sets `version` downloads one. Pin a commit you have reviewed, since the key is handed to the `dg` it builds.
 
 ```yaml
 jobs:
@@ -31,26 +31,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: cargo test
-      # Until a release exists: build dg from Dash Forge's source.
-      - name: Build dg
-        if: always()
-        run: |
-          # protoc 25 or newer (Ubuntu's is older; docs/BUILDING.md)
-          curl -fsSLo /tmp/protoc.zip https://github.com/protocolbuffers/protobuf/releases/download/v28.3/protoc-28.3-linux-x86_64.zip
-          sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
-          git clone --depth 1 https://github.com/PastaPastaPasta/dash-forge "$RUNNER_TEMP/dash-forge"
-          cargo build --release --manifest-path "$RUNNER_TEMP/dash-forge/Cargo.toml" -p dg
-          echo "$RUNNER_TEMP/dash-forge/target/release" >> "$GITHUB_PATH"
       - name: Report to Dash Forge
         if: always()
-        uses: PastaPastaPasta/dash-forge/check-action@master
+        uses: PastaPastaPasta/dash-forge/check-action@master   # better: @<a commit you reviewed>
         with:
           repo: <owner identity id>/project     # or dash://<owner>/project
           job-status: ${{ job.status }}
-          # Forge runs on a devnet today; name it (see docs/guides/README.md "Which network").
-          network: devnet
-          devnet-name: <devnet name>
-          install: 'false'
+          network: devnet                       # Forge's network today (the default)
+          devnet-name: sakura
         env:
           DASH_FORGE_KEY: ${{ secrets.FORGE_RUNNER_KEY }}
 ```
@@ -76,14 +64,15 @@ Optionally, report `in_progress` at the start of a long job with an early step t
 | `log` | | A file to upload as the run's log. It needs `log-storage`. |
 | `log-storage` | | The storage profile the log goes to. The job must provide it: a `storage.toml` under `$XDG_CONFIG_HOME/dash-forge/` naming a bucket, with the bucket's credentials in the job's environment (see [Bring your own storage](../docs/guides/bring-your-own-storage.md)). |
 | `public-log` | `false` | No longer has any effect (it warns): a private repository's check run cannot carry a log. |
-| `network` / `devnet-name` | `mainnet` | Which network the Forge repository is on. With `network: devnet`, `devnet-name` names it (lowercase letters, digits, `-`). |
-| `version` | `0.1.0` | The Dash Forge release to install. |
-| `install` | `true` | `false`: use a `dg` already on `PATH`. No release is published yet: see the note above. A second use of the action in the same job reuses the installed `dg`. |
+| `network` / `devnet-name` | `devnet` / `sakura` | Which network the Forge repository is on. The default is the devnet the hosted site uses; Forge has no mainnet or testnet deployment yet. `devnet-name` (lowercase letters, digits, `-`) is used only with `network: devnet`. |
+| `version` | *(empty)* | The Dash Forge release to install. Empty until the first release: `install: 'true'` then builds from source. |
+| `install` | `true` | `true`: install release `version` (the step warns, or fails with `fail-on-error`, if it is not published), or, with `version` empty, build `dg` from the action's own source. `source`: always build from source. `false`: use a `dg` already on `PATH`. A second use of the action in the same job reuses the installed `dg`. |
+| `build-cache` | `true` | A source build reuses its compiled dependencies from `actions/cache`, which is trusted like any other cache of your repository: a workflow there that can write the default branch's caches (one that runs a pull request's code, say) could plant one. `false`: compile everything on every run. |
 | `fail-on-error` | `false` | `true`: fail the step when `dg` cannot be installed or the report cannot be written. |
 
 ## Outputs
 
-`document-id`, `sha` (the commit reported on: the PR head for pull request runs), `name` (the check's name), `url` (the Forge commit page) and `action` (`created`, `updated` or `unchanged`; empty when nothing was written).
+`document-id`, `sha` (the commit reported on: the PR head for pull request runs), `name` (the check's name), `url` (the Forge commit page), `action` (`created`, `updated` or `unchanged`; empty when nothing was written) and `dg` (the `dg` the action installed or built, for later steps; empty with `install: 'false'`).
 
 ## Security
 
@@ -95,13 +84,13 @@ Optionally, report `in_progress` at the start of a long job with an early step t
 ## Test it
 
 - `bash check-action/test.sh` runs offline against a fake `dg`. It checks the arguments built from each input and the environment, the refusals, the outputs, the step summary, warn-or-fail, and that the key stays off the command line.
-- The `Check Action` workflow (`.github/workflows/check-action.yml`) also reports its own job to a Forge repository on a devnet. That live job is **skipped** until the repository has a `FORGE_CI_RUNNER_KEY` secret and the `FORGE_CHECK_REPO` and `FORGE_CHECK_DEVNET` variables (for example `bonsia`). These need the owner's approval (`SECRETS-TODO.md`).
+- The `Check Action` workflow (`.github/workflows/check-action.yml`) also reports its own job to a Forge repository on a devnet. That live job is **skipped** until the repository has a `FORGE_CI_RUNNER_KEY` secret and the `FORGE_CHECK_REPO` and `FORGE_CHECK_DEVNET` variables (for example `sakura`). These need the owner's approval (`SECRETS-TODO.md`).
 - To run the same flow on your machine against a repository you own, set a simulated GitHub environment and run the two scripts. With a runner key in `DASH_FORGE_KEY`:
 
 ```sh
 export RUNNER_TEMP=$(mktemp -d) GITHUB_OUTPUT=/dev/stdout GITHUB_RUN_ID=1 GITHUB_JOB=local \
        GITHUB_SERVER_URL=https://github.com GITHUB_REPOSITORY=me/app GITHUB_SHA=<commit>
-INPUT_REPO=<owner>/<repo> INPUT_NAME=local-check INPUT_JOB_STATUS=success INPUT_NETWORK=mainnet \
+INPUT_REPO=<owner>/<repo> INPUT_NAME=local-check INPUT_JOB_STATUS=success INPUT_NETWORK=devnet INPUT_DEVNET_NAME=sakura \
   bash check-action/resolve.sh > /tmp/o && FORGE_ARGS_FILE=$(sed -n 's/^args-file=//p' /tmp/o) \
   bash check-action/report.sh
 ```

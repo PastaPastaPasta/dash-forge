@@ -5,7 +5,7 @@ import { fixtureWriteBlocked, idFile, idOrEmpty, loadSeedPulls, repoUrl, shot, s
 /**
  * forge-v2 WRITES, live on a devnet (real spend, a few thousandths of a DASH per run):
  *
- *   E2E_DEVNET=bonsia E2E_WRITE=1 pnpm exec playwright test v2-writes.spec.ts
+ *   E2E_DEVNET=sakura E2E_WRITE=1 pnpm exec playwright test v2-writes.spec.ts
  *
  * One story, four identities from ~/.config/dash-forge/test-identities/devnet-<name>/, each in
  * its own browser context: OWNER creates a repo, COLLAB accepts its invite link, and OWNER adds

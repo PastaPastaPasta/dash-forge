@@ -35,6 +35,7 @@ import {
   readTransitions,
   repoSource,
   str,
+  titleOf,
   wellFormed,
   type IssueView,
   type PullView,
@@ -46,7 +47,7 @@ import {
 } from '../repo'
 import { sortTransitions, transitionOf } from '../repo/transitions'
 import { readProvedVerdicts, type ProvedVerdicts } from '../repo/verdicts'
-import { isLocked, stateCode } from '../rules/transition'
+import { closeReasonOf, currentCloseReason, isLocked, stateCode, type ClosedAs } from '../rules/transition'
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import { compositeOf, docsAt, queryComposite, siblingOf } from '../sdk/composite'
 import { prefetchDpnsNames } from './dpns'
@@ -55,6 +56,9 @@ import { HiddenTally, admitAll, gateFor, type HiddenCounts } from '../repo/priva
 import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
 import { foldThreadMetaV2, type ThreadMeta } from '../rules/parity'
+import type { HiddenItems } from '../rules/moderation'
+import { hidesProved } from '../repo/moderation'
+import { foldModeration, hasHides, moderationInput, type ModerationInput } from '../repo/moderation-fold'
 import { anchorOf, countApprovals, foldPrReviewV2, groupReviewComments, meetsPolicy, RoleOracle, type Anchor, type Approvals, type Policy, type PolicyStatus, type PrReviewState, type Review, type Role } from '../rules/v2'
 import { reviewerRows, sinceYourReview, summarizeReviews, type ReviewerCardRow, type ReviewSummary, type SinceYourReview } from './review-fold'
 
@@ -85,6 +89,12 @@ export interface CommentView {
   readonly origin?: Origin | null
   /** It carries a membership proof (`asMember`, RC1): consensus re-checks it on every edit. */
   readonly proved?: boolean
+  /**
+   * A mirrored review comment's source diff hunk (QW2-010, `diffHunk`): only on an imported comment
+   * on a file. Untrusted text: shown as text, and only when its provenance is trusted
+   * (`trustedOrigin`), which the component decides.
+   */
+  readonly diffHunk?: string | null
 }
 
 /**
@@ -131,7 +141,15 @@ export function toCommentView(d: PlainDocument): CommentView {
     imported: typeof d['imported'] === 'object' && d['imported'] !== null,
     origin: originOf(d),
     proved: asIdentifierString(d['asMember']) !== '',
+    diffHunk: hunkOf(d),
   }
+}
+
+/** A comment's `diffHunk` when it may be shown: an imported comment on a file (QW2-010). */
+function hunkOf(d: PlainDocument): string | null {
+  const h = d['diffHunk']
+  const imported = typeof d['imported'] === 'object' && d['imported'] !== null
+  return typeof h === 'string' && h !== '' && imported && typeof d['path'] === 'string' ? h : null
 }
 
 
@@ -222,6 +240,17 @@ export interface IssueThread {
    * issue's transitions (RC1 R-15; sum ≥ 16), which consensus enforces on every comment.
    */
   readonly meta: ThreadMeta
+  /** Why it is closed (QW-069; `currentCloseReason`), null while open or for a plain close. */
+  readonly closedAs?: ClosedAs | null
+  /**
+   * The canonical issues its duplicate closes name that are issues of this repo, by number (with
+   * their titles; '' when unreadable): only these link. Any other `dupNumber` shows unlinked.
+   */
+  readonly duplicates?: ReadonlyMap<number, { readonly number: number; readonly title: string }>
+  /** What maintainers hid (RC2 MOD; `hiddenItems`): collapsed rows, or the whole issue. */
+  readonly moderation?: HiddenItems
+  /** What the reader rule read, for a maintainer's Hide / Unhide (`moderationBlocked`). */
+  readonly moderationInput?: ModerationInput
 }
 
 /** A write the issue page made, for {@link issueWriteShows}. */
@@ -236,6 +265,7 @@ export type IssueWrite =
   | { readonly kind: 'editIssue'; readonly title: string; readonly body: string }
   | { readonly kind: 'editComment'; readonly id: string; readonly body: string }
   | { readonly kind: 'deleteComment'; readonly id: string }
+  | { readonly kind: 'hide'; readonly item: string | null; readonly hide: boolean }
 
 /**
  * Whether a read of the thread already shows `w`: the page re-reads after a write until it does,
@@ -268,7 +298,15 @@ export function issueWriteShows(t: IssueThread, w: IssueWrite): boolean {
       return comment(w.id)?.body === w.body
     case 'deleteComment':
       return comment(w.id) === undefined
+    case 'hide':
+      return isHidden(t.moderation, w.item) === w.hide
   }
+}
+
+/** Whether `item` (null: the thread) is hidden in `m` (RC2 MOD). */
+export function isHidden(m: HiddenItems | undefined, item: string | null): boolean {
+  if (m === undefined) return false
+  return item === null ? m.thread !== null : m.items[item] !== undefined
 }
 
 /** How a private repo's event values were read ({@link TargetLog}). */
@@ -354,16 +392,55 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
   const tally = new HiddenTally()
   const comments = (await admitAll(gate, 'comment', [...commentDocs].sort(byTime), tally)).docs.map(toCommentView)
   const labels = docs(3).length < 100 ? newestLabels(docs(3)) : await readLabels(sdk, repo)
+  const issueNumber = num(doc, 'number')
+  // A duplicate's canonical, for its link only: a failed read shows it unlinked, never fails the page.
+  const duplicates = await readDuplicateTargets(sdk, repo, transitions.flatMap((t) => closeReasonOf(t, issueNumber)?.duplicateOf ?? [])).catch(
+    () => new Map<number, { readonly number: number; readonly title: string }>(),
+  )
+  // RC2 MOD: the contract's proof is read only when the issue has a hide, beside the members (a
+  // failed read counts the owner's and current maintainers' hides alone, the stricter rule).
+  const [members, proved] = await Promise.all([
+    memberships ?? readMembershipsCached(sdk, repo, network),
+    hasHides(log.events) ? hidesProved(sdk, repo).catch(() => false) : Promise.resolve(false),
+  ])
+  const modInput = moderationInput({ events: log.events, thread: { id, author: str(doc, '$ownerId') }, owner: repo.ownerId, members, proved, comments })
   return {
+    closedAs: currentCloseReason(transitions, issueNumber),
+    duplicates,
+    moderation: foldModeration(modInput),
+    moderationInput: modInput,
     issue: issueViewOf(doc, log, stateCode(transitions)),
     timeline: mergeTimeline(comments, log.events, log.authorEvents, [], tally.total > 0, transitions),
     hidden: tally.value,
     eventValues: eventValues(log),
     labels,
-    members: memberships ?? (await readMembershipsCached(sdk, repo, network)),
+    members,
     // The lock is a transition since RC1 (kinds 3/4); the retired lock events 21/22 are refused.
     meta: { ...foldThreadMetaV2(log.events), locked: isLocked(transitions) },
   }
+}
+
+/**
+ * The issues of `repo` among `numbers` (a duplicate close's canonicals), with their titles: one
+ * read per distinct number (an issue rarely names more than one). A number that holds a PR, or
+ * nothing, is absent: a reader links a duplicate only to an issue of the repo.
+ */
+export async function readDuplicateTargets(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  numbers: readonly number[],
+): Promise<Map<number, { readonly number: number; readonly title: string }>> {
+  const out = new Map<number, { readonly number: number; readonly title: string }>()
+  const gate = gateFor(repo)
+  await Promise.all(
+    [...new Set(numbers)].map(async (n) => {
+      const [doc] = await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.issue, { where: [['number', '==', n]] }))
+      if (doc === undefined) return
+      const admitted = await gate.admit('issue', doc)
+      out.set(n, { number: n, title: admitted.ok ? titleOf(admitted.doc) : '' })
+    }),
+  )
+  return out
 }
 
 /** The counted approvals of a PR, and what each reviewer's role is now. */
@@ -419,6 +496,13 @@ export interface PullThread {
    * refuses a comment or review from anyone who does not prove membership.
    */
   readonly locked: boolean
+  /**
+   * What maintainers hid (RC2 MOD; `hiddenItems`). Display only: a hidden review's verdict still
+   * counts in `approvals` until it is dismissed.
+   */
+  readonly moderation?: HiddenItems
+  /** What the reader rule read, for a maintainer's Hide / Unhide (`moderationBlocked`). */
+  readonly moderationInput?: ModerationInput
 }
 
 /**
@@ -513,8 +597,12 @@ export async function loadPullThread(
   const policyDocs = docs(7).length < 100 ? docs(7) : null
   const policy: Promise<Policy | null> = policyDocs === null ? readPolicy(sdk, repo) : Promise.resolve(policyFromDocs(policyDocs))
   const members = memberships ?? (await readMembershipsCached(sdk, repo, network).catch(() => null))
-  const [approvals, verdicts] = await Promise.all([readApprovals(members, policy, reviews, review, pull.author), verdictsRead])
+  const proved = hasHides(log.events) ? hidesProved(sdk, repo).catch(() => false) : Promise.resolve(false)
+  const [approvals, verdicts, hidesAreProved] = await Promise.all([readApprovals(members, policy, reviews, review, pull.author), verdictsRead, proved])
+  const modInput = moderationInput({ events: log.events, thread: { id, author: pull.author }, owner: repo.ownerId, members: members ?? [], proved: hidesAreProved, comments, reviews })
   return {
+    moderation: foldModeration(modInput),
+    moderationInput: modInput,
     pull,
     timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews, tally.total > 0, transitions),
     comments,

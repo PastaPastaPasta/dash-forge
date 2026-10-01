@@ -54,6 +54,11 @@ import {
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
+import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost } from '@/components/repo/moderation'
+import { setHidden } from '@/lib/repo/moderation'
+import { moderationBlocked } from '@/lib/repo/moderation-fold'
+import { isHidden } from '@/lib/view/issues-view'
+import type { HideReason } from '@/lib/rules/moderation'
 import { bypassValue, deleteBranchOffer, deleteBranchProblem, prLinkedIssues, requiredChecksLine } from '@/lib/view/pull-actions'
 import {
   createComment,
@@ -70,6 +75,7 @@ import {
   MERGE_METHODS,
   writeRefUpdate,
   defineLabel,
+  EVENT_KIND_CODE,
   postTargetEvent,
   readViewerPermissions,
   repoContractIds,
@@ -88,7 +94,9 @@ import {
 import { checksPhrase, expectedChecks, readCheckRuns, requiredSources, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
 import { branchShown, headSync, readBranchState, readBranchTip, readBranchUpdates, type BranchWrite } from '@/lib/repo/source-branch'
 import type { Event, EventKind, Holdings, RefState } from '@/lib/rules'
-import { linkedIssues, RoleOracle, type ChecksState, type Policy, type PolicyStatus } from '@/lib/rules/v2'
+import { ROLE_NOUN, capabilitiesOf, memberMayWriteEvent } from '@/lib/rules/roles'
+import { RoleLimitNote } from '@/components/repo/role-limit-note'
+import { isApprover, linkedIssues, RoleOracle, type ChecksState, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { checksState } from '@/lib/rules/parity'
 import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, sumPreviews, type CostPreview as Cost } from '@/lib/sdk'
 import { commentEditDrops, pullSinceYourReview } from '@/lib/view/issues-view'
@@ -105,7 +113,8 @@ import { WALK_COMMIT_CAP } from '@/lib/merge/objects'
 import { commentsShown, draftIsEmpty, draftWhereabouts, reviewShows, SUBMIT_WAIT } from '@/lib/view/pending-review'
 import { tipOidOf } from '@/lib/view/refs'
 import { importedReviewers, type ReviewerCardRow } from '@/lib/view/review-fold'
-import { foldMirroredReviews, mirroredCommentText } from '@/lib/view/mirror-review-fold'
+import { foldMirroredReviews, mirroredCommentText, nestThreadReplies } from '@/lib/view/mirror-review-fold'
+import { shownHunk } from '@/lib/view/diff-hunk'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
 import { readUntil, retryWhileMissing } from '@/lib/view/retry'
 import { forgetShownOwnReviews, ownReviewScope, rememberOwnReview, unshownOwnReviews, type OwnReview } from '@/lib/view/own-reviews'
@@ -201,6 +210,8 @@ type Pending =
   | { kind: 'delete-comment'; id: string }
   | { kind: 'resolve'; root: string; resolve: boolean }
   | { kind: 'lock'; on: boolean }
+  /** A maintainer hides (or unhides) a comment, a review, or with `item` null the PR (RC2 MOD). */
+  | { kind: 'hide'; item: string | null; what: 'comment' | 'review' | 'pull request'; reason: HideReason | null; hide: boolean; closeAndLock?: boolean }
 
 export function PullContent({
   home,
@@ -289,6 +300,8 @@ function PullPage({
   // guard), as the header's "Session locked — Unlock" says. Signed out, there is none.
   const viewer = identity ?? lockedIdentity
   const guard = useWriteGuard()
+  // A hidden PR's conversation shows only after "Show it anyway" (RC2 MOD).
+  const [threadRevealed, setThreadRevealed] = useState(false)
   const router = useRouter()
   const pathname = usePathname()
   const params = useSearchParams()
@@ -313,7 +326,13 @@ function PullPage({
     [ready, repoKey(repo), viewer ?? '', network],
     { enabled: ready && sdk !== null && viewer !== null },
   )
-  const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
+  // Any membership document (a reader's too) proves membership on comments and reviews.
+  const isMember = holdings.data?.member === true
+  // What this viewer may do as a member (RC2 roles: a triage member closes, labels, assigns,
+  // locks, requests reviews and resolves threads; a reader none of it; merging, draft and ready,
+  // head updates and dismissals are a maintainer's or writer's). The author keeps the author's own.
+  const viewerRole = holdings.data?.role ?? null
+  const caps = capabilitiesOf(viewerRole)
   const isAuthor = viewer !== null && viewer === pull.author
   const archived = home.config?.archived === true
   // A locked PR takes comments and reviews from members only (RC1: consensus refuses the rest).
@@ -390,9 +409,10 @@ function PullPage({
   )
 
   // ---- checks on the head ---------------------------------------------------------------------
-  // Trust is by the current member set: keyed on the set itself (a swap of members re-reads).
+  // Trust is by the current approvers (maintainers and role-1 writers; never a triage member or
+  // reader) and runners: keyed on the set itself (a swap of members re-reads).
   const membersKnown = thread.approvals !== null
-  const memberKey = thread.members.map((m) => m.identity).sort().join(',')
+  const memberKey = [...new Set(thread.members.filter((m) => isApprover(m.role)).map((m) => m.identity))].sort().join(',')
   const rules = policyOf(thread.approvals)
   const policyNow = rules.policy === 'unknown' ? null : rules.policy
   // The policy's pinned check sources (RC1 R-08): a pinned check lists and counts its source's run.
@@ -436,8 +456,9 @@ function PullPage({
   // Once a read shows the write, the read alone speaks again (later changes by others included).
   if (branchWrite !== null && readSync !== null && readSync.kind === (branchWrite.to === 'deleted' ? 'deleted' : 'in-sync')) setBranchWrite(null)
   const sync = branchShown(readSync, branchWrite, pull.sourceRefName, pull.headOid)
-  // The PR's author or a maintainer/writer: who may move the head, mark draft/ready, resolve and request.
-  const authorOrMember = identity !== null && (isAuthor || isMember)
+  // The PR's author or a maintainer/writer: who may move the head (event kind 16: role 1) and mark
+  // draft or ready (transition kinds 14/15: role 1).
+  const authorOrMember = identity !== null && (isAuthor || caps.canPush)
   const canMoveHead = authorOrMember && open && !writeBlocked
   const since = pullSinceYourReview(thread, identity)
   // A review this page just submitted: until every comment it wrote shows, say how many have.
@@ -487,7 +508,14 @@ function PullPage({
   const showMarkMerged = actions.canMarkMerged && !pull.state.draft
   const base = shortBranch(pull.baseRefName) || 'the base branch'
   const canAuthorOrMember = authorOrMember && !archived
+  // Who may request reviews (the author, or a member down to triage).
+  const canRequestReview = identity !== null && (isAuthor || caps.canRequestReview) && !archived
   const canMember = identity !== null && isMember && !archived && guard.disabledReason === null
+  // RC2 MOD: maintainers hide; readers see collapsed rows, and a hidden PR opens behind a banner.
+  const canModerate = canMember && holdings.data?.maintain === true
+  const moderation = thread.moderation
+  const threadHidden = moderation?.thread ?? null
+  const threadCollapsed = threadHidden !== null && !threadRevealed
 
   const [comment, setComment] = useState('')
   const commentIntent = useIntent()
@@ -512,7 +540,7 @@ function PullPage({
   const commentFirst = useFirstWrite(() => commentFirsts(sdk!, repo, pull.id, identity!, hasComments), [pull.id, identity ?? '', hasComments], firstsReady)
   const reviewFirst = useFirstWrite(() => reviewFirsts(sdk!, repo, identity!, hasReviews), [pull.id, identity ?? '', hasReviews], firstsReady)
   // Review kinds are a member `event` or the author's `authorEvent`; state changes a `transition`.
-  const stateType = isMember ? 'event' : 'authorEvent'
+  const stateType = caps.canLabel ? 'event' : 'authorEvent'
   const eventFirst = useFirstWrite(() => eventFirsts(sdk!, repo, stateType, pull.id, identity!), [pull.id, identity ?? '', stateType], firstsReady)
   const transitionFirst = useFirstWrite(() => eventFirsts(sdk!, repo, 'transition', pull.id, identity!), [pull.id, identity ?? ''], firstsReady)
   const transitionCost = previewCreate('transition', {}, transitionFirst)
@@ -596,6 +624,9 @@ function PullPage({
         outdated={!anchorOnHead(anchor, pull.headOid)}
         applied={applied.get(c.id) ?? null}
         label={label}
+        // The source hunk is numbered at the comment's own commit: a comment carried to the head
+        // shows the head's lines instead.
+        hunk={carried.has(c.id) ? null : shownHunk(c, trust)}
       />
     )
   }
@@ -608,7 +639,8 @@ function PullPage({
     headReader,
     headOnly: comparison.headOnly,
     applied,
-    isMember,
+    // The head update's member route is role 1's (event kind 16); anyone else updates as the author.
+    isMember: caps.canPush,
     isAuthor,
     signedIn: identity !== null && guard.disabledReason === null && !archived,
     branchAhead: sync?.kind === 'ahead',
@@ -623,7 +655,7 @@ function PullPage({
     [ready, sourceRef?.repoId ?? '', home.config?.defaultBranch ?? '', sourceWrite.can],
     { enabled: ready && sdk !== null && (open ? sourceWrite.can : closedWrite.can) },
   )
-  const canResolve = authorOrMember && !writeBlocked && guard.disabledReason === null
+  const canResolve = identity !== null && (isAuthor || caps.canResolve) && !writeBlocked && guard.disabledReason === null
   // Stable across renders (the diff's lines re-render only when these change): the handler
   // reads the latest confirm (cost and guard) through a ref.
   const confirmResolve = useRef(confirmEvent)
@@ -639,8 +671,9 @@ function PullPage({
       viewer: identity,
       onEdit: (c, body) => setPending({ kind: 'edit-comment', id: c.id, body }),
       onDelete: (c) => setPending({ kind: 'delete-comment', id: c.id }),
+      ...(thread.moderation ? { hidden: thread.moderation } : {}),
     }),
-    [canResolve, resolvedKey, identity, setPending],
+    [canResolve, resolvedKey, identity, setPending, thread.moderation],
   )
   const commentCost = composeCost(repo, 'comment', { body: comment.trim() }, commentFirst)
   const commentTooLong = composeTooLong(repo, 'comment', { body: comment.trim() })
@@ -649,8 +682,8 @@ function PullPage({
   // The repo's milestones, for the picker (QW2-050): read for members only (only they can set one).
   const milestones = useAsync(
     () => readMilestones(sdk!, repo),
-    [ready, repoKey(repo), canMember ? 1 : 0],
-    { enabled: ready && sdk !== null && canMember },
+    [ready, repoKey(repo), canMember && caps.canMilestone ? 1 : 0],
+    { enabled: ready && sdk !== null && canMember && caps.canMilestone },
   )
 
   const postComment = async (): Promise<void> => {
@@ -679,7 +712,8 @@ function PullPage({
   /** Post a review-parity event by whichever route the viewer holds. */
   const post = async (kind: EventKind, intent: string, payload: { value?: string; oidHex?: string; refId?: string } = {}): Promise<string> => {
     if (!sdk || !signer) throw new Error('sign in to continue')
-    const r = await postTargetEvent(sdk, signer, repo, { target, kind, author: pull.author, isMember, payload, intent })
+    // The member route only for a kind this viewer's role may write as a member (else the author's).
+    const r = await postTargetEvent(sdk, signer, repo, { target, kind, author: pull.author, isMember: memberMayWriteEvent(viewerRole, EVENT_KIND_CODE[kind]), payload, intent })
     return r.documentId
   }
 
@@ -700,7 +734,7 @@ function PullPage({
         }
         const posted = closeComment.current?.intent === intent ? closeComment.current.id : null
         try {
-          await setTargetState(sdk, signer, repo, { target: stateTarget, action: p.to, isMember, intent })
+          await setTargetState(sdk, signer, repo, { target: stateTarget, action: p.to, isMember: caps.canCloseReopen, intent })
         } catch (e) {
           // The comment is posted: show it while the close is retried.
           if (posted !== null) refresh((t) => t.comments.some((c) => c.id === posted))
@@ -710,7 +744,7 @@ function PullPage({
         return
       }
       case 'mark-merged':
-        await setTargetState(sdk, signer, repo, { target: stateTarget, action: 'merge', isMember, oidHex: pull.headOid, intent })
+        await setTargetState(sdk, signer, repo, { target: stateTarget, action: 'merge', isMember: caps.canMerge, oidHex: pull.headOid, intent })
         // A maintainer recording it past unmet branch rules: the bypass is recorded on the PR,
         // as the merge box and `dg pr merge --event-only --override-policy` record theirs.
         if (p.bypass.length > 0) {
@@ -734,7 +768,7 @@ function PullPage({
         return
       }
       case 'draft':
-        await setTargetState(sdk, signer, repo, { target: stateTarget, action: p.to, isMember, intent })
+        await setTargetState(sdk, signer, repo, { target: stateTarget, action: p.to, isMember: caps.canDraftReady, intent })
         refresh((t) => t.pull.state.draft === (p.to === 'draft'))
         return
       case 'head':
@@ -806,8 +840,18 @@ function PullPage({
         return
       case 'lock':
         // A member transition (18/19): from then on consensus refuses non-members' comments and reviews.
-        await setLock(sdk, signer, repo, { target: stateTarget, lock: p.on, isMember, intent })
+        await setLock(sdk, signer, repo, { target: stateTarget, lock: p.on, isMember: caps.canLock, intent })
         refresh((t) => t.locked === p.on)
+        return
+      case 'hide':
+        await setHidden(sdk, signer, repo, { target, item: p.item, reason: p.reason, hide: p.hide, intent })
+        if (p.closeAndLock) {
+          // Separate writes (a batch holds one transition): close, then lock, each skipped when done.
+          if (open) await setTargetState(sdk, signer, repo, { target: stateTarget, action: 'close', isMember: caps.canCloseReopen, intent: `${intent}:close` })
+          if (!thread.locked) await setLock(sdk, signer, repo, { target: stateTarget, lock: true, isMember: caps.canLock, intent: `${intent}:lock` })
+        }
+        // With "also close and lock", until the close and the lock show as well.
+        refresh((t) => isHidden(t.moderation, p.item) === p.hide && (!p.closeAndLock || (!t.pull.state.open && t.locked)))
         return
       case 'edit-comment': {
         const c = thread.comments.find((x) => x.id === p.id)
@@ -839,6 +883,11 @@ function PullPage({
       case 'draft':
       case 'lock':
         return transitionCost
+      case 'hide': {
+        const hide = hideCost(repo, pending)
+        const extra = pending.closeAndLock ? (open ? 1 : 0) + (thread.locked ? 0 : 1) : 0
+        return previewCredits(hide.credits + extra * transitionCost.credits)
+      }
       case 'labels':
       case 'assignees':
         return sumPreviews([...pending.change.add, ...pending.change.remove].map((value) => previewCreate('event', { value })))
@@ -863,7 +912,7 @@ function PullPage({
         return eventCost
     }
   })()
-  const confirm = confirmText(pending, pull.number, isMember, pull.headOid, base)
+  const confirm = confirmText(pending, pull.number, caps.canLabel, pull.headOid, base)
 
   // ---- conversation ------------------------------------------------------------------------------
   // Replies to an inline thread show under its root, not on their own.
@@ -873,12 +922,15 @@ function PullPage({
   // A mirrored PR's review comments under the review they were submitted with (QW2-010).
   const conversation = useMemo(
     () =>
-      foldMirroredReviews(
-        timeline
-          .filter((t) => !(t.kind === 'comment' && t.comment.replyTo !== null && inlineIds.has(t.comment.id)))
-          // A comment carried to the head (QW3-015) names its place there.
-          .map((t) => (t.kind === 'comment' && carried.has(t.comment.id) ? { ...t, comment: withCarried(t.comment) } : t)),
-        (it) => (it.kind === 'review' ? trustedOrigin(it.review.origin, it.review.reviewer, trust) : trustedOrigin(it.comment.origin, it.comment.author, trust)),
+      nestThreadReplies(
+        foldMirroredReviews(
+          timeline
+            .filter((t) => !(t.kind === 'comment' && t.comment.replyTo !== null && inlineIds.has(t.comment.id)))
+            // A comment carried to the head (QW3-015) names its place there.
+            .map((t) => (t.kind === 'comment' && carried.has(t.comment.id) ? { ...t, comment: withCarried(t.comment) } : t)),
+          (it) => (it.kind === 'review' ? trustedOrigin(it.review.origin, it.review.reviewer, trust) : trustedOrigin(it.comment.origin, it.comment.author, trust)),
+        ),
+        inlineIds,
       ),
     [timeline, inlineIds, trust, carried, withCarried],
   )
@@ -1130,7 +1182,7 @@ function PullPage({
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-caution/40 bg-caution/5 px-4 py-2 text-dense" role="status" data-testid="own-review-pending">
           <span className="min-w-0 flex-1">
             Your {OWN_VERDICT[ownWaiting.verdict] ?? 'review'} is on Platform (submitted <Time ms={ownWaiting.at} />), but the node this page reads doesn&apos;t show it yet.
-            {isMember ? '' : ' It shows here, marked as not counted, once it does.'}
+            {isApprover(viewerRole) ? '' : ' It shows here, marked as not counted, once it does.'}
           </span>
           <Button size="sm" variant="outline" onClick={() => refresh((t) => t.reviews.some((x) => x.id === ownWaiting.id), SUBMIT_WAIT)}>
             Refresh
@@ -1166,6 +1218,9 @@ function PullPage({
           {suggest.runner.busy && !(tab === 'files' || (tab === 'conversation' && !(open && pull.state.draft))) ? suggest.runner.view : null}
           {tab === 'conversation' ? (
             <>
+              {threadHidden !== null ? <HiddenBanner hidden={threadHidden} noun="pull request" revealed={threadRevealed} onReveal={() => setThreadRevealed(true)} /> : null}
+              {threadCollapsed ? null : (
+              <>
               {/* Description */}
               <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
@@ -1188,6 +1243,21 @@ function PullPage({
                   items={conversation}
                   links={links}
                   trust={trust}
+                  {...(moderation ? { moderation } : {})}
+                  {...(canModerate
+                    ? {
+                        moderate: ({ kind, id }: { readonly kind: 'comment' | 'review'; readonly id: string }) => (
+                          <HideMenu
+                            hidden={isHidden(moderation, id)}
+                            blocked={moderationBlocked(thread.moderationInput, identity, id, !isHidden(moderation, id))}
+                            what={kind}
+                            disabled={false}
+                            onHide={(reason) => confirmEvent({ kind: 'hide', item: id, what: kind, reason, hide: true })}
+                            onUnhide={() => confirmEvent({ kind: 'hide', item: id, what: kind, reason: null, hide: false })}
+                          />
+                        ),
+                      }
+                    : {})}
                   eventText={eventText}
                   anchorContext={anchorContext}
                   renderComment={(item) =>
@@ -1211,6 +1281,8 @@ function PullPage({
                   }
                 />
               ) : null}
+              </>
+              )}
               <HiddenNote hidden={0} what="comments and reviews" home={home} by={thread.hidden} />
               <EventValuesNote counts={thread.eventValues} />
 
@@ -1285,7 +1357,7 @@ function PullPage({
                       </span>
                       {suggest.write.can && suggest.who !== null && repo.visibility === 'public' ? (
                         <>
-                          <BranchCommitCost isMember={isMember} storage="" />
+                          <BranchCommitCost isMember={caps.canPush} storage="" />
                           <Button
                             size="sm"
                             variant="outline"
@@ -1451,8 +1523,12 @@ function PullPage({
                       <span className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="author-review-note">
                         You opened this PR: your own approval would never count, so only a comment-only review is offered.
                       </span>
-                    ) : !isMember && holdings.settled ? (
-                      <span className="text-[12px] text-anvil-500 dark:text-anvil-400">Only approvals from maintainers and writers count.</span>
+                    ) : !isApprover(viewerRole) && holdings.settled ? (
+                      <span className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="approval-not-counted-note">
+                        {viewerRole === 'triage' || viewerRole === 'reader'
+                          ? `You're ${ROLE_NOUN[viewerRole]} here: your review is recorded, but only approvals from maintainers and writers count.`
+                          : 'Only approvals from maintainers and writers count.'}
+                      </span>
                     ) : null}
                   </div>
                 ) : null}
@@ -1567,8 +1643,8 @@ function PullPage({
                 author={pull.author}
                 headOid={pull.headOid}
                 membersKnown={thread.approvals !== null}
-                canRequest={canAuthorOrMember && open && guard.disabledReason === null}
-                canDismiss={canMember && open}
+                canRequest={canRequestReview && open && guard.disabledReason === null}
+                canDismiss={canMember && caps.canDismiss && open}
                 onRequest={(who, remove) => {
                   confirmEvent({ kind: 'request', who, remove })
                 }}
@@ -1581,7 +1657,7 @@ function PullPage({
               <AssigneePicker
                 assignees={pull.state.assignees}
                 members={thread.members.map((m) => m.identity)}
-                canEdit={canMember}
+                canEdit={canMember && caps.canAssign}
                 onApply={(change) => setPending({ kind: 'assignees', change })}
               />
             </SidebarSection>
@@ -1590,7 +1666,7 @@ function PullPage({
                 applied={pull.state.labels}
                 defs={thread.labels}
                 byName={new Map(thread.labels.map((l) => [l.name, l]))}
-                canEdit={canMember}
+                canEdit={canMember && caps.canLabel}
                 onApply={(change) => setPending({ kind: 'labels', change })}
                 onDefine={(name, color, description) => setPending({ kind: 'define-label', name, color, description })}
                 manageHref={repoHref('/repo/labels', addr)}
@@ -1603,7 +1679,7 @@ function PullPage({
                 choices={milestones.data ?? []}
                 loading={milestones.data === null && milestones.error === null}
                 canDefine={repo.visibility !== 'private'}
-                canEdit={canMember}
+                canEdit={canMember && caps.canMilestone}
                 onChoose={(title) => setPending({ kind: 'milestone', title })}
                 manageHref={repoHref('/repo/milestones', addr)}
               />
@@ -1679,9 +1755,29 @@ function PullPage({
                 <p className="text-anvil-600 dark:text-anvil-300" data-testid="thread-lock-state">
                   {lockStateText(thread.locked)}
                 </p>
-                {canMember ? (
+                {canMember && caps.canLock ? (
                   <div className="mt-2">
                     <LockToggle locked={thread.locked} onToggle={(on) => confirmEvent({ kind: 'lock', on }, transitionCost)} />
+                  </div>
+                ) : null}
+                {!archived ? (
+                  <RoleLimitNote
+                    role={viewerRole}
+                    what={caps.canLock ? 'merge, mark drafts ready, update heads or dismiss reviews' : 'lock, label, assign or set milestones as a member'}
+                    className="mt-2"
+                  />
+                ) : null}
+                {canModerate ? (
+                  <div className="mt-2">
+                    <HideThreadControl
+                      hidden={threadHidden !== null}
+                      blocked={moderationBlocked(thread.moderationInput, identity, null, threadHidden === null)}
+                      noun="pull request"
+                      offerClose={open}
+                      offerLock={!thread.locked}
+                      onHide={(reason, closeAndLock) => confirmEvent({ kind: 'hide', item: null, what: 'pull request', reason, hide: true, closeAndLock })}
+                      onUnhide={() => confirmEvent({ kind: 'hide', item: null, what: 'pull request', reason: null, hide: false })}
+                    />
                   </div>
                 ) : null}
               </SidebarSection>
@@ -1860,6 +1956,8 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
         : { title: 'Unresolve conversation', description: `Appends ${via} naming the thread.`, label: 'Sign & unresolve' }
     case 'lock':
       return lockConfirm(pending.on, `PR #${number}`, 'pull')
+    case 'hide':
+      return hideConfirm(pending, `PR #${number}`)
     default:
       return { title: '', description: '', label: 'Confirm' }
   }

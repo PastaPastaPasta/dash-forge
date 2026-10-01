@@ -1,10 +1,10 @@
 /**
  * Live helper (never gates CI): write each version of a file blame compared, from a showcase repo
- * (the showcase mirrors are on moutai and not yet re-created on bonsia), to FORGE_DUMP_DIR as
+ * (the showcase mirrors are on moutai and not yet re-created on sakura), to FORGE_DUMP_DIR as
  * `<n>-<commit>.txt` (newest first), for comparing the line alignment with git's offline.
  *
  *   FORGE_LIVE=1 FORGE_DUMP_OWNER=… FORGE_DUMP_NAME=dash FORGE_DUMP_PATH=src/qt/dashstrings.cpp \
- *   FORGE_DUMP_DIR=/tmp/x NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=bonsia \
+ *   FORGE_DUMP_DIR=/tmp/x NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=sakura \
  *     pnpm exec vitest run lib/view/blame-dump.live.test.ts
  */
 

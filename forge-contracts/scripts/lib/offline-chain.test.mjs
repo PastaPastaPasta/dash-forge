@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
 import { OfflineChain } from './offline-chain.mjs';
-import { TRANSITION, VIS, b58encode, documentReader, documentWriter, idBytes, membership, transition } from './seed-io.mjs';
+import { CONTRACTS, FUSED_STAR, MEMBER_ROLES, TRANSITION, VIS, b58encode, documentReader, documentWriter, idBytes, membership, transition } from './seed-io.mjs';
 
 const person = (name) => ({ name, id: b58encode(createHash('sha256').update(name).digest()) });
 const OWNER = person('owner');
@@ -49,16 +49,46 @@ test('an invited member is enrolled only after its consent', async () => {
   await write(OWNER, 'writer', membership(R, OWNER.id, OTHER.id));
 });
 
-test('a non-member cannot write an event; the repo owner cannot beat its own repo', async () => {
+test('a non-member cannot write an event; the repo owner cannot beat its own repo (no beat with the fused star)', async () => {
   const { write, R } = await repoChain();
   const i1 = (await write(OWNER, 'issue', issue(R, 1))).id.toBase58();
   const label = { repoId: R, targetId: idBytes(i1), targetNumber: 1, kind: 4, value: 'bug' };
   await assert.rejects(write(OTHER, 'event', label), refusedWith(40120, 'event.ownerRefersTo'));
   await write(OWNER, 'event', label);
+  if (FUSED_STAR) {
+    // RC2 C1: the star is the trending entry, with no repoOwner to tell the owner apart
+    await assert.rejects(write(OTHER, 'starBeat', { repoId: R, vis: VIS, repoOwner: idBytes(OWNER.id) }), /starBeat/);
+    await write(OWNER, 'star', { repoId: R });
+    return;
+  }
   await assert.rejects(write(OWNER, 'starBeat', { repoId: R, vis: VIS, repoOwner: idBytes(OWNER.id) }), refusedWith(10419));
   await write(OTHER, 'starBeat', { repoId: R, vis: VIS, repoOwner: idBytes(OWNER.id) });
   // The repo is found, but its owner is not the beat's repoOwner: a `where` mismatch.
   await assert.rejects(write(OTHER, 'starBeat', { repoId: R, vis: VIS, repoOwner: idBytes(person('third').id) }), refusedWith(40127, 'starBeat.repoId'));
+});
+
+// RC2 MOD (design/v5/MODERATION.md): a hide names the writer's maintainer document of the repo.
+// The hideByMaint rule (asMaintainer = the writer) is rs-dpp's (rc1 vectors); the lookup is this.
+test('a hide proves its writer a maintainer of the repo now', { skip: !('asMaintainer' in (CONTRACTS.community.documentSchemas.event.properties ?? {})) }, async () => {
+  const { chain, write, R } = await repoChain();
+  const sdk = new (chain.evo().EvoSDK)();
+  const i1 = (await write(OWNER, 'issue', issue(R, 1))).id.toBase58();
+  const hide = (who) => ({ repoId: R, targetId: idBytes(i1), targetNumber: 1, kind: 24, refId: Buffer.alloc(32, 5), asMaintainer: idBytes(who.id) });
+  await write(OWNER, 'event', hide(OWNER));
+  // A writer passes the event gate (ownerRefersTo) but holds no maintainer document
+  await write(OTHER, 'consent', { repoId: R });
+  await write(OWNER, 'writer', membership(R, OWNER.id, OTHER.id));
+  await assert.rejects(write(OTHER, 'event', hide(OTHER)), refusedWith(40120, 'event.asMaintainer'));
+  // A maintainer of another repo is no maintainer of this one
+  const theirs = idBytes((await write(OTHER, 'repo', { name: 'theirs', visibility: VIS })).id.toBase58());
+  await write(OTHER, 'maintainer', membership(theirs, OTHER.id, OTHER.id));
+  await assert.rejects(write(OTHER, 'event', hide(OTHER)), refusedWith(40120, 'event.asMaintainer'));
+  // Promoted, then removed: the hide written meanwhile stands, the next one is refused
+  const promoted = await write(OWNER, 'maintainer', membership(R, OWNER.id, OTHER.id));
+  await write(OTHER, 'event', hide(OTHER));
+  await sdk.documents.delete({ document: promoted });
+  await assert.rejects(write(OTHER, 'event', hide(OTHER)), refusedWith(40120, 'event.asMaintainer'));
+  assert.equal(chain.live('event').filter((e) => e.view.kind === 24).length, 2);
 });
 
 test('transitions move only from the state their rules name', async () => {
@@ -146,4 +176,32 @@ test('a document goes to the contract that holds its type', async () => {
   const sdk = new evo.EvoSDK();
   const wrong = documentWriter({ sdk }, evo, { ids: { ...chain.ids, community: chain.ids.collab } }, noReconnect);
   await assert.rejects(wrong(OWNER, 'star', { repoId: Buffer.alloc(32, 1) }), /star is in forge-community, not forge-collab/);
+});
+
+test('member roles: the writer gate proves the claimed r against writer.role', { skip: !MEMBER_ROLES }, async () => {
+  const { write, R } = await repoChain();
+  await write(OTHER, 'consent', { repoId: R });
+  await write(OWNER, 'writer', { ...membership(R, OWNER.id, OTHER.id), role: 2 });
+  const i1 = (await write(OWNER, 'issue', issue(R, 1))).id.toBase58();
+  const ref = { repoId: R, refNameHash: Buffer.alloc(32, 1), refName: 'refs/heads/main', newOid: Buffer.alloc(20, 1), vis: VIS };
+  // triage cannot push: r 1 is not its role (the writer operand, the last, reports 40127)
+  await assert.rejects(write(OTHER, 'refUpdate', ref), refusedWith(40127, 'refUpdate.ownerRefersTo'));
+  await write(OWNER, 'refUpdate', ref);
+  // triage labels and closes with r 2, and a claim of r 1 is refused
+  const label = { repoId: R, targetId: idBytes(i1), targetNumber: 1, kind: 4, value: 'bug' };
+  await assert.rejects(write(OTHER, 'event', label), refusedWith(40127, 'event.ownerRefersTo'));
+  await write(OTHER, 'event', { ...label, r: 2 });
+  await write(OTHER, 'label', { repoId: R, name: 'bug', r: 2 });
+  await write(OTHER, 'transition', { ...transition(R, { id: i1, number: 1 }, TRANSITION.issueClose), r: 2 });
+});
+
+test('member roles: a reader matches no gate', { skip: !MEMBER_ROLES }, async () => {
+  const { write, R } = await repoChain();
+  await write(OTHER, 'consent', { repoId: R });
+  await write(OWNER, 'writer', { ...membership(R, OWNER.id, OTHER.id), role: 3 });
+  const i1 = (await write(OWNER, 'issue', issue(R, 1))).id.toBase58();
+  for (const r of [1, 2]) {
+    await assert.rejects(write(OTHER, 'label', { repoId: R, name: 'x', r }), refusedWith(40127, 'label.ownerRefersTo'));
+    await assert.rejects(write(OTHER, 'event', { repoId: R, targetId: idBytes(i1), targetNumber: 1, kind: 4, value: 'bug', r }), refusedWith(40127, 'event.ownerRefersTo'));
+  }
 });

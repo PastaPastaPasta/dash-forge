@@ -2,7 +2,7 @@ name: Mirror Action
 
 # Tests the GitHub Mirror Action in action/.
 #   * static: actionlint, shellcheck and action/test.sh (offline). Every trigger.
-#   * live:   mirrors PastaPastaPasta/dash-faucet into the bonsia OWNER fixture's
+#   * live:   mirrors PastaPastaPasta/dash-faucet into the sakura OWNER fixture's
 #             `mirror-ci-dash-faucet` repo (e2e/README.md reserves it), then runs the
 #             action again and requires that second run to write nothing and spend 0.
 #             Not on pull requests: it needs the funded fixture identity.
@@ -72,18 +72,18 @@ jobs:
       - name: Probe
         id: probe
         env:
-          FORGE_BONSIA_IDENTITY_OWNER: ${{ secrets.FORGE_BONSIA_IDENTITY_OWNER }}
+          FORGE_SAKURA_IDENTITY_OWNER: ${{ secrets.FORGE_SAKURA_IDENTITY_OWNER }}
         run: |
-          if [ -n "$FORGE_BONSIA_IDENTITY_OWNER" ]; then
+          if [ -n "$FORGE_SAKURA_IDENTITY_OWNER" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "### Live mirror test skipped: missing secret \`FORGE_BONSIA_IDENTITY_OWNER\`" >> "$GITHUB_STEP_SUMMARY"
-            echo "::warning title=Mirror Action live test skipped::missing secret FORGE_BONSIA_IDENTITY_OWNER"
+            echo "### Live mirror test skipped: missing secret \`FORGE_SAKURA_IDENTITY_OWNER\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=Mirror Action live test skipped::missing secret FORGE_SAKURA_IDENTITY_OWNER"
           fi
 
   live:
-    name: live mirror (devnet bonsia)
+    name: live mirror (devnet sakura)
     needs: [static, fixtures]
     if: needs.fixtures.outputs.present == 'true'
     runs-on: ubuntu-latest
@@ -93,30 +93,9 @@ jobs:
         with:
           persist-credentials: false
 
-      # Pinned modern protoc: Ubuntu's 3.21 breaks the tenderdash proto build
-      # (nightly.yml has the details).
-      - name: Install protoc
-        env:
-          PROTOC_VERSION: '28.3'
-        run: |
-          curl -sSLo /tmp/protoc.zip \
-            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip"
-          sudo unzip -q -o /tmp/protoc.zip -d /usr/local bin/protoc 'include/*'
-          sudo chmod +x /usr/local/bin/protoc
-
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: mirror-action
-
-      # No release is published yet, so the action runs with install: 'false' on binaries
-      # built from this commit.
-      - name: Build forge-import, git-remote-dash, dg
-        timeout-minutes: 30
-        run: |
-          cargo build --locked -p forge-import -p git-remote-dash -p dg
-          echo "$GITHUB_WORKSPACE/target/debug" >> "$GITHUB_PATH"
-
+      # No release is published yet, so the action builds forge-import, git-remote-dash and dg
+      # from this checkout itself (install: 'source', the path the /mirror wizard's workflows
+      # and the default install take today), installing protoc and caching the build.
       - name: Mirror (first run)
         id: first
         uses: ./action
@@ -124,13 +103,13 @@ jobs:
           repo: mirror-ci-dash-faucet
           github-repo: PastaPastaPasta/dash-faucet
           network: devnet
-          devnet-name: bonsia
+          devnet-name: sakura
           sync: code,issues,prs,releases,labels
           storage-kind: platform
           cost-cap: '0.25'
-          install: 'false'
+          install: 'source'
         env:
-          DASH_FORGE_KEY: ${{ secrets.FORGE_BONSIA_IDENTITY_OWNER }}
+          DASH_FORGE_KEY: ${{ secrets.FORGE_SAKURA_IDENTITY_OWNER }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Each invocation gets a fresh work dir and, with state-cache off, no sync state: the
@@ -143,14 +122,14 @@ jobs:
           repo: mirror-ci-dash-faucet
           github-repo: PastaPastaPasta/dash-faucet
           network: devnet
-          devnet-name: bonsia
+          devnet-name: sakura
           sync: code,issues,prs,releases,labels
           storage-kind: platform
           cost-cap: '0.25'
-          install: 'false'
+          install: 'source'
           state-cache: 'false'
         env:
-          DASH_FORGE_KEY: ${{ secrets.FORGE_BONSIA_IDENTITY_OWNER }}
+          DASH_FORGE_KEY: ${{ secrets.FORGE_SAKURA_IDENTITY_OWNER }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Assert the second run was idempotent

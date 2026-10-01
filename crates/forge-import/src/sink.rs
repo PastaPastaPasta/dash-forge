@@ -33,12 +33,12 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 
 use forge_core::collab::v2::{ImportedTarget, PatchInput, PrBase, Provenance, Target, TargetKind};
-use forge_core::collab::ReleaseInput;
+use forge_core::collab::{CommentAnchor, Imported, ReleaseInput};
 use forge_core::history::Freshness;
 use forge_core::platform::PlatformClient;
 use forge_core::repo::credits_to_dash;
 use forge_core::rules::v2::{
-    next_transition, Actor, StateAction, TransitionMove, TransitionTarget, Visibility,
+    next_transition, Actor, ClosedAs, StateAction, TransitionMove, TransitionTarget, Visibility,
 };
 use forge_core::rules::{EventKind, MergeBaseTips};
 use forge_core::scope::RepoRef;
@@ -46,7 +46,10 @@ use forge_core::scope::RepoRef;
 use crate::budget::{collab_doc_credits, Budget, CollabDoc};
 use crate::chain::{Chain, Current};
 use crate::gitsync::{ProofRepo, Unfetched};
-use crate::model::{same_item, same_item_renamed, SrcCollab, SrcLabel, SrcRelease, SrcTarget};
+use crate::model::{
+    same_item, same_item_renamed, SrcCloseReason, SrcCollab, SrcComment, SrcLabel, SrcRelease,
+    SrcReview, SrcTarget,
+};
 use crate::pipeline::{lock, Progress, Stop};
 use crate::sealed_release::ReleaseStorage;
 use crate::summary::Counts;
@@ -286,6 +289,23 @@ struct Caches {
     /// The first source item stored at a number other than its own ([`Sink::create`]):
     /// numbers diverge from there on, said once.
     diverged: bool,
+    /// Closes held back for the end of the run ([`Sink::sync_deferred`]): duplicates whose
+    /// canonical was not on chain yet when their state came up.
+    deferred: Vec<Deferred>,
+}
+
+/// An issue's close held back until every item of the run is placed (QW-069): it closes as a
+/// duplicate of an issue that was not on chain yet (on a first import, one numbered after it),
+/// and a transition is immutable, so it is written once its canonical's mirror number can be
+/// known. The issue stays open until then (RIDERS §1.8).
+struct Deferred {
+    /// The item's place in the run's targets.
+    index: usize,
+    target: Target,
+    /// The moves still to write: an issue's close (no merge, so no oid).
+    moves: Vec<TransitionMove>,
+    /// Why it closed: a duplicate of a same-repository canonical.
+    why: SrcCloseReason,
 }
 
 /// An item placed on chain (created, or found) whose other writes are still to do: a lane's
@@ -522,6 +542,30 @@ type StateEvent = (EventKind, String);
 
 fn need(repo: Option<&RepoRef>) -> forge_core::Result<&RepoRef> {
     repo.ok_or_else(|| forge_core::Error::Config("no destination repository".into()))
+}
+
+/// A stand-in for a duplicate's canonical issue at the source, for [`Sink::lookup`]: its kind,
+/// source number and key are all a lookup reads.
+fn canonical_stub(upstream: u32, url: &str) -> SrcTarget {
+    SrcTarget {
+        kind: TargetKind::Issue,
+        number: upstream,
+        title: String::new(),
+        body: String::new(),
+        imported: Imported {
+            url: url.to_string(),
+            ..Imported::default()
+        },
+        closed: false,
+        close_reason: None,
+        merged_oid: None,
+        merged_without_sha: false,
+        labels: BTreeSet::new(),
+        draft: false,
+        patch: None,
+        comments: Vec::new(),
+        reviews: Vec::new(),
+    }
 }
 
 /// The key [`Sink::known`] holds `t` under.
@@ -860,12 +904,13 @@ impl<'a, C: Chain> Sink<'a, C> {
             }
         }
         self.check_order(src).await?;
-        self.sync_targets(&src.targets).await
+        self.sync_targets(src).await
     }
 
     /// Every issue and PR: created (or found) strictly in order, the rest of each item's
     /// writes pipelined behind ([`crate::pipeline::run`]).
-    async fn sync_targets(&self, targets: &[SrcTarget]) -> Result<()> {
+    async fn sync_targets(&self, src: &SrcCollab) -> Result<()> {
+        let targets = &src.targets;
         let progress = Progress::new(targets.len(), PROGRESS_EVERY);
         let progress = &progress;
         let result = crate::pipeline::run(
@@ -885,18 +930,95 @@ impl<'a, C: Chain> Sink<'a, C> {
             },
             |job: Job<'_>| async move {
                 self.finish_target(&job).await?;
-                progress.completed(job.index, job.t.number);
+                // An item whose close is held back completes when it is written.
+                if !self.held(job.index) {
+                    progress.completed(job.index, job.t.number);
+                }
                 self.say(progress, false);
                 Ok(())
             },
         )
         .await;
+        // Only after a complete pass: a run that stopped early leaves those issues open and
+        // its state unadvanced, so the next run reads them again and closes them then.
+        let result = match result {
+            Ok(()) => self.sync_deferred(src, progress).await,
+            stopped => stopped,
+        };
         if self.lanes > 1 && !self.dry_run {
             // What the lanes wrote since their last read.
             self.measure(true).await;
         }
         self.say(progress, true);
         result
+    }
+
+    /// Whether item `index`'s close is held back for the end of the run.
+    fn held(&self, index: usize) -> bool {
+        self.caches().deferred.iter().any(|d| d.index == index)
+    }
+
+    /// The closes [`Sink::sync_state`] held back, once every item of the run is placed, in
+    /// source order, each written once and here only: it names its canonical's mirror number
+    /// when the canonical now has a copy. When it has none, the close is final only if no later
+    /// run can place the canonical ([`Sink::placed_later`]); otherwise the issue is left open
+    /// and skipped (which holds the incremental state), so a later run closes it with the link.
+    async fn sync_deferred(&self, src: &SrcCollab, progress: &Progress) -> Result<()> {
+        let mut deferred = std::mem::take(&mut self.caches().deferred);
+        deferred.sort_by_key(|d| d.index);
+        for d in deferred {
+            let t = &src.targets[d.index];
+            let close = async {
+                let found = self.closed_as(t, &d.target, &d.why).await?;
+                let reason = if let Some(reason) = found {
+                    reason
+                } else {
+                    let (upstream, url) = d.why.duplicate_of.clone().unwrap_or_default();
+                    if let Some(why) = self.placed_later(src, upstream) {
+                        self.ledger().skip(format!(
+                            "{} was closed as a duplicate of {url}, {why}: it is left open, \
+                             and a later run closes it naming its canonical",
+                            t.imported.url
+                        ));
+                        return Ok(());
+                    }
+                    if !self.dry_run {
+                        self.warn(format!(
+                            "{} was closed as a duplicate of {url}, which is not mirrored: it \
+                             is recorded as a duplicate without naming it",
+                            t.imported.url
+                        ));
+                    }
+                    ClosedAs {
+                        reason: d.why.reason,
+                        duplicate_of: None,
+                    }
+                };
+                self.write_moves(t, &d.target, &d.moves, None, Some(&reason))
+                    .await
+            };
+            close.await.or_else(|e| self.item_skipped(t, e))?;
+            progress.completed(d.index, t.number);
+        }
+        Ok(())
+    }
+
+    /// Why a duplicate's same-repository canonical (source issue `upstream`) that has no copy
+    /// at the end of the run may still get one from a later run, which would name it: it is in
+    /// this run but was skipped for a reason that is not final (not refused for its content),
+    /// or the run was cut by `--limit` before it. `None` when it is truly absent (not at the
+    /// source, or refused for good): the close is then written without it.
+    fn placed_later(&self, src: &SrcCollab, upstream: u32) -> Option<&'static str> {
+        let key = (TargetKind::Issue.transition_target().code(), upstream);
+        let in_run = src
+            .targets
+            .iter()
+            .any(|c| c.kind == TargetKind::Issue && c.number == upstream);
+        if in_run {
+            let refused = self.ledger().refused.contains(&key) || src.refused.contains(&key);
+            return (!refused).then_some("which this run could not mirror");
+        }
+        src.truncated.then_some("which is past this run's --limit")
     }
 
     /// Log the write phase's progress when a line is due.
@@ -1248,7 +1370,10 @@ impl<'a, C: Chain> Sink<'a, C> {
 
     async fn finish_target_inner(&self, job: &Job<'_>) -> Result<()> {
         let Job {
-            t, target, fresh, ..
+            index,
+            t,
+            target,
+            fresh,
         } = job;
         let current = if *fresh {
             Current::default()
@@ -1262,16 +1387,77 @@ impl<'a, C: Chain> Sink<'a, C> {
         // leave the item open.
         let thread = self.sync_thread(t, target, *fresh).await;
         if state_after(&thread) {
-            self.sync_state(t, target, &current).await?;
+            self.sync_state(*index, t, target, &current).await?;
         }
         thread
     }
 
-    /// An item's comments, then (a PR's) reviews.
+    /// An item's comments and (a PR's) reviews, as one stream in source time order
+    /// ([`thread_order`]): a review just before the first of its comments, so each comment can
+    /// name it (`reviewId`), and a reply after the comment it replies to (`replyTo`).
     async fn sync_thread(&self, t: &SrcTarget, target: &Target, fresh: bool) -> Result<()> {
-        self.sync_comments(t, target, fresh).await?;
-        if t.kind == TargetKind::Patch {
-            self.sync_reviews(t, target, fresh).await?;
+        let reviews: &[SrcReview] = if t.kind == TargetKind::Patch {
+            &t.reviews
+        } else {
+            &[]
+        };
+        if t.comments.is_empty() && reviews.is_empty() {
+            return Ok(());
+        }
+        // What this signer already wrote on the thread, by source URL: skipped, and (by its
+        // `$id`) what a later comment names.
+        let (mut comment_ids, mut review_ids) = (Vec::new(), Vec::new());
+        if !fresh {
+            let repo = need(self.repo.as_ref())?;
+            if !t.comments.is_empty() {
+                comment_ids = self.done_by_me(self.chain.comments(repo, &target.id).await?);
+            }
+            if !reviews.is_empty() {
+                review_ids = self.done_by_me(self.chain.reviews(repo, &target.id).await?);
+            }
+        }
+        for step in thread_order(&t.comments, reviews) {
+            match step {
+                Step::Review(r) => {
+                    if find_id(&review_ids, &r.imported.url).is_some() {
+                        continue;
+                    }
+                    // The comments that will name it: those not on chain yet (one written
+                    // before this review cannot name it).
+                    let count = t
+                        .comments
+                        .iter()
+                        .filter(|c| c.review_key.as_deref() == Some(r.imported.url.as_str()))
+                        .filter(|c| find_id(&comment_ids, &c.imported.url).is_none())
+                        .count();
+                    let count = u16::try_from(count).unwrap_or(u16::MAX);
+                    if let Some(id) = self.write_review(t, target, r, count).await? {
+                        review_ids.push((r.imported.url.clone(), id));
+                    }
+                }
+                Step::Comment(c) => {
+                    if find_id(&comment_ids, &c.imported.url).is_some() {
+                        continue;
+                    }
+                    let mut anchor = c.anchor.clone();
+                    let reply_to = c
+                        .reply_key
+                        .as_deref()
+                        .and_then(|k| find_id(&comment_ids, k));
+                    let review_id = c
+                        .review_key
+                        .as_deref()
+                        .and_then(|k| find_id(&review_ids, k));
+                    if reply_to.is_some() || review_id.is_some() {
+                        let a = anchor.get_or_insert_with(CommentAnchor::default);
+                        a.reply_to = reply_to.map(str::to_string);
+                        a.review_id = review_id.map(str::to_string);
+                    }
+                    if let Some(id) = self.write_comment(t, target, c, anchor.as_ref()).await? {
+                        comment_ids.push((c.imported.url.clone(), id));
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -1472,7 +1658,15 @@ impl<'a, C: Chain> Sink<'a, C> {
     /// Bring `target` to `t`'s state: label events for the labels that differ, then the
     /// transitions ([`state_path`]) from its state code to the source's ([`wanted_code`]).
     /// Idempotent: a target already in that state takes nothing, and a merged one is final.
-    async fn sync_state(&self, t: &SrcTarget, target: &Target, current: &Current) -> Result<()> {
+    /// An issue closed as a duplicate of one not on chain yet keeps its close for the end of
+    /// the run ([`Deferred`]); `index` is `t`'s place in the run.
+    async fn sync_state(
+        &self,
+        index: usize,
+        t: &SrcTarget,
+        target: &Target,
+        current: &Current,
+    ) -> Result<()> {
         let moves = state_path(
             t.kind.transition_target(),
             current.code,
@@ -1503,113 +1697,233 @@ impl<'a, C: Chain> Sink<'a, C> {
             )
             .await?;
         }
-        for mv in moves {
+        // The close that ends the path says why (QW-069): an issue's closing move.
+        let has_close = moves
+            .iter()
+            .any(|m| m.kind == forge_core::rules::transition::ISSUE_CLOSE);
+        let reason = match &t.close_reason {
+            Some(r) if has_close => {
+                let Some(reason) = self.closed_as(t, target, r).await? else {
+                    self.caches().deferred.push(Deferred {
+                        index,
+                        target: target.clone(),
+                        moves,
+                        why: r.clone(),
+                    });
+                    return Ok(());
+                };
+                Some(reason)
+            }
+            _ => None,
+        };
+        self.write_moves(t, target, &moves, merge_oid.as_deref(), reason.as_ref())
+            .await
+    }
+
+    /// Write `moves` on `target` in order: a merge names `merge_oid`, an issue's close carries
+    /// `reason`.
+    async fn write_moves(
+        &self,
+        t: &SrcTarget,
+        target: &Target,
+        moves: &[TransitionMove],
+        merge_oid: Option<&[u8]>,
+        reason: Option<&ClosedAs>,
+    ) -> Result<()> {
+        let (chain, repo) = (&self.chain, self.repo.as_ref());
+        for &mv in moves {
             let oid = (mv.kind == forge_core::rules::transition::PR_MERGE)
-                .then_some(merge_oid.as_deref())
+                .then_some(merge_oid)
                 .flatten();
+            let closed = reason.filter(|_| mv.kind == forge_core::rules::transition::ISSUE_CLOSE);
+            let reason_bytes =
+                closed.map_or(0, |c| 2 + if c.duplicate_of.is_some() { 5 } else { 0 });
             let credits = collab_doc_credits(
                 CollabDoc::Transition,
-                TRANSITION_BYTES + oid.map_or(0, <[u8]>::len) as u64,
+                TRANSITION_BYTES + oid.map_or(0, <[u8]>::len) as u64 + reason_bytes,
             );
             let what = format!("kind-{} transition on #{}", mv.kind, t.number);
             self.write(
                 what,
                 credits,
                 |c| c.transitions += 1,
-                || async move { chain.write_transition(need(repo)?, target, &mv, oid).await },
+                || async move {
+                    chain
+                        .write_transition(need(repo)?, target, &mv, oid, closed)
+                        .await
+                },
             )
             .await?;
         }
         Ok(())
     }
 
-    /// The source URLs of the documents already on a thread written by the signer.
-    fn done_by_me(&self, written: Vec<crate::chain::Written>) -> BTreeSet<String> {
+    /// `t`'s close reason (`r`) as the mirror records it: a duplicate's canonical as its
+    /// number in the destination, when its copy is there (this run's, or an earlier one's).
+    /// `None` while a same-repository canonical has no copy: on a first import a canonical
+    /// numbered after its duplicate is placed later in the run, so the close (immutable) waits
+    /// for the end of the run ([`Sink::sync_deferred`]). A canonical in another repository is
+    /// never named.
+    async fn closed_as(
+        &self,
+        t: &SrcTarget,
+        target: &Target,
+        r: &SrcCloseReason,
+    ) -> Result<Option<ClosedAs>> {
+        let Some((upstream, url)) = &r.duplicate_of else {
+            return Ok(Some(ClosedAs {
+                reason: r.reason,
+                duplicate_of: None,
+            }));
+        };
+        let key = (TargetKind::Issue.transition_target().code(), *upstream);
+        let known = self.caches().known.get(&key).cloned().flatten();
+        let canonical = match known {
+            Some(c) => Some(c),
+            None if self.repo.is_some() => self.lookup(&canonical_stub(*upstream, url)).await?,
+            None => None,
+        };
+        let Some(canonical) = canonical else {
+            return Ok(None);
+        };
+        let duplicate_of = (canonical.kind == TargetKind::Issue
+            && canonical.number != target.number)
+            .then_some(canonical.number);
+        if duplicate_of.is_none() && !self.dry_run {
+            self.warn(format!(
+                "{} was closed as a duplicate of {url}, whose copy is not an issue it can name: \
+                 it is recorded as a duplicate without naming it",
+                t.imported.url
+            ));
+        }
+        Ok(Some(ClosedAs {
+            reason: r.reason,
+            duplicate_of,
+        }))
+    }
+
+    /// The documents already on a thread written by the signer: `(source URL, $id)`.
+    fn done_by_me(&self, written: Vec<crate::chain::Written>) -> Vec<(String, String)> {
         written
             .into_iter()
             .filter(|w| self.is_mine(&w.author))
-            .filter_map(|w| w.url)
+            .filter_map(|w| Some((w.url?, w.id)))
             .collect()
     }
 
-    async fn sync_comments(&self, t: &SrcTarget, target: &Target, fresh: bool) -> Result<()> {
-        if t.comments.is_empty() {
-            return Ok(());
-        }
-        let done = if fresh {
-            BTreeSet::new()
-        } else {
-            let repo = need(self.repo.as_ref())?;
-            self.done_by_me(self.chain.comments(repo, &target.id).await?)
-        };
+    /// Write one comment of `t`'s thread (`anchor`: its own, with the reply and review the
+    /// sink found); its `$id`, `None` in a dry run.
+    async fn write_comment(
+        &self,
+        t: &SrcTarget,
+        target: &Target,
+        c: &SrcComment,
+        anchor: Option<&CommentAnchor>,
+    ) -> Result<Option<String>> {
         let (chain, repo) = (&self.chain, self.repo.as_ref());
-        for c in t
-            .comments
-            .iter()
-            .filter(|c| !done.iter().any(|u| same_item_renamed(u, &c.imported.url)))
-        {
-            let credits = collab_doc_credits(
-                CollabDoc::Comment,
-                text_doc(&c.body) + c.imported.url.len() as u64,
-            );
-            self.write(
-                format!("comment on #{}", t.number),
-                credits,
-                |n| n.comments += 1,
-                || async move {
-                    chain
-                        .comment(
-                            need(repo)?,
-                            &target.id,
-                            &c.body,
-                            c.anchor.as_ref(),
-                            &c.imported,
-                        )
-                        .await
-                },
-            )
-            .await?;
-        }
-        Ok(())
+        let hunk = anchor
+            .and_then(|a| a.diff_hunk.as_ref())
+            .map_or(0, |h| h.len() as u64 + 3);
+        let ids = anchor.map_or(0, |a| {
+            32 * (u64::from(a.reply_to.is_some()) + u64::from(a.review_id.is_some()))
+        });
+        let credits = collab_doc_credits(
+            CollabDoc::Comment,
+            text_doc(&c.body) + c.imported.url.len() as u64 + hunk + ids,
+        );
+        self.write(
+            format!("comment on #{}", t.number),
+            credits,
+            |n| n.comments += 1,
+            || async move {
+                chain
+                    .comment(need(repo)?, &target.id, &c.body, anchor, &c.imported)
+                    .await
+            },
+        )
+        .await
     }
 
-    async fn sync_reviews(&self, t: &SrcTarget, target: &Target, fresh: bool) -> Result<()> {
-        if t.reviews.is_empty() {
-            return Ok(());
-        }
-        let done = if fresh {
-            BTreeSet::new()
-        } else {
-            let repo = need(self.repo.as_ref())?;
-            self.done_by_me(self.chain.reviews(repo, &target.id).await?)
-        };
+    /// Write one review of `t`, announcing the `count` comments that name it; its `$id`,
+    /// `None` in a dry run.
+    async fn write_review(
+        &self,
+        t: &SrcTarget,
+        target: &Target,
+        r: &SrcReview,
+        count: u16,
+    ) -> Result<Option<String>> {
         let (chain, repo) = (&self.chain, self.repo.as_ref());
-        for r in t
-            .reviews
-            .iter()
-            .filter(|r| !done.iter().any(|u| same_item_renamed(u, &r.imported.url)))
-        {
-            let credits = collab_doc_credits(
-                CollabDoc::Review,
-                text_doc(&r.body) + r.imported.url.len() as u64 + 40,
-            );
-            self.write(
-                format!("review on #{}", t.number),
-                credits,
-                |n| n.reviews += 1,
-                // Always a comment verdict ([`Chain::review`]): the mirror identity is a
-                // member, and a member's approve / request-changes counts (§6); a source
-                // reviewer's verdict must not become one. It is in the body.
-                || async move {
-                    chain
-                        .review(need(repo)?, &target.id, &r.commit_oid, &r.body, &r.imported)
-                        .await
-                },
-            )
-            .await?;
-        }
-        Ok(())
+        let credits = collab_doc_credits(
+            CollabDoc::Review,
+            text_doc(&r.body) + r.imported.url.len() as u64 + 40 + if count > 0 { 3 } else { 0 },
+        );
+        let count = (count > 0).then_some(count);
+        self.write(
+            format!("review on #{}", t.number),
+            credits,
+            |n| n.reviews += 1,
+            // Always a comment verdict ([`Chain::review`]): the mirror identity is a member,
+            // and a member's approve / request-changes counts (§6); a source reviewer's
+            // verdict must not become one. It is in the body.
+            || async move {
+                chain
+                    .review(
+                        need(repo)?,
+                        &target.id,
+                        &r.commit_oid,
+                        &r.body,
+                        count,
+                        &r.imported,
+                    )
+                    .await
+            },
+        )
+        .await
     }
+}
+
+/// One write of a thread, in [`thread_order`].
+enum Step<'t> {
+    Comment(&'t SrcComment),
+    Review(&'t SrcReview),
+}
+
+/// The `$id` of the document already written for source key `url` (a renamed source repo still
+/// matches).
+fn find_id<'w>(written: &'w [(String, String)], url: &str) -> Option<&'w str> {
+    written
+        .iter()
+        .find(|(u, _)| same_item_renamed(u, url))
+        .map(|(_, id)| id.as_str())
+}
+
+/// A thread's comments and reviews in the order they are written: by source time, a review
+/// placed just before the first of its comments (a pending review's comments predate its
+/// submission), and at the same time a review with comments first, then the comments (each
+/// reply after the root it names, which GitHub dates earlier), then the reviews without any.
+/// The comments keep their source order among themselves.
+fn thread_order<'t>(comments: &'t [SrcComment], reviews: &'t [SrcReview]) -> Vec<Step<'t>> {
+    let mut steps: Vec<(u64, u8, usize, Step<'t>)> = comments
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.imported.created_at, 1, i, Step::Comment(c)))
+        .collect();
+    for (i, r) in reviews.iter().enumerate() {
+        let first = comments
+            .iter()
+            .filter(|c| c.review_key.as_deref() == Some(r.imported.url.as_str()))
+            .map(|c| c.imported.created_at)
+            .min();
+        let (at, rank) = match first {
+            Some(f) => (f.min(r.imported.created_at), 0),
+            None => (r.imported.created_at, 2),
+        };
+        steps.push((at, rank, i, Step::Review(r)));
+    }
+    // Comments are in source order already: only the reviews move.
+    steps.sort_by_key(|&(at, rank, i, _)| (at, rank, i));
+    steps.into_iter().map(|(_, _, _, s)| s).collect()
 }
 
 /// The mirror's own tip of `base` when it contains `merged`: a run that pushes (`code`) puts
@@ -1700,6 +2014,7 @@ mod tests {
             body: "b".into(),
             imported: Imported::default(),
             closed: false,
+            close_reason: None,
             merged_oid: None,
             merged_without_sha: false,
             labels: BTreeSet::new(),

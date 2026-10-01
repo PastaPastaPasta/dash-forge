@@ -23,10 +23,10 @@ describe('shortenIds', () => {
 })
 
 describe('the showcase (QW-045)', () => {
-  it('features the bonsia demo repos, and nothing on a network without an entry', () => {
-    expect(showcaseFor('devnet-bonsia').map((e) => e.name)).toEqual(['dips', 'dash', 'forge-v2-demo'])
+  it('features nothing on a network without an entry (sakura has none until its repos exist)', () => {
+    expect(showcaseFor('devnet-sakura')).toEqual([])
     expect(showcaseFor('testnet')).toEqual([])
-    expect(Object.keys(SHOWCASE)).toEqual(['devnet-bonsia'])
+    expect(Object.keys(SHOWCASE)).toEqual([])
   })
 })
 

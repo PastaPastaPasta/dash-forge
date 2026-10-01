@@ -56,7 +56,7 @@ infra-up:
 infra-down:
 	docker compose -f $(COMPOSE_FILE) down -v
 
-## e2e: run the CLI end-to-end suite (LIVE devnet bonsia, forge-v2) against the
+## e2e: run the CLI end-to-end suite (LIVE devnet sakura, forge-v2) against the
 ## OWNER-owned e2e-cli repo (created on first run).
 ## Builds the binaries if needed, then drives real git push/clone through the
 ## dash:// helper. See e2e/cli/README-less run.sh header for env knobs
@@ -73,12 +73,12 @@ e2e-fixture:
 ## funded from the devnet's faucet wallet key, then verify every identity on
 ## Platform. The key is read from dash-network-configs at runtime (process
 ## substitution, never copied to disk) unless FORGE_DEVNET_FUNDING_WIF is set.
-## Devnet bonsia is not in dash-network-configs: run with DEVNET=bonsia and
+## Devnet sakura is not in dash-network-configs: run with DEVNET=sakura and
 ## FORGE_DEVNET_FUNDING_WIF set (or use the QA harness outside this repo,
-## dash-forge-qa's `QA_NETWORK=bonsia qa mint`).
-## Knobs: DEVNET (bonsia), DEVNET_CONFIGS (~/workspace/dash-network-configs),
+## dash-forge-qa's `QA_NETWORK=sakura qa mint`).
+## Knobs: DEVNET (sakura), DEVNET_CONFIGS (~/workspace/dash-network-configs),
 ## DEVNET_IDENTITY_DIR, DEVNET_POOL_AMOUNT (DASH per role), DEVNET_ROLE_AMOUNTS.
-DEVNET ?= bonsia
+DEVNET ?= sakura
 DEVNET_CONFIGS ?= $(HOME)/workspace/dash-network-configs
 DEVNET_IDENTITY_DIR ?= $(HOME)/.config/dash-forge/test-identities/devnet-$(DEVNET)
 DEVNET_POOL_AMOUNT ?= 5
@@ -143,7 +143,7 @@ survivability: infra-up
 		pnpm build:ipfs && FORGE_DRILL=1 pnpm exec playwright test -c e2e-drill/playwright.config.ts
 
 ## storage-e2e: a REAL `git push` / `git clone` through git-remote-dash with packs stored
-## on local RustFS (S3) + kubo and only the manifest + ref on devnet bonsia, against the
+## on local RustFS (S3) + kubo and only the manifest + ref on devnet sakura, against the
 ## dedicated storage-e2e-a / storage-e2e-b repos (e2e/README.md; ~0.001 DASH each, once).
 ## Builds the helper with the `test-hooks` fault-injection feature. Opt-in.
 storage-e2e: infra-up

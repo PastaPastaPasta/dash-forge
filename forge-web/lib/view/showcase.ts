@@ -20,15 +20,11 @@ export interface ShowcaseEntry {
   readonly repoId: string
 }
 
-/** By network key (`ACTIVE_NETWORK.key`). */
-export const SHOWCASE: Readonly<Record<string, readonly ShowcaseEntry[]>> = {
-  'devnet-bonsia': [
-    // Mirrors of dashpay/dips and dashpay/dash, and the seeded demo repo.
-    { owner: '3gvojK6k3Kt3QjeerN5JE8tbvFhUaTChwhZMbYKjizzs', name: 'dips', repoId: '9iRKx1dVvr4Eu3ckjGCo7dKwPKoM1cTdbfge72mCp993' },
-    { owner: '7A1MEuLjzcHZq8bLBzGYSUkpb2VM9dv7gtNuNYrPxKt3', name: 'dash', repoId: '6qf6HGBvKAaMyDuV8xn1CijNQE3xysLzAGzKXZiXZUvW' },
-    { owner: '2X2XM6kF5DK9Vx8Mfot4wetvppBKLE1W3tC87NA36jXP', name: 'forge-v2-demo', repoId: 'HhkpzikUjK1k5f3JHpYGBLYHf9mYZJFKbyeK7mwrpYA3' },
-  ],
-}
+/**
+ * By network key (`ACTIVE_NETWORK.key`). bonsia's entries (the dips and dash mirrors and the
+ * seeded demo repo) went with that devnet; devnet-sakura's are added once they exist there.
+ */
+export const SHOWCASE: Readonly<Record<string, readonly ShowcaseEntry[]>> = {}
 
 /** The showcase entries of a network key. */
 export function showcaseFor(networkKey: string): readonly ShowcaseEntry[] {
@@ -36,8 +32,12 @@ export function showcaseFor(networkKey: string): readonly ShowcaseEntry[] {
 }
 
 /** The showcase repos that resolve, in the configured order (one request). */
-export async function listShowcaseRepos(sdk: EvoSDK, network: Network, networkKey: string): Promise<DiscoveredRepo[]> {
-  const entries = showcaseFor(networkKey)
+export async function listShowcaseRepos(
+  sdk: EvoSDK,
+  network: Network,
+  networkKey: string,
+  entries: readonly ShowcaseEntry[] = showcaseFor(networkKey),
+): Promise<DiscoveredRepo[]> {
   if (entries.length === 0) return []
   const byId = await discoverReposById(sdk, entries.map((e) => e.repoId), { network })
   return entries.flatMap((e) => {

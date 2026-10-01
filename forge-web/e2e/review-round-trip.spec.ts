@@ -18,7 +18,7 @@ import { shot, waitForRepoResolved } from './helpers'
  *     follows GitHub there, `dg pr view` names the commit the comment was made on); each
  *     resolved ("resolved a conversation" ×3).
  *
- *   E2E_S21_STATE=/path/s21-state.json E2E_DEVNET=bonsia pnpm exec playwright test review-round-trip
+ *   E2E_S21_STATE=/path/s21-state.json E2E_DEVNET=sakura pnpm exec playwright test review-round-trip
  *
  * Skipped without a state file.
  */

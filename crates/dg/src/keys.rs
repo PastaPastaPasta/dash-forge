@@ -114,7 +114,7 @@ fn status_json(kr: &Keyring) -> Value {
         "unreadableWraps": kr.unreadable_wraps(),
         "members": kr.members().iter().map(|m| json!({
             "identityId": m.identity_id,
-            "role": forge_core::members::doc_type(m.role),
+            "role": m.role.as_str(),
         })).collect::<Vec<_>>(),
     })
 }
@@ -183,11 +183,7 @@ fn print_status(handle: &RepoRef, arg: &str, kr: &Keyring) {
     }
     println!("  members:");
     for m in kr.members() {
-        println!(
-            "    {}  {}",
-            m.identity_id,
-            forge_core::members::doc_type(m.role)
-        );
+        println!("    {}  {}", m.identity_id, m.role);
     }
 }
 

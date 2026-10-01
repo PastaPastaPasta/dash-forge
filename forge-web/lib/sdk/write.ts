@@ -411,6 +411,10 @@ export interface RefusalFigures {
   readonly balance?: bigint
   /** What the transition required (from the key budget, or the balance). */
   readonly required?: bigint
+  /** The immutable property a replace tried to change (40128). */
+  readonly property?: string
+  /** The document type that property belongs to (40128). */
+  readonly documentType?: string
 }
 
 /**
@@ -556,6 +560,11 @@ export const DUPLICATE_UNIQUE_CODE = 40105
 
 /** An `ownerRefersTo` gate was not satisfied (not a member, not the author). */
 export const GATE_REFUSED_CODE = 40120
+/**
+ * A gate's referenced document was found but disagrees with a `where` entry (RC2 member roles: the
+ * signer's writer document holds another `role` than the claimed `r`).
+ */
+export const WHERE_MISMATCH_CODE = 40127
 /** A document breaks one of its type's `propertyConstraints` rules (the message names the rule). */
 export const RULE_REFUSED_CODE = 10422
 
@@ -587,7 +596,9 @@ const REFUSAL_PATTERNS: ReadonlyArray<readonly [number, RegExp]> = [
   [40106, /Document \S+ has invalid revision/i],
   [40120, /referenced \S+ \S+ not found for path/i],
   [40127, /does not agree with the referenced document's/i],
-  [40128, /is immutable and cannot be changed by a replace/i],
+  // v5 renders the property and type: `property 'p' of document <id> (type 't') is immutable ...`
+  // (rs-dpp 5.0.0-beta.1, `document_immutable_property_changed_error.rs:27`).
+  [40128, /(?:property '(?<property>[^']*)' of document \S+ \(type '(?<documentType>[^']*)'\) )?is immutable and cannot be changed by a replace/i],
   [10421, /over its maxBytes of \d+/i],
   [10417, /Document field \S+ size \d+ is more than system maximum/i],
   [20014, /Batch member is outside the contract bounds of key/i],
@@ -632,10 +643,12 @@ function chargedByKind(e: unknown): boolean | null {
 }
 
 function figuresOf(groups: Record<string, string> | undefined): RefusalFigures {
-  const out: { remaining?: bigint; balance?: bigint; required?: bigint } = {}
+  const out: { -readonly [K in keyof RefusalFigures]: RefusalFigures[K] } = {}
   if (groups?.['remaining']) out.remaining = BigInt(groups['remaining'])
   if (groups?.['balance']) out.balance = BigInt(groups['balance'])
   if (groups?.['required']) out.required = BigInt(groups['required'])
+  if (groups?.['property']) out.property = groups['property']
+  if (groups?.['documentType']) out.documentType = groups['documentType']
   return out
 }
 
@@ -1025,7 +1038,7 @@ const writeLocks = new Map<string, Promise<unknown>>()
  */
 export const WRITER_WAIT_MS = 10 * 60_000
 
-/** The devnet is being re-cut (`NEXT_PUBLIC_DEVNET_NOTICE=moving`): nothing is signed or sent now. */
+/** Forge left this devnet (`NEXT_PUBLIC_DEVNET_NOTICE=moving` on a retired devnet): nothing is signed or sent now. */
 export class WritesPausedError extends Error {
   constructor(reason: string) {
     super(reason)

@@ -17,7 +17,7 @@ Amounts are in **DASH**. Dollar figures are examples at **$30/DASH**, the same f
 
 Platform fees are paid in **credits**, from your identity's balance. **1 DASH = 100,000,000,000 credits.**
 
-You get credits by locking Dash into your identity from any Dash wallet: when you create the identity, or later with a top-up (the bridge's **Top Up Existing Identity**). Forge does not sponsor identities, and mainnet has no faucet. Devnet bonsia Dash is free, from the [bonsia faucet](https://faucet.bonsia.networks.dash.org).
+You get credits by locking Dash into your identity from any Dash wallet: when you create the identity, or later with a top-up (the bridge's **Top Up Existing Identity**). Forge does not sponsor identities, and mainnet has no faucet. Devnet sakura Dash is free, from the [sakura faucet](https://faucet.sakura.networks.dash.org).
 
 ```sh
 dg auth balance
@@ -123,6 +123,8 @@ A write that is the first of its kind somewhere (a repository's first push or fi
 
 **How Trending counts.** Trending on Explore ranks repositories by their **new stargazers in the last week** (or today), read with a proof from the `starBeat` documents' weekly window index. A beat's window entries expire on their own after a week (the index's own time-to-live), so the network keeps no permanent record for them; the one small permanent entry per starrer and repository is what stops a second beat. Measured on devnet moutai on 2026-09-28 (platform-parity-spec §4.4): a star costs 17.7 M credits in steady state (+2 % for the ranked "most starred" index), a beat 14.4–15.3 M.
 
+**On Platform v5 networks with the fused star** (RC2 C1, if its fee probe passes at registration): there is no `starBeat`. The star itself carries the weekly window, so every new star counts toward Trending, with nothing to turn off (`--no-trending` and the Settings toggle then do nothing), and its price is at most a star plus a beat today. An unstar is still refunded, but the star keeps counting in the windows it was in until they pass; starring the same repository again inside one of them counts once. Explore leaves private repositories and an owner's star of their own repository out of Trending when it reads the ranking. No index gives a star's time back, so it can only take the owner's star out of a repository created inside the window (less than a week old): an owner's star of an older repository may count, by one.
+
 Where the numbers come from: the per-write balance changes recorded by the push calibration (P-6, PR #127, 2026-09-27/28; its figures are the constants in `forge_core::cost::push_fees`), the web app's measured model (`forge-web/lib/sdk/cost.ts`), the live measurements in the pull requests that built each feature and in [e2e/README.md](../../e2e/README.md), and the contract costs in [forge-v2.md §7](../contracts/forge-v2.md#7-measured-size-and-cost).
 
 ```sh
@@ -193,7 +195,7 @@ Sizes and fees below were computed with `forge-core`'s own code from a full clon
 | junegunn/fzf (`master`) | 178 | 3,746 / 3,488 | 6,925 B, 1 chunk | ~0.0044 DASH | ~0.0016 DASH |
 | dtolnay/anyhow (`master`) | 62 | 931 / 668 | 2,490 B, 1 chunk | ~0.0032 DASH | ~0.0016 DASH |
 
-**Measured (v1):** backfilling dashpay/dash's v1 index with `dg repo reindex` on devnet moutai (Platform 4.2.0-beta.6, 2026-09-29) cost **0.02479 DASH** for 66,965 B (quoted 0.02455 before a repository's first-index margin was added; the quote now includes it and stays above the charge). That index was computed in a shallow clone, so its counts (33,553 / 7,979) were short; a shallow clone is now refused. The v2 backfill of the dash mirror waits for its re-import on devnet bonsia. Computing dash's full v2 index takes about 1.5 s on the pusher's machine.
+**Measured (v1):** backfilling dashpay/dash's v1 index with `dg repo reindex` on devnet moutai (Platform 4.2.0-beta.6, 2026-09-29) cost **0.02479 DASH** for 66,965 B (quoted 0.02455 before a repository's first-index margin was added; the quote now includes it and stays above the charge). That index was computed in a shallow clone, so its counts (33,553 / 7,979) were short; a shallow clone is now refused. The v2 backfill of the dash mirror waits for its re-import on devnet sakura. Computing dash's full v2 index takes about 1.5 s on the pusher's machine.
 
 `dg repo reindex <repo>`, run inside a clone that has the default branch's tip, publishes the index for a repository pushed before it existed, or a v2 index over a v1 one, and quotes its price before asking. A push that stores no new pack, such as a retry of a recorded one, publishes none; `dg repo reindex` fills that in.
 

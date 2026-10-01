@@ -18,9 +18,12 @@ import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
 import { useMemo, useRef, useState } from 'react'
+import { HiddenThreadsToggle, useHiddenThreads } from '@/components/repo/moderation'
 import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { CheckCircle2, CircleDot, MessageSquarePlus, Pin, X } from 'lucide-react'
+import { CheckCircle2, CircleDot, CircleSlash, MessageSquarePlus, Pin, X } from 'lucide-react'
+import { readCloseReasons } from '@/lib/repo/transitions'
+import { closedSkipped } from '@/lib/view/close-reason'
 import type { RepoHome } from '@/lib/view'
 import { ARCHIVED_REASON, resolveDpnsName } from '@/lib/view'
 import {
@@ -169,6 +172,18 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   useAutoReadOn(data?.searchedOf, loading, reload)
 
   const labelDefs = useMemo(() => new Map((data?.labels ?? []).map((l) => [l.name, l])), [data])
+  // Why each closed row was closed (QW-069): the grey "not planned" icon. One read of their
+  // transitions; until it lands (or on a page of more than 100 closed rows) the plain icon shows.
+  const closedRows = (data?.rows ?? []).filter((r) => !r.state.open).map((r) => ({ id: r.id, number: r.number }))
+  const closedKey = closedRows.map((r) => r.id).join(',')
+  const reasons = useAsync(() => readCloseReasons(sdk!, home.repo, closedRows), [ready, repoKey(home.repo), closedKey], {
+    enabled: ready && sdk !== null && closedRows.length > 0,
+  })
+  // RC2 MOD: issues a maintainer hid are left out of the list behind a toggle (counts stay as proved).
+  const [showHidden, setShowHidden] = useState(false)
+  const hiddenIds = useHiddenThreads(sdk, ready, home.repo, network, data?.rows)
+  const rows = (data?.rows ?? []).filter((r) => showHidden || !hiddenIds.has(r.id))
+  const hiddenOnPage = (data?.rows ?? []).filter((r) => hiddenIds.has(r.id)).length
   const empty = data !== null && data.rows.length === 0
   const filtered = hasFilters(query)
   const lastPage = empty ? pastLastPage(query.page, data?.matching ?? null, ISSUE_PAGE_SIZE) : null
@@ -308,11 +323,15 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
             }
           />
         ) : (
+          <>
+          <HiddenThreadsToggle count={hiddenOnPage} shown={showHidden} onToggle={() => setShowHidden((s) => !s)} noun="issue" />
           <ul aria-label="Issues" aria-busy={loading}>
-            {data?.rows.map((issue) => (
+            {rows.map((issue) => (
               <li key={issue.id} className="flex items-start gap-3 border-b border-anvil-100 px-4 py-3 last:border-b-0 hover:bg-anvil-50 dark:border-anvil-850 dark:hover:bg-anvil-900" data-testid="issue-row" data-number={issue.number}>
                 {issue.state.open ? (
                   <><CircleDot className="mt-0.5 h-4 w-4 shrink-0 text-verify-700 dark:text-verify-400" aria-hidden /><span className="sr-only">Open</span></>
+                ) : closedSkipped(reasons.data?.get(issue.id)) ? (
+                  <><CircleSlash className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden data-icon="closed-skipped" /><span className="sr-only">{reasons.data?.get(issue.id)?.reason === 'duplicate' ? 'Closed as a duplicate' : 'Closed as not planned'}</span></>
                 ) : (
                   <><CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-forge-500" aria-hidden /><span className="sr-only">Closed</span></>
                 )}
@@ -340,6 +359,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
               </li>
             ))}
           </ul>
+          </>
         )}
       </div>
 

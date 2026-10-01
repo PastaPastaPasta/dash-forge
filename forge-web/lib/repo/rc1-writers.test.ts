@@ -18,6 +18,8 @@ const present = new Set<string>()
 const liveTags: string[] = []
 /** The member documents (`maintainer` / `writer` / `runner` → member ids) the complete reads find. */
 const held: Record<string, string[]> = {}
+/** A `writer` document's RC2 `role` per member id (absent: 1, writer). */
+const writerRole: Record<string, number> = {}
 /** A refusal the next create meets (then cleared). */
 let refuseNext: Error | null = null
 /** How many more `consent` reads answer "none" first (a node that has not indexed it yet). */
@@ -50,7 +52,13 @@ vi.mock('../sdk', async (importOriginal) => {
       return { documents: present.has(q.documentTypeName) ? [{ $id: NEW_ID, $ownerId: BOB }] : [] }
     }),
     queryAllDocuments: vi.fn(async (_sdk: unknown, q: { documentTypeName: string }) =>
-      (held[q.documentTypeName] ?? []).map((memberId, i) => ({ $id: `${q.documentTypeName}${i}`, $ownerId: ALICE, $createdAt: 1, memberId })),
+      (held[q.documentTypeName] ?? []).map((memberId, i) => ({
+        $id: `${q.documentTypeName}${i}`,
+        $ownerId: ALICE,
+        $createdAt: 1,
+        memberId,
+        ...(q.documentTypeName === 'writer' && writerRole[memberId] !== undefined ? { role: writerRole[memberId] } : {}),
+      })),
     ),
     countDocuments: vi.fn(async () => 0),
     sumDocumentsGrouped: vi.fn(async () => new Map(liveTags.map((t) => [t, 1]))),
@@ -58,6 +66,8 @@ vi.mock('../sdk', async (importOriginal) => {
 })
 
 import { resetMemoryStores } from '../idb'
+import { RoleRefusedError } from '../rules/roles'
+import { invalidateMembers } from './members'
 import { listParticipation } from '../view/participation'
 import type { WriteAuth } from '../sdk'
 import { expectRc1Valid, rc1Contracts } from '../sdk/rc1-validate'
@@ -67,6 +77,7 @@ import { putPlatformChunks, writePackManifest, writeRefUpdate } from './push'
 import { postTargetEvent, setAssignee, setLabel, setMilestone, setPolicy, setThreadFlag, submitReviewDraft, type ReviewDraft } from './review-writes'
 import { syncTopicDocs, updateConfig } from './settings'
 import { contractOf } from './source'
+import { resetStarShapes } from './star-shape'
 import { repoKeyData } from './private-members'
 import { decodeIdentifier } from '../auth/base58'
 import { EpochKeys } from '../private/keys'
@@ -78,6 +89,7 @@ import {
   CONSENT_LAG_RETRIES,
   ConsentMissingError,
   acceptInvite,
+  changeMemberRole,
   createComment,
   createIssue,
   createPatch,
@@ -103,8 +115,17 @@ const REPO: RepoRef = { forge: FORGE, repoId: '8H5JaQm8Z765UunuttoUuVsVMCmDoy2EB
 const PR = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'
 const ISSUE = 'EA8HsynH63cw1i8xQLoARwk43sDf74HrKut1D4RV3L35'
 const HEAD = 'ab'.repeat(20)
-/** The raw documents facade the index-only reads use: nothing held yet. */
-const sdk = { documents: { query: async () => new Map() } } as unknown as EvoSDK
+/**
+ * The raw documents facade the index-only reads use (nothing held yet), and the committed
+ * forge-community for the star shape (`star-shape.ts`: fused when the star has a time window).
+ */
+const sdk = {
+  documents: { query: async () => new Map() },
+  contracts: { fetch: async (cid: string) => ({ schemas: rc1Contracts()[cid === FORGE.collab ? 'forge-collab' : cid === FORGE.core ? 'forge-core' : 'forge-community'].documentSchemas }) },
+} as unknown as EvoSDK
+const FUSED_STAR = (
+  (rc1Contracts()['forge-community'].documentSchemas as Record<string, { indices?: { timeRange?: unknown }[] }>)['star']?.indices ?? []
+).some((index) => index.timeRange !== undefined)
 const auth = (identityId: string): WriteAuth => ({ identityId, network: 'devnet', getSigningKeyWif: () => 'x' })
 
 /** Every create since the last call: routed by the RC1 layout and RC1-valid as its signer made it. */
@@ -125,9 +146,12 @@ beforeEach(() => {
   present.clear()
   liveTags.length = 0
   for (const k of Object.keys(held)) delete held[k]
+  for (const k of Object.keys(writerRole)) delete writerRole[k]
+  invalidateMembers(REPO, 'devnet')
   refuseNext = null
   consentLag = 0
   resetMemoryStores()
+  resetStarShapes()
 })
 
 describe('forge-core writers are RC1-valid', () => {
@@ -244,6 +268,17 @@ describe('forge-collab writers are RC1-valid', () => {
     const made = await judged()
     expect(made.map((c) => [c.data['kind'], c.data['delta'], c.data['asAuthor']])).toEqual([[1, 1, 1], [13, 2, 0], [3, 16, 0], [18, 16, 0]])
   })
+
+  it('an issue closed as not planned and as a duplicate records why (QW-069)', async () => {
+    const issue = { id: ISSUE, number: 3, type: 'issue' as const, author: BOB }
+    await setTargetState(sdk, auth(ALICE), REPO, { target: issue, action: 'close', isMember: true, closed: { reason: 'not_planned', duplicateOf: null } })
+    await setTargetState(sdk, auth(BOB), REPO, { target: issue, action: 'close', isMember: false, closed: { reason: 'duplicate', duplicateOf: 1 } })
+    const made = await judged()
+    const hasRider = 'reason' in ((rc1Contracts()['forge-collab'].documentSchemas as Record<string, { properties: object }>)['transition']?.properties ?? {})
+    expect(made.map((c) => [c.data['kind'], c.data['reason'], c.data['dupNumber']])).toEqual(
+      hasRider ? [[1, 2, undefined], [1, 3, 1]] : [[1, undefined, undefined], [1, undefined, undefined]],
+    )
+  })
 })
 
 describe('forge-community writers are RC1-valid', () => {
@@ -273,7 +308,7 @@ describe('forge-community writers are RC1-valid', () => {
     expect(creates).toHaveLength(0)
   })
 
-  it('a star with its trending beat (repoOwner, vis public), a watch and a follow', async () => {
+  it.skipIf(FUSED_STAR)('a star with its trending beat (repoOwner, vis public), a watch and a follow', async () => {
     await starRelation(sdk, auth(BOB), BOB, REPO, true).add()
     await watchRelation(sdk, auth(BOB), BOB, REPO).add()
     await followRelation(sdk, auth(BOB), BOB, FORGE, ALICE).add()
@@ -282,10 +317,101 @@ describe('forge-community writers are RC1-valid', () => {
     expect(made[1]?.data).toMatchObject({ vis: 'public' })
   })
 
+  it.runIf(FUSED_STAR)('a fused star (RC2 C1) is its own Trending entry: no beat, whatever the preference; a watch and a follow', async () => {
+    await starRelation(sdk, auth(BOB), BOB, REPO, true).add()
+    await starRelation(sdk, auth(BOB), BOB, { ...REPO, repoId: PR }, false).add()
+    await watchRelation(sdk, auth(BOB), BOB, REPO).add()
+    await followRelation(sdk, auth(BOB), BOB, FORGE, ALICE).add()
+    expect(types(await judged())).toEqual(['star', 'star', 'watch', 'follow'])
+  })
+
   it('no trending beat on your own repo or a private one (consensus refuses both)', async () => {
     await starRelation(sdk, auth(ALICE), ALICE, REPO, true).add()
     await starRelation(sdk, auth(BOB), BOB, { ...REPO, visibility: 'private' }, true).add()
     expect(types(await judged())).toEqual(['star', 'star'])
+  })
+})
+
+describe('RC2 member roles: every gated write claims its role (r), proved by the writer leaf', () => {
+  const issue = { id: ISSUE, number: 1, type: 'issue' as const, author: ALICE }
+  const pr = { id: PR, number: 2, type: 'patch' as const, author: ALICE }
+  const asTriage = (): void => {
+    held['writer'] = [BOB]
+    writerRole[BOB] = 2
+  }
+
+  it('the owner grants a triage role: a writer document with role 2; a reader is for private repos only', async () => {
+    present.add('consent')
+    await grantMember(sdk, auth(ALICE), REPO, BOB, 'triage')
+    const [w] = await judged()
+    expect(w?.documentType).toBe('writer')
+    expect(w?.data['role']).toBe(2)
+    await expect(grantMember(sdk, auth(ALICE), REPO, BOB, 'reader')).rejects.toThrow(/private/)
+    await expectRc1Valid('writer', membershipData({ ...REPO, visibility: 'private' }, BOB, { role: 3 }), ALICE)
+  })
+
+  it('a role change checks everything before deleting: the role still held, a reader only on private repos', async () => {
+    present.add('consent')
+    present.add('writer') // their writer document, holding role 1 (writer)
+    await expect(changeMemberRole(sdk, auth(ALICE), REPO, BOB, 'triage', 'writer')).rejects.toThrow(/no longer a triage/)
+    await expect(changeMemberRole(sdk, auth(ALICE), REPO, BOB, 'writer', 'reader')).rejects.toThrow(/private/)
+    await expect(changeMemberRole(sdk, auth(BOB), REPO, BOB, 'writer', 'triage')).rejects.toThrow(/owner/)
+    await expect(changeMemberRole(sdk, auth(ALICE), { ...REPO, visibility: 'private' }, BOB, 'writer', 'triage')).rejects.toThrow(/private/)
+    expect(creates).toHaveLength(0)
+  })
+
+  it('a maintainer and a writer claim 1 on push, label, milestone, event and transition', async () => {
+    held['maintainer'] = [ALICE]
+    held['writer'] = [BOB]
+    await putPlatformChunks(sdk, auth(BOB), REPO, new Uint8Array(10).fill(1), 'cd'.repeat(32))
+    await writeRefUpdate(sdk, auth(BOB), REPO, { refName: 'refs/heads/x', newOid: HEAD }, { protectedPatterns: [] })
+    await defineLabel(sdk, auth(BOB), REPO, { name: 'bug' })
+    await setLabel(sdk, auth(ALICE), REPO, { target: issue, label: 'bug', add: true })
+    await setTargetState(sdk, auth(ALICE), REPO, { target: pr, action: 'merge', isMember: true, oidHex: HEAD })
+    const made = await judged()
+    expect(made.map((c) => [c.documentType, c.data['r']])).toEqual([['chunk', 1], ['refUpdate', 1], ['label', 1], ['event', 1], ['transition', 1]])
+  })
+
+  it('a triage member claims 2 on a label, an assignee, a close and a lock', async () => {
+    asTriage()
+    await defineLabel(sdk, auth(BOB), REPO, { name: 'bug' })
+    await setLabel(sdk, auth(BOB), REPO, { target: issue, label: 'bug', add: true })
+    await setAssignee(sdk, auth(BOB), REPO, { target: issue, assignee: ALICE, assign: true })
+    await setTargetState(sdk, auth(BOB), REPO, { target: issue, action: 'close', isMember: true })
+    await setLock(sdk, auth(BOB), REPO, { target: issue, lock: true, isMember: true })
+    const made = await judged()
+    expect(made.map((c) => [c.documentType, c.data['r']])).toEqual([['label', 2], ['event', 2], ['event', 2], ['transition', 2], ['transition', 2]])
+  })
+
+  it('a triage member is refused a push, a merge, a pin and a dismissal before anything is signed', async () => {
+    asTriage()
+    await expect(putPlatformChunks(sdk, auth(BOB), REPO, new Uint8Array(10), 'cd'.repeat(32))).rejects.toBeInstanceOf(RoleRefusedError)
+    await expect(writeRefUpdate(sdk, auth(BOB), REPO, { refName: 'refs/heads/x', newOid: HEAD }, { protectedPatterns: [] })).rejects.toThrow(/cannot push/)
+    await expect(setTargetState(sdk, auth(BOB), REPO, { target: pr, action: 'merge', isMember: true, oidHex: HEAD })).rejects.toThrow(/cannot merge/)
+    await expect(setThreadFlag(sdk, auth(BOB), REPO, { target: issue, on: true })).rejects.toBeInstanceOf(RoleRefusedError)
+    await expect(postTargetEvent(sdk, auth(BOB), REPO, { target: issue, kind: 'reviewDismiss', author: ALICE, isMember: true, payload: { refId: PR, value: 'x' } })).rejects.toThrow(/dismiss/)
+    expect(creates).toHaveLength(0)
+  })
+
+  it('an author keeps the author route: a triage author marks its own PR ready (asAuthor, r 1), and moves its head as an authorEvent', async () => {
+    asTriage()
+    const own = { ...pr, author: BOB }
+    await setTargetState(sdk, auth(BOB), REPO, { target: own, action: 'draft', isMember: true })
+    await postTargetEvent(sdk, auth(BOB), REPO, { target: own, kind: 'headUpdate', author: BOB, isMember: true, payload: { oidHex: HEAD } })
+    const made = await judged()
+    expect(made.map((c) => [c.documentType, c.data['asAuthor'], c.data['r']])).toEqual([['transition', 2, 1], ['authorEvent', undefined, undefined]])
+  })
+
+  it('a reader writes no gated document as a member', async () => {
+    held['writer'] = [BOB]
+    writerRole[BOB] = 3
+    await expect(defineLabel(sdk, auth(BOB), REPO, { name: 'bug' })).rejects.toBeInstanceOf(RoleRefusedError)
+    await expect(setLabel(sdk, auth(BOB), REPO, { target: issue, label: 'bug', add: true })).rejects.toThrow(/reader/)
+    await expect(setTargetState(sdk, auth(BOB), REPO, { target: issue, action: 'close', isMember: true })).rejects.toThrow(/reader/)
+    expect(creates).toHaveLength(0)
+    // As the author of its own issue it still closes it.
+    await setTargetState(sdk, auth(BOB), REPO, { target: { ...issue, author: BOB }, action: 'close', isMember: false })
+    expect((await judged()).map((c) => [c.data['asAuthor'], c.data['r']])).toEqual([[1, 1]])
   })
 })
 

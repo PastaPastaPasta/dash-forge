@@ -138,6 +138,10 @@ pub struct GhIssue {
     /// `open` / `closed`.
     #[serde(default)]
     pub state: String,
+    /// Why it was closed (issues): `completed`, `not_planned`, `duplicate`, or `reopened` /
+    /// `null` (REST issues, docs.github.com/en/rest/issues/issues).
+    #[serde(default)]
+    pub state_reason: Option<String>,
     /// Browser URL.
     #[serde(default)]
     pub html_url: String,
@@ -304,6 +308,31 @@ pub struct GhComment {
     /// Review comments: the commit commented on.
     #[serde(default)]
     pub commit_id: Option<String>,
+    /// Review comments: the root comment this one replies to.
+    #[serde(default)]
+    pub in_reply_to_id: Option<u64>,
+    /// Review comments: the review it was posted in.
+    #[serde(default)]
+    pub pull_request_review_id: Option<u64>,
+    /// Review comments: first line of a multi-line comment (in the new file).
+    #[serde(default)]
+    pub start_line: Option<u64>,
+    /// Review comments: the line on the commit it was made on (`line` is `null` once the line
+    /// is outdated; this never is).
+    #[serde(default)]
+    pub original_line: Option<u64>,
+    /// Review comments: `start_line` on the commit it was made on.
+    #[serde(default)]
+    pub original_start_line: Option<u64>,
+    /// Review comments: the commit it was made on.
+    #[serde(default)]
+    pub original_commit_id: Option<String>,
+    /// Review comments: the diff hunk it was made on (its last line is the commented one).
+    #[serde(default)]
+    pub diff_hunk: Option<String>,
+    /// Review comments: `line`, or `file` for a comment on a whole file.
+    #[serde(default)]
+    pub subject_type: Option<String>,
 }
 
 impl GhComment {
@@ -351,6 +380,10 @@ pub trait GhApi {
     /// Every element of a paginated array listing, one JSON document each, across all
     /// pages.
     fn list(&self, path: &str) -> Result<Vec<String>>;
+    /// A GraphQL query's JSON response (`gh api graphql`). A recorded API has none.
+    fn graphql(&self, _query: &str) -> Result<Vec<u8>> {
+        anyhow::bail!("this GitHub API answers no GraphQL")
+    }
 }
 
 /// The `gh` CLI (`gh api`), which owns auth, pagination and retries.
@@ -363,6 +396,11 @@ impl GhApi for GhCli {
 
     fn list(&self, path: &str) -> Result<Vec<String>> {
         api_list_lines(path)
+    }
+
+    fn graphql(&self, query: &str) -> Result<Vec<u8>> {
+        let field = format!("query={query}");
+        Ok(gh_output_with_retry("graphql", &["-f", &field], "`gh api graphql`")?.stdout)
     }
 }
 
@@ -495,6 +533,26 @@ impl GithubClient {
             &self.path(&format!("issues/{number}")),
             &format!("#{number}"),
         )
+    }
+
+    /// The canonical issue a duplicate-closed issue names (GraphQL `Issue.duplicateOf`; REST has
+    /// no such field): its number, or `None` when it names none or one in another repository.
+    pub fn duplicate_of(&self, number: u64) -> Result<Option<u64>> {
+        let query = format!(
+            "query {{ repository(owner: {}, name: {}) {{ issue(number: {number}) {{ duplicateOf {{ number repository {{ nameWithOwner }} }} }} }} }}",
+            serde_json::Value::from(self.repo.owner.as_str()),
+            serde_json::Value::from(self.repo.repo.as_str()),
+        );
+        let v: serde_json::Value = serde_json::from_slice(&self.api.graphql(&query)?)
+            .context("parsing the duplicateOf answer")?;
+        if let Some(e) = v.get("errors").filter(|e| !e.is_null()) {
+            anyhow::bail!("GitHub refused the duplicateOf query: {e}");
+        }
+        let dup = &v["data"]["repository"]["issue"]["duplicateOf"];
+        let same_repo = dup["repository"]["nameWithOwner"]
+            .as_str()
+            .is_some_and(|r| r.eq_ignore_ascii_case(&self.repo.slug()));
+        Ok(dup["number"].as_u64().filter(|_| same_repo))
     }
 
     /// One PR's detail.

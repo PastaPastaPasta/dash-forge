@@ -23,7 +23,7 @@ import { PrivateBanner } from '@/components/repo/private-banner'
 import { InviteBanner } from '@/components/repo/invite-banner'
 import { PrivateRepoState } from '@/components/repo/private-repo-state'
 import { RepoNotFound } from '@/components/repo/repo-not-found'
-import { failedRows, selectRef, type RepoHome, type SelectedRef } from '@/lib/view'
+import { failedRows, selectRef, type RepoHome, type RepoHomeRefs, type SelectedRef } from '@/lib/view'
 import { useRepoTrust } from '@/hooks/use-repo-trust'
 import { TrustFailureBanner } from '@/components/ui/trust-alert'
 import { repoHref, useExpiredLink, type RepoAddress } from '@/hooks/use-query-param'
@@ -35,6 +35,7 @@ export function RepoScaffold({
   refParam = '',
   sealedOk = false,
   browse = false,
+  refs = 'all',
 }: {
   addr: RepoAddress
   /** The page body; `reload` re-reads the repo home (after a write that changes it). */
@@ -49,8 +50,13 @@ export function RepoScaffold({
   sealedOk?: boolean
   /** The page reads code (home, tree, blob, commits): start the browse index with the refs. */
   browse?: boolean
+  /**
+   * `default`: the page shows no ref but the default branch (the issue and PR lists), so its home
+   * resolves that branch alone ({@link RepoHomeRefs}).
+   */
+  refs?: RepoHomeRefs
 }): JSX.Element {
-  const { data, loading, error, cause, settled, ready, reload } = useRepoHome(addr, { browse })
+  const { data, loading, error, cause, settled, ready, reload } = useRepoHome(addr, { browse, refs })
   const { status: sdkStatus, retry: retrySdk } = useSdk()
   // A private repo is re-read through the viewer's decryption session (or shown as sealed).
   const privateHome = usePrivateHome(data ?? null, addr)

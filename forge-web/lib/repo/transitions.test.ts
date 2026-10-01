@@ -12,7 +12,8 @@ import { base58Decode, base58Encode } from '../auth/base58'
 import { ConsensusRefusal, uintGroupKey, uintOfGroupKey, type DocumentQuery, type WriteResult } from '../sdk'
 import type { RepoRef } from './contract'
 import { ISSUE_LOCK, ISSUE_UNLOCK, PR_CLOSE, PR_DRAFT, PR_DRAFT_CLOSE, PR_LOCK, isLocked, stateCode, statusOfCode, threadStateOf } from '../rules/transition'
-import { IllegalTransitionError, isStaleStateRefusal, readKindCounts, readStateCodes, readThreadStates, transitionData, writeLock, writeTransition, type StateTarget } from './transitions'
+import { IllegalTransitionError, closeReasonData, isStaleStateRefusal, readCloseReasons, readKindCounts, readStateCodes, readThreadStates, transitionData, writeLock, writeTransition, type StateTarget } from './transitions'
+import { resetContractShapes } from './contract-shape'
 
 const id = (name: string): string => base58Encode(sha256(new TextEncoder().encode(name)))
 const hex = (b58: string): string => [...base58Decode(b58)].map((b) => b.toString(16).padStart(2, '0')).join('')
@@ -65,6 +66,43 @@ describe('transitionData', () => {
 describe('writeTransition', () => {
   const auth = (who: string) => ({ identityId: who, network: 'devnet' as const, getSigningKeyWif: () => '' })
 
+  /** `sumSdk` over a forge-collab whose transition has (or lacks) the QW-069 rider. */
+  const riderSdk = (rider: boolean): EvoSDK => {
+    resetContractShapes()
+    const props = rider ? { kind: {}, reason: {}, dupNumber: {} } : { kind: {} }
+    return { ...sumSdk(() => ({})), contracts: { fetch: async (cid: string) => (cid === 'COLLAB' ? { schemas: { transition: { properties: props } } } : null) } } as unknown as EvoSDK
+  }
+
+  it('records why an issue closes where the contract has the rider (QW-069)', async () => {
+    const writes: Record<string, unknown>[] = []
+    const intents: (string | undefined)[] = []
+    const record = async (_t: string, data: Record<string, unknown>, intent?: string) => {
+      writes.push(data)
+      intents.push(intent)
+      return OK
+    }
+    await writeTransition(riderSdk(true), auth(MAINT), REPO, record, { target: ISSUE, action: 'close', isMember: true, intent: 'i', closed: { reason: 'duplicate', duplicateOf: 1 } })
+    await writeTransition(riderSdk(true), auth(MAINT), REPO, record, { target: ISSUE, action: 'close', isMember: true, intent: 'i', closed: { reason: 'not_planned', duplicateOf: null } })
+    // a contract without it: the plain close
+    await writeTransition(riderSdk(false), auth(MAINT), REPO, record, { target: ISSUE, action: 'close', isMember: true, closed: { reason: 'not_planned', duplicateOf: null } })
+    // a PR close never says why
+    await writeTransition(riderSdk(true), auth(MAINT), REPO, record, { target: PR, action: 'close', isMember: true, closed: { reason: 'not_planned', duplicateOf: null } })
+    expect(writes.map((w) => [w['kind'], w['reason'], w['dupNumber']])).toEqual([
+      [1, 3, 1],
+      [1, 2, undefined],
+      [1, undefined, undefined],
+      [11, undefined, undefined],
+    ])
+    // each reason its own intent: a retry never replays another reason's bytes
+    expect(intents.slice(0, 2)).toEqual(['i:close:m:3-1', 'i:close:m:2'])
+  })
+
+  it('refuses a duplicate of itself, or a canonical beside another reason', () => {
+    expect(closeReasonData({ reason: 'completed', duplicateOf: null }, 3)).toEqual({ reason: 1 })
+    expect(() => closeReasonData({ reason: 'duplicate', duplicateOf: 3 }, 3)).toThrow(/cannot be a duplicate of #3/)
+    expect(() => closeReasonData({ reason: 'not_planned', duplicateOf: 2 }, 3)).toThrow(/only a close as a duplicate/)
+  })
+
   it('reads the state, then writes one transition as a member', async () => {
     const writes: Record<string, unknown>[] = []
     const seen: DocumentQuery[] = []
@@ -88,6 +126,23 @@ describe('writeTransition', () => {
       return OK
     }, { target: PR, action: 'close', isMember: true })
     expect(writes).toEqual([expect.objectContaining({ kind: 11, asAuthor: 7 })])
+  })
+
+  it('writes as the author when the gate refuses a stale claimed role (40127), but never for a non-author', async () => {
+    const writes: Record<string, unknown>[] = []
+    let calls = 0
+    await writeTransition(sumSdk(() => ({})), auth(AUTHOR), REPO, async (_t, data) => {
+      calls++
+      if (calls === 1) throw new ConsensusRefusal(40127, 'role', {}, false)
+      writes.push(data)
+      return OK
+    }, { target: PR, action: 'close', isMember: true })
+    expect(writes).toEqual([expect.objectContaining({ kind: 11, asAuthor: 7 })])
+    await expect(
+      writeTransition(sumSdk(() => ({})), auth(MAINT), REPO, async () => {
+        throw new ConsensusRefusal(40127, 'role', {}, false)
+      }, { target: PR, action: 'close', isMember: true }),
+    ).rejects.toBeInstanceOf(ConsensusRefusal)
   })
 
   it('re-reads and retries once when a state rule refuses (the target moved meanwhile)', async () => {
@@ -114,7 +169,7 @@ describe('writeTransition', () => {
 
   it('refuses a stranger and an author merge before reading anything', async () => {
     const seen: DocumentQuery[] = []
-    await expect(writeTransition(sumSdk(() => ({}), seen), auth(id('x')), REPO, async () => OK, { target: PR, action: 'close', isMember: false })).rejects.toThrow(/author or a maintainer/)
+    await expect(writeTransition(sumSdk(() => ({}), seen), auth(id('x')), REPO, async () => OK, { target: PR, action: 'close', isMember: false })).rejects.toThrow(/the author, or a member whose role allows it/)
     await expect(writeTransition(sumSdk(() => ({}), seen), auth(AUTHOR), REPO, async () => OK, { target: PR, action: 'merge', isMember: false, oidHex: 'ab'.repeat(20) })).rejects.toThrow(/maintainer or writer can merge/)
     expect(seen).toEqual([])
   })
@@ -241,7 +296,7 @@ describe('the lock bit (RC1 R-15: kinds 3/4 and 18/19, delta ±16, sums read mod
       expect.objectContaining({ kind: ISSUE_UNLOCK, delta: -16, targetKind: 0, asAuthor: 0 }),
     ])
     expect(done.documentId).toBe('')
-    await expect(writeLock(sumSdk(() => ({})), auth(AUTHOR), REPO, write, { target: ISSUE, lock: true, isMember: false })).rejects.toThrow(/maintainer or writer/)
+    await expect(writeLock(sumSdk(() => ({})), auth(AUTHOR), REPO, write, { target: ISSUE, lock: true, isMember: false })).rejects.toThrow(/maintainer, writer or triage member/)
   })
 
   it('re-reads once when c6 refuses (someone locked it meanwhile)', async () => {
@@ -254,5 +309,40 @@ describe('the lock bit (RC1 R-15: kinds 3/4 and 18/19, delta ±16, sums read mod
     }, { target: PR, lock: true, isMember: true })
     expect(calls).toBe(1)
     expect(done.documentId).toBe('')
+  })
+})
+
+describe('transitionOf (QW-069)', () => {
+  it('reads reason and dupNumber whether the SDK hands them as numbers or bigints', async () => {
+    const { transitionOf } = await import('./transitions')
+    const t = transitionOf({ $id: 't', $ownerId: MAINT, $createdAt: 1, targetId: ISSUE.id, kind: 1, asAuthor: 0, reason: 3n, dupNumber: 4294967295n })
+    expect([t.reason, t.dupNumber]).toEqual([3, 4294967295])
+    expect('reason' in transitionOf({ $id: 't', $ownerId: MAINT, $createdAt: 1, targetId: ISSUE.id, kind: 1, asAuthor: 0 })).toBe(false)
+  })
+})
+
+describe('readCloseReasons (QW-069)', () => {
+  it('reads a page of closed issues\' transitions once, and says why each closed', async () => {
+    const A = { id: id('a'), number: 1 }
+    const B = { id: id('b'), number: 2 }
+    const seen: DocumentQuery[] = []
+    const sdk = {
+      documents: {
+        query: async (q: DocumentQuery) => {
+          seen.push(q)
+          const doc = (target: string, kind: number, at: number, reason?: number) => ({ $id: id(`${target}${at}`), $ownerId: MAINT, $createdAt: at, targetId: target, kind, asAuthor: 0, ...(reason ? { reason } : {}) })
+          const rows = [doc(A.id, 1, 1, 2), doc(B.id, 1, 1, 2), doc(B.id, 2, 2), doc(B.id, 1, 3)]
+          return new Map(rows.map((d) => [d.$id, d]))
+        },
+      },
+    } as unknown as EvoSDK
+    const got = await readCloseReasons(sdk, REPO, [A, B])
+    expect([...got]).toEqual([[A.id, { reason: 'not_planned', duplicateOf: null }]])
+    expect(seen).toHaveLength(1)
+    expect(seen[0]?.where).toEqual([['targetId', 'in', [A.id, B.id].sort()]])
+    // more than one proved `in` can name: none read
+    const many = Array.from({ length: 101 }, (_, i) => ({ id: id(`m${i}`), number: i + 1 }))
+    expect((await readCloseReasons(sdk, REPO, many)).size).toBe(0)
+    expect(seen).toHaveLength(1)
   })
 })
