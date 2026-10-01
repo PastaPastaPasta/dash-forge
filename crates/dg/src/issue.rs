@@ -435,7 +435,17 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
         .await?;
     let values_note = crate::fmt::event_values_note(view.hidden_values, view.plaintext_values);
     let (hidden_values, plaintext_values) = (view.hidden_values, view.plaintext_values);
-    let events: Vec<Event> = view.events().into_iter().cloned().collect();
+    // A hide or unhide readers ignore (a writer's without the contract's proof, a refId of
+    // another thread) is noise, not the record: only the counted ones show.
+    let events: Vec<Event> = view
+        .events()
+        .into_iter()
+        .filter(|e| {
+            !matches!(e.kind, EventKind::Hide | EventKind::Unhide)
+                || moderation.counted.contains(&e.id)
+        })
+        .cloned()
+        .collect();
     let transitions = view.log.transitions.clone();
     let timeline = timeline(&comments, &events, &transitions);
     let issue_number = u32::try_from(number).unwrap_or(u32::MAX);

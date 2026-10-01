@@ -54,8 +54,9 @@ import {
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
-import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm } from '@/components/repo/moderation'
+import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost } from '@/components/repo/moderation'
 import { setHidden } from '@/lib/repo/moderation'
+import { moderationBlocked } from '@/lib/repo/moderation-fold'
 import { isHidden } from '@/lib/view/issues-view'
 import type { HideReason } from '@/lib/rules/moderation'
 import { bypassValue, deleteBranchOffer, deleteBranchProblem, prLinkedIssues, requiredChecksLine } from '@/lib/view/pull-actions'
@@ -722,7 +723,8 @@ function PullPage({
           if (open) await setTargetState(sdk, signer, repo, { target: stateTarget, action: 'close', isMember, intent: `${intent}:close` })
           if (!thread.locked) await setLock(sdk, signer, repo, { target: stateTarget, lock: true, isMember, intent: `${intent}:lock` })
         }
-        refresh((t) => isHidden(t.moderation, p.item) === p.hide)
+        // With "also close and lock", until the close and the lock show as well.
+        refresh((t) => isHidden(t.moderation, p.item) === p.hide && (!p.closeAndLock || (!t.pull.state.open && t.locked)))
         return
       case 'edit-comment': {
         const c = thread.comments.find((x) => x.id === p.id)
@@ -755,7 +757,7 @@ function PullPage({
       case 'lock':
         return transitionCost
       case 'hide': {
-        const hide = previewCreate('event', pending.hide && pending.reason ? { value: pending.reason } : {})
+        const hide = hideCost(repo, pending)
         const extra = pending.closeAndLock ? (open ? 1 : 0) + (thread.locked ? 0 : 1) : 0
         return previewCredits(hide.credits + extra * transitionCost.credits)
       }
@@ -1079,6 +1081,7 @@ function PullPage({
                         moderate: ({ kind, id }: { readonly kind: 'comment' | 'review'; readonly id: string }) => (
                           <HideMenu
                             hidden={isHidden(moderation, id)}
+                            blocked={moderationBlocked(thread.moderationInput, identity, id, !isHidden(moderation, id))}
                             what={kind}
                             disabled={false}
                             onHide={(reason) => confirmEvent({ kind: 'hide', item: id, what: kind, reason, hide: true })}
@@ -1561,6 +1564,7 @@ function PullPage({
                   <div className="mt-2">
                     <HideThreadControl
                       hidden={threadHidden !== null}
+                      blocked={moderationBlocked(thread.moderationInput, identity, null, threadHidden === null)}
                       noun="pull request"
                       offerClose={open}
                       offerLock={!thread.locked}

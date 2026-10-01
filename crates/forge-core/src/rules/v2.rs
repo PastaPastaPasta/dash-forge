@@ -38,8 +38,8 @@
 use std::collections::BTreeSet;
 
 pub use super::moderation::{
-    hidden_items, is_hide_reason, Hidden, HiddenItems, HiddenVia, HideScope, ThreadItem,
-    HIDE_REASONS,
+    hidden_items, hide_blocked, is_hide_reason, Hidden, HiddenItems, HiddenVia, HideBlock,
+    HideScope, ThreadItem, HIDE_REASONS,
 };
 pub use super::parity::{
     check_run_write, checks_state, fold_milestones_v2, fold_thread_meta_v2, pinned_targets,

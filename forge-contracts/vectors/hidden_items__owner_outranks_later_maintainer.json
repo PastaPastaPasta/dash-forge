@@ -61,6 +61,10 @@
         "eventId": "e1",
         "via": "item"
       }
-    }
+    },
+    "counted": [
+      "e1",
+      "e2"
+    ]
   }
 }

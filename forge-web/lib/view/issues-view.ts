@@ -58,7 +58,7 @@ import { compareKey, type Event } from '../rules'
 import { foldThreadMetaV2, type ThreadMeta } from '../rules/parity'
 import type { HiddenItems } from '../rules/moderation'
 import { hidesProved } from '../repo/moderation'
-import { hasHides, threadModeration } from '../repo/moderation-fold'
+import { foldModeration, hasHides, moderationInput, type ModerationInput } from '../repo/moderation-fold'
 import { anchorOf, countApprovals, foldPrReviewV2, groupReviewComments, meetsPolicy, RoleOracle, type Anchor, type Approvals, type Policy, type PolicyStatus, type PrReviewState, type Review, type Role } from '../rules/v2'
 import { reviewerRows, sinceYourReview, summarizeReviews, type ReviewerCardRow, type ReviewSummary, type SinceYourReview } from './review-fold'
 
@@ -249,6 +249,8 @@ export interface IssueThread {
   readonly duplicates?: ReadonlyMap<number, { readonly number: number; readonly title: string }>
   /** What maintainers hid (RC2 MOD; `hiddenItems`): collapsed rows, or the whole issue. */
   readonly moderation?: HiddenItems
+  /** What the reader rule read, for a maintainer's Hide / Unhide (`moderationBlocked`). */
+  readonly moderationInput?: ModerationInput
 }
 
 /** A write the issue page made, for {@link issueWriteShows}. */
@@ -395,16 +397,18 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
   const duplicates = await readDuplicateTargets(sdk, repo, transitions.flatMap((t) => closeReasonOf(t, issueNumber)?.duplicateOf ?? [])).catch(
     () => new Map<number, { readonly number: number; readonly title: string }>(),
   )
-  const members = memberships ?? (await readMembershipsCached(sdk, repo, network))
-  // RC2 MOD: the contract's proof is read only when the issue has a hide (a failed read counts the
-  // owner's and current maintainers' hides alone, the stricter rule).
-  const proved = hasHides(log.events) ? await hidesProved(sdk, repo).catch(() => false) : false
-  const author = str(doc, '$ownerId')
-  const moderation = threadModeration({ events: log.events, thread: { id, author }, owner: repo.ownerId, members, proved, comments })
+  // RC2 MOD: the contract's proof is read only when the issue has a hide, beside the members (a
+  // failed read counts the owner's and current maintainers' hides alone, the stricter rule).
+  const [members, proved] = await Promise.all([
+    memberships ?? readMembershipsCached(sdk, repo, network),
+    hasHides(log.events) ? hidesProved(sdk, repo).catch(() => false) : Promise.resolve(false),
+  ])
+  const modInput = moderationInput({ events: log.events, thread: { id, author: str(doc, '$ownerId') }, owner: repo.ownerId, members, proved, comments })
   return {
     closedAs: currentCloseReason(transitions, issueNumber),
     duplicates,
-    moderation,
+    moderation: foldModeration(modInput),
+    moderationInput: modInput,
     issue: issueViewOf(doc, log, stateCode(transitions)),
     timeline: mergeTimeline(comments, log.events, log.authorEvents, [], tally.total > 0, transitions),
     hidden: tally.value,
@@ -497,6 +501,8 @@ export interface PullThread {
    * counts in `approvals` until it is dismissed.
    */
   readonly moderation?: HiddenItems
+  /** What the reader rule read, for a maintainer's Hide / Unhide (`moderationBlocked`). */
+  readonly moderationInput?: ModerationInput
 }
 
 /**
@@ -593,9 +599,10 @@ export async function loadPullThread(
   const members = memberships ?? (await readMembershipsCached(sdk, repo, network).catch(() => null))
   const proved = hasHides(log.events) ? hidesProved(sdk, repo).catch(() => false) : Promise.resolve(false)
   const [approvals, verdicts, hidesAreProved] = await Promise.all([readApprovals(members, policy, reviews, review, pull.author), verdictsRead, proved])
-  const moderation = threadModeration({ events: log.events, thread: { id, author: pull.author }, owner: repo.ownerId, members: members ?? [], proved: hidesAreProved, comments, reviews })
+  const modInput = moderationInput({ events: log.events, thread: { id, author: pull.author }, owner: repo.ownerId, members: members ?? [], proved: hidesAreProved, comments, reviews })
   return {
-    moderation,
+    moderation: foldModeration(modInput),
+    moderationInput: modInput,
     pull,
     timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews, tally.total > 0, transitions),
     comments,

@@ -15,7 +15,7 @@
  * clients compute merge readiness themselves and must agree.
  */
 
-import { compareKey } from './oid'
+import { compareKey, compareStrings } from './oid'
 import type { Event } from './types'
 
 /** The reasons a hide may give (`value`); any other value reads as no reason. */
@@ -63,9 +63,20 @@ export interface HiddenItems {
   readonly thread: Hidden | null
   /** Each hidden comment or review by `$id`, with the inline comments of a hidden review. */
   readonly items: Readonly<Record<string, Hidden>>
+  /**
+   * The `$id`s of the hide and unhide events that count (sorted): what the timeline shows as the
+   * record. Any other kind 24/25 (a writer's without the proof, a `refId` of another thread) is
+   * noise a reader drops.
+   */
+  readonly counted: readonly string[]
 }
 
-export const NOTHING_HIDDEN: HiddenItems = { thread: null, items: {} }
+export const NOTHING_HIDDEN: HiddenItems = { thread: null, items: {}, counted: [] }
+
+/** Whether `e` is a hide or an unhide (kinds 24/25). */
+export function isModerationKind(e: Pick<Event, 'kind'>): boolean {
+  return e.kind === 'hide' || e.kind === 'unhide'
+}
 
 /**
  * The hides standing in a thread (parity: Rust `hidden_items`). Per key — the thread, or one of
@@ -83,15 +94,16 @@ export function hiddenItems(
   const authors = new Map<string, string>([...comments, ...reviews].map((i) => [i.id, i.author]))
   const maintainers = new Set(scope.maintainers ?? [])
   const ordered = events
-    .filter((e) => (e.kind === 'hide' || e.kind === 'unhide') && e.targetId === scope.threadId)
+    .filter((e) => isModerationKind(e) && e.targetId === scope.threadId)
     .filter((e) => scope.proved || e.actor === scope.owner || maintainers.has(e.actor))
-    .slice()
     .sort((a, b) => compareKey(a, b))
   const THREAD = '\u0000thread'
   const byKey = new Map<string, Event[]>()
+  const counted: string[] = []
   for (const e of ordered) {
     const ref = e.refId ?? null
     if (ref !== null && !authors.has(ref)) continue
+    counted.push(e.id ?? '')
     const key = ref ?? THREAD
     const list = byKey.get(key)
     if (list) list.push(e)
@@ -120,5 +132,35 @@ export function hiddenItems(
     const h = items[c.reviewId]
     if (h !== undefined && h.via === 'item') items[c.id] = { ...h, via: 'review' }
   }
-  return { thread, items }
+  return { thread, items, counted: [...new Set(counted)].sort(compareStrings) }
+}
+
+/**
+ * Why a hide or unhide would change nothing a reader sees (parity: Rust `hide_blocked`): the
+ * owner's content or decision (only the owner changes it), an inline comment hidden with its review
+ * (unhide the review), already hidden, or not hidden. Null when it would take effect.
+ */
+export type HideBlock = 'ownersContent' | 'ownerDecided' | 'withItsReview' | 'alreadyHidden' | 'notHidden'
+
+export function hideBlocked(
+  events: readonly Event[],
+  scope: HideScope,
+  comments: readonly ThreadItem[],
+  reviews: readonly ThreadItem[],
+  signer: string,
+  item: string | null,
+  hide: boolean,
+): HideBlock | null {
+  if (signer !== scope.owner) {
+    const author = item === null ? scope.threadAuthor : [...comments, ...reviews].find((c) => c.id === item)?.author
+    if (author === scope.owner) return 'ownersContent'
+    const ownerDecided = events.some((e) => isModerationKind(e) && e.targetId === scope.threadId && e.actor === scope.owner && (e.refId ?? null) === item)
+    if (ownerDecided) return 'ownerDecided'
+  }
+  const now = hiddenItems(events, scope, comments, reviews)
+  const via = (item === null ? now.thread : now.items[item])?.via ?? null
+  if (hide && via === 'item') return 'alreadyHidden'
+  if (!hide && via === null) return 'notHidden'
+  if (!hide && via === 'review') return 'withItsReview'
+  return null
 }

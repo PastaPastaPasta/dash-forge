@@ -83,8 +83,9 @@ import { LockToggle, LockedBanner, lockConfirm, lockStateText, lockViewerOf } fr
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
 import { numberLabel, shownUpstreamNumber } from '@/lib/view/upstream'
-import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm } from '@/components/repo/moderation'
+import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost } from '@/components/repo/moderation'
 import { setHidden } from '@/lib/repo/moderation'
+import { moderationBlocked } from '@/lib/repo/moderation-fold'
 import { isHidden } from '@/lib/view/issues-view'
 import type { HideReason } from '@/lib/rules/moderation'
 
@@ -367,6 +368,9 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           return setChangeShows(t.issue.state.labels, write.change)
         case 'assignees':
           return setChangeShows(t.issue.state.assignees, write.change)
+        case 'hide':
+          // With "also close and lock", until the close and the lock show as well.
+          return issueWriteShows(t, write) && (!write.closeAndLock || (!t.issue.state.open && t.meta.locked))
         default:
           return issueWriteShows(t, write)
       }
@@ -397,7 +401,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       case 'deleteComment':
         return previewDelete('comment')
       case 'hide': {
-        const hide = composeCost(home.repo, 'event', pending.hide && pending.reason ? { value: pending.reason } : {}, eventFirst)
+        const hide = hideCost(home.repo, pending, eventFirst)
         const extra = pending.closeAndLock ? [...(open ? [stateCost] : []), ...(meta.locked ? [] : [stateCost])] : []
         return extra.length > 0 ? sumPreviews([hide, ...extra]) : hide
       }
@@ -499,6 +503,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   moderate: ({ id }: { readonly kind: 'comment' | 'review'; readonly id: string }) => (
                     <HideMenu
                       hidden={isHidden(moderation, id)}
+                      blocked={moderationBlocked(data.moderationInput, identity, id, !isHidden(moderation, id))}
                       disabled={false}
                       onHide={(reason) => setPending({ kind: 'hide', item: id, what: 'comment', reason, hide: true })}
                       onUnhide={() => setPending({ kind: 'hide', item: id, what: 'comment', reason: null, hide: false })}
@@ -634,6 +639,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
               <div className="mt-2">
                 <HideThreadControl
                   hidden={threadHidden !== null}
+                  blocked={moderationBlocked(data.moderationInput, identity, null, threadHidden === null)}
                   noun="issue"
                   offerClose={open}
                   offerLock={!meta.locked}

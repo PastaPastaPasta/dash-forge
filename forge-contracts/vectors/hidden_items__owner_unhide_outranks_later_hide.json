@@ -53,6 +53,10 @@
   },
   "expected": {
     "thread": null,
-    "items": {}
+    "items": {},
+    "counted": [
+      "e1",
+      "e2"
+    ]
   }
 }

@@ -29,7 +29,7 @@ import { EditedMarker } from '@/components/repo/issue-bits'
 import { Oid } from '@/components/ui/oid'
 import { WithAge } from '@/components/ui/with-age'
 import { HiddenRow, RevealedNote, reasonWords } from '@/components/repo/moderation'
-import { isHideReason, type HiddenItems } from '@/lib/rules/moderation'
+import { isHideReason, isModerationKind, type HiddenItems } from '@/lib/rules/moderation'
 
 function verdictIcon(verdict: VerdictName): JSX.Element {
   switch (verdict) {
@@ -336,7 +336,7 @@ export function timelineWindow(n: number, revealed: number): { head: number; tai
 }
 
 export function Timeline({
-  items,
+  items: allItems,
   links,
   renderComment,
   eventText,
@@ -373,6 +373,11 @@ export function Timeline({
   /** A maintainer's Hide / Unhide for a comment or review (omit: the viewer is no maintainer). */
   moderate?: (item: { readonly kind: 'comment' | 'review'; readonly id: string }) => ReactNode
 }): JSX.Element {
+  // A hide or unhide the reader rule did not count (a writer's without the contract's proof, a
+  // refId of another thread) is noise anyone could write, not the moderation record: left out.
+  const items = allItems.some((x) => x.kind === 'event' && isModerationKind(x.event))
+    ? allItems.filter((x) => x.kind !== 'event' || !isModerationKind(x.event) || (moderation?.counted.includes(x.event.id ?? '') ?? false))
+    : allItems
   // The hidden items this reader expanded (nothing is deleted: anyone may read them).
   const [revealed, setRevealed] = useState<ReadonlySet<string>>(() => new Set())
   const reveal = (id: string, on: boolean): void =>

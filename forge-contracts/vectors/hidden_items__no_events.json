@@ -32,6 +32,7 @@
   },
   "expected": {
     "thread": null,
-    "items": {}
+    "items": {},
+    "counted": []
   }
 }

@@ -59,6 +59,9 @@
         "eventId": "e1",
         "via": "review"
       }
-    }
+    },
+    "counted": [
+      "e1"
+    ]
   }
 }

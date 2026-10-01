@@ -109,6 +109,10 @@ pub struct HiddenItems {
     pub thread: Option<Hidden>,
     /// Each hidden comment or review by `$id`, with the inline comments of a hidden review.
     pub items: BTreeMap<String, Hidden>,
+    /// The `$id`s of the hide and unhide events that count (rules 1 and 2): what the timeline
+    /// shows as the record. Any other kind 24/25 (a writer's without the proof, a `refId` of
+    /// another thread) is noise a reader drops.
+    pub counted: BTreeSet<String>,
 }
 
 impl HiddenItems {
@@ -150,15 +154,16 @@ pub fn hidden_items(
     ordered.sort_by(|a, b| event_order(a, b));
     // key: None = the thread, Some(id) = an item of it
     let mut by_key: BTreeMap<Option<&str>, Vec<&Event>> = BTreeMap::new();
+    let mut out = HiddenItems::default();
     for e in ordered {
         let key = match e.ref_id.as_deref() {
             None => None,
             Some(r) if authors.contains_key(r) => Some(r),
             Some(_) => continue,
         };
+        out.counted.insert(e.id.clone());
         by_key.entry(key).or_default().push(e);
     }
-    let mut out = HiddenItems::default();
     for (key, list) in by_key {
         let author = key.map_or(scope.thread_author.as_str(), |k| authors[k]);
         let decisive = match list.iter().rev().find(|e| e.actor == scope.owner) {
@@ -199,6 +204,72 @@ pub fn hidden_items(
         }
     }
     out
+}
+
+/// Why a hide or unhide by `signer` of `item` (`None`: the thread) would change nothing a reader
+/// sees ([`hide_blocked`]): a client refuses it before signing rather than write it to no effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HideBlock {
+    /// The repo's owner wrote it: only the owner hides it (rule 3).
+    OwnersContent,
+    /// The owner already hid or unhid it: only the owner changes that (rule 3).
+    OwnerDecided,
+    /// An inline comment hidden with its review: unhiding the comment cannot show it (rule 4).
+    WithItsReview,
+    /// It is hidden already (by its own hide).
+    AlreadyHidden,
+    /// It is not hidden.
+    NotHidden,
+}
+
+/// Whether `signer`'s hide (`hide`) or unhide of `item` (`None`: the thread) would be ignored or
+/// change nothing, by the rules of [`hidden_items`]; `None` when it would take effect. An item
+/// covered only by its review's hide may still get its own hide (it stays hidden if the review
+/// is shown again).
+#[must_use]
+pub fn hide_blocked(
+    events: &[Event],
+    scope: &HideScope,
+    comments: &[ThreadItem],
+    reviews: &[ThreadItem],
+    signer: &str,
+    item: Option<&str>,
+    hide: bool,
+) -> Option<HideBlock> {
+    if signer != scope.owner {
+        let author = match item {
+            None => Some(scope.thread_author.as_str()),
+            Some(i) => comments
+                .iter()
+                .chain(reviews)
+                .find(|c| c.id == i)
+                .map(|c| c.author.as_str()),
+        };
+        if author == Some(scope.owner.as_str()) {
+            return Some(HideBlock::OwnersContent);
+        }
+        let owner_decided = events.iter().any(|e| {
+            matches!(e.kind, EventKind::Hide | EventKind::Unhide)
+                && e.target_id == scope.thread_id
+                && e.actor == scope.owner
+                && e.ref_id.as_deref() == item
+        });
+        if owner_decided {
+            return Some(HideBlock::OwnerDecided);
+        }
+    }
+    let now = hidden_items(events, scope, comments, reviews);
+    let state = match item {
+        None => now.thread.as_ref(),
+        Some(i) => now.item(i),
+    };
+    match (hide, state.map(|h| h.via)) {
+        (true, Some(HiddenVia::Item)) => Some(HideBlock::AlreadyHidden),
+        (false, None) => Some(HideBlock::NotHidden),
+        (false, Some(HiddenVia::Review)) => Some(HideBlock::WithItsReview),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -283,6 +354,45 @@ mod tests {
         assert_eq!(got.item("c1").map(|h| h.via), Some(HiddenVia::Review));
         assert!(got.item("c2").is_none());
         assert_eq!(got.item("r1").map(|h| h.via), Some(HiddenVia::Item));
+    }
+
+    #[test]
+    fn a_hide_that_would_change_nothing_is_blocked() {
+        let reviews = [item("r1", "bob", None)];
+        let comments = [
+            item("c1", "bob", Some("r1")),
+            item("c2", "own", None),
+            item("c3", "bob", None),
+        ];
+        let events = [
+            ev("e1", EventKind::Hide, "alice", Some("r1"), 1),
+            ev("e2", EventKind::Hide, "own", Some("c3"), 2),
+        ];
+        let s = scope(true, &[]);
+        let blocked = |who: &str, item: Option<&str>, hide: bool| {
+            hide_blocked(&events, &s, &comments, &reviews, who, item, hide)
+        };
+        assert_eq!(
+            blocked("alice", Some("c2"), true),
+            Some(HideBlock::OwnersContent)
+        );
+        assert_eq!(blocked("own", Some("c2"), true), None);
+        assert_eq!(
+            blocked("alice", Some("c3"), false),
+            Some(HideBlock::OwnerDecided)
+        );
+        assert_eq!(blocked("own", Some("c3"), false), None);
+        assert_eq!(
+            blocked("alice", Some("c1"), false),
+            Some(HideBlock::WithItsReview)
+        );
+        assert_eq!(blocked("alice", Some("c1"), true), None);
+        assert_eq!(
+            blocked("alice", Some("r1"), true),
+            Some(HideBlock::AlreadyHidden)
+        );
+        assert_eq!(blocked("alice", None, false), Some(HideBlock::NotHidden));
+        assert_eq!(blocked("alice", None, true), None);
     }
 
     #[test]

@@ -11,13 +11,16 @@ import { ChevronDown, Eye, EyeOff } from 'lucide-react'
 
 import { Author } from '@/components/author'
 import { useDismiss } from '@/components/repo/target-rail'
-import { HIDE_REASONS, type Hidden, type HideReason } from '@/lib/rules/moderation'
+import { HIDE_REASONS, type Hidden, type HideBlock, type HideReason } from '@/lib/rules/moderation'
 import { timeAgo } from '@/lib/view'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { useAsync } from '@/hooks/use-async'
-import { hiddenThreadIds, type HideableRow } from '@/lib/repo/moderation'
+import { hiddenRowIds, hiddenThreadIds, type HideableRow } from '@/lib/repo/moderation'
 import { repoKey, type RepoRef } from '@/lib/repo'
 import type { Network } from '@/lib/constants'
+import { previewCredits, type CostPreview, type FirstWrite } from '@/lib/sdk'
+import { estimateBytesCredits } from '@/lib/sdk/cost'
+import { composeCost } from '@/components/repo/private-compose'
 
 /** GitHub's words for each reason. */
 export const HIDE_REASON_LABEL: Readonly<Record<HideReason, string>> = {
@@ -29,6 +32,15 @@ export const HIDE_REASON_LABEL: Readonly<Record<HideReason, string>> = {
   duplicate: 'Duplicate',
 }
 
+/** Why a maintainer's Hide / Unhide is not offered (null: say nothing, the menu just shows the other action). */
+const BLOCKED_NOTE: Readonly<Record<HideBlock, string | null>> = {
+  ownersContent: 'The repository owner wrote this: only the owner can hide it.',
+  ownerDecided: 'The repository owner already hid or unhid this, and readers follow the owner.',
+  withItsReview: 'Hidden with its review: unhide the review to show it.',
+  alreadyHidden: null,
+  notHidden: null,
+}
+
 /** "as spam", or '' for a hide with no reason. */
 export function reasonWords(reason: HideReason | null): string {
   return reason === null ? '' : ` as ${HIDE_REASON_LABEL[reason].toLowerCase()}`
@@ -36,7 +48,9 @@ export function reasonWords(reason: HideReason | null): string {
 
 /**
  * A maintainer's Hide / Unhide on a comment or review header. Hide opens the reasons; Unhide
- * writes at once (through the page's confirm).
+ * writes at once (through the page's confirm). `blocked`: why the write would change nothing
+ * (`moderationBlocked`: the owner's content or decision, an inline comment hidden with its
+ * review), shown instead of the action.
  */
 export function HideMenu({
   hidden,
@@ -44,17 +58,27 @@ export function HideMenu({
   onUnhide,
   disabled,
   what = 'comment',
+  blocked = null,
 }: {
   hidden: boolean
   onHide: (reason: HideReason | null) => void
   onUnhide: () => void
   disabled: boolean
   what?: 'comment' | 'review'
-}): JSX.Element {
+  blocked?: HideBlock | null
+}): JSX.Element | null {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLSpanElement>(null)
   useDismiss(open, ref, () => setOpen(false))
   const button = 'inline-flex items-center gap-1 text-[12px] text-anvil-500 hover:text-forge-700 disabled:opacity-50 dark:text-anvil-400 dark:hover:text-forge-400 coarse:min-h-11 coarse:px-1'
+  if (blocked !== null) {
+    const note = BLOCKED_NOTE[blocked]
+    return note === null ? null : (
+      <span className="text-[12px] text-anvil-500 dark:text-anvil-400" title={note} data-testid="hide-blocked" data-why={blocked}>
+        <EyeOff className="inline h-3 w-3" aria-hidden /> {blocked === 'withItsReview' ? 'Hidden with its review' : "Owner's call"}
+      </span>
+    )
+  }
   if (hidden) {
     return (
       <button type="button" className={button} onClick={onUnhide} disabled={disabled} aria-label={`Unhide ${what}`} data-testid="unhide-item">
@@ -187,8 +211,11 @@ export function HideThreadControl({
   offerLock,
   onHide,
   onUnhide,
+  blocked = null,
 }: {
   hidden: boolean
+  /** Why the write would change nothing (`moderationBlocked`), shown instead of the action. */
+  blocked?: HideBlock | null
   noun: 'issue' | 'pull request'
   /** It is open: offer to close it too. */
   offerClose: boolean
@@ -200,6 +227,13 @@ export function HideThreadControl({
   const [open, setOpen] = useState(false)
   const [reason, setReason] = useState<HideReason | ''>('spam')
   const [also, setAlso] = useState(true)
+  if (blocked !== null && BLOCKED_NOTE[blocked] !== null) {
+    return (
+      <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="hide-thread-blocked">
+        {BLOCKED_NOTE[blocked]}
+      </p>
+    )
+  }
   if (hidden) {
     return (
       <button type="button" onClick={onUnhide} className="inline-flex items-center gap-1 rounded-md border border-anvil-300 px-2 py-1 text-[12px] hover:bg-anvil-50 dark:border-anvil-700 dark:hover:bg-anvil-900" data-testid="unhide-thread">
@@ -284,7 +318,9 @@ export function useHiddenThreads(sdk: EvoSDK | null, ready: boolean, repo: RepoR
   const withHides = (rows ?? []).filter((r) => (r.threadHides?.length ?? 0) > 0)
   const key = withHides.map((r) => `${r.id}:${r.threadHides?.length ?? 0}`).join(',')
   const read = useAsync(() => hiddenThreadIds(sdk!, repo, network, withHides), [ready, repoKey(repo), key], { enabled: ready && sdk !== null && key !== '' })
-  return key === '' ? NO_IDS : read.data ?? NO_IDS
+  if (key === '') return NO_IDS
+  // Until the read lands: every hide counts (the registration's default), so no hidden row flashes in.
+  return read.data ?? hiddenRowIds(withHides, repo.ownerId, [], true)
 }
 
 /** "2 hidden by maintainers · Show": the list's toggle for hidden issues or PRs. */
@@ -302,4 +338,15 @@ export function HiddenThreadsToggle({ count, shown, onToggle, noun }: { count: n
       </button>
     </div>
   )
+}
+
+/**
+ * A hide's or unhide's cost: the event (its reason sealed in a private repo) plus the identifiers a
+ * plain event does not carry, the item's `refId` and, assumed present (an upper bound: the page
+ * learns whether the contract has it only when it writes), the 32-byte `asMaintainer` proof.
+ */
+export function hideCost(repo: RepoRef, input: { readonly item: string | null; readonly reason: HideReason | null; readonly hide: boolean }, first: FirstWrite = {}): CostPreview {
+  const event = composeCost(repo, 'event', input.hide && input.reason ? { value: input.reason } : {}, first)
+  const bytes = (input.item === null ? 0 : 32) + 32
+  return previewCredits(event.credits + estimateBytesCredits('event', bytes) - estimateBytesCredits('event', 0))
 }

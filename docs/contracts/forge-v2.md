@@ -194,6 +194,8 @@ Platform v5 cannot let a repo's maintainers delete other people's documents in t
 3. The owner outranks maintainers (only the owner writes maintainer documents): if the owner wrote any of the key's events, the owner's latest decides, and what the owner wrote only the owner hides. Otherwise the latest decides, by `($createdAt, $id)`.
 4. A hide decides "hidden", an unhide "shown". A review's hide also covers its inline comments (`comment.reviewId`).
 
+The events that pass rules 1 and 2 are the record a timeline shows (`counted`); any other kind 24/25 (a writer's without the proof, a `refId` of another thread) is left out, since anyone with a membership could write it. Clients refuse before signing a hide or unhide that these rules would ignore or that changes nothing (`hide_blocked`: the owner's content or decision, an inline comment hidden with its review, already hidden, not hidden).
+
 Hiding changes no state fold. Merge readiness is computed by every client and no consensus rule counts reviews, so a hidden review's verdict still counts until a maintainer dismisses it (kind 15); open, closed and every count are unchanged. Clients that predate kinds 24/25 drop them (an unknown kind) and show everything.
 
 ## 4. Non-deletable audit types

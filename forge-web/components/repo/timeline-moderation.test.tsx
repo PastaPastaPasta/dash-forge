@@ -46,7 +46,7 @@ const review: TimelineItem = {
   expected: 0,
 }
 const hidden = (by: string, eventId: string, reason: 'spam' | null = 'spam') => ({ by, reason, at: 5, eventId, via: 'item' as const })
-const moderation: HiddenItems = { thread: null, items: { c1: hidden(CAROL, 'e1'), r1: hidden(CAROL, 'e2', null) } }
+const moderation: HiddenItems = { thread: null, items: { c1: hidden(CAROL, 'e1'), r1: hidden(CAROL, 'e2', null) }, counted: ['e1', 'e2'] }
 
 describe('Timeline with hidden items', () => {
   it('collapses a hidden comment and review, and expands them on Show', () => {
@@ -63,9 +63,17 @@ describe('Timeline with hidden items', () => {
 
   it("renders a maintainer's actions on a collapsed row and a shown one", () => {
     const moderate = vi.fn(({ id }: { kind: 'comment' | 'review'; id: string }) => <span data-testid={`mod-${id}`} />)
-    act(() => root.render(<Timeline items={[comment, review]} moderation={{ thread: null, items: { c1: hidden(CAROL, 'e1') } }} moderate={moderate} />))
+    act(() => root.render(<Timeline items={[comment, review]} moderation={{ thread: null, items: { c1: hidden(CAROL, 'e1') }, counted: ['e1'] }} moderate={moderate} />))
     expect(host.querySelector('[data-testid="mod-c1"]')).not.toBeNull()
     expect(host.querySelector('[data-testid="mod-r1"]')).not.toBeNull()
+  })
+
+  it('leaves out a hide the reader rule did not count', () => {
+    const ev = (id: string, actor: string): TimelineItem => ({ kind: 'event', at: 3, event: { id, kind: 'hide', actor, refId: 'c1', value: 'spam', createdAt: 3 } as never })
+    act(() => root.render(<Timeline items={[comment, ev('e1', CAROL), ev('e9', BOB)]} moderation={{ thread: null, items: { c1: hidden(CAROL, 'e1') }, counted: ['e1'] }} />))
+    const rows = [...host.querySelectorAll('[data-testid="timeline-event"]')]
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.textContent).toContain('hid a comment by')
   })
 
   it('names what a hide hid', () => {
@@ -78,6 +86,15 @@ describe('Timeline with hidden items', () => {
 })
 
 describe('HideMenu', () => {
+  it("says why instead of offering a write that would change nothing", () => {
+    act(() => root.render(<HideMenu hidden={false} onHide={vi.fn()} onUnhide={vi.fn()} disabled={false} blocked="ownersContent" />))
+    expect(host.querySelector('[data-testid="hide-item"]')).toBeNull()
+    expect(host.querySelector('[data-testid="hide-blocked"]')?.getAttribute('data-why')).toBe('ownersContent')
+    act(() => root.render(<HideMenu hidden onHide={vi.fn()} onUnhide={vi.fn()} disabled={false} blocked="withItsReview" />))
+    expect(host.querySelector('[data-testid="unhide-item"]')).toBeNull()
+    expect(host.textContent).toContain('Hidden with its review')
+  })
+
   it('offers the reasons, and Unhide when hidden', () => {
     const onHide = vi.fn()
     const onUnhide = vi.fn()

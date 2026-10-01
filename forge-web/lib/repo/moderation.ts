@@ -73,12 +73,21 @@ export interface HideableRow {
  * the owner's and current maintainers' hides, and no members: the owner's alone).
  */
 export async function hiddenThreadIds(sdk: EvoSDK, repo: RepoRef, network: Network, rows: readonly HideableRow[]): Promise<ReadonlySet<string>> {
-  const withHides = rows.filter((r) => (r.threadHides?.length ?? 0) > 0)
-  if (withHides.length === 0) return new Set()
+  if (!rows.some((r) => (r.threadHides?.length ?? 0) > 0)) return new Set()
   const [proved, members] = await Promise.all([hidesProved(sdk, repo).catch(() => false), readMembershipsCached(sdk, repo, network).catch((): Membership[] => [])])
+  return hiddenRowIds(rows, repo.ownerId, members, proved)
+}
+
+/**
+ * The rows whose thread is hidden, judged with `members` and `proved` (pure). A list shows this
+ * with `proved` assumed (every hide counts, as on a registration with the proof) until the read of
+ * the contract and the members lands, so a hidden spam row never flashes into the list.
+ */
+export function hiddenRowIds(rows: readonly HideableRow[], owner: string, members: readonly Membership[], proved: boolean): ReadonlySet<string> {
   const out = new Set<string>()
-  for (const r of withHides) {
-    const m = threadModeration({ events: r.threadHides ?? [], thread: { id: r.id, author: r.author }, owner: repo.ownerId, members, proved, comments: [] })
+  for (const r of rows) {
+    if ((r.threadHides?.length ?? 0) === 0) continue
+    const m = threadModeration({ events: r.threadHides ?? [], thread: { id: r.id, author: r.author }, owner, members, proved, comments: [] })
     if (m.thread !== null) out.add(r.id)
   }
   return out
