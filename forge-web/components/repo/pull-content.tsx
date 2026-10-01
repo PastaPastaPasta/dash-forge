@@ -98,6 +98,8 @@ import { inlineCommentIds, lineKey, repliesByRoot } from '@/lib/view/inline-thre
 import { appliedSuggestions, prCommits, prHaveSet } from '@/lib/view/pr-commits'
 import { anchorOnHead } from '@/lib/view/inline-threads'
 import { snippetKey, snippetSource } from '@/lib/view/anchor-snippet'
+import { carryAnchor, carrySources } from '@/lib/view/carry-anchor'
+import type { Anchor } from '@/lib/rules/v2'
 import { AnchorContext, useSnippetTexts } from '@/components/repo/anchor-snippet'
 import { WALK_COMMIT_CAP } from '@/lib/merge/objects'
 import { commentsShown, draftIsEmpty, draftWhereabouts, reviewShows, SUBMIT_WAIT } from '@/lib/view/pending-review'
@@ -481,14 +483,29 @@ function PullPage({
   // The code each inline comment was left on, for Conversation (QW2-049): read on that tab only.
   const snippetSources = useMemo(() => thread.comments.flatMap((c) => (c.anchor === null ? [] : [snippetSource(c.anchor)].filter((s) => s !== null))), [thread.comments])
   const snippetTexts = useSnippetTexts(tab === 'conversation' ? headReader : null, snippetSources)
+  // Comments left on an older head whose lines the head kept unchanged (QW3-015): carried to the
+  // head at those lines' new numbers, so they stay current in Files changed and their suggestions
+  // stay appliable, as on GitHub. Only the files those comments name are read.
+  const carrySrc = useMemo(() => thread.comments.flatMap((c) => (c.anchor === null ? [] : carrySources(c.anchor, pull.headOid) ?? [])), [thread.comments, pull.headOid])
+  const carryTexts = useSnippetTexts(carrySrc.length === 0 ? null : headReader, carrySrc)
+  const carried = useMemo(() => {
+    const out = new Map<string, Anchor>()
+    for (const c of thread.comments) {
+      const a = c.anchor === null ? null : carryAnchor(c.anchor, pull.headOid, (commit, path) => carryTexts.get(snippetKey({ commit, path })))
+      if (a !== null) out.set(c.id, a)
+    }
+    return out
+  }, [thread.comments, pull.headOid, carryTexts])
+  const comments = useMemo(() => (carried.size === 0 ? thread.comments : thread.comments.map((c) => (carried.has(c.id) ? { ...c, anchor: carried.get(c.id) as Anchor } : c))), [thread.comments, carried])
   const anchorContext = (c: CommentView, label = true): JSX.Element | null => {
     if (c.anchor === null) return null
+    // The code it was left on (its own commit's lines); current when carried to the head.
     const source = snippetSource(c.anchor)
     return (
       <AnchorContext
         anchor={c.anchor}
         text={source === null ? null : snippetTexts.get(snippetKey(source))}
-        outdated={!anchorOnHead(c.anchor, pull.headOid)}
+        outdated={!anchorOnHead(carried.get(c.id) ?? c.anchor, pull.headOid)}
         applied={applied.get(c.id) ?? null}
         label={label}
       />
@@ -498,7 +515,7 @@ function PullPage({
     repo,
     source: sourceRef,
     pull,
-    comments: thread.comments,
+    comments,
     drafts: reviewDraft.draft?.comments ?? NO_DRAFTS,
     headReader,
     headOnly: comparison.headOnly,
@@ -1360,7 +1377,7 @@ function PullPage({
                   writeBlock={composeBlock}
                   pullId={pull.id}
                   headOid={pull.headOid}
-                  comments={thread.comments}
+                  comments={comments}
                   changedPaths={new Set(c.changes.flatMap((x) => (x.oldPath !== undefined ? [x.path, x.oldPath] : [x.path])))}
                   onPosted={onInlinePosted}
                   actions={threadActions}
