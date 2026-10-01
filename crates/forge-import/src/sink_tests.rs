@@ -81,6 +81,9 @@ struct Recorded {
     cost_pct: u64,
     /// Source URLs whose document the chain refuses for its content (before it lands).
     refuse: BTreeSet<String>,
+    /// Source URLs whose create loses its number to another create (an item error that is
+    /// not final: the next run creates it).
+    contend: BTreeSet<String>,
 }
 
 impl Recorded {
@@ -92,6 +95,7 @@ impl Recorded {
             }),
             cost_pct: 100,
             refuse: BTreeSet::new(),
+            contend: BTreeSet::new(),
         }
     }
 
@@ -299,6 +303,9 @@ impl Chain for &Recorded {
                 rule: "hasTitle".into(),
                 detail: url,
             });
+        }
+        if self.contend.contains(&url) {
+            return Err(forge_core::Error::DuplicateUniqueIndex("number".into()));
         }
         self.land(None, |st| {
             // dense: the count of issues and PRs, plus one
@@ -1220,4 +1227,52 @@ async fn an_incremental_duplicate_names_a_canonical_already_mirrored() {
         let st = chain.st();
         assert!(st.violations.is_empty(), "{:?}", st.violations);
     }
+}
+
+/// A run cut by `--limit` before a later canonical leaves its duplicate open (skipped, so the
+/// state holds) instead of closing it for good without the link; the next, complete run
+/// closes it naming the canonical, once.
+#[tokio::test(start_paused = true)]
+async fn a_duplicate_of_an_issue_past_the_limit_stays_open_for_the_next_run() {
+    let chain = shifted();
+    let mut cut = issues(1..=3, &[(2, Some(5))]);
+    cut.truncated = true;
+    let run = import(&chain, &cut, 4, None).await;
+    run.result.unwrap();
+    assert!(chain.logs()[&2].1.is_empty(), "#2 left open");
+    assert_eq!(run.counts.transitions, 0);
+    assert_eq!(run.counts.skipped, 1, "the skip holds the state");
+
+    let run = import(&chain, &issues(1..=5, &[(2, Some(5))]), 4, None).await;
+    run.result.unwrap();
+    let logs = chain.logs();
+    assert_eq!(logs[&2].1, [format!("t 1 as duplicate of #{}", logs[&5].0)]);
+    assert_eq!(run.counts.transitions, 1);
+    assert_eq!(run.counts.skipped, 0);
+}
+
+/// A later canonical this run could not place for a reason that is not final (another create
+/// took its number) leaves its duplicate open; the next run places it and closes the duplicate
+/// naming it, once.
+#[tokio::test(start_paused = true)]
+async fn a_duplicate_of_an_issue_skipped_this_run_stays_open_for_the_next_run() {
+    let src = issues(1..=5, &[(2, Some(5))]);
+    let mut chain = shifted();
+    chain
+        .contend
+        .insert("https://github.com/o/r/issues/5".into());
+    let run = import(&chain, &src, 4, None).await;
+    run.result.unwrap();
+    assert!(!chain.logs().contains_key(&5), "#5 not placed");
+    assert!(chain.logs()[&2].1.is_empty(), "#2 left open");
+    assert_eq!(run.counts.transitions, 0);
+    assert!(run.refused.is_empty(), "not a final refusal");
+    assert_eq!(run.counts.skipped, 2, "#5, and #2 left open");
+
+    chain.contend.clear();
+    let run = import(&chain, &src, 4, None).await;
+    run.result.unwrap();
+    let logs = chain.logs();
+    assert_eq!(logs[&2].1, [format!("t 1 as duplicate of #{}", logs[&5].0)]);
+    assert_eq!(run.counts.transitions, 1);
 }

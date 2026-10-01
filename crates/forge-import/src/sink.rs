@@ -304,6 +304,8 @@ struct Deferred {
     target: Target,
     /// The moves still to write: an issue's close (no merge, so no oid).
     moves: Vec<TransitionMove>,
+    /// Why it closed: a duplicate of a same-repository canonical.
+    why: SrcCloseReason,
 }
 
 /// An item placed on chain (created, or found) whose other writes are still to do: a lane's
@@ -902,12 +904,13 @@ impl<'a, C: Chain> Sink<'a, C> {
             }
         }
         self.check_order(src).await?;
-        self.sync_targets(&src.targets).await
+        self.sync_targets(src).await
     }
 
     /// Every issue and PR: created (or found) strictly in order, the rest of each item's
     /// writes pipelined behind ([`crate::pipeline::run`]).
-    async fn sync_targets(&self, targets: &[SrcTarget]) -> Result<()> {
+    async fn sync_targets(&self, src: &SrcCollab) -> Result<()> {
+        let targets = &src.targets;
         let progress = Progress::new(targets.len(), PROGRESS_EVERY);
         let progress = &progress;
         let result = crate::pipeline::run(
@@ -927,7 +930,10 @@ impl<'a, C: Chain> Sink<'a, C> {
             },
             |job: Job<'_>| async move {
                 self.finish_target(&job).await?;
-                progress.completed(job.index, job.t.number);
+                // An item whose close is held back completes when it is written.
+                if !self.held(job.index) {
+                    progress.completed(job.index, job.t.number);
+                }
                 self.say(progress, false);
                 Ok(())
             },
@@ -936,7 +942,7 @@ impl<'a, C: Chain> Sink<'a, C> {
         // Only after a complete pass: a run that stopped early leaves those issues open and
         // its state unadvanced, so the next run reads them again and closes them then.
         let result = match result {
-            Ok(()) => self.sync_deferred(targets).await,
+            Ok(()) => self.sync_deferred(src, progress).await,
             stopped => stopped,
         };
         if self.lanes > 1 && !self.dry_run {
@@ -947,25 +953,72 @@ impl<'a, C: Chain> Sink<'a, C> {
         result
     }
 
+    /// Whether item `index`'s close is held back for the end of the run.
+    fn held(&self, index: usize) -> bool {
+        self.caches().deferred.iter().any(|d| d.index == index)
+    }
+
     /// The closes [`Sink::sync_state`] held back, once every item of the run is placed, in
-    /// source order: each names its canonical's mirror number when it now has one, else it is
-    /// a duplicate of nothing (and the run says so). Each is written once, here only.
-    async fn sync_deferred(&self, targets: &[SrcTarget]) -> Result<()> {
+    /// source order, each written once and here only: it names its canonical's mirror number
+    /// when the canonical now has a copy. When it has none, the close is final only if no later
+    /// run can place the canonical ([`Sink::placed_later`]); otherwise the issue is left open
+    /// and skipped (which holds the incremental state), so a later run closes it with the link.
+    async fn sync_deferred(&self, src: &SrcCollab, progress: &Progress) -> Result<()> {
         let mut deferred = std::mem::take(&mut self.caches().deferred);
         deferred.sort_by_key(|d| d.index);
         for d in deferred {
-            let t = &targets[d.index];
+            let t = &src.targets[d.index];
             let close = async {
-                let reason = match &t.close_reason {
-                    Some(r) => self.closed_as(t, &d.target, r, true).await?,
-                    None => None,
+                let found = self.closed_as(t, &d.target, &d.why).await?;
+                let reason = if let Some(reason) = found {
+                    reason
+                } else {
+                    let (upstream, url) = d.why.duplicate_of.clone().unwrap_or_default();
+                    if let Some(why) = self.placed_later(src, upstream) {
+                        self.ledger().skip(format!(
+                            "{} was closed as a duplicate of {url}, {why}: it is left open, \
+                             and a later run closes it naming its canonical",
+                            t.imported.url
+                        ));
+                        return Ok(());
+                    }
+                    if !self.dry_run {
+                        self.warn(format!(
+                            "{} was closed as a duplicate of {url}, which is not mirrored: it \
+                             is recorded as a duplicate without naming it",
+                            t.imported.url
+                        ));
+                    }
+                    ClosedAs {
+                        reason: d.why.reason,
+                        duplicate_of: None,
+                    }
                 };
-                self.write_moves(t, &d.target, &d.moves, None, reason.as_ref())
+                self.write_moves(t, &d.target, &d.moves, None, Some(&reason))
                     .await
             };
             close.await.or_else(|e| self.item_skipped(t, e))?;
+            progress.completed(d.index, t.number);
         }
         Ok(())
+    }
+
+    /// Why a duplicate's same-repository canonical (source issue `upstream`) that has no copy
+    /// at the end of the run may still get one from a later run, which would name it: it is in
+    /// this run but was skipped for a reason that is not final (not refused for its content),
+    /// or the run was cut by `--limit` before it. `None` when it is truly absent (not at the
+    /// source, or refused for good): the close is then written without it.
+    fn placed_later(&self, src: &SrcCollab, upstream: u32) -> Option<&'static str> {
+        let key = (TargetKind::Issue.transition_target().code(), upstream);
+        let in_run = src
+            .targets
+            .iter()
+            .any(|c| c.kind == TargetKind::Issue && c.number == upstream);
+        if in_run {
+            let refused = self.ledger().refused.contains(&key) || src.refused.contains(&key);
+            return (!refused).then_some("which this run could not mirror");
+        }
+        src.truncated.then_some("which is past this run's --limit")
     }
 
     /// Log the write phase's progress when a line is due.
@@ -1650,11 +1703,12 @@ impl<'a, C: Chain> Sink<'a, C> {
             .any(|m| m.kind == forge_core::rules::transition::ISSUE_CLOSE);
         let reason = match &t.close_reason {
             Some(r) if has_close => {
-                let Some(reason) = self.closed_as(t, target, r, false).await? else {
+                let Some(reason) = self.closed_as(t, target, r).await? else {
                     self.caches().deferred.push(Deferred {
                         index,
                         target: target.clone(),
                         moves,
+                        why: r.clone(),
                     });
                     return Ok(());
                 };
@@ -1704,19 +1758,17 @@ impl<'a, C: Chain> Sink<'a, C> {
         Ok(())
     }
 
-    /// `t`'s close reason as the mirror records it: a duplicate's canonical as its number in
-    /// the destination, when its copy is there (this run's, or an earlier one's). `None` while
-    /// a same-repository canonical has no copy yet and this is not the `last` look: on a first
-    /// import a canonical numbered after its duplicate is placed later in the run, so the close
-    /// (immutable) waits for the end of the run ([`Sink::sync_deferred`]). On the last look, a
-    /// canonical still missing (or one of another repository) gives a duplicate without one,
-    /// and the run says so.
+    /// `t`'s close reason (`r`) as the mirror records it: a duplicate's canonical as its
+    /// number in the destination, when its copy is there (this run's, or an earlier one's).
+    /// `None` while a same-repository canonical has no copy: on a first import a canonical
+    /// numbered after its duplicate is placed later in the run, so the close (immutable) waits
+    /// for the end of the run ([`Sink::sync_deferred`]). A canonical in another repository is
+    /// never named.
     async fn closed_as(
         &self,
         t: &SrcTarget,
         target: &Target,
         r: &SrcCloseReason,
-        last: bool,
     ) -> Result<Option<ClosedAs>> {
         let Some((upstream, url)) = &r.duplicate_of else {
             return Ok(Some(ClosedAs {
@@ -1731,16 +1783,16 @@ impl<'a, C: Chain> Sink<'a, C> {
             None if self.repo.is_some() => self.lookup(&canonical_stub(*upstream, url)).await?,
             None => None,
         };
-        if canonical.is_none() && !last {
+        let Some(canonical) = canonical else {
             return Ok(None);
-        }
-        let duplicate_of = canonical
-            .filter(|c| c.kind == TargetKind::Issue && c.number != target.number)
-            .map(|c| c.number);
+        };
+        let duplicate_of = (canonical.kind == TargetKind::Issue
+            && canonical.number != target.number)
+            .then_some(canonical.number);
         if duplicate_of.is_none() && !self.dry_run {
             self.warn(format!(
-                "{} was closed as a duplicate of {url}, which is not mirrored: it is recorded \
-                 as a duplicate without naming it",
+                "{} was closed as a duplicate of {url}, whose copy is not an issue it can name: \
+                 it is recorded as a duplicate without naming it",
                 t.imported.url
             ));
         }
