@@ -84,6 +84,15 @@ jobs:
       # combination of the rider flags (QW-069, QW2-010) with every RC2 item on
       - name: Every RC2 flag combination validates
         run: python3 forge-contracts/schema/variants.py "$CARGO_TARGET_DIR/debug/contract-validate"
+      # The RC2 registration fee probes (rc1-fee-probe.mjs --rc2): their six throwaway contracts,
+      # cut from the build.py variants, differ in the gated item alone and parse under v5, and the
+      # documents the live run writes are accepted
+      - name: RC2 fee-probe contracts validate
+        run: |
+          node --test forge-contracts/scripts/lib/rc2-probe.test.mjs
+          node forge-contracts/scripts/rc1-fee-probe.mjs --rc2 --emit "$RUNNER_TEMP/rc2-probe"
+          "$CARGO_TARGET_DIR/debug/contract-validate" --vectors "$RUNNER_TEMP/rc2-probe/vectors" \
+            "$RUNNER_TEMP"/rc2-probe/contracts/rc2-*.json
       # The seed and verify scripts, run against an in-memory chain: the rules that need chain
       # state (references, dense numbers, transitions, totals) are judged in JS, then rs-dpp
       # judges every document they write as an rc1 vector
