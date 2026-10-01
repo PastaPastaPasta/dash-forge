@@ -311,8 +311,9 @@ done
 EOF
 printf '#!/bin/sh\necho "libprotoc ${STUB_PROTOC:-28.3}"\n' >"$ib/protoc"
 printf '#!/bin/sh\ncase "$1" in -s) echo "${STUB_OS:-Linux}" ;; -m) echo "${STUB_ARCH:-x86_64}" ;; esac\n' >"$ib/uname"
-ln -s "$(command -v jq)" "$ib/jq"
 chmod +x "$ib"/*
+# After the chmod: through the link it would reach the real jq, which a CI runner does not own.
+ln -s "$(command -v jq)" "$ib/jq"
 # install_forge plan|build [VAR=value...]: run install-forge.sh with stub tools.
 install_forge() {
     local sub=$1
@@ -407,7 +408,7 @@ install_forge plan
 key_all=$(sed -n 's/^cache-key=//p' "$tmp/iout")
 install_forge plan FORGE_BINARIES=dg
 key_dg=$(sed -n 's/^cache-key=//p' "$tmp/iout")
-[ -n "$key_all" ] && [ "$key_all" != "$key_dg" ] || fail "the same key for different binaries"
+if [ -z "$key_all" ] || [ -z "$key_dg" ] || [ "$key_all" = "$key_dg" ]; then fail "the same key for different binaries"; fi
 case="install build without cargo"
 mv "$ib/cargo" "$ib/cargo.off"
 if install_forge build; then fail "succeeded"; fi
