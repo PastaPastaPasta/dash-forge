@@ -620,6 +620,37 @@ else:
     index('C1', 'starBeat carries the trending window', 'starBeat', 'byWeek', True, properties=['$createdAt', 'repoId'],
           timeRange=True, outlivesDelete=False)
 
+# ---------------- RC2 riders (design/v5/RIDERS.md) ----------------
+# QW-069: reason and dupNumber carry no rule (readers judge them), so only their bounds refuse.
+if F['close_reason']:
+    ok('QW-069', 'close as completed', 'transition', reason=1)
+    ok('QW-069', 'close as not planned', 'transition', reason=2)
+    ok('QW-069', 'close as a duplicate of #3', 'transition', reason=3, dupNumber=3)
+    ok('QW-069', 'close as a duplicate with no canonical', 'transition', reason=3)
+    no('QW-069', 'reason 0', 'transition', 'minimum', reason=0)
+    no('QW-069', 'reason 4', 'transition', 'maximum', reason=4)
+    no('QW-069', 'dupNumber 0', 'transition', 'minimum', reason=3, dupNumber=0)
+    no('QW-069', 'dupNumber over u32', 'transition', 'maximum', reason=3, dupNumber=4294967296)
+else:
+    no('QW-069', 'no close reason property', 'transition', 'additionalProperties', reason=2)
+# QW2-010: a mirrored review comment's diff hunk
+HUNK = '@@ -10,3 +10,4 @@\n a\n-b\n+c\n+d'
+REVIEW_COMMENT = dict(imported=dict(IMP, url='https://github.com/x/y/pull/7#discussion_r1'), asMember=i(OWNER),
+                      commitOid=b(1, 20), path='src/a.rs', line=13, side=1)
+if F['review_hunk']:
+    ok('QW2-010', 'imported review comment with a hunk', 'comment', diffHunk=HUNK, **REVIEW_COMMENT)
+    ok('QW2-010', 'a hunk of 1024 bytes', 'comment', diffHunk='@@ -1 +1 @@\n+' + 'x' * 1011, **REVIEW_COMMENT)
+    no('QW2-010', 'a hunk over 1024 bytes', 'comment', 'maxBytes', diffHunk='@@ -1 +1 @@\n+' + '\u00e9' * 600, **REVIEW_COMMENT)
+    no('QW2-010', 'an empty hunk', 'comment', 'minLength', diffHunk='', **REVIEW_COMMENT)
+    no('QW2-010', 'a sealed comment with a plaintext hunk', 'comment', 'noPlain', body=DROP, vis='private', diffHunk=HUNK, **SEALED)
+    STORED_RC = doc('comment', diffHunk=HUNK, **REVIEW_COMMENT)
+    replace('QW2-010', 'an imported review comment\'s body edited', 'comment', STORED_RC, None, body='hi (edited)')
+    replace('QW2-010', 'a hunk changed', 'comment', STORED_RC, '40128', diffHunk='@@ -1 +1 @@\n+forged')
+    replace('QW2-010', 'a hunk removed', 'comment', STORED_RC, '40128', diffHunk=DROP)
+    replace('QW2-010', 'a hunk added to a stored comment', 'comment', doc('comment', **REVIEW_COMMENT), '40128', diffHunk=HUNK)
+else:
+    no('QW2-010', 'no diffHunk property', 'comment', 'additionalProperties', diffHunk=HUNK, **REVIEW_COMMENT)
+
 # Rules that read a total, a time or a height: judged on chain only (forge-contracts/scripts/rc1-live.mjs).
 LIVE_ONLY = {('issue', 'dense'), ('patch', 'dense'), ('transition', 'c1_closedAfter'), ('transition', 'c2_openAfter'),
              ('transition', 'c3_mergedAfter'), ('transition', 'c4_draftAfter'), ('transition', 'c5_draftClosedAfter'),
