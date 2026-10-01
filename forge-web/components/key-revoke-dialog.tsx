@@ -15,7 +15,7 @@
  * the dialog vanished and nothing was revoked.
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ShieldOff } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { Dialog } from '@/components/ui/dialog'
@@ -24,6 +24,7 @@ import { CostPreview } from '@/components/ui/cost-preview'
 import { ErrorBox } from '@/components/auth/protection-fields'
 import { useMasterKeyInput } from '@/components/auth/master-key-input'
 import { UnlockMore } from '@/components/auth/unlock-more'
+import { topUpStays } from '@/components/top-up-stays'
 import { UnlockNeededError } from '@/lib/auth/controller'
 import { IdentityUpdateNotSentError, WrongMasterKeyError } from '@/lib/auth/limited-key'
 import { KEY_DISABLE_CREDITS, previewCredits } from '@/lib/sdk'
@@ -39,6 +40,16 @@ export function KeyRevokeDialog({ unlimited, onClose }: { unlimited: boolean; on
   const [unlockAsked, setUnlockAsked] = useState(false)
   const needsUnlock = unlockScope === 'signing' || unlockAsked
   const noun = unlimited ? 'the keys this browser holds' : "this browser's key"
+  // What this browser keeps about the identity's top-ups after the revoke forgets the key (QW3-034).
+  const [stays, setStays] = useState<string | null>(null)
+  useEffect(() => {
+    if (identity === null) return
+    let live = true
+    void topUpStays(identity).then((s) => live && setStays(s))
+    return () => {
+      live = false
+    }
+  }, [identity])
 
   const revoke = async (): Promise<void> => {
     if (identity === null || !master.ready || isLoading) return
@@ -67,6 +78,11 @@ export function KeyRevokeDialog({ unlimited, onClose }: { unlimited: boolean; on
           Only need this browser to stop signing? Sign out &amp; forget key instead: nothing is sent, and the key stays valid on chain until it
           expires.
         </p>
+        {stays !== null ? (
+          <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="revoke-top-up-stays">
+            {stays}
+          </p>
+        ) : null}
         {needsUnlock ? (
           <UnlockMore
             forgot={false}
