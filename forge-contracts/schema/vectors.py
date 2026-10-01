@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""The RC1 accept/refuse document vectors, one set per contract, written to
-forge-contracts/vectors/rc1/<contract>.json (see its README for the format).
+"""The RC1/RC2 accept/refuse document vectors, one set per contract, written to
+forge-contracts/vectors/rc1/<contract>.json, with the replace vectors in <contract>.replace.json
+and the index vectors in <contract>.indices.json (see its README for the format).
 
-  python3 forge-contracts/schema/vectors.py [--check] [--gate <b7gate>]
+  python3 forge-contracts/schema/vectors.py [--check] [--off flag,flag] [--on flag,flag] [--out <dir>]
+                                            [--gate <b7gate>]
 
---check  write nothing; exit 1 when the committed vectors differ from a fresh generation.
---gate   also judge every case with b7gate --cases (rs-dpp v4.2.0-beta.7) against the committed
-         contracts and fail on any mismatch.
+--check     write nothing; exit 1 when the committed vectors differ from a fresh generation.
+--off/--on  the vectors of a build.py variant (the same flags): written only to --out.
+--out       write the files to this directory instead of forge-contracts/vectors/rc1.
+--gate      also judge every create case with b7gate --cases (rs-dpp v4.2.0-beta.7) against the
+            committed contracts and fail on any mismatch (RC1 only: beta.7 refuses RC2's
+            forge-community).
 
 Every case is a document create judged the way a node's structure validation judges it: the JSON
 schema, maxBytes, every `propertyConstraints` rule that reads no total, time or height, then the
@@ -25,6 +30,18 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.dont_write_bytecode = True  # no __pycache__ beside the schemas
+import build  # noqa: E402  (FLAGS: the cases follow the build's flags)
+
+AP = argparse.ArgumentParser()
+AP.add_argument('--check', action='store_true')
+AP.add_argument('--gate')
+AP.add_argument('--off', default='')
+AP.add_argument('--on', default='')
+AP.add_argument('--out')
+ARGS = AP.parse_args() if __name__ == '__main__' else AP.parse_args([])
+F = build.flags_from(ARGS.off, ARGS.on)
 REPO = os.path.dirname(os.path.dirname(HERE))
 CONTRACTS = os.path.join(REPO, 'forge-contracts', 'contracts')
 OUT = os.path.join(REPO, 'forge-contracts', 'vectors', 'rc1')
@@ -91,7 +108,12 @@ CONTRACT_OF.update({t: 'forge-collab' for t in ('issue', 'patch', 'transition', 
 CONTRACT_OF.update({t: 'forge-community' for t in ('event', 'authorEvent', 'milestone', 'runner', 'checkRun', 'policy', 'webhook',
                                                     'profile', 'star', 'watch', 'follow', 'starBeat')})
 
+if F['fused_star']:
+    del BASE['starBeat']   # C1: the star carries the trending window
+
 CASES = []
+REPLACES = []   # (contract) <contract>.replace.json: a replace of `stored` by `doc`
+INDICES = []    # (contract) <contract>.indices.json: what the parsed indexes must be
 
 
 def doc(t, /, **kw):
@@ -121,6 +143,36 @@ def ok(item, label, t, /, **kw):
 
 def no(item, label, t, why, /, **kw):
     case(item, label, t, "refused", why, **kw)
+
+
+def replace(item, label, t, stored, why, /, **kw):
+    """A replace of `stored` (a `doc(t, ...)`) by it with the changes `kw`; `why` None = accepted."""
+    c = {"item": item, "name": label, "type": t, "expect": "refused" if why else "ok"}
+    if why:
+        c["why"] = why
+    c["stored"] = stored
+    written = json.loads(json.dumps(stored))
+    for k, v in kw.items():
+        if v is DROP:
+            written.pop(k, None)
+        else:
+            written[k] = v
+    c["doc"] = written
+    REPLACES.append(c)
+
+
+def index(item, label, t, name, present, /, properties=None, **has):
+    """The parsed type `t` has (or lacks) index `name` (or, with `name` None, is itself present or
+    absent); `has` names index flags it must have (True) or lack (False)."""
+    c = {"item": item, "name": label, "type": t}
+    if name:
+        c["index"] = name
+    c["expect"] = "present" if present else "absent"
+    if properties:
+        c["properties"] = properties
+    if has:
+        c["has"] = has
+    INDICES.append(c)
 
 
 SEALED = dict(enc=b(5, 61), epoch=0)
@@ -454,11 +506,12 @@ no('R-18', 'run vis internal', 'checkRun', 'enum', vis='internal')
 no('R-19', 'webhook on a private repo', 'webhook', 'publicOnly', vis='private')
 no('R-19', 'webhook without vis', 'webhook', 'required', vis=DROP)
 
-# ---------------- O-08 trending public ----------------
-no('O-08', 'private beat', 'starBeat', 'enum', vis='private')
-no('O-08', 'beat without repoOwner', 'starBeat', 'required', repoOwner=DROP)
-no('O-08', 'beat without vis', 'starBeat', 'required', vis=DROP)
-no('O-08', 'the old {repoId} beat', 'starBeat', 'required', vis=DROP, repoOwner=DROP)
+# ---------------- O-08 trending public (gone with C1's fused star) ----------------
+if not F['fused_star']:
+    no('O-08', 'private beat', 'starBeat', 'enum', vis='private')
+    no('O-08', 'beat without repoOwner', 'starBeat', 'required', repoOwner=DROP)
+    no('O-08', 'beat without vis', 'starBeat', 'required', vis=DROP)
+    no('O-08', 'the old {repoId} beat', 'starBeat', 'required', vis=DROP, repoOwner=DROP)
 
 # ---------------- COMM-9 social counters (index-only shapes unchanged) ----------------
 no('COMM-9', 'star with an extra field', 'star', 'additionalProperties', note='x')
@@ -510,10 +563,62 @@ no('base', 'checkRun conclusion outside its enum', 'checkRun', 'enum', conclusio
 
 
 # ---------------- a node's create structure checks after the schema: distinctFrom, encryptedFor ----------------
-no('O-08', "a beat on the signer's own repo (distinctFrom)", 'starBeat', '10419', repoOwner=i(OWNER))
+if not F['fused_star']:
+    no('O-08', "a beat on the signer's own repo (distinctFrom)", 'starBeat', '10419', repoOwner=i(OWNER))
 no('base', 'following yourself (distinctFrom)', 'follow', '10419', identityId=i(OWNER))
 no('R-13', 'a 40-byte wrap (not a multiple of 16)', 'repoKey', '10420', wrapped=b(9, 40))
 no('R-19', 'a 33-byte webhook secret (not a multiple of 16)', 'webhook', '10420', secret=b(9, 33))
+
+# ---------------- RC2 (design/v5/PLAN.md §3): replaces of a stored check run ----------------
+# A replace is judged as a v5 node judges it: the document properties, then `immutable`, where a
+# changed property listed by name is refused (40128), and one listed with a condition only while
+# its condition holds on the written document with the stored one under `$old`.
+QUEUED = doc('checkRun', status='queued', conclusion=DROP, startedAt=DROP, completedAt=DROP, outcome=0, externalId=DROP)
+RUNNING = doc('checkRun', status='in_progress', conclusion=DROP, completedAt=DROP, outcome=0)
+DONE = doc('checkRun', logUrl='https://logs.example.com/1.txt', logSha256=b(1, 32), artifacts='[]')
+# M1: startedAt, completedAt, conclusion and externalId are set once (immutableAllowSetting's semantics)
+replace('M1', 'queued -> in progress sets startedAt', 'checkRun', QUEUED, None, status='in_progress', startedAt=1760000000000)
+replace('M1', 'externalId set once on a queued run', 'checkRun', QUEUED, None, externalId='gh-9')
+replace('M1', 'in progress -> completed sets completedAt and conclusion', 'checkRun', RUNNING, None,
+        status='completed', completedAt=1760000060000, conclusion='success', outcome=1)
+replace('M1', 'startedAt moved', 'checkRun', RUNNING, '40128', startedAt=1760000000001)
+replace('M1', 'externalId changed', 'checkRun', RUNNING, '40128', externalId='gh-2')
+replace('M1', 'externalId removed', 'checkRun', RUNNING, '40128', externalId=DROP)
+replace('M1', 'conclusion flipped after completion', 'checkRun', DONE, '40128', conclusion='failure', outcome=2)
+replace('M1', 'a completed run reopened without its conclusion', 'checkRun', DONE, '40128',
+        status='in_progress', conclusion=DROP, completedAt=DROP, outcome=0)
+replace('M1', 'a completed run reopened keeping its conclusion', 'checkRun', DONE, 'doneIfConclusion',
+        status='in_progress', completedAt=DROP, outcome=0)
+replace('M1', 'name changed (frozen outright)', 'checkRun', QUEUED, '40128', name='build2')
+replace('M1', 'vis changed (frozen outright)', 'checkRun', QUEUED, '40128', vis='private', detailsUrl=DROP, summary=DROP)
+# S1: once the stored run is completed, its evidence stands; it is free until then
+replace('S1', 'summary edited while running', 'checkRun', RUNNING, None, summary='half way')
+replace('S1', 'evidence written by the replace that completes the run', 'checkRun', RUNNING, None,
+        status='completed', completedAt=1760000060000, conclusion='success', outcome=1, summary='all green',
+        logUrl='https://logs.example.com/2.txt', logSha256=b(2, 32), artifacts='[]')
+S1 = '40128' if F['check_evidence_freeze'] else None
+replace('S1', 'a completed run\'s logUrl replaced', 'checkRun', DONE, S1, logUrl='https://logs.example.com/forged.txt')
+replace('S1', 'a completed run\'s log replaced with its hash', 'checkRun', DONE, S1, logUrl='ipfs://bafyforged', logSha256=b(3, 32))
+replace('S1', 'a completed run\'s summary edited', 'checkRun', DONE, S1, summary='all green (edited)')
+replace('S1', 'a completed run\'s detailsUrl removed', 'checkRun', DONE, S1, detailsUrl=DROP)
+replace('S1', 'a completed run\'s artifacts replaced', 'checkRun', DONE, S1, artifacts='[{"name":"other"}]')
+replace('S1', 'a log added to a completed run', 'checkRun', doc('checkRun'), S1, logUrl='https://logs.example.com/late.txt', logSha256=b(4, 32))
+
+# ---------------- RC2: the parsed indexes ----------------
+index('S2', 'reviews filed under the reviewed patch\'s owner', 'review', 'toAuthor', F['review_to_author'],
+      **(dict(properties=['patchId.$ownerId', '$createdAt'], derived=True) if F['review_to_author'] else {}))
+index('S3', 'reviews filed under their writer', 'review', 'author', F['review_author'],
+      **(dict(properties=['$ownerId', '$createdAt'], derived=False) if F['review_author'] else {}))
+if F['fused_star']:
+    index('C1', 'the star carries the trending window', 'star', 'byWeek', True, properties=['$createdAt', 'repoId'],
+          timeRange=True, rangeCountable=True, rankedCountable=True, outlivesDelete=True)
+    index('C1', 'the all-time star count is cleared by an unstar', 'star', 'byRepo', True, properties=['repoId'],
+          rangeCountable=True, rankedCountable=True, outlivesDelete=False)
+    index('C1', 'no starBeat type', 'starBeat', None, False)
+else:
+    index('C1', 'no window on the star', 'star', 'byWeek', False)
+    index('C1', 'starBeat carries the trending window', 'starBeat', 'byWeek', True, properties=['$createdAt', 'repoId'],
+          timeRange=True, outlivesDelete=False)
 
 # Rules that read a total, a time or a height: judged on chain only (forge-contracts/scripts/rc1-live.mjs).
 LIVE_ONLY = {('issue', 'dense'), ('patch', 'dense'), ('transition', 'c1_closedAfter'), ('transition', 'c2_openAfter'),
@@ -526,8 +631,8 @@ def uncovered():
     """(contract, type, rule) with no refusing vector and not judged on chain only."""
     refused = {(c['type'], c['why']) for c in CASES if c['expect'] == 'refused'}
     out = []
-    for name in NAMES:
-        for t, d in json.load(open(os.path.join(CONTRACTS, f'{name}.json')))['documentSchemas'].items():
+    for name, contract in build.build(F).items():
+        for t, d in contract['documentSchemas'].items():
             for rule in d.get('propertyConstraints', {}):
                 if (t, rule) not in refused and (t, rule) not in LIVE_ONLY:
                     out.append((name, t, rule))
@@ -535,13 +640,16 @@ def uncovered():
 
 
 def split():
-    out = {n: [] for n in NAMES}
-    seen = set()
-    for c in CASES:
-        key = (c['type'], c['name'])
-        assert key not in seen, key
-        seen.add(key)
-        out[CONTRACT_OF[c['type']]].append(c)
+    """{file name: its cases}: `<contract>.json` for every contract, and `<contract>.replace.json`
+    and `<contract>.indices.json` for those with such cases."""
+    out = {f'{n}.json': [] for n in NAMES}
+    for suffix, cases in (('', CASES), ('.replace', REPLACES), ('.indices', INDICES)):
+        seen = set()
+        for c in cases:
+            key = (c['type'], c['name'])
+            assert key not in seen, key
+            seen.add(key)
+            out.setdefault(f"{CONTRACT_OF[c['type']]}{suffix}.json", []).append(c)
     return out
 
 
@@ -579,25 +687,32 @@ def gate(gate_bin, sets):
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--check', action='store_true')
-    ap.add_argument('--gate')
-    a = ap.parse_args()
+    if ARGS.check and (ARGS.off or ARGS.on):
+        sys.exit('--check compares the default build: use it without --off/--on')
+    if (ARGS.off or ARGS.on) and not ARGS.out:
+        sys.exit('a variant (--off/--on) is written only to --out')
     sets = split()
-    paths = {n: os.path.join(OUT, f'{n}.json') for n in NAMES}
+    out = ARGS.out or OUT
+    paths = {f: os.path.join(out, f) for f in sets}
     missing = uncovered()
     for m in missing:
         print('no refusing vector for rule %s.%s.%s' % m)
-    if a.check:
-        stale = [p for n, p in paths.items() if not os.path.exists(p) or open(p).read() != dumps(sets[n])]
+    if ARGS.check:
+        stale = [p for f, p in paths.items() if not os.path.exists(p) or open(p).read() != dumps(sets[f])]
+        stale += [os.path.join(OUT, f) for f in os.listdir(OUT) if f.endswith('.json') and f not in sets]
         for p in stale:
             print(f'stale: {os.path.relpath(p, REPO)} (re-run forge-contracts/schema/vectors.py)')
         sys.exit(1 if stale or missing else 0)
-    os.makedirs(OUT, exist_ok=True)
-    for n, p in paths.items():
-        open(p, 'w').write(dumps(sets[n]))
-    print(f'{len(CASES)} cases written to {os.path.relpath(OUT, REPO)}')
-    sys.exit(1 if missing or (a.gate and gate(a.gate, sets)) else 0)
+    os.makedirs(out, exist_ok=True)
+    for f, p in paths.items():
+        open(p, 'w').write(dumps(sets[f]))
+    if not ARGS.out:
+        for f in os.listdir(OUT):
+            if f.endswith('.json') and f not in sets:
+                os.remove(os.path.join(OUT, f))
+    print(f'{len(CASES)} create, {len(REPLACES)} replace and {len(INDICES)} index cases written to {os.path.relpath(out, REPO)}')
+    sys.exit(1 if missing or (ARGS.gate and gate(ARGS.gate, {n: sets[f'{n}.json'] for n in NAMES})) else 0)
+
 
 if __name__ == '__main__':
     main()

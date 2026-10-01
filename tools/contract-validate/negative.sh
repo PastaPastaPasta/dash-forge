@@ -11,7 +11,7 @@ vectors="$here/../../forge-contracts/vectors/rc1"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/dash-forge-target-contract-validate}"
-# Pinned like the rs-dpp tag it builds against (platform v4.2.0-beta.7's rust-toolchain.toml)
+# Pinned like the rs-dpp tag it builds against (platform v5.0.0-beta.1's rust-toolchain.toml)
 cargo +1.98.1 build -q --locked --manifest-path "$here/Cargo.toml"
 bin="$CARGO_TARGET_DIR/debug/contract-validate"
 
@@ -67,13 +67,34 @@ expect_reject review-link-where-missing-prop collab '.documentSchemas.comment.pr
 expect_reject policy-gate-permanent-on-deletable community '.documentSchemas.policy.ownerRefersTo.type = "permanentDocument"'
 expect_reject immutable-unknown-prop collab '.documentSchemas.patch.immutable += ["nope"]'
 expect_reject immutable-on-immutable-type community '.documentSchemas.policy.immutable = ["repoId"]'
-# C-1 (platform-parity-spec §4, §6)
-# a timeRange index needs $createdAt required, which is why star is not fused with trending
-expect_reject timerange-without-createdat community '.documentSchemas.starBeat.required = ["repoId"]'
-# every indexOnly type keeps a $createdAt-free proof index
-expect_reject beat-without-proof-index community '.documentSchemas.starBeat.indices |= map(select(.name != "byOwner"))'
-# the window's ttl is capped at one week (protocol 14)
-expect_reject beat-ttl-over-a-week community '.documentSchemas.starBeat.indices[1].timeRange.ttl = 691200'
+# C-1 (platform-parity-spec §4, §6), and RC2 C1 (the fused star) when the build has it
+if jq -e '.documentSchemas.starBeat' "$contracts/forge-community.json" > /dev/null; then
+  # a timeRange index needs $createdAt required
+  expect_reject timerange-without-createdat community '.documentSchemas.starBeat.required = ["repoId"]'
+  # every indexOnly type keeps a $createdAt-free proof index
+  expect_reject beat-without-proof-index community '.documentSchemas.starBeat.indices |= map(select(.name != "byOwner"))'
+  # the window's ttl is capped at one week (protocol 14)
+  expect_reject beat-ttl-over-a-week community '.documentSchemas.starBeat.indices[1].timeRange.ttl = 691200'
+else
+  week='(.documentSchemas.star.indices[] | select(.name == "byWeek"))'
+  # the star's window needs $createdAt required (C1 adds it), its ttl is capped at one week, and
+  # outlivesDelete needs a ttl so the entries an unstar leaves expire (book contract-keywords/index-only.md:227)
+  expect_reject star-window-without-createdat community '.documentSchemas.star.required = ["repoId"]' 'does not require'
+  expect_reject star-window-ttl-over-a-week community "$week.timeRange.ttl = 691200" 'exceeds the maximum'
+  expect_reject star-outlives-delete-without-ttl community "del($week.timeRange.ttl)" 'outlivesDelete. without a .timeRange. carrying a .ttl.'
+  expect_reject star-outlives-delete-with-a-sum community "$week.summable = \"repoId\""
+  # the index vectors are load-bearing: a star window that is cleared by an unstar disagrees
+  expect_reject star-window-cleared-by-unstar community "del($week.outlivesDelete)" 'index vectors disagree'
+fi
+if jq -e '.documentSchemas.review.indices | any(.name == "toAuthor")' "$contracts/forge-collab.json" > /dev/null; then
+  # RC2 S2: a derived index property needs a fixed same-contract reference to a fixed field, and
+  # no uniqueness (book contract-keywords/derived-index-properties.md:80-92)
+  to_author='(.documentSchemas.review.indices[] | select(.name == "toAuthor"))'
+  expect_reject derived-index-unique collab "$to_author.unique = true" 'a derived value is read from the referenced document'
+  expect_reject derived-index-mutable-field collab "$to_author.properties[0] = {\"patchId.title\": \"asc\"}" 'can change once written'
+  expect_reject derived-index-movable-reference collab '.documentSchemas.review.documentsMutable = true' 'a replace could point "patchId" at another document'
+  expect_reject s2-index-dropped collab '.documentSchemas.review.indices |= map(select(.name != "toAuthor"))' 'index vectors disagree'
+fi
 # ranked needs the range axis
 expect_reject ranked-without-range community 'del(.documentSchemas.star.indices[0].rangeCountable)'
 # a runner is granted by the repo owner only, exactly like maintainer / writer
@@ -106,12 +127,26 @@ expect_reject sum-without-summable-index collab '.documentSchemas.transition.ind
 expect_reject summed-property-optional collab '.documentSchemas.transition.required -= ["delta"]'
 expect_reject skip-property-required collab '.documentSchemas.issue.required += ["upstreamNumber"]'
 expect_reject transition-member-findby-non-unique collab '.documentSchemas.transition.ownerRefersTo.anyOf[0].findBy = {"memberId": "."}'
-expect_reject allow-setting-a-mutable-property community '.documentSchemas.checkRun.immutableAllowSetting += ["summary"]'
+# RC2 M1 (design/v5/PLAN.md §3.1): v5 refuses `immutableAllowSetting` on every parse, and checks
+# each conditional `immutable` entry (book contract-keywords/mutability.md:117-131)
+expect_reject immutable-allow-setting-refused community '.documentSchemas.checkRun.immutableAllowSetting = ["summary"]' 'immutableAllowSetting. is replaced'
+expect_reject immutable-condition-unknown-prop community '.documentSchemas.checkRun.immutable += [{"property":"nope","when":{"present":"$old.nope"}}]' 'not a property of the document type'
+expect_reject immutable-listed-twice community '.documentSchemas.checkRun.immutable += [{"property":"repoId","when":{"present":"$old.repoId"}}]' 'under .immutable. twice'
+expect_reject old-read-outside-immutable community '.documentSchemas.checkRun.propertyConstraints.oldRead = {"present":"$old.summary"}' '\$old\.summary'
+# The replace vectors are load-bearing: a set-once field frozen outright, or left free, and (S1) a
+# completed run's log left free, each make a replace vector disagree
+expect_reject m1-set-once-frozen-outright community '.documentSchemas.checkRun.immutable |= map(if type == "object" and .property == "startedAt" then "startedAt" else . end)' 'replace.json vectors disagree'
+expect_reject m1-set-once-left-free community '.documentSchemas.checkRun.immutable |= map(select(type == "string" or .property != "externalId"))' 'replace.json vectors disagree'
+if jq -e '.documentSchemas.checkRun.immutable | any(type == "object" and .property == "logUrl")' "$contracts/forge-community.json" > /dev/null; then
+  expect_reject s1-log-left-free community '.documentSchemas.checkRun.immutable |= map(select(type == "string" or .property != "logUrl"))' 'replace.json vectors disagree'
+fi
 # RC1 (WIPE-DECISIONS D-10, D-11): the vis stamps and the new references are registration-checked
 expect_reject vis-where-missing-on-member community '.documentSchemas.webhook.ownerRefersTo.where = {"visibility": "vis"}'
 expect_reject vis-where-kind-mismatch collab '.documentSchemas.issue.properties.repoId.refersTo.where = {"visibility": "number"}'
 expect_reject reply-where-missing-prop collab '.documentSchemas.comment.properties.replyTo.refersTo.where.replyTo = "nope"'
-expect_reject beat-where-owner-non-id community '.documentSchemas.starBeat.properties.repoId.refersTo.where = {"$ownerId": "vis"}' '40126'
+if jq -e '.documentSchemas.starBeat' "$contracts/forge-community.json" > /dev/null; then
+  expect_reject beat-where-owner-non-id community '.documentSchemas.starBeat.properties.repoId.refersTo.where = {"$ownerId": "vis"}' '40126'
+fi
 expect_reject consent-findby-non-unique core '.documentSchemas.consent.indices[0].unique = false'
 expect_reject asmember-findby-non-unique collab '.schemaDefs.member.refersTo.anyOf[0].findBy = {"memberId": "."}'
 expect_reject check-source-cross-permanent community '.documentSchemas.policy.properties.requiredCheckSources.items.refersTo.anyOf[1].type = "permanentDocument"'
