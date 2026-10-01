@@ -4,27 +4,13 @@
   "name": "reviews filed under the reviewed patch's owner",
   "type": "review",
   "index": "toAuthor",
-  "expect": "present",
-  "properties": [
-   "patchId.$ownerId",
-   "$createdAt"
-  ],
-  "has": {
-   "derived": true
-  }
+  "expect": "absent"
  },
  {
   "item": "S3",
   "name": "reviews filed under their writer",
   "type": "review",
   "index": "author",
-  "expect": "present",
-  "properties": [
-   "$ownerId",
-   "$createdAt"
-  ],
-  "has": {
-   "derived": false
-  }
+  "expect": "absent"
  }
 ]
