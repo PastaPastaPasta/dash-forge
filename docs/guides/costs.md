@@ -17,7 +17,7 @@ Amounts are in **DASH**. Dollar figures are examples at **$30/DASH**, the same f
 
 Platform fees are paid in **credits**, from your identity's balance. **1 DASH = 100,000,000,000 credits.**
 
-You get credits by locking Dash into your identity from any Dash wallet: when you create the identity, or later with a top-up (the bridge's **Top Up Existing Identity**). Forge does not sponsor identities, and mainnet has no faucet. Devnet bonsia Dash is free, from the [bonsia faucet](https://faucet.bonsia.networks.dash.org).
+You get credits by locking Dash into your identity from any Dash wallet: when you create the identity, or later with a top-up (the bridge's **Top Up Existing Identity**). Forge does not sponsor identities, and mainnet has no faucet. Devnet sakura Dash is free, from the [sakura faucet](https://faucet.sakura.networks.dash.org).
 
 ```sh
 dg auth balance
@@ -195,7 +195,7 @@ Sizes and fees below were computed with `forge-core`'s own code from a full clon
 | junegunn/fzf (`master`) | 178 | 3,746 / 3,488 | 6,925 B, 1 chunk | ~0.0044 DASH | ~0.0016 DASH |
 | dtolnay/anyhow (`master`) | 62 | 931 / 668 | 2,490 B, 1 chunk | ~0.0032 DASH | ~0.0016 DASH |
 
-**Measured (v1):** backfilling dashpay/dash's v1 index with `dg repo reindex` on devnet moutai (Platform 4.2.0-beta.6, 2026-09-29) cost **0.02479 DASH** for 66,965 B (quoted 0.02455 before a repository's first-index margin was added; the quote now includes it and stays above the charge). That index was computed in a shallow clone, so its counts (33,553 / 7,979) were short; a shallow clone is now refused. The v2 backfill of the dash mirror waits for its re-import on devnet bonsia. Computing dash's full v2 index takes about 1.5 s on the pusher's machine.
+**Measured (v1):** backfilling dashpay/dash's v1 index with `dg repo reindex` on devnet moutai (Platform 4.2.0-beta.6, 2026-09-29) cost **0.02479 DASH** for 66,965 B (quoted 0.02455 before a repository's first-index margin was added; the quote now includes it and stays above the charge). That index was computed in a shallow clone, so its counts (33,553 / 7,979) were short; a shallow clone is now refused. The v2 backfill of the dash mirror waits for its re-import on devnet sakura. Computing dash's full v2 index takes about 1.5 s on the pusher's machine.
 
 `dg repo reindex <repo>`, run inside a clone that has the default branch's tip, publishes the index for a repository pushed before it existed, or a v2 index over a v1 one, and quotes its price before asking. A push that stores no new pack, such as a retry of a recorded one, publishes none; `dg repo reindex` fills that in.
 

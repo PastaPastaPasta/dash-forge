@@ -95,7 +95,7 @@ Optionally, report `in_progress` at the start of a long job with an early step t
 ## Test it
 
 - `bash check-action/test.sh` runs offline against a fake `dg`. It checks the arguments built from each input and the environment, the refusals, the outputs, the step summary, warn-or-fail, and that the key stays off the command line.
-- The `Check Action` workflow (`.github/workflows/check-action.yml`) also reports its own job to a Forge repository on a devnet. That live job is **skipped** until the repository has a `FORGE_CI_RUNNER_KEY` secret and the `FORGE_CHECK_REPO` and `FORGE_CHECK_DEVNET` variables (for example `bonsia`). These need the owner's approval (`SECRETS-TODO.md`).
+- The `Check Action` workflow (`.github/workflows/check-action.yml`) also reports its own job to a Forge repository on a devnet. That live job is **skipped** until the repository has a `FORGE_CI_RUNNER_KEY` secret and the `FORGE_CHECK_REPO` and `FORGE_CHECK_DEVNET` variables (for example `sakura`). These need the owner's approval (`SECRETS-TODO.md`).
 - To run the same flow on your machine against a repository you own, set a simulated GitHub environment and run the two scripts. With a runner key in `DASH_FORGE_KEY`:
 
 ```sh

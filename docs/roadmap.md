@@ -78,10 +78,10 @@ Every roadmap item must keep all of these true:
 | D-G | **Users fund their own identities.** No sponsored grants and no faucet in the product (the testnet/devnet faucet links are only for development). |
 | D-H | **Private repos are in the first release.** |
 | D-I | **Hosting = GitHub Pages only** (plus a published IPFS build users can pin themselves). |
-| D-J | **Mainnet contracts are registered by the owner** once PV14 is active on mainnet (expected ~1 month after 2026-09-24; testnet ~1–2 weeks). All PV14 development happens on a devnet until then: **devnet bonsia** (protocol 14, drive 4.2.0-beta.7) since 2026-09-29, devnet moutai before that (drive 4.2.0-beta.5; reset 2026-09-27). |
+| D-J | **Mainnet contracts are registered by the owner** once PV14 is active on mainnet (expected ~1 month after 2026-09-24; testnet ~1–2 weeks). All PV14 development happens on a devnet until then: **devnet sakura** (protocol 14, drive 5.0.0-beta.1) since 2026-10-01, devnet bonsia (drive 4.2.0-beta.7) from 2026-09-29, devnet moutai before that (drive 4.2.0-beta.5; reset 2026-09-27). |
 | D-L | **Sign in with a mobile Dash wallet (yappr / App Connect style)** is a launch requirement (owner, 2026-09-26). A user scans a QR (or taps a deep link on mobile) with the Dash Wallet app on iOS or Android, approves on the phone, and is signed in with a limited, contract-group-bound key. No key file and no key paste in the browser. See Phase 4. |
 | D-K | External accounts (Apple signing, pinning services, cloud buckets) are **out of scope for now**. S3 and IPFS are tested against local MinIO and kubo only. |
-| D-M | **2026-09-26: forge-v1 removed, no backwards compatibility; forge-v2 only.** The registry contract, the per-repo contract template, token ACLs, v1 read compatibility (`dash://<contract id>`, `?contract=` routes), the registry overrides and `dg collab suspend/unsuspend` are gone, and there is no migration path. The v1 data on testnet and on forge.dashhq.org was test data only the owner used. The hosted web app is built for the PV14 devnet (moutai, then bonsia) until forge-v2 is registered on testnet (when PV14 reaches it) and mainnet. |
+| D-M | **2026-09-26: forge-v1 removed, no backwards compatibility; forge-v2 only.** The registry contract, the per-repo contract template, token ACLs, v1 read compatibility (`dash://<contract id>`, `?contract=` routes), the registry overrides and `dg collab suspend/unsuspend` are gone, and there is no migration path. The v1 data on testnet and on forge.dashhq.org was test data only the owner used. The hosted web app is built for the PV14 devnet (moutai, then bonsia, now sakura) until forge-v2 is registered on testnet (when PV14 reaches it) and mainnet. |
 
 ### Still open
 | # | Question | Default until decided |
@@ -92,7 +92,7 @@ Every roadmap item must keep all of these true:
 
 ## 6. Roadmap
 
-Sizes: S ≈ days, M ≈ 1–2 weeks, L ≈ 3+ weeks of focused work. Phase 0 comes first. Phases 1 and 2 then run in parallel. Phase 2 targets devnet bonsia now (moutai until 2026-09-29) and moves to testnet when PV14 activates there.
+Sizes: S ≈ days, M ≈ 1–2 weeks, L ≈ 3+ weeks of focused work. Phase 0 comes first. Phases 1 and 2 then run in parallel. Phase 2 targets devnet sakura now (bonsia until 2026-10-01, moutai until 2026-09-29) and moves to testnet when PV14 activates there.
 
 ### Phase 0 — Make it true and green (S–M) · *gate: nightly green 7 days, zero misleading UI*
 - [ ] Land PR #4 (browse index on push). Rebase and land `fix/pull-request-diff` (PR diff renderer).

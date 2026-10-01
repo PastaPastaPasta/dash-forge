@@ -26,7 +26,7 @@ This guide covers:
 
 ## The setup wizard
 
-Open **[forge.dashhq.org/mirror](https://forge.dashhq.org/mirror/)**, or **New → Mirror a GitHub repo** in the header. You need a public GitHub repository and a Dash identity. You can create the identity on the same page ([Identity and keys](identity-and-keys.md)). The hosted site moves to bonsia when the web app cuts over ([Which network](README.md#which-network)). Until then, the wizard is at `/mirror` on any build of `forge-web` for bonsia. The wizard works through six steps:
+Open **[forge.dashhq.org/mirror](https://forge.dashhq.org/mirror/)**, or **New → Mirror a GitHub repo** in the header. You need a public GitHub repository and a Dash identity. You can create the identity on the same page ([Identity and keys](identity-and-keys.md)). The hosted site moves to sakura when its contracts are registered and the web app cuts over ([Which network](README.md#which-network)). Until then, the wizard is at `/mirror` on any build of `forge-web` for sakura that records them. The wizard works through six steps:
 
 | Step | What happens | On chain |
 |---|---|---|
@@ -51,11 +51,11 @@ You need:
   ```sh
   cargo install --locked --path crates/forge-import
   ```
-- A funded identity, signed in with `dg auth new` or `dg auth login` ([quick start, steps 2–3](quick-start.md#2-get-an-identity)). `dg import` uses that stored key. The standalone `forge-import` does not read `dg`'s default: give it `--identity <source>` or `DASH_FORGE_KEY`, for example `DASH_FORGE_KEY=keychain:dash-forge/devnet-bonsia/<identity id>` for the key `dg auth` keeps in the keychain ([key sources](identity-and-keys.md#where-keys-live-today)).
+- A funded identity, signed in with `dg auth new` or `dg auth login` ([quick start, steps 2–3](quick-start.md#2-get-an-identity)). `dg import` uses that stored key. The standalone `forge-import` does not read `dg`'s default: give it `--identity <source>` or `DASH_FORGE_KEY`, for example `DASH_FORGE_KEY=keychain:dash-forge/devnet-sakura/<identity id>` for the key `dg auth` keeps in the keychain ([key sources](identity-and-keys.md#where-keys-live-today)).
 - The [GitHub CLI](https://cli.github.com), logged in with `gh auth login` (or `GH_TOKEN` / `GITHUB_TOKEN` in the environment). The importer reads issues, PRs and releases through it.
 - Optional but recommended: a storage profile for your own bucket (`dg storage add`; see [Bring your own storage](bring-your-own-storage.md)), so that pack bytes do not go on Platform at ~0.33 DASH/MiB ([Costs](costs.md)).
 
-> **Network.** The importer writes **forge-v2** repositories (about **0.0016 DASH** to create). They exist on devnet bonsia today (`--network devnet --devnet-name bonsia`), come to testnet when Platform protocol 14 reaches it, and to mainnet after protocol 14 activates there and the contracts are registered.
+> **Network.** The importer writes **forge-v2** repositories (about **0.0016 DASH** to create). They exist on devnet sakura once its RC2 registration lands (`--network devnet --devnet-name sakura`), come to testnet when Platform protocol 14 reaches it, and to mainnet after protocol 14 activates there and the contracts are registered.
 
 > **Cost.** A first import is mostly git data plus one document per issue, PR, comment and review. The Mirror Action's first live run of a small repository (`dash-faucet`, packs on Platform) cost about **0.078 DASH**; a repository with 2 PRs, 15 comments and 7 reviews cost 0.112 DASH. Re-runs pay only for what is new, and nothing when nothing changed. `--dry-run` prices your repository before you spend anything.
 
@@ -78,13 +78,13 @@ The estimate follows the same policy. With your own storage, the git part costs 
 **Always start with a dry run.** It reads everything, compares it with what the destination already holds, and prints what it would write and what that would cost. It writes nothing:
 
 ```sh
-forge-import alice/project --network devnet --devnet-name bonsia --dry-run
+forge-import alice/project --network devnet --devnet-name sakura --dry-run
 ```
 
 Then run it with a spending cap:
 
 ```sh
-forge-import alice/project --network devnet --devnet-name bonsia --max-spend 0.5 --state ./alice-project.sync.json
+forge-import alice/project --network devnet --devnet-name sakura --max-spend 0.5 --state ./alice-project.sync.json
 ```
 
 Unlike `git` and `dg`, the standalone `forge-import` does not read the network `dg auth` recorded: without `--network` (or `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME`) it uses testnet, which has no Forge deployment ([E702](../errors.md#e702)). `dg import alice/project` takes the same core flags and uses `dg`'s network and identity defaults.
@@ -256,7 +256,7 @@ jobs:
         with:
           repo: dash://<owner identity id>/<repo name>
           network: devnet                 # the default is mainnet, which has no Forge deployment yet
-          devnet-name: bonsia
+          devnet-name: sakura
           sync: code,releases,issues,prs
           storage-kind: s3
           s3-endpoint: https://<account>.r2.cloudflarestorage.com
@@ -296,7 +296,7 @@ Run the same import again whenever you like, from cron or another CI system, wit
 
 ```sh
 # crontab -e: every 15 minutes, code and issues, never more than 0.02 DASH a run
-*/15 * * * * DASH_FORGE_KEY=/srv/mirror/ci-identity.json forge-import alice/project --repo <owner id>/project --network devnet --devnet-name bonsia --state /srv/mirror/project.sync.json --work-dir /srv/mirror/project.git --max-spend 0.02 --yes --summary-json /srv/mirror/last-run.json
+*/15 * * * * DASH_FORGE_KEY=/srv/mirror/ci-identity.json forge-import alice/project --repo <owner id>/project --network devnet --devnet-name sakura --state /srv/mirror/project.sync.json --work-dir /srv/mirror/project.git --max-spend 0.02 --yes --summary-json /srv/mirror/last-run.json
 ```
 
 If you only want code, plain git does it with no importer at all:

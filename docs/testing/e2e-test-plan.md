@@ -4,11 +4,11 @@ Full pyramid with emphasis on **real end-to-end testing against live networks**,
 
 ## 1. Test infrastructure: identities & funding
 
-forge-v2 (shared contracts forge-core + forge-collab, Platform protocol 14; [contracts/forge-v2.md](../contracts/forge-v2.md)) is deployed only on **devnet bonsia** today (the RC1 contracts; moutai until 2026-09-29), so every live suite runs there. Testnet runs resume once protocol 14 reaches testnet and forge-v2 is registered there.
+forge-v2 (shared contracts forge-core + forge-collab, Platform protocol 14; [contracts/forge-v2.md](../contracts/forge-v2.md)) targets **devnet sakura** (the RC2 contracts on Platform v5.0.0-beta.1, being registered; sakura with the RC1 contracts until 2026-10-01, moutai until 2026-09-29), so every live suite runs there. Testnet runs resume once protocol 14 reaches testnet and forge-v2 is registered there.
 
-### 1.1 Obtaining identities (devnet bonsia)
+### 1.1 Obtaining identities (devnet sakura)
 
-**A. Pre-provisioned fixture pool (primary).** Funded bonsia identities minted by `make devnet-identities` (`tools/mint-identity pool`, funded from the devnet's faucet wallet key; manual top-ups from https://faucet.bonsia.networks.dash.org), as bridge-format JSON (mnemonic + keys incl. High/Critical AUTH WIFs). Roles: OWNER (owns the test repos, adds and removes members), MAINTAINER, COLLAB (added as a writer, then removed), CONTRIB (never a member), CI-RUNNER, RELAY, DEPLOYER (registered the RC1 contracts on bonsia), TREASURY. CI secrets; locally `~/.config/dash-forge/test-identities/devnet-bonsia/` (gitignored — yappr's checked-in identity JSONs are explicitly not repeated). `make devnet-identities-verify` checks balances and keys.
+**A. Pre-provisioned fixture pool (primary).** Funded sakura identities minted by `make devnet-identities` (`tools/mint-identity pool`, funded from the devnet's faucet wallet key; manual top-ups from https://faucet.sakura.networks.dash.org), as bridge-format JSON (mnemonic + keys incl. High/Critical AUTH WIFs). Roles: OWNER (owns the test repos, adds and removes members), MAINTAINER, COLLAB (added as a writer, then removed), CONTRIB (never a member), CI-RUNNER, RELAY, DEPLOYER (registered the RC1 contracts on sakura), TREASURY. CI secrets; locally `~/.config/dash-forge/test-identities/devnet-sakura/` (gitignored — yappr's checked-in identity JSONs are explicitly not repeated). `make devnet-identities-verify` checks balances and keys.
 
 **B. Programmatic minting (`tools/mint-identity`, built in Phase 0 S0.4).** Headless flow reimplementing the bridge: derive HD keys → fund the deposit address (a devnet funding key; on testnet `POST https://faucet.thepasta.org/api/core-faucet {address}`, **3/hour/IP**, with TREASURY as the fallback) → asset-lock tx → chain lock (devnet) or InstantSend lock (testnet) → `identities.create` → bridge-format JSON out. Used for onboarding tests, pool replenishment, top-ups.
 
@@ -16,11 +16,11 @@ forge-v2 (shared contracts forge-core + forge-collab, Platform protocol 14; [con
 
 | Env | Purpose |
 |---|---|
-| **Devnet bonsia** (protocol 14, drive 4.2.0-beta.7) | All integration + e2e suites; contract re-registration rehearsals (`deploy-v2.mjs --force-new`) |
+| **Devnet sakura** (protocol 14, drive 5.0.0-beta.1) | All integration + e2e suites; contract re-registration rehearsals (`deploy-v2.mjs --force-new`) |
 | Testnet | The same suites once protocol 14 and forge-v2 are live there |
 | Mainnet | Production smoke (§8) after forge-v2 is registered there |
 
-Contract ids from the `v2` section of `forge-contracts/deployments/<network>.json` (`devnet-bonsia.json`); never hardcoded. forge-v2 repositories, issues, PRs, events and Platform-stored packs cannot be deleted, so suites reuse reserved fixture repos (e2e/README.md) and write fresh `e2e/<run-id>/…` branches, deleting the refs after each run, instead of creating and deleting repositories.
+Contract ids from the `v2` section of `forge-contracts/deployments/<network>.json` (`devnet-sakura.json`); never hardcoded. forge-v2 repositories, issues, PRs, events and Platform-stored packs cannot be deleted, so suites reuse reserved fixture repos (e2e/README.md) and write fresh `e2e/<run-id>/…` branches, deleting the refs after each run, instead of creating and deleting repositories.
 
 ## 2. Pyramid
 
@@ -29,10 +29,10 @@ Contract ids from the `v2` section of `forge-contracts/deployments/<network>.jso
 | Unit: chunker bounds, offset index, pack assembly, rules folds, cost math, backends (mocked) | cargo test / vitest | none | every PR |
 | **Conformance vectors** (`FORGE_RULES_V2`, `forge-contracts/vectors/`): Rust and TS suites against shared JSON fixtures — ref resolution, protected patterns, issue/PR folds over `event` + `authorEvent`, numbering, approvals, pack reader rule and pack list, plaintext-or-`enc`, repo names | both | none | every PR |
 | Contract validation: `tools/contract-validate` builds forge-core + forge-collab with `fullValidation` at `PlatformVersion` 14, signed transition < 20,480 B, index bounds; `--previous` checks an update against the registered schema | cargo | none | every PR |
-| Integration: forge-core services against live contracts | cargo test (serial per identity) | devnet bonsia | nightly + pre-merge label |
-| E2E CLI (real `git` + helper + dg) | bash harness (`e2e/cli/run.sh`) | devnet bonsia | nightly + release |
-| E2E Web | Playwright | devnet bonsia | nightly + release |
-| Relay + import + chaos | mixed | devnet bonsia | release |
+| Integration: forge-core services against live contracts | cargo test (serial per identity) | devnet sakura | nightly + pre-merge label |
+| E2E CLI (real `git` + helper + dg) | bash harness (`e2e/cli/run.sh`) | devnet sakura | nightly + release |
+| E2E Web | Playwright | devnet sakura | nightly + release |
+| Relay + import + chaos | mixed | devnet sakura | release |
 | Production smoke | scripted | mainnet | post-deploy + weekly |
 
 Flake policy: writes always via the idempotent WriteEngine (a timeout-flake is a product bug, not a test bug); one job-level retry; persistent failures invoke the network-instability playbook.
@@ -54,7 +54,7 @@ Flake policy: writes always via the idempotent WriteEngine (a timeout-flake is a
 
 Assertions: `git fsck` clean, `git rev-parse` equality, object counts, worktree `diff -r`.
 
-**Implemented today** (`e2e/cli/run.sh`, `make e2e`, 11 scenarios on bonsia against the OWNER-owned `e2e-cli` repo; details in `e2e/README.md`): 01 round-trip, 02 non-ff, 03 ref delete, 04 revoked-writer push, 05 non-member push, 06 third-party verify, 07 depth + filter, 09 issue lifecycle, 10 PR from a fork, 11 release asset, 12 star/unstar. (08 was the forge-v1 read-compat scenario, removed with v1; the number is not reused.) `make storage-e2e` (`e2e/cli/storage-byo.sh`) covers bring-your-own storage. The full plan:
+**Implemented today** (`e2e/cli/run.sh`, `make e2e`, 11 scenarios on sakura against the OWNER-owned `e2e-cli` repo; details in `e2e/README.md`): 01 round-trip, 02 non-ff, 03 ref delete, 04 revoked-writer push, 05 non-member push, 06 third-party verify, 07 depth + filter, 09 issue lifecycle, 10 PR from a fork, 11 release asset, 12 star/unstar. (08 was the forge-v1 read-compat scenario, removed with v1; the number is not reused.) `make storage-e2e` (`e2e/cli/storage-byo.sh`) covers bring-your-own storage. The full plan:
 
 1. **Round-trip, platform backend**: seeded repo (100 commits, binaries, tags, symlinks) push → fresh clone byte-identical; proof-verified refs.
 2. ⭐ **Monorepo round-trip**: clone/push of the **Dash Platform monorepo** itself (mixed backend).
@@ -71,9 +71,9 @@ Assertions: `git fsck` clean, `git rev-parse` equality, object counts, worktree 
 12. **Fresh-user onboarding**: mint identity via §1.1-B → `dg auth login` → repo create → push (zero prior state).
 13. ⭐ **Third-party verification**: standalone script (no forge-core) reconstructs a clone from raw DAPI queries + manifests and verifies every hash — "no trust in any server" acceptance.
 
-## 5. E2E Web suite (Playwright vs a static build for devnet bonsia)
+## 5. E2E Web suite (Playwright vs a static build for devnet sakura)
 
-The specs read the forge-v2 read fixture (`forge-v2-demo` and `forge-v2-empty` on bonsia), seeded idempotently by `forge-contracts/scripts/seed-v2-fixture.mjs`.
+The specs read the forge-v2 read fixture (`forge-v2-demo` and `forge-v2-empty` on sakura), seeded idempotently by `forge-contracts/scripts/seed-v2-fixture.mjs`.
 
 1. **Logged-out browse**: tree/blob/blame/history/README/diff on the seeded repo; verification chips; request-interception proves zero non-DAPI/non-backend origins.
 2. **Auth**: key login, password vault, passkey PRF (virtual authenticator), logout clears storage.
@@ -96,7 +96,7 @@ The specs read the forge-v2 read fixture (`forge-v2-demo` and `forge-v2-empty` o
 
 ## 7. Contract lifecycle testing
 
-Every forge-core/forge-collab schema change: `tools/contract-validate` (with `--previous` against the registered schema, to tell an in-place update from a re-registration) → register or update on bonsia (`deploy-v2.mjs`, `--force-new` when the update rules refuse the change) → re-seed the read fixture → full nightly; testnet the same once it runs protocol 14. Post-deploy assertion: both contracts fetch with proof and are enrolled in the recorded contract group (`dg doctor` checks this), plus a canary document per gated type.
+Every forge-core/forge-collab schema change: `tools/contract-validate` (with `--previous` against the registered schema, to tell an in-place update from a re-registration) → register or update on sakura (`deploy-v2.mjs`, `--force-new` when the update rules refuse the change) → re-seed the read fixture → full nightly; testnet the same once it runs protocol 14. Post-deploy assertion: both contracts fetch with proof and are enrolled in the recorded contract group (`dg doctor` checks this), plus a canary document per gated type.
 
 ## 8. Production (mainnet) smoke — post-deploy + weekly, budget ≤ 0.05 DASH/run
 
@@ -110,7 +110,7 @@ forge-v2 repositories, issues and Platform-stored packs are permanent, so the sm
 ## 9. CI wiring
 
 - **PR**: unit + vectors + contract validation + builds (< 10 min, no network).
-- **Nightly** (`Devnet Nightly` workflow): seeds the v2 read fixture (`forge-contracts/scripts/seed-v2-fixture.mjs`, idempotent) → Playwright against a bonsia build → CLI e2e suite (`e2e/cli`, 11 scenarios) on bonsia. Funded jobs run only when the fixture identity secrets are configured and report SKIP otherwise. Teardown deletes the run's `e2e/<run-id>/…` refs; documents that cannot be deleted stay in the reserved fixture repos.
+- **Nightly** (`Devnet Nightly` workflow): seeds the v2 read fixture (`forge-contracts/scripts/seed-v2-fixture.mjs`, idempotent) → Playwright against a sakura build → CLI e2e suite (`e2e/cli`, 11 scenarios) on sakura. Funded jobs run only when the fixture identity secrets are configured and report SKIP otherwise. Teardown deletes the run's `e2e/<run-id>/…` refs; documents that cannot be deleted stay in the reserved fixture repos.
 - **Release**: nightly + scale ladder + backends/chaos + relay + import + fees ledger + onboarding.
 - **Post-deploy/weekly**: mainnet smoke.
 - Serialization: one live job per fixture identity (nonce discipline); parallelism across identities, not within.
