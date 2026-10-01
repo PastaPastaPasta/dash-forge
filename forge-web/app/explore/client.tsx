@@ -559,7 +559,7 @@ function SearchBox({ initial, onSearch }: { initial: string; onSearch: (text: st
           type="search"
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder="Search repos by name (e.g. ripgrep)"
+          placeholder="Repo name, e.g. ripgrep"
           autoComplete="off"
           spellCheck={false}
           className="h-9 w-full rounded-md border border-anvil-300 bg-white pl-8 pr-2 text-dense placeholder:text-anvil-500 focus-visible:border-forge-400 coarse:h-11 coarse:text-base dark:border-anvil-700 dark:bg-anvil-900 dark:placeholder:text-anvil-400"
