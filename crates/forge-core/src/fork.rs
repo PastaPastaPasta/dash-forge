@@ -1,5 +1,6 @@
 //! Forking a forge-v2 repository: a new `repo` with `forkOf` = the parent, the parent's
-//! packs recorded in the fork **without re-uploading them**, and the parent's refs copied.
+//! packs recorded in the fork **without re-uploading them**, and the parent's branches and
+//! tags copied (never a mirror's PR heads, `refs/mirror/pull/*`).
 //!
 //! A pack's bytes are content-addressed, so the fork's `packManifest` only has to say where
 //! to read them (`forge-v2.md` §4 keeps chunks permanent, which is what makes this safe):
@@ -119,16 +120,60 @@ pub fn plan_manifests<'m>(
     out
 }
 
-/// The refs a fork still needs: every ref of the parent that resolves to a tip (a diverged
-/// ref at its provisional tip) and that the fork does not have at all. A ref the fork already
-/// has is the fork owner's own from then on and is never moved, so re-running an
-/// interrupted fork finishes it without undoing the owner's pushes.
+/// Whether a fork copies a parent ref: its branches and tags, as a GitHub fork does. A
+/// mirror's PR heads (`refs/mirror/pull/<n>/head`) and any other namespace stay the parent's.
+pub fn forkable_ref(name: &str) -> bool {
+    name.starts_with("refs/heads/") || name.starts_with("refs/tags/")
+}
+
+/// `description` without forge-import's mirror marker (`Mirror of github.com/o/r`, or a
+/// trailing ` (mirror of github.com/o/r)`), which a fork would otherwise copy and then read as
+/// a mirror. Only a marker the web reads as one is dropped (a `host[:port]/path` with no
+/// spaces, two segments on github.com); anything else is kept as written.
+pub fn without_mirror_marker(description: &str) -> String {
+    let d = description.trim();
+    let is_source = |src: &str| {
+        let Some((host, path)) = src.split_once('/') else {
+            return false;
+        };
+        let (name, port) = host.split_once(':').unwrap_or((host, ""));
+        !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-')
+            && port.chars().all(|c| c.is_ascii_digit())
+            && host.contains(':') != port.is_empty()
+            && !path.is_empty()
+            && !path.contains(|c: char| c.is_whitespace() || c == '(' || c == ')')
+            && (name != "github.com" || path.split('/').count() == 2)
+    };
+    if let Some(src) = d.strip_prefix("Mirror of ") {
+        if is_source(src) {
+            return String::new();
+        }
+    }
+    if let Some(at) = d.rfind("(mirror of ") {
+        let inner = &d[at + "(mirror of ".len()..];
+        if let Some(src) = inner.strip_suffix(')') {
+            if is_source(src) {
+                return d[..at].trim_end().to_string();
+            }
+        }
+    }
+    d.to_string()
+}
+
+/// The refs a fork still needs: every branch and tag of the parent ([`forkable_ref`]) that
+/// resolves to a tip (a diverged ref at its provisional tip) and that the fork does not have
+/// at all. A ref the fork already has is the fork owner's own from then on and is never
+/// moved, so re-running an interrupted fork finishes it without undoing the owner's pushes.
 pub fn plan_refs(
     parent: &[(String, RefState)],
     fork: &[(String, RefState)],
 ) -> Vec<(String, String)> {
     parent
         .iter()
+        .filter(|(name, _)| forkable_ref(name))
         .filter(|(name, _)| {
             !fork
                 .iter()
@@ -400,5 +445,51 @@ mod tests {
             vec![("refs/heads/new".to_string(), "cc".to_string())]
         );
         assert_eq!(plan_refs(&parent, &[]).len(), 3);
+    }
+
+    #[test]
+    fn a_fork_of_a_mirror_drops_the_mirror_marker_from_its_description() {
+        assert_eq!(
+            without_mirror_marker("Dash Improvement Proposals (mirror of github.com/dashpay/dips)"),
+            "Dash Improvement Proposals"
+        );
+        assert_eq!(
+            without_mirror_marker("Mirror of github.com/dashpay/dash"),
+            ""
+        );
+        assert_eq!(
+            without_mirror_marker("Mirror of gitlab.example.com:8443/g/sub/p"),
+            ""
+        );
+        // Not a marker the web reads: kept as written.
+        assert_eq!(
+            without_mirror_marker("Tools (mirror of github.com/a/b/c)"),
+            "Tools (mirror of github.com/a/b/c)"
+        );
+        assert_eq!(
+            without_mirror_marker("Tools (mirror of github.com/a/b"),
+            "Tools (mirror of github.com/a/b"
+        );
+        assert_eq!(without_mirror_marker("  Plain  "), "Plain");
+    }
+
+    #[test]
+    fn a_fork_copies_branches_and_tags_but_not_a_mirrors_pr_heads() {
+        let r = |oid: &str| RefState::Resolved {
+            oid: oid.into(),
+            author: "a".into(),
+            created_at: 1,
+        };
+        let parent = vec![
+            ("refs/heads/master".to_string(), r("aa")),
+            ("refs/tags/v1".to_string(), r("bb")),
+            ("refs/mirror/pull/12/head".to_string(), r("cc")),
+            ("refs/notes/commits".to_string(), r("dd")),
+        ];
+        let names: Vec<String> = plan_refs(&parent, &[])
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(names, vec!["refs/heads/master", "refs/tags/v1"]);
     }
 }

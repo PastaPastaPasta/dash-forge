@@ -302,6 +302,7 @@ export {
   checkForkName,
   findForks,
   forkManifest,
+  forkableRef,
   forkRepoV2,
   planFork,
   planManifests,

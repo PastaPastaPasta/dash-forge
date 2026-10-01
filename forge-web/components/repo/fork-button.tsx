@@ -4,8 +4,10 @@
  * Fork — a forge-v2 fork from the browser (`ux-dx-spec.md` §1d, P0 #14), the same documents
  * `dg repo fork` writes: the fork's `repo` (with `forkOf`), its owner's `maintainer` and first
  * `config`, one `packManifest` per parent pack by reference (nothing re-uploaded), and the
- * parent's refs. The dialog prices all of it before signing and lists the steps as they run;
- * an interrupted fork is finished by forking again under the same name.
+ * parent's branches and tags. As on GitHub, "Copy the <default> branch only" is ticked to start
+ * with (QW3-010: forking dash copied 604 refs, one signed write each). The dialog prices all of
+ * it, says roughly how long the writes take, and lists the steps as they run; an interrupted
+ * fork is finished by forking again under the same name.
  */
 
 import { useEffect, useMemo, useState } from 'react'
@@ -13,6 +15,7 @@ import { useRouter } from 'next/navigation'
 import { Check, GitFork, Loader2 } from 'lucide-react'
 
 import { checkForkName, descriptionProblem, forkRepoV2, normalizeRepoName, planFork, type ForkNameCheck, type ForkStep, type RepoRef } from '@/lib/repo'
+import { withoutMirrorMarker } from '@/lib/view/mirror-source'
 import { previewCreate, sumPreviews, type FirstWrite } from '@/lib/sdk'
 import { errorMessage } from '@/lib/utils'
 import { spendAction } from '@/lib/spend-toast'
@@ -33,6 +36,18 @@ const STEPS: readonly { step: ForkStep; label: string }[] = [
   { step: 'manifests', label: "The parent's packs, by reference" },
   { step: 'refs', label: "The parent's branches and tags" },
 ]
+
+/**
+ * About how long one signed write takes, for the dialog's estimate: on bonsia a dips fork (32
+ * writes) took about 90 s (QA wave 3). Writes run one after another.
+ */
+const SECONDS_PER_WRITE = 3
+
+/** "under a minute" / "about 20 minutes" for `writes` signed writes in a row. */
+export function forkDuration(writes: number): string {
+  const minutes = Math.round((writes * SECONDS_PER_WRITE) / 60)
+  return minutes < 1 ? 'under a minute' : `about ${plural(minutes, 'minute')}`
+}
 
 type Progress = Partial<Record<ForkStep, { state: 'running' | 'done'; count?: string }>>
 
@@ -78,7 +93,11 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
   const guard = useWriteGuard()
   const router = useRouter()
   const [name, setName] = useState(parent.name)
-  const [description, setDescription] = useState(defaults.description)
+  // The parent's description, less a mirror's "(mirror of …)" marker: a fork is no mirror (QW3-011).
+  const [description, setDescription] = useState(() => withoutMirrorMarker(defaults.description))
+  // GitHub's default: the default branch alone. Unticked, every branch and tag is copied.
+  const [defaultOnly, setDefaultOnly] = useState(true)
+  const defaultRef = `refs/heads/${defaults.defaultBranch}`
   const descriptionError = descriptionProblem(description)
   const [check, setCheck] = useState<ForkNameCheck | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
@@ -121,6 +140,8 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
     }
   }, [sdk, parent, owner, normalized, nameError, suggested])
 
+  // The refs this fork copies: the default branch alone, or every branch and tag.
+  const refs = useMemo(() => (plan.data?.refs ?? []).filter((r) => !defaultOnly || r.refName === defaultRef), [plan.data, defaultOnly, defaultRef])
   const cost = useMemo(() => {
     const p = plan.data
     const manifests = p?.manifests ?? []
@@ -133,9 +154,9 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
       previewCreate('maintainer', {}, after),
       previewCreate('config', { defaultBranch: defaults.defaultBranch }, { ...after, repo: true }),
       ...manifests.map((m, i) => previewCreate('packManifest', { uris: m.uris }, { ...after, repo: i === 0 })),
-      ...(p?.refs ?? []).map((r, i) => previewCreate('refUpdate', { refName: r.refName }, { ...after, repo: i === 0, target: true })),
+      ...refs.map((r, i) => previewCreate('refUpdate', { refName: r.refName }, { ...after, repo: i === 0, target: true })),
     ])
-  }, [plan.data, normalized, parent.name, description, defaults.defaultBranch])
+  }, [plan.data, refs, normalized, parent.name, description, defaults.defaultBranch])
 
   const run = async (): Promise<void> => {
     if (!sdk || !signer || pending || nameError !== null || descriptionError !== null || check?.kind === 'taken') return
@@ -149,11 +170,16 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
       const result = await spendAction(
         { running: `Forking ${parent.name}…`, done: `Forked ${parent.name} as ${normalized}`, failed: `Fork of ${parent.name} stopped part-way` },
         async (tag) => {
-          const r = await forkRepoV2(sdk, tag(signer), parent, { name: normalized, description: description.trim(), defaultBranch: defaults.defaultBranch }, (p) =>
-            setProgress((prev) => ({
-              ...(prev ?? {}),
-              [p.step]: { state: p.state === 'start' ? 'running' : 'done', ...(p.total ? { count: `${p.done ?? 0} of ${p.total}` } : {}) },
-            })),
+          const r = await forkRepoV2(
+            sdk,
+            tag(signer),
+            parent,
+            { name: normalized, description: description.trim(), defaultBranch: defaults.defaultBranch, defaultBranchOnly: defaultOnly },
+            (p) =>
+              setProgress((prev) => ({
+                ...(prev ?? {}),
+                [p.step]: { state: p.state === 'start' ? 'running' : 'done', ...(p.total ? { count: `${p.done ?? 0} of ${p.total}` } : {}) },
+              })),
           )
           if (r.unreferenceable.length > 0) throw new IncompleteFork(r.unreferenceable.length)
           return r
@@ -222,9 +248,34 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
           </p>
         ) : (
           <>
+            {p.unreferenceable.length === 0 ? (
+              <label className="flex items-start gap-2 text-dense coarse:min-h-11">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 shrink-0 accent-forge-700"
+                  checked={defaultOnly}
+                  onChange={(e) => setDefaultOnly(e.target.checked)}
+                  disabled={pending}
+                  data-testid="fork-default-only"
+                />
+                <span>
+                  Copy the <span className="font-mono">{defaults.defaultBranch}</span> branch only
+                  <span className="block text-[12px] text-anvil-600 dark:text-anvil-400">
+                    {parent.name} has {plural(branchCount(p.refs), 'branch', 'branches')} and {plural(p.refs.length - branchCount(p.refs), 'tag')}; each one copied
+                    is a signed write.{defaultOnly ? ' Untick to copy them all.' : ''}
+                  </span>
+                </span>
+              </label>
+            ) : null}
             <p className="text-dense text-anvil-700 dark:text-anvil-200" data-testid="fork-plan">
-              Repository, maintainer and config, {plural(p.manifests.length, 'pack manifest')} by reference, and {plural(p.refs.length, 'ref')} (branches and tags) copied.
+              Repository, maintainer and config, {plural(p.manifests.length, 'pack manifest')} by reference, and {copiedRefs(refs)} copied:{' '}
+              {plural(3 + p.manifests.length + refs.length, 'signed write')}, {forkDuration(3 + p.manifests.length + refs.length)}.
             </p>
+            {defaultOnly && refs.length === 0 && p.refs.length > 0 && p.unreferenceable.length === 0 ? (
+              <p className="text-[12px] text-caution-700 dark:text-caution-400" data-testid="fork-no-default">
+                {parent.name} has no <span className="font-mono">{defaults.defaultBranch}</span> branch yet: untick to copy its other branches.
+              </p>
+            ) : null}
             {p.unreferenceable.length > 0 ? (
               <p className="text-[12px] text-caution-700 dark:text-caution-400">
                 {plural(p.unreferenceable.length, 'pack')} {p.unreferenceable.length === 1 ? 'has' : 'have'} no copy a fork can point at, so branches will not be copied.
@@ -262,4 +313,18 @@ function ForkDialog({ parent, defaults, owner, onClose }: { parent: RepoRef; def
       </div>
     </Dialog>
   )
+}
+
+/** How many of `refs` are branches. */
+function branchCount(refs: readonly { refName: string }[]): number {
+  return refs.filter((r) => r.refName.startsWith('refs/heads/')).length
+}
+
+/** "the main branch", "3 branches and 1 tag", "no branches": what a fork copies. */
+function copiedRefs(refs: readonly { refName: string }[]): string {
+  const branches = branchCount(refs)
+  const tags = refs.length - branches
+  if (refs.length === 0) return 'no branches'
+  const parts = [branches > 0 ? plural(branches, 'branch', 'branches') : null, tags > 0 ? plural(tags, 'tag') : null].filter((x) => x !== null)
+  return parts.join(' and ')
 }

@@ -47,6 +47,8 @@ vi.mock('@/lib/view', async (importOriginal) => {
 })
 
 const asked: PullSelection[] = []
+/** The parent `readForkParent` answers for a fork (QW3-012). */
+let forkParent: unknown = null
 let answer: PullListPage
 vi.mock('@/lib/repo', async (importOriginal) => {
   const real = await importOriginal<typeof import('@/lib/repo')>()
@@ -56,6 +58,7 @@ vi.mock('@/lib/repo', async (importOriginal) => {
       asked.push(q)
       return answer
     },
+    readForkParent: async () => forkParent,
   }
 })
 
@@ -112,7 +115,13 @@ function row(number: number, extra: Partial<PullRow> = {}): PullRow {
   }
 }
 
-const HOME = { repo: { repoId: 'r', forge: { core: 'C', collab: 'L', group: 'G' }, ownerId: 'o', name: 'n', visibility: 'public' }, description: '' } as unknown as RepoHome
+const HOME = {
+  repo: { repoId: 'r', forge: { core: 'C', collab: 'L', group: 'G' }, ownerId: 'o', name: 'n', visibility: 'public' },
+  v2: { forkOf: null },
+  description: '',
+  defaultBranch: 'main',
+  branches: [],
+} as unknown as RepoHome
 const addr = { owner: 'o', name: 'n' }
 
 let root: Root
@@ -126,6 +135,7 @@ beforeEach(() => {
   dotReads.length = 0
   replaced.length = 0
   asked.length = 0
+  forkParent = null
   answer = {
     rows: [
       row(203, { comments: 2, state: { open: true, merged: false, draft: false, baseRef: null, labels: ['bug'], assignees: [], mergeOnBase: null } }),
@@ -150,8 +160,8 @@ afterEach(() => {
 })
 
 const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)) })
-const render = async (): Promise<void> => {
-  act(() => root.render(<PullsContent home={HOME} addr={addr} />))
+const render = async (home: RepoHome = HOME): Promise<void> => {
+  act(() => root.render(<PullsContent home={home} addr={addr} />))
   await settle()
 }
 const tabs = (): string[] => [...el.querySelectorAll('[role="tab"]')].map((t) => t.textContent?.trim() ?? '')
@@ -349,5 +359,14 @@ describe('PullsContent (L-44)', () => {
     await render()
     expect(el.textContent).toContain('No open pull requests')
     expect(el.textContent).toContain('53 pull requests are merged or closed')
+  })
+
+  it("on a fork, New pull request opens the parent's form with the fork's default branch as the head (QW3-012)", async () => {
+    const newPull = (): string => [...el.querySelectorAll('a')].find((a) => a.textContent?.includes('New pull request'))?.getAttribute('href') ?? ''
+    await render()
+    expect(newPull()).toBe('/repo/pulls/new/?owner=o&name=n')
+    forkParent = { repoId: 'P', forge: HOME.repo.forge, ownerId: 'up', name: 'dips', visibility: 'public' }
+    await render({ ...HOME, v2: { forkOf: 'P' }, defaultBranch: 'master' } as unknown as RepoHome)
+    expect(newPull()).toBe('/repo/pulls/new/?owner=up&name=dips&head=r%3Amaster')
   })
 })
