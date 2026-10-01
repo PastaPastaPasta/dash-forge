@@ -10,6 +10,10 @@
  *
  * Read from the contract itself (seeded or fetched once), not from a build flag, so a build
  * reads whichever contract the deployment registered.
+ *
+ * What a fused star gives up (the owner's C1 trade-off, PLAN.md §2): the Trending opt-out, and
+ * RC1's beat rules (O-08: one per identity and repo, ever; public repos of others only). Its
+ * window entry outlives an unstar, so unstarring and starring again counts twice.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -28,7 +32,10 @@ export function starShape(sdk: EvoSDK, forge: ForgeIds): Promise<StarShape> {
   const read = (async (): Promise<StarShape> => {
     const contract = await sdk.contracts.fetch(forge.community)
     if (!contract) throw new Error(`forge-community ${forge.community} was not found`)
-    return DOC.starBeat in contract.schemas ? 'beat' : 'fused'
+    // Fused when the star itself carries a time-window index (C1's `byWeek`), whether or not a
+    // `starBeat` type is still declared.
+    const star = contract.schemas[DOC.star] as { indices?: ReadonlyArray<{ timeRange?: unknown }> } | undefined
+    return star?.indices?.some((index) => index.timeRange !== undefined) ? 'fused' : 'beat'
   })()
   shapes.set(forge.community, read)
   read.catch(() => shapes.delete(forge.community))

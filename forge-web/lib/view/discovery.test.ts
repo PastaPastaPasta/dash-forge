@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { NETWORKS } from '../constants'
 import type { DocumentQuery } from '../sdk'
 import type { CompositeQuery } from '../sdk/composite'
+import { resetStarShapes } from '../repo/star-shape'
 import { cachedDpnsName, clearDpnsCache } from './dpns'
 import {
   keysetPage,
@@ -154,6 +155,8 @@ function mockSdk(store: Record<string, Record<string, Doc[]>>, seen: Seen, opts:
       ...(opts.noComposite ? {} : { composite }),
     },
     dpns: { resolveName: async () => undefined },
+    // forge-community as RC1 shapes its star (`star-shape.ts`): a separate starBeat ranks Trending.
+    contracts: { fetch: async () => ({ schemas: { star: { indices: [{ name: 'byRepo' }] }, starBeat: {} } }) },
   } as unknown as EvoSDK
 }
 
@@ -192,7 +195,10 @@ const fresh = (): Seen => ({ composites: [], queries: [], counts: [], ranked: []
 const names = (rs: readonly DiscoveredRepo[]): string[] => rs.map((r) => r.slug)
 const requests = (s: Seen): number => s.composites.length + s.queries.length + s.counts.length + s.ranked.length
 
-beforeEach(() => clearDpnsCache())
+beforeEach(() => {
+  clearDpnsCache()
+  resetStarShapes()
+})
 
 describe('searchPrefix / prefixUpperBound', () => {
   it('reads a repo-name prefix, lowercased, the name part of owner/name', () => {

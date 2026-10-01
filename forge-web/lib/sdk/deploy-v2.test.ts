@@ -55,7 +55,9 @@ describe('deploy-v2: the three forge-v2 contracts', () => {
     const collab = types('forge-collab')
     const community = types('forge-community')
     expect(collab).toEqual(['comment', 'issue', 'patch', 'repoKey', 'review', 'transition'])
-    expect(community).toEqual(['authorEvent', 'checkRun', 'event', 'follow', 'milestone', 'policy', 'profile', 'runner', 'star', 'starBeat', 'watch', 'webhook'])
+    // starBeat only on the beat shape: a fused star (RC2 C1) carries Trending itself.
+    const beat = community.includes('starBeat') ? ['starBeat'] : []
+    expect(community).toEqual(['authorEvent', 'checkRun', 'event', 'follow', 'milestone', 'policy', 'profile', 'runner', 'star', ...beat, 'watch', 'webhook'])
     expect(types('forge-core').filter((t) => collab.includes(t) || community.includes(t))).toEqual([])
   })
 

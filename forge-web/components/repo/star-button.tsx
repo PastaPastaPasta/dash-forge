@@ -43,8 +43,9 @@ export function StarButton({
   const guard = useWriteGuard()
   // Read once per mount: Settings changes it, and the next page picks it up.
   const [trending] = useState(() => trendingPref())
-  // null while it is read: priced and labelled as a beat-shaped star with its beat (the upper bound).
-  const fused = useStarShape(repo.forge) === 'fused'
+  // Read only for a signed-in viewer (the only one offered a price); null while it is read or
+  // when the read fails: priced and labelled as a beat-shaped star with its beat.
+  const fused = useStarShape(identity !== null ? repo.forge : null) === 'fused'
 
   const star = useRelationToggle({
     enabled: ready && sdk !== null && identity !== null,

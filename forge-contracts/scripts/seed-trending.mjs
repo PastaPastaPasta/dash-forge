@@ -17,12 +17,15 @@
 // A repo's owner may not beat its own repo (starBeat `repoOwner` is distinctFrom the signer), so
 // the owner never stars.
 //
+// On a fused-star contract (RC2 C1, `FUSED_STAR`) the star is its own Trending entry: the seed
+// writes the star alone, and its "beat" below is that star.
+//
 // Idempotent: a rerun with the same --out reuses its run's repos (found on chain by name, so an
 // unrecorded one is adopted) and writes only the stars and beats still missing (a beat is once
 // per identity and repo, ever).
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
-import { VIS, idBytes, loadIdentity, log, membership, openSession, parseArgs, runIfMain, until } from './lib/seed-io.mjs';
+import { FUSED_STAR, VIS, idBytes, loadIdentity, log, membership, openSession, parseArgs, runIfMain, until } from './lib/seed-io.mjs';
 
 export async function main(argv, injected) {
   const opt = parseArgs(argv, ['identity']);
@@ -47,10 +50,11 @@ export async function main(argv, injected) {
     if (state.beats.some((b) => b.repoId === repoId && b.owner === w.id)) return;
     const own = (type) => read.owns(w, type, repoId);
     const before = Date.now();
-    if (!(await own('star'))) await write(w, 'star', { repoId: idBytes(repoId) });
-    if (await own('starBeat')) log(`the beat of ${w.id.slice(0, 6)} on ${repoId.slice(0, 6)} landed in an earlier run: its time is taken as now`);
-    else await write(w, 'starBeat', { repoId: idBytes(repoId), vis: VIS, repoOwner: idBytes(D.id) });
-    if (!(await until(() => own('starBeat')))) throw new Error(`the beat of ${w.id} on ${repoId} did not land`);
+    const entry = FUSED_STAR ? 'star' : 'starBeat';
+    if (!FUSED_STAR && !(await own('star'))) await write(w, 'star', { repoId: idBytes(repoId) });
+    if (await own(entry)) log(`the ${entry} of ${w.id.slice(0, 6)} on ${repoId.slice(0, 6)} landed in an earlier run: its time is taken as now`);
+    else await write(w, entry, FUSED_STAR ? { repoId: idBytes(repoId) } : { repoId: idBytes(repoId), vis: VIS, repoOwner: idBytes(D.id) });
+    if (!(await until(() => own(entry)))) throw new Error(`the ${entry} of ${w.id} on ${repoId} did not land`);
     const after = Date.now();
     const day = 86_400_000;
     if (Math.floor(before / day) !== Math.floor(after / day)) throw new Error('the beat straddled 00:00 UTC; rerun (the window test needs its day)');

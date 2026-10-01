@@ -27,6 +27,12 @@ export const CONTRACTS = Object.fromEntries(
   ['core', 'collab', 'community'].map((c) => [c, JSON.parse(readFileSync(join(ROOT, 'contracts', `forge-${c}.json`), 'utf8'))]),
 );
 
+/**
+ * Whether forge-community's star is fused (RC2 C1): the star carries Trending's time-window index
+ * itself and there is no `starBeat` (forge-web `lib/repo/star-shape.ts` reads it the same way).
+ */
+export const FUSED_STAR = (CONTRACTS.community.documentSchemas.star?.indices ?? []).some((index) => index.timeRange !== undefined);
+
 /** The contract (`core`, `collab`, `community`) that holds each document type. */
 export const CONTRACT_OF = Object.fromEntries(
   Object.entries(CONTRACTS).flatMap(([c, json]) => Object.keys(json.documentSchemas).map((t) => [t, c])),

@@ -23,7 +23,7 @@
 //      beat the first repo, MEMBER the second.
 // Writes only to repos it creates (`c1-verify-<run>`), about 0.02 DASH per identity.
 import {
-  VIS, checkOutcome, expectRefused, idBytes, loadIdentity, log, membership, openSession, parseArgs, refusalOf, runIfMain, until,
+  FUSED_STAR, VIS, checkOutcome, expectRefused, idBytes, loadIdentity, log, membership, openSession, parseArgs, refusalOf, runIfMain, until,
 } from './lib/seed-io.mjs';
 
 const MOVED = {
@@ -116,20 +116,22 @@ export async function main(argv, injected) {
   });
   check('count on topic.byName counts the tagged repo', counted);
 
-  // 7. ranked trending with `oldest`: two beats on the first repo, one on the second
+  // 7. ranked trending with `oldest`: two beats on the first repo, one on the second (on a
+  // fused-star contract, RC2 C1, the stars themselves: the star carries the window)
+  const trend = FUSED_STAR ? 'star' : 'starBeat';
   for (const [w, id] of [[MEMBER, R], [THIRD, R], [MEMBER, idBytes(repo2Id)]]) {
-    await create(w, 'starBeat', { repoId: id, vis: VIS, repoOwner: idBytes(OWNER.id) });
+    await create(w, trend, FUSED_STAR ? { repoId: id } : { repoId: id, vis: VIS, repoOwner: idBytes(OWNER.id) });
   }
   // The scratch repos' rows of the ranking, in ranked order: [repoId, count].
   let mine = [];
   await until(async () => {
     const ranked = await retry((sdk) =>
-      sdk.documents.ranked({ dataContractId: ids.community, documentTypeName: 'starBeat', groupBy: 'repoId', aggregate: { type: 'count' }, limit: 100, timeRange: [{ field: '$createdAt', selector: 'oldest' }] }),
+      sdk.documents.ranked({ dataContractId: ids.community, documentTypeName: trend, groupBy: 'repoId', aggregate: { type: 'count' }, limit: 100, timeRange: [{ field: '$createdAt', selector: 'oldest' }] }),
     );
     mine = ranked.entries.filter((e) => e.groupValue === repoId || e.groupValue === repo2Id).map((e) => [e.groupValue, Number(e.value)]);
     return mine.length === 2;
   });
-  check('ranked(starBeat, oldest) returns the seeded order', JSON.stringify(mine) === JSON.stringify([[repoId, 2], [repo2Id, 1]]), JSON.stringify(mine));
+  check(`ranked(${trend}, oldest) returns the seeded order`, JSON.stringify(mine) === JSON.stringify([[repoId, 2], [repo2Id, 1]]), JSON.stringify(mine));
 
   const failed = results.filter((r) => !r.ok).length;
   console.log(JSON.stringify({ run, repoId, repo2Id, passed: results.length - failed, failed }));

@@ -106,13 +106,15 @@ const ISSUE = 'EA8HsynH63cw1i8xQLoARwk43sDf74HrKut1D4RV3L35'
 const HEAD = 'ab'.repeat(20)
 /**
  * The raw documents facade the index-only reads use (nothing held yet), and the committed
- * forge-community for the star shape (`star-shape.ts`: a fused star when it has no `starBeat`).
+ * forge-community for the star shape (`star-shape.ts`: fused when the star has a time window).
  */
 const sdk = {
   documents: { query: async () => new Map() },
   contracts: { fetch: async () => ({ schemas: rc1Contracts()['forge-community'].documentSchemas }) },
 } as unknown as EvoSDK
-const FUSED_STAR = !('starBeat' in (rc1Contracts()['forge-community'].documentSchemas as object))
+const FUSED_STAR = (
+  (rc1Contracts()['forge-community'].documentSchemas as Record<string, { indices?: { timeRange?: unknown }[] }>)['star']?.indices ?? []
+).some((index) => index.timeRange !== undefined)
 const auth = (identityId: string): WriteAuth => ({ identityId, network: 'devnet', getSigningKeyWif: () => 'x' })
 
 /** Every create since the last call: routed by the RC1 layout and RC1-valid as its signer made it. */
@@ -293,7 +295,7 @@ describe('forge-community writers are RC1-valid', () => {
 
   it.runIf(FUSED_STAR)('a fused star (RC2 C1) is its own Trending entry: no beat, whatever the preference; a watch and a follow', async () => {
     await starRelation(sdk, auth(BOB), BOB, REPO, true).add()
-    await starRelation(sdk, auth(BOB), BOB, REPO, false).add()
+    await starRelation(sdk, auth(BOB), BOB, { ...REPO, repoId: PR }, false).add()
     await watchRelation(sdk, auth(BOB), BOB, REPO).add()
     await followRelation(sdk, auth(BOB), BOB, FORGE, ALICE).add()
     expect(types(await judged())).toEqual(['star', 'star', 'watch', 'follow'])

@@ -73,7 +73,7 @@ function frozenField({ property, documentType }: ConsensusRefusal['figures']): s
   if (documentType === 'checkRun' && CHECK_SET_ONCE.has(property)) {
     return `this check run's "${property}" is already set, and it cannot be changed once set.`
   }
-  return documentType ? `the ${documentType}'s "${property}" field cannot be changed once written.` : `"${property}" cannot be changed once written.`
+  return `its "${property}" field cannot be changed once written.`
 }
 
 /** A plain sentence for a consensus refusal that no sheet fixes. */

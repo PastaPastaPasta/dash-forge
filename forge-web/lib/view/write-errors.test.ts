@@ -266,8 +266,10 @@ describe('an immutable-property refusal (40128) names the frozen field', () => {
       /check run's "conclusion" is already set.*Nothing was charged/,
     )
   })
-  it('any other type names the type and the field', () => {
-    expect(writeFailure(asConsensusRefusal(wasm(immutable('headOid', 'patch'), 40128))).message).toMatch(/the patch's "headOid" field cannot be changed/)
+  it('any other type names the field, not the schema type', () => {
+    const { message } = writeFailure(asConsensusRefusal(wasm(immutable('headOid', 'patch'), 40128)))
+    expect(message).toMatch(/its "headOid" field cannot be changed once written/)
+    expect(message).not.toMatch(/patch/)
   })
   it('an older text without the property still reads as 40128 with the generic sentence', () => {
     const r = asConsensusRefusal(wasm('Protocol error: Document field is immutable and cannot be changed by a replace'))
