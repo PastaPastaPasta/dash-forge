@@ -109,6 +109,8 @@ export interface ThreadSub {
   readonly reasons?: readonly ThreadReason[]
   /** When I joined the thread (the earliest reason): activity before it is not news to me. */
   readonly since: number
+  /** The PR's author, not a member, asked me for a review (an `authorEvent`): its author events are read. */
+  readonly viaAuthor?: boolean
 }
 
 /** Whether I follow `t` for any of `rs` (a thread an earlier build stored has only `reason`). */
@@ -228,8 +230,8 @@ export function planFeeds(subs: Subscriptions, prefs: InboxPrefs, me?: string): 
     feeds.push({ kind: 'state', type: 'event', repo, threads }, { kind: 'state', type: 'transition', repo, threads })
     // A PR author who is not a member asks for a review with an `authorEvent`. Of its kinds only
     // a review request naming me is news ({@link stateWhat}), and the addressee index has already
-    // made such a thread 'review-requested': read the feed for those threads only.
-    const asked = threads.filter((t) => has(t, 'review-requested'))
+    // marked the PRs such a request reached: read the feed for those threads only.
+    const asked = threads.filter((t) => t.viaAuthor === true && t.kind === 'pull')
     if (asked.length > 0) feeds.push({ kind: 'state', type: 'authorEvent', repo, threads: asked })
   }
   for (const { repo, reason } of subs.repos) {
@@ -423,6 +425,9 @@ export function transitionWhat(kind: number): string | null {
   }
 }
 
+/** A review request: the `event` / `authorEvent` kind (not the `transition` 13, merged). */
+const REVIEW_REQUEST_KIND = 13
+
 /**
  * What an `event` or `authorEvent` kind means to a reader of the inbox (state kinds are
  * transitions; the kinds share their codes, and of an author's only the review request is news).
@@ -501,6 +506,8 @@ export function toItems(f: Feed, docs: readonly PlainDocument[], me: string, nam
         const value = f.repo.private ? undefined : d.value
         const what = f.type === 'transition' ? transitionWhat(d.kind) : stateWhat(d.kind, value, me, d.refId)
         if (!t || what === null || !notMine(d) || d.$createdAt <= t.since) return []
+        // A review request is a PR's (an issue's author can write the kind; it means nothing there).
+        if (f.type !== 'transition' && d.kind === REVIEW_REQUEST_KIND && t.kind !== 'pull') return []
         const reason = f.type === 'transition' ? undefined : stateReason(d.kind, value, me, d.refId)
         return [item(d, { kind: 'state', repo: t.repo, what, target: { kind: t.kind, number: t.number, title: t.title }, ...(reason ? { reason } : {}) })]
       })
@@ -651,7 +658,9 @@ export async function computeSubscriptions(
   if (!indexes.read) incomplete.push("this forge's review indexes (the last ones known are used)")
   if (myIssues.more) incomplete.push('issues you opened (more than the first 500)')
   if (myPulls.more) incomplete.push('pull requests you opened (more than the first 500)')
-  const addressed = ok(addressedRes, [])
+  const addressedRead = ok(addressedRes, { targets: [], partial: false })
+  const addressed = addressedRead.targets
+  if (addressedRead.partial) incomplete.push('your assignments and review requests (one of their two reads)')
   const participated = ok(participatedRes, [])
   const reviewed = ok(reviewedRes, [])
   const joinedIds = [
@@ -685,15 +694,16 @@ export async function computeSubscriptions(
   // One sub per thread: the strongest reason (the first source that names it, in the order
   // below), every reason, and the earliest time any of them began.
   const byThread = new Map<string, ThreadSub>()
-  const follow = (t: TargetRow | undefined, repo: RepoLite | null | undefined, reason: ThreadReason, since: number): void => {
+  const follow = (t: TargetRow | undefined, repo: RepoLite | null | undefined, reason: ThreadReason, since: number, viaAuthor = false): void => {
     if (!t || !repo) return
     const prev = byThread.get(t.id)
+    const via = viaAuthor || prev?.viaAuthor === true ? { viaAuthor: true } : {}
     if (prev === undefined) {
-      byThread.set(t.id, { ...threadOf(t, repo, reason, since), reasons: [reason] })
+      byThread.set(t.id, { ...threadOf(t, repo, reason, since), reasons: [reason], ...via })
       return
     }
     const reasons = prev.reasons ?? [prev.reason]
-    byThread.set(t.id, { ...prev, since: Math.min(prev.since, since), reasons: reasons.includes(reason) ? reasons : [...reasons, reason] })
+    byThread.set(t.id, { ...prev, since: Math.min(prev.since, since), reasons: reasons.includes(reason) ? reasons : [...reasons, reason], ...via })
   }
   for (const t of authored) follow(t, t.repo ?? repoById.get(t.repoId), 'author', t.createdAt)
   for (const c of commentedTargets) {
@@ -705,7 +715,9 @@ export async function computeSubscriptions(
   const rowOf = (id: string): TargetRow | undefined => commentedRows.get(id) ?? authored.find((t) => t.id === id)
   for (const a of addressed) {
     const t = rowOf(a.targetId)
-    follow(t, t ? t.repo ?? repoById.get(t.repoId) : undefined, a.reason, a.firstAt - 1)
+    // A review request is a PR's: an issue's author can write the kind, but it asks nothing.
+    if (a.reason === 'review-requested' && t?.kind !== 'pull') continue
+    follow(t, t ? t.repo ?? repoById.get(t.repoId) : undefined, a.reason, a.firstAt - 1, a.viaAuthor)
   }
   // Reviewed (S3, QW2-009): on every device, as this browser's record only knew its own.
   for (const r of reviewed) {

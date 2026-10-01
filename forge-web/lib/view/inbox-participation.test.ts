@@ -77,10 +77,10 @@ describe('stateWhat and reasons', () => {
   })
 
   it('marks an assignment, a review request and a mention as why an item reached me', () => {
-    const state: Feed = { kind: 'state', type: 'event', repo: REPO, threads: [thread()] }
+    const state: Feed = { kind: 'state', type: 'event', repo: REPO, threads: [thread(), thread({ id: PR_ID, kind: 'pull', number: 2 })] }
     const items = toItems(state, [
       { $id: 'e1', $ownerId: OTHER, $createdAt: 2000, targetId: ISSUE_ID, kind: 6, value: ME, refId: ME },
-      { $id: 'e2', $ownerId: OTHER, $createdAt: 2001, targetId: ISSUE_ID, kind: 13, refId: ME },
+      { $id: 'e2', $ownerId: OTHER, $createdAt: 2001, targetId: PR_ID, kind: 13, refId: ME },
       { $id: 'e3', $ownerId: OTHER, $createdAt: 2002, targetId: ISSUE_ID, kind: 4, value: 'bug' },
     ], ME)
     expect(items.map((i) => [i.what, i.reason])).toEqual([
@@ -157,7 +157,7 @@ describe('a review request from a PR author who is not a member (P1-1)', () => {
   it('follows the PR, with one more addressee read than before', async () => {
     const sdk = chainSdk(docs)
     const subs = await computeSubscriptions(sdk, 'devnet', FORGE, ME, DEFAULT_PREFS, 10_000)
-    expect(subs.threads).toEqual([expect.objectContaining({ id: PR_ID, kind: 'pull', reason: 'review-requested', since: 6999 })])
+    expect(subs.threads).toEqual([expect.objectContaining({ id: PR_ID, kind: 'pull', reason: 'review-requested', since: 6999, viaAuthor: true })])
     expect(subs.incomplete ?? []).toEqual([])
     // The member events' addressee index and the author events' one, once each, and no other
     // `authorEvent` read.
@@ -165,15 +165,46 @@ describe('a review request from a PR author who is not a member (P1-1)', () => {
     expect(sdk.queries.filter((q) => q.documentTypeName === 'authorEvent')).toHaveLength(1)
   })
 
-  it('reads the author events only of repos holding threads I was asked to review', () => {
-    const asked = thread({ id: PR_ID, kind: 'pull', number: 2, reason: 'commented', reasons: ['commented', 'review-requested'] })
+  it('keeps the member events when the author events cannot be read, and says so', async () => {
+    const sdk = chainSdk([
+      ...docs,
+      { type: 'issue', $id: ISSUE_ID, $ownerId: OTHER, $createdAt: 100, repoId: REPO_ID, number: 1, title: 'Bug' },
+      { type: 'event', $id: 'a1', $ownerId: MAINTAINER, $createdAt: 5000, targetId: ISSUE_ID, kind: 6, value: ME, refId: ME },
+    ])
+    const query = sdk.documents.query.bind(sdk.documents) as (q: DocumentQuery) => Promise<unknown>
+    ;(sdk.documents as unknown as { query: (q: DocumentQuery) => Promise<unknown> }).query = async (q) => {
+      if (q.documentTypeName === 'authorEvent') throw new Error('no such index')
+      return query(q)
+    }
+    const subs = await computeSubscriptions(sdk, 'devnet', FORGE, ME, DEFAULT_PREFS, 10_000)
+    expect(subs.threads).toEqual([expect.objectContaining({ id: ISSUE_ID, reason: 'assigned' })])
+    expect(subs.incomplete).toEqual([expect.stringContaining('your assignments and review requests')])
+  })
+
+  it("ignores a 'review request' an issue's author wrote: only a PR has reviewers", async () => {
+    const sdk = chainSdk([
+      { type: 'repo', $id: REPO_ID, $ownerId: MAINTAINER, $createdAt: 1, name: 'demo' },
+      { type: 'issue', $id: ISSUE_ID, $ownerId: OTHER, $createdAt: 100, repoId: REPO_ID, number: 1, title: 'Bug' },
+      { type: 'authorEvent', $id: 'ae9', $ownerId: OTHER, $createdAt: 7000, repoId: REPO_ID, targetId: ISSUE_ID, kind: 13, refId: ME },
+    ])
+    const subs = await computeSubscriptions(sdk, 'devnet', FORGE, ME, DEFAULT_PREFS, 10_000)
+    expect(subs.threads).toEqual([])
+    const issue = thread({ reason: 'commented', viaAuthor: true })
+    const feed: Feed = { kind: 'state', type: 'authorEvent', repo: REPO, threads: [issue] }
+    expect(toItems(feed, [{ $id: 'ae9', $ownerId: OTHER, $createdAt: 7000, targetId: ISSUE_ID, kind: 13, refId: ME }], ME)).toEqual([])
+  })
+
+  it('reads the author events only of the PRs an author asked me to review', () => {
+    const asked = thread({ id: PR_ID, kind: 'pull', number: 2, reason: 'commented', reasons: ['commented', 'review-requested'], viaAuthor: true })
+    // Asked by a member (an `event`): the event feed already carries that request.
+    const byMember = thread({ id: 'PR-BY-MEMBER', kind: 'pull', number: 4, reason: 'review-requested' })
     const other = thread({ id: REVIEWED_ID, kind: 'pull', number: 3, reason: 'author' })
     const elsewhere = thread({ id: ISSUE_ID, repo: { ...REPO, id: 'OTHER-REPO' }, reason: 'commented' })
-    const subs: Subscriptions = { at: 1000, repos: [], threads: [asked, other, elsewhere], droppedRepos: 0, droppedThreads: 0 }
+    const subs: Subscriptions = { at: 1000, repos: [], threads: [asked, byMember, other, elsewhere], droppedRepos: 0, droppedThreads: 0 }
     const state = planFeeds(subs, DEFAULT_PREFS, ME).filter((f) => f.kind === 'state')
     expect(state.map((f) => (f.kind === 'state' ? [f.type, f.repo.id, f.threads.map((t) => t.id)] : null))).toEqual([
-      ['event', REPO_ID, [PR_ID, REVIEWED_ID]],
-      ['transition', REPO_ID, [PR_ID, REVIEWED_ID]],
+      ['event', REPO_ID, [PR_ID, 'PR-BY-MEMBER', REVIEWED_ID]],
+      ['transition', REPO_ID, [PR_ID, 'PR-BY-MEMBER', REVIEWED_ID]],
       ['authorEvent', REPO_ID, [PR_ID]],
       ['event', 'OTHER-REPO', [ISSUE_ID]],
       ['transition', 'OTHER-REPO', [ISSUE_ID]],

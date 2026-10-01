@@ -392,12 +392,14 @@ export function assignedTargets(
 const REVIEW_REQUEST = 13
 const REVIEW_REQUEST_REMOVE = 14
 
-/** A thread whose events name `me` as their addressee: assigned, or asked for a review. */
+/** A thread whose events name `me` as their addressee, for one reason: assigned, or asked for a review. */
 export interface AddressedTarget {
   readonly targetId: string
   readonly reason: 'assigned' | 'review-requested'
-  /** The first such event (ms). */
+  /** The first event of this reason (ms). */
   readonly firstAt: number
+  /** Some of them are the thread author's `authorEvent`s (a non-member PR author's review request). */
+  readonly viaAuthor: boolean
 }
 
 /** How many addressed events are read per document type (newest first). */
@@ -422,24 +424,31 @@ function readAddressed(sdk: EvoSDK, forge: ForgeIds, me: string, type: typeof DO
  * sparse `addressee (refId, $createdAt)` indexes: an assign names the assignee in `refId` (since
  * F-1), a review request the reviewer. A member's request is an `event`; a PR author who is not a
  * member asks with an `authorEvent` (`forge-v2.md` §3), so both are read, in parallel, newest
- * {@link ADDRESSED_MAX} of each. A thread stays followed after an unassign, as GitHub keeps the
- * subscription; an assignment wins over a review request as the reason.
+ * {@link ADDRESSED_MAX} of each; when one read fails the other's threads are still returned (and
+ * `partial` says so), and only both failing is an error. One entry per thread and reason, the
+ * assignments first (an assignment wins over a review request as a thread's reason). A thread
+ * stays followed after an unassign, as GitHub keeps the subscription. Whether a review request
+ * is on a PR is for the caller, which reads the thread, to check.
  */
-export async function listAddressedTargets(sdk: EvoSDK, forge: ForgeIds, me: string): Promise<AddressedTarget[]> {
-  const [events, authorEvents] = await Promise.all([readAddressed(sdk, forge, me, DOC.event), readAddressed(sdk, forge, me, DOC.authorEvent)])
-  const docs = parseDocs(eventDoc, [...events, ...authorEvents])
+export async function listAddressedTargets(sdk: EvoSDK, forge: ForgeIds, me: string): Promise<{ readonly targets: AddressedTarget[]; readonly partial: boolean }> {
+  const [events, authorEvents] = await Promise.allSettled([readAddressed(sdk, forge, me, DOC.event), readAddressed(sdk, forge, me, DOC.authorEvent)])
+  if (events.status === 'rejected' && authorEvents.status === 'rejected') throw events.reason
+  const docsOf = (r: PromiseSettledResult<PlainDocument[]>, viaAuthor: boolean) => (r.status === 'fulfilled' ? parseDocs(eventDoc, r.value).map((e) => ({ e, viaAuthor })) : [])
   const out = new Map<string, AddressedTarget>()
-  for (const e of docs) {
+  for (const { e, viaAuthor } of [...docsOf(events, false), ...docsOf(authorEvents, true)]) {
     const reason = e.kind === ASSIGN || e.kind === UNASSIGN ? 'assigned' : e.kind === REVIEW_REQUEST || e.kind === REVIEW_REQUEST_REMOVE ? 'review-requested' : null
     if (reason === null) continue
-    const prev = out.get(e.targetId)
-    out.set(e.targetId, {
+    const key = `${reason}:${e.targetId}`
+    const prev = out.get(key)
+    out.set(key, {
       targetId: e.targetId,
-      reason: prev?.reason === 'assigned' ? 'assigned' : reason,
+      reason,
       firstAt: Math.min(prev?.firstAt ?? e.$createdAt, e.$createdAt),
+      viaAuthor: (prev?.viaAuthor ?? false) || viaAuthor,
     })
   }
-  return [...out.values()]
+  const targets = [...out.values()].sort((a, b) => (a.reason === b.reason ? 0 : a.reason === 'assigned' ? -1 : 1))
+  return { targets, partial: events.status === 'rejected' || authorEvents.status === 'rejected' }
 }
 
 /** What {@link scanAssignedAndMentions} found, and over how much it looked. */

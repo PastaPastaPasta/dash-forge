@@ -315,6 +315,27 @@ describe('a thread watched after its state events landed (L-17)', () => {
     expect((await loadItems('devnet', ME)).map((i) => i.id)).toEqual(['EV-MERGE'])
   })
 
+  it("backfills a PR author's review request the author-event feed read before the PR was watched (P1-1)", async () => {
+    const ASKED = thread({ id: 'PR3', kind: 'pull', number: 3, title: 'Asked', since: 300, reason: 'review-requested', viaAuthor: true })
+    const FIRST = thread({ id: 'PR4', kind: 'pull', number: 4, title: 'Asked first', since: 100, reason: 'review-requested', viaAuthor: true })
+    const request = { type: 'authorEvent', $id: 'AE-ASK', $ownerId: OTHER, $createdAt: 500, repoId: REPO.id, targetId: ASKED.id, kind: 13, refId: ME }
+    const { sdk, queries } = chainSdk([request])
+    // Poll 1: only PR4 is watched; the repo's author-event feed reads the request on PR3 (not
+    // watched yet) and moves past it.
+    await watch([FIRST], 1000)
+    await pollOnce(sdk, 'devnet', FORGE, ME, { now: 1000 })
+    expect(await loadItems('devnet', ME)).toEqual([])
+
+    // Poll 2: PR3 is watched now; its request is read once from its own history.
+    await watch([ASKED, FIRST], 2000)
+    queries.length = 0
+    await pollOnce(sdk, 'devnet', FORGE, ME, { now: 2000 })
+    expect((await loadItems('devnet', ME)).map((i) => [i.target?.number, i.what, i.reason])).toEqual([[3, 'requested your review', 'review_requested']])
+    expect(backfills(queries).filter((q) => q.documentTypeName === 'authorEvent')).toEqual([
+      { dataContractId: FORGE.community, documentTypeName: 'authorEvent', where: [['targetId', '==', 'PR3'], ['$createdAt', '>', 300], ['$createdAt', '<=', 500]], orderBy: [['$createdAt', 'desc']], limit: 20 },
+    ])
+  })
+
   it('a poll running when the inbox is cleared writes nothing after the clear (QW2-028)', async () => {
     const { sdk } = chainSdk([{ ...MERGED, type: 'transition' }])
     await watch([PR], 1000)
