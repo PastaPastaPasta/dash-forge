@@ -17,11 +17,11 @@ Reading a public repository needs no identity: `dg repo view`, `dg repo list --o
 
 ## Collaborators
 
-There are four roles. Consensus enforces each one: a write the role does not allow is refused by Platform, and Forge's clients refuse it before you pay for it.
+There are four roles. Consensus enforces what each role can write: a write the role does not allow is refused by Platform, and Forge's clients refuse it before you pay for it. Counting approvals and offering readers only on private repositories are client rules, which every Forge client applies alike.
 
 | Role | `--role` | Can | Closest GitHub role |
 |---|---|---|---|
-| Reader | `reader` (alias `read`); **private repositories only** | Read the repository (it receives the key). Otherwise what anyone can do: open issues and PRs, comment, review, and close or reopen their own issues and PRs. | Read |
+| Reader | `reader` (alias `read`); **private repositories only** | Read the repository (it receives the key). Otherwise what anyone can do: open issues and PRs, comment and review, and as an author close or reopen their own issues and PRs, mark their own PRs draft or ready, request reviews on them and resolve their threads. | Read |
 | Triage | `triage` | Close, reopen and lock any issue or PR; label, assign, set milestones, request reviews and resolve review threads; create labels and milestones. **Not**: push, merge, mark a PR draft or ready, change a PR's base, dismiss reviews, pin, or post check runs. | Triage |
 | Writer | `writer` (default) | Everything triage can, plus push to unprotected branches, merge, mark draft or ready, change a PR's base, dismiss reviews, pin, and post check runs. | Write |
 | Maintainer | `maintainer` | Everything a writer can, plus protected branches, releases, repository settings (`config`, branch policy), webhooks and hiding comments. | Maintain, and most of Admin |
@@ -95,16 +95,16 @@ Forge has no organization accounts, and membership is never delegated: only a re
 
 1. Create an identity for the organization (`dg auth new`, or the web app's sign-up) and keep its identity file or recovery words offline. It owns the organization's repositories (`dg repo create`), so their URLs are `<org>/<repo>`; register a DPNS name for it.
 2. Add each admin's **personal** identity as a maintainer of each repository (`dg collab add <org>/<repo> <admin> --role maintainer`). Pushes, merges, reviews and releases stay signed by the person who made them.
-3. Give each admin a **limited key of the organization identity** for the owner-only writes: adding and removing members, the description and topics. The organization's master key registers it, with a budget and an expiry, bound to Forge's contracts:
+3. Give each admin a **limited key of the organization identity** for the owner-only writes: adding and removing members, the description and topics. The key can do everything the organization can on Forge (it is the owner and a maintainer of every organization repository: protected pushes, settings, policy, webhooks, new repositories), but never spend more than its budget, never outlive its expiry, and never touch another contract. The organization's master key registers it:
 
    ```sh
    # as the organization (its identity file); one key per admin
    dg auth export --new-key --budget 0.5 --expires 90d --format dfk1 --reveal-secrets -o alice-admin.dfk1
    ```
 
-   Hand the file to the admin over a private channel; they use it as `DASH_FORGE_KEY` (or `dg --identity`) for the organization's owner-only commands. A key can never spend more than its budget, cannot touch other contracts, and lapses at its expiry. `dg auth keys list` (as the organization) shows every admin's key, and `dg auth keys disable <id>` revokes one at once.
+   Hand the file to the admin over a private channel; they use it as `DASH_FORGE_KEY` (or `dg --identity`) for the organization's commands. `dg auth keys list` (as the organization) shows every admin's key, and `dg auth keys disable <id>`, run with the organization's identity file, revokes one at once.
 
-What this does not give you: the key does not say which admin used it (Platform records the organization as the writer of membership changes), and a limited key holds no encryption key, so on a **private** repository adding a member (which wraps the key to them) and removing one (which rotates it) need the organization's identity file, or `dg auth login` with it on that admin's machine.
+What this does not give you: the key does not say which admin used it (Platform records the organization as the writer of membership changes), and a limited key holds no encryption key, so on a **private** repository adding a member (which wraps the key to them) and removing one (which rotates it) is done by whoever keeps the organization's identity file, on that machine. Don't copy the identity file to admins' machines: that gives them the master key, which the limited keys exist to avoid.
 
 ---
 

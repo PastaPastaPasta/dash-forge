@@ -714,6 +714,8 @@ if F['member_roles']:
     ok('ROLES', 'an author drafts as r 1 (the author operand proves no role)', 'transition',
        targetKind=1, kind=14, delta=8, asAuthor=7)
     no('ROLES', 'transition claiming reader (r 3)', 'transition', 'maximum', r=3)
+    no('ROLES', 'an author drafting with r 2 (merge, draft and ready claim r 1 on every operand)', 'transition',
+       'e_mergeOid', r=2, targetKind=1, kind=14, delta=8, asAuthor=7)
     # events: triage labels, assigns, requests reviews, resolves threads and sets milestones
     for label, kw in (('label+', {}), ('label-', dict(kind=5)), ('assign', dict(kind=6, refId=i(9))),
                       ('unassign', dict(kind=7, refId=i(9))), ('thread resolve', dict(kind=11, value=DROP, refId=i(5))),
@@ -729,6 +731,9 @@ if F['member_roles']:
         ok('ROLES', f'writer {label} event (r 1)', 'event', **kw)
         no('ROLES', f'triage {label} event', 'event', 't_triageKinds', r=2, **kw)
     no('ROLES', 'event claiming reader (r 3)', 'event', 'maximum', r=3)
+    # t_triageKinds names the kinds triage may not write: a later client-convention kind (kind is
+    # 4..255) stays open to triage, as kind 23 would have been without the rule
+    ok('ROLES', 'triage event of an unassigned convention kind (30)', 'event', r=2, kind=30, value=DROP)
 else:
     no('ROLES', 'no role property', 'writer', 'additionalProperties', role=1)
     no('ROLES', 'no r property', 'transition', 'additionalProperties', r=1)
@@ -749,6 +754,21 @@ def uncovered():
             for rule in d.get('propertyConstraints', {}):
                 if (t, rule) not in refused and (t, rule) not in LIVE_ONLY:
                     out.append((name, t, rule))
+    return out
+
+
+def unproved_roles():
+    """(contract, type) whose `r` no writer leaf of its ownerRefersTo proves (`where {"role": "r"}`):
+    the offline validator accepts such a contract, and only the live suite would notice."""
+    out = []
+    for name, contract in build.build(F).items():
+        for t, d in contract['documentSchemas'].items():
+            if 'r' not in d.get('properties', {}):
+                continue
+            gate = d.get('ownerRefersTo', {})
+            leaves = gate.get('anyOf', [gate])
+            if not any(leaf.get('documentType') == 'writer' and leaf.get('where', {}).get('role') == 'r' for leaf in leaves):
+                out.append((name, t))
     return out
 
 
@@ -810,6 +830,9 @@ def main():
     missing = uncovered()
     for m in missing:
         print('no refusing vector for rule %s.%s.%s' % m)
+    for m in unproved_roles():
+        print('role claim r of %s.%s is proved by no writer leaf' % m)
+        missing.append(m)
     if ARGS.check:
         stale = [p for f, p in paths.items() if not os.path.exists(p) or open(p).read() != dumps(sets[f])]
         stale += [os.path.join(OUT, f) for f in os.listdir(OUT) if f.endswith('.json') and f not in sets]

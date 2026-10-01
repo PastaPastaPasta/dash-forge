@@ -435,7 +435,10 @@ export const EVENT = {
 
 /** RC2 member roles (forge-v2.md §2.1): the committed contracts carry `writer.role` and a claimed `r`. */
 export const MEMBER_ROLES = 'role' in CONTRACTS.core.documentSchemas.writer.properties;
-const ROLE_GATED = new Set(['refUpdate', 'packManifest', 'chunk', 'label', 'transition', 'event', 'milestone', 'checkRun']);
+/** The role-gated types: every type that claims a role `r`. */
+export const ROLE_GATED = new Set(
+  Object.values(CONTRACTS).flatMap((c) => Object.entries(c.documentSchemas).filter(([, s]) => s.properties?.r).map(([t]) => t)),
+);
 
 /**
  * `data` with the role fields the contracts require and it leaves out: a `writer` enrolment is

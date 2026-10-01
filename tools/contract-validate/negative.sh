@@ -170,7 +170,7 @@ if jq -e '.documentSchemas.writer.properties.role' "$contracts/forge-core.json" 
   expect_reject roles-where-kind-mismatch core '.documentSchemas.refUpdate.ownerRefersTo.anyOf[1].where.role = "refName"' '40126'
   expect_reject roles-where-missing-prop collab '.documentSchemas.transition.ownerRefersTo.anyOf[1].where.role = "nope"' '40126'
   expect_reject roles-where-missing-target community '.documentSchemas.checkRun.ownerRefersTo.anyOf[2].where = {"rank": "r"}' '40126'
-  expect_reject roles-writer-role-optional core '.documentSchemas.writer.required -= ["role"]' 'index vectors disagree|expected refused by required, got accepted'
+  expect_reject roles-writer-role-optional core '.documentSchemas.writer.required -= ["role"]' 'expected refused by required, got accepted'
   expect_reject roles-push-admits-triage core '.documentSchemas.refUpdate.properties.r.maximum = 2' 'expected refused by maximum, got accepted'
 fi
 

@@ -3770,5 +3770,22 @@
    "value": "bug",
    "r": 3
   }
+ },
+ {
+  "item": "ROLES",
+  "name": "triage event of an unassigned convention kind (30)",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 30,
+   "r": 2
+  }
  }
 ]

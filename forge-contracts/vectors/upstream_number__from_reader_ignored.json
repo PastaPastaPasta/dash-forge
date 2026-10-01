@@ -5,7 +5,7 @@
   "rules": "v2",
   "input": {
     "upstreamNumber": 42,
-    "author": "tri",
+    "author": "rdr",
     "repoOwner": "owner",
     "memberships": [
       {
@@ -19,7 +19,7 @@
         "createdAt": 10
       },
       {
-        "identity": "tri",
+        "identity": "rdr",
         "role": "reader",
         "createdAt": 10
       }

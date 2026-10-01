@@ -3059,5 +3059,26 @@
    "asAuthor": 0,
    "r": 3
   }
+ },
+ {
+  "item": "ROLES",
+  "name": "an author drafting with r 2 (merge, draft and ready claim r 1 on every operand)",
+  "type": "transition",
+  "expect": "refused",
+  "why": "e_mergeOid",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 14,
+   "delta": 8,
+   "asAuthor": 7,
+   "r": 2
+  }
  }
 ]
