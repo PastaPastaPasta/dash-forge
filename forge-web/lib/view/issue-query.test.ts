@@ -279,12 +279,20 @@ describe('free-text match', () => {
     expect(matchesText('DIP-15', dip)).toBe(true)
     expect(matchesText('"the config"', row)).toBe(true)
     expect(matchesText('"config the"', row)).toBe(false)
-    expect(searchTerms('"DIP-15" crash "two words"')).toEqual(['dip-15', 'crash', 'two words'])
+    expect(searchTerms('"DIP-15" crash "two words"').map((t) => t.text)).toEqual(['dip-15', 'crash', 'two words'])
   })
   it('excludes a negated word or phrase, as GitHub does (QW3-018)', () => {
     const dip = { title: 'DIP-15: DashPay contacts', number: 3 }
     const other = { title: 'DIP-16: Headers first', number: 4, body: 'Two words here.' }
-    expect(searchTerms('-"two words" -DIP-15 -')).toEqual(['-two words', '-dip-15', '-'])
+    expect(searchTerms('-"two words" -DIP-15 - "--force"')).toEqual([
+      { text: 'two words', not: true },
+      { text: 'dip-15', not: true },
+      { text: '-', not: false },
+      { text: '--force', not: false },
+    ])
+    // A `-` inside quotes is literal: the way to search for text that starts with one.
+    expect(matchesText('"--force"', { title: 'Push with --force', number: 9 })).toBe(true)
+    expect(matchesText('"--force"', { title: 'Push', number: 9 })).toBe(false)
     expect(matchesText('-DIP-15', dip)).toBe(false)
     expect(matchesText('-"DIP-15"', dip)).toBe(false)
     expect(matchesText('-DIP-15', other)).toBe(true)

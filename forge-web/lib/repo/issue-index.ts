@@ -293,8 +293,8 @@ export function matchesText(text: string, row: { readonly title: string; readonl
     if (bare && Number(bare[1]) === row.number) return true
     return fields.some((f) => f.includes(w))
   }
-  // `-word` and `-"a phrase"` exclude (QW3-018, GitHub's NOT); a lone `-` is a word.
-  return terms.every((w) => (w.length > 1 && w.startsWith('-') ? !holds(w.slice(1)) : holds(w)))
+  // `-word` and `-"a phrase"` exclude (QW3-018, GitHub's NOT).
+  return terms.every((t) => holds(t.text) !== t.not)
 }
 
 /** The sort order of the list. */
