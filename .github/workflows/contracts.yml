@@ -79,7 +79,7 @@ jobs:
             forge-contracts/contracts/forge-community.json
       - name: Negative mutations are refused
         run: tools/contract-validate/negative.sh
-      # RC2: S1, S2, S3 and C1 are build.py flags decided at registration (fee probes), so every
+      # RC2: S1, S2, S3, C1 and MOD are build.py flags decided at registration (fee probes), so every
       # combination of them must validate (with its own vectors) and fit the budget; so must each
       # combination of the rider flags (QW-069, QW2-010) with every RC2 item on
       - name: Every RC2 flag combination validates

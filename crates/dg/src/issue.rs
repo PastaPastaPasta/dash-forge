@@ -19,13 +19,18 @@ use forge_core::user_error::{codes, UserError};
 use crate::common::{number_arg, Reader, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, safe, transition_phrase, transition_route_text, with_name};
-use crate::{CloseReasonArg, IssueCommand, IssueListArgs};
+use crate::{CloseReasonArg, HideReasonArg, IssueCommand, IssueListArgs};
 
 /// Dispatch an `issue` subcommand.
+#[allow(clippy::too_many_lines)] // one arm per subcommand
 pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
     match cmd {
         IssueCommand::List(args) => list(ctx, args).await,
-        IssueCommand::View { repo, number } => view(ctx, repo, *number).await,
+        IssueCommand::View {
+            repo,
+            number,
+            show_hidden,
+        } => view(ctx, repo, *number, *show_hidden).await,
         IssueCommand::Create { repo, title, body } => create(ctx, repo, title, body).await,
         IssueCommand::Edit {
             repo,
@@ -101,6 +106,23 @@ pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
         }
         IssueCommand::Lock { repo, number, off } => {
             thread_flag(ctx, repo, *number, Flag::Lock, !off).await
+        }
+        IssueCommand::Hide {
+            repo,
+            number,
+            comment,
+            reason,
+            off,
+        } => {
+            hide(
+                ctx,
+                repo,
+                *number,
+                comment.as_deref(),
+                reason.map(HideReasonArg::as_str),
+                !off,
+            )
+            .await
         }
     }
 }
@@ -397,7 +419,8 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
     Ok(())
 }
 
-async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
+#[allow(clippy::too_many_lines)] // one view: the reads, the JSON, then the human lines
+async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<()> {
     let s = Reader::open(ctx, repo).await?;
 
     let collab = s.collab();
@@ -408,9 +431,23 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let (comments, hidden) = collab
         .comments_counted(&s.repo, &view.issue.document_id)
         .await?;
+    // RC2 MOD: what maintainers hid (collapsed below unless --show-hidden)
+    let moderation = collab
+        .hidden_items(&s.repo, &view.issue.target(), &view.log, &comments, &[])
+        .await?;
     let values_note = crate::fmt::event_values_note(view.hidden_values, view.plaintext_values);
     let (hidden_values, plaintext_values) = (view.hidden_values, view.plaintext_values);
-    let events: Vec<Event> = view.events().into_iter().cloned().collect();
+    // A hide or unhide readers ignore (a writer's without the contract's proof, a refId of
+    // another thread) is noise, not the record: only the counted ones show.
+    let events: Vec<Event> = view
+        .events()
+        .into_iter()
+        .filter(|e| {
+            !matches!(e.kind, EventKind::Hide | EventKind::Unhide)
+                || moderation.counted.contains(&e.id)
+        })
+        .cloned()
+        .collect();
     let transitions = view.log.transitions.clone();
     let timeline = timeline(&comments, &events, &transitions);
     let issue_number = u32::try_from(number).unwrap_or(u32::MAX);
@@ -461,6 +498,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             })).collect::<Vec<_>>(),
             "transitions": transitions.iter().map(transition_json).collect::<Vec<_>>(),
             "hiddenComments": hidden,
+            "moderation": moderation,
             "hiddenEventValues": hidden_values,
             "plaintextEventValues": plaintext_values,
         }),
@@ -476,6 +514,12 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             for line in crate::fmt::triage_lines(&labels, &assignees, meta.milestone.as_deref()) {
                 println!("{line}");
             }
+            if let Some(h) = &moderation.thread {
+                println!("{}", crate::fmt::hidden_line("this issue", h, &who, show_hidden));
+                if !show_hidden {
+                    return;
+                }
+            }
             if !body.is_empty() {
                 println!("\n{}", safe(&body));
             }
@@ -483,7 +527,20 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
                 match item {
                     Item::Comment(c) => {
                         let author = who(&c.author);
-                        println!("\n— {author} ({}):\n{}", c.document_id, safe(&c.body));
+                        match moderation.item(&c.document_id) {
+                            Some(h) if !show_hidden => println!(
+                                "\n— {author} ({}): {}",
+                                c.document_id,
+                                crate::fmt::hidden_line("comment", h, &who, false)
+                            ),
+                            h => {
+                                println!("\n— {author} ({}):", c.document_id);
+                                if let Some(h) = h {
+                                    println!("{}", crate::fmt::hidden_line("comment", h, &who, true));
+                                }
+                                println!("{}", safe(&c.body));
+                            }
+                        }
                     }
                     Item::Event(e) => println!("\n· {} {}", who(&e.actor), safe(&event_phrase(e))),
                     Item::Transition(t) => {
@@ -587,6 +644,7 @@ fn event_phrase(e: &Event) -> String {
         EventKind::Unpin => "unpinned this".into(),
         EventKind::Lock => "locked the conversation".into(),
         EventKind::Unlock => "unlocked the conversation".into(),
+        EventKind::Hide | EventKind::Unhide => crate::fmt::moderation_phrase(e),
         // PR-only kinds do nothing to an issue; name them as the contract does.
         other => serde_json::to_value(other)
             .ok()
@@ -709,6 +767,51 @@ async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str) -> Result<()> {
                 cost_line(spent, price)
             );
         },
+    );
+    Ok(())
+}
+
+/// Hide (`on`) or unhide comment `comment` of issue `number`, or with none the issue itself
+/// (RC2 MOD: one member event, kind 24 or 25). Maintainers only, refused before signing for
+/// anyone else; nothing is deleted.
+async fn hide(
+    ctx: &Ctx,
+    repo: &str,
+    number: u64,
+    comment: Option<&str>,
+    reason: Option<&str>,
+    on: bool,
+) -> Result<()> {
+    if let Some(id) = comment {
+        crate::common::document_id_arg(id, "comment id", COMMENT_IDS)?;
+    }
+    let s = Session::open_for_write(ctx, repo, "nothing hidden").await?;
+    let target = target(&s, repo, number).await?;
+    let what = comment.map_or_else(
+        || format!("issue #{number}"),
+        |id| format!("comment {id} on issue #{number}"),
+    );
+    let (verb, done) = if on {
+        ("Hide", "hid")
+    } else {
+        ("Unhide", "unhid")
+    };
+    ctx.confirm_or_cancel(&format!(
+        "{verb} {what}? (one small event; maintainers only; nothing is deleted, and readers can still expand it)"
+    ))?;
+    let id = s
+        .collab()
+        .set_hidden(&s.repo, &target, comment, reason, on)
+        .await?;
+    ctx.emit(
+        json!({
+            "status": if on { "hidden" } else { "unhidden" },
+            "issue": number,
+            "comment": comment,
+            "reason": reason,
+            "eventId": id,
+        }),
+        || println!("✓ {done} {what}"),
     );
     Ok(())
 }

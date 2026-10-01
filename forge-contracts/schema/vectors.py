@@ -651,6 +651,30 @@ if F['review_hunk']:
 else:
     no('QW2-010', 'no diffHunk property', 'comment', 'additionalProperties', diffHunk=HUNK, **REVIEW_COMMENT)
 
+# ---------------- RC2 moderation (design/v5/MODERATION.md) ----------------
+# A hide (24) or unhide (25) names the writer's own maintainer document (asMaintainer = $ownerId).
+# Whether that document exists (a writer, a maintainer of another repo, a removed maintainer:
+# 40120) is a reference, judged by the live suite and the offline chain
+# (forge-contracts/scripts/rc1-live.mjs `moderation`, lib/offline-chain.test.mjs).
+HIDE = dict(kind=24, value=DROP, refId=i(5), asMaintainer=i(OWNER))
+if F['event_as_maintainer']:
+    ok('MOD', 'a maintainer hides a comment', 'event', **HIDE)
+    ok('MOD', 'a maintainer hides a comment as spam', 'event', **dict(HIDE, value='spam'))
+    ok('MOD', 'a maintainer hides a whole thread', 'event', **dict(HIDE, refId=DROP))
+    ok('MOD', 'a maintainer unhides a comment', 'event', **dict(HIDE, kind=25))
+    ok('MOD', 'another maintainer (signer 9) hides as itself', 'event', signer=9, **dict(HIDE, asMaintainer=i(9)))
+    ok('MOD', 'a sealed hide reason', 'event', **dict(HIDE, **SEALED))
+    no('MOD', 'a hide without asMaintainer', 'event', 'hideByMaint', **dict(HIDE, asMaintainer=DROP))
+    no('MOD', 'an unhide without asMaintainer', 'event', 'hideByMaint', **dict(HIDE, kind=25, asMaintainer=DROP))
+    no('MOD', 'a hide naming another maintainer', 'event', 'hideByMaint', **dict(HIDE, asMaintainer=i(9)))
+    no('MOD', 'a hide by signer 9 naming the signer 7', 'event', 'hideByMaint', signer=9, **HIDE)
+    ok('MOD', 'a label event without asMaintainer', 'event')
+    ok('MOD', 'a label event with asMaintainer (readers ignore it)', 'event', asMaintainer=i(OWNER))
+    no('MOD', 'asMaintainer of 31 bytes', 'event', 'minItems', **dict(HIDE, asMaintainer=b(7, 31)))
+else:
+    ok('MOD', 'a hide with no proof (readers judge it)', 'event', **dict(HIDE, asMaintainer=DROP))
+    no('MOD', 'no asMaintainer property', 'event', 'additionalProperties', **HIDE)
+
 # Rules that read a total, a time or a height: judged on chain only (forge-contracts/scripts/rc1-live.mjs).
 LIVE_ONLY = {('issue', 'dense'), ('patch', 'dense'), ('transition', 'c1_closedAfter'), ('transition', 'c2_openAfter'),
              ('transition', 'c3_mergedAfter'), ('transition', 'c4_draftAfter'), ('transition', 'c5_draftClosedAfter'),

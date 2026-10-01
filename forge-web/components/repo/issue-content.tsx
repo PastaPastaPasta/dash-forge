@@ -83,6 +83,11 @@ import { LockToggle, LockedBanner, lockConfirm, lockStateText, lockViewerOf } fr
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
 import { numberLabel, shownUpstreamNumber } from '@/lib/view/upstream'
+import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost } from '@/components/repo/moderation'
+import { setHidden } from '@/lib/repo/moderation'
+import { moderationBlocked } from '@/lib/repo/moderation-fold'
+import { isHidden } from '@/lib/view/issues-view'
+import type { HideReason } from '@/lib/rules/moderation'
 
 /** The write the confirm dialog is about to sign. */
 type Pending =
@@ -100,6 +105,11 @@ type Pending =
   | { kind: 'editIssue'; title: string; body: string }
   | { kind: 'editComment'; id: string; body: string }
   | { kind: 'deleteComment'; id: string }
+  /**
+   * A maintainer hides (or unhides) a comment, or with `item` null the issue (RC2 MOD); hiding the
+   * issue may also close and lock it, as separate writes after the hide.
+   */
+  | { kind: 'hide'; item: string | null; what: 'comment' | 'issue'; reason: HideReason | null; hide: boolean; closeAndLock?: boolean }
   | null
 
 /** Bytes a body may hold (the `body` schema: 5,120). */
@@ -176,6 +186,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const closeComment = useRef<{ intent: string; id: string } | null>(null)
   const [editing, setEditing] = useState<{ title: string; body: string } | null>(null)
   const [editingComment, setEditingComment] = useState<{ id: string; body: string } | null>(null)
+  // A hidden issue's body and timeline show only after "Show it anyway" (RC2 MOD).
+  const [threadRevealed, setThreadRevealed] = useState(false)
 
   // The PRs that close or mention this issue (the Development box, and the timeline's "closed this
   // in #3" and "mentioned this issue in #4", QW2-048). The trusted upstream number needs the thread.
@@ -208,6 +220,11 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   // Closed as not planned or as a duplicate: GitHub's grey badge (QW-069).
   const skipped = !open && closedSkipped(data.closedAs)
   const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
+  // RC2 MOD: only a maintainer hides (consensus refuses a writer where the contract proves it).
+  const isMaintainer = holdings.data !== null && holdings.data.maintain
+  const moderation = data.moderation
+  const threadHidden = moderation?.thread ?? null
+  const threadCollapsed = threadHidden !== null && !threadRevealed
   const postContext = { isMember, locked: meta.locked }
   const isAuthor = identity !== null && identity === issue.author
   const canToggle = identity !== null && (isAuthor || isMember)
@@ -334,6 +351,14 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         await deleteComment(sdk, signer, home.repo, pending.id)
         if (editingComment?.id === pending.id) setEditingComment(null)
         break
+      case 'hide':
+        await setHidden(sdk, signer, home.repo, { target, item: pending.item, reason: pending.reason, hide: pending.hide, intent })
+        if (pending.closeAndLock) {
+          // Separate writes (a batch holds one transition): close, then lock, each skipped when done.
+          if (open) await setTargetState(sdk, signer, home.repo, { target: { ...target, type: 'issue', author: issue.author }, action: 'close', isMember, intent: `${intent}:close`, closed: { reason: 'not_planned', duplicateOf: null } })
+          if (!meta.locked) await setLock(sdk, signer, home.repo, { target: { ...target, type: 'issue', author: issue.author }, lock: true, isMember, intent: `${intent}:lock` })
+        }
+        break
     }
     refresh((t) => {
       switch (write.kind) {
@@ -343,6 +368,9 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           return setChangeShows(t.issue.state.labels, write.change)
         case 'assignees':
           return setChangeShows(t.issue.state.assignees, write.change)
+        case 'hide':
+          // With "also close and lock", until the close and the lock show as well.
+          return issueWriteShows(t, write) && (!write.closeAndLock || (!t.issue.state.open && t.meta.locked))
         default:
           return issueWriteShows(t, write)
       }
@@ -372,12 +400,18 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         return previewReplace('comment', { body: pending.body })
       case 'deleteComment':
         return previewDelete('comment')
+      case 'hide': {
+        const hide = hideCost(home.repo, pending, eventFirst)
+        const extra = pending.closeAndLock ? [...(open ? [stateCost] : []), ...(meta.locked ? [] : [stateCost])] : []
+        return extra.length > 0 ? sumPreviews([hide, ...extra]) : hide
+      }
       default:
         return stateCost
     }
   })()
 
   const confirm = confirmText(pending, issue.number, open, isMember)
+  const canModerate = isMaintainer && !archived && guard.disabledReason === null
 
   return (
     <div className="mx-auto grid max-w-5xl gap-6 lg:grid-cols-[minmax(0,1fr)_16rem]">
@@ -436,7 +470,10 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           </div>
         </div>
 
+        {threadHidden !== null ? <HiddenBanner hidden={threadHidden} noun="issue" revealed={threadRevealed} onReveal={() => setThreadRevealed(true)} /> : null}
+
         {/* Body */}
+        {threadCollapsed ? null : (
         <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
           <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
             <Byline author={issue.author} createdAt={issue.createdAt} origin={origin} verb="authored" />
@@ -452,13 +489,28 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             )}
           </div>
         </div>
+        )}
 
         {/* Timeline */}
-        {timeline.length > 0 || (backlinks.linking.data?.mentioning.length ?? 0) > 0 ? (
+        {!threadCollapsed && (timeline.length > 0 || (backlinks.linking.data?.mentioning.length ?? 0) > 0) ? (
           <Timeline
             items={timeline}
             links={links}
             trust={trust}
+            {...(moderation ? { moderation } : {})}
+            {...(canModerate
+              ? {
+                  moderate: ({ id }: { readonly kind: 'comment' | 'review'; readonly id: string }) => (
+                    <HideMenu
+                      hidden={isHidden(moderation, id)}
+                      blocked={moderationBlocked(data.moderationInput, identity, id, !isHidden(moderation, id))}
+                      disabled={false}
+                      onHide={(reason) => setPending({ kind: 'hide', item: id, what: 'comment', reason, hide: true })}
+                      onUnhide={() => setPending({ kind: 'hide', item: id, what: 'comment', reason: null, hide: false })}
+                    />
+                  ),
+                }
+              : {})}
             closedIn={(t) => closedInRef(t, backlinks, addr)}
             closeWhy={(t) => closeWhyOf(t, issue.number, data.duplicates ?? NO_DUPLICATES, (n) => (addr ? repoHref('/repo/issue', addr, { number: String(n) }) : ''))}
             crossRefs={crossRefsOf(backlinks.linking.data, addr)}
@@ -583,6 +635,19 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 <LockToggle locked={meta.locked} onToggle={(on) => setPending({ kind: 'flag', flag: 'lock', on })} />
               </div>
             ) : null}
+            {canModerate ? (
+              <div className="mt-2">
+                <HideThreadControl
+                  hidden={threadHidden !== null}
+                  blocked={moderationBlocked(data.moderationInput, identity, null, threadHidden === null)}
+                  noun="issue"
+                  offerClose={open}
+                  offerLock={!meta.locked}
+                  onHide={(reason, closeAndLock) => setPending({ kind: 'hide', item: null, what: 'issue', reason, hide: true, closeAndLock })}
+                  onUnhide={() => setPending({ kind: 'hide', item: null, what: 'issue', reason: null, hide: false })}
+                />
+              </div>
+            ) : null}
           </SidebarSection>
         ) : null}
         <SidebarSection title="Labels" icon={Tag}>
@@ -630,6 +695,8 @@ function closeWords(c: ClosedAs | undefined): string {
 /** The confirm dialog's words for each pending write. */
 function confirmText(pending: Pending, number: number, open: boolean, isMember: boolean): { title: string; description: string; label: string } {
   switch (pending?.kind) {
+    case 'hide':
+      return hideConfirm(pending, `issue #${number}`)
     case 'labels':
       return labelsConfirm(pending.change)
     case 'assignees':

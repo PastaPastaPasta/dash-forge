@@ -73,6 +73,7 @@ fn check_id_args(cmd: &PrCommand) -> Result<()> {
 }
 
 /// Dispatch a `pr` subcommand.
+#[allow(clippy::too_many_lines)] // one arm per subcommand
 pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
     use crate::PrSuggestionCommand as Sg;
     check_id_args(cmd)?;
@@ -83,7 +84,8 @@ pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
             repo,
             number,
             comments,
-        } => view(ctx, repo, *number, *comments).await,
+            show_hidden,
+        } => view(ctx, repo, *number, *comments, *show_hidden).await,
         PrCommand::Checkout { repo, number } => checkout(ctx, repo, *number).await,
         PrCommand::Review(a) => review::review(ctx, a).await,
         PrCommand::Comment(a) => review::comment(ctx, a).await,
@@ -110,6 +112,29 @@ pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
         PrCommand::Ready { repo, number } => state::set_draft(ctx, repo, *number, false).await,
         PrCommand::Draft { repo, number } => state::set_draft(ctx, repo, *number, true).await,
         PrCommand::Lock { repo, number, off } => state::set_locked(ctx, repo, *number, !off).await,
+        PrCommand::Hide {
+            repo,
+            number,
+            comment,
+            review,
+            reason,
+            off,
+        } => {
+            let item = match (comment, review) {
+                (Some(c), _) => Some(("comment", c.as_str())),
+                (None, Some(r)) => Some(("review", r.as_str())),
+                (None, None) => None,
+            };
+            state::hide(
+                ctx,
+                repo,
+                *number,
+                item,
+                reason.map(crate::HideReasonArg::as_str),
+                !off,
+            )
+            .await
+        }
         PrCommand::Resolve {
             repo,
             number,
@@ -851,7 +876,13 @@ fn comments_json(comments: &[forge_core::collab::v2::Comment]) -> Vec<serde_json
 /// always in `--json`) its conversations. Works signed out for a public repo; with an identity
 /// it adds "new commits since your review", and opens a private repo's sealed documents.
 #[allow(clippy::too_many_lines)]
-async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result<()> {
+async fn view(
+    ctx: &Ctx,
+    repo: &str,
+    number: u64,
+    show_comments: bool,
+    show_hidden: bool,
+) -> Result<()> {
     // A public PR is read without opening any key (a sealed one would ask for its
     // passphrase); a private repo's sealed documents open with the identity's keys. The
     // viewer ("new commits since your review") is named when the key source says who it is.
@@ -865,13 +896,37 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
     let approvals = approvals_over(&reviews, &v, &oracle);
     let (comments, hidden_comments) = collab.comments_counted(handle, doc_id).await?;
     let review_state = v.review_with_threads(&comments);
+    // RC2 MOD: what maintainers hid. Collapsed in the human view unless --show-hidden; a hidden
+    // review's verdict still counts (only a dismissal stops it), so approvals are unchanged.
+    let moderation = collab
+        .hidden_items(handle, &v.patch.target(), &v.log, &comments, &reviews)
+        .await?;
+    let trusted = |who: &str| {
+        who == handle.owner_id()
+            || oracle.current_role(who) == Some(forge_core::rules::v2::Role::Maintainer)
+    };
     let mut conv = threads::threads(&comments, &v.head, &review_state.resolved_threads);
     // A mirrored hunk shows only from a signer who may mirror (the web's trust set: the owner
     // and the current maintainers), as the web shows it.
-    threads::drop_untrusted_hunks(&mut conv, |who| {
-        who == handle.owner_id()
-            || oracle.current_role(who) == Some(forge_core::rules::v2::Role::Maintainer)
-    });
+    threads::drop_untrusted_hunks(&mut conv, trusted);
+    // The conversations as printed: a hidden comment's body is its one "hidden by" line.
+    let printed_conv = if show_hidden || moderation.items.is_empty() {
+        None
+    } else {
+        let shown: Vec<_> = comments
+            .iter()
+            .map(|c| match moderation.item(&c.document_id) {
+                Some(h) => forge_core::collab::v2::Comment {
+                    body: crate::fmt::hidden_line("comment", h, &|id: &str| id.to_string(), false),
+                    ..c.clone()
+                },
+                None => c.clone(),
+            })
+            .collect();
+        let mut printed = threads::threads(&shown, &v.head, &review_state.resolved_threads);
+        threads::drop_untrusted_hunks(&mut printed, trusted);
+        Some(printed)
+    };
     let rows = threads::reviewer_rows(
         &reviews,
         &review_state,
@@ -973,6 +1028,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
             "comments": comments_json(&comments),
             "hiddenComments": hidden_comments,
             "hiddenReviews": hidden_reviews,
+            "moderation": moderation,
             "hiddenEventValues": v.log.hidden_values,
             "plaintextEventValues": v.log.plaintext_values,
     });
@@ -989,6 +1045,12 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
                 safe(&v.patch.title)
             );
             println!("author: {}", v.patch.author);
+            if let Some(h) = &moderation.thread {
+                println!("{}", crate::fmt::hidden_line("this pull request", h, &|id: &str| id.to_string(), show_hidden));
+                if !show_hidden {
+                    return;
+                }
+            }
             println!(
                 "{} {} ({}) → {}",
                 source,
@@ -1095,12 +1157,22 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
                     short(&r.commit_oid),
                     short(&r.document_id)
                 );
+                if let Some(h) = moderation.item(&r.document_id) {
+                    // Still counted: hiding is display only (dismiss to stop it counting).
+                    println!(
+                        "  {} (its verdict still counts unless dismissed)",
+                        crate::fmt::hidden_line("review", h, &|id: &str| id.to_string(), show_hidden)
+                    );
+                    if !show_hidden {
+                        continue;
+                    }
+                }
                 if !r.body.is_empty() {
                     println!("  {}", safe(&r.body));
                 }
             }
             if show_comments {
-                print_conversations(&conv);
+                print_conversations(printed_conv.as_ref().unwrap_or(&conv));
             } else if !comments.is_empty() {
                 println!(
                     "\n{} comment(s) in {} thread(s) ({unresolved} unresolved) — `--comments` shows them",

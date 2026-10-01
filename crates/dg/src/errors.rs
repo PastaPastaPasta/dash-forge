@@ -157,6 +157,9 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Issue(I::Close { repo, .. }) => ("issue not closed", Some(repo)),
         Command::Issue(I::Pin { repo, .. }) => ("pin not changed", Some(repo)),
         Command::Issue(I::Lock { repo, .. }) => ("lock not changed", Some(repo)),
+        Command::Issue(I::Hide { repo, .. }) | Command::Pr(P::Hide { repo, .. }) => {
+            ("nothing hidden", Some(repo))
+        }
         Command::Milestone(MilestoneCommand::List { repo }) => {
             ("could not list milestones", Some(repo))
         }

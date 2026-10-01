@@ -1,0 +1,62 @@
+{
+  "name": "owner_unhide_outranks_later_hide",
+  "description": "The owner unhides; a maintainer's later hide does not count against it.",
+  "case": "hidden_items",
+  "rules": "v2",
+  "input": {
+    "threadId": "T",
+    "threadAuthor": "bob",
+    "owner": "own",
+    "maintainers": [
+      "alice",
+      "carol"
+    ],
+    "proved": true,
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "unhide",
+        "actor": "own",
+        "value": null,
+        "oid": null,
+        "createdAt": 10,
+        "refId": "c1"
+      },
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "hide",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 20,
+        "refId": "c1"
+      }
+    ],
+    "comments": [
+      {
+        "id": "c1",
+        "author": "bob"
+      },
+      {
+        "id": "c2",
+        "author": "dave"
+      }
+    ],
+    "reviews": [
+      {
+        "id": "r1",
+        "author": "bob"
+      }
+    ]
+  },
+  "expected": {
+    "thread": null,
+    "items": {},
+    "counted": [
+      "e1",
+      "e2"
+    ]
+  }
+}

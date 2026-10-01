@@ -420,6 +420,20 @@ function runCaseV2(v: Vector): void {
       expect(v.case === 'pinned' ? v2.pinnedTargets(events) : v2.foldThreadMetaV2(events)).toEqual(v.expected)
       break
     }
+    case 'hidden_items': {
+      onlyKeys(v, ['threadId', 'threadAuthor', 'owner', 'maintainers', 'proved', 'events', 'comments', 'reviews'], {
+        events: EVENT_KEYS,
+        comments: ['id', 'author', 'reviewId'],
+        reviews: ['id', 'author'],
+      })
+      const inp = v.input as v2.HideScope & {
+        readonly events: readonly Event[]
+        readonly comments?: readonly v2.ThreadItem[]
+        readonly reviews?: readonly v2.ThreadItem[]
+      }
+      expect(v2.hiddenItems(inp.events, inp, inp.comments ?? [], inp.reviews ?? [])).toEqual(v.expected)
+      break
+    }
     case 'milestones': {
       onlyKeys(v, ['docs', 'items'], {
         docs: ['id', 'title', 'description', 'dueOn', 'closed', 'createdAt'],

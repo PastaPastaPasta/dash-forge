@@ -56,6 +56,9 @@ import { HiddenTally, admitAll, gateFor, type HiddenCounts } from '../repo/priva
 import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
 import { foldThreadMetaV2, type ThreadMeta } from '../rules/parity'
+import type { HiddenItems } from '../rules/moderation'
+import { hidesProved } from '../repo/moderation'
+import { foldModeration, hasHides, moderationInput, type ModerationInput } from '../repo/moderation-fold'
 import { anchorOf, countApprovals, foldPrReviewV2, groupReviewComments, meetsPolicy, RoleOracle, type Anchor, type Approvals, type Policy, type PolicyStatus, type PrReviewState, type Review, type Role } from '../rules/v2'
 import { reviewerRows, sinceYourReview, summarizeReviews, type ReviewerCardRow, type ReviewSummary, type SinceYourReview } from './review-fold'
 
@@ -244,6 +247,10 @@ export interface IssueThread {
    * their titles; '' when unreadable): only these link. Any other `dupNumber` shows unlinked.
    */
   readonly duplicates?: ReadonlyMap<number, { readonly number: number; readonly title: string }>
+  /** What maintainers hid (RC2 MOD; `hiddenItems`): collapsed rows, or the whole issue. */
+  readonly moderation?: HiddenItems
+  /** What the reader rule read, for a maintainer's Hide / Unhide (`moderationBlocked`). */
+  readonly moderationInput?: ModerationInput
 }
 
 /** A write the issue page made, for {@link issueWriteShows}. */
@@ -258,6 +265,7 @@ export type IssueWrite =
   | { readonly kind: 'editIssue'; readonly title: string; readonly body: string }
   | { readonly kind: 'editComment'; readonly id: string; readonly body: string }
   | { readonly kind: 'deleteComment'; readonly id: string }
+  | { readonly kind: 'hide'; readonly item: string | null; readonly hide: boolean }
 
 /**
  * Whether a read of the thread already shows `w`: the page re-reads after a write until it does,
@@ -290,7 +298,15 @@ export function issueWriteShows(t: IssueThread, w: IssueWrite): boolean {
       return comment(w.id)?.body === w.body
     case 'deleteComment':
       return comment(w.id) === undefined
+    case 'hide':
+      return isHidden(t.moderation, w.item) === w.hide
   }
+}
+
+/** Whether `item` (null: the thread) is hidden in `m` (RC2 MOD). */
+export function isHidden(m: HiddenItems | undefined, item: string | null): boolean {
+  if (m === undefined) return false
+  return item === null ? m.thread !== null : m.items[item] !== undefined
 }
 
 /** How a private repo's event values were read ({@link TargetLog}). */
@@ -381,15 +397,24 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
   const duplicates = await readDuplicateTargets(sdk, repo, transitions.flatMap((t) => closeReasonOf(t, issueNumber)?.duplicateOf ?? [])).catch(
     () => new Map<number, { readonly number: number; readonly title: string }>(),
   )
+  // RC2 MOD: the contract's proof is read only when the issue has a hide, beside the members (a
+  // failed read counts the owner's and current maintainers' hides alone, the stricter rule).
+  const [members, proved] = await Promise.all([
+    memberships ?? readMembershipsCached(sdk, repo, network),
+    hasHides(log.events) ? hidesProved(sdk, repo).catch(() => false) : Promise.resolve(false),
+  ])
+  const modInput = moderationInput({ events: log.events, thread: { id, author: str(doc, '$ownerId') }, owner: repo.ownerId, members, proved, comments })
   return {
     closedAs: currentCloseReason(transitions, issueNumber),
     duplicates,
+    moderation: foldModeration(modInput),
+    moderationInput: modInput,
     issue: issueViewOf(doc, log, stateCode(transitions)),
     timeline: mergeTimeline(comments, log.events, log.authorEvents, [], tally.total > 0, transitions),
     hidden: tally.value,
     eventValues: eventValues(log),
     labels,
-    members: memberships ?? (await readMembershipsCached(sdk, repo, network)),
+    members,
     // The lock is a transition since RC1 (kinds 3/4); the retired lock events 21/22 are refused.
     meta: { ...foldThreadMetaV2(log.events), locked: isLocked(transitions) },
   }
@@ -471,6 +496,13 @@ export interface PullThread {
    * refuses a comment or review from anyone who does not prove membership.
    */
   readonly locked: boolean
+  /**
+   * What maintainers hid (RC2 MOD; `hiddenItems`). Display only: a hidden review's verdict still
+   * counts in `approvals` until it is dismissed.
+   */
+  readonly moderation?: HiddenItems
+  /** What the reader rule read, for a maintainer's Hide / Unhide (`moderationBlocked`). */
+  readonly moderationInput?: ModerationInput
 }
 
 /**
@@ -565,8 +597,12 @@ export async function loadPullThread(
   const policyDocs = docs(7).length < 100 ? docs(7) : null
   const policy: Promise<Policy | null> = policyDocs === null ? readPolicy(sdk, repo) : Promise.resolve(policyFromDocs(policyDocs))
   const members = memberships ?? (await readMembershipsCached(sdk, repo, network).catch(() => null))
-  const [approvals, verdicts] = await Promise.all([readApprovals(members, policy, reviews, review, pull.author), verdictsRead])
+  const proved = hasHides(log.events) ? hidesProved(sdk, repo).catch(() => false) : Promise.resolve(false)
+  const [approvals, verdicts, hidesAreProved] = await Promise.all([readApprovals(members, policy, reviews, review, pull.author), verdictsRead, proved])
+  const modInput = moderationInput({ events: log.events, thread: { id, author: pull.author }, owner: repo.ownerId, members: members ?? [], proved: hidesAreProved, comments, reviews })
   return {
+    moderation: foldModeration(modInput),
+    moderationInput: modInput,
     pull,
     timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews, tally.total > 0, transitions),
     comments,

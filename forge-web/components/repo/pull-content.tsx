@@ -54,6 +54,11 @@ import {
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
+import { HiddenBanner, HideMenu, HideThreadControl, hideConfirm, hideCost } from '@/components/repo/moderation'
+import { setHidden } from '@/lib/repo/moderation'
+import { moderationBlocked } from '@/lib/repo/moderation-fold'
+import { isHidden } from '@/lib/view/issues-view'
+import type { HideReason } from '@/lib/rules/moderation'
 import { bypassValue, deleteBranchOffer, deleteBranchProblem, prLinkedIssues, requiredChecksLine } from '@/lib/view/pull-actions'
 import {
   createComment,
@@ -194,6 +199,8 @@ type Pending =
   | { kind: 'delete-comment'; id: string }
   | { kind: 'resolve'; root: string; resolve: boolean }
   | { kind: 'lock'; on: boolean }
+  /** A maintainer hides (or unhides) a comment, a review, or with `item` null the PR (RC2 MOD). */
+  | { kind: 'hide'; item: string | null; what: 'comment' | 'review' | 'pull request'; reason: HideReason | null; hide: boolean; closeAndLock?: boolean }
 
 export function PullContent({
   home,
@@ -282,6 +289,8 @@ function PullPage({
   // guard), as the header's "Session locked — Unlock" says. Signed out, there is none.
   const viewer = identity ?? lockedIdentity
   const guard = useWriteGuard()
+  // A hidden PR's conversation shows only after "Show it anyway" (RC2 MOD).
+  const [threadRevealed, setThreadRevealed] = useState(false)
   const router = useRouter()
   const pathname = usePathname()
   const params = useSearchParams()
@@ -431,6 +440,11 @@ function PullPage({
   const base = shortBranch(pull.baseRefName) || 'the base branch'
   const canAuthorOrMember = authorOrMember && !archived
   const canMember = identity !== null && isMember && !archived && guard.disabledReason === null
+  // RC2 MOD: maintainers hide; readers see collapsed rows, and a hidden PR opens behind a banner.
+  const canModerate = canMember && holdings.data?.maintain === true
+  const moderation = thread.moderation
+  const threadHidden = moderation?.thread ?? null
+  const threadCollapsed = threadHidden !== null && !threadRevealed
 
   const [comment, setComment] = useState('')
   const commentIntent = useIntent()
@@ -536,8 +550,9 @@ function PullPage({
       viewer: identity,
       onEdit: (c, body) => setPending({ kind: 'edit-comment', id: c.id, body }),
       onDelete: (c) => setPending({ kind: 'delete-comment', id: c.id }),
+      ...(thread.moderation ? { hidden: thread.moderation } : {}),
     }),
-    [canResolve, resolvedKey, identity, setPending],
+    [canResolve, resolvedKey, identity, setPending, thread.moderation],
   )
   const commentCost = composeCost(repo, 'comment', { body: comment.trim() }, commentFirst)
   const commentTooLong = composeTooLong(repo, 'comment', { body: comment.trim() })
@@ -701,6 +716,16 @@ function PullPage({
         await setLock(sdk, signer, repo, { target: stateTarget, lock: p.on, isMember, intent })
         refresh((t) => t.locked === p.on)
         return
+      case 'hide':
+        await setHidden(sdk, signer, repo, { target, item: p.item, reason: p.reason, hide: p.hide, intent })
+        if (p.closeAndLock) {
+          // Separate writes (a batch holds one transition): close, then lock, each skipped when done.
+          if (open) await setTargetState(sdk, signer, repo, { target: stateTarget, action: 'close', isMember, intent: `${intent}:close` })
+          if (!thread.locked) await setLock(sdk, signer, repo, { target: stateTarget, lock: true, isMember, intent: `${intent}:lock` })
+        }
+        // With "also close and lock", until the close and the lock show as well.
+        refresh((t) => isHidden(t.moderation, p.item) === p.hide && (!p.closeAndLock || (!t.pull.state.open && t.locked)))
+        return
       case 'edit-comment': {
         const c = thread.comments.find((x) => x.id === p.id)
         await updateComment(sdk, signer, repo, {
@@ -731,6 +756,11 @@ function PullPage({
       case 'draft':
       case 'lock':
         return transitionCost
+      case 'hide': {
+        const hide = hideCost(repo, pending)
+        const extra = pending.closeAndLock ? (open ? 1 : 0) + (thread.locked ? 0 : 1) : 0
+        return previewCredits(hide.credits + extra * transitionCost.credits)
+      }
       case 'labels':
       case 'assignees':
         return sumPreviews([...pending.change.add, ...pending.change.remove].map((value) => previewCreate('event', { value })))
@@ -1020,6 +1050,9 @@ function PullPage({
           {suggest.runner.busy && !(tab === 'files' || (tab === 'conversation' && !(open && pull.state.draft))) ? suggest.runner.view : null}
           {tab === 'conversation' ? (
             <>
+              {threadHidden !== null ? <HiddenBanner hidden={threadHidden} noun="pull request" revealed={threadRevealed} onReveal={() => setThreadRevealed(true)} /> : null}
+              {threadCollapsed ? null : (
+              <>
               {/* Description */}
               <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
                 <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
@@ -1042,6 +1075,21 @@ function PullPage({
                   items={conversation}
                   links={links}
                   trust={trust}
+                  {...(moderation ? { moderation } : {})}
+                  {...(canModerate
+                    ? {
+                        moderate: ({ kind, id }: { readonly kind: 'comment' | 'review'; readonly id: string }) => (
+                          <HideMenu
+                            hidden={isHidden(moderation, id)}
+                            blocked={moderationBlocked(thread.moderationInput, identity, id, !isHidden(moderation, id))}
+                            what={kind}
+                            disabled={false}
+                            onHide={(reason) => confirmEvent({ kind: 'hide', item: id, what: kind, reason, hide: true })}
+                            onUnhide={() => confirmEvent({ kind: 'hide', item: id, what: kind, reason: null, hide: false })}
+                          />
+                        ),
+                      }
+                    : {})}
                   eventText={eventText}
                   anchorContext={anchorContext}
                   renderComment={(item) =>
@@ -1065,6 +1113,8 @@ function PullPage({
                   }
                 />
               ) : null}
+              </>
+              )}
               <HiddenNote hidden={0} what="comments and reviews" home={home} by={thread.hidden} />
               <EventValuesNote counts={thread.eventValues} />
 
@@ -1510,6 +1560,19 @@ function PullPage({
                     <LockToggle locked={thread.locked} onToggle={(on) => confirmEvent({ kind: 'lock', on }, transitionCost)} />
                   </div>
                 ) : null}
+                {canModerate ? (
+                  <div className="mt-2">
+                    <HideThreadControl
+                      hidden={threadHidden !== null}
+                      blocked={moderationBlocked(thread.moderationInput, identity, null, threadHidden === null)}
+                      noun="pull request"
+                      offerClose={open}
+                      offerLock={!thread.locked}
+                      onHide={(reason, closeAndLock) => confirmEvent({ kind: 'hide', item: null, what: 'pull request', reason, hide: true, closeAndLock })}
+                      onUnhide={() => confirmEvent({ kind: 'hide', item: null, what: 'pull request', reason: null, hide: false })}
+                    />
+                  </div>
+                ) : null}
               </SidebarSection>
             ) : null}
             {holdings.settled && holdings.data === null && identity !== null ? (
@@ -1680,6 +1743,8 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
         : { title: 'Unresolve conversation', description: `Appends ${via} naming the thread.`, label: 'Sign & unresolve' }
     case 'lock':
       return lockConfirm(pending.on, `PR #${number}`, 'pull')
+    case 'hide':
+      return hideConfirm(pending, `PR #${number}`)
     default:
       return { title: '', description: '', label: 'Confirm' }
   }

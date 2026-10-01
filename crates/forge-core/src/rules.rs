@@ -46,6 +46,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+pub mod moderation;
 pub mod parity;
 pub mod review;
 pub mod transition;
@@ -864,11 +865,12 @@ fn neutralize_wildmatch(pattern: &str) -> String {
 // Event fold (issue / PR state)
 // ===========================================================================
 
-/// A collaboration `event` kind (forge-v2.md §3, numeric kinds 1–23). Kinds 1–10 change the
+/// A collaboration `event` kind (forge-v2.md §3, numeric kinds 1–25). Kinds 1–10 change the
 /// issue/PR state ([`apply_issue_event`], [`apply_pr_event`]); 11–18 are the review state
 /// ([`v2::fold_pr_review_v2`]); 17–22 are a thread's milestone, pin and lock
-/// ([`parity::fold_thread_meta_v2`]); 23 is an audit record no fold reads. None of 11–23
-/// changes [`PrState`] / [`IssueState`].
+/// ([`parity::fold_thread_meta_v2`]); 23 is an audit record no fold reads; 24–25 are a
+/// maintainer's hide and unhide ([`moderation::hidden_items`]). None of 11–25 changes
+/// [`PrState`] / [`IssueState`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum EventKind {
@@ -920,6 +922,12 @@ pub enum EventKind {
     /// `oid` = the merge commit). Members only. The record of the bypass: an `event` is
     /// immutable and non-deletable, so the bypasser cannot erase it (a comment could be).
     PolicyBypass,
+    /// 24 — a maintainer hides a comment or review (`ref_id`) or, without `ref_id`, the whole
+    /// issue or PR (`value` = an optional reason, [`moderation::HIDE_REASONS`]). Display only:
+    /// readers collapse it ([`moderation::hidden_items`]); nothing is deleted.
+    Hide,
+    /// 25 — a maintainer unhides what kind 24 hid (same `ref_id`).
+    Unhide,
 }
 
 /// A single `event` document (§2.3), flattened for the fold.
@@ -1667,6 +1675,22 @@ mod tests {
 
     #[derive(Debug, Deserialize, Serialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct HiddenItemsInput {
+        thread_id: String,
+        thread_author: String,
+        owner: String,
+        #[serde(default)]
+        maintainers: std::collections::BTreeSet<String>,
+        proved: bool,
+        events: Vec<Event>,
+        #[serde(default)]
+        comments: Vec<v2::ThreadItem>,
+        #[serde(default)]
+        reviews: Vec<v2::ThreadItem>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct MilestonesInput {
         docs: Vec<v2::MilestoneDoc>,
         #[serde(default)]
@@ -1880,6 +1904,18 @@ mod tests {
                 let inp: MilestonesInput = input(v);
                 let got = v2::fold_milestones_v2(&inp.docs, &inp.items);
                 assert_eq!(got, expected::<Vec<v2::Milestone>>(v), "vector `{ctx}`");
+            }
+            "hidden_items" => {
+                let inp: HiddenItemsInput = input(v);
+                let scope = v2::HideScope {
+                    thread_id: inp.thread_id,
+                    thread_author: inp.thread_author,
+                    owner: inp.owner,
+                    maintainers: inp.maintainers,
+                    proved: inp.proved,
+                };
+                let got = v2::hidden_items(&inp.events, &scope, &inp.comments, &inp.reviews);
+                assert_eq!(got, expected::<v2::HiddenItems>(v), "vector `{ctx}`");
             }
             "trending" => {
                 let inp: TrendingInput = input(v);
@@ -2157,7 +2193,9 @@ mod tests {
             }
             "fold_review" | "policy" | "anchor" | "review_group" | "suggestion"
             | "linked_issues" => run_review_case(v),
-            "checks" | "thread_meta" | "pinned" | "milestones" | "trending" => run_parity_case(v),
+            "checks" | "thread_meta" | "pinned" | "milestones" | "trending" | "hidden_items" => {
+                run_parity_case(v);
+            }
             other => panic!("vector `{ctx}`: unknown v2 case `{other}`"),
         }
     }

@@ -1210,6 +1210,23 @@
         "epoch": {
           "$ref": "#/$defs/u32",
           "position": 8
+        },
+        "asMaintainer": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "type": "deletableDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "maintainer",
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
+            }
+          },
+          "position": 9
         }
       },
       "indices": [
@@ -1379,6 +1396,25 @@
               20,
               32
             ]
+          ]
+        },
+        "hideByMaint": {
+          "ifThen": [
+            {
+              "in": [
+                "kind",
+                [
+                  24,
+                  25
+                ]
+              ]
+            },
+            {
+              "equal": [
+                "asMaintainer",
+                "$ownerId"
+              ]
+            }
           ]
         }
       }

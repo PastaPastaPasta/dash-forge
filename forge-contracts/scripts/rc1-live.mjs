@@ -31,6 +31,11 @@
 //   social    starBeat where + distinctFrom (O-08), or with RC2 C1 the fused star (unstar and
 //             star again inside the window), public-only webhooks (R-19), repoKey wraps
 //             to members only (R-13), events and author events across contracts (O-01)
+//   moderation with RC2 MOD (design/v5/MODERATION.md) a maintainer's hide / unhide (event kinds
+//             24/25 naming its own maintainer document, asMaintainer), and the refusals: a
+//             writer's hide (40120), a maintainer of another repo, a removed maintainer, and a
+//             hide naming another maintainer (hideByMaint); the fees of a hide and of a plain
+//             event (the fee gate: <= +10 % per hide)
 //
 // Every refusal is matched on the node's numeric code (and, for a rule, its name in the
 // message), never on the decoded cause (IMPL-RULES: codes shifted between SDK builds).
@@ -61,6 +66,8 @@ const REVIEW_INDEXES = new Set(CONTRACTS.collab.documentSchemas.review.indices.m
 // The RC2 riders (design/v5/RIDERS.md): QW-069 close reasons, QW2-010 review-comment hunks
 const CLOSE_REASON = 'reason' in CONTRACTS.collab.documentSchemas.transition.properties;
 const REVIEW_HUNK = 'diffHunk' in CONTRACTS.collab.documentSchemas.comment.properties;
+// RC2 moderation (design/v5/MODERATION.md): a hide proves its writer a maintainer
+const HIDE_PROOF = 'asMaintainer' in CONTRACTS.community.documentSchemas.event.properties;
 
 const evo = await loadEvoSdk();
 const { EvoSDK, Document, IdentityPublicKey, IdentitySigner, PrivateKey, Identifier } = evo;
@@ -306,7 +313,7 @@ if (want('refs')) {
 
 // ---------------- issues, PRs, transitions, locks (state) ----------------
 let I1; let I2; let PR3;
-if (want('state') || want('threads')) {
+if (want('state') || want('threads') || want('moderation')) {
   await no('state', 'issue at the wrong number (dense)', S, COLLAB, 'issue', { repoId: R, number: 2, tk: 0, title: 'skip', vis: 'public' }, [10422], 'dense');
   I1 = await ok('state', 'issue #1 (stranger)', S, COLLAB, 'issue', { repoId: R, number: 1, tk: 0, title: 'first', body: 'b', vis: 'public' }, 'issue');
   await no('R-03', 'issue stamped private on a public repo', S, COLLAB, 'issue', { repoId: R, number: 2, tk: 0, vis: 'private', enc: bytes(61), epoch: 0 }, [40127]);
@@ -618,6 +625,45 @@ if (want('social')) {
     await ok('O-01', "author's resolve (authorEvent across contracts)", S, COMM, 'authorEvent', { repoId: R, targetId: id(docId(I1)), targetNumber: 1, kind: 11, refId: bytes(32, 4) });
     await no('O-01', "non-author's authorEvent", M, COMM, 'authorEvent', { repoId: R, targetId: id(docId(I1)), targetNumber: 1, kind: 11, refId: bytes(32, 4) }, [40120]);
     await ok('O-01', 'milestone in community', M, COMM, 'milestone', { repoId: R, title: 'v1' });
+  }
+}
+
+// ---------------- moderation: hide / unhide (RC2 MOD) ----------------
+if (want('moderation') && !I1) record({ item: 'MOD', label: 'moderation group', expect: 'run', got: 'SKIPPED: issue #1 was not written', pass: false });
+if (want('moderation') && I1 && HIDE_PROOF) {
+  // `extra` overrides a field, and undefined leaves it out
+  const hide = (who, extra = {}) => Object.fromEntries(Object.entries({ repoId: R, targetId: id(docId(I1)), targetNumber: 1, kind: 24, refId: bytes(32, 5), asMaintainer: id(who.id), ...extra }).filter(([, v]) => v !== undefined));
+  // The fee gate: a hide (its maintainer lookup, rule and 32 bytes) against the same event
+  // without asMaintainer (kind 19 with a refId, which no reader reads there: what a hide costs
+  // with the flag off)
+  await ok('MOD', 'a member event with a refId (fee baseline)', O, COMM, 'event', { repoId: R, targetId: id(docId(I1)), targetNumber: 1, kind: 19, refId: bytes(32, 5) }, 'event: no asMaintainer (fee baseline)');
+  await ok('MOD', "the owner hides a comment as spam", O, COMM, 'event', hide(O, { value: 'spam' }));
+  await ok('MOD', 'the owner hides a comment', O, COMM, 'event', hide(O), 'event: hide (asMaintainer)');
+  await ok('MOD', 'the owner unhides it', O, COMM, 'event', hide(O, { kind: 25 }));
+  await ok('MOD', 'the owner hides the whole thread', O, COMM, 'event', hide(O, { refId: undefined }));
+  await no('MOD', 'a hide without asMaintainer', O, COMM, 'event', hide(O, { asMaintainer: undefined }), [10422], 'hideByMaint');
+  await no('MOD', "a writer's hide", M, COMM, 'event', hide(M), [40120]);
+  await no('MOD', "a writer's hide naming the owner", M, COMM, 'event', hide(O), [10422], 'hideByMaint');
+  await no('MOD', "a stranger's hide", S, COMM, 'event', hide(S), [40120]);
+  const theirs = await ok('MOD', "the member's own repo", M, CORE, 'repo', { name: `rc1m-${tag}`, visibility: 'public' });
+  if (theirs) {
+    await ok('MOD', 'the member self-enrols as its maintainer', M, CORE, 'maintainer', { repoId: id(docId(theirs)), memberId: id(M.id), vis: 'public' });
+    await sleep(A_BLOCK);
+    await no('MOD', 'a maintainer of another repo hides here', M, COMM, 'event', hide(M), [40120]);
+  }
+  const promoted = await ok('MOD', 'the owner makes the member a maintainer', O, CORE, 'maintainer', { repoId: R, memberId: id(M.id), vis: 'public', consentBy: id(M.id) });
+  if (promoted) {
+    await sleep(A_BLOCK);
+    await ok('MOD', 'the new maintainer hides a comment', M, COMM, 'event', hide(M));
+    await no('MOD', 'a maintainer hide naming another maintainer', M, COMM, 'event', hide(O), [10422], 'hideByMaint');
+    try {
+      await sdk.documents.delete({ document: promoted, ...ownOps(O) });
+      record({ item: 'MOD', label: "the owner removes the member's maintainer document", expect: 'ok', got: 'ok', pass: true });
+      await sleep(A_BLOCK);
+      await no('MOD', 'the removed maintainer hides', M, COMM, 'event', hide(M), [40120]);
+    } catch (e) {
+      record({ item: 'MOD', label: "the owner removes the member's maintainer document", expect: 'ok', got: `refused ${codeOf(e)}`, note: String(e?.message ?? e).slice(0, 300), pass: false });
+    }
   }
 }
 

@@ -101,9 +101,13 @@ FLAGS = dict(
     # ---- RC2 riders (design/v5/RIDERS.md): forge-collab only, each in RC2 if ready before registration
     close_reason=True,           # QW-069: transition.reason / dupNumber, judged by readers (no rule)
     review_hunk=True,            # QW2-010: comment.diffHunk for mirrored review comments (immutable, noPlain)
+    # ---- RC2 moderation (design/v5/MODERATION.md): forge-community event only. Decided at
+    # registration by a fee probe like S2/S3 (<= +10 % per hide), and fixed once registered
+    # (refersTo / findBy never change on an update).
+    event_as_maintainer=True,    # MOD: a hide / unhide (event kinds 24/25) proves its writer a maintainer
 )
 # The RC2 items with a flag: forge-contracts/schema/variants.py validates every combination.
-RC2_FLAGS = ('check_evidence_freeze', 'review_to_author', 'review_author', 'fused_star')
+RC2_FLAGS = ('check_evidence_freeze', 'review_to_author', 'review_author', 'fused_star', 'event_as_maintainer')
 # The riders: independent of the RC2 items (other types and properties), so variants.py turns
 # each off only with every RC2 item on, the largest build.
 RIDER_FLAGS = ('close_reason', 'review_hunk')
@@ -196,6 +200,8 @@ def tsum(target='targetId'):
 
 
 LOCK_KINDS = [3, 4, 18, 19]
+# The maintainer moderation event kinds (design/v5/MODERATION.md §2): 24 hide, 25 unhide.
+HIDE_KINDS = [24, 25]
 
 
 def build(flags):
@@ -600,6 +606,21 @@ def build(flags):
         cm = ld['comment']
         add_prop(cm, 'diffHunk', {"type": "string", "minLength": 1, "maxLength": 1024, "maxBytes": 1024}, immutable=True)
         cm['propertyConstraints']['noPlain']['anyOf'][1]['allOf'].append({"absent": "diffHunk"})
+
+    # ======================= RC2 moderation (design/v5/MODERATION.md) =======================
+    if f['event_as_maintainer']:
+        # MOD. A hide or unhide (24/25) names its writer's maintainer document of the repo:
+        # `asMaintainer` must be the writer (an absent identifier equals nothing, v5 book
+        # contract-keywords/property-constraints.md:150, so the one rule also refuses a hide
+        # without it), and its findBy proves the writer a maintainer when it is written, so a
+        # writer's hide is refused (40120) and a hide outlives its writer's removal. Other kinds
+        # may carry it; readers ignore it there. Every hide is a client display rule: v5 contract
+        # moderation is contract-wide (book data-model/contract-moderation.md:11), so no
+        # consensus delete can be scoped to one repo.
+        ev = ev_home['event']
+        add_prop(ev, 'asMaintainer', ident(refersTo=find_leaf("maintainer", CORE)))
+        ev['propertyConstraints']['hideByMaint'] = {"ifThen": [{"in": ["kind", HIDE_KINDS]},
+                                                               {"equal": ["asMaintainer", "$ownerId"]}]}
 
     core['description'] = "Dash Forge v2 core: repositories, refs, packs, members, releases, labels, topics"
     collab['description'] = "Dash Forge v2 collaboration: issues, pull requests, transitions, comments, reviews, repo keys"

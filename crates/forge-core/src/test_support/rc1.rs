@@ -780,6 +780,61 @@ mod builders {
         }
     }
 
+    /// RC2 MOD: a hide or unhide as `Collab::set_hidden` writes it (the writer's own
+    /// `asMaintainer` where the contract has it) is accepted; without the proof, or naming
+    /// someone else, `hideByMaint` refuses it. A reason off the list, or one on an unhide, is
+    /// refused before signing.
+    #[test]
+    fn hides_are_rc1_valid_with_the_writers_maintainer_proof() {
+        use crate::collab::moderation::EVENT_AS_MAINTAINER;
+        let issue = target(TargetKind::Issue);
+        let pr = target(TargetKind::Patch);
+        let proved = super::loaded(crate::layout::ForgeContract::Community)
+            .has_property("event", EVENT_AS_MAINTAINER);
+        assert!(proved, "the committed forge-community carries RC2 MOD");
+        let hide = |t: &Target, kind: EventKind, item: Option<&str>, reason: Option<&str>| {
+            scoped(
+                event_payload_props(
+                    t,
+                    kind,
+                    &EventPayload {
+                        value: reason,
+                        ref_id: item,
+                        ..EventPayload::default()
+                    },
+                )
+                .unwrap(),
+            )
+        };
+        for (t, kind, item, reason) in [
+            (&issue, EventKind::Hide, Some(ID), Some("spam")),
+            (&issue, EventKind::Hide, None, Some("off-topic")),
+            (&pr, EventKind::Hide, Some(ID), None),
+            (&pr, EventKind::Unhide, Some(ID), None),
+        ] {
+            let mut p = hide(t, kind, item, reason);
+            if proved {
+                assert_refused("event", &p, "hideByMaint");
+                p.insert(EVENT_AS_MAINTAINER.into(), FieldValue::identifier([9; 32]));
+                assert_refused("event", &p, "hideByMaint");
+                p.insert(EVENT_AS_MAINTAINER.into(), FieldValue::identifier(OWNER));
+            }
+            assert_valid("event", &p);
+        }
+        let none = EventPayload::default();
+        let rude = EventPayload {
+            value: Some("rude"),
+            ..EventPayload::default()
+        };
+        assert!(event_payload_props(&issue, EventKind::Hide, &rude).is_err());
+        let spam = EventPayload {
+            value: Some("spam"),
+            ..EventPayload::default()
+        };
+        assert!(event_payload_props(&issue, EventKind::Unhide, &spam).is_err());
+        assert!(event_payload_props(&issue, EventKind::Unhide, &none).is_ok());
+    }
+
     #[test]
     fn a_policy_is_rc1_valid() {
         let p = policy_props(&Policy {

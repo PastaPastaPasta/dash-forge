@@ -2764,5 +2764,293 @@
    },
    "vis": "public"
   }
+ },
+ {
+  "item": "MOD",
+  "name": "a maintainer hides a comment",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 24,
+   "refId": {
+    "$id": 5
+   },
+   "asMaintainer": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "a maintainer hides a comment as spam",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 24,
+   "value": "spam",
+   "refId": {
+    "$id": 5
+   },
+   "asMaintainer": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "a maintainer hides a whole thread",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 24,
+   "asMaintainer": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "a maintainer unhides a comment",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 25,
+   "refId": {
+    "$id": 5
+   },
+   "asMaintainer": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "another maintainer (signer 9) hides as itself",
+  "type": "event",
+  "expect": "ok",
+  "owner": 9,
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 24,
+   "refId": {
+    "$id": 5
+   },
+   "asMaintainer": {
+    "$id": 9
+   }
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "a sealed hide reason",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 24,
+   "refId": {
+    "$id": 5
+   },
+   "asMaintainer": {
+    "$id": 7
+   },
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "a hide without asMaintainer",
+  "type": "event",
+  "expect": "refused",
+  "why": "hideByMaint",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 24,
+   "refId": {
+    "$id": 5
+   }
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "an unhide without asMaintainer",
+  "type": "event",
+  "expect": "refused",
+  "why": "hideByMaint",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 25,
+   "refId": {
+    "$id": 5
+   }
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "a hide naming another maintainer",
+  "type": "event",
+  "expect": "refused",
+  "why": "hideByMaint",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 24,
+   "refId": {
+    "$id": 5
+   },
+   "asMaintainer": {
+    "$id": 9
+   }
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "a hide by signer 9 naming the signer 7",
+  "type": "event",
+  "expect": "refused",
+  "why": "hideByMaint",
+  "owner": 9,
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 24,
+   "refId": {
+    "$id": 5
+   },
+   "asMaintainer": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "a label event without asMaintainer",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 4,
+   "value": "bug"
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "a label event with asMaintainer (readers ignore it)",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 4,
+   "value": "bug",
+   "asMaintainer": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "MOD",
+  "name": "asMaintainer of 31 bytes",
+  "type": "event",
+  "expect": "refused",
+  "why": "minItems",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 24,
+   "refId": {
+    "$id": 5
+   },
+   "asMaintainer": {
+    "$b": [
+     7,
+     31
+    ]
+   }
+  }
  }
 ]

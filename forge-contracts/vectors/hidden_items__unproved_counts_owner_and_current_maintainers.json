@@ -1,0 +1,87 @@
+{
+  "name": "unproved_counts_owner_and_current_maintainers",
+  "description": "Without the proof, a writer's hide is ignored, a current maintainer's and the owner's count.",
+  "case": "hidden_items",
+  "rules": "v2",
+  "input": {
+    "threadId": "T",
+    "threadAuthor": "bob",
+    "owner": "own",
+    "maintainers": [
+      "alice",
+      "carol"
+    ],
+    "proved": false,
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "hide",
+        "actor": "writer",
+        "value": null,
+        "oid": null,
+        "createdAt": 10,
+        "refId": "c1"
+      },
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "hide",
+        "actor": "carol",
+        "value": null,
+        "oid": null,
+        "createdAt": 11,
+        "refId": "c2"
+      },
+      {
+        "id": "e3",
+        "targetId": "T",
+        "kind": "hide",
+        "actor": "own",
+        "value": null,
+        "oid": null,
+        "createdAt": 12,
+        "refId": "r1"
+      }
+    ],
+    "comments": [
+      {
+        "id": "c1",
+        "author": "bob"
+      },
+      {
+        "id": "c2",
+        "author": "dave"
+      }
+    ],
+    "reviews": [
+      {
+        "id": "r1",
+        "author": "bob"
+      }
+    ]
+  },
+  "expected": {
+    "thread": null,
+    "items": {
+      "c2": {
+        "by": "carol",
+        "reason": null,
+        "at": 11,
+        "eventId": "e2",
+        "via": "item"
+      },
+      "r1": {
+        "by": "own",
+        "reason": null,
+        "at": 12,
+        "eventId": "e3",
+        "via": "item"
+      }
+    },
+    "counted": [
+      "e2",
+      "e3"
+    ]
+  }
+}

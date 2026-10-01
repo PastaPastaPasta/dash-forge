@@ -22,7 +22,10 @@ import { trustedOrigin } from '@/lib/repo/provenance'
 import { shownHunk } from '@/lib/view/diff-hunk'
 import { DiffHunkLines } from '@/components/repo/diff-hunk-view'
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
-import { CheckCircle2, FileDiff, MessageSquare, Pencil, Trash2 } from 'lucide-react'
+import { CheckCircle2, EyeOff, FileDiff, MessageSquare, Pencil, Trash2 } from 'lucide-react'
+import { Author } from '@/components/author'
+import { reasonWords } from '@/components/repo/moderation'
+import type { HiddenItems } from '@/lib/rules/moderation'
 
 import { commentFirsts, postComment, type AnchorInput, type PostContext, type RepoRef } from '@/lib/repo'
 import type { DraftComment } from '@/lib/repo'
@@ -55,6 +58,8 @@ export interface ThreadActions {
   readonly viewer: string | null
   readonly onEdit: (comment: CommentView, body: string) => void
   readonly onDelete: (comment: CommentView) => void
+  /** What maintainers hid (RC2 MOD): those comments show collapsed, with Show. */
+  readonly hidden?: HiddenItems
 }
 
 /**
@@ -442,9 +447,25 @@ function CommentBlock({
   suggestions?: SuggestionActions
 }): JSX.Element {
   const [editing, setEditing] = useState<string | null>(null)
+  const [shown, setShown] = useState(false)
   // An imported line comment from a trusted mirror shows its original author and date (FG-6).
   const origin = trustedOrigin(c.origin, c.author, useMirrorTrust(repo))
   const own = actions !== undefined && actions.viewer !== null && actions.viewer === c.author && writeBlock === null
+  const hidden = actions?.hidden?.items[c.id]
+  if (hidden !== undefined && !shown) {
+    return (
+      <div className="flex flex-wrap items-center gap-2 border-b border-anvil-100 px-3 py-1.5 text-[12px] text-anvil-500 last:border-b-0 dark:border-anvil-850 dark:text-anvil-400" data-testid="thread-comment-hidden" data-id={c.id}>
+        <EyeOff className="h-3 w-3" aria-hidden />
+        <span>
+          {hidden.via === 'review' ? 'In a hidden review: hidden' : 'Hidden'} by <Author identityId={hidden.by} link={false} className="align-middle" />
+          {reasonWords(hidden.reason)}
+        </span>
+        <button type="button" onClick={() => setShown(true)} className="ml-auto font-medium text-forge-700 hover:underline dark:text-forge-400">
+          Show
+        </button>
+      </div>
+    )
+  }
   return (
     <div className="border-b border-anvil-100 px-3 py-2 last:border-b-0 dark:border-anvil-850" data-testid="thread-comment" data-id={c.id}>
       <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">

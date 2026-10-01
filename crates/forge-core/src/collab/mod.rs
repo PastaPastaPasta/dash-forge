@@ -5,6 +5,7 @@
 //! importer share: the release and label shapes, importer provenance ([`Imported`]), the
 //! stored numeric event kinds, and the text-length checks run before anything is signed.
 
+pub mod moderation;
 pub mod parity;
 pub mod private;
 pub mod v2;
@@ -139,6 +140,8 @@ pub(crate) fn event_kind_to_u64(kind: EventKind) -> u64 {
         EventKind::Lock => 21,
         EventKind::Unlock => 22,
         EventKind::PolicyBypass => 23,
+        EventKind::Hide => 24,
+        EventKind::Unhide => 25,
     }
 }
 
@@ -168,6 +171,8 @@ pub(crate) fn u64_to_event_kind(kind: u64) -> Option<EventKind> {
         21 => EventKind::Lock,
         22 => EventKind::Unlock,
         23 => EventKind::PolicyBypass,
+        24 => EventKind::Hide,
+        25 => EventKind::Unhide,
         _ => return None,
     })
 }
@@ -569,12 +574,14 @@ mod tests {
             (EventKind::Lock, 21),
             (EventKind::Unlock, 22),
             (EventKind::PolicyBypass, 23),
+            (EventKind::Hide, 24),
+            (EventKind::Unhide, 25),
         ] {
             assert_eq!(event_kind_to_u64(kind), n);
             assert_eq!(u64_to_event_kind(n), Some(kind));
         }
         assert_eq!(u64_to_event_kind(0), None);
-        assert_eq!(u64_to_event_kind(24), None);
+        assert_eq!(u64_to_event_kind(26), None);
     }
 
     #[test]

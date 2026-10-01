@@ -1,0 +1,74 @@
+{
+  "name": "inline_comment_own_hide_wins",
+  "description": "An inline comment hidden itself keeps its own hide under a hidden review.",
+  "case": "hidden_items",
+  "rules": "v2",
+  "input": {
+    "threadId": "T",
+    "threadAuthor": "bob",
+    "owner": "own",
+    "maintainers": [
+      "alice",
+      "carol"
+    ],
+    "proved": true,
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "hide",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 10,
+        "refId": "r1"
+      },
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "hide",
+        "actor": "carol",
+        "value": "spam",
+        "oid": null,
+        "createdAt": 11,
+        "refId": "c1"
+      }
+    ],
+    "comments": [
+      {
+        "id": "c1",
+        "author": "bob",
+        "reviewId": "r1"
+      }
+    ],
+    "reviews": [
+      {
+        "id": "r1",
+        "author": "bob"
+      }
+    ]
+  },
+  "expected": {
+    "thread": null,
+    "items": {
+      "r1": {
+        "by": "alice",
+        "reason": null,
+        "at": 10,
+        "eventId": "e1",
+        "via": "item"
+      },
+      "c1": {
+        "by": "carol",
+        "reason": "spam",
+        "at": 11,
+        "eventId": "e2",
+        "via": "item"
+      }
+    },
+    "counted": [
+      "e1",
+      "e2"
+    ]
+  }
+}

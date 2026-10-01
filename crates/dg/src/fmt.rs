@@ -244,6 +244,51 @@ pub fn event_values_note(hidden: usize, plaintext: usize) -> Option<String> {
     (!parts.is_empty()).then(|| format!("({})", parts.join("; ")))
 }
 
+/// What a maintainer hid (RC2 MOD), in one line: `what` ("comment", "review", "this issue")
+/// "hidden by alice as spam". `shown`: the content follows (`--show-hidden`); otherwise the
+/// line stands in for it and says how to read it. Nothing is deleted, so it can always be read.
+#[must_use]
+pub fn hidden_line(
+    what: &str,
+    h: &forge_core::rules::v2::Hidden,
+    who: &dyn Fn(&str) -> String,
+    shown: bool,
+) -> String {
+    let reason = h
+        .reason
+        .as_deref()
+        .map(|r| format!(" as {r}"))
+        .unwrap_or_default();
+    let via = if h.via == forge_core::rules::v2::HiddenVia::Review {
+        " with its review"
+    } else {
+        ""
+    };
+    let by = who(&h.by);
+    if shown {
+        format!("[{what} hidden by {by}{reason}{via}; shown because of --show-hidden]")
+    } else {
+        format!("[{what} hidden by {by}{reason}{via}; --show-hidden to read it]")
+    }
+}
+
+/// A hide or unhide event's timeline phrase (RC2 MOD): "hid <id> as spam", "unhid this".
+#[must_use]
+pub fn moderation_phrase(e: &forge_core::rules::Event) -> String {
+    let hide = e.kind == forge_core::rules::EventKind::Hide;
+    let verb = if hide { "hid" } else { "unhid" };
+    let reason = e
+        .value
+        .as_deref()
+        .filter(|v| hide && forge_core::rules::v2::is_hide_reason(v))
+        .map(|r| format!(" as {r}"))
+        .unwrap_or_default();
+    match &e.ref_id {
+        Some(id) => format!("{verb} {id}{reason}"),
+        None => format!("{verb} this{reason}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -28,6 +28,7 @@ import type { Event, EventKind, IsAncestor, IssueState, Oid, PrState } from './t
 
 export * from './review'
 export * from './parity'
+export * from './moderation'
 export * from './transition'
 
 /** The versioned rules identifier for forge-v2 repositories. */

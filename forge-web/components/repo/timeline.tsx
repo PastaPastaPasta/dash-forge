@@ -10,7 +10,7 @@
 
 import { Byline } from '@/components/repo/byline'
 import { importedVerdictOf, searchableBody, trustedOrigin } from '@/lib/repo/provenance'
-import { Check, CheckCircle2, CircleDot, CircleSlash, Eye, GitCommit, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, ShieldAlert, Tag, Trash2, UserPlus, X } from 'lucide-react'
+import { Check, CheckCircle2, CircleDot, CircleSlash, Eye, EyeOff, GitCommit, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pencil, Pin, ShieldAlert, Tag, Trash2, UserPlus, X } from 'lucide-react'
 import type { CommentView, TimelineItem } from '@/lib/view'
 import { branchName, plural, timeAgo } from '@/lib/view'
 import { anchorLabel } from '@/lib/view/inline-threads'
@@ -28,6 +28,8 @@ import { importedUrlOf } from '@/lib/view/ref-targets'
 import { EditedMarker } from '@/components/repo/issue-bits'
 import { Oid } from '@/components/ui/oid'
 import { WithAge } from '@/components/ui/with-age'
+import { HiddenRow, RevealedNote, reasonWords } from '@/components/repo/moderation'
+import { isHideReason, isModerationKind, type HiddenItems } from '@/lib/rules/moderation'
 
 function verdictIcon(verdict: VerdictName): JSX.Element {
   switch (verdict) {
@@ -100,9 +102,30 @@ function eventPhrase(e: Event): { text: string; icon: JSX.Element; who?: string;
     case 'policyBypass':
       // The immutable record of a maintainer's bypass (QW2-003): what was not met at the merge.
       return { text: bypassPhrase(value, true), icon: <ShieldAlert className="h-3.5 w-3.5 text-caution-700 dark:text-caution-400" aria-hidden /> }
+    // RC2 MOD: a maintainer's hide is the audit trail of what readers see collapsed.
+    case 'hide':
+      return { text: `hid ${e.refId ? 'an item' : 'this'}${reasonWords(value && isHideReason(value) ? value : null)}`, icon: <EyeOff className={muted} aria-hidden /> }
+    case 'unhide':
+      return { text: `unhid ${e.refId ? 'an item' : 'this'}`, icon: <Eye className={muted} aria-hidden /> }
     default:
       return { text: String(kind), icon: <Tag className={muted} aria-hidden /> }
   }
+}
+
+/**
+ * A hide's or unhide's line naming what it hid (RC2 MOD): "hid a comment by bob as spam". Null
+ * for any other event, or a hide of the whole thread (its own phrase says "hid this").
+ */
+export function moderationNamed(
+  e: Event,
+  refs: ReadonlyMap<string, { readonly kind: 'comment' | 'review'; readonly author: string }>,
+): { text: string; who: string; after: string } | null {
+  if ((e.kind !== 'hide' && e.kind !== 'unhide') || !e.refId) return null
+  const ref = refs.get(e.refId)
+  if (ref === undefined) return null
+  const verb = e.kind === 'hide' ? 'hid' : 'unhid'
+  const reason = e.kind === 'hide' && e.value && isHideReason(e.value) ? reasonWords(e.value) : ''
+  return { text: `${verb} a ${ref.kind} by`, who: ref.author, after: reason }
 }
 
 /**
@@ -313,7 +336,7 @@ export function timelineWindow(n: number, revealed: number): { head: number; tai
 }
 
 export function Timeline({
-  items,
+  items: allItems,
   links,
   renderComment,
   eventText,
@@ -322,6 +345,8 @@ export function Timeline({
   closedIn,
   closeWhy,
   crossRefs = [],
+  moderation,
+  moderate,
 }: {
   items: readonly TimelineItem[]
   /** Where `#n` / `@name` in bodies link (omit: plain text). Keep it referentially stable. */
@@ -343,7 +368,35 @@ export function Timeline({
   closeWhy?: (t: TransitionView) => CloseWhy | null
   /** PRs that mention this issue, placed in time order among the items. */
   crossRefs?: readonly CrossRefItem[]
+  /** What maintainers hid (RC2 MOD): those comments and reviews show collapsed, with Show. */
+  moderation?: HiddenItems
+  /** A maintainer's Hide / Unhide for a comment or review (omit: the viewer is no maintainer). */
+  moderate?: (item: { readonly kind: 'comment' | 'review'; readonly id: string }) => ReactNode
 }): JSX.Element {
+  // A hide or unhide the reader rule did not count (a writer's without the contract's proof, a
+  // refId of another thread) is noise anyone could write, not the moderation record: left out.
+  const items = allItems.some((x) => x.kind === 'event' && isModerationKind(x.event))
+    ? allItems.filter((x) => x.kind !== 'event' || !isModerationKind(x.event) || (moderation?.counted.includes(x.event.id ?? '') ?? false))
+    : allItems
+  // The hidden items this reader expanded (nothing is deleted: anyone may read them).
+  const [revealed, setRevealed] = useState<ReadonlySet<string>>(() => new Set())
+  const reveal = (id: string, on: boolean): void =>
+    setRevealed((cur) => {
+      const next = new Set(cur)
+      if (on) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  const hiddenOf = (id: string) => (revealed.has(id) ? null : moderation?.items[id] ?? null)
+  // What a hide's refId names, for its timeline line ("hid a comment by bob").
+  const refs = new Map<string, { kind: 'comment' | 'review'; author: string }>()
+  for (const x of items) {
+    if (x.kind === 'comment') refs.set(x.comment.id, { kind: 'comment', author: x.comment.author })
+    if (x.kind === 'review') {
+      refs.set(x.review.id, { kind: 'review', author: x.review.reviewer })
+      for (const c of x.comments) refs.set(c.id, { kind: 'comment', author: c.author })
+    }
+  }
   // The merge commits of this thread's merge transitions: a policy-bypass event is the record of
   // one of them only when it names it.
   const mergeOids = new Set(items.flatMap((x) => (x.kind === 'transition' && x.transition.kind === PR_MERGE && x.transition.oid ? [x.transition.oid.toLowerCase()] : [])))
@@ -400,8 +453,17 @@ export function Timeline({
   function renderItem(item: TimelineItem, i: number): ReactNode {
         if (item.kind === 'comment') {
           const slot = renderComment?.(item) ?? {}
+          const cid = item.comment.id
+          const actions = moderate?.({ kind: 'comment', id: cid })
+          const hidden = hiddenOf(cid)
+          if (hidden !== null) {
+            return <HiddenRow key={`c-${cid}-${i}`} hidden={hidden} what="comment" author={item.comment.author} onShow={() => reveal(cid, true)} actions={actions} />
+          }
+          const shownHidden = moderation?.items[cid]
           return (
-            <div key={`c-${item.comment.id}-${i}`} className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="timeline-comment">
+            <div key={`c-${cid}-${i}`} className="space-y-1">
+            {shownHidden ? <RevealedNote hidden={shownHidden} onCollapse={() => reveal(cid, false)} /> : null}
+            <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="timeline-comment">
               <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
                 <Byline
                   author={item.comment.author}
@@ -411,6 +473,7 @@ export function Timeline({
                 />
                 <EditedMarker createdAt={item.comment.createdAt} updatedAt={item.comment.updatedAt} />
                 {slot.header}
+                {actions ? <span className={slot.header ? '' : 'ml-auto'}>{actions}</span> : null}
               </div>
               {slot.body ?? (
                 <div className="px-4 py-3">
@@ -418,10 +481,24 @@ export function Timeline({
                 </div>
               )}
             </div>
+            </div>
           )
         }
         if (item.kind === 'review') {
           const { review } = item
+          const actions = moderate?.({ kind: 'review', id: review.id })
+          const hidden = hiddenOf(review.id)
+          if (hidden !== null) {
+            // Display only: a hidden review's verdict still counts until it is dismissed.
+            const counts = review.verdict === 'approve' || review.verdict === 'requestChanges'
+            const note = counts ? (
+              <span className="rounded-full border border-anvil-300 px-2 py-0.5 text-[11px] text-anvil-500 opacity-70 dark:border-anvil-700" data-testid="hidden-verdict">
+                {VERDICT_LABEL[review.verdict]} · still counts unless dismissed
+              </span>
+            ) : null
+            return <HiddenRow key={`r-${review.id}-${i}`} hidden={hidden} what="review" author={review.reviewer} onShow={() => reveal(review.id, true)} note={note} actions={actions} />
+          }
+          const shownHidden = moderation?.items[review.id]
           // A mirrored review records its source verdict in its provenance line; the document's
           // own verdict is a comment (a mirror identity's approval would count as a maintainer's).
           // Shown as what the source reviewer did, never as counted.
@@ -440,7 +517,9 @@ export function Timeline({
             )
           }
           return (
-            <div key={`r-${review.id}-${i}`} className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
+            <div key={`r-${review.id}-${i}`} className="space-y-1">
+            {shownHidden ? <RevealedNote hidden={shownHidden} onCollapse={() => reveal(review.id, false)} /> : null}
+            <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
               <div className="flex flex-wrap items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 coarse:gap-y-3 coarse:py-3 dark:border-anvil-800 dark:bg-anvil-900">
                 <span className="flex h-6 w-6 items-center justify-center rounded-full bg-anvil-100 dark:bg-anvil-800">
                   {verdictIcon(review.verdict)}
@@ -460,6 +539,7 @@ export function Timeline({
                 {review.commitOid ? (
                   <span className="flex items-center gap-1 text-anvil-500 dark:text-anvil-400">on <Oid value={review.commitOid} chars={9} /></span>
                 ) : null}
+                {actions ? <span className="ml-auto">{actions}</span> : null}
               </div>
               {/* A mirrored review with no text of its own: its header already says who and when. */}
               {review.body && !(origin !== null && searchableBody(review.body).trim() === '') ? (
@@ -469,9 +549,17 @@ export function Timeline({
               ) : null}
               {item.comments.length > 0 || item.expected > 0 ? (
                 <div className="space-y-2 border-t border-anvil-200 px-4 py-3 dark:border-anvil-800" data-testid="review-comments">
-                  {item.comments.map((c) => (
-                    <ReviewComment key={c.id} comment={c} links={links} trust={trust} anchorContext={anchorContext} slot={renderComment?.({ kind: 'comment', at: c.createdAt, comment: c }) ?? {}} />
-                  ))}
+                  {item.comments.map((c) => {
+                    // An inline comment hidden on its own (one hidden with its review shows once the review is shown)
+                    const own = moderation?.items[c.id]
+                    const ownActions = moderate?.({ kind: 'comment', id: c.id })
+                    if (own?.via === 'item' && !revealed.has(c.id)) {
+                      return <HiddenRow key={c.id} hidden={own} what="comment" author={c.author} onShow={() => reveal(c.id, true)} actions={ownActions} />
+                    }
+                    const slot = renderComment?.({ kind: 'comment', at: c.createdAt, comment: c }) ?? {}
+                    const header = ownActions ? <>{slot.header}<span className={slot.header ? '' : 'ml-auto'}>{ownActions}</span></> : slot.header
+                    return <ReviewComment key={c.id} comment={c} links={links} trust={trust} anchorContext={anchorContext} slot={{ ...slot, header }} />
+                  })}
                   {/* A submit writes the review first, then its comments: say when some have not landed (yet). */}
                   {item.expected > item.comments.length ? (
                     <p className="text-[12px] text-anvil-600 dark:text-anvil-400">
@@ -480,6 +568,7 @@ export function Timeline({
                   ) : null}
                 </div>
               ) : null}
+            </div>
             </div>
           )
         }
@@ -524,7 +613,8 @@ export function Timeline({
         }
         const own = eventText?.(item.event) ?? (item.event.kind === 'policyBypass' ? bypassPhrase(item.event.value, mergeOids.has((item.event.oid ?? '').toLowerCase())) : null)
         const base = eventPhrase(item.event)
-        const phrase = own === null ? base : { ...base, text: own }
+        const named = moderationNamed(item.event, refs)
+        const phrase = own !== null ? { ...base, text: own } : named !== null ? { ...base, ...named } : base
         return (
           <div key={`e-${item.event.id}-${i}`} className={EVENT_ROW} data-testid="timeline-event" data-kind={item.event.kind}>
             <span className={EVENT_ICON}>{phrase.icon}</span>
@@ -534,7 +624,8 @@ export function Timeline({
                 <>
                   {phrase.text}{' '}
                   <span className="whitespace-nowrap">
-                    <Author identityId={phrase.who} link={false} className="align-middle" /> · {timeAgo(item.event.createdAt)}
+                    <Author identityId={phrase.who} link={false} className="align-middle" />
+                    {phrase.after ?? ''} · {timeAgo(item.event.createdAt)}
                   </span>
                 </>
               ) : (

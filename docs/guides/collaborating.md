@@ -175,6 +175,35 @@ dg issue lock   <owner>/<repo> 12 --off    # unlock
 
 Locking and unlocking are transitions members write, folded the same way for issues and PRs. `dg issue view --json` shows the fold as `"locked": true|false`; `dg pr view` does not print it today. On the web, an issue's sidebar shows "Locked to members" or "Open to everyone" and has a **Lock** / **Unlock** button for members; a PR enforces the same lock (a non-member sees the compose box disabled, "This conversation is locked: only maintainers and writers can comment") but shows no status label and no button yet — it locks and unlocks from `dg pr lock` only. Once locked, a non-member's comment or review is refused at the CLI before anything is signed (*"comment not posted: issue #12 is locked to members"*); a member's still goes through. Locking does not require re-running a close or reopen — it is independent of the issue or PR's open/closed state.
 
+### Moderation: lock and hide
+
+A repository's maintainers moderate its conversations with two tools. Neither deletes anything: on Dash Platform nobody but a comment's author can delete it, and the network's own moderation applies to every repository at once, so it cannot be scoped to yours.
+
+| | Lock | Hide |
+|---|---|---|
+| Who | writers and maintainers | **maintainers** only |
+| What it does | from then on only members can comment or review | readers see a comment, a review or a whole issue or PR collapsed, and can expand it |
+| Enforced by | the network (consensus refuses a non-member's post) | every Forge client; the network checks that the hider is a maintainer |
+| Use it for | a thread under attack, or a finished discussion | spam, abuse, off-topic or outdated posts that are already there |
+
+```sh
+dg issue hide <owner>/<repo> 12 --comment <comment id> --reason spam   # hide one comment
+dg issue hide <owner>/<repo> 12 --reason off-topic                       # hide the whole issue
+dg issue hide <owner>/<repo> 12 --comment <comment id> --off             # unhide
+dg pr hide    <owner>/<repo> 7 --review <review id> --reason outdated    # or --comment <id>
+dg issue view <owner>/<repo> 12 --show-hidden                            # read what was hidden
+```
+
+Reasons are GitHub's: `spam`, `abuse`, `off-topic`, `outdated`, `resolved`, `duplicate`, or none. The ids come from `dg issue view --json` and `dg pr view --comments --json`. `dg` refuses a hide from someone who is not a maintainer before anything is signed.
+
+**What readers see.** On the web a hidden comment or review is one line, "A comment by bob was hidden by alice as spam · Show", in the timeline and in Files changed. A hidden issue or PR keeps its number; the web's Issues and Pull requests lists leave it out behind "N on this page hidden by maintainers · Show" (the Open and Closed counts do not change; `dg issue list` and `dg pr list` still list it), and its page opens behind a banner with "Show it anyway". `dg issue view` and `dg pr view` print the same one line unless you pass `--show-hidden`. The timeline records every hide and unhide that counts ("alice hid a comment by bob · spam"): they cannot be edited or deleted, so they are the record of who hid what.
+
+**Who wins.** Any maintainer can hide or unhide. If the repository's owner hid or unhid something, the owner's latest decision stands whatever a maintainer does later, and only the owner can hide what the owner wrote; `dg` and the web refuse such a write before signing rather than spend credits on it. An inline comment hidden with its review shows again when the review is unhidden. A hide stays after its maintainer is removed (the network proved them a maintainer when they wrote it); unhide it to undo it.
+
+**A hidden review still counts.** Hiding is display only: an approval or a request for changes still counts toward the merge until a member dismisses it (`dg pr dismiss-review`, or **Dismiss** on the Reviewers card). Hiding an issue or PR does not close it either; the web's **Hide issue…** offers "Also close and lock it", which writes the close and the lock after the hide.
+
+**Limits.** A hidden post is still on Platform: anyone can read it with **Show**, `--show-hidden`, or any client that predates hiding. In a private repository the reason is encrypted like other event values; which item was hidden is not. Each hide costs about as much as a label (one small event). To stop a flood, lock the thread first, then hide what was already posted.
+
 ---
 
 ## Pull requests

@@ -99,6 +99,8 @@ export const EVENT_KIND_CODE: Readonly<Record<EventKind, number>> = {
   lock: 21,
   unlock: 22,
   policyBypass: 23,
+  hide: 24,
+  unhide: 25,
 }
 
 /** Review verdicts (`review.verdict`) a member writes: approve and request changes carry `asMember`. */

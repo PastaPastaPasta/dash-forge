@@ -3,8 +3,8 @@
 
   python3 forge-contracts/schema/variants.py <contract-validate binary> [--markdown]
 
-S2, S3 and C1 are decided at registration by fee probes on the v5 network, and S1 could be
-dropped the same way, so any combination of build.RC2_FLAGS (the other flags at their FLAGS
+S2, S3, C1 and MOD (design/v5/MODERATION.md: a hide proves its writer a maintainer) are decided
+at registration by fee probes on the v5 network, and S1 could be dropped the same way, so any combination of build.RC2_FLAGS (the other flags at their FLAGS
 defaults) may be the one registered. The riders (build.RIDER_FLAGS: R1 = QW-069 close reasons,
 R2 = QW2-010 review-comment hunks) ride only if ready, and touch other properties, so each of
 their combinations is run once, with every RC2 item on. For each, this builds the three contracts
@@ -30,7 +30,7 @@ sys.dont_write_bytecode = True  # no __pycache__ beside the schemas
 import build  # noqa: E402
 
 SHORT = {'check_evidence_freeze': 'S1', 'review_to_author': 'S2', 'review_author': 'S3', 'fused_star': 'C1',
-         'close_reason': 'R1', 'review_hunk': 'R2'}
+         'event_as_maintainer': 'MOD', 'close_reason': 'R1', 'review_hunk': 'R2'}
 
 
 def combinations():

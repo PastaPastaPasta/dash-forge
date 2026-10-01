@@ -139,6 +139,13 @@ expect_reject m1-set-once-left-free community '.documentSchemas.checkRun.immutab
 if jq -e '.documentSchemas.checkRun.immutable | any(type == "object" and .property == "logUrl")' "$contracts/forge-community.json" > /dev/null; then
   expect_reject s1-log-left-free community '.documentSchemas.checkRun.immutable |= map(select(type == "string" or .property != "logUrl"))' 'replace.json vectors disagree'
 fi
+# RC2 MOD (design/v5/MODERATION.md): asMaintainer's findBy must read the value itself ("."), so
+# the writer is bound by the hideByMaint rule and not by the lookup (refers-to-lookup.md:171), and
+# must name a unique index of maintainer
+if jq -e '.documentSchemas.event.properties.asMaintainer' "$contracts/forge-community.json" > /dev/null; then
+  expect_reject mod-findby-without-value community '.documentSchemas.event.properties.asMaintainer.refersTo.findBy.memberId = "$ownerId"'
+  expect_reject mod-findby-non-unique community '.documentSchemas.event.properties.asMaintainer.refersTo.findBy = {"memberId": "."}'
+fi
 # RC1 (WIPE-DECISIONS D-10, D-11): the vis stamps and the new references are registration-checked
 expect_reject vis-where-missing-on-member community '.documentSchemas.webhook.ownerRefersTo.where = {"visibility": "vis"}'
 expect_reject vis-where-kind-mismatch collab '.documentSchemas.issue.properties.repoId.refersTo.where = {"visibility": "number"}'
