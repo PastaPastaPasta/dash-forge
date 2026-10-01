@@ -18,6 +18,7 @@ on:
     paths: &paths
       - check-action/**
       - install.sh
+      - action/install-forge.sh
       - crates/dg/src/ci.rs
       - crates/forge-core/src/ci.rs
       - .github/workflows/check-action.yml

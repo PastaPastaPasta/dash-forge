@@ -58,15 +58,16 @@ fi
 match replicas "${INPUT_REPLICAS:-}" '^[1-9]$' "must be a whole number from 1 to 9"
 bool dry-run "${INPUT_DRY_RUN:-}"
 case "${INPUT_INSTALL:-}" in true | source | false) ;; *) fail install "must be 'true', 'source' or 'false'" ;; esac
+bool build-cache "${INPUT_BUILD_CACHE:-true}"
 bool state-cache "${INPUT_STATE_CACHE:-}"
 bool fail-on-partial "${INPUT_FAIL_ON_PARTIAL:-false}"
 bool s3-virtual-hosted "${INPUT_S3_VIRTUAL_HOSTED:-false}"
 if [ "${INPUT_S3_VIRTUAL_HOSTED:-false}" = true ] && [ "${INPUT_STORAGE_KIND:-}" != s3 ]; then
     fail s3-virtual-hosted "applies only to storage-kind s3"
 fi
-if [ "${INPUT_INSTALL:-}" = true ]; then
+if [ "${INPUT_INSTALL:-}" = true ] && [ -n "${INPUT_VERSION:-}" ]; then
     match version "${INPUT_VERSION:-}" '^v?[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$' \
-        "must be a release version like 0.1.0"
+        "must be a release version like 0.1.0, or empty to build from source"
 fi
 
 case "${INPUT_STORAGE_KIND:-}" in

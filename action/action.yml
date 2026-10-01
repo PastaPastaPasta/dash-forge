@@ -2,8 +2,9 @@
 # releases, labels) into a Dash Forge repository with forge-import. See action/README.md.
 #
 # `version` below is the Dash Forge release this action version pins. It is defined once,
-# as the input's default; bump it together with the action when cutting a release. Until that
-# release is published, `install: 'true'` builds the binaries from the Action's own source.
+# as the input's default, and is empty until the commit that cuts the first release sets it:
+# until then `install: 'true'` builds the binaries from the Action's own source, and a pinned
+# commit never switches to downloaded binaries behind the workflow's back.
 #
 # The network defaults to the devnet the hosted site (forge.dashhq.org) targets: Forge's
 # contracts are registered there, and not on mainnet yet (forge-contracts/deployments/).
@@ -70,10 +71,13 @@ inputs:
     description: "GitHub repository to mirror (owner/repo)."
     default: ${{ github.repository }}
   version:
-    description: "Dash Forge release to install (the release this action version pins)."
-    default: "0.1.0"
+    description: "Dash Forge release to install (the release this action version pins). Empty: none is pinned yet, so install 'true' builds from source."
+    default: ""
   install:
-    description: "true: install release `version`, or build the Action's own source (the ref in uses:) when that release is not published. source: always build the Action's own source. false: use dg, git-remote-dash and forge-import already on PATH."
+    description: "true: install release `version`, or build the Action's own source (the ref in uses:) when `version` is empty. source: always build the Action's own source. false: use dg, git-remote-dash and forge-import already on PATH."
+    default: "true"
+  build-cache:
+    description: "A source build reuses compiled dependencies from actions/cache, trusted like any other cache of this repository. false: compile everything every run."
     default: "true"
   state-cache:
     description: "Keep the incremental sync state in actions/cache (speed only; correctness does not depend on it)."
@@ -116,6 +120,7 @@ runs:
         INPUT_GITHUB_REPO: ${{ inputs.github-repo }}
         INPUT_VERSION: ${{ inputs.version }}
         INPUT_INSTALL: ${{ inputs.install }}
+        INPUT_BUILD_CACHE: ${{ inputs.build-cache }}
         INPUT_STATE_CACHE: ${{ inputs.state-cache }}
         INPUT_FAIL_ON_PARTIAL: ${{ inputs.fail-on-partial }}
       run: bash "$GITHUB_ACTION_PATH/validate.sh"
@@ -154,13 +159,17 @@ runs:
         GH_TOKEN: ${{ github.token }}
       # install.sh ships with this action (same ref): it checks the archive's sha256
       # against SHA256SUMS and, with gh logged in, the build provenance attestation.
-      run: sh "$GITHUB_ACTION_PATH/../install.sh"
+      run: |
+        sh "$GITHUB_ACTION_PATH/../install.sh" || {
+          echo "::error title=Dash Forge install::Dash Forge v${DASH_FORGE_VERSION#v} could not be installed (the log above says why). If that release is not published, set install: 'source' to build from the Action's own source."
+          exit 1
+        }
 
-    # A source build. The dependencies and compiled crates are cached across runs, keyed by
+    # A source build. The compiled dependencies are cached across runs (build-cache), keyed by
     # Cargo.lock and the pinned toolchain, so only the first run compiles everything.
     - name: Restore the Dash Forge build cache
       id: build-cache
-      if: steps.install.outputs.method == 'source'
+      if: steps.install.outputs.method == 'source' && inputs.build-cache == 'true'
       uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: |
@@ -183,7 +192,7 @@ runs:
       run: bash "$GITHUB_ACTION_PATH/install-forge.sh" build
 
     - name: Save the Dash Forge build cache
-      if: steps.install.outputs.method == 'source' && steps.build-cache.outputs.cache-hit != 'true'
+      if: steps.install.outputs.method == 'source' && inputs.build-cache == 'true' && steps.build-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: |

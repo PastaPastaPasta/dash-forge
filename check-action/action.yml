@@ -43,16 +43,19 @@ inputs:
     description: "No longer has any effect: a private repository's check run cannot carry a log, so none is uploaded there."
     default: "false"
   network:
-    description: "mainnet, testnet or devnet."
-    default: mainnet
+    description: "mainnet, testnet or devnet. The default is the devnet the hosted site targets; Forge is not deployed on mainnet yet."
+    default: devnet
   devnet-name:
-    description: "Devnet name (required when network is devnet): lowercase letters, digits and -."
-    default: ""
+    description: "Devnet name, used only when network is devnet: lowercase letters, digits and -."
+    default: bonsia
   version:
-    description: "Dash Forge release to install."
-    default: "0.1.0"
+    description: "Dash Forge release to install. Empty (until the first release is pinned here): install 'true' builds dg from source."
+    default: ""
   install:
-    description: "false: use the dg already on PATH. No release is published yet, so for now build dg in the job and set this to false."
+    description: "true: install release `version`, or build dg from this action's own source (the ref in uses:) when `version` is empty. source: always build from source. false: use the dg already on PATH."
+    default: "true"
+  build-cache:
+    description: "A source build reuses compiled dependencies from actions/cache, trusted like any other cache of this repository. false: compile everything every run."
     default: "true"
   fail-on-error:
     description: "true: fail the step when the report cannot be written. Default false: a warning, so a Forge outage never fails your CI."
@@ -95,6 +98,9 @@ runs:
         INPUT_PUBLIC_LOG: ${{ inputs.public-log }}
         INPUT_NETWORK: ${{ inputs.network }}
         INPUT_DEVNET_NAME: ${{ inputs.devnet-name }}
+        INPUT_INSTALL: ${{ inputs.install }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_BUILD_CACHE: ${{ inputs.build-cache }}
         PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         # A matrix leg: its index goes into the run id and its values into the default name,
         # so the legs of one job never overwrite each other.
@@ -103,27 +109,82 @@ runs:
         MATRIX_JSON: ${{ toJSON(matrix) }}
       run: bash "$GITHUB_ACTION_PATH/resolve.sh"
 
+    # dg is installed once per job: a second use of the action finds it and installs nothing.
+    # The Mirror Action's install-forge.sh (same ref) decides between the pinned release and a
+    # build of this action's own source.
+    - name: Choose how to install dg
+      id: plan
+      if: inputs.install != 'false'
+      shell: bash
+      env:
+        INPUT_INSTALL: ${{ inputs.install }}
+        INPUT_VERSION: ${{ inputs.version }}
+        FORGE_BINARIES: dg
+      run: |
+        if [ "$INPUT_INSTALL" = source ] || [ -z "$INPUT_VERSION" ]; then dir=source; else dir=$INPUT_VERSION; fi
+        dir="$RUNNER_TEMP/forge-check-bin-$dir"
+        { echo "dir=$dir"; echo "dg=$dir/dg"; } >>"$GITHUB_OUTPUT"
+        if [ -x "$dir/dg" ]; then echo "method=installed" >>"$GITHUB_OUTPUT"; exit 0; fi
+        bash "$GITHUB_ACTION_PATH/../action/install-forge.sh" plan
+
     - name: Install Dash Forge ${{ inputs.version }}
       id: install
-      if: inputs.install == 'true'
+      if: steps.plan.outputs.method == 'release'
       shell: bash
       env:
         DASH_FORGE_VERSION: ${{ inputs.version }}
-        DASH_FORGE_INSTALL_DIR: ${{ runner.temp }}/forge-check-bin-${{ inputs.version }}
+        DASH_FORGE_INSTALL_DIR: ${{ steps.plan.outputs.dir }}
         DASH_FORGE_BINARIES: dg
         DASH_FORGE_ATTESTATION: auto
         GH_TOKEN: ${{ github.token }}
-      # A failed install is reported by the next step, which honours fail-on-error; installed
-      # once per job (a second use of the action reuses it).
+      # A failed install is reported by the report step, which honours fail-on-error.
       run: |
-        dg="$DASH_FORGE_INSTALL_DIR/dg"
-        if [ ! -x "$dg" ]; then
-          if ! sh "$GITHUB_ACTION_PATH/../install.sh" >&2; then
-            echo "failed=dg $DASH_FORGE_VERSION could not be installed (is it released?)" >>"$GITHUB_OUTPUT"
-            exit 0
-          fi
+        if ! sh "$GITHUB_ACTION_PATH/../install.sh" >&2; then
+          echo "failed=dg $DASH_FORGE_VERSION could not be installed (if that release is not published, set install: 'source')" >>"$GITHUB_OUTPUT"
         fi
-        echo "dg=$dg" >>"$GITHUB_OUTPUT"
+
+    # A source build. Its compiled dependencies are cached across runs (build-cache), shared
+    # with the Mirror Action's.
+    - name: Restore the Dash Forge build cache
+      id: build-cache
+      if: steps.plan.outputs.method == 'source' && inputs.build-cache == 'true'
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: |
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          ${{ runner.temp }}/dash-forge-build
+        key: ${{ steps.plan.outputs.cache-key }}
+        restore-keys: |
+          dash-forge-build@${{ runner.os }}-${{ runner.arch }}@
+
+    - name: Build dg from the action's source
+      id: build
+      if: steps.plan.outputs.method == 'source'
+      shell: bash
+      env:
+        FORGE_BINARIES: dg
+        FORGE_BIN_DIR: ${{ steps.plan.outputs.dir }}
+        FORGE_TARGET_DIR: ${{ runner.temp }}/dash-forge-build
+        FORGE_TOOLS_DIR: ${{ runner.temp }}/forge-check-tools
+        DASH_FORGE_ACTION_REF: ${{ github.action_ref }}
+      # A failed build is reported by the report step, which honours fail-on-error.
+      run: |
+        if ! bash "$GITHUB_ACTION_PATH/../action/install-forge.sh" build; then
+          echo "failed=dg could not be built from the action's source (the log above says why)" >>"$GITHUB_OUTPUT"
+        fi
+
+    - name: Save the Dash Forge build cache
+      if: steps.plan.outputs.method == 'source' && inputs.build-cache == 'true' && steps.build-cache.outputs.cache-hit != 'true' && steps.build.outputs.failed == ''
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: |
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          ${{ runner.temp }}/dash-forge-build
+        key: ${{ steps.plan.outputs.cache-key }}
 
     - name: Report to Forge
       id: report
@@ -131,6 +192,6 @@ runs:
       env:
         FORGE_ARGS_FILE: ${{ steps.resolve.outputs.args-file }}
         FORGE_FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
-        FORGE_INSTALL_FAILED: ${{ steps.install.outputs.failed }}
-        DG_BIN: ${{ steps.install.outputs.dg || 'dg' }}
+        FORGE_INSTALL_FAILED: ${{ steps.install.outputs.failed || steps.build.outputs.failed }}
+        DG_BIN: ${{ steps.plan.outputs.dg || 'dg' }}
       run: bash "$GITHUB_ACTION_PATH/report.sh"

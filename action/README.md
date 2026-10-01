@@ -4,7 +4,7 @@ Keeps a [Dash Forge](../README.md) copy of a GitHub repository up to date: branc
 
 Each run is **idempotent** (running it again writes nothing and costs nothing) and **capped** (it will not spend more than `cost-cap` DASH).
 
-> **Status.** Forge runs on devnet **bonsia**, the network [forge.dashhq.org](https://forge.dashhq.org) uses, and that is the Action's default network. It is not deployed on mainnet or testnet yet. No Dash Forge release is published yet either, so the default `install: 'true'` builds `dg`, `git-remote-dash` and `forge-import` from the Action's own source (the ref after `@` in `uses:`). The first run compiles for several minutes; later runs reuse a build cache. This Action has no release tag yet: use `@master`, or better, pin a commit you have reviewed (`@<40-character commit id>`).
+> **Status.** Forge runs on devnet **bonsia**, the network [forge.dashhq.org](https://forge.dashhq.org) uses, and that is the Action's default network. It is not deployed on mainnet or testnet yet. No Dash Forge release is published yet either, so this Action pins none (`version` is empty), and the default `install: 'true'` builds `dg`, `git-remote-dash` and `forge-import` from the Action's own source (the ref after `@` in `uses:`). It keeps doing so at that ref after a release is published: only an Action version that sets `version` downloads release binaries. The first run compiles for several minutes; later runs reuse a build cache. This Action has no release tag yet: use `@master`, or better, pin a commit you have reviewed (`@<40-character commit id>`).
 
 ## Quick start
 
@@ -74,8 +74,9 @@ Run it once with `dry-run: 'true'` from the Actions tab (`workflow_dispatch`) to
 | `dry-run` | `false` | `true`: list, compare and estimate, and write nothing. |
 | `fail-on-partial` | `false` | `true`: fail the step when some items were skipped (`status: partial`). By default that is a warning, because the next run retries them. |
 | `github-repo` | `${{ github.repository }}` | The GitHub repository to mirror. |
-| `version` | `0.1.0` | The Dash Forge release this Action version pins. |
-| `install` | `true` | `true`: install release `version` with [`install.sh`](../install.sh); if that release is not published, build from source as `source` does. `source`: build `dg`, `git-remote-dash` and `forge-import` from the Action's own source, the ref after `@` in `uses:` (needs Rust, which `ubuntu-latest` has; protoc is installed if missing on Linux x86_64). The build is cached across runs. `false`: use the binaries already on `PATH`. |
+| `version` | *(empty)* | The Dash Forge release this Action version pins. Empty until the first release: `install: 'true'` then builds from source. |
+| `install` | `true` | `true`: install release `version` with [`install.sh`](../install.sh) (the step fails if that release is not published), or, with `version` empty, build from source as `source` does. `source`: build `dg`, `git-remote-dash` and `forge-import` from the Action's own source, the ref after `@` in `uses:` (needs Rust and jq, which GitHub's ubuntu runners have; protoc is installed if missing on Linux x86_64 and arm64). `false`: use the binaries already on `PATH`. |
+| `build-cache` | `true` | A source build reuses its compiled dependencies from `actions/cache`, keyed by `Cargo.lock` and the toolchain. `false`: compile everything on every run. |
 | `state-cache` | `true` | Keep the incremental sync state in `actions/cache`, so a run looks only at what changed on GitHub since the last one. This is only for speed: without the cache a run re-examines everything and still writes nothing that is already there. |
 
 ## Outputs
@@ -160,7 +161,7 @@ A `partial` run adds a *Skipped (retried next run)* row and a warning. A failed 
 - The storage secrets are never written to disk. The storage profile holds `env:S3_SECRET_ACCESS_KEY`-style references, which are resolved when the push runs.
 - Every input is validated before anything runs, and inputs reach the scripts only as environment variables, never as text inside a script.
 - The storage settings are passed to git only for the Action's own step (as git's command-scope config). The runner's `~/.gitconfig` is left unchanged.
-- `install: 'true'` uses this repository's `install.sh` at the same ref as the Action. It checks the archive's sha256 against the release's `SHA256SUMS`, and checks its build provenance attestation with `gh`. A source build (`install: 'source'`, or `'true'` before the release is published) compiles exactly the code at the ref in `uses:`, with `cargo build --locked`, so pin that ref to a commit you have reviewed. The protoc it may download is checked against a pinned sha256.
+- `install: 'true'` uses this repository's `install.sh` at the same ref as the Action. It checks the archive's sha256 against the release's `SHA256SUMS`, and checks its build provenance attestation with `gh`. A source build (`install: 'source'`, or `'true'` with no `version`) compiles the code at the ref in `uses:`, with `cargo build --locked`, so pin that ref to a commit you have reviewed. Its workspace crates are always compiled from that source. Its compiled dependencies come from the build cache, which is trusted like any other cache of your repository: a workflow there that can write the default branch's caches (for example one that runs a pull request's code) could plant one. Set `build-cache: 'false'` for a build from source alone. The protoc it may download is checked against a pinned sha256.
 
 ## Development
 

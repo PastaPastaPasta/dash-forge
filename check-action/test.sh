@@ -62,6 +62,23 @@ has "--sha=abcdef0123456789abcdef0123456789abcdef01"
 has "alice/project"
 has "--devnet-name=bonsia"
 
+case="the default devnet-name is ignored on another network, and an empty version builds from source"
+resolve INPUT_JOB_STATUS=success INPUT_NETWORK=testnet INPUT_DEVNET_NAME=bonsia INPUT_INSTALL=true INPUT_VERSION= || fail "exit $?"
+has "--network=testnet"
+lacks_prefix "--devnet-name"
+
+# action.yml's defaults: a network Forge is deployed on (the hosted site's devnet), and no
+# release pinned, so install 'true' builds dg from this action's own source.
+case="action.yml defaults"
+default_of() {
+  awk -v want="  $1:" '$0 == want { found = 1; next } found && /^    default:/ { sub(/^    default: */, ""); gsub(/"/, ""); print; exit }' "$here/action.yml"
+}
+[[ "$(default_of network)" == devnet ]] || fail "network defaults to '$(default_of network)'"
+[[ -f "$here/../forge-contracts/deployments/devnet-$(default_of devnet-name).json" ]] || fail "no deployment for the default devnet"
+[[ -z "$(default_of version)" ]] || fail "version defaults to '$(default_of version)'"
+[[ "$(default_of install)" == true ]] || fail "install defaults to '$(default_of install)'"
+[[ "$(default_of build-cache)" == true ]] || fail "build-cache defaults to '$(default_of build-cache)'"
+
 case="matrix legs are separate checks"
 resolve INPUT_JOB_STATUS=success JOB_TOTAL=2 JOB_INDEX=1 MATRIX_JSON='{"os":"ubuntu","rust":1.8}' || fail "exit $?"
 has "--name=CI / build (ubuntu, 1.8)"
@@ -121,6 +138,10 @@ refuse "details url without a host" INPUT_JOB_STATUS=success INPUT_DETAILS_URL=h
 refuse "details url in capitals" INPUT_JOB_STATUS=success INPUT_DETAILS_URL=HTTPS://a.b
 refuse "devnet without a name" INPUT_JOB_STATUS=success INPUT_NETWORK=devnet
 refuse "devnet name with odd characters" INPUT_JOB_STATUS=success INPUT_NETWORK=devnet 'INPUT_DEVNET_NAME=a b'
+refuse "bad install" INPUT_JOB_STATUS=success INPUT_INSTALL=yes
+refuse "bad build-cache" INPUT_JOB_STATUS=success INPUT_BUILD_CACHE=maybe
+refuse "bad version" INPUT_JOB_STATUS=success INPUT_VERSION=latest
+refuse "a version that is a path" INPUT_JOB_STATUS=success INPUT_VERSION=../../x
 refuse "a newline in the name" INPUT_JOB_STATUS=success INPUT_NAME=$'a\n--public-log'
 grep -q 'name must be one line' "$tmp/stdout" || fail "refused for the newline"
 refuse "missing log file" INPUT_JOB_STATUS=success INPUT_LOG=/nonexistent/log

@@ -170,7 +170,9 @@ bad INPUT_SYNC=code,
 bad INPUT_SYNC=$'code\n--dry-run'
 bad INPUT_NETWORK=devnet INPUT_DEVNET_NAME='x@y'
 bad INPUT_INSTALL=yes
-bad INPUT_INSTALL=true INPUT_VERSION=''
+good INPUT_INSTALL=true INPUT_VERSION=''
+good INPUT_BUILD_CACHE=false
+bad INPUT_BUILD_CACHE=maybe
 bad INPUT_COST_CAP=abc
 bad INPUT_COST_CAP=0
 bad INPUT_COST_CAP=1e3
@@ -270,6 +272,8 @@ devnet_default=$(default_of devnet-name)
 [ -f "$here/../forge-contracts/deployments/devnet-$devnet_default.json" ] ||
     fail "no deployment for the default devnet '$devnet_default'"
 [ "$(default_of install)" = true ] || fail "install defaults to '$(default_of install)'"
+[ -z "$(default_of version)" ] || fail "version defaults to '$(default_of version)' (a release must be pinned on purpose)"
+[ "$(default_of build-cache)" = true ] || fail "build-cache defaults to '$(default_of build-cache)'"
 # The defaults pass validation as they are.
 good INPUT_NETWORK="$(default_of network)" INPUT_DEVNET_NAME="$devnet_default" INPUT_VERSION="$(default_of version)"
 expect vout "devnet-name=$devnet_default"
@@ -277,32 +281,37 @@ expect vout "devnet-name=$devnet_default"
 # install-forge.sh with stub curl, cargo, protoc and uname, on a PATH without the real ones.
 ib="$tmp/ibin"
 mkdir -p "$ib"
-# curl: --write-out probes print $STUB_HTTP; downloads write junk to the --output file.
+# curl: records its arguments and writes junk to the --output file.
 cat >"$ib/curl" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >>"$STUB_OUT/curl"
 out=''
-probe=false
 while [ $# -gt 0 ]; do
-    case "$1" in
-        --output) out=$2; shift ;;
-        --write-out) probe=true; shift ;;
-    esac
+    [ "$1" != --output ] || out=$2
     shift
 done
-if [ "$probe" = true ]; then printf '%s' "$STUB_HTTP"; exit 0; fi
 printf 'not a zip' >"$out"
 EOF
+# cargo: `metadata` lists the workspace; `build` records its arguments and environment and
+# makes the binaries asked for.
 cat >"$ib/cargo" <<'EOF'
 #!/bin/sh
+if [ "$1" = metadata ]; then
+    echo '{"packages":[{"name":"dg"},{"name":"forge-core"},{"name":"git-remote-dash"}]}'
+    exit 0
+fi
 printf '%s\n' "$*" >"$STUB_OUT/cargo"
 pwd >"$STUB_OUT/cargo-pwd"
 env >"$STUB_OUT/cargo-env"
 mkdir -p "$CARGO_TARGET_DIR/debug"
-for b in dg git-remote-dash forge-import; do printf '#!/bin/sh\n' >"$CARGO_TARGET_DIR/debug/$b"; done
+while [ $# -gt 0 ]; do
+    [ "$1" != -p ] || printf '#!/bin/sh\n' >"$CARGO_TARGET_DIR/debug/$2"
+    shift
+done
 EOF
 printf '#!/bin/sh\necho "libprotoc ${STUB_PROTOC:-28.3}"\n' >"$ib/protoc"
 printf '#!/bin/sh\ncase "$1" in -s) echo "${STUB_OS:-Linux}" ;; -m) echo "${STUB_ARCH:-x86_64}" ;; esac\n' >"$ib/uname"
+ln -s "$(command -v jq)" "$ib/jq"
 chmod +x "$ib"/*
 # install_forge plan|build [VAR=value...]: run install-forge.sh with stub tools.
 install_forge() {
@@ -311,34 +320,38 @@ install_forge() {
     : >"$tmp/iout"
     rm -rf "$tmp/curl" "$tmp/cargo" "$tmp/cargo-pwd" "$tmp/cargo-env" "$tmp/forge-bin" "$tmp/tools"
     env -i PATH="$ib:/usr/bin:/bin" STUB_OUT="$tmp" GITHUB_OUTPUT="$tmp/iout" \
-        INPUT_INSTALL=true INPUT_VERSION=0.1.0 FORGE_BIN_DIR="$tmp/forge-bin" \
-        FORGE_TARGET_DIR="$tmp/target" FORGE_TOOLS_DIR="$tmp/tools" \
+        INPUT_INSTALL=true INPUT_VERSION='' FORGE_BIN_DIR="$tmp/forge-bin" \
+        FORGE_TARGET_DIR="$tmp/target" FORGE_TOOLS_DIR="$tmp/tools" GITHUB_RUN_ID=1 GITHUB_JOB=j \
         "$@" "$BASH" "$here/install-forge.sh" "$sub" >"$tmp/ilog" 2>&1
 }
 
-case="install plan: release not published (404) builds from source"
-install_forge plan STUB_HTTP=404 RUNNER_OS=Linux RUNNER_ARCH=X64 || fail "exited $?"
-expect curl 'https://github.com/PastaPastaPasta/dash-forge/releases/download/v0.1.0/SHA256SUMS'
+case="install plan: no release pinned builds from source"
+install_forge plan RUNNER_OS=Linux RUNNER_ARCH=X64 || fail "exited $?"
 expect iout 'method=source'
 expect iout 'cache-key=dash-forge-build@Linux-X64@'
-expect ilog '::notice title=Forge mirror install::Dash Forge v0.1.0 is not published'
-case="install plan: release published"
-install_forge plan STUB_HTTP=200 INPUT_VERSION=v0.2.0 || fail "exited $?"
-expect curl 'download/v0.2.0/SHA256SUMS'
+expect ilog '::notice title=Dash Forge install::No Dash Forge release is pinned'
+case="install plan: a pinned release is downloaded, never probed for"
+install_forge plan INPUT_VERSION=0.2.0 || fail "exited $?"
 expect iout 'method=release'
 reject iout 'cache-key'
-case="install plan: GitHub unreachable leaves it to install.sh"
-install_forge plan STUB_HTTP=000 || fail "exited $?"
-expect iout 'method=release'
-case="install plan: source"
-install_forge plan INPUT_INSTALL=source INPUT_VERSION='' || fail "exited $?"
-expect iout 'method=source'
 [ ! -e "$tmp/curl" ] || fail "probed for a release"
+case="install plan: source, whatever the version"
+install_forge plan INPUT_INSTALL=source INPUT_VERSION=0.2.0 || fail "exited $?"
+expect iout 'method=source'
+case="install plan: no rust-toolchain.toml still makes a key"
+mkdir -p "$tmp/src/action"
+cp "$here/install-forge.sh" "$tmp/src/action/"
+printf 'lock\n' >"$tmp/src/Cargo.lock"
+: >"$tmp/iout"
+env -i PATH="$ib:/usr/bin:/bin" GITHUB_OUTPUT="$tmp/iout" INPUT_INSTALL=source \
+    "$BASH" "$tmp/src/action/install-forge.sh" plan >"$tmp/ilog" 2>&1 || fail "exited $?"
+expect iout 'cache-key=dash-forge-build@-@'
 
 case="install build"
 install_forge build || fail "exited: $(cat "$tmp/ilog")"
-expect cargo 'build --locked -p dg -p git-remote-dash -p forge-import'
+expect cargo 'build --locked --config profile.dev.package."*".opt-level=2 -p dg -p git-remote-dash -p forge-import'
 expect cargo-env 'CARGO_PROFILE_DEV_DEBUG=0'
+expect cargo-env 'CARGO_INCREMENTAL=0'
 reject cargo-env 'DASH_FORGE_BUILD_SHA'
 [ "$(cat "$tmp/cargo-pwd")" = "$(cd "$here/.." && pwd)" ] ||
     fail "cargo did not run from the Action's source root"
@@ -346,16 +359,31 @@ for b in dg git-remote-dash forge-import; do
     [ -x "$tmp/forge-bin/$b" ] || fail "$b not installed"
 done
 [ ! -e "$tmp/curl" ] || fail "downloaded protoc though a new one is on PATH"
-case="install build forgets cached workspace crates"
-mkdir -p "$tmp/target/debug/.fingerprint/forge-core-0123abcd" "$tmp/target/debug/.fingerprint/dg-77" \
-    "$tmp/target/debug/.fingerprint/serde-0123abcd" "$tmp/target/debug/.fingerprint/dgx-1"
-install_forge build || fail "exited $?"
+case="install build: check-action's dg only"
+install_forge build FORGE_BINARIES=dg || fail "exited $?"
+expect cargo '-p dg'
+reject cargo 'forge-import'
+[ ! -e "$tmp/forge-bin/forge-import" ] || fail "installed forge-import"
+
+fingerprints() {
+    rm -rf "$tmp/target/debug/.fingerprint"
+    mkdir -p "$tmp/target/debug/.fingerprint/forge-core-0123abcd" "$tmp/target/debug/.fingerprint/dg-77" \
+        "$tmp/target/debug/.fingerprint/serde-0123abcd" "$tmp/target/debug/.fingerprint/dgx-1"
+}
+case="install build: a restored cache's workspace crates are forgotten"
+fingerprints
+install_forge build GITHUB_RUN_ID=2 || fail "exited $?"
 for d in forge-core-0123abcd dg-77; do
     [ ! -e "$tmp/target/debug/.fingerprint/$d" ] || fail "kept $d"
 done
 for d in serde-0123abcd dgx-1; do
     [ -e "$tmp/target/debug/.fingerprint/$d" ] || fail "removed dependency $d"
 done
+case="install build: a second use in the same job keeps them"
+fingerprints
+install_forge build GITHUB_RUN_ID=2 || fail "exited $?"
+[ -e "$tmp/target/debug/.fingerprint/forge-core-0123abcd" ] || fail "rebuilt this job's own workspace crates"
+
 case="install build at a pinned commit"
 install_forge build DASH_FORGE_ACTION_REF=0123456789abcdef0123456789abcdef01234567 || fail "exited $?"
 expect cargo-env 'DASH_FORGE_BUILD_SHA=0123456789abcdef0123456789abcdef01234567'
@@ -376,6 +404,10 @@ if install_forge build STUB_PROTOC=3.21.12; then fail "succeeded"; fi
 expect curl 'protoc-28.3-linux-x86_64.zip'
 expect ilog 'protoc 28.3 checksum mismatch'
 [ ! -e "$tmp/cargo" ] || fail "built anyway"
+case="install build: protoc for arm64 Linux"
+if install_forge build STUB_PROTOC=3.21.12 STUB_ARCH=aarch64; then fail "succeeded"; fi
+expect curl 'protoc-28.3-linux-aarch_64.zip'
+expect ilog 'protoc 28.3 checksum mismatch'
 
 if [ "$fails" -ne 0 ]; then
     echo "$fails check(s) failed"
