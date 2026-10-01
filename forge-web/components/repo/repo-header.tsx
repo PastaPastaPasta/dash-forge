@@ -21,13 +21,17 @@ import { cn } from '@/lib/utils'
 import { TabStrip } from '@/components/ui/tab-strip'
 import { bareRoute } from '@/lib/page-title'
 import { ForkButton } from '@/components/repo/fork-button'
-import { readRepoById } from '@/lib/repo'
+import { readRepoById, type RepoRef } from '@/lib/repo'
+import { contributeHref } from '@/components/repo/fork-contribute'
 import type { ForgeIds } from '@/lib/deployments'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 
-/** "forked from owner/name", linking to the parent (read by its id). */
-function ForkedFrom({ forge, parentId }: { forge: ForgeIds; parentId: string }): JSX.Element {
+/**
+ * "forked from owner/name", linking to the parent (read by its id), and GitHub's Contribute: the
+ * parent's New pull request form with this fork's default branch as the head (QW3-012).
+ */
+function ForkedFrom({ forge, parentId, fork, branch }: { forge: ForgeIds; parentId: string; fork: RepoRef; branch: string }): JSX.Element {
   const { sdk, ready } = useSdk()
   const parent = useAsync(() => readRepoById(sdk!, forge, parentId), [ready, parentId], { enabled: ready && sdk !== null })
   const doc = parent.data
@@ -41,6 +45,18 @@ function ForkedFrom({ forge, parentId }: { forge: ForgeIds; parentId: string }):
           <Link href={repoHref('/repo', { owner: doc.ownerId, name: doc.name })} className="font-mono hover:text-forge-800 dark:hover:text-forge-400">
             {doc.name}
           </Link>
+          {doc.visibility === 'public' ? (
+            <>
+              <span aria-hidden>·</span>
+              <Link
+                href={contributeHref(doc, fork, branch)}
+                className="hit-area inline-flex items-center gap-1 text-forge-700 hover:underline dark:text-forge-400"
+                data-testid="fork-contribute"
+              >
+                <GitPullRequest className="h-3 w-3" aria-hidden /> Open a pull request to {doc.name}
+              </Link>
+            </>
+          ) : null}
         </>
       ) : (
         <span className="font-mono">{parentId.slice(0, 8)}…</span>
@@ -119,7 +135,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
         </div>
       </div>
 
-      {home.v2.forkOf ? <ForkedFrom forge={home.repo.forge} parentId={home.v2.forkOf} /> : null}
+      {home.v2.forkOf ? <ForkedFrom forge={home.repo.forge} parentId={home.v2.forkOf} fork={home.repo} branch={home.defaultBranch} /> : null}
 
       {home.description ? (
         <p className="mt-2 max-w-3xl text-dense text-anvil-600 dark:text-anvil-300">{home.description}</p>

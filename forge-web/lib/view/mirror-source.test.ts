@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { invalidateMembers, type RepoRef } from '../repo'
 import type { DocumentQuery } from '../sdk'
-import { mirrorSourceOf, mirrorSourceOfDescription, readMirrorSource } from './mirror-source'
+import { mirrorSourceOf, mirrorSourceOfDescription, mirrorSourceOfRepo, readMirrorSource, withoutMirrorMarker } from './mirror-source'
 
 describe('mirrorSourceOf', () => {
   it('names a GitHub issue or PR source and links its full list', () => {
@@ -50,6 +50,21 @@ describe('mirrorSourceOfDescription (what forge-import writes on the repo)', () 
     expect(mirrorSourceOfDescription('', 'issue')).toBeNull()
     expect(mirrorSourceOfDescription('A mirror of good ideas', 'issue')).toBeNull()
     expect(mirrorSourceOfDescription('Mirror of github.com/o', 'issue')).toBeNull()
+  })
+})
+
+describe('a fork of a mirror is no mirror (QW3-011)', () => {
+  it('strips the marker from the description a fork starts with', () => {
+    expect(withoutMirrorMarker('Dash Improvement Proposals (mirror of github.com/dashpay/dips)')).toBe('Dash Improvement Proposals')
+    expect(withoutMirrorMarker('Mirror of github.com/dashpay/dash')).toBe('')
+    expect(withoutMirrorMarker('  A plain description  ')).toBe('A plain description')
+    expect(withoutMirrorMarker('Mirror of the moon (mirror of github.com/o/r)')).toBe('Mirror of the moon')
+  })
+
+  it("never reads a fork's copied description as provenance", () => {
+    const description = 'Dash Improvement Proposals (mirror of github.com/dashpay/dips)'
+    expect(mirrorSourceOfRepo({ description, forkOf: null }, 'issue')?.label).toBe('github.com/dashpay/dips')
+    expect(mirrorSourceOfRepo({ description, forkOf: 'P'.repeat(44) }, 'issue')).toBeNull()
   })
 })
 

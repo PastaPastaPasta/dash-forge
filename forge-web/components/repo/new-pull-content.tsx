@@ -2,8 +2,10 @@
 
 /**
  * NewPullContent — open a PR from the browser (`ux-dx-spec.md` §1d, §5.7). Nothing is pushed
- * here: the head is a branch that already exists, in this repo or in one of the viewer's forks
- * of it (the `forkOf` index). The base defaults to the repo's default branch, the diff renders
+ * here: the head is a branch that already exists, in this repo, in one of the viewer's forks
+ * of it (the `forkOf` index), or in the fork a `?head=<forkRepoId>:<branch>` link names (a
+ * fork's Contribute link, QW3-012). On a fork, "Base repository" offers its parent, as GitHub's
+ * compare page does. The base defaults to the repo's default branch, the diff renders
  * before submit, the title comes from the head commit's subject, and the `patch` is numbered
  * by the repo's allocation rule, retrying past a number someone claims meanwhile. A signed-out
  * draft is kept in this tab while the sign-in sheet is open (`lib/view/pr-draft.ts`; a private
@@ -33,6 +35,7 @@ import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { PushBranchHint } from '@/components/repo/push-branch-hint'
+import { contributeHref, useForkParent } from '@/components/repo/fork-contribute'
 import { cn } from '@/lib/utils'
 
 /** A branch a PR can come from: this repo's, or one of the viewer's forks'. */
@@ -79,9 +82,13 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   )
 
   const branches = useMemo(() => sortBranches(home.branches.filter((b) => tipOidOf(b) !== null), home.defaultBranch), [home.branches, home.defaultBranch])
+  // A fork the head names (a fork's Contribute link): listed even when it is not the viewer's.
+  const colon = headKey.indexOf(':')
+  const namedFork = colon > 0 && headKey.slice(0, colon) !== repo.repoId ? headKey.slice(0, colon) : null
   const forks = useAsync(
     async () => {
-      const mine = await findForks(sdk!, repo.forge, repo.repoId, identity!)
+      // Every fork of this repo (one `forkOf` index read), kept: the viewer's and the named one.
+      const mine = (await findForks(sdk!, repo.forge, repo.repoId)).filter((f) => f.ownerId === identity || f.repoId === namedFork)
       // One fork whose refs will not read loses its branches, not the viewer's other forks (nor
       // the push hint's knowledge that the fork exists).
       return Promise.all(
@@ -94,10 +101,12 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
         })),
       )
     },
-    [ready, repo.repoId, identity ?? ''],
+    [ready, repo.repoId, identity ?? '', namedFork ?? ''],
     // A private repo has no forks (only public repos fork).
-    { enabled: ready && sdk !== null && identity !== null && repo.visibility === 'public' },
+    { enabled: ready && sdk !== null && (identity !== null || namedFork !== null) && repo.visibility === 'public' },
   )
+  const ownForks = useMemo(() => (forks.data ?? []).filter((f) => f.fork.ownerId === identity), [forks.data, identity])
+  const forkParent = useForkParent(home)
 
   const options = useMemo<HeadOption[]>(() => {
     const opt = (r: RepoRef, b: ResolvedRef, label: string): HeadOption | null => {
@@ -201,6 +210,23 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
 
       {/* Each field may shrink below its select's widest option, so a long branch name never pushes the pickers past a phone's edge. */}
       <div className="flex flex-wrap items-end gap-3 rounded-lg border border-anvil-200 p-3 dark:border-anvil-800 [&>*]:min-w-0 [&>*]:max-w-full">
+        {forkParent !== null ? (
+          <Field label="Base repository" htmlFor="pr-base-repo">
+            <select
+              id="pr-base-repo"
+              value="fork"
+              data-testid="pr-base-repo"
+              onChange={(e) => {
+                // The parent's form, with the branch picked here (else this fork's default) as the head.
+                if (e.target.value === 'parent') router.push(contributeHref(forkParent, repo, head !== null && head.repo.repoId === repo.repoId ? branchName(head.refName) : home.defaultBranch))
+              }}
+              className="h-9 min-w-0 max-w-full rounded-md border border-anvil-300 bg-white px-2 font-mono text-dense coarse:h-11 coarse:text-base text-anvil-900 dark:border-anvil-700 dark:bg-anvil-950 dark:text-anvil-100"
+            >
+              <option value="parent">{forkParent.name} (forked from)</option>
+              <option value="fork">{repo.name} (this fork)</option>
+            </select>
+          </Field>
+        ) : null}
         <Field label="Base" htmlFor="pr-base">
           <select
             id="pr-base"
@@ -237,7 +263,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
                 ))}
             </optgroup>
             {(forks.data ?? []).length > 0 ? (
-              <optgroup label="Your forks">
+              <optgroup label={ownForks.length === (forks.data ?? []).length ? 'Your forks' : 'Forks'}>
                 {options
                   .filter((o) => o.repo.repoId !== repo.repoId)
                   .map((o) => (
@@ -252,7 +278,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
         {forks.loading && identity !== null ? <span className="pb-2 text-[12px] text-anvil-600 dark:text-anvil-400">Looking for your forks…</span> : null}
       </div>
 
-      <PushBranchHint repo={repo} forkDefaults={{ defaultBranch: home.defaultBranch, description: home.description }} forks={forks.error !== null ? 'failed' : forks.data === null ? null : forks.data.map((f) => f.fork)} />
+      <PushBranchHint repo={repo} forkDefaults={{ defaultBranch: home.defaultBranch, description: home.description }} forks={forks.error !== null ? 'failed' : forks.data === null ? null : ownForks.map((f) => f.fork)} />
 
       {noBase ? (
         <p role="alert" className="text-dense text-caution-700 dark:text-caution-400">

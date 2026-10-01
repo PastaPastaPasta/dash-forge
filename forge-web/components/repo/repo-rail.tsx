@@ -21,7 +21,7 @@ import {
   type RepoHome,
   type SelectedRef,
 } from '@/lib/view'
-import { mirrorSourceOfDescription } from '@/lib/view/mirror-source'
+import { mirrorSourceOfRepo } from '@/lib/view/mirror-source'
 import { readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
 import type { Membership } from '@/lib/rules/v2'
 import { useSdk } from '@/hooks/use-sdk'
@@ -244,7 +244,8 @@ function Facts({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; se
  * changed, not when a sync last ran (a sync that found nothing new writes nothing).
  */
 function MirrorProvenance({ home }: { home: RepoHome }): JSX.Element | null {
-  const source = mirrorSourceOfDescription(home.description, 'issue')
+  // A fork of a mirror carries the mirror's description, not its provenance (QW3-011).
+  const source = mirrorSourceOfRepo(home.v2, 'issue')
   if (source === null) return null
   const updated = [...home.branches, ...home.tags].reduce((newest, r) => {
     const at = r.state.state === 'resolved' ? r.state.createdAt : r.state.state === 'diverged' ? Math.max(...r.state.heads.map((h) => h.createdAt)) : 0
