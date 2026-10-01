@@ -186,6 +186,9 @@ impl Helper {
                     .await
                     .with_context(|| format!("resolving repo {id}"))?,
             };
+            // Before anything is read or a key opened: is this still the repository the
+            // clone was made from (a DPNS name can change hands)?
+            self.check_pin(&repo)?;
             let keyring = forge_core::repo::KeyringCache::default();
             let mut signer = None;
             if repo.visibility == forge_core::rules::v2::Visibility::Private {
@@ -213,6 +216,36 @@ impl Helper {
             });
         }
         Ok(self.conn.as_ref().expect("conn populated"))
+    }
+
+    /// Pin a named URL's resolution in the repository git runs us for, or refuse one that now
+    /// resolves elsewhere ([`crate::pin`]). Outside a repository (`git ls-remote` with no
+    /// repo) there is nothing to pin. A pin that cannot be written is a warning, not a failed
+    /// clone; a moved URL is E504.
+    fn check_pin(&self, repo: &RepoRef) -> Result<()> {
+        if crate::pin::section(&self.url).is_none() {
+            return Ok(());
+        }
+        let Ok(git_dir) = LocalRepo::git_dir() else {
+            return Ok(());
+        };
+        let now = crate::pin::Pin {
+            repo_id: repo.id().to_string(),
+            owner_id: repo.owner_id().to_string(),
+            network: self.target.network.key(),
+        };
+        let allow = crate::pin::allow_repin()?;
+        match crate::pin::guard(&self.url, &git_dir, self.remote.as_deref(), &now, allow) {
+            Ok(outcome) => {
+                tracing::debug!(?outcome, "dash:// pin");
+                Ok(())
+            }
+            Err(e) if e.downcast_ref::<UserError>().is_some() => Err(e),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not record which repository this URL names; continuing without the pin");
+                Ok(())
+            }
+        }
     }
 
     /// [`Self::ensure_conn`], plus the signing identity (loaded once, on first need): a push
