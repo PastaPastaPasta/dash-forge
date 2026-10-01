@@ -25,6 +25,12 @@ export interface CloseWhy {
   readonly skipped: boolean
 }
 
+/** A close reason after "closed as": "completed", "not planned", "a duplicate of #3". */
+export function closedAsWords(c: ClosedAs): string {
+  if (c.reason === 'duplicate') return c.duplicateOf !== null ? `a duplicate of #${c.duplicateOf}` : 'a duplicate'
+  return c.reason === 'not_planned' ? 'not planned' : 'completed'
+}
+
 /** Whether a close reason means "not done" (the grey icon and badge). */
 export function closedSkipped(closed: ClosedAs | null | undefined): boolean {
   return closed?.reason === 'not_planned' || closed?.reason === 'duplicate'

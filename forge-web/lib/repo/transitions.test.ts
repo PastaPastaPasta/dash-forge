@@ -295,6 +295,15 @@ describe('the lock bit (RC1 R-15: kinds 3/4 and 18/19, delta ±16, sums read mod
   })
 })
 
+describe('transitionOf (QW-069)', () => {
+  it('reads reason and dupNumber whether the SDK hands them as numbers or bigints', async () => {
+    const { transitionOf } = await import('./transitions')
+    const t = transitionOf({ $id: 't', $ownerId: MAINT, $createdAt: 1, targetId: ISSUE.id, kind: 1, asAuthor: 0, reason: 3n, dupNumber: 4294967295n })
+    expect([t.reason, t.dupNumber]).toEqual([3, 4294967295])
+    expect('reason' in transitionOf({ $id: 't', $ownerId: MAINT, $createdAt: 1, targetId: ISSUE.id, kind: 1, asAuthor: 0 })).toBe(false)
+  })
+})
+
 describe('readCloseReasons (QW-069)', () => {
   it('reads a page of closed issues\' transitions once, and says why each closed', async () => {
     const A = { id: id('a'), number: 1 }

@@ -822,7 +822,6 @@ fn state_word(open: bool) -> &'static str {
     }
 }
 
-/// `(past tense, prompt verb)` of a close or a reopen ("reopend" was L-35).
 /// The close `--reason` / `--duplicate-of` ask for (QW-069): completed by default, as on
 /// GitHub; `--duplicate-of` implies a duplicate and names another issue.
 fn closed_as(
@@ -895,6 +894,7 @@ fn closed_words(c: &ClosedAs) -> String {
     }
 }
 
+/// `(past tense, prompt verb)` of a close or a reopen ("reopend" was L-35).
 fn open_words(close: bool) -> (&'static str, &'static str) {
     if close {
         ("closed", "Close")

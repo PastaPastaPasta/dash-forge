@@ -293,8 +293,10 @@ impl Chain for CollabChain<'_> {
         anchor: Option<&CommentAnchor>,
         imported: &Imported,
     ) -> Result<String> {
+        // The sink replies only to a root it mirrored (GitHub's `in_reply_to_id`, a GitLab
+        // discussion's first note): no read for it.
         self.collab
-            .comment(repo, target_id, body, anchor, Some(imported))
+            .comment_on_root(repo, target_id, body, anchor, Some(imported))
             .await
     }
 

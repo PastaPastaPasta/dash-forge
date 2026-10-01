@@ -222,16 +222,10 @@ function compareTransitions(a: Transition, b: Transition): number {
   return ai < bi ? -1 : ai > bi ? 1 : 0
 }
 
-/** How a timeline says why an issue was closed: "closed this as not planned". */
+/** How a timeline says why an issue was closed: "closed this as not planned" (dg's `closed_phrase`). */
 export function closeReasonPhrase(closed: ClosedAs): string {
-  switch (closed.reason) {
-    case 'completed':
-      return 'closed this as completed'
-    case 'not_planned':
-      return 'closed this as not planned'
-    case 'duplicate':
-      return closed.duplicateOf != null ? `closed this as a duplicate of #${closed.duplicateOf}` : 'closed this as a duplicate'
-  }
+  if (closed.reason === 'duplicate') return closed.duplicateOf != null ? `closed this as a duplicate of #${closed.duplicateOf}` : 'closed this as a duplicate'
+  return closed.reason === 'not_planned' ? 'closed this as not planned' : 'closed this as completed'
 }
 
 /** The raw delta sum of a target's transitions (unknown kinds count 0). */

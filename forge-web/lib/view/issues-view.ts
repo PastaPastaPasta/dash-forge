@@ -377,7 +377,10 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
   const comments = (await admitAll(gate, 'comment', [...commentDocs].sort(byTime), tally)).docs.map(toCommentView)
   const labels = docs(3).length < 100 ? newestLabels(docs(3)) : await readLabels(sdk, repo)
   const issueNumber = num(doc, 'number')
-  const duplicates = await readDuplicateTargets(sdk, repo, transitions.flatMap((t) => closeReasonOf(t, issueNumber)?.duplicateOf ?? []))
+  // A duplicate's canonical, for its link only: a failed read shows it unlinked, never fails the page.
+  const duplicates = await readDuplicateTargets(sdk, repo, transitions.flatMap((t) => closeReasonOf(t, issueNumber)?.duplicateOf ?? [])).catch(
+    () => new Map<number, { readonly number: number; readonly title: string }>(),
+  )
   return {
     closedAs: currentCloseReason(transitions, issueNumber),
     duplicates,

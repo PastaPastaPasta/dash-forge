@@ -75,8 +75,10 @@ export interface TransitionView extends Transition {
 /** A `transition` document as a {@link TransitionView}. */
 export function transitionOf(d: PlainDocument): TransitionView {
   const oid = byteFieldToHex(d, 'oid')
-  const reason = d['reason']
-  const dupNumber = d['dupNumber']
+  // Integers may come back as bigint (as `num` reads them): absent stays absent.
+  const int = (f: string): number | undefined => (typeof d[f] === 'number' || typeof d[f] === 'bigint' ? num(d, f) : undefined)
+  const reason = int('reason')
+  const dupNumber = int('dupNumber')
   return {
     id: str(d, '$id'),
     targetId: asIdentifierString(d['targetId']),
@@ -85,8 +87,8 @@ export function transitionOf(d: PlainDocument): TransitionView {
     asAuthor: num(d, 'asAuthor'),
     createdAt: num(d, '$createdAt'),
     ...(oid !== '' ? { oid } : {}),
-    ...(typeof reason === 'number' ? { reason } : {}),
-    ...(typeof dupNumber === 'number' ? { dupNumber } : {}),
+    ...(reason !== undefined ? { reason } : {}),
+    ...(dupNumber !== undefined ? { dupNumber } : {}),
   }
 }
 

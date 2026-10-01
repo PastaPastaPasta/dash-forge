@@ -29,3 +29,13 @@ describe('closeWhyOf (QW-069)', () => {
     expect(closedSkipped(null)).toBe(false)
   })
 })
+
+describe('closedAsWords', () => {
+  it('names a reason after "closed as"', async () => {
+    const { closedAsWords } = await import('./close-reason')
+    expect(closedAsWords({ reason: 'not_planned', duplicateOf: null })).toBe('not planned')
+    expect(closedAsWords({ reason: 'duplicate', duplicateOf: 3 })).toBe('a duplicate of #3')
+    expect(closedAsWords({ reason: 'duplicate', duplicateOf: null })).toBe('a duplicate')
+    expect(closedAsWords({ reason: 'completed', duplicateOf: null })).toBe('completed')
+  })
+})

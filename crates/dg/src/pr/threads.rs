@@ -159,6 +159,17 @@ pub fn threads(comments: &[Comment], head: &str, resolved: &[String]) -> Convers
     Conversations { threads, general }
 }
 
+/// Drop the hunk of each thread whose root's signer `trusted` does not admit to mirror (QW2-010:
+/// the hunk is the source's text only when a mirror wrote it).
+pub fn drop_untrusted_hunks(conv: &mut Conversations, trusted: impl Fn(&str) -> bool) {
+    for t in &mut conv.threads {
+        let root_trusted = t.comments.first().is_some_and(|c| trusted(&c.author));
+        if !root_trusted {
+            t.diff_hunk = None;
+        }
+    }
+}
+
 /// A reviewer's standing on the PR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -430,13 +441,17 @@ mod tests {
         mirrored.imported = Some(forge_core::collab::Imported::default());
         let mut native = comment("n", None, Some(("src/b.rs", 2, None, H1)), 2);
         native.diff_hunk = Some("@@ -1 +1 @@\n+forged".into());
-        let conv = threads(&[mirrored, native], H2, &[]);
-        let hunks: Vec<Option<&str>> = conv
-            .threads
-            .iter()
-            .map(|t| t.diff_hunk.as_deref())
-            .collect();
-        assert_eq!(hunks, [Some("@@ -1,2 +1,2 @@\n a\n+b"), None]);
+        let mut conv = threads(&[mirrored, native], H2, &[]);
+        let hunks = |c: &Conversations| -> Vec<Option<String>> {
+            c.threads.iter().map(|t| t.diff_hunk.clone()).collect()
+        };
+        assert_eq!(
+            hunks(&conv),
+            [Some("@@ -1,2 +1,2 @@\n a\n+b".to_string()), None]
+        );
+        // a signer who may not mirror shows none
+        drop_untrusted_hunks(&mut conv, |who| who != "rev");
+        assert_eq!(hunks(&conv), [None, None]);
     }
 
     #[test]

@@ -1324,10 +1324,13 @@ impl<'a, C: Chain> Sink<'a, C> {
                     if find_id(&review_ids, &r.imported.url).is_some() {
                         continue;
                     }
+                    // The comments that will name it: those not on chain yet (one written
+                    // before this review cannot name it).
                     let count = t
                         .comments
                         .iter()
                         .filter(|c| c.review_key.as_deref() == Some(r.imported.url.as_str()))
+                        .filter(|c| find_id(&comment_ids, &c.imported.url).is_none())
                         .count();
                     let count = u16::try_from(count).unwrap_or(u16::MAX);
                     if let Some(id) = self.write_review(t, target, r, count).await? {
@@ -1627,7 +1630,10 @@ impl<'a, C: Chain> Sink<'a, C> {
 
     /// `t`'s close reason as the mirror records it: a duplicate's canonical as its number in
     /// the destination, when its copy is there (this run's, or an earlier one's); otherwise a
-    /// duplicate without one, and the run says so.
+    /// duplicate without one, and the run says so. Items are created in source order, so a
+    /// canonical numbered after its duplicate is not there yet on a first import, and the
+    /// close (immutable) never names it: a rare shape (a duplicate usually names an older issue)
+    /// kept over leaving the item open until a later run.
     async fn closed_as(
         &self,
         t: &SrcTarget,

@@ -485,8 +485,11 @@ export function Timeline({
         }
         if (item.kind === 'transition') {
           const t = item.transition
-          const cause = closedIn?.(t) ?? null
-          const why = cause === null ? closeWhy?.(t) ?? null : null
+          // A close that says it was not done (not planned, a duplicate) says so, whatever PR
+          // mentioned the issue; a completed one names the PR whose merge closed it.
+          const said = closeWhy?.(t) ?? null
+          const cause = said?.skipped ? null : closedIn?.(t) ?? null
+          const why = cause === null ? said : null
           return (
             <div key={`t-${t.id}-${i}`} className={EVENT_ROW} data-testid="timeline-event" data-kind={`transition-${t.kind}`}>
               <span className={EVENT_ICON}>{why?.skipped ? <CircleSlash className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden data-icon="closed-skipped" /> : transitionIcon(t.kind)}</span>

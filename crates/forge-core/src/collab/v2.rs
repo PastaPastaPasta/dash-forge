@@ -1739,7 +1739,6 @@ pub fn review_props(
     Ok(p)
 }
 
-/// Whether `community` is a fused-star forge-community (RC2 C1): it has no `starBeat` type.
 /// [`insert_close_reason`] when `closed` is asked for and `collab` has `transition.reason`;
 /// returns what was recorded. A contract without it (RC1, or RC2 with the rider off) gets the
 /// plain close, with a warning.
@@ -1764,6 +1763,7 @@ fn with_close_reason(
     Ok(Some(*closed))
 }
 
+/// Whether `community` is a fused-star forge-community (RC2 C1): it has no `starBeat` type.
 fn fused_star(community: &LoadedContract) -> bool {
     !community.has_document_type(DOC_STAR_BEAT)
 }
@@ -4189,7 +4189,8 @@ impl<'a> Collab<'a> {
 
     // --- writes: comments, reviews ----------------------------------------------------------
 
-    /// Comment on an issue or PR. Un-gated.
+    /// Comment on an issue or PR. Un-gated. A reply is written to its thread's root
+    /// ([`Self::thread_root`]: one or two reads).
     pub async fn comment(
         &self,
         repo: &RepoRef,
@@ -4198,11 +4199,39 @@ impl<'a> Collab<'a> {
         anchor: Option<&CommentAnchor>,
         imported: Option<&Imported>,
     ) -> Result<String> {
+        self.comment_with(repo, target_id, body, anchor, imported, true)
+            .await
+    }
+
+    /// [`Self::comment`] for a writer whose `replyTo` already names the thread's root (the
+    /// importer: it replies to the root comment it mirrored, which a node a block behind may not
+    /// show yet). Nothing is read for it; consensus refuses a reply that names no live root
+    /// (`replyTo … where replyTo = noParent`, 40127).
+    pub async fn comment_on_root(
+        &self,
+        repo: &RepoRef,
+        target_id: &str,
+        body: &str,
+        anchor: Option<&CommentAnchor>,
+        imported: Option<&Imported>,
+    ) -> Result<String> {
+        self.comment_with(repo, target_id, body, anchor, imported, false)
+            .await
+    }
+
+    async fn comment_with(
+        &self,
+        repo: &RepoRef,
+        target_id: &str,
+        body: &str,
+        anchor: Option<&CommentAnchor>,
+        imported: Option<&Imported>,
+        find_root: bool,
+    ) -> Result<String> {
         let collab = self.collab_contract(repo).await?;
-        // A reply names its thread's root ([`Self::thread_root`]).
         let mut anchor = anchor.cloned();
         if let Some(a) = &mut anchor {
-            if let Some(parent) = &a.reply_to {
+            if let Some(parent) = a.reply_to.as_ref().filter(|_| find_root) {
                 a.reply_to = Some(self.thread_root(repo, &collab, target_id, parent).await?);
             }
             // A hunk is public text: a private repo's sealed comment has no room for it, and a

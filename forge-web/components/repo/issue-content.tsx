@@ -27,7 +27,7 @@ import type { LinkingPulls, TransitionView } from '@/lib/repo'
 import type { RepoHome, IssueThread, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, issueWriteShows, loadIssueThread } from '@/lib/view'
 import { readDuplicateTargets } from '@/lib/view/issues-view'
-import { closeWhyOf, closedSkipped } from '@/lib/view/close-reason'
+import { closeWhyOf, closedAsWords, closedSkipped } from '@/lib/view/close-reason'
 import type { ClosedAs } from '@/lib/rules/transition'
 import { CloseIssueButton } from '@/components/repo/close-issue-button'
 import { commentEditDrops } from '@/lib/view/issues-view'
@@ -619,15 +619,12 @@ const NO_DUPLICATES: ReadonlyMap<number, { readonly number: number; readonly tit
 
 /** The header badge's tooltip: "Closed as not planned". */
 function closedTitle(c: ClosedAs): string {
-  if (c.reason === 'duplicate') return c.duplicateOf !== null ? `Closed as a duplicate of #${c.duplicateOf}` : 'Closed as a duplicate'
-  return c.reason === 'not_planned' ? 'Closed as not planned' : 'Closed as completed'
+  return `Closed as ${closedAsWords(c)}`
 }
 
 /** " as not planned": a close's reason in the confirm dialog's title (completed says nothing). */
 function closeWords(c: ClosedAs | undefined): string {
-  if (c === undefined || c.reason === 'completed') return ''
-  if (c.reason === 'not_planned') return ' as not planned'
-  return c.duplicateOf !== null ? ` as a duplicate of #${c.duplicateOf}` : ' as a duplicate'
+  return c === undefined || c.reason === 'completed' ? '' : ` as ${closedAsWords(c)}`
 }
 
 /** The confirm dialog's words for each pending write. */

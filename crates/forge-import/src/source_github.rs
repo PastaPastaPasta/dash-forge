@@ -599,8 +599,8 @@ fn comment(src: &GithubRepoRef, number: u32, c: &GhComment) -> SrcComment {
 /// Where a review comment on `path` sits (QW2-010): on the current diff while GitHub still has
 /// its line (`line`, `commit_id`), else where it was made (`original_line`,
 /// `original_commit_id`: an outdated comment); a comment on a whole file (`subject_type`
-/// `file`) names its path only. The hunk is the source's, trimmed to the original line
-/// ([`crate::hunk::trim`]).
+/// `file`) names its path only. A thread's root keeps the source's hunk, trimmed to the
+/// original line ([`crate::hunk::trim`]); a reply none.
 fn review_anchor(c: &GhComment, path: &str) -> CommentAnchor {
     let right = c.side.as_deref() != Some("LEFT");
     let file = c.subject_type.as_deref() == Some("file");
@@ -613,8 +613,11 @@ fn review_anchor(c: &GhComment, path: &str) -> CommentAnchor {
         ),
     };
     let line = line.filter(|_| !file);
+    // A reply shares its root's hunk, which only the root stores (readers show the thread's).
     let diff_hunk = match (c.diff_hunk.as_deref(), c.original_line) {
-        (Some(h), Some(l)) if !file => crate::hunk::trim(h, right, l, c.original_start_line),
+        (Some(h), Some(l)) if !file && c.in_reply_to_id.is_none() => {
+            crate::hunk::trim(h, right, l, c.original_start_line)
+        }
         _ => None,
     };
     CommentAnchor {
@@ -716,7 +719,7 @@ mod tests {
                 "pull_request_url": "https://api.github.com/repos/o/r/pulls/2",
                 "path": "a.rs", "side": "RIGHT", "subject_type": "line",
                 "commit_id": "ab".repeat(20), "original_commit_id": "cd".repeat(20),
-                "pull_request_review_id": 7, "in_reply_to_id": 10,
+                "pull_request_review_id": 7,
                 "diff_hunk": "@@ -1,2 +1,3 @@\n a\n+b\n c",
                 "line": 3, "original_line": 3,
             });
@@ -737,10 +740,14 @@ mod tests {
             now.review_key.as_deref(),
             Some("https://github.com/o/r/pull/2#pullrequestreview-7")
         );
+        assert_eq!(now.reply_key, None);
+        // a reply names its root, and stores no hunk of its own (the root's is the thread's)
+        let reply = comment(&src(), 2, &c(serde_json::json!({"in_reply_to_id": 10})));
         assert_eq!(
-            now.reply_key.as_deref(),
+            reply.reply_key.as_deref(),
             Some("https://github.com/o/r/pull/2#discussion_r10")
         );
+        assert_eq!(reply.anchor.as_ref().unwrap().diff_hunk, None);
         // outdated: GitHub drops `line`; it keeps the original line and commit (it had no
         // anchor at all before: a side without a line reads as malformed)
         let old = comment(

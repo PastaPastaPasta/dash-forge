@@ -865,7 +865,13 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
     let approvals = approvals_over(&reviews, &v, &oracle);
     let (comments, hidden_comments) = collab.comments_counted(handle, doc_id).await?;
     let review_state = v.review_with_threads(&comments);
-    let conv = threads::threads(&comments, &v.head, &review_state.resolved_threads);
+    let mut conv = threads::threads(&comments, &v.head, &review_state.resolved_threads);
+    // A mirrored hunk shows only from a signer who may mirror (the web's trust set: the owner
+    // and the current maintainers), as the web shows it.
+    threads::drop_untrusted_hunks(&mut conv, |who| {
+        who == handle.owner_id()
+            || oracle.current_role(who) == Some(forge_core::rules::v2::Role::Maintainer)
+    });
     let rows = threads::reviewer_rows(
         &reviews,
         &review_state,
