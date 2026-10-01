@@ -279,7 +279,29 @@ describe('free-text match', () => {
     expect(matchesText('DIP-15', dip)).toBe(true)
     expect(matchesText('"the config"', row)).toBe(true)
     expect(matchesText('"config the"', row)).toBe(false)
-    expect(searchTerms('"DIP-15" crash "two words"')).toEqual(['dip-15', 'crash', 'two words'])
+    expect(searchTerms('"DIP-15" crash "two words"').map((t) => t.text)).toEqual(['dip-15', 'crash', 'two words'])
+  })
+  it('excludes a negated word or phrase, as GitHub does (QW3-018)', () => {
+    const dip = { title: 'DIP-15: DashPay contacts', number: 3 }
+    const other = { title: 'DIP-16: Headers first', number: 4, body: 'Two words here.' }
+    expect(searchTerms('-"two words" -DIP-15 - "--force"')).toEqual([
+      { text: 'two words', not: true },
+      { text: 'dip-15', not: true },
+      { text: '-', not: false },
+      { text: '--force', not: false },
+    ])
+    // A `-` inside quotes is literal: the way to search for text that starts with one.
+    expect(matchesText('"--force"', { title: 'Push with --force', number: 9 })).toBe(true)
+    expect(matchesText('"--force"', { title: 'Push', number: 9 })).toBe(false)
+    expect(matchesText('-DIP-15', dip)).toBe(false)
+    expect(matchesText('-"DIP-15"', dip)).toBe(false)
+    expect(matchesText('-DIP-15', other)).toBe(true)
+    expect(matchesText('dip -dashpay', other)).toBe(true)
+    expect(matchesText('dip -dashpay', dip)).toBe(false)
+    expect(matchesText('-"two words"', other)).toBe(false)
+    expect(matchesText('-"two words"', dip)).toBe(true)
+    expect(matchesText('-#3', dip)).toBe(false)
+    expect(matchesText('-#3', other)).toBe(true)
   })
   it('looks in titles and bodies by default, and in one of them with in: (QW-020)', () => {
     const r = { title: 'Crash on start', number: 4, body: 'The HMAC check fails.' }
@@ -424,8 +446,13 @@ describe('emptyIssuesBody (L-37)', () => {
     expect(emptyIssuesBody(false, 'open', null)).toBe('No issue is open right now.')
   })
 
-  it('keeps the filtered and closed-tab lines', () => {
-    expect(emptyIssuesBody(true, 'open', 2)).toBe('Try fewer filters.')
+  it('keeps the closed-tab line, and a search that matches none in its tab points at the others (QW3-051)', () => {
+    expect(emptyIssuesBody(true, 'open', 2)).toBe('None is open; 2 closed issues match.')
+    expect(emptyIssuesBody(true, 'open', 1)).toBe('None is open; 1 closed issue matches.')
+    expect(emptyIssuesBody(true, 'closed', 0, 1_200)).toBe('None is closed; 1,200 open issues match.')
+    expect(emptyIssuesBody(true, 'open', null)).toBe('Try fewer filters, or search every state.')
+    expect(emptyIssuesBody(true, 'open', 0)).toBe('Try fewer filters, or search every state.')
+    expect(emptyIssuesBody(true, 'all', 3, 2)).toBe('Try fewer filters.')
     expect(emptyIssuesBody(false, 'closed', 0)).toBe('Nothing has been closed yet.')
   })
 })

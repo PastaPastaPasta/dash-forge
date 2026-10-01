@@ -253,8 +253,10 @@ describe('searchRepos (the repo.name index)', () => {
       ['name', '<', 'riq'],
     ])
     expect(c?.orderBy).toEqual([['name', 'asc']])
-    // An ascending page carries no push lookup (a lookup must walk the page's direction).
-    expect(c?.subQueries.map((s) => s.documentType)).toEqual(['star', 'issue', 'domain'])
+    // An ascending page reads its repos' pushes too (QW3-041), its lookup walking ascending as
+    // the page does (a lookup must walk the page's direction).
+    expect(c?.subQueries.map((s) => s.documentType)).toEqual(['star', 'issue', 'domain', 'packManifest'])
+    expect(c?.subQueries[3]?.orderBy?.[0]).toEqual(['repoId', 'asc'])
     expect(cachedDpnsName(NET, OWNER_B)).toBe('burntsushi.dash')
   })
 

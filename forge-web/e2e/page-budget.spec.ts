@@ -220,6 +220,69 @@ test.describe('page request budget (S-1)', () => {
 })
 
 /**
+ * The browse index on a large repo (QW3-001), on the dash mirror: a cold code page reads the
+ * chunks of its index that hold the rows of the objects it shows, not the whole index. dash's is
+ * 9.65 MB in 657 chunk documents; every cold home, tree, file or log page read all of them before
+ * its first row (80-160 s on a slow devnet). Measured on bonsia (2026-09-30): the home 13 chunk
+ * documents in all, the branch list 42 (most of them its tips' commits). The budgets are a few
+ * times that, so a resent query passes and a return of the whole-index read (657 and up) fails.
+ *
+ * Run where the dash mirror is: bonsia, or elsewhere with its owner in `E2E_SHOWCASE_DASHPAY`.
+ */
+const DASH_HOME_CHUNK_DOCS = 60
+const DASH_BRANCHES_CHUNK_DOCS = 120
+
+/** Chunk documents `page` asks DAPI for from now on (resends included), by summing the `seq in` lists. */
+function recordChunkDocs(page: Page): () => number {
+  let docs = 0
+  page.on('request', (r: Request) => {
+    if (DAPI_METHOD.exec(r.url())?.[1] !== 'getDocuments') return
+    const q = decodeDocumentsRequest(r.postDataBuffer())
+    if (q?.documentType === 'chunk') docs += q.where.find((w) => w.field === 'seq')?.inCount ?? 0
+  })
+  return () => docs
+}
+
+test.describe('the browse index on the dash mirror (QW3-001)', () => {
+  test.describe.configure({ timeout: 240_000 })
+
+  test('bi-1. a cold home and branch list read a sliver of the 657-chunk index', async ({ browser }) => {
+    const dash = await showcaseRepo('DASHPAY', 'dash').catch(() => null)
+    test.skip(dash === null, `the dash mirror is not imported on ${E2E_DEVNET}`)
+    if (dash === null) return
+
+    const context = await browser.newContext()
+    const page = await context.newPage()
+    const { errors } = collectPageErrors(page)
+    const chunkDocs = recordChunkDocs(page)
+    const dapi = recordDapi(page)
+    await page.goto(repoUrl('', '', dash), { waitUntil: 'domcontentloaded' })
+    await waitForRepoResolved(page)
+    await expect(fileRows(page).first()).toBeVisible({ timeout: 90_000 })
+    await expect(page.locator('section[aria-label=README]')).toBeVisible({ timeout: 90_000 })
+    await settle(page)
+    test.info().annotations.push({ type: 'dapi', description: `dash cold home: ${chunkDocs()} chunk documents, ${dapi.all().length} requests ${summary(dapi.all())}` })
+    expect(errors, errors.join('\n')).toEqual([])
+    expect(chunkDocs()).toBeLessThanOrEqual(DASH_HOME_CHUNK_DOCS)
+    await shot(page, 'bi-01-dash-home-cold')
+    await context.close()
+
+    // The branch list: every row's tip commit date, the index rows for them read side by side.
+    const fresh = await browser.newContext()
+    const list = await fresh.newPage()
+    const listDocs = recordChunkDocs(list)
+    await list.goto(repoUrl('branches', '', dash), { waitUntil: 'domcontentloaded' })
+    await waitForRepoResolved(list)
+    await expect(list.locator('[data-testid=ref-updated][data-source=commit]').first()).toBeVisible({ timeout: 90_000 })
+    await settle(list)
+    test.info().annotations.push({ type: 'dapi', description: `dash cold branch list: ${listDocs()} chunk documents` })
+    expect(listDocs()).toBeLessThanOrEqual(DASH_BRANCHES_CHUNK_DOCS)
+    await shot(list, 'bi-02-dash-branches-cold')
+    await fresh.close()
+  })
+})
+
+/**
  * The issue list on a large repo (QW2-002), on the dash mirror: every state tab, cold, within
  * S-1. The list used to read every issue whose tab was not full (the Open tab's 10 of 320 issues:
  * all four chunks) and the Closed tab every close transition before its first row; it now reads

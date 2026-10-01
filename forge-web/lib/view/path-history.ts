@@ -383,11 +383,11 @@ async function listedAt(reader: PrefixReader, walker: ObjectReader, start: strin
   // The list must describe this commit's tree: its newest version is the path's entry here.
   const here = await entryHere()
   if (here === null || !matches(here, newest)) return null
-  const versions = got.versions.map(
-    (v, i): PathVersion => {
-      const entry = i === 0 ? here : resolveEntry(reader, v.mode, v.oidPrefix)
+  const versions = await Promise.all(
+    got.versions.map(async (v, i): Promise<PathVersion> => {
+      const entry = i === 0 ? here : await resolveEntry(reader, v.mode, v.oidPrefix)
       return { oid: v.commit.oid, subject: v.commit.subject, author: { name: v.commit.author, when: v.commit.when }, ...(entry !== undefined ? { entry } : {}) }
-    },
+    }),
   )
   const list: ServedList = { versions, claims: got.versions, complete: got.complete }
   versions.forEach((v, at) => {
@@ -425,8 +425,9 @@ function forgetList(memo: WalkMemo, list: ServedList, path: string): void {
  * reader hash-checks whatever it then reads). Undefined for a directory or a gitlink, or when
  * the prefix does not name exactly one object (the caller reads the trees instead).
  */
-function resolveEntry(reader: PrefixReader, mode: number, prefix: string): string | undefined {
+async function resolveEntry(reader: PrefixReader, mode: number, prefix: string): Promise<string | undefined> {
   if (!isFileMode(mode) || prefix === '') return undefined
-  const found = reader.findByPrefix?.(prefix, 2) ?? []
+  // An index slice that cannot be read leaves it unresolved too.
+  const found = (await reader.findByPrefix?.(prefix, 2).catch(() => undefined)) ?? []
   return found.length === 1 ? `${mode}:${found[0] as string}` : undefined
 }

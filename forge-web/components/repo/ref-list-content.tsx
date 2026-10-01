@@ -46,7 +46,7 @@ export function RefListContent({
   const { prefix, icon: Icon, empty, noun, single } = KIND[kind]
   // Tags are peeled for their commit chips, and every row's tip is read for its date (QW2-023):
   // both through the published browse index, a row at a time as it scrolls into view.
-  const peeler = useTagPeeler(home.repo)
+  const peeler = useTagPeeler(home.repo, { readAhead: kind === 'tags' })
   const tipChip = (tip: string): JSX.Element => {
     // A tag's tip may be a tag object: the chip shows the commit it names (L-02). Keyed by the
     // tip, so a force-moved tag's chip starts over instead of keeping the old commit.

@@ -163,13 +163,19 @@ export async function starBeatFirsts(sdk: EvoSDK, repo: RepoRef, viewer: string)
   return known({ author: await none(sdk, { dataContractId: repo.forge.community, documentTypeName: DOC.starBeat, where: [['$ownerId', '==', viewer]] }) })
 }
 
-/** A new follow by `viewer` (the author subtree of the `byOwner` index). */
-export async function followFirsts(sdk: EvoSDK, community: string, viewer: string): Promise<FirstWrite> {
-  const [author, contract] = await Promise.all([
+/**
+ * A new follow by `viewer` of `target`: the author subtree of the `byOwner` index, and the target's
+ * of `byTarget` (its first follower). `followers`: the target's count the page already read.
+ */
+export async function followFirsts(sdk: EvoSDK, community: string, viewer: string, target: string, followers?: number | null): Promise<FirstWrite> {
+  const [author, targetFirst, contract] = await Promise.all([
     none(sdk, { dataContractId: community, documentTypeName: DOC.follow, where: [['$ownerId', '==', viewer]] }),
+    typeof followers === 'number'
+      ? Promise.resolve(followers === 0)
+      : none(sdk, { dataContractId: community, documentTypeName: DOC.follow, where: [['identityId', '==', target]] }),
     contractFirst(sdk, viewer, community),
   ])
-  return known({ author, contract })
+  return known({ author, target: targetFirst, contract })
 }
 
 /** A new review on a PR. `prHasReviews`: what the page already read. */
@@ -197,13 +203,14 @@ export function previewRepoCreate(
       previewCreate('repo', { name: i.name, visibility: 'private', ...(i.description ? { description: i.description } : {}) }, firsts.first),
       previewCreate('maintainer', {}, firsts.rest),
       previewCreate('repoKey'),
-      previewCreate('config', { enc: new Uint8Array(80), epoch: 0, backend: { mode: 0 } }, firsts.rest),
+      previewCreate('config', { enc: new Uint8Array(80), epoch: 0, backend: { mode: 0 } }, { ...firsts.rest, repo: true }),
     ])
   }
   return sumPreviews([
     previewCreate('repo', { ...i, visibility: 'public' }, firsts.first),
     previewCreate('maintainer', {}, firsts.rest),
-    previewCreate('config', { defaultBranch: i.defaultBranch ?? 'main' }, firsts.rest),
+    // A new repo's first config builds its config subtree (QW3-037).
+    previewCreate('config', { defaultBranch: i.defaultBranch ?? 'main' }, { ...firsts.rest, repo: true }),
   ])
 }
 

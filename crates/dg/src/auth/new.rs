@@ -273,8 +273,7 @@ fn backup_ceremony(screen: &mut dyn std::io::Write, words: &Secret, to: WordsTo)
     )?;
     for p in positions {
         for attempt in 0..3 {
-            let got = rpassword::prompt_password(format!("  word #{}: ", p + 1))
-                .context("reading a word")?;
+            let got = crate::prompt::read_hidden(format!("  word #{}: ", p + 1), "reading a word")?;
             if got.trim().eq_ignore_ascii_case(list[p]) {
                 break;
             }

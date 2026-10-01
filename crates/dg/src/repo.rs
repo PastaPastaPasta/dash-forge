@@ -51,7 +51,9 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
         RepoCommand::Unwatch { repo } => watch(ctx, repo, false).await,
         RepoCommand::Topic { repo, add, remove } => topic(ctx, repo, add, remove).await,
         RepoCommand::View { repo } => Box::pin(view(ctx, repo)).await,
-        RepoCommand::List { owner } => list(ctx, owner.as_deref()).await,
+        RepoCommand::List { owner_arg, owner } => {
+            list(ctx, owner_arg.as_deref().or(owner.as_deref())).await
+        }
         RepoCommand::Backend(RepoBackendCommand::Set { repo, mode }) => {
             backend_set(ctx, repo, mode.mode(), mode.label()).await
         }
@@ -217,11 +219,14 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
             .map(|m| m.uris.len() as u64)
             .collect();
     let packs = manifest_uris.len();
+    // Its branches and tags: a mirror's PR heads stay the parent's (QW3-009).
     let refs = svc
         .read_refs(&parent)
         .await
         .context("reading the parent's refs")?
-        .len();
+        .iter()
+        .filter(|(name, _)| forge_core::fork::forkable_ref(name))
+        .count();
     let estimate = fork_estimate(&manifest_uris, refs as u64);
     // As on GitHub, the fork takes the parent's default branch (QW2-013) and description
     // (QW2-062; it was "fork of <parent>", which `forkOf` already records).
@@ -239,7 +244,7 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
         );
     }
     ctx.confirm_or_cancel(&format!("Fork {}?", parent.display()))?;
-    let opts = fork_opts(slug, default_branch, description);
+    let opts = fork_opts(slug, default_branch, &description);
     let result = forge_core::fork::fork_repo(
         &client,
         &identity,
@@ -255,13 +260,14 @@ async fn fork(ctx: &Ctx, repo: &str, name: Option<&str>) -> Result<()> {
 
 /// A fork's create options: the parent's default branch (`main` when it has none) and its
 /// description.
-fn fork_opts(slug: String, default_branch: Option<String>, description: String) -> CreateRepoOpts {
+fn fork_opts(slug: String, default_branch: Option<String>, description: &str) -> CreateRepoOpts {
     let base = CreateRepoOpts::public(slug);
     CreateRepoOpts {
         default_branch: default_branch
             .filter(|b| !b.is_empty())
             .unwrap_or(base.default_branch.clone()),
-        description,
+        // A fork of a mirror is no mirror (QW3-011): the copied description loses its marker.
+        description: forge_core::fork::without_mirror_marker(description),
         ..base
     }
 }
@@ -728,17 +734,24 @@ mod tests {
     /// QW2-013 / QW2-062: a fork takes the parent's default branch and description.
     #[test]
     fn a_fork_takes_the_parents_default_branch_and_description() {
-        let opts = fork_opts("proj".into(), Some("develop".into()), "A project".into());
+        let opts = fork_opts("proj".into(), Some("develop".into()), "A project");
         assert_eq!(opts.default_branch, "develop");
         assert_eq!(opts.description, "A project");
         assert_eq!(opts.visibility, Visibility::Public);
-        let bare = fork_opts("proj".into(), None, String::new());
+        let bare = fork_opts("proj".into(), None, "");
         assert_eq!(bare.default_branch, "main");
         assert_eq!(bare.description, "");
         assert_eq!(
-            fork_opts("proj".into(), Some(String::new()), String::new()).default_branch,
+            fork_opts("proj".into(), Some(String::new()), "").default_branch,
             "main"
         );
+        // QW3-011: a fork of a mirror does not claim to be one.
+        let of_mirror = fork_opts(
+            "dips".into(),
+            None,
+            "Dash Improvement Proposals (mirror of github.com/dashpay/dips)",
+        );
+        assert_eq!(of_mirror.description, "Dash Improvement Proposals");
     }
 
     /// QW2-020: a fork of a parent with two packs and two refs was quoted 0.0032 DASH and

@@ -102,7 +102,7 @@ const FIELDS = leaves(
 )
 const KEY_INPUT = ['repoId', 'key', 'epoch']
 const SEAL_PACK = leaves(...KEY_INPUT, 'fileId', 'plaintextMod251', 'plaintextHex')
-const OPEN_CONTEXT = object({ keys: values(LEAF), anchors: values(leaves('id', 'height')), members: LEAF, burned: LEAF })
+const OPEN_CONTEXT = object({ keys: values(LEAF), anchors: values(leaves('id', 'height', 'statedHeight')), members: LEAF, burned: LEAF })
 const RELEASE_FIELDS = leaves(
   'tag', 'name', 'notes', 'targetOid', 'prerelease', 'draft', 'yanked', 'unpublished', 'notesContinue',
   'importedAuthor', 'importedUrl', 'importedCreatedAt', 'assetManifest',
@@ -356,10 +356,12 @@ async function openContextOf(repoId: Uint8Array, c: Obj): Promise<OpenContext> {
   return {
     keys: await keyring(repoId, obj(c, 'keys')),
     anchors: new Map(
-      Object.entries(obj(c, 'anchors')).map(([e, a]) => [
-        Number(e),
-        { id: privateId(str(a as Obj, 'id')), height: num(a as Obj, 'height') },
-      ]),
+      Object.entries(obj(c, 'anchors')).map(([e, v]) => {
+        const a = v as Obj
+        // stated(e) defaults to the anchor's own height: the anchor first stated its key
+        const statedHeight = num(a, a['statedHeight'] === undefined ? 'height' : 'statedHeight')
+        return [Number(e), { id: privateId(str(a, 'id')), height: num(a, 'height'), statedHeight }]
+      }),
     ),
     members: new IdSet(Array.isArray(members) ? members.map((m) => privateId(String(m))) : []),
     burned: new Set(Array.isArray(burned) ? burned.map(Number) : []),
@@ -676,7 +678,7 @@ async function releaseSeal(inp: Obj): Promise<Json> {
     expect(prod.enc.length).toBe(s.enc.length)
     const ctx: OpenContext = {
       keys: ring,
-      anchors: new Map([[keys.epoch, { id: new Uint8Array(32), height: 1 }]]),
+      anchors: new Map([[keys.epoch, { id: new Uint8Array(32), height: 1, statedHeight: 1 }]]),
       members: new IdSet([owner]),
     }
     const opened = await openRelease(ctx, {

@@ -18,13 +18,14 @@ import { pullBase, useComparisonSides } from '@/components/repo/pull-diff'
  * Where the PR page puts the merge box on `tab` ({@link mergeBoxSlot}), and the callback that
  * tells it a merge is running (pass it as `extras.onRunning`).
  */
-export function useMergeSlot(tab: string, draft: boolean): { slot: 'shown' | 'kept' | 'none'; onRunning: (running: boolean) => void } {
+export function useMergeSlot(tab: string, draft: boolean): { slot: 'shown' | 'kept' | 'none'; running: boolean; onRunning: (running: boolean) => void } {
   const [running, setRunning] = useState(false)
   // The tab a merge last ran on: its outcome stays on screen there until the merger moves on.
   const [ranOn, setRanOn] = useState<string | null>(null)
   if (running && ranOn !== tab) setRanOn(tab)
   return {
     slot: mergeBoxSlot({ onConversation: tab === 'conversation', draft, running, ranOnPage: ranOn !== null, ranOnThisTab: ranOn === tab }),
+    running,
     onRunning: setRunning,
   }
 }
@@ -74,6 +75,12 @@ export interface MergeExtras {
   readonly unmetRules?: readonly string[]
   /** The merger may bypass them (a maintainer). */
   readonly canBypass?: boolean
+  /** The source branch is past the PR head: the merge waits for "Update PR head" (QW3-013). */
+  readonly branchAhead?: { readonly branch: string; readonly tip: string } | null
+  /** Re-read the source branch right before merging: why not to, or null. */
+  readonly checkSourceBranch?: () => Promise<string | null>
+  /** "Delete the branch after merging" deleted it. */
+  readonly onBranchDeleted?: () => void
 }
 
 function MergeReaders({
@@ -119,6 +126,9 @@ function MergeReaders({
       {...(extras.active !== undefined ? { active: extras.active } : {})}
       {...(extras.unmetRules !== undefined ? { unmetRules: extras.unmetRules } : {})}
       {...(extras.canBypass !== undefined ? { canBypass: extras.canBypass } : {})}
+      {...(extras.branchAhead !== undefined ? { branchAhead: extras.branchAhead } : {})}
+      {...(extras.checkSourceBranch !== undefined ? { checkSourceBranch: extras.checkSourceBranch } : {})}
+      {...(extras.onBranchDeleted !== undefined ? { onBranchDeleted: extras.onBranchDeleted } : {})}
     />
   )
 }

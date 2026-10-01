@@ -134,7 +134,7 @@ describe('substituteFiles, as git archive expands', () => {
   }
   async function expand(files: Record<string, string>, opts: { tagged?: boolean; when?: number } = {}): Promise<Record<string, string>> {
     const { s, tip, tags } = repo(files, opts)
-    const reader = Object.assign(s.reader(), { findByPrefix: findIn(s), objectCount: s.objects.size })
+    const reader = Object.assign(s.reader(), { findByPrefix: async (p: string, limit?: number) => findIn(s)(p, limit), objectCount: s.objects.size })
     const plan = await planArchive(reader, tip)
     const entries = await readZipFiles(reader, plan.files, () => undefined)
     await substituteFiles(reader, plan, entries, { tags, heads: [{ name: 'main', oid: tip }] })
@@ -310,7 +310,7 @@ describe.skipIf(!HAVE_GIT)('the browser zip against git archive --format=zip', (
       const want = new Uint8Array(git(dir, ['archive', '--format=zip', '--prefix=p/', tip]).bytes)
 
       // The browser's pipeline, as the clone box runs it.
-      const reader = Object.assign(s.reader(), { findByPrefix: findIn(s), objectCount: s.objects.size })
+      const reader = Object.assign(s.reader(), { findByPrefix: async (p: string, limit?: number) => findIn(s)(p, limit), objectCount: s.objects.size })
       const plan = await planArchive(reader, tip)
       const entries = await readZipFiles(reader, plan.files, () => undefined)
       await substituteFiles(reader, plan, entries, { tags: [{ name: 'v0.1', oid: tagObj }], heads: [] })

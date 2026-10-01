@@ -1168,6 +1168,7 @@ pub(crate) async fn existing_copies(
     }))
 }
 
+#[allow(clippy::too_many_lines)] // one flow: set the policy, then say what it leaves behind
 async fn use_profiles(
     ctx: &Ctx,
     list: &str,
@@ -1207,6 +1208,13 @@ async fn use_profiles(
     } else {
         existing_copies(ctx, &resolved).await
     };
+    // QW3-072: the repository's public config still names the storage it was created with
+    // (the web's badge); say so when this policy differs.
+    let advertised = if global {
+        None
+    } else {
+        advertised_elsewhere(ctx, &resolved).await
+    };
     ctx.emit(
         json!({
             "storage": names,
@@ -1214,6 +1222,7 @@ async fn use_profiles(
             "platformFallback": resolved.platform_fallback,
             "scope": if global { "global" } else { "repo" },
             "warnings": url_warnings,
+            "advertisedMode": advertised.as_ref().map(|(_, mode)| mode),
             "existingPacks": match &existing {
                 Ok(e) => e.as_ref().map(|e| json!({
                     "repo": e.repo,
@@ -1258,7 +1267,12 @@ async fn use_profiles(
                     );
                 }
             }
-            if !resolved.external.is_empty() {
+            if let Some((repo, mode)) = &advertised {
+                println!(
+                    "note: {repo} still tells readers its packs are on {} (its public config); `dg storage advertise {repo}` records this policy  (one small on-chain config write)",
+                    mode_name(*mode)
+                );
+            } else if !resolved.external.is_empty() {
                 println!(
                     "Tell readers where to look: dg storage advertise <owner>/<repo>  (one small on-chain config write)"
                 );
@@ -1266,6 +1280,40 @@ async fn use_profiles(
         },
     );
     Ok(())
+}
+
+/// What a `config.backend.mode` says, in words.
+fn mode_name(mode: u8) -> &'static str {
+    match mode {
+        0 => "Platform",
+        1 => "IPFS",
+        2 => "S3-compatible storage",
+        _ => "several storages",
+    }
+}
+
+/// The clone's repository and the storage mode its public config advertises, when that is not
+/// what `policy` would advertise. `None` outside a clone, when they agree, or when it cannot
+/// be read quickly (a read only: no identity).
+async fn advertised_elsewhere(ctx: &Ctx, policy: &ResolvedPolicy) -> Option<(String, u8)> {
+    let (_, url) = dash_remote_url()?;
+    let (owner, name) = crate::publish::parse_dash_url(&url)?;
+    let read = async {
+        let client = ctx.connect().await?;
+        let handle = match &name {
+            Some(n) => forge_core::resolve::resolve_named(&client, &owner, n).await?,
+            None => forge_core::resolve::resolve_id(&client, &owner).await?,
+        };
+        let config = forge_core::repo::RepoService::reader(&client)
+            .current_config(&handle)
+            .await?;
+        anyhow::Ok((handle.display(), config.backend_mode))
+    };
+    let (repo, mode) = tokio::time::timeout(std::time::Duration::from_secs(15), read)
+        .await
+        .ok()?
+        .ok()?;
+    (mode != policy.advertised_mode()).then_some((repo, mode))
 }
 
 async fn advertise(ctx: &Ctx, repo: &str, remote: Option<&str>) -> Result<()> {

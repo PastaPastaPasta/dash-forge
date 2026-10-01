@@ -12,7 +12,8 @@
 import { describe, expect, it } from 'vitest'
 
 import { serializeLocator, type IndexedObject } from './indexer'
-import { ObjectLocator, lookupRanged, offsetKey } from './locator'
+import { FANOUT_LEN, ObjectLocator, offsetKey } from './locator'
+import { RangedLocator } from './object-index'
 
 const oid = (n: number): string => n.toString(16).padStart(40, '0')
 
@@ -133,15 +134,18 @@ describe('ObjectLocator.merge', () => {
   })
 })
 
-describe('lookupRanged', () => {
-  // The size-independent path: it never downloads the locator, it fetches the fanout and
-  // one 1/256 slice. It must reach the SAME row as `ObjectLocator.lookup` — a merged
-  // locator holds one row per pack for a duplicated OID, and a binary search can land on
-  // any of them, so it needs the same walk-back to the lowest packRef.
-  const rangeOver = (loc: ObjectLocator) => {
+describe('a ranged lookup (RangedLocator)', () => {
+  // The size-independent path: it never downloads the locator, it reads the fanout and the rows
+  // around the OID. It must reach the SAME row as `ObjectLocator.lookup`: a merged locator holds
+  // one row per pack for a duplicated OID, and a binary search can land on any of them, so it
+  // needs the same walk-back to the lowest packRef.
+  const ranged = (loc: ObjectLocator): RangedLocator => {
     const bytes = loc.asBytes()
-    return (start: number, end: number): Promise<Uint8Array> =>
-      Promise.resolve(bytes.subarray(start, end))
+    return RangedLocator.open(bytes.subarray(0, FANOUT_LEN), {
+      sizeBytes: bytes.length,
+      readRange: async (start, end) => bytes.slice(start, end),
+      loadWhole: async () => bytes,
+    }) as RangedLocator
   }
 
   it('agrees with lookup on a duplicated OID, whichever row the search lands on', async () => {
@@ -151,14 +155,14 @@ describe('lookupRanged', () => {
     const merged = ObjectLocator.merge(parts)
     expect(merged.count).toBe(3)
 
-    const ranged = await lookupRanged(rangeOver(merged), bytes(oid(0x10)))
-    expect(ranged).toEqual(merged.lookup(bytes(oid(0x10))))
-    expect(ranged).toMatchObject({ packRef: 0, offset: 100 })
+    const found = await ranged(merged).lookup(bytes(oid(0x10)))
+    expect(found).toEqual(merged.lookup(bytes(oid(0x10))))
+    expect(found).toMatchObject({ packRef: 0, offset: 100 })
   })
 
   it('still returns null for an absent OID', async () => {
     const merged = ObjectLocator.merge([fragment(0, [[0x10, 100]]), fragment(1, [[0x20, 200]])])
-    expect(await lookupRanged(rangeOver(merged), bytes(oid(0x30)))).toBeNull()
+    expect(await ranged(merged).lookup(bytes(oid(0x30)))).toBeNull()
   })
 })
 

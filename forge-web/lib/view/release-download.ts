@@ -249,7 +249,7 @@ export type ListStanding = Pick<OpenContext, 'anchors' | 'burned'>
 /**
  * Whether a sealed asset list was uploaded under an old key (§16.5, §8.2; forge-core
  * `late_asset_lists`): its first copy (`copies`: every kind-4 `packManifest` of its hash; a later
- * copy re-stores the same bytes) was recorded after `H(next(e)) + GRACE_BLOCKS` for the epoch `e`
+ * copy re-stores the same bytes) was recorded after `stated(next(e)) + GRACE_BLOCKS` for the epoch `e`
  * its sealed header (`sealed`) names, or under a burned epoch. It stays readable (the revision's
  * `enc` commits to it), but a member removed by the rotation may read it: maintainers are warned.
  */

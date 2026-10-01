@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ResolvedRef } from '../repo'
-import { isLive, matchesRefQuery, refParamFor, selectedTip, selectRef, splitRefPath } from './refs'
+import { isLive, matchesRefQuery, pinnedAt, refParamFor, selectedTip, selectRef, splitRefPath } from './refs'
 
 function ref(refName: string, oid = 'a'.repeat(40)): ResolvedRef {
   return { refName, refNameHash: 'x', state: { state: 'resolved', oid, author: 'id', createdAt: 1 } }
@@ -140,5 +140,23 @@ describe('splitRefPath', () => {
     expect(splitRefPath(slashed, slashTags, 'feat', 'other/doc')).toBeNull()
     expect(splitRefPath(slashed, slashTags, 'feat', '')).toBeNull()
     expect(splitRefPath(slashed, slashTags, '', 'feat/flatpak')).toBeNull()
+  })
+})
+
+describe('pinnedAt (QW3-043)', () => {
+  const A = 'a4d46dd2'.padEnd(40, '0')
+  const B = 'b'.repeat(40)
+  const ref = (refName: string, oid: string): ResolvedRef => ({ refName, refNameHash: '', state: { state: 'resolved', oid, author: 'x', createdAt: 1 } })
+  const branches = [ref('refs/heads/feature', A), ref('refs/heads/master', A), ref('refs/heads/old', B)]
+
+  it('names the ref whose tip a full commit id is, the default branch first', () => {
+    expect(pinnedAt(A, branches, [], 'master')?.name).toBe('master')
+    expect(pinnedAt(B, branches, [ref('refs/tags/v1', B)], 'master')?.name).toBe('old')
+    expect(pinnedAt('c'.repeat(40), branches, [ref('refs/tags/v1', 'c'.repeat(40))], 'master')?.name).toBe('v1')
+  })
+
+  it('matches no short id and no commit that is not a tip', () => {
+    expect(pinnedAt('a4d46dd', branches, [], 'master')).toBeUndefined()
+    expect(pinnedAt('d'.repeat(40), branches, [], 'master')).toBeUndefined()
   })
 })

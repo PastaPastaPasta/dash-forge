@@ -25,6 +25,7 @@ import { authSdk, sleep } from '../sdk/facade'
 import { timed } from '../step-timing'
 import { deriveAt, deriveMasterKey, identityKeyPath, isValidMnemonic, invalidMnemonicMessage, normalizeMnemonic, wasmNetwork } from './hd'
 import { parsePrivateKey } from './wif'
+import { WrongMasterKeyError, assertMasterKeyOf, sendIdentityUpdate, shortId } from './limited-key'
 import { VaultLockedError, storeEncryptionKey, storedEncryptionKeyId, unlockScope, unlockedSecret, withEncryptionKey } from './vault'
 
 /** The step-timing flow of enabling private repos at sign-in (L-20). */
@@ -267,14 +268,10 @@ export async function registerEncryptionKey(
   const identity = await authSdk(sdk).identities.fetch(identityId)
   if (!identity) throw new Error(`identity ${identityId} not found`)
   const masterWif = identityIndex === 0 ? (await deriveMasterKey(mnemonic, network)).wif : (await deriveAt(mnemonic, identityKeyPath(network, 0, identityIndex), network)).wif
+  await assertMasterKeyOf(identity, identityId, masterWif, network).catch((e: unknown) => {
+    throw e instanceof WrongMasterKeyError ? new WrongMasterKeyError(identityId, `These recovery words don't belong to identity ${shortId(identityId)} (the one signed in here). Check the words.`) : e
+  })
   const master = PrivateKey.fromWIF(masterWif)
-  const masterBytes = master.toBytes()
-  const isMaster = identity.publicKeys.some((k) => k.securityLevelNumber === 0 && k.disabledAt === undefined && safeValidate(k, masterBytes, network))
-  masterBytes.fill(0)
-  if (!isMaster) {
-    master.free()
-    throw new Error("that recovery phrase does not hold this identity's master key")
-  }
   const keyId = Math.max(...identity.publicKeys.map((k) => k.keyId)) + 1
   const secret = await deriveSecret(mnemonic, network, keyId, identityIndex)
   const fresh = PrivateKey.fromBytes(secret, wasmNetwork(network))
@@ -290,7 +287,7 @@ export async function registerEncryptionKey(
       data: fresh.getPublicKey().toBytes(),
     })
     try {
-      await authSdk(sdk).identities.update({ identity, addPublicKeys: [key], signer })
+      await sendIdentityUpdate(sdk, identityId, () => authSdk(sdk).identities.update({ identity, addPublicKeys: [key], signer }))
     } catch (e) {
       if (/revision|duplicate|already exists|key id/i.test(String((e as { message?: unknown })?.message ?? e))) {
         throw new Error('another key was registered on this identity at the same moment; try again')
@@ -314,14 +311,6 @@ export async function registerEncryptionKey(
     }
   } finally {
     secret.fill(0)
-  }
-}
-
-function safeValidate(k: { validatePrivateKey(b: Uint8Array, n: string): boolean }, bytes: Uint8Array, network: Network): boolean {
-  try {
-    return k.validatePrivateKey(bytes, network)
-  } catch {
-    return false
   }
 }
 

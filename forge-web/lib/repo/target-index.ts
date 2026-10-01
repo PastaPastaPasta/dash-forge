@@ -33,12 +33,13 @@ import { NETWORKS, type Network } from '../constants'
 import { compositeOf, countsAt, docsAt, queryComposite, siblingOf, type CompositeResult, type CompositeSub } from '../sdk/composite'
 import { IncompleteReadError, queryAllDocuments, queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from '../sdk'
 import { statusOfCode } from '../rules/transition'
-import { DOC, asIdentifierString, repoKey, str, type RepoRef } from './contract'
+import { DOC, asIdentifierString, num, repoKey, str, type RepoRef } from './contract'
 import { EMPTY_LOG, feedQuery, groupFeed, onRepoInvalidated, readRepoFeedFrom, repoEpoch, sharedRepoCounts, sharedRepoFeed, toLog, type TargetLog } from './issues'
 import { newestLabels, type LabelDef } from './labels'
 import { HiddenTally, gateFor, type ContentGate } from './private-content'
 import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
+import { newScan, readScanPage, scanCodes, scanFloor, settledCode, type StateScan } from './state-scan'
 import { readStateCodes, type readRepoCounts } from './transitions'
 
 /** The repo's proved issue and PR totals by state ({@link repoCountsOf}). */
@@ -77,6 +78,9 @@ interface Walk {
 /** What every row carries besides its view: its comment count (null: not counted), whether its labels are verified. */
 export interface RowExtras {
   readonly id: string
+  /** Its dense number (issues and PRs share one sequence, in creation order). */
+  readonly number: number
+  readonly createdAt: number
   readonly comments: number | null
   /** False when the row's member events were not read completely: its labels and assignees are unverified. */
   readonly stateComplete: boolean
@@ -117,6 +121,8 @@ export interface ListIndex<Row extends RowExtras> {
   readonly epoch: number
   /** The feed read, once started. */
   feedRead?: Promise<Map<string, TargetLog> | null>
+  /** The feed ran past a bounded read (the issue list's pinned issues): not read again for them. */
+  feedLong?: boolean
   readonly labels: LabelDef[]
   readonly rows: Map<string, Row>
   /** What each row was built from. */
@@ -127,6 +133,12 @@ export interface ListIndex<Row extends RowExtras> {
   readonly unverified: Set<string>
   /** Ids proven not to be (well-formed, shown) rows of this type: the other type, malformed, hidden. */
   readonly notRows: Set<string>
+  /** The loaded rows' ids by number. */
+  readonly byNumber: Map<number, string>
+  /** Numbers proven not to be (shown) rows of this type: the other type's, or hidden rows'. */
+  readonly notNumbers: Set<number>
+  /** The repo's state scan, once a sparse tab used it (`./state-scan`). */
+  scan?: StateScan
   /** Rows left out: not well-formed for the repo, or (private) not readable with the session keys. */
   readonly hidden: HiddenTally
   /** How many of the hidden rows are open (their state code): the Open count leaves them out. */
@@ -329,13 +341,13 @@ async function recordChunk<Row extends RowExtras>(
   codes.catch(() => undefined)
   const counts = countsAt(res, 0)
   const fresh = new Map<string, PlainDocument>()
-  const hidden: { id: string; reason: Parameters<HiddenTally['add']>[0] }[] = []
+  const hidden: { id: string; reason: Parameters<HiddenTally['add']>[0]; number: number }[] = []
   for (const raw of docs) {
     const id = str(raw, '$id')
     if (id === '' || index.notRows.has(id) || index.rows.has(id) || fresh.has(id) || hidden.some((h) => h.id === id)) continue
     const admitted = await index.gate.admit(index.type, raw)
     if (admitted.ok) fresh.set(id, admitted.doc)
-    else hidden.push({ id, reason: admitted.reason })
+    else hidden.push({ id, reason: admitted.reason, number: num(raw, 'number') })
   }
   const code = await codes
   // The rows' member events: the feed's, once read; else the chunk's own lookup when it is
@@ -351,14 +363,16 @@ async function recordChunk<Row extends RowExtras>(
   // Every read is done: record.
   for (const { src, row } of built) {
     index.rows.set(row.id, row)
+    index.byNumber.set(row.number, row.id)
     index.sources.set(row.id, src)
     if (logs === null) {
       index.unhydrated.add(row.id)
       index.unverified.add(row.id)
     }
   }
-  for (const { id, reason } of hidden) {
+  for (const { id, reason, number } of hidden) {
     index.notRows.add(id)
+    if (number > 0) index.notNumbers.add(number)
     index.hidden.add(reason)
     if (statusOfCode(code.get(id) ?? 0).open) index.hiddenOpen++
   }
@@ -389,17 +403,26 @@ function advance<Row extends RowExtras>(index: ListIndex<Row>, walk: Walk, docs:
   if (walk.done && walk.complete) index.all = true
 }
 
-/** Read one chunk (`page`, up to `limit`) with its comment counts and names, and record it. */
+/** What a reader already knows of some documents' state codes (a state scan's), by id; the rest are summed. */
+export type KnownCodes = (docs: readonly PlainDocument[]) => ReadonlyMap<string, number>
+
+/**
+ * Read one chunk (`page`, up to `limit`) with its comment counts and names, and record it. Its
+ * states are one proved sum, but for those `known` already proves (none summed when it proves all).
+ */
 async function readChunk<Row extends RowExtras>(
   sdk: EvoSDK,
   index: ListIndex<Row>,
   page: DocumentQuery,
   limit: number,
-  { walk = null, keep }: { walk?: Walk | null; keep?: (d: PlainDocument) => boolean } = {},
+  { walk = null, keep, known }: { walk?: Walk | null; keep?: (d: PlainDocument) => boolean; known?: KnownCodes } = {},
 ): Promise<PlainDocument[]> {
   const res = await queryComposite(sdk, compositeOf(page, limit, chunkSubs(index.repo, index.network)))
   const docs = keep ? res.page.filter(keep) : res.page
-  await recordChunk(sdk, index, res, docs, walk)
+  const have = known?.(docs) ?? new Map<string, number>()
+  const rest = docs.filter((d) => !have.has(str(d, '$id')))
+  const codes = rest.length === 0 ? Promise.resolve(new Map(have)) : codesOf(sdk, index.repo, rest).then((m) => new Map([...have, ...m]))
+  await recordChunk(sdk, index, res, docs, walk, codes)
   return docs
 }
 
@@ -451,6 +474,8 @@ async function loadListIndex<Row extends RowExtras>(
     unhydrated: new Set(),
     unverified: new Set(),
     notRows: new Set(),
+    byNumber: new Map(),
+    notNumbers: new Set(),
     hidden: new HiddenTally(),
     hiddenOpen: 0,
     walks: { desc: newWalk(), asc: newWalk() },
@@ -518,6 +543,28 @@ export function resolveIds<Row extends RowExtras>(sdk: EvoSDK, index: ListIndex<
         keep: (d) => asIdentifierString(d['repoId']) === index.repo.repoId,
       })
       for (const id of batch) if (!index.rows.has(id)) index.notRows.add(id)
+    }
+  })
+}
+
+/**
+ * Resolve rows by number (the `number` index, `number in` composites of up to 100): the numbers a
+ * state scan names but no loaded chunk holds. A number with no document of this type is the other
+ * type's (or hidden), recorded so it is not asked for again.
+ */
+export function resolveNumbers<Row extends RowExtras>(sdk: EvoSDK, index: ListIndex<Row>, numbers: Iterable<number>, known?: KnownCodes): Promise<void> {
+  const wanted = [...numbers]
+  return serial(index, async () => {
+    const todo = [...new Set(wanted)].filter((n) => !index.byNumber.has(n) && !index.notNumbers.has(n)).sort((a, b) => a - b)
+    if (index.all) {
+      for (const n of todo) index.notNumbers.add(n)
+      return
+    }
+    const source = repoSource(index.repo)
+    for (let i = 0; i < todo.length; i += CHUNK) {
+      const batch = todo.slice(i, i + CHUNK)
+      await readChunk(sdk, index, source.repoQuery(DOC[index.type], { where: [['number', 'in', batch]], orderBy: [['number', 'asc']] }), batch.length, known ? { known } : {})
+      for (const n of batch) if (!index.byNumber.has(n)) index.notNumbers.add(n)
     }
   })
 }
@@ -648,6 +695,44 @@ export function candidatesCheaper<Row extends RowExtras>(index: ListIndex<Row>, 
   return 3 * Math.ceil(tab / CHUNK) < 2 * chunks
 }
 
+/** Of the repo's open issues and PRs, the share that are `typeOpen` (one type's open rows), for {@link ScanTab.openShare}. */
+export function openShare(counts: RepoCounts, typeOpen: number): number {
+  const all = counts.issuesOpen + counts.prsOpen
+  return all > 0 ? Math.max(typeOpen / all, 0.01) : 1
+}
+
+/**
+ * Whether an unfiltered state tab is cheaper to read through the state scan ({@link scanSelect})
+ * than by walking its rows, by the proved counts: walking reads two heavy requests per 100 rows of
+ * this type until the page's rows are held; the scan one light request per 100 state changes
+ * until it covers them, plus a read per 100 rows it names (for the Open tab, numbers no change
+ * names: every open row of either type among them). A dense tab fills from a chunk or two; the
+ * Open PRs of a repo with thousands of merged ones (QW3-002) are found by the scan. A public repo
+ * only (a private repo's counts include rows this reader cannot open), newest or oldest first.
+ */
+export function scanCheaper<Row extends RowExtras>(
+  index: ListIndex<Row>,
+  walk: PageWalk,
+  tab: number,
+  counts: RepoCounts,
+  openTab: boolean,
+): boolean {
+  if (index.repo.visibility === 'private' || walk.walkAll || index.all || tab <= 0) return false
+  const typeTotal = index.type === 'issue' ? counts.issues : counts.patches
+  const transitions = counts.transitions
+  if (transitions <= 0) return false
+  const need = walk.direction === 'desc' ? Math.min(walk.want + 1, tab) : tab
+  const walked = index.walks[walk.direction].ids.length
+  const walkCost = 2 * Math.max(0, Math.ceil((need * typeTotal) / tab / CHUNK) - Math.floor(walked / CHUNK))
+  // A page the walk already holds costs nothing more: never scan for it.
+  if (walkCost === 0) return false
+  const scan = index.scan
+  // A scan that has read every change only names and reads the page's rows.
+  const pages = scan?.done && scan.complete ? 0 : Math.max(0, Math.ceil((need * transitions) / tab / CHUNK) - (scan?.pages ?? 0))
+  const share = openTab ? openShare(counts, Math.min(tab, index.type === 'issue' ? counts.issuesOpen : counts.prsOpen)) : 1
+  return pages + Math.ceil(need / share / CHUNK) < walkCost
+}
+
 /**
  * The rows of every feed target with a member event of `kind` (resolved by id; the other type's
  * targets are skipped), or null when the feed was too large to read, so a caller's answer is
@@ -669,12 +754,25 @@ export function rowsOf<Row extends RowExtras>(index: ListIndex<Row>, ids: Iterab
 
 /** How far a list page read when its answer covers only part of the repo. */
 export interface SearchedOf {
-  /** Rows looked at, newest (or oldest) first. */
+  /**
+   * Rows looked at, newest (or oldest) first; for a state scan (`kind` `scan`), the newest issue
+   * and PR numbers its state changes cover.
+   */
   readonly searched: number
-  /** Rows in the repo, when known. */
+  /** Rows in the repo, when known (a state scan: issues and PRs together). */
   readonly total: number | null
   /** The page stopped at its chunk budget: reading on (the same query again) looks further. */
   readonly more: boolean
+  /**
+   * What was read: rows matched against a search (`rows`, the default), rows sorted by their
+   * comment counts (`sort`), or the state changes a sparse tab finds its rows through (`scan`).
+   */
+  readonly kind?: 'rows' | 'sort' | 'scan'
+  /**
+   * The tab's proved count says rows are still unread: the list reads on by itself (a state
+   * scan), rather than waiting to be asked.
+   */
+  readonly auto?: boolean
 }
 
 /** What a list page's caller may ask besides its query. */
@@ -695,6 +793,12 @@ export interface Selected<Row> {
   readonly searched: number | null
   /** The walk stopped at its chunk budget before the page was full: reading on can find more. */
   readonly more: boolean
+  /** What `searched` counts ({@link SearchedOf.kind}); absent: rows. */
+  readonly kind?: SearchedOf['kind']
+  /** Reading on is the list's own next step ({@link SearchedOf.auto}). */
+  readonly auto?: boolean
+  /** What `searched` is out of, when the selection knows it better than the caller (a scan). */
+  readonly total?: number | null
 }
 
 /**
@@ -784,7 +888,182 @@ export async function selectRows<Row extends RowExtras>(
   const short = !complete && (walk.done || more)
   // Every row the proved count allows is held: a search or sort over them saw them all.
   const searched = !complete && (more || (partial && !holdsAll(rows.length))) ? loaded().length : null
-  return { rows: rows.sort(cmp), complete, short, searched, more }
+  return { rows: rows.sort(cmp), complete, short, searched, more, ...(walkAll ? { kind: 'sort' as const } : {}) }
+}
+
+/** State-scan pages one list load reads at most before it shows what it has and reads on. */
+export const SCAN_PAGES_PER_LOAD = 15
+/** State-scan pages a list reads on by itself at most, over all its loads (then it waits to be asked). */
+export const SCAN_AUTO_PAGES = 200
+/** Scan pages between reads of the candidates they named, when those are not yet expected to fill the page. */
+const RESOLVE_EVERY = 4
+
+/** A sparse tab read through the state scan ({@link scanSelect}). */
+export interface ScanTab<Row> {
+  /** Whether a row in state `code` (`statusOfCode`) is in the tab. */
+  readonly inTab: (code: number) => boolean
+  /** Whether a loaded row is in the tab (its proved state). */
+  readonly matches: (r: Row) => boolean
+  readonly cmp: (a: Row, b: Row) => number
+  /** Newest or oldest first. */
+  readonly direction: Direction
+  /** Rows the page needs (its own and one more, for a next page). */
+  readonly want: number
+  /** How many rows the tab holds in the whole repo (its proved count). */
+  readonly known: number
+  /** The repo's issue and PR numbers run 1..`max` (the proved totals: numbering is dense). */
+  readonly max: number
+  /** This index's type's rows in the repo (its proved total): progress is told in them. */
+  readonly typeTotal: number
+  /** Of the repo's open issues and PRs, the share that are of this index's type (how many unnamed numbers to read per open row expected). */
+  readonly openShare: number
+  readonly onProgress?: (covered: number) => void
+}
+
+/**
+ * A sparse tab's rows through the repo's state scan (`./state-scan`), QW3-002: the Open PRs of a
+ * mirror with thousands of merged ones sit anywhere in its history, and walking every PR above
+ * them costs two heavy reads per 100. The scan reads the repo's state changes newest first (one
+ * light read per 100) and names the tab's candidates among the numbers it covers: a row whose
+ * newest state change puts it in the tab (or whose state the scan cannot settle), and, for a tab
+ * that holds open rows, every number no change names that was created after the watermark (one
+ * never closed). Only those are read, by id or number, each with its proved state sum. Reading
+ * stops when the page is proved:
+ *
+ * - every row the tab's proved count allows is held; or
+ * - the page's last row was created after the scan's watermark: every number above it was too,
+ *   so every state change of theirs is read and every candidate among them is named and read;
+ * - or the scan reached the repo's first state change.
+ *
+ * At most {@link SCAN_PAGES_PER_LOAD} scan pages per call: past that the answer is partial and says
+ * so (`more`, `auto`: the proved count says rows are still missing, so the list reads on).
+ * Candidates are read in batches, once enough of them are expected to be the tab's rows
+ * (`openShare` of the unnamed numbers), not after every scan page.
+ */
+export async function scanSelect<Row extends RowExtras>(sdk: EvoSDK, index: ListIndex<Row>, tab: ScanTab<Row>): Promise<Selected<Row>> {
+  const scan = (index.scan ??= newScan())
+  const kind = index.type === 'issue' ? 0 : 1
+  const openTab = tab.inTab(0) || tab.inTab(8)
+  // The newest-first page needs its own rows and one more; an oldest-first one needs every row of
+  // the tab (the oldest come last), unless the scan reaches the start.
+  const need = tab.direction === 'desc' ? Math.min(tab.want, tab.known) : tab.known
+  const tabRows = (): Row[] => [...index.rows.values()].filter(tab.matches).sort((a, b) => b.number - a.number)
+  // How far the scan reaches, in this type's rows (about: the numbers it covers are both types').
+  const covered = (): number => Math.round((Math.max(0, tab.max - Math.max(1, scanFloor(scan)) + 1) * tab.typeTotal) / Math.max(1, tab.max))
+  // The lowest number no state change names that can be taken as never closed: above every
+  // loaded row created before the watermark (numbers run in creation order), and within the scan's
+  // reach (its oldest page's middle number: a page of late closes of old rows does not drag it
+  // down). A number named below it is read and its proved state decides; this bounds the cost.
+  const gapFloor = (): number => {
+    if (scan.done && scan.complete) return 1
+    const mark = scan.watermark
+    if (mark === null) return tab.max + 1
+    let stale = 0
+    for (const r of index.rows.values()) if (r.createdAt <= mark && r.number > stale) stale = r.number
+    return Math.max(stale + 1, scanFloor(scan))
+  }
+  // The candidates from the newest number down, until `need` rows are sure (held, or settled in
+  // the tab by the scan): every candidate above that point is named. A row whose state the scan
+  // has not settled yet (its newest change on the watermark's timestamp, or only a lock read) is
+  // named only when it must be (`unsettled`): the next scan page usually settles it, unread.
+  // `held` counts the sure rows already loaded; `whole`: the descent looked at every number down to 1.
+  const nominate = (floor = gapFloor(), unsettled = false): { numbers: number[]; sure: number; held: number; whole: boolean } => {
+    const numbers: number[] = []
+    let sure = 0
+    let held = 0
+    let m = tab.max
+    for (; m >= 1 && (tab.direction === 'asc' || sure < need); m--) {
+      const loaded = index.byNumber.get(m)
+      if (loaded !== undefined) {
+        const r = index.rows.get(loaded)
+        if (r !== undefined && tab.matches(r)) {
+          sure++
+          held++
+        }
+        continue
+      }
+      if (index.notNumbers.has(m)) continue
+      const id = scan.byNumber.get(m)
+      if (id === undefined) {
+        if (openTab && m >= floor) numbers.push(m)
+        continue
+      }
+      const t = scan.targets.get(id)
+      if (t === undefined || t.kind !== kind || index.notRows.has(id)) continue
+      const code = settledCode(scan, t)
+      if (code === null) {
+        if (unsettled) numbers.push(m)
+      } else if (tab.inTab(code)) {
+        numbers.push(m)
+        sure++
+      }
+    }
+    return { numbers, sure, held, whole: m < 1 }
+  }
+  // A row the scan settles needs no state sum: one read per batch, not two.
+  const known: KnownCodes = (docs) => scanCodes(scan, docs)
+  let sinceRead = 0
+  // One read by number per batch (the scan knows every named row's number).
+  const resolve = async (numbers: readonly number[]): Promise<void> => {
+    sinceRead = 0
+    await resolveNumbers(sdk, index, numbers, known)
+  }
+  const done = (rows: Row[], complete: boolean): Selected<Row> => ({ rows: rows.sort(tab.cmp), complete, short: false, searched: null, more: false })
+  let pages = 0
+  for (;;) {
+    let rows = tabRows()
+    if (index.all || rows.length >= tab.known) return done(rows, true)
+    const atEnd = scan.done || pages >= SCAN_PAGES_PER_LOAD
+    // Read the candidates when they are expected to fill the page, every few scan pages, or when
+    // the scan can go no further this load: a read per scan page would double its cost.
+    const named = nominate(gapFloor(), atEnd)
+    const batch = named.numbers.length
+    // Settled rows are sure; unnamed numbers are this type's open rows at `openShare`.
+    const settled = named.sure - named.held
+    const expected = named.sure + (batch - settled) * tab.openShare
+    if (batch > 0 && (atEnd || expected >= need || batch >= CHUNK || sinceRead >= RESOLVE_EVERY)) {
+      await resolve(named.numbers)
+      rows = tabRows()
+      if (rows.length >= tab.known) return done(rows, true)
+    }
+    if (scan.done && scan.complete) {
+      // Every state change is read: every candidate the page needs is named; once they are read,
+      // the page is proved. A named row that turns out not to be one (hidden, another type) lets
+      // the descent name more, so it names again until nothing new is named. The whole tab is
+      // held when its count is, or when the descent looked at every number (a count read before
+      // a later close can be one too many: the scan is the newer proof).
+      const tried = new Set<number>()
+      for (;;) {
+        const rest = nominate(1, true)
+        const fresh = rest.numbers.filter((n) => !tried.has(n))
+        if (fresh.length === 0) {
+          const held = tabRows()
+          return done(held, held.length >= tab.known || rest.whole)
+        }
+        for (const n of fresh) tried.add(n)
+        await resolve(fresh)
+      }
+    }
+    // The page's last row created after the watermark: every number above it was too, so every
+    // candidate above it is named; once they are read, the page is proved.
+    const last = rows[need - 1]
+    if (last !== undefined && tab.direction === 'desc' && scan.watermark !== null && last.createdAt > scan.watermark) {
+      // The descent stops at `last` (the need-th sure row): everything it names is above it.
+      const above = nominate(last.number + 1, true).numbers
+      if (above.length === 0) return done(rows, false)
+      await resolve(above)
+      continue
+    }
+    if (atEnd) {
+      // Partial: what is held so far, and how far the scan reaches.
+      const auto = !scan.done && scan.pages < SCAN_AUTO_PAGES
+      return { rows: rows.sort(tab.cmp), complete: false, short: scan.done, searched: covered(), more: !scan.done, kind: 'scan', auto, total: tab.typeTotal }
+    }
+    await serial(index, () => readScanPage(sdk, index.repo, scan))
+    pages++
+    sinceRead++
+    tab.onProgress?.(covered())
+  }
 }
 
 /**
@@ -828,8 +1107,13 @@ export function pageWalk(q: { readonly sort: 'newest' | 'oldest' | 'comments'; r
     want: q.page * q.pageSize,
     walkAll: q.sort === 'comments',
     partial,
-    maxChunks: partial ? MAX_CHUNKS : PAGE_CHUNKS,
-    minRows: (q.page - 1) * q.pageSize + 1,
+    // A search or a sort by comments reads as much per load as an unfiltered page (QW3-004,
+    // QW3-019): it says how far it read and reads on when asked, rather than reading a
+    // thousands-row repo before it shows anything.
+    maxChunks: PAGE_CHUNKS,
+    // An unfiltered page with nothing to show yet reads on (its proved count says there is
+    // something to find); a search or sort has no count to go by, so it stops at its budget.
+    minRows: partial ? 0 : (q.page - 1) * q.pageSize + 1,
   }
 }
 
@@ -846,7 +1130,14 @@ export function matchingOf(selected: Selected<unknown>, filtered: boolean, tabCo
 
 /** How far a page read, when its answer covers only part of the repo (`total`: the repo's rows, when known). */
 export function searchedOfPage(selected: Selected<unknown>, total: number | null): SearchedOf | null {
-  return selected.searched === null ? null : { searched: selected.searched, total, more: selected.more }
+  if (selected.searched === null) return null
+  return {
+    searched: selected.searched,
+    total: selected.total !== undefined ? selected.total : total,
+    more: selected.more,
+    ...(selected.kind !== undefined ? { kind: selected.kind } : {}),
+    ...(selected.auto ? { auto: true } : {}),
+  }
 }
 
 /** The rows of page `page` (1-based) of `pageSize`, and whether a next page exists. */

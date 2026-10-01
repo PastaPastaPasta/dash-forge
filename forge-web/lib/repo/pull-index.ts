@@ -17,7 +17,11 @@
  *    close (`kinds 11, 16`) transitions, read on first use when the proved counts say that is
  *    cheaper than walking (`candidatesCheaper`: a sparse tab); a candidate's row says whether it
  *    still is (a closed PR can have been reopened).
- * 4. **The repo's member-event feed**, only for a label, assignee, milestone or review-request
+ * 4. **The state scan** (`./state-scan`), for a sparse tab when the proved counts say it is
+ *    cheaper than walking: the repo's state changes newest first, one light read per 100, naming
+ *    the tab's rows among the numbers they cover (QW3-002: dash's 8 open PRs among 4,911, the
+ *    oldest about 1,000 numbers down, cost 11 light reads instead of 18 heavy ones and 37 clicks).
+ * 5. **The repo's member-event feed**, only for a label, assignee, milestone or review-request
  *    filter (shared with the issue index).
  *
  * State: the index's view step (`indexOf`) is the one step that turns patch documents into their state, the proved
@@ -37,7 +41,7 @@ import { IncompleteReadError } from '../sdk'
 import type { RepoRef } from './contract'
 import { compareRows, eventFiltered, rowMatches, selectionFiltered, type RowFilters } from './issue-index'
 import { baseRefReaders, countsSettled, incompletePullView, readPull, type BaseRefReaders, type PullView } from './issues'
-import { PR_CLOSE, PR_DRAFT_CLOSE, PR_MERGE } from '../rules/transition'
+import { PR_CLOSE, PR_DRAFT_CLOSE, PR_MERGE, statusOfCode } from '../rules/transition'
 import { linkedIssues } from '../rules/review'
 import type { Event } from '../rules'
 import { threadHidesOf } from './moderation-fold'
@@ -53,11 +57,14 @@ import {
   logsVerified,
   matchingOf,
   metaCandidates,
+  openShare,
   pageOf,
   pageWalk,
   repoCountsOf,
   rowsInAnyState,
   rowsWithEvent,
+  scanCheaper,
+  scanSelect,
   searchedOfPage,
   selectRows,
   shownRows,
@@ -163,7 +170,7 @@ export interface PullListPage {
 const NO_COUNTS: PullCounts = { open: null, merged: null, closed: null }
 
 /** Whether a row's state passes the state tab. */
-function pullStateMatches(row: Pick<PullView, 'state'>, tab: PullStateFilter): boolean {
+function pullStateMatches(row: { readonly state: { readonly open: boolean; readonly merged: boolean } }, tab: PullStateFilter): boolean {
   if (tab === 'all') return true
   if (tab === 'merged') return row.state.merged
   if (tab === 'closed') return !row.state.open && !row.state.merged
@@ -255,11 +262,12 @@ function sum(c: PullCounts): number | null {
 /**
  * One page of the PR list for `q`, reading only what it needs: the first chunk (with the proved
  * counts beside it), then, unfiltered, keyset chunks until the page is full or every PR the tab's
- * count allows is held (at most `PAGE_CHUNKS` per load), or the tab's transitions when that is
- * cheaper; filtered, a filter's candidates by id or up to 30 chunks (a search, reported through
- * `onProgress`); a sort by comments reads every chunk up to 30. The member-event feed is read only
- * for a filter on what it decides. `total` is the repo's PR count (the countable index), or null
- * when it is not known.
+ * count allows is held (at most `PAGE_CHUNKS` per load), or a sparse tab's rows through the state
+ * scan (the Open tab of a mirror with thousands of merged PRs, QW3-002) or the tab's transitions
+ * when that is cheaper; filtered, a filter's candidates by id or up to `PAGE_CHUNKS` chunks per
+ * load (a search, reported through `onProgress`, read on when asked); a sort by comments the
+ * same (QW3-004). The member-event feed is read only for a filter on what it decides. `total` is
+ * the repo's PR count (the countable index), or null for the proved count this call reads.
  */
 export async function queryPulls(
   sdk: EvoSDK,
@@ -275,17 +283,33 @@ export async function queryPulls(
   if (needLogs) await feedOf(sdk, index)
   const bound = await repoCountsOf(sdk, index)
   const walk = pageWalk(q, filtered)
-  const byState = candidatesCheaper(index, walk, tabBound(bound, index, q.state), bound?.patches ?? null)
-  const selected = await selectRows(sdk, index, {
-    ...walk,
-    candidates: await candidatesFor(sdk, index, q, byState),
-    matches: (r) => pullStateMatches(r, q.state) && filtersMatch(r, q),
-    cmp: compareRows(q.sort),
-    // The walk stops at the tab's proved count (never a filter's), once it includes this browser's own writes.
-    known: () => (filtered || !countsSettled(repo) ? null : tabBound(bound, index, q.state)),
-    needLogs,
-    onProgress,
-  })
+  const tab = tabBound(bound, index, q.state)
+  // A sparse tab (a mirror's few open PRs among thousands merged, QW3-002) through the state scan,
+  // when the proved counts say that is cheaper than walking (and include this browser's writes).
+  const byScan = !filtered && bound !== null && tab !== null && countsSettled(repo) && scanCheaper(index, walk, tab, bound, q.state === 'open' || q.state === 'unmerged')
+  const selected = byScan
+    ? await scanSelect(sdk, index, {
+        inTab: (code) => pullStateMatches({ state: statusOfCode(code) }, q.state),
+        matches: (r) => pullStateMatches(r, q.state),
+        cmp: compareRows(q.sort),
+        direction: walk.direction,
+        want: walk.want + 1,
+        known: tab,
+        max: bound.issues + bound.patches,
+        typeTotal: bound.patches,
+        openShare: openShare(bound, bound.prsOpen),
+        onProgress,
+      })
+    : await selectRows(sdk, index, {
+        ...walk,
+        candidates: await candidatesFor(sdk, index, q, candidatesCheaper(index, walk, tab, bound?.patches ?? null)),
+        matches: (r) => pullStateMatches(r, q.state) && filtersMatch(r, q),
+        cmp: compareRows(q.sort),
+        // The walk stops at the tab's proved count (never a filter's), once it includes this browser's own writes.
+        known: () => (filtered || !countsSettled(repo) ? null : tabBound(bound, index, q.state)),
+        needLogs,
+        onProgress,
+      })
 
   let counts = NO_COUNTS
   if (!filtered) {
@@ -305,7 +329,7 @@ export async function queryPulls(
     matching: matchingOf(selected, filtered, tabCount),
     hasNext: page.hasNext,
     counts,
-    searchedOf: searchedOfPage(selected, total),
+    searchedOf: searchedOfPage(selected, total ?? bound?.patches ?? null),
     stateComplete: logsVerified(index, rows),
     labels: index.labels,
     hidden: index.hidden.total,

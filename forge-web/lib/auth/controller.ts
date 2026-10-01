@@ -32,7 +32,7 @@ import { stepClock, timed } from '../step-timing'
 import { DEPLOYMENTS, FORGE_CONTRACT_KINDS, contractKind, groupTrust, type ForgeIds, type GroupTrust } from '../deployments'
 import { assertGroupHolds, type GroupCheck } from './group-trust'
 import { SECURITY_LEVEL, WriteAuthError, balanceBeforeWrite, findSigningKey, measureActual, readIdentityBalance, serialized, type SpendEvent, type WriteAuth } from '../sdk/write'
-import { KEY_ADD_FLOOR_CREDITS, KEY_LIMITS_UPDATE_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS } from '../sdk/cost'
+import { KEY_ADD_FLOOR_CREDITS, KEY_DISABLE_CREDITS, KEY_LIMITS_UPDATE_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS } from '../sdk/cost'
 import { authSdk, type WasmIdentity } from '../sdk/facade'
 import type { HeldBrowserKey } from './create-identity'
 import type { KeyLimits } from '../view/funds'
@@ -50,11 +50,13 @@ import { forgetLastIdentity, rememberLastIdentity } from './last-identity'
 import { checkWalletKey, hasNoLimits, isForgeContract, keyScope, scopeCovers, type KeyScope, type WalletKey } from './key-registration'
 import { PRIVATE_REPOS_FLOW, encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
 import {
+  WrongMasterKeyError,
   disableHeldKeys,
   isForgeBrowserKey,
   readKeyLimits,
   registerLimitedKey,
   revokeLimitedKey,
+  shortId,
   topUpLimitedKey,
   type HeldKey,
   type LimitedKey,
@@ -196,7 +198,7 @@ export const KEY_SPEND_ESTIMATES: Readonly<Record<KeySpendKind, number>> = {
   'key:register': KEY_REGISTER_CREDITS,
   'key:renew': KEY_RENEW_CREDITS,
   'key:topup': KEY_LIMITS_UPDATE_CREDITS,
-  'key:revoke': 0,
+  'key:revoke': KEY_DISABLE_CREDITS,
   'key:encryption': 0,
   'key:runner': KEY_REGISTER_CREDITS,
   'identity:create': 0,
@@ -832,13 +834,17 @@ export class AuthController {
       if (!masterWif) throw new Error('no master key found')
       this.requireFullUnlock(identityId)
       this.step("Checking this browser's stored keys")
-      const previous = (await listVaults(this.network)).find((v) => v.identityId === identityId)
+      const stored = (await listVaults(this.network)).find((v) => v.identityId === identityId)
+      // A key that only got staged (a sign-in that did not finish) is no key to replace or
+      // disable: this is a first registration, priced as one (QW3-007). Its stage stays, and
+      // one that may have landed refuses to be overwritten (PendingRenewalError: unlock first).
+      const previous = stored?.staged === true ? undefined : stored
       // Found from the words, and this browser already holds a key for it: the user never saw
       // the "Unlock it instead" choice, so don't turn signing back in into a paid renewal.
       // `renew` is a renewal of the signed-in identity only: words that found another identity
       // this browser holds still get the choice.
       const renewing = options.renew === true && this.state.session?.identityId === identityId
-      if (foundByWords && previous && !renewing) throw new AlreadyStoredError(identityId)
+      if (foundByWords && stored && !renewing) throw new AlreadyStoredError(identityId)
       this.step('Connecting to Dash Platform')
       const sdk = await this.getSdk()
       // Renewing also disables the wallet keys this browser holds for the identity (a shipped
@@ -856,7 +862,7 @@ export class AuthController {
       // browser cannot keep the key, nothing changes on chain. A failure after the stage keeps
       // it: the next unlock asks Platform whether it was registered, and adopts it or keeps
       // waiting (it is only dropped on proof it never was).
-      const { key, committed } = await this.charged(identityId, previous ? 'key:renew' : 'key:register', (r) => r?.key.keyId ?? null, async () => {
+      const { key, committed } = await this.wordedMasterError(identityId, 'mnemonic' in input && !foundByWords ? input.mnemonic : null, renewing ? 'signed-in' : 'import', () => this.charged(identityId, previous ? 'key:renew' : 'key:register', (r) => r?.key.keyId ?? null, async () => {
         const registered = await registerLimitedKey(sdk, {
           network: this.network,
           identityId,
@@ -867,10 +873,12 @@ export class AuthController {
           trust: this.groupTrust(),
           ...(request ? { request } : {}),
           persist: (k) => stageInVault(this.network, { identityId, keyId: k.keyId, wif: k.wif }, protection),
+          // Nothing reached Platform (its nonce read failed): no key is left staged here (QW3-007).
+          unpersist: (k) => abandonStaged(this.network, identityId, k.keyId),
         })
         this.step(protection.passkey ? 'Saving the key with your passkey' : 'Saving the key in this browser')
         return { key: registered, committed: await this.commitKey({ identityId, keyId: registered.keyId, wif: registered.wif }, protection) }
-      })
+      }))
       // This import brings the encryption key again (enableEncryption below says if it cannot):
       // the old copy the replacement could not carry over is not "lost" (QW-052).
       const session = await this.adopt(identityId, key, protection, material !== null ? { ...committed, encryptionKeyDropped: false } : committed)
@@ -1296,11 +1304,13 @@ export class AuthController {
       await this.assertUnlockedIfWalletKeys(sdk, identityId, stored.keyId)
       const masterWif = await this.masterWifFor(identityId, input)
       const held = this.heldKeys(identityId)
-      await this.charged(identityId, 'key:revoke', () => stored.keyId, () =>
-        held.length > 1 || (held.length === 1 && this.state.session?.unlimited)
-          ? // Wallet keys (and any Forge key beside them): disable every key this browser holds.
-            disableHeldKeys(sdk, { network: this.network, identityId, masterWif, keys: held })
-          : revokeLimitedKey(sdk, { network: this.network, identityId, masterWif, keyId: stored.keyId }),
+      await this.wordedMasterError(identityId, 'mnemonic' in input ? input.mnemonic : null, 'signed-in', () =>
+        this.charged(identityId, 'key:revoke', () => stored.keyId, () =>
+          held.length > 1 || (held.length === 1 && this.state.session?.unlimited)
+            ? // Wallet keys (and any Forge key beside them): disable every key this browser holds.
+              disableHeldKeys(sdk, { network: this.network, identityId, masterWif, keys: held })
+            : revokeLimitedKey(sdk, { network: this.network, identityId, masterWif, keyId: stored.keyId }),
+        ),
       )
       await this.forget(identityId)
     })
@@ -1321,8 +1331,8 @@ export class AuthController {
       const { identityId, keyId } = session
       const masterWif = await this.masterWifFor(identityId, input)
       const sdk = await this.getSdk()
-      const limits = await this.charged(identityId, 'key:topup', () => keyId, () =>
-        topUpLimitedKey(sdk, { network: this.network, identityId, masterWif, keyId, request }),
+      const limits = await this.wordedMasterError(identityId, 'mnemonic' in input ? input.mnemonic : null, 'signed-in', () =>
+        this.charged(identityId, 'key:topup', () => keyId, () => topUpLimitedKey(sdk, { network: this.network, identityId, masterWif, keyId, request })),
       )
       const current = this.state.session
       if (current?.identityId === identityId && current.keyId === keyId) this.setState({ session: { ...current, keyLimits: limits } })
@@ -1344,8 +1354,10 @@ export class AuthController {
       if (!identityId) throw new Error('sign in first')
       const masterWif = await this.masterWifFor(identityId, input)
       const sdk = await this.getSdk()
-      return this.charged(identityId, 'key:runner', (k) => k?.keyId ?? null, () =>
-        registerLimitedKey(sdk, { network: this.network, identityId, masterWif, group: this.group(), trust: this.groupTrust(), request }),
+      return this.wordedMasterError(identityId, 'mnemonic' in input ? input.mnemonic : null, 'signed-in', () =>
+        this.charged(identityId, 'key:runner', (k) => k?.keyId ?? null, () =>
+          registerLimitedKey(sdk, { network: this.network, identityId, masterWif, group: this.group(), trust: this.groupTrust(), request }),
+        ),
       )
     })
   }
@@ -1406,6 +1418,24 @@ export class AuthController {
   }
 
   /**
+   * Run a master-key update and, when the key given is not `identityId`'s
+   * ({@link WrongMasterKeyError}), say so in plain words for what was given (QW3-028): recovery
+   * `words` name the identity they do belong to when Platform knows one (one read). `who`: the
+   * identity is the one signed in here, or the one an import names.
+   */
+  private async wordedMasterError<T>(identityId: string, words: string | null, who: 'signed-in' | 'import', run: () => Promise<T>): Promise<T> {
+    try {
+      return await run()
+    } catch (e) {
+      if (!(e instanceof WrongMasterKeyError) || words === null) throw e
+      const theirs = await deriveMasterKey(words, this.network)
+        .then(async (m) => identityOfMasterKey(await this.getSdk(), m.publicKeyHex, this.network))
+        .catch(() => null)
+      throw new WrongMasterKeyError(identityId, wrongWordsMessage(identityId, theirs, who))
+    }
+  }
+
+  /**
    * The master key (WIF) of `identityId` from an identity file or recovery phrase. The caller
    * drops it as soon as it has signed. A file for another identity or network is refused.
    */
@@ -1413,7 +1443,7 @@ export class AuthController {
     let masterWif: string | null
     if ('fileText' in input) {
       const m = masterMaterialFromFile(input.fileText)
-      if (m.identityId !== identityId) throw new Error('that identity file is for another identity')
+      if (m.identityId !== identityId) throw new WrongMasterKeyError(identityId, otherIdentityFileMessage(m.identityId, identityId))
       this.checkFileNetwork(m.networkKey)
       masterWif = m.masterWif ?? (m.mnemonic ? (await deriveMasterKey(m.mnemonic, this.network)).wif : null)
     } else {
@@ -1427,7 +1457,9 @@ export class AuthController {
   /**
    * Delete the stored key of `identityId` from this device (ending its session if open), and
    * what this browser recorded for the identity: its spend ledger, its notifications inbox and
-   * the last-used marker (QW2-028). Write journals stay: they finish an interrupted write.
+   * the last-used marker (QW2-028). Write journals stay: they finish an interrupted write. So do
+   * the top-up records (`topUpRecords`, QW3-034: an unfinished top-up, and where the next one
+   * starts), which the forget and revoke confirmations name.
    */
   async forget(identityId: string): Promise<void> {
     if (this.state.session?.identityId === identityId) this.logout()
@@ -1435,6 +1467,28 @@ export class AuthController {
     forgetLastIdentity(this.network, identityId)
     await Promise.allSettled([clearLedger(this.network, identityId), clearInbox(this.network, identityId)])
   }
+}
+
+/** An identity file for another identity than the one signed in here (QW3-028). */
+export function otherIdentityFileMessage(fileIdentity: string, identityId: string, fileName?: string): string {
+  const what = fileName ? `${fileName} is the identity file of` : 'This identity file is for'
+  return `${what} ${shortId(fileIdentity)}, not ${shortId(identityId)} (the identity signed in here). Choose ${shortId(identityId)}'s file.`
+}
+
+/**
+ * Recovery words that do not open `identityId` (QW3-028), naming the identity they belong to
+ * (`theirs`) when Platform knows it. `who`: signed in here, or named in an import.
+ */
+export function wrongWordsMessage(identityId: string, theirs: string | null, who: 'signed-in' | 'import'): string {
+  const id = shortId(identityId)
+  if (who === 'import') {
+    return theirs !== null && theirs !== identityId
+      ? `These recovery words belong to identity ${shortId(theirs)}, not ${id}. Leave Identity ID empty to sign in to ${shortId(theirs)}, or check the words.`
+      : `These recovery words don't belong to identity ${id}. Check the words, or leave Identity ID empty to find the identity they belong to.`
+  }
+  return theirs !== null && theirs !== identityId
+    ? `These recovery words belong to identity ${shortId(theirs)}, not ${id} (the identity signed in here). Use ${id}'s recovery phrase.`
+    : `These recovery words don't open ${id} (the identity signed in here). Check the words, or use its identity file.`
 }
 
 /**

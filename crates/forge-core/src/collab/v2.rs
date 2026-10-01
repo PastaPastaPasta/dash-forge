@@ -3447,7 +3447,7 @@ impl<'a> Collab<'a> {
     async fn check_run_docs(&self, repo: &RepoRef, head_oid: &str) -> Result<Vec<FetchedDocument>> {
         let community = self.community_contract(repo).await?;
         let oid = hex::decode(head_oid)
-            .map_err(|_| Error::Config(format!("{head_oid:?} is not a hex commit id")))?;
+            .map_err(|_| Error::InvalidInput(format!("{head_oid:?} is not a hex commit id")))?;
         check_run_docs(self.client, &community, repo, oid).await
     }
 
@@ -3858,7 +3858,7 @@ impl<'a> Collab<'a> {
                         return Ok(done);
                     }
                     floor = number.saturating_add(1);
-                    tracing::warn!(number, attempt, "number taken; counting again");
+                    tracing::debug!(number, attempt, "number taken; counting again");
                 }
                 // The membership was removed since it was read: nothing landed; once, sign
                 // again without the (optional) proof.
@@ -5126,7 +5126,7 @@ impl<'a> Collab<'a> {
 
     /// The live sealed releases (their revisions' `$id`s) whose asset list was uploaded late
     /// (§16.5, §8.2): the named kind-4 `packManifest`'s first copy was recorded after
-    /// `H(next(e)) + GRACE_BLOCKS` for its sealed header's epoch `e`, or under a burned epoch
+    /// `stated(next(e)) + GRACE_BLOCKS` for its sealed header's epoch `e`, or under a burned epoch
     /// ([`crate::keyring::Keyring::uploaded_late`]). The list stays readable, since the
     /// revision's `enc` commits to it, but a member removed by the rotation may read it:
     /// maintainers are warned ("uploaded under an old key"). Nothing is fetched for a list no
@@ -7860,6 +7860,7 @@ mod tests {
                 AnchorRef {
                     id: [9; 32],
                     height: 1,
+                    stated_height: 1,
                 },
             )]
             .into(),

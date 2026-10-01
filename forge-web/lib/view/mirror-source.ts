@@ -73,6 +73,28 @@ export function mirrorSourceOfDescription(description: string, kind: MirrorKind)
   return sourceAt(host, repo, kind)
 }
 
+/**
+ * `description` without forge-import's mirror marker (`Mirror of github.com/o/r`, or the
+ * ` (mirror of github.com/o/r)` suffix): what a fork of a mirror starts with. A fork copies the
+ * parent's description (QW2-062), and the marker made every fork of a mirror read as a mirror
+ * (QW3-011); a fork is never one (forge-import creates mirrors, with no `forkOf`).
+ */
+export function withoutMirrorMarker(description: string): string {
+  const d = description.trim()
+  const m = DESCRIPTION.exec(d)
+  // Only a marker this module reads as a mirror source: other text stays as written.
+  if (m === null || mirrorSourceOfDescription(d, 'issue') === null) return d
+  return d.slice(0, m.index).trimEnd()
+}
+
+/**
+ * The mirror source of a repo document: none for a fork, whose description may be a mirror's
+ * copied with it (QW3-011); else the one its description names.
+ */
+export function mirrorSourceOfRepo(repo: { readonly description: string; readonly forkOf: string | null }, kind: MirrorKind): MirrorSource | null {
+  return repo.forkOf !== null ? null : mirrorSourceOfDescription(repo.description, kind)
+}
+
 /** The source an `imported` record names, from a trusted author's row. */
 function sourceOfRow(doc: PlainDocument, kind: MirrorKind): MirrorSource | null {
   const imported = doc['imported']

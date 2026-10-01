@@ -546,7 +546,7 @@ async function entryAt(reader: BrowseReader, tipOid: string, path: string): Prom
 export async function readRepoImage(reader: BrowseReader, tipOid: string, path: string): Promise<{ bytes: Uint8Array; type: string }> {
   const entry = await entryAt(reader, tipOid, path)
   if (entry === undefined) throw new Error('not found')
-  if ((knownMinSize(reader, entry.oid) ?? 0) > REPO_IMAGE_MAX_BYTES) throw new Error('too large')
+  if (((await knownMinSize(reader, entry.oid)) ?? 0) > REPO_IMAGE_MAX_BYTES) throw new Error('too large')
   const bytes = await readBlob(reader, entry.oid, REPO_IMAGE_MAX_BYTES)
   const type = imagePreviewType(path, bytes)
   if (type === null) throw new Error('not an image')

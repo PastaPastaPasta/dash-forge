@@ -16,6 +16,7 @@ import type { Network } from '@/lib/constants'
 import type { LabelDef } from '@/lib/repo'
 import { plural, resolveDpnsId } from '@/lib/view'
 import { dpnsAuthorCandidates, Q_MAX, resolveSearchNames, withQuery } from '@/lib/view/issue-query'
+import { formatCount as grouped } from '@/lib/view/text-limits'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -216,9 +217,9 @@ export function SortSelect<S extends 'newest' | 'oldest' | 'comments'>({ id, val
   )
 }
 
-/** A count before a tab's name (nothing while not proven). */
+/** A count before a tab's name, digit-grouped as elsewhere in the UI (QW3-058; nothing while not proven). */
 export function tabCount(n: number | null | undefined): string {
-  return n == null ? '' : `${n} `
+  return n == null ? '' : `${grouped(n)} `
 }
 
 /**
@@ -576,42 +577,91 @@ export function AuthorLoginNote({ login, notFound }: { login: string | null; not
   )
 }
 
-/** "Searched the newest N of M …": a search or comment sort that looked at part of the repo. */
+/** What {@link SearchedNote} reads of a list page's `searchedOf`. */
+export interface SearchedOfLike {
+  readonly searched: number
+  readonly total: number | null
+  readonly more?: boolean
+  readonly kind?: 'rows' | 'sort' | 'scan'
+  readonly auto?: boolean
+}
+
+/**
+ * How far a list read when it covers part of the repo: a search ("Searched the newest N of M …"),
+ * a sort by comments over the rows read so far, or a sparse tab finding its older rows through the
+ * repo's state changes (it reads on by itself, `auto`). Where reading on is the viewer's call, a
+ * "Look through older" button does it.
+ */
 export function SearchedNote({
   searchedOf,
   noun,
   onMore,
   reading,
+  oldest = false,
 }: {
-  searchedOf: { readonly searched: number; readonly total: number | null; readonly more?: boolean } | null | undefined
+  searchedOf: SearchedOfLike | null | undefined
   noun: string
+  /** The list reads oldest first: it has read the oldest rows, and the newer ones are unread. */
+  oldest?: boolean
   /** Read on from where the list stopped (offered when it stopped at its read budget). */
   onMore?: () => void
   /** The list is reading on now: how many it has read so far, or null. */
   reading?: number | null
 }): JSX.Element | null {
   if (!searchedOf) return null
-  const of = searchedOf.total !== null ? ` of ${searchedOf.total}` : ''
-  if (searchedOf.more && onMore) {
+  const [edge, beyond] = oldest ? ['oldest', 'newer'] : ['newest', 'older']
+  const n = grouped(reading ?? searchedOf.searched)
+  const of = searchedOf.total !== null ? ` of ${grouped(searchedOf.total)}` : ''
+  if (searchedOf.kind === 'scan' && (searchedOf.auto || reading != null)) {
+    // A sparse tab reading on by itself: progress, no button.
     return (
-      <p className="mt-2 flex flex-wrap items-center gap-x-2 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="list-read-budget">
+      <p className="mt-2 flex flex-wrap items-center gap-x-2 text-[12px] text-anvil-500 dark:text-anvil-400" role="status" data-testid="list-read-budget">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
         <span>
-          Read the newest {reading ?? searchedOf.searched}
-          {of} {noun}
-          {reading != null ? '…' : '; older ones are not read yet.'}
+          Finding the older {noun} in this tab: checked about {n}
+          {of} {noun} so far…
+        </span>
+      </p>
+    )
+  }
+  if (searchedOf.more && onMore) {
+    const what =
+      searchedOf.kind === 'sort'
+        ? `Sorted the ${edge} ${n}${of} ${noun} by comments`
+        : searchedOf.kind === 'scan'
+          ? `Checked about ${n}${of} ${noun} for this tab`
+          : `Read the ${edge} ${n}${of} ${noun}`
+    return (
+      <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="list-read-budget">
+        <span>
+          {what}
+          {reading != null ? '…' : `; ${beyond} ones are not read yet.`}
         </span>
         <Button variant="outline" size="sm" onClick={onMore} disabled={reading != null}>
-          {reading != null ? 'Reading…' : `Look through older ${noun}`}
+          {reading != null ? 'Reading…' : `Look through ${beyond} ${noun}`}
         </Button>
       </p>
     )
   }
   return (
     <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-      Searched the newest {searchedOf.searched}
-      {of} {noun}; older ones were not read for this search.
+      {searchedOf.kind === 'scan'
+        ? `Checked about ${n}${of} ${noun} for this tab; the older ones could not be checked.`
+        : `${searchedOf.kind === 'sort' ? `Sorted the ${edge} ${n}${of} ${noun} by comments` : `Searched the ${edge} ${n}${of} ${noun}`}; ${beyond} ones were not read for this ${searchedOf.kind === 'sort' ? 'sort' : 'search'}.`}
     </p>
   )
+}
+
+/**
+ * Read on by itself while the list's answer says it should (`searchedOf.auto`: a sparse tab whose
+ * proved count says rows are still unread, QW3-002), one bounded load after another, so its rows
+ * show as they are found rather than after the last one.
+ */
+export function useAutoReadOn(searchedOf: SearchedOfLike | null | undefined, loading: boolean, reload: () => void): void {
+  const auto = searchedOf?.auto === true
+  useEffect(() => {
+    if (auto && !loading) reload()
+  }, [auto, loading, searchedOf, reload])
 }
 
 /**
@@ -636,14 +686,15 @@ export function useReadProgress(): {
 }
 
 /** The empty list's title when a page stopped reading before it found a row for `page`: there are older ones to read. */
-export function budgetEmptyTitle(page: number, searched: number, noun: string): string {
-  return page === 1 ? `None among the newest ${searched} ${noun}` : `Nothing for page ${page} among the newest ${searched} ${noun}`
+export function budgetEmptyTitle(page: number, searched: number, noun: string, oldest = false): string {
+  const edge = oldest ? 'oldest' : 'newest'
+  return page === 1 ? `None among the ${edge} ${grouped(searched)} ${noun}` : `Nothing for page ${page} among the ${edge} ${grouped(searched)} ${noun}`
 }
 
 /** A list's loading line: what it reads, and (a walk under way) how many rows it has read. */
 export function readingLabel(what: string, progress: number | null, total: number | null): string {
   if (progress === null) return `Reading ${what}`
-  return `Reading ${what}: ${progress}${total !== null ? ` of ${total}` : ''} read`
+  return `Reading ${what}: ${grouped(progress)}${total !== null ? ` of ${grouped(total)}` : ''} read`
 }
 
 /** A row's label chip that adds the label to the list's filter. */

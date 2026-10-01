@@ -76,7 +76,8 @@ function eventPhrase(e: Event): { text: string; icon: JSX.Element; who?: string;
     case 'ready':
       return { text: 'marked this ready for review', icon: <Eye className={muted} aria-hidden /> }
     case 'headUpdate':
-      return { text: e.oid ? `pushed new commits (head ${e.oid.slice(0, 9)})` : 'pushed new commits', icon: <GitCommit className={muted} aria-hidden /> }
+      // Who posted the update need not be who pushed the commits (QW3-048): the page says who did when it knows.
+      return { text: e.oid ? `updated the head to ${e.oid.slice(0, 9)}` : 'updated the head', icon: <GitCommit className={muted} aria-hidden /> }
     case 'threadResolve':
       return { text: 'resolved a conversation', icon: <CheckCircle2 className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden /> }
     case 'threadUnresolve':
@@ -353,8 +354,11 @@ export function Timeline({
   links?: MarkdownLinks
   /** A comment's additions: the author's Edit in the header, the inline editor as its body. */
   renderComment?: (item: Extract<TimelineItem, { kind: 'comment' }>) => CommentSlots
-  /** A page's own wording for an event (the PR page counts the commits a head update pushed), or null. */
-  eventText?: (e: Event) => string | null
+  /**
+   * A page's own wording for an event (the PR page counts the commits a head update pushed, and
+   * names who pushed them when that is not who posted it: `who`), or null.
+   */
+  eventText?: (e: Event) => string | { readonly text: string; readonly who?: string } | null
   /**
    * A review's inline comment's heading: where it points, whether it is outdated or applied, and
    * the code it was left on (the PR page, QW2-049). Omitted: the anchor's label alone.
@@ -464,7 +468,7 @@ export function Timeline({
             <div key={`c-${cid}-${i}`} className="space-y-1">
             {shownHidden ? <RevealedNote hidden={shownHidden} onCollapse={() => reveal(cid, false)} /> : null}
             <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="timeline-comment">
-              <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
                 <Byline
                   author={item.comment.author}
                   createdAt={item.comment.createdAt}
@@ -614,7 +618,10 @@ export function Timeline({
         const own = eventText?.(item.event) ?? (item.event.kind === 'policyBypass' ? bypassPhrase(item.event.value, mergeOids.has((item.event.oid ?? '').toLowerCase())) : null)
         const base = eventPhrase(item.event)
         const named = moderationNamed(item.event, refs)
-        const phrase = own !== null ? { ...base, text: own } : named !== null ? { ...base, ...named } : base
+        const phrase =
+          own !== null
+            ? typeof own === 'string' ? { ...base, text: own } : { ...base, text: own.text, who: own.who }
+            : named !== null ? { ...base, ...named } : base
         return (
           <div key={`e-${item.event.id}-${i}`} className={EVENT_ROW} data-testid="timeline-event" data-kind={item.event.kind}>
             <span className={EVENT_ICON}>{phrase.icon}</span>

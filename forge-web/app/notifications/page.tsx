@@ -29,6 +29,7 @@ import {
   matchesFilter,
   subsByThread,
   threadReasons,
+  watchCounts,
   type InboxFilter,
   type InboxItem,
   type InboxThread,
@@ -76,6 +77,7 @@ export default function NotificationsPage(): JSX.Element {
     const index = subsByThread(subs)
     return groupThreads(items).map((t) => ({ thread: t, reasons: threadReasons(t, index) }))
   }, [items, subs])
+  const counts = subs ? watchCounts(subs) : null
   const byReason = reason === null ? threads : threads.filter((t) => matchesFilter(t.reasons, reason))
   const shown = filter === 'unread' ? byReason.filter((t) => t.thread.unread > 0) : byReason
   const unread = byReason.filter((t) => t.thread.unread > 0).length
@@ -198,29 +200,29 @@ export default function NotificationsPage(): JSX.Element {
 
         <section className="rounded-lg border border-anvil-200 p-4 text-dense dark:border-anvil-800" aria-labelledby="watching">
           <h2 id="watching" className="mb-2 font-medium">What this browser watches</h2>
-          {subs ? (
+          {subs && counts !== null ? (
             <ul className="list-inside list-disc space-y-1 text-anvil-600 dark:text-anvil-300">
               <li>
-                {plural(subs.repos.filter((r) => r.reason !== 'starred' && r.reason !== 'watched').length, 'repo')} you own or belong to: new issues and pull
+                {plural(counts.member, 'repo')} you own or belong to: new issues and pull
                 requests{prefs?.pushes ? ', pushes' : ''}.
               </li>
               <li>
-                {plural(subs.repos.filter((r) => r.reason === 'watched').length, 'repo')} you watch (on every device): new issues and pull
+                {plural(counts.watched, 'repo')} you watch (on every device): new issues and pull
                 requests{prefs?.pushes ? ', pushes' : ''}.
               </li>
               <li>
-                {plural(subs.threads.filter((t) => t.reason === 'author' || t.reason === 'commented').length, 'issue or pull request', 'issues and pull requests')} you
+                {plural(counts.joined, 'issue or pull request', 'issues and pull requests')} you
                 opened or commented on: comments, state changes, and reviews on your pull requests.
               </li>
               <li>
-                {plural(subs.threads.filter((t) => t.reason === 'assigned' || t.reason === 'review-requested').length, 'issue or pull request', 'issues and pull requests')} you
+                {plural(counts.addressed, 'issue or pull request', 'issues and pull requests')} you
                 were assigned or asked to review (on every device): the assignment, comments and state changes.
               </li>
               <li>
-                {plural(subs.threads.filter((t) => t.reason === 'reviewed' || t.reason === 'mentioned').length, 'pull request or issue', 'pull requests and issues')} you
+                {plural(counts.seen, 'pull request or issue', 'pull requests and issues')} you
                 reviewed or were mentioned in, as this browser saw it: comments and state changes. Other devices do not know about these.
               </li>
-              {prefs?.stars ? <li>{plural(subs.repos.filter((r) => r.reason === 'starred').length, 'starred repo')}: new issues and pull requests.</li> : null}
+              {prefs?.stars ? <li>{plural(counts.starred, 'starred repo')}: new issues and pull requests.</li> : null}
               {subs.droppedRepos > 0 ? (
                 <li>
                   Capped at {MAX_REPOS} repos: {subs.droppedRepos} more are not watched.

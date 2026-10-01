@@ -22,7 +22,7 @@ use forge_core::members::{
 use forge_core::rules::v2::Visibility;
 use forge_core::user_error::{codes, UserError};
 
-use crate::fmt::cost_line;
+use crate::fmt::{cost_json, cost_line};
 
 use crate::common::{resolve_identity, Reader, Session};
 use crate::context::Ctx;
@@ -119,13 +119,21 @@ async fn accept(ctx: &Ctx, repo: &str, withdraw: bool) -> Result<()> {
     ))? {
         return Err(crate::errors::cancelled());
     }
+    let before = s.balance().await;
     let (document_id, written) = consent
         .accept(handle)
         .await
         .context("accepting membership")?;
+    let spent = if written {
+        s.spent_since(before).await
+    } else {
+        0
+    };
+    let price = ctx.usd_price();
     let me = s.identity.id();
     ctx.emit(
         json!({
+            "cost": cost_json(spent, price),
             "status": if written { "accepted" } else { "already_accepted" },
             "repo": handle.display(),
             "identityId": me,
@@ -138,11 +146,15 @@ async fn accept(ctx: &Ctx, repo: &str, withdraw: bool) -> Result<()> {
                 handle.display(),
                 handle.display()
             );
+            if written {
+                println!("  {}", cost_line(spent, price));
+            }
         },
     );
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)] // one flow: consent, key checks, the grant and its wrap
 async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u64>) -> Result<()> {
     let role = role.to_core();
     let s = Session::open(ctx, repo).await?;
@@ -153,11 +165,11 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     let signer = crate::keys::signer(&s);
     // The member's consent comes first (checked before any cost prompt or key work), unless
     // they already hold the role: re-running an add to finish its key wrap needs none.
-    if MemberReader::new(client)
+    let held = MemberReader::new(client)
         .role_doc(handle, member, role)
         .await?
-        .is_none()
-    {
+        .is_some();
+    if !held {
         require_consent(ctx, client, handle, member, wait).await?;
     }
     let private = handle.visibility == Visibility::Private;
@@ -218,6 +230,7 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     ))? {
         return Err(crate::errors::cancelled());
     }
+    let before = s.balance().await;
     let granted = MemberService::new(client, &s.identity, &s.bridge)
         .grant(handle, member, role)
         .await
@@ -227,6 +240,13 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
             .await
             .context("wrapping the repository key to the new member (re-run `dg collab add` to finish: the membership stands)")?;
     }
+    // A role already held writes nothing (a private repository's wrap may still).
+    let spent = if held && !private {
+        0
+    } else {
+        s.spent_since(before).await
+    };
+    let price = ctx.usd_price();
     ctx.emit(
         json!({
             "status": "granted",
@@ -235,13 +255,15 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
             "documentId": granted.document_id,
             "id": granted.document_id,
             "repo": handle.display(),
+            "cost": cost_json(spent, price),
         }),
         || {
             println!(
-                "{member} is a {} of {} (document {}).",
+                "{member} is a {} of {} (document {}) · {}",
                 role_name(role),
                 handle.display(),
-                granted.document_id
+                granted.document_id,
+                cost_line(spent, price)
             );
         },
     );

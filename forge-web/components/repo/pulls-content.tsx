@@ -14,7 +14,8 @@
  * totals. The search box and filters are the Issues list's (`./list-controls`). Once the page is
  * shown, each row's head gets its CI status dot (`./check-dot`: three proved counts for the page, plus a run read per head whose re-runs disagree).
  *
- * "New pull request" opens `/repo/pulls/new` to propose an already-pushed branch.
+ * "New pull request" opens `/repo/pulls/new` to propose an already-pushed branch; on a fork, the
+ * parent's form, with the fork's default branch as the head (QW3-012).
  */
 
 import { Byline } from '@/components/repo/byline'
@@ -25,7 +26,7 @@ import { HiddenThreadsToggle, useHiddenThreads } from '@/components/repo/moderat
 import Link from 'next/link'
 import { GitMerge, GitPullRequest, GitPullRequestClosed, X } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { branchName } from '@/lib/view'
+import { ARCHIVED_REASON, branchName } from '@/lib/view'
 import {
   PULL_PAGE_SIZE,
   emptyPullsBody,
@@ -69,6 +70,7 @@ import {
   budgetEmptyTitle,
   readingLabel,
   tabCount,
+  useAutoReadOn,
   useListQuery,
   useReadProgress,
   type ListGrammar,
@@ -78,8 +80,10 @@ import { CheckDot, useCheckOutcomes } from '@/components/repo/check-dot'
 import { HiddenNote } from '@/components/repo/hidden-note'
 import { MirrorNote } from '@/components/repo/mirror-note'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
+import { Button } from '@/components/ui/button'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
+import { contributeHref, forkHeadBranch, useForkParent } from '@/components/repo/fork-contribute'
 
 /** The PR list's search grammar (`lib/view/pull-query`): a submit keeps the state tab. */
 const PULL_GRAMMAR: ListGrammar<PullListQuery> = {
@@ -103,6 +107,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
   const generation = useRepoWriteGeneration(home.repo)
   const trust = useMirrorTrust(home.repo)
   const total = useRepoTotals(home.repo, 'pulls')
+  const forkParent = useForkParent(home)
   const milestones = useMilestones(home.repo)
 
   // The list query lives in the URL (a reload or a shared link shows the same list).
@@ -133,9 +138,14 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
       }
       return track(signal, (options) => queryPulls(sdk!, home.repo, selection, total, network, options))
     },
-    [ready, repoKey(home.repo), generation, JSON.stringify(query), identity ?? '', total ?? -1, query.authorLogin !== null && trust !== null ? [...trust].sort().join(',') : null],
+    // Not `total`: it arrives while page 1 reads, and the same query again reads on a load (a sort or
+    // search would read two loads cold). The page's own proved count fills in for it.
+    [ready, repoKey(home.repo), generation, JSON.stringify(query), identity ?? '', query.authorLogin !== null && trust !== null ? [...trust].sort().join(',') : null],
     { enabled: ready && sdk !== null && (!needsViewer || identity !== null) && !awaitingTrust },
   )
+
+  // A sparse tab finding its older rows through the state scan reads on by itself (QW3-002).
+  useAutoReadOn(data?.searchedOf, loading, reload)
 
   const labelDefs = useMemo(() => new Map((data?.labels ?? []).map((l) => [l.name, l])), [data])
   // The page's heads, for the status dots, read once the rows are shown. A row's head is the one
@@ -157,12 +167,20 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <SearchBox id="pull-search" label="Search pull requests" search={search} placeholder="is:open label:bug author:@me" />
         <TriageNav addr={addr} />
-        <Link
-          href={repoHref('/repo/pulls/new', addr)}
-          className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md bg-forge-700 px-2.5 text-dense font-medium text-white hover:bg-forge-800 coarse:h-11"
-        >
-          <GitPullRequest className="h-3.5 w-3.5" aria-hidden /> New pull request
-        </Link>
+        {home.config?.archived === true ? (
+          // An archived repo takes no new pull request (QW3-017), as its New issue says.
+          <Button variant="primary" size="sm" disabled title={ARCHIVED_REASON} data-testid="new-pull-archived">
+            <GitPullRequest className="h-3.5 w-3.5" aria-hidden /> New pull request
+          </Button>
+        ) : (
+          <Link
+            // A fork proposes to its parent, as on GitHub (QW3-012); the form there offers this fork's branches.
+            href={forkParent !== null ? contributeHref(forkParent, home.repo, forkHeadBranch(home)) : repoHref('/repo/pulls/new', addr)}
+            className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md bg-forge-700 px-2.5 text-dense font-medium text-white hover:bg-forge-800 coarse:h-11"
+          >
+            <GitPullRequest className="h-3.5 w-3.5" aria-hidden /> New pull request
+          </Link>
+        )}
       </div>
       <DroppedNote search={search} reason={pullDroppedReason(search.dropped, search.notFound)} testId="pull-search-dropped" />
       <AuthorLoginNote login={query.authorLogin} notFound={search.notFound} />
@@ -206,20 +224,21 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
 
         {needsViewer && identity === null ? (
           <p className="px-4 py-6 text-dense text-anvil-500 dark:text-anvil-400">Sign in to filter by your own pull requests, assignments and review requests.</p>
-        ) : (loading || awaitingTrust) && !data ? (
-          <LoadingBlock label={readingLabel('pull requests', progress, total)} />
+        ) : ((loading || awaitingTrust) && !data) || (data !== null && data.rows.length === 0 && data.searchedOf?.auto) ? (
+          <LoadingBlock label={readingLabel('pull requests', progress ?? data?.searchedOf?.searched ?? null, total)} />
         ) : error ? (
           <div className="p-4"><ErrorState message={error} onRetry={reload} /></div>
         ) : lastPage !== null ? (
           <PastLastPage page={query.page} last={lastPage} onPage={(page) => change({ page })} />
         ) : data !== null && data.rows.length === 0 && data.searchedOf?.more ? (
           // The page stopped at its read budget before reaching any: there are older ones to read.
-          <EmptyState icon={GitPullRequest} title={budgetEmptyTitle(query.page, data.searchedOf.searched, 'pull requests')} body="Older ones are not read yet." />
+          <EmptyState icon={GitPullRequest} title={budgetEmptyTitle(query.page, data.searchedOf.searched, 'pull requests', query.sort === 'oldest')} body={query.sort === 'oldest' ? 'Newer ones are not read yet.' : 'Older ones are not read yet.'} />
         ) : data !== null && data.rows.length === 0 ? (
           <EmptyState
             icon={GitPullRequest}
             title={filtered ? 'No pull requests match' : query.state === 'all' ? 'No pull requests yet' : `No ${query.state} pull requests`}
             body={emptyPullsBody(filtered, query.state, settled)}
+            action={filtered && query.state !== 'all' ? <Button onClick={() => change({ state: 'all' })} data-testid="pulls-search-all">Search all pull requests</Button> : undefined}
           />
         ) : (
           <>
@@ -256,7 +275,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
         )}
       </div>
 
-      <SearchedNote searchedOf={data?.searchedOf} noun="pull requests" onMore={reload} reading={loading ? progress ?? data?.searchedOf?.searched ?? 0 : null} />
+      <SearchedNote searchedOf={data?.searchedOf} noun="pull requests" onMore={reload} oldest={query.sort === 'oldest'} reading={loading ? progress ?? data?.searchedOf?.searched ?? 0 : null} />
       {data !== null && !data.stateComplete ? (
         <p className="mt-2 text-[12px] text-danger-700 dark:text-danger-400">
           Some of these pull requests have too many events to read completely, so their labels and assignees are unverified.

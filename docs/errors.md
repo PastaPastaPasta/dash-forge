@@ -79,7 +79,7 @@ Fix: apply the suggestions that still fit, one by one or with `--all`, and edit 
 
 ## E201
 
-**Invalid arguments.** The flags or arguments do not make sense together, for example `dg issue label` without exactly one of `--add` or `--remove`, or a value is not of the form the flag takes: a `--color` that is not a hex color, an empty `--title`, a text over its length limit, or a comment, review or thread id that is not a document id (`dg issue delete-comment <repo> 2`; the ids are in `dg issue view --json` and `dg pr view --comments --json`). A command line `dg` cannot parse at all (a missing argument, an unknown flag) is E201 too: the cause quotes what is wrong, and the command's usage line follows the error block. Inside a `dash://` clone, a command that leaves out the repository uses the clone's, so `dg issue list`, `dg issue label 3 add bug` or `dg release download v1.0` there is not an error. What you typed where the repository goes is kept when it names one: the clone's own repository (`dg label create project` in a clone of `alice/project` is a label name left out), or an `owner/name` whose owner is an identity id, `@name` or `name.dash`. `-R <repo>` (`--repo`) names the repository anywhere on the line, as with `gh`. In a clone of a fork, `dg pr create` with no repository opens the PR in the fork's parent.
+**Invalid arguments.** The flags or arguments do not make sense together, for example `dg issue label` that names neither `add <label>…` nor `remove <label>…` (or both of the older `--add` and `--remove` flags), or a value is not of the form the flag takes: a `--color` that is not a hex color, an empty `--title`, a text over its length limit, or a comment, review or thread id that is not a document id (`dg issue delete-comment <repo> 2`; the ids are in `dg issue view --json` and `dg pr view --comments --json`). A command line `dg` cannot parse at all (a missing argument, an unknown flag) is E201 too: the cause quotes what is wrong, and the command's usage line follows the error block. Inside a `dash://` clone, a command that leaves out the repository uses the clone's, so `dg issue list`, `dg issue label 3 add bug` or `dg release download v1.0` there is not an error. What you typed where the repository goes is kept when it names one: the clone's own repository (`dg label create project` in a clone of `alice/project` is a label name left out), or an `owner/name` whose owner is an identity id, `@name` or `name.dash`. `-R <repo>` (`--repo`) names the repository anywhere on the line, as with `gh`. In a clone of a fork, `dg pr create` with no repository opens the PR in the fork's parent.
 
 Fix: see `dg <command> --help`.
 
@@ -225,6 +225,8 @@ It is also what `git push`, `dg init`, `dg repo create`, `dg storage advertise`,
 
 Fix: `dg storage list` shows your profiles and `dg storage use <profiles>` sets `dash.storage`. For an address problem, re-add the profile with a public https `--public-url` / `--public-gateway` (a bucket domain, a CDN, a named tunnel or a reverse proxy on your own domain), or record it anyway with `git push -o allow-private-uri`, `git config dash.allowPrivateUri true`, `dg storage add … --allow-private-uri`, or `--allow-private-uri` on `dg init` / `dg repo create`. See [bring your own storage](guides/bring-your-own-storage.md#public-addresses).
 
+A secret given as its literal value is E501 too (`dg storage add … --secret-access-key <the secret>`): `cause: a secret must be a reference — env:VAR_NAME or keychain:<service>/<account> — never the literal value`. Nothing was saved, and the value is never echoed. Its fix is different from the above: export the secret in an environment variable and pass `env:VAR_NAME`, or store it in the OS keychain and pass `keychain:dash-forge/<profile>`. `dg storage add` with no arguments asks instead: it offers to paste the secret into the keychain where there is one, and says so when there is none (`DASH_FORGE_NO_KEYCHAIN` is set, or the system has no keychain), leaving an environment variable or an existing keychain entry.
+
 ## E502
 
 **Storage policy not met.** Fewer targets confirmed the pack than `dash.replicas` requires, so the push stopped **before** the `packManifest` and the refs were written. No ref points at history that is not stored where you asked.
@@ -286,7 +288,7 @@ Fix: ask the member who pushed it to push again (`git push` re-stores it under a
 
 ## E510
 
-**Written after the key was rotated.** The content is under a superseded key epoch and was written more than 240 blocks after the next epoch's anchor by someone who is no longer a member (the late-content rule). It is hidden, not deleted.
+**Written after the key was rotated.** The content is under a superseded key epoch and was written more than 240 blocks after the next epoch's key was first announced on chain (re-announcing the same key later does not move this) by someone who is no longer a member (the late-content rule). It is hidden, not deleted.
 
 Fix: none needed; if the writer is still meant to be a member, re-add them and have them write it again.
 
@@ -370,6 +372,8 @@ Fix: read it again (`dg issue view`, `dg pr view --comments`) and redo the edit 
 
 Fix: check your connection and run the command again after a minute. `dg doctor` tests reachability. On a devnet, check `--dapi-addresses` / `git config dash.dapiAddresses`.
 
+A devnet name that does not exist is reported here too, because a lookup failure cannot tell a typo from being offline: the quorum service host is derived from the name (`quorums.<name>.networks.dash.org`), and `cause:` shows `Failed to resolve domain 'quorums.<name>.networks.dash.org'`. When it does, the fix names the `--devnet-name` that failed. A devnet name is checked for its shape only ([E204](#e204), for example a leading `-`), never for existing.
+
 ## E702
 
 **Dash Forge not deployed on this network.** The embedded `forge-contracts/deployments/<network>.json` records no registered forge-v2 contracts (forge-core, forge-collab, forge-community and their contract group), so there is nothing to read or write. The tools never fall back to another network's contracts. Today forge-v2 is deployed on devnet bonsia only; testnet and mainnet follow once they run Platform protocol 14.
@@ -408,10 +412,10 @@ Fix: pass `--yes` once you have checked what the command will do. The `cause:` l
 
 ## E803
 
-**Cancelled.** You answered no at the confirmation prompt (or the terminal closed). Nothing was written.
+**Cancelled.** You answered no at a confirmation prompt, or the input ended (Ctrl-D, a closed terminal) before an answer at one of `dg`'s own prompts, including the hidden ones: the recovery words, a word of `dg auth new`'s backup check, a secret pasted into `dg storage add`. Nothing was written. (A passphrase prompt that cannot be asked is [E303](#e303).)
 
 ## E804
 
-**Branch policy not met.** `dg pr merge` checked the repository's branch `policy` (`dg repo policy show`) and it is not satisfied: fewer counted approvals than it requires (from maintainers only, when it says so), or a merge method it does not allow, or the policy could not be read. The policy is a client rule every Forge client applies, not a consensus rule. Nothing was pushed and no merge event was posted.
+**Branch policy not met.** `dg pr merge` checked the repository's branch `policy` (`dg repo policy show`) and it is not satisfied: fewer counted approvals than it requires (from maintainers only, when it says so), required checks that are not passing (`cause: required checks not passing: lint failing`), a merge method it does not allow, or the policy could not be read. The policy is a client rule every Forge client applies, not a consensus rule. Nothing was pushed and no merge event was posted.
 
-Fix: get the missing approvals (`dg pr review --approve` by a member other than the PR author, whose own approval never counts), or use an allowed method. A maintainer can bypass the approvals and checks with `--override-policy`; the merge then records the bypassed rules on the PR as a policy-bypass event, which nobody can delete. The allowed merge methods still apply.
+Fix: get the missing approvals (`dg pr review --approve` by a member other than the PR author, whose own approval never counts), get the failing checks to pass (`dg pr checks <owner>/<repo> <n>` shows the runs), or use an allowed method. A maintainer can bypass the approvals and checks with `--override-policy`; the merge then records the bypassed rules on the PR as a policy-bypass event, which nobody can delete. The allowed merge methods still apply.

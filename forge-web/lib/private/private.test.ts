@@ -45,7 +45,7 @@ describe('production seals are randomized and round-trip', () => {
     expect(bytesToHex(a)).not.toBe(bytesToHex(b))
     const ctx: OpenContext = {
       keys: new Map([[0, keys]]),
-      anchors: new Map([[0, { id: new Uint8Array(32).fill(0xc0), height: 10 }]]),
+      anchors: new Map([[0, { id: new Uint8Array(32).fill(0xc0), height: 10, statedHeight: 10 }]]),
       members: new IdSet(),
     }
     for (const enc of [a, b]) {
@@ -350,7 +350,7 @@ describe('identities are bytes', () => {
 describe('doc hardening', () => {
   const ctx = async (): Promise<OpenContext> => ({
     keys: new Map([[0, await keysFor()]]),
-    anchors: new Map([[0, { id: new Uint8Array(32).fill(0xc0), height: 10 }]]),
+    anchors: new Map([[0, { id: new Uint8Array(32).fill(0xc0), height: 10, statedHeight: 10 }]]),
     members: new IdSet(),
   })
 

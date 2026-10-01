@@ -9,13 +9,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { resetMemoryStores } from '../idb'
 import { SECURITY_LEVEL } from '../sdk/write'
-import { identityIdProblem, rawKeyProblem, type RawKeyView } from './controller'
+import { identityIdProblem, otherIdentityFileMessage, rawKeyProblem, wrongWordsMessage, type RawKeyView } from './controller'
 import { mnemonicProblem, quizAnswerOk } from './hd'
 import { listVaults, lockVault, passkeyFailure, storeEncryptionKey, storeInVault } from './vault'
 import { encodeWif } from './wif'
 
 const NET = 'devnet' as const
 const ID = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
+
+describe('a master key for another identity, in plain words (QW3-028)', () => {
+  const OTHER = '9CVMSjkxXqpjNnb93AR4mzk6SRp95ZNP6J3xDNTvEmpv'
+  it('names both identities, and what to do', () => {
+    expect(wrongWordsMessage(ID, OTHER, 'signed-in')).toBe(
+      "These recovery words belong to identity 9CVMSjk…, not 9r27eDs… (the identity signed in here). Use 9r27eDs…'s recovery phrase.",
+    )
+    expect(wrongWordsMessage(ID, null, 'signed-in')).toMatch(/^These recovery words don't open 9r27eDs… \(the identity signed in here\)/)
+    expect(wrongWordsMessage(ID, OTHER, 'import')).toMatch(/belong to identity 9CVMSjk…, not 9r27eDs…\. Leave Identity ID empty to sign in to 9CVMSjk…/)
+    expect(otherIdentityFileMessage(OTHER, ID, 'LOW.identity.json')).toBe(
+      "LOW.identity.json is the identity file of 9CVMSjk…, not 9r27eDs… (the identity signed in here). Choose 9r27eDs…'s file.",
+    )
+  })
+})
 
 describe('mnemonicProblem', () => {
   it('names the word count when it is not one a phrase can have', () => {

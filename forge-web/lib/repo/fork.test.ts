@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ForgeIds } from '../deployments'
 import type { RefState } from '../rules'
-import { forkManifest, planManifests, planRefs, type ForkCopy } from './fork'
+import { forkManifest, forkableRef, planManifests, planRefs, type ForkCopy } from './fork'
 
 const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'G' }
 const PARENT = 'A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1'
@@ -94,6 +94,27 @@ describe('plan_refs', () => {
     const fork = [ref('refs/heads/main', r('aa')), ref('refs/heads/dev', r('dd'))]
     expect(planRefs(parent, fork)).toEqual([{ refName: 'refs/heads/new', oid: 'cc' }])
     expect(planRefs(parent, [])).toHaveLength(3)
+  })
+
+  it("copies branches and tags only, never a mirror's PR heads (QW3-009)", () => {
+    const parent = [
+      ref('refs/heads/master', r('aa')),
+      ref('refs/tags/v1', r('bb')),
+      ref('refs/mirror/pull/12/head', r('cc')),
+      ref('refs/notes/commits', r('dd')),
+    ]
+    expect(planRefs(parent, []).map((x) => x.refName)).toEqual(['refs/heads/master', 'refs/tags/v1'])
+    expect(forkableRef('refs/mirror/pull/1/head')).toBe(false)
+    expect(forkableRef('refs/heads/mirror/pull/1')).toBe(true)
+  })
+
+  it('copies the default branch alone when asked (QW3-010)', () => {
+    const parent = [ref('refs/heads/develop', r('aa')), ref('refs/heads/master', r('bb')), ref('refs/tags/v1', r('cc'))]
+    expect(planRefs(parent, [], 'develop')).toEqual([{ refName: 'refs/heads/develop', oid: 'aa' }])
+    // A resumed fork that already has it copies nothing more.
+    expect(planRefs(parent, [ref('refs/heads/develop', r('aa'))], 'develop')).toEqual([])
+    // A parent without that branch: nothing (the dialog says so).
+    expect(planRefs(parent, [], 'main')).toEqual([])
   })
 
   it('copies a diverged ref at its provisional tip', () => {

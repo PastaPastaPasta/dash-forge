@@ -35,7 +35,7 @@ describe('object size limit', () => {
   it('refuses a delta-compressed blob over the limit although its stored entry is tiny', async () => {
     const { reader, oids } = imageRepo([{ name: 'big.png', delta: { base: png(1024), size: 6 * MIB } }])
     const oid = oids['big.png'] as string
-    const entry = reader.locate(oid)
+    const entry = await reader.locate(oid)
     expect(entry?.deltaDepth).toBe(1)
     expect(entry?.length).toBeLessThan(4096) // the stored-length check passed this
     await expect(reader.readObject(oid, { maxBytes: CAP })).rejects.toBeInstanceOf(ObjectTooLargeError)
@@ -72,7 +72,7 @@ describe('object size limit', () => {
   it('does not fetch an entry too long to hold an object under the limit', async () => {
     const { reader, oids, fetched } = imageRepo([{ name: 'bomb.png', bomb: { claimed: 1024, inflates: 128 * MIB } }])
     const oid = oids['bomb.png'] as string
-    const length = reader.locate(oid)?.length ?? 0
+    const length = (await reader.locate(oid))?.length ?? 0
     expect(length).toBeGreaterThan(64 * 1024)
     const before = fetched.length
     await expect(reader.readObject(oid, { maxBytes: 4096 })).rejects.toBeInstanceOf(ObjectTooLargeError)
@@ -161,7 +161,7 @@ describe('object size limit', () => {
     for (let i = 65536 + 8; i < noise.length; i += 65536) noise.set(noise.subarray(8, Math.min(65536 + 8, noise.length - i + 8)), i)
     const { reader, oids, fetched } = imageRepo([{ name: 'big.png', bytes: noise }])
     const oid = oids['big.png'] as string
-    const length = reader.locate(oid)?.length ?? 0
+    const length = (await reader.locate(oid))?.length ?? 0
     expect(length).toBeGreaterThan(64 * 1024 * 1.001 + 64)
     const before = fetched.length
     await expect(reader.readObject(oid, { maxBytes: 64 * 1024 })).rejects.toBeInstanceOf(ObjectTooLargeError)
@@ -187,7 +187,7 @@ describe('object size limit', () => {
     const base = png(1024)
     crypto.getRandomValues(base.subarray(8))
     const { reader, oids, fetched } = imageRepo([{ name: 'd.png', delta: { base, size: 1024 * 1024, inserts: 1024 * 1024, zeros: true } }])
-    const entry = reader.locate(oids['d.png'] as string)
+    const entry = await reader.locate(oids['d.png'] as string)
     expect(entry?.length).toBeGreaterThan(1024 * 1.001 + 64)
     const before = fetched.length
     const err = await reader.readObject(oids['d.png'] as string, { maxBytes: 1024 }).catch((e: unknown) => e)

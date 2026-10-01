@@ -207,9 +207,11 @@ test('r5. the maintainer re-reviews: resolves, approves; checks gate the merge u
   await page.getByTestId('pr-tab-files').click()
   const view = dg('OWNER', 'pr', 'view', SLUG, String(prNumber), '--comments') as unknown as View
   const range = view.threads.find((t) => t.location.startsWith(`${FILE}:3-5`))!
-  // The range thread is outdated now (the suggestion commit moved the head): it lists on top.
-  await page.getByTestId('outdated-comments').locator('summary').click({ timeout: 180_000 })
+  // The suggestion commit moved the head but left lines 3–5 as they were: the range thread is
+  // carried to the new head and stays on its lines (QW3-015), not under "on an older version".
   const thread = page.locator(`[data-testid=thread][data-root="${range.id}"]`)
+  await expect(thread).toBeVisible({ timeout: 180_000 })
+  await expect(page.getByTestId('outdated-comments').locator(`[data-testid=thread][data-root="${range.id}"]`)).toHaveCount(0)
   await thread.getByRole('button', { name: 'Reply' }).click()
   await thread.getByRole('textbox', { name: 'Reply' }).fill('Fine as it is.')
   await thread.getByRole('button', { name: 'Reply' }).last().click()

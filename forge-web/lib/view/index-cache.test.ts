@@ -5,7 +5,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import { describe, expect, it, vi } from 'vitest'
 
-import { idbArtifactStore, loadIndexArtifact } from './index-cache'
+import { idbArtifactStore, keepIndexRange, loadIndexArtifact, storedIndexRanges } from './index-cache'
 
 const artifact = (n: number, size = 1000): { bytes: Uint8Array; hash: string } => {
   const bytes = new Uint8Array(size).fill(n)
@@ -61,5 +61,17 @@ describe('loadIndexArtifact over IndexedDB', () => {
     expect(await store.get(`${scope}:${b.hash}`)).toBeUndefined()
     expect(await store.get(`${scope}:${a.hash}`)).toBeDefined()
     expect(await store.get(`${scope}:${c.hash}`)).toBeDefined()
+  })
+})
+
+describe('index ranges over IndexedDB (QW3-001)', () => {
+  it('serves a range only to the copy it was read from, never to another repo naming the same pack', async () => {
+    const store = freshStore()
+    const { hash } = artifact(9)
+    const rows = new Uint8Array([1, 2, 3, 4])
+    keepIndexRange(`t${db}:repoA:uploaderA`, hash, 0, 4, rows, store)
+    await vi.waitFor(async () => expect(await storedIndexRanges(`t${db}:repoA:uploaderA`, hash, [[0, 4]], store)).toEqual([rows]))
+    expect(await storedIndexRanges(`t${db}:repoB:uploaderB`, hash, [[0, 4]], store)).toEqual([undefined])
+    expect(await storedIndexRanges(`t${db}:repoA:uploaderB`, hash, [[0, 4]], store)).toEqual([undefined])
   })
 })

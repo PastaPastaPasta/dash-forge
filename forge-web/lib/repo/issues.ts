@@ -152,6 +152,13 @@ export interface PullView {
    */
   readonly baseOidAtOpen: string
   /**
+   * A merged PR's base tip just before its merge (the tip the merge moved the base from), when
+   * the merge's commit is a valid tip of the base's history; else `''` or absent. The diff of a
+   * merged PR starts from here, as GitHub's diffs against the merge base at merge time: the tip
+   * at open would count base commits a later "Update branch" merged in as the PR's own (QW3-014).
+   */
+  readonly baseOidAtMerge?: string
+  /**
    * The PR's CURRENT head, hex: the newest `headUpdate` (author or member), else
    * {@link initialHeadOid}. Approvals, staleness, the diff and merges use this.
    */
@@ -504,6 +511,41 @@ export function sharedRepoFeed(repo: RepoRef): Promise<Map<string, TargetLog> | 
   return live(hit) ? hit!.promise : undefined
 }
 
+/**
+ * Feed pages (after the first, which rides the issue index's first composite) an issue list's page
+ * 1 reads for its pinned issues before it leaves them to be asked for (QW3-003: the dash mirror's
+ * import grew its feed to 9 pages, read on every cold load).
+ */
+export const PIN_FEED_PAGES = 2
+
+/**
+ * The repo's feed when it ends within `maxPages` pages (`first`, the composite's first page, is
+ * page 1), shared as {@link readRepoFeedFrom}'s would be; `'long'` when it runs longer, with
+ * nothing cached (a full read later still reads it). A feed another reader has is joined.
+ */
+export async function readShortRepoFeed(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  first: readonly PlainDocument[] | undefined,
+  epoch: number,
+  maxPages: number,
+): Promise<Map<string, TargetLog> | null | 'long'> {
+  const shared = sharedRepoFeed(repo)
+  if (shared !== undefined) return shared
+  let docs: PlainDocument[]
+  try {
+    docs = await queryAllDocuments(sdk, feedQuery(repo), { maxPages, firstPage: first })
+  } catch (e) {
+    if (e instanceof IncompleteReadError) return 'long'
+    throw e
+  }
+  const log = await toLog(repo, docs, [])
+  const feed = groupFeed(log.events, [])
+  // Shared like a full read's, unless a write landed meanwhile.
+  if (epoch === repoEpoch(repo)) return ttlCached(feedCache, pageKey(repo), () => Promise.resolve(feed))
+  return feed
+}
+
 async function readRepoFeed(sdk: EvoSDK, repo: RepoRef, first: readonly PlainDocument[] | undefined): Promise<Map<string, TargetLog> | null> {
   try {
     const docs = await queryAllDocuments(sdk, feedQuery(repo), { maxPages: FEED_MAX_PAGES, firstPage: first })
@@ -665,6 +707,17 @@ export function baseRefTips(
 }
 
 /**
+ * The base tip a merge moved the base branch from: the valid tip recorded just before `mergeOid`
+ * first became one (`historical` is oldest first, each tip once), or `''` when the merge's commit
+ * was never a tip of the base (a mark recorded for a commit only an ancestor of a tip) or was its
+ * first tip.
+ */
+export function tipBeforeMerge(historical: readonly string[], mergeOid: string): string {
+  const at = historical.indexOf(mergeOid.toLowerCase())
+  return at > 0 ? (historical[at - 1] as string) : ''
+}
+
+/**
  * Read one PR (patch) and its state. `transitions`, when given, are the PR's own (a detail
  * view: the merge oid is then known and labelled against the base's VALID history through the
  * historical-tips predicate); else `code` is its state code from a list page's sum query.
@@ -733,6 +786,7 @@ export async function readPull(
     baseRefName: str(patchDoc, 'baseRefName'),
     baseTipOid: baseTip ?? '',
     baseOidAtOpen: tips.atOpen ?? baseTip ?? '',
+    baseOidAtMerge: mergeOid === null ? '' : tipBeforeMerge(tips.historical, mergeOid),
     headOid,
     initialHeadOid,
     review,

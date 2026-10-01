@@ -802,6 +802,10 @@ fn from_config(msg: &str, chain: &str, ctx: &ErrorContext<'_>) -> UserError {
     if m.contains("authentication key") {
         return key_cannot_sign(msg);
     }
+    // The stored signing key is garbled: the key source, not the configuration (QW3-024).
+    if m.contains("invalid signing key wif") {
+        return identity_unreadable(msg);
+    }
     if m.starts_with("secret ") && (m.contains("is not set") || m.contains("keychain")) {
         return UserError::new(
             codes::STORAGE_SECRET,
@@ -810,6 +814,17 @@ fn from_config(msg: &str, chain: &str, ctx: &ErrorContext<'_>) -> UserError {
         .cause(msg)
         .fix("export the variable in the environment git and dg run in, or re-add the profile with a keychain reference: `dg storage add <name> … --secret-access-key keychain:dash-forge/<name>`")
         .fix("`dg storage list` shows which references resolve");
+    }
+    // A pasted secret where a reference goes (QW3-068): `dg storage list` would show nothing
+    // useful, so the fix says how to give one.
+    if m.starts_with("a secret must be a reference") {
+        return UserError::new(
+            codes::STORAGE_CONFIG,
+            ctx.headline("storage is not configured correctly"),
+        )
+        .cause(msg)
+        .fix("export the secret in an environment variable and give the flag `env:VAR_NAME` instead of the value, or store it in the OS keychain and give `keychain:dash-forge/<profile>`")
+        .fix("`dg storage add` with no arguments asks for the secret and handles either (it can paste into the keychain where there is one)");
     }
     if m.contains("dash.storage")
         || m.contains("dash.replicas")
@@ -1411,13 +1426,37 @@ fn timed_out(ctx: &ErrorContext<'_>, retryable: bool) -> UserError {
 }
 
 fn unreachable(ctx: &ErrorContext<'_>, detail: &str) -> UserError {
-    UserError::new(
+    let mut u = UserError::new(
         codes::UNREACHABLE,
         ctx.headline("could not reach Dash Platform"),
     )
     .cause(detail)
     .fix("check the connection and run it again (nodes that failed are skipped for a minute)")
-    .fix("`dg doctor` tests DAPI reachability; on a devnet check `--dapi-addresses` / git config dash.dapiAddresses")
+    .fix("`dg doctor` tests DAPI reachability; on a devnet check `--dapi-addresses` / git config dash.dapiAddresses");
+    // A devnet name that does not exist looks like an outage: the quorum service host is
+    // derived from the name (`quorums.<name>.networks.dash.org`) and does not resolve. A
+    // resolver failure for it cannot tell a typo from being offline, so say both (QW3-068).
+    if let Some(name) = unresolved_quorum_devnet(detail) {
+        u = u.fix(format!(
+            "if the devnet name is wrong, `--devnet-name {name}` is the one that failed: its quorum service host `quorums.{name}.networks.dash.org` does not resolve"
+        ));
+    }
+    u
+}
+
+/// The devnet name in a failed lookup of its quorum service host
+/// (`Failed to resolve domain 'quorums.<name>.networks.dash.org'`), when `detail` has one: a
+/// resolver or lookup failure that names `quorums.<name>.networks.…`, whatever its wording.
+fn unresolved_quorum_devnet(detail: &str) -> Option<&str> {
+    let lower = detail.to_ascii_lowercase();
+    if !(lower.contains("resolve") || lower.contains("lookup")) {
+        return None;
+    }
+    let at = lower.find("quorums.")? + "quorums.".len();
+    let rest = detail.get(at..)?;
+    let name = rest.split_once(".networks.")?.0;
+    (!name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        .then_some(name)
 }
 
 /// E301 for a read of private `repo` (its `owner/name`) with no identity: its content is
@@ -2857,6 +2896,55 @@ mod tests {
             &ErrorContext::default(),
         );
         assert_eq!(u.code, "E204");
+    }
+
+    /// QW3-068: a pasted storage secret is E501 with a fix that says how to give a reference,
+    /// not the generic "`dg storage list` shows your profiles".
+    #[test]
+    fn a_literal_storage_secret_says_how_to_give_a_reference() {
+        let u = core_chain(
+            CoreError::Config(
+                "a secret must be a reference — `env:VAR_NAME` or `keychain:<service>/<account>` — never the literal value (secrets are not stored in storage.toml)".into(),
+            ),
+            &ErrorContext::default(),
+        );
+        assert_eq!(u.code, "E501");
+        let fixes = u.fix.join(" | ");
+        assert!(fixes.contains("env:VAR_NAME"), "{fixes}");
+        assert!(!fixes.contains("dg storage list"), "{fixes}");
+    }
+
+    /// QW3-068: an unknown devnet name surfaces as a failed lookup of its quorum service host.
+    /// That is E701 (offline looks the same), but the fix names the devnet name as a suspect.
+    #[test]
+    fn an_unresolvable_quorum_host_names_the_devnet_name() {
+        let text = "connecting to Dash Platform (devnet-nosuchdevnet): platform error: building context provider for devnet-nosuchdevnet: Network error: Failed to resolve domain 'quorums.nosuchdevnet.networks.dash.org': failed to lookup address information";
+        assert_eq!(unresolved_quorum_devnet(text), Some("nosuchdevnet"));
+        assert_eq!(
+            unresolved_quorum_devnet(
+                "dns error: failed to lookup address for quorums.foo-1.networks.dash.org"
+            ),
+            Some("foo-1")
+        );
+        let u = unreachable(&ErrorContext::default(), text);
+        assert_eq!(u.code, "E701");
+        assert!(
+            u.fix
+                .iter()
+                .any(|f| f.contains("--devnet-name nosuchdevnet")),
+            "{:?}",
+            u.fix
+        );
+        // An ordinary outage names no devnet.
+        let down = unreachable(
+            &ErrorContext::default(),
+            "Dapi client error: transport error",
+        );
+        assert!(!down.fix.iter().any(|f| f.contains("--devnet-name")));
+        assert_eq!(
+            unresolved_quorum_devnet("Failed to resolve domain 'quorums..networks.x'"),
+            None
+        );
     }
 
     #[derive(Debug)]

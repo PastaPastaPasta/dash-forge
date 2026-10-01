@@ -419,7 +419,7 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)] // one view: the reads, the JSON, then the human lines
+#[allow(clippy::too_many_lines)] // one view: the reads, then its JSON and its human rendering
 async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<()> {
     let s = Reader::open(ctx, repo).await?;
 
@@ -468,6 +468,13 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
         let actors = actors.chain(events.iter().map(|e| e.actor.as_str()));
         let actors = actors.chain(transitions.iter().map(|t| t.actor.as_str()));
         let actors = actors.chain(state.assignees.iter().map(String::as_str));
+        // whom an (un)assign event names (QW3-070: event targets were bare ids)
+        let actors = actors.chain(
+            events
+                .iter()
+                .filter(|e| matches!(e.kind, EventKind::Assign | EventKind::Unassign))
+                .filter_map(|e| e.value.as_deref()),
+        );
         s.client
             .dpns_first_names(std::iter::once(author.as_str()).chain(actors))
             .await
@@ -542,7 +549,11 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_hidden: bool) -> Result<(
                             }
                         }
                     }
-                    Item::Event(e) => println!("\n· {} {}", who(&e.actor), safe(&event_phrase(e))),
+                    Item::Event(e) => println!(
+                        "\n· {} {}",
+                        who(&e.actor),
+                        safe(&event_phrase_with(e, &who))
+                    ),
                     Item::Transition(t) => {
                         println!("\n· {} {}", who(&t.actor), transition_line(t, issue_number));
                     }
@@ -624,8 +635,15 @@ fn empty_issues_line(args: &IssueListArgs, total: usize, pages: usize) -> String
     )
 }
 
-/// What an issue event did, in the web timeline's words.
+/// What an issue event did, in the web timeline's words (identities as bare ids).
+#[cfg(test)]
 fn event_phrase(e: &Event) -> String {
+    event_phrase_with(e, &str::to_string)
+}
+
+/// What an issue event did, in the web timeline's words, with the identity an (un)assign
+/// event names shown by `who` (its DPNS name beside the id).
+fn event_phrase_with(e: &Event, who: &dyn Fn(&str) -> String) -> String {
     let value = e.value.as_deref().unwrap_or("");
     match e.kind {
         // A private repo's value this reader cannot open is absent: say what happened.
@@ -634,9 +652,9 @@ fn event_phrase(e: &Event) -> String {
         EventKind::LabelRemove if value.is_empty() => "removed a label (hidden)".into(),
         EventKind::LabelRemove => format!("removed the {value} label"),
         EventKind::Assign if value.is_empty() => "assigned this".into(),
-        EventKind::Assign => format!("assigned {value}"),
+        EventKind::Assign => format!("assigned {}", who(value)),
         EventKind::Unassign if value.is_empty() => "unassigned this".into(),
-        EventKind::Unassign => format!("unassigned {value}"),
+        EventKind::Unassign => format!("unassigned {}", who(value)),
         EventKind::MilestoneSet if value.is_empty() => "set the milestone (hidden)".into(),
         EventKind::MilestoneSet => format!("set the milestone to {value}"),
         EventKind::MilestoneClear => "cleared the milestone".into(),
@@ -1137,6 +1155,7 @@ async fn label(ctx: &Ctx, repo: &str, number: u64, add: bool, names: &[String]) 
         if add { "Add" } else { "Remove" },
         names.join(", ")
     ))?;
+    let before = s.balance().await;
     let mut ids = Vec::new();
     for name in &names {
         ids.push(
@@ -1145,8 +1164,11 @@ async fn label(ctx: &Ctx, repo: &str, number: u64, add: bool, names: &[String]) 
                 .await?,
         );
     }
+    let spent = s.spent_since(before).await;
+    let price = ctx.usd_price();
     ctx.emit(
         json!({
+            "cost": cost_json(spent, price),
             "status": "labeled",
             "issue": number,
             "label": names.first(),
@@ -1159,8 +1181,9 @@ async fn label(ctx: &Ctx, repo: &str, number: u64, add: bool, names: &[String]) 
         || {
             let verb = if add { "added" } else { "removed" };
             println!(
-                "✓ {verb} label {} on issue #{number}",
-                safe(&names.join(", "))
+                "✓ {verb} label {} on issue #{number} · {}",
+                safe(&names.join(", ")),
+                cost_line(spent, price)
             );
         },
     );
@@ -1326,12 +1349,16 @@ async fn assign(ctx: &Ctx, repo: &str, number: u64, who: &[String], add: bool) -
         ids.join(", ")
     ))?;
     let collab = s.collab();
+    let before = s.balance().await;
     let mut events = Vec::new();
     for id in &ids {
         events.push(collab.set_assignee(&s.repo, &target, id, add).await?);
     }
+    let spent = s.spent_since(before).await;
+    let price = ctx.usd_price();
     ctx.emit(
         json!({
+            "cost": cost_json(spent, price),
             "status": if add { "assigned" } else { "unassigned" },
             "issue": number,
             "assignees": ids,
@@ -1340,7 +1367,11 @@ async fn assign(ctx: &Ctx, repo: &str, number: u64, who: &[String], add: bool) -
         }),
         || {
             let verb = if add { "assigned" } else { "unassigned" };
-            println!("✓ {verb} {} on issue #{number}", ids.join(", "));
+            println!(
+                "✓ {verb} {} on issue #{number} · {}",
+                ids.join(", "),
+                cost_line(spent, price)
+            );
         },
     );
     Ok(())
