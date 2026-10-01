@@ -232,7 +232,6 @@ export function ReviewersCard({
                   onClick={() => {
                     const who = other.trim()
                     setPicking(false)
-                    setOther('')
                     onRequest(who, false)
                   }}
                 >

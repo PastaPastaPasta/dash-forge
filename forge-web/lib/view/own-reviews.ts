@@ -13,8 +13,8 @@ export const OWN_REVIEW_TTL_MS = 15 * 60_000
 export interface OwnReview {
   /** The review document's id. */
   readonly id: string
-  /** 'approve' | 'requestChanges' | 'comment'. */
-  readonly verdict: string
+  /** The verdict, when submitted with one from the composer; 'review' from the review drawer. */
+  readonly verdict: 'approve' | 'requestChanges' | 'comment' | 'review'
   /** When it was confirmed (ms). */
   readonly at: number
 }
@@ -58,13 +58,16 @@ export function rememberOwnReview(scope: string, review: OwnReview): void {
   save(scope, [...load(scope).filter((r) => r.id !== review.id), review])
 }
 
-/**
- * The remembered reviews a read has not shown yet (`shown`: the review ids the page read), newest
- * first; shown and expired ones are forgotten.
- */
+/** The remembered reviews a read has not shown yet (`shown`: the review ids the page read), newest first. Reads only. */
 export function unshownOwnReviews(scope: string, shown: ReadonlySet<string>, now = Date.now()): OwnReview[] {
+  return load(scope)
+    .filter((r) => !shown.has(r.id) && now - r.at < OWN_REVIEW_TTL_MS)
+    .sort((a, b) => b.at - a.at)
+}
+
+/** Forget the remembered reviews a read shows, and expired ones. */
+export function forgetShownOwnReviews(scope: string, shown: ReadonlySet<string>, now = Date.now()): void {
   const all = load(scope)
   const left = all.filter((r) => !shown.has(r.id) && now - r.at < OWN_REVIEW_TTL_MS)
   if (left.length !== all.length) save(scope, left)
-  return left.sort((a, b) => b.at - a.at)
 }

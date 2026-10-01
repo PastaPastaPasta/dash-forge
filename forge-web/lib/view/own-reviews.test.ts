@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { OWN_REVIEW_TTL_MS, ownReviewScope, rememberOwnReview, unshownOwnReviews } from './own-reviews'
+import { forgetShownOwnReviews, OWN_REVIEW_TTL_MS, ownReviewScope, rememberOwnReview, unshownOwnReviews } from './own-reviews'
 
 const scope = ownReviewScope('devnet', 'R', 6, 'outsider')
 
@@ -13,6 +13,7 @@ describe('own reviews awaiting a read (QW3-047)', () => {
     expect(unshownOwnReviews(scope, new Set(), 2000)).toEqual([{ id: 'r1', verdict: 'approve', at: 1000 }])
     // Shown: forgotten for good.
     expect(unshownOwnReviews(scope, new Set(['r1']), 3000)).toEqual([])
+    forgetShownOwnReviews(scope, new Set(['r1']), 3000)
     expect(unshownOwnReviews(scope, new Set(), 4000)).toEqual([])
   })
 

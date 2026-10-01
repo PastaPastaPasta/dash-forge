@@ -127,7 +127,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
             {identity === null
               ? "You're viewing this repo's settings read-only. Sign in as one of its maintainers to change them."
               : viewerRole === 'writer'
-                ? "You're a writer here: you can view these settings, and only maintainers can change them."
+                ? "You're a writer here: only maintainers can change the repo's settings. Where your own browser stores what you push (Storage) is yours to set."
                 : "You're viewing this repo's settings read-only: only its maintainers can change them."}
           </span>
         </p>
@@ -264,7 +264,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       <Section id="storage" title="Storage" icon={<UserCog className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
         <StorageBackend backend={home.backend} emptyText="Readers follow each pack manifest's own storage." />
         {/* Where this browser stores packs it pushes here: a member's only (an outsider never pushes to this repo). */}
-        {viewerRole !== null ? (
+        {!(viewer.known && viewerRole === null) ? (
           <>
             <h3 className="mb-2 mt-5 flex items-center gap-2 text-dense font-medium">
               <HardDrive className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden /> Your browser pushes
