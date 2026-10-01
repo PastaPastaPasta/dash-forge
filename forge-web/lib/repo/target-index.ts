@@ -525,7 +525,7 @@ export function indexCache<Row extends RowExtras>(
 }
 
 /** Resolve ids an index names but no loaded chunk holds: `$id in` composites of up to 100. */
-export function resolveIds<Row extends RowExtras>(sdk: EvoSDK, index: ListIndex<Row>, ids: Iterable<string>, known?: KnownCodes): Promise<void> {
+export function resolveIds<Row extends RowExtras>(sdk: EvoSDK, index: ListIndex<Row>, ids: Iterable<string>): Promise<void> {
   // Serialized per index: two readers resolving the same ids at once each see what the other read.
   const wanted = [...ids]
   return serial(index, async () => {
@@ -541,7 +541,6 @@ export function resolveIds<Row extends RowExtras>(sdk: EvoSDK, index: ListIndex<
       // Only this repo's rows: the ids come from its own feed or transitions, but the read is by id, so check.
       await readChunk(sdk, index, { ...byId, where: [['$id', 'in', batch]], orderBy: [['$id', 'asc']] }, batch.length, {
         keep: (d) => asIdentifierString(d['repoId']) === index.repo.repoId,
-        ...(known ? { known } : {}),
       })
       for (const id of batch) if (!index.rows.has(id)) index.notRows.add(id)
     }
@@ -956,7 +955,7 @@ export async function scanSelect<Row extends RowExtras>(sdk: EvoSDK, index: List
   // reach (its oldest page's middle number: a page of late closes of old rows does not drag it
   // down). A number named below it is read and its proved state decides; this bounds the cost.
   const gapFloor = (): number => {
-    if (scan.done) return 1
+    if (scan.done && scan.complete) return 1
     const mark = scan.watermark
     if (mark === null) return tab.max + 1
     let stale = 0
@@ -967,8 +966,7 @@ export async function scanSelect<Row extends RowExtras>(sdk: EvoSDK, index: List
   // the tab by the scan): every candidate above that point is named. A row whose state the scan
   // has not settled yet (its newest change on the watermark's timestamp, or only a lock read) is
   // named only when it must be (`unsettled`): the next scan page usually settles it, unread.
-  const nominate = (floor = gapFloor(), unsettled = false): { ids: string[]; numbers: number[]; sure: number } => {
-    const ids: string[] = []
+  const nominate = (floor = gapFloor(), unsettled = false): { numbers: number[]; sure: number } => {
     const numbers: number[] = []
     let sure = 0
     for (let m = tab.max; m >= 1 && (tab.direction === 'asc' || sure < need); m--) {
@@ -988,22 +986,21 @@ export async function scanSelect<Row extends RowExtras>(sdk: EvoSDK, index: List
       if (t === undefined || t.kind !== kind || index.notRows.has(id)) continue
       const code = settledCode(scan, t)
       if (code === null) {
-        if (unsettled) ids.push(id)
+        if (unsettled) numbers.push(m)
       } else if (tab.inTab(code)) {
-        ids.push(id)
+        numbers.push(m)
         sure++
       }
     }
-    return { ids, numbers, sure }
+    return { numbers, sure }
   }
   // A row the scan settles needs no state sum: one read per batch, not two.
   const known: KnownCodes = (docs) => scanCodes(scan, docs)
   let sinceRead = 0
-  // One read by number for the batch: the scan knows the number of every id it names.
-  const resolve = async (c: { ids: string[]; numbers: number[] }): Promise<void> => {
+  // One read by number per batch (the scan knows every named row's number).
+  const resolve = async (numbers: readonly number[]): Promise<void> => {
     sinceRead = 0
-    const byId = c.ids.map((x) => scan.targets.get(x)?.number ?? 0).filter((n) => n > 0)
-    await resolveNumbers(sdk, index, [...byId, ...c.numbers], known)
+    await resolveNumbers(sdk, index, numbers, known)
   }
   const done = (rows: Row[], complete: boolean): Selected<Row> => ({ rows: rows.sort(tab.cmp), complete, short: false, searched: null, more: false })
   let pages = 0
@@ -1014,18 +1011,19 @@ export async function scanSelect<Row extends RowExtras>(sdk: EvoSDK, index: List
     // Read the candidates when they are expected to fill the page, every few scan pages, or when
     // the scan can go no further this load: a read per scan page would double its cost.
     const named = nominate(gapFloor(), atEnd)
-    const expected = named.sure + named.numbers.length * tab.openShare
-    const batch = named.ids.length + named.numbers.length
+    const batch = named.numbers.length
+    // Settled rows are sure; unnamed numbers are this type's open rows at `openShare`.
+    const expected = named.sure + (batch - named.sure) * tab.openShare
     if (batch > 0 && (atEnd || expected >= need || batch >= CHUNK || sinceRead >= RESOLVE_EVERY)) {
-      await resolve(named)
+      await resolve(named.numbers)
       rows = tabRows()
       if (rows.length >= tab.known) return done(rows, true)
     }
     if (scan.done && scan.complete) {
       // Every state change is read: every candidate the page needs is named; once they are read,
       // the page is proved (the whole tab only when every row of it is held).
-      const rest = nominate(1, true)
-      if (rest.ids.length + rest.numbers.length > 0) await resolve(rest)
+      const rest = nominate(1, true).numbers
+      if (rest.length > 0) await resolve(rest)
       const held = tabRows()
       return done(held, held.length >= tab.known)
     }
@@ -1033,10 +1031,10 @@ export async function scanSelect<Row extends RowExtras>(sdk: EvoSDK, index: List
     // candidate above it is named; once they are read, the page is proved.
     const last = rows[need - 1]
     if (last !== undefined && tab.direction === 'desc' && scan.watermark !== null && last.createdAt > scan.watermark) {
-      const above = nominate(last.number + 1, true)
-      const unread = { ids: above.ids.filter((x) => (scan.targets.get(x)?.number ?? 0) > last.number), numbers: above.numbers }
-      if (unread.ids.length + unread.numbers.length === 0) return done(rows, false)
-      await resolve(unread)
+      // The descent stops at `last` (the need-th sure row): everything it names is above it.
+      const above = nominate(last.number + 1, true).numbers
+      if (above.length === 0) return done(rows, false)
+      await resolve(above)
       continue
     }
     if (atEnd) {
