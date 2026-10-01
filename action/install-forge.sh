@@ -21,11 +21,23 @@ read -r -a BINARIES <<<"${FORGE_BINARIES:-dg git-remote-dash forge-import}"
 PROTOC_VERSION=28.3
 PROTOC_SHA256_LINUX_X86_64=0ad949f04a6a174da83cdcbdb36dee0a4925272a5b6d83f79a6bf9852076d53f
 PROTOC_SHA256_LINUX_AARCH_64=1de522032a8b194002fe35cab86d747848238b5e4de4f99648372079f5b46f9a
+# The version of build()'s settings, part of the build cache key: bump it with them.
+BUILD_SETTINGS=v2
 
+# The annotation a failure makes: `error`, or `warning` for a caller that reports the failure
+# itself and must not fail the job by default (check-action without fail-on-error).
 die() {
-    printf '::error title=Dash Forge install::%s\n' "$1"
+    local level=error
+    [ "${FORGE_INSTALL_SEVERITY:-}" != warning ] || level=warning
+    printf '::%s title=Dash Forge install::%s\n' "$level" "$1"
     exit 1
 }
+
+# Settings the build makes its own. The calling job's Rust environment (check-action runs inside
+# arbitrary CI jobs) must not change what is compiled, or where.
+BUILD_ENV_UNSET=(RUSTFLAGS CARGO_ENCODED_RUSTFLAGS CARGO_BUILD_RUSTFLAGS RUSTDOCFLAGS RUSTC_WRAPPER
+    RUSTC_WORKSPACE_WRAPPER CARGO_BUILD_TARGET CARGO_BUILD_TARGET_DIR RUSTUP_TOOLCHAIN CARGO_TARGET_DIR
+    CARGO_INCREMENTAL CARGO_BUILD_INCREMENTAL)
 
 src=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
@@ -57,10 +69,12 @@ plan() {
     echo "method=$method" >>"$GITHUB_OUTPUT"
     if [ "$method" = source ]; then
         [ -f "$src/Cargo.lock" ] || die "the Action's source at $src has no Cargo.lock, so it cannot be built. Use the Action from the dash-forge repository (uses: $REPO/<action>@<commit>)."
-        # The build cache key: the runner platform, the dependency set and the toolchain (workspace
-        # crates rebuild anyway). action.yml restores by its prefix, `dash-forge-build@<os>-<arch>@`.
+        # The build cache key: the runner platform, the build settings (BUILD_SETTINGS, bumped when
+        # build() changes them) and binaries, the dependency set and the toolchain (workspace crates
+        # rebuild anyway). action.yml restores by its prefix, `dash-forge-build@<os>-<arch>@`.
         local hash
         hash=$({
+            printf '%s %s\n' "$BUILD_SETTINGS" "${BINARIES[*]}"
             cat "$src/Cargo.lock"
             cat "$src/rust-toolchain.toml" 2>/dev/null || true
         } | sha256 -)
@@ -114,6 +128,11 @@ build() {
     # a release build takes several times longer, and keeps the cached target directory small.
     # Dependencies (SHA-1, zlib, the Platform SDK) are optimized, once per Cargo.lock thanks to
     # the cache, so packing a big repository is not slow.
+    local v
+    unset "${BUILD_ENV_UNSET[@]}"
+    for v in $(compgen -e); do
+        case "$v" in CARGO_PROFILE_*) unset "$v" ;; esac
+    done
     export CARGO_TARGET_DIR="$FORGE_TARGET_DIR" CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0
     # `dg --version` names the commit: a commit id in `uses:` (a tarball has no .git to ask).
     if [[ ${DASH_FORGE_ACTION_REF:-} =~ ^[0-9a-f]{40}$ ]]; then

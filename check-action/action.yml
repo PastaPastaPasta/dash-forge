@@ -77,6 +77,9 @@ outputs:
   action:
     description: "created, updated or unchanged (empty when nothing was written)."
     value: ${{ steps.report.outputs.action }}
+  dg:
+    description: "The dg the action installed or built (empty with install 'false'), for later steps of the job."
+    value: ${{ steps.plan.outputs.dg }}
 
 runs:
   using: composite
@@ -120,12 +123,20 @@ runs:
         INPUT_INSTALL: ${{ inputs.install }}
         INPUT_VERSION: ${{ inputs.version }}
         FORGE_BINARIES: dg
+        FORGE_INSTALL_SEVERITY: ${{ inputs.fail-on-error == 'true' && 'error' || 'warning' }}
       run: |
         if [ "$INPUT_INSTALL" = source ] || [ -z "$INPUT_VERSION" ]; then dir=source; else dir=$INPUT_VERSION; fi
+        # The source build (and so the default, until a release is pinned) supports Linux runners
+        # only: say so up front, and let the report step warn or fail as fail-on-error asks.
+        if [ "$dir" = source ] && [ "$RUNNER_OS" != Linux ]; then
+          echo "failed=dg can be built from source on Linux runners only (this one is $RUNNER_OS). Report from a Linux job, or put dg on PATH and set install: 'false'" >>"$GITHUB_OUTPUT"
+          exit 0
+        fi
         dir="$RUNNER_TEMP/forge-check-bin-$dir"
         { echo "dir=$dir"; echo "dg=$dir/dg"; } >>"$GITHUB_OUTPUT"
         if [ -x "$dir/dg" ]; then echo "method=installed" >>"$GITHUB_OUTPUT"; exit 0; fi
-        bash "$GITHUB_ACTION_PATH/../action/install-forge.sh" plan
+        bash "$GITHUB_ACTION_PATH/../action/install-forge.sh" plan ||
+          echo "failed=could not tell how to install dg (the log above says why)" >>"$GITHUB_OUTPUT"
 
     - name: Install Dash Forge ${{ inputs.version }}
       id: install
@@ -169,6 +180,7 @@ runs:
         FORGE_TARGET_DIR: ${{ runner.temp }}/dash-forge-build
         FORGE_TOOLS_DIR: ${{ runner.temp }}/forge-check-tools
         DASH_FORGE_ACTION_REF: ${{ github.action_ref }}
+        FORGE_INSTALL_SEVERITY: ${{ inputs.fail-on-error == 'true' && 'error' || 'warning' }}
       # A failed build is reported by the report step, which honours fail-on-error.
       run: |
         if ! bash "$GITHUB_ACTION_PATH/../action/install-forge.sh" build; then
@@ -192,6 +204,6 @@ runs:
       env:
         FORGE_ARGS_FILE: ${{ steps.resolve.outputs.args-file }}
         FORGE_FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
-        FORGE_INSTALL_FAILED: ${{ steps.install.outputs.failed || steps.build.outputs.failed }}
+        FORGE_INSTALL_FAILED: ${{ steps.plan.outputs.failed || steps.install.outputs.failed || steps.build.outputs.failed }}
         DG_BIN: ${{ steps.plan.outputs.dg || 'dg' }}
       run: bash "$GITHUB_ACTION_PATH/report.sh"

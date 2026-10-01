@@ -390,10 +390,31 @@ expect cargo-env 'DASH_FORGE_BUILD_SHA=0123456789abcdef0123456789abcdef01234567'
 case="install build at a branch"
 install_forge build DASH_FORGE_ACTION_REF=master || fail "exited $?"
 reject cargo-env 'DASH_FORGE_BUILD_SHA'
+case="install build ignores the calling job's Rust settings"
+install_forge build RUSTFLAGS=-Ctarget-cpu=native CARGO_ENCODED_RUSTFLAGS=x CARGO_BUILD_RUSTFLAGS=x RUSTDOCFLAGS=x \
+    RUSTC_WRAPPER=sccache RUSTC_WORKSPACE_WRAPPER=x CARGO_BUILD_TARGET=wasm32-unknown-unknown \
+    CARGO_BUILD_TARGET_DIR=/elsewhere CARGO_TARGET_DIR=/elsewhere RUSTUP_TOOLCHAIN=nightly CARGO_INCREMENTAL=1 \
+    CARGO_PROFILE_DEV_OPT_LEVEL=3 CARGO_PROFILE_DEV_DEBUG=2 CARGO_PROFILE_RELEASE_LTO=true || fail "exited $?"
+for v in RUSTFLAGS CARGO_ENCODED_RUSTFLAGS CARGO_BUILD_RUSTFLAGS RUSTDOCFLAGS RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER \
+    CARGO_BUILD_TARGET CARGO_BUILD_TARGET_DIR RUSTUP_TOOLCHAIN CARGO_PROFILE_DEV_OPT_LEVEL CARGO_PROFILE_RELEASE_LTO; do
+    ! grep -q "^$v=" "$tmp/cargo-env" || fail "$v reached cargo"
+done
+expect cargo-env "CARGO_TARGET_DIR=$tmp/target"
+expect cargo-env 'CARGO_PROFILE_DEV_DEBUG=0'
+expect cargo-env 'CARGO_INCREMENTAL=0'
+case="install plan: the cache key covers the binaries built"
+install_forge plan
+key_all=$(sed -n 's/^cache-key=//p' "$tmp/iout")
+install_forge plan FORGE_BINARIES=dg
+key_dg=$(sed -n 's/^cache-key=//p' "$tmp/iout")
+[ -n "$key_all" ] && [ "$key_all" != "$key_dg" ] || fail "the same key for different binaries"
 case="install build without cargo"
 mv "$ib/cargo" "$ib/cargo.off"
 if install_forge build; then fail "succeeded"; fi
-expect ilog 'needs Rust (cargo)'
+expect ilog '::error title=Dash Forge install::building Dash Forge from source needs Rust (cargo)'
+# A caller that reports the failure itself asks for a warning.
+if install_forge build FORGE_INSTALL_SEVERITY=warning; then fail "succeeded"; fi
+expect ilog '::warning title=Dash Forge install::building Dash Forge from source needs Rust (cargo)'
 mv "$ib/cargo.off" "$ib/cargo"
 case="install build: old protoc on macOS"
 if install_forge build STUB_PROTOC=3.21.12 STUB_OS=Darwin STUB_ARCH=arm64; then fail "succeeded"; fi

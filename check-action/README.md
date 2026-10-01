@@ -22,7 +22,7 @@ Reports a GitHub Actions job's result as a [Dash Forge](../README.md) check run 
 
 2. **Report each job.** Add the action as the last step, with `if: always()` so failures are reported too.
 
-> **No Dash Forge release is published yet**, so this action pins none (`version` is empty), and the default `install: 'true'` builds `dg` from the action's own source: the ref after `@` in `uses:`. It needs Rust and jq, which GitHub's ubuntu runners have; protoc is installed if missing on Linux x86_64 and arm64. The first build takes several minutes; later runs reuse a build cache (shared with the Mirror Action's). A pinned commit keeps building from source after a release is published: only an action version that sets `version` downloads one. Pin a commit you have reviewed, since the key is handed to the `dg` it builds.
+> **No Dash Forge release is published yet**, so this action pins none (`version` is empty), and the default `install: 'true'` builds `dg` from the action's own source: the ref after `@` in `uses:`. This works on **Linux runners only** (it needs Rust and jq, which GitHub's ubuntu runners have; protoc is installed if missing on x86_64 and arm64): on macOS or Windows the step warns and reports nothing, or fails with `fail-on-error`. It also costs time in every job that reports: the first build takes several minutes, and even with a warm build cache each job recompiles Dash Forge's own crates, a few minutes more. So report from one Linux leg of a matrix, or from one summary job that `needs:` the others, rather than from every job. A pinned commit keeps building from source after a release is published: only an action version that sets `version` downloads one. Pin a commit you have reviewed, since the key is handed to the `dg` it builds.
 
 ```yaml
 jobs:
@@ -72,7 +72,7 @@ Optionally, report `in_progress` at the start of a long job with an early step t
 
 ## Outputs
 
-`document-id`, `sha` (the commit reported on: the PR head for pull request runs), `name` (the check's name), `url` (the Forge commit page) and `action` (`created`, `updated` or `unchanged`; empty when nothing was written).
+`document-id`, `sha` (the commit reported on: the PR head for pull request runs), `name` (the check's name), `url` (the Forge commit page), `action` (`created`, `updated` or `unchanged`; empty when nothing was written) and `dg` (the `dg` the action installed or built, for later steps; empty with `install: 'false'`).
 
 ## Security
 
