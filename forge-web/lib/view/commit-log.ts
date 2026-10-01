@@ -285,7 +285,7 @@ export async function loadCommitChanges(reader: PrefixReader, id: string): Promi
     // reader's MissingObjectError, QW2-037). A partial clone's own error already names the
     // packs it could not load; keep it.
     if (e instanceof MissingObjectError && reader.incomplete) throw e
-    if ((await reader.locate?.(named)) === null) throw notFound(reader, id)
+    if ((await reader.locate?.(named)?.catch(() => undefined)) === null) throw notFound(reader, id)
     if (e instanceof MissingObjectError) throw e
     if (e instanceof ObjectTypeError) throw new CommitIdError('not-a-commit', id, [], e.actual, e.oid !== named)
     throw e

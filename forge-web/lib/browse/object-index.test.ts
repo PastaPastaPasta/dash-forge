@@ -139,6 +139,48 @@ describe('RangedLocator', () => {
     expect(src.wholeLoads).toBe(1)
   })
 
+  it('does not let a fanout that cuts a slice short hide the rows it leaves out', async () => {
+    // A fanout that still adds up but starts slice `b` after the target's row: the row before the
+    // slice's claimed start is then of slice `b` itself, which the edge check catches.
+    const target = oidOf(7)
+    const b = parseInt(target.slice(0, 2), 16)
+    let row = 0
+    while (bytesToHex(bytes.subarray(FANOUT_LEN + row * LOCATOR_ROW_LEN, FANOUT_LEN + row * LOCATOR_ROW_LEN + 20)) !== target) row++
+    const bad = bytes.slice()
+    new DataView(bad.buffer).setUint32((b - 1) * 4, row + 1)
+    const src = source(bad, GRANULE)
+    src.loadWhole = async () => {
+      src.wholeLoads += 1
+      return bytes.slice()
+    }
+    const index = RangedLocator.open(bad.slice(0, FANOUT_LEN), src) as RangedLocator
+    expect(await index.lookup(hexToBytes(target))).toEqual(whole.lookup(hexToBytes(target)))
+    expect(src.wholeLoads).toBe(1)
+  })
+
+  it('answers from the whole fragment when a range cannot be read, and does not retry a failed whole on every lookup', async () => {
+    const src = source(bytes, GRANULE)
+    src.readRange = async () => {
+      throw new Error('chunk missing')
+    }
+    const index = RangedLocator.open(bytes.slice(0, FANOUT_LEN), src) as RangedLocator
+    expect(await index.lookup(hexToBytes(oidOf(3)))).toEqual(whole.lookup(hexToBytes(oidOf(3))))
+    expect(src.wholeLoads).toBe(1)
+
+    const failing = source(bytes, GRANULE)
+    failing.readRange = async () => {
+      throw new Error('chunk missing')
+    }
+    failing.loadWhole = async () => {
+      failing.wholeLoads += 1
+      throw new Error('offline')
+    }
+    const stuck = RangedLocator.open(bytes.slice(0, FANOUT_LEN), failing) as RangedLocator
+    await expect(stuck.lookup(hexToBytes(oidOf(3)))).rejects.toThrow('offline')
+    await expect(stuck.lookup(hexToBytes(oidOf(4)))).rejects.toThrow('chunk missing')
+    expect(failing.wholeLoads).toBe(1)
+  })
+
   it('refuses a fanout that does not describe the fragment', () => {
     expect(RangedLocator.open(bytes.slice(0, FANOUT_LEN), { ...source(bytes), sizeBytes: bytes.length + LOCATOR_ROW_LEN })).toBeNull()
     const falling = bytes.slice(0, FANOUT_LEN)

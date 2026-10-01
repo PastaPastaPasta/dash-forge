@@ -1617,10 +1617,15 @@ function openFragment(sdk: EvoSDK, repo: RepoRef, m: PackManifest): Promise<Obje
     const scope = ACTIVE_NETWORK.key
     const kept = await storedIndexArtifact(scope, m.packHash)
     if (kept !== undefined) return ObjectLocator.parse(kept)
+    // Rows are read only from this copy's own Platform chunks (its uploader's, under this repo),
+    // and kept under that copy: never another copy's or an external mirror's, whose ranges are
+    // anyone's. Any range that cannot be read sends the lookup to the whole read, which is
+    // checked against the pack hash and may use every copy (`RangedLocator.rowsFor`).
+    const copy = `${scope}:${repoKey(repo)}:${m.uploader}`
     const readRange = gatherRanges(
-      (ranges) => storedIndexRanges(scope, m.packHash, ranges),
-      artifactRangeFetch(sdk, repo, m),
-      (start, end, bytes) => keepIndexRange(scope, m.packHash, start, end, bytes),
+      (ranges) => storedIndexRanges(copy, m.packHash, ranges),
+      (start, end) => fetchPlatformRange(sdk, repo, m, start, end),
+      (start, end, bytes) => keepIndexRange(copy, m.packHash, start, end, bytes),
     )
     // A Platform copy is read a chunk at a time whatever the range: read the index in chunks too.
     const granule = CHUNK_PAYLOAD_MAX

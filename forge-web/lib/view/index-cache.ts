@@ -220,7 +220,13 @@ export async function storedIndexArtifact(
   return undefined
 }
 
-const rangeKey = (scope: string, packHash: string, start: number, end: number): string => `${scope}:${packHash.toLowerCase()}@${start}-${end}`
+/**
+ * Where an index range is kept: unlike a whole artifact (checked against its sha256 before it is
+ * kept or served), a range is unchecked, so it is keyed by the copy it was read from, `copy` (the
+ * network's repo and uploader, whose Platform chunks only that uploader can write), never by the
+ * pack hash alone: another repo's manifest naming the same hash must not supply its rows.
+ */
+const rangeKey = (copy: string, packHash: string, start: number, end: number): string => `${copy}:${packHash.toLowerCase()}@${start}-${end}`
 
 /**
  * The kept copies of byte ranges `[start, end)` of the artifact whose sha256 is `packHash`
@@ -229,13 +235,13 @@ const rangeKey = (scope: string, packHash: string, start: number, end: number): 
  * it gets: an index slice's shape, then every object read through it against its oid.
  */
 export async function storedIndexRanges(
-  scope: string,
+  copy: string,
   packHash: string,
   ranges: readonly (readonly [number, number])[],
   store: ArtifactStore | null = indexArtifactStore(),
 ): Promise<(Uint8Array | undefined)[]> {
   if (store === null || ranges.length === 0) return ranges.map(() => undefined)
-  const keys = ranges.map(([start, end]) => rangeKey(scope, packHash, start, end))
+  const keys = ranges.map(([start, end]) => rangeKey(copy, packHash, start, end))
   const got = await (store.getMany !== undefined ? store.getMany(keys) : Promise.all(keys.map((k) => store.get(k)))).catch(() => keys.map(() => undefined))
   return got.map((bytes, i) => {
     const [start, end] = ranges[i] as readonly [number, number]
@@ -243,7 +249,7 @@ export async function storedIndexRanges(
   })
 }
 
-/** Keep range `[start, end)` of artifact `packHash` for the next visit ({@link storedIndexRanges}). */
-export function keepIndexRange(scope: string, packHash: string, start: number, end: number, bytes: Uint8Array, store: ArtifactStore | null = indexArtifactStore()): void {
-  if (store !== null && bytes.length === end - start) void store.put(rangeKey(scope, packHash, start, end), bytes).catch(() => undefined)
+/** Keep range `[start, end)` of copy `copy` of artifact `packHash` for the next visit ({@link storedIndexRanges}). */
+export function keepIndexRange(copy: string, packHash: string, start: number, end: number, bytes: Uint8Array, store: ArtifactStore | null = indexArtifactStore()): void {
+  if (store !== null && bytes.length === end - start) void store.put(rangeKey(copy, packHash, start, end), bytes).catch(() => undefined)
 }

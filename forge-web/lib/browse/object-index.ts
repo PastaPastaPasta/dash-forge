@@ -129,8 +129,8 @@ export class RangedLocator {
   private granuleBytes = 0
   private whole: ObjectLocator | null = null
   private wholeLoad: Promise<ObjectLocator> | null = null
-  /** The read whole that {@link ESCALATE_FRACTION} started failed: it is not started again by lookups. */
-  private escalationFailed = false
+  /** A read whole failed: lookups no longer start one (a failing one would cost megabytes each time). */
+  private wholeFailed = false
   private readonly granule: number
 
   private constructor(
@@ -170,6 +170,7 @@ export class RangedLocator {
         return locator
       })
       load.catch(() => {
+        this.wholeFailed = true
         if (this.wholeLoad === load) this.wholeLoad = null
       })
       this.wholeLoad = load
@@ -203,10 +204,8 @@ export class RangedLocator {
    * time rather than download megabytes again on each one. {@link loadWhole} still tries.
    */
   private escalate(): void {
-    if (this.escalationFailed || this.wholeLoad !== null || this.granuleBytes < this.count * LOCATOR_ROW_LEN * ESCALATE_FRACTION) return
-    this.loadWhole().catch(() => {
-      this.escalationFailed = true
-    })
+    if (this.wholeFailed || this.wholeLoad !== null || this.granuleBytes < this.count * LOCATOR_ROW_LEN * ESCALATE_FRACTION) return
+    this.loadWhole().catch(() => undefined)
   }
 
   /** The byte range of rows `[from, to)`. */
@@ -222,20 +221,38 @@ export class RangedLocator {
     return out
   }
 
-  /** Rows `[from, to)` of slice `b`, from `parts` (their granules, in order), checked for shape. */
+  /**
+   * Rows `[from, to)` of slice `b` read with the row just past each slice edge they reach: the
+   * fanout is the fragment's own claim, so a slice end is checked against its neighbour (a fanout
+   * that cut a slice short would otherwise hide the rows it left out, without a malformed row).
+   */
+  private span(b: number, from: number, to: number): readonly [number, number] {
+    const [lo, hi] = fanoutBounds(this.fanout, b)
+    return [from === lo && lo > 0 ? lo - 1 : from, to === hi && hi < this.count ? hi + 1 : to]
+  }
+
+  /**
+   * Rows `[from, to)` of slice `b`, from `parts` (the granules of their {@link span}, in order),
+   * checked for shape: sorted rows of slice `b`, a row of a lower slice before an edge at the
+   * slice's start, one of a higher slice after an edge at its end.
+   */
   private assemble(b: number, from: number, to: number, parts: readonly Uint8Array[]): Uint8Array {
     const key = `${b}:${from}:${to}`
     const done = this.checked.get(key)
     if (done !== undefined) return done
-    const [start, end] = this.bytesOf(from, to)
+    const [a0, z0] = this.span(b, from, to)
+    const [start, end] = this.bytesOf(a0, z0)
     const first = Math.floor(start / this.granule)
-    const out = new Uint8Array(end - start)
+    const all = new Uint8Array(end - start)
     parts.forEach((bytes, i) => {
       const at = (first + i) * this.granule
       const a = Math.max(start, at)
       const z = Math.min(end, at + bytes.length)
-      if (z > a) out.set(bytes.subarray(a - at, z - at), a - start)
+      if (z > a) all.set(bytes.subarray(a - at, z - at), a - start)
     })
+    if (a0 < from && (all[0] as number) >= b) throw new MalformedSliceError(b)
+    if (z0 > to && (all[(z0 - a0 - 1) * LOCATOR_ROW_LEN] as number) <= b) throw new MalformedSliceError(b)
+    const out = all.subarray((from - a0) * LOCATOR_ROW_LEN, (to - a0) * LOCATOR_ROW_LEN)
     if (!wellFormedSlice(out, b)) throw new MalformedSliceError(b)
     this.checked.set(key, out)
     // Kept small: a window is a granule or two, and lookups land in few of them at once.
@@ -278,7 +295,7 @@ export class RangedLocator {
     if (this.whole !== null) return this.whole.bucketRows(b)
     try {
       const read = async (from: number, to: number): Promise<Uint8Array> =>
-        this.assemble(b, from, to, await Promise.all(this.granulesOf(from, to).map((g) => this.readGranule(g))))
+        this.assemble(b, from, to, await Promise.all(this.granulesOf(...this.span(b, from, to)).map((g) => this.readGranule(g))))
       const [from, to] = this.window(b, low, high)
       const rows = await read(from, to)
       if (this.brackets(b, from, to, rows, low, high)) return rows
@@ -286,7 +303,10 @@ export class RangedLocator {
       const [lo, hi] = fanoutBounds(this.fanout, b)
       return await read(lo, hi)
     } catch (e) {
-      if (!(e instanceof MalformedSliceError)) throw e
+      // Rows that cannot be read or are not well formed: the whole fragment, checked against its
+      // hash and read from any copy, is the answer (as it was before ranged reads), unless it
+      // already failed once.
+      if (this.wholeFailed && this.wholeLoad === null) throw e
       return (await this.loadWhole()).bucketRows(b)
     }
   }
@@ -295,7 +315,7 @@ export class RangedLocator {
   private heldRowsFor(b: number, low: Uint8Array, high: Uint8Array): Uint8Array | undefined {
     if (this.whole !== null) return this.whole.bucketRows(b)
     const held = (from: number, to: number): Uint8Array | undefined => {
-      const parts = this.granulesOf(from, to).map((g) => this.held.get(g))
+      const parts = this.granulesOf(...this.span(b, from, to)).map((g) => this.held.get(g))
       if (parts.some((p) => p === undefined)) return undefined
       try {
         return this.assemble(b, from, to, parts as Uint8Array[])

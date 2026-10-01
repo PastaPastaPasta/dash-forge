@@ -118,7 +118,7 @@ async function readText(reader: ObjectReader, oid: string | null, options: Patch
   } catch (e) {
     if (!(e instanceof ObjectTooLargeError)) throw e
     // Refused on the entry's length alone: the index's claim, which nothing has checked.
-    const stored = e.size === (await reader.locate?.(oid))?.length
+    const stored = e.size === (await reader.locate?.(oid)?.catch(() => null))?.length
     if (!stored && (await sniffedBinary(reader, oid))) throw new Binary(true)
     if (stored) throw new TooLarge(e.size, 'stored')
     throw new TooLarge(null, 'refused')
