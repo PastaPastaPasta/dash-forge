@@ -12,8 +12,13 @@
  * reads whichever contract the deployment registered.
  *
  * What a fused star gives up (the owner's C1 trade-off, PLAN.md §2): the Trending opt-out, and
- * RC1's beat rules (O-08: one per identity and repo, ever; public repos of others only). Its
- * window entry outlives an unstar, so unstarring and starring again counts twice.
+ * RC1's beat rules (O-08: one per identity and repo, ever; public repos of others only) as
+ * consensus rules. Readers apply the second instead (`fusedTrending` in `trending.ts`). Its
+ * window entry outlives an unstar, so an unstarred repo keeps the star's count in the windows
+ * it was in until they pass; a star again inside one of them writes over that entry and counts
+ * once (v5 `book/src/contract-keywords/index-only.md:197-218`,
+ * `book/src/drive/index-only-document-types.md:336-342`). An unstar carries no `$createdAt`
+ * (rs-dpp `document_index_only_delete_transition/v0/from_document.rs:33-51`).
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
